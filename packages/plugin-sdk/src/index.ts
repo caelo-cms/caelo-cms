@@ -319,6 +319,10 @@ export const pluginManifest = z
     operations: z.array(z.string().min(1).max(120)).min(1),
     component: pluginComponent.optional(),
     hasStaticRender: z.boolean().default(false),
+    /** See `PluginDefinition.buildAssets`. Release-signed only — the
+     *  files land on every page of the public site, so authorship has
+     *  to be auditable. */
+    hasBuildAssets: z.boolean().default(false),
     /** Tier 1 only. */
     requestedCapabilities: z.array(pluginCapability).optional(),
     /** Tier 1 only. */
@@ -661,6 +665,31 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   };
   readonly staticRender?: (ctx: C, args: { pageId: string }) => Promise<string> | string;
   /**
+   * The plugin's channel to the browser: files emitted ONCE per build
+   * and referenced from every page of the site.
+   *
+   * Returns `{ "runtime.js": "…", "runtime.css": "…" }`. `.js` files
+   * are linked before `</body>`, `.css` files before `</head>`; the
+   * host hashes each file's content into its name so a CDN can cache
+   * it forever and a changed file still lands.
+   *
+   * Why once per build rather than per page: the point of this channel
+   * is behaviour a plugin must guarantee itself — a consent dialog that
+   * has to work regardless of how the site's markup was authored, an
+   * embed that must not load before the visitor opts in. Such a runtime
+   * usually needs configuration BEFORE it can decide anything, and a
+   * static site cannot afford a blocking fetch to obtain it. Emitting
+   * once per build lets the plugin bake that configuration into the
+   * file it ships.
+   *
+   * @param args.pageIds every page in this build, so a plugin can bake
+   *   per-page data into a lookup rather than fetching it at runtime.
+   */
+  readonly buildAssets?: (
+    ctx: C,
+    args: { pageIds: ReadonlyArray<string> },
+  ) => Promise<Record<string, string>> | Record<string, string>;
+  /**
    * P13 audit fix #4 — optional cheap signature of the plugin's data
    * for this page. Folded into the static_bakes
    * cache key so the bake refreshes when plugin data changes even
@@ -765,6 +794,7 @@ export function manifestFromDefinition(def: {
   readonly operations: Readonly<Record<string, unknown>>;
   readonly component?: PluginComponent;
   readonly staticRender?: unknown;
+  readonly buildAssets?: unknown;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
   readonly tools?: ReadonlyArray<PluginToolSpec>;
@@ -780,6 +810,7 @@ export function manifestFromDefinition(def: {
       ? { tag: def.component.tag, shadowMode: def.component.shadowMode ?? "open" }
       : undefined,
     hasStaticRender: Boolean(def.staticRender),
+    hasBuildAssets: Boolean(def.buildAssets),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.workers ? { workers: [...def.workers] } : {}),
     ...(def.tools ? { tools: [...def.tools] } : {}),

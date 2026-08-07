@@ -468,6 +468,35 @@ export async function runPluginStaticRender(opts: {
 }
 
 /**
+ * #449 — invoke the plugin's `buildAssets(...)` once for a build.
+ *
+ * Returns `{}` for a plugin that declares none, so callers can iterate
+ * every plugin without branching. A plugin that DOES declare it and
+ * throws propagates: see `collectBuildAssets` for why a missing runtime
+ * has to stop the build rather than ship a silently inert page.
+ */
+export async function runPluginBuildAssets(opts: {
+  pluginSlug: string;
+  pageIds: ReadonlyArray<string>;
+}): Promise<Record<string, string>> {
+  const plugin = loadedPlugins.bySlug(opts.pluginSlug);
+  if (!plugin) return {};
+  const build = plugin.definition.buildAssets;
+  if (typeof build !== "function") return {};
+  if (!cachedInfra || !makeContext) {
+    throw new Error("plugin host not bootstrapped");
+  }
+  const ctx = await makeContext({ plugin, infra: cachedInfra });
+  const out = await build(ctx as PluginContext, { pageIds: opts.pageIds });
+  if (out === null || typeof out !== "object" || Array.isArray(out)) {
+    throw new Error(
+      `plugin "${opts.pluginSlug}" buildAssets returned ${Array.isArray(out) ? "an array" : typeof out} — expected an object of {fileName: contents}`,
+    );
+  }
+  return out;
+}
+
+/**
  * P13 perf-pass — invoke the plugin's `metaSignatureBatch(...)` to
  * resolve N page signatures in ONE call. Returns a Map keyed
  * by pageId. Empty Map when the plugin doesn't declare the batch

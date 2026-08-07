@@ -533,6 +533,16 @@ For Tier 2 the validator gates activation (rejection ⇒ status stays `draft`). 
 
 The frontend rules are tier-agnostic: a Tier 1 plugin's component runs in the browser the same way a Tier 2 plugin's does.
 
+#### Client assets — the site-wide runtime channel (#449)
+
+A Web Component covers a plugin surface the page opts into by placing its tag. Some plugin behaviour is not opt-in per placement: a consent dialog has to work regardless of how the site's markup was authored, and a third-party embed must not load before the visitor opts in. For that, a release-signed plugin declares `buildAssets`, returning `.js` / `.css` files **once per build**; the generator writes them under `_caelo/plugin/<slug>/` with the content hash in the name and references them from every page.
+
+- **Once per build, not per page.** Such a runtime usually needs configuration before it can decide anything, and a static site cannot afford a blocking fetch to obtain it — one call per build lets the plugin bake that configuration into the file it ships. The build's full page list is passed in, so per-page data can be baked into a lookup.
+- **Content hash in the filename.** The file is referenced from every page, so it wants a long CDN TTL; hashing the content into the name keeps "cache forever" and "the change lands" both true.
+- **Release-signed only.** These files run in every visitor's browser on every page — the widest blast radius any contribution has. A runtime-authored plugin's frontend stays inside its Shadow DOM component.
+- **One resolver, two surfaces.** The deploy links the files; the admin preview inlines the identical bytes, because the preview iframe has no build directory to serve from. Delivery differs, content does not — the editor can never show behaviour the deployed site won't have.
+- **Loud, per CLAUDE.md §2.** A throwing plugin, a malformed file name and an over-budget payload all fail the build. A runtime that silently stops shipping is precisely the defect this channel exists to prevent.
+
 ### 14.7 Runtime Split
 
 ```

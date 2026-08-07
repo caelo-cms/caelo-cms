@@ -15,8 +15,10 @@
  */
 
 import {
+  collectBuildAssets,
   collectContributions,
   composeHeadBlock,
+  injectPluginAssets,
   pluginDataListsRegistry,
   resolveDataLists,
 } from "@caelo-cms/plugin-host";
@@ -1129,6 +1131,14 @@ export const renderPagePreviewOp = defineOperation({
       html,
       composeHeadBlock(headBlock, contributions.head.get(input.pageId)),
     );
+
+    // #449 — plugin client assets. The deploy LINKS these files; the
+    // preview iframe has no build directory to serve from, so it
+    // inlines the identical bytes. Same resolver, so the editor can
+    // never show behaviour the deployed site won't have — a consent
+    // dialog that works in preview and is missing on the live site is
+    // the failure this parity exists to prevent.
+    html = injectPluginAssets(html, await collectBuildAssets([input.pageId]), "inline");
 
     // issue #156 — surface unknown `var(--…)` references in the page's
     // CSS bundle (layout + template + placed modules) on the existing
