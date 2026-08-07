@@ -87,17 +87,12 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
   );
   const sessionId = tracker.currentSessionId();
 
-  // Render the home page the way a visitor would see it.
-  const html = await page.evaluate(async (pageId) => {
-    const r = await fetch(`/api/query/pages.render_preview`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ pageId }),
-    });
-    const body = (await r.json()) as { data?: { html?: string } };
-    return body.data?.html ?? "";
-  }, seed.pageId);
-
+  // Render the home page the way a visitor would see it. /edit/preview
+  // serves the composed page as raw HTML, without the admin chrome
+  // around it.
+  const preview = await page.goto(`/edit/preview/${seed.pageId}`);
+  expect(preview?.status() ?? 0).toBeLessThan(400);
+  const html = (await preview?.text()) ?? "";
   expect(html.length).toBeGreaterThan(0);
 
   // The dialog exists and the runtime can find it.
