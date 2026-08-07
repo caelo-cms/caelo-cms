@@ -42,7 +42,7 @@
     "knip": "6.25.0",
     "license-checker-rseidelsohn": "5.0.1",
     "madge": "8.0.0",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "zod": "4.4.3"
   },
   "engines": {
