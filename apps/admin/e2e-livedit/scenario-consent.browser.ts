@@ -38,6 +38,31 @@ import {
   sendChatPromptAndWait,
 } from "./helpers.js";
 
+/** A second published page on the same template. */
+function seedSecondPage(templateId: string): string {
+  const raw = spawnSync(
+    "bun",
+    [
+      "-e",
+      `
+      import { SQL } from "bun";
+      const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+      const rows = await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return tx\`INSERT INTO pages (slug, title, template_id, status, current_path)
+                  VALUES ('kontakt', 'Kontakt', \${templateId}::uuid, 'published', '/kontakt')
+                  RETURNING id::text AS id\`;
+      });
+      console.log(rows[0].id);
+      await sql.end();
+      `,
+    ],
+    { env: process.env, encoding: "utf8" },
+  );
+  if (raw.status !== 0) throw new Error(`seedSecondPage failed: ${raw.stderr || raw.stdout}`);
+  return raw.stdout.trim();
+}
+
 /** Wipe the plugin's own tables so a rerun starts from the seed. */
 function resetConsentState(): void {
   const raw = spawnSync(
@@ -71,6 +96,12 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
   const seed = seedMinimalSite();
   resetConsentState();
 
+  // A second page, seeded BEFORE the turn. Without it the difference
+  // between "banner on this page" and "banner on the site" is invisible
+  // — and an assertion the AI cannot observe the point of is a
+  // preference dressed up as a gate.
+  const secondPageId = seedSecondPage(seed.templateId);
+
   const tracker = attachChatSessionTracker(page);
   await loginAsDevOwner(page);
   // Activation is a hard state: without the Owner's click the AI has no
@@ -82,7 +113,7 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
 
   await sendChatPromptAndWait(
     page,
-    "Wir brauchen einen Cookie-Banner, der zur Seite passt. Besucher sollen einzeln auswählen können, was sie erlauben.",
+    "Wir brauchen einen Cookie-Banner für die ganze Website, der zum Design passt. Besucher sollen einzeln auswählen können, was sie erlauben.",
     600_000,
   );
   const sessionId = tracker.currentSessionId();
@@ -120,28 +151,14 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
   expect(html).toContain("caelo-consent-ask");
   expect(html).toContain("/api/plugin/consent-manager/record_consent");
 
-  // The banner is site chrome: one placement in the layout covers every
-  // page. A per-page placement misses the next page the operator adds.
-  const layoutPlaced = spawnSync(
-    "bun",
-    [
-      "-e",
-      `
-      import { SQL } from "bun";
-      const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-      const rows = await sql.begin(async (tx) => {
-        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-        return tx\`SELECT count(*)::int AS n
-                   FROM layout_modules lm JOIN modules m ON m.id = lm.module_id
-                   WHERE m.html LIKE '%data-consent-banner%'\`;
-      });
-      console.log(rows[0].n);
-      await sql.end();
-      `,
-    ],
-    { env: process.env, encoding: "utf8" },
-  );
-  expect(Number.parseInt(layoutPlaced.stdout.trim(), 10)).toBeGreaterThan(0);
+  // The property the layout placement exists for: the banner is on
+  // EVERY page, including one the AI never looked at. Bound to the page
+  // it was asked about, it would be missing from the next page the
+  // operator adds — and nobody would notice, because the page they were
+  // looking at when they asked is fine.
+  const second = await page.goto(`/edit/preview/${secondPageId}`);
+  expect(second?.status() ?? 0).toBeLessThan(400);
+  expect((await second?.text()) ?? "").toContain("data-consent-banner");
 
   assertNoOrphanLocks(sessionId ?? "");
   assertNoChatRunnerDiagWarnings();
