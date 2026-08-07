@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { activatePluginTool } from "./activate-plugin.js";
 import { addModuleTool } from "./add-module.js";
 import { addPluginToPageTool } from "./add-plugin-to-page.js";
 import { autofillPageSeoTool } from "./autofill-page-seo.js";
@@ -188,6 +189,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // text before; the AI had no fetch path when it claimed to lack a UUID.
   registry.register(listLayoutsTool);
   registry.register(listPluginsTool);
+  registry.register(activatePluginTool);
   registry.register(listTemplatesTool);
   registry.register(listPagesTool);
   registry.register(loadSkillTool);

@@ -277,6 +277,7 @@ import {
 } from "./ops/owner-bootstrap-tokens.js";
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
+import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
   commentArchiveInsertOp,
   commentArchiveListForPageOp,
@@ -545,6 +546,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeUrlMigrationOp);
   registry.register(proposeUninstallPluginOp);
   registry.register(executeUninstallPluginOp);
+  registry.register(proposePluginActivationOp);
+  registry.register(executePluginActivationOp);
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
   registry.register(setPageModuleContentManyOp);

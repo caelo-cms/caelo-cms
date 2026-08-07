@@ -22,7 +22,7 @@
  * the separate Owner queue are gone.
  */
 
-import { runPluginOperation } from "@caelo-cms/plugin-host";
+import { loadActivatedPlugin, runPluginOperation } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -77,6 +77,37 @@ export function attachGatedExecute(
           ok: false,
           error: `${gated.executeOp} failed: ${describePersistError(applied.error)}`,
         };
+      }
+      // 3. Post-commit step, if the domain declared one. The apply
+      //    transaction is closed by now, which is the whole reason this
+      //    is not folded into `execute_proposal`.
+      if (gated.afterApply === "load-activated-plugin") {
+        const slug = (applied.value as { slug?: string }).slug;
+        if (slug) {
+          const live = await loadActivatedPlugin(slug);
+          if (!live.loaded) {
+            // The row IS active; only the in-process load failed. Say so
+            // precisely rather than reporting a clean success the
+            // operator would find untrue, or a failure that would send
+            // them re-approving something already applied.
+            return {
+              ok: true,
+              value: {
+                ...(applied.value as Record<string, unknown>),
+                loadedIntoHost: false,
+                warning: `"${slug}" is activated but could not be loaded into the running host (${live.reason}). It will load on the next restart; do not use its tools before then.`,
+              },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              ...(applied.value as Record<string, unknown>),
+              loadedIntoHost: true,
+              note: "The plugin is running. Its tools and skills become available to you on your NEXT turn — this turn's tool list was fixed before the approval.",
+            },
+          };
+        }
       }
       return { ok: true, value: applied.value };
     },

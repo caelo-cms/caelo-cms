@@ -56,7 +56,17 @@ export const BULK_TOOL_SIBLINGS: ReadonlyMap<string, string> = new Map(
  * ignored by the provider's SDK-tool builder.
  */
 export type FilteredTool = ToolDefinition & {
-  gated?: { proposeOp: string; executeOp: string };
+  gated?: {
+    proposeOp: string;
+    executeOp: string;
+    /**
+     * A step that must run AFTER the apply transaction commits.
+     * `load-activated-plugin` puts a just-approved plugin into the
+     * running host; it cannot run inside the op because the loader
+     * opens its own transaction and takes the same plugins row.
+     */
+    afterApply?: "load-activated-plugin";
+  };
   /** #388 — a plugin tool that declared `approvalMode` in its spec. The
    *  chat-runner attaches an SDK `execute` that dispatches the plugin
    *  operation only after the Owner's in-chat Approve — plugin tools no

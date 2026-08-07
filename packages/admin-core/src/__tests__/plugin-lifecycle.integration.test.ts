@@ -319,4 +319,72 @@ describe("#393 — lifecycle completion", () => {
     expect(after.schema[0]?.n).toBe(0);
     expect(droppedSchemas).toEqual(["public:plugin_t393_life", "admin:plugin_t393_life"]);
   });
+
+  it("the AI proposes an activation, cannot apply it, and the plugin runs only after the click", async () => {
+    // Michael's contract: the AI notices a dormant plugin, goes through
+    // ONE approval, and can use it afterwards. This pins every step of
+    // that, including the two that are easy to get wrong — the AI must
+    // not be able to skip the click, and flipping the row must not be
+    // mistaken for the plugin actually running.
+    await bootHost();
+    const off = await execute(registry, adapter, HUMAN_CTX, "plugins.disable", {
+      slug: "t393-life",
+    });
+    if (!off.ok) throw new Error(JSON.stringify(off.error));
+    await bootHost(); // a disabled plugin is not loaded at all
+    expect(pluginToolsRegistry.list().some((t) => t.spec.name === "t393_noop")).toBe(false);
+
+    // 1. The AI proposes. The preview must name what starts running —
+    //    an "Approve" with nothing to read is not informed consent.
+    const AI_CTX: ExecutionContext = { ...SYS_CTX, actorKind: "ai" };
+    const proposed = await execute(registry, adapter, AI_CTX, "plugins.propose_activation", {
+      slug: "t393-life",
+      reason: "the operator asked for something this plugin provides",
+    });
+    if (!proposed.ok) throw new Error(JSON.stringify(proposed.error));
+    const { proposalId, preview } = proposed.value as {
+      proposalId: string;
+      preview: Record<string, unknown>;
+    };
+    expect(preview.currentStatus).toBe("disabled");
+    expect(preview.toolsAdded).toContain("t393_noop");
+
+    // 2. The AI cannot apply its own proposal. This is the gate.
+    const bypass = await execute(registry, adapter, AI_CTX, "plugins.execute_activation", {
+      proposalId,
+    });
+    expect(bypass.ok).toBe(false);
+    if (!bypass.ok) expect(bypass.error.kind).toBe("ActorScopeRejected");
+    const stillOff = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(`SELECT status FROM plugins WHERE slug = 't393-life'`)) as {
+          status: string;
+        }[],
+    );
+    expect(stillOff[0]?.status).toBe("disabled");
+
+    // 3. The operator approves.
+    const applied = await execute(registry, adapter, HUMAN_CTX, "plugins.execute_activation", {
+      proposalId,
+    });
+    if (!applied.ok) throw new Error(JSON.stringify(applied.error));
+    expect((applied.value as { previousStatus: string }).previousStatus).toBe("disabled");
+
+    // 4. The row is active — and that alone changes NOTHING at runtime.
+    //    Conflating the two is how "activated but nothing happened"
+    //    would sneak back in.
+    expect(pluginToolsRegistry.list().some((t) => t.spec.name === "t393_noop")).toBe(false);
+
+    // 5. The post-commit load is what makes it usable.
+    expect(await loadActivatedPlugin("t393-life")).toEqual({ loaded: true });
+    expect(pluginToolsRegistry.list().some((t) => t.spec.name === "t393_noop")).toBe(true);
+
+    // Re-proposing an already-active plugin is refused with a message
+    // that tells the AI to just use it.
+    const again = await execute(registry, adapter, AI_CTX, "plugins.propose_activation", {
+      slug: "t393-life",
+    });
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.error.message).toContain("already active");
+  });
 });
