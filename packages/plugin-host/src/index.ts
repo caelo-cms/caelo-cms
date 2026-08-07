@@ -20,12 +20,12 @@ export {
   type ResolvedDataLists,
   resolveDataLists,
 } from "./data-list-resolution.js";
+export { type DataListItem, pluginDataListsRegistry } from "./data-lists.js";
 export {
   type ResolvedDeferral,
   type ResolvedDeferrals,
   resolveModuleDeferrals,
 } from "./deferrals.js";
-export { type DataListItem, pluginDataListsRegistry } from "./data-lists.js";
 export {
   type DevKeyPair,
   type DevSignReport,
