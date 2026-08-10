@@ -33,7 +33,7 @@
     "lucide-svelte": "^1.0.1",
     "marked": "^18",
     "mode-watcher": "^1.1.0",
-    "svelte-dnd-action": "^0.9.76",
+    "svelte-dnd-action": "^0.9.78",
     "svelte-sonner": "^1.1.1",
     "tailwind-merge": "^2.5.5",
     "tailwind-variants": "^1.0.0",
@@ -47,9 +47,9 @@
     "@tailwindcss/vite": "^4.3.3",
     "svelte": "5.56.8",
     "svelte-adapter-bun": "1.0.1",
-    "svelte-check": "4.7.4",
+    "svelte-check": "4.7.5",
     "tailwindcss": "^4.3.3",
-    "vite": "8.2.0"
+    "vite": "8.2.1"
   },
   "optionalDependencies": {
     "@rollup/rollup-darwin-arm64": "^4",
