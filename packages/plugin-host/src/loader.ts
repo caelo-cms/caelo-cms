@@ -49,6 +49,7 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { makePluginContext } from "./capabilities.js";
+import { pluginDataListsRegistry } from "./data-lists.js";
 import {
   type LoadedPlugin,
   loadedPlugins,
@@ -642,6 +643,29 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     );
   }
 
+  // Declared BEFORE the activation gate on purpose. An inactive plugin
+  // contributes nothing, but a module written while it ran still says
+  // `{{#its_list}}`; remembering the name lets the renderer report "that
+  // plugin is switched off" instead of "unknown field".
+  if (def.dataLists && def.dataLists.length > 0) {
+    if (def.tier !== 1) {
+      throw new Error(
+        `plugin "${def.slug}" declares dataLists but is not release-signed — refused`,
+      );
+    }
+    if (!def.dataListsOperation) {
+      throw new Error(
+        `plugin "${def.slug}" declares dataLists without a dataListsOperation to resolve them`,
+      );
+    }
+    if (!def.operations[def.dataListsOperation]) {
+      throw new Error(
+        `plugin "${def.slug}" names dataListsOperation "${def.dataListsOperation}", which is not one of its operations`,
+      );
+    }
+    pluginDataListsRegistry.declare(def.slug, def.dataLists);
+  }
+
   // Upsert the plugins row + actor row; reuses migration 0036's partial unique index.
   //
   // The status a FRESH row gets is the whole activation model. Discovery
@@ -774,6 +798,9 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   for (const tool of def.tools ?? []) {
     pluginToolsRegistry.register(def.slug, tool);
   }
+  if (def.dataLists && def.dataLists.length > 0 && def.dataListsOperation) {
+    pluginDataListsRegistry.register(def.slug, def.dataLists, def.dataListsOperation);
+  }
   for (const renderer of def.promptContext ?? []) {
     pluginPromptContextRegistry.register({
       pluginSlug: def.slug,
@@ -899,6 +926,7 @@ async function markPluginFailed(opts: {
 export function resetPluginHost(): void {
   pluginWorkerScheduler.shutdown();
   pluginToolsRegistry.reset();
+  pluginDataListsRegistry.reset();
   pluginPromptContextRegistry.reset();
   urlContributionsRegistry.reset();
   loadedPlugins.reset();

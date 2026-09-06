@@ -140,6 +140,14 @@ export interface ComposeInput {
   readonly theme?: ComposeTheme;
   /** issue #150 — resolved web fonts; undefined = system stacks only. */
   readonly fonts?: ComposeFonts;
+  /**
+   * Plugin-provided lists for the page being composed, plus the names
+   * declared by installed-but-inactive plugins. Threaded so a module
+   * iterating `{{#language_links}}` renders the same on deploy as in
+   * the editor — including the loud marker when its plugin is off.
+   */
+  readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
+  readonly dormantDataLists?: Readonly<Record<string, string>>;
 }
 
 export interface ComposeOutput {
@@ -204,7 +212,7 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
         navRendered = true;
         baseHtml = renderNavMenuHtml(navMenuItems);
       } else {
-        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
+        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme, input);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
@@ -389,11 +397,18 @@ function applyFieldSubstitution(
   fields: readonly { name: string; kind?: ModuleFieldKind; default?: unknown }[] | undefined,
   contentValues: Readonly<Record<string, unknown>> | undefined,
   theme: ComposeTheme | undefined,
+  lists: {
+    readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
+    readonly dormantDataLists?: Readonly<Record<string, string>>;
+  },
 ): string {
   // The substitution engine (renderTemplate) already unwraps CDATA
   // guards; cover the no-op early-return path so a chrome module with no
   // fields/values/theme is cleaned too.
-  if (!fields && !contentValues && !theme) return stripCdataGuards(html);
+  const hasLists =
+    Object.keys(lists.dataLists ?? {}).length > 0 ||
+    Object.keys(lists.dormantDataLists ?? {}).length > 0;
+  if (!fields && !contentValues && !theme && !hasLists) return stripCdataGuards(html);
   const engineFields: TemplateField[] = (fields ?? []).map((f) => ({
     name: f.name,
     kind: f.kind ?? "text",
@@ -403,6 +418,8 @@ function applyFieldSubstitution(
     html,
     fields: engineFields,
     contentValues,
+    dataLists: lists.dataLists,
+    dormantDataLists: lists.dormantDataLists,
     // v0.11.1 (issue #76) — thread the active theme's asset URLs so
     // module HTML carrying `{{theme_logo_url}}` etc. resolves. Unbound
     // slots emit loud-raw + `theme-asset-unbound:<slot>` markers.
@@ -551,7 +568,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
         navRendered = true;
         baseHtml = renderNavMenuHtml(navMenuItems);
       } else {
-        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
+        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme, input);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
@@ -583,7 +600,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
         navRendered = true;
         baseHtml = renderNavMenuHtml(navMenuItems);
       } else {
-        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
+        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme, input);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });

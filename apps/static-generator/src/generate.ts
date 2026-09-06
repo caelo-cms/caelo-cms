@@ -24,6 +24,7 @@
 
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { pluginDataListsRegistry, resolveDataLists } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -556,6 +557,13 @@ export async function generateSite(args: {
   }[] = [];
   // P13 — per-slug bake target for the plugin render pass.
   const bakeTargets = new Map<string, BakeTarget>();
+  // Plugin data lists for the whole deploy, resolved in ONE call per
+  // contributing plugin rather than per page. Names declared by
+  // installed-but-inactive plugins come along so a module still
+  // iterating a switched-off plugin's list emits the loud marker here
+  // exactly as it does in the editor preview.
+  const allLists = await resolveDataLists(pageRows.map((p) => p.page_id));
+  const dormantLists = Object.fromEntries(pluginDataListsRegistry.dormantNames());
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];
     if (!page) continue;
@@ -608,6 +616,8 @@ export async function generateSite(args: {
         layoutCss: page.layout_css,
         layoutBlocks,
         layoutSlug: page.layout_slug,
+        dataLists: allLists.get(page.page_id) ?? {},
+        dormantDataLists: dormantLists,
       });
     } catch (e) {
       if (e instanceof ComposeError) {

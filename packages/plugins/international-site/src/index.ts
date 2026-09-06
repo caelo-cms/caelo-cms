@@ -414,6 +414,8 @@ interface PublishedVariant {
   localeCode: string;
   isDefault: boolean;
   href: string;
+  /** The locale's operator-facing name ("Deutsch"), for switcher labels. */
+  displayName: string;
 }
 
 /** Absolute URL for a variant. Path-strategy locales ride on the site
@@ -474,6 +476,7 @@ async function publishedVariantMatrix(
         localeCode: locale.code,
         isDefault: locale.is_default,
         href: absoluteVariantUrl(siteBaseUrl, locale, page.currentPath),
+        displayName: locale.display_name,
       });
     }
     if (published.length < 2) continue;
@@ -624,6 +627,37 @@ export default definePlugin<PluginContextTier1>({
         };
       }
       return { annotations };
+    },
+
+    /**
+     * Resolver for the `language_links` data list. Batched over the
+     * pages of one render pass, mirroring `head_contributions` — the
+     * same published-variant matrix feeds both, so the visible switcher
+     * and the hreflang tags can never disagree about what is published.
+     */
+    language_links: async (ctx, args) => {
+      const { pageIds } = args as { pageIds: string[] };
+      const cms = cmsOf(ctx);
+      const seo = await cms.call<{ siteBaseUrl: string }>("site_defaults.get_seo", {});
+      const matrix = await publishedVariantMatrix(ctx, pageIds, seo.siteBaseUrl);
+      const lists: Record<string, Record<string, Array<Record<string, string>>>> = {};
+      for (const pageId of pageIds) {
+        const variants = matrix.get(pageId);
+        lists[pageId] = {
+          // An absent group yields an empty list, not a missing one:
+          // "this page has no alternates" is data the module should be
+          // allowed to render nothing for.
+          language_links: (variants ?? []).map((v) => ({
+            href: v.href,
+            label: v.displayName,
+            locale: v.localeCode,
+            // String, not boolean — data-list values are flat strings so
+            // they substitute cleanly; a module tests it with a section.
+            is_current: v.pageId === pageId ? "true" : "",
+          })),
+        };
+      }
+      return { lists };
     },
 
     /** Worker tick — keeps the decode-side locale cache warm. */
@@ -1208,6 +1242,23 @@ export default definePlugin<PluginContextTier1>({
     return `<nav class="caelo-language-selector" aria-label="Language"><ul>${items}</ul></nav>`;
   },
   contributes: ["head", "sitemap"],
+  /**
+   * The visible counterpart to the hreflang links: the same published
+   * variants, as DATA for a module to iterate. `staticRender` below
+   * still ships a ready-made switcher for operators who want one
+   * without authoring markup, but a module using this list carries the
+   * site's own design and — because it resolves per page — can live in
+   * the LAYOUT and cover every page from one placement.
+   */
+  dataLists: [
+    {
+      name: "language_links",
+      description:
+        "Every PUBLISHED language version of the current page, including the current one. Empty when the page has fewer than two published variants — a lone language needs no switcher.",
+      itemFields: ["href", "label", "locale", "is_current"],
+    },
+  ],
+  dataListsOperation: "language_links",
   contributionsOperation: "head_contributions",
   /**
    * #399 — companion skills (CLAUDE.md §2: skills are the official way
@@ -1250,7 +1301,7 @@ export default definePlugin<PluginContextTier1>({
         "3. If existing pages' URLs are affected by the change, call propose_url_migration next — it previews the URL fan-out and the 301 redirects, and the Owner approves it SEPARATELY.",
         "4. Seed the language: for each core page the operator cares about, create_variant with a localized slug, then translate_variant. Do not mass-create variants for every page unprompted — ask which pages matter, or start with the pages the operator named.",
         "5. hreflang links and sitemap alternates appear automatically once variants are PUBLISHED (drafts are invisible to search engines by design — a missing translation is a clean 404, never a fallback).",
-        "6. To offer visitors a language switcher, place the international-site plugin placeholder in a suitable chrome module — it renders as static HTML at deploy.",
+        '6. To offer visitors a language switcher, add a module whose HTML iterates the plugin\'s list: `<nav>{{#language_links}}<a href="{{href}}" hreflang="{{locale}}">{{label}}</a>{{/language_links}}</nav>`. Each item carries href, label, locale and is_current. Write the markup to match the site\'s design — you own it, the plugin only supplies the data. Because it resolves per page, placing that module in the LAYOUT gives every page a switcher from one placement. The list is empty until a page has at least two PUBLISHED variants.',
       ].join("\n"),
       autoEngagementHints: {
         keywords: [

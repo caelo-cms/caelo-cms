@@ -7,6 +7,7 @@
  * workers running until process restart.
  */
 
+import { pluginDataListsRegistry } from "./data-lists.js";
 import { loadedPlugins, setPluginDisabled } from "./dispatch.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
@@ -39,6 +40,10 @@ export function deregisterPlugin(slug: string): void {
   setPluginDisabled(slug, false);
   pluginWorkerScheduler.unschedulePlugin(slug);
   pluginToolsRegistry.unregisterPlugin(slug);
+  // Live sources only — the DECLARED names stay, so a module still
+  // holding `{{#its_list}}` renders "plugin switched off" instead of
+  // "unknown field".
+  pluginDataListsRegistry.unregisterPlugin(slug);
   pluginPromptContextRegistry.unregisterPlugin(slug);
   urlContributionsRegistry.unregisterPlugin(slug);
   loadedPlugins.unload(slug);

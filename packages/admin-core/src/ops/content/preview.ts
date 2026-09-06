@@ -14,7 +14,12 @@
  * render the post-AI-edit view of a page without requiring publish.
  */
 
-import { collectContributions, composeHeadBlock } from "@caelo-cms/plugin-host";
+import {
+  collectContributions,
+  composeHeadBlock,
+  pluginDataListsRegistry,
+  resolveDataLists,
+} from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -693,6 +698,15 @@ export const renderPagePreviewOp = defineOperation({
     // Collect CSS/JS from every nested module touched during recursion
     // so the page's <style>/<script> tags include them. Dedup by
     // moduleId; the composer dedupes by moduleId as well (issue #158).
+    // Plugin data lists for THIS page: the editor preview must show the
+    // same thing the deploy will, including the loud marker when a
+    // plugin whose list a module iterates has been switched off.
+    const resolvedLists = await resolveDataLists([input.pageId]);
+    const pluginLists = {
+      dataLists: resolvedLists.get(input.pageId) ?? {},
+      dormantDataLists: Object.fromEntries(pluginDataListsRegistry.dormantNames()),
+    };
+
     const nestedCssJsByModuleId = new Map<string, ModuleResource>();
     for (const m of modRows) {
       const binding = placementBindings.get(`${m.block_name}#${m.position}`);
@@ -705,6 +719,7 @@ export const renderPagePreviewOp = defineOperation({
         binding.contentInstanceId,
         resolver,
         renderThemeAssets,
+        pluginLists,
       );
       m.html = result.html;
       // CSS/JS dedup: emit CSS/JS for every module the recursion touched

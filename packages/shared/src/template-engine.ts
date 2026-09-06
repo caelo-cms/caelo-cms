@@ -94,6 +94,24 @@ export interface RenderTemplateInput {
    */
   readonly partials?: Readonly<Record<string, string>>;
   /**
+   * Plugin-provided lists for THIS page, keyed by the claimed name a
+   * module iterates as `{{#name}}`. The plugin supplies the data, the
+   * module owns the markup — so a language switcher looks like the site
+   * it lives on instead of carrying a plugin's fixed HTML.
+   *
+   * Resolved per page, which is what lets a module carrying one sit in
+   * a LAYOUT and cover every page. The `staticRender` placeholder can't:
+   * it needs the page's own id baked into its HTML.
+   */
+  readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
+  /**
+   * Names an INSTALLED plugin declares that are not live right now,
+   * mapped to the owning plugin. A module written while the plugin ran
+   * still says `{{#language_links}}`; this is what lets the render
+   * report "that plugin is switched off" instead of "unknown field".
+   */
+  readonly dormantDataLists?: Readonly<Record<string, string>>;
+  /**
    * v0.11.1 (issue #76) — active theme's resolved asset URLs. When
    * present, `{{theme_logo_url}}` / `{{theme_logo_dark_url}}` /
    * `{{theme_favicon_url}}` / `{{theme_social_share_url}}` substitute
@@ -243,7 +261,18 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
 
   // 1. {{#name}}…{{/name}} sections.
   let html = sourceHtml.replace(SECTION_RE, (match, name: string, inner: string) =>
-    renderSection(match, name, inner, fieldByName, cvs, partials, missing, mkSentinel),
+    renderSection(
+      match,
+      name,
+      inner,
+      fieldByName,
+      cvs,
+      partials,
+      missing,
+      mkSentinel,
+      input.dataLists ?? {},
+      input.dormantDataLists ?? {},
+    ),
   );
 
   // 2. {{>name}} single partials.
@@ -333,9 +362,24 @@ function renderSection(
   partials: Readonly<Record<string, string>>,
   missing: string[],
   mkSentinel: (original: string) => string,
+  dataLists: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>,
+  dormantLists: Readonly<Record<string, string>>,
 ): string {
   const field = fields.get(name);
   if (!field) {
+    // No declared field — a plugin may still offer this name. Module
+    // fields are looked up FIRST by construction, so a plugin can never
+    // shadow something the module's author declared.
+    const items = dataLists[name];
+    if (items) return renderDataList(inner, items);
+    // Declared by an installed plugin that is NOT running. Naming the
+    // plugin turns "unknown field" (hunt for a typo) into "switch that
+    // plugin back on", which is the actual fix.
+    const owner = dormantLists[name];
+    if (owner) {
+      missing.push(`plugin-list-unavailable:${name} plugin=${owner}`);
+      return mkSentinel(match);
+    }
     missing.push(`field-not-declared:${name}`);
     return mkSentinel(match);
   }
@@ -421,6 +465,33 @@ function renderTextList(
     }
     const value = String(el);
     parts.push(inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => value));
+  }
+  return parts.join("");
+}
+
+/**
+ * Iterate a plugin-provided list, substituting each item's keys inside
+ * the section body.
+ *
+ * Unlike `link-list` no shape is imposed: the keys are whatever the
+ * plugin declared in `itemFields`, so a language switcher uses
+ * href/label/locale and a comment list something else entirely. A
+ * `{{key}}` the item does not carry is left raw, matching the engine's
+ * loud-raw rule everywhere else — a typo'd key stays visible instead of
+ * quietly rendering as nothing.
+ */
+function renderDataList(
+  inner: string,
+  items: ReadonlyArray<Readonly<Record<string, string>>>,
+): string {
+  const parts: string[] = [];
+  for (const item of items) {
+    let rendered = inner;
+    for (const [key, value] of Object.entries(item)) {
+      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      rendered = rendered.replace(new RegExp(`\\{\\{\\s*${escaped}\\s*\\}\\}`, "g"), () => value);
+    }
+    parts.push(rendered);
   }
   return parts.join("");
 }
