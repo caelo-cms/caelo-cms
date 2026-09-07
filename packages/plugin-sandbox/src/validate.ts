@@ -240,6 +240,14 @@ export function validateSource(opts: {
   let ast: unknown;
   try {
     const parsed = parseSync(filename, source, { sourceType: "module" });
+    if (parsed.errors.length > 0) {
+      return [
+        {
+          kind: "parse-error",
+          hint: "Plugin source contains syntax errors; correct them before submission.",
+        },
+      ];
+    }
     ast = parsed.program;
   } catch (e) {
     failures.push({
@@ -255,7 +263,11 @@ export function validateSource(opts: {
     if (!type) return;
 
     // ImportDeclaration — only @caelo-cms/plugin-sdk allowed.
-    if (type === "ImportDeclaration") {
+    if (
+      type === "ImportDeclaration" ||
+      ((type === "ExportNamedDeclaration" || type === "ExportAllDeclaration") &&
+        (node as { source?: unknown }).source)
+    ) {
       const sourceVal = (node as { source?: { value?: unknown } }).source?.value;
       const relativeOk =
         opts.allowRelativeImports === true &&

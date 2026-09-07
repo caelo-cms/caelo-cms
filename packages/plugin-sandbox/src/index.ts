@@ -8,12 +8,10 @@
  *  2. schema.ts    — schema-from-spec SQL emitter (FORCE RLS scoped to caelo.plugin_id).
  *  3. manifest.ts  — Ed25519 manifest signature verifier (Tier 1 only).
  *
- * The Deno subprocess wrapper for Tier 2 invocation lives in sandbox.ts
- * (lands when the API Gateway P13 plumbing connects public requests to
- * plugin operations; for P11 the lifecycle ops + validator + schema
- * emitter are enough to round-trip a hello-world Tier 2 plugin
- * end-to-end without spawning Deno).
+ * The Deno subprocess and SDK broker live in @caelo-cms/plugin-host.
  */
+
+export { externalArtifactDigest } from "./artifact.js";
 
 export {
   bytesToHex,

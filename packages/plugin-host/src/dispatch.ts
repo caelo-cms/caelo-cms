@@ -76,20 +76,6 @@ export interface LoadedPlugin {
   /** Per-plugin actor row id — set as caelo.actor_id when the plugin's
    *  operations write through the Query API. */
   readonly pluginActorId: string;
-  /** v0.2.16 — true when a Tier-2 plugin's row + schema survived an
-   *  upgrade and was registered from the DB at bootstrap, but the
-   *  Deno-subprocess execution runtime is not yet wired. The plugin
-   *  is visible in `/security/plugins`; runOperation returns
-   *  Tier2RuntimePending. Defaults to undefined for Tier-1 + active
-   *  Tier-2 plugins (when the runtime ships, this flag stops being
-   *  set). */
-  readonly executionStub?: boolean;
-  /** Operation names from the plugin's manifest. Used only when
-   *  `executionStub` is true to distinguish "operation declared but
-   *  runtime missing" (Tier2RuntimePending) from "operation not
-   *  declared at all" (OperationNotDeclared). Real Tier-1 plugins
-   *  read their declared operations from `definition.operations`. */
-  readonly declaredOperationNames?: ReadonlyArray<string>;
 }
 
 export const loadedPlugins = new LoadedPluginsRegistry();
@@ -220,8 +206,7 @@ export type RunPluginOperationResult =
           | "PluginDisabled"
           | "OperationNotDeclared"
           | "OperationNotPublic"
-          | "OperationFailed"
-          | "Tier2RuntimePending";
+          | "OperationFailed";
         readonly message: string;
       };
     };
@@ -278,32 +263,6 @@ export async function runPluginOperation(
       error: {
         kind: "PluginDisabled",
         message: `plugin "${opts.pluginSlug}" is disabled — re-enable via /security/plugins`,
-      },
-    };
-  }
-  // v0.2.16 — Tier-2 plugin survived upgrade (DB-loaded by loader) but
-  // execution runtime isn't wired yet. Honest error rather than the
-  // stale-feeling OperationNotDeclared (the operation IS declared in
-  // the manifest; we just can't run it).
-  if (plugin.executionStub) {
-    const declared = plugin.declaredOperationNames?.includes(opts.operationName) ?? false;
-    if (!declared) {
-      return {
-        ok: false,
-        error: {
-          kind: "OperationNotDeclared",
-          message: `plugin "${opts.pluginSlug}" does not declare operation "${opts.operationName}"`,
-        },
-      };
-    }
-    return {
-      ok: false,
-      error: {
-        kind: "Tier2RuntimePending",
-        message:
-          `Tier-2 plugin "${opts.pluginSlug}" is registered (source + schema survived the upgrade) ` +
-          `but the Deno-subprocess execution runtime is not yet shipped. ` +
-          `Use Tier-1 (PR-shipped) plugins for runtime functionality, or wait for the runtime ship.`,
       },
     };
   }
