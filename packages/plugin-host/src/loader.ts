@@ -58,6 +58,7 @@ import {
   runPluginOperation,
   setContextFactory,
   setHostInfra,
+  setHostSystemActorId,
 } from "./dispatch.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
@@ -177,6 +178,7 @@ let bootOpts: BootstrapOpts | null = null;
 
 export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   setHostInfra(opts.infra);
+  setHostSystemActorId(opts.systemActorId);
   setContextFactory(makePluginContext);
   bootOpts = opts;
 
@@ -641,6 +643,49 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     throw new Error(
       `plugin "${def.slug}" declares workers without the background_workers capability — registration refused`,
     );
+  }
+  // Client assets run in every visitor's browser on every page. That is
+  // the widest blast radius any contribution has, so it is release-signed
+  // only — a runtime-authored plugin's frontend stays inside its Shadow
+  // DOM component, where the sandbox can still reason about it.
+  if (typeof def.buildAssets === "function" && def.tier !== 1) {
+    throw new Error(
+      `plugin "${def.slug}" declares buildAssets but is not release-signed — refused`,
+    );
+  }
+  // A `publicOperations` entry naming an operation that does not exist
+  // reads as "this is exposed" while exposing nothing — and the reverse
+  // typo (an intended-public op misspelled) silently 404s the visitor
+  // surface. Both are caught here, at load, rather than in production.
+  for (const name of def.publicOperations ?? []) {
+    if (!def.operations[name]) {
+      throw new Error(
+        `plugin "${def.slug}" lists "${name}" in publicOperations, which is not one of its operations`,
+      );
+    }
+  }
+
+  // Declared BEFORE the activation gate on purpose. An inactive plugin
+  // contributes nothing, but a module written while it ran still says
+  // `{{#its_list}}`; remembering the name lets the renderer report "that
+  // plugin is switched off" instead of "unknown field".
+  if (def.dataLists && def.dataLists.length > 0) {
+    if (def.tier !== 1) {
+      throw new Error(
+        `plugin "${def.slug}" declares dataLists but is not release-signed — refused`,
+      );
+    }
+    if (!def.dataListsOperation) {
+      throw new Error(
+        `plugin "${def.slug}" declares dataLists without a dataListsOperation to resolve them`,
+      );
+    }
+    if (!def.operations[def.dataListsOperation]) {
+      throw new Error(
+        `plugin "${def.slug}" names dataListsOperation "${def.dataListsOperation}", which is not one of its operations`,
+      );
+    }
+    pluginDataListsRegistry.declare(def.slug, def.dataLists);
   }
 
   // Declared BEFORE the activation gate on purpose. An inactive plugin

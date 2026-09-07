@@ -119,6 +119,9 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   requestedCapabilities: ["chat_runner_tools", "email", "background_workers"],
+  /** Visitor-facing surface (default deny — everything else is
+   *  refused a visitor-context dispatch). */
+  publicOperations: ["signup", "login", "logout", "me", "request_password_reset", "reset_password"],
   operations: {
     signup: async (ctx, args) => {
       const input = args as SignupInput;

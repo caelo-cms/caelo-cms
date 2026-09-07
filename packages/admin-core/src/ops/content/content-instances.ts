@@ -395,7 +395,12 @@ function rowToContentInstance(r: ContentInstanceRowSql): z.infer<typeof contentI
 
 export const listContentInstancesOp = defineOperation({
   name: "content_instances.list",
-  actorScope: ["human", "ai", "system"],
+  // #453 — plugin actors read too. The vendor URL an embed points at
+  // usually lives in a content value rather than in module HTML (the
+  // extractor lifts it out at authoring time), so a plugin reasoning
+  // about what a module loads cannot see it any other way. Read only;
+  // the write ops stay closed to plugins.
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z
     .object({

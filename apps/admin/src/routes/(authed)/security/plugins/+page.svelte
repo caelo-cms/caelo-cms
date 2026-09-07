@@ -95,7 +95,7 @@
           </TableHeader>
           <TableBody>
             {#each data.tier1 as p (p.id)}
-              <TableRow>
+              <TableRow data-testid="plugin-row-{p.slug}">
                 <TableCell class="font-mono text-xs">{p.slug}</TableCell>
                 <TableCell class="text-xs">{p.version}</TableCell>
                 <TableCell>

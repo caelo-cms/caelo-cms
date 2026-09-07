@@ -17,7 +17,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { bootstrap, decodePagePath, resetPluginHost } from "@caelo-cms/plugin-host";
+import {
+  bootstrap,
+  decodePagePath,
+  resetPluginHost,
+  runPluginOperation,
+} from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -76,6 +81,11 @@ async function cleanup(): Promise<void> {
       "DELETE FROM redirects WHERE from_path LIKE '/t395-%' OR from_path LIKE '/de/t395-%'",
     );
     await tx.unsafe(`DELETE FROM audit_events WHERE actor_id IN (
+      SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'international-site')
+    )`);
+    // create_variant writes through pages.duplicate, so the plugin actor
+    // owns snapshots too; children cascade from site_snapshots.
+    await tx.unsafe(`DELETE FROM site_snapshots WHERE actor_id IN (
       SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'international-site')
     )`);
     await tx.unsafe(
@@ -361,5 +371,101 @@ describe("#395 — international-site URL contributions on the generic engine", 
     if (!proposed.ok) {
       expect(JSON.stringify(proposed.error)).toContain("no url_host configured");
     }
+  });
+});
+
+/**
+ * The counterpart of the composer fix above, one layer earlier. #445
+ * taught the URL composer that a variant of the home page is its
+ * locale's root ("/de"), but `create_variant` still demanded a slug —
+ * and for the home page there is no honest answer to give it. Slugs
+ * went site-wide unique with #384, so the AI's natural expression of
+ * "this is the German homepage" (reusing "home") collides with the
+ * English page, and every rename it then attempts collides too. A live
+ * run walked exactly that dead end.
+ */
+describe("create_variant — the slug the caller cannot invent", () => {
+  it("mints the locale root itself and refuses a slug for it", async () => {
+    await cleanup();
+    const homeId = await seedPage("t395-lr-home");
+    const setHome = await execute(registry, adapter, SYS_CTX, "pages.set_home_page", {
+      pageId: homeId,
+    });
+    if (!setHome.ok) throw new Error(JSON.stringify(setHome.error));
+    await bootPlugin();
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `INSERT INTO "plugin_international_site"."locales" (code, display_name, url_strategy, is_default) VALUES ('en', 'English', 'none', true)`,
+      );
+      await tx.unsafe(
+        `INSERT INTO "plugin_international_site"."locales" (code, display_name, url_strategy, is_default) VALUES ('de', 'Deutsch', 'subdirectory', false)`,
+      );
+    });
+
+    // Passing one is an error rather than a silent drop: the slug would
+    // have no effect on the URL, and pretending otherwise is the
+    // fallback CLAUDE.md §2 forbids.
+    const withSlug = await runPluginOperation({
+      pluginSlug: "international-site",
+      operationName: "create_variant",
+      args: { sourcePageId: homeId, localeCode: "de", slug: "home" },
+    });
+    expect(withSlug.ok).toBe(false);
+    if (!withSlug.ok) {
+      expect(withSlug.error.message).toContain("root of that locale");
+      expect(withSlug.error.message).toContain("Omit");
+    }
+
+    const minted = await runPluginOperation({
+      pluginSlug: "international-site",
+      operationName: "create_variant",
+      args: { sourcePageId: homeId, localeCode: "de", title: "Startseite" },
+    });
+    if (!minted.ok) throw new Error(JSON.stringify(minted.error));
+    const created = minted.value as { pageId: string; slug: string; isLocaleRoot: boolean };
+    expect(created.isLocaleRoot).toBe(true);
+    expect(created.slug).toBe("t395-lr-home-de");
+
+    const path = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(`SELECT current_path FROM pages WHERE id = '${created.pageId}'`)) as {
+          current_path: string;
+        }[],
+    );
+    expect(path[0]?.current_path).toBe("/de");
+  });
+
+  it("still requires a localized slug for an ordinary page, and names the clash", async () => {
+    const aboutId = await seedPage("t395-lr-about");
+
+    const noSlug = await runPluginOperation({
+      pluginSlug: "international-site",
+      operationName: "create_variant",
+      args: { sourcePageId: aboutId, localeCode: "de" },
+    });
+    expect(noSlug.ok).toBe(false);
+    if (!noSlug.ok) expect(noSlug.error.message).toContain("the slug IS its URL segment");
+
+    // Reusing the source's own slug is the mistake worth explaining:
+    // core answers "page already exists", which reads as "you are done"
+    // and invites a pointless retry instead of a rename.
+    const clash = await runPluginOperation({
+      pluginSlug: "international-site",
+      operationName: "create_variant",
+      args: { sourcePageId: aboutId, localeCode: "de", slug: "t395-lr-about" },
+    });
+    expect(clash.ok).toBe(false);
+    if (!clash.ok) {
+      expect(clash.error.message).toContain("unique across the WHOLE site");
+      expect(clash.error.message).toContain("t395-lr-about-de");
+    }
+
+    const ok = await runPluginOperation({
+      pluginSlug: "international-site",
+      operationName: "create_variant",
+      args: { sourcePageId: aboutId, localeCode: "de", slug: "t395-lr-ueber-uns" },
+    });
+    if (!ok.ok) throw new Error(JSON.stringify(ok.error));
+    expect((ok.value as { isLocaleRoot: boolean }).isLocaleRoot).toBe(false);
   });
 });

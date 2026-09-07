@@ -203,3 +203,38 @@ describe("validateTemplatizedModule", () => {
     if (!r.ok) expect(r.message).toContain("{{ghost}}");
   });
 });
+
+describe("template syntax survives extraction", () => {
+  // Recognising only the bare `{{name}}` form made the extractor a
+  // silent content-destroyer: a section marker sits in a TEXT position,
+  // so `{{#nav_links}}` read as hardcoded content and was lifted into an
+  // invented field whose default value was the marker itself. The loop
+  // vanished and the page shipped `{{#nav_links}}` as literal text.
+  it("leaves section markers alone instead of lifting them into fields", () => {
+    const html =
+      '<div>{{#consent_categories}}<label data-k="{{key}}">{{label}}</label>{{/consent_categories}}</div>';
+    const e = extractModuleStructure(html, undefined);
+    expect(e.templatizedHtml).toBe(html);
+    expect(e.fields).toEqual([]);
+  });
+
+  it("leaves a nested-module reference alone", () => {
+    const html = "<div>{{>cta}}</div>";
+    const e = extractModuleStructure(html, undefined);
+    expect(e.templatizedHtml).toBe(html);
+    expect(e.fields).toEqual([]);
+  });
+
+  it("accepts a section a plugin claims, without a module field for it", () => {
+    // The data comes from the plugin, not from the module's content, so
+    // there is nothing for the module to declare — and demanding a
+    // declaration would make every such module unauthorable.
+    const html =
+      '<nav>{{#language_links}}<a href="{{href}}">{{label}}</a>{{/language_links}}</nav>';
+    expect(validateTemplatizedModule(html, [], new Set(["language_links"]))).toEqual({ ok: true });
+    expect(validateTemplatizedModule(html, [])).toEqual({
+      ok: false,
+      message: 'placeholder {{language_links}} references undeclared field "language_links"',
+    });
+  });
+});
