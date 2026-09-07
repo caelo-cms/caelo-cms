@@ -66,6 +66,10 @@ function makePlugin(slug: string) {
         const a = args as { since: string };
         return ctx.query.list("greetings", { since: a.since, orderBy: "created_at", limit: 5 });
       },
+      change_tags: async (ctx, args) => {
+        const a = args as { id: string; tags: unknown };
+        await ctx.query.update("greetings", a.id, { tags: a.tags });
+      },
       change_message: async (ctx, args) => {
         const a = args as { id: string; message: string };
         await ctx.query.update("greetings", a.id, { message: a.message });
@@ -213,6 +217,28 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     if (!list.ok) throw new Error(JSON.stringify(list.error));
     const rows = list.value as Array<{ tags: unknown }>;
     expect(rows[0]?.tags).toEqual(["analytics", "marketing"]);
+    if (!add.ok) throw new Error(add.error.message);
+    const id = (add.value as { id: string }).id;
+    for (const tags of [
+      ["functional", "analytics"],
+      { categories: ["marketing"], accepted: true },
+      [],
+      null,
+    ]) {
+      const updated = await runPluginOperation({
+        pluginSlug: PLUGIN_A,
+        operationName: "change_tags",
+        args: { id, tags },
+      });
+      expect(updated.ok).toBe(true);
+      const reloaded = await runPluginOperation({
+        pluginSlug: PLUGIN_A,
+        operationName: "list_all",
+        args: {},
+      });
+      if (!reloaded.ok) throw new Error(reloaded.error.message);
+      expect((reloaded.value as { tags: unknown }[])[0]?.tags).toEqual(tags);
+    }
   });
 
   it("update + delete work via id", async () => {
