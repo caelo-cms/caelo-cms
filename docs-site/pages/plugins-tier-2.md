@@ -4,7 +4,7 @@ template: doc-page
 status: published
 seo:
   title: Tier 2 plugins — Caelo CMS
-  description: AI-authored, sandboxed in Deno, locked SDK surface. Per-plugin RLS scoping. Owner approves each plugin per active transition.
+  description: External packages run in isolated Deno processes with explicit Owner capability grants and per-plugin RLS.
 ---
 
 # External plugins (Tier 2)
@@ -20,6 +20,16 @@ Each operation has a 30-second execution deadline, a 128 MiB V8 heap limit, a 1 
 
 Caelo's admin and gateway images include Deno 2.9.6 (MIT). For development, install this version on `PATH`, or set `CAELO_DENO_BINARY` to its executable path. A missing executable fails the invocation explicitly.
 
-This implementation supplies the existing base SDK. Owner grants for elevated capabilities, client assets, chat tools and private authoring data are a separate implementation of the [external capability proposal](https://github.com/caelo-cms/caelo-cms/pull/471).
+## Installing a package with author capabilities
 
-Plugin tables live in `cms_public.plugin_<slug>`. Every table declares `id: "uuid"`; the host adds `caelo_plugin_id` and forced row-level security. SDK calls validate tables and columns against the reviewed manifest and run with the plugin’s own identity.
+Upload a JSON file containing `manifest` and `source` at **Security → Plugins → Install external packages and review access**. The `plugins.install` permission, assigned to Owner by default, controls approval and revocation. The moderation permission `plugins.approve` is insufficient.
+
+Declare `requestedCapabilities`, explain each in `capabilityReasons`, and review every access checkbox. No checkbox is preselected. This rollout supports `cms_admin_schema` (the plugin's own private storage, including conditional writes) and `chat_runner_tools` (namespaced, schema-validated tools with host-enforced per-action approvals). Other requests can be staged but activation fails until their brokers are implemented.
+
+The isolated operation receives `adminQuery` only for an authenticated author with `content.write`. `ctx.invocation` contains the host-selected actor, human operator and chat branch; operation arguments cannot replace them. Visitor and rendering calls receive no private storage handle. Name external tools `<slug_with_underscores>__<tool_name>` and declare each operation only once as a tool.
+
+Updates are separate immutable artifacts: upload and approve a replacement while the previous version keeps running. Preparation validates the isolated definition and provisions declared schemas before committing the new active artifact. Failed preparation preserves the active version; the UI offers retry using the existing approval. Removing columns or changing their declared types is rejected. Revoking an active capability disables that package while preserving its data. Re-approval issues new receipts; old runtime handles remain invalid.
+
+Every storage call holds the registry row through commit. Revocation waits for an already accepted write to commit; once revocation completes, old handles cannot begin another write. This does not undo earlier writes or promise cancellation of already dispatched external effects.
+
+Plugin tables live in `cms_public.plugin_<slug>`. Tables may declare `id: "uuid"`; otherwise the host creates that primary key. Forced row-level security scopes access to the plugin identity. SDK calls validate tables and columns against the reviewed manifest and run with the plugin’s own identity.

@@ -79,11 +79,9 @@ export const pluginSchemaMap = z.record(z.string(), pluginTableSchema);
 export type PluginSchemaMap = z.infer<typeof pluginSchemaMap>;
 
 /** Capability requests. Every capability is runtime-enforced; what is
- *  GRANTABLE is capped by provenance (epic #380 decision 2): a
- *  release-signed plugin may request any capability, a runtime-authored
- *  plugin none beyond the sandbox base (query/api/theme/visitor/captcha).
- *  The validator rejects runtime-authored manifests that reach over the
- *  ceiling. */
+ *  release signature determines origin and execution path. External access
+ *  requires individual installation receipts and an implemented host broker.
+ *  Unsupported external requests fail activation; declarations never grant access. */
 export const pluginCapability = z.enum([
   "cms_admin",
   "cms_admin_schema",
@@ -94,6 +92,10 @@ export const pluginCapability = z.enum([
   "domain_events",
   "email",
   "head_contributions",
+  "url_slots",
+  "client_assets",
+  "data_lists",
+  "companion_skills",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -121,8 +123,7 @@ export const pluginWorkerSpec = z.object({
 
 export type PluginWorkerSpec = z.infer<typeof pluginWorkerSpec>;
 
-/** AI tool registration declaration. Tier 1 only — Tier 2 plugins do
- *  not get chat-runner tool registration. */
+/** AI tool declaration. External packages require the chat_runner_tools grant. */
 export const pluginToolSpec = z.object({
   name: z.string().min(1).max(120),
   description: z.string().min(1).max(4000),
@@ -359,6 +360,23 @@ export const pluginManifest = z
     publicOperations: z.array(z.string().min(1).max(120)).optional(),
     /** Tier 1 only. */
     requestedCapabilities: z.array(pluginCapability).optional(),
+    /** Untrusted author explanations, displayed beside each explicit Owner grant. */
+    capabilityReasons: z.partialRecord(pluginCapability, z.string().min(1).max(500)).optional(),
+    /** Requested scopes are part of the immutable reviewed artifact. */
+    capabilityConstraints: z
+      .partialRecord(
+        pluginCapability,
+        z
+          .object({
+            operations: z
+              .array(z.string().regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/))
+              .max(100)
+              .optional(),
+            maxDailyCostMicrocents: z.number().int().positive().optional(),
+          })
+          .strict(),
+      )
+      .optional(),
     /** Tier 1 only. */
     workers: z.array(pluginWorkerSpec).optional(),
     /** Tier 1 only. */
@@ -648,8 +666,14 @@ export interface PluginSnapshots {
   }): Promise<{ siteSnapshotId: string }>;
 }
 
-/** Locked context — what every Tier 2 plugin receives. */
+/** Base context. External author invocations may receive explicitly granted handles. */
 export interface PluginContext {
+  /** Read-only identity selected by the host, never from operation arguments. */
+  readonly invocation?: {
+    readonly actorId: string;
+    readonly operatorActorId: string;
+    readonly chatBranchId: string | null;
+  };
   readonly query: PluginQuery;
   readonly api: PluginApi;
   readonly theme: PluginTheme;
@@ -657,9 +681,8 @@ export interface PluginContext {
   readonly captcha: PluginCaptcha;
 }
 
-/** Tier 1 context — adds the elevated capability handles. The host
- *  ONLY constructs the handles a plugin's `requestedCapabilities`
- *  asked for; unrequested fields are absent. */
+/** Extended SDK context (legacy name). The host attaches only authorized handles;
+ * external plugins additionally require exact receipts and a supported broker. */
 export interface PluginContextTier1 extends PluginContext {
   /** #389 — attached when the manifest holds `cms_admin_schema`. */
   readonly adminQuery?: PluginAdminQuery;
@@ -759,6 +782,8 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   ) => Promise<ReadonlyMap<string, string>> | ReadonlyMap<string, string>;
   /** Tier 1 only. */
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  readonly capabilityReasons?: PluginManifest["capabilityReasons"];
+  readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
   /** Tier 1 only. Cron-style background workers; the host's scheduler
    *  dispatches `operationName` on each tick. */
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
@@ -873,6 +898,8 @@ export function manifestFromDefinition(def: {
   readonly buildAssets?: unknown;
   readonly deferralsOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  readonly capabilityReasons?: PluginManifest["capabilityReasons"];
+  readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
   readonly tools?: ReadonlyArray<PluginToolSpec>;
   readonly publicOperations?: ReadonlyArray<string>;
@@ -894,6 +921,8 @@ export function manifestFromDefinition(def: {
       ? { publicOperations: [...def.publicOperations] }
       : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
+    ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
+    ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),
     ...(def.workers ? { workers: [...def.workers] } : {}),
     ...(def.tools ? { tools: [...def.tools] } : {}),
     ...(def.urlContributions && def.urlContributions.length > 0

@@ -10,9 +10,8 @@
  *
  * Capability gating: `ctx.cms` / `ctx.ai` / `ctx.snapshots` are only attached
  * if the plugin's manifest declares the matching `requestedCapabilities`.
- * Runtime-authored plugins NEVER get these — provenance is the grantability
- * ceiling (#388); the function returns the locked base `PluginContext` for
- * them regardless of the manifest.
+ * External plugins require exact Owner receipts as well as a supported broker.
+ * Author storage is never attached to a visitor or render invocation.
  */
 
 import type {
@@ -35,9 +34,11 @@ import type {
 import { execute } from "@caelo-cms/query-api";
 import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
+import type { AuthorDispatchContext, LoadedPlugin, PluginHostInfra } from "./dispatch.js";
+import { withExternalAuthorization } from "./external-authorization.js";
 
 export interface MakePluginContextOpts {
+  readonly authorContext?: AuthorDispatchContext;
   readonly plugin: LoadedPlugin;
   readonly infra: PluginHostInfra;
   readonly visitorContext?: VisitorContext;
@@ -79,12 +80,38 @@ export async function makePluginContext(
     captcha: makePluginCaptcha(),
   };
 
-  // #388 grantability ceiling — provenance, not tier, decides what a
-  // plugin can be GIVEN: runtime-authored plugins get the sandbox base
-  // and nothing else, regardless of what their manifest requests (the
-  // validator rejects such manifests anyway; this is the runtime's
-  // independent enforcement of the same ceiling).
-  if (plugin.provenance === "runtime-authored") return baseCtx;
+  // Externals remain in Deno and acquire only host-brokered, explicitly approved access.
+  if (plugin.provenance === "runtime-authored") {
+    if (!plugin.externalApproval) return baseCtx;
+    // Visitor/render contexts never acquire author data access, even on an approved install.
+    if (visitorContext || !opts.authorContext) return baseCtx;
+    const author = opts.authorContext;
+    if (
+      !["human", "ai"].includes(author.actor.actorKind) ||
+      (author.actor.actorKind === "human" && author.actor.actorId !== author.operatorActorId)
+    )
+      throw new Error("ExternalAuthorIdentityInvalid");
+    await withExternalAuthorization(plugin, infra, async (tx) => {
+      const rows = (await tx.execute(sql`SELECT EXISTS (SELECT 1 FROM users u
+        JOIN user_roles ur ON ur.user_id=u.id JOIN role_permissions rp ON rp.role_id=ur.role_id
+        JOIN permissions p ON p.id=rp.permission_id WHERE u.id=${author.operatorActorId}::uuid
+        AND u.deleted_at IS NULL AND p.name='content.write') AS allowed`)) as unknown as {
+        allowed: boolean;
+      }[];
+      if (!rows[0]?.allowed) throw new Error("ExternalAuthorPermissionDenied");
+    });
+    const extended: Mutable<PluginContextTier1> = {
+      ...baseCtx,
+      invocation: Object.freeze({
+        actorId: author.actor.actorId,
+        operatorActorId: author.operatorActorId,
+        chatBranchId: author.actor.chatBranchId ?? null,
+      }),
+    };
+    if (plugin.externalApproval.capabilities.includes("cms_admin_schema"))
+      extended.adminQuery = makePluginAdminQuery(plugin, infra);
+    return extended;
+  }
 
   // Release-signed — attach elevated handles per requestedCapabilities.
   const tier1: Mutable<PluginContextTier1> = { ...baseCtx };
@@ -183,7 +210,9 @@ function makeScopedQuery(
     fn: (tx: Parameters<Parameters<typeof infra.adapter.public.transaction>[0]>[0]) => Promise<T>,
   ): Promise<T> {
     const pool = scope.pool === "admin" ? infra.adapter.admin : infra.adapter.public;
-    return pool.transaction(async (tx) => {
+    const perform = async (
+      tx: Parameters<Parameters<typeof infra.adapter.public.transaction>[0]>[0],
+    ) => {
       // P12 review-pass #1 — set_config takes parameterised values; the
       // SETTING NAME is a literal (Postgres doesn't parameterise it).
       // Guards above make sure the *values* are UUIDs, and `set_config`'s
@@ -192,7 +221,13 @@ function makeScopedQuery(
       await tx.execute(sql`SELECT set_config('caelo.actor_id', ${plugin.pluginActorId}, true)`);
       await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${plugin.pluginId}, true)`);
       return fn(tx);
-    });
+    };
+    if (plugin.externalApproval) {
+      return withExternalAuthorization(plugin, infra, async (tx) =>
+        scope.pool === "admin" ? perform(tx) : pool.transaction(perform),
+      );
+    }
+    return pool.transaction(perform);
   }
 
   return {

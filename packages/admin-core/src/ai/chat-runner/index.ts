@@ -329,7 +329,9 @@ export async function* runChatTurn(
     // subagent turns strip them (a child never fronts an Owner approval).
     if (t.pluginGated) {
       if (isSubagentTurn) return [];
-      return [attachPluginGatedExecute(t)];
+      return [
+        attachPluginGatedExecute(t, { actor: aiCtxWithBranch, operatorActorId: humanCtx.actorId }),
+      ];
     }
     return [t];
   });

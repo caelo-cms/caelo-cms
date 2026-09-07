@@ -80,7 +80,10 @@ export interface ValidationResult {
 // Manifest validation — pure JSON shape + tier invariants.
 // ---------------------------------------------------------------------------
 
-export function validateManifest(rawManifest: unknown): {
+export function validateManifest(
+  rawManifest: unknown,
+  opts: { allowExternalCapabilities?: boolean } = {},
+): {
   manifest: PluginManifest | null;
   failures: ValidationFailure[];
 } {
@@ -113,7 +116,7 @@ export function validateManifest(rawManifest: unknown): {
   // #388 — every capability is enforced, starting at the manifest:
   // declaring tools[] / workers[] without holding the matching
   // capability is a validation failure, not a silently-honoured extra.
-  if (m.tier === 1) {
+  if (m.tier === 1 || opts.allowExternalCapabilities) {
     const caps = new Set(m.requestedCapabilities ?? []);
     if (m.adminSchema && Object.keys(m.adminSchema).length > 0 && !caps.has("cms_admin_schema")) {
       failures.push({
@@ -144,7 +147,7 @@ export function validateManifest(rawManifest: unknown): {
   // Tier 2 (runtime-authored) cannot reach over the grantability
   // ceiling: no capabilities, no workers, no chat tools, no cms_admin
   // schema.
-  if (m.tier === 2) {
+  if (m.tier === 2 && !opts.allowExternalCapabilities) {
     if (m.contributes && m.contributes.length > 0) {
       failures.push({
         kind: "manifest-tier2-cap-leak",
@@ -449,8 +452,12 @@ export function validatePlugin(opts: {
   manifest: unknown;
   source: string;
   filename?: string;
+  /** Host installation review only; this never grants runtime permissions. */
+  allowExternalCapabilities?: boolean;
 }): ValidationResult {
-  const { failures: manifestFailures, manifest } = validateManifest(opts.manifest);
+  const { failures: manifestFailures, manifest } = validateManifest(opts.manifest, {
+    allowExternalCapabilities: opts.allowExternalCapabilities,
+  });
   const sourceFailures = validateSource({
     filename: opts.filename ?? "plugin.ts",
     source: opts.source,

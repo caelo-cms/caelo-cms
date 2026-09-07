@@ -25,7 +25,7 @@
  * hook does it (see `gated-tools.ts`).
  */
 
-import { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
+import { externalArtifactDigest, validatePlugin } from "@caelo-cms/plugin-sandbox";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -256,6 +256,17 @@ export const executePluginActivationOp = defineOperation({
       });
     }
 
+    if (
+      artifact?.tier === 2 &&
+      !validatePlugin({ manifest: artifact.manifest_json, source: artifact.source_code ?? "" }).ok
+    ) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.execute_activation",
+        message:
+          "This external package requires individual installation grants; use the installation review.",
+      });
+    }
     await tx.execute(sql`
       UPDATE plugins
       SET status = 'active',

@@ -127,6 +127,8 @@ export const actions: Actions = {
       const pluginTool = pluginToolsRegistry.resolve(toolName);
       if (pluginTool) {
         const r = await runPluginOperation({
+          authorContext: { actor: locals.ctx, operatorActorId: locals.ctx.actorId },
+          approvedToolName: toolName,
           pluginSlug: pluginTool.pluginSlug,
           operationName: pluginTool.spec.operationName,
           args,

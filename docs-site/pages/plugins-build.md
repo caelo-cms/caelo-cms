@@ -55,7 +55,7 @@ The host only constructs the requested handles in your `ctx`; capabilities you d
 
 **You're adding behaviour to YOUR install** without touching core. Tier 2 plugins are usually AI-authored — you ask the chat to draft one, the validator runs, the result lands in `/security/plugins` for Owner approval. Source is stored in `plugins.source_code` in the database, not on disk.
 
-Tier 2 runs in a **Deno subprocess** with `--no-read --no-write --no-net --no-env --no-prompt --no-npm --no-remote`. The subprocess gets the locked SDK — only:
+The legacy base-SDK path for Tier 2 runs in a **Deno subprocess** with `--no-read --no-write --no-net --no-env --no-prompt --no-npm --no-remote`. The subprocess gets the locked SDK — only:
 
 - `ctx.query.*` — over the plugin's own `cms_public.plugin_<slug>.<table>` schema
 - `ctx.api.*` — visitor-side public read API
@@ -146,3 +146,6 @@ if (!saved) throw new Error("The document changed. Reload before applying your e
 The check and update run in one database statement under the plugin's forced RLS scope. `null` matches `null`, and JSON values use database JSON equality. Both `expected` and `patch` must contain 1–64 declared columns; changing `id` or host-owned columns is rejected. Use a fresh revision token on every successful update so reverting content does not accidentally revive an old write expectation.
 
 For immutable history, persist a complete candidate revision first, then conditionally advance the document's head. A failed or interrupted advance leaves an unattached candidate, while readers keep seeing the previous complete revision. The plugin owns history and cleanup; Caelo provides the general atomic write primitive.
+
+
+For externally installed private authoring tools, use the individual installation grants described in [External plugins](./plugins-tier-2). Release provenance does not confer external grants; the host verifies exact approval receipts.

@@ -123,7 +123,10 @@ export function attachGatedExecute(
  * way to express an approval requirement at all — every call ran
  * unqueued and unapproved.
  */
-export function attachPluginGatedExecute(tool: FilteredTool): FilteredTool {
+export function attachPluginGatedExecute(
+  tool: FilteredTool,
+  authorContext?: Parameters<typeof runPluginOperation>[0]["authorContext"],
+): FilteredTool {
   const pluginGated = tool.pluginGated;
   if (!pluginGated) return tool;
   return {
@@ -131,6 +134,8 @@ export function attachPluginGatedExecute(tool: FilteredTool): FilteredTool {
     approvalMode: "user-approval",
     execute: async (input: unknown): Promise<unknown> => {
       const r = await runPluginOperation({
+        authorContext,
+        approvedToolName: tool.name,
         pluginSlug: pluginGated.pluginSlug,
         operationName: pluginGated.operationName,
         args: input,

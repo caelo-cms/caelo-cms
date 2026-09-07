@@ -11,6 +11,7 @@
  */
 
 export { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
+export { pluginManifest } from "@caelo-cms/plugin-sdk";
 export {
   collectBuildAssets,
   injectPluginAssets,
@@ -62,6 +63,7 @@ export {
 } from "./head-composition.js";
 export { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
 export {
+  activateApprovedExternalPlugin,
   type BootstrapOpts,
   bootstrap,
   type LoadReport,
