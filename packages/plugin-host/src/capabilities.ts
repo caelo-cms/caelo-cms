@@ -340,7 +340,11 @@ function makeScopedQuery(
         }
         validateIdent(k, "column");
         const colSql = sql.raw(`"${k}"`);
-        sets.push(sql`${colSql} = ${v}`);
+        const value =
+          declared.get(k) === "jsonb" && typeof v === "object" && v !== null
+            ? sql`${sql.param(v)}`
+            : sql`${v}`;
+        sets.push(sql`${colSql} = ${value}`);
       }
       if (sets.length === 0) {
         throw new Error(`${scope.label}.update: patch must include at least one declared column`);
