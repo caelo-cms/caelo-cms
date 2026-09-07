@@ -24,7 +24,7 @@ let initialized = false;
 let buffer = "";
 const decoder = new TextDecoder();
 const execute = async (message) => {
-  const query = Object.fromEntries(["insert", "list", "update", "delete"].map(
+  const query = Object.fromEntries(["insert", "list", "update", "compareAndSwap", "delete"].map(
     (name) => [name, (...args) => rpc("query." + name, ...args)]));
   const ctx = Object.freeze({
     query: Object.freeze(query),

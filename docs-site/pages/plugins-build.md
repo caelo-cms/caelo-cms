@@ -129,3 +129,20 @@ Full surface in [`packages/plugin-sdk/src/`](https://github.com/caelo-cms/caelo-
 - [Tier 2 deep dive →](/plugins-tier-2)
 - [Architecture →](/architecture)
 - The [`@caelo-cms/plugin-sdk` source](https://github.com/caelo-cms/caelo-cms/tree/main/packages/plugin-sdk)
+
+## Conditional writes
+
+`ctx.query.compareAndSwap(table, id, expected, patch)` changes a row only if every expected value still matches. It returns `false` when the row changed, disappeared or is inaccessible to this plugin. The same operation is available on `ctx.adminQuery` with the private-schema capability, and through the external runtime's public query broker.
+
+```ts
+const saved = await ctx.adminQuery.compareAndSwap(
+  "documents", documentId,
+  { revision: previousRevision },
+  { revision: crypto.randomUUID(), content: updatedDocument },
+);
+if (!saved) throw new Error("The document changed. Reload before applying your edit.");
+```
+
+The check and update run in one database statement under the plugin's forced RLS scope. `null` matches `null`, and JSON values use database JSON equality. Both `expected` and `patch` must contain 1–64 declared columns; changing `id` or host-owned columns is rejected. Use a fresh revision token on every successful update so reverting content does not accidentally revive an old write expectation.
+
+For immutable history, persist a complete candidate revision first, then conditionally advance the document's head. A failed or interrupted advance leaves an unattached candidate, while readers keep seeing the previous complete revision. The plugin owns history and cleanup; Caelo provides the general atomic write primitive.

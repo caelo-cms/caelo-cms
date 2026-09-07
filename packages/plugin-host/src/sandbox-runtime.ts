@@ -48,6 +48,10 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
       const a = z.tuple([table, id, record]).parse(args);
       return ctx.query.update(...a);
     }
+    case "query.compareAndSwap": {
+      const a = z.tuple([table, id, record, record]).parse(args);
+      return ctx.query.compareAndSwap(...a);
+    }
     case "query.delete": {
       const a = z.tuple([table, id]).parse(args);
       return ctx.query.delete(...a);

@@ -16,6 +16,7 @@ const context: PluginContext = {
     insert: async () => ({ id: "11111111-1111-4111-8111-111111111111" }),
     list: async () => [{ body: "host result" }],
     update: async () => {},
+    compareAndSwap: async () => false,
     delete: async () => {},
   },
   api: { list: async () => [], get: async () => null },

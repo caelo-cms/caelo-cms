@@ -26,13 +26,14 @@ const manifest = {
   version: "1.0.0",
   tier: 2,
   schema: { notes: { id: "uuid", body: "text" } },
-  operations: ["save", "read"],
+  operations: ["save", "read", "compare"],
   publicOperations: ["read"],
   hasStaticRender: false,
 };
 const source = `import { definePlugin } from "@caelo-cms/plugin-sdk";
 export default definePlugin({ slug:"${slug}",version:"1.0.0",tier:2,schema:{},operations:{
  save:async(ctx,args)=>ctx.query.insert("notes",{body:args.body}),
+ compare:async(ctx,args)=>ctx.query.compareAndSwap("notes",args.id,{body:"persistent"},{body:"updated"}),
  read:async(ctx)=>ctx.query.list("notes")}});`;
 let pluginsRoot: string;
 let adapter: DatabaseAdapter;
@@ -108,6 +109,17 @@ describe("external plugin installation", () => {
     });
     expect(saved.ok).toBe(true);
     if (!saved.ok) throw new Error(saved.error.message);
+    const changed = await Promise.all(
+      [0, 1].map(() =>
+        runPluginOperation({
+          pluginSlug: slug,
+          operationName: "compare",
+          args: { id: (saved.value as { id: string }).id },
+        }),
+      ),
+    );
+    expect(changed.every((result) => result.ok)).toBe(true);
+    expect(changed.filter((result) => result.ok && result.value === true)).toHaveLength(1);
     const replacement = await execute(registry, adapter, system, "plugins.submit", {
       slug,
       version: "1.0.0",
@@ -122,7 +134,7 @@ describe("external plugin installation", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.error.message);
     expect(result.value).toEqual(
-      expect.arrayContaining([expect.objectContaining({ body: "persistent" })]),
+      expect.arrayContaining([expect.objectContaining({ body: "updated" })]),
     );
     const visitorWrite = await runPluginOperation({
       pluginSlug: slug,
