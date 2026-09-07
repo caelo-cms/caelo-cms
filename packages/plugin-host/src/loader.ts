@@ -58,7 +58,9 @@ import {
   runPluginOperation,
   setContextFactory,
   setHostInfra,
+  setHostSystemActorId,
 } from "./dispatch.js";
+import { externalPluginDefinition } from "./external-plugin.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
 import { pluginToolsRegistry } from "./tools-registry.js";
@@ -177,6 +179,7 @@ let bootOpts: BootstrapOpts | null = null;
 
 export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   setHostInfra(opts.infra);
+  setHostSystemActorId(opts.systemActorId);
   setContextFactory(makePluginContext);
   bootOpts = opts;
 
@@ -218,7 +221,8 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
     entries = readdirSync(opts.pluginsRoot);
   } catch (e) {
     // No plugins directory at all — fine on a fresh dev install.
-    return { loaded, inactive, failed: [{ slug: "<root>", reason: (e as Error).message }] };
+    entries = [];
+    failed.push({ slug: "<root>", reason: (e as Error).message });
   }
 
   const publicKeyHex = resolveTrustRoot(opts);
@@ -284,16 +288,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
     }
   }
 
-  // v0.2.16 — Tier-2 plugins persist as `plugins.source_code` + a
-  // `cms_public.plugin_<slug>` schema. Their rows survive every
-  // `cms-provision upgrade` because the DB does. But the loader only
-  // walks the filesystem (which holds Tier-1 plugins shipped in the
-  // image), so a Tier-2 plugin completely disappears from the runtime
-  // after upgrade unless we explicitly read it from the DB. Register
-  // each active Tier-2 row as a stub LoadedPlugin so it shows up in
-  // `/security/plugins` and gateway dispatches return a clear
-  // "Tier2RuntimePending" error rather than confusing PluginNotFound.
-  // The actual Deno-subprocess execution runtime is a deferred ship.
+  // Restore active external plugins from their reviewed database source.
   const tier2 = await loadActiveTier2Plugins(opts);
   for (const t of tier2.loaded) loaded.push({ slug: t.slug, version: t.version, tier: 2 });
   for (const f of tier2.failed) failed.push(f);
@@ -301,17 +296,11 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   return { loaded, inactive, failed };
 }
 
-/**
- * v0.2.16 — Read every `plugins WHERE tier=2 AND status='active'` row
- * and register a stub `LoadedPlugin` so the plugin is visible to the
- * runtime registry post-upgrade. The stub's `runOperation` path
- * returns `Tier2RuntimePending` for every declared op (see
- * `dispatch.ts:runPluginOperation` — it short-circuits before the
- * handler lookup when `executionStub` is true). Tools / workers /
- * prompt-context renderers are NOT registered for Tier-2 stubs —
- * those need real execution to function.
- */
-async function loadActiveTier2Plugins(opts: BootstrapOpts): Promise<{
+/** Validate database-backed external plugins and register isolated operation proxies. */
+async function loadActiveTier2Plugins(
+  opts: BootstrapOpts,
+  slug?: string,
+): Promise<{
   loaded: ReadonlyArray<{ slug: string; version: string }>;
   failed: ReadonlyArray<{ slug: string; reason: string }>;
 }> {
@@ -322,6 +311,7 @@ async function loadActiveTier2Plugins(opts: BootstrapOpts): Promise<{
     slug: string;
     version: string;
     manifest_json: unknown;
+    source_code: string;
   }> = [];
   try {
     rows = await opts.infra.adapter.withAdminTransaction(
@@ -332,15 +322,16 @@ async function loadActiveTier2Plugins(opts: BootstrapOpts): Promise<{
       },
       async (tx) =>
         (await tx.execute(sql`
-          SELECT id::text AS id, slug, version, manifest_json
+          SELECT id::text AS id, slug, version, manifest_json, source_code
           FROM plugins
-          WHERE tier = 2 AND status = 'active'
+          WHERE tier = 2 AND status = 'active' AND (${slug ?? null}::text IS NULL OR slug = ${slug ?? null})
           ORDER BY slug ASC
         `)) as unknown as ReadonlyArray<{
           id: string;
           slug: string;
           version: string;
           manifest_json: unknown;
+          source_code: string;
         }>,
     );
   } catch (e) {
@@ -353,36 +344,45 @@ async function loadActiveTier2Plugins(opts: BootstrapOpts): Promise<{
 
   for (const row of rows) {
     try {
-      // Look up the per-plugin actor row created at activation time.
+      const definition = externalPluginDefinition({
+        manifest: row.manifest_json,
+        source: row.source_code,
+        infra: opts.infra,
+        systemActorId: opts.systemActorId,
+      });
+      if (definition.slug !== row.slug || definition.version !== row.version) {
+        throw new Error("ExternalPluginIdentityMismatch");
+      }
+      // Both the registry and in-chat activation paths use this idempotent provisioning.
+      const emitted = schemaFromSpec({
+        pluginId: row.id,
+        slug: row.slug,
+        schema: definition.schema,
+      });
+      await opts.infra.adapter.provisionPluginPublicSchema({ pluginId: row.id, sql: emitted.sql });
       const actorId = await opts.infra.adapter.withAdminTransaction(
         {
           actorId: opts.systemActorId,
           actorKind: "system",
-          requestId: `plugin-host-tier2-bootstrap-${row.slug}`,
+          requestId: `external-load-${row.slug}`,
         },
         async (tx) => {
-          const r = (await tx.execute(sql`
-            SELECT id::text AS id FROM actors
-            WHERE plugin_id = ${row.id}::uuid LIMIT 1
+          const actors = (await tx.execute(sql`
+            INSERT INTO actors (kind, display_name, plugin_id)
+            VALUES ('plugin', ${`Plugin: ${row.slug}`}, ${row.id}::uuid)
+            ON CONFLICT (plugin_id) WHERE plugin_id IS NOT NULL DO UPDATE
+              SET display_name = EXCLUDED.display_name RETURNING id::text AS id
           `)) as unknown as { id: string }[];
-          return r[0]?.id ?? null;
+          await tx.execute(sql`
+            INSERT INTO plugin_schema_migrations (plugin_id, applied_for_version, applied_sql)
+            SELECT ${row.id}::uuid, ${row.version}, ${emitted.sql}
+            WHERE NOT EXISTS (SELECT 1 FROM plugin_schema_migrations
+              WHERE plugin_id = ${row.id}::uuid AND applied_for_version = ${row.version})
+          `);
+          return actors[0]?.id;
         },
       );
-      if (!actorId) {
-        failed.push({ slug: row.slug, reason: "missing per-plugin actor row" });
-        continue;
-      }
-      const declaredOps = extractDeclaredOps(row.manifest_json);
-      // Minimal frozen shell. dispatch.ts checks `executionStub` BEFORE
-      // touching `definition.operations`, so the empty operations object
-      // is never read. Same for component / workers / tools.
-      const stubDef = {
-        slug: row.slug,
-        version: row.version,
-        tier: 2 as const,
-        schema: {},
-        operations: {},
-      } as unknown as PluginDefinition<PluginContext>;
+      if (!actorId) throw new Error("ExternalPluginActorMissing");
       loadedPlugins.set({
         pluginId: row.id,
         slug: row.slug,
@@ -390,9 +390,7 @@ async function loadActiveTier2Plugins(opts: BootstrapOpts): Promise<{
         tier: 2,
         provenance: "runtime-authored",
         pluginActorId: actorId,
-        definition: stubDef,
-        executionStub: true,
-        declaredOperationNames: declaredOps,
+        definition,
       });
       loaded.push({ slug: row.slug, version: row.version });
     } catch (e) {
@@ -400,18 +398,6 @@ async function loadActiveTier2Plugins(opts: BootstrapOpts): Promise<{
     }
   }
   return { loaded, failed };
-}
-
-function extractDeclaredOps(manifestJson: unknown): ReadonlyArray<string> {
-  if (manifestJson === null || typeof manifestJson !== "object") return [];
-  const ops = (manifestJson as { operations?: unknown }).operations;
-  if (Array.isArray(ops)) {
-    return ops.filter((o): o is string => typeof o === "string");
-  }
-  if (ops !== null && typeof ops === "object") {
-    return Object.keys(ops as Record<string, unknown>);
-  }
-  return [];
 }
 
 /**
@@ -526,6 +512,9 @@ export async function loadActivatedPlugin(
   slug: string,
 ): Promise<{ loaded: boolean; reason?: string }> {
   if (!bootOpts) return { loaded: false, reason: "plugin host not bootstrapped" };
+  const external = await loadActiveTier2Plugins(bootOpts, slug);
+  if (external.loaded.length) return { loaded: true };
+  if (external.failed.length) return { loaded: false, reason: external.failed[0]?.reason };
   if (bootOpts.testPlugins) {
     const tp = bootOpts.testPlugins.find((t) => t.definition.slug === slug);
     if (!tp) return { loaded: false, reason: `no in-memory plugin "${slug}"` };
@@ -641,6 +630,49 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     throw new Error(
       `plugin "${def.slug}" declares workers without the background_workers capability — registration refused`,
     );
+  }
+  // Client assets run in every visitor's browser on every page. That is
+  // the widest blast radius any contribution has, so it is release-signed
+  // only — a runtime-authored plugin's frontend stays inside its Shadow
+  // DOM component, where the sandbox can still reason about it.
+  if (typeof def.buildAssets === "function" && def.tier !== 1) {
+    throw new Error(
+      `plugin "${def.slug}" declares buildAssets but is not release-signed — refused`,
+    );
+  }
+  // A `publicOperations` entry naming an operation that does not exist
+  // reads as "this is exposed" while exposing nothing — and the reverse
+  // typo (an intended-public op misspelled) silently 404s the visitor
+  // surface. Both are caught here, at load, rather than in production.
+  for (const name of def.publicOperations ?? []) {
+    if (!def.operations[name]) {
+      throw new Error(
+        `plugin "${def.slug}" lists "${name}" in publicOperations, which is not one of its operations`,
+      );
+    }
+  }
+
+  // Declared BEFORE the activation gate on purpose. An inactive plugin
+  // contributes nothing, but a module written while it ran still says
+  // `{{#its_list}}`; remembering the name lets the renderer report "that
+  // plugin is switched off" instead of "unknown field".
+  if (def.dataLists && def.dataLists.length > 0) {
+    if (def.tier !== 1) {
+      throw new Error(
+        `plugin "${def.slug}" declares dataLists but is not release-signed — refused`,
+      );
+    }
+    if (!def.dataListsOperation) {
+      throw new Error(
+        `plugin "${def.slug}" declares dataLists without a dataListsOperation to resolve them`,
+      );
+    }
+    if (!def.operations[def.dataListsOperation]) {
+      throw new Error(
+        `plugin "${def.slug}" names dataListsOperation "${def.dataListsOperation}", which is not one of its operations`,
+      );
+    }
+    pluginDataListsRegistry.declare(def.slug, def.dataLists);
   }
 
   // Declared BEFORE the activation gate on purpose. An inactive plugin

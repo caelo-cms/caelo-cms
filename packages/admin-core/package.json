@@ -18,6 +18,7 @@
     "@ai-sdk/anthropic": "^4.0.33",
     "@ai-sdk/google": "^4.0.36",
     "@ai-sdk/openai": "^4.0.32",
+    "@caelo-cms/plugin-consent-manager": "workspace:*",
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/plugin-sandbox": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",

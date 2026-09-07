@@ -10,6 +10,8 @@
 # CLAUDE.md §11.C: published to ghcr.io/caelo-cms/gateway by the
 # .github/workflows/release-images.yml workflow on every release.
 
+FROM denoland/deno:bin-2.9.6 AS deno
+
 FROM oven/bun:1.3.14 AS builder
 
 WORKDIR /repo
@@ -40,6 +42,7 @@ COPY packages/plugins/newsletter/package.json packages/plugins/newsletter/
 COPY packages/plugins/ratings/package.json packages/plugins/ratings/
 COPY packages/plugins/auth/package.json packages/plugins/auth/
 COPY packages/plugins/international-site/package.json packages/plugins/international-site/
+COPY packages/plugins/consent-manager/package.json packages/plugins/consent-manager/
 
 RUN bun install --frozen-lockfile
 
@@ -64,18 +67,14 @@ RUN bun run --filter @caelo-cms/shared build
 # endpoint 404'd in production. The .tier1-trust-root drop file bakes
 # the verification key next to the manifests; the private half is
 # deleted in the same layer.
-RUN bunx tsc -b \
-  packages/plugins/forms \
-  packages/plugins/comments \
-  packages/plugins/newsletter \
-  packages/plugins/ratings \
-  packages/plugins/auth \
-  packages/plugins/international-site
+RUN bunx tsc -b packages/plugins/*
 COPY apps/admin/scripts/sign-tier1-manifest.ts apps/admin/scripts/
 RUN bun run apps/admin/scripts/sign-tier1-manifest.ts --new-key && rm -f .caelo-dev-key
 
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.3.14-slim AS runtime
+
+COPY --from=deno /deno /usr/local/bin/deno
 
 WORKDIR /app
 

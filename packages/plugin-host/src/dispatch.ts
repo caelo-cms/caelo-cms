@@ -76,20 +76,6 @@ export interface LoadedPlugin {
   /** Per-plugin actor row id — set as caelo.actor_id when the plugin's
    *  operations write through the Query API. */
   readonly pluginActorId: string;
-  /** v0.2.16 — true when a Tier-2 plugin's row + schema survived an
-   *  upgrade and was registered from the DB at bootstrap, but the
-   *  Deno-subprocess execution runtime is not yet wired. The plugin
-   *  is visible in `/security/plugins`; runOperation returns
-   *  Tier2RuntimePending. Defaults to undefined for Tier-1 + active
-   *  Tier-2 plugins (when the runtime ships, this flag stops being
-   *  set). */
-  readonly executionStub?: boolean;
-  /** Operation names from the plugin's manifest. Used only when
-   *  `executionStub` is true to distinguish "operation declared but
-   *  runtime missing" (Tier2RuntimePending) from "operation not
-   *  declared at all" (OperationNotDeclared). Real Tier-1 plugins
-   *  read their declared operations from `definition.operations`. */
-  readonly declaredOperationNames?: ReadonlyArray<string>;
 }
 
 export const loadedPlugins = new LoadedPluginsRegistry();
@@ -219,8 +205,8 @@ export type RunPluginOperationResult =
           | "PluginNotFound"
           | "PluginDisabled"
           | "OperationNotDeclared"
-          | "OperationFailed"
-          | "Tier2RuntimePending";
+          | "OperationNotPublic"
+          | "OperationFailed";
         readonly message: string;
       };
     };
@@ -234,6 +220,28 @@ export type RunPluginOperationResult =
 let cachedInfra: PluginHostInfra | null = null;
 export function setHostInfra(infra: PluginHostInfra): void {
   cachedInfra = infra;
+}
+
+/** The bootstrapped adapter + registry, for host-internal passes that
+ *  need to read core through the Query API (never raw SQL). Throws
+ *  rather than returning null — every caller runs inside a render pass
+ *  that a booted host is a precondition for. */
+export function hostInfra(): PluginHostInfra {
+  if (!cachedInfra) throw new Error("plugin host not bootstrapped");
+  return cachedInfra;
+}
+
+let cachedSystemActorId: string | null = null;
+export function setHostSystemActorId(actorId: string): void {
+  cachedSystemActorId = actorId;
+}
+
+/** Actor the host itself reads core as. Host-internal passes are not
+ *  acting for any plugin — attributing their reads to one would put a
+ *  plugin's id on rows it never asked for. */
+export function hostSystemActorId(): string {
+  if (!cachedSystemActorId) throw new Error("plugin host not bootstrapped");
+  return cachedSystemActorId;
 }
 
 export async function runPluginOperation(
@@ -258,32 +266,6 @@ export async function runPluginOperation(
       },
     };
   }
-  // v0.2.16 — Tier-2 plugin survived upgrade (DB-loaded by loader) but
-  // execution runtime isn't wired yet. Honest error rather than the
-  // stale-feeling OperationNotDeclared (the operation IS declared in
-  // the manifest; we just can't run it).
-  if (plugin.executionStub) {
-    const declared = plugin.declaredOperationNames?.includes(opts.operationName) ?? false;
-    if (!declared) {
-      return {
-        ok: false,
-        error: {
-          kind: "OperationNotDeclared",
-          message: `plugin "${opts.pluginSlug}" does not declare operation "${opts.operationName}"`,
-        },
-      };
-    }
-    return {
-      ok: false,
-      error: {
-        kind: "Tier2RuntimePending",
-        message:
-          `Tier-2 plugin "${opts.pluginSlug}" is registered (source + schema survived the upgrade) ` +
-          `but the Deno-subprocess execution runtime is not yet shipped. ` +
-          `Use Tier-1 (PR-shipped) plugins for runtime functionality, or wait for the runtime ship.`,
-      },
-    };
-  }
   const handler = plugin.definition.operations[opts.operationName];
   if (!handler) {
     return {
@@ -293,6 +275,26 @@ export async function runPluginOperation(
         message: `plugin "${opts.pluginSlug}" does not declare operation "${opts.operationName}"`,
       },
     };
+  }
+  // Visitor-facing dispatch is DEFAULT DENY.
+  //
+  // A plugin's operations mix two audiences with no naming rule to tell
+  // them apart — `submit` sits next to `moderate`, `subscribe` next to
+  // `send_campaign`, `me` next to `apply_auth_config` — and every one of
+  // them runs with whatever capabilities the plugin was granted. The
+  // check lives HERE rather than at the gateway route so a second entry
+  // point cannot be added later without it.
+  if (opts.visitorContext) {
+    const allowed = plugin.definition.publicOperations ?? [];
+    if (!allowed.includes(opts.operationName)) {
+      return {
+        ok: false,
+        error: {
+          kind: "OperationNotPublic",
+          message: `operation "${opts.operationName}" of plugin "${opts.pluginSlug}" is not visitor-facing. Add it to the plugin's \`publicOperations\` if it genuinely is.`,
+        },
+      };
+    }
   }
   if (!cachedInfra || !makeContext) {
     return {
@@ -465,6 +467,35 @@ export async function runPluginStaticRender(opts: {
   const ctx = await makeContext({ plugin, infra: cachedInfra });
   const out = await render(ctx as PluginContext, { pageId: opts.pageId });
   return typeof out === "string" ? out : "";
+}
+
+/**
+ * #449 — invoke the plugin's `buildAssets(...)` once for a build.
+ *
+ * Returns `{}` for a plugin that declares none, so callers can iterate
+ * every plugin without branching. A plugin that DOES declare it and
+ * throws propagates: see `collectBuildAssets` for why a missing runtime
+ * has to stop the build rather than ship a silently inert page.
+ */
+export async function runPluginBuildAssets(opts: {
+  pluginSlug: string;
+  pageIds: ReadonlyArray<string>;
+}): Promise<Record<string, string>> {
+  const plugin = loadedPlugins.bySlug(opts.pluginSlug);
+  if (!plugin) return {};
+  const build = plugin.definition.buildAssets;
+  if (typeof build !== "function") return {};
+  if (!cachedInfra || !makeContext) {
+    throw new Error("plugin host not bootstrapped");
+  }
+  const ctx = await makeContext({ plugin, infra: cachedInfra });
+  const out = await build(ctx as PluginContext, { pageIds: opts.pageIds });
+  if (out === null || typeof out !== "object" || Array.isArray(out)) {
+    throw new Error(
+      `plugin "${opts.pluginSlug}" buildAssets returned ${Array.isArray(out) ? "an array" : typeof out} — expected an object of {fileName: contents}`,
+    );
+  }
+  return out;
 }
 
 /**
