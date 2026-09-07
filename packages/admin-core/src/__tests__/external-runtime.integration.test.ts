@@ -136,6 +136,79 @@ describe("external plugin installation", () => {
       (await runPluginOperation({ pluginSlug: slug, operationName: "read", args: {} })).ok,
     ).toBe(false);
   });
+  it("adds public columns on upgrade while preserving stored rows", async () => {
+    const upgradeSlug = "external-upgrade-probe";
+    const firstManifest = { ...manifest, slug: upgradeSlug };
+    const firstSource = source.replaceAll(slug, upgradeSlug);
+    async function activate() {
+      const prep = (await call("plugins.prepare_activation", { slug: upgradeSlug })) as {
+        pluginId: string;
+        schemaName: string;
+        appliedSql: string;
+        artifactDigest: string;
+        version: string;
+      };
+      await adapter.provisionPluginPublicSchema({ pluginId: prep.pluginId, sql: prep.appliedSql });
+      await call("plugins.activate", {
+        slug: upgradeSlug,
+        schemaName: prep.schemaName,
+        appliedSql: prep.appliedSql,
+        artifactDigest: prep.artifactDigest,
+        version: prep.version,
+      });
+      expect(await loadActivatedPlugin(upgradeSlug)).toEqual({ loaded: true });
+    }
+    await call("plugins.submit", {
+      slug: upgradeSlug,
+      version: "1.0.0",
+      manifest: firstManifest,
+      source: firstSource,
+    });
+    await activate();
+    expect(
+      (
+        await runPluginOperation({
+          pluginSlug: upgradeSlug,
+          operationName: "save",
+          args: { body: "preserved" },
+        })
+      ).ok,
+    ).toBe(true);
+    await call("plugins.disable", { slug: upgradeSlug });
+    const upgraded = {
+      ...firstManifest,
+      version: "1.1.0",
+      schema: { notes: { ...manifest.schema.notes, tags: "jsonb" } },
+    };
+    const nextSource = firstSource
+      .replace('version:"1.0.0"', 'version:"1.1.0"')
+      .replace("{body:args.body}", "{body:args.body,tags:args.tags}");
+    await call("plugins.submit", {
+      slug: upgradeSlug,
+      version: "1.1.0",
+      manifest: upgraded,
+      source: nextSource,
+    });
+    await activate();
+    expect(
+      (
+        await runPluginOperation({
+          pluginSlug: upgradeSlug,
+          operationName: "save",
+          args: { body: "new", tags: ["illustrated", "published"] },
+        })
+      ).ok,
+    ).toBe(true);
+    expect(
+      await runPluginOperation({ pluginSlug: upgradeSlug, operationName: "read", args: {} }),
+    ).toMatchObject({
+      ok: true,
+      value: expect.arrayContaining([
+        expect.objectContaining({ body: "preserved", tags: null }),
+        expect.objectContaining({ body: "new", tags: ["illustrated", "published"] }),
+      ]),
+    });
+  });
   it("binds both activation paths to reviewed source and provisions chat installations", async () => {
     const chatSlug = "external-chat-probe";
     const chatManifest = { ...manifest, slug: chatSlug };
