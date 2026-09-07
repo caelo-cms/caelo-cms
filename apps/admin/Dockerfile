@@ -11,6 +11,8 @@
 # CLAUDE.md §11.C: this image is published to ghcr.io/caelo-cms/admin
 # by .github/workflows/release-images.yml. End-users never build it.
 
+FROM denoland/deno:bin-2.9.6 AS deno
+
 FROM oven/bun:1.3.14 AS builder
 
 # npm is needed to work around Bun's transitive optionalDependencies gap
@@ -155,6 +157,8 @@ RUN cd apps/admin && bun x vite build
 # Runtime stage
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.3.14-slim AS runtime
+
+COPY --from=deno /deno /usr/local/bin/deno
 
 # Reproduce the workspace layout under /app so node_modules resolution
 # works the same way it did at build time (Bun nests admin-specific

@@ -10,6 +10,7 @@
  * P11 lifecycle (submit → activate → cms_public schema provisioned).
  */
 
+export { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
 export {
   collectBuildAssets,
   injectPluginAssets,

@@ -23,7 +23,12 @@
  */
 
 import { applyPluginLifecycle, loadedPlugins } from "@caelo-cms/plugin-host";
-import { type EmittedSchema, schemaFromSpec, validatePlugin } from "@caelo-cms/plugin-sandbox";
+import {
+  type EmittedSchema,
+  externalArtifactDigest,
+  schemaFromSpec,
+  validatePlugin,
+} from "@caelo-cms/plugin-sandbox";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -246,6 +251,16 @@ export const submitPluginOp = defineOperation({
       source: input.source,
       filename: `${input.slug}.ts`,
     });
+    if (
+      validation.manifest &&
+      (validation.manifest.slug !== input.slug || validation.manifest.version !== input.version)
+    ) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.submit",
+        message: "Manifest slug/version must match the submitted plugin identity.",
+      });
+    }
     const status: z.infer<typeof pluginStatus> = validation.ok ? "awaiting_activation" : "draft";
     const validationErrorsJson = JSON.stringify(validation.failures);
 
@@ -272,6 +287,7 @@ export const submitPluginOp = defineOperation({
         validation_errors = EXCLUDED.validation_errors,
         submitted_by = EXCLUDED.submitted_by,
         updated_at = now()
+      WHERE plugins.tier = 2 AND plugins.status <> 'active'
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const id = rows[0]?.id;
@@ -279,7 +295,8 @@ export const submitPluginOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "plugins.submit",
-        message: "no id returned",
+        message:
+          "Cannot replace an active or release-signed plugin. Disable the external plugin before submitting a replacement.",
       });
     }
     await recordAudit(tx, {
@@ -415,6 +432,7 @@ export const preparePluginActivationOp = defineOperation({
   output: z.object({
     pluginId: z.string(),
     version: z.string(),
+    artifactDigest: z.string().nullable(),
     schemaName: z.string(),
     appliedSql: z.string(),
     /** When true the caller should skip provisioning + commit and just
@@ -428,7 +446,7 @@ export const preparePluginActivationOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, tier, status, manifest_json, version
+      SELECT id::text AS id, tier, status, manifest_json, version, source_code
       FROM plugins
       WHERE slug = ${input.slug}
     `)) as unknown as Array<{
@@ -436,6 +454,7 @@ export const preparePluginActivationOp = defineOperation({
       tier: number;
       status: string;
       manifest_json: unknown;
+      source_code: string | null;
       version: string;
     }>;
     const r = rows[0];
@@ -458,6 +477,8 @@ export const preparePluginActivationOp = defineOperation({
       return ok({
         pluginId: r.id,
         version: r.version,
+        artifactDigest:
+          r.tier === 2 ? externalArtifactDigest(r.manifest_json, r.source_code ?? "") : null,
         schemaName,
         appliedSql: "",
         isReEnable: true,
@@ -471,6 +492,8 @@ export const preparePluginActivationOp = defineOperation({
       return ok({
         pluginId: r.id,
         version: r.version,
+        artifactDigest:
+          r.tier === 2 ? externalArtifactDigest(r.manifest_json, r.source_code ?? "") : null,
         schemaName,
         appliedSql: "",
         isReEnable: false,
@@ -505,6 +528,8 @@ export const preparePluginActivationOp = defineOperation({
     return ok({
       pluginId: r.id,
       version: r.version,
+      artifactDigest:
+        r.tier === 2 ? externalArtifactDigest(r.manifest_json, r.source_code ?? "") : null,
       schemaName: emitted.schemaName,
       appliedSql: emitted.sql,
       isReEnable: false,
@@ -525,6 +550,10 @@ export const activatePluginOp = defineOperation({
   input: z
     .object({
       slug: z.string().min(1).max(120),
+      artifactDigest: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .optional(),
       /** Required when transitioning awaiting_activation → active.
        *  Omitted on the disabled → active re-enable path. */
       schemaName: z.string().min(1).max(200).optional(),
@@ -542,7 +571,7 @@ export const activatePluginOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, tier, status, version
+      SELECT id::text AS id, tier, status, version, manifest_json, source_code
       FROM plugins
       WHERE slug = ${input.slug}
       FOR UPDATE
@@ -551,6 +580,8 @@ export const activatePluginOp = defineOperation({
       tier: number;
       status: string;
       version: string;
+      manifest_json: unknown;
+      source_code: string | null;
     }>;
     const r = rows[0];
     if (!r) {
@@ -558,6 +589,17 @@ export const activatePluginOp = defineOperation({
         kind: "HandlerError",
         operation: "plugins.activate",
         message: `no plugin with slug "${input.slug}"`,
+      });
+    }
+    if (
+      r.tier === 2 &&
+      input.artifactDigest !== externalArtifactDigest(r.manifest_json, r.source_code ?? "")
+    ) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.activate",
+        message:
+          "Plugin artifact changed or approval digest missing. Review the current source and retry.",
       });
     }
     // Release-signed plugins activate through this op too. They used to
@@ -682,7 +724,10 @@ export const activatePluginOp = defineOperation({
           updated_at = now()
       WHERE id = ${r.id}::uuid
     `);
-    const actorId = await upsertPluginActor(tx, r.id, input.slug);
+    // Human actors cannot create or read another actor under forced RLS.
+    // The host loader provisions the plugin actor after this transaction commits.
+    const actorId =
+      ctx.actorKind === "system" ? await upsertPluginActor(tx, r.id, input.slug) : null;
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

@@ -10,6 +10,8 @@
 # CLAUDE.md §11.C: published to ghcr.io/caelo-cms/gateway by the
 # .github/workflows/release-images.yml workflow on every release.
 
+FROM denoland/deno:bin-2.9.6 AS deno
+
 FROM oven/bun:1.3.14 AS builder
 
 WORKDIR /repo
@@ -71,6 +73,8 @@ RUN bun run apps/admin/scripts/sign-tier1-manifest.ts --new-key && rm -f .caelo-
 
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.3.14-slim AS runtime
+
+COPY --from=deno /deno /usr/local/bin/deno
 
 WORKDIR /app
 
