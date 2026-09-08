@@ -609,7 +609,7 @@ export async function activateApprovedExternalPlugin(
     };
     const manifest = pluginManifest.parse(artifact.manifest);
     // Each capability is enabled here only once its isolated host broker is implemented.
-    const supported = new Set(["cms_admin_schema", "chat_runner_tools"]);
+    const supported = new Set(["cms_admin_schema", "chat_runner_tools", "companion_skills"]);
     for (const capability of manifest.requestedCapabilities ?? [])
       if (!supported.has(capability))
         throw new Error(`External capability broker unavailable: ${capability}`);

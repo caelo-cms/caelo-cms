@@ -14,8 +14,18 @@ test("Owner uploads a package, explicitly grants each capability, and revokes pr
     schema: {},
     adminSchema: { notes: { body: "text" } },
     operations: ["read"],
-    requestedCapabilities: ["cms_admin_schema", "chat_runner_tools"],
+    requestedCapabilities: ["cms_admin_schema", "chat_runner_tools", "companion_skills"],
+    skills: [
+      {
+        slug: `${slug}-guide`,
+        displayName: `Guide ${slug}`,
+        description: "Read private notes",
+        body: "Use the private notes tool in author chat.",
+        allowlistedTools: [toolName],
+      },
+    ],
     capabilityReasons: {
+      companion_skills: "Teach the authoring workflow",
       cms_admin_schema: "Store unpublished notes",
       chat_runner_tools: "Read notes from author chat",
     },
@@ -55,6 +65,8 @@ test("Owner uploads a package, explicitly grants each capability, and revokes pr
   await expect(review.locator("pre").nth(1)).toHaveText(source);
   const privateAccess = review.getByRole("checkbox", { name: /cms_admin_schema/ });
   const tools = review.getByRole("checkbox", { name: /chat_runner_tools/ });
+  const companion = review.getByRole("checkbox", { name: /companion_skills/ });
+  await expect(companion).not.toBeChecked();
   await expect(privateAccess).not.toBeChecked();
   await expect(tools).not.toBeChecked();
   // Bypass browser required-field validation to prove server-side enforcement too.
@@ -70,12 +82,18 @@ test("Owner uploads a package, explicitly grants each capability, and revokes pr
   );
   await privateAccess.check();
   await tools.check();
+  await companion.check();
   await review.getByRole("button", { name: "Approve selected access and activate" }).click();
   await expect(page.getByRole("status")).toContainText("Approved package is running.");
   await expect(review).toContainText("Review: active");
+  await page.goto("/security/skills");
+  await expect(page.getByText(`Guide ${slug}`, { exact: true })).toBeVisible();
+  await page.goto("/security/plugins/installations");
   await review.getByRole("button", { name: "Revoke cms_admin_schema", exact: true }).click();
   await expect(page.getByRole("status")).toContainText(
     "Access revoked. The plugin is disabled; its data is preserved.",
   );
   await expect(review).toContainText("Current plugin: disabled");
+  await page.goto("/security/skills");
+  await expect(page.getByText(`Guide ${slug}`, { exact: true })).toHaveCount(0);
 });

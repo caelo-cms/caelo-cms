@@ -87,3 +87,31 @@ it("refuses unbounded host-side tool schemas and ambiguous approval declarations
   for (let depth = 0; depth < 15; depth++) nested = { type: "object", properties: { nested } };
   expect(() => check([{ ...tool, inputJsonSchema: nested }])).toThrow("schema shape");
 });
+
+it("requires scoped, explicitly granted companion skill declarations", () => {
+  const guide = {
+    slug: "external-notes-guide",
+    displayName: "Guide",
+    description: "Author notes",
+    body: "Use the notes tools.",
+  };
+  const base = manifest();
+  const check = (skills: (typeof guide)[]) =>
+    validateInstallationPolicy(
+      pluginManifest.parse({
+        ...base,
+        skills,
+        requestedCapabilities: ["cms_admin_schema", "companion_skills"],
+        capabilityReasons: { ...base.capabilityReasons, companion_skills: "Teach note authoring" },
+      }),
+    );
+  expect(() => validateInstallationPolicy({ ...base, skills: [guide] })).toThrow(
+    "companion_skills",
+  );
+  expect(() => check([guide])).not.toThrow();
+  expect(() => check([{ ...guide, slug: "another-plugin-guide" }])).toThrow("must start with");
+  expect(() => check([guide, guide])).toThrow("Duplicate companion");
+  expect(() =>
+    check(Array.from({ length: 21 }, (_, i) => ({ ...guide, slug: `${guide.slug}-${i}` }))),
+  ).toThrow("at most 20");
+});
