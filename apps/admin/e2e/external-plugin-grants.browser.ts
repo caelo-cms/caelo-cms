@@ -35,6 +35,14 @@ test("Owner uploads a package, explicitly grants each capability, and revokes pr
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/edit/, { timeout: 15_000 });
   await page.goto("/security/plugins/installations");
+  // Every installation mutation rejects a missing session CSRF token before touching state.
+  for (const action of ["stage", "approve", "retry", "revoke"]) {
+    const status = await page.evaluate(async (name) => {
+      const response = await fetch(`?/${name}`, { method: "POST", body: new FormData() });
+      return response.status;
+    }, action);
+    expect(status).toBe(403);
+  }
   await page.getByLabel("Plugin package (.json)").setInputFiles({
     name: "notes.caelo-plugin.json",
     mimeType: "application/json",

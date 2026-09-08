@@ -106,6 +106,55 @@ function validateExternalToolSchema(schema: Record<string, unknown>): void {
         throw new Error(
           `Unsupported external tool schema keyword: ${key}; validate complex rules inside the sandbox`,
         );
+    const types = Array.isArray(value.type) ? value.type : [value.type];
+    if (
+      !types.length ||
+      new Set(types).size !== types.length ||
+      types.some(
+        (type) =>
+          !["object", "array", "string", "number", "integer", "boolean", "null"].includes(
+            String(type),
+          ),
+      )
+    )
+      throw new Error("Invalid external tool schema type");
+    for (const key of ["$schema", "title", "description", "format"])
+      if (value[key] !== undefined && typeof value[key] !== "string")
+        throw new Error(`Invalid external tool schema ${key}`);
+    for (const key of ["minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems"]) {
+      const limit = value[key];
+      if (
+        limit !== undefined &&
+        (typeof limit !== "number" ||
+          !Number.isFinite(limit) ||
+          (key !== "minimum" && key !== "maximum" && (!Number.isSafeInteger(limit) || limit < 0)))
+      )
+        throw new Error(`Invalid external tool schema ${key}`);
+    }
+    for (const [min, max] of [
+      ["minimum", "maximum"],
+      ["minLength", "maxLength"],
+      ["minItems", "maxItems"],
+    ] as const)
+      if (
+        typeof value[min] === "number" &&
+        typeof value[max] === "number" &&
+        value[min] > value[max]
+      )
+        throw new Error("Invalid external tool schema bounds");
+    if (value.enum !== undefined && (!Array.isArray(value.enum) || value.enum.length === 0))
+      throw new Error("Invalid external tool schema enum");
+    if (
+      value.required !== undefined &&
+      (!Array.isArray(value.required) ||
+        new Set(value.required).size !== value.required.length ||
+        value.required.some(
+          (key) => typeof key !== "string" || !Object.hasOwn(value.properties ?? {}, key),
+        ))
+    )
+      throw new Error("Invalid external tool schema required properties");
+    if (types.includes("array") && value.items === undefined)
+      throw new Error("External array schemas require items");
     if (value.additionalProperties !== undefined && typeof value.additionalProperties !== "boolean")
       throw new Error("External additionalProperties must be boolean");
     if (
@@ -125,4 +174,8 @@ function validateExternalToolSchema(schema: Record<string, unknown>): void {
     if (value.items !== undefined) inspect(value.items, depth + 1);
   }
   inspect(schema, 0);
+  if (schema.type !== "object" || schema.additionalProperties !== false)
+    throw new Error(
+      "External tool schemas require an object root with additionalProperties: false",
+    );
 }

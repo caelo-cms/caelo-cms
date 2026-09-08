@@ -49,7 +49,7 @@ it("refuses unbounded host-side tool schemas and ambiguous approval declarations
     name: "external_notes__save",
     operationName: "save",
     description: "Save notes",
-    inputJsonSchema: { type: "object" } as Record<string, unknown>,
+    inputJsonSchema: { type: "object", additionalProperties: false } as Record<string, unknown>,
   };
   const withTools = {
     ...manifest(),
@@ -68,6 +68,21 @@ it("refuses unbounded host-side tool schemas and ambiguous approval declarations
     check([{ ...tool, inputJsonSchema: { type: "string", pattern: "(a+)+$" } }]),
   ).toThrow("keyword");
   expect(() => check([{ ...tool, inputJsonSchema: { $ref: "#" } }])).toThrow("keyword");
+  for (const schema of [
+    { type: "not-a-json-schema-type" },
+    { type: "object", enum: "invalid" },
+    { type: "object", minimum: "zero" },
+    { type: "object", required: "body" },
+    { type: "object", required: ["missing"], properties: {} },
+    { type: "object", properties: { list: { type: "array" } } },
+    { type: "object", properties: { text: { type: "string", minLength: -1 } } },
+    { type: "object", properties: { n: { type: "number", minimum: 3, maximum: 2 } } },
+  ])
+    expect(() => check([{ ...tool, inputJsonSchema: schema }])).toThrow();
+  expect(() => check([{ ...tool, inputJsonSchema: { type: "string" } }])).toThrow("object root");
+  expect(() =>
+    check([{ ...tool, inputJsonSchema: { type: "object", additionalProperties: true } }]),
+  ).toThrow("object root");
   let nested: Record<string, unknown> = { type: "object" };
   for (let depth = 0; depth < 15; depth++) nested = { type: "object", properties: { nested } };
   expect(() => check([{ ...tool, inputJsonSchema: nested }])).toThrow("schema shape");

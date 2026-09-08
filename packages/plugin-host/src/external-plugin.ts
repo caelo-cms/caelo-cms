@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-/** Load external definitions as RPC proxies; source is never imported by the Bun host. */
 import { externalArtifactDigest, validatePlugin } from "@caelo-cms/plugin-sandbox";
 import type { PluginContext, PluginDefinition } from "@caelo-cms/plugin-sdk";
+/** Load external definitions as RPC proxies; source is never imported by the Bun host. */
+import { z } from "zod";
 import type { PluginHostInfra } from "./dispatch.js";
 import { type ExternalApproval, withExternalAuthorization } from "./external-authorization.js";
 import { runSandbox } from "./sandbox-runtime.js";
@@ -25,6 +26,7 @@ export function externalPluginDefinition(opts: {
     throw new Error(`ExternalPluginRejected: ${validation.failures.map((f) => f.hint).join("; ")}`);
   }
   const manifest = validation.manifest;
+  for (const tool of manifest.tools ?? []) z.fromJSONSchema(tool.inputJsonSchema);
   for (const capability of manifest.requestedCapabilities ?? []) {
     if (!["cms_admin_schema", "chat_runner_tools"].includes(capability))
       throw new Error(`External capability broker unavailable: ${capability}`);

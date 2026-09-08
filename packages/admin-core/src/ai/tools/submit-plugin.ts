@@ -18,7 +18,8 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
     "Submit a Tier 2 plugin for validation + Owner approval. " +
     "TWO-STEP: this only validates and queues — an Owner must click Approve at /security/plugins to activate. DO NOT claim the plugin is active. " +
     "Tier 2 plugins are sandboxed (Deno --no-read --no-write --no-net); source must use ONLY @caelo-cms/plugin-sdk imports (no fetch / Deno / dynamic imports / raw SQL). " +
-    "Manifests must declare `tier: 2`; do NOT include `requestedCapabilities`, `workers`, or `tools` (those are Tier 1 / core only — submitting them gets rejected). " +
+    "Manifests must declare `tier: 2`. For private author storage or chat tools, request `cms_admin_schema` / `chat_runner_tools`, explain each in `capabilityReasons`, and declare `adminSchema` / namespaced `tools`. " +
+    "Capability-bearing packages go to /security/plugins/installations for individual Owner approval; other capability brokers are not available yet. " +
     "Schema invariant: any table with `page_id` MUST also declare `locale`. " +
     "Inputs: slug (lowercase-with-hyphens, unique site-wide), version (semver), manifest (JSON object: slug, version, tier=2, schema, operations, optional component, hasStaticRender), source (full JS module string). " +
     "Returns {pluginId, status, validationErrors[]}. On validation failure the AI sees structured `{kind, hint}` errors and can auto-fix + resubmit in the same turn — read each `hint` and adjust the source accordingly.",
@@ -42,6 +43,33 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
     },
   },
   handler: async (ctx, input, toolCtx) => {
+    if (input.manifest.slug !== input.slug || input.manifest.version !== input.version)
+      return {
+        ok: false,
+        content: "submit_plugin failed: slug and version must match the manifest.",
+      };
+    if (
+      Array.isArray(input.manifest.requestedCapabilities) &&
+      input.manifest.requestedCapabilities.length > 0
+    ) {
+      const staged = await execute(
+        toolCtx.registry,
+        toolCtx.adapter,
+        ctx,
+        "plugins.stage_installation",
+        {
+          manifest: input.manifest,
+          source: input.source,
+          origin: "runtime-authored",
+        },
+      );
+      if (!staged.ok)
+        return { ok: false, content: `submit_plugin failed: ${describeError(staged.error)}` };
+      return {
+        ok: true,
+        content: `Submitted plugin ${input.slug} v${input.version} for installation review. An Owner must review its exact source and grant each requested capability at /security/plugins/installations. The package has not been activated.`,
+      };
+    }
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.submit", input);
     if (!r.ok) {
       return { ok: false, content: `submit_plugin failed: ${describeError(r.error)}` };

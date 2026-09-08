@@ -45,7 +45,7 @@ Caelo is an AI-first, open-source CMS, MPL 2.0 licensed. Key architectural ancho
 
 These cannot be violated by any change, AI-generated or human:
 
-- **No raw SQL anywhere.** All database access goes through the Query API → Validator → Database Adapter chain. If you need a new DB operation, add a named op; do not reach past the API.
+- **No raw SQL anywhere.** All database access goes through the Query API → Validator → Database Adapter chain. If you need a new DB operation, add a named op; do not reach past the API. The isolated plugin host is the narrow infrastructure exception: capability authorization and SDK storage brokers use `DatabaseAdapter` transactions with forced RLS directly, because receipt verification and the permitted write must share the registry-row lock until commit. This exception does not expose SQL to plugins or allow application handlers to bypass named operations.
 - **RLS on every table, both DBs, `FORCE`d for owners too.** Role isolation alone is not enough — per-actor and per-plugin scoping live at the Postgres layer.
 - **No raw HTML on pages.** Pages are assembled from module references only. Raw HTML belongs inside modules.
 - **No raw HTML into `<head>`.** SEO is structured fields only.

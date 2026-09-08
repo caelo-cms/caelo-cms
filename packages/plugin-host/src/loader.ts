@@ -48,6 +48,7 @@ import {
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { z } from "zod";
 import { makePluginContext } from "./capabilities.js";
 import { pluginDataListsRegistry } from "./data-lists.js";
 import {
@@ -598,6 +599,7 @@ export async function activateApprovedExternalPlugin(
     );
     if (!prepared.ok) throw new Error(JSON.stringify(prepared.error));
     const artifact = prepared.value as {
+      status: "approved" | "active";
       pluginId: string;
       artifactDigest: string;
       manifest: unknown;
@@ -611,6 +613,13 @@ export async function activateApprovedExternalPlugin(
     for (const capability of manifest.requestedCapabilities ?? [])
       if (!supported.has(capability))
         throw new Error(`External capability broker unavailable: ${capability}`);
+    if (artifact.status === "active") {
+      // Finalization may have committed before a transient host load failure.
+      // The Query API and loader both verify this is still the exact active artifact.
+      const live = await loadActivatedPlugin(manifest.slug);
+      if (live.loaded) setPluginDisabled(manifest.slug, false);
+      return live;
+    }
     const previous = pluginManifest.parse(artifact.previousManifest);
     // Do not silently change existing column types or remove author data on an update.
     for (const key of ["schema", "adminSchema"] as const) {
@@ -622,6 +631,7 @@ export async function activateApprovedExternalPlugin(
       }
     }
     for (const tool of manifest.tools ?? []) {
+      z.fromJSONSchema(tool.inputJsonSchema);
       const existing = pluginToolsRegistry.resolve(tool.name);
       if (existing && existing.pluginSlug !== manifest.slug)
         throw new Error(`Tool name already registered: ${tool.name}`);

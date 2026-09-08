@@ -426,6 +426,7 @@ export const mcpExecuteToolOp = defineOperation({
     }
     const rawResult: ToolResult = pluginTool
       ? await runPluginOperation({
+          authorContext: { actor: aiCtx, operatorActorId: auth.actorId },
           pluginSlug: pluginTool.pluginSlug,
           operationName: pluginTool.spec.operationName,
           args: input.args ?? {},

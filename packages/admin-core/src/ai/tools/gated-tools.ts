@@ -22,7 +22,13 @@
  * the separate Owner queue are gone.
  */
 
-import { loadActivatedPlugin, runPluginOperation } from "@caelo-cms/plugin-host";
+import {
+  hostInfra,
+  loadActivatedPlugin,
+  loadedPlugins,
+  recordExternalToolApproval,
+  runPluginOperation,
+} from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -129,13 +135,29 @@ export function attachPluginGatedExecute(
 ): FilteredTool {
   const pluginGated = tool.pluginGated;
   if (!pluginGated) return tool;
+  const plugin = loadedPlugins.bySlug(pluginGated.pluginSlug);
   return {
     ...tool,
     approvalMode: "user-approval",
-    execute: async (input: unknown): Promise<unknown> => {
+    ...(plugin?.externalApproval
+      ? {
+          prepareApproval: async (toolCallId: string, args: unknown) =>
+            recordExternalToolApproval({
+              plugin,
+              infra: hostInfra(),
+              authorContext,
+              toolCallId,
+              args,
+              toolName: tool.name,
+              operationName: pluginGated.operationName,
+            }),
+        }
+      : {}),
+    execute: async (input: unknown, options?: { toolCallId?: string }): Promise<unknown> => {
       const r = await runPluginOperation({
         authorContext,
         approvedToolName: tool.name,
+        approvedToolCallId: options?.toolCallId,
         pluginSlug: pluginGated.pluginSlug,
         operationName: pluginGated.operationName,
         args: input,

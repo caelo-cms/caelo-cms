@@ -33,3 +33,7 @@ Updates are separate immutable artifacts: upload and approve a replacement while
 Every storage call holds the registry row through commit. Revocation waits for an already accepted write to commit; once revocation completes, old handles cannot begin another write. This does not undo earlier writes or promise cancellation of already dispatched external effects.
 
 Plugin tables live in `cms_public.plugin_<slug>`. Tables may declare `id: "uuid"`; otherwise the host creates that primary key. Forced row-level security scopes access to the plugin identity. SDK calls validate tables and columns against the reviewed manifest and run with the plugin’s own identity.
+
+External tools declaring `approvalMode: "user-approval"` use the native chat approval card. Before showing it, the host records an immutable binding to the artifact, capability receipt IDs, tool and operation, exact arguments, author and chat branch. The binding survives restarts; updates, revocation/reapproval, or changed arguments require a fresh call and approval. Legacy queued approvals without that binding cannot execute an external gated tool. Power-MCP passes authenticated author context for ordinary tools and directs approval-gated calls to the CMS chat.
+
+The installation page supports retrying an approved installation and reloading its exact finalized active artifact after a transient host-load failure. Neither action issues new capability receipts. AI-authored capability-bearing `submit_plugin` requests enter this same installation review queue.

@@ -56,7 +56,7 @@
  */
 
 import { createDefaultToolRegistry } from "@caelo-cms/admin-core";
-import { pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";
+import { loadedPlugins, pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
@@ -126,6 +126,10 @@ export const actions: Actions = {
       // built-ins fall through to the built-in registry.
       const pluginTool = pluginToolsRegistry.resolve(toolName);
       if (pluginTool) {
+        if (loadedPlugins.bySlug(pluginTool.pluginSlug)?.externalApproval)
+          throw new Error(
+            "This legacy proposal has no installation binding. Request a fresh external plugin call in the Caelo chat.",
+          );
         const r = await runPluginOperation({
           authorContext: { actor: locals.ctx, operatorActorId: locals.ctx.actorId },
           approvedToolName: toolName,

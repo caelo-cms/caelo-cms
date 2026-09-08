@@ -12,6 +12,7 @@
   {#if form?.error}<p role="alert" class="rounded border border-red-500 p-3">{form.error}</p>{/if}
   {#if form?.ok}<p role="status" class="rounded border p-3">{form.message}</p>{/if}
   <form method="post" action="?/stage" enctype="multipart/form-data" use:enhance class="flex flex-wrap items-end gap-3">
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
     <label class="grid gap-2">Plugin package (.json)<input type="file" name="package" accept=".json,application/json" required /></label>
     <Button type="submit">Submit package for review</Button>
   </form>
@@ -27,6 +28,7 @@
       </details>
       {#if item.status === 'pending' || item.status === 'retired' || (item.status === 'active' && item.currentStatus === 'disabled')}
         <form method="post" action="?/approve" use:enhance class="space-y-3">
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
           <input type="hidden" name="installationId" value={item.id} />
           <input type="hidden" name="artifactDigest" value={item.artifactDigest} />
           <input type="hidden" name="expectedStateDigest" value={item.currentStateDigest} />
@@ -41,14 +43,16 @@
           </fieldset>
           <Button type="submit">Approve selected access and activate</Button>
         </form>
-      {:else if item.status === 'approved'}
+      {:else if item.status === 'approved' || (item.status === 'active' && item.currentStatus === 'active')}
         <form method="post" action="?/retry" use:enhance>
-          <input type="hidden" name="installationId" value={item.id} /><Button type="submit">Retry approved installation</Button>
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
+          <input type="hidden" name="installationId" value={item.id} /><Button type="submit">{item.status === 'active' ? 'Reload approved installation' : 'Retry approved installation'}</Button>
         </form>
       {/if}
       {#if item.status === 'active' || item.status === 'approved'}
         {#each item.manifest.requestedCapabilities ?? [] as capability}
           <form method="post" action="?/revoke" use:enhance>
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
             <input type="hidden" name="installationId" value={item.id} /><input type="hidden" name="capability" value={capability} />
             <Button type="submit" variant="outline">Revoke {capability}</Button>
           </form>

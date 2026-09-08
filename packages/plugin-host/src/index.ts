@@ -78,6 +78,7 @@ export {
   pluginWorkerScheduler,
   type ScheduledWorker,
 } from "./scheduler.js";
+export { recordExternalToolApproval } from "./tool-approval-binding.js";
 export {
   pluginToolsRegistry,
   type RegisteredPluginTool,

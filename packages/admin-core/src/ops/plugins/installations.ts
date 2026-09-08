@@ -46,6 +46,7 @@ export const stagePluginInstallationOp = defineOperation({
       });
     try {
       validateInstallationPolicy(manifest);
+      for (const tool of manifest.tools ?? []) z.fromJSONSchema(tool.inputJsonSchema);
     } catch (error) {
       return err({
         kind: "HandlerError",
@@ -313,6 +314,7 @@ export const getApprovedPluginInstallationOp = defineOperation({
   database: "cms_admin",
   input: z.object({ installationId: z.string().uuid() }).strict(),
   output: z.object({
+    status: z.enum(["approved", "active"]),
     pluginId: z.string(),
     artifactDigest: z.string(),
     manifest: z.unknown(),
@@ -322,9 +324,10 @@ export const getApprovedPluginInstallationOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const rows =
-      (await tx.execute(sql`SELECT v.plugin_id::text AS plugin_id, v.artifact_digest, v.manifest_json, v.source_code, p.manifest_json AS previous_manifest
+      (await tx.execute(sql`SELECT v.status, v.plugin_id::text AS plugin_id, v.artifact_digest, v.manifest_json, v.source_code, p.manifest_json AS previous_manifest
       FROM plugin_installation_versions v JOIN plugins p ON p.id = v.plugin_id
-      WHERE v.id = ${input.installationId}::uuid AND v.status = 'approved'`)) as unknown as {
+      WHERE v.id = ${input.installationId}::uuid AND (v.status = 'approved' OR (v.status = 'active' AND p.status = 'active' AND p.manifest_json = v.manifest_json AND p.source_code = v.source_code))`)) as unknown as {
+        status: "approved" | "active";
         plugin_id: string;
         artifact_digest: string;
         manifest_json: unknown;
@@ -346,6 +349,7 @@ export const getApprovedPluginInstallationOp = defineOperation({
       grants.map((g) => g.capability),
     );
     return ok({
+      status: row.status,
       pluginId: row.plugin_id,
       artifactDigest: row.artifact_digest,
       manifest: row.manifest_json,

@@ -25,6 +25,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { ExternalApproval } from "./external-authorization.js";
+import { assertExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
 /** Runtime registry of loaded Tier-1 plugins. Loader writes here at startup;
@@ -199,6 +200,8 @@ export function setContextFactory(
 export interface RunPluginOperationOpts {
   /** Set only by the host after the matching tool approval has completed. */
   readonly approvedToolName?: string;
+  /** SDK call id whose immutable host binding was recorded before asking the author. */
+  readonly approvedToolCallId?: string;
   /** Host-authenticated author identity, never supplied through plugin arguments. */
   readonly authorContext?: AuthorDispatchContext;
   readonly pluginSlug: string;
@@ -326,6 +329,16 @@ export async function runPluginOperation(
         if (tool.approvalMode && opts.approvedToolName !== tool.name)
           throw new Error("ExternalToolApprovalRequired");
         z.fromJSONSchema(tool.inputJsonSchema).parse(opts.args);
+        if (tool.approvalMode)
+          await assertExternalToolApproval({
+            plugin,
+            infra: cachedInfra,
+            authorContext: opts.authorContext,
+            toolName: tool.name,
+            operationName: opts.operationName,
+            toolCallId: opts.approvedToolCallId,
+            args: opts.args,
+          });
       } catch (error) {
         return { ok: false, error: { kind: "OperationFailed", message: (error as Error).message } };
       }

@@ -15,6 +15,9 @@ import {
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { withExternalAuthorization } from "../../../plugin-host/src/external-authorization.js";
+import { attachPluginGatedExecute } from "../ai/tools/gated-tools.js";
+import { submitPluginTool } from "../ai/tools/submit-plugin.js";
+import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
 import { registerAdminOps } from "../register.js";
 
 let adapter: DatabaseAdapter;
@@ -316,6 +319,30 @@ it("revoking a pending update preserves the active version and cancels its prepa
   expect(current.plugin).toMatchObject({ status: "active", version: "1.0.0" });
 });
 
+it("stages AI-authored capability packages through the author tool without activating them", async () => {
+  const authored = { ...manifest, slug: "ai-private-notes" };
+  const result = await submitPluginTool.handler(
+    { ...system, actorKind: "ai" },
+    {
+      slug: authored.slug,
+      version: authored.version,
+      manifest: authored,
+      source: source.replaceAll(manifest.slug, authored.slug),
+    },
+    { adapter, registry } as Parameters<typeof submitPluginTool.handler>[2],
+  );
+  expect(result.ok).toBe(true);
+  expect(result.content).toContain("/security/plugins/installations");
+  const review = (await call("plugins.list_installations", {})) as {
+    installations: { slug: string; status: string; origin: string }[];
+  };
+  expect(review.installations.find((i) => i.slug === authored.slug)).toMatchObject({
+    status: "pending",
+    origin: "runtime-authored",
+  });
+  expect(loadedPlugins.bySlug(authored.slug)).toBeUndefined();
+});
+
 it("runs approved author tools in Deno with private storage, trusted chat identity and restart/revocation checks", async () => {
   const slug = "external-private-notes";
   const privateManifest = {
@@ -409,17 +436,53 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
       })
     ).ok,
   ).toBe(false);
+  // Simulate a finalized artifact whose in-memory registration was lost after a load failure.
+  loadedPlugins.unload(slug);
+  expect(await activateApprovedExternalPlugin(item.installationId)).toEqual({ loaded: true });
+  expect(loadedPlugins.bySlug(slug)).toBeDefined();
+  const gatedTool = () =>
+    attachPluginGatedExecute(
+      {
+        name: "external_private_notes__approved_save",
+        description: "Save after approval",
+        inputSchema: privateManifest.tools[0]!.inputJsonSchema,
+        pluginGated: { pluginSlug: slug, operationName: "approved_save" },
+      },
+      authorContext,
+    );
+  const originalTool = gatedTool();
+  const approvedArgs = { body: "approved" };
+  expect(await originalTool.execute!(approvedArgs, { toolCallId: "missing" })).toMatchObject({
+    ok: false,
+  });
+  await originalTool.prepareApproval!("approved-call", approvedArgs);
+  await originalTool.prepareApproval!("approved-call", approvedArgs); // idempotent retry
+  await expect(originalTool.prepareApproval!("approved-call", { body: "changed" })).rejects.toThrow(
+    "BindingChanged",
+  );
   expect(
-    (
-      await runPluginOperation({
-        pluginSlug: slug,
-        operationName: "approved_save",
-        args: { body: "approved" },
-        authorContext,
-        approvedToolName: "external_private_notes__approved_save",
-      })
-    ).ok,
-  ).toBe(true);
+    await originalTool.execute!({ body: "changed" }, { toolCallId: "approved-call" }),
+  ).toMatchObject({ ok: false });
+  expect(await originalTool.execute!(approvedArgs, { toolCallId: "approved-call" })).toMatchObject({
+    ok: true,
+  });
+  await originalTool.prepareApproval!("restart-call", { body: "after restart" });
+  await originalTool.prepareApproval!("stale-call", { body: "must never execute" });
+  await expect(
+    adapter.withAdminTransaction(actor, (tx) =>
+      tx.execute(sql`
+    INSERT INTO plugin_tool_approval_bindings (plugin_id,chat_branch_id,tool_call_id,operator_actor_id,binding_digest)
+    VALUES (${loadedPlugins.bySlug(slug)!.pluginId}::uuid,${actor.chatBranchId}::uuid,'forged',${owner.actorId}::uuid,${"a".repeat(64)})
+  `),
+    ),
+  ).rejects.toThrow();
+  expect(
+    await adapter.withAdminTransaction(actor, (tx) =>
+      tx.execute(sql`
+    SELECT * FROM plugin_tool_approval_bindings
+  `),
+    ),
+  ).toHaveLength(0);
 
   const identity = await runPluginOperation({
     pluginSlug: slug,
@@ -462,6 +525,57 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
   expect(
     await runPluginOperation({ pluginSlug: slug, operationName: "read", args: {}, authorContext }),
   ).toMatchObject({ ok: true, value: [{ body: "unpublished" }, { body: "approved" }] });
+  expect(
+    await gatedTool().execute!({ body: "after restart" }, { toolCallId: "restart-call" }),
+  ).toMatchObject({ ok: true });
+  const wrongBranchTool = attachPluginGatedExecute(originalTool, {
+    ...authorContext,
+    actor: { ...actor, chatBranchId: crypto.randomUUID() },
+  });
+  expect(
+    await wrongBranchTool.execute!(approvedArgs, { toolCallId: "approved-call" }),
+  ).toMatchObject({ ok: false });
+  const wrongAuthorTool = attachPluginGatedExecute(originalTool, {
+    ...authorContext,
+    operatorActorId: reviewer.actorId,
+  });
+  expect(
+    await wrongAuthorTool.execute!(approvedArgs, { toolCallId: "approved-call" }),
+  ).toMatchObject({ ok: false });
+  configureMcpBridge({ adapter, registry, resolveProvider: async () => null });
+  const token = (await call(
+    "mcp_tokens.create",
+    { displayName: "external-notes-test", scope: "admin" },
+    owner,
+  )) as { plaintextToken: string };
+  const session = (await call("mcp.open_session", {
+    plaintextToken: token.plaintextToken,
+    title: "Private plugin via MCP",
+  })) as { chatSessionId: string };
+  const mcpResult = (await call("mcp.execute_tool", {
+    plaintextToken: token.plaintextToken,
+    chatSessionId: session.chatSessionId,
+    toolName: "external_private_notes__save",
+    args: { body: "authenticated MCP author" },
+  })) as { ok: boolean; content: string };
+  expect(mcpResult.ok).toBe(true);
+  const mcpNote = JSON.parse(mcpResult.content) as { id: string };
+  expect(
+    await runPluginOperation({ pluginSlug: slug, operationName: "read", args: {}, authorContext }),
+  ).toMatchObject({
+    ok: true,
+    value: expect.arrayContaining([
+      expect.objectContaining({ id: mcpNote.id, body: "authenticated MCP author" }),
+    ]),
+  });
+  const mcpGated = (await call("mcp.execute_tool", {
+    plaintextToken: token.plaintextToken,
+    chatSessionId: session.chatSessionId,
+    toolName: "external_private_notes__approved_save",
+    args: { body: "must ask in chat" },
+  })) as { ok: boolean; content: string };
+  expect(mcpGated.ok).toBe(false);
+  expect(mcpGated.content).toContain("in-chat approval");
   const loaded = loadedPlugins.bySlug(slug)!;
   let releaseWrite!: () => void;
   let enteredWrite!: () => void;
@@ -522,4 +636,46 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
       })
     ).ok,
   ).toBe(false);
+  // Reapproval of identical bytes issues fresh receipts: old SDK cards stay stale.
+  await call(
+    "plugins.approve_installation",
+    {
+      ...(await decision(item)),
+      capabilities: privateManifest.requestedCapabilities,
+    },
+    owner,
+  );
+  expect(await activateApprovedExternalPlugin(item.installationId)).toEqual({ loaded: true });
+  expect(
+    await gatedTool().execute!({ body: "must never execute" }, { toolCallId: "stale-call" }),
+  ).toMatchObject({ ok: false });
+  await expect(
+    gatedTool().prepareApproval!("stale-call", { body: "must never execute" }),
+  ).rejects.toThrow("BindingChanged");
+  await gatedTool().prepareApproval!("update-call", { body: "old version" });
+  const updated = (await call("plugins.stage_installation", {
+    manifest: { ...privateManifest, version: "1.0.1" },
+    source: privateSource.replace('version:"1.0.0"', 'version:"1.0.1"'),
+  })) as Awaited<ReturnType<typeof stage>>;
+  await call(
+    "plugins.approve_installation",
+    {
+      ...(await decision(updated)),
+      capabilities: privateManifest.requestedCapabilities,
+    },
+    owner,
+  );
+  expect(await activateApprovedExternalPlugin(updated.installationId)).toEqual({ loaded: true });
+  expect(
+    await originalTool.execute!({ body: "old version" }, { toolCallId: "update-call" }),
+  ).toMatchObject({ ok: false });
+  resetPluginHost();
+  await bootstrap({ infra: { adapter, registry }, pluginsRoot, systemActorId: system.actorId });
+  expect(
+    await gatedTool().execute!({ body: "old version" }, { toolCallId: "update-call" }),
+  ).toMatchObject({ ok: false });
+  await gatedTool().prepareApproval!("fresh-call", { body: "new version" });
+  expect(
+    await gatedTool().execute!({ body: "new version" }, { toolCallId: "fresh-call" }),
+  ).toMatchObject({ ok: true });
 });

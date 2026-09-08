@@ -7,6 +7,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
+import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -45,6 +46,7 @@ export const actions: Actions = {
   stage: async ({ request, locals }) => {
     requirePermission(locals, "plugins.install");
     const form = await request.formData();
+    await assertCsrfToken(form, locals);
     const file = form.get("package");
     if (!(file instanceof File) || file.size > 1_000_000)
       return fail(400, { error: "Choose a plugin package JSON file smaller than 1 MB." });
@@ -71,6 +73,7 @@ export const actions: Actions = {
   approve: async ({ request, locals }) => {
     requirePermission(locals, "plugins.install");
     const form = await request.formData();
+    await assertCsrfToken(form, locals);
     const installationId = String(form.get("installationId") ?? "");
     const { adapter, registry } = getQueryContext();
     const approved = await execute(registry, adapter, locals.ctx, "plugins.approve_installation", {
@@ -88,6 +91,7 @@ export const actions: Actions = {
   retry: async ({ request, locals }) => {
     requirePermission(locals, "plugins.install");
     const form = await request.formData();
+    await assertCsrfToken(form, locals);
     const live = await activateApprovedExternalPlugin(String(form.get("installationId") ?? ""));
     if (!live.loaded) return fail(409, { error: `Activation did not complete: ${live.reason}` });
     return { ok: true, message: "Approved package is running." };
@@ -95,6 +99,7 @@ export const actions: Actions = {
   revoke: async ({ request, locals }) => {
     requirePermission(locals, "plugins.install");
     const form = await request.formData();
+    await assertCsrfToken(form, locals);
     const { adapter, registry } = getQueryContext();
     const revoked = await execute(registry, adapter, locals.ctx, "plugins.revoke_capability", {
       installationId: form.get("installationId"),
