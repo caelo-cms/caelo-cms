@@ -221,9 +221,9 @@ it("checks live receipts even without a lifecycle notification and does not elev
   expect(await get(guide.slug)).toBeNull();
   const rows = await adapter.withAdminTransaction(ai, (tx) =>
     tx.execute(sql`
-    SELECT plugin_skill_available(${item.pluginId}::uuid,${item.artifactDigest}) AS available,
+    SELECT plugin_skill_available(${item.pluginId}::uuid,${item.artifactDigest},${slug}) AS available,
       current_setting('caelo.actor_kind') AS actor_kind,
-      plugin_skill_available(NULL,${item.artifactDigest}) AS detached_available
+      plugin_skill_available(NULL,${item.artifactDigest},${slug}) AS detached_available
   `),
   );
   expect(rows).toMatchObject([{ available: false, actor_kind: "ai", detached_available: false }]);

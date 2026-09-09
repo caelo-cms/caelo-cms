@@ -104,7 +104,7 @@ export const listSkillsOp = defineOperation({
                    allowlisted_tools, auto_engagement_hints, status,
                    activated_at, created_at, updated_at
             FROM skills
-            WHERE plugin_skill_available(plugin_id, plugin_artifact_digest)
+            WHERE plugin_skill_available(plugin_id, plugin_artifact_digest, plugin_owner_slug)
             ORDER BY status ASC, slug ASC
           `
         : sql`
@@ -112,7 +112,7 @@ export const listSkillsOp = defineOperation({
                    allowlisted_tools, auto_engagement_hints, status,
                    activated_at, created_at, updated_at
             FROM skills
-            WHERE status = ${input.status} AND plugin_skill_available(plugin_id, plugin_artifact_digest)
+            WHERE status = ${input.status} AND plugin_skill_available(plugin_id, plugin_artifact_digest, plugin_owner_slug)
             ORDER BY slug ASC
           `,
     )) as unknown as SkillDb[];
@@ -132,7 +132,7 @@ export const getSkillOp = defineOperation({
              allowlisted_tools, auto_engagement_hints, status,
              activated_at, created_at, updated_at
       FROM skills WHERE slug = ${input.slug}
-        AND plugin_skill_available(plugin_id, plugin_artifact_digest) LIMIT 1
+        AND plugin_skill_available(plugin_id, plugin_artifact_digest, plugin_owner_slug) LIMIT 1
     `)) as unknown as SkillDb[];
     const r = rows[0];
     return ok({ skill: r ? rowToOut(r) : null });

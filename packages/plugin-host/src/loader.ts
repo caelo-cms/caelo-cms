@@ -1025,13 +1025,13 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
             INSERT INTO skills (
               slug, display_name, description, body,
               allowlisted_tools, auto_engagement_hints,
-              status, activated_at, plugin_id
+              status, activated_at, plugin_id, plugin_owner_slug
             ) VALUES (
               ${skill.slug}, ${skill.displayName}, ${skill.description}, ${skill.body},
               (${JSON.stringify(skill.allowlistedTools ?? [])}::text)::jsonb,
               (${JSON.stringify(skill.autoEngagementHints ?? {})}::text)::jsonb,
               'active', now(),
-              ${pluginId}::uuid
+              ${pluginId}::uuid, ${def.slug}
             )
             ON CONFLICT (slug) DO UPDATE SET
               display_name = EXCLUDED.display_name,
@@ -1040,6 +1040,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
               allowlisted_tools = EXCLUDED.allowlisted_tools,
               auto_engagement_hints = EXCLUDED.auto_engagement_hints,
               plugin_id = EXCLUDED.plugin_id,
+              plugin_owner_slug = EXCLUDED.plugin_owner_slug,
               -- Every boot re-runs this upsert, so the stamp must only
               -- move on a real transition — otherwise a restart would
               -- re-announce every plugin skill to every open chat.

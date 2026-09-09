@@ -48,7 +48,7 @@ export const listPinDefaultsOp = defineOperation({
       FROM skill_pin_defaults p
       JOIN skills s ON s.id = p.skill_id
       WHERE p.user_id = ${userId}::uuid AND s.status = 'active'
-        AND plugin_skill_available(s.plugin_id, s.plugin_artifact_digest)
+        AND plugin_skill_available(s.plugin_id, s.plugin_artifact_digest, s.plugin_owner_slug)
       ORDER BY s.slug ASC
     `)) as unknown as { skill_id: string; slug: string; display_name: string }[];
     return ok({
