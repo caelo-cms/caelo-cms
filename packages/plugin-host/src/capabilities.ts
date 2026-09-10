@@ -179,7 +179,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function assertUuid(value: string, label: string): void {
   if (!UUID_RE.test(value)) {
-    throw new Error(`ctx.query: refusing to set session var ${label}: not a UUID (${value})`);
+    throw new Error(`ctx.query: ${label} must be a UUID (${value})`);
   }
 }
 
