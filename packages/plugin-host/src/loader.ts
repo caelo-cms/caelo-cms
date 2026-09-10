@@ -48,6 +48,7 @@ import {
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { z } from "zod";
 import { makePluginContext } from "./capabilities.js";
 import { pluginDataListsRegistry } from "./data-lists.js";
 import {
@@ -59,9 +60,12 @@ import {
   setContextFactory,
   setHostInfra,
   setHostSystemActorId,
+  setPluginDisabled,
 } from "./dispatch.js";
+import { readExternalApproval } from "./external-authorization.js";
 import { externalPluginDefinition } from "./external-plugin.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
+import { runSandbox } from "./sandbox-runtime.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
 import { pluginToolsRegistry } from "./tools-registry.js";
 import { urlContributionsRegistry } from "./url-composition.js";
@@ -344,7 +348,16 @@ async function loadActiveTier2Plugins(
 
   for (const row of rows) {
     try {
+      const approval = await readExternalApproval({
+        pluginId: row.id,
+        manifest: row.manifest_json,
+        source: row.source_code,
+        infra: opts.infra,
+        systemActorId: opts.systemActorId,
+      });
       const definition = externalPluginDefinition({
+        pluginId: row.id,
+        approval,
         manifest: row.manifest_json,
         source: row.source_code,
         infra: opts.infra,
@@ -360,6 +373,17 @@ async function loadActiveTier2Plugins(
         schema: definition.schema,
       });
       await opts.infra.adapter.provisionPluginPublicSchema({ pluginId: row.id, sql: emitted.sql });
+      if (definition.adminSchema && Object.keys(definition.adminSchema).length) {
+        const privateSchema = adminSchemaFromSpec({
+          pluginId: row.id,
+          slug: row.slug,
+          adminSchema: definition.adminSchema,
+        });
+        await opts.infra.adapter.provisionPluginAdminSchema({
+          pluginId: row.id,
+          sql: privateSchema.sql,
+        });
+      }
       const actorId = await opts.infra.adapter.withAdminTransaction(
         {
           actorId: opts.systemActorId,
@@ -390,8 +414,11 @@ async function loadActiveTier2Plugins(
         tier: 2,
         provenance: "runtime-authored",
         pluginActorId: actorId,
+        externalApproval: approval,
         definition,
       });
+      pluginToolsRegistry.unregisterPlugin(row.slug);
+      for (const tool of definition.tools ?? []) pluginToolsRegistry.register(row.slug, tool);
       loaded.push({ slug: row.slug, version: row.version });
     } catch (e) {
       failed.push({ slug: row.slug, reason: (e as Error).message });
@@ -548,6 +575,127 @@ export async function loadActivatedPlugin(
       : { loaded: false, reason: `plugin is ${outcome.status}, not active` };
   } catch (e) {
     return { loaded: false, reason: (e as Error).message };
+  }
+}
+
+/** Complete an already recorded Owner decision. Failed preparation preserves the running version. */
+export async function activateApprovedExternalPlugin(
+  installationId: string,
+): Promise<{ loaded: boolean; reason?: string }> {
+  if (!bootOpts) return { loaded: false, reason: "plugin host not bootstrapped" };
+  const opts = bootOpts;
+  const system = {
+    actorId: opts.systemActorId,
+    actorKind: "system" as const,
+    requestId: "external-installation-activate",
+  };
+  try {
+    const prepared = await execute(
+      opts.infra.registry,
+      opts.infra.adapter,
+      system,
+      "plugins.get_approved_installation",
+      { installationId },
+    );
+    if (!prepared.ok) throw new Error(JSON.stringify(prepared.error));
+    const artifact = prepared.value as {
+      status: "approved" | "active";
+      pluginId: string;
+      artifactDigest: string;
+      manifest: unknown;
+      source: string;
+      previousManifest: unknown;
+      grantIds: string[];
+    };
+    const manifest = pluginManifest.parse(artifact.manifest);
+    // Each capability is enabled here only once its isolated host broker is implemented.
+    const supported = new Set(["cms_admin_schema", "chat_runner_tools"]);
+    for (const capability of manifest.requestedCapabilities ?? [])
+      if (!supported.has(capability))
+        throw new Error(`External capability broker unavailable: ${capability}`);
+    if (artifact.status === "active") {
+      // Finalization may have committed before a transient host load failure.
+      // The Query API and loader both verify this is still the exact active artifact.
+      const live = await loadActivatedPlugin(manifest.slug);
+      if (live.loaded) setPluginDisabled(manifest.slug, false);
+      return live;
+    }
+    const previous = pluginManifest.parse(artifact.previousManifest);
+    // Do not silently change existing column types or remove author data on an update.
+    for (const key of ["schema", "adminSchema"] as const) {
+      for (const [table, columns] of Object.entries(previous[key] ?? {})) {
+        for (const [column, type] of Object.entries(columns)) {
+          if (manifest[key]?.[table]?.[column] !== type)
+            throw new Error(`Incompatible schema update: ${key}.${table}.${column}`);
+        }
+      }
+    }
+    for (const tool of manifest.tools ?? []) {
+      z.fromJSONSchema(tool.inputJsonSchema);
+      const existing = pluginToolsRegistry.resolve(tool.name);
+      if (existing && existing.pluginSlug !== manifest.slug)
+        throw new Error(`Tool name already registered: ${tool.name}`);
+    }
+    const context = await makePluginContext({
+      plugin: {
+        pluginId: artifact.pluginId,
+        pluginActorId: system.actorId,
+        slug: manifest.slug,
+        version: manifest.version,
+        tier: 2,
+        provenance: "runtime-authored",
+        definition: {
+          slug: manifest.slug,
+          version: manifest.version,
+          tier: 2,
+          schema: {},
+          operations: {},
+        },
+      },
+      infra: opts.infra,
+    });
+    await runSandbox({
+      source: artifact.source,
+      manifest,
+      operation: "$inspect",
+      args: manifest,
+      context,
+      authorize: async () => {},
+      denySdkCalls: true,
+    });
+    const publicSchema = schemaFromSpec({
+      pluginId: artifact.pluginId,
+      slug: manifest.slug,
+      schema: manifest.schema,
+    });
+    await opts.infra.adapter.provisionPluginPublicSchema({
+      pluginId: artifact.pluginId,
+      sql: publicSchema.sql,
+    });
+    if (manifest.adminSchema) {
+      const privateSchema = adminSchemaFromSpec({
+        pluginId: artifact.pluginId,
+        slug: manifest.slug,
+        adminSchema: manifest.adminSchema,
+      });
+      await opts.infra.adapter.provisionPluginAdminSchema({
+        pluginId: artifact.pluginId,
+        sql: privateSchema.sql,
+      });
+    }
+    const finalized = await execute(
+      opts.infra.registry,
+      opts.infra.adapter,
+      system,
+      "plugins.finalize_installation",
+      { installationId, artifactDigest: artifact.artifactDigest, grantIds: artifact.grantIds },
+    );
+    if (!finalized.ok) throw new Error(JSON.stringify(finalized.error));
+    const live = await loadActivatedPlugin(manifest.slug);
+    if (live.loaded) setPluginDisabled(manifest.slug, false);
+    return live;
+  } catch (error) {
+    return { loaded: false, reason: (error as Error).message };
   }
 }
 

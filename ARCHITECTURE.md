@@ -256,3 +256,8 @@ erDiagram
 ---
 
 *This document is hand-edited. A future `apps/admin/scripts/generate-architecture-doc.ts` could regenerate the diagrams from the ops registry + migration files; see the deferred items in the master plan.*
+
+
+### External installation boundary
+
+External packages are immutable `(manifest, source)` artifacts identified by SHA-256. `plugin_installation_versions` holds pending updates independently of `plugins`, and `plugin_capability_grants` records each authenticated `plugins.install` decision. Approval records receipts; host preparation then finalizes the exact reviewed state. An old source keeps running during preparation. Private storage and chat-tool brokers run through Deno RPC and the same SDK storage implementation as bundled plugins. Runtime receipt checks and a shared registry-row lock serialize storage commits against revocation. Visitor/render invocations never acquire private author handles. Further capability brokers are a separate rollout and fail closed until implemented.

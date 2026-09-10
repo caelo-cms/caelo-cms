@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateSource } from "@caelo-cms/plugin-sandbox";
-import type { PluginContext, PluginManifest } from "@caelo-cms/plugin-sdk";
+import type { PluginContext, PluginContextTier1, PluginManifest } from "@caelo-cms/plugin-sdk";
 import { z } from "zod";
 import { sandboxEntrySource } from "./sandbox-entry.js";
 import {
@@ -24,6 +24,7 @@ export interface SandboxInvocation {
   readonly context: PluginContext;
   readonly authorize: () => Promise<void>;
   readonly timeoutMs?: number;
+  readonly denySdkCalls?: boolean;
 }
 
 const table = z
@@ -34,6 +35,11 @@ const record = z.record(z.string(), z.unknown());
 const id = z.string().uuid();
 
 async function broker(ctx: PluginContext, method: string, args: unknown[]): Promise<unknown> {
+  if (method.startsWith("adminQuery.")) {
+    const adminQuery = (ctx as PluginContextTier1).adminQuery;
+    if (!adminQuery) throw new Error("SandboxCapabilityDenied: cms_admin_schema");
+    return broker({ ...ctx, query: adminQuery }, method.replace("adminQuery.", "query."), args);
+  }
   switch (method) {
     case "query.insert": {
       const a = z.tuple([table, record]).parse(args);
@@ -182,6 +188,8 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
       operation: invocation.operation,
       args: invocation.args,
       theme: context.theme,
+      invocation: context.invocation,
+      hasAdminQuery: Boolean((context as PluginContextTier1).adminQuery),
       visitor: {
         id: context.visitor.id,
         publicUserId: context.visitor.publicUserId,
@@ -201,6 +209,7 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
       if (message.id !== nextCall++ || nextCall > SANDBOX_CALL_LIMIT)
         throw new Error("SandboxCallLimitOrSequence");
       await bounded(invocation.authorize());
+      if (invocation.denySdkCalls) throw new Error("SandboxInstallationCannotCallSdk");
       try {
         const value = await bounded(broker(context, message.method, message.args));
         send({ id: message.id, ok: true, value: value ?? null });

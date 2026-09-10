@@ -21,7 +21,11 @@ import type {
   PluginProvenance,
 } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { z } from "zod";
+import type { ExternalApproval } from "./external-authorization.js";
+import { assertExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
 /** Runtime registry of loaded Tier-1 plugins. Loader writes here at startup;
@@ -61,6 +65,7 @@ class LoadedPluginsRegistry {
 }
 
 export interface LoadedPlugin {
+  readonly externalApproval?: ExternalApproval;
   readonly pluginId: string;
   readonly slug: string;
   readonly version: string;
@@ -156,7 +161,13 @@ export type SnapshotEmitter = (
 let makeContext: ((opts: MakeContextOpts) => Promise<PluginContext | PluginContextTier1>) | null =
   null;
 
+export interface AuthorDispatchContext {
+  readonly actor: ExecutionContext;
+  readonly operatorActorId: string;
+}
+
 interface MakeContextOpts {
+  readonly authorContext?: AuthorDispatchContext;
   readonly plugin: LoadedPlugin;
   readonly infra: PluginHostInfra;
   /** Visitor-facing context if dispatched from the API gateway. */
@@ -187,6 +198,12 @@ export function setContextFactory(
 }
 
 export interface RunPluginOperationOpts {
+  /** Set only by the host after the matching tool approval has completed. */
+  readonly approvedToolName?: string;
+  /** SDK call id whose immutable host binding was recorded before asking the author. */
+  readonly approvedToolCallId?: string;
+  /** Host-authenticated author identity, never supplied through plugin arguments. */
+  readonly authorContext?: AuthorDispatchContext;
   readonly pluginSlug: string;
   readonly operationName: string;
   readonly args: unknown;
@@ -305,12 +322,35 @@ export async function runPluginOperation(
       },
     };
   }
+  if (plugin.externalApproval) {
+    const tool = plugin.definition.tools?.find((t) => t.operationName === opts.operationName);
+    if (tool) {
+      try {
+        if (tool.approvalMode && opts.approvedToolName !== tool.name)
+          throw new Error("ExternalToolApprovalRequired");
+        z.fromJSONSchema(tool.inputJsonSchema).parse(opts.args);
+        if (tool.approvalMode)
+          await assertExternalToolApproval({
+            plugin,
+            infra: cachedInfra,
+            authorContext: opts.authorContext,
+            toolName: tool.name,
+            operationName: opts.operationName,
+            toolCallId: opts.approvedToolCallId,
+            args: opts.args,
+          });
+      } catch (error) {
+        return { ok: false, error: { kind: "OperationFailed", message: (error as Error).message } };
+      }
+    }
+  }
   let ctx: PluginContext | PluginContextTier1;
   try {
     ctx = await makeContext({
       plugin,
       infra: cachedInfra,
       visitorContext: opts.visitorContext,
+      authorContext: opts.authorContext,
     });
   } catch (e) {
     return {

@@ -1,52 +1,44 @@
 // SPDX-License-Identifier: MPL-2.0
 
-/** Load external definitions as RPC proxies; source is never imported by the Bun host. */
 import { externalArtifactDigest, validatePlugin } from "@caelo-cms/plugin-sandbox";
 import type { PluginContext, PluginDefinition } from "@caelo-cms/plugin-sdk";
-import { execute } from "@caelo-cms/query-api";
+/** Load external definitions as RPC proxies; source is never imported by the Bun host. */
+import { z } from "zod";
 import type { PluginHostInfra } from "./dispatch.js";
+import { type ExternalApproval, withExternalAuthorization } from "./external-authorization.js";
 import { runSandbox } from "./sandbox-runtime.js";
 
 /** Build a definition containing host-generated handlers for only the reviewed operation names. */
 export function externalPluginDefinition(opts: {
+  readonly pluginId: string;
+  readonly approval: ExternalApproval;
   readonly manifest: unknown;
   readonly source: string;
   readonly infra: PluginHostInfra;
   readonly systemActorId: string;
 }): PluginDefinition<PluginContext> {
-  const validation = validatePlugin({ manifest: opts.manifest, source: opts.source });
+  const validation = validatePlugin({
+    manifest: opts.manifest,
+    source: opts.source,
+    allowExternalCapabilities: true,
+  });
   if (!validation.ok || !validation.manifest || validation.manifest.tier !== 2) {
     throw new Error(`ExternalPluginRejected: ${validation.failures.map((f) => f.hint).join("; ")}`);
   }
   const manifest = validation.manifest;
-  const digest = externalArtifactDigest(opts.manifest, opts.source);
-  const authorize = async () => {
-    const result = await execute(
-      opts.infra.registry,
-      opts.infra.adapter,
-      {
-        actorId: opts.systemActorId,
-        actorKind: "system",
-        requestId: `external-plugin-${manifest.slug}`,
-      },
-      "plugins.get",
-      { slug: manifest.slug },
+  for (const tool of manifest.tools ?? []) z.fromJSONSchema(tool.inputJsonSchema);
+  for (const capability of manifest.requestedCapabilities ?? []) {
+    if (!["cms_admin_schema", "chat_runner_tools"].includes(capability))
+      throw new Error(`External capability broker unavailable: ${capability}`);
+  }
+  if (externalArtifactDigest(opts.manifest, opts.source) !== opts.approval.artifactDigest)
+    throw new Error("ExternalPluginArtifactMismatch");
+  const authorize = () =>
+    withExternalAuthorization(
+      { pluginId: opts.pluginId, externalApproval: opts.approval },
+      opts.infra,
+      async () => {},
     );
-    if (!result.ok) throw new Error("ExternalPluginAuthorizationUnavailable");
-    const row = (
-      result.value as {
-        plugin: { status: string; sourceCode: string; manifestJson: unknown } | null;
-      }
-    ).plugin;
-    if (
-      row?.status !== "active" ||
-      externalArtifactDigest(row.manifestJson, row.sourceCode) !== digest
-    ) {
-      throw new Error(
-        "ExternalPluginApprovalChanged: activate the reviewed version before running it",
-      );
-    }
-  };
   const invoke = (operation: string) => (context: PluginContext, args: unknown) =>
     runSandbox({ source: opts.source, manifest, operation, args, context, authorize });
   return Object.freeze({
@@ -54,6 +46,9 @@ export function externalPluginDefinition(opts: {
     version: manifest.version,
     tier: 2,
     schema: manifest.schema,
+    adminSchema: manifest.adminSchema,
+    requestedCapabilities: manifest.requestedCapabilities,
+    tools: manifest.tools,
     operations: Object.freeze(
       Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
     ),
