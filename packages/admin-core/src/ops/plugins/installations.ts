@@ -13,6 +13,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { syncExternalCompanionSkills } from "./companion-skills.js";
 
 export const stagePluginInstallationOp = defineOperation({
   name: "plugins.stage_installation",
@@ -423,6 +424,7 @@ export const finalizePluginInstallationOp = defineOperation({
       manifest,
       grants.map((g) => g.capability),
     );
+    await syncExternalCompanionSkills(tx, row.plugin_id, row.artifact_digest, manifest);
     await tx.execute(
       sql`UPDATE plugin_installation_versions SET status='retired' WHERE plugin_id=${row.plugin_id}::uuid AND status='active'`,
     );

@@ -339,7 +339,7 @@ export const pluginManifest = z
       .regex(/^\d+\.\d+\.\d+(-[a-z0-9.]+)?$/, "must be semver"),
     tier: z.union([z.literal(1), z.literal(2)]),
     schema: pluginSchemaMap,
-    /** #389 — release-signed only: the plugin's own authoring-DB schema,
+    /** The plugin's own authoring-DB schema,
      *  provisioned as `plugin_<slug>` in cms_admin (FORCE RLS, scoped to
      *  the plugin's id). Same declarative table spec as `schema`; `ref:`
      *  columns may FK onto allowlisted core tables. Requires the
@@ -379,7 +379,7 @@ export const pluginManifest = z
       .optional(),
     /** Tier 1 only. */
     workers: z.array(pluginWorkerSpec).optional(),
-    /** Tier 1 only. */
+    /** Chat tools; external packages require a chat_runner_tools receipt. */
     tools: z.array(pluginToolSpec).optional(),
     /** #390 — URL-slot claims (release-signed only). The definition
      *  supplies the matching pure encode/decode pairs. */
@@ -387,7 +387,7 @@ export const pluginManifest = z
     /** #391 — head/sitemap contribution claims (release-signed only,
      *  requires the `head_contributions` capability). */
     contributes: z.array(contributionKind).optional(),
-    /** #393 — plugin-shipped skills (release-signed only). */
+    /** Plugin-shipped instructions; external packages require a companion_skills receipt. */
     skills: z.array(pluginSkillSpec).optional(),
     /**
      * Named lists a module can iterate with `{{#name}}…{{/name}}`,
@@ -787,7 +787,7 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   /** Tier 1 only. Cron-style background workers; the host's scheduler
    *  dispatches `operationName` on each tick. */
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
-  /** Tier 1 only. AI tools registered into the chat-runner catalogue
+  /** Approved AI tools registered into the chat-runner catalogue
    *  at activation. Each tool dispatches to the named operation. */
   readonly tools?: ReadonlyArray<PluginToolSpec>;
   /** Tier 1 only. Plugin-emitted system-prompt blocks rendered every
@@ -925,6 +925,7 @@ export function manifestFromDefinition(def: {
     ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),
     ...(def.workers ? { workers: [...def.workers] } : {}),
     ...(def.tools ? { tools: [...def.tools] } : {}),
+    ...(def.skills ? { skills: [...def.skills] } : {}),
     ...(def.urlContributions && def.urlContributions.length > 0
       ? { urlContributions: def.urlContributions.map((c) => ({ slot: c.slot })) }
       : {}),

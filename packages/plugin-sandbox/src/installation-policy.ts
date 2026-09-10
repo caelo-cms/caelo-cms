@@ -29,6 +29,15 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
   ) {
     throw new Error("cms_admin requires an explicit named-operation allowlist");
   }
+  if ((manifest.skills?.length ?? 0) > 20)
+    throw new Error("External packages support at most 20 companion skills");
+  const skillSlugs = new Set<string>();
+  for (const skill of manifest.skills ?? []) {
+    if (!skill.slug.startsWith(`${manifest.slug}-`))
+      throw new Error(`External companion skill slugs must start with ${manifest.slug}-`);
+    if (skillSlugs.has(skill.slug)) throw new Error("Duplicate companion skill slug");
+    skillSlugs.add(skill.slug);
+  }
   const operations = new Set(manifest.operations);
   if (operations.size !== manifest.operations.length) throw new Error("Duplicate operation name");
   for (const name of [

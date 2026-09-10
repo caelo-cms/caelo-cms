@@ -28,7 +28,7 @@ export function externalPluginDefinition(opts: {
   const manifest = validation.manifest;
   for (const tool of manifest.tools ?? []) z.fromJSONSchema(tool.inputJsonSchema);
   for (const capability of manifest.requestedCapabilities ?? []) {
-    if (!["cms_admin_schema", "chat_runner_tools"].includes(capability))
+    if (!["cms_admin_schema", "chat_runner_tools", "companion_skills"].includes(capability))
       throw new Error(`External capability broker unavailable: ${capability}`);
   }
   if (externalArtifactDigest(opts.manifest, opts.source) !== opts.approval.artifactDigest)
@@ -49,6 +49,7 @@ export function externalPluginDefinition(opts: {
     adminSchema: manifest.adminSchema,
     requestedCapabilities: manifest.requestedCapabilities,
     tools: manifest.tools,
+    skills: manifest.skills,
     operations: Object.freeze(
       Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
     ),
