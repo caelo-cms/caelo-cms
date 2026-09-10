@@ -152,7 +152,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function assertUuid(value: string, label: string): void {
   if (!UUID_RE.test(value)) {
-    throw new Error(`ctx.query: refusing to set session var ${label}: not a UUID (${value})`);
+    throw new Error(`ctx.query: ${label} must be a UUID (${value})`);
   }
 }
 
@@ -353,6 +353,50 @@ function makeScopedQuery(
       const setsSql = sql.join(sets, sql`, `);
       await withPluginTx(async (tx) => {
         await tx.execute(sql`UPDATE ${fqTable} SET ${setsSql} WHERE id = ${id}::uuid`);
+      });
+    },
+
+    compareAndSwap: async (table, id, expected, patch) => {
+      validateIdent(table, "table");
+      assertUuid(id, "row id");
+      const declared = declaredColumnsIn(scope.schemaMap, table);
+      if (!declared) throw new Error(`${scope.label}.compareAndSwap: undeclared table "${table}"`);
+      const conditions: ReturnType<typeof sql>[] = [];
+      const assignments: ReturnType<typeof sql>[] = [];
+      for (const [values, fragments, matching] of [
+        [expected, conditions, true],
+        [patch, assignments, false],
+      ] as const) {
+        const entries = Object.entries(values);
+        if (entries.length === 0 || entries.length > 64)
+          throw new Error(
+            `${scope.label}.compareAndSwap: expected and patch must each contain 1..64 columns`,
+          );
+        for (const [column, value] of entries) {
+          validateIdent(column, "column");
+          if (!declared.has(column) || (!matching && column === "id"))
+            throw new Error(
+              `${scope.label}.compareAndSwap: undeclared or immutable column "${column}"`,
+            );
+          if (value === undefined)
+            throw new Error(
+              `${scope.label}.compareAndSwap: undefined is not a stored value; use null explicitly`,
+            );
+          const name = sql.raw(`"${column}"`);
+          const parameter =
+            declared.get(column) === "jsonb" && value !== null && typeof value === "object"
+              ? sql`${sql.param(value)}`
+              : sql`${value}`;
+          fragments.push(
+            matching ? sql`${name} IS NOT DISTINCT FROM ${parameter}` : sql`${name} = ${parameter}`,
+          );
+        }
+      }
+      const target = sql.raw(`"${schemaName}"."${table}"`);
+      return withPluginTx(async (tx) => {
+        const changed = await tx.execute(sql`UPDATE ${target} SET ${sql.join(assignments, sql`, `)}
+          WHERE id = ${id}::uuid AND ${sql.join(conditions, sql` AND `)} RETURNING id`);
+        return (changed as unknown as { id: string }[]).length === 1;
       });
     },
 

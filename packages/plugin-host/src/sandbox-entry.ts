@@ -4,8 +4,16 @@
 export const sandboxEntrySource = `
 import plugin from "caelo:plugin";
 const encoder = new TextEncoder();
-const write = (value) => {
-  const bytes = encoder.encode(JSON.stringify(value) + "\\n");
+const write = (value, strictCas = false) => {
+  // Losing a field or converting NaN to null would change a CAS predicate.
+  // Validate during serialization, before anything reaches the host.
+  const json = JSON.stringify(value, strictCas ? (_key, item) => {
+    if (item === undefined || ["function", "symbol", "bigint"].includes(typeof item)
+      || (typeof item === "number" && !Number.isFinite(item)))
+      throw new Error("compareAndSwap requires JSON values; undefined and non-finite values are forbidden");
+    return item;
+  } : undefined);
+  const bytes = encoder.encode(json + "\\n");
   if (bytes.length > 1048576) throw new Error("SandboxMessageTooLarge");
   let offset = 0;
   while (offset < bytes.length) offset += Deno.stdout.writeSync(bytes.subarray(offset));
@@ -16,15 +24,22 @@ const pending = new Map();
 let nextId = 0;
 const rpc = (method, ...args) => new Promise((resolve, reject) => {
   if (nextId >= 256) return reject(new Error("SandboxCallLimit"));
-  const id = nextId++;
+  const id = nextId;
   pending.set(id, { resolve, reject });
-  write({ kind: "call", id, method, args });
+  try {
+    write({ kind: "call", id, method, args },
+      method === "query.compareAndSwap" || method === "adminQuery.compareAndSwap");
+    nextId++;
+  } catch (error) {
+    pending.delete(id);
+    reject(error);
+  }
 });
 let initialized = false;
 let buffer = "";
 const decoder = new TextDecoder();
 const execute = async (message) => {
-  const query = Object.fromEntries(["insert", "list", "update", "delete"].map(
+  const query = Object.fromEntries(["insert", "list", "update", "compareAndSwap", "delete"].map(
     (name) => [name, (...args) => rpc("query." + name, ...args)]));
   const ctx = Object.freeze({
     query: Object.freeze(query),

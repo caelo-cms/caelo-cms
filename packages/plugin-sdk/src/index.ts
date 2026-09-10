@@ -423,6 +423,16 @@ export interface PluginQuery {
     id: string,
     patch: Record<string, unknown>,
   ): Promise<void>;
+  /** Atomically update one row only while all expected values still match.
+   * Returns false for a stale, missing or inaccessible row. Null compares equal
+   * to null; an empty expectation or patch is rejected. Identity is immutable.
+   * Use a new revision token in every successful write to avoid ABA conflicts. */
+  compareAndSwap<TableName extends string>(
+    table: TableName,
+    id: string,
+    expected: Record<string, unknown>,
+    patch: Record<string, unknown>,
+  ): Promise<boolean>;
   delete<TableName extends string>(table: TableName, id: string): Promise<void>;
 }
 
