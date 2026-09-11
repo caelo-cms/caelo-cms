@@ -16,8 +16,8 @@ import { generateText } from "ai";
  * dispatches to whichever provider's `image_model` field is set on the
  * primary `ai_provider_configs` row.
  *
- * Two adapters in v1: OpenAI (DALL·E 3) + Gemini (Imagen 3). Both via
- * raw fetch to avoid SDK deps.
+ * OpenAI uses DALL·E 3; Google uses Gemini native image generation through
+ * the AI SDK. Google image and chat models are configured separately.
  */
 
 export interface ImageRequest {
@@ -107,9 +107,8 @@ export class OpenAiImageProvider implements ImageProvider {
  * fetch), so it stays vendor-neutral behind the same provider abstraction
  * as the chat models — no Vercel AI Gateway coupling.
  *
- * Key resolution mirrors the chat: an explicit config apiKey when present,
- * else the SDK reads `GOOGLE_GENERATIVE_AI_API_KEY` from env (the fallback
- * the e2e seed's dummy-encrypted config relies on).
+ * The host resolves the encrypted provider key with the chat resolver before
+ * invoking this adapter. No credential is read from public provider config.
  */
 export class GeminiSdkImageProvider implements ImageProvider {
   readonly name = "google" as const;
@@ -120,11 +119,24 @@ export class GeminiSdkImageProvider implements ImageProvider {
 
   async generate(opts: ImageRequest): Promise<ImageResponse> {
     const start = Date.now();
-    const hasKey = typeof opts.apiKey === "string" && opts.apiKey.length >= 8;
-    const provider = createGoogleGenerativeAI(hasKey ? { apiKey: opts.apiKey } : {});
+    if (!opts.apiKey) throw new Error("gemini image: provider key is not configured");
+    const provider = createGoogleGenerativeAI({
+      apiKey: opts.apiKey,
+      ...(opts.fetchImpl ? { fetch: opts.fetchImpl } : {}),
+    });
     const result = await generateText({
       model: provider(opts.model || this.model),
       prompt: opts.prompt,
+      maxRetries: 0,
+      providerOptions: {
+        google: {
+          responseModalities: ["TEXT", "IMAGE"],
+          imageConfig: {
+            aspectRatio:
+              opts.size === "1792x1024" ? "16:9" : opts.size === "1024x1792" ? "9:16" : "1:1",
+          },
+        },
+      },
       ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
     });
     const img = result.files.find((f) => f.mediaType.startsWith("image/"));

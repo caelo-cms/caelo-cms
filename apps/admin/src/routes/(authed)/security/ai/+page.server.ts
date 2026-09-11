@@ -3,6 +3,7 @@
 import { checkProviderKeyHealth, type ProviderKeyHealth } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
+import { defaultModelForProvider } from "$lib/ai-models.js";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
@@ -10,13 +11,6 @@ import type { Actions, PageServerLoad } from "./$types";
 
 const KNOWN_PROVIDERS = ["anthropic", "openai", "google", "local-openai-compat"] as const;
 type KnownProvider = (typeof KNOWN_PROVIDERS)[number];
-
-const DEFAULT_MODEL: Record<KnownProvider, string> = {
-  anthropic: "claude-sonnet-5",
-  openai: "gpt-4o",
-  google: "gemini-1.5-pro",
-  "local-openai-compat": "qwen2.5",
-};
 
 export const load: PageServerLoad = async ({ locals, url }) => {
   requirePermission(locals, "settings.read");
@@ -68,8 +62,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       keyHealth: healthByName.get(name) ?? "no_key",
       model:
         (typeof row?.config.model === "string" ? (row.config.model as string) : null) ??
-        DEFAULT_MODEL[name] ??
+        defaultModelForProvider(name) ??
         "",
+      imageModel: typeof row?.config.imageModel === "string" ? row.config.imageModel : "",
       baseUrl: typeof row?.config.baseUrl === "string" ? (row.config.baseUrl as string) : null,
       // v0.2.53 — Per-provider output ceiling stored alongside model.
       // null means "use the chat-runner default of 16384". Range
@@ -134,6 +129,13 @@ export const actions: Actions = {
         ).providers.find((p) => p.name === name)?.config) ||
       {};
     const config: Record<string, unknown> = { ...existingConfig, model };
+    if (name === "google" && form.has("imageModel")) {
+      const imageModel = String(form.get("imageModel") ?? "").trim();
+      if (imageModel && !/^[a-zA-Z0-9._-]{1,128}$/.test(imageModel))
+        return fail(400, { error: "Invalid image model ID." });
+      if (imageModel) config.imageModel = imageModel;
+      else delete config.imageModel;
+    }
     if (baseUrl) config.baseUrl = baseUrl;
     else delete config.baseUrl;
     delete config.maxOutputTokens;
