@@ -22,19 +22,7 @@ import { jsonbParam } from "../../sql-helpers.js";
 const PROVIDER_NAMES = ["anthropic", "openai", "google", "local-openai-compat"] as const;
 type ProviderName = (typeof PROVIDER_NAMES)[number];
 
-/** Map provider name → legacy env var the resolver falls back to. */
-function envNameFor(name: ProviderName): string {
-  switch (name) {
-    case "anthropic":
-      return "ANTHROPIC_API_KEY";
-    case "openai":
-      return "OPENAI_API_KEY";
-    case "google":
-      return "GOOGLE_API_KEY";
-    case "local-openai-compat":
-      return "LOCAL_OPENAI_API_KEY";
-  }
-}
+import { providerEnvKey } from "../../ai/provider-env.js";
 
 const providerRow = z.object({
   id: z.string(),
@@ -45,7 +33,7 @@ const providerRow = z.object({
   /**
    * Where the resolver finds the API key for this provider.
    *  - 'db'   — encrypted row in cms_admin (preferred path).
-   *  - 'env'  — falls back to process.env[envNameFor(name)] (legacy).
+   *  - 'env'  — falls back to providerEnvKey(name) (legacy).
    *  - null   — no key configured anywhere → chat surfaces "configure".
    */
   apiKeySource: z.enum(["db", "env"]).nullable(),
@@ -88,7 +76,7 @@ export const listAiProvidersOp = defineOperation({
       providers: rows.map((r) => {
         const apiKeySource: "db" | "env" | null = r.has_db_key
           ? "db"
-          : process.env[envNameFor(r.name)]
+          : providerEnvKey(r.name)
             ? "env"
             : null;
         return {
@@ -239,9 +227,7 @@ export const anyAiProviderConfiguredOp = defineOperation({
       WHERE is_active = true
     `)) as unknown as { name: ProviderName; has_db_key: boolean }[];
 
-    const anyConfigured = rows.some(
-      (r) => r.has_db_key || Boolean(process.env[envNameFor(r.name)]),
-    );
+    const anyConfigured = rows.some((r) => r.has_db_key || Boolean(providerEnvKey(r.name)));
     return ok({ anyConfigured });
   },
 });
