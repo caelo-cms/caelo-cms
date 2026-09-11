@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describeError } from "@caelo-cms/admin-core";
+import { loadedPlugins } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error, fail, redirect } from "@sveltejs/kit";
@@ -11,6 +12,7 @@ import {
 } from "$lib/components/edit/use-overlay-layout.svelte.js";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission, requireUser } from "$lib/server/guards.js";
+import { pluginWorkflowSuggestions } from "$lib/server/plugin-workflows.js";
 import { getQueryContext } from "$lib/server/query.js";
 import { stagingPreviewPath } from "$lib/server/staging-preview-path.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -262,6 +264,22 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // The `messages.length === 0` guard makes the seed idempotent per
   // chat; once identity or pages exist the branch never fires again.
   let firstRunSuggestions: typeof FIRST_RUN_SUGGESTIONS = [];
+  let pluginSuggestions: typeof FIRST_RUN_SUGGESTIONS = [];
+  if (!messages.some((m) => m.role === "user")) {
+    const visible = await execute(registry, adapter, locals.ctx, "skills.list", {
+      status: "active",
+    });
+    if (visible.ok) {
+      const skills = (visible.value as { skills: { slug: string; displayName: string }[] }).skills;
+      const slugs = new Set(
+        loadedPlugins
+          .all()
+          .flatMap((plugin) => (plugin.definition.skills ?? []).map((skill) => skill.slug)),
+      );
+      pluginSuggestions = pluginWorkflowSuggestions(skills, slugs);
+      firstRunSuggestions = pluginSuggestions;
+    }
+  }
   if (activeChat && pages.length === 0) {
     const defaultsR = await execute(registry, adapter, locals.ctx, "site_defaults.get", {});
     const identity = defaultsR.ok
@@ -279,13 +297,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     // below KEEPS the untouched gate; its cold-start entry-point pitch
     // would be stale advice on an install with identity.
     if (!messages.some((m) => m.role === "user")) {
-      firstRunSuggestions = FIRST_RUN_SUGGESTIONS;
+      firstRunSuggestions = [...pluginSuggestions, ...FIRST_RUN_SUGGESTIONS];
     }
     if (untouched && messages.length === 0) {
       const seeded = await execute(registry, adapter, locals.ctx, "chat.append_message", {
         chatSessionId: activeChat.id,
         role: "assistant",
-        content: FIRST_RUN_WELCOME,
+        content: pluginSuggestions.length
+          ? "**Welcome — what would you like to create?** Describe your goal, or choose one of the available workflows below. I'll guide you through it."
+          : FIRST_RUN_WELCOME,
         // issue #303 — producer hint for the empty-content rejection.
         source: "first-run welcome seed (/edit)",
       });

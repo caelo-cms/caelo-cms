@@ -25,6 +25,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { ExternalApproval } from "./external-authorization.js";
+import { previewContext } from "./preview-context.js";
 import { assertExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
@@ -198,6 +199,8 @@ export function setContextFactory(
 }
 
 export interface RunPluginOperationOpts {
+  /** Host-only: a private preview gets storage reads and no effectful handles. */
+  readonly readOnlyPreview?: boolean;
   /** Set only by the host after the matching tool approval has completed. */
   readonly approvedToolName?: string;
   /** SDK call id whose immutable host binding was recorded before asking the author. */
@@ -264,6 +267,11 @@ export function hostSystemActorId(): string {
 export async function runPluginOperation(
   opts: RunPluginOperationOpts,
 ): Promise<RunPluginOperationResult> {
+  if (
+    opts.readOnlyPreview &&
+    (!opts.authorContext || opts.visitorContext || opts.operationName !== "preview")
+  )
+    return { ok: false, error: { kind: "OperationFailed", message: "Invalid preview context" } };
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) {
     return {
@@ -362,7 +370,11 @@ export async function runPluginOperation(
     };
   }
   try {
-    const value = await handler(ctx as PluginContext, opts.args);
+    const value = await handler(
+      opts.readOnlyPreview ? previewContext(ctx) : (ctx as PluginContext),
+      opts.args,
+    );
+    if (opts.readOnlyPreview) return { ok: true, value };
     // v0.2.16 — emit an audit_events row so plugin write ops (e.g.
     // `comments.moderate`) are visible to the redeploy orchestrator's
     // poll, allowing per-page incremental rebuild on plugin data
