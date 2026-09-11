@@ -14,8 +14,20 @@ test("plugin preview is authenticated, read-only and inert even when opened dire
     schema: {},
     adminSchema: { notes: { body: "text" } },
     operations: ["preview"],
-    requestedCapabilities: ["cms_admin_schema"],
-    capabilityReasons: { cms_admin_schema: "Read private drafts" },
+    requestedCapabilities: ["cms_admin_schema", "companion_skills"],
+    skills: [
+      {
+        slug: `${slug}-authoring`,
+        displayName: `Create with ${slug}`,
+        description: "Private creative projects",
+        body: "Guide the author through a private creative project.",
+        allowlistedTools: [],
+      },
+    ],
+    capabilityReasons: {
+      cms_admin_schema: "Read private drafts",
+      companion_skills: "Offer the reviewed author workflow",
+    },
   };
   const html =
     '<style>p{color:rgb(10,20,30)}</style><p class="story">Private story</p><script>window.previewEscaped=true</script><a href="https://example.com/leak">Leave</a><img src="https://example.com/leak">';
@@ -34,8 +46,13 @@ test("plugin preview is authenticated, read-only and inert even when opened dire
   await page.getByRole("button", { name: "Submit package for review" }).click();
   const review = page.getByTestId(`installation-${slug}`);
   await review.getByRole("checkbox", { name: /cms_admin_schema/ }).check();
+  await review.getByRole("checkbox", { name: /companion_skills/ }).check();
   await review.getByRole("button", { name: "Approve selected access and activate" }).click();
   await expect(page.getByRole("status")).toContainText("Approved package is running.");
+  await page.goto("/edit");
+  await expect(
+    page.getByRole("button", { name: `Create with ${slug}`, exact: true }),
+  ).toBeVisible();
   const previewPath = `/plugins/${slug}/preview`;
   const anon = await browser.newContext();
   try {
@@ -56,4 +73,8 @@ test("plugin preview is authenticated, read-only and inert even when opened dire
   await review.getByRole("button", { name: "Revoke cms_admin_schema", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Access revoked.");
   expect((await page.goto(previewPath))?.status()).toBe(404);
+  await page.goto("/edit");
+  await expect(page.getByRole("button", { name: `Create with ${slug}`, exact: true })).toHaveCount(
+    0,
+  );
 });
