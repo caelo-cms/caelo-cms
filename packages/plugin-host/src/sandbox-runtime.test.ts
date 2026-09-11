@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import { describe, expect, it } from "bun:test";
 import type { PluginContext, PluginManifest } from "@caelo-cms/plugin-sdk";
+import { previewContext } from "./preview-context.js";
 import { runSandbox } from "./sandbox-runtime.js";
 
 const manifest: PluginManifest = {
@@ -166,5 +167,27 @@ describe("actual Deno plugin execution", () => {
   });
   it("rejects oversized plugin output", async () => {
     await expect(invoke('return "x".repeat(1100000);')).rejects.toThrow("SandboxMessageTooLarge");
+  });
+});
+
+it("preview denies public/private writes and cross-plugin RPC in the real sandbox", async () => {
+  const readonly = previewContext({ ...context, adminQuery: context.query });
+  const result = await invoke(
+    `
+    const denied = [];
+    for (const target of [ctx.query, ctx.adminQuery]) {
+      const id = "11111111-1111-4111-8111-111111111111";
+      for (const [method, args] of [["insert", ["notes", {body:"changed"}]], ["update", ["notes", id, {body:"changed"}]], ["delete", ["notes", id]], ["compareAndSwap", ["notes", id, {body:"old"}, {body:"changed"}]]]) {
+        try { await target[method](...args); } catch (e) { denied.push(e.message); }
+      }
+    }
+    try { await ctx.api.get({}); } catch (e) { denied.push(e.message); }
+    return { denied, rows: await ctx.adminQuery.list("notes") };
+  `,
+    { context: readonly },
+  );
+  expect(result).toEqual({
+    denied: Array(9).fill("PluginPreviewReadOnly"),
+    rows: [{ body: "host result" }],
   });
 });
