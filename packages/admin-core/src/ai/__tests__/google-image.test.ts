@@ -78,3 +78,71 @@ test("text-only replies do not masquerade as generated images", async () => {
     }),
   ).rejects.toThrow("no image");
 });
+
+test("native image request sends reference bytes and resolution, and ignores thought images", async () => {
+  let sent: Record<string, unknown> = {};
+  const result = await new GeminiSdkImageProvider({ model: "gemini-3.1-flash-image" }).generate({
+    model: "gemini-3.1-flash-image",
+    prompt: "Illustration only, no text",
+    apiKey: "test-key",
+    referenceImages: [{ data: new Uint8Array([1, 2, 3]), mediaType: "image/png" }],
+    imageSize: "2K",
+    fetchImpl: (async (_url, init) => {
+      sent = JSON.parse(String(init?.body));
+      return Response.json({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                { thought: true, inlineData: { mimeType: "image/png", data: "dGhvdWdodA==" } },
+                { inlineData: { mimeType: "image/png", data: "ZmluYWw=" } },
+              ],
+            },
+            finishReason: "STOP",
+          },
+        ],
+      });
+    }) as typeof fetch,
+  });
+  expect(sent.contents).toEqual([
+    {
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: "image/png", data: "AQID" } },
+        { text: "Illustration only, no text" },
+      ],
+    },
+  ]);
+  expect(sent.generationConfig).toMatchObject({
+    imageConfig: { aspectRatio: "1:1", imageSize: "2K" },
+  });
+  expect(result.imageUrl).toBe("data:image/png;base64,ZmluYWw=");
+});
+
+test("unsupported resolution and excess reference inputs fail before a paid request", async () => {
+  let calls = 0;
+  const provider = new GeminiSdkImageProvider({ model: "gemini-2.5-flash-image" });
+  const input = {
+    model: provider.model,
+    prompt: "Fox",
+    apiKey: "test-key",
+    fetchImpl: (async () => {
+      calls++;
+      return Response.json({});
+    }) as typeof fetch,
+  };
+  await expect(provider.generate({ ...input, imageSize: "4K" })).rejects.toThrow(
+    "Native resolution",
+  );
+  await expect(
+    provider.generate({
+      ...input,
+      referenceImages: Array.from({ length: 4 }, () => ({
+        data: new Uint8Array([1]),
+        mediaType: "image/png" as const,
+      })),
+    }),
+  ).rejects.toThrow("Too many reference images");
+  expect(calls).toBe(0);
+});

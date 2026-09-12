@@ -17,8 +17,15 @@ requests IMAGE and TEXT modalities and translates the size selector to a square,
 landscape or portrait aspect ratio. Provider output dimensions are read from the
 actual image, not inferred from the requested ratio. Automatic SDK retries are
 disabled for paid image calls so uncertain provider failures do not silently
-start another generation. This does not provide resumable jobs or private plugin
-media storage; those remain separate service work.
+start another generation. The adapter accepts host-resolved PNG, JPEG and WebP
+reference bytes (no reference URLs): up to 14 for the three curated Gemini 3
+image models and up to 3 for Gemini 2.5. Native 1K, 2K and 4K resolution controls
+are accepted only for those known Gemini 3 image models. References are limited
+to 10 MB each and 20 MB in total; invalid inputs fail before a paid call. The
+installed SDK sends these as file parts and excludes internal thought images
+from the final generated image. These are adapter inputs, not yet plugin APIs.
+This does not provide resumable jobs or private plugin media storage; those
+remain separate service work.
 
 Source verification: 2026-09-11.
 

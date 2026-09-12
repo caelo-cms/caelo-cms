@@ -22,12 +22,19 @@ import { generateText } from "ai";
 
 export interface ImageRequest {
   readonly prompt: string;
-  /** Model id ("dall-e-3", "imagen-3.0-generate-001"). */
+  /** Model id (for example "dall-e-3" or "gemini-3.1-flash-image"). */
   readonly model: string;
   /** Square is the only universally-supported choice; provider-specific
    *  larger sizes are best-effort. Adapters fall back to 1024x1024. */
   readonly size?: "1024x1024" | "1792x1024" | "1024x1792";
   readonly quality?: "standard" | "hd";
+  /** Host-resolved bytes only; adapters never fetch caller-provided reference URLs. */
+  readonly referenceImages?: readonly {
+    data: Uint8Array;
+    mediaType: "image/png" | "image/jpeg" | "image/webp";
+  }[];
+  /** Explicit native Gemini resolution; unsupported models fail before a paid call. */
+  readonly imageSize?: "1K" | "2K" | "4K";
   readonly apiKey: string;
   readonly fetchImpl?: typeof fetch;
   readonly abortSignal?: AbortSignal;
@@ -62,6 +69,10 @@ export class OpenAiImageProvider implements ImageProvider {
   }
 
   async generate(opts: ImageRequest): Promise<ImageResponse> {
+    if (opts.referenceImages?.length || opts.imageSize)
+      throw new Error(
+        "This image adapter does not support reference images or native resolution controls",
+      );
     const start = Date.now();
     const fetchImpl = opts.fetchImpl ?? fetch;
     const res = await fetchImpl(`${this.#baseUrl}/v1/images/generations`, {
@@ -118,6 +129,29 @@ export class GeminiSdkImageProvider implements ImageProvider {
   }
 
   async generate(opts: ImageRequest): Promise<ImageResponse> {
+    const model = opts.model || this.model;
+    const references = opts.referenceImages ?? [];
+    const modernImage = [
+      "gemini-3.1-flash-image",
+      "gemini-3.1-flash-lite-image",
+      "gemini-3-pro-image",
+    ].includes(model);
+    if (references.length > (modernImage ? 14 : 3))
+      throw new Error("Too many reference images for this model");
+    if (
+      references.some(
+        (image) =>
+          !(image.data instanceof Uint8Array) ||
+          !image.data.byteLength ||
+          image.data.byteLength > 10_000_000 ||
+          !["image/png", "image/jpeg", "image/webp"].includes(image.mediaType),
+      )
+    )
+      throw new Error("Invalid reference image bytes or media type");
+    if (references.reduce((size, image) => size + image.data.byteLength, 0) > 20_000_000)
+      throw new Error("Reference images exceed the request byte limit");
+    if (opts.imageSize && !modernImage)
+      throw new Error("Native resolution is not supported for this configured model");
     const start = Date.now();
     if (!opts.apiKey) throw new Error("gemini image: provider key is not configured");
     const provider = createGoogleGenerativeAI({
@@ -125,13 +159,26 @@ export class GeminiSdkImageProvider implements ImageProvider {
       ...(opts.fetchImpl ? { fetch: opts.fetchImpl } : {}),
     });
     const result = await generateText({
-      model: provider(opts.model || this.model),
-      prompt: opts.prompt,
+      model: provider(model),
+      messages: [
+        {
+          role: "user",
+          content: [
+            ...references.map((image) => ({
+              type: "file" as const,
+              data: image.data,
+              mediaType: image.mediaType,
+            })),
+            { type: "text", text: opts.prompt },
+          ],
+        },
+      ],
       maxRetries: 0,
       providerOptions: {
         google: {
           responseModalities: ["TEXT", "IMAGE"],
           imageConfig: {
+            ...(opts.imageSize ? { imageSize: opts.imageSize } : {}),
             aspectRatio:
               opts.size === "1792x1024" ? "16:9" : opts.size === "1024x1792" ? "9:16" : "1:1",
           },
