@@ -23,6 +23,18 @@ export function previewContext(ctx: PluginContext | PluginContextTier1): PluginC
     theme: ctx.theme,
     visitor: ctx.visitor,
     ...(author.invocation ? { invocation: author.invocation } : {}),
+    ...(author.privateFiles
+      ? {
+          privateFiles: Object.freeze({
+            stat: author.privateFiles.stat.bind(author.privateFiles),
+            readChunk: author.privateFiles.readChunk.bind(author.privateFiles),
+            begin: forbidden,
+            writeChunk: forbidden,
+            commit: forbidden,
+            remove: forbidden,
+          }),
+        }
+      : {}),
     ...(author.adminQuery ? { adminQuery: query(author.adminQuery) } : {}),
   });
 }

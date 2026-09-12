@@ -96,6 +96,7 @@ export const pluginCapability = z.enum([
   "client_assets",
   "data_lists",
   "companion_skills",
+  "private_files",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -681,11 +682,37 @@ export interface PluginContext {
   readonly captcha: PluginCaptcha;
 }
 
+/** Private immutable files, scoped to this installation and an authenticated author.
+ * Fixed-size base64 chunks keep binary data below the isolated RPC message limit.
+ * A ready file cannot be overwritten. Its SHA-256 is its immutable revision.
+ */
+export interface PluginPrivateFile {
+  readonly id: string;
+  readonly mediaType: string;
+  readonly sizeBytes: number;
+  readonly sha256: string;
+  readonly status: "pending" | "ready" | "deleted";
+}
+export interface PluginPrivateFiles {
+  /** Idempotent for the exact same id and metadata; conflicting reuse is rejected. */
+  begin(input: Omit<PluginPrivateFile, "status">): Promise<PluginPrivateFile>;
+  /** Offset is a multiple of 262144; only the final chunk may be shorter. */
+  writeChunk(input: { id: string; offset: number; base64: string }): Promise<void>;
+  /** Requires all bytes and verifies SHA-256 before marking the file ready. */
+  commit(input: { id: string }): Promise<PluginPrivateFile>;
+  stat(input: { id: string }): Promise<PluginPrivateFile>;
+  /** Permanently remove bytes. The identity is retired and cannot be reused. */
+  remove(input: { id: string; sha256: string }): Promise<void>;
+  /** Only ready files; returns one stored chunk, never a provider URL. */
+  readChunk(input: { id: string; offset: number }): Promise<{ base64: string }>;
+}
+
 /** Extended SDK context (legacy name). The host attaches only authorized handles;
  * external plugins additionally require exact receipts and a supported broker. */
 export interface PluginContextTier1 extends PluginContext {
   /** #389 — attached when the manifest holds `cms_admin_schema`. */
   readonly adminQuery?: PluginAdminQuery;
+  readonly privateFiles?: PluginPrivateFiles;
   /** #392 — attached when the manifest holds `domain_events`. */
   readonly events?: PluginEvents;
   readonly cms?: PluginCms;

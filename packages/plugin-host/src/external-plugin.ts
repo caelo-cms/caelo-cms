@@ -28,7 +28,11 @@ export function externalPluginDefinition(opts: {
   const manifest = validation.manifest;
   for (const tool of manifest.tools ?? []) z.fromJSONSchema(tool.inputJsonSchema);
   for (const capability of manifest.requestedCapabilities ?? []) {
-    if (!["cms_admin_schema", "chat_runner_tools", "companion_skills"].includes(capability))
+    if (
+      !["cms_admin_schema", "chat_runner_tools", "companion_skills", "private_files"].includes(
+        capability,
+      )
+    )
       throw new Error(`External capability broker unavailable: ${capability}`);
   }
   if (externalArtifactDigest(opts.manifest, opts.source) !== opts.approval.artifactDigest)

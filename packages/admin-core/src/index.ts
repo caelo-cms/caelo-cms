@@ -73,6 +73,7 @@ export {
 // P12 review pass — email transport factory (consumed by hooks.server.ts).
 export { buildEmailTransport, type EmailConfigRow } from "./email/transport.js";
 export * from "./media/pipeline.js";
+export { resolvePrivatePreviewImages } from "./media/private-preview-images.js";
 export * from "./media/storage.js";
 export * from "./ops/auth.js";
 export * from "./ops/deploy.js";
