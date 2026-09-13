@@ -35,6 +35,28 @@ const record = z.record(z.string(), z.unknown());
 const id = z.string().uuid();
 
 async function broker(ctx: PluginContext, method: string, args: unknown[]): Promise<unknown> {
+  if (method.startsWith("privateFiles.")) {
+    const files = (ctx as PluginContextTier1).privateFiles;
+    if (!files) throw new Error("SandboxCapabilityDenied: private_files");
+    const input = z.tuple([record]).parse(args)[0];
+    // Each host handle validates its entire input before touching storage.
+    switch (method) {
+      case "privateFiles.begin":
+        return files.begin(input as Parameters<typeof files.begin>[0]);
+      case "privateFiles.writeChunk":
+        return files.writeChunk(input as Parameters<typeof files.writeChunk>[0]);
+      case "privateFiles.commit":
+        return files.commit(input as Parameters<typeof files.commit>[0]);
+      case "privateFiles.stat":
+        return files.stat(input as Parameters<typeof files.stat>[0]);
+      case "privateFiles.readChunk":
+        return files.readChunk(input as Parameters<typeof files.readChunk>[0]);
+      case "privateFiles.remove":
+        return files.remove(input as Parameters<typeof files.remove>[0]);
+      default:
+        throw new Error("SandboxMethodDenied");
+    }
+  }
   if (method.startsWith("adminQuery.")) {
     const adminQuery = (ctx as PluginContextTier1).adminQuery;
     if (!adminQuery) throw new Error("SandboxCapabilityDenied: cms_admin_schema");
@@ -190,6 +212,7 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
       theme: context.theme,
       invocation: context.invocation,
       hasAdminQuery: Boolean((context as PluginContextTier1).adminQuery),
+      hasPrivateFiles: Boolean((context as PluginContextTier1).privateFiles),
       visitor: {
         id: context.visitor.id,
         publicUserId: context.visitor.publicUserId,

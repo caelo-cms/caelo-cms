@@ -36,6 +36,7 @@ import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/share
 import { sql } from "drizzle-orm";
 import type { AuthorDispatchContext, LoadedPlugin, PluginHostInfra } from "./dispatch.js";
 import { withExternalAuthorization } from "./external-authorization.js";
+import { makePluginPrivateFiles } from "./private-files.js";
 
 export interface MakePluginContextOpts {
   readonly authorContext?: AuthorDispatchContext;
@@ -110,6 +111,8 @@ export async function makePluginContext(
     };
     if (plugin.externalApproval.capabilities.includes("cms_admin_schema"))
       extended.adminQuery = makePluginAdminQuery(plugin, infra);
+    if (plugin.externalApproval.capabilities.includes("private_files"))
+      extended.privateFiles = makePluginPrivateFiles(plugin, infra, author);
     return extended;
   }
 
@@ -133,6 +136,8 @@ export async function makePluginContext(
   if (requested.has("email")) {
     tier1.email = makePluginEmail(infra);
   }
+  if (requested.has("private_files") && opts.authorContext && !visitorContext)
+    tier1.privateFiles = makePluginPrivateFiles(plugin, infra, opts.authorContext);
   return tier1;
 }
 

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { resolvePrivatePreviewImages } from "@caelo-cms/admin-core";
 import { runPluginOperation } from "@caelo-cms/plugin-host";
 import { error } from "@sveltejs/kit";
 import { z } from "zod";
 import { requirePermission } from "$lib/server/guards.js";
+import { privatePluginFiles } from "$lib/server/plugin-files.js";
 import { PLUGIN_PREVIEW_CSP, sanitizePluginPreview } from "$lib/server/plugin-preview.js";
 import type { RequestHandler } from "./$types";
 
@@ -28,7 +30,15 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
   if (!result.ok) throw error(404, "Preview unavailable");
   const document = z.object({ html: z.string().max(800_000) }).safeParse(result.value);
   if (!document.success) throw error(422, "Invalid plugin preview");
-  return new Response(sanitizePluginPreview(document.data.html), {
+  let images: ReadonlyMap<string, string>;
+  try {
+    images = await resolvePrivatePreviewImages(document.data.html, () =>
+      privatePluginFiles(params.slug, locals),
+    );
+  } catch {
+    throw error(422, "Private preview images unavailable");
+  }
+  return new Response(sanitizePluginPreview(document.data.html, images), {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
