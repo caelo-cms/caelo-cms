@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { DEFAULT_GOOGLE_CHAT_MODEL, GOOGLE_CHAT_MODELS } from "@caelo-cms/shared";
+
+export { GOOGLE_IMAGE_MODELS } from "@caelo-cms/shared";
+
 /**
  * Shared model catalogue for the two AI-credential entry points — the
  * first-run wizard (`(auth)/welcome/ai`) and the Owner security panel
@@ -33,19 +37,20 @@ export const MODEL_OPTIONS: Record<string, readonly ModelOption[]> = {
     { id: "claude-haiku-4-5", label: "Haiku 4.5 (fastest/cheapest)" },
   ],
   openai: [{ id: "gpt-4o", label: "GPT-4o" }],
-  google: [{ id: "gemini-1.5-pro", label: "Gemini 1.5 Pro" }],
+  google: GOOGLE_CHAT_MODELS,
 } as const;
 
 /** Per-provider default model id (the pre-selected option). */
 export const DEFAULT_MODEL_ID: Record<string, string> = {
   anthropic: "claude-sonnet-5",
   openai: "gpt-4o",
-  google: "gemini-1.5-pro",
+  google: DEFAULT_GOOGLE_CHAT_MODEL,
+  "local-openai-compat": "qwen2.5",
 } as const;
 
 /** Short helper copy shown beneath the Model picker. */
 export const MODEL_HELPER_TEXT =
-  "Claude's Sonnet 5 is the default — a good balance of quality and cost.";
+  "Choose a chat model. Preview models may change; image generation uses a separate model.";
 
 /**
  * Models for a provider, or an empty list for providers that use a

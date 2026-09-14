@@ -7,7 +7,7 @@
  * Resolution order per provider name:
  *   1. The active row in `ai_providers` (decrypts api_key_encrypted via
  *      secret-box if present).
- *   2. process.env[envNameFor(name)] — preserves Compose installs that
+ *   2. providerEnvKey(name) — preserves Compose installs that
  *      already wired ANTHROPIC_API_KEY before this refactor.
  *   3. null — caller surfaces "AI provider not configured" through
  *      degraded-mode behaviour (chat stream emits SSE error; MCP
@@ -21,6 +21,7 @@
  */
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { DEFAULT_GOOGLE_CHAT_MODEL } from "@caelo-cms/shared";
 import { decryptSecret } from "../security/secret-box.js";
 import type { AIProvider, ProviderName } from "./provider.js";
 import { makeProvider } from "./providers/index.js";
@@ -30,23 +31,11 @@ const PROVIDER_NAMES = ["anthropic", "openai", "google", "local-openai-compat"] 
 const DEFAULT_MODEL: Record<ProviderName, string> = {
   anthropic: "claude-sonnet-5",
   openai: "gpt-4o",
-  google: "gemini-1.5-pro",
+  google: DEFAULT_GOOGLE_CHAT_MODEL,
   "local-openai-compat": "qwen2.5",
 };
 
-/** Map provider name → legacy env var the resolver falls back to. */
-function envNameFor(name: ProviderName): string {
-  switch (name) {
-    case "anthropic":
-      return "ANTHROPIC_API_KEY";
-    case "openai":
-      return "OPENAI_API_KEY";
-    case "google":
-      return "GOOGLE_API_KEY";
-    case "local-openai-compat":
-      return "LOCAL_OPENAI_API_KEY";
-  }
-}
+import { providerEnvKey } from "./provider-env.js";
 
 interface ResolverDeps {
   readonly adapter: DatabaseAdapter;
@@ -385,7 +374,7 @@ async function loadApiKey(
       );
     }
   }
-  const envKey = process.env[envNameFor(name)];
+  const envKey = providerEnvKey(name);
   if (envKey) return { apiKey: envKey, source: "env" };
   return null;
 }
@@ -483,7 +472,7 @@ export async function checkProviderKeyHealth(name: ProviderName): Promise<Provid
       return "unreadable_kek_mismatch";
     }
   }
-  if (process.env[envNameFor(name)]) return "env_only";
+  if (providerEnvKey(name)) return "env_only";
   return "no_key";
 }
 
@@ -493,7 +482,7 @@ export async function getActiveProvider(): Promise<ResolvedProvider | null> {
   if (!meta) {
     // No active row at all — fall back to anthropic env-var as the
     // only legacy single-provider path Compose installs relied on.
-    const envKey = process.env[envNameFor("anthropic")];
+    const envKey = providerEnvKey("anthropic");
     if (!envKey) return null;
     return resolveProvider("anthropic", { model: DEFAULT_MODEL.anthropic });
   }
@@ -589,4 +578,12 @@ export async function getActiveProviderForModel(modelId: string): Promise<Resolv
   };
   tierCache.set(cacheKey, { resolved, expiresAt: now + TTL_MS });
   return resolved;
+}
+
+/** Host-only image dispatch shares the chat resolver's encrypted-key path.
+ * Do not expose this value through a query operation, tool result or browser loader.
+ */
+export async function getImageProviderApiKey(name: "google" | "openai"): Promise<string | null> {
+  if (!deps) throw new Error("provider-resolver not configured");
+  return (await loadApiKey(deps, name))?.apiKey ?? null;
 }

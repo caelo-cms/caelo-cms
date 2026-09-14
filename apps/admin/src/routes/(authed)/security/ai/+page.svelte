@@ -13,7 +13,7 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import { Select } from "$lib/components/ui/select/index.js";
-  import { MODEL_HELPER_TEXT, modelsForProvider } from "$lib/ai-models.js";
+  import { GOOGLE_IMAGE_MODELS, MODEL_HELPER_TEXT, modelsForProvider } from "$lib/ai-models.js";
 
   let { data, form } = $props();
 </script>
@@ -126,6 +126,9 @@
             <Label for="model-{p.name}">Model</Label>
             {#if modelsForProvider(p.name).length > 0}
               <Select id="model-{p.name}" name="model" value={p.model}>
+                {#if p.model && !modelsForProvider(p.name).some(m => m.id === p.model)}
+                  <option value={p.model}>{p.model} (saved model)</option>
+                {/if}
                 {#each modelsForProvider(p.name) as m (m.id)}
                   <option value={m.id}>{m.label}</option>
                 {/each}
@@ -135,6 +138,16 @@
               <Input id="model-{p.name}" name="model" type="text" value={p.model} required />
             {/if}
           </div>
+          {#if p.name === "google"}
+            <div class="space-y-2">
+              <Label for="imageModel-google">Image model</Label>
+              <Input id="imageModel-google" name="imageModel" list="google-image-models" value={p.imageModel} placeholder="Choose a model to enable images" />
+              <datalist id="google-image-models">
+                {#each GOOGLE_IMAGE_MODELS as m (m.id)}<option value={m.id}>{m.label}</option>{/each}
+              </datalist>
+              <p class="text-xs text-muted-foreground">Uses the same Google key. Leave empty to disable image generation. You can enter another supported Gemini image model ID.</p>
+            </div>
+          {/if}
           <div class="space-y-2">
             <Label for="maxOutputTokens-{p.name}">Max output tokens</Label>
             <Input
