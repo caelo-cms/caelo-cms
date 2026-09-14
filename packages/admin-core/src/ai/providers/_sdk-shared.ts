@@ -46,6 +46,7 @@ import { normalizeToolArgs } from "../tools/normalize-args.js";
  * paths).
  */
 export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessage[] {
+  const toolNames = new Map<string, string>();
   return messages.flatMap((m): ModelMessage[] => {
     // Option C (CLAUDE.md §12) — a replayed assistant turn carrying the
     // SDK's own `response.messages` is spliced back verbatim. The SDK
@@ -54,6 +55,12 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
     // exactly what dropped the paired tool-search result and 400'd run-B6.
     // One history row expands to N ModelMessages here.
     if (m.sdkMessages && m.sdkMessages.length > 0) {
+      for (const message of m.sdkMessages as ModelMessage[]) {
+        if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+        for (const part of message.content) {
+          if (part.type === "tool-call") toolNames.set(part.toolCallId, part.toolName);
+        }
+      }
       return m.sdkMessages as ModelMessage[];
     }
     if (m.role === "user") {
@@ -130,6 +137,7 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
       // stays captured/persisted for audit + the wire log; it just isn't
       // sent back to the provider.
       for (const tc of m.toolCalls ?? []) {
+        toolNames.set(tc.id, tc.name);
         content.push({
           type: "tool-call",
           toolCallId: tc.id,
@@ -139,7 +147,10 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
       }
       return [{ role: "assistant", content: content as ModelMessage["content"] } as ModelMessage];
     }
-    // role === "tool"
+    // Legacy tool rows persist only the call ID; recover the name from its call.
+    const toolName = toolNames.get(m.toolCallId ?? "");
+    if (!toolName)
+      throw new Error(`Tool result has no matching call: ${m.toolCallId ?? "missing ID"}`);
     return [
       {
         role: "tool",
@@ -147,7 +158,7 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
           {
             type: "tool-result",
             toolCallId: m.toolCallId ?? "",
-            toolName: "",
+            toolName,
             output: { type: "text", value: m.content },
           },
         ],

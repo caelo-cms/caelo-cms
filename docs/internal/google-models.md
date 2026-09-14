@@ -37,3 +37,29 @@ Source verification: 2026-09-11.
 Validation exercises the actual installed SDK with captured HTTP requests and
 real PostgreSQL encrypted-key resolution. Live account access and generated
 image quality require a configured Google key and are not implied by these tests.
+
+Google's GenerateContent function `Schema.enum` accepts string values. The
+installed SDK converts numeric JSON Schema constants/enums into that field
+unchanged, which makes the entire chat request fail (for example, redirect
+status codes 301/302/307/308/410). The Gemini model middleware adapts only the
+wire tool schemas: numeric/boolean choices remain typed arguments, with their
+allowed values described instead of an unsupported enum. String enums are
+preserved. Caelo's canonical schemas, coercion and strict dispatch validation
+are unchanged; an invalid redirect status still fails validation. Nullable type
+arrays are represented as schema branches so object properties stay attached
+to the object type. The structured-set tool declares its object item shape
+without restoring a top-level discriminator union.
+
+The opt-in `e2e-livedit/google-pictbook.browser.ts` exercises the live Google
+provider through browser login, a fresh chat and the Pictbook entry. It uses no
+credential seed or provider mock; enable it only on a configured local instance
+with `CAELO_LIVE_GOOGLE_PICTBOOK=1`.
+
+Tool-result history rows recover the required function name from the preceding
+call ID, including calls in canonical SDK response messages. SDK messages remain
+unchanged; orphan results fail locally instead of sending an empty function name.
+
+Live Chromium acceptance passed on 2026-09-14 against the configured Google
+provider: login, new chat, Pictbook entry, guide loading and a completed response
+asking for the book concept. This verifies chat/tool round trips, not image
+creation or PDF export.
