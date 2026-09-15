@@ -614,6 +614,7 @@ export async function activateApprovedExternalPlugin(
       "chat_runner_tools",
       "companion_skills",
       "private_files",
+      "image_generation",
     ]);
     for (const capability of manifest.requestedCapabilities ?? [])
       if (!supported.has(capability))

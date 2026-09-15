@@ -97,6 +97,7 @@ export const pluginCapability = z.enum([
   "data_lists",
   "companion_skills",
   "private_files",
+  "image_generation",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -707,12 +708,47 @@ export interface PluginPrivateFiles {
   readChunk(input: { id: string; offset: number }): Promise<{ base64: string }>;
 }
 
+/** Private image generation. Request IDs are immutable, installation-scoped and
+ * never automatically replay a paid call after an uncertain outcome. */
+export interface PluginImageResult {
+  readonly requestId: string;
+  readonly status: "running" | "ready" | "uncertain";
+  readonly file?: PluginPrivateFile;
+  readonly width?: number;
+  readonly height?: number;
+  readonly model: string;
+  /** Conservative estimate, not a provider invoice. Uncertain calls retain the reservation. */
+  readonly costMicrocents: number;
+}
+/** Bounded local derivative; originals remain immutable and no AI call is made. */
+export interface PluginImageTransform {
+  source: { id: string; sha256: string };
+  width: number;
+  height: number;
+  quality: number;
+}
+export interface PluginImages {
+  transform(
+    input: PluginImageTransform,
+  ): Promise<{ file: PluginPrivateFile; width: number; height: number }>;
+  describe(): Promise<{ model: string; maxCostMicrocents: number; imageSizes: readonly string[] }>;
+  get(input: { requestId: string }): Promise<PluginImageResult | null>;
+  generate(input: {
+    requestId: string;
+    prompt: string;
+    imageSize: "1K" | "2K" | "4K";
+    references: readonly { id: string; sha256: string }[];
+    maxCostMicrocents: number;
+  }): Promise<PluginImageResult>;
+}
+
 /** Extended SDK context (legacy name). The host attaches only authorized handles;
  * external plugins additionally require exact receipts and a supported broker. */
 export interface PluginContextTier1 extends PluginContext {
   /** #389 — attached when the manifest holds `cms_admin_schema`. */
   readonly adminQuery?: PluginAdminQuery;
   readonly privateFiles?: PluginPrivateFiles;
+  readonly images?: PluginImages;
   /** #392 — attached when the manifest holds `domain_events`. */
   readonly events?: PluginEvents;
   readonly cms?: PluginCms;

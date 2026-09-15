@@ -53,7 +53,7 @@ test("Owner uploads a package, explicitly grants each capability, and revokes pr
     }, action);
     expect(status).toBe(403);
   }
-  await page.getByLabel("Plugin package (.json)").setInputFiles({
+  await page.getByLabel("Plugin package (.json, .json.gz or .json.br)").setInputFiles({
     name: "notes.caelo-plugin.json",
     mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify({ manifest, source })),

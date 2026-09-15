@@ -35,6 +35,20 @@ const record = z.record(z.string(), z.unknown());
 const id = z.string().uuid();
 
 async function broker(ctx: PluginContext, method: string, args: unknown[]): Promise<unknown> {
+  if (method.startsWith("images.")) {
+    const images = (ctx as PluginContextTier1).images;
+    if (!images) throw new Error("SandboxCapabilityDenied: image_generation");
+    switch (method) {
+      case "images.transform":
+        return images.transform(args[0] as Parameters<typeof images.transform>[0]);
+      case "images.describe":
+        return images.describe();
+      case "images.get":
+        return images.get(args[0] as Parameters<typeof images.get>[0]);
+      case "images.generate":
+        return images.generate(args[0] as Parameters<typeof images.generate>[0]);
+    }
+  }
   if (method.startsWith("privateFiles.")) {
     const files = (ctx as PluginContextTier1).privateFiles;
     if (!files) throw new Error("SandboxCapabilityDenied: private_files");
@@ -140,7 +154,7 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
   let timedOut = false;
   let outstanding: Promise<unknown> | undefined;
   try {
-    if (Buffer.byteLength(invocation.source) > 800_000) throw new Error("SandboxSourceTooLarge");
+    if (Buffer.byteLength(invocation.source) > 16_000_000) throw new Error("SandboxSourceTooLarge");
     await invocation.authorize();
     const code = await bundle(invocation.source);
     directory = await mkdtemp(join(tmpdir(), "caelo-plugin-"));
@@ -165,7 +179,7 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
         "--deny-run",
         "--deny-ffi",
         "--deny-sys",
-        "--v8-flags=--max-old-space-size=128",
+        "--v8-flags=--max-old-space-size=256",
         entry,
       ],
       {
@@ -212,6 +226,7 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
       theme: context.theme,
       invocation: context.invocation,
       hasAdminQuery: Boolean((context as PluginContextTier1).adminQuery),
+      hasImages: Boolean((context as PluginContextTier1).images),
       hasPrivateFiles: Boolean((context as PluginContextTier1).privateFiles),
       visitor: {
         id: context.visitor.id,

@@ -39,7 +39,7 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
         type: "object",
         additionalProperties: true,
       },
-      source: { type: "string", minLength: 1, maxLength: 200_000 },
+      source: { type: "string", minLength: 1, maxLength: 4_000_000 },
     },
   },
   handler: async (ctx, input, toolCtx) => {
