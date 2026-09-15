@@ -112,6 +112,32 @@ export function resetDisabledSet(): void {
  *  injects these from the host process (apps/admin) so plugin-host stays
  *  free of upward circular imports on @caelo-cms/admin-core. */
 export interface PluginHostInfra {
+  /** Local image processing, with no provider or network access. */
+  readonly imageTransform?: (input: {
+    bytes: Uint8Array;
+    width: number;
+    height: number;
+    quality: number;
+  }) => Promise<{ bytes: Uint8Array; width: number; height: number }>;
+  readonly imageProvider?: {
+    describe(): Promise<{
+      model: string;
+      maxCostMicrocents: number;
+      imageSizes: readonly string[];
+    }>;
+    generate(input: {
+      model: string;
+      prompt: string;
+      imageSize: "1K" | "2K" | "4K";
+      references: readonly { data: Uint8Array; mediaType: string }[];
+    }): Promise<{
+      bytes: Uint8Array;
+      width: number;
+      height: number;
+      costMicrocents: number;
+      durationMs: number;
+    }>;
+  };
   readonly adapter: DatabaseAdapter;
   readonly registry: OperationRegistry;
   /** Optional — only required if any active plugin requested `ai_provider`. */

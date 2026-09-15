@@ -23,7 +23,7 @@ console.log = console.info = console.debug = console.warn = console.error = () =
 const pending = new Map();
 let nextId = 0;
 const rpc = (method, ...args) => new Promise((resolve, reject) => {
-  if (nextId >= 256) return reject(new Error("SandboxCallLimit"));
+  if (nextId >= 1024) return reject(new Error("SandboxCallLimit"));
   const id = nextId;
   pending.set(id, { resolve, reject });
   try {
@@ -44,6 +44,7 @@ const execute = async (message) => {
   const ctx = Object.freeze({
     query: Object.freeze(query),
     ...(message.hasAdminQuery ? { adminQuery: Object.freeze(Object.fromEntries(["insert", "list", "update", "compareAndSwap", "delete"].map(name => [name, (...args) => rpc("adminQuery." + name, ...args)]))) } : {}),
+    ...(message.hasImages ? { images: Object.freeze(Object.fromEntries(["describe", "get", "generate", "transform"].map(name => [name, (...args) => rpc("images." + name, ...args)]))) } : {}),
     ...(message.hasPrivateFiles ? { privateFiles: Object.freeze(Object.fromEntries(["begin", "writeChunk", "commit", "stat", "readChunk", "remove"].map(name => [name, (...args) => rpc("privateFiles." + name, ...args)]))) } : {}),
     ...(message.invocation ? { invocation: Object.freeze(message.invocation) } : {}),
     api: Object.freeze({ list: (...args) => rpc("api.list", ...args), get: (...args) => rpc("api.get", ...args) }),

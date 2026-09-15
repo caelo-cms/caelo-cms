@@ -26,10 +26,12 @@ import {
   generateKekHex,
   getActiveProvider,
   getMediaStorage,
+  makePluginImageProvider,
   startChatImageGcWorker,
   startDomainEventGcWorker,
   startProposalGcWorker,
   startReleaseCheckWorker,
+  transformPluginImage,
 } from "@caelo-cms/admin-core";
 import {
   bootstrap as bootstrapPluginHost,
@@ -209,6 +211,8 @@ async function bootstrapPlugins(): Promise<void> {
       adapter,
       registry,
       aiProvider,
+      imageTransform: transformPluginImage,
+      imageProvider: makePluginImageProvider({ adapter, registry }),
       emitSnapshot: emitter,
       emailTransport,
     },

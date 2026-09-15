@@ -118,6 +118,12 @@ export function validateManifest(
   // capability is a validation failure, not a silently-honoured extra.
   if (m.tier === 1 || opts.allowExternalCapabilities) {
     const caps = new Set(m.requestedCapabilities ?? []);
+    if (caps.has("image_generation") && !caps.has("private_files")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "image_generation requires private_files for private results and references; request and approve both capabilities.",
+      });
+    }
     if (m.adminSchema && Object.keys(m.adminSchema).length > 0 && !caps.has("cms_admin_schema")) {
       failures.push({
         kind: "manifest-cap-missing",

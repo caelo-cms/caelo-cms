@@ -32,7 +32,7 @@ test("private raster preview and attachment download require live author and plu
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/edit/);
   await page.goto("/security/plugins/installations");
-  await page.getByLabel("Plugin package (.json)").setInputFiles({
+  await page.getByLabel("Plugin package (.json, .json.gz or .json.br)").setInputFiles({
     name: "files.json",
     mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify({ manifest, source })),

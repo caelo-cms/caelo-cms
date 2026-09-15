@@ -9,6 +9,7 @@ import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";
+import { readPluginPackage } from "$lib/server/plugin-package.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -48,13 +49,13 @@ export const actions: Actions = {
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const file = form.get("package");
-    if (!(file instanceof File) || file.size > 1_000_000)
-      return fail(400, { error: "Choose a plugin package JSON file smaller than 1 MB." });
+    if (!(file instanceof File) || file.size > 20_000_000)
+      return fail(400, { error: "Choose a plugin package JSON file smaller than 20 MB." });
     let artifact: unknown;
     try {
-      artifact = JSON.parse(await file.text());
+      artifact = await readPluginPackage(file);
     } catch {
-      return fail(400, { error: "Invalid package JSON." });
+      return fail(400, { error: "Invalid package JSON or compressed package." });
     }
     const { adapter, registry } = getQueryContext();
     const staged = await execute(

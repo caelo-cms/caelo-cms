@@ -29,9 +29,13 @@ export function externalPluginDefinition(opts: {
   for (const tool of manifest.tools ?? []) z.fromJSONSchema(tool.inputJsonSchema);
   for (const capability of manifest.requestedCapabilities ?? []) {
     if (
-      !["cms_admin_schema", "chat_runner_tools", "companion_skills", "private_files"].includes(
-        capability,
-      )
+      ![
+        "cms_admin_schema",
+        "chat_runner_tools",
+        "companion_skills",
+        "private_files",
+        "image_generation",
+      ].includes(capability)
     )
       throw new Error(`External capability broker unavailable: ${capability}`);
   }
@@ -44,7 +48,15 @@ export function externalPluginDefinition(opts: {
       async () => {},
     );
   const invoke = (operation: string) => (context: PluginContext, args: unknown) =>
-    runSandbox({ source: opts.source, manifest, operation, args, context, authorize });
+    runSandbox({
+      source: opts.source,
+      manifest,
+      operation,
+      args,
+      context,
+      authorize,
+      timeoutMs: manifest.requestedCapabilities?.includes("image_generation") ? 240_000 : 30_000,
+    });
   return Object.freeze({
     slug: manifest.slug,
     version: manifest.version,

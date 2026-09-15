@@ -22,7 +22,7 @@ export const stagePluginInstallationOp = defineOperation({
   input: z
     .object({
       manifest: z.unknown(),
-      source: z.string().min(1).max(200_000),
+      source: z.string().min(1).max(4_000_000),
       origin: z.enum(["external-package", "runtime-authored"]).default("external-package"),
     })
     .strict(),

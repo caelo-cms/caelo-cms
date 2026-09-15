@@ -4,10 +4,14 @@
 import { z } from "zod";
 
 export const SANDBOX_MESSAGE_BYTES = 1_048_576;
-export const SANDBOX_CALL_LIMIT = 256;
+export const SANDBOX_CALL_LIMIT = 1024;
 
 /** Only these SDK calls may cross the process boundary. */
 export const sandboxMethod = z.enum([
+  "images.transform",
+  "images.describe",
+  "images.get",
+  "images.generate",
   "privateFiles.begin",
   "privateFiles.writeChunk",
   "privateFiles.commit",

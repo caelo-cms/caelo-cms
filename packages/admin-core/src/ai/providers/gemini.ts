@@ -15,7 +15,7 @@
  */
 
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-
+import { wrapLanguageModel } from "ai";
 import type {
   AIProvider,
   GenerateInput,
@@ -25,13 +25,15 @@ import type {
   ProviderName,
 } from "../provider.js";
 import { runSDKGenerateObject, runSDKStream, toSDKMessages } from "./_sdk-shared.js";
+import { googleToolSchema } from "./google-tool-schema.js";
 
 interface GeminiProviderOptions {
   readonly apiKey: string;
   readonly model: string;
   readonly baseUrl?: string;
+  readonly fetchImpl?: typeof fetch;
   /** Test hook — pre-resolved LanguageModel instance. */
-  readonly _modelOverride?: import("ai").LanguageModel;
+  readonly _modelOverride?: Exclude<import("ai").LanguageModel, string>;
 }
 
 export class GeminiProvider implements AIProvider {
@@ -41,15 +43,27 @@ export class GeminiProvider implements AIProvider {
 
   constructor(options: GeminiProviderOptions) {
     this.model = options.model;
-    if (options._modelOverride) {
-      this.#model = options._modelOverride;
-      return;
-    }
     const provider = createGoogleGenerativeAI({
       apiKey: options.apiKey,
       ...(options.baseUrl ? { baseURL: options.baseUrl } : {}),
+      ...(options.fetchImpl ? { fetch: options.fetchImpl } : {}),
     });
-    this.#model = provider(options.model as Parameters<typeof provider>[0]);
+    this.#model = wrapLanguageModel({
+      model: options._modelOverride ?? provider(options.model),
+      middleware: {
+        transformParams: async ({ params }) => ({
+          ...params,
+          tools: params.tools?.map((tool) =>
+            tool.type === "function"
+              ? {
+                  ...tool,
+                  inputSchema: googleToolSchema(tool.inputSchema) as typeof tool.inputSchema,
+                }
+              : tool,
+          ),
+        }),
+      },
+    });
   }
 
   async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {

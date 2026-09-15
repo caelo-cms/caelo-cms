@@ -92,4 +92,4 @@ export function sanitizePluginPreview(
 }
 
 export const PLUGIN_PREVIEW_CSP =
-  "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+  "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";

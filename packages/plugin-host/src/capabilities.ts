@@ -36,6 +36,7 @@ import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/share
 import { sql } from "drizzle-orm";
 import type { AuthorDispatchContext, LoadedPlugin, PluginHostInfra } from "./dispatch.js";
 import { withExternalAuthorization } from "./external-authorization.js";
+import { makePluginImages } from "./images.js";
 import { makePluginPrivateFiles } from "./private-files.js";
 
 export interface MakePluginContextOpts {
@@ -113,6 +114,8 @@ export async function makePluginContext(
       extended.adminQuery = makePluginAdminQuery(plugin, infra);
     if (plugin.externalApproval.capabilities.includes("private_files"))
       extended.privateFiles = makePluginPrivateFiles(plugin, infra, author);
+    if (plugin.externalApproval.capabilities.includes("image_generation"))
+      extended.images = makePluginImages(plugin, infra, author);
     return extended;
   }
 
@@ -138,6 +141,8 @@ export async function makePluginContext(
   }
   if (requested.has("private_files") && opts.authorContext && !visitorContext)
     tier1.privateFiles = makePluginPrivateFiles(plugin, infra, opts.authorContext);
+  if (requested.has("image_generation") && opts.authorContext && !visitorContext)
+    tier1.images = makePluginImages(plugin, infra, opts.authorContext);
   return tier1;
 }
 
