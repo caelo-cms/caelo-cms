@@ -26,7 +26,7 @@ export async function resolvePrivatePreviewImages(
   if (!sources.size) return resolved;
   const files = await getFiles();
   let outputBytes = 0;
-  for (const source of sources) {
+  async function resolve(source: string) {
     const match = reference.exec(source);
     const id = match?.[1];
     if (!match || !id) throw new Error("PrivatePreviewInvalidReference");
@@ -62,5 +62,16 @@ export async function resolvePrivatePreviewImages(
     if (outputBytes > 8_388_608) throw new Error("PrivatePreviewImageByteLimit");
     resolved.set(source, `data:image/webp;base64,${thumb.toString("base64")}`);
   }
+  // Bound concurrent decodes and file reads: serial 4K books can exceed the
+  // adapter's ten-second idle deadline before the HTML response is available.
+  const queue = [...sources];
+  await Promise.all(
+    Array.from({ length: Math.min(4, queue.length) }, async () => {
+      while (queue.length) {
+        const source = queue.shift();
+        if (source) await resolve(source);
+      }
+    }),
+  );
   return resolved;
 }
