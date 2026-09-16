@@ -11,7 +11,8 @@
    * to /content/chat/[sessionId]/stream stays untouched.
    */
 
-  import { ArrowDown, Lock, Square, Unlock } from "lucide-svelte";
+  import { CHAT_IMAGE_MIMES, CHAT_MAX_ATTACHMENTS, CHAT_MAX_ATTACHMENT_BYTES } from "@caelo-cms/shared";
+  import { ArrowDown, ImagePlus, Lock, Square, Unlock } from "lucide-svelte";
   import { onMount, tick } from "svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -876,7 +877,9 @@
   /** issue #190 — images attached to the NEXT message (chips above the
    *  composer). Uploaded immediately on drop; sent as attachment refs. */
   let pendingAttachments = $state<{ assetId: string; mime: string; alt: string }[]>([]);
-  const MAX_PENDING_ATTACHMENTS = 4;
+  const MAX_PENDING_ATTACHMENTS = CHAT_MAX_ATTACHMENTS;
+  let uploadingImages = $state(false);
+  let imageInput: HTMLInputElement | undefined = $state();
 
   /** Hardcoded tool hints for the slash menu. Not the full 80-tool
    *  catalogue — that would overwhelm the popup. The list covers the
@@ -1015,54 +1018,73 @@
     }
   }
 
-  /** issue #190 — drag-drop image attach. Uploads to /api/media/upload
-   *  immediately, then records an attachment CHIP on the pending
-   *  message — the model receives the image as a real image part, not
-   *  a URL string it can't see. (The pre-#190 handler spliced an
-   *  `<img>` tag into the composer text; besides being invisible to
-   *  the model, it expected a `url` field the upload endpoint never
-   *  returned, so it was broken end-to-end.) */
-  const ATTACHABLE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-  async function onComposerDrop(e: DragEvent): Promise<void> {
+  /** Picker, clipboard and drop all use the same bounded media-library upload. */
+  const ATTACHABLE_MIMES = new Set<string>(CHAT_IMAGE_MIMES);
+  async function attachImages(files: File[]): Promise<void> {
+    if (!files.length) return;
+    if (uploadingImages) {
+      uploadError = "Please wait for the current upload to finish.";
+      return;
+    }
+    uploadingImages = true;
+    uploadError = null;
+    const errors: string[] = [];
+    const uploadSession = session.id;
+    try {
+      for (const file of files) {
+        if (pendingAttachments.length >= MAX_PENDING_ATTACHMENTS) {
+          errors.push(`Max ${MAX_PENDING_ATTACHMENTS} images per message.`);
+          break;
+        }
+        if (!ATTACHABLE_MIMES.has(file.type)) {
+          errors.push(`"${file.name}": choose PNG, JPEG, WebP or GIF.`);
+          continue;
+        }
+        if (!file.size || file.size > CHAT_MAX_ATTACHMENT_BYTES) {
+          errors.push(`"${file.name}": choose a non-empty image up to 5 MiB.`);
+          continue;
+        }
+        const fd = new FormData();
+        fd.append("file", file);
+        try {
+          const res = await fetch("/api/chat/images", {
+            method: "POST", headers: { "x-csrf-token": csrfToken }, body: fd,
+          });
+          if (!res.ok) {
+            errors.push(`"${file.name}": upload failed (${res.status}). Please retry.`);
+            continue;
+          }
+          const v = (await res.json()) as { assetId?: string; mime?: string };
+          if (!v.assetId || !v.mime || !ATTACHABLE_MIMES.has(v.mime)) {
+            errors.push(`"${file.name}": upload returned no usable image.`);
+            continue;
+          }
+          // The media library deduplicates identical bytes; keep keyed chips unique too.
+          if (session.id !== uploadSession) return;
+          if (!pendingAttachments.some(a => a.assetId === v.assetId)) {
+            pendingAttachments = [...pendingAttachments, { assetId: v.assetId, mime: v.mime, alt: file.name }];
+          }
+        } catch (err) {
+          errors.push(`"${file.name}": upload failed. ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } finally {
+      uploadingImages = false;
+      if (errors.length) uploadError = errors.join(" ");
+    }
+  }
+
+  function onComposerDrop(e: DragEvent): void {
     e.preventDefault();
     dragOver = false;
-    const files = [...(e.dataTransfer?.files ?? [])];
-    if (files.length === 0) return;
-    uploadError = null;
-    for (const file of files) {
-      if (pendingAttachments.length >= MAX_PENDING_ATTACHMENTS) {
-        uploadError = `Max ${MAX_PENDING_ATTACHMENTS} images per message.`;
-        break;
-      }
-      if (!ATTACHABLE_MIMES.has(file.type)) {
-        uploadError = `"${file.name}" is ${file.type || "an unknown type"} — only PNG/JPEG/WebP/GIF images can be attached to the chat.`;
-        continue;
-      }
-      const fd = new FormData();
-      fd.append("file", file);
-      try {
-        const res = await fetch("/api/media/upload", {
-          method: "POST",
-          headers: { "x-csrf-token": csrfToken },
-          body: fd,
-        });
-        if (!res.ok) {
-          uploadError = `Upload failed (${res.status}). Drop a smaller file or use the media picker.`;
-          continue;
-        }
-        const v = (await res.json()) as { assetId?: string; mime?: string };
-        if (!v.assetId || !v.mime || !ATTACHABLE_MIMES.has(v.mime)) {
-          uploadError = `Upload of "${file.name}" returned no usable image asset.`;
-          continue;
-        }
-        pendingAttachments = [
-          ...pendingAttachments,
-          { assetId: v.assetId, mime: v.mime, alt: file.name },
-        ];
-      } catch (err) {
-        uploadError = `Upload failed: ${(err as Error).message ?? "unknown"}`;
-      }
-    }
+    void attachImages([...(e.dataTransfer?.files ?? [])]);
+  }
+
+  function onComposerPaste(e: ClipboardEvent): void {
+    const files = [...(e.clipboardData?.files ?? [])].filter(file => file.type.startsWith("image/"));
+    if (!files.length) return; // Preserve ordinary text paste.
+    e.preventDefault();
+    void attachImages(files);
   }
 
   const moduleStateBefore: Record<string, string> = {};
@@ -1192,7 +1214,7 @@
     // why clicking a chip sends AND leaves your typed text untouched.
     overrideText?: string,
   ): Promise<void> {
-    if (streaming) return;
+    if (streaming || (uploadingImages && !resume && overrideText === undefined)) return;
     if (
       !resume &&
       overrideText === undefined &&
@@ -1216,6 +1238,7 @@
     streamingText = "";
     streamingThinkingText = "";
     currentActivity = resume ? "Applying…" : "Sending…";
+    const optimisticMessageId = `local-${crypto.randomUUID()}`;
     if (!resume) {
       // An override must NOT disturb the operator's draft — only a real
       // composer send clears the field + consumes pending chips/attachments.
@@ -1230,7 +1253,7 @@
       messages = [
         ...messages,
         {
-          id: `local-${Date.now()}`,
+          id: optimisticMessageId,
           role: "user",
           content: text,
           // issue #29 — auto-injected nudges render as muted status notes,
@@ -1279,6 +1302,19 @@
       currentActivity = null;
       if (!(ac.signal.aborted || (e instanceof Error && e.name === "AbortError"))) {
         chatError = `Chat request failed: ${e instanceof Error ? e.message : String(e)}`;
+      }
+      return;
+    }
+    if (!res.ok) {
+      streaming = false;
+      streamAbort = null;
+      currentActivity = null;
+      chatError = `Chat request failed (${res.status}). Your draft is ready to retry.`;
+      if (!resume && !isOverride) {
+        composer = text === "(see attached image)" ? "" : text;
+        chips = sentChips;
+        pendingAttachments = sentAttachments;
+        messages = messages.filter(m => m.id !== optimisticMessageId);
       }
       return;
     }
@@ -2228,7 +2264,34 @@
               {/each}
             </div>
           {/if}
+          <div class="flex items-center gap-2">
+            <input
+              bind:this={imageInput}
+              type="file"
+              accept={CHAT_IMAGE_MIMES.join(",")}
+              multiple
+              class="sr-only"
+              tabindex="-1"
+              aria-label="Choose chat images"
+              data-testid="chat-image-input"
+              onchange={(e) => {
+                const files = [...(e.currentTarget.files ?? [])];
+                e.currentTarget.value = "";
+                void attachImages(files);
+              }}
+            />
+            <Button type="button" variant="outline" size="sm"
+              disabled={!hydrated || uploadingImages || pendingAttachments.length >= MAX_PENDING_ATTACHMENTS}
+              onclick={() => imageInput?.click()} data-testid="chat-attach-images">
+              <ImagePlus class="mr-1.5 size-4" />
+              {uploadingImages ? "Uploading…" : "Add images"}
+            </Button>
+            <span class="text-xs text-muted-foreground" role="status">
+              {uploadingImages ? "Wait for uploads before sending." : "Up to 4 images · 5 MiB each · saved in Media library"}
+            </span>
+          </div>
           <Textarea
+            onpaste={onComposerPaste}
             bind:value={composer}
             bind:ref={composerEl}
             rows={1}
@@ -2369,7 +2432,7 @@
               <Button
                 type="submit"
                 size="sm"
-                disabled={composer.trim().length === 0}
+                disabled={!hydrated || uploadingImages || (composer.trim().length === 0 && pendingAttachments.length === 0)}
                 data-testid="chat-send"
               >
                 Send

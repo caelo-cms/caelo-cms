@@ -15,8 +15,13 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import {
+  CHAT_MAX_ATTACHMENTS,
+  chatAttachmentSchema,
+  type ExecutionContext,
+} from "@caelo-cms/shared";
 import { error, json } from "@sveltejs/kit";
+import { z } from "zod";
 import { getQueryContext } from "$lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
@@ -30,20 +35,28 @@ export const POST: RequestHandler = async ({ request }) => {
   const token = request.headers.get("x-caelo-mcp-token");
   if (!token) throw error(401, "missing x-caelo-mcp-token header");
 
-  let body: { message?: unknown; chatSessionId?: unknown; pageId?: unknown };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    throw error(400, "body is not valid JSON");
-  }
-  if (typeof body.message !== "string" || body.message.length === 0) {
-    throw error(400, "message must be a non-empty string");
-  }
+  const parsed = z
+    .object({
+      message: z.string().min(1).max(50_000),
+      chatSessionId: z.string().uuid().optional(),
+      pageId: z.string().uuid().optional(),
+      attachments: z
+        .array(
+          chatAttachmentSchema.refine((a) => a.assetId !== undefined, "Use uploaded media assets"),
+        )
+        .max(CHAT_MAX_ATTACHMENTS)
+        .optional(),
+    })
+    .strict()
+    .safeParse(await request.json().catch(() => null));
+  if (!parsed.success) throw error(400, "Invalid chat input or attachments");
+  const body = parsed.data;
 
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, SYSTEM_CTX, "mcp.send_chat", {
     plaintextToken: token,
     message: body.message,
+    ...(body.attachments !== undefined ? { attachments: body.attachments } : {}),
     ...(typeof body.chatSessionId === "string" ? { chatSessionId: body.chatSessionId } : {}),
     ...(typeof body.pageId === "string" ? { pageId: body.pageId } : {}),
   });
@@ -56,6 +69,7 @@ export const POST: RequestHandler = async ({ request }) => {
     if (typeof msg === "string" && msg.startsWith("auth_error:")) {
       throw error(401, msg);
     }
+    if (r.error.kind === "ValidationFailed") throw error(400, "Invalid chat input or attachments");
     throw error(500, typeof msg === "string" ? msg : "mcp.send_chat failed");
   }
   return json(r.value);

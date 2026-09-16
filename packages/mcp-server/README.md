@@ -3,7 +3,7 @@
 MCP servers for your Caelo CMS install. Two surfaces, selected by the
 token's scope:
 
-- **`caelo_chat`** (default mode, scope `chat`) — one tool that talks
+- **`caelo_chat`** (default mode, scope `chat`) — talks
   to Caelo's own AI agent. You describe an outcome; Caelo's chat-runner
   does the work.
 - **Power-MCP** (`caelo-admin-mcp` binary / `caelo-mcp-server admin`,
@@ -49,6 +49,7 @@ with these env vars set:
 |---|---|---|
 | `message` | string, required | What you want to say to the Caelo agent. |
 | `chatSessionId` | uuid, optional | Continue an existing chat session. |
+| `attachments` | array, optional | Up to four image references returned by `caelo_upload_images`. |
 | `pageId` | uuid, optional | Bind a NEW chat to one page so the agent's page-context block populates. |
 
 Output: assistant reply text + a JSON block with `chatSessionId` (for
@@ -58,7 +59,7 @@ tool-call summaries the agent dispatched, the per-turn cost in
 microcents, and a `pendingProposals` count so the agent can surface
 "you have N things waiting for Owner approval".
 
-## Why a single tool?
+## Why route editing through chat?
 
 Browse / publish / propose actions happen *through* the chat — "which
 pages exist?" → the Caelo agent calls `pages.list` internally → answers
@@ -69,3 +70,15 @@ human-equivalent agent, not to a programmatic API.
 ## License
 
 MPL-2.0.
+
+## Image uploads
+
+Both modes expose `caelo_upload_images`. For example, call it with:
+
+```json
+{"images":[{"filePath":"/home/me/Pictures/character.png","alt":"Main character reference"}]}
+```
+
+Paths are local to the MCP process. Alternatively use `base64` plus an optional `filename`; supply exactly one of `filePath` and `base64`. Uploads support PNG/JPEG/WebP/GIF, up to 5 MiB each, with at most four files per call. The result contains per-file successes/errors and an `attachments` array. Pass that array to `caelo_chat` alongside `message` to send actual image content to Caelo's AI. In admin mode, the returned asset IDs can be used with regular media/page tools.
+
+The token owner's current `content.write` permission is required for either scope. Images are stored in the shared CMS media library; admin previews require authentication. Uploading alone does not publish a page. A partial batch keeps successful uploads — retry only the failed entries. See the [upload workflow](https://caelo-cms.com/mcp#upload-and-attach-images) for HTTP examples and server limits.

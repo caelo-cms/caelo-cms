@@ -7,6 +7,9 @@ import { defineConfig } from "@playwright/test";
  * (production build) so the flow exercises the same Bun adapter that ships.
  * One browser (chromium) is enough for the smoke surface; expand in P3+.
  */
+const port = process.env.CAELO_E2E_PORT ?? "4173";
+const origin = `http://localhost:${port}`;
+
 export default defineConfig({
   testDir: "./e2e",
   // Custom glob — file ends with `.browser.ts` so Bun's default test runner
@@ -27,7 +30,7 @@ export default defineConfig({
   retries: 0,
   reporter: [["list"]],
   use: {
-    baseURL: "http://localhost:4173",
+    baseURL: origin,
     trace: "retain-on-failure",
   },
   webServer: {
@@ -43,9 +46,8 @@ export default defineConfig({
     // at boot; CI checkouts have none (locally they exist as tsc side
     // effects, which is how this went unnoticed until the first plugin
     // E2E). Build them before the admin build.
-    command:
-      "bun run plugins:build && bun run build && PORT=4173 ORIGIN=http://localhost:4173 bun run build/index.js",
-    url: "http://localhost:4173",
+    command: `bun run plugins:build && bun run build && PORT=${port} ORIGIN=${origin} bun run build/index.js`,
+    url: origin,
     reuseExistingServer: !process.env.CI,
     // Cold builds on first run can take longer than 120s when node_modules has
     // just been installed. Bump to 240s — local subsequent runs reuse.
@@ -54,13 +56,14 @@ export default defineConfig({
       ADMIN_DATABASE_URL: process.env.ADMIN_DATABASE_URL ?? "",
       PUBLIC_ADMIN_DATABASE_URL: process.env.PUBLIC_ADMIN_DATABASE_URL ?? "",
       PUBLIC_DATABASE_URL: process.env.PUBLIC_DATABASE_URL ?? "",
-      ORIGIN: "http://localhost:4173",
+      ORIGIN: origin,
       // NODE_ENV must be unset / non-production for the test-provider
       // registry (`/__test/providers`) to accept registrations. The
       // production build runtime sets NODE_ENV=production by default
       // when invoked through `bun run build/index.js`; we override here
       // so Playwright specs can register fixtures.
       NODE_ENV: "development",
+      BODY_SIZE_LIMIT: "8M",
       // image-generation.browser.ts — the fake image provider stands in for
       // the real image API (no key, no cost). Test-only, same non-production
       // gate as the AI test-registry above.

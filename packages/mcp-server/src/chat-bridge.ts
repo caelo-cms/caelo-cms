@@ -12,12 +12,15 @@
  * clients see a clean error instead of a hung connection.
  */
 
+import type { z } from "zod";
 import { postAdmin, resolveTimeoutMs } from "./http.js";
+import type { uploadedImageSchema } from "./image-upload.js";
 
 export interface SendChatOpts {
   readonly adminUrl: string;
   readonly token: string;
   readonly message: string;
+  readonly attachments?: z.infer<typeof uploadedImageSchema>[];
   readonly chatSessionId?: string;
   readonly pageId?: string;
 }
@@ -38,6 +41,7 @@ export async function sendChat(opts: SendChatOpts): Promise<SendChatResult> {
     path: "/api/mcp/chat",
     body: {
       message: opts.message,
+      attachments: opts.attachments,
       chatSessionId: opts.chatSessionId,
       pageId: opts.pageId,
     },

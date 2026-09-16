@@ -381,6 +381,11 @@ export const chatCreateSessionInput = z
   })
   .strict();
 
+/** Raster image types understood by all supported chat providers. */
+export const CHAT_IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+/** Limit originals before upload so every accepted attachment can reach the provider. */
+export const CHAT_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
 /**
  * issue #190 — an operator-attached image riding a user chat message.
  * References a media_assets row (the upload endpoint owns validation
@@ -397,7 +402,7 @@ export const chatAttachmentSchema = z
      * doc comment. Exactly one of `assetId` / `storageKey` is present.
      */
     storageKey: z.string().min(1).max(512).optional(),
-    mime: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif"]),
+    mime: z.enum(CHAT_IMAGE_MIMES),
     alt: z.string().max(2048).optional(),
   })
   .strict()
