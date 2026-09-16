@@ -18,7 +18,12 @@ import {
   type ThemeDocument,
 } from "@caelo-cms/shared";
 import { z } from "zod";
-import { SPACING_RHYTHM_HINTS, TOKEN_ROLE_HINTS, TOKEN_SHAPE_HINTS } from "../theme-guidance.js";
+import {
+  SPACING_RHYTHM_HINTS,
+  TOKEN_ROLE_HINTS,
+  TOKEN_SHAPE_HINTS,
+  TYPOGRAPHY_COMPOSITION_HINTS,
+} from "../theme-guidance.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -50,7 +55,7 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
     "not per-theme). When ambiguous (a bare name with no value-shape signal) the tool " +
     "returns `UnknownTokenName` with did-you-mean suggestions; retry with the canonical " +
     "path. " +
-    `${TOKEN_SHAPE_HINTS} ${SPACING_RHYTHM_HINTS} ${TOKEN_ROLE_HINTS}`,
+    `${TOKEN_SHAPE_HINTS} ${SPACING_RHYTHM_HINTS} ${TOKEN_ROLE_HINTS} ${TYPOGRAPHY_COMPOSITION_HINTS}`,
   schema: setThemeTokensToolInput,
   // issue #251 (WS5) — inputSchema derived from `schema` at registration.
   handler: async (ctx, input, toolCtx) => {

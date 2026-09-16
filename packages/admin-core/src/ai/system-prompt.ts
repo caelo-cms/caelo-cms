@@ -338,7 +338,12 @@ export function formatContentLibraryBlock(
 // SystemPromptChunk is defined in ./provider.ts so adapters can import
 // it without pulling in the system-prompt composer; we re-use that type here.
 import type { SystemPromptChunk } from "./provider.js";
-import { ANCHOR_HUE_HINTS, DEPTH_AND_SURFACE_HINTS, TOKEN_SHAPE_HINTS } from "./theme-guidance.js";
+import {
+  ANCHOR_HUE_HINTS,
+  DEPTH_AND_SURFACE_HINTS,
+  TOKEN_SHAPE_HINTS,
+  TYPOGRAPHY_COMPOSITION_HINTS,
+} from "./theme-guidance.js";
 
 export type { SystemPromptChunk } from "./provider.js";
 
@@ -859,6 +864,7 @@ export function formatThemeBlock(
     // web fonts are fetched + self-hosted automatically, so any Google
     // Fonts family is safe; a family that is neither a system stack nor
     // resolvable fails the deploy loudly.
+    TYPOGRAPHY_COMPOSITION_HINTS,
     '**Web fonts are self-hosted automatically.** Any Google Fonts family in `typography.*.fontFamily` (e.g. `"Poppins", sans-serif`) is downloaded at deploy and served from the site — pick real typefaces that fit the brand instead of defaulting to system stacks. System stacks (`system-ui`, `Georgia`, …) load nothing. A family that is neither resolves as `theme-font-unresolvable:<family>` in the preview\'s missing-content list and BLOCKS the deploy — fix it via `set_theme_tokens` when you see that marker.',
     "",
     // v0.11.4 (issue #76 follow-up) — list the EXACT CSS var names the

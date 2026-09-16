@@ -22,6 +22,7 @@ import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { registerAdminOps } from "../../register.js";
+import { TYPOGRAPHY_COMPOSITION_HINTS } from "../theme-guidance.js";
 import { checkColdStartGate } from "../tools/_cold-start-gate.js";
 import type { ToolContext } from "../tools/dispatch.js";
 
@@ -59,6 +60,7 @@ describe("checkColdStartGate (issue #106)", () => {
     expect(res.blocked).toBe(true);
     const content = res.gateResult?.content ?? "";
     expect(content).toContain("no active theme yet");
+    expect(content).toContain(TYPOGRAPHY_COMPOSITION_HINTS);
     expect(content).toContain("propose_create_theme");
     expect(content).toContain("propose_activate_theme");
     // issue #112 — the AI composes the document itself; no preset menu.

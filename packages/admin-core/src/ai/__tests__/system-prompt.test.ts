@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { composeSystemPrompt } from "../system-prompt.js";
+import { composeSystemPrompt, formatThemeBlock } from "../system-prompt.js";
+import { TYPOGRAPHY_COMPOSITION_HINTS } from "../theme-guidance.js";
 
 describe("composeSystemPrompt", () => {
   it("orders slots deterministically regardless of input order", () => {
@@ -45,4 +46,15 @@ describe("composeSystemPrompt", () => {
     const out = composeSystemPrompt([]);
     expect(out.startsWith("You are Caelo")).toBe(true);
   });
+});
+
+it("keeps typographic intent in the active theme context", () => {
+  expect(
+    formatThemeBlock({
+      displayName: "Brand",
+      slug: "brand",
+      tokensSummary: "Warm editorial",
+      origin: "operator",
+    }),
+  ).toContain(TYPOGRAPHY_COMPOSITION_HINTS);
 });
