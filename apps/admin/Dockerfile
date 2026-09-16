@@ -197,6 +197,8 @@ COPY --from=builder /repo/apps/static-generator ./apps/static-generator
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# 5 MiB chat images plus multipart overhead exceed the adapter's 512 KiB default.
+ENV BODY_SIZE_LIMIT=8M
 EXPOSE 3000
 
 WORKDIR /app/apps/admin

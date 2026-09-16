@@ -15,7 +15,13 @@
 
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { defineOperation, execute, type OperationRegistry } from "@caelo-cms/query-api";
-import { err, ok, type Result } from "@caelo-cms/shared";
+import {
+  CHAT_MAX_ATTACHMENTS,
+  chatAttachmentSchema,
+  err,
+  ok,
+  type Result,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { runChatTurn } from "../../ai/chat-runner.js";
@@ -267,6 +273,15 @@ const sendChatInput = z
   .object({
     plaintextToken: z.string().min(8).max(200),
     message: z.string().min(1).max(50_000),
+    attachments: z
+      .array(
+        chatAttachmentSchema.refine(
+          (a) => a.assetId !== undefined,
+          "MCP attachments must reference uploaded media assets",
+        ),
+      )
+      .max(CHAT_MAX_ATTACHMENTS)
+      .optional(),
     /** Continue an existing chat session; omit to start a fresh one. */
     chatSessionId: z.string().uuid().optional(),
     /** When starting fresh, bind the chat to this page so the page-context block populates. */
@@ -387,7 +402,7 @@ export const mcpSendChatOp = defineOperation({
         chatSessionId,
         content: input.message,
         chips: [],
-        attachments: [],
+        attachments: input.attachments ?? [],
         ...(input.pageId ? { activePageId: input.pageId } : {}),
       },
     );
@@ -437,5 +452,47 @@ export const mcpSendChatOp = defineOperation({
       pendingProposals,
       costMicrocents: Math.round(costUsd * 1e8),
     });
+  },
+});
+
+/** Resolve the bearer and current write permission before accepting any image bytes. */
+export const mcpAuthorizeUploadOp = defineOperation({
+  name: "mcp.authorize_upload",
+  // Why system-only: credentials are resolved here; bytes are stored as the human actor.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({ plaintextToken: z.string().min(8).max(200) }).strict(),
+  output: z.object({ actorId: z.string().uuid() }),
+  handler: async (_ctx, input, tx) => {
+    const bridge = getMcpBridge();
+    if (!bridge)
+      return err({
+        kind: "HandlerError",
+        operation: "mcp.authorize_upload",
+        message: "MCP bridge not configured",
+      });
+    const resolved = await resolveMcpToken(bridge.adapter, input.plaintextToken);
+    if (!resolved.ok)
+      return err({
+        kind: "HandlerError",
+        operation: "mcp.authorize_upload",
+        message: `auth_error: token ${resolved.error}`,
+      });
+    const actorId = resolved.value.actorId;
+    const rows = (await tx.execute(sql`
+      SELECT u.id FROM users u
+      JOIN user_roles ur ON ur.user_id = u.id
+      JOIN role_permissions rp ON rp.role_id = ur.role_id
+      JOIN permissions p ON p.id = rp.permission_id
+      WHERE u.id = ${actorId}::uuid AND u.deleted_at IS NULL AND p.name = 'content.write'
+      LIMIT 1
+    `)) as unknown as { id: string }[];
+    if (!rows.length)
+      return err({
+        kind: "HandlerError",
+        operation: "mcp.authorize_upload",
+        message: "permission_denied: content.write required for an active user",
+      });
+    return ok({ actorId });
   },
 });
