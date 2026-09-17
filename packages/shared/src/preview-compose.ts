@@ -184,7 +184,10 @@ function injectBefore(source: string, marker: RegExp, fragment: string): string 
 export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | null {
   if (fonts === undefined) return null;
   const links = fonts.preloads
-    .map((href) => `<link rel="preload" as="font" type="font/woff2" crossorigin href="${href}">`)
+    .map((href) => {
+      const format = /\.(woff2?|ttf|otf)(?:[?#]|$)/.exec(href)?.[1];
+      return `<link rel="preload" as="font"${format ? ` type="font/${format}"` : ""} crossorigin href="${href}">`;
+    })
     .join("");
   const style =
     fonts.css.trim().length > 0 ? `<style data-source="fonts">${fonts.css}</style>` : "";

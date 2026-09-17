@@ -30,7 +30,12 @@ export const GET: RequestHandler = async ({ params, locals, request }) => {
   requireUserOrPreviewScreenshotToken(locals, request);
 
   const { family, file } = params;
-  if (!family || !file || !FAMILY_RE.test(family) || !FILE_RE.test(file)) {
+  if (
+    !family ||
+    !file ||
+    !FAMILY_RE.test(family) ||
+    !(family === "pinned" ? /^[a-f0-9]{64}\.(ttf|otf|woff|woff2)$/.test(file) : FILE_RE.test(file))
+  ) {
     throw error(404, "not found");
   }
 
@@ -43,12 +48,13 @@ export const GET: RequestHandler = async ({ params, locals, request }) => {
 
   // Copy into a fresh ArrayBuffer so BodyInit accepts it regardless of
   // the backing buffer kind — same rationale as the media route.
+  const mime = `font/${file.split(".").at(-1)}`;
   const copy = new Uint8Array(body.byteLength);
   copy.set(body);
-  return new Response(new Blob([copy], { type: "font/woff2" }), {
+  return new Response(new Blob([copy], { type: mime }), {
     status: 200,
     headers: {
-      "content-type": "font/woff2",
+      "content-type": mime,
       "content-length": String(body.byteLength),
       "cache-control": "private, max-age=31536000, immutable",
     },

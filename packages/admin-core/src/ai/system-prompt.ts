@@ -878,6 +878,7 @@ export function formatThemeBlock(
       : "**CSS vars this theme defines:** _(none — theme is empty; ask the operator to configure tokens)_",
     "",
     "Tools (all read tokens by canonical DTCG path; `set_theme_tokens` ALSO accepts loose names that the server normalizes):",
+    "- Fonts: use find_fonts, list_font_variants and acquire_font for licensed complete files; inspect_font and preview_typography verify exact revisions and glyph coverage. Pin theme roles through set_theme_tokens.fontBindings; do not invent CaeloFont_ family names. /design/fonts loads real specimens. Plugins with approved font_assets use this same registry. Typography edits follow existing theme history; publishing includes only fonts bound to the selected theme.",
     "- `list_themes()` — list every theme (one active, rest variants).",
     "- `get_theme({slug, as?})` — `as` is one of `dtcg` (default) / `css-vars` / `tailwind` / `summary`. Use `css-vars` when authoring module HTML so you don't translate DTCG paths.",
     "- `set_theme_tokens({set: {primaryColor: '#ff6600', fontHeading: 'Inter'}})` — edit the active theme. Pass loose names; the server returns the canonical paths it wrote.",

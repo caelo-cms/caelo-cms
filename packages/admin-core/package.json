@@ -31,7 +31,8 @@
     "google-auth-library": "^10.9.0",
     "htmlparser2": "^12.0.0",
     "sharp": "^0.35",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@caelo-cms/font-service": "workspace:*"
   },
   "devDependencies": {
     "@caelo-cms/api-gateway": "workspace:*",

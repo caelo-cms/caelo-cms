@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import {
+  findFontsOp,
+  importFontOp,
+  inspectFontOp,
+  readFontOp,
+  resolveFontOp,
+} from "@caelo-cms/font-service";
 import type { OperationRegistry } from "@caelo-cms/query-api";
 import { createBugReportOp, listBugReportsOp } from "./ops/ai/bug-reports.js";
 import { logModuleizeAttemptOp } from "./ops/ai/moduleize_log.js";
@@ -465,6 +472,11 @@ import {
 } from "./ops/users.js";
 
 export function registerAdminOps(registry: OperationRegistry): void {
+  registry.register(importFontOp);
+  registry.register(findFontsOp);
+  registry.register(inspectFontOp);
+  registry.register(resolveFontOp);
+  registry.register(readFontOp);
   registry.register(stagePluginInstallationOp);
   registry.register(approvePluginInstallationOp);
   registry.register(getApprovedPluginInstallationOp);

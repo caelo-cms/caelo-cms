@@ -22,6 +22,7 @@ export function previewContext(ctx: PluginContext | PluginContextTier1): PluginC
     captcha: Object.freeze({ requireProof: forbidden }),
     theme: ctx.theme,
     visitor: ctx.visitor,
+    ...(author.fonts ? { fonts: author.fonts } : {}),
     ...(author.invocation ? { invocation: author.invocation } : {}),
     ...(author.privateFiles
       ? {

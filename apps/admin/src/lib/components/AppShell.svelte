@@ -70,6 +70,12 @@
       // matches the existing /security/themes/pending permission: theme
       // edits affect every page on the site.
       {
+        href: "/design/fonts",
+        label: "Fonts",
+        icon: Palette,
+        show: has("roles.manage"),
+      },
+      {
         href: "/design/themes",
         label: "Themes",
         icon: Palette,

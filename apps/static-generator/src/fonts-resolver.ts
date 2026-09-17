@@ -29,6 +29,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { type FontMetadata, type FontRef, fontRef } from "@caelo-cms/font-service";
 import {
   buildFontFaceCss,
   extractThemeFontRequests,
@@ -71,6 +72,7 @@ export interface ResolveThemeFontsArgs {
   readonly publicBasePath: string;
   /** Injectable for tests; defaults to global fetch. */
   readonly fetcher?: typeof fetch;
+  readonly readFont?: (ref: FontRef) => Promise<{ metadata: FontMetadata; bytes: Uint8Array }>;
 }
 
 export interface ResolvedThemeFonts {
@@ -155,11 +157,78 @@ async function fetchFamily(
 export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<ResolvedThemeFonts> {
   const fetcher = args.fetcher ?? fetch;
   const requests = extractThemeFontRequests(args.tokens);
+  const pinnedFamilies = new Set<string>();
+  const pinnedCss: string[] = [];
+  const pinnedPreloads: string[] = [];
   const resolvedFaces: ResolvedFontFace[] = [];
   const files: { cachePath: string; relPath: string }[] = [];
   const unresolved: string[] = [];
 
+  const typography = (args.tokens as Record<string, unknown>).typography;
+  if (typography && typeof typography === "object") {
+    for (const [role, raw] of Object.entries(typography)) {
+      const entry = raw as {
+        $extensions?: Record<string, unknown>;
+        $value?: { fontFamily?: string; fontWeight?: number | string; fontStyle?: string };
+      };
+      const binding = entry?.$extensions?.["caelo.font"];
+      if (binding === undefined) continue;
+      const family = entry.$value?.fontFamily ?? role;
+      pinnedFamilies.add(family);
+      try {
+        const ref = fontRef.parse(binding);
+        if (!args.readFont) throw new Error("FontReaderUnavailable");
+        const { metadata, bytes } = await args.readFont(ref);
+        if (
+          family !== metadata.cssFamily ||
+          !metadata.embedding.web ||
+          metadata.sha256 !== ref.sha256 ||
+          createHash("sha256").update(bytes).digest("hex") !== ref.sha256
+        )
+          throw new Error("FontBindingMismatch");
+        const declaredWeight = entry.$value?.fontWeight ?? metadata.weight;
+        const weight =
+          declaredWeight === "normal" ? 400 : declaredWeight === "bold" ? 700 : declaredWeight;
+        const wght = metadata.axes.wght;
+        if (
+          typeof weight !== "number" ||
+          (wght ? weight < wght.min || weight > wght.max : weight !== metadata.weight) ||
+          (entry.$value?.fontStyle ?? "normal") !== metadata.style
+        )
+          throw new Error("FontFaceMismatch");
+        const relPath = `pinned/${ref.sha256}.${metadata.format}`;
+        const cachePath = join(args.cacheDir, relPath);
+        await mkdir(dirname(cachePath), { recursive: true });
+        await writeFile(cachePath, bytes);
+        const url = `${args.publicBasePath}/${relPath}`;
+        const format = { ttf: "truetype", otf: "opentype", woff: "woff", woff2: "woff2" }[
+          metadata.format
+        ];
+        pinnedCss.push(
+          `@font-face{font-family:${metadata.cssFamily};font-style:${metadata.style};font-weight:${wght ? `${wght.min} ${wght.max}` : metadata.weight};font-display:swap;src:url("${url}") format("${format}");}`,
+        );
+        if (!files.some((f) => f.relPath === relPath)) {
+          files.push({ cachePath, relPath });
+          pinnedPreloads.push(url);
+        }
+        const licensePath = `pinned/${ref.id}.license.txt`;
+        if (!files.some((f) => f.relPath === licensePath)) {
+          const licenseCache = join(args.cacheDir, licensePath);
+          await writeFile(licenseCache, metadata.license.text);
+          files.push({ cachePath: licenseCache, relPath: licensePath });
+        }
+      } catch (error) {
+        unresolved.push(`pinned:${role}:${error instanceof Error ? error.message : "unavailable"}`);
+      }
+    }
+  }
+
   for (const req of requests) {
+    if (pinnedFamilies.has(req.family)) continue;
+    if (req.family.startsWith("CaeloFont_")) {
+      unresolved.push(req.family);
+      continue;
+    }
     const key = requestKey(req);
     let manifest = memo.get(key) ?? null;
     if (manifest === null) {
@@ -194,8 +263,11 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
   }
 
   return {
-    css: resolvedFaces.length > 0 ? buildFontFaceCss(resolvedFaces) : "",
-    preloads: selectPreloadFaces(resolvedFaces).map((f) => f.publicUrl),
+    css: [...pinnedCss, buildFontFaceCss(resolvedFaces)].filter(Boolean).join("\n"),
+    preloads: [
+      ...pinnedPreloads,
+      ...selectPreloadFaces(resolvedFaces).map((f) => f.publicUrl),
+    ].slice(0, 2),
     files,
     unresolved,
   };

@@ -1,173 +1,146 @@
-# A central font service for Caelo
+# Caelo font service
 
-Status: proposal for the font-service work; the role-based AI guidance in this PR
-is implemented. This does not introduce a font registry, plugin grant or PDF API.
+The font service is a core Caelo capability. It works without installed plugins
+and before AI provider setup. Website authoring, themes, page previews, static
+builds and approved plugins use the same immutable font registry.
 
-## Problem and current implementation
+## Author workflow
 
-An operator asking for an expressive title needs a deliberate typographic
-composition. Changing the family name, increasing a body font or coloring each
-letter does not by itself produce that outcome. The Pictbook cover exercise
-also exposed the cost of each plugin bundling a separate font system.
+Open **Design → Fonts** (`/design/fonts`) to search imported faces, discover
+Google families, choose a file variant or upload a licensed TTF, OTF, WOFF or
+WOFF2 file. Uploads include the license text and explicit declarations of web
+and document embedding rights. Files are bounded to 8 MiB; collections and
+malformed containers are rejected. The admin image sets `BODY_SIZE_LIMIT=12M`
+to accommodate multipart overhead; custom runtimes should use the same limit.
 
-Caelo already has useful foundations:
+Specimens use the actual imported file through `FontFace.load()`. The server
+checks the specimen's characters against the file's cmap; an unavailable face
+or missing glyph produces an error rather than a specimen in a substitute font.
+Specimen text goes only to the Caelo server, never to Google. The theme editor
+uses the same loaded-face component for pinned fonts.
 
-- `packages/shared/src/themes.ts` validates typography composites; theme roles
-  in `$description` describe intended use. `theme-render.ts` emits family, size,
-  weight, leading and tracking variables. A `display` role can already be added.
-- `apps/admin/src/lib/components/theme/FontFamilyPicker.svelte` offers names from
-  the authenticated `/design/themes/api/fonts` catalog proxy. Its dropdown sets
-  `font-family`, but does not itself load those families; an uninstalled face
-  can therefore look like the browser fallback rather than a genuine specimen.
-- `apps/static-generator/src/fonts-resolver.ts` is shared by page preview and
-  deployment. It downloads Google font faces and serves local files, reports
-  unresolved families, and keeps preview/deploy resolution aligned.
-- The resolver currently models family and weight requests. Its cache identity
-  does not model a complete font asset revision, requested style, variable axes,
-  license evidence or export capability.
-- The plugin SDK has no shared font catalog/resolution interface. A plugin cannot
-  assume a website's WOFF2 resource is suitable for its PDF renderer.
+The Google catalog reports whether it is live, cached, a curated selection
+(no `GOOGLE_FONTS_API_KEY`), or temporarily unavailable. It never describes a
+family suggestion as an installed font. Acquisition downloads complete TTF
+faces and their actual `OFL.txt` from Google's official fonts repository; it
+supports that repository's `ofl` families. Other licensed fonts can be uploaded.
+No visitor browser requests Google Fonts when using pinned fonts.
 
-Keep these foundations. Book layouts, title lettering, PDF composition and print
-profiles remain in Pictbook, never in core CMS tables or services.
+## Immutable identity and storage
 
-## Design behavior implemented in this PR
+`packages/font-service` owns parsing, catalog acquisition and the named Query
+API operations. `font_assets` in `cms_admin` stores each file, its SHA-256,
+provenance, license, family/style/weight, variable axes, glyph count and allowed
+embedding uses. Migration `0221_font_assets.sql` enables and forces RLS. There
+is no update/delete policy or mutable latest-version pointer: importing again
+creates a new ID, even for identical bytes with a different license declaration.
+Database backups therefore retain the font files as well as their metadata.
 
-The shared AI guidance now distinguishes sustained-reading text, structural
-headings and expressive display titles. The AI plans hierarchy, line breaks,
-weight and spacing, records role constraints, and chooses a restrained pairing
-appropriate to the brief. It preserves an existing brand unless a redesign is
-requested. Creation, cold-start setup, theme edits and the persistent theme
-context receive the same guidance.
+Old revisions remain available for historical theme documents and plugin
+revisions. There is intentionally no garbage collector or deletion API that
+could break an existing reference. OS/2 embedding/subsetting restrictions are
+combined with the supplied license declaration. Format compatibility and glyph
+coverage are checked for the actual consumer; web availability alone does not
+establish PDF compatibility.
 
-The AI must inspect actual loaded fonts, mobile wrapping and the author's own
-characters. Generated lettering remains a separately approved image treatment:
-it is not editable text, a font file, or a reusable site font. Keep accessible
-semantic text without a second visibly duplicated title.
+Operations:
 
-## Proposed Caelo font service
+| Operation | Purpose |
+| --- | --- |
+| `fonts.import` | Validate and persist a complete immutable face; audited |
+| `fonts.find` | Bounded search of installed revisions, with `hasMore` |
+| `fonts.inspect` | Read exact revision metadata and license |
+| `fonts.resolve` | Validate hash, web/document use, consumer formats and text |
+| `fonts.read_chunk` | Read up to 256 KiB from an exact revision |
 
-Caelo owns the font service as a core CMS capability. It must work on an
-installation with no plugins enabled. Caelo's own authoring, themes, modules,
-page preview and website deployment are its primary consumers. Plugins access
-that same service through the SDK; they do not own or activate the service.
+Font bytes are private. Authenticated management/preview routes enforce access;
+the plugin broker separately checks installation grants and author permission.
+Raw plugin Query API actors cannot read the core registry directly.
 
-The service owns catalog discovery, font imports, immutable face revisions,
-variant/coverage inspection, storage, local delivery and reference-aware
-retention. Theme tokens and module styles select fonts and define their visual
-roles; they do not create a second font registry. The admin interface, AI tools,
-preview renderer, deployment pipeline and plugin adapter must use the same
-resolution result and asset identity.
+## Themes, rendering and restoration
 
-### Caelo-native workflow
+Assign a face to body, heading, display or mono in the font library, or call:
 
-An operator can ask Caelo to choose an appropriate font pairing or bring an
-existing brand font. The AI inspects available families and variants, shows
-actual specimens with the site's copy, and assigns body, heading and optional
-display roles through the existing theme workflow. The operator can also inspect
-and manage these fonts directly in Caelo's design interface.
+```json
+{
+  "themeSlug": "site-default",
+  "fontBindings": {
+    "heading": { "id": "<font UUID>", "sha256": "<64 hex characters>" }
+  }
+}
+```
 
-Caelo resolves the selected faces, validates coverage and variants, and binds
-immutable font revisions to the design. Its page preview and published website
-use the same files and typography settings. Module editing uses those bindings
-through theme variables. Updates and undo preserve the referenced versions;
-unused asset cleanup must respect both saved designs and published deployments.
-Acquiring a font is distinct from publishing it: an import must not make a
-private brand font publicly accessible before the selected site is published.
+`themes.update_tokens` (AI: `set_theme_tokens`) validates the binding, sets the
+exact face's family/style/weight and stores the reference under the token's
+`$extensions["caelo.font"]`. It preserves size, leading and tracking. Existing
+theme locks, audit and snapshot emission remain in effect. Routine typography
+edits preserve the reference; explicitly changing the family clears it.
 
-All of this is required without Pictbook or another plugin. A plugin later
-requests the same face revision through an authorized SDK adapter, optionally
-for a separately validated use such as document embedding.
+A hash-derived CSS family separates different versions of the same named face.
+`resolveThemeFonts` is shared by page preview, genesis previews and static
+builds. Pinned references never fetch a replacement from the network. A missing
+revision, hash mismatch, forbidden embedding or incompatible face/weight is
+reported; it blocks deployment. The build copies only referenced font files
+and their license texts, not the font registry. Restoring an earlier exported
+DTCG theme document through `themes.import` restores its original references.
 
-A family listing should include source, classification, supported weights and
-styles, variable axes, language coverage, and known usage notes. Distinguish a
-catalog suggestion, a locally available face and a validated export asset.
-Expose catalog source/status when upstream lookup is unavailable; a small
-curated list is useful but must not masquerade as the full catalog.
+Legacy family-string themes continue using the existing Google resolver until
+explicitly pinned. Variable faces expose their axis ranges; the web resolver
+supports weights within `wght`. The service does not convert formats or produce
+static variable-font instances. Consumers state supported formats and use the
+chosen face's default instance unless they implement variation selection.
 
-Persist an immutable face revision with:
+## AI and plugin API
 
-- stable family/face identity and SHA-256 of the actual font bytes;
-- weight, style, supported axes and glyph coverage;
-- source/provenance and the accompanying license/attribution evidence;
-- available formats and validated uses (`web`, `document-embedding`), including
-  an explicit unknown/not-validated state;
-- tenant ownership/visibility, storage identity and references from saved designs.
+Core tools are `find_fonts`, `list_font_variants`, `acquire_font`, `inspect_font`
+and `preview_typography`. The latter validates the requested text/use and links
+to the real specimen UI. Theme guidance distinguishes sustained-reading body
+text, structural headings and expressive display text, including pairing,
+line breaks, weight, spacing, contrast and existing brand constraints.
 
-Theme and plugin documents can pin these revisions. Never change an old print
-export or published design because an upstream font file changed. Retain assets
-while a saved revision references them. Existing family-string theme tokens must
-remain readable; explicit resolution can add pins without rewriting old designs.
+Both release-signed and runtime-installed plugins can request `font_assets`.
+An external installation requires its normal exact-artifact Owner grant. The
+handle is available only in author invocations, not visitor/static rendering.
+Every call rechecks the active installation and the operator's `content.write`
+permission; stale handles stop working after revocation. The Deno sandbox stays
+in place. Read-only author previews may use the read-only handle.
 
-Do not promise PDF embedding based only on a catalog name, WOFF2 availability or
-an OS font. Validate the exact file, renderer format support, needed glyphs and
-recorded usage evidence. Missing glyphs or unsupported embedding should return
-an actionable error, not synthetic bold/italic or an unannounced substitute.
+```ts
+const face = await ctx.fonts.resolve({
+  id, sha256,
+  use: "document",
+  formats: ["ttf", "otf", "woff"],
+  text: "Grüße aus dem Bilderbuch"
+});
+const chunk = await ctx.fonts.readChunk({ id, sha256, offset: 0, length: 262144 });
+```
 
-### Caelo tools and additional SDK access (not yet shipped)
+The SDK also exposes `find` and `inspect`. Generic private plugin previews may
+reference `caelo-font:<uuid>:<sha256>` in font-face CSS. The host validates and
+expands these references to embedded font data after authorization, keeping
+large files outside sandbox RPC messages and retaining the existing restrictive
+preview CSP.
 
-- `find_fonts`: discover candidates by role, language, category and availability;
-  return enough context for the AI to choose without asking implementation questions.
-- `inspect_font`: report the exact face/version, coverage, variants, source and
-  validated uses. Do not present aesthetic suitability as a hard guarantee.
-- `preview_typography`: compare actual loaded faces using the author's text in
-  role-based specimens and mobile/desktop layouts. Keep private sample text local;
-  downloading a font does not require sending the text to a provider.
-- `ctx.fonts.resolve`: return a pinned descriptor and a bounded, authorized read
-  handle suitable for the requested use. No raw storage paths or arbitrary remote
-  URLs. Any conversion must be an explicit deterministic derivative, retain the
-  original, and record its source hash. Do not expose an unbounded parser to a plugin.
+Book revisions, cover design, PDF layout and print profiles stay in Pictbook.
+Pictbook 0.5.0 stores selected page/cover font references in its own revisions,
+validates text through `ctx.fonts`, verifies downloaded bytes and embeds the same
+face in PDFs. Its bundled defaults remain available when no custom face is
+selected. AI-generated lettering remains a separately requested image treatment,
+not a font service feature or a substitute for editable, accessible text.
 
-These names are discussion proposals, not shipped Caelo tools or SDK APIs. Separate
-local metadata reads from font acquisition/import. Reuse the theme read/write
-permissions for theme operations; font imports need explicit actor authority.
-Plugin access should follow the approved external-plugin capability model: a
-reviewed grant at installation, the same host-enforced API for internal and
-external plugins, tenant scoping and immediate revocation. Routine authorized
-font reads should not prompt again on every use.
+## Validation
 
-Uploaded font files need the same bounded validation and provenance treatment
-as downloaded files. Preview private uploads through authenticated routes; a
-published web design may publish only the explicitly selected font assets.
-Bundled plugin fonts remain a supported offline option with their notices.
+- Real font parsing, German glyph coverage, missing characters, container limits
+  and fixed-origin/bounded network reads.
+- PostgreSQL import/search/resolve/chunks, immutable rows, plugin actor denial,
+  theme metadata preservation, restoration and actual static-build bytes/license
+  retention; unselected revisions are excluded.
+- Release-plugin author access and live operator/plugin revocation.
+- External Pictbook installation in Deno, shared-font preview, 24-page PDF,
+  restart, visitor denial and live font-capability revocation.
+- Browser import, actual FontFace loading, private file access and missing-glyph
+  feedback (`apps/admin/e2e/font-service.browser.ts`); a separate manual browser
+  run also exercises real Google acquisition and theme assignment.
 
-## Rollout and acceptance
-
-1. **Role guidance (this PR):** reuse current token and resolver behavior. No new
-   permissions, downloads, dependencies or database schema.
-2. **Caelo font discovery and management:** consolidate the catalog, show its status,
-   load real faces in the picker, and expose discovery to the AI. Acceptance:
-   `document.fonts.load/check` with the requested text, actual face network
-   evidence, and a visible error instead of a mislabeled fallback sample.
-3. **Core resolution and delivery:** add the versioned registry/read operations,
-   import validation and bindings consumed by Caelo preview and deployment.
-   Acceptance: stable hashes, exact weight/style, accent/non-Latin fixtures,
-   unavailable provider, offline cache, malformed/oversized files, tenant isolation,
-   and revision-aware retention tests. Do not silently map unsupported weights.
-4. **Plugin access to the Caelo service:** introduce the grant and SDK descriptors only after the
-   asset contract is reviewed. Acceptance: same API for internal/external plugins,
-   denied reads without a grant, revocation, no arbitrary URL/path fetch, no private
-   font leakage into a public preview, and restart-safe pinned resolution.
-5. **Pictbook integration:** choose a real display/body pairing from that service,
-   embed the selected validated face and retain its asset identity in each book
-   revision/export. Verify selectable Unicode text, embedding, layout/overflow,
-   glyph coverage and raster comparison in PDF. PDF-specific checks stay in Pictbook.
-
-The core milestone must pass a browser flow with **all plugins disabled**:
-import or acquire a font, inspect genuine specimens, assign theme roles, render
-a page with the exact face/weight, publish the same font bytes, and restore a
-previous design with its pinned fonts. Check that unrelated/private font files
-are absent from the published output. This is a Caelo acceptance gate, not a
-plugin integration test. The SDK milestone additionally proves that a plugin
-resolves the same asset revision rather than a separate download or catalog.
-
-For the current Mila cover, the requested custom lettering is image artwork;
-it does not replace this font work. The author line and summary remain real text.
-
-## Review decisions
-
-Core ownership is settled. Decide the package boundary for the Caelo service
-without introducing the existing admin-core/static-generator dependency cycle; whether theme face pins live in
-DTCG extensions or a companion structured binding; and the minimum upload/export
-formats for the first release. Avoid committing to automatic font conversion or
-universal PDF support before a renderer-backed compatibility test exists.
+References: [Google Fonts repository](https://github.com/google/fonts),
+[Google catalog API](https://developers.google.com/fonts/docs/developer_api).

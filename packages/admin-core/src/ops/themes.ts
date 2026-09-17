@@ -30,6 +30,7 @@
  * live (handled by the chat.publish path's existing snapshot replay).
  */
 
+import { fontRef, resolveFontOp } from "@caelo-cms/font-service";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   applyDtcgWrites,
@@ -325,6 +326,7 @@ const updateTokensInput = z
      * `{$value, $type}` leaves.
      */
     set: z.record(z.string(), z.unknown()).optional(),
+    fontBindings: z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9-]{0,79}$/), fontRef).optional(),
     /**
      * Canonical DTCG paths to drop. No normalization — caller must
      * know the path (looked up via get_theme first if needed).
@@ -332,9 +334,15 @@ const updateTokensInput = z
     remove: z.array(z.string()).optional(),
   })
   .strict()
-  .refine((v) => (v.set && Object.keys(v.set).length > 0) || (v.remove && v.remove.length > 0), {
-    message: "pass at least one of `set` or `remove`",
-  });
+  .refine(
+    (v) =>
+      (v.set && Object.keys(v.set).length > 0) ||
+      (v.remove && v.remove.length > 0) ||
+      (v.fontBindings && Object.keys(v.fontBindings).length > 0),
+    {
+      message: "pass at least one of `set` or `remove`",
+    },
+  );
 
 export const updateThemeTokensOp = defineOperation({
   name: "themes.update_tokens",
@@ -416,6 +424,39 @@ export const updateThemeTokensOp = defineOperation({
           nextTokens = result.tokens;
           removed.push(path);
         }
+      }
+    }
+
+    if (input.fontBindings) {
+      nextTokens = structuredClone(nextTokens);
+      const doc = nextTokens as Record<string, unknown>;
+      const typography = (doc.typography ?? {}) as Record<string, unknown>;
+      doc.typography = typography;
+      for (const [role, ref] of Object.entries(input.fontBindings)) {
+        const resolved = await resolveFontOp.handler(
+          ctx,
+          { ...ref, use: "web", text: "", formats: ["ttf", "otf", "woff", "woff2"] },
+          tx,
+        );
+        if (!resolved.ok) return resolved;
+        const face = resolved.value;
+        const previous = typography[role] as
+          | { $value?: unknown; $extensions?: Record<string, unknown> }
+          | undefined;
+        if (previous && typeof previous.$value === "string")
+          throw new Error("Bind the concrete typography role instead of an alias");
+        typography[role] = {
+          ...previous,
+          $type: "typography",
+          $value: {
+            ...(typeof previous?.$value === "object" ? previous.$value : {}),
+            fontFamily: face.cssFamily,
+            fontWeight: face.weight,
+            fontStyle: face.style,
+          },
+          $extensions: { ...previous?.$extensions, "caelo.font": ref },
+        };
+        canonicalPathsWritten = [...canonicalPathsWritten, `typography.${role}`];
       }
     }
 

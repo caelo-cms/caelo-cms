@@ -13,6 +13,7 @@
 import { execute } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
+  fontRef,
   listThemeCssVarNames,
   scanCssVars,
   type ThemeDocument,
@@ -37,6 +38,7 @@ const setThemeTokensToolInput = z
       .regex(/^[a-z0-9][a-z0-9-]*$/)
       .optional(),
     /** Loose-name → value map. Server normalizes to canonical paths. */
+    fontBindings: z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9-]{0,79}$/), fontRef).optional(),
     set: z.record(z.string(), z.unknown()).optional(),
     /** Canonical DTCG paths to drop. */
     remove: z.array(z.string()).optional(),
@@ -49,6 +51,7 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
   description:
     "Update theme tokens for one theme. Accepts loose names (`primaryColor`, `fontHeading`, " +
     "`spacingLg`) — server normalizes to canonical paths and returns what was written. " +
+    "Use fontBindings: {body: {id, sha256}, heading: {id, sha256}} from find_fonts/acquire_font to pin exact font files. " +
     "Pass `set` to add/replace tokens, `remove` to drop them. Works with the active theme " +
     "by default; pass `themeSlug` to target a specific theme. For a complete theme " +
     "replacement, use `set_theme_tokens` with all desired tokens (it's an upsert per token, " +
