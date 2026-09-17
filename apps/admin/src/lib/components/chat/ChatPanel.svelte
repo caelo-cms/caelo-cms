@@ -40,6 +40,8 @@
   import ToolCardRouter from "./tool-cards/ToolCardRouter.svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "./types.js";
 
+  import { readPluginPreviewReference, type PluginPreviewSelection } from "@caelo-cms/shared";
+
   interface Chip {
     moduleId: string;
     selector: string;
@@ -68,6 +70,8 @@
   };
 
   interface Props {
+    previewSelection?: PluginPreviewSelection | null;
+    onClearPreviewSelection?: () => void;
     session: ChatSession;
     initialMessages: ChatMessage[];
     modules: ChatModule[];
@@ -119,6 +123,8 @@
     compact = false,
     firstRunSuggestions = [],
     activePageId = null,
+    previewSelection = null,
+    onClearPreviewSelection,
     onToolResult,
     onSpendUpdate,
     debug = false,
@@ -1233,6 +1239,7 @@
           id: `local-${Date.now()}`,
           role: "user",
           content: text,
+          ...(!isOverride && previewSelection ? { previewSelection } : {}),
           // issue #29 — auto-injected nudges render as muted status notes,
           // not "You:". Optimistically mark them so the operator never sees
           // the message flash as their own before the reload confirms it.
@@ -1255,6 +1262,7 @@
             : {
                 content: text,
                 chips: sentChips,
+                ...(!isOverride && previewSelection ? { previewSelection } : {}),
                 // issue #29 — provenance so the persisted row + reload keep the
                 // system-origin status treatment durable across refresh.
                 ...(origin ? { origin } : {}),
@@ -1841,7 +1849,9 @@
                 >
                   <strong>{m.role === "user" ? "You" : "AI"}:</strong>
                   {#if m.role === "user"}
-                    <pre class="m-0 whitespace-pre-wrap font-sans">{m.content}</pre>
+                    {@const reference = readPluginPreviewReference(m.content)}
+                    <pre class="m-0 whitespace-pre-wrap font-sans">{reference.text}</pre>
+                    {#if reference.selection ?? m.previewSelection}<span class="mt-1 inline-block rounded-full bg-primary/10 px-2 py-0.5 text-xs">{(reference.selection ?? m.previewSelection)?.label}</span>{/if}
                     {#if m.attachments && m.attachments.length > 0}
                       <!-- issue #190 — persisted attachment thumbnails. -->
                       <div class="mt-2 flex flex-wrap gap-2" data-testid="chat-message-attachments">
@@ -2000,6 +2010,12 @@
           {/if}
         </div>
 
+        {#if previewSelection}
+          <div class="flex items-center gap-2 px-2 text-xs" data-testid="plugin-selection-chip">
+            <span class="rounded-full bg-primary/10 px-2 py-1">{previewSelection.label}</span>
+            <button type="button" onclick={() => onClearPreviewSelection?.()} aria-label="Remove preview reference">×</button>
+          </div>
+        {/if}
         {#if chips.length > 0}
           <div class="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
             <span class="self-center"><em>Module references attached:</em></span>

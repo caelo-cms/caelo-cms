@@ -9,7 +9,11 @@
 
 import type { DatabaseAdapter, OperationRegistry, QueryError } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
-import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
+import {
+  type ChatSendMessageInput,
+  type ExecutionContext,
+  PLUGIN_PREVIEW_REFERENCE_MARKER,
+} from "@caelo-cms/shared";
 
 import type { AccumulatedServerToolCall, AccumulatedToolCall } from "./types.js";
 
@@ -46,7 +50,11 @@ export interface LoadedSession {
 export function buildUserContent(input: ChatSendMessageInput): string {
   // content is optional as of Plan B (resume turns carry none) but this helper
   // is only reached on the operator-message path, where content is present.
-  const content = input.content ?? "";
+  const content =
+    (input.content ?? "") +
+    (input.previewSelection
+      ? PLUGIN_PREVIEW_REFERENCE_MARKER + JSON.stringify(input.previewSelection)
+      : "");
   return input.chips.length > 0
     ? [
         content,
