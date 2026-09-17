@@ -1,4 +1,4 @@
-# Typography as a shared design capability
+# A central font service for Caelo
 
 Status: proposal for the font-service work; the role-based AI guidance in this PR
 is implemented. This does not introduce a font registry, plugin grant or PDF API.
@@ -45,10 +45,39 @@ characters. Generated lettering remains a separately approved image treatment:
 it is not editable text, a font file, or a reusable site font. Keep accessible
 semantic text without a second visibly duplicated title.
 
-## Proposed shared font service
+## Proposed Caelo font service
 
-One service should supply the theme picker, AI discovery tools, preview/deploy
-and approved external plugins. Do not add independent catalogs to each surface.
+Caelo owns the font service as a core CMS capability. It must work on an
+installation with no plugins enabled. Caelo's own authoring, themes, modules,
+page preview and website deployment are its primary consumers. Plugins access
+that same service through the SDK; they do not own or activate the service.
+
+The service owns catalog discovery, font imports, immutable face revisions,
+variant/coverage inspection, storage, local delivery and reference-aware
+retention. Theme tokens and module styles select fonts and define their visual
+roles; they do not create a second font registry. The admin interface, AI tools,
+preview renderer, deployment pipeline and plugin adapter must use the same
+resolution result and asset identity.
+
+### Caelo-native workflow
+
+An operator can ask Caelo to choose an appropriate font pairing or bring an
+existing brand font. The AI inspects available families and variants, shows
+actual specimens with the site's copy, and assigns body, heading and optional
+display roles through the existing theme workflow. The operator can also inspect
+and manage these fonts directly in Caelo's design interface.
+
+Caelo resolves the selected faces, validates coverage and variants, and binds
+immutable font revisions to the design. Its page preview and published website
+use the same files and typography settings. Module editing uses those bindings
+through theme variables. Updates and undo preserve the referenced versions;
+unused asset cleanup must respect both saved designs and published deployments.
+Acquiring a font is distinct from publishing it: an import must not make a
+private brand font publicly accessible before the selected site is published.
+
+All of this is required without Pictbook or another plugin. A plugin later
+requests the same face revision through an authorized SDK adapter, optionally
+for a separately validated use such as document embedding.
 
 A family listing should include source, classification, supported weights and
 styles, variable axes, language coverage, and known usage notes. Distinguish a
@@ -75,7 +104,7 @@ an OS font. Validate the exact file, renderer format support, needed glyphs and
 recorded usage evidence. Missing glyphs or unsupported embedding should return
 an actionable error, not synthetic bold/italic or an unannounced substitute.
 
-### Proposed tools and SDK contract (not yet shipped)
+### Caelo tools and additional SDK access (not yet shipped)
 
 - `find_fonts`: discover candidates by role, language, category and availability;
   return enough context for the AI to choose without asking implementation questions.
@@ -89,7 +118,7 @@ an actionable error, not synthetic bold/italic or an unannounced substitute.
   URLs. Any conversion must be an explicit deterministic derivative, retain the
   original, and record its source hash. Do not expose an unbounded parser to a plugin.
 
-These names are discussion proposals, not APIs a plugin may call today. Separate
+These names are discussion proposals, not shipped Caelo tools or SDK APIs. Separate
 local metadata reads from font acquisition/import. Reuse the theme read/write
 permissions for theme operations; font imports need explicit actor authority.
 Plugin access should follow the approved external-plugin capability model: a
@@ -106,15 +135,16 @@ Bundled plugin fonts remain a supported offline option with their notices.
 
 1. **Role guidance (this PR):** reuse current token and resolver behavior. No new
    permissions, downloads, dependencies or database schema.
-2. **Honest specimens and discovery:** consolidate the catalog, show its status,
+2. **Caelo font discovery and management:** consolidate the catalog, show its status,
    load real faces in the picker, and expose discovery to the AI. Acceptance:
    `document.fonts.load/check` with the requested text, actual face network
    evidence, and a visible error instead of a mislabeled fallback sample.
-3. **Versioned assets:** add the registry/read operations and import validation.
+3. **Core resolution and delivery:** add the versioned registry/read operations,
+   import validation and bindings consumed by Caelo preview and deployment.
    Acceptance: stable hashes, exact weight/style, accent/non-Latin fixtures,
    unavailable provider, offline cache, malformed/oversized files, tenant isolation,
    and revision-aware retention tests. Do not silently map unsupported weights.
-4. **Plugin bridge:** introduce the grant and SDK descriptors only after the
+4. **Plugin access to the Caelo service:** introduce the grant and SDK descriptors only after the
    asset contract is reviewed. Acceptance: same API for internal/external plugins,
    denied reads without a grant, revocation, no arbitrary URL/path fetch, no private
    font leakage into a public preview, and restart-safe pinned resolution.
@@ -123,13 +153,21 @@ Bundled plugin fonts remain a supported offline option with their notices.
    revision/export. Verify selectable Unicode text, embedding, layout/overflow,
    glyph coverage and raster comparison in PDF. PDF-specific checks stay in Pictbook.
 
+The core milestone must pass a browser flow with **all plugins disabled**:
+import or acquire a font, inspect genuine specimens, assign theme roles, render
+a page with the exact face/weight, publish the same font bytes, and restore a
+previous design with its pinned fonts. Check that unrelated/private font files
+are absent from the published output. This is a Caelo acceptance gate, not a
+plugin integration test. The SDK milestone additionally proves that a plugin
+resolves the same asset revision rather than a separate download or catalog.
+
 For the current Mila cover, the requested custom lettering is image artwork;
 it does not replace this font work. The author line and summary remain real text.
 
 ## Review decisions
 
-Decide the registry owner/package without introducing the existing
-admin-core/static-generator dependency cycle; whether theme face pins live in
+Core ownership is settled. Decide the package boundary for the Caelo service
+without introducing the existing admin-core/static-generator dependency cycle; whether theme face pins live in
 DTCG extensions or a companion structured binding; and the minimum upload/export
 formats for the first release. Avoid committing to automatic font conversion or
 universal PDF support before a renderer-backed compatibility test exists.

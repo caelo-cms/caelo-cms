@@ -193,4 +193,6 @@ roles, including sizes, supported weights, line breaks and usage constraints.
 The role guidance is shared by creation, edits, setup and the author context.
 Actual font loading must be checked; a family name in a dropdown is not a specimen.
 See [the typography strategy](./typography-strategy.md) for the current font
-pipeline and the proposed shared catalog, versioned assets and plugin interface.
+pipeline and the proposed central Caelo font service: catalog, font management,
+versioned assets and shared preview/deployment resolution. Plugins consume that
+core service through an additional SDK interface; it works without plugins.
