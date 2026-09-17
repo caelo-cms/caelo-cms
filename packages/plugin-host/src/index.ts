@@ -56,6 +56,7 @@ export {
   setPluginDisabled,
   type VisitorDispatchContext,
 } from "./dispatch.js";
+export { resolvePreviewFonts } from "./font-preview.js";
 export {
   type CollectedContributions,
   collectContributions,

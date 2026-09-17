@@ -12,7 +12,9 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { TYPOGRAPHY_COMPOSITION_HINTS } from "../theme-guidance.js";
 import { proposeCreateThemeTool } from "../tools/propose-tools-batch.js";
+import { updateThemeTokensTool } from "../tools/update-theme-tokens.js";
 
 /** Minimal-but-realistic composed document (valid DTCG shapes). */
 const BRAND_DOC = {
@@ -104,5 +106,35 @@ describe("propose_create_theme tool boundary (issue #112)", () => {
     // mention allowed.
     expect(description).not.toContain("shadcn-default");
     expect(description).not.toContain("preset:");
+  });
+});
+
+describe("typography intent at authoring boundaries", () => {
+  it("provides the same design guidance during creation and later edits", () => {
+    expect(proposeCreateThemeTool.description).toContain(TYPOGRAPHY_COMPOSITION_HINTS);
+    expect(updateThemeTokensTool.description).toContain(TYPOGRAPHY_COMPOSITION_HINTS);
+  });
+  it("accepts a described display role alongside reading typography", () => {
+    const result = proposeCreateThemeTool.schema.safeParse({
+      ...VALID_INPUT,
+      tokens: {
+        ...BRAND_DOC,
+        typography: {
+          ...BRAND_DOC.typography,
+          display: {
+            $type: "typography",
+            $description: "Expressive hero titles only; never body text.",
+            $value: {
+              fontFamily: "Playfair Display, serif",
+              fontSize: "3rem",
+              fontWeight: 700,
+              lineHeight: 1.1,
+              letterSpacing: "-0.02em",
+            },
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
   });
 });

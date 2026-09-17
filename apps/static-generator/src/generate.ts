@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+import { fontReader } from "@caelo-cms/font-service";
 
 /**
  * Static generator entry point. Takes a transaction handle on `cms_admin`
@@ -529,6 +530,11 @@ export async function generateSite(args: {
   let themeFontFiles: readonly { cachePath: string; relPath: string }[] = [];
   if (activeTheme !== undefined) {
     const resolved = await resolveThemeFonts({
+      readFont: fontReader(tx, {
+        actorId: "00000000-0000-0000-0000-00000000ffff",
+        actorKind: "system",
+        requestId: "font-build",
+      }),
       tokens: activeTheme.tokens,
       cacheDir: defaultFontsCacheDir(root),
       publicBasePath: "/_assets/fonts",

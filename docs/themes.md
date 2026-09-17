@@ -185,3 +185,14 @@ active theme's bound assets at render time. Unbound slots stay loud-raw
   the live-AI on-brand assertion lives in
   `apps/admin/e2e-livedit/scenario-homepage.browser.ts`
   (see [internal/e2e-livedit.md](./internal/e2e-livedit.md)).
+
+## Typography intent and font-service direction
+
+The AI should compose body, heading and optional display typography as separate
+roles, including sizes, supported weights, line breaks and usage constraints.
+The role guidance is shared by creation, edits, setup and the author context.
+Actual font loading must be checked; a family name in a dropdown is not a specimen.
+See [the typography strategy](./typography-strategy.md) for the current font
+pipeline and the proposed central Caelo font service: catalog, font management,
+versioned assets and shared preview/deployment resolution. Plugins consume that
+core service through an additional SDK interface; it works without plugins.

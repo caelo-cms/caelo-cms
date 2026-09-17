@@ -29,6 +29,7 @@ import type { LayoutServerLoad } from "./$types";
  */
 
 const AI_REDIRECT_ALLOWED_PREFIXES = [
+  "/design/fonts", // Core font management and previews work before AI/provider setup.
   "/security/ai", // landing page itself + sub-routes
   "/security", // other Owner-only setup screens (deployments etc.)
   "/logout",

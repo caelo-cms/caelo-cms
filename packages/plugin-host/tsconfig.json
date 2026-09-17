@@ -8,6 +8,7 @@
   },
   "include": ["src/**/*"],
   "references": [
+    { "path": "../font-service" },
     { "path": "../shared" },
     { "path": "../query-api" },
     { "path": "../plugin-sdk" },

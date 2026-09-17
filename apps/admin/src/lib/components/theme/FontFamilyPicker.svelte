@@ -110,7 +110,6 @@
           role="option"
           aria-selected={value === f.family}
           class="block w-full rounded px-2 py-1 text-left text-xs hover:bg-accent hover:text-accent-foreground"
-          style={`font-family: ${JSON.stringify(f.family)}, ${f.category ?? "sans-serif"};`}
           onmousedown={(e) => {
             // mousedown fires before blur — prevents the dropdown from
             // closing before pick() runs.

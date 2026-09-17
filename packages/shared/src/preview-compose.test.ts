@@ -5,6 +5,7 @@ import {
   ComposeError,
   composePagePreview,
   composePageWithLayout,
+  fontsHeadFragment,
   tagModuleId,
 } from "./preview-compose.js";
 
@@ -634,4 +635,19 @@ describe("composePageWithLayout", () => {
     const matches = out.html.match(/caelo-slot[^>]*name=["']content["']/g) ?? [];
     expect(matches.length).toBe(1);
   });
+});
+
+// A complete imported TTF must not be advertised as WOFF2 in preload hints.
+it("preloads pinned TTF/OTF/WOFF files with their actual format", () => {
+  const html = fontsHeadFragment({
+    css: "",
+    preloads: [
+      "/_assets/fonts/pinned/a.ttf",
+      "/_assets/fonts/pinned/b.otf",
+      "/_assets/fonts/pinned/c.woff",
+    ],
+  });
+  expect(html).toContain('type="font/ttf"');
+  expect(html).toContain('type="font/otf"');
+  expect(html).toContain('type="font/woff"');
 });

@@ -49,6 +49,21 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
         return images.generate(args[0] as Parameters<typeof images.generate>[0]);
     }
   }
+  if (method.startsWith("fonts.")) {
+    const fonts = (ctx as PluginContextTier1).fonts;
+    if (!fonts) throw new Error("SandboxCapabilityDenied: font_assets");
+    if (args.length !== 1) throw new Error("SandboxArgumentsInvalid");
+    switch (method) {
+      case "fonts.find":
+        return fonts.find(args[0] as Parameters<typeof fonts.find>[0]);
+      case "fonts.inspect":
+        return fonts.inspect(args[0] as Parameters<typeof fonts.inspect>[0]);
+      case "fonts.resolve":
+        return fonts.resolve(args[0] as Parameters<typeof fonts.resolve>[0]);
+      case "fonts.readChunk":
+        return fonts.readChunk(args[0] as Parameters<typeof fonts.readChunk>[0]);
+    }
+  }
   if (method.startsWith("privateFiles.")) {
     const files = (ctx as PluginContextTier1).privateFiles;
     if (!files) throw new Error("SandboxCapabilityDenied: private_files");
@@ -227,6 +242,7 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
       invocation: context.invocation,
       hasAdminQuery: Boolean((context as PluginContextTier1).adminQuery),
       hasImages: Boolean((context as PluginContextTier1).images),
+      hasFonts: Boolean((context as PluginContextTier1).fonts),
       hasPrivateFiles: Boolean((context as PluginContextTier1).privateFiles),
       visitor: {
         id: context.visitor.id,

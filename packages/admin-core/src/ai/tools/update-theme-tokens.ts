@@ -13,12 +13,18 @@
 import { execute } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
+  fontRef,
   listThemeCssVarNames,
   scanCssVars,
   type ThemeDocument,
 } from "@caelo-cms/shared";
 import { z } from "zod";
-import { SPACING_RHYTHM_HINTS, TOKEN_ROLE_HINTS, TOKEN_SHAPE_HINTS } from "../theme-guidance.js";
+import {
+  SPACING_RHYTHM_HINTS,
+  TOKEN_ROLE_HINTS,
+  TOKEN_SHAPE_HINTS,
+  TYPOGRAPHY_COMPOSITION_HINTS,
+} from "../theme-guidance.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -32,6 +38,7 @@ const setThemeTokensToolInput = z
       .regex(/^[a-z0-9][a-z0-9-]*$/)
       .optional(),
     /** Loose-name → value map. Server normalizes to canonical paths. */
+    fontBindings: z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9-]{0,79}$/), fontRef).optional(),
     set: z.record(z.string(), z.unknown()).optional(),
     /** Canonical DTCG paths to drop. */
     remove: z.array(z.string()).optional(),
@@ -44,13 +51,14 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
   description:
     "Update theme tokens for one theme. Accepts loose names (`primaryColor`, `fontHeading`, " +
     "`spacingLg`) — server normalizes to canonical paths and returns what was written. " +
+    "Use fontBindings: {body: {id, sha256}, heading: {id, sha256}} from find_fonts/acquire_font to pin exact font files. " +
     "Pass `set` to add/replace tokens, `remove` to drop them. Works with the active theme " +
     "by default; pass `themeSlug` to target a specific theme. For a complete theme " +
     "replacement, use `set_theme_tokens` with all desired tokens (it's an upsert per token, " +
     "not per-theme). When ambiguous (a bare name with no value-shape signal) the tool " +
     "returns `UnknownTokenName` with did-you-mean suggestions; retry with the canonical " +
     "path. " +
-    `${TOKEN_SHAPE_HINTS} ${SPACING_RHYTHM_HINTS} ${TOKEN_ROLE_HINTS}`,
+    `${TOKEN_SHAPE_HINTS} ${SPACING_RHYTHM_HINTS} ${TOKEN_ROLE_HINTS} ${TYPOGRAPHY_COMPOSITION_HINTS}`,
   schema: setThemeTokensToolInput,
   // issue #251 (WS5) — inputSchema derived from `schema` at registration.
   handler: async (ctx, input, toolCtx) => {

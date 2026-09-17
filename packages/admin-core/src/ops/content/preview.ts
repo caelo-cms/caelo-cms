@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+import { fontReader } from "@caelo-cms/font-service";
 
 /**
  * Render a page to composed HTML for the admin preview iframe.
@@ -974,6 +975,7 @@ export const renderPagePreviewOp = defineOperation({
     const fontMarkers: string[] = [];
     if (composeTheme !== undefined) {
       const resolvedFonts = await resolveThemeFonts({
+        readFont: fontReader(tx, ctx),
         tokens: composeTheme.tokens,
         cacheDir: defaultFontsCacheDir(process.cwd()),
         publicBasePath: "/_caelo/fonts",

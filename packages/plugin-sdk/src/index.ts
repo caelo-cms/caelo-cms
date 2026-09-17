@@ -26,6 +26,7 @@
  * module and ONLY this module — the validator enforces it.
  */
 
+import type { FontMetadata, FontRef } from "@caelo-cms/shared";
 import { z } from "zod";
 
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
@@ -96,6 +97,7 @@ export const pluginCapability = z.enum([
   "client_assets",
   "data_lists",
   "companion_skills",
+  "font_assets",
   "private_files",
   "image_generation",
 ]);
@@ -744,7 +746,28 @@ export interface PluginImages {
 
 /** Extended SDK context (legacy name). The host attaches only authorized handles;
  * external plugins additionally require exact receipts and a supported broker. */
+/** Read access to Caelo's immutable core font registry; author invocations only. */
+export interface PluginFonts {
+  find(input: {
+    query?: string;
+    limit?: number;
+  }): Promise<{ fonts: FontMetadata[]; hasMore: boolean }>;
+  inspect(input: FontRef): Promise<FontMetadata>;
+  resolve(
+    input: FontRef & {
+      use: "web" | "document";
+      text?: string;
+      formats: ("ttf" | "otf" | "woff" | "woff2")[];
+    },
+  ): Promise<FontMetadata>;
+  readChunk(
+    input: FontRef & { offset: number; length: number },
+  ): Promise<{ dataBase64: string; sizeBytes: number; eof: boolean }>;
+}
+export type { FontMetadata, FontRef } from "@caelo-cms/shared";
+
 export interface PluginContextTier1 extends PluginContext {
+  readonly fonts?: PluginFonts;
   /** #389 — attached when the manifest holds `cms_admin_schema`. */
   readonly adminQuery?: PluginAdminQuery;
   readonly privateFiles?: PluginPrivateFiles;

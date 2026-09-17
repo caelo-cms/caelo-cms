@@ -39,6 +39,7 @@ COPY apps/static-generator/package.json apps/static-generator/
 COPY packages/shared/package.json packages/shared/
 COPY packages/query-api/package.json packages/query-api/
 COPY packages/admin-core/package.json packages/admin-core/
+COPY packages/font-service/package.json packages/font-service/
 COPY packages/plugin-sdk/package.json packages/plugin-sdk/
 COPY packages/plugin-component-kit/package.json packages/plugin-component-kit/
 COPY packages/plugin-sandbox/package.json packages/plugin-sandbox/
@@ -196,6 +197,8 @@ COPY --from=builder /repo/apps/static-generator ./apps/static-generator
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# Multipart font imports: 8 MiB font + license and form overhead.
+ENV BODY_SIZE_LIMIT=12M
 EXPOSE 3000
 
 WORKDIR /app/apps/admin
