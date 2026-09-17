@@ -283,6 +283,14 @@ import {
   commentArchiveListForPageOp,
 } from "./ops/plugins/comment_archive.js";
 import {
+  approvePluginInstallationOp,
+  finalizePluginInstallationOp,
+  getApprovedPluginInstallationOp,
+  listPluginInstallationsOp,
+  revokePluginCapabilityOp,
+  stagePluginInstallationOp,
+} from "./ops/plugins/installations.js";
+import {
   activatePluginOp,
   disablePluginOp,
   getPluginOp,
@@ -457,6 +465,12 @@ import {
 } from "./ops/users.js";
 
 export function registerAdminOps(registry: OperationRegistry): void {
+  registry.register(stagePluginInstallationOp);
+  registry.register(approvePluginInstallationOp);
+  registry.register(getApprovedPluginInstallationOp);
+  registry.register(finalizePluginInstallationOp);
+  registry.register(revokePluginCapabilityOp);
+  registry.register(listPluginInstallationsOp);
   registry.register(createFirstOwnerOp);
   registry.register(isSetupCompleteOp);
   registry.register(insertBootstrapTokenOp);

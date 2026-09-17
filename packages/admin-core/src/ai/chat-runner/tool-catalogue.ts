@@ -72,6 +72,8 @@ export type FilteredTool = ToolDefinition & {
    *  operation only after the Owner's in-chat Approve — plugin tools no
    *  longer bypass the approvals surface. */
   pluginGated?: { pluginSlug: string; operationName: string };
+  /** Host callback: persist the external installation binding before displaying a card. */
+  prepareApproval?: (toolCallId: string, args: unknown) => Promise<void>;
 };
 
 /**

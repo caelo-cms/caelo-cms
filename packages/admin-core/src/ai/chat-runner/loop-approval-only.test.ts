@@ -96,6 +96,7 @@ describe("runToolLoop — approval-only turn", () => {
     const provider = new ApprovalOnlyProvider();
     const ctx: ExecutionContext = { actorId: "op-1", actorKind: "human", requestId: "r1" };
     const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0 };
+    const prepared: string[] = [];
     const gen = runToolLoop({
       registry: fixture.registry,
       adapter: fixture.adapter,
@@ -113,7 +114,17 @@ describe("runToolLoop — approval-only turn", () => {
       chatBranchId: "cb-1",
       abortSignal: undefined,
       systemChunks: "",
-      filteredTools: [],
+      filteredTools: [
+        {
+          name: "set_locales",
+          description: "Set locales",
+          inputSchema: { type: "object" },
+          prepareApproval: async (id, args) => {
+            expect(args).toEqual({ locales: [] });
+            prepared.push(id);
+          },
+        },
+      ],
       initialMessages: [{ role: "user", content: "add German to the site" }],
       compactionThresholdTokens: 600_000,
       maxLoops: 5,
@@ -133,6 +144,7 @@ describe("runToolLoop — approval-only turn", () => {
         result = step.value;
         break;
       }
+      if (step.value.kind === "tool-approval-request") expect(prepared).toEqual(["tu-locales-1"]);
       events.push(step.value);
     }
 

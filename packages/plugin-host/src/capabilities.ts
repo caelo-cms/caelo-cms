@@ -10,9 +10,8 @@
  *
  * Capability gating: `ctx.cms` / `ctx.ai` / `ctx.snapshots` are only attached
  * if the plugin's manifest declares the matching `requestedCapabilities`.
- * Runtime-authored plugins NEVER get these — provenance is the grantability
- * ceiling (#388); the function returns the locked base `PluginContext` for
- * them regardless of the manifest.
+ * External plugins require exact Owner receipts as well as a supported broker.
+ * Author storage is never attached to a visitor or render invocation.
  */
 
 import type {
@@ -35,9 +34,13 @@ import type {
 import { execute } from "@caelo-cms/query-api";
 import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
+import type { AuthorDispatchContext, LoadedPlugin, PluginHostInfra } from "./dispatch.js";
+import { withExternalAuthorization } from "./external-authorization.js";
+import { makePluginImages } from "./images.js";
+import { makePluginPrivateFiles } from "./private-files.js";
 
 export interface MakePluginContextOpts {
+  readonly authorContext?: AuthorDispatchContext;
   readonly plugin: LoadedPlugin;
   readonly infra: PluginHostInfra;
   readonly visitorContext?: VisitorContext;
@@ -79,12 +82,42 @@ export async function makePluginContext(
     captcha: makePluginCaptcha(),
   };
 
-  // #388 grantability ceiling — provenance, not tier, decides what a
-  // plugin can be GIVEN: runtime-authored plugins get the sandbox base
-  // and nothing else, regardless of what their manifest requests (the
-  // validator rejects such manifests anyway; this is the runtime's
-  // independent enforcement of the same ceiling).
-  if (plugin.provenance === "runtime-authored") return baseCtx;
+  // Externals remain in Deno and acquire only host-brokered, explicitly approved access.
+  if (plugin.provenance === "runtime-authored") {
+    if (!plugin.externalApproval) return baseCtx;
+    // Visitor/render contexts never acquire author data access, even on an approved install.
+    if (visitorContext || !opts.authorContext) return baseCtx;
+    const author = opts.authorContext;
+    if (
+      !["human", "ai"].includes(author.actor.actorKind) ||
+      (author.actor.actorKind === "human" && author.actor.actorId !== author.operatorActorId)
+    )
+      throw new Error("ExternalAuthorIdentityInvalid");
+    await withExternalAuthorization(plugin, infra, async (tx) => {
+      const rows = (await tx.execute(sql`SELECT EXISTS (SELECT 1 FROM users u
+        JOIN user_roles ur ON ur.user_id=u.id JOIN role_permissions rp ON rp.role_id=ur.role_id
+        JOIN permissions p ON p.id=rp.permission_id WHERE u.id=${author.operatorActorId}::uuid
+        AND u.deleted_at IS NULL AND p.name='content.write') AS allowed`)) as unknown as {
+        allowed: boolean;
+      }[];
+      if (!rows[0]?.allowed) throw new Error("ExternalAuthorPermissionDenied");
+    });
+    const extended: Mutable<PluginContextTier1> = {
+      ...baseCtx,
+      invocation: Object.freeze({
+        actorId: author.actor.actorId,
+        operatorActorId: author.operatorActorId,
+        chatBranchId: author.actor.chatBranchId ?? null,
+      }),
+    };
+    if (plugin.externalApproval.capabilities.includes("cms_admin_schema"))
+      extended.adminQuery = makePluginAdminQuery(plugin, infra);
+    if (plugin.externalApproval.capabilities.includes("private_files"))
+      extended.privateFiles = makePluginPrivateFiles(plugin, infra, author);
+    if (plugin.externalApproval.capabilities.includes("image_generation"))
+      extended.images = makePluginImages(plugin, infra, author);
+    return extended;
+  }
 
   // Release-signed — attach elevated handles per requestedCapabilities.
   const tier1: Mutable<PluginContextTier1> = { ...baseCtx };
@@ -106,6 +139,10 @@ export async function makePluginContext(
   if (requested.has("email")) {
     tier1.email = makePluginEmail(infra);
   }
+  if (requested.has("private_files") && opts.authorContext && !visitorContext)
+    tier1.privateFiles = makePluginPrivateFiles(plugin, infra, opts.authorContext);
+  if (requested.has("image_generation") && opts.authorContext && !visitorContext)
+    tier1.images = makePluginImages(plugin, infra, opts.authorContext);
   return tier1;
 }
 
@@ -128,13 +165,16 @@ function pluginSchemaName(slug: string): string {
   return `plugin_${slug.replace(/-/g, "_")}`;
 }
 
+/** Declared column name → its type spec, or null when the table is not
+ *  the plugin's. Callers need the spec, not just the name, to bind a
+ *  jsonb value correctly. */
 function declaredColumnsIn(
   schemaMap: Readonly<Record<string, Readonly<Record<string, string>>>>,
   table: string,
-): Set<string> | null {
+): Map<string, string> | null {
   const tableSpec = schemaMap[table];
   if (!tableSpec) return null;
-  return new Set(Object.keys(tableSpec));
+  return new Map(Object.entries(tableSpec));
 }
 
 function validateIdent(name: string, label: string): void {
@@ -149,7 +189,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function assertUuid(value: string, label: string): void {
   if (!UUID_RE.test(value)) {
-    throw new Error(`ctx.query: refusing to set session var ${label}: not a UUID (${value})`);
+    throw new Error(`ctx.query: ${label} must be a UUID (${value})`);
   }
 }
 
@@ -180,7 +220,9 @@ function makeScopedQuery(
     fn: (tx: Parameters<Parameters<typeof infra.adapter.public.transaction>[0]>[0]) => Promise<T>,
   ): Promise<T> {
     const pool = scope.pool === "admin" ? infra.adapter.admin : infra.adapter.public;
-    return pool.transaction(async (tx) => {
+    const perform = async (
+      tx: Parameters<Parameters<typeof infra.adapter.public.transaction>[0]>[0],
+    ) => {
       // P12 review-pass #1 — set_config takes parameterised values; the
       // SETTING NAME is a literal (Postgres doesn't parameterise it).
       // Guards above make sure the *values* are UUIDs, and `set_config`'s
@@ -189,7 +231,13 @@ function makeScopedQuery(
       await tx.execute(sql`SELECT set_config('caelo.actor_id', ${plugin.pluginActorId}, true)`);
       await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${plugin.pluginId}, true)`);
       return fn(tx);
-    });
+    };
+    if (plugin.externalApproval) {
+      return withExternalAuthorization(plugin, infra, async (tx) =>
+        scope.pool === "admin" ? perform(tx) : pool.transaction(perform),
+      );
+    }
+    return pool.transaction(perform);
   }
 
   return {
@@ -212,7 +260,20 @@ function makeScopedQuery(
         }
         validateIdent(k, "column");
         cols.push(`"${k}"`);
-        valueFragments.push(sql`${v}`);
+        // A jsonb ARRAY needs `sql.param` to survive the trip. Bound
+        // straight into the template, drizzle expands it into a SQL
+        // tuple — `VALUES ($1, ($2, $3))`, a syntax error — and
+        // hand-stringifying it first lands a jsonb STRING in the column
+        // instead of an array, because the driver JSON-encodes string
+        // params for jsonb. Both are traps a plugin author would have
+        // to discover from a confusing failure, so the boundary handles
+        // it: the driver encodes the value correctly when it arrives as
+        // one parameter.
+        if (declared.get(k) === "jsonb" && v !== null && typeof v === "object") {
+          valueFragments.push(sql`${sql.param(v)}`);
+        } else {
+          valueFragments.push(sql`${v}`);
+        }
       }
       if (cols.length === 0) {
         throw new Error(`${scope.label}.insert: data must include at least one declared column`);
@@ -324,7 +385,11 @@ function makeScopedQuery(
         }
         validateIdent(k, "column");
         const colSql = sql.raw(`"${k}"`);
-        sets.push(sql`${colSql} = ${v}`);
+        const value =
+          declared.get(k) === "jsonb" && typeof v === "object" && v !== null
+            ? sql`${sql.param(v)}`
+            : sql`${v}`;
+        sets.push(sql`${colSql} = ${value}`);
       }
       if (sets.length === 0) {
         throw new Error(`${scope.label}.update: patch must include at least one declared column`);
@@ -333,6 +398,50 @@ function makeScopedQuery(
       const setsSql = sql.join(sets, sql`, `);
       await withPluginTx(async (tx) => {
         await tx.execute(sql`UPDATE ${fqTable} SET ${setsSql} WHERE id = ${id}::uuid`);
+      });
+    },
+
+    compareAndSwap: async (table, id, expected, patch) => {
+      validateIdent(table, "table");
+      assertUuid(id, "row id");
+      const declared = declaredColumnsIn(scope.schemaMap, table);
+      if (!declared) throw new Error(`${scope.label}.compareAndSwap: undeclared table "${table}"`);
+      const conditions: ReturnType<typeof sql>[] = [];
+      const assignments: ReturnType<typeof sql>[] = [];
+      for (const [values, fragments, matching] of [
+        [expected, conditions, true],
+        [patch, assignments, false],
+      ] as const) {
+        const entries = Object.entries(values);
+        if (entries.length === 0 || entries.length > 64)
+          throw new Error(
+            `${scope.label}.compareAndSwap: expected and patch must each contain 1..64 columns`,
+          );
+        for (const [column, value] of entries) {
+          validateIdent(column, "column");
+          if (!declared.has(column) || (!matching && column === "id"))
+            throw new Error(
+              `${scope.label}.compareAndSwap: undeclared or immutable column "${column}"`,
+            );
+          if (value === undefined)
+            throw new Error(
+              `${scope.label}.compareAndSwap: undefined is not a stored value; use null explicitly`,
+            );
+          const name = sql.raw(`"${column}"`);
+          const parameter =
+            declared.get(column) === "jsonb" && value !== null && typeof value === "object"
+              ? sql`${sql.param(value)}`
+              : sql`${value}`;
+          fragments.push(
+            matching ? sql`${name} IS NOT DISTINCT FROM ${parameter}` : sql`${name} = ${parameter}`,
+          );
+        }
+      }
+      const target = sql.raw(`"${schemaName}"."${table}"`);
+      return withPluginTx(async (tx) => {
+        const changed = await tx.execute(sql`UPDATE ${target} SET ${sql.join(assignments, sql`, `)}
+          WHERE id = ${id}::uuid AND ${sql.join(conditions, sql` AND `)} RETURNING id`);
+        return (changed as unknown as { id: string }[]).length === 1;
       });
     },
 

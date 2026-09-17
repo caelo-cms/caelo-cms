@@ -74,6 +74,12 @@ function emitCreateTable(
     `CREATE TABLE IF NOT EXISTS ${fqTable} (`,
     `  ${colDefs.join(",\n  ")}`,
     `);`,
+    ...Object.entries(columns)
+      .filter(([name]) => name !== "id")
+      .map(
+        ([name, spec]) =>
+          `ALTER TABLE ${fqTable} ADD COLUMN IF NOT EXISTS ${emitColumnDef(name, spec)};`,
+      ),
     `ALTER TABLE ${fqTable} ENABLE ROW LEVEL SECURITY;`,
     `ALTER TABLE ${fqTable} FORCE  ROW LEVEL SECURITY;`,
     `DROP POLICY IF EXISTS ${quoteIdent(policyName)} ON ${fqTable};`,

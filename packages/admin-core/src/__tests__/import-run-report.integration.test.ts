@@ -53,12 +53,18 @@ beforeAll(async () => {
   sqlc = new SQL(ADMIN_URL!);
   await cleanup();
 
-  const run = await execute(registry, adapter, SYSTEM, "imports.create_run", {
-    sourceUrl: "https://issue197.example/",
-    depth: 1,
-    maxPages: 10,
+  // This suite tests a finished report, not crawl dispatch. create_run queues
+  // live work: a crawler attached to the same test DB can claim that row and
+  // replace our simulated crawl_state between setup and the assertions.
+  runId = crypto.randomUUID();
+  await sqlc.begin(async (tx) => {
+    await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+    await tx`
+      INSERT INTO import_runs (id, source_url, depth, max_pages, status, proposed_by)
+      VALUES (${runId}::uuid, 'https://issue197.example/', 1, 10,
+              'ready_for_review', ${SYSTEM.actorId}::uuid)
+    `;
   });
-  runId = (run.value as { runId: string }).runId;
   await execute(registry, adapter, SYSTEM, "imports.write_extracted_pages", {
     runId,
     pages: [

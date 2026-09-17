@@ -61,7 +61,7 @@ Open an issue using the **Bug** template. If you've already got the fix, open th
 
 Tier 2 plugins are sandboxed (Deno subprocess) and AI-authorable. Most plugin contributions will use the AI authoring path — open an issue describing the plugin's purpose, then ask the live-edit chat to draft it. The Owner UI at `/security/plugins` runs the validator + activates after review.
 
-For human-authored Tier 2 plugins: scaffold under `packages/plugins/<slug>/`, declare your schema, your operations, your component, your `staticRender`. Submit via the same `submit_plugin` flow OR open a PR adding the source under `packages/plugins/<slug>/source.ts` + the AI tool will pick it up at install time.
+Keep human-authored external plugins in their own repositories. Bundle a single source module and a JSON package `{ "manifest": ..., "source": "..." }`; upload it at `/security/plugins/installations`. Explain every requested capability and review each checkbox. This path supports private plugin storage and chat tools without a Caelo release signature. Other external brokers are still pending. The legacy `submit_plugin` path remains available for base-SDK plugins.
 
 ### New Tier 1 plugins (core, signed, in-process)
 

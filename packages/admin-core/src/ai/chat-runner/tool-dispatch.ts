@@ -222,6 +222,7 @@ export async function dispatchToolCall(
     const pluginTool = pluginToolsRegistry.resolve(call.name);
     const dispatchPromise: Promise<ToolDispatchResult> = pluginTool
       ? runPluginOperation({
+          authorContext: { actor: aiCtxWithBranch, operatorActorId: humanCtx.actorId },
           pluginSlug: pluginTool.pluginSlug,
           operationName: pluginTool.spec.operationName,
           args: call.arguments,

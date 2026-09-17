@@ -79,11 +79,9 @@ export const pluginSchemaMap = z.record(z.string(), pluginTableSchema);
 export type PluginSchemaMap = z.infer<typeof pluginSchemaMap>;
 
 /** Capability requests. Every capability is runtime-enforced; what is
- *  GRANTABLE is capped by provenance (epic #380 decision 2): a
- *  release-signed plugin may request any capability, a runtime-authored
- *  plugin none beyond the sandbox base (query/api/theme/visitor/captcha).
- *  The validator rejects runtime-authored manifests that reach over the
- *  ceiling. */
+ *  release signature determines origin and execution path. External access
+ *  requires individual installation receipts and an implemented host broker.
+ *  Unsupported external requests fail activation; declarations never grant access. */
 export const pluginCapability = z.enum([
   "cms_admin",
   "cms_admin_schema",
@@ -94,6 +92,12 @@ export const pluginCapability = z.enum([
   "domain_events",
   "email",
   "head_contributions",
+  "url_slots",
+  "client_assets",
+  "data_lists",
+  "companion_skills",
+  "private_files",
+  "image_generation",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -121,8 +125,7 @@ export const pluginWorkerSpec = z.object({
 
 export type PluginWorkerSpec = z.infer<typeof pluginWorkerSpec>;
 
-/** AI tool registration declaration. Tier 1 only — Tier 2 plugins do
- *  not get chat-runner tool registration. */
+/** AI tool declaration. External packages require the chat_runner_tools grant. */
 export const pluginToolSpec = z.object({
   name: z.string().min(1).max(120),
   description: z.string().min(1).max(4000),
@@ -295,6 +298,35 @@ export const pluginDataListSpec = z
 
 export type PluginDataListSpec = z.infer<typeof pluginDataListSpec>;
 
+/**
+ * A module withheld from the page until the withholding plugin says
+ * otherwise.
+ *
+ * Core emits the module's real HTML inside an inert `<template>` plus a
+ * visible placeholder module; nothing inside a `<template>` issues a
+ * network request, so a third-party embed genuinely does not load. The
+ * plugin's client runtime clones the content into place when its
+ * condition is met.
+ *
+ * Deliberately generic — core learns "withheld by plugin X for reason
+ * Y", never "consent". A paywall or an auth gate uses the same shape.
+ */
+export const moduleDeferralSpec = z
+  .object({
+    /** The plugin's own vocabulary, surfaced as `data-reason`. */
+    reason: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z][a-z0-9_-]*$/, "reason is a lowercase key"),
+    /** Slug of the module rendered in the withheld one's place. An
+     *  ordinary module, so the AI authors and styles it. */
+    placeholderModuleSlug: z.string().min(1).max(200),
+  })
+  .strict();
+
+export type ModuleDeferralSpec = z.infer<typeof moduleDeferralSpec>;
+
 export const pluginManifest = z
   .object({
     slug: z
@@ -309,7 +341,7 @@ export const pluginManifest = z
       .regex(/^\d+\.\d+\.\d+(-[a-z0-9.]+)?$/, "must be semver"),
     tier: z.union([z.literal(1), z.literal(2)]),
     schema: pluginSchemaMap,
-    /** #389 — release-signed only: the plugin's own authoring-DB schema,
+    /** The plugin's own authoring-DB schema,
      *  provisioned as `plugin_<slug>` in cms_admin (FORCE RLS, scoped to
      *  the plugin's id). Same declarative table spec as `schema`; `ref:`
      *  columns may FK onto allowlisted core tables. Requires the
@@ -319,11 +351,37 @@ export const pluginManifest = z
     operations: z.array(z.string().min(1).max(120)).min(1),
     component: pluginComponent.optional(),
     hasStaticRender: z.boolean().default(false),
+    /** See `PluginDefinition.buildAssets`. Release-signed only — the
+     *  files land on every page of the public site, so authorship has
+     *  to be auditable. */
+    hasBuildAssets: z.boolean().default(false),
+    /** See `PluginDefinition.deferralsOperation`. Release-signed only:
+     *  withholding a module changes what visitors see. */
+    hasDeferrals: z.boolean().default(false),
+    /** See `PluginDefinition.publicOperations`. */
+    publicOperations: z.array(z.string().min(1).max(120)).optional(),
     /** Tier 1 only. */
     requestedCapabilities: z.array(pluginCapability).optional(),
+    /** Untrusted author explanations, displayed beside each explicit Owner grant. */
+    capabilityReasons: z.partialRecord(pluginCapability, z.string().min(1).max(500)).optional(),
+    /** Requested scopes are part of the immutable reviewed artifact. */
+    capabilityConstraints: z
+      .partialRecord(
+        pluginCapability,
+        z
+          .object({
+            operations: z
+              .array(z.string().regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/))
+              .max(100)
+              .optional(),
+            maxDailyCostMicrocents: z.number().int().positive().optional(),
+          })
+          .strict(),
+      )
+      .optional(),
     /** Tier 1 only. */
     workers: z.array(pluginWorkerSpec).optional(),
-    /** Tier 1 only. */
+    /** Chat tools; external packages require a chat_runner_tools receipt. */
     tools: z.array(pluginToolSpec).optional(),
     /** #390 — URL-slot claims (release-signed only). The definition
      *  supplies the matching pure encode/decode pairs. */
@@ -331,7 +389,7 @@ export const pluginManifest = z
     /** #391 — head/sitemap contribution claims (release-signed only,
      *  requires the `head_contributions` capability). */
     contributes: z.array(contributionKind).optional(),
-    /** #393 — plugin-shipped skills (release-signed only). */
+    /** Plugin-shipped instructions; external packages require a companion_skills receipt. */
     skills: z.array(pluginSkillSpec).optional(),
     /**
      * Named lists a module can iterate with `{{#name}}…{{/name}}`,
@@ -385,6 +443,16 @@ export interface PluginQuery {
     id: string,
     patch: Record<string, unknown>,
   ): Promise<void>;
+  /** Atomically update one row only while all expected values still match.
+   * Returns false for a stale, missing or inaccessible row. Null compares equal
+   * to null; an empty expectation or patch is rejected. Identity is immutable.
+   * Use a new revision token in every successful write to avoid ABA conflicts. */
+  compareAndSwap<TableName extends string>(
+    table: TableName,
+    id: string,
+    expected: Record<string, unknown>,
+    patch: Record<string, unknown>,
+  ): Promise<boolean>;
   delete<TableName extends string>(table: TableName, id: string): Promise<void>;
 }
 
@@ -600,8 +668,14 @@ export interface PluginSnapshots {
   }): Promise<{ siteSnapshotId: string }>;
 }
 
-/** Locked context — what every Tier 2 plugin receives. */
+/** Base context. External author invocations may receive explicitly granted handles. */
 export interface PluginContext {
+  /** Read-only identity selected by the host, never from operation arguments. */
+  readonly invocation?: {
+    readonly actorId: string;
+    readonly operatorActorId: string;
+    readonly chatBranchId: string | null;
+  };
   readonly query: PluginQuery;
   readonly api: PluginApi;
   readonly theme: PluginTheme;
@@ -609,12 +683,72 @@ export interface PluginContext {
   readonly captcha: PluginCaptcha;
 }
 
-/** Tier 1 context — adds the elevated capability handles. The host
- *  ONLY constructs the handles a plugin's `requestedCapabilities`
- *  asked for; unrequested fields are absent. */
+/** Private immutable files, scoped to this installation and an authenticated author.
+ * Fixed-size base64 chunks keep binary data below the isolated RPC message limit.
+ * A ready file cannot be overwritten. Its SHA-256 is its immutable revision.
+ */
+export interface PluginPrivateFile {
+  readonly id: string;
+  readonly mediaType: string;
+  readonly sizeBytes: number;
+  readonly sha256: string;
+  readonly status: "pending" | "ready" | "deleted";
+}
+export interface PluginPrivateFiles {
+  /** Idempotent for the exact same id and metadata; conflicting reuse is rejected. */
+  begin(input: Omit<PluginPrivateFile, "status">): Promise<PluginPrivateFile>;
+  /** Offset is a multiple of 262144; only the final chunk may be shorter. */
+  writeChunk(input: { id: string; offset: number; base64: string }): Promise<void>;
+  /** Requires all bytes and verifies SHA-256 before marking the file ready. */
+  commit(input: { id: string }): Promise<PluginPrivateFile>;
+  stat(input: { id: string }): Promise<PluginPrivateFile>;
+  /** Permanently remove bytes. The identity is retired and cannot be reused. */
+  remove(input: { id: string; sha256: string }): Promise<void>;
+  /** Only ready files; returns one stored chunk, never a provider URL. */
+  readChunk(input: { id: string; offset: number }): Promise<{ base64: string }>;
+}
+
+/** Private image generation. Request IDs are immutable, installation-scoped and
+ * never automatically replay a paid call after an uncertain outcome. */
+export interface PluginImageResult {
+  readonly requestId: string;
+  readonly status: "running" | "ready" | "uncertain";
+  readonly file?: PluginPrivateFile;
+  readonly width?: number;
+  readonly height?: number;
+  readonly model: string;
+  /** Conservative estimate, not a provider invoice. Uncertain calls retain the reservation. */
+  readonly costMicrocents: number;
+}
+/** Bounded local derivative; originals remain immutable and no AI call is made. */
+export interface PluginImageTransform {
+  source: { id: string; sha256: string };
+  width: number;
+  height: number;
+  quality: number;
+}
+export interface PluginImages {
+  transform(
+    input: PluginImageTransform,
+  ): Promise<{ file: PluginPrivateFile; width: number; height: number }>;
+  describe(): Promise<{ model: string; maxCostMicrocents: number; imageSizes: readonly string[] }>;
+  get(input: { requestId: string }): Promise<PluginImageResult | null>;
+  generate(input: {
+    requestId: string;
+    prompt: string;
+    imageSize: "1K" | "2K" | "4K";
+    references: readonly { id: string; sha256: string }[];
+    maxCostMicrocents: number;
+  }): Promise<PluginImageResult>;
+}
+
+/** Extended SDK context (legacy name). The host attaches only authorized handles;
+ * external plugins additionally require exact receipts and a supported broker. */
 export interface PluginContextTier1 extends PluginContext {
   /** #389 — attached when the manifest holds `cms_admin_schema`. */
   readonly adminQuery?: PluginAdminQuery;
+  readonly privateFiles?: PluginPrivateFiles;
+  readonly images?: PluginImages;
   /** #392 — attached when the manifest holds `domain_events`. */
   readonly events?: PluginEvents;
   readonly cms?: PluginCms;
@@ -661,6 +795,31 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   };
   readonly staticRender?: (ctx: C, args: { pageId: string }) => Promise<string> | string;
   /**
+   * The plugin's channel to the browser: files emitted ONCE per build
+   * and referenced from every page of the site.
+   *
+   * Returns `{ "runtime.js": "…", "runtime.css": "…" }`. `.js` files
+   * are linked before `</body>`, `.css` files before `</head>`; the
+   * host hashes each file's content into its name so a CDN can cache
+   * it forever and a changed file still lands.
+   *
+   * Why once per build rather than per page: the point of this channel
+   * is behaviour a plugin must guarantee itself — a consent dialog that
+   * has to work regardless of how the site's markup was authored, an
+   * embed that must not load before the visitor opts in. Such a runtime
+   * usually needs configuration BEFORE it can decide anything, and a
+   * static site cannot afford a blocking fetch to obtain it. Emitting
+   * once per build lets the plugin bake that configuration into the
+   * file it ships.
+   *
+   * @param args.pageIds every page in this build, so a plugin can bake
+   *   per-page data into a lookup rather than fetching it at runtime.
+   */
+  readonly buildAssets?: (
+    ctx: C,
+    args: { pageIds: ReadonlyArray<string> },
+  ) => Promise<Record<string, string>> | Record<string, string>;
+  /**
    * P13 audit fix #4 — optional cheap signature of the plugin's data
    * for this page. Folded into the static_bakes
    * cache key so the bake refreshes when plugin data changes even
@@ -686,10 +845,12 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   ) => Promise<ReadonlyMap<string, string>> | ReadonlyMap<string, string>;
   /** Tier 1 only. */
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  readonly capabilityReasons?: PluginManifest["capabilityReasons"];
+  readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
   /** Tier 1 only. Cron-style background workers; the host's scheduler
    *  dispatches `operationName` on each tick. */
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
-  /** Tier 1 only. AI tools registered into the chat-runner catalogue
+  /** Approved AI tools registered into the chat-runner catalogue
    *  at activation. Each tool dispatches to the named operation. */
   readonly tools?: ReadonlyArray<PluginToolSpec>;
   /** Tier 1 only. Plugin-emitted system-prompt blocks rendered every
@@ -722,6 +883,38 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly contributionsOperation?: string;
   /** See `pluginManifest.dataLists`. Release-signed only. */
   readonly dataLists?: ReadonlyArray<PluginDataListSpec>;
+  /**
+   * Operations reachable by an unauthenticated visitor through the API
+   * gateway (`POST /api/plugin/<slug>/<operation>`).
+   *
+   * DEFAULT DENY. An operation not listed here cannot be dispatched
+   * with a visitor context, no matter what route reaches for it.
+   *
+   * Declaring the visitor surface explicitly is the only workable
+   * shape: a plugin's operation list mixes the two audiences freely —
+   * `submit` next to `moderate`, `subscribe` next to `send_campaign`,
+   * `me` next to `apply_auth_config` — and the difference is not
+   * derivable from a name. An allowlist is also the half that a
+   * reviewer can check at a glance, which a deny-list is not.
+   *
+   * Keep it minimal. Everything here runs for anyone on the internet,
+   * with whatever capabilities the plugin was granted; the gateway
+   * adds a body cap, a rate limit, a honeypot and CAPTCHA, but it
+   * cannot know that an operation was meant for the Owner.
+   */
+  readonly publicOperations?: ReadonlyArray<string>;
+  /**
+   * The I/O half of module deferrals: an operation in `operations`
+   * taking `{moduleIds: string[]}` (every module in the current render
+   * pass) and returning
+   * `{deferrals: Record<moduleId, ModuleDeferralSpec>}`.
+   *
+   * Withholding is per MODULE, not per placement: a video module
+   * classified once is withheld everywhere it appears, including from
+   * a layout. Return only the modules actually withheld — an absent id
+   * renders normally.
+   */
+  readonly deferralsOperation?: string;
   /**
    * The I/O half of `dataLists`: an operation in `operations` taking
    * `{pageIds: string[]}` and returning
@@ -765,9 +958,14 @@ export function manifestFromDefinition(def: {
   readonly operations: Readonly<Record<string, unknown>>;
   readonly component?: PluginComponent;
   readonly staticRender?: unknown;
+  readonly buildAssets?: unknown;
+  readonly deferralsOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  readonly capabilityReasons?: PluginManifest["capabilityReasons"];
+  readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
   readonly tools?: ReadonlyArray<PluginToolSpec>;
+  readonly publicOperations?: ReadonlyArray<string>;
 }): PluginManifest {
   return pluginManifest.parse({
     slug: def.slug,
@@ -780,9 +978,17 @@ export function manifestFromDefinition(def: {
       ? { tag: def.component.tag, shadowMode: def.component.shadowMode ?? "open" }
       : undefined,
     hasStaticRender: Boolean(def.staticRender),
+    hasBuildAssets: Boolean(def.buildAssets),
+    hasDeferrals: Boolean(def.deferralsOperation),
+    ...(def.publicOperations && def.publicOperations.length > 0
+      ? { publicOperations: [...def.publicOperations] }
+      : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
+    ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
+    ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),
     ...(def.workers ? { workers: [...def.workers] } : {}),
     ...(def.tools ? { tools: [...def.tools] } : {}),
+    ...(def.skills ? { skills: [...def.skills] } : {}),
     ...(def.urlContributions && def.urlContributions.length > 0
       ? { urlContributions: def.urlContributions.map((c) => ({ slot: c.slot })) }
       : {}),

@@ -798,7 +798,20 @@ export async function* runToolLoop(
       const rejected: ApprovalRequest[] = [];
       const askable: ApprovalRequest[] = [];
       for (const req of run.approvalRequests) {
-        const bad = preflightGatedCall(tools, registry, req.name, req.arguments);
+        let bad = preflightGatedCall(tools, registry, req.name, req.arguments);
+        if (!bad) {
+          try {
+            await args.filteredTools
+              .find((t) => t.name === req.name)
+              ?.prepareApproval?.(req.toolCallId, req.arguments);
+          } catch {
+            bad = {
+              toolName: req.name,
+              reason:
+                "The plugin installation or approval binding changed. Propose a fresh tool call.",
+            };
+          }
+        }
         if (bad) {
           console.error("[chat-runner] gated call rejected before asking the operator", {
             chatSessionId,
@@ -843,7 +856,7 @@ export async function* runToolLoop(
       // append the SDK tool-approval-response and CONTINUE; the next run
       // resumes the paused turn (the SDK executes the gated tool pre-loop).
       if (process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1") {
-        for (const req of run.approvalRequests) {
+        for (const req of askable) {
           history.messages.push({
             role: "tool",
             content: "",

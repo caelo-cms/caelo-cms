@@ -80,7 +80,10 @@ export interface ValidationResult {
 // Manifest validation — pure JSON shape + tier invariants.
 // ---------------------------------------------------------------------------
 
-export function validateManifest(rawManifest: unknown): {
+export function validateManifest(
+  rawManifest: unknown,
+  opts: { allowExternalCapabilities?: boolean } = {},
+): {
   manifest: PluginManifest | null;
   failures: ValidationFailure[];
 } {
@@ -113,8 +116,14 @@ export function validateManifest(rawManifest: unknown): {
   // #388 — every capability is enforced, starting at the manifest:
   // declaring tools[] / workers[] without holding the matching
   // capability is a validation failure, not a silently-honoured extra.
-  if (m.tier === 1) {
+  if (m.tier === 1 || opts.allowExternalCapabilities) {
     const caps = new Set(m.requestedCapabilities ?? []);
+    if (caps.has("image_generation") && !caps.has("private_files")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "image_generation requires private_files for private results and references; request and approve both capabilities.",
+      });
+    }
     if (m.adminSchema && Object.keys(m.adminSchema).length > 0 && !caps.has("cms_admin_schema")) {
       failures.push({
         kind: "manifest-cap-missing",
@@ -144,7 +153,7 @@ export function validateManifest(rawManifest: unknown): {
   // Tier 2 (runtime-authored) cannot reach over the grantability
   // ceiling: no capabilities, no workers, no chat tools, no cms_admin
   // schema.
-  if (m.tier === 2) {
+  if (m.tier === 2 && !opts.allowExternalCapabilities) {
     if (m.contributes && m.contributes.length > 0) {
       failures.push({
         kind: "manifest-tier2-cap-leak",
@@ -240,6 +249,14 @@ export function validateSource(opts: {
   let ast: unknown;
   try {
     const parsed = parseSync(filename, source, { sourceType: "module" });
+    if (parsed.errors.length > 0) {
+      return [
+        {
+          kind: "parse-error",
+          hint: "Plugin source contains syntax errors; correct them before submission.",
+        },
+      ];
+    }
     ast = parsed.program;
   } catch (e) {
     failures.push({
@@ -255,7 +272,11 @@ export function validateSource(opts: {
     if (!type) return;
 
     // ImportDeclaration — only @caelo-cms/plugin-sdk allowed.
-    if (type === "ImportDeclaration") {
+    if (
+      type === "ImportDeclaration" ||
+      ((type === "ExportNamedDeclaration" || type === "ExportAllDeclaration") &&
+        (node as { source?: unknown }).source)
+    ) {
       const sourceVal = (node as { source?: { value?: unknown } }).source?.value;
       const relativeOk =
         opts.allowRelativeImports === true &&
@@ -437,8 +458,12 @@ export function validatePlugin(opts: {
   manifest: unknown;
   source: string;
   filename?: string;
+  /** Host installation review only; this never grants runtime permissions. */
+  allowExternalCapabilities?: boolean;
 }): ValidationResult {
-  const { failures: manifestFailures, manifest } = validateManifest(opts.manifest);
+  const { failures: manifestFailures, manifest } = validateManifest(opts.manifest, {
+    allowExternalCapabilities: opts.allowExternalCapabilities,
+  });
   const sourceFailures = validateSource({
     filename: opts.filename ?? "plugin.ts",
     source: opts.source,

@@ -252,8 +252,20 @@ export async function loginAsDevOwner(page: Page): Promise<void> {
 export async function activatePluginAsOwner(page: Page, slug: string): Promise<void> {
   await page.goto("/security/plugins");
   const activate = page.getByTestId(`activate-${slug}`);
-  // Already active (a rerun against a warm DB) — nothing to click.
-  if ((await activate.count()) === 0) return;
+  if ((await activate.count()) === 0) {
+    // Absent button, two very different causes. Already active on a
+    // warm DB is fine; the plugin never having loaded is not, and
+    // treating them alike is how a missing plugin masquerades as an AI
+    // that ignored its tools — which is exactly what it looked like
+    // before this check existed, at the cost of a full CI cycle.
+    const known = await page.getByTestId(`plugin-row-${slug}`).count();
+    if (known === 0) {
+      throw new Error(
+        `activatePluginAsOwner: plugin "${slug}" is not installed on this stack, so the AI runs without its tools and skills. Check the admin log for "dist/index.js missing" — the plugin's dist has to be built before boot.`,
+      );
+    }
+    return;
+  }
   await activate.click();
   await expect(page.getByTestId(`activate-${slug}`)).toHaveCount(0, { timeout: 30_000 });
 }

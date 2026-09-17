@@ -77,12 +77,6 @@ export const addPluginToPageTool: ToolDefinitionWithHandler<
         content: `plugin "${input.pluginSlug}" is not loaded. Check /security/plugins for installed plugins; the slug must match exactly.`,
       };
     }
-    if (loaded.executionStub) {
-      return {
-        ok: false,
-        content: `plugin "${input.pluginSlug}" is registered but its Tier-2 execution runtime is not yet wired — placement would result in an empty placeholder. Use a Tier-1 (PR-shipped) plugin instead, or wait for the runtime ship.`,
-      };
-    }
 
     // 2. Confirm the page exists before splicing.
     const pageR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get", {

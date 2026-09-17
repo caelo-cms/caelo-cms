@@ -440,12 +440,10 @@ AI-authored at runtime, or Owner-installed from a vetted repo. Examples: a custo
 
 - **Activation:** lifecycle `draft` → `validated` → `awaiting_activation` → `active` / `disabled`. **Owner click required** for every transition into `active`. No auto-activation, ever.
 - **Runtime:** **Deno subprocess** with `--no-read --no-write --no-net --no-env --no-prompt --no-npm --no-remote`. Per-invocation cold start. The SDK + plugin source written to tmp files; import map points `@caelo-cms/plugin-sdk` at the SDK module.
-- **SDK capabilities (locked):**
-  - **Reads + writes ONLY against the plugin's own `cms_public.<slug>` schema.** No `cms_admin` access of any kind.
-  - **No snapshot emission** (plugins write to `cms_public`; that surface has no snapshot model).
-  - **No chat-runner tool registration.** The plugin exposes an HTTP-style `run_operation` surface invoked by the API Gateway on public requests; not a tool the AI can call directly.
-  - **No AI provider access.** Public-facing plugins should not be calling LLMs from inside a Deno subprocess on the request path.
-  - **No background workers.** If a Tier 2 plugin needs cron-style work, the host runs it; the plugin only declares the schedule.
+- **SDK capabilities:** the base SDK is available after package approval. Extended access is requested in the manifest, explained per capability, and granted through immutable receipts bound to the package digest. The `plugins.install` permission is distinct from content moderation (`plugins.approve`) and is initially assigned only to Owner.
+  - The initial external brokers support the plugin's own private `adminSchema`, namespaced chat tools and reviewed companion skills. Companion availability follows the exact active artifact and its live receipt; updates preserve unrelated skills and individual archives. Private author operations require authenticated author context; visitors never receive author storage handles.
+  - Other capabilities remain unavailable until their host broker is implemented. Listing a request or receiving a receipt does not make an unsupported broker executable.
+  - A staged update preserves the active source. The host prepares the approved package before switching versions. Revocation disables the affected active package and blocks subsequent calls; storage commits and revocation serialize through the registry row.
 - **Validator runs every load.** oxc-parser walks the source; rejects forbidden patterns (`fetch`, `Deno.*` outside the allowlist, dynamic `import()`, raw SQL strings, `eval`, `new Function`, top-level `globalThis` writes).
 - **Updates:** the AI submits a new version through `submit_plugin`; Owner re-activates.
 
@@ -467,11 +465,11 @@ A plugin host that's itself a plugin is a bootstrapping headache. These stay in 
 |---|---|---|
 | Runtime | Bun, in-process | Deno subprocess, sandboxed |
 | Cold-start | none | ~50–100ms per invocation |
-| `cms_admin` reads | ✓ (declared scopes) | ✗ |
-| `cms_admin` writes | ✓ (declared scopes) | ✗ |
+| `cms_admin` reads | ✓ (declared scopes) | Own private schema after explicit grant; cross-CMS broker pending |
+| `cms_admin` writes | ✓ (declared scopes) | Own private schema after explicit grant; cross-CMS broker pending |
 | `cms_public.<slug>` reads + writes | ✓ | ✓ |
 | Snapshot emission | ✓ | ✗ |
-| Chat-runner tool registration | ✓ (auto from `operations`) | ✗ |
+| Chat-runner tool registration | ✓ (declared tools) | ✓ (individually granted, namespaced, host-validated) |
 | AI provider access | ✓ | ✗ |
 | Background workers | ✓ | ✗ (declare schedule; host runs it) |
 | Activation gate | signed manifest, auto on install; Owner can disable | Owner click per `active` transition |
@@ -479,7 +477,7 @@ A plugin host that's itself a plugin is a bootstrapping headache. These stay in 
 | Source location | `packages/plugins/<slug>/` | `plugins.source_code` (DB) |
 | Updates | with Caelo release | per `submit_plugin` call |
 
-Tier 2 is Tier 1 with capabilities masked off. The SDK exports the same shapes; the runtime exposes only what the tier permits. A Tier 1 plugin recompiled and submitted as Tier 2 source would fail validation the moment it imports a Tier-1-only capability.
+Both execution paths use the same SDK. External capability access is determined by exact Owner receipts and the implemented broker, independently of release origin. An unsupported broker fails activation; it must never silently omit requested access.
 
 ### 14.4 Plugin Structure (shape both tiers share)
 
@@ -532,6 +530,33 @@ For Tier 2 the validator gates activation (rejection ⇒ status stays `draft`). 
 - Receives site theme tokens.
 
 The frontend rules are tier-agnostic: a Tier 1 plugin's component runs in the browser the same way a Tier 2 plugin's does.
+
+#### Client assets — the site-wide runtime channel (#449)
+
+A Web Component covers a plugin surface the page opts into by placing its tag. Some plugin behaviour is not opt-in per placement: a consent dialog has to work regardless of how the site's markup was authored, and a third-party embed must not load before the visitor opts in. For that, a release-signed plugin declares `buildAssets`, returning `.js` / `.css` files **once per build**; the generator writes them under `_caelo/plugin/<slug>/` with the content hash in the name and references them from every page.
+
+- **Once per build, not per page.** Such a runtime usually needs configuration before it can decide anything, and a static site cannot afford a blocking fetch to obtain it — one call per build lets the plugin bake that configuration into the file it ships. The build's full page list is passed in, so per-page data can be baked into a lookup.
+- **Content hash in the filename.** The file is referenced from every page, so it wants a long CDN TTL; hashing the content into the name keeps "cache forever" and "the change lands" both true.
+- **Release-signed only.** These files run in every visitor's browser on every page — the widest blast radius any contribution has. A runtime-authored plugin's frontend stays inside its Shadow DOM component.
+- **One resolver, two surfaces.** The deploy links the files; the admin preview inlines the identical bytes, because the preview iframe has no build directory to serve from. Delivery differs, content does not — the editor can never show behaviour the deployed site won't have.
+- **Loud, per CLAUDE.md §2.** A throwing plugin, a malformed file name and an over-budget payload all fail the build. A runtime that silently stops shipping is precisely the defect this channel exists to prevent.
+
+#### Deferred modules — withholding content until a plugin allows it (#450)
+
+A plugin can know something about a module its author does not: this one embeds YouTube, and until the visitor agrees to marketing cookies it must not reach YouTube at all. A plugin declares `deferralsOperation`, receives every module in the render pass, and returns a verdict per withheld module (`reason` + `placeholderModuleSlug`). Core emits:
+
+```html
+<div data-caelo-deferred="<plugin>" data-reason="<key>" data-module="<slug>">
+  <div data-caelo-deferred-placeholder>…placeholder module…</div>
+  <template data-caelo-deferred-content>…the real module…</template>
+</div>
+```
+
+- **`<template>` is the mechanism, not a convention.** Browsers parse its contents but instantiate nothing inside it — no image, iframe, script or stylesheet is fetched. "Not loaded" is therefore a fact about the network, not a promise about the DOM. Hiding the module with CSS or stripping attributes in script would both leave the request already sent. The plugin's client runtime (§14.6) clones the content into place when its condition is met.
+- **Per module, not per placement.** A module classified once is withheld everywhere it appears, including from a layout. A per-placement decision would have to be repeated for every page and would silently miss the next one.
+- **The placeholder is an ordinary module**, named by slug, so the AI authors and styles it like any other content.
+- **Generic by design.** Core learns "withheld by plugin X for reason Y" and nothing about consent. A paywall or an auth gate uses the same primitive.
+- **Loud, per CLAUDE.md §2.** A failing verdict op, a malformed verdict, two plugins gating one module, and a missing placeholder module all fail the render. Rendering the withheld module instead would issue exactly the request the gate exists to prevent.
 
 ### 14.7 Runtime Split
 

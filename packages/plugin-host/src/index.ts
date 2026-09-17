@@ -10,11 +10,25 @@
  * P11 lifecycle (submit → activate → cms_public schema provisioned).
  */
 
+export { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
+export { pluginManifest } from "@caelo-cms/plugin-sdk";
+export { makePluginContext } from "./capabilities.js";
+export {
+  collectBuildAssets,
+  injectPluginAssets,
+  PLUGIN_ASSET_DIR,
+  type PluginClientAsset,
+} from "./client-assets.js";
 export {
   type ResolvedDataLists,
   resolveDataLists,
 } from "./data-list-resolution.js";
 export { type DataListItem, pluginDataListsRegistry } from "./data-lists.js";
+export {
+  type ResolvedDeferral,
+  type ResolvedDeferrals,
+  resolveModuleDeferrals,
+} from "./deferrals.js";
 export {
   type DevKeyPair,
   type DevSignReport,
@@ -24,6 +38,7 @@ export {
 } from "./dev-signing.js";
 export {
   type EmailTransport,
+  hostInfra,
   isPluginDisabled,
   type LoadedPlugin,
   loadedPlugins,
@@ -31,6 +46,7 @@ export {
   type RunPluginOperationOpts,
   type RunPluginOperationResult,
   resetDisabledSet,
+  runPluginBuildAssets,
   runPluginMetaSignature,
   runPluginMetaSignatureBatch,
   runPluginOperation,
@@ -48,6 +64,7 @@ export {
 } from "./head-composition.js";
 export { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
 export {
+  activateApprovedExternalPlugin,
   type BootstrapOpts,
   bootstrap,
   type LoadReport,
@@ -62,6 +79,7 @@ export {
   pluginWorkerScheduler,
   type ScheduledWorker,
 } from "./scheduler.js";
+export { recordExternalToolApproval } from "./tool-approval-binding.js";
 export {
   pluginToolsRegistry,
   type RegisteredPluginTool,

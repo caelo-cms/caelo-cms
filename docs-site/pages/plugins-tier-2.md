@@ -4,149 +4,40 @@ template: doc-page
 status: published
 seo:
   title: Tier 2 plugins — Caelo CMS
-  description: AI-authored, sandboxed in Deno, locked SDK surface. Per-plugin RLS scoping. Owner approves each plugin per active transition.
+  description: External packages run in isolated Deno processes with explicit Owner capability grants and per-plugin RLS.
 ---
 
-# Tier 2 plugins
+# External plugins (Tier 2)
 
-The sandboxed half of the [plugin host](/plugins-build). This page covers the constraints + safety surfaces — read [Build a plugin](/plugins-build) first if you haven't.
 
-## Why Tier 2 exists
+External plugins are submitted with `plugins.submit` as a single TypeScript or JavaScript module plus its JSON manifest. The module exports its plugin definition as the default export. Its slug and version must match the manifest. Only the public SDK and component kit may be imported; package-relative imports must be bundled before submission.
 
-Two reasons:
+An Owner reviews the package under **Security → Plugins → Review package**, then approves it. Approval is bound to the exact source and manifest. If a package changes while the review page or a chat activation proposal is open, review and approve the new version. An active package cannot be overwritten: disable it before submitting a replacement. The host also restores approved external plugins after restart.
 
-1. **AI-authorability.** The chat can draft an entire plugin in one turn. Source goes to `plugins.source_code` in the database, not to disk. No PR, no human reviewer required for the *technical* layer (the validator is the technical reviewer); Owner approval gates the *trust* layer (you decide whether the plugin's behaviour is what you want).
-2. **Defense-in-depth via runtime isolation.** Even if the validator misses something, the Deno subprocess can't read files, can't open sockets, can't reach env vars, can't reach the cms_admin database. Postgres RLS forces per-plugin scoping at the database layer; even within `cms_public`, plugin A cannot see plugin B's tables.
+Operations and static rendering run in a separate Deno process. The runtime provides `query`, `api`, `theme`, `visitor`, and `captcha` through the SDK. It rejects direct filesystem, network, environment, process and FFI access. Visitor calls must be declared in `publicOperations`. Disable stops new dispatch and the host checks the active package before every SDK call and before returning a result. Already committed writes are preserved.
 
-## What runs where
+Each operation has a 30-second execution deadline, a 128 MiB V8 heap limit, a 1 MiB protocol message limit and a maximum of 256 SDK calls. A host runs at most four simultaneous external invocations. Plugins should split long work into bounded operations and await every SDK call. A deadline does not roll back an SDK write already accepted by the database.
 
-```
-                 (Bun host process)
-                       ↓
-            Plugin host detects request
-                       ↓
-            Spawn fresh Deno subprocess
-                       ↓
-   ┌───────────────────────────────────────┐
-   │ Deno subprocess                       │
-   │   --no-read --no-write --no-net       │
-   │   --no-env --no-prompt --no-npm       │
-   │   --no-remote                         │
-   │                                       │
-   │ Plugin code runs here.                │
-   │ ctx.query.* → JSON-RPC over stdio     │
-   │ ctx.api.*   → JSON-RPC over stdio     │
-   └───────────────────────────────────────┘
-                       ↑
-            Bun host bridges stdio
-            to the cms_public connection
-            with caelo.plugin_id session var set
-```
+Caelo's admin and gateway images include Deno 2.9.6 (MIT). For development, install this version on `PATH`, or set `CAELO_DENO_BINARY` to its executable path. A missing executable fails the invocation explicitly.
 
-## Capabilities the plugin gets
+## Installing a package with author capabilities
 
-```ts
-ctx.query.insert(table, data) → { id }
-ctx.query.list(table, filter) → row[]
-ctx.query.update(table, id, patch)
-ctx.query.delete(table, id)
+Upload a JSON file containing `manifest` and `source` at **Security → Plugins → Install external packages and review access**. The `plugins.install` permission, assigned to Owner by default, controls approval and revocation. The moderation permission `plugins.approve` is insufficient.
 
-ctx.api.list(table, filter) → row[]   // visitor-side public read
-ctx.api.get(table, id) → row | null
+Declare `requestedCapabilities`, explain each in `capabilityReasons`, and review every access checkbox. No checkbox is preselected. This rollout supports `cms_admin_schema` (the plugin's own private storage, including conditional writes), `companion_skills` (reviewed, namespaced authoring instructions) and `chat_runner_tools` (namespaced, schema-validated tools with host-enforced per-action approvals). Other requests can be staged but activation fails until their brokers are implemented.
 
-ctx.theme.tokens                       // read-only CSS vars
-ctx.theme.tokens
+The isolated operation receives `adminQuery` only for an authenticated author with `content.write`. `ctx.invocation` contains the host-selected actor, human operator and chat branch; operation arguments cannot replace them. Visitor and rendering calls receive no private storage handle. Name external tools `<slug_with_underscores>__<tool_name>` and declare each operation only once as a tool.
 
-ctx.visitor.id                         // visitor cookie id
-ctx.visitor.publicUserId               // when logged in via auth plugin
-ctx.visitor.id
-ctx.visitor.sessionToken
-ctx.visitor.setSession({...})          // mutator (auth plugin uses)
+Updates are separate immutable artifacts: upload and approve a replacement while the previous version keeps running. Preparation validates the isolated definition and provisions declared schemas before committing the new active artifact. Failed preparation preserves the active version; the UI offers retry using the existing approval. Removing columns or changing their declared types is rejected. Revoking an active capability disables that package while preserving its data. Re-approval issues new receipts; old runtime handles remain invalid.
 
-ctx.captcha.requireProof(token) → boolean
-```
+Every storage call holds the registry row through commit. Revocation waits for an already accepted write to commit; once revocation completes, old handles cannot begin another write. This does not undo earlier writes or promise cancellation of already dispatched external effects.
 
-That's it. **No** `ctx.cms`, `ctx.ai`, `ctx.snapshots`, `ctx.tools`, `ctx.email`, `ctx.workers`. Manifests declaring `requestedCapabilities` are rejected by the validator.
+Plugin tables live in `cms_public.plugin_<slug>`. Tables may declare `id: "uuid"`; otherwise the host creates that primary key. Forced row-level security scopes access to the plugin identity. SDK calls validate tables and columns against the reviewed manifest and run with the plugin’s own identity.
 
-## Per-plugin RLS scoping
+External tools declaring `approvalMode: "user-approval"` use the native chat approval card. Before showing it, the host records an immutable binding to the artifact, capability receipt IDs, tool and operation, exact arguments, author and chat branch. The binding survives restarts; updates, revocation/reapproval, or changed arguments require a fresh call and approval. Legacy queued approvals without that binding cannot execute an external gated tool. Power-MCP passes authenticated author context for ordinary tools and directs approval-gated calls to the CMS chat.
 
-Every Tier 2 plugin's tables live under its slug-prefixed schema:
+The installation page supports retrying an approved installation and reloading its exact finalized active artifact after a transient host-load failure. Neither action issues new capability receipts. AI-authored capability-bearing `submit_plugin` requests enter this same installation review queue.
 
-```
-cms_public.plugin_<slug>.<table>
-```
+Companion skills are declared in `skills[]` and require an explicit `companion_skills` grant. External packages may declare up to 20, with slugs beginning with the package slug plus `-`. The public SDK's `manifestFromDefinition` includes their complete reviewed bodies. They become available in the same transaction that activates the artifact. Updates cannot overwrite another author's or plugin's skill; a collision rolls back activation. Removed guides become unavailable, and an Owner's individual archive remains in effect. Namespace ownership survives uninstall so reinstalling the same plugin can reclaim its own archived guides.
 
-Each table carries an RLS policy that matches `current_setting('caelo.plugin_id')`. The Bun host sets `SET LOCAL caelo.plugin_id = '<plugin-uuid>'` per transaction — so even if the plugin's code is misbehaved (or the validator missed a hole), Postgres at the database layer prevents reads of other plugins' data.
-
-You can verify this by attempting a cross-plugin read from inside a plugin's `ctx.query` call — the Validator + RLS + the schema-validator triple-stack will fail closed.
-
-## Validator forbidden patterns
-
-The validator (`packages/plugin-sandbox/src/validate.ts`, oxc-parser-based) walks the compiled JS module tree before the plugin reaches the sandbox. It rejects:
-
-| Forbidden pattern | Why | What to use instead |
-|---|---|---|
-| `import x from 'node:fs'` | Filesystem access | (no equivalent — plugins don't need files) |
-| `fetch(...)` / `XMLHttpRequest` | Network egress | (none — plugins are server-internal) |
-| `Deno.readFile`, `Deno.env.get`, etc. | Bypass sandbox flags | (none) |
-| Dynamic `import()` | Runtime code injection | Static `import` from `@caelo-cms/plugin-sdk` |
-| Template literals matching SQL keywords | Raw SQL | `ctx.query.insert/list/update/delete` |
-| `eval`, `Function`, `new Function` | Runtime code injection | (none) |
-| Top-level `globalThis` writes | Escape vector | Module-scoped consts only |
-
-Validation failures return structured errors the AI can auto-fix and re-submit:
-
-```ts
-{
-  kind: 'forbidden-pattern',
-  nodeType: 'CallExpression',
-  snippet: "fetch('https://evil.com')",
-  location: { line: 12, column: 17 },
-  hint: "use ctx.api.list() instead of fetch()"
-}
-```
-
-## Schema rules
-
-Every table in `manifest.schema`:
-
-- Must declare `id: 'uuid'` (primary key)
-- Cannot redeclare `caelo_plugin_id` (the host adds it for the RLS policy)
-
-The validator runs schema rules before the SQL emitter; bad shapes fail at submit time with a clear error.
-
-## What "AI authors a Tier 2 plugin" looks like end-to-end
-
-1. You ask the chat: "draft a Tier 2 plugin called `event-rsvp`..."
-2. AI calls `submit_plugin({slug, source, manifest})`. Validator runs synchronously.
-3. **Pass:** `plugins` row inserted with `status='awaiting_activation'`. AI tells you "click Approve at /security/plugins/event-rsvp" and the chat surfaces the validation summary.
-4. **Fail:** `status='draft'` + structured errors in `validation_errors`. AI fixes + re-submits in the same turn (loop until pass).
-5. You navigate to `/security/plugins/event-rsvp`. You see: source diff (the full text), declared schema, declared operations, declared component tag, validation summary.
-6. You click **Approve**. The host opens a transaction, creates `cms_public.plugin_event_rsvp`, applies the schema, registers the plugin's operations, mounts the Web Component placeholder. Status flips to `active`.
-7. The plugin is live. Visitors can interact via the API gateway; admin sees data via `ctx.api.*` calls (the AI can summarise via `summarize-plugin-data` skill).
-
-## Disabling a plugin
-
-`/security/plugins/<slug>` → "Disable" sets `status='disabled'`. The host stops dispatching to it. **The plugin's tables stay** — data preservation. Re-enable flips status back; no schema changes needed.
-
-To completely uninstall + drop the plugin's schema, use `plugins.uninstall` (lands as a follow-up; v1 keeps tables on disable for safety).
-
-## When NOT to use Tier 2
-
-- You need cross-`cms_admin` writes → Tier 1
-- You need to register a chat-runner AI tool the AI can dispatch → Tier 1
-- You need a background worker (cron-style) → Tier 1
-- You need to send emails → Tier 1
-- You need to call the AI provider from within the plugin → Tier 1
-
-For those cases, ship Tier 1 via PR per [Build a plugin](/plugins-build).
-
-## Tier-boundary one-way door
-
-A Tier 2 row's `tier` column is immutable after insert. To "graduate" a community Tier 2 plugin into core: a human contributor reads the source, refactors as needed, audits, signs the manifest, lands it via PR in `packages/plugins/<slug>/`, bumps the Caelo version. There's no UI shortcut by design.
-
-## Next
-
-- [Build a plugin →](/plugins-build) (the Tier 1 path is here)
-- [Architecture →](/architecture)
-- The [`@caelo-cms/plugin-sandbox` source](https://github.com/caelo-cms/caelo-cms/tree/main/packages/plugin-sandbox)
+Skill reads and pinned defaults check the owning plugin's active state and, for externals, the exact artifact and live companion receipt. This also removes disabled release-signed plugin skills from discovery. Both plugin types retain their ownership marker through uninstall, including individually archived guides, so deleting the plugin cannot make its guides appear standalone. Receipt metadata is readable to AI actors under RLS; granting, revoking, and private author storage remain separately protected.
