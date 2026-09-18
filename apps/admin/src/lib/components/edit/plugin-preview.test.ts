@@ -25,3 +25,15 @@ test("only local plugin documents open in the editor, with canonical bounded arg
   );
   expect(previewFromResult("not json", origin)).toBeNull();
 });
+
+test("explicit local preview views survive navigation without accepting scripts or paths", () => {
+  expect(
+    localPluginPreview(
+      "/plugins/example/preview?view=reference-job-one&channel=forged",
+      "https://cms.test",
+    ),
+  ).toBe("/plugins/example/preview?args=%7B%7D&view=reference-job-one");
+  expect(
+    localPluginPreview("/plugins/example/preview?view=../security", "https://cms.test"),
+  ).toBeNull();
+});

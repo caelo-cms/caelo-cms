@@ -57,12 +57,15 @@
       try {
         const endpoint = new URL(currentUrl, location.origin);
         endpoint.searchParams.set("format", "metadata");
+        const changedDocument = baseUrl !== currentUrl || !baseDoc;
         if (baseUrl !== currentUrl || !baseDoc) {
           const initialResponse = await fetch(endpoint, { signal: controller.signal });
           if (!initialResponse.ok) throw new Error(`Preview unavailable (${initialResponse.status})`);
           baseDoc = pluginPreviewDocumentSchema.parse({ ...await initialResponse.json(), html: "" });
           baseUrl = currentUrl;
         }
+        const requestedView = changedDocument ? endpoint.searchParams.get("view") : null;
+        if (requestedView && requestedView !== currentView && baseDoc.views.some(item => item.id === requestedView)) { view = requestedView; return; }
         const validView = baseDoc.views.some((item) => item.id === currentView) ? currentView : baseDoc.views[0]?.id ?? "";
         if (validView !== currentView) { view = validView; return; }
         if (currentView) endpoint.searchParams.set("view", currentView);

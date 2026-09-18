@@ -15,7 +15,13 @@ export function localPluginPreview(value: unknown, origin: string): string | nul
     if (args.length > 2048) return null;
     const parsed = JSON.parse(args);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return `${url.pathname}?${new URLSearchParams({ args }).toString()}`;
+    const params = new URLSearchParams({ args });
+    const view = url.searchParams.get("view");
+    if (view) {
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(view)) return null;
+      params.set("view", view);
+    }
+    return `${url.pathname}?${params.toString()}`;
   } catch {
     return null;
   }
