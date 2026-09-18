@@ -55,3 +55,25 @@ test("transcripts show a reference label without exposing opaque IDs or losing o
   const literal = "Unrelated message" + PLUGIN_PREVIEW_REFERENCE_MARKER + "not JSON";
   expect(readPluginPreviewReference(literal)).toEqual({ text: literal });
 });
+
+test("viewport context must reference declared targets and document choices have unique identities", () => {
+  const target = { id: "page", label: "Page", reference: { revisionId: "one" } };
+  expect(
+    pluginPreviewDocumentSchema.safeParse({
+      html: "",
+      targets: [target],
+      contextTargetIds: ["missing"],
+    }).success,
+  ).toBe(false);
+  expect(
+    pluginPreviewDocumentSchema.safeParse({
+      html: "",
+      targets: [target],
+      contextTargetIds: ["page"],
+    }).success,
+  ).toBe(true);
+  const doc = { id: "document", label: "Document", url: "/plugins/example/preview?args=%7B%7D" };
+  expect(pluginPreviewDocumentSchema.safeParse({ html: "", documents: [doc, doc] }).success).toBe(
+    false,
+  );
+});

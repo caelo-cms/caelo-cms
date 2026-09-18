@@ -2,7 +2,24 @@
   // SPDX-License-Identifier: MPL-2.0
   import { onMount } from "svelte";
   import { pluginPreviewDocumentSchema, type PluginPreviewSelection } from "@caelo-cms/shared";
-  let { url, onSelection }: { url: string; onSelection: (selection: PluginPreviewSelection | null) => void } = $props();
+  import { localPluginPreview } from "./plugin-preview.js";
+  let { url, onSelection, onContext, onDocument }: { url: string; onSelection: (selection: PluginPreviewSelection | null) => void; onContext: (selection: PluginPreviewSelection | null) => void; onDocument: (url: string) => void } = $props();
+  let contextId = "";
+  const visitedDocuments = new Map<string, string>();
+  function setContext(id: string) {
+    const target = metadata?.targets.find(item => item.id === id);
+    if (!target || !metadata?.contextTargetIds.includes(id) || contextId === id) return;
+    contextId = id;
+    onContext({ ...target, pluginSlug });
+    selectedId = "";
+    onSelection(null);
+  }
+  function switchDocument(id: string) {
+    const item = metadata?.documents.find(item => item.id === id);
+    const next = localPluginPreview(visitedDocuments.get(`${pluginSlug}:${id}`) ?? item?.url, location.origin);
+    if (!next || next.split("/")[2] !== pluginSlug) return;
+    view = ""; selectedId = ""; onDocument(next);
+  }
   let view = $state("");
   let metadata = $state<ReturnType<typeof pluginPreviewDocumentSchema.parse> | null>(null);
   let src = $state("");
@@ -24,17 +41,18 @@
     view = new URL(location.href).searchParams.get("previewView") ?? "";
     ready = true;
     const handle = (event: MessageEvent) => {
-      if (event.source !== iframe?.contentWindow || event.data?.kind !== "caelo:plugin-target" || event.data?.channel !== channel || typeof event.data?.id !== "string") return;
-      select(event.data.id);
+      if (event.source !== iframe?.contentWindow || event.data?.channel !== channel || typeof event.data?.id !== "string") return;
+      if (event.data.kind === "caelo:plugin-context") setContext(event.data.id);
+      else if (event.data.kind === "caelo:plugin-target") select(event.data.id);
     };
     window.addEventListener("message", handle);
-    return () => { window.removeEventListener("message", handle); onSelection(null); };
+    return () => { window.removeEventListener("message", handle); onSelection(null); onContext(null); };
   });
   $effect(() => {
     if (!ready) return;
     const currentUrl = url, currentView = view;
     const controller = new AbortController();
-    metadata = null; src = ""; failure = ""; onSelection(null);
+    metadata = null; src = ""; failure = ""; contextId = ""; onSelection(null); onContext(null);
     async function load() {
       try {
         const endpoint = new URL(currentUrl, location.origin);
@@ -55,6 +73,7 @@
         const chosen = doc.views.some((item) => item.id === currentView) ? currentView : doc.views[0]?.id ?? "";
         if (chosen !== currentView) { view = chosen; return; }
         metadata = doc;
+        if (doc.documentId) visitedDocuments.set(`${pluginSlug}:${doc.documentId}`, currentUrl);
         channel = crypto.randomUUID();
         endpoint.searchParams.delete("format"); endpoint.searchParams.set("channel", channel);
         src = endpoint.pathname + endpoint.search;
@@ -62,8 +81,11 @@
         parentUrl.searchParams.set("pluginPreview", currentUrl);
         if (view) parentUrl.searchParams.set("previewView", view); else parentUrl.searchParams.delete("previewView");
         history.replaceState(history.state, "", parentUrl);
-        const initial = doc.targets.find((target) => target.id === selectedId) ?? doc.targets[0];
+        const previousId = selectedId;
+        if (doc.contextTargetIds[0]) setContext(doc.contextTargetIds[0]);
+        const initial = doc.targets.find((target) => target.id === previousId);
         if (initial) select(initial.id);
+        else if (!doc.contextTargetIds.length && doc.targets[0]) select(doc.targets[0].id);
       } catch (error) {
         if (!controller.signal.aborted) failure = error instanceof Error ? error.message : "Preview unavailable";
       }
@@ -75,6 +97,11 @@
 <div class="flex h-full min-h-0 flex-col" data-testid="plugin-live-preview">
   <div class="flex flex-wrap items-center gap-2 border-b bg-background p-2 text-sm">
     <strong>{metadata?.title ?? "Plugin preview"}</strong>
+    {#if metadata?.documents.length}
+      <select aria-label="Preview document" value={metadata.documentId} onchange={event => switchDocument(event.currentTarget.value)} class="max-w-64 rounded border bg-background px-2 py-1">
+        {#each metadata.documents as item}<option value={item.id}>{item.label}</option>{/each}
+      </select>
+    {/if}
     {#if metadata?.views.length}
       <button type="button" aria-label="Previous preview page" disabled={metadata.views.findIndex(v => v.id === view) <= 0} onclick={() => { const i = metadata!.views.findIndex(v => v.id === view); const next = metadata?.views[i - 1]; if (next) view = next.id; }}>←</button>
       <select aria-label="Preview page" bind:value={view} class="max-w-64 rounded border bg-background px-2 py-1">
@@ -86,7 +113,7 @@
   </div>
   {#if failure}<p role="alert" class="p-4">{failure}</p>
   {:else if src}
-    <p class="bg-background px-3 py-1 text-xs text-muted-foreground">Click an image or text to refer to it in the chat.</p>
+    <p class="bg-background px-3 py-1 text-xs text-muted-foreground">The visible view is shared with the chat automatically. Click an element to be more specific.</p>
     <iframe bind:this={iframe} {src} title="Plugin live preview" sandbox="allow-scripts" class="min-h-0 w-full flex-1 border-0 bg-white"></iframe>
   {:else}<p role="status" class="p-4">Loading preview…</p>{/if}
 </div>

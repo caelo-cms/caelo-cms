@@ -64,7 +64,7 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
   const targets = new Set(document.data.targets.map((target) => target.id));
   const nonce = crypto.randomUUID();
   const bridge = channel
-    ? `<script nonce="${nonce}">${previewBridge(channel, [...targets])}</script>`
+    ? `<script nonce="${nonce}">${previewBridge(channel, [...targets], document.data.contextTargetIds)}</script>`
     : "";
   const csp = channel
     ? PLUGIN_PREVIEW_CSP.replace("sandbox;", `sandbox allow-scripts; script-src 'nonce-${nonce}';`)

@@ -2013,7 +2013,7 @@
         {#if previewSelection}
           <div class="flex items-center gap-2 px-2 text-xs" data-testid="plugin-selection-chip">
             <span class="rounded-full bg-primary/10 px-2 py-1">{previewSelection.label}</span>
-            <button type="button" onclick={() => onClearPreviewSelection?.()} aria-label="Remove preview reference">×</button>
+            {#if onClearPreviewSelection}<button type="button" onclick={onClearPreviewSelection} aria-label="Remove preview reference">×</button>{/if}
           </div>
         {/if}
         {#if chips.length > 0}

@@ -22,11 +22,28 @@ export const pluginPreviewDocumentSchema = z
       .default([]),
     viewId: identifier.optional(),
     targets: z.array(pluginPreviewTargetSchema).max(400).default([]),
+    contextTargetIds: z.array(identifier).max(100).default([]),
+    documentId: identifier.optional(),
+    documents: z
+      .array(
+        z
+          .object({
+            id: identifier,
+            label: z.string().min(1).max(200),
+            url: z.string().max(4096),
+          })
+          .strict(),
+      )
+      .max(100)
+      .default([]),
   })
   .refine(
     (doc) =>
       new Set(doc.targets.map((t) => t.id)).size === doc.targets.length &&
-      new Set(doc.views.map((v) => v.id)).size === doc.views.length,
+      new Set(doc.views.map((v) => v.id)).size === doc.views.length &&
+      new Set(doc.contextTargetIds).size === doc.contextTargetIds.length &&
+      new Set(doc.documents.map((item) => item.id)).size === doc.documents.length &&
+      doc.contextTargetIds.every((id) => doc.targets.some((target) => target.id === id)),
     "Duplicate preview identifiers",
   );
 export const pluginPreviewSelectionSchema = pluginPreviewTargetSchema

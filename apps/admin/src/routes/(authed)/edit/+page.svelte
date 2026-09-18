@@ -51,15 +51,16 @@
   let activePageId = $state(data.activePageId ?? "");
   let pluginPreviewUrl = $state<string | null>(null);
   let previewSelection = $state<PluginPreviewSelection | null>(null);
+  let previewContext = $state<PluginPreviewSelection | null>(null);
   let previewChat = $state("");
   let mounted = $state(false);
   function openPluginPreview(url: string) {
-    if (url !== pluginPreviewUrl) previewSelection = null;
+    if (url !== pluginPreviewUrl) { previewSelection = null; previewContext = null; }
     pluginPreviewUrl = url;
     diffOpen = false;
   }
   function closePluginPreview() {
-    pluginPreviewUrl = null; previewSelection = null;
+    pluginPreviewUrl = null; previewSelection = null; previewContext = null;
     const url = new URL(location.href); url.searchParams.delete("pluginPreview"); url.searchParams.delete("previewView");
     history.replaceState(history.state, "", url);
   }
@@ -532,7 +533,7 @@
   <!-- Full-bleed iframe -->
   <div class="min-h-0 flex-1">
     {#if pluginPreviewUrl}
-      <PluginPreview url={pluginPreviewUrl} onSelection={(selection) => { previewSelection = selection; }} />
+      <PluginPreview url={pluginPreviewUrl} onSelection={(selection) => { previewSelection = selection; }} onContext={(context) => { previewContext = context; }} onDocument={openPluginPreview} />
     {:else if previewSrc}
       <iframe
         bind:this={iframe}
@@ -584,8 +585,8 @@
   <div class={pluginPreviewUrl ? "h-[45vh] shrink-0 md:h-full md:w-[420px]" : "contents"}>
   <Overlay
     docked={!!pluginPreviewUrl}
-    {previewSelection}
-    onClearPreviewSelection={() => { previewSelection = null; }}
+    previewSelection={previewSelection ?? previewContext}
+    onClearPreviewSelection={previewSelection ? () => { previewSelection = null; } : undefined}
     session={data.activeChat}
     initialMessages={data.messages}
     firstRunSuggestions={data.firstRunSuggestions}
