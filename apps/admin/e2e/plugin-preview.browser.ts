@@ -9,7 +9,7 @@ test("plugin pages and exact element references stay beside chat and follow new 
   test.setTimeout(180_000);
   page.setDefaultTimeout(30_000);
   const browserErrors: string[] = [];
-  page.on("pageerror", error => browserErrors.push(error.message));
+  page.on("pageerror", (error) => browserErrors.push(error.message));
 
   const chatId = process.env.CAELO_PREVIEW_CHAT_ID;
   const previous = process.env.CAELO_PREVIEW_PREVIOUS;
@@ -147,16 +147,17 @@ test("plugin pages and exact element references stay beside chat and follow new 
   await expect(
     frame.getByRole("heading", { name: "Bilder & Referenzen", exact: true }),
   ).toBeVisible();
-  await expect(frame.locator("img").first()).toBeVisible();
-  await frame.locator("article").first().click();
-  await page.getByTestId("chat-composer").fill("Dieses Original als Referenz verwenden.");
+  const character = frame.locator('article[data-caelo-preview-target^="character-"]').first();
+  await expect(character).toBeVisible();
+  await character.getByRole("heading").click();
+  await page.getByTestId("chat-composer").fill("Diese Figur als eigene Referenz ausarbeiten.");
   await page.getByTestId("chat-send").click();
   await expect
     .poll(() => (sent?.previewSelection as { reference?: { part?: string } })?.reference?.part)
-    .toBe("asset");
-  expect((sent?.previewSelection as { reference: { assetId: string } }).reference.assetId).toMatch(
-    /^[a-f0-9-]{36}$/,
-  );
+    .toBe("character.references");
+  expect(
+    (sent?.previewSelection as { reference: { characterId: string } }).reference.characterId,
+  ).toMatch(/^[a-f0-9-]{36}$/);
   await page.getByLabel("Preview page", { exact: true }).selectOption("design");
   await expect(
     frame.getByRole("heading", { name: "Briefing & Gestaltung", exact: true }),
