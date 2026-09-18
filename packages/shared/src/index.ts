@@ -31,6 +31,7 @@ export {
 } from "./logger.js";
 export * from "./media.js";
 export * from "./page-log.js";
+export * from "./plugin-preview.js";
 export * from "./preview-compose.js";
 export * from "./preview-scanner.js";
 export * from "./proposal-status.js";

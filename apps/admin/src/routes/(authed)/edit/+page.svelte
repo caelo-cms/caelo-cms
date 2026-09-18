@@ -26,6 +26,9 @@
   import { onMount } from "svelte";
   import CrossChatBanner from "$lib/components/edit/CrossChatBanner.svelte";
   import DiffPanel from "$lib/components/edit/DiffPanel.svelte";
+  import PluginPreview from "$lib/components/edit/PluginPreview.svelte";
+  import { localPluginPreview, previewFromResult } from "$lib/components/edit/plugin-preview.js";
+  import type { PluginPreviewSelection } from "@caelo-cms/shared";
   import Overlay from "$lib/components/edit/Overlay.svelte";
   import StageDeployButton from "$lib/components/edit/StageDeployButton.svelte";
   import {
@@ -46,6 +49,29 @@
 
   let { data, form } = $props();
   let activePageId = $state(data.activePageId ?? "");
+  let pluginPreviewUrl = $state<string | null>(null);
+  let previewSelection = $state<PluginPreviewSelection | null>(null);
+  let previewContext = $state<PluginPreviewSelection | null>(null);
+  let previewChat = $state("");
+  let mounted = $state(false);
+  function openPluginPreview(url: string) {
+    if (url !== pluginPreviewUrl) { previewSelection = null; previewContext = null; }
+    pluginPreviewUrl = url;
+    diffOpen = false;
+  }
+  function closePluginPreview() {
+    pluginPreviewUrl = null; previewSelection = null; previewContext = null;
+    const url = new URL(location.href); url.searchParams.delete("pluginPreview"); url.searchParams.delete("previewView");
+    history.replaceState(history.state, "", url);
+  }
+  $effect(() => {
+    if (!mounted || previewChat === data.activeChat.id) return;
+    const first = !previewChat;
+    previewChat = data.activeChat.id;
+    previewSelection = null;
+    const requested = first ? localPluginPreview(new URL(location.href).searchParams.get("pluginPreview"), location.origin) : null;
+    pluginPreviewUrl = requested ?? [...data.messages].reverse().filter(m => m.role === "tool").map(m => previewFromResult(m.content, location.origin)).find(Boolean) ?? null;
+  });
 
   /**
    * The 7-day AI spend the runner reported at the end of the most recent turn,
@@ -150,6 +176,7 @@
   }
 
   function onPageChange(value: string): void {
+    if (pluginPreviewUrl) closePluginPreview();
     if (value === activePageId) return;
     if (pendingChanges > 0) {
       pendingSwitchTo = value;
@@ -183,6 +210,16 @@
   }
 
   onMount(() => {
+    mounted = true;
+    const openLink = (event: MouseEvent) => {
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      const anchor = (event.target as Element)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!anchor || anchor.closest('[data-testid="plugin-live-preview"]')) return;
+      const url = localPluginPreview(anchor.href, location.origin);
+      if (!url) return;
+      event.preventDefault(); openPluginPreview(url);
+    };
+    document.addEventListener("click", openLink, true);
     const handler = (ev: MessageEvent) => {
       if (ev.source !== iframe?.contentWindow) return;
       if (!isCaeloMessage(ev.data)) return;
@@ -226,7 +263,7 @@
       }
     };
     window.addEventListener("message", handler);
-    return () => window.removeEventListener("message", handler);
+    return () => { window.removeEventListener("message", handler); document.removeEventListener("click", openLink, true); };
   });
 
   // v0.9.3 — auto-switch the iframe when the AI creates a new home page
@@ -289,6 +326,7 @@
 
   function onAiToolResult(payload: {
     ok: boolean;
+    content?: string;
     arguments?: Record<string, unknown>;
   }): void {
     // v0.8.0 — no manual counter increment; pendingChanges is $derived
@@ -300,6 +338,10 @@
     // omit pageId; we stay on the current page in that case.
     // Stale `data.pages` here is fine — we run invalidateAll() right
     // after, so the next tool-result picks up the fresh list.
+    if (payload.ok && payload.content) {
+      const next = previewFromResult(payload.content, location.origin);
+      if (next) openPluginPreview(next);
+    }
     const args = payload.arguments;
     const targetPageId =
       args && typeof args["pageId"] === "string" ? (args["pageId"] as string) : null;
@@ -341,7 +383,8 @@
     <code
       class="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
       data-testid="edit-url"
-    >{urlText}</code>
+    >{pluginPreviewUrl ? "Preview" : urlText}</code>
+    {#if pluginPreviewUrl}<button type="button" class="underline" onclick={closePluginPreview}>Website preview</button>{/if}
 
     <!-- AI spend, last 7 days. /edit is chrome-less (no AppShell), so the
          spend readout that lives in the AppShell top bar is repeated here —
@@ -361,7 +404,7 @@
          (per-page surface, per-chat semantics under the hood). The
          (N) badge counts entities on the active chat's branch; the ▾
          opens the Promote-to-production modal. -->
-    {#if activePageId && data.activeChat}
+    {#if !pluginPreviewUrl && activePageId && data.activeChat}
       <div class="ml-auto flex items-center gap-3" data-testid="toolbar-publish">
         {#if stagedPreviewUrl}
           <span class="text-xs text-muted-foreground">
@@ -393,6 +436,7 @@
     <button
       type="button"
       onclick={toggleEditMode}
+      disabled={!!pluginPreviewUrl}
       data-testid="edit-mode-toggle"
       aria-pressed={editMode}
       class={cn(
@@ -410,7 +454,7 @@
       type="button"
       onclick={() => (diffOpen = !diffOpen)}
       aria-pressed={diffOpen}
-      disabled={!activePage || !data.activeChat}
+      disabled={!!pluginPreviewUrl || !activePage || !data.activeChat}
       class={cn(
         "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors motion-reduce:transition-none",
         diffOpen
@@ -425,7 +469,7 @@
       <GitCompareArrows class="size-3.5" />
       Diff
     </button>
-    {#if data.pages.length > 0}
+    {#if !pluginPreviewUrl && data.pages.length > 0}
       <div class="w-64">
         <Combobox
           items={data.pages.map((p) => ({
@@ -477,7 +521,7 @@
           </button>
         </form>
       {/if}
-    {:else}
+    {:else if !pluginPreviewUrl}
       <span class="text-muted-foreground">
         No pages yet —
         <a class="underline" href="/content/pages">create one</a>.
@@ -485,9 +529,12 @@
     {/if}
   </header>
 
+  <div class={pluginPreviewUrl ? "flex min-h-0 flex-1 flex-col md:flex-row" : "contents"}>
   <!-- Full-bleed iframe -->
-  <div class="flex-1">
-    {#if previewSrc}
+  <div class="min-h-0 flex-1">
+    {#if pluginPreviewUrl}
+      <PluginPreview url={pluginPreviewUrl} onSelection={(selection) => { previewSelection = selection; }} onContext={(context) => { previewContext = context; }} onDocument={openPluginPreview} />
+    {:else if previewSrc}
       <iframe
         bind:this={iframe}
         src={previewSrc}
@@ -534,15 +581,19 @@
     {/if}
   </div>
 
-  <!-- Floating overlay -->
+  <!-- Dock beside plugin documents so the chat never covers the selected page. -->
+  <div class={pluginPreviewUrl ? "h-[45vh] shrink-0 md:h-full md:w-[420px]" : "contents"}>
   <Overlay
+    docked={!!pluginPreviewUrl}
+    previewSelection={previewSelection ?? previewContext}
+    onClearPreviewSelection={previewSelection ? () => { previewSelection = null; } : undefined}
     session={data.activeChat}
     initialMessages={data.messages}
     firstRunSuggestions={data.firstRunSuggestions}
     modules={data.modules}
     csrfToken={data.csrfToken}
     initialLayout={data.layout}
-    activePageId={activePageId || null}
+    activePageId={pluginPreviewUrl ? null : activePageId || null}
     pageChats={data.pageChats}
     globalChats={data.globalChats}
     onToolResult={onAiToolResult}
@@ -552,6 +603,8 @@
     onDragStateChange={(active) => (overlayDragging = active)}
   />
 
+  </div>
+  </div>
   <!-- P6.6b — side-by-side iframe diff. Closes via the X button or
        by toggling the toolbar Diff button. Guarded on activeChat
        too — without a chat session there's no chatBranchId for the

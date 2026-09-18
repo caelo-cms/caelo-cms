@@ -26,3 +26,15 @@ test("blocked nested and malformed content cannot reopen active tags", () => {
   expect(html).toContain("Visible");
   expect(html).toContain("p{color:red}");
 });
+
+test("only declared selection targets survive; plugin scripts remain blocked", () => {
+  const html = sanitizePluginPreview(
+    '<p data-caelo-preview-target="page-1" onclick="steal()">Text</p><p data-caelo-preview-target="forged">Other</p><script nonce="trusted">steal()</script>',
+    new Map(),
+    new Set(["page-1"]),
+  );
+  expect(html).toContain('data-caelo-preview-target="page-1"');
+  expect(html).not.toContain("forged");
+  expect(html).not.toContain("script");
+  expect(html).not.toContain("steal");
+});
