@@ -311,3 +311,25 @@ describe("manifest signing + verification", () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe("validateSource — host-filesystem escapes via the bundler (#473 review)", () => {
+  const kinds = (source: string) => validateSource({ source, filename: "p.ts" }).map((f) => f.kind);
+
+  it("rejects require() in every spelling", () => {
+    expect(kinds('const s = require("/app/secrets/sa.json");')).toContain("forbidden-require");
+    expect(kinds('const s = module.require("/etc/passwd");')).toContain("forbidden-require");
+    expect(kinds('const s = globalThis.require("/etc/passwd");')).toContain("forbidden-require");
+  });
+
+  it("rejects import.meta", () => {
+    expect(kinds("export const where = import.meta.url;")).toContain("forbidden-import-meta");
+  });
+
+  it("still accepts ordinary plugin code", () => {
+    expect(
+      kinds(
+        'import { definePlugin } from "@caelo-cms/plugin-sdk"; export default definePlugin({} as never);',
+      ),
+    ).toEqual([]);
+  });
+});

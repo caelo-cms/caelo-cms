@@ -67,6 +67,20 @@ async function bundle(source: string): Promise<string> {
   const failures = validateSource({ source, filename: "external-plugin.ts" });
   if (failures.length)
     throw new Error(`SandboxSourceRejected: ${failures.map((f) => f.kind).join(", ")}`);
+  return buildIsolatedBundle(source);
+}
+
+/**
+ * Bundle already-validated plugin source for the Deno child. Runs in the
+ * HOST process, so it must itself refuse every resolution outside the
+ * entry and the two SDK packages — exported so that second line can be
+ * tested without the validator in front of it.
+ *
+ * @throws `SandboxResolveDenied` for any other import/require target.
+ */
+export async function buildIsolatedBundle(source: string): Promise<string> {
+  // Bun rejects a failed build with a generic "Bundle failed"
+  // AggregateError; surface the plugin-resolution reason inside it.
   const built = await Bun.build({
     entrypoints: ["caelo:entry"],
     target: "browser",
@@ -87,9 +101,30 @@ async function bundle(source: string): Promise<string> {
           build.onResolve({ filter: /^@caelo-cms\/plugin-(sdk|component-kit)$/ }, (args) => ({
             path: import.meta.resolve(args.path).replace(/^file:\/\//, ""),
           }));
+          // Defense in depth behind validateSource: this build runs in
+          // the HOST, with host filesystem access, before the Deno
+          // sandbox exists. Anything the plugin's own code asks for
+          // beyond the entry and the two SDK packages — a relative
+          // path, an absolute host path, a require() the validator
+          // missed — would be inlined from the host disk. Registered
+          // last, so the two allowed resolutions above win.
+          build.onResolve({ filter: /.*/ }, (args) => {
+            if (args.namespace === "caelo" || args.importer.startsWith("caelo:")) {
+              throw new Error(
+                `SandboxResolveDenied: plugin code may import only "@caelo-cms/plugin-sdk" (asked for "${args.path}")`,
+              );
+            }
+            return undefined;
+          });
         },
       },
     ],
+  }).catch((e: unknown) => {
+    const inner =
+      e instanceof AggregateError ? e.errors.map((x) => String((x as Error)?.message ?? x)) : [];
+    throw new Error(
+      `SandboxBuildFailed: ${inner.length > 0 ? inner.join("; ") : e instanceof Error ? e.message : String(e)}`,
+    );
   });
   const output = built.outputs[0];
   if (!built.success || built.outputs.length !== 1 || !output)
@@ -178,11 +213,16 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
       operation: invocation.operation,
       args: invocation.args,
       theme: context.theme,
+      // No sessionToken: it is the visitor's HttpOnly `caelo_session`
+      // bearer credential. Handing it to runtime-authored code would let
+      // a plugin collect tokens in its own schema and replay them to take
+      // over logged-in visitors' sessions. The opaque id is enough to key
+      // per-visitor state.
       visitor: {
         id: context.visitor.id,
         publicUserId: context.visitor.publicUserId,
         ipHash: context.visitor.ipHash,
-        sessionToken: context.visitor.sessionToken,
+        sessionToken: null,
       },
     });
     let nextCall = 0;
