@@ -581,6 +581,9 @@ export default definePlugin<PluginContextTier1>({
     "domain_events",
     "head_contributions",
   ],
+  /** Visitor-facing surface (default deny — everything else is
+   *  refused a visitor-context dispatch). */
+  publicOperations: [],
   operations: {
     /**
      * #390 I/O phase — per-page URL annotations from the variant table:
