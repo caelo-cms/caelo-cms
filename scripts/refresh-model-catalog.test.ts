@@ -10,7 +10,7 @@ import {
   pickNewest,
   pricedModels,
   refreshCatalog,
-  renderSummary,
+  renderIssueBody,
 } from "./refresh-model-catalog.js";
 
 const slot = (role: string, match: string, id: string) => ({
@@ -112,21 +112,40 @@ describe("refreshCatalog", () => {
   });
 });
 
-describe("summary", () => {
-  it("lists pricing and capability follow-ups for new models only where needed", () => {
-    const summary = renderSummary({
-      changes: [
-        { provider: "anthropic", role: "default", from: "a", to: "claude-sonnet-6", label: "S6" },
-        { provider: "google", role: "default", from: "b", to: "gemini-2.5-pro", label: "G" },
-      ],
-      skipped: ["openai"],
-      unmatched: [],
-      priced: new Set(["gemini-2.5-pro"]),
-    });
-    expect(summary).toContain("ai_pricing` migration for `anthropic` / `claude-sonnet-6`");
-    expect(summary).not.toContain("migration for `google`");
-    expect(summary).toContain("rejectsForcedToolChoice");
-    expect(summary).toContain("Skipped (no API key configured): openai.");
+describe("issue body for the coding agent", () => {
+  const body = renderIssueBody({
+    changes: [
+      { provider: "anthropic", role: "default", from: "a", to: "claude-sonnet-6", label: "S6" },
+      { provider: "google", role: "default", from: "b", to: "gemini-2.5-pro", label: "G" },
+    ],
+    skipped: ["openai"],
+    unmatched: [],
+    priced: new Set(["gemini-2.5-pro"]),
+  });
+
+  it("carries the exact slot changes (the agent has no provider keys)", () => {
+    expect(body).toContain("| anthropic | default | `a` | `claude-sonnet-6` | S6 |");
+  });
+
+  it("asks for pricing only for unpriced models, from the official page, never guessed", () => {
+    expect(body).toContain(
+      "`anthropic` / `claude-sonnet-6` — prices from https://platform.claude.com",
+    );
+    expect(body).not.toContain("`google` / `gemini-2.5-pro` — prices");
+    expect(body).toContain("do NOT guess");
+  });
+
+  it("includes the Anthropic capability task, the SDK check and the test commands", () => {
+    expect(body).toContain("rejectsForcedToolChoice");
+    expect(body).toContain("@ai-sdk/<provider>");
+    expect(body).toContain("bunx biome check .");
+    expect(body).toContain("_Not checked (no API key configured): openai._");
+  });
+
+  it("says so when nothing changed", () => {
+    expect(
+      renderIssueBody({ changes: [], skipped: [], unmatched: [], priced: new Set() }),
+    ).toContain("up to date");
   });
 
   it("finds priced models in migration SQL", () => {

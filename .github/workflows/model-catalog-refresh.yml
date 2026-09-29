@@ -1,22 +1,26 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# Caelo CMS — weekly model-catalog refresh.
+# Caelo CMS — weekly model check, implemented by the Copilot coding agent.
 #
-# Lists the models Anthropic / OpenAI / Google currently serve and moves
-# every slot in packages/admin-core/src/ai/model-catalog.json to the newest
-# matching id (scripts/refresh-model-catalog.ts). A changed catalog becomes a
-# PR on `chore/model-catalog-refresh` — never a direct push: a new model can
-# need an ai_pricing migration and (Anthropic) a capability-predicate update,
-# and the PR body lists exactly those follow-ups.
+# 1. scripts/refresh-model-catalog.ts lists the models Anthropic / OpenAI /
+#    Google currently serve and works out which slots of
+#    packages/admin-core/src/ai/model-catalog.json should move to a newer id.
+#    Only this job holds the provider keys; it calls list-models endpoints
+#    only (no generation, no spend).
+# 2. If anything moved, it opens an issue whose body carries the exact
+#    changes plus the full definition of done (catalog, ai_pricing migration,
+#    Anthropic capability predicates, SDK bump, tests) and assigns it to the
+#    Copilot coding agent, which opens the PR. Humans review and merge.
+#    While such an issue is open, later runs comment on it instead of opening
+#    another one.
 #
-# Keys (repo secrets; a provider whose key is missing is skipped and named in
-# the summary): ANTHROPIC_API_KEY_E2E, OPENAI_API_KEY,
-# GOOGLE_GENERATIVE_AI_API_KEY. The script only calls the list-models
-# endpoints — no generation, no spend.
-#
-# PR token: RELEASE_PAT when configured (same as release-cut.yml), else the
-# repo GITHUB_TOKEN. A PR opened with GITHUB_TOKEN does not trigger the
-# required CI checks — push an empty commit or close/reopen it to run them.
+# Secrets:
+#   ANTHROPIC_API_KEY_E2E, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY —
+#     provider keys; a missing one is skipped and named in the issue.
+#   COPILOT_ASSIGN_TOKEN — fine-grained PAT of a user with a Copilot seat
+#     (Issues: read/write, Contents: read, Metadata: read). The repo
+#     GITHUB_TOKEN cannot assign Copilot; without this secret the issue is
+#     still created, just unassigned (a warning says so).
 
 name: model-catalog-refresh
 
@@ -26,8 +30,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  issues: write
 
 concurrency:
   group: model-catalog-refresh
@@ -37,15 +41,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  refresh:
-    name: refresh model catalog
+  check:
+    name: check for newer models
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v7
         with:
           ref: main
-          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -55,7 +58,8 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Refresh catalog
+      - name: Check provider model lists
+        id: check
         # env: injection, NOT ${{ }} inside run: — keeps the keys out of the
         # generated shell script.
         env:
@@ -63,31 +67,50 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
         run: |
-          bun scripts/refresh-model-catalog.ts --summary "$RUNNER_TEMP/model-refresh.md"
-          bunx biome format --write packages/admin-core/src/ai/model-catalog.json
-          cat "$RUNNER_TEMP/model-refresh.md" >> "$GITHUB_STEP_SUMMARY"
+          bun scripts/refresh-model-catalog.ts --issue-body "$RUNNER_TEMP/issue.md"
+          cat "$RUNNER_TEMP/issue.md" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Open or update the refresh PR
+      - name: Hand the update to the Copilot coding agent
+        if: steps.check.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
-          BRANCH: chore/model-catalog-refresh
+          GH_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN || secrets.GITHUB_TOKEN }}
+          HAS_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN != '' }}
+          LABEL: model-catalog
+          # GraphQL documents live in env so their $variables never meet the shell.
+          FIND_COPILOT: >-
+            query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
+            suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) { nodes { login ... on Bot { id } } } } }
+          ASSIGN: >-
+            mutation($issue: ID!, $actors: [ID!]!) {
+            replaceActorsForAssignable(input: { assignableId: $issue, actorIds: $actors }) { __typename } }
         run: |
-          if git diff --quiet; then
-            echo "model-catalog.json is up to date."
+          gh label create "$LABEL" --color 5319e7 \
+            --description "Weekly model catalog update" 2>/dev/null || true
+          open=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body-file "$RUNNER_TEMP/issue.md"
+            echo "Updated open issue #$open."
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -C "$BRANCH"
-          git commit -am "chore(ai): refresh model catalog"
-          # --force: the branch is regenerated from main every run.
-          git push --force origin "$BRANCH"
-          if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = "OPEN" ]; then
-            gh pr edit "$BRANCH" --body-file "$RUNNER_TEMP/model-refresh.md"
-          else
-            gh pr create \
-              --base main \
-              --head "$BRANCH" \
-              --title "chore(ai): refresh model catalog" \
-              --body-file "$RUNNER_TEMP/model-refresh.md"
+          url=$(gh issue create \
+            --title "chore(ai): update model catalog to newer models" \
+            --label "$LABEL" \
+            --body-file "$RUNNER_TEMP/issue.md")
+          echo "Created $url"
+          if [ "$HAS_ASSIGN_TOKEN" != "true" ]; then
+            echo "::warning::COPILOT_ASSIGN_TOKEN not set — assign $url to Copilot manually."
+            exit 0
           fi
+          issue_id=$(gh issue view "$url" --json id --jq .id)
+          bot_id=$(gh api graphql \
+            -f query="$FIND_COPILOT" \
+            -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" \
+            --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id')
+          if [ -z "$bot_id" ]; then
+            echo "::warning::Copilot coding agent is not available in this repository — assign $url manually."
+            exit 0
+          fi
+          gh api graphql \
+            -f query="$ASSIGN" \
+            -f issue="$issue_id" -f "actors[]=$bot_id" > /dev/null
+          echo "Assigned $url to Copilot."

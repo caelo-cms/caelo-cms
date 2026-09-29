@@ -4,7 +4,8 @@
  * Pure-string checks on `.github/workflows/model-catalog-refresh.yml`, in the
  * style of `codeql-workflow.test.ts`: the weekly trigger, least-privilege
  * permissions, keys injected via env (never interpolated into `run:`), and
- * that a changed catalog only ever reaches main through a PR.
+ * that the job never writes code itself — it hands the update to the Copilot
+ * coding agent as an issue. Also checks the agent's setup workflow.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -22,10 +23,8 @@ describe("model-catalog-refresh.yml", () => {
     expect(workflow).toContain("workflow_dispatch:");
   });
 
-  it("asks only for contents + pull-requests write", () => {
-    expect(workflow).toMatch(
-      /permissions:\s*\n\s*contents: write\s*\n\s*pull-requests: write\s*\n/,
-    );
+  it("asks only for contents read + issues write", () => {
+    expect(workflow).toMatch(/permissions:\s*\n\s*contents: read\s*\n\s*issues: write\s*\n/);
   });
 
   it("pins setup-bun by SHA like the other workflows", () => {
@@ -51,16 +50,34 @@ describe("model-catalog-refresh.yml", () => {
     expect(runBodies.join("\n")).not.toMatch(/\$\{\{\s*secrets\./);
   });
 
-  it("changes reach main only via a PR branch", () => {
-    expect(workflow).toContain('git push --force origin "$BRANCH"');
-    expect(workflow).toContain("gh pr create");
-    expect(workflow).not.toMatch(/git push[^\n]*\bmain\b/);
+  it("never pushes code — the change goes to an issue", () => {
+    expect(workflow).not.toContain("git push");
+    expect(workflow).toContain("gh issue create");
+    expect(workflow).toContain('--body-file "$RUNNER_TEMP/issue.md"');
   });
 
-  it("runs the refresh script with a summary for the PR body", () => {
-    expect(workflow).toContain(
-      'bun scripts/refresh-model-catalog.ts --summary "$RUNNER_TEMP/model-refresh.md"',
-    );
-    expect(workflow).toContain('--body-file "$RUNNER_TEMP/model-refresh.md"');
+  it("only acts when the check found changes, and reuses an open issue", () => {
+    expect(workflow).toContain("if: steps.check.outputs.changed == 'true'");
+    expect(workflow).toContain('gh issue comment "$open"');
+  });
+
+  it("assigns the issue to the Copilot coding agent via the documented GraphQL path", () => {
+    expect(workflow).toContain('select(.login == "copilot-swe-agent")');
+    expect(workflow).toContain("replaceActorsForAssignable");
+    expect(workflow).toContain("COPILOT_ASSIGN_TOKEN");
+  });
+});
+
+describe("copilot-setup-steps.yml", () => {
+  const setup = readFileSync(
+    resolve(import.meta.dir, "../.github/workflows/copilot-setup-steps.yml"),
+    "utf8",
+  );
+
+  it("uses the job name GitHub requires and installs like CI", () => {
+    expect(setup).toMatch(/jobs:\s*\n\s*copilot-setup-steps:/);
+    expect(setup).toContain("oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6");
+    expect(setup).toContain("bun install --frozen-lockfile");
+    expect(setup).toMatch(/permissions:\s*\n\s*contents: read\s*\n/);
   });
 });

@@ -1,23 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Weekly model-catalog refresh (.github/workflows/model-catalog-refresh.yml).
+ * Weekly model check (.github/workflows/model-catalog-refresh.yml).
  *
- * Lists the models each provider currently serves and moves every slot in
- * `packages/admin-core/src/ai/model-catalog.json` to the newest id matching
- * the slot's `match` regex. The workflow turns a changed catalog into a PR —
- * nothing here ships without review, because a new model can also need an
- * `ai_pricing` row and (Anthropic) a capability-predicate update. The
- * summary written with `--summary <file>` lists exactly those follow-ups.
+ * Lists the models each provider currently serves and works out which slots
+ * in `packages/admin-core/src/ai/model-catalog.json` should move to a newer id
+ * (newest id matching the slot's `match` regex, or off a retired id). The
+ * workflow turns the result into an issue assigned to the Copilot coding
+ * agent, which implements the whole update — catalog, `ai_pricing`
+ * migration, Anthropic capability predicates, SDK bump — as one PR. The
+ * agent has no provider keys, so this script (which does) supplies the facts.
  *
  * A provider whose key is not set is skipped and reported, never guessed.
  *
- *   bun scripts/refresh-model-catalog.ts [--summary <file>] [--dry-run]
+ *   bun scripts/refresh-model-catalog.ts [--issue-body <file>] [--write]
  *
+ * `--write` also rewrites the catalog locally (handy for manual runs).
+ * Sets `changed=true|false` in $GITHUB_OUTPUT when running in Actions.
  * Keys: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY.
  */
 
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -132,42 +135,89 @@ export function pricedModels(migrationSql: readonly string[]): Set<string> {
   return priced;
 }
 
-export function renderSummary(args: {
+const DOCS: Record<Provider, { pricing: string; models: string }> = {
+  anthropic: {
+    pricing: "https://platform.claude.com/docs/en/about-claude/pricing.md",
+    models: "https://platform.claude.com/docs/en/about-claude/models/migration-guide.md",
+  },
+  openai: {
+    pricing: "https://openai.com/api/pricing/",
+    models: "https://platform.openai.com/docs/models",
+  },
+  google: {
+    pricing: "https://ai.google.dev/gemini-api/docs/pricing",
+    models: "https://ai.google.dev/gemini-api/docs/models",
+  },
+};
+
+/**
+ * Issue body for the coding agent (the workflow assigns it to Copilot). It
+ * carries the exact slot changes — the agent has no provider keys — plus the
+ * complete definition of done, so the resulting PR only needs review.
+ */
+export function renderIssueBody(args: {
   changes: readonly SlotChange[];
   skipped: readonly string[];
   unmatched: readonly string[];
   priced: ReadonlySet<string>;
 }): string {
-  const lines: string[] = ["## Model catalog refresh", ""];
+  const lines: string[] = [];
   if (args.changes.length === 0) {
     lines.push("No newer models found — `model-catalog.json` is up to date.");
   } else {
-    lines.push("| Provider | Slot | From | To |", "|---|---|---|---|");
+    lines.push(
+      "The weekly model check found newer models. Update Caelo to them in ONE pull request.",
+      "",
+      "## Catalog changes (from the providers' live model lists)",
+      "",
+      "| Provider | Slot | From | To | Label |",
+      "|---|---|---|---|---|",
+    );
     for (const c of args.changes) {
-      lines.push(`| ${c.provider} | ${c.role} | \`${c.from}\` | \`${c.to}\` (${c.label}) |`);
+      lines.push(`| ${c.provider} | ${c.role} | \`${c.from}\` | \`${c.to}\` | ${c.label} |`);
     }
-    lines.push("", "### Before merging", "");
-    for (const c of args.changes) {
-      if (!args.priced.has(c.to)) {
+    lines.push(
+      "",
+      "## Tasks",
+      "",
+      "1. In `packages/admin-core/src/ai/model-catalog.json`, set each slot above to the new `id` and `label` (keep `role`, `note`, `match`).",
+    );
+    const unpriced = args.changes.filter((c) => !args.priced.has(c.to));
+    if (unpriced.length > 0) {
+      lines.push(
+        "2. Add ONE new migration `packages/migrations/migrations/cms_admin/<next number>_p_pricing_<models>.sql` with `ai_pricing` rows, following `0215_p_pricing_sonnet_5_5_opus_5_5.sql` (microcents per 1K tokens; cache write = 1.25x input unless the provider lists it) for:",
+      );
+      for (const c of unpriced) {
         lines.push(
-          `- [ ] Add an \`ai_pricing\` migration for \`${c.provider}\` / \`${c.to}\` (calls are recorded as \`unpriced\` until then)`,
-        );
-      }
-      if (c.provider === "anthropic") {
-        lines.push(
-          `- [ ] Check \`isAdaptiveModel\` / \`rejectsForcedToolChoice\` in \`packages/admin-core/src/ai/providers/anthropic.ts\` cover \`${c.to}\``,
+          `   - \`${c.provider}\` / \`${c.to}\` — prices from ${DOCS[c.provider].pricing}`,
         );
       }
       lines.push(
-        `- [ ] Confirm the installed \`@ai-sdk/${c.provider}\` version knows \`${c.to}\` (capabilities, max output tokens)`,
+        "   Take every number from the official pricing page and cite it in the migration header. If a page is unreachable or does not list the model, do NOT guess: leave that row out and say so in the PR description.",
+      );
+    } else {
+      lines.push("2. Pricing: every new id already has an `ai_pricing` row — no migration needed.");
+    }
+    if (args.changes.some((c) => c.provider === "anthropic")) {
+      lines.push(
+        `3. Anthropic: read ${DOCS.anthropic.models} for each new Claude id and update the capability predicates in \`packages/admin-core/src/ai/providers/anthropic.ts\` — \`isAdaptiveModel\` (rejects \`temperature\` / \`budget_tokens\`) and \`rejectsForcedToolChoice\` (rejects \`tool_choice\` any/tool). Extend \`packages/admin-core/src/ai/__tests__/thinking-option.test.ts\` for the new ids.`,
       );
     }
+    lines.push(
+      "4. Check that the installed `@ai-sdk/<provider>` package (`packages/admin-core/package.json`) recognises each new id (search its `dist/index.js` for the model name). If it does not, bump that package and `ai` to the newest compatible versions.",
+      "5. Run `bun test ./scripts ./packages/admin-core/src/ai`, `bunx biome check .` and `bunx tsc -b packages/admin-core`; all must pass.",
+      "",
+      "Follow `CLAUDE.md` and `CONTRIBUTING.md` (conventional commit `chore(ai): …`, PR template). Existing installs keep their stored model — do not write a data migration for `ai_providers.config`.",
+    );
   }
   if (args.skipped.length > 0) {
-    lines.push("", `Skipped (no API key configured): ${args.skipped.join(", ")}.`);
+    lines.push("", `_Not checked (no API key configured): ${args.skipped.join(", ")}._`);
   }
   if (args.unmatched.length > 0) {
-    lines.push("", `No listed model matched: ${args.unmatched.join(", ")} — check the slot regex.`);
+    lines.push(
+      "",
+      `_No listed model matched: ${args.unmatched.join(", ")} — the slot regex may need an update._`,
+    );
   }
   return `${lines.join("\n")}\n`;
 }
@@ -212,9 +262,9 @@ async function listGoogle(apiKey: string): Promise<ListedModel[]> {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const summaryIdx = argv.indexOf("--summary");
-  const summaryPath = summaryIdx >= 0 ? argv[summaryIdx + 1] : undefined;
-  const dryRun = argv.includes("--dry-run");
+  const issueIdx = argv.indexOf("--issue-body");
+  const issuePath = issueIdx >= 0 ? argv[issueIdx + 1] : undefined;
+  const writeCatalog = argv.includes("--write");
 
   const listed: Partial<Record<Provider, ListedModel[]>> = {};
   const skipped: string[] = [];
@@ -232,13 +282,16 @@ async function main(): Promise<void> {
       .filter((f) => f.endsWith(".sql"))
       .map((f) => readFileSync(join(MIGRATIONS_DIR, f), "utf8")),
   );
-  const summary = renderSummary({ changes, skipped, unmatched, priced });
+  const body = renderIssueBody({ changes, skipped, unmatched, priced });
 
-  if (changes.length > 0 && !dryRun) {
+  if (writeCatalog && changes.length > 0) {
     writeFileSync(CATALOG_PATH, `${JSON.stringify(catalog, null, 2)}\n`);
   }
-  if (summaryPath) writeFileSync(summaryPath, summary);
-  console.log(summary);
+  if (issuePath) writeFileSync(issuePath, body);
+  if (process.env.GITHUB_OUTPUT) {
+    appendFileSync(process.env.GITHUB_OUTPUT, `changed=${changes.length > 0}\n`);
+  }
+  console.log(body);
 }
 
 if (import.meta.main) {
