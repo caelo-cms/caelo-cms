@@ -58,6 +58,7 @@ import {
   runPluginOperation,
   setContextFactory,
   setHostInfra,
+  setHostSystemActorId,
 } from "./dispatch.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
@@ -177,6 +178,7 @@ let bootOpts: BootstrapOpts | null = null;
 
 export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   setHostInfra(opts.infra);
+  setHostSystemActorId(opts.systemActorId);
   setContextFactory(makePluginContext);
   bootOpts = opts;
 
@@ -652,6 +654,15 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
         `plugin "${def.slug}" lists "${name}" in publicOperations, which is not one of its operations`,
       );
     }
+  }
+  // Client assets run in every visitor's browser on every page. That is
+  // the widest blast radius any contribution has, so it is release-signed
+  // only — a runtime-authored plugin's frontend stays inside its Shadow
+  // DOM component, where the sandbox can still reason about it.
+  if (typeof def.buildAssets === "function" && def.tier !== 1) {
+    throw new Error(
+      `plugin "${def.slug}" declares buildAssets but is not release-signed — refused`,
+    );
   }
 
   // Declared BEFORE the activation gate on purpose. An inactive plugin
