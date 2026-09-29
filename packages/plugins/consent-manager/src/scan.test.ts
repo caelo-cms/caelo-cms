@@ -99,6 +99,69 @@ describe("moduleHosts", () => {
   });
 });
 
+describe("moduleHosts counts only what loads with the page", () => {
+  const mod = (
+    html: string,
+    extra: { css?: string; js?: string; fields?: unknown; contentValues?: unknown[] } = {},
+  ) =>
+    moduleHosts({
+      html,
+      css: extra.css ?? "",
+      js: extra.js ?? "",
+      fields: extra.fields ?? [],
+      contentValues: extra.contentValues ?? [],
+    });
+
+  it("ignores a footer link to an external site (the CI homepage case)", () => {
+    // A link contacts nobody until clicked; withholding the footer for it
+    // blanked the whole preview (run 36619865351).
+    expect(
+      mod('<footer><a href="{{license_href}}">{{license_label}}</a></footer>', {
+        fields: [{ name: "license_href", default: "https://www.mozilla.org/MPL/2.0/" }],
+      }),
+    ).toEqual([]);
+    expect(mod('<a href="https://example.org/about">About</a>')).toEqual([]);
+  });
+
+  it("ignores non-loading link relations and form targets", () => {
+    expect(mod('<link rel="canonical" href="https://example.org/x">')).toEqual([]);
+    expect(mod('<form action="https://forms.example.org/submit"></form>')).toEqual([]);
+  });
+
+  it("counts embeds, stylesheets and CSS backgrounds, literal or via fields", () => {
+    expect(mod('<iframe src="https://www.youtube.com/embed/x"></iframe>')).toEqual([
+      "www.youtube.com",
+    ]);
+    expect(
+      mod('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">'),
+    ).toEqual(["fonts.googleapis.com"]);
+    expect(
+      mod('<div style="background:url({{bg}})"></div>', {
+        contentValues: [{ bg: "https://cdn.example.net/a.jpg" }],
+      }),
+    ).toEqual(["cdn.example.net"]);
+    expect(
+      mod('{{#slides}}<img src="{{src}}">{{/slides}}', {
+        contentValues: [{ slides: [{ src: "https://images.example.com/1.jpg" }] }],
+      }),
+    ).toEqual(["images.example.com"]);
+  });
+
+  it("counts any non-link attribute when the module's own JS may load it", () => {
+    const html = '<div data-video="https://player.vimeo.com/video/1"></div>';
+    expect(mod(html)).toEqual([]);
+    expect(mod(html, { js: "document.querySelectorAll('[data-video]').forEach(load);" })).toEqual([
+      "player.vimeo.com",
+    ]);
+  });
+
+  it("still reads the module's JS over-inclusively", () => {
+    expect(
+      mod("<div></div>", { js: 'const api = "https://api.tracker.example/collect";' }),
+    ).toEqual(["api.tracker.example"]);
+  });
+});
+
 describe("deferralReason (render-time gate)", () => {
   const classify = (hosts: ReadonlyArray<string>) =>
     hosts.every((h) => h === "www.youtube.com") ? "marketing" : null;

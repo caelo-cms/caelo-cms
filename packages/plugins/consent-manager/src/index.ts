@@ -39,6 +39,7 @@ import {
   z,
 } from "@caelo-cms/plugin-sdk";
 import { type CategoryRow, DEFAULT_CATEGORIES } from "./categories.js";
+import { defaultPlaceholder } from "./placeholder.js";
 import { buildRuntimeJs, RUNTIME_CSS } from "./runtime.js";
 import { deferralReason, moduleHosts } from "./scan.js";
 import { CONSENT_SKILLS } from "./skills.js";
@@ -97,6 +98,89 @@ const recordConsentArgs = z.object({
 });
 
 /** What core sends the deferrals operation: the render pass, with the content about to ship. */
+/**
+ * Bring every module's guard row in line with what it reaches NOW (the
+ * same `moduleHosts` judgement the render-time gate applies). Shared by
+ * the cron scan and `list_embeds`, so the list an editor or the AI reads
+ * is never older than what the gate is withholding.
+ */
+async function syncGuards(ctx: PluginContextTier1): Promise<{ flagged: number; cleared: number }> {
+  const q = adminQueryOf(ctx);
+  const cms = cmsOf(ctx);
+  const modules = await cms.call<{
+    modules: Array<{
+      id: string;
+      slug: string;
+      html: string;
+      css: string;
+      js: string;
+      fields?: unknown;
+    }>;
+  }>("modules.list", {});
+  // The vendor URL is DATA, not markup. Authoring lifts
+  // `src="https://youtube.com/…"` out of the HTML into a field
+  // default, and a placement can point the same module at a
+  // different vendor through its content values. Scanning the HTML
+  // alone would therefore find nothing on exactly the modules that
+  // matter most.
+  const instances = await cms.call<{
+    instances: Array<{ moduleId: string; values: unknown }>;
+  }>("content_instances.list", {});
+  const valuesByModule = new Map<string, unknown[]>();
+  for (const inst of instances.instances) {
+    const bucket = valuesByModule.get(inst.moduleId) ?? [];
+    bucket.push(inst.values ?? {});
+    valuesByModule.set(inst.moduleId, bucket);
+  }
+  const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
+  const byModule = new Map(guards.map((g) => [g.module_id, g]));
+
+  let flagged = 0;
+  let cleared = 0;
+  for (const m of modules.modules) {
+    const hosts = moduleHosts({
+      ...m,
+      contentValues: valuesByModule.get(m.id) ?? [],
+    });
+    const existing = byModule.get(m.id);
+    if (hosts.length === 0) {
+      // The module stopped reaching out — drop the guard rather than
+      // leaving a stale one that withholds a now-harmless module.
+      if (existing) {
+        await q.delete("module_guards", existing.id);
+        cleared += 1;
+      }
+      continue;
+    }
+    const known = classifyHosts(hosts);
+    if (!existing) {
+      await q.insert("module_guards", {
+        module_id: m.id,
+        category_key: known ?? "marketing",
+        detected_hosts: hosts,
+        status: known ? "gated" : "pending",
+        decided_by: known ? "vendor-table" : "",
+      });
+      flagged += 1;
+      continue;
+    }
+    // Hosts changed under an existing verdict: the decision was made
+    // about a different set, so it no longer applies.
+    const before = JSON.stringify(existing.detected_hosts ?? []);
+    if (before !== JSON.stringify(hosts)) {
+      const rescored = classifyHosts(hosts);
+      await q.update("module_guards", existing.id, {
+        detected_hosts: hosts,
+        category_key: rescored ?? existing.category_key,
+        status: rescored ? "gated" : "pending",
+        decided_by: rescored ? "vendor-table" : "",
+      });
+      flagged += 1;
+    }
+  }
+  return { flagged, cleared };
+}
+
 const deferralsArgs = z.object({
   modules: z.array(
     z.object({
@@ -489,7 +573,15 @@ export default definePlugin<PluginContextTier1>({
       const { modules } = deferralsArgs.parse(args);
       const q = adminQueryOf(ctx);
       const settings = await settingsOf(q);
-      const deferrals: Record<string, { reason: string; placeholderModuleSlug: string }> = {};
+      const labelOf = new Map((await categoriesOf(q)).map((c) => [c.key, c.display_name]));
+      const deferrals: Record<
+        string,
+        {
+          reason: string;
+          placeholderModuleSlug: string;
+          defaultPlaceholder: { html: string; css: string };
+        }
+      > = {};
       for (const m of modules) {
         const hosts = moduleHosts(m);
         if (hosts.length === 0) continue;
@@ -504,6 +596,7 @@ export default definePlugin<PluginContextTier1>({
         deferrals[m.moduleId] = {
           reason,
           placeholderModuleSlug: settings.placeholder_module_slug,
+          defaultPlaceholder: defaultPlaceholder(reason, labelOf.get(reason) ?? null),
         };
       }
       return { deferrals };
@@ -517,84 +610,10 @@ export default definePlugin<PluginContextTier1>({
      * when someone remembered would be a scan that ran after the
      * request went out.
      */
-    scan_modules: async (ctx) => {
-      const q = adminQueryOf(ctx);
-      const cms = cmsOf(ctx);
-      const modules = await cms.call<{
-        modules: Array<{
-          id: string;
-          slug: string;
-          html: string;
-          css: string;
-          js: string;
-          fields?: unknown;
-        }>;
-      }>("modules.list", {});
-      // The vendor URL is DATA, not markup. Authoring lifts
-      // `src="https://youtube.com/…"` out of the HTML into a field
-      // default, and a placement can point the same module at a
-      // different vendor through its content values. Scanning the HTML
-      // alone would therefore find nothing on exactly the modules that
-      // matter most.
-      const instances = await cms.call<{
-        instances: Array<{ moduleId: string; values: unknown }>;
-      }>("content_instances.list", {});
-      const valuesByModule = new Map<string, unknown[]>();
-      for (const inst of instances.instances) {
-        const bucket = valuesByModule.get(inst.moduleId) ?? [];
-        bucket.push(inst.values ?? {});
-        valuesByModule.set(inst.moduleId, bucket);
-      }
-      const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
-      const byModule = new Map(guards.map((g) => [g.module_id, g]));
-
-      let flagged = 0;
-      let cleared = 0;
-      for (const m of modules.modules) {
-        const hosts = moduleHosts({
-          ...m,
-          contentValues: valuesByModule.get(m.id) ?? [],
-        });
-        const existing = byModule.get(m.id);
-        if (hosts.length === 0) {
-          // The module stopped reaching out — drop the guard rather than
-          // leaving a stale one that withholds a now-harmless module.
-          if (existing) {
-            await q.delete("module_guards", existing.id);
-            cleared += 1;
-          }
-          continue;
-        }
-        const known = classifyHosts(hosts);
-        if (!existing) {
-          await q.insert("module_guards", {
-            module_id: m.id,
-            category_key: known ?? "marketing",
-            detected_hosts: hosts,
-            status: known ? "gated" : "pending",
-            decided_by: known ? "vendor-table" : "",
-          });
-          flagged += 1;
-          continue;
-        }
-        // Hosts changed under an existing verdict: the decision was made
-        // about a different set, so it no longer applies.
-        const before = JSON.stringify(existing.detected_hosts ?? []);
-        if (before !== JSON.stringify(hosts)) {
-          const rescored = classifyHosts(hosts);
-          await q.update("module_guards", existing.id, {
-            detected_hosts: hosts,
-            category_key: rescored ?? existing.category_key,
-            status: rescored ? "gated" : "pending",
-            decided_by: rescored ? "vendor-table" : "",
-          });
-          flagged += 1;
-        }
-      }
-      return { flagged, cleared };
-    },
+    scan_modules: async (ctx) => syncGuards(ctx),
 
     list_embeds: async (ctx) => {
+      await syncGuards(ctx);
       const q = adminQueryOf(ctx);
       const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
       const cms = cmsOf(ctx);

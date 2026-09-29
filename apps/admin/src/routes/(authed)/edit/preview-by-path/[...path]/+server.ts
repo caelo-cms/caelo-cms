@@ -77,7 +77,13 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
     ...(branch ? { chatBranchId: branch } : {}),
     ...(excludeBranchModules ? { excludeBranchModules } : {}),
   });
-  if (!composed.ok) throw error(404, "Page render failed");
+  if (!composed.ok) {
+    // The page was found above, so a failure here is a render failure,
+    // not a 404; surface its message (see preview/[pageId]).
+    const message =
+      "message" in composed.error ? String(composed.error.message) : composed.error.kind;
+    throw error(500, `Preview render failed: ${message}`);
+  }
 
   const out = composed.value as { html: string };
   // The inject-script needs to know its own pageId/slug so it can
