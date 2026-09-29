@@ -22,15 +22,16 @@
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { decryptSecret } from "../security/secret-box.js";
+import { catalogModel } from "./model-catalog.js";
 import type { AIProvider, ProviderName } from "./provider.js";
 import { makeProvider } from "./providers/index.js";
 
 const PROVIDER_NAMES = ["anthropic", "openai", "google", "local-openai-compat"] as const;
 
 const DEFAULT_MODEL: Record<ProviderName, string> = {
-  anthropic: "claude-sonnet-5",
-  openai: "gpt-4o",
-  google: "gemini-1.5-pro",
+  anthropic: catalogModel("anthropic", "default"),
+  openai: catalogModel("openai", "default"),
+  google: catalogModel("google", "default"),
   "local-openai-compat": "qwen2.5",
 };
 

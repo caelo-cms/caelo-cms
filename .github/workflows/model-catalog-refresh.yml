@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Caelo CMS — weekly model-catalog refresh.
+#
+# Lists the models Anthropic / OpenAI / Google currently serve and moves
+# every slot in packages/admin-core/src/ai/model-catalog.json to the newest
+# matching id (scripts/refresh-model-catalog.ts). A changed catalog becomes a
+# PR on `chore/model-catalog-refresh` — never a direct push: a new model can
+# need an ai_pricing migration and (Anthropic) a capability-predicate update,
+# and the PR body lists exactly those follow-ups.
+#
+# Keys (repo secrets; a provider whose key is missing is skipped and named in
+# the summary): ANTHROPIC_API_KEY_E2E, OPENAI_API_KEY,
+# GOOGLE_GENERATIVE_AI_API_KEY. The script only calls the list-models
+# endpoints — no generation, no spend.
+#
+# PR token: RELEASE_PAT when configured (same as release-cut.yml), else the
+# repo GITHUB_TOKEN. A PR opened with GITHUB_TOKEN does not trigger the
+# required CI checks — push an empty commit or close/reopen it to run them.
+
+name: model-catalog-refresh
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: model-catalog-refresh
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  refresh:
+    name: refresh model catalog
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Refresh catalog
+        # env: injection, NOT ${{ }} inside run: — keeps the keys out of the
+        # generated shell script.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+        run: |
+          bun scripts/refresh-model-catalog.ts --summary "$RUNNER_TEMP/model-refresh.md"
+          bunx biome format --write packages/admin-core/src/ai/model-catalog.json
+          cat "$RUNNER_TEMP/model-refresh.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update the refresh PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          BRANCH: chore/model-catalog-refresh
+        run: |
+          if git diff --quiet; then
+            echo "model-catalog.json is up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git commit -am "chore(ai): refresh model catalog"
+          # --force: the branch is regenerated from main every run.
+          git push --force origin "$BRANCH"
+          if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = "OPEN" ]; then
+            gh pr edit "$BRANCH" --body-file "$RUNNER_TEMP/model-refresh.md"
+          else
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore(ai): refresh model catalog" \
+              --body-file "$RUNNER_TEMP/model-refresh.md"
+          fi

@@ -6,7 +6,7 @@
     "outDir": "./dist",
     "noEmit": false
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "src/ai/model-catalog.json"],
   "references": [
     { "path": "../shared" },
     { "path": "../query-api" },

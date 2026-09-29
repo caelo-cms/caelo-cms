@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { checkProviderKeyHealth, type ProviderKeyHealth } from "@caelo-cms/admin-core";
+import { catalogModel } from "@caelo-cms/admin-core/model-catalog";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
@@ -12,9 +13,9 @@ const KNOWN_PROVIDERS = ["anthropic", "openai", "google", "local-openai-compat"]
 type KnownProvider = (typeof KNOWN_PROVIDERS)[number];
 
 const DEFAULT_MODEL: Record<KnownProvider, string> = {
-  anthropic: "claude-sonnet-5",
-  openai: "gpt-4o",
-  google: "gemini-1.5-pro",
+  anthropic: catalogModel("anthropic", "default"),
+  openai: catalogModel("openai", "default"),
+  google: catalogModel("google", "default"),
   "local-openai-compat": "qwen2.5",
 };
 
