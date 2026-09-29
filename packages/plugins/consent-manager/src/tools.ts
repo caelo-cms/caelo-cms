@@ -108,7 +108,11 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
           enum: ["necessary", "functional", "analytics", "marketing"],
         },
         scriptSrc: { type: "string", description: "External script URL." },
-        inlineSnippet: { type: "string", description: "Inline JS, when the vendor gives one." },
+        inlineSnippet: {
+          type: "string",
+          description:
+            "Inline JS, when the vendor gives one: ONLY the code inside the vendor's <script> tag, never the <script>/<noscript> wrappers.",
+        },
         position: { type: "string", enum: ["head", "body_end"] },
         justification: {
           type: "string",

@@ -79,12 +79,38 @@ export const KNOWN_VENDORS: Readonly<
 };
 
 /**
+ * Reject vendor HTML in `inlineSnippet`. Vendors hand out
+ * `<script>…</script><noscript><img …></noscript>`; the runtime runs the
+ * snippet as JavaScript, so HTML there is a syntax error and the tag
+ * silently never fires.
+ */
+export function assertInlineSnippetIsJs(inline: string): void {
+  if (/<\/?(script|noscript)\b/i.test(inline)) {
+    throw new Error(
+      "add_tag: `inlineSnippet` must be the JavaScript INSIDE the vendor's <script> tag, without the <script>/<noscript> wrappers. Strip the tags and pass only the code between them; a <noscript> tracking pixel is dropped, since it only fires for visitors without JavaScript and cannot wait for consent.",
+    );
+  }
+}
+
+/**
+ * JSON safe to place inside an inline `<script>`: `<` is escaped so a
+ * `</script>` in the data cannot end the element early, and the two
+ * line separators JavaScript treats as line breaks are escaped too.
+ */
+export function jsonForInlineScript(value: unknown): string {
+  return JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
+}
+
+/**
  * The injector, appended to the runtime with the site's tags baked in.
  * Replaces the stub the runtime ships with when no tags exist.
  */
 export function buildTagInjector(tags: ReadonlyArray<BakedTag>): string {
   return [
-    `var TAGS = ${JSON.stringify(tags)};`,
+    `var TAGS = ${jsonForInlineScript(tags)};`,
     `var loadedTags = {};`,
     `function loadTags() {`,
     `  for (var i = 0; i < TAGS.length; i++) {`,

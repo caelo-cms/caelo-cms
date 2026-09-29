@@ -39,6 +39,7 @@
  */
 
 import type { ConsentCategory } from "./categories.js";
+import { jsonForInlineScript } from "./tags.js";
 
 /** What gets baked into the emitted runtime. */
 export interface RuntimeConfig {
@@ -358,7 +359,7 @@ export function buildRuntimeJs(
   return [
     "(function () {",
     '"use strict";',
-    `var CONFIG = ${JSON.stringify(config)};`,
+    `var CONFIG = ${jsonForInlineScript(config)};`,
     tagInjector,
     RUNTIME_BODY,
     "})();",

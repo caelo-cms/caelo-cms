@@ -175,7 +175,9 @@ export function injectPluginAssets(
           : `<style data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${a.content}\n</style>`,
       )
       .join("\n");
-    out = out.replace(HEAD_CLOSE_RE, `${block}\n</head>`);
+    // A function replacer: a string one would expand `$&` / `$'` inside
+    // plugin content as replacement patterns.
+    out = out.replace(HEAD_CLOSE_RE, () => `${block}\n</head>`);
   }
   if (js.length > 0 && BODY_CLOSE_RE.test(out)) {
     const block = js
@@ -185,7 +187,7 @@ export function injectPluginAssets(
           : `<script defer data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${a.content}\n</script>`,
       )
       .join("\n");
-    out = out.replace(BODY_CLOSE_RE, `${block}\n</body>`);
+    out = out.replace(BODY_CLOSE_RE, () => `${block}\n</body>`);
   }
   return out;
 }

@@ -61,6 +61,13 @@ describe("plugin client assets — page injection", () => {
     expect(html).toContain('data-caelo-plugin="consent-manager"');
   });
 
+  it("inlines plugin content verbatim, even with `$` replacement patterns", () => {
+    // A string replacement would expand `$&` / `$'` inside the content.
+    const content = 'var a = s.replace(/x/, "$&$\'");';
+    const html = injectPluginAssets(DOC, [asset({ content })], "inline");
+    expect(html).toContain(content);
+  });
+
   it("leaves a fragment untouched", () => {
     // The module-only preview render is not a document and cannot carry
     // a runtime; silently appending to it would produce stray tags.

@@ -42,7 +42,13 @@ import { type CategoryRow, DEFAULT_CATEGORIES } from "./categories.js";
 import { buildRuntimeJs, RUNTIME_CSS } from "./runtime.js";
 import { deferralReason, moduleHosts } from "./scan.js";
 import { CONSENT_SKILLS } from "./skills.js";
-import { type BakedTag, buildTagInjector, KNOWN_VENDORS, type TagRow } from "./tags.js";
+import {
+  assertInlineSnippetIsJs,
+  type BakedTag,
+  buildTagInjector,
+  KNOWN_VENDORS,
+  type TagRow,
+} from "./tags.js";
 import { CONSENT_TOOLS } from "./tools.js";
 
 const SLUG = "consent-manager";
@@ -661,6 +667,7 @@ export default definePlugin<PluginContextTier1>({
       if (src.length === 0 && inline.length === 0) {
         throw new Error("add_tag: give the tag something to load — `scriptSrc` or `inlineSnippet`");
       }
+      assertInlineSnippetIsJs(inline);
       const reason = typeof justification === "string" ? justification.trim() : "";
       // A `necessary` tag runs for everyone, unasked. That is right for
       // a session cookie and wrong for anything that measures or follows
