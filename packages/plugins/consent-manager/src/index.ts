@@ -36,10 +36,11 @@ import {
   definePlugin,
   type PluginAdminQuery,
   type PluginContextTier1,
+  z,
 } from "@caelo-cms/plugin-sdk";
 import { type CategoryRow, DEFAULT_CATEGORIES } from "./categories.js";
 import { buildRuntimeJs, RUNTIME_CSS } from "./runtime.js";
-import { externalHosts } from "./scan.js";
+import { deferralReason, moduleHosts } from "./scan.js";
 import { CONSENT_SKILLS } from "./skills.js";
 import { type BakedTag, buildTagInjector, KNOWN_VENDORS, type TagRow } from "./tags.js";
 import { CONSENT_TOOLS } from "./tools.js";
@@ -75,6 +76,20 @@ function cmsOf(ctx: unknown): CmsHandle {
   }
   return cms;
 }
+
+/** What core sends the deferrals operation: the render pass, with the content about to ship. */
+const deferralsArgs = z.object({
+  modules: z.array(
+    z.object({
+      moduleId: z.string().uuid(),
+      html: z.string(),
+      css: z.string(),
+      js: z.string(),
+      fields: z.unknown(),
+      contentValues: z.array(z.unknown()),
+    }),
+  ),
+});
 
 /**
  * Which consent category a set of third-party hosts falls under, or
@@ -440,17 +455,23 @@ export default definePlugin<PluginContextTier1>({
      * the two is surfaced to the EDITOR, not to the visitor.
      */
     consent_deferrals: async (ctx, args) => {
-      const { moduleIds } = args as { moduleIds: string[] };
+      const { modules } = deferralsArgs.parse(args);
       const q = adminQueryOf(ctx);
       const settings = await settingsOf(q);
-      const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
-      const wanted = new Set(moduleIds);
       const deferrals: Record<string, { reason: string; placeholderModuleSlug: string }> = {};
-      for (const g of guards) {
-        if (!wanted.has(g.module_id)) continue;
-        if (g.status === "allowed") continue;
-        deferrals[g.module_id] = {
-          reason: g.status === "pending" ? "unclassified" : g.category_key,
+      for (const m of modules) {
+        const hosts = moduleHosts(m);
+        if (hosts.length === 0) continue;
+        // Looked up per module: a list capped at 1000 rows would drop the
+        // verdicts of every module past it, and those would ship ungated.
+        const [guard] = (await q.list("module_guards", {
+          module_id: m.moduleId,
+          limit: 1,
+        })) as unknown as GuardRow[];
+        const reason = deferralReason(hosts, guard, classifyHosts);
+        if (reason === null) continue;
+        deferrals[m.moduleId] = {
+          reason,
           placeholderModuleSlug: settings.placeholder_module_slug,
         };
       }
@@ -487,10 +508,10 @@ export default definePlugin<PluginContextTier1>({
       const instances = await cms.call<{
         instances: Array<{ moduleId: string; values: unknown }>;
       }>("content_instances.list", {});
-      const valuesByModule = new Map<string, string[]>();
+      const valuesByModule = new Map<string, unknown[]>();
       for (const inst of instances.instances) {
         const bucket = valuesByModule.get(inst.moduleId) ?? [];
-        bucket.push(JSON.stringify(inst.values ?? {}));
+        bucket.push(inst.values ?? {});
         valuesByModule.set(inst.moduleId, bucket);
       }
       const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
@@ -499,12 +520,9 @@ export default definePlugin<PluginContextTier1>({
       let flagged = 0;
       let cleared = 0;
       for (const m of modules.modules) {
-        const hosts = externalHosts({
-          html: m.html,
-          css: m.css,
-          js: [m.js, JSON.stringify(m.fields ?? []), ...(valuesByModule.get(m.id) ?? [])].join(
-            "\n",
-          ),
+        const hosts = moduleHosts({
+          ...m,
+          contentValues: valuesByModule.get(m.id) ?? [],
         });
         const existing = byModule.get(m.id);
         if (hosts.length === 0) {

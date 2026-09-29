@@ -23,6 +23,7 @@ import {
   resolveDataLists,
   resolveModuleDeferrals,
 } from "@caelo-cms/plugin-host";
+import type { DeferralCandidate } from "@caelo-cms/plugin-sdk";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -949,11 +950,26 @@ export const renderPagePreviewOp = defineOperation({
     // editor has to see the placeholder the visitor will see; a module
     // that renders here and is gated on the live site would leave the
     // operator styling something nobody is shown yet.
-    const placedModuleIds = [
-      ...blocks.flatMap((b) => b.modules.map((m) => m.moduleId)),
-      ...layoutBlocks.flatMap((b) => b.modules.map((m) => m.moduleId)),
-    ];
-    const deferredModules = Object.fromEntries(await resolveModuleDeferrals(placedModuleIds));
+    // The gate judges the content about to render, not a verdict
+    // recorded before the latest edit. Page modules arrive with their
+    // content values already substituted into `html` (by
+    // renderModuleWithContent above); layout modules carry `fields`,
+    // whose defaults the composer substitutes.
+    const candidates = new Map<string, DeferralCandidate>();
+    for (const m of [...blocks, ...layoutBlocks].flatMap((b) => b.modules)) {
+      if (candidates.has(m.moduleId)) continue;
+      candidates.set(m.moduleId, {
+        moduleId: m.moduleId,
+        html: m.html,
+        css: m.css,
+        js: m.js,
+        fields: "fields" in m ? m.fields : [],
+        contentValues: [],
+      });
+    }
+    const deferredModules = Object.fromEntries(
+      await resolveModuleDeferrals([...candidates.values()]),
+    );
 
     // v0.11.0 (#45) — `composeTheme` loaded earlier (above the render
     // loop) so its asset URLs flow into renderModuleWithContent for

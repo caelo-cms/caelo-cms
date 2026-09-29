@@ -397,6 +397,24 @@ describe("#451 — consent-manager", () => {
     });
     if (!mod.ok) throw new Error(JSON.stringify(mod.error));
     const unknownId = (mod.value as { moduleId: string }).moduleId;
+    const unknownCandidate = {
+      moduleId: unknownId,
+      html: '<iframe src="https://widgets.unknown-vendor.example/x"></iframe>',
+      css: "",
+      js: "",
+      fields: [],
+      contentValues: [],
+    };
+
+    // Before any scan: the render-time gate judges the content itself.
+    // Review of #456 — this module used to ship ungated until the
+    // 5-minute cron scan had written a verdict for it.
+    const unscanned = await call("consent_deferrals", { modules: [unknownCandidate] });
+    if (!unscanned.ok) throw new Error(JSON.stringify(unscanned.error));
+    expect(
+      (unscanned.value as { deferrals: Record<string, { reason: string }> }).deferrals[unknownId]
+        ?.reason,
+    ).toBe("unclassified");
 
     await call("scan_modules");
     const listed = await call("list_embeds");
@@ -406,7 +424,7 @@ describe("#451 — consent-manager", () => {
     ).embeds.find((e) => e.moduleId === unknownId);
     expect(row?.status).toBe("pending");
 
-    const deferrals = await call("consent_deferrals", { moduleIds: [unknownId] });
+    const deferrals = await call("consent_deferrals", { modules: [unknownCandidate] });
     if (!deferrals.ok) throw new Error(JSON.stringify(deferrals.error));
     const d = (deferrals.value as { deferrals: Record<string, { reason: string }> }).deferrals;
     // Withheld, and the reason says WHY it is withheld — an editor
@@ -416,7 +434,7 @@ describe("#451 — consent-manager", () => {
 
     const decided = await call("classify_embed", { moduleId: unknownId, category: "functional" });
     if (!decided.ok) throw new Error(JSON.stringify(decided.error));
-    const after = await call("consent_deferrals", { moduleIds: [unknownId] });
+    const after = await call("consent_deferrals", { modules: [unknownCandidate] });
     if (!after.ok) throw new Error(JSON.stringify(after.error));
     expect(
       (after.value as { deferrals: Record<string, { reason: string }> }).deferrals[unknownId]
@@ -425,7 +443,7 @@ describe("#451 — consent-manager", () => {
 
     const allowed = await call("classify_embed", { moduleId: unknownId, allow: true });
     if (!allowed.ok) throw new Error(JSON.stringify(allowed.error));
-    const finally_ = await call("consent_deferrals", { moduleIds: [unknownId] });
+    const finally_ = await call("consent_deferrals", { modules: [unknownCandidate] });
     if (!finally_.ok) throw new Error(JSON.stringify(finally_.error));
     expect(
       (finally_.value as { deferrals: Record<string, unknown> }).deferrals[unknownId],

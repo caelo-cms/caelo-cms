@@ -156,6 +156,11 @@ async function renderPage(): Promise<string> {
   return (r.value as { html: string }).html;
 }
 
+/** The video module as the render pass hands it to the gate. */
+function videoCandidate() {
+  return { moduleId: videoModuleId, html: "", css: "", js: "", fields: [], contentValues: [] };
+}
+
 describe("#450 — module deferrals through the preview op", () => {
   it("renders the module normally when the plugin withholds nothing", async () => {
     verdicts = {};
@@ -187,14 +192,14 @@ describe("#450 — module deferrals through the preview op", () => {
     // the gate exists to prevent — the least acceptable silent recovery
     // in this codebase (CLAUDE.md §2).
     verdicts = { [videoModuleId]: { reason: "marketing", placeholderModuleSlug: "t450-nope" } };
-    expect(resolveModuleDeferrals([videoModuleId])).rejects.toThrow(/does not exist/);
+    expect(resolveModuleDeferrals([videoCandidate()])).rejects.toThrow(/does not exist/);
   });
 
   it("rejects a verdict whose reason is not a plain key", async () => {
     verdicts = {
       [videoModuleId]: { reason: "Marketing Cookies!", placeholderModuleSlug: "t450-placeholder" },
     };
-    expect(resolveModuleDeferrals([videoModuleId])).rejects.toThrow(/invalid verdict/);
+    expect(resolveModuleDeferrals([videoCandidate()])).rejects.toThrow(/invalid verdict/);
   });
 
   it("costs nothing when no plugin declares deferrals", async () => {
@@ -202,6 +207,6 @@ describe("#450 — module deferrals through the preview op", () => {
       [videoModuleId]: { reason: "marketing", placeholderModuleSlug: "t450-placeholder" },
     };
     resetPluginHost();
-    expect(await resolveModuleDeferrals([videoModuleId])).toEqual(new Map());
+    expect(await resolveModuleDeferrals([videoCandidate()])).toEqual(new Map());
   });
 });

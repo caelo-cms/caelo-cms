@@ -573,11 +573,39 @@ export async function generateSite(args: {
   // #450 — withheld modules, resolved ONCE for the build. Asking per
   // page would be one plugin round-trip per page for a verdict that is
   // per MODULE; the module set is the same question every time.
-  const allModuleIdRows = (await tx.execute(sql`
-    SELECT id::text AS id FROM modules WHERE deleted_at IS NULL
-  `)) as unknown as { id: string }[];
+  // The gate judges the content this build ships — module code plus
+  // every main-line content instance — not a verdict a background scan
+  // recorded before the latest edit.
+  const candidateRows = (await tx.execute(sql`
+    SELECT m.id::text AS id, m.html, m.css, m.js, m.fields::text AS fields,
+           COALESCE(
+             json_agg(ci.values) FILTER (WHERE ci.id IS NOT NULL),
+             '[]'::json
+           )::text AS content_values
+    FROM modules m
+      LEFT JOIN content_instances ci
+        ON ci.module_id = m.id AND ci.chat_branch_id IS NULL
+    WHERE m.deleted_at IS NULL
+    GROUP BY m.id
+  `)) as unknown as {
+    id: string;
+    html: string;
+    css: string;
+    js: string;
+    fields: string | null;
+    content_values: string;
+  }[];
   const deferredModules = Object.fromEntries(
-    await resolveModuleDeferrals(allModuleIdRows.map((r) => r.id)),
+    await resolveModuleDeferrals(
+      candidateRows.map((r) => ({
+        moduleId: r.id,
+        html: r.html,
+        css: r.css,
+        js: r.js,
+        fields: r.fields ? JSON.parse(r.fields) : [],
+        contentValues: JSON.parse(r.content_values) as unknown[],
+      })),
+    ),
   );
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];

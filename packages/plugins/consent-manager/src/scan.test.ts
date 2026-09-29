@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { externalHosts } from "./scan.js";
+import { deferralReason, externalHosts, moduleHosts } from "./scan.js";
 
 describe("externalHosts", () => {
   it("finds an iframe embed", () => {
@@ -81,5 +81,65 @@ describe("externalHosts", () => {
         html: '<iframe src="https://www.youtube.com/embed/a"></iframe><iframe src="https://www.youtube.com/embed/b"></iframe><img src="https://maps.googleapis.com/x.png">',
       }),
     ).toEqual(["maps.googleapis.com", "www.youtube.com"]);
+  });
+});
+
+describe("moduleHosts", () => {
+  it("finds a vendor that only a placement's content values point at", () => {
+    // Authoring lifts the embed URL into a field; the module code is clean.
+    expect(
+      moduleHosts({
+        html: '<iframe src="{{video_url}}"></iframe>',
+        css: "",
+        js: "",
+        fields: [{ name: "video_url" }],
+        contentValues: [{ video_url: "https://www.youtube.com/embed/abc" }],
+      }),
+    ).toEqual(["www.youtube.com"]);
+  });
+});
+
+describe("deferralReason (render-time gate)", () => {
+  const classify = (hosts: ReadonlyArray<string>) =>
+    hosts.every((h) => h.endsWith("youtube.com")) ? "marketing" : null;
+  const yt = ["www.youtube.com"];
+
+  it("renders a module that reaches no third party", () => {
+    expect(deferralReason([], undefined, classify)).toBeNull();
+  });
+
+  it("withholds a module the background scan has not seen yet", () => {
+    // Review of #456: with no guard row the module used to render
+    // normally, so anything published inside the 5-minute scan window
+    // shipped ungated.
+    expect(deferralReason(yt, undefined, classify)).toBe("marketing");
+    expect(deferralReason(["tracker.unknown.example"], undefined, classify)).toBe("unclassified");
+  });
+
+  it("honours the operator's verdict only for the hosts it was made about", () => {
+    const allowed = { detected_hosts: yt, status: "allowed" as const, category_key: "marketing" };
+    expect(deferralReason(yt, allowed, classify)).toBeNull();
+    // The module now also reaches a second vendor: the old "allowed" no
+    // longer applies.
+    expect(deferralReason([...yt, "tracker.unknown.example"], allowed, classify)).toBe(
+      "unclassified",
+    );
+  });
+
+  it("uses the stored category for a current gated or pending verdict", () => {
+    expect(
+      deferralReason(
+        yt,
+        { detected_hosts: yt, status: "gated", category_key: "analytics" },
+        classify,
+      ),
+    ).toBe("analytics");
+    expect(
+      deferralReason(
+        yt,
+        { detected_hosts: yt, status: "pending", category_key: "marketing" },
+        classify,
+      ),
+    ).toBe("unclassified");
   });
 });

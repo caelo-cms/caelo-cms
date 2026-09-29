@@ -89,3 +89,63 @@ export function externalHosts(sources: { html?: string; css?: string; js?: strin
   }
   return [...found].sort();
 }
+
+/**
+ * Every external host a module can reach with the content it ships:
+ * its code, its field schema (authoring lifts vendor URLs into field
+ * defaults) and every content-values object it renders with (a
+ * placement can point the same module at a different vendor). The
+ * background scan and the render-time gate both call this, so the two
+ * can never disagree about what a module reaches.
+ */
+export function moduleHosts(module: {
+  html: string;
+  css: string;
+  js: string;
+  fields?: unknown;
+  contentValues: ReadonlyArray<unknown>;
+}): string[] {
+  return externalHosts({
+    html: module.html,
+    css: module.css,
+    js: [
+      module.js,
+      JSON.stringify(module.fields ?? []),
+      ...module.contentValues.map((v) => JSON.stringify(v ?? {})),
+    ].join("\n"),
+  });
+}
+
+/** A stored verdict about one module, as far as the gate needs it. */
+export interface GuardVerdict {
+  readonly detected_hosts: ReadonlyArray<string>;
+  readonly status: "pending" | "gated" | "allowed";
+  readonly category_key: string;
+}
+
+/**
+ * Whether the render-time gate withholds a module, and under which
+ * consent category — or `null` to render it.
+ *
+ * Fails closed: a stored verdict counts only when it was made about
+ * exactly the hosts the module reaches NOW. A module edited since the
+ * last scan, or created on a chat branch the scan never sees, is judged
+ * from its hosts alone — withheld under the vendor's known category, or
+ * as `unclassified` until the operator rules on it.
+ *
+ * @param hosts `moduleHosts()` of the content about to render
+ * @param guard the stored verdict for the module, if any
+ * @param classify maps hosts to a consent category, `null` if unknown
+ */
+export function deferralReason(
+  hosts: ReadonlyArray<string>,
+  guard: GuardVerdict | undefined,
+  classify: (hosts: ReadonlyArray<string>) => string | null,
+): string | null {
+  if (hosts.length === 0) return null;
+  if (guard && JSON.stringify(guard.detected_hosts) === JSON.stringify(hosts)) {
+    if (guard.status === "allowed") return null;
+    return guard.status === "gated" ? guard.category_key : "unclassified";
+  }
+  return classify(hosts) ?? "unclassified";
+}

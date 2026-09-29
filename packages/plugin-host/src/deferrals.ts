@@ -31,7 +31,11 @@
  * would silently miss the next one.
  */
 
-import { type ModuleDeferralSpec, moduleDeferralSpec } from "@caelo-cms/plugin-sdk";
+import {
+  type DeferralCandidate,
+  type ModuleDeferralSpec,
+  moduleDeferralSpec,
+} from "@caelo-cms/plugin-sdk";
 import { execute, type OperationRegistry } from "@caelo-cms/query-api";
 import { type ModuleFieldKind, renderTemplate } from "@caelo-cms/shared";
 import {
@@ -74,13 +78,16 @@ interface ModuleRow {
  * exists to prevent — the least acceptable silent fallback in this
  * codebase.
  *
- * @param moduleIds every module in the current render pass.
+ * @param modules every module in the current render pass, with the
+ *   content about to ship, so a gate judges what is rendered rather than
+ *   a verdict recorded before the latest edit.
  */
 export async function resolveModuleDeferrals(
-  moduleIds: ReadonlyArray<string>,
+  modules: ReadonlyArray<DeferralCandidate>,
 ): Promise<ResolvedDeferrals> {
   const out = new Map<string, ResolvedDeferral>();
-  if (moduleIds.length === 0) return out;
+  if (modules.length === 0) return out;
+  const moduleIds = modules.map((m) => m.moduleId);
 
   const contributors = loadedPlugins
     .all()
@@ -95,7 +102,7 @@ export async function resolveModuleDeferrals(
     const r = await runPluginOperation({
       pluginSlug: lp.slug,
       operationName,
-      args: { moduleIds: [...moduleIds] },
+      args: { moduleIds, modules: [...modules] },
     });
     if (!r.ok) {
       throw new Error(

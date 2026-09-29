@@ -324,6 +324,23 @@ export const moduleDeferralSpec = z
 
 export type ModuleDeferralSpec = z.infer<typeof moduleDeferralSpec>;
 
+/**
+ * One module of the render pass, as the deferrals operation receives it:
+ * exactly the content about to be shipped. A gate must judge THIS, not a
+ * verdict recorded earlier — a module edited (or created on a chat
+ * branch) since the last background scan would otherwise ship ungated.
+ */
+export interface DeferralCandidate {
+  readonly moduleId: string;
+  readonly html: string;
+  readonly css: string;
+  readonly js: string;
+  /** The module's field schema (defaults can carry vendor URLs). */
+  readonly fields: unknown;
+  /** Every content-values object the module renders with in this pass. */
+  readonly contentValues: ReadonlyArray<unknown>;
+}
+
 export const pluginManifest = z
   .object({
     slug: z
@@ -807,9 +824,9 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly publicOperations?: ReadonlyArray<string>;
   /**
    * The I/O half of module deferrals: an operation in `operations`
-   * taking `{moduleIds: string[]}` (every module in the current render
-   * pass) and returning
-   * `{deferrals: Record<moduleId, ModuleDeferralSpec>}`.
+   * taking `{moduleIds: string[], modules: DeferralCandidate[]}` (every
+   * module in the current render pass, with the content about to ship)
+   * and returning `{deferrals: Record<moduleId, ModuleDeferralSpec>}`.
    *
    * Withholding is per MODULE, not per placement: a video module
    * classified once is withheld everywhere it appears, including from
