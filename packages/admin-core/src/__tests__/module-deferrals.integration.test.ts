@@ -195,6 +195,27 @@ describe("#450 — module deferrals through the preview op", () => {
     expect(resolveModuleDeferrals([videoCandidate()])).rejects.toThrow(/does not exist/);
   });
 
+  it("renders the plugin's built-in placeholder when the site has not designed one", async () => {
+    // A site whose placeholder module was never created must still
+    // render the page — the withheld module stays withheld.
+    verdicts = {
+      [videoModuleId]: {
+        reason: "marketing",
+        placeholderModuleSlug: "t450-nope",
+        defaultPlaceholder: {
+          html: '<div data-t450-default><button data-consent-grant="marketing">Allow</button></div>',
+          css: ".t450d{}",
+        },
+      },
+    };
+    const html = await renderPage();
+    expect(html).toContain("data-t450-default");
+    expect(html).toContain(".t450d{}");
+    expect(html.indexOf("youtube.com")).toBeGreaterThan(
+      html.indexOf("<template data-caelo-deferred-content>"),
+    );
+  });
+
   it("rejects a verdict whose reason is not a plain key", async () => {
     verdicts = {
       [videoModuleId]: { reason: "Marketing Cookies!", placeholderModuleSlug: "t450-placeholder" },
