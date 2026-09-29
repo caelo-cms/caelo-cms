@@ -213,17 +213,46 @@ const PROVISIONER_ROLES: readonly string[] = [
 ];
 
 /**
+ * IAM errors that clear up on their own within seconds:
+ *   - a service account created moments ago is not yet visible to the
+ *     IAM policy backend ("Service account ... does not exist") — this
+ *     hits the FIRST binding right after `createServiceAccount`
+ *   - Google's service agents write the project policy concurrently
+ *     right after `enableApis` ("There were concurrent policy changes")
+ * Anything else (PERMISSION_DENIED, bad role name) fails immediately.
+ */
+const TRANSIENT_IAM_ERROR =
+  /does not exist|concurrent policy changes|ABORTED|UNAVAILABLE|deadline exceeded/i;
+
+const GRANT_RETRY_DELAYS_MS: readonly number[] = [2_000, 4_000, 8_000, 16_000];
+
+interface RoleGrantFailure {
+  role: string;
+  /** Last gcloud stderr for this role, so the operator sees WHY. */
+  error: string;
+}
+
+/**
  * Bind every role the GCP stack provisioner SA needs. Idempotent —
- * gcloud silently no-ops a binding that already exists.
+ * gcloud silently no-ops a binding that already exists. Transient IAM
+ * errors are retried with backoff; `opts` exists for tests.
  */
 export async function grantProvisionerRoles(
   projectId: string,
   saEmail: string,
-): Promise<{ granted: number; failed: string[] }> {
+  opts: {
+    run?: typeof gcloud;
+    sleep?: (ms: number) => Promise<void>;
+    retryDelaysMs?: readonly number[];
+  } = {},
+): Promise<{ granted: number; failed: RoleGrantFailure[] }> {
+  const run = opts.run ?? gcloud;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const retryDelaysMs = opts.retryDelaysMs ?? GRANT_RETRY_DELAYS_MS;
   let granted = 0;
-  const failed: string[] = [];
+  const failed: RoleGrantFailure[] = [];
   for (const role of PROVISIONER_ROLES) {
-    const r = await gcloud([
+    const args = [
       "projects",
       "add-iam-policy-binding",
       projectId,
@@ -233,9 +262,15 @@ export async function grantProvisionerRoles(
       role,
       "--condition=None",
       "--quiet",
-    ]);
+    ];
+    let r = await run(args);
+    for (const delay of retryDelaysMs) {
+      if (r.ok || !TRANSIENT_IAM_ERROR.test(r.stderr)) break;
+      await sleep(delay);
+      r = await run(args);
+    }
     if (r.ok) granted++;
-    else failed.push(role);
+    else failed.push({ role, error: r.stderr.trim() });
   }
   return { granted, failed };
 }
