@@ -136,7 +136,7 @@ describe("S2 + S3: schema version + entry count", () => {
 });
 
 describe("S4: bun block targets the repo root only", () => {
-  it("uses `directory: \"/\"` and no per-workspace `directories`", () => {
+  it('uses `directory: "/"` and no per-workspace `directories`', () => {
     expect(bunEntry?.directory).toBe("/");
     expect(bunEntry?.directories).toBeUndefined();
   });
