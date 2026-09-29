@@ -118,21 +118,12 @@ export async function pulumiUpGcp(
     },
   );
 
-  const secretReplication = resolveSecretReplication(
-    (await stack.getAllConfig())[`${ns}:secretReplication`]?.value,
-    ((await stack.exportStack()).deployment?.resources ?? []) as Array<{
-      type?: string;
-      outputs?: Record<string, unknown>;
-    }>,
-  );
-
   // Set every config value the stack reads. Secrets via setConfig with
   // {value, secret: true}; Pulumi encrypts them in state.
   // wafAdaptiveProtection is gcp-only; the gcp-firebase stack has no
   // Cloud Armor + ignores the key, but setting it does no harm.
   await stack.setAllConfig({
     [`${ns}:project`]: { value: inputs.projectId },
-    [`${ns}:secretReplication`]: { value: secretReplication },
     [`${ns}:domain`]: { value: inputs.domain },
     [`${ns}:ownerEmail`]: { value: inputs.ownerEmail },
     [`${ns}:region`]: { value: inputs.region },
@@ -155,6 +146,24 @@ export async function pulumiUpGcp(
       ]),
     ),
   });
+
+  // Read back only after the required keys are set: `pulumi config` refuses to
+  // list a stack that lacks them, which is every fresh stack.
+  const configuredReplication = await stack.getConfig(`${ns}:secretReplication`).then(
+    (v) => v.value,
+    (e: unknown) => {
+      if (/not found/i.test(String(e))) return undefined;
+      throw e;
+    },
+  );
+  const secretReplication = resolveSecretReplication(
+    configuredReplication,
+    ((await stack.exportStack()).deployment?.resources ?? []) as Array<{
+      type?: string;
+      outputs?: Record<string, unknown>;
+    }>,
+  );
+  await stack.setConfig(`${ns}:secretReplication`, { value: secretReplication });
 
   // Refresh state first to detect drift from any out-of-band changes.
   await stack.refresh({ onOutput: (msg) => onEvent("log", msg) });
