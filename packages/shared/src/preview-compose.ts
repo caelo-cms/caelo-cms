@@ -193,6 +193,13 @@ export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | nul
 }
 
 export function composePagePreview(input: ComposeInput): ComposeOutput {
+  // No withholding path here; rendering a withheld module would ship it
+  // ungated, so refuse instead of degrading silently (CLAUDE.md §2).
+  if (input.deferredModules && Object.keys(input.deferredModules).length > 0) {
+    throw new Error(
+      "composePagePreview cannot withhold modules; compose pages with deferrals through composePageWithLayout",
+    );
+  }
   const contentByName = new Map<string, string>();
   const allCss: string[] = [];
   const allJs: string[] = [];
@@ -492,18 +499,31 @@ export interface ComposeDeferral {
  * which is a fact about the network rather than a promise about the
  * DOM. Hiding the module with CSS or stripping attributes in script
  * would both leave the request already sent.
+ *
+ * The module's CSS and JS go into the same `<template>` and NEVER into
+ * the page-wide bundles: a `url(https://maps.gstatic.com/…)` in its CSS
+ * or a `fetch()` in its JS reaches the vendor exactly as surely as an
+ * `<iframe src>` does. The JS is parked as `type="text/plain"` (inert
+ * even once cloned) and the plugin runtime executes it once per module,
+ * after the markup it expects is in the DOM.
  */
 function wrapDeferredModule(
   moduleHtml: string,
-  moduleSlug: string,
+  module: Pick<ComposeModule, "moduleId" | "slug" | "css" | "js">,
   deferral: ComposeDeferral,
 ): string {
   const attr = (v: string): string =>
     v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+  const css =
+    module.css.trim().length > 0 ? `<style data-source="module">${module.css}</style>` : "";
+  const js =
+    module.js.trim().length > 0
+      ? `<script type="text/plain" data-caelo-deferred-script="${attr(module.moduleId)}">${module.js}</script>`
+      : "";
   return [
-    `<div data-caelo-deferred="${attr(deferral.pluginSlug)}" data-reason="${attr(deferral.reason)}" data-module="${attr(moduleSlug)}">`,
+    `<div data-caelo-deferred="${attr(deferral.pluginSlug)}" data-reason="${attr(deferral.reason)}" data-module="${attr(module.slug)}">`,
     `<div data-caelo-deferred-placeholder>${deferral.placeholderHtml}</div>`,
-    `<template data-caelo-deferred-content>${moduleHtml}</template>`,
+    `<template data-caelo-deferred-content>${css}${moduleHtml}${js}</template>`,
     `</div>`,
   ].join("");
 }
@@ -622,17 +642,22 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     const deferral = input.deferredModules?.[m.moduleId];
     if (!deferral) return tagged;
     deferredCss.set(deferral.placeholderModuleSlug, deferral.placeholderCss);
-    return wrapDeferredModule(tagged, m.slug, deferral);
+    return wrapDeferredModule(tagged, m, deferral);
+  };
+  // A withheld module's CSS/JS travel inside its <template> (see
+  // wrapDeferredModule); only modules that render normally feed the
+  // page-wide bundles.
+  const collectAssets = (m: ComposeModule): void => {
+    if (seenAssetModules.has(m.moduleId)) return;
+    seenAssetModules.add(m.moduleId);
+    if (input.deferredModules?.[m.moduleId]) return;
+    if (m.css.trim().length > 0) cssParts.push(m.css);
+    if (m.js.trim().length > 0) jsParts.push(m.js);
   };
   for (const block of input.blocks) {
     const renderedModuleHtml = block.modules.map(renderPlaced);
     templateContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
-    for (const m of block.modules) {
-      if (seenAssetModules.has(m.moduleId)) continue;
-      seenAssetModules.add(m.moduleId);
-      if (m.css.trim().length > 0) cssParts.push(m.css);
-      if (m.js.trim().length > 0) jsParts.push(m.js);
-    }
+    for (const m of block.modules) collectAssets(m);
   }
   const renderedTemplate = applySlotReplacements(input.templateHtml, {
     contentByName: templateContentByName,
@@ -649,12 +674,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     if (block.blockName === "content") continue; // reserved for the page body
     const renderedModuleHtml = block.modules.map(renderPlaced);
     layoutContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
-    for (const m of block.modules) {
-      if (seenAssetModules.has(m.moduleId)) continue;
-      seenAssetModules.add(m.moduleId);
-      if (m.css.trim().length > 0) cssParts.push(m.css);
-      if (m.js.trim().length > 0) jsParts.push(m.js);
-    }
+    for (const m of block.modules) collectAssets(m);
   }
 
   for (const css of deferredCss.values()) {

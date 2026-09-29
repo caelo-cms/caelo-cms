@@ -190,8 +190,25 @@ function apply() {
 /**
  * Reveal modules core withheld at build time (#450). The real markup
  * sits in an inert <template>; cloning it is the first moment anything
- * inside it can reach the network.
+ * inside it can reach the network. The module's CSS rides along as a
+ * <style>; its JS is parked as type="text/plain" and run here, once per
+ * module, AFTER the markup it queries is in the DOM.
  */
+var ranModuleScripts = {};
+function runDeferredScripts(block) {
+  var parked = block.querySelectorAll("script[data-caelo-deferred-script]");
+  for (var i = 0; i < parked.length; i++) {
+    var moduleId = parked[i].getAttribute("data-caelo-deferred-script");
+    var source = parked[i].textContent || "";
+    parked[i].parentNode.removeChild(parked[i]);
+    if (!moduleId || ranModuleScripts[moduleId]) continue;
+    ranModuleScripts[moduleId] = true;
+    var live = doc.createElement("script");
+    live.textContent = source;
+    doc.body.appendChild(live);
+  }
+}
+
 function hydrateDeferred() {
   var blocks = doc.querySelectorAll('[data-caelo-deferred="' + CONFIG.slug + '"]');
   for (var i = 0; i < blocks.length; i++) {
@@ -208,6 +225,7 @@ function hydrateDeferred() {
     if (ph && ph.parentNode) ph.parentNode.removeChild(ph);
     block.appendChild(tpl.content.cloneNode(true));
     block.setAttribute("data-caelo-hydrated", "1");
+    runDeferredScripts(block);
   }
 }
 

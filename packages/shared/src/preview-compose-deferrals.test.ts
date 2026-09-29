@@ -97,6 +97,43 @@ describe("composer — withheld modules", () => {
     expect(html).toContain("<template data-caelo-deferred-content>");
   });
 
+  it("keeps a withheld module's CSS and JS out of the page-wide bundles", () => {
+    // Review of #456: the CSS/JS loops pushed every module's assets into
+    // the page bundle, so a vendor URL in a withheld module's CSS or a
+    // fetch() in its JS left before the visitor answered the banner.
+    const vendor = {
+      ...VIDEO,
+      css: ".v{background:url(https://maps.gstatic.com/tile.png)}",
+      js: 'fetch("https://api.vendor.example/track");',
+    };
+    const { html } = composePageWithLayout({
+      templateHtml: TEMPLATE,
+      templateCss: "",
+      blocks: [{ blockName: "main", modules: [vendor] }],
+      layoutHtml: LAYOUT,
+      layoutCss: "",
+      layoutBlocks: [],
+      deferredModules: { [VIDEO.moduleId]: DEFERRAL },
+    });
+    const templateStart = html.indexOf("<template data-caelo-deferred-content>");
+    const templateEnd = html.indexOf("</template>");
+    for (const needle of ["maps.gstatic.com", "api.vendor.example"]) {
+      expect(html.indexOf(needle)).toBeGreaterThan(templateStart);
+      expect(html.indexOf(needle)).toBeLessThan(templateEnd);
+      expect(html.lastIndexOf(needle)).toBeLessThan(templateEnd);
+    }
+    // The JS is parked inert, for the plugin runtime to run after hydration.
+    expect(html).toContain(
+      `<script type="text/plain" data-caelo-deferred-script="${VIDEO.moduleId}">`,
+    );
+  });
+
+  it("still bundles the CSS and JS of modules that render normally", () => {
+    const { html } = compose();
+    expect(html).toContain(".v{}");
+    expect(html).not.toContain("data-caelo-deferred-script");
+  });
+
   it("escapes the wrapper attributes", () => {
     const { html } = compose({
       [VIDEO.moduleId]: { ...DEFERRAL, pluginSlug: 'x" onload="evil()' },
