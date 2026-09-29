@@ -60,6 +60,28 @@ function gcpStackWorkDir(provider: "gcp" | "gcp-firebase" = "gcp"): string {
 }
 
 /**
+ * Pick the stack's `secretReplication` (see stacks/<provider>/index.ts).
+ * A value already in config wins. Otherwise secrets that already exist
+ * in state with `auto` replication keep it — switching would replace
+ * them — and everything else (new stacks) gets `regional`.
+ */
+export function resolveSecretReplication(
+  configured: string | undefined,
+  stateResources: ReadonlyArray<{ type?: string; outputs?: Record<string, unknown> }>,
+): "auto" | "regional" {
+  if (configured === "auto" || configured === "regional") return configured;
+  if (configured !== undefined) {
+    throw new Error(`secretReplication must be "auto" or "regional", got "${configured}"`);
+  }
+  const hasAutoSecret = stateResources.some((r) => {
+    if (r.type !== "gcp:secretmanager/secret:Secret") return false;
+    const replication = r.outputs?.replication as { auto?: unknown } | undefined;
+    return replication?.auto != null;
+  });
+  return hasAutoSecret ? "auto" : "regional";
+}
+
+/**
  * Run `pulumi up` against the GCP stack via the Automation SDK.
  * Streams resource-create events to the supplied onEvent callback so
  * the wizard can render a live progress bar.
@@ -96,12 +118,21 @@ export async function pulumiUpGcp(
     },
   );
 
+  const secretReplication = resolveSecretReplication(
+    (await stack.getAllConfig())[`${ns}:secretReplication`]?.value,
+    ((await stack.exportStack()).deployment?.resources ?? []) as Array<{
+      type?: string;
+      outputs?: Record<string, unknown>;
+    }>,
+  );
+
   // Set every config value the stack reads. Secrets via setConfig with
   // {value, secret: true}; Pulumi encrypts them in state.
   // wafAdaptiveProtection is gcp-only; the gcp-firebase stack has no
   // Cloud Armor + ignores the key, but setting it does no harm.
   await stack.setAllConfig({
     [`${ns}:project`]: { value: inputs.projectId },
+    [`${ns}:secretReplication`]: { value: secretReplication },
     [`${ns}:domain`]: { value: inputs.domain },
     [`${ns}:ownerEmail`]: { value: inputs.ownerEmail },
     [`${ns}:region`]: { value: inputs.region },
