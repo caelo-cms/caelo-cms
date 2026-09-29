@@ -10,7 +10,7 @@
 # CLAUDE.md §11.C: published to ghcr.io/caelo-cms/gateway by the
 # .github/workflows/release-images.yml workflow on every release.
 
-FROM oven/bun:1.3.14 AS builder
+FROM oven/bun:1.4.2 AS builder
 
 WORKDIR /repo
 
@@ -75,7 +75,7 @@ COPY apps/admin/scripts/sign-tier1-manifest.ts apps/admin/scripts/
 RUN bun run apps/admin/scripts/sign-tier1-manifest.ts --new-key && rm -f .caelo-dev-key
 
 # ---------------------------------------------------------------------------
-FROM oven/bun:1.3.14-slim AS runtime
+FROM oven/bun:1.4.2-slim AS runtime
 
 WORKDIR /app
 
