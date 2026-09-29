@@ -101,7 +101,7 @@ describe("moduleHosts", () => {
 
 describe("deferralReason (render-time gate)", () => {
   const classify = (hosts: ReadonlyArray<string>) =>
-    hosts.every((h) => h.endsWith("youtube.com")) ? "marketing" : null;
+    hosts.every((h) => h === "www.youtube.com") ? "marketing" : null;
   const yt = ["www.youtube.com"];
 
   it("renders a module that reaches no third party", () => {
