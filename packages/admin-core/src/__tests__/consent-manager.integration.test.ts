@@ -270,6 +270,21 @@ describe("#451 — consent-manager", () => {
     if (!r.ok) expect(r.error.message).toContain("array of category keys");
   });
 
+  it("rejects a decision naming a category the site never offered", async () => {
+    const r = await call("record_consent", {
+      granted: ["necessary", "crypto-mining"],
+      policyVersion: 1,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toContain("unknown consent categories: crypto-mining");
+  });
+
+  it("rejects a decision made under an outdated policy version", async () => {
+    const r = await call("record_consent", { granted: ["necessary"], policyVersion: 99 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toContain("not the current one");
+  });
+
   it("rewords a category but refuses to invent one", async () => {
     const ok = await call("describe_categories", {
       categories: [{ key: "analytics", displayName: "Statistik" }],

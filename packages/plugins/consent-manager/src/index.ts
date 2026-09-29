@@ -83,6 +83,19 @@ function cmsOf(ctx: unknown): CmsHandle {
   return cms;
 }
 
+/** A visitor's decision as the runtime posts it through the gateway. */
+const recordConsentArgs = z.object({
+  granted: z
+    .array(
+      z
+        .string()
+        .max(64)
+        .regex(/^[a-z][a-z0-9_-]*$/),
+    )
+    .max(32),
+  policyVersion: z.number().int().positive(),
+});
+
 /** What core sends the deferrals operation: the render pass, with the content about to ship. */
 const deferralsArgs = z.object({
   modules: z.array(
@@ -353,20 +366,32 @@ export default definePlugin<PluginContextTier1>({
      * gateway itself resolved.
      */
     record_consent: async (ctx, args) => {
-      const { granted, policyVersion } = args as {
-        granted?: unknown;
-        policyVersion?: unknown;
-      };
-      if (!Array.isArray(granted) || granted.some((g) => typeof g !== "string")) {
-        throw new Error("record_consent: `granted` must be an array of category keys");
+      // A consent row is evidence: one with a shape, category or policy
+      // version the site never offered is worse than none, because it
+      // looks like proof.
+      const parsed = recordConsentArgs.safeParse(args);
+      if (!parsed.success) {
+        throw new Error(
+          "record_consent: expected `granted` as an array of category keys (at most 32) and `policyVersion` as a positive integer",
+        );
       }
-      if (typeof policyVersion !== "number" || !Number.isInteger(policyVersion)) {
-        throw new Error("record_consent: `policyVersion` must be an integer");
+      const { granted, policyVersion } = parsed.data;
+      const q = adminQueryOf(ctx);
+      const settings = await settingsOf(q);
+      if (policyVersion !== settings.policy_version) {
+        throw new Error(
+          `record_consent: policy version ${policyVersion} is not the current one (${settings.policy_version}); the visitor must be asked again`,
+        );
+      }
+      const known = new Set((await categoriesOf(q)).map((c) => c.key));
+      const unknown = granted.filter((k) => !known.has(k));
+      if (unknown.length > 0) {
+        throw new Error(`record_consent: unknown consent categories: ${unknown.join(", ")}`);
       }
       await ctx.query.insert("consent_log", {
         visitor_id: ctx.visitor.id,
         ip_hash: ctx.visitor.ipHash,
-        granted,
+        granted: [...new Set(granted)],
         policy_version: policyVersion,
         user_agent: "",
       });
@@ -794,24 +819,35 @@ export default definePlugin<PluginContextTier1>({
       const q = adminQueryOf(ctx);
       const settings = await settingsOf(q);
       const cutoff = Date.now() - settings.retention_days * 24 * 60 * 60 * 1000;
-      const stale = (await ctx.query.list("consent_log", {
-        limit: 1000,
-        orderBy: "created_at",
-        orderDir: "asc",
-      })) as unknown as Array<{ id: string; created_at: string | Date }>;
+      // Oldest first, a batch at a time, until the oldest remaining
+      // record is inside the window. A single capped pass per day never
+      // caught up on a site recording more decisions than the cap.
+      const batch = 1000;
       let deleted = 0;
-      for (const row of stale) {
-        // Compare instants, not strings. The driver hands back a Date
-        // (or a Postgres timestamp string, whose format differs from an
-        // ISO one) and lexical comparison across those two silently
-        // deletes records that are well inside the window.
-        const at = new Date(row.created_at).getTime();
-        if (!Number.isFinite(at)) {
-          throw new Error(`prune_log: unreadable created_at on consent record ${row.id}`);
+      for (;;) {
+        const oldest = (await ctx.query.list("consent_log", {
+          limit: batch,
+          orderBy: "created_at",
+          orderDir: "asc",
+        })) as unknown as Array<{ id: string; created_at: string | Date }>;
+        let reachedWindow = false;
+        for (const row of oldest) {
+          // Compare instants, not strings. The driver hands back a Date
+          // (or a Postgres timestamp string, whose format differs from an
+          // ISO one) and lexical comparison across those two silently
+          // deletes records that are well inside the window.
+          const at = new Date(row.created_at).getTime();
+          if (!Number.isFinite(at)) {
+            throw new Error(`prune_log: unreadable created_at on consent record ${row.id}`);
+          }
+          if (at >= cutoff) {
+            reachedWindow = true;
+            break;
+          }
+          await ctx.query.delete("consent_log", row.id);
+          deleted += 1;
         }
-        if (at >= cutoff) break;
-        await ctx.query.delete("consent_log", row.id);
-        deleted += 1;
+        if (reachedWindow || oldest.length < batch) break;
       }
       return { deleted, cutoff: new Date(cutoff).toISOString() };
     },
