@@ -22,6 +22,9 @@
  *   [data-consent-reject-all]       grant only what is required
  *   [data-consent-save]             grant exactly what is ticked
  *   [data-consent-open]             re-open the dialog later
+ *   [data-consent-grant="<key>"]    grant one category in place, e.g.
+ *                                   on a withheld embed's placeholder;
+ *                                   works without a banner on the page
  *
  * ## Why it is baked at build time
  *
@@ -337,9 +340,36 @@ function prefill(banner) {
   }
 }
 
+/**
+ * In-place grants, typically the button on a withheld embed's
+ * placeholder. Bound independently of the banner: a site whose banner
+ * was never set up must still let a visitor load the one thing they
+ * clicked on.
+ */
+function bindGrants() {
+  var grants = doc.querySelectorAll("[data-consent-grant]");
+  for (var i = 0; i < grants.length; i++) {
+    var node = grants[i];
+    if (node.getAttribute("data-consent-bound") === "1") continue;
+    node.setAttribute("data-consent-bound", "1");
+    node.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      var key = ev.currentTarget.getAttribute("data-consent-grant");
+      if (!key || allKeys().indexOf(key) === -1) {
+        warn("[data-consent-grant] names an unknown category: " + key);
+        return;
+      }
+      var next = granted().slice();
+      if (next.indexOf(key) === -1) next.push(key);
+      record(next);
+    });
+  }
+}
+
 function start() {
   if (currentState() === null) root.classList.add("caelo-consent-ask");
   bind();
+  bindGrants();
   apply();
 }
 

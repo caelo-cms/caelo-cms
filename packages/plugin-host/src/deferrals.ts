@@ -137,6 +137,18 @@ export async function resolveModuleDeferrals(
   );
   for (const [moduleId, { pluginSlug, spec }] of raw) {
     const mod = placeholders.get(spec.placeholderModuleSlug);
+    if (!mod && spec.defaultPlaceholder) {
+      // The plugin ships a placeholder of its own; the page keeps
+      // rendering until someone designs the site's module for it.
+      out.set(moduleId, {
+        pluginSlug,
+        reason: spec.reason,
+        placeholderModuleSlug: spec.placeholderModuleSlug,
+        placeholderHtml: spec.defaultPlaceholder.html,
+        placeholderCss: spec.defaultPlaceholder.css,
+      });
+      continue;
+    }
     if (!mod) {
       throw new Error(
         `deferrals: plugin "${pluginSlug}" withholds module ${moduleId} behind placeholder module "${spec.placeholderModuleSlug}", which does not exist. Create it (or point the plugin at one) — rendering the withheld module instead would issue exactly the request the gate exists to prevent.`,

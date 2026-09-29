@@ -319,6 +319,13 @@ export const moduleDeferralSpec = z
     /** Slug of the module rendered in the withheld one's place. An
      *  ordinary module, so the AI authors and styles it. */
     placeholderModuleSlug: z.string().min(1).max(200),
+    /** The plugin's own built-in placeholder, rendered while no module
+     *  with `placeholderModuleSlug` exists yet. Without it a site whose
+     *  placeholder was never designed cannot render the page at all. */
+    defaultPlaceholder: z
+      .object({ html: z.string().min(1).max(20_000), css: z.string().max(20_000) })
+      .strict()
+      .optional(),
   })
   .strict();
 
