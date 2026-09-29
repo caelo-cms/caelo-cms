@@ -138,7 +138,25 @@ function isGranted(key) {
   return false;
 }
 
+/**
+ * Whether this page is already running something the visitor may just
+ * have revoked: a loaded tag or a module cloned out of its template.
+ */
+function somethingLoaded() {
+  if (typeof loadedTags !== "undefined") {
+    for (var name in loadedTags) {
+      if (Object.prototype.hasOwnProperty.call(loadedTags, name)) return true;
+    }
+  }
+  return doc.querySelector('[data-caelo-hydrated="1"]') !== null;
+}
+
 function record(keys) {
+  var before = granted();
+  var revoked = false;
+  for (var i = 0; i < before.length; i++) {
+    if (keys.indexOf(before[i]) === -1) revoked = true;
+  }
   var state = {
     granted: keys,
     policyVersion: CONFIG.policyVersion,
@@ -169,6 +187,11 @@ function record(keys) {
   } catch (e) {
     warn("could not record the consent decision server-side");
   }
+  // A withdrawal must stop what already runs, and a loaded tag or a
+  // cloned-in embed cannot be unloaded in place. Reloading re-renders
+  // the page under the narrower decision; the record above is a beacon
+  // (or keepalive fetch), so it survives the navigation.
+  if (revoked && somethingLoaded()) location.reload();
 }
 
 function tickedKeys(banner) {
