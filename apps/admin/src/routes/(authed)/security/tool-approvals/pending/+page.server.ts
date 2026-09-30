@@ -127,6 +127,7 @@ export const actions: Actions = {
       const pluginTool = pluginToolsRegistry.resolve(toolName);
       if (pluginTool) {
         const r = await runPluginOperation({
+          invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
           pluginSlug: pluginTool.pluginSlug,
           operationName: pluginTool.spec.operationName,
           args,

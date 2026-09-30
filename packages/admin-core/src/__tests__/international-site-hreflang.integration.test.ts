@@ -112,6 +112,7 @@ afterAll(async () => {
 
 async function op<T>(operationName: string, args: unknown): Promise<T> {
   const r = await runPluginOperation({
+    invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
     pluginSlug: "international-site",
     operationName,
     args,
@@ -213,6 +214,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     // Language selector: build-time HTML, links to both published
     // variants, aria-current on self, display names as labels.
     const html = await runPluginStaticRender({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       pageId: de.pageId,
     });
@@ -225,6 +227,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     expect(html).not.toContain("<script");
     // Below-threshold page renders nothing at all.
     const solo = await runPluginStaticRender({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       pageId: soloId,
     });

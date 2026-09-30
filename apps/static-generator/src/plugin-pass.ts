@@ -19,6 +19,7 @@
  */
 
 import {
+  hostSystemActorId,
   loadedPlugins,
   runPluginMetaSignature,
   runPluginMetaSignatureBatch,
@@ -88,6 +89,7 @@ export async function runPluginRenderPass(args: {
   for (const plugin of activePlugins) {
     try {
       const m = await runPluginMetaSignatureBatch({
+        invocation: { origin: "render", actorId: hostSystemActorId() },
         pluginSlug: plugin.slug,
         pageIds: allPageIds,
       });
@@ -113,6 +115,7 @@ export async function runPluginRenderPass(args: {
       const metaSig =
         batched?.get(target.pageId) ??
         (await runPluginMetaSignature({
+          invocation: { origin: "render", actorId: hostSystemActorId() },
           pluginSlug: plugin.slug,
           pageId: target.pageId,
         }).catch(() => ""));
@@ -142,6 +145,7 @@ export async function runPluginRenderPass(args: {
       } else {
         try {
           const rendered = await runPluginStaticRender({
+            invocation: { origin: "render", actorId: hostSystemActorId() },
             pluginSlug: plugin.slug,
             pageId: target.pageId,
           });

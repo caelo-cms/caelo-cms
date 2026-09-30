@@ -26,6 +26,7 @@ import type {
   PluginDomainEvent,
   PluginEmail,
   PluginEvents,
+  PluginInvocation,
   PluginQuery,
   PluginQueryFilter,
   PluginSnapshots,
@@ -41,6 +42,7 @@ export interface MakePluginContextOpts {
   readonly plugin: LoadedPlugin;
   readonly infra: PluginHostInfra;
   readonly visitorContext?: VisitorContext;
+  readonly invocation: PluginInvocation;
 }
 
 /**
@@ -68,7 +70,7 @@ export type SessionMutation =
 export async function makePluginContext(
   opts: MakePluginContextOpts,
 ): Promise<PluginContext | PluginContextTier1> {
-  const { plugin, infra, visitorContext } = opts;
+  const { plugin, infra, visitorContext, invocation } = opts;
   const requested = new Set<PluginCapability>(plugin.definition.requestedCapabilities ?? []);
 
   const baseCtx: PluginContext = {
@@ -77,6 +79,7 @@ export async function makePluginContext(
     theme: makePluginTheme(),
     visitor: makePluginVisitor(visitorContext),
     captcha: makePluginCaptcha(),
+    invocation: Object.freeze({ ...invocation }),
   };
 
   // #388 grantability ceiling — provenance, not tier, decides what a

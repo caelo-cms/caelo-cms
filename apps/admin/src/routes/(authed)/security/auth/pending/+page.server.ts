@@ -24,6 +24,7 @@ interface Proposal {
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
   const r = await runPluginOperation({
+    invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
     pluginSlug: "auth",
     operationName: "list_pending_proposals",
     args: {},
@@ -39,6 +40,7 @@ export const actions: Actions = {
     const id = form.get("proposalId");
     if (typeof id !== "string") return fail(400, { error: "proposalId required" });
     const r = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "auth",
       operationName: "execute_proposal",
       args: { proposalId: id },
@@ -53,6 +55,7 @@ export const actions: Actions = {
     const reason = form.get("reason");
     if (typeof id !== "string") return fail(400, { error: "proposalId required" });
     const r = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "auth",
       operationName: "reject_proposal",
       args: {

@@ -51,6 +51,7 @@ import { sql } from "drizzle-orm";
 import { makePluginContext } from "./capabilities.js";
 import { pluginDataListsRegistry } from "./data-lists.js";
 import {
+  hostSystemActorId,
   type LoadedPlugin,
   loadedPlugins,
   type PluginHostInfra,
@@ -829,9 +830,13 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       label: renderer.label,
       render: () =>
         // Render with a fresh ctx every turn — handles get the live infra.
-        Promise.resolve(makePluginContext({ plugin: lp, infra: opts.infra })).then((ctx) =>
-          Promise.resolve(renderer.render(ctx as PluginContext)),
-        ),
+        Promise.resolve(
+          makePluginContext({
+            plugin: lp,
+            infra: opts.infra,
+            invocation: { origin: "system", actorId: hostSystemActorId() },
+          }),
+        ).then((ctx) => Promise.resolve(renderer.render(ctx as PluginContext))),
     });
   }
   if (def.workers && def.workers.length > 0) {

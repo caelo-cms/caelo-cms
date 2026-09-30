@@ -34,8 +34,10 @@ export {
   TRUST_ROOT_FILENAME,
 } from "./dev-signing.js";
 export {
+  assertInvocationConsistent,
   type EmailTransport,
   hostInfra,
+  hostSystemActorId,
   isPluginDisabled,
   type LoadedPlugin,
   loadedPlugins,

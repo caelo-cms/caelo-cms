@@ -433,7 +433,7 @@ Every plugin is the same kind of thing, whoever wrote it and however it arrived.
 Every active plugin gets exactly this:
 
 - **Its own public tables** (`cms_public.<slug>`), declared in the manifest schema, read and written through `ctx.query`. RLS scopes every row to the plugin; no other plugin and no visitor query can reach them.
-- `ctx.theme` (read-only tokens), `ctx.visitor` (opaque visitor id, public user id, IP hash — **never** the session bearer token), `ctx.captcha` (proof verification), `ctx.api` (the plugin's own public read surface).
+- `ctx.theme` (read-only tokens), `ctx.visitor` (opaque visitor id, public user id, IP hash — **never** the session bearer token), `ctx.captcha` (proof verification), `ctx.api` (the plugin's own public read surface), `ctx.invocation` (who the call acts for — origin, actor, the chat's human, the chat branch).
 - Declaring `operations`, a Web Component, and `staticRender`.
 - **Visitor-facing operations** listed in `publicOperations` (default deny; §14.7).
 

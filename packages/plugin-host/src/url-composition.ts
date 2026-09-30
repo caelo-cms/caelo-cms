@@ -31,7 +31,7 @@
 import type { UrlComposePage, UrlContributionDef, UrlSlot } from "@caelo-cms/plugin-sdk";
 import { trimSlashes } from "@caelo-cms/shared";
 import type { PluginHostInfra } from "./dispatch.js";
-import { isPluginDisabled, runPluginOperation } from "./dispatch.js";
+import { hostSystemActorId, isPluginDisabled, runPluginOperation } from "./dispatch.js";
 
 export interface RegisteredUrlContribution {
   readonly pluginSlug: string;
@@ -264,6 +264,7 @@ export async function collectUrlAnnotations(
   for (const [pluginSlug, operationName] of urlContributionsRegistry.annotationOps()) {
     if (isPluginDisabled(pluginSlug)) continue;
     const r = await runPluginOperation({
+      invocation: { origin: "system", actorId: hostSystemActorId() },
       pluginSlug,
       operationName,
       args: { pageIds: [...pageIds] },

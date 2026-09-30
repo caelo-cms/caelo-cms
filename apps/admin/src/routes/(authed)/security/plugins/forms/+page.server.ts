@@ -29,6 +29,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     args.status = status;
   }
   const r = await runPluginOperation({
+    invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
     pluginSlug: "forms",
     operationName: "list_submissions",
     args,
@@ -48,6 +49,7 @@ export const actions: Actions = {
     const id = form.get("submissionId");
     if (typeof id !== "string") return fail(400, { error: "submissionId required" });
     const r = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "forms",
       operationName: "mark_read",
       args: { submissionId: id },
@@ -61,6 +63,7 @@ export const actions: Actions = {
     const id = form.get("submissionId");
     if (typeof id !== "string") return fail(400, { error: "submissionId required" });
     const r = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "forms",
       operationName: "archive",
       args: { submissionId: id },
