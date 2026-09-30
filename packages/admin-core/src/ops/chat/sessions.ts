@@ -700,6 +700,8 @@ export const countBranchChangesOp = defineOperation({
        * e2e-livedit scenario-homepage second-Stage caught.
        */
       contentInstances: z.number().int().nonnegative(),
+      /** Plugin private-storage rows written on this branch, deduped by row. */
+      pluginRows: z.number().int().nonnegative(),
     }),
   }),
   handler: async (_ctx, input, tx) => {
@@ -728,7 +730,10 @@ export const countBranchChangesOp = defineOperation({
         -- calls on the same row count as one change for toolbar UX.
         (SELECT COUNT(DISTINCT content_instance_id)::int
            FROM content_instance_snapshots
-          WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS content_instances
+          WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS content_instances,
+        (SELECT COUNT(DISTINCT row_id)::int
+           FROM plugin_row_snapshots
+          WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS plugin_rows
     `)) as unknown as {
       modules: number;
       pages: number;
@@ -737,6 +742,7 @@ export const countBranchChangesOp = defineOperation({
       page_module_content: number;
       layout_chrome: number;
       content_instances: number;
+      plugin_rows: number;
     }[];
     const r = rows[0] ?? {
       modules: 0,
@@ -746,6 +752,7 @@ export const countBranchChangesOp = defineOperation({
       page_module_content: 0,
       layout_chrome: 0,
       content_instances: 0,
+      plugin_rows: 0,
     };
     return ok({
       count:
@@ -755,7 +762,8 @@ export const countBranchChangesOp = defineOperation({
         r.page_layouts +
         r.page_module_content +
         r.layout_chrome +
-        r.content_instances,
+        r.content_instances +
+        r.plugin_rows,
       byKind: {
         modules: r.modules,
         pages: r.pages,
@@ -764,6 +772,7 @@ export const countBranchChangesOp = defineOperation({
         pageModuleContent: r.page_module_content,
         layoutChrome: r.layout_chrome,
         contentInstances: r.content_instances,
+        pluginRows: r.plugin_rows,
       },
     });
   },

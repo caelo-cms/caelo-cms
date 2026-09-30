@@ -468,6 +468,7 @@ Hard-to-revert actions a plugin performs (e.g. a URL-strategy change) additional
 - **No plugin writes the live state of `cms_admin` directly.** Authoring writes — core data and the plugin's own private storage alike — go through named operations that validate, audit and snapshot. A write that originates in a chat lands on that chat's branch, is undoable with the chat, and reaches live only when the branch is published.
 - **The one live exception** is a visitor write into the plugin's own public tables (a form submission, a comment, a rating) through a declared `publicOperation`. Those are runtime data, not authoring, and follow CLAUDE.md §7 (CAPTCHA/PoW, rate limit, honeypot).
 - **No raw SQL** — not in plugin code, and not in the host code that brokers for plugins. Every database access is a named operation behind the Validator.
+- **Render and visitor calls never write private storage.** They are not authoring contexts. Create-time defaults (a settings row, seed categories) are written by the plugin's `onActivate` hook, which runs on main whenever the host brings the plugin up; read paths never seed.
 
 ### 14.8 Activation and lifecycle
 
@@ -534,8 +535,9 @@ Each ships companion skills as its natural-language entry point.
 The model above is normative. Where the code does not meet it yet, this list is the source of truth, and each item is a tracked defect, not an accepted exception:
 
 - **Shipped plugins run in-process and receive their capabilities at load** rather than through Owner-approved, per-artifact grants; `cms_admin` is a broad capability rather than per-domain read/write grants.
-- **Some shipped-plugin authoring writes go straight to live** (e.g. the consent-manager's settings and embed classification in its own `cms_admin` tables), outside a chat branch and without snapshots.
-- **Host code still issues SQL directly** for plugin domain-event polling, AI cost accounting, the per-operation audit row and plugin registration in the loader. Plugin table storage itself goes through the `plugin_storage.*` / `plugin_public_storage.*` operations.
+- **Render-time plugin calls do not see the preview branch yet**: data lists, deferrals, head contributions, build assets and URL annotations read main even in a branch preview.
+- **A render call's `ctx.cms.call` is not refused for core writes.** Private storage refuses render and visitor writes; core operations carry no read/write marker the host could check.
+- **Host code still issues SQL directly** for plugin domain-event polling, AI cost accounting, the per-operation audit row and plugin registration in the loader. Plugin table storage itself goes through the `plugin_storage.*` / `plugin_public_storage.*` operations, which follow the branch model: chat writes land on the chat's branch with a `pluginRow` lock, Stage/publish applies them live, `chat.discard_branch` drops them, and main-line writes are snapshotted.
 
 ## 15. Provisioning Strategy
 

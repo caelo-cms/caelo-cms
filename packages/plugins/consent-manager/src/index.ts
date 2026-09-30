@@ -259,50 +259,55 @@ function adminQueryOf(ctx: unknown): PluginAdminQuery {
 }
 
 /**
- * Read settings, seeding the row on first use.
- *
- * The seed is not a fallback (CLAUDE.md §2): it is the create-time
- * default for a table that has exactly one row, written once and then
- * read like any other data. A missing row after that would be a bug,
- * and `list` returning empty twice in a row would surface it.
+ * Write the create-time defaults — the one settings row and the default
+ * categories — when they are missing. Runs from `onActivate`, on main:
+ * render and visitor calls cannot write private storage, so the read
+ * helpers below never seed (CMS_REQUIREMENTS §14.7).
  */
+async function seedDefaults(q: PluginAdminQuery): Promise<void> {
+  const settings = await q.list("settings", { limit: 1 });
+  if (settings.length === 0) {
+    await q.insert("settings", {
+      policy_version: 1,
+      retention_days: 365,
+      placeholder_module_slug: DEFAULT_PLACEHOLDER_SLUG,
+    });
+  }
+  const categories = await q.list("categories", { limit: 1 });
+  if (categories.length === 0) {
+    for (const c of DEFAULT_CATEGORIES) {
+      await q.insert("categories", {
+        key: c.key,
+        display_name: c.displayName,
+        description: c.description,
+        required: c.required,
+        position: c.position,
+      });
+    }
+  }
+}
+
+/** The settings row. Seeded by `onActivate`; missing means activation did not run. */
 async function settingsOf(q: PluginAdminQuery): Promise<SettingsRow> {
   const rows = (await q.list("settings", { limit: 1 })) as unknown as SettingsRow[];
-  const existing = rows[0];
-  if (existing) return existing;
-  await q.insert("settings", {
-    policy_version: 1,
-    retention_days: 365,
-    placeholder_module_slug: DEFAULT_PLACEHOLDER_SLUG,
-  });
-  const seeded = (await q.list("settings", { limit: 1 })) as unknown as SettingsRow[];
-  const row = seeded[0];
-  if (!row) throw new Error("consent-manager: settings row could not be created");
+  const row = rows[0];
+  if (!row) {
+    throw new Error("consent-manager: settings row missing — onActivate has not seeded it");
+  }
   return row;
 }
 
-/** Categories in display order, seeding the defaults on first use. */
+/** Categories in display order. Seeded by `onActivate`. */
 async function categoriesOf(q: PluginAdminQuery): Promise<CategoryRow[]> {
   const rows = (await q.list("categories", {
     limit: 100,
     orderBy: "position",
     orderDir: "asc",
   })) as unknown as CategoryRow[];
-  if (rows.length > 0) return rows;
-  for (const c of DEFAULT_CATEGORIES) {
-    await q.insert("categories", {
-      key: c.key,
-      display_name: c.displayName,
-      description: c.description,
-      required: c.required,
-      position: c.position,
-    });
+  if (rows.length === 0) {
+    throw new Error("consent-manager: no categories — onActivate has not seeded them");
   }
-  return (await q.list("categories", {
-    limit: 100,
-    orderBy: "position",
-    orderDir: "asc",
-  })) as unknown as CategoryRow[];
+  return rows;
 }
 
 export default definePlugin<PluginContextTier1>({
@@ -411,6 +416,10 @@ export default definePlugin<PluginContextTier1>({
    * whether a tag may fire before anything else loads, and a static
    * site cannot afford a blocking request to find out.
    */
+  onActivate: async (ctx) => {
+    await seedDefaults(adminQueryOf(ctx));
+  },
+
   buildAssets: async (ctx) => {
     const q = adminQueryOf(ctx);
     const settings = await settingsOf(q);

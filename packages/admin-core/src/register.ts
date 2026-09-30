@@ -18,6 +18,7 @@ import {
   resolveSessionOp,
 } from "./ops/auth.js";
 import { cancelProposalOp } from "./ops/cancel_proposal.js";
+import { discardChatBranchOp } from "./ops/chat/discard.js";
 import { listForeignLocksOp } from "./ops/chat/foreign-locks.js";
 import {
   appendChatMessageOp,
@@ -609,6 +610,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getChatBranchIdOp);
   registry.register(renameChatSessionOp);
   registry.register(archiveChatSessionOp);
+  registry.register(discardChatBranchOp);
   registry.register(appendChatMessageOp);
   registry.register(markChatMessageInterruptedOp);
   registry.register(setResponseMessagesOp);

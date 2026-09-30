@@ -62,6 +62,11 @@ async function cleanup(): Promise<void> {
     await tx.unsafe(`DELETE FROM audit_events WHERE actor_id IN (
       SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'consent-manager')
     )`);
+    // Storage writes (onActivate's seed included) snapshot under the
+    // plugin's actor; the history goes before the actor it references.
+    await tx.unsafe(`DELETE FROM site_snapshots WHERE actor_id IN (
+      SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'consent-manager')
+    )`);
     await tx.unsafe(
       "DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'consent-manager')",
     );

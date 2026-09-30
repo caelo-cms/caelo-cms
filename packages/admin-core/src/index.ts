@@ -72,6 +72,7 @@ export {
 } from "./email/password-reset.js";
 // P12 review pass — email transport factory (consumed by hooks.server.ts).
 export { buildEmailTransport, type EmailConfigRow } from "./email/transport.js";
+export { lockPluginRow } from "./locks.js";
 export * from "./media/pipeline.js";
 export * from "./media/storage.js";
 export * from "./ops/auth.js";

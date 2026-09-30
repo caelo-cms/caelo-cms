@@ -75,7 +75,7 @@ export async function makePluginContext(
   const requested = new Set<PluginCapability>(plugin.definition.requestedCapabilities ?? []);
 
   const baseCtx: PluginContext = {
-    query: makePluginQuery(plugin, infra),
+    query: makePluginQuery(plugin, infra, invocation),
     api: makePluginApi(plugin, infra),
     theme: makePluginTheme(),
     visitor: makePluginVisitor(visitorContext),
@@ -93,10 +93,10 @@ export async function makePluginContext(
   // Release-signed — attach elevated handles per requestedCapabilities.
   const tier1: Mutable<PluginContextTier1> = { ...baseCtx };
   if (requested.has("cms_admin")) {
-    tier1.cms = makePluginCms(plugin, infra);
+    tier1.cms = makePluginCms(plugin, infra, invocation);
   }
   if (requested.has("cms_admin_schema")) {
-    tier1.adminQuery = makePluginAdminQuery(plugin, infra);
+    tier1.adminQuery = makePluginAdminQuery(plugin, infra, invocation);
   }
   if (requested.has("domain_events")) {
     tier1.events = makePluginEvents(plugin, infra);
@@ -179,6 +179,7 @@ interface QueryScope {
 function makeScopedQuery(
   plugin: LoadedPlugin,
   infra: PluginHostInfra,
+  invocation: PluginInvocation,
   scope: QueryScope,
 ): PluginQuery {
   const schemaName = pluginSchemaName(plugin.slug);
@@ -188,12 +189,37 @@ function makeScopedQuery(
   assertUuid(plugin.pluginActorId, "caelo.actor_id");
   assertUuid(plugin.pluginId, "caelo.plugin_id");
   const ops = STORAGE_OPS[scope.pool === "admin" ? "private" : "public"];
+  // Private storage follows the invocation's branch: a chat's writes land
+  // on its branch, everything else on main (docs/branch-aware-plugin-
+  // storage.md). Public storage is visitor data and always live.
+  const branch =
+    scope.pool === "admin" && invocation.chatBranchId
+      ? {
+          chatBranchId: invocation.chatBranchId,
+          ...(invocation.chatTaskId ? { chatTaskId: invocation.chatTaskId } : {}),
+        }
+      : {};
   const ctx = {
     actorId: plugin.pluginActorId,
     actorKind: "plugin" as const,
     pluginId: plugin.pluginId,
     requestId: `plugin-${plugin.slug}`,
+    ...branch,
   };
+
+  /**
+   * Rendering and visitor requests are not authoring contexts: a write to
+   * private storage from one would change author data outside any chat or
+   * Owner action (CMS_REQUIREMENTS §14.7). Seed data in `onActivate`.
+   */
+  function assertAuthoring(method: string): void {
+    if (scope.pool !== "admin") return;
+    if (invocation.origin === "render" || invocation.origin === "visitor") {
+      throw new Error(
+        `${scope.label}.${method}: plugin "${plugin.slug}" cannot write its private storage from a ${invocation.origin} call — write from a chat tool, the Owner panel, a worker or onActivate`,
+      );
+    }
+  }
 
   /** The table's declared column map, or a loud error naming the plugin. */
   function tableColumns(method: string, table: string): Record<string, string> {
@@ -226,7 +252,7 @@ function makeScopedQuery(
   async function run<T>(opName: string, input: unknown): Promise<T> {
     // Registered on first use, not at construction: building a context
     // must not touch the registry (the handles are lazy by design).
-    registerPluginStorageOps(infra.registry);
+    registerPluginStorageOps(infra.registry, { lockPluginRow: infra.lockPluginRow });
     const r = await execute(infra.registry, infra.adapter, ctx, opName, input);
     if (!r.ok) {
       throw new Error("message" in r.error ? String(r.error.message) : r.error.kind);
@@ -237,6 +263,7 @@ function makeScopedQuery(
   return {
     insert: async (table, data) => {
       const tableStr = table as string;
+      assertAuthoring("insert");
       const columns = tableColumns("insert", tableStr);
       assertDeclared("insert", tableStr, columns, Object.keys(data));
       if (Object.keys(data).length === 0) {
@@ -290,6 +317,7 @@ function makeScopedQuery(
 
     update: async (table, id, patch) => {
       const tableStr = table as string;
+      assertAuthoring("update");
       const columns = tableColumns("update", tableStr);
       const keys = Object.keys(patch).filter((k) => k !== "id");
       assertDeclared("update", tableStr, columns, keys);
@@ -301,14 +329,19 @@ function makeScopedQuery(
 
     delete: async (table, id) => {
       const tableStr = table as string;
+      assertAuthoring("delete");
       const columns = tableColumns("delete", tableStr);
       await run(ops.delete, { schema: schemaName, table: tableStr, columns, id });
     },
   };
 }
 
-function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQuery {
-  return makeScopedQuery(plugin, infra, {
+function makePluginQuery(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  invocation: PluginInvocation,
+): PluginQuery {
+  return makeScopedQuery(plugin, infra, invocation, {
     label: "ctx.query",
     schemaLabel: "schema",
     schemaMap: plugin.definition.schema,
@@ -323,8 +356,12 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
  * RLS policies scope rows to this plugin's id). Attached by
  * makePluginContext only when the manifest holds `cms_admin_schema`.
  */
-function makePluginAdminQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginAdminQuery {
-  return makeScopedQuery(plugin, infra, {
+function makePluginAdminQuery(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  invocation: PluginInvocation,
+): PluginAdminQuery {
+  return makeScopedQuery(plugin, infra, invocation, {
     label: "ctx.adminQuery",
     schemaLabel: "adminSchema",
     schemaMap: plugin.definition.adminSchema ?? {},
@@ -524,7 +561,26 @@ function makePluginTheme(): PluginTheme {
 // caelo.plugin_id session vars via the adapter's existing runOperation path.
 // ---------------------------------------------------------------------------
 
-function makePluginCms(plugin: LoadedPlugin, infra: PluginHostInfra): PluginCms {
+/**
+ * Core operations for a plugin granted `cms_admin`. Calls inherit the
+ * invocation's branch and task, so core writes a plugin makes from a chat
+ * are branched, locked and snapshotted like the AI's own, and its core
+ * reads see the branch (docs/branch-aware-plugin-storage.md §3). This
+ * must switch together with private storage: a page created on the
+ * branch while the plugin's own row linking it went live would expose an
+ * unpublished page.
+ */
+function makePluginCms(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  invocation: PluginInvocation,
+): PluginCms {
+  const branch = invocation.chatBranchId
+    ? {
+        chatBranchId: invocation.chatBranchId,
+        ...(invocation.chatTaskId ? { chatTaskId: invocation.chatTaskId } : {}),
+      }
+    : {};
   return {
     call: async <Input, Output>(opName: string, input: Input): Promise<Output> => {
       const r = await execute(
@@ -535,6 +591,7 @@ function makePluginCms(plugin: LoadedPlugin, infra: PluginHostInfra): PluginCms 
           actorKind: "plugin",
           requestId: `plugin-${plugin.slug}`,
           pluginId: plugin.pluginId,
+          ...branch,
         },
         opName,
         input as unknown,

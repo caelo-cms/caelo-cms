@@ -19,6 +19,7 @@
  * v0.10.19), or chat discard / archive.
  */
 
+import type { PluginRowLocker } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import {
@@ -49,7 +50,11 @@ export type LockedEntityKind =
   | "contentInstance"
   // v0.11.0 — themes are global (one active row affects every page),
   // so writes lock the theme entity same as structured_sets / layouts.
-  | "theme";
+  | "theme"
+  // A row in a plugin's private storage written on a chat branch
+  // (docs/branch-aware-plugin-storage.md). Row ids are uuids, unique
+  // across plugin tables, so the row id alone keys the lock.
+  | "pluginRow";
 
 export interface LockHolder {
   chatSessionId: string;
@@ -309,3 +314,36 @@ export async function entityWriteBlockedError(
     `entityWriteBlockedError called for ${operation} on ${kind} ${entityId} with no siblingLease or holder`,
   );
 }
+
+/**
+ * The `pluginRow` lock taker the plugin host calls for every branch write
+ * to a plugin's private storage (PluginHostInfra.lockPluginRow).
+ *
+ * Same branch lock + per-task sub-lease as core entities. The busy
+ * message names the holding chat by title only: the write runs as the
+ * plugin's actor, and a failed enrich read (lockedError also reads pages)
+ * would abort the caller's transaction.
+ */
+export const lockPluginRow: PluginRowLocker = async (tx, args) => {
+  const result = await checkAndAcquireEntityLock(tx, {
+    kind: "pluginRow",
+    entityId: args.rowId,
+    chatBranchId: args.chatBranchId,
+    holderKey: args.chatTaskId,
+  });
+  if (result.permitted) return null;
+  if (result.siblingLease) {
+    return siblingLeaseError(args.operation, "pluginRow", args.rowId, result.siblingLease).message;
+  }
+  if (!result.holder) {
+    throw new Error(`lockPluginRow: ${args.operation} blocked on ${args.rowId} with no holder`);
+  }
+  const rows = (await tx.execute(sql`
+    SELECT title FROM chat_sessions WHERE id = ${result.holder.chatSessionId}::uuid LIMIT 1
+  `)) as unknown as { title: string | null }[];
+  const title = rows[0]?.title;
+  const chat = title
+    ? `another chat ('${title}')`
+    : `another chat (session ${result.holder.chatSessionId})`;
+  return `${args.operation}: row ${args.rowId} is busy in ${chat} — finish that chat (Stage + Publish) or change a different row`;
+};

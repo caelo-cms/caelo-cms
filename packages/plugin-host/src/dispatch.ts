@@ -23,6 +23,7 @@ import type {
 } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import type { PluginRowLocker } from "./private-storage.js";
 import type { AIProvider } from "./types.js";
 
 /** Runtime registry of loaded Tier-1 plugins. Loader writes here at startup;
@@ -133,6 +134,10 @@ export interface PluginHostInfra {
   /** P12 PR1.3 — optional outbound email transport. When omitted,
    *  ctx.email.send falls back to a no-op stderr stub. */
   readonly emailTransport?: EmailTransport;
+  /** Takes the chat lock for a plugin row written on a branch. Required
+   *  for any chat-origin private-storage write; admin-core supplies it
+   *  (it owns chat locks). A branch write without it fails loudly. */
+  readonly lockPluginRow?: PluginRowLocker;
 }
 
 /** Outbound email transport. Implementations live in the host process

@@ -817,6 +817,21 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   };
   loadedPlugins.set(lp);
 
+  // Create-time defaults, on main, before anything can read them.
+  if (def.onActivate) {
+    const ctx = await makePluginContext({
+      plugin: lp,
+      infra: opts.infra,
+      invocation: { origin: "system", actorId: hostSystemActorId() },
+    });
+    try {
+      await def.onActivate(ctx);
+    } catch (e) {
+      loadedPlugins.unload(def.slug);
+      throw new Error(`plugin "${def.slug}" onActivate failed: ${(e as Error).message}`);
+    }
+  }
+
   // Register tools + workers + prompt-context renderers.
   for (const tool of def.tools ?? []) {
     pluginToolsRegistry.register(def.slug, tool);
