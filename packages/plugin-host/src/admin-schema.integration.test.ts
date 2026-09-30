@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { registerAdminOps } from "@caelo-cms/admin-core";
 import { definePlugin, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
-import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import {
   bootstrap,
@@ -82,6 +82,7 @@ async function cleanup(): Promise<void> {
   await withSystemSql(async (tx) => {
     await tx.unsafe('DROP SCHEMA IF EXISTS "plugin_t389_alpha" CASCADE');
     await tx.unsafe('DROP SCHEMA IF EXISTS "plugin_t389_beta" CASCADE');
+    await tx.unsafe('DROP SCHEMA IF EXISTS "plugin_t389_gamma" CASCADE');
     await tx.unsafe(`DELETE FROM audit_events WHERE actor_id IN (
       SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug LIKE 't389-%')
     )`);
@@ -319,5 +320,145 @@ describe("#389 — plugin-owned cms_admin schema", () => {
     expect(report.failed.find((f) => f.slug === "t389-ref-in-public")?.reason).toContain(
       "schema-shape",
     );
+  });
+});
+
+describe("plugin storage through named operations (§14.7, step 2)", () => {
+  const SLUG = "t389-gamma";
+  const SYS = "00000000-0000-0000-0000-000000000000";
+  const call = (operationName: string, args: unknown = {}) =>
+    runPluginOperation({
+      pluginSlug: SLUG,
+      operationName,
+      args,
+      invocation: { origin: "system", actorId: SYS },
+    });
+
+  beforeAll(async () => {
+    resetPluginHost();
+    const report = await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [
+        {
+          definition: definePlugin({
+            slug: SLUG,
+            version: "0.1.0",
+            tier: 1,
+            schema: {},
+            adminSchema: { settings: { label: "string" } },
+            requestedCapabilities: ["cms_admin_schema"],
+            operations: {
+              add: async (ctx, args) =>
+                (ctx as AdminCtx).adminQuery?.insert("settings", {
+                  label: (args as { label: string }).label,
+                }),
+              rename: async (ctx, args) => {
+                const a = args as { id: string; label: string };
+                await (ctx as AdminCtx).adminQuery?.update("settings", a.id, { label: a.label });
+                return {};
+              },
+              remove: async (ctx, args) => {
+                await (ctx as AdminCtx).adminQuery?.delete("settings", (args as { id: string }).id);
+                return {};
+              },
+              list: async (ctx) => (ctx as AdminCtx).adminQuery?.list("settings", {}),
+              write_host_column: async (ctx) =>
+                (ctx as AdminCtx).adminQuery?.insert("settings", {
+                  label: "x",
+                  caelo_chat_branch_id: "22222222-2222-4222-8222-222222222222",
+                }),
+            },
+          }),
+        },
+      ],
+    });
+    expect(report.failed).toEqual([]);
+  });
+
+  async function hostState(id: string) {
+    const lp = loadedPlugins.bySlug(SLUG);
+    if (!lp) throw new Error("plugin not loaded");
+    return withSystemSql(async (tx) => {
+      // Plugin tables are RLS-scoped to their plugin, the system actor included.
+      await tx.unsafe(`SELECT set_config('caelo.plugin_id', '${lp.pluginId}', true)`);
+      const rows = (await tx.unsafe(
+        `SELECT caelo_version, caelo_deleted_at, caelo_chat_branch_id FROM plugin_t389_gamma.settings WHERE id = '${id}'`,
+      )) as {
+        caelo_version: number;
+        caelo_deleted_at: Date | null;
+        caelo_chat_branch_id: string | null;
+      }[];
+      return rows[0];
+    });
+  }
+
+  it("never hands a host-owned column to the plugin", async () => {
+    const added = await call("add", { label: "hello" });
+    if (!added.ok) throw new Error(added.error.message);
+    const listed = await call("list");
+    if (!listed.ok) throw new Error(listed.error.message);
+    const rows = listed.value as Record<string, unknown>[];
+    expect(rows.some((r) => r.label === "hello")).toBe(true);
+    for (const row of rows) {
+      expect(Object.keys(row).some((k) => k.startsWith("caelo_"))).toBe(false);
+    }
+  });
+
+  it("bumps the version on update and soft-deletes on delete", async () => {
+    const added = await call("add", { label: "before" });
+    if (!added.ok) throw new Error(added.error.message);
+    const { id } = added.value as { id: string };
+    expect((await hostState(id))?.caelo_version).toBe(1);
+
+    expect((await call("rename", { id, label: "after" })).ok).toBe(true);
+    expect((await hostState(id))?.caelo_version).toBe(2);
+
+    expect((await call("remove", { id })).ok).toBe(true);
+    const state = await hostState(id);
+    // The row survives with its last state; reads no longer return it.
+    expect(state?.caelo_deleted_at).not.toBeNull();
+    const listed = await call("list");
+    if (!listed.ok) throw new Error(listed.error.message);
+    expect((listed.value as { id: string }[]).some((r) => r.id === id)).toBe(false);
+  });
+
+  it("refuses a plugin write to a host-owned column", async () => {
+    const r = await call("write_host_column");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toContain("not declared");
+  });
+
+  it("refuses the storage operations to anyone but a plugin", async () => {
+    const r = await execute(
+      registry,
+      adapter,
+      { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t" },
+      "plugin_storage.list",
+      { schema: "plugin_t389_gamma", table: "settings", columns: { label: "string" } },
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it("refuses a caelo_ column even when a caller names it in the column map", async () => {
+    // A plugin reaching the operation directly (e.g. via ctx.cms.call)
+    // cannot smuggle a host column in through its own column map.
+    const lp = loadedPlugins.bySlug(SLUG);
+    if (!lp) throw new Error("plugin not loaded");
+    const r = await execute(
+      registry,
+      adapter,
+      { actorId: lp.pluginActorId, actorKind: "plugin", pluginId: lp.pluginId, requestId: "t" },
+      "plugin_storage.insert",
+      {
+        schema: "plugin_t389_gamma",
+        table: "settings",
+        columns: { label: "string", caelo_chat_branch_id: "uuid" },
+        data: { label: "x", caelo_chat_branch_id: "22222222-2222-4222-8222-222222222222" },
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok && "message" in r.error) expect(String(r.error.message)).toContain("host-owned");
   });
 });
