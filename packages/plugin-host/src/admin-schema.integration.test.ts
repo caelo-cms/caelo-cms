@@ -378,7 +378,11 @@ describe("plugin storage through named operations (§14.7, step 2)", () => {
   });
 
   async function hostState(id: string) {
+    const lp = loadedPlugins.bySlug(SLUG);
+    if (!lp) throw new Error("plugin not loaded");
     return withSystemSql(async (tx) => {
+      // Plugin tables are RLS-scoped to their plugin, the system actor included.
+      await tx.unsafe(`SELECT set_config('caelo.plugin_id', '${lp.pluginId}', true)`);
       const rows = (await tx.unsafe(
         `SELECT caelo_version, caelo_deleted_at, caelo_chat_branch_id FROM plugin_t389_gamma.settings WHERE id = '${id}'`,
       )) as {
