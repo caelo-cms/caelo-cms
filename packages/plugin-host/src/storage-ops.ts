@@ -39,14 +39,6 @@ const IDENT_RE = /^[a-z_][a-z0-9_]{0,62}$/;
 const ident = z.string().regex(IDENT_RE);
 const HOST_COLUMN_PREFIX = "caelo_";
 
-/** The columns every private-zone table carries for branch + history. */
-export const PRIVATE_HOST_COLUMNS = [
-  "caelo_chat_branch_id",
-  "caelo_deleted_at",
-  "caelo_version",
-  "caelo_updated_at",
-] as const;
-
 const base = {
   schema: ident,
   table: ident,
