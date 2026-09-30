@@ -409,202 +409,133 @@ Full primary/replica with automatic failover. Opt-in, documented as upgrade path
 
 ### 14.1 Overview — Caelo as a plugin host
 
-Caelo is a **plugin host**. Almost every feature beyond the irreducible kernel — translation, SEO, media, scheduled publish, comments, forms, kits, typed content, analytics, even authentication — is a plugin built against the same SDK. The kernel is small on purpose: auth state machine, RLS, the Query API chokepoint, the snapshot system, the chat-runner, the deploy trigger, the plugin host itself. Everything else lives in `packages/plugins/<slug>/`.
+Caelo is a **plugin host**. Almost every feature beyond the irreducible kernel — translation, SEO, media, scheduled publish, comments, forms, kits, typed content, analytics, even authentication — is a plugin built against the same SDK. The kernel is small on purpose: auth state machine, RLS, the Query API chokepoint, the snapshot system, the chat-runner, the deploy trigger, the plugin host itself.
 
-The benefit is uniformity: when the AI authors a plugin at runtime, it follows the same shape that ships in core. The AI's mental model has no "core vs. plugin" cliff. The cost is that the SDK has to be honest enough to host a real, complex feature (i18n — the `international-site` plugin, §7) — which is exactly what we want it to be.
+There is **no external plugin marketplace**. A plugin either ships with a Caelo release (`packages/plugins/<slug>/`) or is installed at runtime — written by the AI or pasted by an Owner — with its source stored in `plugins.source_code`.
 
-There is **no external plugin marketplace**. Plugins are either (a) shipped with the Caelo release as core software, or (b) AI-authored at runtime against the SDK and Owner-activated.
+### 14.2 One plugin model — who wrote it grants nothing
 
-### 14.2 Two tiers — same shape, masked capabilities
+Every plugin is the same kind of thing, whoever wrote it and however it arrived. **Authorship and delivery path never determine what a plugin may do.** Most code — shipped plugins included — is AI-written; a distinction by author would be a formality, not a security boundary.
 
-Plugins ship in one of two tiers. They use the same `definePlugin` / `defineComponent` SDK shape; the runtime decides which capabilities are exposed.
+- **Provenance is evidence, not permission.** A shipped plugin's release signature proves which artifact is installed and that it came with a Caelo release. It is shown to the Owner at approval time. It does not unlock a single capability.
+- **Everything beyond the base (§14.4) is an explicit Owner grant (§14.5)**, bound to the exact artifact (content digest). A new version of the plugin is a new artifact and needs a new approval; a revoked grant takes effect before the next operation.
+- **The rules in this chapter bind every plugin identically.** A shipped plugin may not do anything a runtime-installed plugin with the same grants could not.
 
-#### Tier 1 — Core plugins
+### 14.3 Execution
 
-Shipped with the Caelo release. Audited. Live in `packages/plugins/<slug>/`. Shipped today: `comments`, `forms`, `newsletter`, `ratings`, `auth`. Planned on the same shape: `international-site` (§7), `seo`, `media`, `scheduled-publish`, `kits`, `typed-content`, `edge-analytics`.
+- **Target: one sandbox for all plugins.** Plugin backend code runs in a Deno subprocess with `--no-read --no-write --no-net --no-env --no-prompt --no-npm --no-remote`, bounded time and memory, talking to the host only through a validated broker (every call Zod-checked, authorization re-checked per call). Shipped plugins run there too; running in-process is an optimisation that must never widen what a plugin can do.
+- **Bundling happens in the host and must itself be closed:** the bundler resolves only the plugin's own entry and the SDK packages; any other import or `require` fails.
+- **The validator (§14.9) runs for every plugin** before it is loaded.
+- **The frontend** runs in the visitor's browser as Web Components (§14.10) regardless of where the backend runs.
 
-- **Activation:** auto-activated on Caelo install via signed manifest (Ed25519 signature shipped with the release). Owner can disable from `/security/plugins` but does not need to click Approve on first run.
-- **Runtime:** **in-process** within the Bun host. No Deno subprocess. Zero cold-start tax. Acceptable because the source is audited and shipped with the release.
-- **SDK capabilities (full):**
-  - Cross-table writes inside `cms_admin` (e.g. `international-site` writing translated content into `pages` + `page_modules` + `modules`).
-  - Snapshot emission (every write goes through the existing snapshot path).
-  - Chat-runner tool registration — the plugin's `operations` automatically become AI tools, with descriptions sourced from the plugin's manifest.
-  - AI provider access — Tier 1 plugins can call the Provider Abstraction Layer (`international-site` needs this for Mode 1/Mode 2 translation prompts).
-  - Background workers (translation jobs in `international-site`, scheduled-publish cron).
-- **Validator still runs** as defense-in-depth (catches forbidden patterns introduced by a future audit miss); it does NOT gate startup.
-- **Updates:** ship with Caelo release upgrades. Pinned to the Caelo version in source control.
+### 14.4 Base capabilities — no grant needed
 
-#### Tier 2 — User plugins
+Every active plugin gets exactly this:
 
-AI-authored at runtime, or Owner-installed from a vetted repo. Examples: a custom `comments-pro` that adds reactions; a site-specific `event-rsvp`; anything the Owner asks the AI to build.
+- **Its own public tables** (`cms_public.<slug>`), declared in the manifest schema, read and written through `ctx.query`. RLS scopes every row to the plugin; no other plugin and no visitor query can reach them.
+- `ctx.theme` (read-only tokens), `ctx.visitor` (opaque visitor id, public user id, IP hash — **never** the session bearer token), `ctx.captcha` (proof verification), `ctx.api` (the plugin's own public read surface).
+- Declaring `operations`, a Web Component, and `staticRender`.
+- **Visitor-facing operations** listed in `publicOperations` (default deny; §14.7).
 
-- **Activation:** lifecycle `draft` → `validated` → `awaiting_activation` → `active` / `disabled`. **Owner click required** for every transition into `active`. No auto-activation, ever.
-- **Runtime:** **Deno subprocess** with `--no-read --no-write --no-net --no-env --no-prompt --no-npm --no-remote`. Per-invocation cold start. The SDK + plugin source written to tmp files; import map points `@caelo-cms/plugin-sdk` at the SDK module.
-- **SDK capabilities (locked):**
-  - **Reads + writes ONLY against the plugin's own `cms_public.<slug>` schema.** No `cms_admin` access of any kind.
-  - **No snapshot emission** (plugins write to `cms_public`; that surface has no snapshot model).
-  - **No chat-runner tool registration.** The plugin exposes an HTTP-style `run_operation` surface invoked by the API Gateway on public requests; not a tool the AI can call directly.
-  - **No AI provider access.** Public-facing plugins should not be calling LLMs from inside a Deno subprocess on the request path.
-  - **No background workers.** If a Tier 2 plugin needs cron-style work, the host runs it; the plugin only declares the schedule.
-- **Validator runs every load.** oxc-parser walks the source; rejects forbidden patterns (`fetch`, `Deno.*` outside the allowlist, dynamic `import()`, raw SQL strings, `eval`, `new Function`, top-level `globalThis` writes).
-- **Updates:** the AI submits a new version through `submit_plugin`; Owner re-activates.
+### 14.5 Grants — Owner-approved, per artifact
 
-#### What stays in core (irreducible kernel — never a plugin)
+A plugin requests grants in its manifest; the Owner approves them at activation, seeing for each grant what it allows. Grants are recorded as receipts bound to the artifact digest and are re-checked on every broker call. Every grant is brokered by the host; a plugin never receives a credential, connection or raw handle.
 
-- Auth state machine (sessions, password hashing, role resolution, permission middleware).
-- Row-Level Security policies.
-- The Query API: `defineOperation`, the Validator, the Database Adapter.
-- The snapshot system (`site_snapshots`, `page_snapshots`, etc.).
-- The chat-runner.
-- The plugin host itself (registry, activation gate, validator, sandbox runtime).
-- The deploy trigger.
-
-A plugin host that's itself a plugin is a bootstrapping headache. These stay in core.
-
-### 14.3 Tier capability matrix
-
-| Capability | Tier 1 (core) | Tier 2 (user) |
+| Grant | Allows | Constraints |
 |---|---|---|
-| Runtime | Bun, in-process | Deno subprocess, sandboxed |
-| Cold-start | none | ~50–100ms per invocation |
-| `cms_admin` reads | ✓ (declared scopes) | ✗ |
-| `cms_admin` writes | ✓ (declared scopes) | ✗ |
-| `cms_public.<slug>` reads + writes | ✓ | ✓ |
-| Snapshot emission | ✓ | ✗ |
-| Chat-runner tool registration | ✓ (auto from `operations`) | ✗ |
-| AI provider access | ✓ | ✗ |
-| Background workers | ✓ | ✗ (declare schedule; host runs it) |
-| Activation gate | signed manifest, auto on install; Owner can disable | Owner click per `active` transition |
-| Validator runs | yes (defense-in-depth) | yes (gates activation) |
-| Source location | `packages/plugins/<slug>/` | `plugins.source_code` (DB) |
-| Updates | with Caelo release | per `submit_plugin` call |
+| Private plugin storage | Tables in the plugin's own private schema in `cms_admin` (author-side data a visitor must never read) | Own schema only; authoring writes follow §14.7 |
+| Core data — per domain, read | Named Query API **read** operations of one domain (e.g. media: `media.list`, `media.get`) | Never a table, never SQL; one grant per domain |
+| Core data — per domain, write | Named Query API **write** operations of one domain | Same path as any human/AI write: validator, audit, snapshot, chat branch (§14.7) |
+| Chat tools | The plugin's operations offered to the AI as tools | The Owner sees every tool name and description in readable form; descriptions are length-limited and part of the approved artifact |
+| Companion skills | Skills that ship with the plugin, live with it, archive with it | Shown readably at approval; part of the artifact |
+| AI provider / image generation | Model calls brokered by the host | Budgeted and metered; the plugin never sees a key |
+| Background workers | Scheduled or queued work | Scheduled and run by the host; same capability set as the plugin's operations |
+| Email | Sending mail through the configured transport | Rate-limited; no transport credentials |
+| Private files | Immutable author-side files | Own files only; size quotas |
+| Client assets | A site-wide browser runtime on every page (§14.10) | Widest blast radius of any grant; shown as such at approval |
+| Contributions (head, sitemap, URL slots, data lists, domain events, deferrals) | Structured contributions core validates and renders | Never raw HTML into `<head>`; URL-shape changes are §11.A-gated (CLAUDE.md) |
 
-Tier 2 is Tier 1 with capabilities masked off. The SDK exports the same shapes; the runtime exposes only what the tier permits. A Tier 1 plugin recompiled and submitted as Tier 2 source would fail validation the moment it imports a Tier-1-only capability.
+Hard-to-revert actions a plugin performs (e.g. a URL-strategy change) additionally go through the in-chat approval gate of CLAUDE.md §11.A, per call.
 
-### 14.4 Plugin Structure (shape both tiers share)
+### 14.6 Data zones
 
-```javascript
-export default definePlugin({
-  slug: "comments-pro",
-  version: "1.0.0",
-  schema: {
-    comments: {
-      id: "uuid",
-      page_id: "string",
-      content: "string",
-      status: "enum:pending,approved,rejected"
-    }
-  },
-  operations: {
-    submit: async ({ query }, data) => query.insert("comments", data),
-    list: async ({ query }, { page_id, since }) =>
-      query.list("comments", { page_id, status: "approved", since })
-  },
-  component: defineComponent({
-    tag: "cms-comments-delta",
-    async mounted({ api, theme }) {
-      const newComments = await api.list({ page_id: this.pageId, since: this.since })
-    }
-  }),
-  staticRender: async ({ query }, { page_id }) => {
-    const comments = await query.list("comments", { page_id, status: "approved" })
-    return comments.map(c =>
-      `<div class="comment"><strong>${c.author}</strong><p>${c.content}</p></div>`
-    ).join("")
-  }
-})
-```
+1. **The plugin's own data** — its public tables (§14.4) and, with the grant, its private storage and files. Only this plugin reaches them.
+2. **Core data** (pages, modules, content, media, themes, layouts, …) — **never directly**. Only through the named Query API operations of a granted domain, with the same validation, audit, snapshots and branch rules as every other writer.
+3. **Another plugin's data** — never.
 
-Tier 1 plugins additionally declare optional capability requests (`requestedCapabilities: ['cms_admin', 'ai_provider', 'snapshots']`) in the manifest; the host grants them at load time after verifying the manifest signature. Tier 2 plugins MUST NOT declare `requestedCapabilities` — the validator rejects the field.
+### 14.7 Writes never go straight to live
 
-### 14.5 Plugin Validation — oxc-parser
+- **No plugin writes the live state of `cms_admin` directly.** Authoring writes — core data and the plugin's own private storage alike — go through named operations that validate, audit and snapshot. A write that originates in a chat lands on that chat's branch, is undoable with the chat, and reaches live only when the branch is published.
+- **The one live exception** is a visitor write into the plugin's own public tables (a form submission, a comment, a rating) through a declared `publicOperation`. Those are runtime data, not authoring, and follow CLAUDE.md §7 (CAPTCHA/PoW, rate limit, honeypot).
+- **No raw SQL** — not in plugin code, and not in the host code that brokers for plugins. Every database access is a named operation behind the Validator.
 
-Custom validator built on oxc-parser (Rust-based, millisecond execution). Forbidden patterns cause immediate rejection with structured error returned to AI for auto-fix and resubmit.
+### 14.8 Activation and lifecycle
 
-For Tier 2 the validator gates activation (rejection ⇒ status stays `draft`). For Tier 1 the validator runs at startup as defense-in-depth (rejection logs a fatal error and refuses to load the plugin; signed-manifest mismatch is treated identically).
+- **Activation is a hard state for every plugin.** Until an Owner activates it, nothing of the plugin is loaded (see CLAUDE.md §2). Shipped plugins are no exception.
+- **Lifecycle:** `draft` → `validated` → `awaiting_activation` → `active` / `disabled`. The AI may submit and propose; only a human Owner activates and grants.
+- **Updates** (a new Caelo release shipping a new plugin version, or a new runtime submission) produce a new artifact; its grants are re-approved before it runs. Disabling never drops data.
 
-### 14.6 Plugin Frontend — Web Components
+### 14.9 Validation — oxc-parser
+
+A validator built on oxc-parser runs for every plugin before load and rejects, with a structured error the AI can act on: imports other than the SDK, `require` in any spelling, `import.meta`, dynamic `import()`, `fetch`/`XMLHttpRequest`/`WebSocket`, `Deno.*`, raw SQL strings, `eval`/`new Function`, and top-level `globalThis` writes.
+
+### 14.10 Plugin Frontend — Web Components
 
 - Native browser Web Components — no framework dependency.
-- **Shadow DOM is mandatory** on every plugin Web Component — plugin CSS can never leak into the host page, and host CSS never leaks into the plugin. Open mode by default, closed mode configurable per plugin.
-- Theme tokens injected as CSS custom properties on the shadow root.
-- API client injected by SDK — cannot construct arbitrary HTTP calls.
-- Receives site theme tokens.
-
-The frontend rules are tier-agnostic: a Tier 1 plugin's component runs in the browser the same way a Tier 2 plugin's does.
+- **Shadow DOM is mandatory** on every plugin Web Component. Open mode by default, closed mode configurable per plugin.
+- Theme tokens injected as CSS custom properties on the shadow root; the API client is injected by the SDK and cannot construct arbitrary HTTP calls.
 
 #### Client assets — the site-wide runtime channel (#449)
 
-A Web Component covers a plugin surface the page opts into by placing its tag. Some plugin behaviour is not opt-in per placement: a consent dialog has to work regardless of how the site's markup was authored, and a third-party embed must not load before the visitor opts in. For that, a release-signed plugin declares `buildAssets`, returning `.js` / `.css` files **once per build**; the generator writes them under `_caelo/plugin/<slug>/` with the content hash in the name and references them from every page.
+With the client-assets grant, a plugin declares `buildAssets`, returning `.js` / `.css` files **once per build**; the generator writes them under `_caelo/plugin/<slug>/` with the content hash in the name and references them from every page.
 
-- **Once per build, not per page.** Such a runtime usually needs configuration before it can decide anything, and a static site cannot afford a blocking fetch to obtain it — one call per build lets the plugin bake that configuration into the file it ships. The build's full page list is passed in, so per-page data can be baked into a lookup.
-- **Content hash in the filename.** The file is referenced from every page, so it wants a long CDN TTL; hashing the content into the name keeps "cache forever" and "the change lands" both true.
-- **Release-signed only.** These files run in every visitor's browser on every page — the widest blast radius any contribution has. A runtime-authored plugin's frontend stays inside its Shadow DOM component.
-- **One resolver, two surfaces.** The deploy links the files; the admin preview inlines the identical bytes, because the preview iframe has no build directory to serve from. Delivery differs, content does not — the editor can never show behaviour the deployed site won't have.
-- **Loud, per CLAUDE.md §2.** A throwing plugin, a malformed file name and an over-budget payload all fail the build. A runtime that silently stops shipping is precisely the defect this channel exists to prevent.
+- **Once per build, not per page.** The runtime can bake its configuration in; a static site cannot afford a blocking fetch.
+- **Content hash in the filename** — long CDN TTL and immediate change landing both hold.
+- **One resolver, two surfaces.** The deploy links the files; the admin preview inlines the identical bytes.
+- **Loud, per CLAUDE.md §2.** A throwing plugin, a malformed file name and an over-budget payload fail the build.
 
 #### Deferred modules — withholding content until a plugin allows it (#450)
 
-A plugin can know something about a module its author does not: this one embeds YouTube, and until the visitor agrees to marketing cookies it must not reach YouTube at all. A plugin declares `deferralsOperation`, receives every module in the render pass, and returns a verdict per withheld module (`reason` + `placeholderModuleSlug`). Core emits:
+A plugin with the deferrals contribution declares `deferralsOperation`, receives every module of the render pass **with the content about to ship**, and returns a verdict per withheld module (`reason`, `placeholderModuleSlug`, optional `defaultPlaceholder`). Core emits:
 
 ```html
 <div data-caelo-deferred="<plugin>" data-reason="<key>" data-module="<slug>">
-  <div data-caelo-deferred-placeholder>…placeholder module…</div>
-  <template data-caelo-deferred-content>…the real module…</template>
+  <div data-caelo-deferred-placeholder>…placeholder…</div>
+  <template data-caelo-deferred-content>…the real module, its CSS and JS…</template>
 </div>
 ```
 
-- **`<template>` is the mechanism, not a convention.** Browsers parse its contents but instantiate nothing inside it — no image, iframe, script or stylesheet is fetched. "Not loaded" is therefore a fact about the network, not a promise about the DOM. Hiding the module with CSS or stripping attributes in script would both leave the request already sent. The plugin's client runtime (§14.6) clones the content into place when its condition is met.
-- **Per module, not per placement.** A module classified once is withheld everywhere it appears, including from a layout. A per-placement decision would have to be repeated for every page and would silently miss the next one.
-- **The placeholder is an ordinary module**, named by slug, so the AI authors and styles it like any other content.
-- **Generic by design.** Core learns "withheld by plugin X for reason Y" and nothing about consent. A paywall or an auth gate uses the same primitive.
-- **Loud, per CLAUDE.md §2.** A failing verdict op, a malformed verdict, two plugins gating one module, and a missing placeholder module all fail the render. Rendering the withheld module instead would issue exactly the request the gate exists to prevent.
+- **`<template>` is the mechanism.** Nothing inside it is fetched. The module's CSS and JS travel inside the template too; the plugin's client runtime runs the JS once, after cloning the markup in.
+- **Only what loads with the page counts.** A gate judges page-load requests (embeds, images, stylesheets, fonts, scripts); a link contacts nobody until clicked.
+- **Per module, not per placement**, including modules placed in a layout.
+- **The placeholder is an ordinary module** by slug; while the site has none, the plugin's `defaultPlaceholder` renders instead, so a page never fails because a placeholder was not designed yet. Without either, the render fails loudly.
+- **Generic by design** — core learns "withheld by plugin X for reason Y", nothing about consent.
 
-### 14.7 Runtime Split
+### 14.11 Shipped plugins
 
-```
-Bun        — CMS host + admin panel + API gateway + static generator + Tier 1 plugins
-Deno       — Tier 2 plugin backend execution (sandboxed subprocess)
-Browser    — Plugin frontend Web Components (both tiers)
-```
+Shipped with the release under `packages/plugins/<slug>/`, subject to every rule above:
 
-### 14.8 Plugin Activation
+- **`international-site`** — the i18n feature of §7; locale-config writes are §11.A-gated.
+- **`consent-manager`** — consent categories, tag manager, deferred embeds, proof of consent.
+- **`comments`**, **`forms`**, **`newsletter`**, **`ratings`** — visitor features.
+- **`auth`** — pre-built, hardened. **AI cannot regenerate core logic.** OAuth2 providers added via config entries + secrets.
+- Planned on the same model: `seo`, `media`, `scheduled-publish`, `kits`, `typed-content`, `edge-analytics`.
 
-- **Tier 1:** auto-activated on install via signed manifest. Owner can disable from `/security/plugins` (signature still validated on each enable). Disabling does not drop tables — data is preserved.
-- **Tier 2:** lifecycle `draft` → `validated` → `awaiting_activation` → `active` / `disabled`. **Activation always requires explicit human Owner confirmation.** AI can submit a plugin for validation, but only a human Owner can flip it to `active`. No auto-activation, ever.
-- **One-click install for Tier 2 plugins shipped with Caelo as samples** (e.g. a starter `event-rsvp`): the manifest is signed; the Owner sees "Install Event RSVP" rather than a multi-step validate/confirm/migrate/activate flow. The full multi-step path remains for custom / AI-authored Tier 2 plugins.
+Each ships companion skills as its natural-language entry point.
 
-### 14.9 Core plugins (shipped Tier 1)
+### 14.12 Source location and upgrade path
 
-Required for a working CMS. Auto-activated on install.
+- **Shipped:** `packages/plugins/<slug>/` — `package.json` (`@caelo-cms/plugin-<slug>`, MPL-2.0, depends on `@caelo-cms/plugin-sdk`), `src/index.ts` (`definePlugin`), a signed `manifest.json`. A Caelo upgrade that changes a shipped plugin produces a new artifact whose grants are re-approved (§14.8).
+- **Runtime-installed:** `plugins.source_code`, submitted via `submit_plugin` (AI) or the Owner panel.
+- **Schema changes** apply transactionally when the new artifact is activated; failure keeps the previous version active and surfaces the error in `/security/plugins`.
 
-- **`international-site`** (planned — epic #380) — the i18n feature of §7: locale registry, URL-shape contributions, variant grouping, Mode 1 + Mode 2 translation, glossary, style guide, translation jobs. AI tools registered automatically from the plugin's `operations`; locale-config writes are §11.A-gated.
-- **`seo`** — fill-once + cross-page optimize.
-- **`media`** — uploads, sharp variants, optional CDN copy.
-- **`scheduled-publish`** — `scheduled_at` on snapshots; cron promoter.
-- **`kits`** — named module collections; enable/disable/swap.
-- **`typed-content`** — Author / Product / Event types with references.
-- **`edge-analytics`** — privacy-preserving pageview/referrer dashboard from CDN logs; feeds A/B experiment results.
-- **`contact`** — generic forms.
-- **`comments`** — moderation + static pre-render.
-- **`newsletter`** — signups.
-- **`ratings`** — likes with static average pre-render.
-- **`auth`** — pre-built, hardened. **AI cannot regenerate core logic.** OAuth2 providers added via config entries + secrets, not code changes.
+### 14.13 Implementation status
 
-Each ships with a companion skill for natural-language invocation (`seo-optimize`, `schedule-publish`, `apply-kit`, `model-content`, `analyse-traffic`, `ab-analyze`, and the `international-site` translation skills, etc.). Companion skills are the AI's "this is how you ask the plugin to do its job" entry point.
+The model above is normative. Where the code does not meet it yet, this list is the source of truth, and each item is a tracked defect, not an accepted exception:
 
-### 14.10 Tier-1 plugin source location and upgrade path
-
-Tier 1 plugins live under `packages/plugins/<slug>/` with the same workspace shape as any other internal package. Each ships:
-
-- `package.json` — `name: "@caelo-cms/plugin-<slug>"`, MPL-2.0, depends on `@caelo-cms/plugin-sdk`.
-- `src/index.ts` — default export of `definePlugin({...})` calling.
-- `manifest.json` — slug + version + signature.
-- `migrations/` (optional) — `cms_public` schema migrations applied at the plugin host's first-run for that plugin version.
-
-Caelo upgrades pull in new versions via the standard package upgrade path. Plugin schema migrations apply transactionally on the next host startup; failure rolls back to the previous version of the plugin and surfaces the error in `/security/plugins`.
-
----
+- **Shipped plugins run in-process and receive their capabilities at load** rather than through Owner-approved, per-artifact grants; `cms_admin` is a broad capability rather than per-domain read/write grants.
+- **Some shipped-plugin authoring writes go straight to live** (e.g. the consent-manager's settings and embed classification in its own `cms_admin` tables), outside a chat branch and without snapshots.
+- **Host brokers still issue SQL directly** for plugin storage instead of named operations.
 
 ## 15. Provisioning Strategy
 
@@ -644,7 +575,7 @@ All services via Docker Compose. Single command, no cloud account required.
 
 - Module variants are stored as sibling `module_snapshots` tagged with an experiment id; no new versioning concept — reuses the snapshot system
 - Traffic split configured at deploy time (edge layer performs the split; the static generator emits all variants)
-- Experiment results (per-variant conversion / engagement events) flow via the edge-log analytics plugin (§14.9)
+- Experiment results (per-variant conversion / engagement events) flow via the edge-log analytics plugin (§14.11)
 - Promoting the winning variant is a standard per-module revert to the chosen snapshot — no bespoke promotion flow
 - Experiments are Owner-configurable; AI can propose variants but cannot start or stop an experiment
 
@@ -736,6 +667,7 @@ A `site_ai_memory` table stores Owner-curated system-prompt snippets — brand v
 - AI cannot write raw SQL or access the database directly
 - AI cannot modify authentication, user management, custom-role definitions, or deployment logic
 - AI cannot install or activate plugins without user confirmation — activation is always human-gated
+- AI cannot grant a plugin any capability — grants are human Owner approvals bound to the exact plugin artifact (§14.5); the AI may only request them
 - AI cannot site-wide-activate a newly-created skill — activation is always human-gated (parallel to plugins). AI may *auto-engage* an already-site-active skill in a chat; that is not activation
 - AI cannot override a user's manual disengagement of a skill in the current chat
 - AI cannot auto-apply behaviour-learned skill proposals — every proposal sits in the Owner's review queue
@@ -815,7 +747,7 @@ So the AI is useful from day one without hand-authored prompt scaffolding:
 - `import-site` — drives the site-import wizard (§15.6); scrapes an existing URL, proposes a module / typed-content structure, stages a site snapshot for review, uses screenshots for design-fidelity verification
 - `site-memory-learner` — detects repeated user corrections / preferences and submits `site_ai_memory` proposals (§17.1a)
 
-Extended built-in plugins (§14.9) each ship matching companion skills (`schedule-publish`, `apply-kit`, `model-content`, `analyse-traffic`).
+Extended built-in plugins (§14.11) each ship matching companion skills (`schedule-publish`, `apply-kit`, `model-content`, `analyse-traffic`).
 
 ---
 

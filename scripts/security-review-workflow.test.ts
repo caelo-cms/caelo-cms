@@ -153,7 +153,7 @@ describe("Caelo security categories file", () => {
   });
 
   it("U16: carries the canonical Caelo guardrail phrases", () => {
-    for (const phrase of ["no raw SQL", "Query API", "RLS", "propose_", "Tier 2"]) {
+    for (const phrase of ["no raw SQL", "Query API", "RLS", "propose_", "Owner-approved grant"]) {
       expect(categories).toContain(phrase);
     }
   });
