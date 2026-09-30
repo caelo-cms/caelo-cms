@@ -89,9 +89,9 @@ Data lists, deferrals, head contributions, build assets and URL annotations rece
 
 Each step is its own PR, green on its own:
 
-1. **Invocation context** through every dispatch site; `ctx.invocation`; `ctx.cms.call` inherits branch and task.
+1. **Invocation context** through every dispatch site; `ctx.invocation`. (`ctx.cms.call` does NOT inherit the branch yet — see step 3.)
 2. **`plugin_storage.*` operations**; `ctx.adminQuery` and `ctx.query` become brokers over them; host-owned columns added by the provisioner; soft delete. Behaviour on main unchanged.
-3. **Branch semantics:** branched insert/update/delete, overlay reads, `plugin_row_snapshots`, locks, merge, stage and pending-change listings, `chat.discard_branch`.
+3. **Branch semantics:** branched insert/update/delete, overlay reads, `plugin_row_snapshots`, locks, merge, stage and pending-change listings, `chat.discard_branch` — and `ctx.cms.call` inheriting the invocation's branch and task. The last two must switch together: if a plugin's core writes went to the branch while its own rows still wrote live (e.g. international-site's `create_variant` duplicating a page on the branch but linking it in `page_variants` on main), the live site would link to unpublished pages.
 4. **Render hooks** receive the preview branch.
 5. **Plugin conversions:** consent-manager (seeding to `onActivate`, read-only `list_embeds`) and international-site (branch-aware reads, cache main-only).
 6. Then **#478** rebases onto this: external plugins get private storage and tools through the same path; approval bindings are consumed once.
