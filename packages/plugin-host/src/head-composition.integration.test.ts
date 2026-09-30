@@ -15,6 +15,7 @@ import { SQL } from "bun";
 import {
   bootstrap,
   collectContributions,
+  MAIN_RENDER,
   type PluginHostInfra,
   renderHeadEntries,
   resetPluginHost,
@@ -122,6 +123,7 @@ describe("#391 — head/sitemap contribution collection", () => {
     expect(report.failed).toEqual([]);
 
     const collected = await collectContributions([PAGE_A], {
+      ...MAIN_RENDER,
       siteBaseUrl: "https://example.com",
     });
     const entries = collected.head.get(PAGE_A) ?? [];
@@ -166,7 +168,7 @@ describe("#391 — head/sitemap contribution collection", () => {
       ],
     });
     await expect(
-      collectContributions([PAGE_A], { siteBaseUrl: "https://example.com" }),
+      collectContributions([PAGE_A], { ...MAIN_RENDER, siteBaseUrl: "https://example.com" }),
     ).rejects.toThrow(/contradictory head entries/);
   });
 
@@ -189,6 +191,7 @@ describe("#391 — head/sitemap contribution collection", () => {
       ],
     });
     const collected = await collectContributions([PAGE_A], {
+      ...MAIN_RENDER,
       siteBaseUrl: "https://example.com",
     });
     expect(collected.sitemap.get(PAGE_A)).toEqual({

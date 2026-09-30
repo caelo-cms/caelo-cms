@@ -39,9 +39,10 @@
 
 import { createHash } from "node:crypto";
 import {
-  hostSystemActorId,
   isPluginDisabled,
   loadedPlugins,
+  type RenderScope,
+  renderInvocation,
   runPluginBuildAssets,
 } from "./dispatch.js";
 
@@ -99,6 +100,7 @@ function assetPaths(
  */
 export async function collectBuildAssets(
   pageIds: ReadonlyArray<string>,
+  scope: RenderScope,
 ): Promise<PluginClientAsset[]> {
   const out: PluginClientAsset[] = [];
   const contributors = loadedPlugins
@@ -111,7 +113,7 @@ export async function collectBuildAssets(
     const files = await runPluginBuildAssets({
       pluginSlug: lp.slug,
       pageIds,
-      invocation: { origin: "render", actorId: hostSystemActorId() },
+      invocation: renderInvocation(scope),
     });
     let totalBytes = 0;
     for (const fileName of Object.keys(files).sort()) {

@@ -43,6 +43,8 @@ import {
   hostSystemActorId,
   isPluginDisabled,
   loadedPlugins,
+  type RenderScope,
+  renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
 
@@ -84,6 +86,7 @@ interface ModuleRow {
  */
 export async function resolveModuleDeferrals(
   modules: ReadonlyArray<DeferralCandidate>,
+  scope: RenderScope,
 ): Promise<ResolvedDeferrals> {
   const out = new Map<string, ResolvedDeferral>();
   if (modules.length === 0) return out;
@@ -100,7 +103,7 @@ export async function resolveModuleDeferrals(
   for (const lp of contributors) {
     const operationName = lp.definition.deferralsOperation as string;
     const r = await runPluginOperation({
-      invocation: { origin: "render", actorId: hostSystemActorId() },
+      invocation: renderInvocation(scope),
       pluginSlug: lp.slug,
       operationName,
       args: { moduleIds, modules: [...modules] },

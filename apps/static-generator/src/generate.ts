@@ -27,6 +27,7 @@ import { dirname, join, resolve } from "node:path";
 import {
   collectBuildAssets,
   injectPluginAssets,
+  MAIN_RENDER,
   pluginDataListsRegistry,
   resolveDataLists,
   resolveModuleDeferrals,
@@ -568,7 +569,10 @@ export async function generateSite(args: {
   // installed-but-inactive plugins come along so a module still
   // iterating a switched-off plugin's list emits the loud marker here
   // exactly as it does in the editor preview.
-  const allLists = await resolveDataLists(pageRows.map((p) => p.page_id));
+  const allLists = await resolveDataLists(
+    pageRows.map((p) => p.page_id),
+    MAIN_RENDER,
+  );
   const dormantLists = Object.fromEntries(pluginDataListsRegistry.dormantNames());
   // #450 — withheld modules, resolved ONCE for the build. Asking per
   // page would be one plugin round-trip per page for a verdict that is
@@ -605,6 +609,7 @@ export async function generateSite(args: {
         fields: r.fields ? JSON.parse(r.fields) : [],
         contentValues: JSON.parse(r.content_values) as unknown[],
       })),
+      MAIN_RENDER,
     ),
   );
   for (let i = 0; i < pageRows.length; i++) {
@@ -770,7 +775,10 @@ export async function generateSite(args: {
   // content hash in the name, then referenced from every page. Runs
   // AFTER the plugin render pass so a runtime that hydrates baked
   // markup is guaranteed to find it already in the document.
-  const clientAssets = await collectBuildAssets(pageRows.map((p) => p.page_id));
+  const clientAssets = await collectBuildAssets(
+    pageRows.map((p) => p.page_id),
+    MAIN_RENDER,
+  );
   for (const asset of clientAssets) {
     const assetPath = join(buildDir, asset.relPath);
     await mkdir(dirname(assetPath), { recursive: true });

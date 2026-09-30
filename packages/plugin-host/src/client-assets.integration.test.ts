@@ -19,6 +19,7 @@ import { SQL } from "bun";
 import {
   bootstrap,
   collectBuildAssets,
+  MAIN_RENDER,
   type PluginHostInfra,
   resetPluginHost,
   setPluginDisabled,
@@ -106,7 +107,7 @@ async function load(definition: ReturnType<typeof definePlugin>): Promise<void> 
 describe("collectBuildAssets", () => {
   it("emits the plugin's files with the content hash in the name", async () => {
     await load(fixture({ "runtime.js": "/* pages: __PAGES__ */", "runtime.css": ".c{}" }));
-    const assets = await collectBuildAssets(PAGE_IDS);
+    const assets = await collectBuildAssets(PAGE_IDS, MAIN_RENDER);
 
     expect(assets).toHaveLength(2);
     const js = assets.find((a) => a.kind === "js");
@@ -119,21 +120,21 @@ describe("collectBuildAssets", () => {
     // The name is what a CDN caches against; if it did not move when the
     // behaviour moved, a deploy would leave stale plugin code live.
     await load(fixture({ "runtime.js": "v1" }));
-    const first = (await collectBuildAssets(PAGE_IDS))[0]?.relPath;
-    const again = (await collectBuildAssets(PAGE_IDS))[0]?.relPath;
+    const first = (await collectBuildAssets(PAGE_IDS, MAIN_RENDER))[0]?.relPath;
+    const again = (await collectBuildAssets(PAGE_IDS, MAIN_RENDER))[0]?.relPath;
     expect(again).toBe(first);
 
     await wipe();
     await load(fixture({ "runtime.js": "v2" }));
-    expect((await collectBuildAssets(PAGE_IDS))[0]?.relPath).not.toBe(first);
+    expect((await collectBuildAssets(PAGE_IDS, MAIN_RENDER))[0]?.relPath).not.toBe(first);
   });
 
   it("emits nothing for a plugin that is switched off", async () => {
     await load(fixture({ "runtime.js": "x" }));
     setPluginDisabled(SLUG, true);
-    expect(await collectBuildAssets(PAGE_IDS)).toEqual([]);
+    expect(await collectBuildAssets(PAGE_IDS, MAIN_RENDER)).toEqual([]);
     setPluginDisabled(SLUG, false);
-    expect(await collectBuildAssets(PAGE_IDS)).toHaveLength(1);
+    expect(await collectBuildAssets(PAGE_IDS, MAIN_RENDER)).toHaveLength(1);
   });
 
   it("costs nothing when no plugin contributes", async () => {
@@ -146,17 +147,17 @@ describe("collectBuildAssets", () => {
         operations: { noop: async () => ({}) },
       }),
     );
-    expect(await collectBuildAssets(PAGE_IDS)).toEqual([]);
+    expect(await collectBuildAssets(PAGE_IDS, MAIN_RENDER)).toEqual([]);
   });
 
   it("rejects a file name that is not a plain .js or .css", async () => {
     await load(fixture({ "../escape.js": "x" }));
-    expect(collectBuildAssets(PAGE_IDS)).rejects.toThrow(/invalid asset name/);
+    expect(collectBuildAssets(PAGE_IDS, MAIN_RENDER)).rejects.toThrow(/invalid asset name/);
   });
 
   it("rejects a payload over the per-plugin budget", async () => {
     await load(fixture({ "runtime.js": "x".repeat(600 * 1024) }));
-    expect(collectBuildAssets(PAGE_IDS)).rejects.toThrow(/budget/);
+    expect(collectBuildAssets(PAGE_IDS, MAIN_RENDER)).rejects.toThrow(/budget/);
   });
 
   it("fails the build when the plugin's own asset build throws", async () => {
@@ -165,6 +166,6 @@ describe("collectBuildAssets", () => {
         throw new Error("config table missing");
       }),
     );
-    expect(collectBuildAssets(PAGE_IDS)).rejects.toThrow(/config table missing/);
+    expect(collectBuildAssets(PAGE_IDS, MAIN_RENDER)).rejects.toThrow(/config table missing/);
   });
 });

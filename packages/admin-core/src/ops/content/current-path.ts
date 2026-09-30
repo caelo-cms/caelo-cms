@@ -16,7 +16,7 @@
  * "/<slug>" (home → "/") — the same shape the 0211 backfill wrote.
  */
 
-import { collectUrlAnnotations, resolvePageUrl } from "@caelo-cms/plugin-host";
+import { collectUrlAnnotations, MAIN_RENDER, resolvePageUrl } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, isHomeSlug, ok } from "@caelo-cms/shared";
@@ -97,7 +97,12 @@ export async function recomputeCurrentPaths(
     .filter((r): r is PageRowForPath => r !== undefined);
 
   const designated = await loadDesignatedHomePageId(tx);
-  const annotations = await collectUrlAnnotations(rows.map((r) => r.id));
+  // current_path is live, main-line state: annotate from main, never from
+  // a chat's branch rows.
+  const annotations = await collectUrlAnnotations(
+    rows.map((r) => r.id),
+    MAIN_RENDER,
+  );
 
   for (const row of rows) {
     const resolved = resolvePageUrl({
@@ -125,7 +130,10 @@ export async function resolveCurrentPathsDryRun(
   const out = new Map<string, string>();
   if (pages.length === 0) return out;
   const designated = await loadDesignatedHomePageId(tx);
-  const annotations = await collectUrlAnnotations(pages.map((r) => r.id));
+  const annotations = await collectUrlAnnotations(
+    pages.map((r) => r.id),
+    MAIN_RENDER,
+  );
   for (const row of pages) {
     const resolved = resolvePageUrl({
       pageId: row.id,

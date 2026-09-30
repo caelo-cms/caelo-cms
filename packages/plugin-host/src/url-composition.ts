@@ -30,8 +30,12 @@
 
 import type { UrlComposePage, UrlContributionDef, UrlSlot } from "@caelo-cms/plugin-sdk";
 import { trimSlashes } from "@caelo-cms/shared";
-import type { PluginHostInfra } from "./dispatch.js";
-import { hostSystemActorId, isPluginDisabled, runPluginOperation } from "./dispatch.js";
+import {
+  isPluginDisabled,
+  type RenderScope,
+  renderInvocation,
+  runPluginOperation,
+} from "./dispatch.js";
 
 export interface RegisteredUrlContribution {
   readonly pluginSlug: string;
@@ -257,14 +261,14 @@ export function decodePagePath(path: string): DecodedPagePath {
  */
 export async function collectUrlAnnotations(
   pageIds: ReadonlyArray<string>,
-  _infra?: PluginHostInfra,
+  scope: RenderScope,
 ): Promise<Map<string, Record<string, unknown>>> {
   const out = new Map<string, Record<string, unknown>>();
   if (pageIds.length === 0) return out;
   for (const [pluginSlug, operationName] of urlContributionsRegistry.annotationOps()) {
     if (isPluginDisabled(pluginSlug)) continue;
     const r = await runPluginOperation({
-      invocation: { origin: "system", actorId: hostSystemActorId() },
+      invocation: renderInvocation(scope),
       pluginSlug,
       operationName,
       args: { pageIds: [...pageIds] },

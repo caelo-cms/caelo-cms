@@ -19,7 +19,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { collectContributions, composeHeadBlock } from "@caelo-cms/plugin-host";
+import { collectContributions, composeHeadBlock, MAIN_RENDER } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   injectSeoIntoHead,
@@ -162,7 +162,7 @@ export async function runSeoPass(args: {
   // uses (composeHeadBlock), so both surfaces stay byte-identical.
   const contributions = await collectContributions(
     seoBundles.map((b) => b.pageId),
-    { siteBaseUrl: args.settings.siteBaseUrl },
+    { siteBaseUrl: args.settings.siteBaseUrl, ...MAIN_RENDER },
   );
 
   // #390 — canonical follows the MATERIALIZED composed path; home

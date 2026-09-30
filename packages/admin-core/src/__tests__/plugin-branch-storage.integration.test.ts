@@ -19,8 +19,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
+  MAIN_RENDER,
   type PluginHostInfra,
   resetPluginHost,
+  resolveDataLists,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
 import {
@@ -64,6 +66,8 @@ const plugin = definePlugin({
   schema: {},
   adminSchema: { notes: { label: "string" } },
   requestedCapabilities: ["cms_admin_schema", "cms_admin"],
+  dataLists: [{ name: "pbs_notes", description: "Every note label.", itemFields: ["label"] }],
+  dataListsOperation: "note_lists",
   onActivate: async (ctx) => {
     const existing = await q(ctx).list("notes", { limit: 1 });
     if (existing.length === 0) await q(ctx).insert("notes", { label: "seed" });
@@ -80,6 +84,12 @@ const plugin = definePlugin({
       return {};
     },
     list: async (ctx) => q(ctx).list("notes", { orderBy: "label", orderDir: "asc" }),
+    note_lists: async (ctx, args) => {
+      const notes = await q(ctx).list("notes", { orderBy: "label", orderDir: "asc" });
+      const items = notes.map((n) => ({ label: String(n.label) }));
+      const pageIds = (args as { pageIds: string[] }).pageIds;
+      return { lists: Object.fromEntries(pageIds.map((id) => [id, { pbs_notes: items }])) };
+    },
     retitle_page: async (ctx, args) => {
       const cms = (ctx as Ctx).cms;
       if (!cms) throw new Error("cms missing");
@@ -243,6 +253,15 @@ describe("branch-aware plugin storage", () => {
     });
     if (!count.ok) throw new Error("count");
     expect((count.value as { byKind: { pluginRows: number } }).byKind.pluginRows).toBe(2);
+
+    // A preview render of the chat shows its branch; a main render does not.
+    const PAGE = "00000000-0000-4000-8000-0000000000aa";
+    const listed = async (chatBranchId: string | null) =>
+      ((await resolveDataLists([PAGE], { chatBranchId })).get(PAGE)?.pbs_notes ?? []).map(
+        (i) => i.label,
+      );
+    expect(await listed(a.chatBranchId)).toEqual(["a-new", "seed-a"]);
+    expect(await listed(MAIN_RENDER.chatBranchId)).toEqual(["seed"]);
 
     // Stage merges the branch state live.
     const merged = await execute(registry, adapter, humanCtx, "chat.merge_to_main", {

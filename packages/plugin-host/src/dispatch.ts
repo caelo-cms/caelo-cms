@@ -297,6 +297,28 @@ export function hostSystemActorId(): string {
   return cachedSystemActorId;
 }
 
+/**
+ * Which branch a render pass shows. The admin preview renders the chat's
+ * branch; the static generator and live paths render main (`null`).
+ * Required at every render call site so none can silently read main in a
+ * branch preview (docs/branch-aware-plugin-storage.md §5).
+ */
+export interface RenderScope {
+  readonly chatBranchId: string | null;
+}
+
+/** A render of the deployed site / live state: no branch. */
+export const MAIN_RENDER: RenderScope = Object.freeze({ chatBranchId: null });
+
+/** The invocation a render-time plugin call runs under. */
+export function renderInvocation(scope: RenderScope): PluginInvocation {
+  return {
+    origin: "render",
+    actorId: hostSystemActorId(),
+    ...(scope.chatBranchId ? { chatBranchId: scope.chatBranchId } : {}),
+  };
+}
+
 export async function runPluginOperation(
   opts: RunPluginOperationOpts,
 ): Promise<RunPluginOperationResult> {
