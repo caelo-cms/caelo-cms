@@ -1,6 +1,6 @@
 # Branch-aware plugin storage — design
 
-**Status:** proposal for review (2026-09-30). Implements CMS_REQUIREMENTS §14.7 ("writes never go straight to live") and closes the §14.13 items about live plugin writes and host-issued SQL.
+**Status:** accepted (2026-09-30). Implements CMS_REQUIREMENTS §14.7 ("writes never go straight to live") and closes the §14.13 items about live plugin writes and host-issued SQL.
 
 ## Problem
 
@@ -96,8 +96,8 @@ Each step is its own PR, green on its own:
 5. **Plugin conversions:** consent-manager (seeding to `onActivate`, read-only `list_embeds`) and international-site (branch-aware reads, cache main-only).
 6. Then **#478** rebases onto this: external plugins get private storage and tools through the same path; approval bindings are consumed once.
 
-## Open questions
+## Decisions (2026-09-30)
 
-1. Owner-panel and worker writes go to main (audited, snapshotted), as core panel edits do today. Agreed?
-2. §11.A-approved plugin actions (e.g. international-site locale config) execute on main at approval, as the propose/execute engine does today — not on the proposing chat's branch. Agreed?
-3. `chat.discard_branch` is added for core entities too (step 3), not only plugin rows. Agreed?
+1. Owner-panel and worker writes go to main, audited and snapshotted, as core panel edits do today.
+2. §11.A-approved plugin actions execute on main at approval, as the propose/execute engine does today.
+3. `chat.discard_branch` covers all branch-tagged state — core entities and plugin rows alike.
