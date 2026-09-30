@@ -84,7 +84,12 @@ async function cleanup(): Promise<void> {
 }
 
 async function call(operationName: string, args: unknown = {}) {
-  return runPluginOperation({ pluginSlug: "consent-manager", operationName, args });
+  return runPluginOperation({
+    invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+    pluginSlug: "consent-manager",
+    operationName,
+    args,
+  });
 }
 
 beforeAll(async () => {

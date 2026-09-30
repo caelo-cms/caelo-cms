@@ -591,6 +591,7 @@ export async function handleRequest(req: Request): Promise<Response> {
     pluginSlug: slug,
     operationName,
     args: body,
+    invocation: { origin: "visitor", actorId: visitor.visitorId },
     visitorContext: {
       visitorId: visitor.visitorId,
       sessionToken: visitor.sessionToken,

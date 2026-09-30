@@ -663,12 +663,40 @@ export interface PluginSnapshots {
 }
 
 /** Locked context — what every Tier 2 plugin receives. */
+/** Where a plugin call came from (CMS_REQUIREMENTS §14.7). */
+export type PluginInvocationOrigin =
+  | "chat"
+  | "owner-panel"
+  | "worker"
+  | "render"
+  | "visitor"
+  | "system";
+
+/**
+ * Who a plugin call acts for and on which chat branch. Every dispatch
+ * site supplies it; the host uses it to decide whether an authoring
+ * write lands on a chat branch or on main (CMS_REQUIREMENTS §14.7).
+ */
+export interface PluginInvocation {
+  readonly origin: PluginInvocationOrigin;
+  /** The acting actor: the AI actor in a chat, the Owner in the panel,
+   *  the system actor for workers/render, the visitor id for visitors. */
+  readonly actorId: string;
+  /** The human a chat belongs to. */
+  readonly operatorActorId?: string;
+  /** Set for origin `chat`: the chat's branch. */
+  readonly chatBranchId?: string;
+  readonly chatTaskId?: string;
+}
+
 export interface PluginContext {
   readonly query: PluginQuery;
   readonly api: PluginApi;
   readonly theme: PluginTheme;
   readonly visitor: PluginVisitor;
   readonly captcha: PluginCaptcha;
+  /** Who this call acts for, and on which branch. */
+  readonly invocation: PluginInvocation;
 }
 
 /** Tier 1 context — adds the elevated capability handles. The host

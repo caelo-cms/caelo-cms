@@ -54,6 +54,8 @@ class WorkerScheduler {
             operationName: w.operationName,
             args: { _trigger: "worker", workerName: w.name },
             pluginActorId: opts.pluginActorId,
+            // Workers act on main by design (CMS_REQUIREMENTS §14.7).
+            invocation: { origin: "worker", actorId: opts.pluginActorId },
           });
         } catch (e) {
           console.warn(

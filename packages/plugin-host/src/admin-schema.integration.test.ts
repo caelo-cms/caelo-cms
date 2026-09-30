@@ -153,12 +153,14 @@ describe("#389 — plugin-owned cms_admin schema", () => {
 
     // Insert + list through the plugin operation (ctx.adminQuery).
     const inserted = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "t389-alpha",
       operationName: "add_note",
       args: { body: "hello-admin-schema", pageId },
     });
     expect(inserted.ok).toBe(true);
     const listed = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "t389-alpha",
       operationName: "list_notes",
       args: {},
@@ -174,6 +176,7 @@ describe("#389 — plugin-owned cms_admin schema", () => {
       await tx.unsafe(`DELETE FROM pages WHERE id = '${pageId}'`);
     });
     const afterCascade = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "t389-alpha",
       operationName: "list_notes",
       args: {},
@@ -209,6 +212,7 @@ describe("#389 — plugin-owned cms_admin schema", () => {
       return id;
     });
     const w = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "t389-alpha",
       operationName: "add_note",
       args: { body: "alpha-secret", pageId },
@@ -217,6 +221,7 @@ describe("#389 — plugin-owned cms_admin schema", () => {
 
     // 1. Handle-level: beta's adminQuery refuses undeclared table names.
     const probe = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "t389-beta",
       operationName: "probe_foreign_table",
       args: {},

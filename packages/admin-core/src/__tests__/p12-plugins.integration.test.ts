@@ -164,6 +164,7 @@ describe("Ratings plugin", () => {
   it("vote, then re-vote on same (page, locale): updates not duplicates", async () => {
     await bootstrapAll();
     const r1 = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "ratings",
       operationName: "submit",
       args: { pageId: "page-1", score: 4 },
@@ -173,6 +174,7 @@ describe("Ratings plugin", () => {
     expect((r1.value as { mode: string }).mode).toBe("inserted");
 
     const r2 = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "ratings",
       operationName: "submit",
       args: { pageId: "page-1", score: 5 },
@@ -185,22 +187,26 @@ describe("Ratings plugin", () => {
   it("worker _refresh recomputes aggregates", async () => {
     await bootstrapAll();
     await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "ratings",
       operationName: "submit",
       args: { pageId: "p", score: 4 },
     });
     await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "ratings",
       operationName: "submit",
       args: { pageId: "p", score: 5 },
     });
     const refresh = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "ratings",
       operationName: "_refresh",
       args: {},
     });
     expect(refresh.ok).toBe(true);
     const list = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "ratings",
       operationName: "list_aggregates",
       args: { pageId: "p" },
@@ -220,6 +226,7 @@ describe("Newsletter plugin", () => {
   it("subscribe → confirm → draft+send → drain marks sends as sent", async () => {
     await bootstrapAll();
     const sub = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "newsletter",
       operationName: "subscribe",
       args: { email: "alice@example.com" },
@@ -236,6 +243,7 @@ describe("Newsletter plugin", () => {
     if (!subRow) return;
 
     const confirm = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "newsletter",
       operationName: "confirm",
       args: { token: subRow.confirm_token },
@@ -258,6 +266,7 @@ describe("Newsletter plugin", () => {
     if (!campaignId) return;
 
     const send = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "newsletter",
       operationName: "send_campaign",
       args: { campaignId },
@@ -269,6 +278,7 @@ describe("Newsletter plugin", () => {
     // Drain. No email transport configured → ctx.email is the no-op stub
     // that "succeeds" with messageId=noop-*.
     const drain = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "newsletter",
       operationName: "_drain_sends",
       args: {},
@@ -283,6 +293,7 @@ describe("Comments plugin", () => {
   it("submit pending → moderate approved → list_approved returns it", async () => {
     await bootstrapAll();
     const submit = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "comments",
       operationName: "submit",
       args: {
@@ -296,6 +307,7 @@ describe("Comments plugin", () => {
     const id = (submit.value as { commentId: string }).commentId;
 
     const before = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "comments",
       operationName: "list_approved",
       args: { pageId: "11111111-1111-4111-8111-111111111111" },
@@ -304,6 +316,7 @@ describe("Comments plugin", () => {
     expect((before.value as { comments: unknown[] }).comments).toHaveLength(0);
 
     const moderate = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "comments",
       operationName: "moderate",
       args: { commentId: id, decision: "approved" },
@@ -311,6 +324,7 @@ describe("Comments plugin", () => {
     expect(moderate.ok).toBe(true);
 
     const after = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "comments",
       operationName: "list_approved",
       args: { pageId: "11111111-1111-4111-8111-111111111111" },
@@ -327,6 +341,7 @@ describe("Comments plugin", () => {
     const ids: string[] = [];
     for (let i = 0; i < 3; i++) {
       const r = await runPluginOperation({
+        invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
         pluginSlug: "comments",
         operationName: "submit",
         args: {
@@ -339,6 +354,7 @@ describe("Comments plugin", () => {
       ids.push((r.value as { commentId: string }).commentId);
     }
     const bulk = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "comments",
       operationName: "bulk_moderate",
       args: { commentIds: ids, decision: "spam" },
@@ -363,6 +379,7 @@ describe("Auth plugin", () => {
     } = { current: { kind: "none" } };
 
     const signup = await runPluginOperation({
+      invocation: { origin: "visitor", actorId: "00000000-0000-0000-0000-00000000aaaa" },
       pluginSlug: "auth",
       operationName: "signup",
       args: { email: "alice@example.com", password: "supersecret" },
@@ -381,6 +398,7 @@ describe("Auth plugin", () => {
 
     // me with the session cookie set — authenticated.
     const me1 = await runPluginOperation({
+      invocation: { origin: "visitor", actorId: "00000000-0000-0000-0000-00000000aaaa" },
       pluginSlug: "auth",
       operationName: "me",
       args: {},
@@ -395,6 +413,7 @@ describe("Auth plugin", () => {
     // logout clears the cookie via mutation.
     const logoutMut: typeof mut = { current: { kind: "none" } };
     const logout = await runPluginOperation({
+      invocation: { origin: "visitor", actorId: "00000000-0000-0000-0000-00000000aaaa" },
       pluginSlug: "auth",
       operationName: "logout",
       args: {},
@@ -409,6 +428,7 @@ describe("Auth plugin", () => {
 
     // me without the session cookie — anonymous.
     const me2 = await runPluginOperation({
+      invocation: { origin: "visitor", actorId: "00000000-0000-0000-0000-00000000aaaa" },
       pluginSlug: "auth",
       operationName: "me",
       args: {},
@@ -423,6 +443,7 @@ describe("Auth plugin", () => {
     // Login → fresh cookie set.
     const loginMut: typeof mut = { current: { kind: "none" } };
     const login = await runPluginOperation({
+      invocation: { origin: "visitor", actorId: "00000000-0000-0000-0000-00000000aaaa" },
       pluginSlug: "auth",
       operationName: "login",
       args: { email: "alice@example.com", password: "supersecret" },
@@ -436,6 +457,7 @@ describe("Auth plugin", () => {
     expect(loginMut.current.kind).toBe("set");
     if (loginMut.current.kind !== "set") return;
     const me3 = await runPluginOperation({
+      invocation: { origin: "visitor", actorId: "00000000-0000-0000-0000-00000000aaaa" },
       pluginSlug: "auth",
       operationName: "me",
       args: {},
@@ -451,11 +473,13 @@ describe("Auth plugin", () => {
   it("login with wrong password fails; signup duplicate email fails", async () => {
     await bootstrapAll();
     await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "signup",
       args: { email: "bob@example.com", password: "rightpass1" },
     });
     const r1 = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "login",
       args: { email: "bob@example.com", password: "wrongpass1" },
@@ -464,6 +488,7 @@ describe("Auth plugin", () => {
     if (!r1.ok) expect(r1.error.message).toContain("invalid credentials");
 
     const r2 = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "signup",
       args: { email: "bob@example.com", password: "anyotherpass" },
@@ -475,11 +500,13 @@ describe("Auth plugin", () => {
   it("password reset flow", async () => {
     await bootstrapAll();
     await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "signup",
       args: { email: "carol@example.com", password: "originalpw" },
     });
     const req = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "request_password_reset",
       args: { email: "carol@example.com" },
@@ -496,6 +523,7 @@ describe("Auth plugin", () => {
     // Skip the reset_password call here — the schema + flow are tested via
     // request_password_reset returning issued=true and inserting a row.
     const reqAgain = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "request_password_reset",
       args: { email: "no-such-email@example.com" },
@@ -509,6 +537,7 @@ describe("Cross-plugin RLS", () => {
   it("auth.public_users not visible from a different plugin's ctx.query", async () => {
     await bootstrapAll();
     await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "signup",
       args: { email: "rls-test@example.com", password: "supersecret" },
@@ -518,6 +547,7 @@ describe("Cross-plugin RLS", () => {
     // run ctx.query.list against a column that exists in comments but not
     // public_users, and a column that exists in public_users.
     const fromComments = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "comments",
       operationName: "list_pending",
       args: {},

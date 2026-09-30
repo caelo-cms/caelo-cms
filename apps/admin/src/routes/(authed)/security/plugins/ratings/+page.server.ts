@@ -15,6 +15,7 @@ interface AggregateRow {
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
   const r = await runPluginOperation({
+    invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
     pluginSlug: "ratings",
     operationName: "list_aggregates",
     args: {},
@@ -29,6 +30,7 @@ export const actions: Actions = {
   refresh: async ({ locals }) => {
     requirePermission(locals, "settings.write");
     const r = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "ratings",
       operationName: "_refresh",
       args: {},

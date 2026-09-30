@@ -23,6 +23,7 @@ interface AuthConfig {
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
   const r = await runPluginOperation({
+    invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
     pluginSlug: "auth",
     operationName: "get_auth_config",
     args: {},
@@ -50,6 +51,7 @@ export const actions: Actions = {
       return fail(400, { error: "passwordMinLength must be 8..128" });
     }
     const r = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "auth",
       operationName: "apply_auth_config",
       args: { signupOpen, passwordMinLength },

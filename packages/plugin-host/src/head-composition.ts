@@ -24,7 +24,12 @@ import {
   type SitemapContribution,
   sitemapContribution,
 } from "@caelo-cms/plugin-sdk";
-import { isPluginDisabled, loadedPlugins, runPluginOperation } from "./dispatch.js";
+import {
+  hostSystemActorId,
+  isPluginDisabled,
+  loadedPlugins,
+  runPluginOperation,
+} from "./dispatch.js";
 
 interface ContributionSource {
   readonly pluginSlug: string;
@@ -83,6 +88,7 @@ export async function collectContributions(
 
   for (const source of contributingPlugins()) {
     const r = await runPluginOperation({
+      invocation: { origin: "render", actorId: hostSystemActorId() },
       pluginSlug: source.pluginSlug,
       operationName: source.operationName,
       args: { pageIds: [...pageIds], siteBaseUrl: opts.siteBaseUrl },

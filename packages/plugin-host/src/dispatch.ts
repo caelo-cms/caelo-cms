@@ -18,6 +18,7 @@ import type {
   PluginContext,
   PluginContextTier1,
   PluginDefinition,
+  PluginInvocation,
   PluginProvenance,
 } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
@@ -173,6 +174,8 @@ let makeContext: ((opts: MakeContextOpts) => Promise<PluginContext | PluginConte
 interface MakeContextOpts {
   readonly plugin: LoadedPlugin;
   readonly infra: PluginHostInfra;
+  /** Who the call acts for and on which branch (CMS_REQUIREMENTS §14.7). */
+  readonly invocation: PluginInvocation;
   /** Visitor-facing context if dispatched from the API gateway. */
   readonly visitorContext?: VisitorDispatchContext;
 }
@@ -208,6 +211,36 @@ export interface RunPluginOperationOpts {
    *  Production callers omit this — dispatch uses `loadedPlugins.bySlug(...).pluginActorId`. */
   readonly pluginActorId?: string;
   readonly visitorContext?: VisitorDispatchContext;
+  /** Required: who the call acts for and on which branch. A call without
+   *  it would silently act as "main, nobody" — the defect §14.7 closes. */
+  readonly invocation: PluginInvocation;
+}
+
+/**
+ * Reject an invocation that contradicts itself, loudly: a visitor call
+ * without a visitor context (or the reverse), a chat call without the
+ * chat's branch, or a branch on a call that cannot have one.
+ */
+export function assertInvocationConsistent(
+  invocation: PluginInvocation,
+  visitorContext: VisitorDispatchContext | undefined,
+): void {
+  if (!invocation || typeof invocation.actorId !== "string" || invocation.actorId.length === 0) {
+    throw new Error("PluginInvocationInvalid: an actorId is required");
+  }
+  if ((invocation.origin === "visitor") !== (visitorContext !== undefined)) {
+    throw new Error(
+      `PluginInvocationInvalid: origin "${invocation.origin}" ${visitorContext ? "with" : "without"} a visitor context`,
+    );
+  }
+  if (invocation.origin === "chat" && !invocation.chatBranchId) {
+    throw new Error("PluginInvocationInvalid: a chat invocation needs the chat's branch");
+  }
+  if (invocation.chatBranchId && invocation.origin !== "chat" && invocation.origin !== "render") {
+    throw new Error(
+      `PluginInvocationInvalid: origin "${invocation.origin}" cannot carry a chat branch`,
+    );
+  }
 }
 
 export type RunPluginOperationResult =
@@ -348,10 +381,12 @@ export async function runPluginOperation(
   }
   let ctx: PluginContext | PluginContextTier1;
   try {
+    assertInvocationConsistent(opts.invocation, opts.visitorContext);
     ctx = await makeContext({
       plugin,
       infra: cachedInfra,
       visitorContext: opts.visitorContext,
+      invocation: opts.invocation,
     });
   } catch (e) {
     return {
@@ -497,6 +532,7 @@ function extractEntityId(result: unknown): string | null {
 export async function runPluginStaticRender(opts: {
   pluginSlug: string;
   pageId: string;
+  invocation: PluginInvocation;
 }): Promise<string | null> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) return null;
@@ -505,7 +541,8 @@ export async function runPluginStaticRender(opts: {
   if (!cachedInfra || !makeContext) {
     throw new Error("plugin host not bootstrapped");
   }
-  const ctx = await makeContext({ plugin, infra: cachedInfra });
+  assertInvocationConsistent(opts.invocation, undefined);
+  const ctx = await makeContext({ plugin, infra: cachedInfra, invocation: opts.invocation });
   const out = await render(ctx as PluginContext, { pageId: opts.pageId });
   return typeof out === "string" ? out : "";
 }
@@ -521,6 +558,7 @@ export async function runPluginStaticRender(opts: {
 export async function runPluginBuildAssets(opts: {
   pluginSlug: string;
   pageIds: ReadonlyArray<string>;
+  invocation: PluginInvocation;
 }): Promise<Record<string, string>> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) return {};
@@ -529,7 +567,8 @@ export async function runPluginBuildAssets(opts: {
   if (!cachedInfra || !makeContext) {
     throw new Error("plugin host not bootstrapped");
   }
-  const ctx = await makeContext({ plugin, infra: cachedInfra });
+  assertInvocationConsistent(opts.invocation, undefined);
+  const ctx = await makeContext({ plugin, infra: cachedInfra, invocation: opts.invocation });
   const out = await build(ctx as PluginContext, { pageIds: opts.pageIds });
   if (out === null || typeof out !== "object" || Array.isArray(out)) {
     throw new Error(
@@ -548,6 +587,7 @@ export async function runPluginBuildAssets(opts: {
 export async function runPluginMetaSignatureBatch(opts: {
   pluginSlug: string;
   pageIds: ReadonlyArray<string>;
+  invocation: PluginInvocation;
 }): Promise<ReadonlyMap<string, string>> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) return new Map();
@@ -556,7 +596,8 @@ export async function runPluginMetaSignatureBatch(opts: {
   if (!cachedInfra || !makeContext) {
     throw new Error("plugin host not bootstrapped");
   }
-  const ctx = await makeContext({ plugin, infra: cachedInfra });
+  assertInvocationConsistent(opts.invocation, undefined);
+  const ctx = await makeContext({ plugin, infra: cachedInfra, invocation: opts.invocation });
   const out = await (
     sig as (
       c: unknown,
@@ -575,6 +616,7 @@ export async function runPluginMetaSignatureBatch(opts: {
 export async function runPluginMetaSignature(opts: {
   pluginSlug: string;
   pageId: string;
+  invocation: PluginInvocation;
 }): Promise<string> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) return "";
@@ -583,7 +625,8 @@ export async function runPluginMetaSignature(opts: {
   if (!cachedInfra || !makeContext) {
     throw new Error("plugin host not bootstrapped");
   }
-  const ctx = await makeContext({ plugin, infra: cachedInfra });
+  assertInvocationConsistent(opts.invocation, undefined);
+  const ctx = await makeContext({ plugin, infra: cachedInfra, invocation: opts.invocation });
   const out = await (sig as (c: unknown, a: { pageId: string }) => Promise<string> | string)(ctx, {
     pageId: opts.pageId,
   });

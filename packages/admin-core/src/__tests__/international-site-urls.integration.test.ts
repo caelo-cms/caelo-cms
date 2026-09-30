@@ -406,6 +406,7 @@ describe("create_variant — the slug the caller cannot invent", () => {
     // have no effect on the URL, and pretending otherwise is the
     // fallback CLAUDE.md §2 forbids.
     const withSlug = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       operationName: "create_variant",
       args: { sourcePageId: homeId, localeCode: "de", slug: "home" },
@@ -417,6 +418,7 @@ describe("create_variant — the slug the caller cannot invent", () => {
     }
 
     const minted = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       operationName: "create_variant",
       args: { sourcePageId: homeId, localeCode: "de", title: "Startseite" },
@@ -439,6 +441,7 @@ describe("create_variant — the slug the caller cannot invent", () => {
     const aboutId = await seedPage("t395-lr-about");
 
     const noSlug = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       operationName: "create_variant",
       args: { sourcePageId: aboutId, localeCode: "de" },
@@ -450,6 +453,7 @@ describe("create_variant — the slug the caller cannot invent", () => {
     // core answers "page already exists", which reads as "you are done"
     // and invites a pointless retry instead of a rename.
     const clash = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       operationName: "create_variant",
       args: { sourcePageId: aboutId, localeCode: "de", slug: "t395-lr-about" },
@@ -461,6 +465,7 @@ describe("create_variant — the slug the caller cannot invent", () => {
     }
 
     const ok = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       operationName: "create_variant",
       args: { sourcePageId: aboutId, localeCode: "de", slug: "t395-lr-ueber-uns" },

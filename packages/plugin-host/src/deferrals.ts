@@ -100,6 +100,7 @@ export async function resolveModuleDeferrals(
   for (const lp of contributors) {
     const operationName = lp.definition.deferralsOperation as string;
     const r = await runPluginOperation({
+      invocation: { origin: "render", actorId: hostSystemActorId() },
       pluginSlug: lp.slug,
       operationName,
       args: { moduleIds, modules: [...modules] },
