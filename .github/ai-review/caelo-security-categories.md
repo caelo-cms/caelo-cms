@@ -41,19 +41,30 @@ so they matter as much as the finding itself.
   no-fallbacks-pre-1.0 invariant. Caelo wants loud failures pointing at
   missing data, not silently-degraded renders.
 
-**Caelo plugin-tier invariants (CLAUDE.md §2):**
-- Tier 2 sandbox bypass is CRITICAL. Tier 2 plugins MUST run in a Deno
-  subprocess with `--no-read --no-write --no-net`, MUST use the oxc-parser
-  validator at activation, MUST declare their `cms_public.<slug>` schema,
-  and MUST use Shadow DOM on every Web Component. Code that disables any
-  one of those is a security regression, not an optimisation.
-- Tier-blur is CRITICAL: a Tier 2 manifest declaring
-  `requestedCapabilities`, or a Tier 2 plugin trying to write outside its
-  own `cms_public.<slug>` schema, breaks the runtime's capability mask.
-- AI authoring Tier 1 source is HIGH: AI must never add a file under
-  `packages/plugins/<slug>/` on its own. Tier 1 source comes from human
-  contributors with an audited and signed manifest. Flag PRs whose Tier 1
-  edits arrive via an AI-only commit chain.
+**Caelo plugin permission model (CLAUDE.md §2, CMS_REQUIREMENTS §14):**
+Every plugin — shipped in `packages/plugins/<slug>/` or installed at
+runtime, human- or AI-written — is held to the same rules. Authorship or
+a release signature never justifies a wider permission.
+- Sandbox bypass is CRITICAL: plugin backend code must run in the Deno
+  subprocess (`--no-read --no-write --no-net --no-env`), be validated by
+  the oxc-parser validator before load, bundle nothing but its own entry
+  and the SDK, and use Shadow DOM on every Web Component. Disabling or
+  widening any of these is a security regression.
+- Capability without a grant is CRITICAL: a plugin reaching anything
+  beyond its base (own `cms_public.<slug>` tables, theme, visitor id,
+  captcha, own public api) without an Owner-approved grant bound to its
+  artifact digest; or a grant check that can be skipped or replayed.
+- Direct data access is CRITICAL: a plugin (or the host code brokering
+  for it) touching core data other than through the named Query API
+  operations of a granted domain, touching another plugin's data, or
+  issuing raw SQL.
+- Live authoring write is HIGH: a plugin write to `cms_admin` — core
+  data or the plugin's own private storage — that bypasses validation,
+  audit and snapshots, or that lands on live instead of the originating
+  chat's branch. Visitor writes into the plugin's own public tables via a
+  declared `publicOperation` are the only live writes allowed.
+- Credential exposure is CRITICAL: a plugin receiving a session token,
+  API key, connection or other bearer credential.
 
 **Caelo propose / execute pattern (CLAUDE.md §11.A):**
 - Auto-approve on gated ops is CRITICAL. Hard-to-revert ops (locales,
@@ -99,7 +110,7 @@ so they matter as much as the finding itself.
 - CRITICAL — RLS bypass, secret in source, sandbox bypass, propose/execute
   bypass, raw SQL outside the Query API, cross-role privilege grant.
 - HIGH — boundary validation missing, raw HTML rendered to page or head,
-  public-write endpoint without anti-abuse, AI-authored Tier 1 source,
+  public-write endpoint without anti-abuse, plugin authoring write to live,
   missing actor-scope rejection, secret as env-literal.
 - MEDIUM — `any` without "why" comment, fallback-on-read paths, missing
   translation fallback, missing snapshot emission, missing audit log.

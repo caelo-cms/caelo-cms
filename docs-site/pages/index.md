@@ -48,7 +48,7 @@ Same chat-runner that powers the live-edit overlay, exposed via MCP. Read pages,
 - **AI-first** — the chat runs the editor; the panel is for security + ops.
 - **Open** — MPL 2.0, every dep MPL-compatible. No CLA. No dual-licensing.
 - **Self-hostable** — one VM works. Cloud works. Multi-region works.
-- **Opinionated** — small kernel, plugin host for the rest. Tier 1 (signed, in-process) + Tier 2 (Deno-sandboxed, AI-authored).
+- **Opinionated** — small kernel, plugin host for the rest. One plugin model: every capability beyond a plugin's own tables is an Owner-approved grant.
 :::
 
 ::: cta

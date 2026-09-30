@@ -80,8 +80,8 @@ Failure modes (any default-on telemetry, any leak of PII / message body) block t
 
 | Category | Trigger |
 |---|---|
-| `plugin_host_bootstrap_failed` | Tier-1 plugin loader threw at admin startup |
-| `plugin_sandbox_panic` | Tier-2 sandbox process exited abnormally |
+| `plugin_host_bootstrap_failed` | The plugin loader threw at admin startup |
+| `plugin_sandbox_panic` | A plugin sandbox process exited abnormally |
 | `provider_auth_401` | AI provider rejected API key |
 | `provider_quota_exceeded` | AI provider returned quota / rate-limit hard error |
 | `db_connection_lost` | Postgres connection dropped + reconnect failed > 3× |

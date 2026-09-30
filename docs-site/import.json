@@ -98,14 +98,14 @@
       "slug": "plugins-build",
       "template": "doc-page",
       "name": "Build a plugin",
-      "title": "Authoring plugins (Tier 1 + Tier 2)"
+      "title": "Build a plugin"
     },
     {
-      "source": "pages/plugins-tier-2.md",
-      "slug": "plugins-tier-2",
+      "source": "pages/plugins-permissions.md",
+      "slug": "plugins-permissions",
       "template": "doc-page",
-      "name": "Tier 2 plugins",
-      "title": "Tier 2 plugins (sandboxed)"
+      "name": "Plugin permissions",
+      "title": "Plugin permissions"
     },
     {
       "source": "pages/multilingual.md",
