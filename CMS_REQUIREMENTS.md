@@ -535,7 +535,7 @@ The model above is normative. Where the code does not meet it yet, this list is 
 
 - **Shipped plugins run in-process and receive their capabilities at load** rather than through Owner-approved, per-artifact grants; `cms_admin` is a broad capability rather than per-domain read/write grants.
 - **Some shipped-plugin authoring writes go straight to live** (e.g. the consent-manager's settings and embed classification in its own `cms_admin` tables), outside a chat branch and without snapshots.
-- **Host brokers still issue SQL directly** for plugin storage instead of named operations.
+- **Host code still issues SQL directly** for plugin domain-event polling, AI cost accounting, the per-operation audit row and plugin registration in the loader. Plugin table storage itself goes through the `plugin_storage.*` / `plugin_public_storage.*` operations.
 
 ## 15. Provisioning Strategy
 

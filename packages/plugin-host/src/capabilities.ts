@@ -37,6 +37,7 @@ import { execute } from "@caelo-cms/query-api";
 import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
+import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
 
 export interface MakePluginContextOpts {
   readonly plugin: LoadedPlugin;
@@ -168,6 +169,13 @@ interface QueryScope {
   readonly pool: "public" | "admin";
 }
 
+/**
+ * The plugin's storage handle — a broker over the `plugin_storage.*` /
+ * `plugin_public_storage.*` Query API operations (storage-ops.ts). It
+ * validates each call against the plugin's manifest (so error messages
+ * name the plugin and its schema) and never issues SQL itself
+ * (CMS_REQUIREMENTS §14.7).
+ */
 function makeScopedQuery(
   plugin: LoadedPlugin,
   infra: PluginHostInfra,
@@ -175,77 +183,70 @@ function makeScopedQuery(
 ): PluginQuery {
   const schemaName = pluginSchemaName(plugin.slug);
   validateIdent(schemaName, "schema");
-  // P12 review-pass #1 — UUIDs are validated at construction time so we
-  // fail fast (and loudly) the moment an attacker-controlled value
-  // somehow lands in `pluginActorId` / `pluginId`. Even with the
-  // parameterised set_config below this is the second layer of defence.
+  // Validated at construction so a bad id fails the moment the handle is
+  // built; the adapter binds them as parameters either way.
   assertUuid(plugin.pluginActorId, "caelo.actor_id");
   assertUuid(plugin.pluginId, "caelo.plugin_id");
+  const ops = STORAGE_OPS[scope.pool === "admin" ? "private" : "public"];
+  const ctx = {
+    actorId: plugin.pluginActorId,
+    actorKind: "plugin" as const,
+    pluginId: plugin.pluginId,
+    requestId: `plugin-${plugin.slug}`,
+  };
 
-  async function withPluginTx<T>(
-    fn: (tx: Parameters<Parameters<typeof infra.adapter.public.transaction>[0]>[0]) => Promise<T>,
-  ): Promise<T> {
-    const pool = scope.pool === "admin" ? infra.adapter.admin : infra.adapter.public;
-    return pool.transaction(async (tx) => {
-      // P12 review-pass #1 — set_config takes parameterised values; the
-      // SETTING NAME is a literal (Postgres doesn't parameterise it).
-      // Guards above make sure the *values* are UUIDs, and `set_config`'s
-      // third arg `true` scopes the setting to the current transaction.
-      await tx.execute(sql`SELECT set_config('caelo.actor_kind', 'plugin', true)`);
-      await tx.execute(sql`SELECT set_config('caelo.actor_id', ${plugin.pluginActorId}, true)`);
-      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${plugin.pluginId}, true)`);
-      return fn(tx);
-    });
+  /** The table's declared column map, or a loud error naming the plugin. */
+  function tableColumns(method: string, table: string): Record<string, string> {
+    validateIdent(table, "table");
+    const declared = declaredColumnsIn(scope.schemaMap, table);
+    if (!declared) {
+      throw new Error(
+        `${scope.label}.${method}: table "${table}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
+      );
+    }
+    return Object.fromEntries(declared);
+  }
+
+  function assertDeclared(
+    method: string,
+    table: string,
+    columns: Record<string, string>,
+    keys: Iterable<string>,
+  ): void {
+    for (const k of keys) {
+      if (!(k in columns)) {
+        throw new Error(
+          `${scope.label}.${method}: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${table}`,
+        );
+      }
+      validateIdent(k, "column");
+    }
+  }
+
+  async function run<T>(opName: string, input: unknown): Promise<T> {
+    // Registered on first use, not at construction: building a context
+    // must not touch the registry (the handles are lazy by design).
+    registerPluginStorageOps(infra.registry);
+    const r = await execute(infra.registry, infra.adapter, ctx, opName, input);
+    if (!r.ok) {
+      throw new Error("message" in r.error ? String(r.error.message) : r.error.kind);
+    }
+    return r.value as T;
   }
 
   return {
     insert: async (table, data) => {
       const tableStr = table as string;
-      validateIdent(tableStr, "table");
-      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
-      if (!declared) {
-        throw new Error(
-          `${scope.label}.insert: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
-        );
-      }
-      const cols: string[] = [];
-      const valueFragments: ReturnType<typeof sql>[] = [];
-      for (const [k, v] of Object.entries(data)) {
-        if (!declared.has(k)) {
-          throw new Error(
-            `${scope.label}.insert: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${tableStr}`,
-          );
-        }
-        validateIdent(k, "column");
-        cols.push(`"${k}"`);
-        // A jsonb ARRAY needs `sql.param` to survive the trip. Bound
-        // straight into the template, drizzle expands it into a SQL
-        // tuple — `VALUES ($1, ($2, $3))`, a syntax error — and
-        // hand-stringifying it first lands a jsonb STRING in the column
-        // instead of an array, because the driver JSON-encodes string
-        // params for jsonb. Both are traps a plugin author would have
-        // to discover from a confusing failure, so the boundary handles
-        // it: the driver encodes the value correctly when it arrives as
-        // one parameter.
-        if (declared.get(k) === "jsonb" && v !== null && typeof v === "object") {
-          valueFragments.push(sql`${sql.param(v)}`);
-        } else {
-          valueFragments.push(sql`${v}`);
-        }
-      }
-      if (cols.length === 0) {
+      const columns = tableColumns("insert", tableStr);
+      assertDeclared("insert", tableStr, columns, Object.keys(data));
+      if (Object.keys(data).length === 0) {
         throw new Error(`${scope.label}.insert: data must include at least one declared column`);
       }
-      const colsSql = sql.raw(cols.join(", "));
-      const valuesSql = sql.join(valueFragments, sql`, `);
-      const fqTable = sql.raw(`"${schemaName}"."${tableStr}"`);
-      return withPluginTx(async (tx) => {
-        const rows = (await tx.execute(
-          sql`INSERT INTO ${fqTable} (${colsSql}) VALUES (${valuesSql}) RETURNING id::text AS id`,
-        )) as unknown as { id: string }[];
-        const id = rows[0]?.id;
-        if (!id) throw new Error(`${scope.label}.insert: no id returned`);
-        return { id };
+      return run<{ id: string }>(ops.insert, {
+        schema: schemaName,
+        table: tableStr,
+        columns,
+        data,
       });
     },
 
@@ -253,121 +254,55 @@ function makeScopedQuery(
       table: string,
       filter?: PluginQueryFilter,
     ): Promise<T[]> => {
-      validateIdent(table, "table");
-      const declared = declaredColumnsIn(scope.schemaMap, table);
-      if (!declared) {
-        throw new Error(
-          `${scope.label}.list: table "${table}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
-        );
-      }
-      const wheres: ReturnType<typeof sql>[] = [];
-      let limit = 100;
-      let orderBy: string | null = null;
-      let orderDir: "asc" | "desc" = "desc";
-      let since: string | null = null;
+      const columns = tableColumns("list", table);
+      const reserved = new Set(["limit", "orderBy", "orderDir", "since"]);
       for (const [k, v] of Object.entries(filter ?? {})) {
-        if (k === "limit") {
-          if (typeof v !== "number" || v <= 0 || v > 1000) {
-            throw new Error(`${scope.label}.list: limit must be 1..1000`);
-          }
-          limit = v;
-          continue;
+        if (k === "limit" && (typeof v !== "number" || v <= 0 || v > 1000)) {
+          throw new Error(`${scope.label}.list: limit must be 1..1000`);
         }
         if (k === "orderBy") {
           if (typeof v !== "string") throw new Error(`${scope.label}.list: orderBy must be string`);
-          if (!declared.has(v)) {
+          if (!(v in columns)) {
             throw new Error(`${scope.label}.list: orderBy "${v}" not declared in schema`);
           }
-          validateIdent(v, "column");
-          orderBy = v;
-          continue;
         }
-        if (k === "orderDir") {
-          if (v !== "asc" && v !== "desc")
-            throw new Error(`${scope.label}.list: orderDir must be asc|desc`);
-          orderDir = v;
-          continue;
+        if (k === "orderDir" && v !== "asc" && v !== "desc") {
+          throw new Error(`${scope.label}.list: orderDir must be asc|desc`);
         }
         if (k === "since") {
-          if (typeof v !== "string")
+          if (typeof v !== "string") {
             throw new Error(`${scope.label}.list: since must be ISO timestamp string`);
-          since = v;
-          continue;
+          }
+          if (!("created_at" in columns)) {
+            throw new Error(`${scope.label}.list: \`since\` requires a created_at column`);
+          }
         }
-        if (!declared.has(k)) {
-          throw new Error(
-            `${scope.label}.list: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${table}`,
-          );
-        }
-        validateIdent(k, "column");
-        const colSql = sql.raw(`"${k}"`);
-        wheres.push(sql`${colSql} = ${v}`);
+        if (!reserved.has(k)) assertDeclared("list", table, columns, [k]);
       }
-      if (since !== null) {
-        if (!declared.has("created_at")) {
-          throw new Error(`${scope.label}.list: \`since\` requires a created_at column`);
-        }
-        wheres.push(sql`"created_at" > ${since}`);
-      }
-      const whereSql =
-        wheres.length === 0 ? sql.raw("") : sql`WHERE ${sql.join(wheres, sql` AND `)}`;
-      const orderSql = orderBy
-        ? sql.raw(`ORDER BY "${orderBy}" ${orderDir.toUpperCase()}`)
-        : sql.raw("");
-      const fqTable = sql.raw(`"${schemaName}"."${table}"`);
-      const limitSql = sql.raw(`LIMIT ${limit}`);
-      return withPluginTx(async (tx) => {
-        const rows = (await tx.execute(
-          sql`SELECT * FROM ${fqTable} ${whereSql} ${orderSql} ${limitSql}`,
-        )) as unknown as T[];
-        return rows;
+      const out = await run<{ rows: T[] }>(ops.list, {
+        schema: schemaName,
+        table,
+        columns,
+        ...(filter ? { filter } : {}),
       });
+      return out.rows;
     },
 
     update: async (table, id, patch) => {
       const tableStr = table as string;
-      validateIdent(tableStr, "table");
-      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
-      if (!declared) {
-        throw new Error(
-          `${scope.label}.update: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
-        );
-      }
-      const sets: ReturnType<typeof sql>[] = [];
-      for (const [k, v] of Object.entries(patch)) {
-        if (k === "id") continue; // never update id
-        if (!declared.has(k)) {
-          throw new Error(
-            `${scope.label}.update: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${tableStr}`,
-          );
-        }
-        validateIdent(k, "column");
-        const colSql = sql.raw(`"${k}"`);
-        sets.push(sql`${colSql} = ${v}`);
-      }
-      if (sets.length === 0) {
+      const columns = tableColumns("update", tableStr);
+      const keys = Object.keys(patch).filter((k) => k !== "id");
+      assertDeclared("update", tableStr, columns, keys);
+      if (keys.length === 0) {
         throw new Error(`${scope.label}.update: patch must include at least one declared column`);
       }
-      const fqTable = sql.raw(`"${schemaName}"."${tableStr}"`);
-      const setsSql = sql.join(sets, sql`, `);
-      await withPluginTx(async (tx) => {
-        await tx.execute(sql`UPDATE ${fqTable} SET ${setsSql} WHERE id = ${id}::uuid`);
-      });
+      await run(ops.update, { schema: schemaName, table: tableStr, columns, id, patch });
     },
 
     delete: async (table, id) => {
       const tableStr = table as string;
-      validateIdent(tableStr, "table");
-      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
-      if (!declared) {
-        throw new Error(
-          `${scope.label}.delete: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
-        );
-      }
-      const fqTable = sql.raw(`"${schemaName}"."${tableStr}"`);
-      await withPluginTx(async (tx) => {
-        await tx.execute(sql`DELETE FROM ${fqTable} WHERE id = ${id}::uuid`);
-      });
+      const columns = tableColumns("delete", tableStr);
+      await run(ops.delete, { schema: schemaName, table: tableStr, columns, id });
     },
   };
 }
