@@ -118,6 +118,7 @@ export const themeTypographyComposite = z
       z
         .object({
           fontFamily: z.string().min(1).max(200).optional(),
+          fontStyle: z.enum(["normal", "italic"]).optional(),
           fontSize: dimensionValueString.optional(),
           fontWeight: fontWeightValue.optional(),
           lineHeight: z.union([z.number().positive(), dimensionValueString]).optional(),
@@ -777,7 +778,20 @@ export function applyDtcgWrites(
     const nextDescription =
       descriptions[path] ??
       (typeof existingDescription === "string" ? existingDescription : undefined);
+    const extensions =
+      existing && typeof existing === "object"
+        ? { ...((existing as { $extensions?: Record<string, unknown> }).$extensions ?? {}) }
+        : {};
+    const oldValue = (existing as { $value?: { fontFamily?: string } } | undefined)?.$value;
+    if (
+      path.startsWith("typography.") &&
+      nextValue &&
+      typeof nextValue === "object" &&
+      (nextValue as { fontFamily?: string }).fontFamily !== oldValue?.fontFamily
+    )
+      delete extensions["caelo.font"];
     setLeafAtPath(out, path, {
+      ...(Object.keys(extensions).length ? { $extensions: extensions } : {}),
       $value: nextValue,
       ...(inferredType ? { $type: inferredType } : {}),
       ...(nextDescription !== undefined ? { $description: nextDescription } : {}),

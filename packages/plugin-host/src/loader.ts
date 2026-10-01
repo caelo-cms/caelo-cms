@@ -621,6 +621,7 @@ export async function activateApprovedExternalPlugin(
       "cms_admin_schema",
       "chat_runner_tools",
       "companion_skills",
+      "font_assets",
       "private_files",
       "image_generation",
     ]);

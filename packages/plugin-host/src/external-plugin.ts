@@ -33,6 +33,7 @@ export function externalPluginDefinition(opts: {
         "cms_admin_schema",
         "chat_runner_tools",
         "companion_skills",
+        "font_assets",
         "private_files",
         "image_generation",
       ].includes(capability)

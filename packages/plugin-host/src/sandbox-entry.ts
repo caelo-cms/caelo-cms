@@ -46,6 +46,7 @@ const execute = async (message) => {
     query: Object.freeze(query),
     ...(message.hasAdminQuery ? { adminQuery: Object.freeze(Object.fromEntries(["insert", "list", "update", "compareAndSwap", "delete"].map(name => [name, (...args) => rpc("adminQuery." + name, ...args)]))) } : {}),
     ...(message.hasImages ? { images: Object.freeze(Object.fromEntries(["describe", "get", "generate", "transform"].map(name => [name, (...args) => rpc("images." + name, ...args)]))) } : {}),
+    ...(message.hasFonts ? { fonts: Object.freeze(Object.fromEntries(["find", "inspect", "resolve", "readChunk"].map(name => [name, (...args) => rpc("fonts." + name, ...args)]))) } : {}),
     ...(message.hasPrivateFiles ? { privateFiles: Object.freeze(Object.fromEntries(["begin", "writeChunk", "commit", "stat", "readChunk", "remove"].map(name => [name, (...args) => rpc("privateFiles." + name, ...args)]))) } : {}),
     api: Object.freeze({ list: (...args) => rpc("api.list", ...args), get: (...args) => rpc("api.get", ...args) }),
     captcha: Object.freeze({ requireProof: (...args) => rpc("captcha.requireProof", ...args) }),

@@ -8,6 +8,10 @@ export const SANDBOX_CALL_LIMIT = 1024;
 
 /** Only these SDK calls may cross the process boundary. */
 export const sandboxMethod = z.enum([
+  "fonts.find",
+  "fonts.inspect",
+  "fonts.resolve",
+  "fonts.readChunk",
   "images.transform",
   "images.describe",
   "images.get",
