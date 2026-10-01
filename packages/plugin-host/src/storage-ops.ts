@@ -38,6 +38,7 @@ import { z } from "zod";
 import {
   type ListPlan,
   type PluginRowLocker,
+  privateCompareAndSwap,
   privateDelete,
   privateInsert,
   privateList,
@@ -64,6 +65,52 @@ const updateInput = z
   .object({ ...base, id: z.string().uuid(), patch: z.record(z.string(), z.unknown()) })
   .strict();
 const deleteInput = z.object({ ...base, id: z.string().uuid() }).strict();
+const casInput = z
+  .object({
+    ...base,
+    id: z.string().uuid(),
+    expected: z.record(z.string(), z.unknown()),
+    patch: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+
+/**
+ * The predicate and assignments of a compare-and-swap, or the reason the
+ * call is refused. `id` may be expected but never patched; host-owned
+ * and undeclared columns are refused on both sides.
+ */
+function casFragments(
+  op: string,
+  columns: Readonly<Record<string, string>>,
+  expected: Readonly<Record<string, unknown>>,
+  patch: Readonly<Record<string, unknown>>,
+): { conditions: ReturnType<typeof sql>[]; sets: ReturnType<typeof sql>[] } | string {
+  const conditions: ReturnType<typeof sql>[] = [];
+  const sets: ReturnType<typeof sql>[] = [];
+  for (const [values, matching] of [
+    [expected, true],
+    [patch, false],
+  ] as const) {
+    const entries = Object.entries(values);
+    if (entries.length === 0 || entries.length > 64) {
+      return `${op}: expected and patch must each contain 1..64 columns`;
+    }
+    for (const [column, value] of entries) {
+      const declared = column === "id" || checkColumn(op, columns, column) === null;
+      if (!IDENT_RE.test(column) || !declared || (!matching && column === "id")) {
+        return `${op}: column "${column}" is undeclared or immutable`;
+      }
+      if (value === undefined) {
+        return `${op}: undefined is not a stored value; use null explicitly`;
+      }
+      const name = sql.raw(`"${column}"`);
+      const param = valueSql(columns, column, value);
+      if (matching) conditions.push(sql`t.${name} IS NOT DISTINCT FROM ${param}`);
+      else sets.push(sql`${name} = ${param}`);
+    }
+  }
+  return { conditions, sets };
+}
 
 type Zone = "private" | "public";
 
@@ -257,7 +304,42 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
     },
   });
 
-  return [insert, list, update, remove];
+  const compareAndSwap = defineOperation({
+    name: `${family}.compare_and_swap`,
+    // Why plugin-only: see insert.
+    actorScope: ["plugin"],
+    database,
+    input: casInput,
+    output: z.object({ swapped: z.boolean() }),
+    handler: async (ctx, input, tx) => {
+      const op = `${family}.compare_and_swap`;
+      const denied = pluginOnly(ctx, op);
+      if (denied) return denied;
+      const fragments = casFragments(op, input.columns, input.expected, input.patch);
+      if (typeof fragments === "string") return fail(op, fragments);
+      if (zone === "private") {
+        return settle(
+          op,
+          await privateCompareAndSwap(
+            tx,
+            ctx,
+            input,
+            input.id,
+            { expected: input.expected, patch: input.patch, ...fragments },
+            locker,
+            op,
+          ),
+        );
+      }
+      // One statement: the check and the write cannot interleave.
+      const rows = (await tx.execute(
+        sql`UPDATE ${table(input.schema, input.table)} AS t SET ${sql.join(fragments.sets, sql`, `)} WHERE t.id = ${input.id}::uuid AND ${sql.join(fragments.conditions, sql` AND `)} RETURNING t.id`,
+      )) as unknown as unknown[];
+      return ok({ swapped: rows.length === 1 });
+    },
+  });
+
+  return [insert, list, update, remove, compareAndSwap];
 }
 
 /** Operation names by zone, for the host broker. */
@@ -267,12 +349,14 @@ export const STORAGE_OPS = {
     list: "plugin_storage.list",
     update: "plugin_storage.update",
     delete: "plugin_storage.delete",
+    compareAndSwap: "plugin_storage.compare_and_swap",
   },
   public: {
     insert: "plugin_public_storage.insert",
     list: "plugin_public_storage.list",
     update: "plugin_public_storage.update",
     delete: "plugin_public_storage.delete",
+    compareAndSwap: "plugin_public_storage.compare_and_swap",
   },
 } as const;
 

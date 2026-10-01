@@ -79,6 +79,10 @@ const plugin = definePlugin({
       await q(ctx).update("notes", a.id, { label: a.label });
       return {};
     },
+    swap: async (ctx, args) => {
+      const a = args as { id: string; from: string; to: string };
+      return q(ctx).compareAndSwap("notes", a.id, { label: a.from }, { label: a.to });
+    },
     remove: async (ctx, args) => {
       await q(ctx).delete("notes", (args as { id: string }).id);
       return {};
@@ -352,5 +356,24 @@ describe("branch-aware plugin storage", () => {
     );
     expect(rows[0]?.title).toBe("Before");
     expect(rows[0]?.branched).toBeGreaterThan(0);
+  });
+
+  it("compare-and-swap in a chat checks the chat's view and leaves main alone", async () => {
+    const added = await call(MAIN, "add", { label: "cas-base" });
+    if (!added.ok) throw new Error(added.error.message);
+    const id = idOf(added.value);
+    const f = await newChat("f");
+    const swap = async (invocation: PluginInvocation, from: string, to: string) => {
+      const r = await call(invocation, "swap", { id, from, to });
+      if (!r.ok) throw new Error(r.error.message);
+      return r.value;
+    };
+    expect(await swap(f.invocation, "cas-base", "cas-f")).toBe(true);
+    // The chat now sees its own value; a second swap from the old value loses.
+    expect(await swap(f.invocation, "cas-base", "cas-x")).toBe(false);
+    expect(await labels(f.invocation)).toContain("cas-f");
+    // Main never saw the branch write.
+    expect(await labels(MAIN)).toContain("cas-base");
+    expect((await liveRows()).find((r) => r.id === id)?.label).toBe("cas-base");
   });
 });

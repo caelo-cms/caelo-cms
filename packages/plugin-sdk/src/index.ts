@@ -448,6 +448,22 @@ export interface PluginQuery {
     patch: Record<string, unknown>,
   ): Promise<void>;
   delete<TableName extends string>(table: TableName, id: string): Promise<void>;
+  /**
+   * Atomically update one row only while every expected value still
+   * matches. Returns false for a stale, missing or inaccessible row.
+   * `null` matches `null`; JSON values compare by JSON equality. Both
+   * `expected` and `patch` take 1–64 declared columns; `id` cannot be
+   * patched. Write a fresh revision token on every successful swap so a
+   * value that returns to an earlier state cannot revive a stale write
+   * (ABA). From a chat the swap runs against the chat's view of the row,
+   * like every other private-storage write.
+   */
+  compareAndSwap<TableName extends string>(
+    table: TableName,
+    id: string,
+    expected: Record<string, unknown>,
+    patch: Record<string, unknown>,
+  ): Promise<boolean>;
 }
 
 /**

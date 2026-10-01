@@ -12,6 +12,7 @@ export const sandboxMethod = z.enum([
   "query.list",
   "query.update",
   "query.delete",
+  "query.compareAndSwap",
   "api.list",
   "api.get",
   "captcha.requireProof",

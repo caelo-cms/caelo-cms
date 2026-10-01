@@ -20,6 +20,7 @@ const context: PluginContext = {
     list: async () => [{ body: "host result" }],
     update: async () => {},
     delete: async () => {},
+    compareAndSwap: async () => true,
   },
   api: { list: async () => [], get: async () => null },
   theme: { tokens: { color: "blue" } },
@@ -125,6 +126,52 @@ describe("actual Deno plugin execution", () => {
         },
       }),
     ).rejects.toThrow("permission revoked");
+  });
+  it("rejects lossy CAS values before RPC and can continue after a rejected call", async () => {
+    const calls: unknown[][] = [];
+    const result = (await invoke(
+      `
+      const errors = [];
+      const invalid = [undefined, NaN, Infinity, () => 1, Symbol("x"), 1n,
+        {nested: undefined}, [undefined]];
+      for (const value of invalid) {
+        for (const side of ["expected", "patch"]) {
+          const expected = {revision: "base"};
+          const patch = {revision: "next"};
+          (side === "expected" ? expected : patch).invalid = value;
+          try {
+            await ctx.query.compareAndSwap("notes", "11111111-1111-4111-8111-111111111111", expected, patch);
+          } catch (error) { errors.push(error.message); }
+        }
+      }
+      const saved = await ctx.query.compareAndSwap("notes", "11111111-1111-4111-8111-111111111111",
+        {revision: "base", note: null}, {revision: "next"});
+      return {errors, saved};
+    `,
+      {
+        context: {
+          ...context,
+          query: {
+            ...context.query,
+            compareAndSwap: async (...args) => {
+              calls.push(args);
+              return true;
+            },
+          },
+        },
+      },
+    )) as { errors: string[]; saved: boolean };
+    expect(result.errors).toHaveLength(16);
+    expect(result.errors.every((message) => message.includes("requires JSON values"))).toBe(true);
+    expect(result.saved).toBe(true);
+    expect(calls).toEqual([
+      [
+        "notes",
+        "11111111-1111-4111-8111-111111111111",
+        { revision: "base", note: null },
+        { revision: "next" },
+      ],
+    ]);
   });
   it("rejects oversized plugin output", async () => {
     await expect(invoke('return "x".repeat(1100000);')).rejects.toThrow("SandboxMessageTooLarge");
