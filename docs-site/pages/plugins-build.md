@@ -79,6 +79,16 @@ The static generator bakes the initial render at deploy; the component fetches d
 
 Nothing of a plugin runs until an Owner activates it at `/security/plugins` — shipped plugins included. The AI can submit a plugin and propose its activation; only a human Owner activates it and approves its grants.
 
+## Running in the sandbox
+
+A runtime-installed plugin is a single TypeScript or JavaScript module plus its JSON manifest, submitted with `plugins.submit`. The module's default export is the plugin definition, and its slug and version must match the manifest. Only the SDK and the component kit may be imported; bundle anything else into the module before submitting.
+
+- **Approval is bound to the exact source and manifest.** If the package changes while its review page or an activation proposal is open, review and approve the new version. An active package cannot be overwritten — disable it before submitting a replacement. Approved packages are restored when the host restarts.
+- **Operations and static rendering run in a separate Deno process** with no file, network, environment, process or FFI access. The SDK handles are the only way out, and every call goes through the host's broker.
+- **Limits per operation:** 30 seconds, a 128 MiB V8 heap, 1 MiB per protocol message and at most 256 SDK calls; a host runs at most four external invocations at once. Split long work into bounded operations and await every SDK call. A deadline does not undo a write the host already accepted.
+- **Disabling** stops new dispatch at once; the host checks the package before every SDK call and before returning a result. Data is kept.
+- **Deno 2.9.6** (MIT) ships in the admin and gateway images. For development, put that version on `PATH` or point `CAELO_DENO_BINARY` at it; a missing executable fails the invocation with an explicit error.
+
 ## Next
 
 - [Plugin permissions →](/plugins-permissions)

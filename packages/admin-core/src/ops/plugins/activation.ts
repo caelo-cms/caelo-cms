@@ -25,6 +25,7 @@
  * hook does it (see `gated-tools.ts`).
  */
 
+import { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -66,7 +67,7 @@ export const proposePluginActivationOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, tier, status, version, manifest_json
+      SELECT id::text AS id, tier, status, version, manifest_json, source_code
       FROM plugins WHERE slug = ${input.slug} LIMIT 1
     `)) as unknown as {
       id: string;
@@ -74,6 +75,7 @@ export const proposePluginActivationOp = defineOperation({
       status: string;
       version: string;
       manifest_json: unknown;
+      source_code: string | null;
     }[];
     const plugin = rows[0];
     if (!plugin) {
@@ -102,6 +104,10 @@ export const proposePluginActivationOp = defineOperation({
     const payload = {
       slug: input.slug,
       pluginId: plugin.id,
+      artifactDigest:
+        plugin.tier === 2
+          ? externalArtifactDigest(plugin.manifest_json, plugin.source_code ?? "")
+          : null,
       reason: input.reason ?? null,
     };
     // Blast radius, in the operator's terms: what starts running.
@@ -207,11 +213,20 @@ export const executePluginActivationOp = defineOperation({
         message: `proposal is '${row.status}', not pending`,
       });
     }
-    const payload = row.payload as { slug: string; pluginId: string };
+    const payload = row.payload as {
+      slug: string;
+      pluginId: string;
+      artifactDigest?: string | null;
+    };
 
     const current = (await tx.execute(sql`
-      SELECT status FROM plugins WHERE id = ${payload.pluginId}::uuid FOR UPDATE
-    `)) as unknown as { status: string }[];
+      SELECT status, tier, manifest_json, source_code FROM plugins WHERE id = ${payload.pluginId}::uuid FOR UPDATE
+    `)) as unknown as {
+      status: string;
+      tier: number;
+      manifest_json: unknown;
+      source_code: string | null;
+    }[];
     const previousStatus = current[0]?.status;
     if (!previousStatus) {
       return err({
@@ -220,11 +235,24 @@ export const executePluginActivationOp = defineOperation({
         message: `plugin row for "${payload.slug}" is gone — it was uninstalled after the proposal was made`,
       });
     }
-    if (previousStatus === "active") {
+    if (previousStatus !== "awaiting_activation" && previousStatus !== "disabled") {
       return err({
         kind: "HandlerError",
         operation: "plugins.execute_activation",
-        message: `plugin "${payload.slug}" is already active`,
+        message: `plugin "${payload.slug}" cannot activate from ${previousStatus}`,
+      });
+    }
+
+    const artifact = current[0];
+    if (
+      artifact?.tier === 2 &&
+      payload.artifactDigest !==
+        externalArtifactDigest(artifact.manifest_json, artifact.source_code ?? "")
+    ) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.execute_activation",
+        message: "Plugin artifact changed since proposal. Review a new activation proposal.",
       });
     }
 

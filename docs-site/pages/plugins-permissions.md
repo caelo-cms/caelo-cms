@@ -58,7 +58,7 @@ Disabling a plugin keeps its data. Uninstalling removes it.
 
 ## Status
 
-Caelo is converging on this model. Where the current release does not meet it yet — shipped plugins still run in-process with their capabilities fixed at load, a broad core-data capability instead of per-domain grants, and some plugin settings written without a chat branch — the gaps are listed in CMS_REQUIREMENTS §14.13 and tracked as defects.
+Caelo is converging on this model. Where the current release does not meet it yet — shipped plugins still run in-process with their capabilities fixed at load, and a broad core-data capability instead of per-domain grants — the gaps are listed in CMS_REQUIREMENTS §14.13 and tracked as defects.
 
 ## Next
 

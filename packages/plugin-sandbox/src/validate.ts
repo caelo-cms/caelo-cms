@@ -56,6 +56,8 @@ export type ValidationFailureKind =
   | "forbidden-call"
   | "forbidden-deno-access"
   | "forbidden-dynamic-import"
+  | "forbidden-require"
+  | "forbidden-import-meta"
   | "forbidden-sql-template"
   | "forbidden-eval"
   | "forbidden-globalthis-write"
@@ -240,6 +242,14 @@ export function validateSource(opts: {
   let ast: unknown;
   try {
     const parsed = parseSync(filename, source, { sourceType: "module" });
+    if (parsed.errors.length > 0) {
+      return [
+        {
+          kind: "parse-error",
+          hint: "Plugin source contains syntax errors; correct them before submission.",
+        },
+      ];
+    }
     ast = parsed.program;
   } catch (e) {
     failures.push({
@@ -255,7 +265,11 @@ export function validateSource(opts: {
     if (!type) return;
 
     // ImportDeclaration — only @caelo-cms/plugin-sdk allowed.
-    if (type === "ImportDeclaration") {
+    if (
+      type === "ImportDeclaration" ||
+      ((type === "ExportNamedDeclaration" || type === "ExportAllDeclaration") &&
+        (node as { source?: unknown }).source)
+    ) {
       const sourceVal = (node as { source?: { value?: unknown } }).source?.value;
       const relativeOk =
         opts.allowRelativeImports === true &&
@@ -284,10 +298,40 @@ export function validateSource(opts: {
       return;
     }
 
+    // import.meta — exposes the module's host URL/path and, under the
+    // host bundler, resolution helpers that reach the host filesystem.
+    if (type === "MetaProperty") {
+      failures.push({
+        kind: "forbidden-import-meta",
+        nodeType: type,
+        location: locOf(node),
+        hint: "import.meta is not allowed in plugin code.",
+      });
+      return;
+    }
+
     // CallExpression — fetch, XMLHttpRequest, eval, Function, dynamic import (legacy AST shape).
     if (type === "CallExpression") {
       const callee = (node as { callee?: unknown }).callee;
       const calleeName = identifierName(callee);
+      // require() — the bundle is built in the HOST process, before the
+      // Deno sandbox exists, so a require of a host path would inline
+      // that file's contents (secrets, service-account keys) into the
+      // plugin bundle. `module.require` / `globalThis.require` alike.
+      const requireProp =
+        callee && (callee as { type?: string }).type === "MemberExpression"
+          ? identifierName((callee as { property?: unknown }).property)
+          : null;
+      if (calleeName === "require" || requireProp === "require") {
+        failures.push({
+          kind: "forbidden-require",
+          nodeType: type,
+          snippet: "require",
+          location: locOf(node),
+          hint: 'require() is not allowed. Use static `import` from "@caelo-cms/plugin-sdk".',
+        });
+        return;
+      }
       if (calleeName === "fetch" || calleeName === "XMLHttpRequest" || calleeName === "WebSocket") {
         failures.push({
           kind: "forbidden-call",

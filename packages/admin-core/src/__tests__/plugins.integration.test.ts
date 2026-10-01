@@ -116,6 +116,7 @@ async function fullActivate(slug: string): Promise<void> {
     version: string;
     schemaName: string;
     appliedSql: string;
+    artifactDigest: string;
     isReEnable: boolean;
   };
   if (!prepared.isReEnable) {
@@ -126,6 +127,7 @@ async function fullActivate(slug: string): Promise<void> {
   }
   const commit = await execute(registry, adapter, systemCtx, "plugins.activate", {
     slug,
+    artifactDigest: prepared.artifactDigest,
     schemaName: prepared.isReEnable ? undefined : prepared.schemaName,
     appliedSql: prepared.isReEnable ? undefined : prepared.appliedSql,
     version: prepared.isReEnable ? undefined : prepared.version,
@@ -276,6 +278,7 @@ describe("plugins.activate", () => {
       pluginId: string;
       schemaName: string;
       appliedSql: string;
+      artifactDigest: string;
     };
     await adapter.provisionPluginPublicSchema({
       pluginId: prepared.pluginId,
@@ -284,6 +287,7 @@ describe("plugins.activate", () => {
     // Force a commit failure by passing a wrong version.
     const commit = await execute(registry, adapter, systemCtx, "plugins.activate", {
       slug: HELLO_SLUG,
+      artifactDigest: prepared.artifactDigest,
       schemaName: prepared.schemaName,
       appliedSql: prepared.appliedSql,
       version: "9.9.9",
@@ -357,7 +361,7 @@ describe("plugins.activate", () => {
       manifest: helloManifest,
       source: helloSource,
     });
-    await execute(registry, adapter, systemCtx, "plugins.activate", { slug: HELLO_SLUG });
+    await fullActivate(HELLO_SLUG);
     await execute(registry, adapter, systemCtx, "plugins.disable", { slug: HELLO_SLUG });
     await fullActivate(HELLO_SLUG); // re-enable path: isReEnable=true skips DDL.
     const get = await execute(registry, adapter, systemCtx, "plugins.get", { slug: HELLO_SLUG });
