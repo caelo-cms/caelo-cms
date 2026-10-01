@@ -326,9 +326,22 @@ function jsonEqual(a: unknown, b: unknown): boolean {
  *
  * @returns null when allowed, else the reason
  */
-export async function privateStorageRefusal(
+export function privateStorageRefusal(
   tx: TransactionRunner,
   ctx: ExecutionContext,
+): Promise<string | null> {
+  return privateGrantRefusal(tx, ctx, "cms_admin_schema");
+}
+
+/**
+ * The same check for any author-side grant (`cms_admin_schema`,
+ * `private_files`): plugin active, and — for an installed artifact — that
+ * exact artifact active with an unrevoked receipt for `capability`.
+ */
+export async function privateGrantRefusal(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  capability: "cms_admin_schema" | "private_files",
 ): Promise<string | null> {
   if (!ctx.pluginId) return "no plugin id on the context";
   // Statement 1 takes the lock. Statement 2 runs after it, so under READ
@@ -344,7 +357,7 @@ export async function privateStorageRefusal(
            EXISTS (
              SELECT 1 FROM plugin_capability_grants g
              WHERE g.plugin_id = v.plugin_id AND g.artifact_digest = v.artifact_digest
-               AND g.capability = 'cms_admin_schema' AND g.revoked_at IS NULL
+               AND g.capability = ${capability} AND g.revoked_at IS NULL
            ) AS granted
     FROM plugin_installation_versions v
     WHERE v.plugin_id = ${ctx.pluginId}::uuid AND v.status = 'active'
@@ -358,7 +371,7 @@ export async function privateStorageRefusal(
     }
   }
   if (active && !active.granted) {
-    return "the Owner has not granted (or has revoked) private storage for this plugin version";
+    return `the Owner has not granted (or has revoked) ${capability === "private_files" ? "private files" : "private storage"} for this plugin version`;
   }
   return null;
 }

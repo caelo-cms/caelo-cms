@@ -35,8 +35,9 @@ import type {
 import { execute } from "@caelo-cms/query-api";
 import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
+import { hostSystemActorId, type LoadedPlugin, type PluginHostInfra } from "./dispatch.js";
 import { operatorCanAuthor } from "./external-authorization.js";
+import { makePluginPrivateFiles } from "./private-files.js";
 import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
 
 export interface MakePluginContextOpts {
@@ -90,16 +91,19 @@ export async function makePluginContext(
     const approval = plugin.externalApproval;
     if (!approval) return baseCtx;
     if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return baseCtx;
-    if (!approval.capabilities.includes("cms_admin_schema")) return baseCtx;
-    // Private storage is author data: only for someone who may author.
-    // Without it the plugin still runs, with the base handles — an
-    // operation that needs storage then fails at the sandbox broker
+    const wantsStorage = approval.capabilities.includes("cms_admin_schema");
+    const wantsFiles = approval.capabilities.includes("private_files");
+    if (!wantsStorage && !wantsFiles) return baseCtx;
+    // Private storage and files are author data: only for someone who may
+    // author. Without it the plugin still runs, with the base handles — an
+    // operation that needs them then fails at the sandbox broker
     // (SandboxCapabilityDenied), not silently.
-    const operator = invocation.origin === "chat" ? invocation.operatorActorId : invocation.actorId;
-    if (!operator || !(await operatorCanAuthor(infra, approval.systemActorId, operator))) {
-      return baseCtx;
-    }
-    return { ...baseCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) };
+    if (!(await authorMayWrite(infra, approval.systemActorId, invocation))) return baseCtx;
+    return {
+      ...baseCtx,
+      ...(wantsStorage ? { adminQuery: makePluginAdminQuery(plugin, infra, invocation) } : {}),
+      ...(wantsFiles ? { privateFiles: makePluginPrivateFiles(plugin, infra, invocation) } : {}),
+    };
   }
 
   // Release-signed — attach elevated handles per requestedCapabilities.
@@ -122,10 +126,29 @@ export async function makePluginContext(
   if (requested.has("email")) {
     tier1.email = makePluginEmail(infra);
   }
+  // Shipped plugins get private files on the same author terms as installed ones.
+  if (
+    requested.has("private_files") &&
+    !visitorContext &&
+    AUTHORING_ORIGINS.has(invocation.origin) &&
+    (await authorMayWrite(infra, hostSystemActorId(), invocation))
+  ) {
+    tier1.privateFiles = makePluginPrivateFiles(plugin, infra, invocation);
+  }
   return tier1;
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+/** Whether the human an authoring invocation acts for may author content. */
+async function authorMayWrite(
+  infra: PluginHostInfra,
+  systemActorId: string,
+  invocation: PluginInvocation,
+): Promise<boolean> {
+  const operator = invocation.origin === "chat" ? invocation.operatorActorId : invocation.actorId;
+  return Boolean(operator) && (await operatorCanAuthor(infra, systemActorId, operator as string));
+}
 
 /** Invocations that author content on someone's behalf. */
 const AUTHORING_ORIGINS: ReadonlySet<string> = new Set(["chat", "owner-panel", "approved"]);

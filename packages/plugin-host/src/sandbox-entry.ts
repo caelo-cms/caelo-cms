@@ -45,6 +45,7 @@ const execute = async (message) => {
   const ctx = Object.freeze({
     query: Object.freeze(query),
     ...(message.hasAdminQuery ? { adminQuery: Object.freeze(Object.fromEntries(["insert", "list", "update", "compareAndSwap", "delete"].map(name => [name, (...args) => rpc("adminQuery." + name, ...args)]))) } : {}),
+    ...(message.hasPrivateFiles ? { privateFiles: Object.freeze(Object.fromEntries(["begin", "writeChunk", "commit", "stat", "readChunk", "remove"].map(name => [name, (...args) => rpc("privateFiles." + name, ...args)]))) } : {}),
     api: Object.freeze({ list: (...args) => rpc("api.list", ...args), get: (...args) => rpc("api.get", ...args) }),
     captcha: Object.freeze({ requireProof: (...args) => rpc("captcha.requireProof", ...args) }),
     theme: Object.freeze(message.theme), visitor: Object.freeze(message.visitor),

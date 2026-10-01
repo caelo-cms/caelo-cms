@@ -8,6 +8,12 @@ export const SANDBOX_CALL_LIMIT = 256;
 
 /** Only these SDK calls may cross the process boundary. */
 export const sandboxMethod = z.enum([
+  "privateFiles.begin",
+  "privateFiles.writeChunk",
+  "privateFiles.commit",
+  "privateFiles.stat",
+  "privateFiles.readChunk",
+  "privateFiles.remove",
   "adminQuery.insert",
   "adminQuery.list",
   "adminQuery.update",

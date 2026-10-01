@@ -50,6 +50,12 @@ test("plugin preview is authenticated, read-only and inert even when opened dire
   await review.getByRole("button", { name: "Approve selected access and activate" }).click();
   await expect(page.getByRole("status")).toContainText("Approved package is running.");
   await page.goto("/edit");
+  // Workflow entries show only in an empty chat. /edit resumes the
+  // owner's most recent chat, which a parallel spec may be writing to —
+  // so open a fresh one, as an operator would.
+  await page.getByTestId("chat-picker-trigger").click();
+  await page.getByTestId("new-global-chat-btn").click();
+  await expect(page).toHaveURL(/[?&]chat=/);
   await expect(
     page.getByRole("button", { name: `Create with ${slug}`, exact: true }),
   ).toBeVisible();

@@ -43,7 +43,10 @@ export function escapePreviewText(value: string): string {
 /** Untrusted plugin HTML: no links, forms, scripts, embeds, SVG, refresh or external assets.
  * Paired with document-level CSP sandbox even when opened outside an iframe.
  */
-export function sanitizePluginPreview(html: string): string {
+export function sanitizePluginPreview(
+  html: string,
+  images: ReadonlyMap<string, string> = new Map(),
+): string {
   let result = "";
   let blocked = 0;
   let inStyle = false;
@@ -63,9 +66,9 @@ export function sanitizePluginPreview(html: string): string {
           else if (
             name === "img" &&
             key === "src" &&
-            /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value)
+            /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(images.get(value) ?? value)
           )
-            result += ` src="${value}"`;
+            result += ` src="${images.get(value) ?? value}"`;
         }
         result += ">";
         inStyle = name === "style";

@@ -74,6 +74,7 @@ export {
 export { buildEmailTransport, type EmailConfigRow } from "./email/transport.js";
 export { lockPluginRow } from "./locks.js";
 export * from "./media/pipeline.js";
+export { resolvePrivatePreviewImages } from "./media/private-preview-images.js";
 export * from "./media/storage.js";
 export * from "./ops/auth.js";
 export * from "./ops/deploy.js";
