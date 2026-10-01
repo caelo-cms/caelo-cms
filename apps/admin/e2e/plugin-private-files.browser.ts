@@ -60,7 +60,7 @@ test("private raster preview and attachment download require live author and plu
       const owner = await sql.begin(async tx => { await tx.unsafe("SET LOCAL caelo.actor_kind='system'"); return (await tx\`SELECT id::text FROM users WHERE email='dev-owner@example.com'\`)[0].id; });
       const registry = new OperationRegistry(); registerAdminOps(registry);
       await bootstrap({ infra: {adapter,registry}, pluginsRoot: root, systemActorId: "00000000-0000-0000-0000-00000000ffff" });
-      const context = await makePluginContext({plugin: loadedPlugins.bySlug(process.env.FILE_PLUGIN_SLUG), infra:{adapter,registry}, authorContext: { actor:{actorId:owner,actorKind:"human",requestId:"file-browser-fixture"},operatorActorId:owner} });
+      const context = await makePluginContext({plugin: loadedPlugins.bySlug(process.env.FILE_PLUGIN_SLUG), infra:{adapter,registry}, invocation: { origin: "owner-panel", actorId: owner } });
       const input = JSON.parse(process.env.FILE_METADATA);
       await context.privateFiles.begin(input);
       await context.privateFiles.writeChunk({id:input.id,offset:0,base64:process.env.FILE_PNG});
