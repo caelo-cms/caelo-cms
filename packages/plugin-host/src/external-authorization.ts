@@ -100,19 +100,29 @@ export async function readExternalApproval(opts: {
   });
 }
 
-/** Whether the human a call acts for may author content. */
-export async function operatorCanAuthor(
+/** Whether the human a call acts for holds `permission`. */
+export async function operatorHasPermission(
   infra: PluginHostInfra,
   systemActorId: string,
   actorId: string,
+  permission: "content.write" | "deploy.trigger",
 ): Promise<boolean> {
   registerExternalPluginOps(infra.registry);
   const r = await execute(
     infra.registry,
     infra.adapter,
-    { actorId: systemActorId, actorKind: "system", requestId: "external-plugin-author" },
-    EXTERNAL_OPS.operatorCanAuthor,
-    { actorId },
+    { actorId: systemActorId, actorKind: "system", requestId: "external-plugin-operator" },
+    EXTERNAL_OPS.operatorHasPermission,
+    { actorId, permission },
   );
   return r.ok && (r.value as { allowed: boolean }).allowed;
+}
+
+/** Whether the human a call acts for may author content. */
+export function operatorCanAuthor(
+  infra: PluginHostInfra,
+  systemActorId: string,
+  actorId: string,
+): Promise<boolean> {
+  return operatorHasPermission(infra, systemActorId, actorId, "content.write");
 }

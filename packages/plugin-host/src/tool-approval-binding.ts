@@ -89,18 +89,25 @@ export async function recordExternalToolApproval(
 }
 
 /**
- * Redeem the binding for the approved call, once. The approved
- * invocation's actor is the Owner who clicked Approve.
+ * Redeem the binding for the approved call, once, in the chat it was
+ * recorded in. The approved invocation's actor is the human who clicked
+ * Approve.
  */
 export async function consumeExternalToolApproval(
-  input: BindingSubject & { readonly invocation: PluginInvocation },
+  input: BindingSubject & {
+    readonly invocation: PluginInvocation;
+    /** The chat the card was shown in. */
+    readonly chatBranchId: string | undefined;
+  },
 ): Promise<void> {
   if (input.invocation.origin !== "approved") {
     throw new Error("ExternalToolApprovalRequired: run this tool through its approval card");
   }
+  if (!input.chatBranchId) throw new Error("ExternalToolApprovalBindingRequired");
   const { digest, toolCallId } = bindingDigest(input);
   await run(input, EXTERNAL_OPS.consumeToolBinding, {
     pluginId: input.plugin.pluginId,
+    chatBranchId: input.chatBranchId,
     toolCallId,
     operatorActorId: input.invocation.actorId,
     bindingDigest: digest,

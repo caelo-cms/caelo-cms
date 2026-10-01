@@ -23,7 +23,7 @@ import { z } from "zod";
 /** Operation names, for the host's callers. */
 export const EXTERNAL_OPS = {
   approval: "plugin_external.approval",
-  operatorCanAuthor: "plugin_external.operator_can_author",
+  operatorHasPermission: "plugin_external.operator_has_permission",
   recordToolBinding: "plugin_external.record_tool_binding",
   consumeToolBinding: "plugin_external.consume_tool_binding",
 } as const;
@@ -73,13 +73,23 @@ const approvalOp = defineOperation({
   },
 });
 
-/** Whether a human may author content — the precondition for author storage. */
-const operatorCanAuthorOp = defineOperation({
-  name: EXTERNAL_OPS.operatorCanAuthor,
+/**
+ * Whether the human a plugin call acts for holds a permission:
+ * `content.write` to author (the precondition for author storage),
+ * `deploy.trigger` to publish (an approved action goes live only for
+ * someone who could publish it anyway).
+ */
+const operatorHasPermissionOp = defineOperation({
+  name: EXTERNAL_OPS.operatorHasPermission,
   // Why system-only: the host checks the operator a plugin call acts for.
   actorScope: ["system"],
   database: "cms_admin",
-  input: z.object({ actorId: z.string().uuid() }).strict(),
+  input: z
+    .object({
+      actorId: z.string().uuid(),
+      permission: z.enum(["content.write", "deploy.trigger"]),
+    })
+    .strict(),
   output: z.object({ allowed: z.boolean() }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
@@ -88,7 +98,7 @@ const operatorCanAuthorOp = defineOperation({
         JOIN user_roles ur ON ur.user_id = u.id
         JOIN role_permissions rp ON rp.role_id = ur.role_id
         JOIN permissions p ON p.id = rp.permission_id
-        WHERE u.id = ${input.actorId}::uuid AND u.deleted_at IS NULL AND p.name = 'content.write'
+        WHERE u.id = ${input.actorId}::uuid AND u.deleted_at IS NULL AND p.name = ${input.permission}
       ) AS allowed
     `)) as unknown as { allowed: boolean }[];
     return ok({ allowed: rows[0]?.allowed === true });
@@ -147,12 +157,13 @@ const consumeToolBindingOp = defineOperation({
   // Why system-only: the host redeems the approval it recorded.
   actorScope: ["system"],
   database: "cms_admin",
-  input: bindingInput,
+  input: bindingInput.extend({ chatBranchId: z.string().uuid() }).strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       DELETE FROM plugin_tool_approval_bindings
-      WHERE plugin_id = ${input.pluginId}::uuid AND tool_call_id = ${input.toolCallId}
+      WHERE plugin_id = ${input.pluginId}::uuid AND chat_branch_id = ${input.chatBranchId}::uuid
+        AND tool_call_id = ${input.toolCallId}
         AND operator_actor_id = ${input.operatorActorId}::uuid
         AND binding_digest = ${input.bindingDigest}
       RETURNING binding_digest
@@ -171,7 +182,7 @@ const consumeToolBindingOp = defineOperation({
   },
 });
 
-const ALL = [approvalOp, operatorCanAuthorOp, recordToolBindingOp, consumeToolBindingOp];
+const ALL = [approvalOp, operatorHasPermissionOp, recordToolBindingOp, consumeToolBindingOp];
 
 /** Register the external-plugin operations (idempotent, like the storage ops). */
 export function registerExternalPluginOps(registry: OperationRegistry): void {

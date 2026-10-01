@@ -27,12 +27,17 @@ export function chatPluginInvocation(
 
 /**
  * The plugin invocation for an approval-gated plugin tool after the
- * Owner's click: an approved action applies live (CMS_REQUIREMENTS
- * §14.7), so it runs on main as the approving Owner — not on the chat's
- * branch, where it would wait for a second, publishing decision.
+ * click (CMS_REQUIREMENTS §14.7). An approved action applies live when
+ * the approver may publish (`deploy.trigger`) — the click is then the
+ * publishing decision. An approver who cannot publish keeps it on the
+ * chat's branch, so it goes live with the chat, by someone who may.
  *
- * @param operatorActorId the Owner who approved
+ * @param operatorActorId the human who approved
+ * @param chatBranch the chat's branch and task, when the action must stay on it
  */
-export function approvedPluginInvocation(operatorActorId: string): PluginInvocation {
-  return { origin: "approved", actorId: operatorActorId };
+export function approvedPluginInvocation(
+  operatorActorId: string,
+  chatBranch?: { readonly chatBranchId: string; readonly chatTaskId?: string },
+): PluginInvocation {
+  return { origin: "approved", actorId: operatorActorId, ...(chatBranch ?? {}) };
 }

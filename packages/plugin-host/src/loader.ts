@@ -407,6 +407,14 @@ async function loadActiveTier2Plugins(
         },
       );
       if (!actorId) throw new Error("ExternalPluginActorMissing");
+      // Same check as activation: a tool name must not shadow another
+      // plugin's — the chat would dispatch the wrong plugin's operation.
+      for (const tool of definition.tools ?? []) {
+        const existing = pluginToolsRegistry.resolve(tool.name);
+        if (existing && existing.pluginSlug !== row.slug) {
+          throw new Error(`Tool name already registered by ${existing.pluginSlug}: ${tool.name}`);
+        }
+      }
       loadedPlugins.set({
         pluginId: row.id,
         slug: row.slug,

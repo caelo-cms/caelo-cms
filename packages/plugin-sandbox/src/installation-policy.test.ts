@@ -87,3 +87,40 @@ it("refuses unbounded host-side tool schemas and ambiguous approval declarations
   for (let depth = 0; depth < 15; depth++) nested = { type: "object", properties: { nested } };
   expect(() => check([{ ...tool, inputJsonSchema: nested }])).toThrow("schema shape");
 });
+
+describe("installed plugins stay inside their own namespace (#515 review)", () => {
+  it("refuses foreign keys into core tables", () => {
+    expect(() =>
+      validateInstallationPolicy({
+        ...manifest(),
+        adminSchema: { notes: { body: "text", page_id: "ref:pages" } },
+      }),
+    ).toThrow("cannot reference core tables");
+  });
+
+  it("refuses a slug whose schema name Postgres would truncate", () => {
+    expect(() => pluginManifest.parse({ ...manifest(), slug: `a${"b".repeat(55)}` })).toThrow();
+    expect(() => pluginManifest.parse({ ...manifest(), slug: `a${"b".repeat(54)}` })).not.toThrow();
+  });
+
+  it("keeps tool names in an unambiguous per-slug namespace", () => {
+    const withTool = (name: string) => ({
+      ...manifest(),
+      requestedCapabilities: ["cms_admin_schema", "chat_runner_tools"] as const,
+      capabilityReasons: { cms_admin_schema: "notes", chat_runner_tools: "save notes" },
+      tools: [
+        {
+          name,
+          description: "Save a note",
+          operationName: "save",
+          inputJsonSchema: { type: "object", properties: {}, additionalProperties: false },
+        },
+      ],
+    });
+    expect(() => validateInstallationPolicy(withTool("external_notes__save"))).not.toThrow();
+    // "external_notes___save" belongs to slug "external-notes-".
+    expect(() => validateInstallationPolicy(withTool("external_notes___save"))).toThrow(
+      "starting with a letter",
+    );
+  });
+});

@@ -24,8 +24,10 @@
 
 import {
   hostInfra,
+  hostSystemActorId,
   loadActivatedPlugin,
   loadedPlugins,
+  operatorHasPermission,
   recordExternalToolApproval,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
@@ -36,6 +38,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 
 import { describePersistError } from "../chat-runner/persistence.js";
 import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
+import { approvedPluginInvocation } from "../plugin-invocation.js";
 
 /**
  * Attach the SDK `execute` to a gated catalogue tool. The returned tool ships
@@ -132,8 +135,8 @@ export function attachGatedExecute(
  */
 export function attachPluginGatedExecute(
   tool: FilteredTool,
-  /** `chat` records the approval binding before the card; `approved` runs the call. */
-  invocations: { readonly chat: PluginInvocation; readonly approved: PluginInvocation },
+  /** The chat the tool is offered in; its operator is the one who approves. */
+  chat: PluginInvocation,
 ): FilteredTool {
   const pluginGated = tool.pluginGated;
   if (!pluginGated) return tool;
@@ -147,7 +150,7 @@ export function attachPluginGatedExecute(
             recordExternalToolApproval({
               plugin,
               infra: hostInfra(),
-              invocation: invocations.chat,
+              invocation: chat,
               toolCallId,
               args,
               toolName: tool.name,
@@ -156,13 +159,32 @@ export function attachPluginGatedExecute(
         }
       : {}),
     execute: async (input: unknown, options?: { toolCallId?: string }): Promise<unknown> => {
+      const approver = chat.operatorActorId;
+      if (!approver)
+        return { ok: false, error: "ApprovalWithoutOperator: no human approved this call" };
+      // Live only for an approver who could publish it anyway; otherwise the
+      // approved action stays on the chat's branch until someone publishes.
+      const canPublish = await operatorHasPermission(
+        hostInfra(),
+        hostSystemActorId(),
+        approver,
+        "deploy.trigger",
+      );
+      const invocation =
+        canPublish || !chat.chatBranchId
+          ? approvedPluginInvocation(approver)
+          : approvedPluginInvocation(approver, {
+              chatBranchId: chat.chatBranchId,
+              ...(chat.chatTaskId ? { chatTaskId: chat.chatTaskId } : {}),
+            });
       const r = await runPluginOperation({
         approvedToolName: tool.name,
         approvedToolCallId: options?.toolCallId,
+        ...(chat.chatBranchId ? { approvedChatBranchId: chat.chatBranchId } : {}),
         pluginSlug: pluginGated.pluginSlug,
         operationName: pluginGated.operationName,
         args: input,
-        invocation: invocations.approved,
+        invocation,
       });
       if (!r.ok) {
         return { ok: false, error: `${r.error.kind}: ${r.error.message}` };

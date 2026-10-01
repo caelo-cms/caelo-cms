@@ -219,6 +219,9 @@ function makeScopedQuery(
     pluginId: plugin.pluginId,
     requestId: `plugin-${plugin.slug}`,
     ...branch,
+    ...(plugin.externalApproval
+      ? { pluginArtifactDigest: plugin.externalApproval.artifactDigest }
+      : {}),
   };
 
   /**

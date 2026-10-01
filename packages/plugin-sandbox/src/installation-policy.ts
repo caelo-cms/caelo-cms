@@ -12,6 +12,18 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
       throw new Error(`Missing required capability request: ${capability}`);
   };
   requireCapability(Object.keys(manifest.adminSchema ?? {}).length > 0, "cms_admin_schema");
+  // A foreign key into core data would let an installed plugin block core
+  // deletes (a page it references cannot be removed) and probe which core
+  // ids exist — FK checks bypass row-level security. Store ids as `uuid`.
+  for (const [table, columns] of Object.entries(manifest.adminSchema ?? {})) {
+    for (const [column, type] of Object.entries(columns)) {
+      if (type.startsWith("ref:")) {
+        throw new Error(
+          `adminSchema.${table}.${column}: installed plugins cannot reference core tables — declare it as "uuid"`,
+        );
+      }
+    }
+  }
   requireCapability(Boolean(manifest.tools?.length), "chat_runner_tools");
   requireCapability(Boolean(manifest.workers?.length), "background_workers");
   requireCapability(Boolean(manifest.contributes?.length), "head_contributions");
@@ -45,9 +57,12 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
     if (toolOperations.has(tool.operationName))
       throw new Error("Tool operations must have exactly one tool declaration");
     toolOperations.add(tool.operationName);
-    if (!tool.name.startsWith(`${manifest.slug.replaceAll("-", "_")}__`))
+    // `<slug>__` then a letter: without the letter, slug "foo" could claim
+    // "foo___x", which belongs to slug "foo-" (prefix "foo___").
+    const prefix = `${manifest.slug.replaceAll("-", "_")}__`;
+    if (!tool.name.startsWith(prefix) || !/^[a-z]/.test(tool.name.slice(prefix.length)))
       throw new Error(
-        `External tool names must start with ${manifest.slug.replaceAll("-", "_")}__`,
+        `External tool names must be ${prefix}<name>, the name starting with a letter`,
       );
     if (publicOperations.has(tool.operationName))
       throw new Error("Authoring tools cannot also be visitor operations");

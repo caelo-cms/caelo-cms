@@ -351,10 +351,13 @@ export interface DeferralCandidate {
 
 export const pluginManifest = z
   .object({
+    // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
+    // truncates identifiers past 63 bytes — two long slugs sharing a
+    // prefix would land in ONE schema, i.e. one plugin's data.
     slug: z
       .string()
       .min(1)
-      .max(120)
+      .max(55)
       .regex(/^[a-z][a-z0-9-]*$/, "must be lowercase, dash-separated"),
     version: z
       .string()

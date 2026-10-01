@@ -331,22 +331,33 @@ export async function privateStorageRefusal(
   ctx: ExecutionContext,
 ): Promise<string | null> {
   if (!ctx.pluginId) return "no plugin id on the context";
+  // Statement 1 takes the lock. Statement 2 runs after it, so under READ
+  // COMMITTED it sees whatever a finalize or revocation committed while
+  // this one waited — a single statement would keep its earlier snapshot
+  // for the joined rows.
+  const plugin = (await tx.execute(sql`
+    SELECT status FROM plugins WHERE id = ${ctx.pluginId}::uuid FOR SHARE
+  `)) as unknown as { status: string }[];
+  if (plugin[0]?.status !== "active") return "the plugin is not active";
   const rows = (await tx.execute(sql`
-    SELECT p.status,
-           v.artifact_digest,
+    SELECT v.artifact_digest,
            EXISTS (
              SELECT 1 FROM plugin_capability_grants g
-             WHERE g.plugin_id = p.id AND g.artifact_digest = v.artifact_digest
+             WHERE g.plugin_id = v.plugin_id AND g.artifact_digest = v.artifact_digest
                AND g.capability = 'cms_admin_schema' AND g.revoked_at IS NULL
            ) AS granted
-    FROM plugins p
-    LEFT JOIN plugin_installation_versions v ON v.plugin_id = p.id AND v.status = 'active'
-    WHERE p.id = ${ctx.pluginId}::uuid
-    FOR SHARE OF p
-  `)) as unknown as { status: string; artifact_digest: string | null; granted: boolean }[];
-  const row = rows[0];
-  if (!row || row.status !== "active") return "the plugin is not active";
-  if (row.artifact_digest !== null && !row.granted) {
+    FROM plugin_installation_versions v
+    WHERE v.plugin_id = ${ctx.pluginId}::uuid AND v.status = 'active'
+  `)) as unknown as { artifact_digest: string; granted: boolean }[];
+  const active = rows[0];
+  if (ctx.pluginArtifactDigest !== undefined) {
+    // An installed artifact may write only while it is the active,
+    // granted one — not a successor finalised while it was running.
+    if (!active || active.artifact_digest !== ctx.pluginArtifactDigest) {
+      return "this plugin version is no longer the active one — reload it";
+    }
+  }
+  if (active && !active.granted) {
     return "the Owner has not granted (or has revoked) private storage for this plugin version";
   }
   return null;

@@ -134,6 +134,13 @@ function quoteIdent(s: string): string {
   if (!/^[a-z_][a-z0-9_]*$/.test(s)) {
     throw new Error(`schemaFromSpec: refusing to quote identifier "${s}"`);
   }
+  // Postgres truncates identifiers past 63 bytes without an error, so two
+  // distinct long names would address the same schema, table or policy.
+  if (s.length > 63) {
+    throw new Error(
+      `schemaFromSpec: identifier "${s}" is longer than Postgres' 63-byte limit — shorten the plugin slug or table name`,
+    );
+  }
   return `"${s}"`;
 }
 

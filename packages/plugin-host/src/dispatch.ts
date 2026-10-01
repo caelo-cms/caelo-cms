@@ -203,6 +203,8 @@ export interface RunPluginOperationOpts {
   readonly approvedToolName?: string;
   /** The approved tool call, whose binding was recorded before asking the Owner. */
   readonly approvedToolCallId?: string;
+  /** The chat the approval card was shown in; its binding is redeemed there only. */
+  readonly approvedChatBranchId?: string;
   readonly pluginSlug: string;
   readonly operationName: string;
   readonly args: unknown;
@@ -235,7 +237,14 @@ export function assertInvocationConsistent(
   if (invocation.origin === "chat" && !invocation.chatBranchId) {
     throw new Error("PluginInvocationInvalid: a chat invocation needs the chat's branch");
   }
-  if (invocation.chatBranchId && invocation.origin !== "chat" && invocation.origin !== "render") {
+  // A branch is allowed for a chat, a branch preview render, and an
+  // approved action whose approver cannot publish (it stays in the chat).
+  if (
+    invocation.chatBranchId &&
+    invocation.origin !== "chat" &&
+    invocation.origin !== "render" &&
+    invocation.origin !== "approved"
+  ) {
     throw new Error(
       `PluginInvocationInvalid: origin "${invocation.origin}" cannot carry a chat branch`,
     );
@@ -388,6 +397,7 @@ export async function runPluginOperation(
             toolName: tool.name,
             operationName: opts.operationName,
             toolCallId: opts.approvedToolCallId,
+            chatBranchId: opts.approvedChatBranchId,
             args: opts.args,
           });
       } catch (error) {

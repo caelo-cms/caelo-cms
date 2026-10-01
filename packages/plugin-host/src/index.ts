@@ -60,6 +60,7 @@ export {
   setPluginDisabled,
   type VisitorDispatchContext,
 } from "./dispatch.js";
+export { operatorHasPermission } from "./external-authorization.js";
 export {
   type CollectedContributions,
   collectContributions,

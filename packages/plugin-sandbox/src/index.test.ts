@@ -382,3 +382,15 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
     ).toThrow("reserved");
   });
 });
+
+describe("identifiers past Postgres' 63-byte limit (#515 review)", () => {
+  it("refuses them instead of letting Postgres truncate them into a shared name", () => {
+    expect(() =>
+      adminSchemaFromSpec({
+        pluginId: "11111111-1111-4111-8111-111111111111",
+        slug: "probe",
+        adminSchema: { [`t${"x".repeat(64)}`]: { body: "text" } },
+      }),
+    ).toThrow("63-byte");
+  });
+});

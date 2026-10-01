@@ -401,7 +401,6 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
     operatorActorId: owner.actorId,
     chatBranchId: branch,
   };
-  const approved: PluginInvocation = { origin: "approved", actorId: owner.actorId };
   const actor = { ...system, actorKind: "ai" as const, chatBranchId: branch };
   expect((await activateApprovedExternalPlugin(item.installationId)).loaded).toBe(false);
   // Existing activation APIs must not bypass the individual grants.
@@ -462,7 +461,7 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
         inputSchema: privateManifest.tools[0]!.inputJsonSchema,
         pluginGated: { pluginSlug: slug, operationName: "approved_save" },
       },
-      { chat, approved },
+      chat,
     );
   const originalTool = gatedTool();
   const approvedArgs = { body: "approved" };
@@ -480,6 +479,34 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
   expect(await originalTool.execute!(approvedArgs, { toolCallId: "approved-call" })).toMatchObject({
     ok: true,
   });
+  // An approver who cannot publish (editor: content.write, no
+  // deploy.trigger) keeps the approved action on their chat's branch.
+  const editor = await user("editor");
+  const editorChat: PluginInvocation = {
+    origin: "chat",
+    actorId: system.actorId,
+    operatorActorId: editor.actorId,
+    chatBranchId: crypto.randomUUID(),
+  };
+  const editorTool = attachPluginGatedExecute(gatedTool(), editorChat);
+  await editorTool.prepareApproval!("editor-call", { body: "editor approved" });
+  expect(
+    await editorTool.execute!({ body: "editor approved" }, { toolCallId: "editor-call" }),
+  ).toMatchObject({ ok: true });
+  const bodiesFor = async (invocation: PluginInvocation) => {
+    const r = await runPluginOperation({
+      pluginSlug: slug,
+      operationName: "read",
+      args: {},
+      invocation,
+    });
+    if (!r.ok) throw new Error(r.error.message);
+    return (r.value as { body: string }[]).map((n) => n.body);
+  };
+  expect(await bodiesFor(editorChat)).toContain("editor approved");
+  expect(await bodiesFor({ origin: "owner-panel", actorId: owner.actorId })).not.toContain(
+    "editor approved",
+  );
   await originalTool.prepareApproval!("restart-call", { body: "after restart" });
   await originalTool.prepareApproval!("stale-call", { body: "must never execute" });
   await expect(
@@ -568,8 +595,8 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
     ok: false,
   });
   const wrongAuthorTool = attachPluginGatedExecute(originalTool, {
-    chat,
-    approved: { origin: "approved", actorId: reviewer.actorId },
+    ...chat,
+    operatorActorId: reviewer.actorId,
   });
   expect(
     await wrongAuthorTool.execute!(approvedArgs, { toolCallId: "approved-call" }),
@@ -636,6 +663,12 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
     pluginId: loaded.pluginId,
     requestId: "revocation-race",
   };
+  // A call from an artifact that is no longer the active one is refused.
+  expect(
+    await adapter.withAdminTransaction(pluginCtx, (tx) =>
+      privateStorageRefusal(tx, { ...pluginCtx, pluginArtifactDigest: "0".repeat(64) }),
+    ),
+  ).toContain("no longer the active one");
   const write = adapter.withAdminTransaction(pluginCtx, async (tx) => {
     expect(await privateStorageRefusal(tx, pluginCtx)).toBeNull();
     await tx.execute(

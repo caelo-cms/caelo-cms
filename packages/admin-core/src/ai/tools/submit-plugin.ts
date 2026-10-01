@@ -26,7 +26,7 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
     additionalProperties: false,
     required: ["slug", "version", "manifest", "source"],
     properties: {
-      slug: { type: "string", pattern: "^[a-z][a-z0-9-]*$", maxLength: 120 },
+      slug: { type: "string", pattern: "^[a-z][a-z0-9-]*$", maxLength: 55 },
       version: {
         type: "string",
         pattern: "^\\d+\\.\\d+\\.\\d+(-[a-z0-9.]+)?$",
