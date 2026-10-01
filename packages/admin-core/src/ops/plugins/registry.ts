@@ -224,7 +224,7 @@ export const submitPluginOp = defineOperation({
         .max(40)
         .regex(/^\d+\.\d+\.\d+(-[a-z0-9.]+)?$/),
       manifest: z.unknown(),
-      source: z.string().min(1).max(200_000),
+      source: z.string().min(1).max(4_000_000),
     })
     .strict(),
   output: z.object({

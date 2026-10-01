@@ -6,7 +6,7 @@ import { privatePluginFiles } from "$lib/server/plugin-files.js";
 import type { RequestHandler } from "./$types";
 
 /** Generic private download: never serve plugin bytes as executable same-origin content. */
-export const GET: RequestHandler = async ({ params, locals }) => {
+export const GET: RequestHandler = async ({ params, locals, url }) => {
   const input = z
     .object({ id: z.string().uuid(), sha256: z.string().regex(/^[a-f0-9]{64}$/) })
     .safeParse(params);
@@ -21,6 +21,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
   } catch {
     throw error(404, "Private file unavailable");
   }
+  const requestedName = url.searchParams.get("filename");
+  const filename =
+    requestedName && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(requestedName)
+      ? requestedName
+      : input.data.id;
   let offset = 0;
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -41,7 +46,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
   return new Response(stream, {
     headers: {
       "content-type": "application/octet-stream",
-      "content-disposition": `attachment; filename="${input.data.id}"`,
+      "content-disposition": `attachment; filename="${filename}"`,
       "content-length": String(size),
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",

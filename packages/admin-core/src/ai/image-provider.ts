@@ -35,6 +35,7 @@ export interface ImageRequest {
   }[];
   /** Explicit native Gemini resolution; unsupported models fail before a paid call. */
   readonly imageSize?: "1K" | "2K" | "4K";
+  readonly maxOutputTokens?: number;
   readonly apiKey: string;
   readonly fetchImpl?: typeof fetch;
   readonly abortSignal?: AbortSignal;
@@ -48,6 +49,7 @@ export interface ImageResponse {
    *  the provider doesn't expose a revision. */
   readonly revisedPrompt: string | null;
   readonly durationMs: number;
+  readonly usage?: { inputTokens: number; outputTokens: number };
 }
 
 export interface ImageProvider {
@@ -174,6 +176,7 @@ export class GeminiSdkImageProvider implements ImageProvider {
         },
       ],
       maxRetries: 0,
+      ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
       providerOptions: {
         google: {
           responseModalities: ["TEXT", "IMAGE"],
@@ -194,6 +197,10 @@ export class GeminiSdkImageProvider implements ImageProvider {
     }
     return {
       imageUrl: `data:${img.mediaType};base64,${img.base64}`,
+      usage: {
+        inputTokens: result.usage.inputTokens ?? 0,
+        outputTokens: result.usage.outputTokens ?? 0,
+      },
       revisedPrompt: null,
       durationMs: Date.now() - start,
     };
