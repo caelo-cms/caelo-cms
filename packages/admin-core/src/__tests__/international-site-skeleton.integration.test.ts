@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
   loadedPlugins,
+  MAIN_RENDER,
   resetPluginHost,
   urlContributionsRegistry,
 } from "@caelo-cms/plugin-host";
@@ -104,7 +105,10 @@ describe("#394 — international-site skeleton on the foundation", () => {
 
     // With no locales registered, pages compose bare (zero-diff retrofit).
     const { collectUrlAnnotations } = await import("@caelo-cms/plugin-host");
-    const annotations = await collectUrlAnnotations(["00000000-0000-4000-8000-000000000001"]);
+    const annotations = await collectUrlAnnotations(
+      ["00000000-0000-4000-8000-000000000001"],
+      MAIN_RENDER,
+    );
     expect(annotations.get("00000000-0000-4000-8000-000000000001")).toEqual({});
   });
 

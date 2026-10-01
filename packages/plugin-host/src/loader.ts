@@ -51,6 +51,7 @@ import { sql } from "drizzle-orm";
 import { makePluginContext } from "./capabilities.js";
 import { pluginDataListsRegistry } from "./data-lists.js";
 import {
+  hostSystemActorId,
   type LoadedPlugin,
   loadedPlugins,
   type PluginHostInfra,
@@ -803,6 +804,21 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   };
   loadedPlugins.set(lp);
 
+  // Create-time defaults, on main, before anything can read them.
+  if (def.onActivate) {
+    const ctx = await makePluginContext({
+      plugin: lp,
+      infra: opts.infra,
+      invocation: { origin: "system", actorId: hostSystemActorId() },
+    });
+    try {
+      await def.onActivate(ctx);
+    } catch (e) {
+      loadedPlugins.unload(def.slug);
+      throw new Error(`plugin "${def.slug}" onActivate failed: ${(e as Error).message}`);
+    }
+  }
+
   // Register tools + workers + prompt-context renderers.
   for (const tool of def.tools ?? []) {
     pluginToolsRegistry.register(def.slug, tool);
@@ -816,9 +832,13 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       label: renderer.label,
       render: () =>
         // Render with a fresh ctx every turn — handles get the live infra.
-        Promise.resolve(makePluginContext({ plugin: lp, infra: opts.infra })).then((ctx) =>
-          Promise.resolve(renderer.render(ctx as PluginContext)),
-        ),
+        Promise.resolve(
+          makePluginContext({
+            plugin: lp,
+            infra: opts.infra,
+            invocation: { origin: "system", actorId: hostSystemActorId() },
+          }),
+        ).then((ctx) => Promise.resolve(renderer.render(ctx as PluginContext))),
     });
   }
   if (def.workers && def.workers.length > 0) {

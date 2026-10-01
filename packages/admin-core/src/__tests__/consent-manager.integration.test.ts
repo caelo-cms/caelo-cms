@@ -16,6 +16,7 @@ import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
   collectBuildAssets,
+  MAIN_RENDER,
   resetPluginHost,
   resolveDataLists,
   runPluginOperation,
@@ -62,6 +63,11 @@ async function cleanup(): Promise<void> {
     await tx.unsafe(`DELETE FROM audit_events WHERE actor_id IN (
       SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'consent-manager')
     )`);
+    // Storage writes (onActivate's seed included) snapshot under the
+    // plugin's actor; the history goes before the actor it references.
+    await tx.unsafe(`DELETE FROM site_snapshots WHERE actor_id IN (
+      SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'consent-manager')
+    )`);
     await tx.unsafe(
       "DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'consent-manager')",
     );
@@ -84,7 +90,12 @@ async function cleanup(): Promise<void> {
 }
 
 async function call(operationName: string, args: unknown = {}) {
-  return runPluginOperation({ pluginSlug: "consent-manager", operationName, args });
+  return runPluginOperation({
+    invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+    pluginSlug: "consent-manager",
+    operationName,
+    args,
+  });
 }
 
 beforeAll(async () => {
@@ -205,7 +216,7 @@ describe("#451 — consent-manager", () => {
   });
 
   it("offers the categories to a module as a data list, not as markup", async () => {
-    const lists = await resolveDataLists([pageId]);
+    const lists = await resolveDataLists([pageId], MAIN_RENDER);
     const items = lists.get(pageId)?.consent_categories;
     expect(items).toBeDefined();
     expect(items?.map((i) => i.key)).toEqual(["necessary", "functional", "analytics", "marketing"]);
@@ -221,7 +232,7 @@ describe("#451 — consent-manager", () => {
   });
 
   it("bakes the categories and the policy version into the runtime", async () => {
-    const assets = await collectBuildAssets([pageId]);
+    const assets = await collectBuildAssets([pageId], MAIN_RENDER);
     const js = assets.find((a) => a.fileName === "runtime.js");
     const css = assets.find((a) => a.fileName === "runtime.css");
     expect(js).toBeDefined();
@@ -318,7 +329,7 @@ describe("#451 — consent-manager", () => {
     // operator does not have to look either up.
     expect((added.value as { category: string }).category).toBe("analytics");
 
-    const assets = await collectBuildAssets([pageId]);
+    const assets = await collectBuildAssets([pageId], MAIN_RENDER);
     const js = assets.find((a) => a.fileName === "runtime.js")?.content ?? "";
     expect(js).toContain("googletagmanager.com");
     // Baked into the RUNTIME, never into the page: a tag in the page's
@@ -363,7 +374,8 @@ describe("#451 — consent-manager", () => {
     const removed = await call("remove_tag", { name: "GA4" });
     if (!removed.ok) throw new Error(JSON.stringify(removed.error));
     const js =
-      (await collectBuildAssets([pageId])).find((a) => a.fileName === "runtime.js")?.content ?? "";
+      (await collectBuildAssets([pageId], MAIN_RENDER)).find((a) => a.fileName === "runtime.js")
+        ?.content ?? "";
     expect(js).not.toContain("googletagmanager.com");
   });
 
@@ -431,7 +443,9 @@ describe("#451 — consent-manager", () => {
         ?.reason,
     ).toBe("unclassified");
 
-    await call("scan_modules");
+    // No scan has recorded a verdict yet: list_embeds is read-only and
+    // still reports what the gate does, and classify_embed records the
+    // operator's decision without a prior scan row.
     const listed = await call("list_embeds");
     if (!listed.ok) throw new Error(JSON.stringify(listed.error));
     const row = (
@@ -533,12 +547,12 @@ describe("#451 — consent-manager", () => {
   });
 
   it("re-asks everyone when the policy version is bumped", async () => {
-    const before = await collectBuildAssets([pageId]);
+    const before = await collectBuildAssets([pageId], MAIN_RENDER);
     const r = await call("bump_policy_version");
     if (!r.ok) throw new Error(JSON.stringify(r.error));
     expect((r.value as { policyVersion: number }).policyVersion).toBe(2);
 
-    const after = await collectBuildAssets([pageId]);
+    const after = await collectBuildAssets([pageId], MAIN_RENDER);
     const js = after.find((a) => a.fileName === "runtime.js");
     expect(js?.content).toContain('"policyVersion":2');
     // A changed runtime must change its hashed filename, or caches keep

@@ -24,7 +24,7 @@ bun run knip:fix      # auto-delete the safe findings (unused exports, unused fi
 
 1. **Start from a clean working tree.** `git status` must be empty so the fix's diff is unambiguous.
 2. **Run `bun run knip:fix`.** Knip rewrites source files in place.
-3. **Review the diff with `git diff`.** Knip's static analysis can't see dynamic-load patterns (files invoked via Pulumi CLI, Bun's `import.meta.glob`, DB-resident Tier 2 plugin source). When `--fix` deletes something dynamically loaded, the loss only surfaces at runtime — catch it here, not in production.
+3. **Review the diff with `git diff`.** Knip's static analysis can't see dynamic-load patterns (files invoked via Pulumi CLI, Bun's `import.meta.glob`, DB-resident plugin source of runtime-installed plugins). When `--fix` deletes something dynamically loaded, the loss only surfaces at runtime — catch it here, not in production.
 4. **Run `bun run typecheck` + `bun test`.** If anything was dynamically loaded and knip got it wrong, the type-check or test will fail.
 5. **Stage + commit.** Use a `refactor:` Conventional Commit subject so the cleanup is discoverable in `git log`.
 
@@ -95,7 +95,7 @@ Knip is a static analysis tool. It does NOT detect:
 
 - **Unused class methods** — by design, class members aren't in the default analysis surface (the `pruneSha` orphan was found by manual audit, not knip).
 - **Unused database columns / tables** — these are runtime data, not code.
-- **Plugin source loaded from the database** — Tier 2 plugin code lives in `plugins.source_code` rows, not on disk.
+- **Plugin source loaded from the database** — runtime-installed plugin code lives in `plugins.source_code` rows, not on disk.
 - **Dynamic invocations via `eval` / `new Function`** — Caelo doesn't use these, but if you add one, knip can't follow it.
 
 For these classes, the contributor still has to think. The reviewer test is: *would a smart human reader of this PR notice that the deleted symbol is dead, given the diff alone?* If yes, knip's silence is fine; if no, document the dynamic load path.

@@ -117,7 +117,9 @@ export async function mintModuleFromHtml(
     } catch (e) {
       return {
         ok: false,
-        content: `moduleize failed: ${e instanceof Error ? e.message : String(e)}. Retry, or pass explicit fields[] to skip inference.`,
+        // Nothing was written. The next step must carry the operator's
+        // copy across, or a retry "succeeds" with empty placeholders.
+        content: `moduleize failed: ${e instanceof Error ? e.message : String(e)}. Nothing was created. Re-call with the HTML already parametrised ({{field}} placeholders), explicit semantic \`fields[]\`, and the ORIGINAL text/hrefs from the raw HTML as \`values\` (or as each field's \`default\`) — that skips inference, and the copy must not be dropped.`,
       };
     }
   }

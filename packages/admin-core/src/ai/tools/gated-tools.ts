@@ -23,6 +23,7 @@
  */
 
 import { loadActivatedPlugin, runPluginOperation } from "@caelo-cms/plugin-host";
+import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -123,7 +124,10 @@ export function attachGatedExecute(
  * way to express an approval requirement at all — every call ran
  * unqueued and unapproved.
  */
-export function attachPluginGatedExecute(tool: FilteredTool): FilteredTool {
+export function attachPluginGatedExecute(
+  tool: FilteredTool,
+  invocation: PluginInvocation,
+): FilteredTool {
   const pluginGated = tool.pluginGated;
   if (!pluginGated) return tool;
   return {
@@ -134,6 +138,7 @@ export function attachPluginGatedExecute(tool: FilteredTool): FilteredTool {
         pluginSlug: pluginGated.pluginSlug,
         operationName: pluginGated.operationName,
         args: input,
+        invocation,
       });
       if (!r.ok) {
         return { ok: false, error: `${r.error.kind}: ${r.error.message}` };

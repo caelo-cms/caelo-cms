@@ -16,16 +16,14 @@
  */
 
 import { createHash } from "node:crypto";
-
 import { pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ChatAttachment, ExecutionContext } from "@caelo-cms/shared";
 import { buildChatImageKey } from "@caelo-cms/shared";
-
 import { getMediaStorage } from "../../media/storage.js";
-
 import { tryAutoRecover } from "../auto-recovery.js";
+import { chatPluginInvocation } from "../plugin-invocation.js";
 import type { AIProvider, ChatMessageInput } from "../provider.js";
 import type { ToolRegistry } from "../tools/index.js";
 import type {
@@ -225,6 +223,7 @@ export async function dispatchToolCall(
           pluginSlug: pluginTool.pluginSlug,
           operationName: pluginTool.spec.operationName,
           args: call.arguments,
+          invocation: chatPluginInvocation(aiCtxWithBranch, humanCtx.actorId),
         }).then((r) =>
           r.ok
             ? { ok: true, content: JSON.stringify(r.value) }

@@ -319,6 +319,13 @@ export const moduleDeferralSpec = z
     /** Slug of the module rendered in the withheld one's place. An
      *  ordinary module, so the AI authors and styles it. */
     placeholderModuleSlug: z.string().min(1).max(200),
+    /** The plugin's own built-in placeholder, rendered while no module
+     *  with `placeholderModuleSlug` exists yet. Without it a site whose
+     *  placeholder was never designed cannot render the page at all. */
+    defaultPlaceholder: z
+      .object({ html: z.string().min(1).max(20_000), css: z.string().max(20_000) })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -656,12 +663,43 @@ export interface PluginSnapshots {
 }
 
 /** Locked context — what every Tier 2 plugin receives. */
+/** Where a plugin call came from (CMS_REQUIREMENTS §14.7). */
+export type PluginInvocationOrigin =
+  | "chat"
+  | "owner-panel"
+  /** An action the Owner approved in the chat (§11.A gate): it applies
+   *  on main, as the approving Owner, never on the chat's branch. */
+  | "approved"
+  | "worker"
+  | "render"
+  | "visitor"
+  | "system";
+
+/**
+ * Who a plugin call acts for and on which chat branch. Every dispatch
+ * site supplies it; the host uses it to decide whether an authoring
+ * write lands on a chat branch or on main (CMS_REQUIREMENTS §14.7).
+ */
+export interface PluginInvocation {
+  readonly origin: PluginInvocationOrigin;
+  /** The acting actor: the AI actor in a chat, the Owner in the panel,
+   *  the system actor for workers/render, the visitor id for visitors. */
+  readonly actorId: string;
+  /** The human a chat belongs to. */
+  readonly operatorActorId?: string;
+  /** Set for origin `chat`: the chat's branch. */
+  readonly chatBranchId?: string;
+  readonly chatTaskId?: string;
+}
+
 export interface PluginContext {
   readonly query: PluginQuery;
   readonly api: PluginApi;
   readonly theme: PluginTheme;
   readonly visitor: PluginVisitor;
   readonly captcha: PluginCaptcha;
+  /** Who this call acts for, and on which branch. */
+  readonly invocation: PluginInvocation;
 }
 
 /** Tier 1 context — adds the elevated capability handles. The host
@@ -766,6 +804,15 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   ) => Promise<ReadonlyMap<string, string>> | ReadonlyMap<string, string>;
   /** Tier 1 only. */
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  /**
+   * Runs each time the host brings the plugin up — at boot and when an
+   * Owner activates it — on main, with `invocation.origin` `"system"`.
+   * The place for create-time defaults (a settings row, seed
+   * categories): render and visitor calls cannot write private storage,
+   * so a read path must never seed. Must be idempotent; a throw fails
+   * the plugin's load loudly.
+   */
+  readonly onActivate?: (ctx: C) => Promise<void> | void;
   /** Tier 1 only. Cron-style background workers; the host's scheduler
    *  dispatches `operationName` on each tick. */
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;

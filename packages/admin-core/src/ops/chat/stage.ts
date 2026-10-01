@@ -49,6 +49,8 @@ const entityRefSchema = z
       "theme",
       // v0.12.0 — content_instance edits surface in the Stage picker.
       "contentInstance",
+      // A plugin private-storage row written on the branch.
+      "pluginRow",
     ]),
     entityId: z.string(),
     /** Short label for the picker row (e.g. module slug, page title). */
@@ -300,6 +302,32 @@ export const listPendingChangesOp = defineOperation({
        AND marks.entity_id::text = l.entity_id
     `)) as unknown as Row[];
 
+    // Plugin private-storage rows. Labelled "<plugin> · <table>" so the
+    // picker groups them by plugin; the row id is the detail.
+    const pluginRowRows = (await tx.execute(sql`
+      WITH latest AS (
+        SELECT DISTINCT ON (prs.row_id)
+          prs.row_id::text AS entity_id, prs.plugin_id, prs.table_name, prs.state
+        FROM plugin_row_snapshots prs
+        JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
+        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+        ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
+      )
+      SELECT
+        l.entity_id,
+        COALESCE(p.slug, l.plugin_id::text) || ' · ' || l.table_name AS label,
+        CASE WHEN l.state->>'deletedAt' IS NOT NULL THEN 'deleted ' ELSE '' END
+          || left(l.entity_id, 8) AS detail,
+        COALESCE(marks.stage_state, 'pending') AS stage_state
+      FROM latest l
+      LEFT JOIN plugins p ON p.id = l.plugin_id
+      LEFT JOIN chat_branch_publish_marks marks
+        ON marks.chat_branch_id = ${branchId}::uuid
+       AND marks.entity_kind = 'pluginRow'
+       AND marks.entity_id::text = l.entity_id
+      ORDER BY label, l.entity_id
+    `)) as unknown as Row[];
+
     function bucketize(
       rows: Row[],
       kind: EntityRef["kind"],
@@ -328,6 +356,7 @@ export const listPendingChangesOp = defineOperation({
     // v0.12.0 — content_instance edits join the globals bucket since
     // editing a synced instance has cross-page blast radius.
     const contentInstances = bucketize(contentInstanceRows, "contentInstance");
+    const pluginRows = bucketize(pluginRowRows, "pluginRow");
 
     // v0.8.0 — layoutChromeRows always stage_state='pending'; bucket
     // into globals so the Stage modal shows them alongside module /
@@ -374,6 +403,7 @@ export const listPendingChangesOp = defineOperation({
           ...ssPendingGlobals,
           ...layoutChromePending,
           ...contentInstances.pending,
+          ...pluginRows.pending,
         ],
         lists: ssPendingLists,
       },
@@ -384,6 +414,7 @@ export const listPendingChangesOp = defineOperation({
           ...templates.staged,
           ...ssStagedGlobals,
           ...contentInstances.staged,
+          ...pluginRows.staged,
         ],
         lists: ssStagedLists,
       },
@@ -466,6 +497,8 @@ export const stageChatChangesOp = defineOperation({
               return "structured_set_snapshots";
             case "contentInstance":
               return "content_instance_snapshots";
+            case "pluginRow":
+              return "plugin_row_snapshots";
             default:
               return null;
           }
@@ -487,6 +520,8 @@ export const stageChatChangesOp = defineOperation({
               return "structured_set_id";
             case "contentInstance":
               return "content_instance_id";
+            case "pluginRow":
+              return "row_id";
             default:
               return "id";
           }
@@ -592,6 +627,18 @@ export const stageChatChangesOp = defineOperation({
           WHERE ss.chat_branch_id = ${branchId}::uuid
           ORDER BY cis.content_instance_id, ss.created_at DESC
         ) ci
+        UNION ALL
+        SELECT entity_id, entity_kind, site_snapshot_id FROM (
+          SELECT DISTINCT ON (prs.row_id)
+            prs.row_id::text AS entity_id,
+            'pluginRow'::text AS entity_kind,
+            prs.site_snapshot_id::text AS site_snapshot_id,
+            ss.created_at
+          FROM plugin_row_snapshots prs
+          JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
+          WHERE ss.chat_branch_id = ${branchId}::uuid
+          ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
+        ) pr
       `)) as unknown as { entity_id: string; entity_kind: string; site_snapshot_id: string }[];
       for (const row of allLatest) {
         picks.push({

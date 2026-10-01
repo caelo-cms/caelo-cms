@@ -17,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
   collectContributions,
+  MAIN_RENDER,
   resetPluginHost,
   resolveDataLists,
   runPluginOperation,
@@ -112,6 +113,7 @@ afterAll(async () => {
 
 async function op<T>(operationName: string, args: unknown): Promise<T> {
   const r = await runPluginOperation({
+    invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
     pluginSlug: "international-site",
     operationName,
     args,
@@ -174,13 +176,17 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
 
     // Only source published → group below threshold → NO contributions.
     await sysOp("pages.set_status", { pageId: sourceId, status: "published" });
-    const below = await collectContributions([sourceId, soloId], { siteBaseUrl: BASE });
+    const below = await collectContributions([sourceId, soloId], {
+      ...MAIN_RENDER,
+      siteBaseUrl: BASE,
+    });
     expect(below.head.size).toBe(0);
     expect(below.sitemap.size).toBe(0);
 
     // Publish de; fr stays draft → en + de + x-default, never fr.
     await sysOp("pages.set_status", { pageId: de.pageId, status: "published" });
     const collected = await collectContributions([sourceId, de.pageId, fr.pageId, soloId], {
+      ...MAIN_RENDER,
       siteBaseUrl: BASE,
     });
     const sourceHead = collected.head.get(sourceId);
@@ -213,6 +219,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     // Language selector: build-time HTML, links to both published
     // variants, aria-current on self, display names as labels.
     const html = await runPluginStaticRender({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       pageId: de.pageId,
     });
@@ -225,6 +232,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     expect(html).not.toContain("<script");
     // Below-threshold page renders nothing at all.
     const solo = await runPluginStaticRender({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       pageId: soloId,
     });
@@ -244,7 +252,10 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
       ],
     });
     await op("refresh_locales", {});
-    const hostCollected = await collectContributions([sourceId], { siteBaseUrl: BASE });
+    const hostCollected = await collectContributions([sourceId], {
+      ...MAIN_RENDER,
+      siteBaseUrl: BASE,
+    });
     const hostLinks = (hostCollected.head.get(sourceId) ?? []).map((e) =>
       e.kind === "link" ? e.href : "",
     );
@@ -267,7 +278,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     await sysOp("pages.set_status", { pageId: sourceId, status: "published" });
     await sysOp("pages.set_status", { pageId: de.pageId, status: "published" });
 
-    const lists = await resolveDataLists([sourceId]);
+    const lists = await resolveDataLists([sourceId], MAIN_RENDER);
     const items = lists.get(sourceId)?.language_links ?? [];
     expect(items.map((i) => i.locale).sort()).toEqual(["de", "en"]);
     // Flat strings only — anything else would substitute as

@@ -25,6 +25,12 @@ const context: PluginContext = {
   theme: { tokens: { color: "blue" } },
   visitor: { id: "visitor", publicUserId: null, ipHash: "", sessionToken: null },
   captcha: { requireProof: async (token) => token === "valid" },
+  invocation: {
+    origin: "chat",
+    actorId: "ai-actor",
+    operatorActorId: "owner",
+    chatBranchId: "22222222-2222-4222-8222-222222222222",
+  },
 };
 function invoke(body: string, overrides: Partial<Parameters<typeof runSandbox>[0]> = {}) {
   return runSandbox({
@@ -165,5 +171,19 @@ describe("visitor identity handed to plugin code", () => {
         context: { ...context, visitor: { ...context.visitor, sessionToken: "secret-bearer" } },
       }),
     ).toBeNull();
+  });
+});
+
+describe("invocation handed to plugin code", () => {
+  it("is visible to the plugin and cannot be changed by it", async () => {
+    expect(
+      await invoke(
+        'try { ctx.invocation.chatBranchId = "x"; } catch {} return {origin: ctx.invocation.origin, branch: ctx.invocation.chatBranchId, frozen: Object.isFrozen(ctx.invocation)};',
+      ),
+    ).toEqual({
+      origin: "chat",
+      branch: "22222222-2222-4222-8222-222222222222",
+      frozen: true,
+    });
   });
 });

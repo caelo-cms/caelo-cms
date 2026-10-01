@@ -35,14 +35,19 @@ export {
   TRUST_ROOT_FILENAME,
 } from "./dev-signing.js";
 export {
+  assertInvocationConsistent,
   type EmailTransport,
   hostInfra,
+  hostSystemActorId,
   isPluginDisabled,
   type LoadedPlugin,
   loadedPlugins,
+  MAIN_RENDER,
   type PluginHostInfra,
+  type RenderScope,
   type RunPluginOperationOpts,
   type RunPluginOperationResult,
+  renderInvocation,
   resetDisabledSet,
   runPluginBuildAssets,
   runPluginMetaSignature,
@@ -68,10 +73,19 @@ export {
   loadActivatedPlugin,
   resetPluginHost,
 } from "./loader.js";
+export type { PluginRowLocker } from "./private-storage.js";
 export {
   type PromptContextRenderer,
   pluginPromptContextRegistry,
 } from "./prompt-context-registry.js";
+export {
+  applyPluginRowState,
+  discardBranchPluginRows,
+  insertPluginRowSnapshot,
+  type PluginRowRef,
+  type PluginRowState,
+  withPluginScope,
+} from "./row-snapshots.js";
 export {
   pluginWorkerScheduler,
   type ScheduledWorker,

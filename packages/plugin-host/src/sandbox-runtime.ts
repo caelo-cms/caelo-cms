@@ -212,6 +212,10 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
       version: manifest.version,
       operation: invocation.operation,
       args: invocation.args,
+      // Read-only for the plugin (SDK contract, #509): who acts and on
+      // which branch. Enforcement stays host-side — the broker below runs
+      // every SDK call through `context`, which carries the same values.
+      invocation: context.invocation,
       theme: context.theme,
       // No sessionToken: it is the visitor's HttpOnly `caelo_session`
       // bearer credential. Handing it to runtime-authored code would let

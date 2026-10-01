@@ -38,7 +38,13 @@
  */
 
 import { createHash } from "node:crypto";
-import { isPluginDisabled, loadedPlugins, runPluginBuildAssets } from "./dispatch.js";
+import {
+  isPluginDisabled,
+  loadedPlugins,
+  type RenderScope,
+  renderInvocation,
+  runPluginBuildAssets,
+} from "./dispatch.js";
 
 /** Public directory every plugin's assets are written under. */
 export const PLUGIN_ASSET_DIR = "_caelo/plugin";
@@ -94,6 +100,7 @@ function assetPaths(
  */
 export async function collectBuildAssets(
   pageIds: ReadonlyArray<string>,
+  scope: RenderScope,
 ): Promise<PluginClientAsset[]> {
   const out: PluginClientAsset[] = [];
   const contributors = loadedPlugins
@@ -103,7 +110,11 @@ export async function collectBuildAssets(
     .sort((a, b) => a.slug.localeCompare(b.slug));
 
   for (const lp of contributors) {
-    const files = await runPluginBuildAssets({ pluginSlug: lp.slug, pageIds });
+    const files = await runPluginBuildAssets({
+      pluginSlug: lp.slug,
+      pageIds,
+      invocation: renderInvocation(scope),
+    });
     let totalBytes = 0;
     for (const fileName of Object.keys(files).sort()) {
       const content = files[fileName];

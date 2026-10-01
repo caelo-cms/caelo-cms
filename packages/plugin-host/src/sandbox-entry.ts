@@ -31,6 +31,7 @@ const execute = async (message) => {
     api: Object.freeze({ list: (...args) => rpc("api.list", ...args), get: (...args) => rpc("api.get", ...args) }),
     captcha: Object.freeze({ requireProof: (...args) => rpc("captcha.requireProof", ...args) }),
     theme: Object.freeze(message.theme), visitor: Object.freeze(message.visitor),
+    invocation: Object.freeze(message.invocation),
   });
   if (!plugin || plugin.slug !== message.slug || plugin.version !== message.version || plugin.tier !== 2)
     throw new Error("SandboxDefinitionMismatch");

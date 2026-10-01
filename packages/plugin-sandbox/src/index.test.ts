@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  adminSchemaFromSpec,
   generateManifestKeyPair,
   schemaFromSpec,
   signManifest,
@@ -331,5 +332,53 @@ describe("validateSource — host-filesystem escapes via the bundler (#473 revie
         'import { definePlugin } from "@caelo-cms/plugin-sdk"; export default definePlugin({} as never);',
       ),
     ).toEqual([]);
+  });
+});
+
+describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", () => {
+  const PID = "11111111-1111-4111-8111-111111111111";
+
+  it("adds the host-owned branch + history columns to every private table", () => {
+    const { sql } = adminSchemaFromSpec({
+      pluginId: PID,
+      slug: "probe",
+      adminSchema: { settings: { id: "uuid", label: "string" } },
+    });
+    for (const col of [
+      "caelo_chat_branch_id uuid NULL",
+      "caelo_deleted_at timestamptz NULL",
+      "caelo_version integer NOT NULL DEFAULT 1",
+      "caelo_updated_at timestamptz NOT NULL DEFAULT now()",
+    ]) {
+      // In the CREATE for fresh tables and as an additive ALTER for existing ones.
+      expect(sql).toContain(col);
+      expect(sql).toContain(`ADD COLUMN IF NOT EXISTS ${col}`);
+    }
+  });
+
+  it("does not add them to public tables", () => {
+    const { sql } = schemaFromSpec({
+      pluginId: PID,
+      slug: "probe",
+      schema: { signups: { id: "uuid", email: "string" } },
+    });
+    expect(sql).not.toContain("caelo_chat_branch_id");
+  });
+
+  it("rejects a manifest declaring a caelo_ column, in either zone", () => {
+    expect(() =>
+      adminSchemaFromSpec({
+        pluginId: PID,
+        slug: "probe",
+        adminSchema: { t: { id: "uuid", caelo_chat_branch_id: "uuid" } },
+      }),
+    ).toThrow("reserved");
+    expect(() =>
+      schemaFromSpec({
+        pluginId: PID,
+        slug: "probe",
+        schema: { t: { id: "uuid", caelo_x: "string" } },
+      }),
+    ).toThrow("reserved");
   });
 });

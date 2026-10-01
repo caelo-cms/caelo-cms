@@ -94,6 +94,7 @@ describe("visitor-facing dispatch", () => {
   it("allows a declared public operation", async () => {
     await load(["submit"]);
     const r = await runPluginOperation({
+      invocation: { origin: "visitor", actorId: "visitor" },
       pluginSlug: SLUG,
       operationName: "submit",
       args: {},
@@ -105,6 +106,7 @@ describe("visitor-facing dispatch", () => {
   it("refuses an operation that is not declared public", async () => {
     await load(["submit"]);
     const r = await runPluginOperation({
+      invocation: { origin: "visitor", actorId: "visitor" },
       pluginSlug: SLUG,
       operationName: "moderate",
       args: {},
@@ -120,6 +122,7 @@ describe("visitor-facing dispatch", () => {
     await load();
     for (const operationName of ["submit", "moderate"]) {
       const r = await runPluginOperation({
+        invocation: { origin: "visitor", actorId: "visitor" },
         pluginSlug: SLUG,
         operationName,
         args: {},
@@ -135,6 +138,7 @@ describe("visitor-facing dispatch", () => {
     // without a visitor; gating them would break every plugin.
     await load(["submit"]);
     const r = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: SLUG,
       operationName: "moderate",
       args: {},

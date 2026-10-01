@@ -276,7 +276,7 @@ Approve route at `apps/admin/src/routes/(authed)/security/tool-approvals/pending
 **Constraints (read before adding `needsApproval` to a new tool):**
 
 1. **Built-in tools only** — the approve route uses
-   `createDefaultToolRegistry()` which does NOT fold in Tier-1
+   `createDefaultToolRegistry()` which does NOT fold in
    plugin tools. A plugin tool with `needsApproval` would queue
    but the Owner-side dispatch would 400 with "unknown tool". Lift
    by importing `pluginToolsRegistry` in the route.

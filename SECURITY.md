@@ -25,7 +25,7 @@ In scope:
 - The admin app (`apps/admin`) and its API surface
 - The Query API + Database Adapter (`packages/query-api`)
 - The plugin host + sandbox (`packages/plugin-host`, `packages/plugin-sandbox`)
-- Any of the five core Tier 1 plugins (forms, comments, newsletter, ratings, auth) when run as shipped
+- Any plugin shipped with Caelo (`packages/plugins/<slug>/`) when run as shipped, and the grant model that bounds every plugin (CMS_REQUIREMENTS §14)
 - The provisioning surface (`packages/provisioning`) — secret handling, IAM scope, network isolation
 - The MCP server (`packages/mcp-server`)
 - The static-generator output (`apps/static-generator`)
@@ -54,7 +54,7 @@ The incident response runbook for operators (rotation flow when a secret leaks, 
 
 Caelo uses cryptographic primitives in three places. Issues with any of them are critical-severity:
 
-- **Tier 1 plugin manifest signatures** — Ed25519 over the manifest JSON. Public key embedded in the host build; rotated on major version bumps.
+- **Shipped-plugin manifest signatures** — Ed25519 over the manifest JSON, proving the installed artifact is the released one (evidence shown at approval; it grants no capability). Public key embedded in the host build; rotated on major version bumps.
 - **Internal-API tokens + cookie/CSRF/HMAC secrets** — minted at install via `cms-provision`; stored in the platform's secrets manager.
 - **MCP token bearer hashes** — sha256 at rest; the plaintext bearer is shown ONCE at mint time.
 

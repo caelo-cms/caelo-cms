@@ -20,6 +20,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
+import { approvedPluginInvocation } from "../plugin-invocation.js";
 
 import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
@@ -329,7 +330,7 @@ export async function* runChatTurn(
     // subagent turns strip them (a child never fronts an Owner approval).
     if (t.pluginGated) {
       if (isSubagentTurn) return [];
-      return [attachPluginGatedExecute(t)];
+      return [attachPluginGatedExecute(t, approvedPluginInvocation(humanCtx.actorId))];
     }
     return [t];
   });

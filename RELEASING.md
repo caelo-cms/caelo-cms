@@ -20,8 +20,9 @@ Actions → **release-cut** → *Run workflow* → pick `patch` / `minor` /
 that PR merges the workflow tags the merge commit and dispatches
 `release.yml` automatically — identical artifacts to the local flow.
 
-One-time setup: CI needs the Tier-1 manifest signing key (release.ts
-re-signs the plugin manifests). The pair stored here IS the release
+One-time setup: CI needs the shipped-plugin manifest signing key
+(release.ts re-signs the plugin manifests; the `TIER1` in the secret
+and script names predates the single plugin model and is historical). The pair stored here IS the release
 keypair from that point on — every published manifest verifies against
 this public key, so it must be the ONE canonical pair, not an
 arbitrary per-machine dev key. Source it from the team secrets
@@ -105,12 +106,12 @@ Before the first tag:
      `release.yml`, the verify loops in `release.yml`, and the npm
      Trusted Publisher config above.
 
-2. **Generate a Tier-1 plugin signing key** (one per maintainer machine):
+2. **Generate a shipped-plugin signing key** (one per maintainer machine):
    ```bash
    bun apps/admin/scripts/sign-tier1-manifest.ts --new-key
    ```
    Persists to `.caelo-dev-key` (gitignored, mode 600). The release
-   script re-signs every Tier-1 plugin manifest using this key on
+   script re-signs every shipped plugin manifest using this key on
    each bump. For production releases, export
    `CAELO_TIER1_PRIVATE_KEY=<hex>` from your team secrets manager
    instead — the script picks that up over the local file.
@@ -156,7 +157,7 @@ What the script does, in order:
    `CAELO_VERSION` (from `packages/shared/src/version.ts`).
 2. Updates the `CAELO_VERSION` constant.
 3. Walks every workspace `package.json` and bumps `"version"` to match.
-4. Re-signs every Tier-1 plugin manifest under
+4. Re-signs every shipped plugin manifest under
    `packages/plugins/<slug>/` with the dev key (or
    `CAELO_TIER1_PRIVATE_KEY` if set).
 5. Generates a `## v<X.Y.Z>` changelog stanza from conventional
