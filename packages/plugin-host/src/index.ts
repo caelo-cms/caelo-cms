@@ -12,6 +12,7 @@
 
 export { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
 export { pluginManifest } from "@caelo-cms/plugin-sdk";
+export { makePluginContext } from "./capabilities.js";
 export {
   collectBuildAssets,
   injectPluginAssets,
