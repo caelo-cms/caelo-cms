@@ -67,7 +67,9 @@ A plugin that requests grants is reviewed at **Security → Plugins → Install 
 - **Private storage is only for authoring.** The plugin gets it when it acts for someone who may author content — in a chat, in the Owner panel, or for an action you approved. Rendering and visitor calls never get it.
 - **Tools that ask before every use** show the approval card in the chat. The card is bound to the exact package, receipts, arguments and person; it can be used once, and a changed package or changed arguments need a fresh approval.
 
-This release supports private storage and chat tools for such plugins. A request for any other grant can be reviewed, but the plugin will not activate until Caelo implements that grant.
+- **Companion skills** — guides the plugin gives the AI — are shown in full before approval. They are active only while the approved version runs and its grant holds; revoking the grant or disabling the plugin removes them from the AI's view at once. Their slugs start with the plugin's slug.
+
+This release supports private storage, chat tools and companion skills for such plugins. A request for any other grant can be reviewed, but the plugin will not activate until Caelo implements that grant.
 
 ## Status
 

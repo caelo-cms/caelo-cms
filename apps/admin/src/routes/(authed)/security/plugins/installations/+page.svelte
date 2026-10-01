@@ -46,6 +46,23 @@
               </ul>
             </section>
           {/if}
+          {#if item.manifest.skills?.length}
+            <section class="space-y-2" data-testid="installation-skills-{item.slug}">
+              <h3 class="font-semibold">Instructions the AI will follow</h3>
+              <p class="text-sm">These guides become part of how the AI works on your site while this plugin is active. Read them as you would a brief to a new colleague.</p>
+              <ul class="space-y-2">
+                {#each item.manifest.skills as skill (skill.slug)}
+                  <li class="rounded border p-2">
+                    <p class="font-semibold">{skill.displayName} <span class="font-mono text-xs">{skill.slug}</span></p>
+                    <p class="whitespace-pre-wrap text-sm">{skill.description}</p>
+                    <details><summary class="cursor-pointer text-sm">Full instructions</summary>
+                      <pre class="max-h-72 overflow-auto whitespace-pre-wrap text-xs">{skill.body}</pre>
+                    </details>
+                  </li>
+                {/each}
+              </ul>
+            </section>
+          {/if}
           <fieldset class="space-y-2"><legend class="font-semibold">Requested access</legend>
             {#each item.manifest.requestedCapabilities ?? [] as capability}
               <label class="flex items-start gap-2"><input type="checkbox" name="capability" value={capability} required />
