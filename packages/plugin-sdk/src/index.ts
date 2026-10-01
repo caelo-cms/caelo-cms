@@ -667,6 +667,9 @@ export interface PluginSnapshots {
 export type PluginInvocationOrigin =
   | "chat"
   | "owner-panel"
+  /** An action the Owner approved in the chat (§11.A gate): it applies
+   *  on main, as the approving Owner, never on the chat's branch. */
+  | "approved"
   | "worker"
   | "render"
   | "visitor"

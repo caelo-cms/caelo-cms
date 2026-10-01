@@ -40,7 +40,7 @@ import { createRedirectOp } from "../redirects.js";
 import { rewriteModuleLinksOp } from "../seo.js";
 import { readSiteDefaults } from "../site_defaults.js";
 import { listStructuredSetsOp, setStructuredSetOp } from "../structured_sets.js";
-import { recomputeCurrentPaths } from "./current-path.js";
+import { recomputeCurrentPaths, renderScopeOf } from "./current-path.js";
 
 const pageRowSchema = z.object({
   id: z.string(),
@@ -806,7 +806,7 @@ export const createPageOp = defineOperation({
     // #390 — compose + materialize the public path (the INSERT trigger
     // wrote the plugin-free default; this accounts for designation +
     // active URL contributions).
-    await recomputeCurrentPaths(tx, [pageId]);
+    await recomputeCurrentPaths(tx, [pageId], renderScopeOf(ctx));
     return ok({ pageId });
   },
 });
@@ -1090,7 +1090,7 @@ export const updatePageOp = defineOperation({
         const oldPathRows = (await tx.execute(sql`
           SELECT current_path FROM pages WHERE id = ${input.pageId}::uuid
         `)) as unknown as { current_path: string }[];
-        const recomputed = await recomputeCurrentPaths(tx, [input.pageId]);
+        const recomputed = await recomputeCurrentPaths(tx, [input.pageId], renderScopeOf(ctx));
         const newPath = recomputed.get(input.pageId);
         const oldPath = oldPathRows[0]?.current_path;
         if (!oldPath || !newPath) {
@@ -2017,7 +2017,7 @@ export const duplicatePageOp = defineOperation({
         payload: { slug: input.newSlug, duplicatedFrom: input.sourcePageId },
       });
     }
-    await recomputeCurrentPaths(tx, [newPageId]);
+    await recomputeCurrentPaths(tx, [newPageId], renderScopeOf(ctx));
     const layoutState = await loadPageLayoutState(tx, newPageId);
     await emitSnapshot(tx, {
       actorId: ctx.actorId,

@@ -32,6 +32,7 @@ import {
   assertNoChatRunnerDiagWarnings,
   assertNoOrphanLocks,
   attachChatSessionTracker,
+  awaitStageComplete,
   loginAsDevOwner,
   resetLiveditFixtures,
   seedMinimalSite,
@@ -120,6 +121,11 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
     600_000,
   );
   const sessionId = tracker.currentSessionId();
+  // Stage: chat writes — the plugin's own rows included — are on the
+  // chat's branch until merged (CMS_REQUIREMENTS §14.7). The DB
+  // assertions below read live state, and the chat's locks are released
+  // here, so assertNoOrphanLocks checks what it is named for.
+  await awaitStageComplete(page);
 
   // Render the home page the way a visitor would see it. /edit/preview
   // serves the composed page as raw HTML, without the admin chrome

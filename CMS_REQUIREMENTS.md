@@ -468,6 +468,8 @@ Hard-to-revert actions a plugin performs (e.g. a URL-strategy change) additional
 - **No plugin writes the live state of `cms_admin` directly.** Authoring writes — core data and the plugin's own private storage alike — go through named operations that validate, audit and snapshot. A write that originates in a chat lands on that chat's branch, is undoable with the chat, and reaches live only when the branch is published.
 - **The one live exception** is a visitor write into the plugin's own public tables (a form submission, a comment, a rating) through a declared `publicOperation`. Those are runtime data, not authoring, and follow CLAUDE.md §7 (CAPTCHA/PoW, rate limit, honeypot).
 - **No raw SQL** — not in plugin code, and not in the host code that brokers for plugins. Every database access is a named operation behind the Validator.
+- **Owner-approved actions apply live.** A gated plugin tool (§11.A) runs after the Owner's click as that Owner, on main — the click is the decision, so it does not wait on the chat's branch for a second one. Owner-panel and worker writes go to main too, audited and snapshotted.
+- **Derived URLs follow the branch.** A page a chat creates composes its `current_path` from that chat's plugin rows (e.g. a locale prefix); a main page keeps its live URL until publish, when the merge recomposes main paths and 301s every page that moved.
 - **Render and visitor calls never write private storage.** They are not authoring contexts. Create-time defaults (a settings row, seed categories) are written by the plugin's `onActivate` hook, which runs on main whenever the host brings the plugin up; read paths never seed.
 
 ### 14.8 Activation and lifecycle

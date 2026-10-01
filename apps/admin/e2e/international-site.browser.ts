@@ -270,9 +270,32 @@ test("gated set_locales pauses for the in-chat click; create_variant lands /de/;
     `,
     { SRC_SLUG, DE_SLUG },
   );
+  // The variant rows were written from the chat, so they sit on the
+  // chat's branch until it is published (CMS_REQUIREMENTS §14.7): the
+  // chat's preview shows the hreflang set, main does not yet.
+  const sessionId = new URL(page.url()).pathname.split("/").at(-1) ?? "";
+  const chatBranchId = runBunInline(
+    `
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx\`SELECT chat_branch_id::text AS b FROM chat_sessions WHERE id = \${process.env.SESSION_ID}::uuid\`;
+    });
+    await sql.end();
+    if (!rows[0]) throw new Error("chat session not found");
+    process.stdout.write(rows[0].b);
+    `,
+    { SESSION_ID: sessionId },
+  ).trim();
   const cookies = await page.context().cookies();
   const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-  const res = await request.get(`${BASE}/content/pages/${seed.pageId}/preview`, {
+  const mainRes = await request.get(`${BASE}/edit/preview/${seed.pageId}`, {
+    headers: { cookie: cookieHeader },
+  });
+  expect(mainRes.status()).toBe(200);
+  expect(await mainRes.text()).not.toContain(`hreflang="de"`);
+  const res = await request.get(`${BASE}/edit/preview/${seed.pageId}?branch=${chatBranchId}`, {
     headers: { cookie: cookieHeader },
   });
   expect(res.status()).toBe(200);

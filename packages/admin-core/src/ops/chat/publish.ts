@@ -44,6 +44,7 @@ import {
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { refreshLivePathsAfterMerge } from "../content/current-path.js";
 import { scanBranchInternalLinks } from "../content/link-integrity.js";
 
 interface SessionRow {
@@ -406,6 +407,35 @@ export async function mergeBranchSnapshotsToMain(
     WHERE 1=1 ${notYetPublished("pluginRow")} ${stageFilter("pluginRow")} ${inFilter(includeAll ? null : (wantPluginRows ?? []))}
   `)) as unknown as (Row & { plugin_id: string; schema_name: string; table_name: string })[]);
 
+  // Plugin rows can shape page URLs, and the post-merge paths are
+  // composed from the branch view (refreshLivePathsAfterMerge) — which is
+  // only the post-merge state when every plugin row of the branch goes
+  // live together.
+  if (pluginRowRows.length > 0) {
+    const pendingRows = (await tx.execute(sql`
+      SELECT count(DISTINCT prs.row_id)::int AS n
+      FROM plugin_row_snapshots prs
+      JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+        AND prs.row_id::text NOT IN (
+          SELECT entity_id::text FROM chat_branch_publish_marks
+          WHERE chat_branch_id = ${session.chat_branch_id}::uuid
+            AND entity_kind = 'pluginRow' AND stage_state = 'published'
+        )
+    `)) as unknown as { n: number }[];
+    if ((pendingRows[0]?.n ?? 0) !== pluginRowRows.length) {
+      return {
+        ok: false,
+        error: {
+          kind: "HandlerError",
+          operation: options.opKind,
+          message:
+            "plugin changes in this chat must be published together — they can shape page URLs. Include every plugin row, or none",
+        },
+      };
+    }
+  }
+
   const total =
     pluginRowRows.length +
     moduleRows.length +
@@ -738,6 +768,12 @@ export async function mergeBranchSnapshotsToMain(
     await withPluginScope(tx, r.plugin_id, () => applyPluginRowState(tx, ref, state));
     // The main-line copy under the merge's header: undo after publish.
     await insertPluginRowSnapshot(tx, result.siteSnapshotId, ref, state);
+  }
+
+  // Plugin rows can carry URL annotations (a locale variant link); now
+  // that they are live, recompose main-line paths and 301 what moved.
+  if (pluginRowRows.length > 0) {
+    await refreshLivePathsAfterMerge(ctx, tx, session.chat_branch_id);
   }
 
   // v0.9.0 — bulk clear chat_branch_id for any branched-create layouts
