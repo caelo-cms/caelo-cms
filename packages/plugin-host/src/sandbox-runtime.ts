@@ -35,6 +35,10 @@ const id = z.string().uuid();
 
 async function broker(ctx: PluginContext, method: string, args: unknown[]): Promise<unknown> {
   switch (method) {
+    case "query.compareAndSwap": {
+      const a = z.tuple([table, id, record, record]).parse(args);
+      return ctx.query.compareAndSwap(...a);
+    }
     case "query.insert": {
       const a = z.tuple([table, record]).parse(args);
       return ctx.query.insert(...a);

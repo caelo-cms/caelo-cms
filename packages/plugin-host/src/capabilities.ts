@@ -333,6 +333,21 @@ function makeScopedQuery(
       const columns = tableColumns("delete", tableStr);
       await run(ops.delete, { schema: schemaName, table: tableStr, columns, id });
     },
+
+    compareAndSwap: async (table, id, expected, patch) => {
+      const tableStr = table as string;
+      assertAuthoring("compareAndSwap");
+      const columns = tableColumns("compareAndSwap", tableStr);
+      const out = await run<{ swapped: boolean }>(ops.compareAndSwap, {
+        schema: schemaName,
+        table: tableStr,
+        columns,
+        id,
+        expected,
+        patch,
+      });
+      return out.swapped;
+    },
   };
 }
 

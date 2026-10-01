@@ -243,6 +243,76 @@ export async function privateDelete(
   return { ok: true, value: {} };
 }
 
+/**
+ * Compare-and-swap one row. On main a single UPDATE checks and writes
+ * atomically. On a chat branch the live row is not the chat's state, so
+ * the check runs against the branch view: the row's `pluginRow` lock
+ * keeps other chats out, and `FOR UPDATE` on the live row serialises
+ * concurrent swaps within this chat — the second one re-reads the first
+ * one's committed branch state and loses.
+ */
+export async function privateCompareAndSwap(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  t: Target,
+  rowId: string,
+  change: {
+    readonly expected: Readonly<Record<string, unknown>>;
+    readonly patch: Readonly<Record<string, unknown>>;
+    readonly conditions: readonly ReturnType<typeof sql>[];
+    readonly sets: readonly ReturnType<typeof sql>[];
+  },
+  locker: PluginRowLocker | undefined,
+  operation: string,
+): Promise<Outcome<{ swapped: boolean }>> {
+  if (ctx.chatBranchId) {
+    const busy = await lock(tx, ctx, locker, operation, rowId);
+    if (busy) return { ok: false, message: busy };
+    await tx.execute(sql`SELECT id FROM ${table(t)} WHERE id = ${rowId}::uuid FOR UPDATE`);
+    const current = await currentState(tx, ctx, t, rowId);
+    if (!current || current.deletedAt !== null) return { ok: true, value: { swapped: false } };
+    for (const [column, value] of Object.entries(change.expected)) {
+      if (!jsonEqual(current.values[column] ?? null, value)) {
+        return { ok: true, value: { swapped: false } };
+      }
+    }
+    await snapshot(tx, ctx, "plugin_storage.update", t, rowId, {
+      schemaVersion: 1,
+      values: { ...current.values, ...change.patch, id: current.values.id },
+      deletedAt: null,
+      version: current.version + 1,
+    });
+    return { ok: true, value: { swapped: true } };
+  }
+  const rows = (await tx.execute(sql`
+    UPDATE ${table(t)} AS t
+    SET ${sql.join([...change.sets, sql`"caelo_version" = t."caelo_version" + 1`, sql`"caelo_updated_at" = now()`], sql`, `)}
+    WHERE t.id = ${rowId}::uuid AND t."caelo_deleted_at" IS NULL AND t."caelo_chat_branch_id" IS NULL
+      AND ${sql.join([...change.conditions], sql` AND `)}
+    RETURNING to_jsonb(t) AS row
+  `)) as unknown as { row: Record<string, unknown> }[];
+  const row = rows[0]?.row;
+  if (!row) return { ok: true, value: { swapped: false } };
+  await snapshot(tx, ctx, "plugin_storage.update", t, rowId, rowToState(row));
+  return { ok: true, value: { swapped: true } };
+}
+
+/** JSON equality as Postgres' jsonb compares: object key order does not matter. */
+function jsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, i) => jsonEqual(item, b[i]));
+  }
+  const ka = Object.keys(a as object);
+  const kb = Object.keys(b as object);
+  return (
+    ka.length === kb.length &&
+    ka.every((k) => jsonEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
+  );
+}
+
 function notFound(operation: string, rowId: string): { ok: false; message: string } {
   return {
     ok: false,

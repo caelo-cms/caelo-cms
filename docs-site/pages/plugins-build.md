@@ -79,6 +79,25 @@ The static generator bakes the initial render at deploy; the component fetches d
 
 Nothing of a plugin runs until an Owner activates it at `/security/plugins` — shipped plugins included. The AI can submit a plugin and propose its activation; only a human Owner activates it and approves its grants.
 
+## Conditional writes
+
+`ctx.query.compareAndSwap(table, id, expected, patch)` changes a row only if every expected value still matches, and returns `false` when the row changed, disappeared or is not this plugin's. It is available on `ctx.adminQuery` too, and to plugins running in the sandbox.
+
+```ts
+const saved = await ctx.adminQuery.compareAndSwap(
+  "documents", documentId,
+  { revision: previousRevision },
+  { revision: crypto.randomUUID(), content: updatedDocument },
+);
+if (!saved) throw new Error("The document changed. Reload before applying your edit.");
+```
+
+`null` matches `null`, and JSON values compare by JSON equality. `expected` and `patch` each take 1–64 declared columns; `id` and host-owned columns cannot be patched, and `undefined` or non-finite numbers are refused rather than silently dropped. Write a fresh revision token on every successful swap, so content that returns to an earlier value cannot revive a stale write.
+
+The check and the write are atomic. From a chat, private storage swaps against the chat's own view of the row and lands on the chat's branch like every other write; another chat cannot touch that row until the first one is published.
+
+For immutable history, store a complete candidate revision first, then conditionally advance the document's head. An interrupted advance leaves an unattached candidate while readers keep the previous complete revision; the plugin owns its history and cleanup.
+
 ## Running in the sandbox
 
 A runtime-installed plugin is a single TypeScript or JavaScript module plus its JSON manifest, submitted with `plugins.submit`. The module's default export is the plugin definition, and its slug and version must match the manifest. Only the SDK and the component kit may be imported; bundle anything else into the module before submitting.
