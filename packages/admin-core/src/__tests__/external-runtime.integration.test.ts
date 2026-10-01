@@ -15,6 +15,14 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { registerAdminOps } from "../register.js";
 
+// Every plugin dispatch names who acts (#509): these calls are system
+// work on main, and the visitor call comes through the gateway.
+const SYSTEM_INVOCATION = {
+  origin: "system",
+  actorId: "00000000-0000-0000-0000-000000000000",
+} as const;
+const VISITOR_INVOCATION = { origin: "visitor", actorId: "visitor" } as const;
+
 const system: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
   actorKind: "system",
@@ -75,7 +83,14 @@ describe("external plugin installation", () => {
       { ...system, actorKind: "ai" },
     );
     expect(
-      (await runPluginOperation({ pluginSlug: slug, operationName: "read", args: {} })).ok,
+      (
+        await runPluginOperation({
+          invocation: SYSTEM_INVOCATION,
+          pluginSlug: slug,
+          operationName: "read",
+          args: {},
+        })
+      ).ok,
     ).toBe(false);
     const denied = await execute(
       registry,
@@ -102,6 +117,7 @@ describe("external plugin installation", () => {
     });
     expect(await loadActivatedPlugin(slug)).toEqual({ loaded: true });
     const saved = await runPluginOperation({
+      invocation: SYSTEM_INVOCATION,
       pluginSlug: slug,
       operationName: "save",
       args: { body: "persistent" },
@@ -118,13 +134,19 @@ describe("external plugin installation", () => {
     resetPluginHost();
     const report = await boot();
     expect(report.failed).toEqual([]);
-    const result = await runPluginOperation({ pluginSlug: slug, operationName: "read", args: {} });
+    const result = await runPluginOperation({
+      invocation: SYSTEM_INVOCATION,
+      pluginSlug: slug,
+      operationName: "read",
+      args: {},
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.error.message);
     expect(result.value).toEqual(
       expect.arrayContaining([expect.objectContaining({ body: "persistent" })]),
     );
     const visitorWrite = await runPluginOperation({
+      invocation: VISITOR_INVOCATION,
       pluginSlug: slug,
       operationName: "save",
       args: { body: "private" },
@@ -133,7 +155,14 @@ describe("external plugin installation", () => {
     expect(visitorWrite.ok).toBe(false);
     await call("plugins.disable", { slug });
     expect(
-      (await runPluginOperation({ pluginSlug: slug, operationName: "read", args: {} })).ok,
+      (
+        await runPluginOperation({
+          invocation: SYSTEM_INVOCATION,
+          pluginSlug: slug,
+          operationName: "read",
+          args: {},
+        })
+      ).ok,
     ).toBe(false);
   });
   it("adds public columns on upgrade while preserving stored rows", async () => {
@@ -168,6 +197,7 @@ describe("external plugin installation", () => {
     expect(
       (
         await runPluginOperation({
+          invocation: SYSTEM_INVOCATION,
           pluginSlug: upgradeSlug,
           operationName: "save",
           args: { body: "preserved" },
@@ -193,6 +223,7 @@ describe("external plugin installation", () => {
     expect(
       (
         await runPluginOperation({
+          invocation: SYSTEM_INVOCATION,
           pluginSlug: upgradeSlug,
           operationName: "save",
           args: { body: "new", tags: ["illustrated", "published"] },
@@ -200,7 +231,12 @@ describe("external plugin installation", () => {
       ).ok,
     ).toBe(true);
     expect(
-      await runPluginOperation({ pluginSlug: upgradeSlug, operationName: "read", args: {} }),
+      await runPluginOperation({
+        invocation: SYSTEM_INVOCATION,
+        pluginSlug: upgradeSlug,
+        operationName: "read",
+        args: {},
+      }),
     ).toMatchObject({
       ok: true,
       value: expect.arrayContaining([
@@ -246,6 +282,7 @@ describe("external plugin installation", () => {
     await call("plugins.execute_activation", { proposalId: fresh.proposalId });
     expect(await loadActivatedPlugin(chatSlug)).toEqual({ loaded: true });
     const result = await runPluginOperation({
+      invocation: SYSTEM_INVOCATION,
       pluginSlug: chatSlug,
       operationName: "save",
       args: { body: "from chat" },

@@ -21,6 +21,13 @@ import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { bootstrap, resetPluginHost, runPluginOperation } from "./index.js";
 
+// Every plugin dispatch names who acts (#509): these calls are system
+// work on main, and the visitor call comes through the gateway.
+const SYSTEM_INVOCATION = {
+  origin: "system",
+  actorId: "00000000-0000-0000-0000-000000000000",
+} as const;
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -230,12 +237,14 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
       null,
     ]) {
       const updated = await runPluginOperation({
+        invocation: SYSTEM_INVOCATION,
         pluginSlug: PLUGIN_A,
         operationName: "change_tags",
         args: { id, tags },
       });
       expect(updated.ok).toBe(true);
       const reloaded = await runPluginOperation({
+        invocation: SYSTEM_INVOCATION,
         pluginSlug: PLUGIN_A,
         operationName: "list_all",
         args: {},
