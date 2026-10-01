@@ -9,7 +9,8 @@
  * What it does:
  *   1. Validates the new version is SemVer + strictly greater than current.
  *   2. Updates packages/shared/src/version.ts CALEO_VERSION constant.
- *   3. Updates root package.json + every workspace package.json `version`.
+ *   3. Updates root package.json + every workspace package.json `version`,
+ *      and bun.lock, which records those versions.
  *   4. Re-signs every Tier-1 plugin manifest under packages/plugins/<slug>/
  *      via apps/admin/scripts/sign-tier1-manifest.ts (the same script
  *      `bun run plugins:sign` uses).
@@ -157,6 +158,24 @@ async function resignManifests(dryRun: boolean): Promise<number> {
   await proc.exited;
   if (proc.exitCode !== 0) throw new Error("plugin manifest re-signing failed");
   return 1;
+}
+
+/**
+ * bun.lock records every workspace's version, so the bump has to reach it
+ * in the same commit — otherwise CI's lockfile-freshness check fails on
+ * the release commit (v0.10.25 shipped without this step).
+ */
+function refreshLockfile(dryRun: boolean): void {
+  if (dryRun) {
+    console.log("[dry-run] would run: bun install --lockfile-only");
+    return;
+  }
+  const proc = Bun.spawnSync(["bun", "install", "--lockfile-only"], {
+    cwd: REPO_ROOT,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  if (proc.exitCode !== 0) throw new Error("bun install --lockfile-only failed");
 }
 
 function maybeGitCommitTag(newVersion: string, dryRun: boolean): void {
@@ -325,6 +344,9 @@ async function main(): Promise<void> {
 
   const changed = bumpJsonVersions(newVersion, dryRun);
   console.log(`✓ ${changed.length} package.json files updated`);
+
+  refreshLockfile(dryRun);
+  console.log(`✓ bun.lock updated`);
 
   await resignManifests(dryRun);
   console.log(`✓ Tier-1 manifests resigned`);
