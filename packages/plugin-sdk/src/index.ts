@@ -667,6 +667,9 @@ export interface PluginSnapshots {
 export type PluginInvocationOrigin =
   | "chat"
   | "owner-panel"
+  /** An action the Owner approved in the chat (§11.A gate): it applies
+   *  on main, as the approving Owner, never on the chat's branch. */
+  | "approved"
   | "worker"
   | "render"
   | "visitor"
@@ -801,6 +804,15 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   ) => Promise<ReadonlyMap<string, string>> | ReadonlyMap<string, string>;
   /** Tier 1 only. */
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  /**
+   * Runs each time the host brings the plugin up — at boot and when an
+   * Owner activates it — on main, with `invocation.origin` `"system"`.
+   * The place for create-time defaults (a settings row, seed
+   * categories): render and visitor calls cannot write private storage,
+   * so a read path must never seed. Must be idempotent; a throw fails
+   * the plugin's load loudly.
+   */
+  readonly onActivate?: (ctx: C) => Promise<void> | void;
   /** Tier 1 only. Cron-style background workers; the host's scheduler
    *  dispatches `operationName` on each tick. */
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;

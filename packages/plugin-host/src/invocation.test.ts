@@ -25,7 +25,7 @@ describe("assertInvocationConsistent", () => {
     expect(() =>
       assertInvocationConsistent({ origin: "visitor", actorId: "v" }, VISITOR),
     ).not.toThrow();
-    for (const origin of ["owner-panel", "worker", "render", "system"] as const) {
+    for (const origin of ["owner-panel", "approved", "worker", "render", "system"] as const) {
       expect(() => assertInvocationConsistent({ origin, actorId: "a" }, undefined)).not.toThrow();
     }
     expect(() =>
@@ -58,7 +58,7 @@ describe("assertInvocationConsistent", () => {
     expect(() => assertInvocationConsistent({ origin: "chat", actorId: "ai" }, undefined)).toThrow(
       "branch",
     );
-    for (const origin of ["owner-panel", "worker", "system"] as const) {
+    for (const origin of ["owner-panel", "approved", "worker", "system"] as const) {
       expect(() =>
         assertInvocationConsistent({ origin, actorId: "a", chatBranchId: BRANCH }, undefined),
       ).toThrow("cannot carry a chat branch");

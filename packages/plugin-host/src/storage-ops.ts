@@ -10,8 +10,10 @@
  * - **private** (`plugin_storage.*`, `cms_admin`) — the plugin's
  *   author-side tables. Host-owned columns (`caelo_chat_branch_id`,
  *   `caelo_deleted_at`, `caelo_version`, `caelo_updated_at`) carry the
- *   branch and history state; deletes are soft; reads return main-line,
- *   non-deleted rows. A plugin can neither read nor write a host column.
+ *   branch and history state; deletes are soft. Writes from a chat land
+ *   on the chat's branch, writes without one go live with a snapshot;
+ *   reads see the caller's branch (private-storage.ts). A plugin can
+ *   neither read nor write a host column.
  * - **public** (`plugin_public_storage.*`, `cms_public`) — visitor data
  *   such as form submissions. Unchanged semantics: live, hard delete.
  *
@@ -33,6 +35,14 @@ import {
 import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import {
+  type ListPlan,
+  type PluginRowLocker,
+  privateDelete,
+  privateInsert,
+  privateList,
+  privateUpdate,
+} from "./private-storage.js";
 
 /** Identifiers interpolated into SQL: lowercase, underscore, ≤63 chars. */
 const IDENT_RE = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -82,13 +92,43 @@ function valueSql(columns: Readonly<Record<string, string>>, column: string, val
     : sql`${value}`;
 }
 
-function stripHostColumns(rows: Record<string, unknown>[]): Record<string, unknown>[] {
-  return rows.map((row) =>
-    Object.fromEntries(Object.entries(row).filter(([k]) => !k.startsWith(HOST_COLUMN_PREFIX))),
-  );
+/** Parse a `list` filter once; the private zone applies it as SQL and to overlay rows. */
+function parseListFilter(
+  op: string,
+  columns: Readonly<Record<string, string>>,
+  filter: Readonly<Record<string, unknown>>,
+): ListPlan | string {
+  let limit = 100;
+  let orderBy: string | null = null;
+  let orderDir: "asc" | "desc" = "desc";
+  let since: string | null = null;
+  const equals: [string, unknown][] = [];
+  for (const [k, v] of Object.entries(filter)) {
+    if (k === "limit") {
+      if (typeof v !== "number" || v <= 0 || v > 1000) return `${op}: limit must be 1..1000`;
+      limit = v;
+    } else if (k === "orderBy") {
+      if (typeof v !== "string") return `${op}: orderBy must be string`;
+      const problem = checkColumn(op, columns, v);
+      if (problem) return problem;
+      orderBy = v;
+    } else if (k === "orderDir") {
+      if (v !== "asc" && v !== "desc") return `${op}: orderDir must be asc|desc`;
+      orderDir = v;
+    } else if (k === "since") {
+      if (typeof v !== "string") return `${op}: since must be ISO timestamp string`;
+      if (!("created_at" in columns)) return `${op}: \`since\` requires a created_at column`;
+      since = v;
+    } else {
+      const problem = checkColumn(op, columns, k);
+      if (problem) return problem;
+      equals.push([k, v]);
+    }
+  }
+  return { limit, orderBy, orderDir, since, equals };
 }
 
-function makeOps(zone: Zone) {
+function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
   const family = zone === "private" ? "plugin_storage" : "plugin_public_storage";
   const database = zone === "private" ? "cms_admin" : "cms_public";
   const table = (schema: string, name: string) => sql.raw(`"${schema}"."${name}"`);
@@ -96,6 +136,10 @@ function makeOps(zone: Zone) {
     ctx.actorKind === "plugin" && ctx.pluginId
       ? null
       : fail(operation, `${operation}: only a plugin can use its own storage`);
+  const settle = <T>(
+    operation: string,
+    r: { ok: true; value: T } | { ok: false; message: string },
+  ) => (r.ok ? ok(r.value) : fail(operation, r.message));
 
   const insert = defineOperation({
     name: `${family}.insert`,
@@ -114,13 +158,16 @@ function makeOps(zone: Zone) {
       for (const [k, v] of Object.entries(input.data)) {
         const problem = checkColumn(op, input.columns, k);
         if (problem) return fail(op, problem);
-        cols.push(`"${k}"`);
+        cols.push(k);
         values.push(valueSql(input.columns, k, v));
       }
       if (cols.length === 0)
         return fail(op, `${op}: data must include at least one declared column`);
+      if (zone === "private") {
+        return settle(op, await privateInsert(tx, ctx, input, cols, values, locker, op));
+      }
       const rows = (await tx.execute(
-        sql`INSERT INTO ${table(input.schema, input.table)} (${sql.raw(cols.join(", "))}) VALUES (${sql.join(values, sql`, `)}) RETURNING id::text AS id`,
+        sql`INSERT INTO ${table(input.schema, input.table)} (${sql.raw(cols.map((c) => `"${c}"`).join(", "))}) VALUES (${sql.join(values, sql`, `)}) RETURNING id::text AS id`,
       )) as unknown as { id: string }[];
       const id = rows[0]?.id;
       if (!id) return fail(op, `${op}: no id returned`);
@@ -139,46 +186,21 @@ function makeOps(zone: Zone) {
       const op = `${family}.list`;
       const denied = pluginOnly(ctx, op);
       if (denied) return denied;
+      const plan = parseListFilter(op, input.columns, input.filter ?? {});
+      if (typeof plan === "string") return fail(op, plan);
+      if (zone === "private") return ok({ rows: await privateList(tx, ctx, input, plan) });
       const wheres: ReturnType<typeof sql>[] = [];
-      if (zone === "private") {
-        wheres.push(sql`"caelo_deleted_at" IS NULL`, sql`"caelo_chat_branch_id" IS NULL`);
-      }
-      let limit = 100;
-      let orderBy: string | null = null;
-      let orderDir: "asc" | "desc" = "desc";
-      for (const [k, v] of Object.entries(input.filter ?? {})) {
-        if (k === "limit") {
-          if (typeof v !== "number" || v <= 0 || v > 1000)
-            return fail(op, `${op}: limit must be 1..1000`);
-          limit = v;
-        } else if (k === "orderBy") {
-          if (typeof v !== "string") return fail(op, `${op}: orderBy must be string`);
-          const problem = checkColumn(op, input.columns, v);
-          if (problem) return fail(op, problem);
-          orderBy = v;
-        } else if (k === "orderDir") {
-          if (v !== "asc" && v !== "desc") return fail(op, `${op}: orderDir must be asc|desc`);
-          orderDir = v;
-        } else if (k === "since") {
-          if (typeof v !== "string") return fail(op, `${op}: since must be ISO timestamp string`);
-          if (!("created_at" in input.columns))
-            return fail(op, `${op}: \`since\` requires a created_at column`);
-          wheres.push(sql`"created_at" > ${v}`);
-        } else {
-          const problem = checkColumn(op, input.columns, k);
-          if (problem) return fail(op, problem);
-          wheres.push(sql`${sql.raw(`"${k}"`)} = ${v}`);
-        }
-      }
+      if (plan.since !== null) wheres.push(sql`"created_at" > ${plan.since}`);
+      for (const [k, v] of plan.equals) wheres.push(sql`${sql.raw(`"${k}"`)} = ${v}`);
       const whereSql =
         wheres.length === 0 ? sql.raw("") : sql`WHERE ${sql.join(wheres, sql` AND `)}`;
-      const orderSql = orderBy
-        ? sql.raw(`ORDER BY "${orderBy}" ${orderDir.toUpperCase()}`)
+      const orderSql = plan.orderBy
+        ? sql.raw(`ORDER BY "${plan.orderBy}" ${plan.orderDir.toUpperCase()}`)
         : sql.raw("");
       const rows = (await tx.execute(
-        sql`SELECT * FROM ${table(input.schema, input.table)} ${whereSql} ${orderSql} ${sql.raw(`LIMIT ${limit}`)}`,
+        sql`SELECT * FROM ${table(input.schema, input.table)} ${whereSql} ${orderSql} ${sql.raw(`LIMIT ${plan.limit}`)}`,
       )) as unknown as Record<string, unknown>[];
-      return ok({ rows: zone === "private" ? stripHostColumns(rows) : rows });
+      return ok({ rows });
     },
   });
 
@@ -194,24 +216,22 @@ function makeOps(zone: Zone) {
       const denied = pluginOnly(ctx, op);
       if (denied) return denied;
       const sets: ReturnType<typeof sql>[] = [];
+      const patch: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(input.patch)) {
         if (k === "id") continue; // never update id
         const problem = checkColumn(op, input.columns, k);
         if (problem) return fail(op, problem);
-        sets.push(sql`${sql.raw(`"${k}"`)} = ${v}`);
+        sets.push(sql`${sql.raw(`"${k}"`)} = ${valueSql(input.columns, k, v)}`);
+        patch[k] = v;
       }
       if (sets.length === 0)
         return fail(op, `${op}: patch must include at least one declared column`);
       if (zone === "private") {
-        sets.push(sql`"caelo_version" = "caelo_version" + 1`, sql`"caelo_updated_at" = now()`);
-        await tx.execute(
-          sql`UPDATE ${table(input.schema, input.table)} SET ${sql.join(sets, sql`, `)} WHERE id = ${input.id}::uuid AND "caelo_deleted_at" IS NULL`,
-        );
-      } else {
-        await tx.execute(
-          sql`UPDATE ${table(input.schema, input.table)} SET ${sql.join(sets, sql`, `)} WHERE id = ${input.id}::uuid`,
-        );
+        return settle(op, await privateUpdate(tx, ctx, input, input.id, patch, sets, locker, op));
       }
+      await tx.execute(
+        sql`UPDATE ${table(input.schema, input.table)} SET ${sql.join(sets, sql`, `)} WHERE id = ${input.id}::uuid`,
+      );
       return ok({});
     },
   });
@@ -228,24 +248,17 @@ function makeOps(zone: Zone) {
       const denied = pluginOnly(ctx, op);
       if (denied) return denied;
       if (zone === "private") {
-        // Soft delete: the row's last state stays for history and for the
-        // branch overlay (docs/branch-aware-plugin-storage.md).
-        await tx.execute(
-          sql`UPDATE ${table(input.schema, input.table)} SET "caelo_deleted_at" = now(), "caelo_version" = "caelo_version" + 1, "caelo_updated_at" = now() WHERE id = ${input.id}::uuid AND "caelo_deleted_at" IS NULL`,
-        );
-      } else {
-        await tx.execute(
-          sql`DELETE FROM ${table(input.schema, input.table)} WHERE id = ${input.id}::uuid`,
-        );
+        return settle(op, await privateDelete(tx, ctx, input, input.id, locker, op));
       }
+      await tx.execute(
+        sql`DELETE FROM ${table(input.schema, input.table)} WHERE id = ${input.id}::uuid`,
+      );
       return ok({});
     },
   });
 
   return [insert, list, update, remove];
 }
-
-const ALL_OPS = [...makeOps("private"), ...makeOps("public")];
 
 /** Operation names by zone, for the host broker. */
 export const STORAGE_OPS = {
@@ -265,10 +278,19 @@ export const STORAGE_OPS = {
 
 /**
  * Register the storage operations on a registry. Idempotent: the admin
- * app, the gateway and tests each bootstrap their own registry.
+ * app, the gateway and tests each bootstrap their own registry. The
+ * first registration binds `lockPluginRow`; a branch write on a registry
+ * registered without one fails loudly.
  */
-export function registerPluginStorageOps(registry: OperationRegistry): void {
-  for (const op of ALL_OPS) {
+export function registerPluginStorageOps(
+  registry: OperationRegistry,
+  deps: { readonly lockPluginRow?: PluginRowLocker } = {},
+): void {
+  if (registry.has(STORAGE_OPS.private.insert)) return;
+  for (const op of [
+    ...makeOps("private", deps.lockPluginRow),
+    ...makeOps("public", deps.lockPluginRow),
+  ]) {
     // The registry stores every op as OperationDefinition<unknown, unknown>.
     if (!registry.has(op.name)) registry.register(op as OperationDefinition<unknown, unknown>);
   }

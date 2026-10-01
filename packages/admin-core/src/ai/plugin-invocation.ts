@@ -24,3 +24,15 @@ export function chatPluginInvocation(
     ...(aiCtx.chatTaskId ? { chatTaskId: aiCtx.chatTaskId } : {}),
   };
 }
+
+/**
+ * The plugin invocation for an approval-gated plugin tool after the
+ * Owner's click: an approved action applies live (CMS_REQUIREMENTS
+ * §14.7), so it runs on main as the approving Owner — not on the chat's
+ * branch, where it would wait for a second, publishing decision.
+ *
+ * @param operatorActorId the Owner who approved
+ */
+export function approvedPluginInvocation(operatorActorId: string): PluginInvocation {
+  return { origin: "approved", actorId: operatorActorId };
+}

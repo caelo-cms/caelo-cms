@@ -19,6 +19,7 @@ import {
   bootstrap,
   collectBuildAssets,
   injectPluginAssets,
+  MAIN_RENDER,
   resetPluginHost,
 } from "@caelo-cms/plugin-host";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
@@ -137,7 +138,7 @@ describe("#449 — plugin client assets reach both render surfaces", () => {
   });
 
   it("the deploy links the identical bytes from a content-hashed file", async () => {
-    const assets = await collectBuildAssets([pageId]);
+    const assets = await collectBuildAssets([pageId], MAIN_RENDER);
     expect(assets.map((a) => a.content).sort()).toEqual([RUNTIME_CSS, RUNTIME_JS].sort());
 
     const linked = injectPluginAssets(

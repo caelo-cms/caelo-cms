@@ -16,7 +16,7 @@
  */
 
 import { type DataListItem, pluginDataListsRegistry } from "./data-lists.js";
-import { hostSystemActorId, runPluginOperation } from "./dispatch.js";
+import { type RenderScope, renderInvocation, runPluginOperation } from "./dispatch.js";
 
 /** pageId → listName → items. Missing page/list means "not offered". */
 export type ResolvedDataLists = ReadonlyMap<string, Readonly<Record<string, DataListItem[]>>>;
@@ -49,7 +49,10 @@ function coerceItems(raw: unknown, where: string): DataListItem[] {
  *   plugin offers any — the common single-language case, which costs
  *   zero plugin calls.
  */
-export async function resolveDataLists(pageIds: ReadonlyArray<string>): Promise<ResolvedDataLists> {
+export async function resolveDataLists(
+  pageIds: ReadonlyArray<string>,
+  scope: RenderScope,
+): Promise<ResolvedDataLists> {
   const out = new Map<string, Record<string, DataListItem[]>>();
   if (pageIds.length === 0) return out;
   const sources = pluginDataListsRegistry.activeByOperation();
@@ -57,7 +60,7 @@ export async function resolveDataLists(pageIds: ReadonlyArray<string>): Promise<
 
   for (const source of sources.values()) {
     const r = await runPluginOperation({
-      invocation: { origin: "render", actorId: hostSystemActorId() },
+      invocation: renderInvocation(scope),
       pluginSlug: source.pluginSlug,
       operationName: source.operationName,
       args: { pageIds: [...pageIds] },

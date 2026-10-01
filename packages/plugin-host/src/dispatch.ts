@@ -23,6 +23,7 @@ import type {
 } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import type { PluginRowLocker } from "./private-storage.js";
 import type { AIProvider } from "./types.js";
 
 /** Runtime registry of loaded Tier-1 plugins. Loader writes here at startup;
@@ -133,6 +134,10 @@ export interface PluginHostInfra {
   /** P12 PR1.3 — optional outbound email transport. When omitted,
    *  ctx.email.send falls back to a no-op stderr stub. */
   readonly emailTransport?: EmailTransport;
+  /** Takes the chat lock for a plugin row written on a branch. Required
+   *  for any chat-origin private-storage write; admin-core supplies it
+   *  (it owns chat locks). A branch write without it fails loudly. */
+  readonly lockPluginRow?: PluginRowLocker;
 }
 
 /** Outbound email transport. Implementations live in the host process
@@ -290,6 +295,28 @@ export function setHostSystemActorId(actorId: string): void {
 export function hostSystemActorId(): string {
   if (!cachedSystemActorId) throw new Error("plugin host not bootstrapped");
   return cachedSystemActorId;
+}
+
+/**
+ * Which branch a render pass shows. The admin preview renders the chat's
+ * branch; the static generator and live paths render main (`null`).
+ * Required at every render call site so none can silently read main in a
+ * branch preview (docs/branch-aware-plugin-storage.md §5).
+ */
+export interface RenderScope {
+  readonly chatBranchId: string | null;
+}
+
+/** A render of the deployed site / live state: no branch. */
+export const MAIN_RENDER: RenderScope = Object.freeze({ chatBranchId: null });
+
+/** The invocation a render-time plugin call runs under. */
+export function renderInvocation(scope: RenderScope): PluginInvocation {
+  return {
+    origin: "render",
+    actorId: hostSystemActorId(),
+    ...(scope.chatBranchId ? { chatBranchId: scope.chatBranchId } : {}),
+  };
 }
 
 export async function runPluginOperation(

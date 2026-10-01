@@ -436,11 +436,46 @@ export async function awaitStageComplete(page: Page): Promise<void> {
   await page.getByTestId("stage-btn").click();
   await page.getByTestId("stage-submit-btn").click();
   const res = await responsePromise;
+  const body = await res.text();
   if (res.status() < 200 || res.status() >= 300) {
     throw new Error(
-      `awaitStageComplete: stageAndDeployStaging returned HTTP ${res.status()}. Response: ${(await res.text()).slice(0, 500)}`,
+      `awaitStageComplete: stageAndDeployStaging returned HTTP ${res.status()}. Response: ${body.slice(0, 500)}`,
     );
   }
+  // A SvelteKit form action's fail() answers HTTP 200 with
+  // {"type":"failure"} — a failed merge or staging build looked like a
+  // successful Stage, and the chat's locks (released only on success)
+  // surfaced later as "orphan locks".
+  if (body.includes('"type":"failure"') || body.includes('"type":"error"')) {
+    throw new Error(`awaitStageComplete: Stage failed. Response: ${body.slice(0, 800)}`);
+  }
+}
+
+/**
+ * Publish a seeded page so a staging build has a page at the site root.
+ * The minimal site seeds its home page as a draft, and staging ships
+ * published pages only — a scenario that Stages without its own
+ * published homepage would fail the build ("no page serves the site
+ * root").
+ */
+export function publishSeededPage(pageId: string): void {
+  const raw = spawnSync(
+    "bun",
+    [
+      "-e",
+      `
+      import { SQL } from "bun";
+      const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx\`UPDATE pages SET status = 'published' WHERE id = \${process.env.PAGE_ID}::uuid\`;
+      });
+      await sql.end();
+      `,
+    ],
+    { env: { ...process.env, PAGE_ID: pageId }, encoding: "utf8" },
+  );
+  if (raw.status !== 0) throw new Error(`publishSeededPage failed: ${raw.stderr || raw.stdout}`);
 }
 
 export async function awaitPublishComplete(page: Page): Promise<void> {
