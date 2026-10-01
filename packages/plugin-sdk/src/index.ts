@@ -79,11 +79,9 @@ export const pluginSchemaMap = z.record(z.string(), pluginTableSchema);
 export type PluginSchemaMap = z.infer<typeof pluginSchemaMap>;
 
 /** Capability requests. Every capability is runtime-enforced; what is
- *  GRANTABLE is capped by provenance (epic #380 decision 2): a
- *  release-signed plugin may request any capability, a runtime-authored
- *  plugin none beyond the sandbox base (query/api/theme/visitor/captcha).
- *  The validator rejects runtime-authored manifests that reach over the
- *  ceiling. */
+ *  release signature determines origin and execution path. External access
+ *  requires individual installation receipts and an implemented host broker.
+ *  Unsupported external requests fail activation; declarations never grant access. */
 export const pluginCapability = z.enum([
   "cms_admin",
   "cms_admin_schema",
@@ -94,6 +92,10 @@ export const pluginCapability = z.enum([
   "domain_events",
   "email",
   "head_contributions",
+  "url_slots",
+  "client_assets",
+  "data_lists",
+  "companion_skills",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -121,8 +123,7 @@ export const pluginWorkerSpec = z.object({
 
 export type PluginWorkerSpec = z.infer<typeof pluginWorkerSpec>;
 
-/** AI tool registration declaration. Tier 1 only — Tier 2 plugins do
- *  not get chat-runner tool registration. */
+/** AI tool declaration. External packages require the chat_runner_tools grant. */
 export const pluginToolSpec = z.object({
   name: z.string().min(1).max(120),
   description: z.string().min(1).max(4000),
@@ -350,10 +351,13 @@ export interface DeferralCandidate {
 
 export const pluginManifest = z
   .object({
+    // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
+    // truncates identifiers past 63 bytes — two long slugs sharing a
+    // prefix would land in ONE schema, i.e. one plugin's data.
     slug: z
       .string()
       .min(1)
-      .max(120)
+      .max(55)
       .regex(/^[a-z][a-z0-9-]*$/, "must be lowercase, dash-separated"),
     version: z
       .string()
@@ -381,11 +385,29 @@ export const pluginManifest = z
     /** See `PluginDefinition.deferralsOperation`. Release-signed only:
      *  withholding a module changes what visitors see. */
     hasDeferrals: z.boolean().default(false),
-    /** Tier 1 only. */
+    /** Grants this plugin asks for. A request grants nothing: the Owner
+     *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
+    /** Untrusted author explanations, displayed beside each explicit Owner grant. */
+    capabilityReasons: z.partialRecord(pluginCapability, z.string().min(1).max(500)).optional(),
+    /** Requested scopes are part of the immutable reviewed artifact. */
+    capabilityConstraints: z
+      .partialRecord(
+        pluginCapability,
+        z
+          .object({
+            operations: z
+              .array(z.string().regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/))
+              .max(100)
+              .optional(),
+            maxDailyCostMicrocents: z.number().int().positive().optional(),
+          })
+          .strict(),
+      )
+      .optional(),
     /** Tier 1 only. */
     workers: z.array(pluginWorkerSpec).optional(),
-    /** Tier 1 only. */
+    /** AI chat tools; needs the `chat_runner_tools` grant. */
     tools: z.array(pluginToolSpec).optional(),
     /** #390 — URL-slot claims (release-signed only). The definition
      *  supplies the matching pure encode/decode pairs. */
@@ -678,7 +700,6 @@ export interface PluginSnapshots {
   }): Promise<{ siteSnapshotId: string }>;
 }
 
-/** Locked context — what every Tier 2 plugin receives. */
 /** Where a plugin call came from (CMS_REQUIREMENTS §14.7). */
 export type PluginInvocationOrigin =
   | "chat"
@@ -708,6 +729,7 @@ export interface PluginInvocation {
   readonly chatTaskId?: string;
 }
 
+/** What every plugin receives. Granted handles extend it (PluginContextTier1). */
 export interface PluginContext {
   readonly query: PluginQuery;
   readonly api: PluginApi;
@@ -718,9 +740,8 @@ export interface PluginContext {
   readonly invocation: PluginInvocation;
 }
 
-/** Tier 1 context — adds the elevated capability handles. The host
- *  ONLY constructs the handles a plugin's `requestedCapabilities`
- *  asked for; unrequested fields are absent. */
+/** Extended SDK context (legacy name). The host attaches only authorized handles;
+ * external plugins additionally require exact receipts and a supported broker. */
 export interface PluginContextTier1 extends PluginContext {
   /** #389 — attached when the manifest holds `cms_admin_schema`. */
   readonly adminQuery?: PluginAdminQuery;
@@ -818,7 +839,7 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
     ctx: C,
     args: { pageIds: ReadonlyArray<string> },
   ) => Promise<ReadonlyMap<string, string>> | ReadonlyMap<string, string>;
-  /** Tier 1 only. */
+  /** Grants this plugin asks for; each is approved by the Owner (§14.5). */
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   /**
    * Runs each time the host brings the plugin up — at boot and when an
@@ -829,11 +850,14 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * the plugin's load loudly.
    */
   readonly onActivate?: (ctx: C) => Promise<void> | void;
+  readonly capabilityReasons?: PluginManifest["capabilityReasons"];
+  readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
   /** Tier 1 only. Cron-style background workers; the host's scheduler
    *  dispatches `operationName` on each tick. */
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
-  /** Tier 1 only. AI tools registered into the chat-runner catalogue
-   *  at activation. Each tool dispatches to the named operation. */
+  /** AI tools registered into the chat-runner catalogue at activation
+   *  (needs the `chat_runner_tools` grant). Each dispatches to the named
+   *  operation. */
   readonly tools?: ReadonlyArray<PluginToolSpec>;
   /** Tier 1 only. Plugin-emitted system-prompt blocks rendered every
    *  turn. */
@@ -943,6 +967,8 @@ export function manifestFromDefinition(def: {
   readonly buildAssets?: unknown;
   readonly deferralsOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  readonly capabilityReasons?: PluginManifest["capabilityReasons"];
+  readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
   readonly tools?: ReadonlyArray<PluginToolSpec>;
   readonly publicOperations?: ReadonlyArray<string>;
@@ -964,6 +990,8 @@ export function manifestFromDefinition(def: {
     hasBuildAssets: Boolean(def.buildAssets),
     hasDeferrals: Boolean(def.deferralsOperation),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
+    ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
+    ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),
     ...(def.workers ? { workers: [...def.workers] } : {}),
     ...(def.tools ? { tools: [...def.tools] } : {}),
     ...(def.urlContributions && def.urlContributions.length > 0

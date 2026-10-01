@@ -22,7 +22,15 @@
  * the separate Owner queue are gone.
  */
 
-import { loadActivatedPlugin, runPluginOperation } from "@caelo-cms/plugin-host";
+import {
+  hostInfra,
+  hostSystemActorId,
+  loadActivatedPlugin,
+  loadedPlugins,
+  operatorHasPermission,
+  recordExternalToolApproval,
+  runPluginOperation,
+} from "@caelo-cms/plugin-host";
 import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
@@ -30,6 +38,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 
 import { describePersistError } from "../chat-runner/persistence.js";
 import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
+import { approvedPluginInvocation } from "../plugin-invocation.js";
 
 /**
  * Attach the SDK `execute` to a gated catalogue tool. The returned tool ships
@@ -126,15 +135,52 @@ export function attachGatedExecute(
  */
 export function attachPluginGatedExecute(
   tool: FilteredTool,
-  invocation: PluginInvocation,
+  /** The chat the tool is offered in; its operator is the one who approves. */
+  chat: PluginInvocation,
 ): FilteredTool {
   const pluginGated = tool.pluginGated;
   if (!pluginGated) return tool;
+  const plugin = loadedPlugins.bySlug(pluginGated.pluginSlug);
   return {
     ...tool,
     approvalMode: "user-approval",
-    execute: async (input: unknown): Promise<unknown> => {
+    ...(plugin?.externalApproval
+      ? {
+          prepareApproval: async (toolCallId: string, args: unknown) =>
+            recordExternalToolApproval({
+              plugin,
+              infra: hostInfra(),
+              invocation: chat,
+              toolCallId,
+              args,
+              toolName: tool.name,
+              operationName: pluginGated.operationName,
+            }),
+        }
+      : {}),
+    execute: async (input: unknown, options?: { toolCallId?: string }): Promise<unknown> => {
+      const approver = chat.operatorActorId;
+      if (!approver)
+        return { ok: false, error: "ApprovalWithoutOperator: no human approved this call" };
+      // Live only for an approver who could publish it anyway; otherwise the
+      // approved action stays on the chat's branch until someone publishes.
+      const canPublish = await operatorHasPermission(
+        hostInfra(),
+        hostSystemActorId(),
+        approver,
+        "deploy.trigger",
+      );
+      const invocation =
+        canPublish || !chat.chatBranchId
+          ? approvedPluginInvocation(approver)
+          : approvedPluginInvocation(approver, {
+              chatBranchId: chat.chatBranchId,
+              ...(chat.chatTaskId ? { chatTaskId: chat.chatTaskId } : {}),
+            });
       const r = await runPluginOperation({
+        approvedToolName: tool.name,
+        approvedToolCallId: options?.toolCallId,
+        ...(chat.chatBranchId ? { approvedChatBranchId: chat.chatBranchId } : {}),
         pluginSlug: pluginGated.pluginSlug,
         operationName: pluginGated.operationName,
         args: input,

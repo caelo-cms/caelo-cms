@@ -23,7 +23,10 @@ import type {
 } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { z } from "zod";
+import type { ExternalApproval } from "./external-authorization.js";
 import type { PluginRowLocker } from "./private-storage.js";
+import { consumeExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
 /** Runtime registry of loaded Tier-1 plugins. Loader writes here at startup;
@@ -63,6 +66,7 @@ class LoadedPluginsRegistry {
 }
 
 export interface LoadedPlugin {
+  readonly externalApproval?: ExternalApproval;
   readonly pluginId: string;
   readonly slug: string;
   readonly version: string;
@@ -195,6 +199,12 @@ export function setContextFactory(
 }
 
 export interface RunPluginOperationOpts {
+  /** Set only by the host after the matching tool approval has completed. */
+  readonly approvedToolName?: string;
+  /** The approved tool call, whose binding was recorded before asking the Owner. */
+  readonly approvedToolCallId?: string;
+  /** The chat the approval card was shown in; its binding is redeemed there only. */
+  readonly approvedChatBranchId?: string;
   readonly pluginSlug: string;
   readonly operationName: string;
   readonly args: unknown;
@@ -227,7 +237,14 @@ export function assertInvocationConsistent(
   if (invocation.origin === "chat" && !invocation.chatBranchId) {
     throw new Error("PluginInvocationInvalid: a chat invocation needs the chat's branch");
   }
-  if (invocation.chatBranchId && invocation.origin !== "chat" && invocation.origin !== "render") {
+  // A branch is allowed for a chat, a branch preview render, and an
+  // approved action whose approver cannot publish (it stays in the chat).
+  if (
+    invocation.chatBranchId &&
+    invocation.origin !== "chat" &&
+    invocation.origin !== "render" &&
+    invocation.origin !== "approved"
+  ) {
     throw new Error(
       `PluginInvocationInvalid: origin "${invocation.origin}" cannot carry a chat branch`,
     );
@@ -364,6 +381,29 @@ export async function runPluginOperation(
         message: "plugin host not bootstrapped — call bootstrap() before dispatch",
       },
     };
+  }
+  if (plugin.externalApproval) {
+    const tool = plugin.definition.tools?.find((t) => t.operationName === opts.operationName);
+    if (tool) {
+      try {
+        if (tool.approvalMode && opts.approvedToolName !== tool.name)
+          throw new Error("ExternalToolApprovalRequired");
+        z.fromJSONSchema(tool.inputJsonSchema).parse(opts.args);
+        if (tool.approvalMode)
+          await consumeExternalToolApproval({
+            plugin,
+            infra: cachedInfra,
+            invocation: opts.invocation,
+            toolName: tool.name,
+            operationName: opts.operationName,
+            toolCallId: opts.approvedToolCallId,
+            chatBranchId: opts.approvedChatBranchId,
+            args: opts.args,
+          });
+      } catch (error) {
+        return { ok: false, error: { kind: "OperationFailed", message: (error as Error).message } };
+      }
+    }
   }
   let ctx: PluginContext | PluginContextTier1;
   try {

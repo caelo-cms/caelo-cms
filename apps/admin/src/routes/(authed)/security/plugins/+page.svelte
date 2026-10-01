@@ -68,6 +68,8 @@
     </div>
   {/if}
 
+  <a href="/security/plugins/installations" class="inline-block underline">Install external packages and review access</a>
+
   <Card>
     <CardHeader>
       <CardTitle class="text-base">Tier 1 — Core plugins ({data.tier1.length})</CardTitle>

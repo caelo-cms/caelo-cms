@@ -32,6 +32,12 @@ export interface ExecutionContext {
    */
   readonly chatTaskId?: string;
   /**
+   * For a plugin installed as an external artifact: the digest of the
+   * artifact this call runs. Private storage operations accept the call
+   * only while exactly this artifact is the active, granted one.
+   */
+  readonly pluginArtifactDigest?: string;
+  /**
    * P10.5: parent attribution for subagent invocations. When the
    * `spawn_subagent` tool calls runChatTurn for the child, it carries
    * these fields so the existing ai_calls + audit_events writers

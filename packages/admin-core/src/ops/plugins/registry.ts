@@ -465,6 +465,17 @@ export const preparePluginActivationOp = defineOperation({
         message: `no plugin with slug "${input.slug}"`,
       });
     }
+    if (
+      r?.tier === 2 &&
+      !validatePlugin({ manifest: r.manifest_json, source: r.source_code ?? "" }).ok
+    ) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.prepare_activation",
+        message:
+          "This external package requires individual installation grants; use the installation review.",
+      });
+    }
     if (r.status !== "awaiting_activation" && r.status !== "disabled") {
       return err({
         kind: "HandlerError",
@@ -600,6 +611,17 @@ export const activatePluginOp = defineOperation({
         operation: "plugins.activate",
         message:
           "Plugin artifact changed or approval digest missing. Review the current source and retry.",
+      });
+    }
+    if (
+      r?.tier === 2 &&
+      !validatePlugin({ manifest: r.manifest_json, source: r.source_code ?? "" }).ok
+    ) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.activate",
+        message:
+          "This external package requires individual installation grants; use the installation review.",
       });
     }
     // Release-signed plugins activate through this op too. They used to

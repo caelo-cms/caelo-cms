@@ -10,9 +10,8 @@
  *
  * Capability gating: `ctx.cms` / `ctx.ai` / `ctx.snapshots` are only attached
  * if the plugin's manifest declares the matching `requestedCapabilities`.
- * Runtime-authored plugins NEVER get these — provenance is the grantability
- * ceiling (#388); the function returns the locked base `PluginContext` for
- * them regardless of the manifest.
+ * External plugins require exact Owner receipts as well as a supported broker.
+ * Author storage is never attached to a visitor or render invocation.
  */
 
 import type {
@@ -37,6 +36,7 @@ import { execute } from "@caelo-cms/query-api";
 import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
+import { operatorCanAuthor } from "./external-authorization.js";
 import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
 
 export interface MakePluginContextOpts {
@@ -83,12 +83,24 @@ export async function makePluginContext(
     invocation: Object.freeze({ ...invocation }),
   };
 
-  // #388 grantability ceiling — provenance, not tier, decides what a
-  // plugin can be GIVEN: runtime-authored plugins get the sandbox base
-  // and nothing else, regardless of what their manifest requests (the
-  // validator rejects such manifests anyway; this is the runtime's
-  // independent enforcement of the same ceiling).
-  if (plugin.provenance === "runtime-authored") return baseCtx;
+  // Runtime-installed plugins run in the sandbox and get only what an
+  // Owner approved for this exact artifact (§14.5) — never on a render or
+  // visitor call, and only when acting for a human who may author content.
+  if (plugin.provenance === "runtime-authored") {
+    const approval = plugin.externalApproval;
+    if (!approval) return baseCtx;
+    if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return baseCtx;
+    if (!approval.capabilities.includes("cms_admin_schema")) return baseCtx;
+    // Private storage is author data: only for someone who may author.
+    // Without it the plugin still runs, with the base handles — an
+    // operation that needs storage then fails at the sandbox broker
+    // (SandboxCapabilityDenied), not silently.
+    const operator = invocation.origin === "chat" ? invocation.operatorActorId : invocation.actorId;
+    if (!operator || !(await operatorCanAuthor(infra, approval.systemActorId, operator))) {
+      return baseCtx;
+    }
+    return { ...baseCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) };
+  }
 
   // Release-signed — attach elevated handles per requestedCapabilities.
   const tier1: Mutable<PluginContextTier1> = { ...baseCtx };
@@ -114,6 +126,9 @@ export async function makePluginContext(
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+/** Invocations that author content on someone's behalf. */
+const AUTHORING_ORIGINS: ReadonlySet<string> = new Set(["chat", "owner-panel", "approved"]);
 
 // ---------------------------------------------------------------------------
 // PluginQuery (P12 PR1.1) — real cms_public dispatch.
@@ -205,6 +220,9 @@ function makeScopedQuery(
     pluginId: plugin.pluginId,
     requestId: `plugin-${plugin.slug}`,
     ...branch,
+    ...(plugin.externalApproval
+      ? { pluginArtifactDigest: plugin.externalApproval.artifactDigest }
+      : {}),
   };
 
   /**
@@ -213,7 +231,18 @@ function makeScopedQuery(
    * Owner action (CMS_REQUIREMENTS §14.7). Seed data in `onActivate`.
    */
   function assertAuthoring(method: string): void {
-    if (scope.pool !== "admin") return;
+    if (scope.pool !== "admin") {
+      // Public tables hold visitor data and have no branch: a write from a
+      // chat would go live before publish. Installed plugins keep chat
+      // work in private storage (which branches); visitors, the Owner
+      // panel and actions approved by someone who may publish write live.
+      if (plugin.externalApproval && invocation.chatBranchId && invocation.origin !== "render") {
+        throw new Error(
+          `${scope.label}.${method}: plugin "${plugin.slug}" cannot write its public tables from a chat — they are live visitor data; keep chat work in private storage (adminQuery)`,
+        );
+      }
+      return;
+    }
     if (invocation.origin === "render" || invocation.origin === "visitor") {
       throw new Error(
         `${scope.label}.${method}: plugin "${plugin.slug}" cannot write its private storage from a ${invocation.origin} call — write from a chat tool, the Owner panel, a worker or onActivate`,

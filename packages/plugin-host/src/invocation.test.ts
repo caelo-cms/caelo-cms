@@ -58,11 +58,18 @@ describe("assertInvocationConsistent", () => {
     expect(() => assertInvocationConsistent({ origin: "chat", actorId: "ai" }, undefined)).toThrow(
       "branch",
     );
-    for (const origin of ["owner-panel", "approved", "worker", "system"] as const) {
+    for (const origin of ["owner-panel", "worker", "system"] as const) {
       expect(() =>
         assertInvocationConsistent({ origin, actorId: "a", chatBranchId: BRANCH }, undefined),
       ).toThrow("cannot carry a chat branch");
     }
+    // An approved action whose approver cannot publish stays on the chat's branch.
+    expect(() =>
+      assertInvocationConsistent(
+        { origin: "approved", actorId: "a", chatBranchId: BRANCH },
+        undefined,
+      ),
+    ).not.toThrow();
   });
 });
 

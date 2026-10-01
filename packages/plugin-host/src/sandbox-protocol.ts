@@ -8,6 +8,11 @@ export const SANDBOX_CALL_LIMIT = 256;
 
 /** Only these SDK calls may cross the process boundary. */
 export const sandboxMethod = z.enum([
+  "adminQuery.insert",
+  "adminQuery.list",
+  "adminQuery.update",
+  "adminQuery.compareAndSwap",
+  "adminQuery.delete",
   "query.insert",
   "query.list",
   "query.update",
