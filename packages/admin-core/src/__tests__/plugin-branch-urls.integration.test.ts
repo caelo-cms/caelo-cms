@@ -208,6 +208,30 @@ describe("plugin URL annotations on a chat branch", () => {
     if (!tagged.ok) throw new Error(tagged.error.message);
     expect(await livePath(branchPageId)).toBe(`/de/${PFX}de`);
 
+    // A page the chat duplicates is the chat's page too (the
+    // international site's create_variant duplicates the source page).
+    const dup = await execute(registry, adapter, aiCtx, "pages.duplicate", {
+      sourcePageId: mainId,
+      newSlug: `${PFX}copy`,
+    });
+    if (!dup.ok) throw new Error(JSON.stringify(dup.error));
+    const copyId = (dup.value as { pageId: string }).pageId;
+    const copyTagged = await runPluginOperation({
+      pluginSlug: SLUG,
+      operationName: "tag_page",
+      args: { pageId: copyId, prefix: "it" },
+      invocation,
+    });
+    if (!copyTagged.ok) throw new Error(copyTagged.error.message);
+    expect(await livePath(copyId)).toBe(`/it/${PFX}copy`);
+    const copyBranch = await withSystemSql(
+      async (tx) =>
+        (await tx`SELECT chat_branch_id::text AS b FROM pages WHERE id = ${copyId}::uuid`) as {
+          b: string | null;
+        }[],
+    );
+    expect(copyBranch[0]?.b).toBe(chatBranchId);
+
     // A main page tagged from the chat keeps its live URL until publish.
     const mainTagged = await runPluginOperation({
       pluginSlug: SLUG,
@@ -226,6 +250,7 @@ describe("plugin URL annotations on a chat branch", () => {
     if (!merged.ok) throw new Error(JSON.stringify(merged.error));
     expect(await livePath(mainId)).toBe(`/fr/${PFX}main`);
     expect(await livePath(branchPageId)).toBe(`/de/${PFX}de`);
+    expect(await livePath(copyId)).toBe(`/it/${PFX}copy`);
     const redirects = await withSystemSql(
       async (tx) =>
         (await tx`SELECT to_path FROM redirects WHERE from_path = ${`/${PFX}main`}`) as {
