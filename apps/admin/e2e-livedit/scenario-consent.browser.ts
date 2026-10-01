@@ -34,6 +34,7 @@ import {
   attachChatSessionTracker,
   awaitStageComplete,
   loginAsDevOwner,
+  publishSeededPage,
   resetLiveditFixtures,
   seedMinimalSite,
   sendChatPromptAndWait,
@@ -125,6 +126,7 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
   // chat's branch until merged (CMS_REQUIREMENTS §14.7). The DB
   // assertions below read live state, and the chat's locks are released
   // here, so assertNoOrphanLocks checks what it is named for.
+  publishSeededPage(seed.pageId);
   await awaitStageComplete(page);
 
   // Render the home page the way a visitor would see it. /edit/preview

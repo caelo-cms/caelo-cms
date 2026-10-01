@@ -22,7 +22,7 @@
  * production produce the same HTML byte-for-byte.
  */
 
-import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
   collectBuildAssets,
@@ -49,6 +49,7 @@ import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { buildRobotsTxtWithSitemap, readSeoSettings, runSeoPass } from "./seo-pass.js";
+import { syncContents } from "./sync-contents.js";
 
 export interface DeployTarget {
   readonly id: string;
@@ -1006,55 +1007,6 @@ export async function generateSite(args: {
   await pruneOldBuilds(buildsDir, runId, 5);
 
   return { pageCount: pageRows.length, fileCount, durationMs: Date.now() - start, buildDir };
-}
-
-/**
- * Mirror `src` into `dst` so dst contains exactly src's tree. Files are
- * overwritten in place; files in dst not present in src are removed.
- * Empty subdirectories are pruned bottom-up. Tolerates EFAULT on rm
- * (Docker Desktop quirk on rm-inside-bind-mount on macOS) so a build
- * never fails the whole deploy because a stale child couldn't be
- * unlinked.
- */
-async function syncContents(src: string, dst: string): Promise<void> {
-  const tryRm = async (path: string, opts: Parameters<typeof rm>[1] = {}) => {
-    try {
-      await rm(path, opts);
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException | undefined)?.code;
-      if (code !== "EFAULT" && code !== "ENOENT") throw e;
-    }
-  };
-  const srcFiles = new Set<string>();
-  const collect = async (rel: string): Promise<void> => {
-    const entries = await readdir(join(src, rel), { withFileTypes: true });
-    for (const entry of entries) {
-      const childRel = rel ? join(rel, entry.name) : entry.name;
-      if (entry.isDirectory()) await collect(childRel);
-      else srcFiles.add(childRel);
-    }
-  };
-  await collect("");
-  for (const rel of srcFiles) {
-    await mkdir(join(dst, rel, ".."), { recursive: true });
-    await copyFile(join(src, rel), join(dst, rel));
-  }
-  const sweep = async (rel: string): Promise<void> => {
-    const here = join(dst, rel);
-    if (!(await stat(here).catch(() => null))) return;
-    const entries = await readdir(here, { withFileTypes: true });
-    for (const entry of entries) {
-      const childRel = rel ? join(rel, entry.name) : entry.name;
-      if (entry.isDirectory()) {
-        await sweep(childRel);
-        const remaining = await readdir(join(dst, childRel)).catch(() => []);
-        if (remaining.length === 0) await tryRm(join(dst, childRel), { recursive: false });
-      } else if (!srcFiles.has(childRel)) {
-        await tryRm(join(dst, childRel), { force: true });
-      }
-    }
-  };
-  await sweep("");
 }
 
 async function pruneOldBuilds(buildsDir: string, keepRunId: string, retain: number): Promise<void> {

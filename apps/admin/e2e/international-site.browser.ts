@@ -257,19 +257,6 @@ test("gated set_locales pauses for the in-chat click; create_variant lands /de/;
     { DE_SLUG },
   );
 
-  // Publish both → the rendered head carries the full hreflang set.
-  runBunInline(
-    `
-    import { SQL } from "bun";
-    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-    await sql.begin(async (tx) => {
-      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx\`UPDATE pages SET status = 'published' WHERE slug IN (\${process.env.SRC_SLUG}, \${process.env.DE_SLUG})\`;
-    });
-    await sql.end();
-    `,
-    { SRC_SLUG, DE_SLUG },
-  );
   // The variant rows were written from the chat, so they sit on the
   // chat's branch until it is published (CMS_REQUIREMENTS §14.7): the
   // chat's preview shows the hreflang set, main does not yet.
@@ -288,6 +275,38 @@ test("gated set_locales pauses for the in-chat click; create_variant lands /de/;
     `,
     { SESSION_ID: sessionId },
   ).trim();
+
+  // Publish both pages IN the chat (pages.update on its branch, as the AI
+  // would) → the chat's preview head carries the full hreflang set.
+  runBunInline(
+    `
+    import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+    import { registerAdminOps } from "@caelo-cms/admin-core";
+    const registry = new OperationRegistry();
+    registerAdminOps(registry);
+    const adapter = new DatabaseAdapter({
+      adminDatabaseUrl: process.env.ADMIN_DATABASE_URL,
+      publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL,
+    });
+    const ctx = {
+      actorId: "00000000-0000-0000-0000-00000000ffff",
+      actorKind: "system",
+      requestId: "e2e-intl-publish",
+      chatBranchId: process.env.CHAT_BRANCH_ID,
+      chatTaskId: process.env.SESSION_ID,
+    };
+    const listed = await execute(registry, adapter, ctx, "pages.list", {});
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    for (const slug of [process.env.SRC_SLUG, process.env.DE_SLUG]) {
+      const p = listed.value.pages.find((x) => x.slug === slug);
+      if (!p) throw new Error("page not on the chat branch: " + slug);
+      const r = await execute(registry, adapter, ctx, "pages.update", { pageId: p.id, status: "published" });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+    }
+    await adapter.close();
+    `,
+    { SRC_SLUG, DE_SLUG, CHAT_BRANCH_ID: chatBranchId, SESSION_ID: sessionId },
+  );
   const cookies = await page.context().cookies();
   const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
   const mainRes = await request.get(`${BASE}/edit/preview/${seed.pageId}`, {

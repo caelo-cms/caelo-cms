@@ -1858,11 +1858,14 @@ export const duplicatePageOp = defineOperation({
     }
     const title = input.newTitle ?? source.title;
     const name = input.newName ?? title;
+    // Branched like pages.create: a copy made in a chat is that chat's
+    // page until publish, not a live draft other chats and the site see.
     const inserted = (await tx.execute(sql`
-      INSERT INTO pages (slug, name, title, template_id, status)
+      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id)
       VALUES (
         ${input.newSlug}, ${name}, ${title},
-        ${targetTemplateId}::uuid, 'draft'
+        ${targetTemplateId}::uuid, 'draft',
+        ${ctx.chatBranchId ?? null}::uuid
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -2009,6 +2012,8 @@ export const duplicatePageOp = defineOperation({
         actorId: ctx.actorId,
         opKind: "pages.create",
         description: `pages.duplicate from=${source.slug} to=${input.newSlug}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: newPageId, state }],
       });
       await emitDomainEvent(tx, {
@@ -2023,6 +2028,8 @@ export const duplicatePageOp = defineOperation({
       actorId: ctx.actorId,
       opKind: "pages.set_modules",
       description: `pages.duplicate layout from=${source.slug}`,
+      chatTaskId: ctx.chatTaskId ?? null,
+      chatBranchId: ctx.chatBranchId ?? null,
       entities: [{ kind: "pageLayout", entityId: newPageId, state: layoutState }],
     });
     return ok({ pageId: newPageId });
