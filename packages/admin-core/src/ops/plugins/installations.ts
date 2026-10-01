@@ -13,6 +13,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { syncExternalCompanionSkills } from "./companion-skills.js";
 
 export const stagePluginInstallationOp = defineOperation({
   name: "plugins.stage_installation",
@@ -432,6 +433,7 @@ export const finalizePluginInstallationOp = defineOperation({
       manifest,
       grants.map((g) => g.capability),
     );
+    await syncExternalCompanionSkills(tx, row.plugin_id, row.artifact_digest, manifest);
     // The previous active version and any competing approved one (e.g.
     // approved in another tab) retire: their receipts are revoked below,
     // so leaving them `approved` would offer a retry that can only fail.
