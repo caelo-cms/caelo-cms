@@ -443,7 +443,9 @@ describe("#451 — consent-manager", () => {
         ?.reason,
     ).toBe("unclassified");
 
-    await call("scan_modules");
+    // No scan has recorded a verdict yet: list_embeds is read-only and
+    // still reports what the gate does, and classify_embed records the
+    // operator's decision without a prior scan row.
     const listed = await call("list_embeds");
     if (!listed.ok) throw new Error(JSON.stringify(listed.error));
     const row = (

@@ -97,14 +97,48 @@ const recordConsentArgs = z.object({
   policyVersion: z.number().int().positive(),
 });
 
-/** What core sends the deferrals operation: the render pass, with the content about to ship. */
+/** A module's third-party hosts now, next to the verdict stored for it (if any). */
+interface EmbedScan {
+  readonly moduleId: string;
+  readonly moduleSlug: string;
+  readonly hosts: string[];
+  readonly guard: GuardRow | undefined;
+}
+
+/** The verdict a guard row should hold, as stored fields. */
+type GuardVerdict = Pick<GuardRow, "category_key" | "detected_hosts" | "status" | "decided_by">;
+
 /**
- * Bring every module's guard row in line with what it reaches NOW (the
- * same `moduleHosts` judgement the render-time gate applies). Shared by
- * the cron scan and `list_embeds`, so the list an editor or the AI reads
- * is never older than what the gate is withholding.
+ * What a module's guard should say given the hosts it reaches now (the
+ * same `moduleHosts` judgement the render-time gate applies):
+ *
+ * - `null` — no third-party host; any stored guard is stale.
+ * - the stored guard — the hosts it was decided about are unchanged.
+ * - a fresh verdict — vendor-table classification, else pending.
  */
-async function syncGuards(ctx: PluginContextTier1): Promise<{ flagged: number; cleared: number }> {
+function verdictFor(scan: EmbedScan): GuardVerdict | null {
+  if (scan.hosts.length === 0) return null;
+  const existing = scan.guard;
+  if (existing && JSON.stringify(existing.detected_hosts ?? []) === JSON.stringify(scan.hosts)) {
+    return existing;
+  }
+  // Hosts changed under an existing verdict (or none was recorded): the
+  // decision was made about a different set, so it no longer applies.
+  const known = classifyHosts(scan.hosts);
+  return {
+    category_key: known ?? existing?.category_key ?? "marketing",
+    detected_hosts: scan.hosts,
+    status: known ? "gated" : "pending",
+    decided_by: known ? "vendor-table" : "",
+  };
+}
+
+/**
+ * Every module with its current hosts and stored guard. Read-only; in a
+ * chat it reads the chat's branch, so the AI sees the modules it just
+ * edited.
+ */
+async function scanEmbeds(ctx: PluginContextTier1): Promise<EmbedScan[]> {
   const q = adminQueryOf(ctx);
   const cms = cmsOf(ctx);
   const modules = await cms.call<{
@@ -134,16 +168,27 @@ async function syncGuards(ctx: PluginContextTier1): Promise<{ flagged: number; c
   }
   const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
   const byModule = new Map(guards.map((g) => [g.module_id, g]));
+  return modules.modules.map((m) => ({
+    moduleId: m.id,
+    moduleSlug: m.slug,
+    hosts: moduleHosts({ ...m, contentValues: valuesByModule.get(m.id) ?? [] }),
+    guard: byModule.get(m.id),
+  }));
+}
 
+/**
+ * Bring every module's guard row in line with what it reaches now. The
+ * scheduled scan (`scan_modules`, a worker on main) is the only writer;
+ * `list_embeds` reports the same verdicts without storing them.
+ */
+async function syncGuards(ctx: PluginContextTier1): Promise<{ flagged: number; cleared: number }> {
+  const q = adminQueryOf(ctx);
   let flagged = 0;
   let cleared = 0;
-  for (const m of modules.modules) {
-    const hosts = moduleHosts({
-      ...m,
-      contentValues: valuesByModule.get(m.id) ?? [],
-    });
-    const existing = byModule.get(m.id);
-    if (hosts.length === 0) {
+  for (const scan of await scanEmbeds(ctx)) {
+    const verdict = verdictFor(scan);
+    const existing = scan.guard;
+    if (verdict === null) {
       // The module stopped reaching out — drop the guard rather than
       // leaving a stale one that withholds a now-harmless module.
       if (existing) {
@@ -152,31 +197,13 @@ async function syncGuards(ctx: PluginContextTier1): Promise<{ flagged: number; c
       }
       continue;
     }
-    const known = classifyHosts(hosts);
-    if (!existing) {
-      await q.insert("module_guards", {
-        module_id: m.id,
-        category_key: known ?? "marketing",
-        detected_hosts: hosts,
-        status: known ? "gated" : "pending",
-        decided_by: known ? "vendor-table" : "",
-      });
-      flagged += 1;
-      continue;
+    if (verdict === existing) continue;
+    if (existing) {
+      await q.update("module_guards", existing.id, verdict);
+    } else {
+      await q.insert("module_guards", { module_id: scan.moduleId, ...verdict });
     }
-    // Hosts changed under an existing verdict: the decision was made
-    // about a different set, so it no longer applies.
-    const before = JSON.stringify(existing.detected_hosts ?? []);
-    if (before !== JSON.stringify(hosts)) {
-      const rescored = classifyHosts(hosts);
-      await q.update("module_guards", existing.id, {
-        detected_hosts: hosts,
-        category_key: rescored ?? existing.category_key,
-        status: rescored ? "gated" : "pending",
-        decided_by: rescored ? "vendor-table" : "",
-      });
-      flagged += 1;
-    }
+    flagged += 1;
   }
   return { flagged, cleared };
 }
@@ -621,26 +648,24 @@ export default definePlugin<PluginContextTier1>({
      */
     scan_modules: async (ctx) => syncGuards(ctx),
 
+    // Read-only: reports the verdict every module would get now, stored
+    // or not, so the list is never older than what the render gate
+    // withholds — without a read tool writing author data.
     list_embeds: async (ctx) => {
-      await syncGuards(ctx);
-      const q = adminQueryOf(ctx);
-      const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
-      const cms = cmsOf(ctx);
-      const modules = await cms.call<{ modules: Array<{ id: string; slug: string }> }>(
-        "modules.list",
-        {},
-      );
-      const slugOf = new Map(modules.modules.map((m) => [m.id, m.slug]));
-      return {
-        embeds: guards.map((g) => ({
-          moduleId: g.module_id,
-          moduleSlug: slugOf.get(g.module_id) ?? "(deleted)",
-          hosts: g.detected_hosts,
-          status: g.status,
-          category: g.category_key,
-          decidedBy: g.decided_by,
-        })),
-      };
+      const embeds = [];
+      for (const scan of await scanEmbeds(ctx)) {
+        const verdict = verdictFor(scan);
+        if (verdict === null) continue;
+        embeds.push({
+          moduleId: scan.moduleId,
+          moduleSlug: scan.moduleSlug,
+          hosts: verdict.detected_hosts,
+          status: verdict.status,
+          category: verdict.category_key,
+          decidedBy: verdict.decided_by,
+        });
+      }
+      return { embeds };
     },
 
     classify_embed: async (ctx, args) => {
@@ -651,31 +676,31 @@ export default definePlugin<PluginContextTier1>({
       };
       if (typeof moduleId !== "string") throw new Error("classify_embed: `moduleId` is required");
       const q = adminQueryOf(ctx);
-      const rows = (await q.list("module_guards", {
-        module_id: moduleId,
-        limit: 1,
-      })) as unknown as GuardRow[];
-      const row = rows[0];
-      if (!row) {
+      const scan = (await scanEmbeds(ctx)).find((e) => e.moduleId === moduleId);
+      if (!scan || scan.hosts.length === 0) {
         throw new Error(
           `classify_embed: module ${moduleId} has no detected third-party host — nothing to classify. Run list_embeds to see what does.`,
         );
       }
+      let decision: Pick<GuardRow, "category_key" | "status">;
       if (allow === true) {
-        await q.update("module_guards", row.id, { status: "allowed", decided_by: "operator" });
-        return { moduleId, status: "allowed" };
+        decision = { category_key: scan.guard?.category_key ?? "marketing", status: "allowed" };
+      } else {
+        const categories = await categoriesOf(q);
+        const known = new Set(categories.map((c) => c.key));
+        if (typeof category !== "string" || !known.has(category)) {
+          throw new Error(`classify_embed: \`category\` must be one of ${[...known].join(", ")}`);
+        }
+        decision = { category_key: category, status: "gated" };
       }
-      const categories = await categoriesOf(q);
-      const known = new Set(categories.map((c) => c.key));
-      if (typeof category !== "string" || !known.has(category)) {
-        throw new Error(`classify_embed: \`category\` must be one of ${[...known].join(", ")}`);
-      }
-      await q.update("module_guards", row.id, {
-        category_key: category,
-        status: "gated",
-        decided_by: "operator",
-      });
-      return { moduleId, status: "gated", category };
+      // The operator decides about the hosts the module reaches now; the
+      // row may not exist yet, since only the scheduled scan records them.
+      const fields = { ...decision, detected_hosts: scan.hosts, decided_by: "operator" };
+      if (scan.guard) await q.update("module_guards", scan.guard.id, fields);
+      else await q.insert("module_guards", { module_id: moduleId, ...fields });
+      return decision.status === "allowed"
+        ? { moduleId, status: "allowed" }
+        : { moduleId, status: "gated", category: decision.category_key };
     },
 
     /**
