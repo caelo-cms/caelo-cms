@@ -22,7 +22,13 @@
  * the separate Owner queue are gone.
  */
 
-import { loadActivatedPlugin, runPluginOperation } from "@caelo-cms/plugin-host";
+import {
+  hostInfra,
+  loadActivatedPlugin,
+  loadedPlugins,
+  recordExternalToolApproval,
+  runPluginOperation,
+} from "@caelo-cms/plugin-host";
 import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
@@ -126,19 +132,37 @@ export function attachGatedExecute(
  */
 export function attachPluginGatedExecute(
   tool: FilteredTool,
-  invocation: PluginInvocation,
+  /** `chat` records the approval binding before the card; `approved` runs the call. */
+  invocations: { readonly chat: PluginInvocation; readonly approved: PluginInvocation },
 ): FilteredTool {
   const pluginGated = tool.pluginGated;
   if (!pluginGated) return tool;
+  const plugin = loadedPlugins.bySlug(pluginGated.pluginSlug);
   return {
     ...tool,
     approvalMode: "user-approval",
-    execute: async (input: unknown): Promise<unknown> => {
+    ...(plugin?.externalApproval
+      ? {
+          prepareApproval: async (toolCallId: string, args: unknown) =>
+            recordExternalToolApproval({
+              plugin,
+              infra: hostInfra(),
+              invocation: invocations.chat,
+              toolCallId,
+              args,
+              toolName: tool.name,
+              operationName: pluginGated.operationName,
+            }),
+        }
+      : {}),
+    execute: async (input: unknown, options?: { toolCallId?: string }): Promise<unknown> => {
       const r = await runPluginOperation({
+        approvedToolName: tool.name,
+        approvedToolCallId: options?.toolCallId,
         pluginSlug: pluginGated.pluginSlug,
         operationName: pluginGated.operationName,
         args: input,
-        invocation,
+        invocation: invocations.approved,
       });
       if (!r.ok) {
         return { ok: false, error: `${r.error.kind}: ${r.error.message}` };

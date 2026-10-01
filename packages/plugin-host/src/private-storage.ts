@@ -313,6 +313,45 @@ function jsonEqual(a: unknown, b: unknown): boolean {
   );
 }
 
+/**
+ * May this plugin touch its private storage right now? Runs first in every
+ * private storage operation, in the operation's own transaction: it holds
+ * the plugin's registry row `FOR SHARE`, so disabling the plugin or
+ * revoking its grant (both lock that row) waits for an accepted write to
+ * commit, and no write starts after the revocation committed.
+ *
+ * A plugin installed as an external artifact additionally needs an
+ * unrevoked `cms_admin_schema` receipt for the artifact it runs
+ * (CMS_REQUIREMENTS §14.5).
+ *
+ * @returns null when allowed, else the reason
+ */
+export async function privateStorageRefusal(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+): Promise<string | null> {
+  if (!ctx.pluginId) return "no plugin id on the context";
+  const rows = (await tx.execute(sql`
+    SELECT p.status,
+           v.artifact_digest,
+           EXISTS (
+             SELECT 1 FROM plugin_capability_grants g
+             WHERE g.plugin_id = p.id AND g.artifact_digest = v.artifact_digest
+               AND g.capability = 'cms_admin_schema' AND g.revoked_at IS NULL
+           ) AS granted
+    FROM plugins p
+    LEFT JOIN plugin_installation_versions v ON v.plugin_id = p.id AND v.status = 'active'
+    WHERE p.id = ${ctx.pluginId}::uuid
+    FOR SHARE OF p
+  `)) as unknown as { status: string; artifact_digest: string | null; granted: boolean }[];
+  const row = rows[0];
+  if (!row || row.status !== "active") return "the plugin is not active";
+  if (row.artifact_digest !== null && !row.granted) {
+    return "the Owner has not granted (or has revoked) private storage for this plugin version";
+  }
+  return null;
+}
+
 function notFound(operation: string, rowId: string): { ok: false; message: string } {
   return {
     ok: false,

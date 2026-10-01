@@ -56,6 +56,19 @@ Grants are bound to the plugin's exact artifact. A new version asks again; a rev
 
 Disabling a plugin keeps its data. Uninstalling removes it.
 
+## Approving a plugin that asks for access
+
+A plugin that requests grants is reviewed at **Security → Plugins → Install external packages and review access** (`/security/plugins/installations`). Packages built outside Caelo are uploaded there as a JSON file `{ "manifest": …, "source": "…" }`; plugins the AI builds with extra access land in the same queue. Approving needs the `plugins.install` permission, which only the Owner has by default — the moderation permission `plugins.approve` is not enough.
+
+- **Every grant is its own checkbox, none preselected.** Each shows the plugin's stated reason. You see the exact source, the manifest, and every tool name and description the AI will be shown.
+- **Approval issues a receipt per grant**, bound to the package's SHA-256. A manifest that merely lists a grant gets nothing; only receipts count.
+- **Updates are new packages.** The running version keeps running while you review the replacement. Removing columns or changing their types is refused; failed preparation keeps the old version.
+- **Revoking a grant disables that version** and keeps its data. A write already accepted finishes first; no write starts after the revocation. Approving again issues fresh receipts, so earlier approvals do not come back to life.
+- **Private storage is only for authoring.** The plugin gets it when it acts for someone who may author content — in a chat, in the Owner panel, or for an action you approved. Rendering and visitor calls never get it.
+- **Tools that ask before every use** show the approval card in the chat. The card is bound to the exact package, receipts, arguments and person; it can be used once, and a changed package or changed arguments need a fresh approval.
+
+This release supports private storage and chat tools for such plugins. A request for any other grant can be reviewed, but the plugin will not activate until Caelo implements that grant.
+
 ## Status
 
 Caelo is converging on this model. Where the current release does not meet it yet — shipped plugins still run in-process with their capabilities fixed at load, and a broad core-data capability instead of per-domain grants — the gaps are listed in CMS_REQUIREMENTS §14.13 and tracked as defects.

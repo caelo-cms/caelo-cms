@@ -42,6 +42,7 @@ import {
   privateDelete,
   privateInsert,
   privateList,
+  privateStorageRefusal,
   privateUpdate,
 } from "./private-storage.js";
 
@@ -200,6 +201,10 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       const op = `${family}.insert`;
       const denied = pluginOnly(ctx, op);
       if (denied) return denied;
+      if (zone === "private") {
+        const refused = await privateStorageRefusal(tx, ctx);
+        if (refused) return fail(op, `${op}: ${refused}`);
+      }
       const cols: string[] = [];
       const values: ReturnType<typeof sql>[] = [];
       for (const [k, v] of Object.entries(input.data)) {
@@ -233,6 +238,10 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       const op = `${family}.list`;
       const denied = pluginOnly(ctx, op);
       if (denied) return denied;
+      if (zone === "private") {
+        const refused = await privateStorageRefusal(tx, ctx);
+        if (refused) return fail(op, `${op}: ${refused}`);
+      }
       const plan = parseListFilter(op, input.columns, input.filter ?? {});
       if (typeof plan === "string") return fail(op, plan);
       if (zone === "private") return ok({ rows: await privateList(tx, ctx, input, plan) });
@@ -262,6 +271,10 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       const op = `${family}.update`;
       const denied = pluginOnly(ctx, op);
       if (denied) return denied;
+      if (zone === "private") {
+        const refused = await privateStorageRefusal(tx, ctx);
+        if (refused) return fail(op, `${op}: ${refused}`);
+      }
       const sets: ReturnType<typeof sql>[] = [];
       const patch: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(input.patch)) {
@@ -295,6 +308,10 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       const denied = pluginOnly(ctx, op);
       if (denied) return denied;
       if (zone === "private") {
+        const refused = await privateStorageRefusal(tx, ctx);
+        if (refused) return fail(op, `${op}: ${refused}`);
+      }
+      if (zone === "private") {
         return settle(op, await privateDelete(tx, ctx, input, input.id, locker, op));
       }
       await tx.execute(
@@ -315,6 +332,10 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       const op = `${family}.compare_and_swap`;
       const denied = pluginOnly(ctx, op);
       if (denied) return denied;
+      if (zone === "private") {
+        const refused = await privateStorageRefusal(tx, ctx);
+        if (refused) return fail(op, `${op}: ${refused}`);
+      }
       const fragments = casFragments(op, input.columns, input.expected, input.patch);
       if (typeof fragments === "string") return fail(op, fragments);
       if (zone === "private") {

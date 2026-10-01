@@ -29,7 +29,7 @@ const rpc = (method, ...args) => new Promise((resolve, reject) => {
   // A refused call consumes no sequence number and leaves nothing pending,
   // so the plugin can catch the error and keep going.
   try {
-    write({ kind: "call", id, method, args }, method === "query.compareAndSwap");
+    write({ kind: "call", id, method, args }, method.endsWith(".compareAndSwap"));
     nextId++;
   } catch (error) {
     pending.delete(id);
@@ -44,6 +44,7 @@ const execute = async (message) => {
     (name) => [name, (...args) => rpc("query." + name, ...args)]));
   const ctx = Object.freeze({
     query: Object.freeze(query),
+    ...(message.hasAdminQuery ? { adminQuery: Object.freeze(Object.fromEntries(["insert", "list", "update", "compareAndSwap", "delete"].map(name => [name, (...args) => rpc("adminQuery." + name, ...args)]))) } : {}),
     api: Object.freeze({ list: (...args) => rpc("api.list", ...args), get: (...args) => rpc("api.get", ...args) }),
     captcha: Object.freeze({ requireProof: (...args) => rpc("captcha.requireProof", ...args) }),
     theme: Object.freeze(message.theme), visitor: Object.freeze(message.visitor),
@@ -51,6 +52,12 @@ const execute = async (message) => {
   });
   if (!plugin || plugin.slug !== message.slug || plugin.version !== message.version || plugin.tier !== 2)
     throw new Error("SandboxDefinitionMismatch");
+  if (message.operation === "$inspect") {
+    for (const name of message.args.operations) if (typeof plugin.operations?.[name] !== "function") throw new Error("SandboxOperationNotDeclared: " + name);
+    if (message.args.hasStaticRender && typeof plugin.staticRender !== "function") throw new Error("SandboxStaticRenderMissing");
+    write({ kind: "result", value: true });
+    return;
+  }
   let handler;
   if (message.operation === "$staticRender") handler = plugin.staticRender;
   else handler = Object.hasOwn(plugin.operations, message.operation) && plugin.operations[message.operation];
