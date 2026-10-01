@@ -793,6 +793,7 @@ export async function runSDKGenerateObject(args: {
         cause?: unknown;
         text?: string;
         finishReason?: string;
+        response?: { id?: string; modelId?: string; headers?: Record<string, string> };
       };
       console.error("[generateObject] NoObjectGenerated — model output did not parse to schema", {
         model: modelId,
@@ -802,6 +803,13 @@ export async function runSDKGenerateObject(args: {
         rawTextLen: typeof err.text === "string" ? err.text.length : 0,
         inputTokens: e.usage?.inputTokens ?? 0,
         outputTokens: e.usage?.outputTokens ?? 0,
+        // The provider's own identifiers for this exact call, so a
+        // degenerate output can be traced with the provider instead of
+        // being re-argued from our side (CLAUDE.md §4).
+        responseId: err.response?.id ?? null,
+        responseModelId: err.response?.modelId ?? null,
+        providerRequestId:
+          err.response?.headers?.["request-id"] ?? err.response?.headers?.["x-request-id"] ?? null,
       });
       return {
         object: undefined,

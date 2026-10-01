@@ -15,11 +15,15 @@
  */
 
 import {
+  collectBuildAssets,
   collectContributions,
   composeHeadBlock,
+  injectPluginAssets,
   pluginDataListsRegistry,
   resolveDataLists,
+  resolveModuleDeferrals,
 } from "@caelo-cms/plugin-host";
+import type { DeferralCandidate } from "@caelo-cms/plugin-sdk";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -132,6 +136,8 @@ export const renderPagePreviewOp = defineOperation({
     // named the branch explicitly. Either source now widens visibility
     // AND drives the overlays, so the two can never disagree again.
     const chatBranchId = input.chatBranchId ?? ctx.chatBranchId;
+    // Plugin render hooks show the same branch as the core rows below.
+    const renderScope = { chatBranchId: chatBranchId ?? null };
     // v0.9.0 — branch-aware preview. The iframe shows the caller's
     // branched-create pages / templates / layouts (in addition to
     // main). Without this filter, a brand-new chat that just created
@@ -701,7 +707,7 @@ export const renderPagePreviewOp = defineOperation({
     // Plugin data lists for THIS page: the editor preview must show the
     // same thing the deploy will, including the loud marker when a
     // plugin whose list a module iterates has been switched off.
-    const resolvedLists = await resolveDataLists([input.pageId]);
+    const resolvedLists = await resolveDataLists([input.pageId], renderScope);
     const pluginLists = {
       dataLists: resolvedLists.get(input.pageId) ?? {},
       dormantDataLists: Object.fromEntries(pluginDataListsRegistry.dormantNames()),
@@ -942,6 +948,31 @@ export const renderPagePreviewOp = defineOperation({
       modules,
     }));
 
+    // #450 — which of this page's modules is a plugin withholding? The
+    // editor has to see the placeholder the visitor will see; a module
+    // that renders here and is gated on the live site would leave the
+    // operator styling something nobody is shown yet.
+    // The gate judges the content about to render, not a verdict
+    // recorded before the latest edit. Page modules arrive with their
+    // content values already substituted into `html` (by
+    // renderModuleWithContent above); layout modules carry `fields`,
+    // whose defaults the composer substitutes.
+    const candidates = new Map<string, DeferralCandidate>();
+    for (const m of [...blocks, ...layoutBlocks].flatMap((b) => b.modules)) {
+      if (candidates.has(m.moduleId)) continue;
+      candidates.set(m.moduleId, {
+        moduleId: m.moduleId,
+        html: m.html,
+        css: m.css,
+        js: m.js,
+        fields: "fields" in m ? m.fields : [],
+        contentValues: [],
+      });
+    }
+    const deferredModules = Object.fromEntries(
+      await resolveModuleDeferrals([...candidates.values()], renderScope),
+    );
+
     // v0.11.0 (#45) — `composeTheme` loaded earlier (above the render
     // loop) so its asset URLs flow into renderModuleWithContent for
     // `{{theme_logo_url}}` substitution (v0.11.1, issue #76). Same row
@@ -976,6 +1007,15 @@ export const renderPagePreviewOp = defineOperation({
     let composed: ReturnType<typeof composePageWithLayout>;
     try {
       composed = composePageWithLayout({
+        deferredModules,
+        // Page-block modules already had their lists applied by
+        // renderModuleWithContent; LAYOUT modules reach the composer
+        // raw, so without these a `{{#list}}` in site chrome renders
+        // literally in the editor and correctly on the deployed site —
+        // the two surfaces disagreeing in exactly the direction nobody
+        // checks. The generator has always passed them here.
+        dataLists: pluginLists.dataLists,
+        dormantDataLists: pluginLists.dormantDataLists,
         templateHtml: pageRow.template_html,
         templateCss: pageRow.template_css,
         blocks,
@@ -1124,10 +1164,25 @@ export const renderPagePreviewOp = defineOperation({
     });
     // #391 — plugin head contributions ride the SAME compose call the
     // static generator uses (byte parity by construction).
-    const contributions = await collectContributions([input.pageId], { siteBaseUrl });
+    const contributions = await collectContributions([input.pageId], {
+      siteBaseUrl,
+      ...renderScope,
+    });
     html = injectSeoIntoHead(
       html,
       composeHeadBlock(headBlock, contributions.head.get(input.pageId)),
+    );
+
+    // #449 — plugin client assets. The deploy LINKS these files; the
+    // preview iframe has no build directory to serve from, so it
+    // inlines the identical bytes. Same resolver, so the editor can
+    // never show behaviour the deployed site won't have — a consent
+    // dialog that works in preview and is missing on the live site is
+    // the failure this parity exists to prevent.
+    html = injectPluginAssets(
+      html,
+      await collectBuildAssets([input.pageId], renderScope),
+      "inline",
     );
 
     // issue #156 — surface unknown `var(--…)` references in the page's

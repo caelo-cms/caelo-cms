@@ -59,7 +59,7 @@ For contributors: read **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** and **[`CLAUDE
 - **i18n as a plugin** — core is locale-agnostic (globally unique slugs, one designated homepage); multi-language sites arrive with the first-party `international-site` plugin (epic #380).
 - **Skills system** — Claude-style skill bodies the AI engages per turn, Owner-curated, AI-proposable.
 - **Subagents** — the AI spawns parallel reasoning loops (QA, brand-voice, legal-check) on demand.
-- **Two-tier plugin host** — Tier 1 plugins ship with core (signed, in-process, full SDK); Tier 2 plugins are AI-authored at runtime + sandboxed in Deno (locked SDK, only their own `cms_public` schema).
+- **One plugin model** — shipped or AI-built at runtime, every plugin gets the same small base (its own tables) and everything else only as an Owner-approved grant for that exact version; core data only through named Query API operations, never a direct write to live.
 - **Five core plugins** — forms, comments, newsletter, ratings, visitor auth (email/password + OAuth via Arctic).
 - **API gateway** with rate-limiting + CAPTCHA / PoW + honeypot + debounced auto-redeploy.
 - **A/B experiments at the edge** — stable per-visitor hash + analytics-plugin attribution.
@@ -88,7 +88,7 @@ See the board for the full list and current status.
 
 ## Local development
 
-Prerequisites: [Bun](https://bun.sh/) ≥ 1.3, Docker + Docker Compose, [Deno](https://deno.com) ≥ 2 (for the Tier 2 plugin sandbox), an Anthropic API key.
+Prerequisites: [Bun](https://bun.sh/) ≥ 1.3, Docker + Docker Compose, [Deno](https://deno.com) ≥ 2 (for the plugin sandbox), an Anthropic API key.
 
 ```bash
 git clone https://github.com/caelo-cms/caelo-cms.git

@@ -40,7 +40,7 @@ import { createRedirectOp } from "../redirects.js";
 import { rewriteModuleLinksOp } from "../seo.js";
 import { readSiteDefaults } from "../site_defaults.js";
 import { listStructuredSetsOp, setStructuredSetOp } from "../structured_sets.js";
-import { recomputeCurrentPaths } from "./current-path.js";
+import { recomputeCurrentPaths, renderScopeOf } from "./current-path.js";
 
 const pageRowSchema = z.object({
   id: z.string(),
@@ -806,7 +806,7 @@ export const createPageOp = defineOperation({
     // #390 — compose + materialize the public path (the INSERT trigger
     // wrote the plugin-free default; this accounts for designation +
     // active URL contributions).
-    await recomputeCurrentPaths(tx, [pageId]);
+    await recomputeCurrentPaths(tx, [pageId], renderScopeOf(ctx));
     return ok({ pageId });
   },
 });
@@ -1090,7 +1090,7 @@ export const updatePageOp = defineOperation({
         const oldPathRows = (await tx.execute(sql`
           SELECT current_path FROM pages WHERE id = ${input.pageId}::uuid
         `)) as unknown as { current_path: string }[];
-        const recomputed = await recomputeCurrentPaths(tx, [input.pageId]);
+        const recomputed = await recomputeCurrentPaths(tx, [input.pageId], renderScopeOf(ctx));
         const newPath = recomputed.get(input.pageId);
         const oldPath = oldPathRows[0]?.current_path;
         if (!oldPath || !newPath) {
@@ -1858,11 +1858,14 @@ export const duplicatePageOp = defineOperation({
     }
     const title = input.newTitle ?? source.title;
     const name = input.newName ?? title;
+    // Branched like pages.create: a copy made in a chat is that chat's
+    // page until publish, not a live draft other chats and the site see.
     const inserted = (await tx.execute(sql`
-      INSERT INTO pages (slug, name, title, template_id, status)
+      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id)
       VALUES (
         ${input.newSlug}, ${name}, ${title},
-        ${targetTemplateId}::uuid, 'draft'
+        ${targetTemplateId}::uuid, 'draft',
+        ${ctx.chatBranchId ?? null}::uuid
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -2009,6 +2012,8 @@ export const duplicatePageOp = defineOperation({
         actorId: ctx.actorId,
         opKind: "pages.create",
         description: `pages.duplicate from=${source.slug} to=${input.newSlug}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: newPageId, state }],
       });
       await emitDomainEvent(tx, {
@@ -2017,12 +2022,14 @@ export const duplicatePageOp = defineOperation({
         payload: { slug: input.newSlug, duplicatedFrom: input.sourcePageId },
       });
     }
-    await recomputeCurrentPaths(tx, [newPageId]);
+    await recomputeCurrentPaths(tx, [newPageId], renderScopeOf(ctx));
     const layoutState = await loadPageLayoutState(tx, newPageId);
     await emitSnapshot(tx, {
       actorId: ctx.actorId,
       opKind: "pages.set_modules",
       description: `pages.duplicate layout from=${source.slug}`,
+      chatTaskId: ctx.chatTaskId ?? null,
+      chatBranchId: ctx.chatBranchId ?? null,
       entities: [{ kind: "pageLayout", entityId: newPageId, state: layoutState }],
     });
     return ok({ pageId: newPageId });

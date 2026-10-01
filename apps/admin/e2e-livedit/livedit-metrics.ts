@@ -23,6 +23,7 @@ import {
   parseChatLog,
   summarizeScenario,
   THRESHOLDS,
+  tailFromByteOffset,
 } from "./lib/metrics-core.js";
 
 // Re-export the core surface so scenarios and global-teardown keep a single
@@ -53,8 +54,7 @@ export function metricsBySession(logText: string): { session: string; metrics: S
 
 /** Aggregate metrics for the admin.log written since {@link logOffset}. */
 export function metricsSince(adminLogPath: string, offset: number): ScenarioMetrics {
-  const full = readFileSync(adminLogPath, "utf8");
-  const tail = full.slice(offset);
+  const tail = tailFromByteOffset(readFileSync(adminLogPath), offset);
   const { loops, tools, splits } = parseChatLog(tail);
   return aggregate(loops, tools, splits);
 }

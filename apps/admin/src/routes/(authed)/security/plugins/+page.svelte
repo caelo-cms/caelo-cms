@@ -68,6 +68,8 @@
     </div>
   {/if}
 
+  <a href="/security/plugins/installations" class="inline-block underline">Install external packages and review access</a>
+
   <Card>
     <CardHeader>
       <CardTitle class="text-base">Tier 1 — Core plugins ({data.tier1.length})</CardTitle>
@@ -95,7 +97,7 @@
           </TableHeader>
           <TableBody>
             {#each data.tier1 as p (p.id)}
-              <TableRow>
+              <TableRow data-testid="plugin-row-{p.slug}">
                 <TableCell class="font-mono text-xs">{p.slug}</TableCell>
                 <TableCell class="text-xs">{p.version}</TableCell>
                 <TableCell>
@@ -119,11 +121,13 @@
                   {#if p.status === "active"}
                     <form method="post" action="?/disable" use:enhance>
                       <input type="hidden" name="slug" value={p.slug} />
+                    <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
                       <Button type="submit" size="sm" variant="outline">Disable</Button>
                     </form>
                   {:else if p.status === "disabled"}
                     <form method="post" action="?/reenable" use:enhance>
                       <input type="hidden" name="slug" value={p.slug} />
+                    <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
                       <Button type="submit" size="sm" variant="outline">Re-enable</Button>
                     </form>
                   {:else if p.status === "awaiting_activation"}
@@ -134,6 +138,7 @@
                          turn it on. -->
                     <form method="post" action="?/activate" use:enhance>
                       <input type="hidden" name="slug" value={p.slug} />
+                    <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
                       <Button type="submit" size="sm" data-testid="activate-{p.slug}">
                         Activate
                       </Button>
@@ -174,16 +179,25 @@
           <TableBody>
             {#each data.tier2AwaitingActivation as p (p.id)}
               <TableRow>
-                <TableCell class="font-mono text-xs">{p.slug}</TableCell>
+                <TableCell class="text-xs">
+                  <span class="font-mono">{p.slug}</span>
+                  <details class="mt-2">
+                    <summary class="cursor-pointer">Review package</summary>
+                    <pre class="mt-2 max-h-64 max-w-xl overflow-auto whitespace-pre-wrap">{JSON.stringify(p.manifestJson, null, 2)}</pre>
+                    <pre class="mt-2 max-h-64 max-w-xl overflow-auto whitespace-pre-wrap">{p.sourceCode}</pre>
+                  </details>
+                </TableCell>
                 <TableCell class="text-xs">{p.version}</TableCell>
                 <TableCell class="text-xs text-muted-foreground">{fmtTime(p.createdAt)}</TableCell>
                 <TableCell class="space-x-2">
                   <form method="post" action="?/activate" use:enhance class="inline">
                     <input type="hidden" name="slug" value={p.slug} />
+                    <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
                     <Button type="submit" size="sm">Approve</Button>
                   </form>
                   <form method="post" action="?/reject" use:enhance class="inline">
                     <input type="hidden" name="slug" value={p.slug} />
+                    <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
                     <Button type="submit" size="sm" variant="outline">Reject</Button>
                   </form>
                 </TableCell>
@@ -222,6 +236,7 @@
                 <TableCell>
                   <form method="post" action="?/disable" use:enhance>
                     <input type="hidden" name="slug" value={p.slug} />
+                    <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
                     <Button type="submit" size="sm" variant="outline">Disable</Button>
                   </form>
                 </TableCell>
@@ -266,10 +281,12 @@
             <div class="mt-3 flex gap-2">
               <form method="post" action="?/revalidate" use:enhance>
                 <input type="hidden" name="slug" value={p.slug} />
+                    <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
                 <Button type="submit" size="sm" variant="outline">Re-run validator</Button>
               </form>
               <form method="post" action="?/reject" use:enhance>
                 <input type="hidden" name="slug" value={p.slug} />
+                    <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
                 <Button type="submit" size="sm" variant="outline">Reject</Button>
               </form>
             </div>
@@ -338,6 +355,7 @@
                 <TableCell>
                   <form method="post" action="?/activate" use:enhance>
                     <input type="hidden" name="slug" value={p.slug} />
+                    <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
                     <Button type="submit" size="sm">Re-enable</Button>
                   </form>
                 </TableCell>

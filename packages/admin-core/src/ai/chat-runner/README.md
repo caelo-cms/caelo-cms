@@ -17,7 +17,7 @@ directory, so every existing import path keeps resolving.
 | `index.ts` | Orchestrator (`runChatTurn`) + public re-exports (`runChatTurn`, `ClientEvent`, `ChatRunnerOptions`). |
 | `loop.ts` | The tool loop (`runToolLoop`): pre-flight history compaction → stream → persist assistant → narrate-then-stop recovery → dispatch, plus the `max_loops` cap notice and the issue-#261 prompt-too-long compact+retry. |
 | `streaming.ts` | `streamProviderTurn`: consumes one `provider.generate(...)` stream, relays text/thinking deltas, accumulates tool calls, tracks usage + soft cost cap + stop diagnostics. |
-| `tool-catalogue.ts` | `buildToolCatalogue`: skill-allowlist intersection (with the issue-#106 zero-match fallback), subagent exclusion, Tier-1 plugin-tool folding. |
+| `tool-catalogue.ts` | `buildToolCatalogue`: skill-allowlist intersection (with the issue-#106 zero-match fallback), subagent exclusion, plugin-tool folding (granted chat tools). |
 | `tool-dispatch.ts` | `dispatchToolCall`: dedup cache lookup, plugin-vs-builtin routing, live subagent-event streaming, auto-recovery, result caching, multimodal image append. |
 | `context-blocks.ts` | `buildSystemContextBlocks`: orchestrates the `context/*` builders into the pre-catalogue block set + skill-engagement results. |
 | `context/page.ts` | Current-page + all-pages blocks. |

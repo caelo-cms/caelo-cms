@@ -105,6 +105,7 @@ async function seedPage(slug: string): Promise<string> {
 
 async function op<T>(operationName: string, args: unknown): Promise<T> {
   const r = await runPluginOperation({
+    invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
     pluginSlug: "international-site",
     operationName,
     args,
@@ -119,6 +120,7 @@ describe("#396 — international-site AI tools", () => {
 
     // set_locales validation: no default → loud.
     const bad = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       operationName: "set_locales",
       args: {

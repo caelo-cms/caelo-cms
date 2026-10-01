@@ -29,6 +29,7 @@ import { z } from "zod";
 import { buildSkillsContext } from "../../ai/chat-runner/context/skills.js";
 import { buildStatusLine } from "../../ai/chat-runner/context-blocks.js";
 import { loadMemory } from "../../ai/chat-runner/persistence.js";
+import { chatPluginInvocation } from "../../ai/plugin-invocation.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
@@ -429,6 +430,7 @@ export const mcpExecuteToolOp = defineOperation({
           pluginSlug: pluginTool.pluginSlug,
           operationName: pluginTool.spec.operationName,
           args: input.args ?? {},
+          invocation: chatPluginInvocation(aiCtx, auth.actorId),
         }).then(
           (r): ToolResult =>
             r.ok

@@ -505,6 +505,8 @@ export const chatPublishInput = z
               // surface so chat-branched theme edits replay into live
               // on chat.publish.
               "theme",
+              // A plugin private-storage row written on the branch.
+              "pluginRow",
             ]),
             entityId: z.string().uuid(),
           })

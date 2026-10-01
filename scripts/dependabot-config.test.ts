@@ -16,10 +16,12 @@
  * S1: SPDX header is the file's first non-blank line (CLAUDE.md §5).
  * S2: `version: 2` (Dependabot's required schema version).
  * S3: three `updates` entries — one per ecosystem.
- * S4: bun block uses workspace globs that mirror the `workspaces`
- *     field in the root `package.json`. A new workspace added to
- *     `package.json` without a corresponding glob in dependabot.yml
- *     would fall through this assertion.
+ * S4: bun block targets the repo root ONLY (`directory: "/"`). A root
+ *     run resolves every workspace through the root `package.json`
+ *     `workspaces` field and updates the manifests plus the single root
+ *     bun.lock together; per-workspace directories produced duplicate
+ *     PRs that never touched bun.lock and always failed "Lockfile
+ *     freshness".
  * S5: every ecosystem block carries `schedule.interval: weekly`,
  *     `schedule.day: monday` (issue #25 AC #2 — first PR within
  *     7 days).
@@ -133,15 +135,14 @@ describe("S2 + S3: schema version + entry count", () => {
   });
 });
 
-describe("S4: bun block directories mirror root workspaces", () => {
-  it("uses globs matching root package.json `workspaces`", () => {
-    const expected = new Set<string>(["/"]);
-    for (const glob of rootPkg.workspaces ?? []) {
-      expected.add(`/${glob}`);
-    }
+describe("S4: bun block targets the repo root only", () => {
+  it('uses `directory: "/"` and no per-workspace `directories`', () => {
+    expect(bunEntry?.directory).toBe("/");
+    expect(bunEntry?.directories).toBeUndefined();
+  });
 
-    const actual = new Set(bunEntry?.directories ?? []);
-    expect(actual).toEqual(expected);
+  it("root package.json declares workspaces, so the root run covers them", () => {
+    expect(rootPkg.workspaces?.length ?? 0).toBeGreaterThan(0);
   });
 });
 

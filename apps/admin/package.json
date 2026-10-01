@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/admin",
-  "version": "0.10.24",
+  "version": "0.10.25",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
@@ -15,7 +15,7 @@
     "e2e-livedit": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts",
     "e2e-livedit:headed": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed",
     "e2e-livedit:debug": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed --debug --workers=1",
-    "plugins:build": "tsc -b --force ../../packages/plugins/forms ../../packages/plugins/comments ../../packages/plugins/newsletter ../../packages/plugins/ratings ../../packages/plugins/auth ../../packages/plugins/international-site"
+    "plugins:build": "tsc -b --force ../../packages/plugins/*"
   },
   "dependencies": {
     "@caelo-cms/admin-core": "workspace:*",
@@ -35,8 +35,8 @@
     "mode-watcher": "^1.1.0",
     "svelte-dnd-action": "^0.9.76",
     "svelte-sonner": "^1.1.1",
-    "tailwind-merge": "^2.5.5",
-    "tailwind-variants": "^1.0.0",
+    "tailwind-merge": "^3.7.0",
+    "tailwind-variants": "^3.3.1",
     "zod": "4.4.3"
   },
   "devDependencies": {
