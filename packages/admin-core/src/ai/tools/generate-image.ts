@@ -11,7 +11,7 @@
  *
  * Dispatch path: ai_providers.list → find isPrimary=true row →
  * config.imageModel must be set (the operator picks per-provider in
- * /security/ai/providers). If absent, tool returns "image generation
+ * /security/ai). If absent, tool returns "image generation
  * is not configured on the active provider".
  */
 
@@ -21,6 +21,7 @@ import { z } from "zod";
 import { runMediaPipeline } from "../../media/pipeline.js";
 import { getMediaStorage, getMediaStorageProvider } from "../../media/storage.js";
 import { FakeImageProvider, isFakeImageEnabled, makeImageProvider } from "../image-provider.js";
+import { getImageProviderApiKey } from "../provider-resolver.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -49,7 +50,7 @@ export type GenerateImageInput = z.infer<typeof generateImageInput>;
 export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = {
   name: "generate_image",
   description:
-    "Generate an image from a natural-language prompt via the active AI provider's image endpoint (DALL·E for OpenAI, Imagen for Gemini). " +
+    "Generate an image from a natural-language prompt via the active AI provider's image endpoint (DALL·E for OpenAI, Nano Banana for Gemini). " +
     "Use for marketing visuals, product mockups, hero illustrations. The result is uploaded to media; the returned `mediaId` " +
     "is suitable for `add_module` HTML referencing `<img src='/media/<id>'>`. " +
     "Image generation has its own daily budget separate from text — if exhausted you'll get a structured `ImageBudgetExceeded` error. " +
@@ -113,23 +114,19 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
         return {
           ok: false,
           content:
-            "generate_image: no image-capable provider configured — needs an active OpenAI or Google provider with an imageModel set. Owner sets one at /security/ai/providers.",
+            "generate_image: no image-capable provider configured — needs an active OpenAI or Google provider with an imageModel set. Owner sets one at /security/ai.",
         };
       }
       const cfg = primary.config as { imageModel: string; apiKey?: string; baseUrl?: string };
       // The filter guarantees openai|google; narrow for the typed union.
       const kind = primary.name as "openai" | "google";
-      // openai is a raw-fetch adapter and NEEDS an explicit key. google
-      // goes through the AI SDK, which resolves the key from the config OR
-      // GOOGLE_GENERATIVE_AI_API_KEY in env — so an empty config key is
-      // fine there (same env fallback the chat provider uses).
-      if (kind === "openai" && (typeof cfg.apiKey !== "string" || cfg.apiKey.length < 8)) {
-        return { ok: false, content: "generate_image: provider apiKey missing or too short" };
-      }
+      const resolvedKey = await getImageProviderApiKey(kind);
+      if (!resolvedKey)
+        return { ok: false, content: "generate_image: configure the provider key at /security/ai" };
       provider = makeImageProvider({ kind, model: cfg.imageModel, baseUrl: cfg.baseUrl });
       providerName = kind;
       imageModel = cfg.imageModel;
-      apiKey = typeof cfg.apiKey === "string" ? cfg.apiKey : "";
+      apiKey = resolvedKey;
     }
 
     // 2. Dispatch.

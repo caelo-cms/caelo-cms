@@ -15,6 +15,7 @@ export * from "./design-draft-shell.js";
 export * from "./fonts.js";
 export * from "./genesis.js";
 export * from "./genesis-inventory.js";
+export * from "./google-models.js";
 export * from "./interactions.js";
 export {
   type LogContext,
