@@ -354,7 +354,8 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
   const privateManifest = {
     ...manifest,
     slug,
-    operations: ["save", "read", "identity", "public_probe", "approved_save"],
+    schema: { signups: { email: "text" } },
+    operations: ["save", "read", "identity", "public_probe", "approved_save", "public_save"],
     publicOperations: ["public_probe"],
     requestedCapabilities: ["cms_admin_schema", "chat_runner_tools"],
     capabilityReasons: {
@@ -386,7 +387,8 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
     approved_save:async(ctx,args)=>ctx.adminQuery.insert("notes",{body:args.body}),
     read:async(ctx)=>ctx.adminQuery.list("notes"),
     identity:async(ctx)=>ctx.invocation,
-    public_probe:async(ctx)=>({privateAccess:!!ctx.adminQuery,identity:ctx.invocation??null})
+    public_probe:async(ctx)=>({privateAccess:!!ctx.adminQuery,identity:ctx.invocation??null}),
+    public_save:async(ctx,args)=>ctx.query.insert("signups",{email:args.email})
   }};`;
   const item = (await call("plugins.stage_installation", {
     manifest: privateManifest,
@@ -479,6 +481,27 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
   expect(await originalTool.execute!(approvedArgs, { toolCallId: "approved-call" })).toMatchObject({
     ok: true,
   });
+  // Public tables are live visitor data with no branch: a chat cannot
+  // write them; the Owner panel can.
+  const fromChat = await runPluginOperation({
+    pluginSlug: slug,
+    operationName: "public_save",
+    args: { email: "a@example.test" },
+    invocation: chat,
+  });
+  expect(fromChat.ok).toBe(false);
+  if (!fromChat.ok) expect(fromChat.error.message).toContain("public tables from a chat");
+  expect(
+    (
+      await runPluginOperation({
+        pluginSlug: slug,
+        operationName: "public_save",
+        args: { email: "b@example.test" },
+        invocation: { origin: "owner-panel", actorId: owner.actorId },
+      })
+    ).ok,
+  ).toBe(true);
+
   // An approver who cannot publish (editor: content.write, no
   // deploy.trigger) keeps the approved action on their chat's branch.
   const editor = await user("editor");

@@ -90,15 +90,16 @@ export async function makePluginContext(
     const approval = plugin.externalApproval;
     if (!approval) return baseCtx;
     if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return baseCtx;
+    if (!approval.capabilities.includes("cms_admin_schema")) return baseCtx;
+    // Private storage is author data: only for someone who may author.
+    // Without it the plugin still runs, with the base handles — an
+    // operation that needs storage then fails at the sandbox broker
+    // (SandboxCapabilityDenied), not silently.
     const operator = invocation.origin === "chat" ? invocation.operatorActorId : invocation.actorId;
     if (!operator || !(await operatorCanAuthor(infra, approval.systemActorId, operator))) {
-      throw new Error("ExternalAuthorPermissionDenied");
+      return baseCtx;
     }
-    const extended: Mutable<PluginContextTier1> = { ...baseCtx };
-    if (approval.capabilities.includes("cms_admin_schema")) {
-      extended.adminQuery = makePluginAdminQuery(plugin, infra, invocation);
-    }
-    return extended;
+    return { ...baseCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) };
   }
 
   // Release-signed — attach elevated handles per requestedCapabilities.
@@ -230,7 +231,18 @@ function makeScopedQuery(
    * Owner action (CMS_REQUIREMENTS §14.7). Seed data in `onActivate`.
    */
   function assertAuthoring(method: string): void {
-    if (scope.pool !== "admin") return;
+    if (scope.pool !== "admin") {
+      // Public tables hold visitor data and have no branch: a write from a
+      // chat would go live before publish. Installed plugins keep chat
+      // work in private storage (which branches); visitors, the Owner
+      // panel and actions approved by someone who may publish write live.
+      if (plugin.externalApproval && invocation.chatBranchId && invocation.origin !== "render") {
+        throw new Error(
+          `${scope.label}.${method}: plugin "${plugin.slug}" cannot write its public tables from a chat — they are live visitor data; keep chat work in private storage (adminQuery)`,
+        );
+      }
+      return;
+    }
     if (invocation.origin === "render" || invocation.origin === "visitor") {
       throw new Error(
         `${scope.label}.${method}: plugin "${plugin.slug}" cannot write its private storage from a ${invocation.origin} call — write from a chat tool, the Owner panel, a worker or onActivate`,

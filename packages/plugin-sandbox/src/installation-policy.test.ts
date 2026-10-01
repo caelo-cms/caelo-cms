@@ -124,3 +124,31 @@ describe("installed plugins stay inside their own namespace (#515 review)", () =
     );
   });
 });
+
+describe("tool names the model provider accepts", () => {
+  const withTools = (...names: string[]) => ({
+    ...manifest(),
+    operations: names.map((_, i) => `op${i}`),
+    requestedCapabilities: ["cms_admin_schema", "chat_runner_tools"] as const,
+    capabilityReasons: { cms_admin_schema: "notes", chat_runner_tools: "tools" },
+    tools: names.map((name, i) => ({
+      name,
+      description: "A tool",
+      operationName: `op${i}`,
+      inputJsonSchema: { type: "object", properties: {}, additionalProperties: false },
+    })),
+  });
+
+  it("refuses duplicate tool names", () => {
+    expect(() =>
+      validateInstallationPolicy(withTools("external_notes__a", "external_notes__a")),
+    ).toThrow("Duplicate tool name");
+  });
+
+  it("refuses names outside a-z0-9_ or longer than 64", () => {
+    expect(() => validateInstallationPolicy(withTools("external_notes__a b"))).toThrow("1-64");
+    expect(() =>
+      validateInstallationPolicy(withTools(`external_notes__${"a".repeat(60)}`)),
+    ).toThrow("1-64");
+  });
+});

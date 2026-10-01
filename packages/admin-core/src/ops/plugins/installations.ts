@@ -130,7 +130,16 @@ export const listPluginInstallationsOp = defineOperation({
         v.manifest_json AS manifest, v.source_code AS source,
         p.manifest_json AS "currentManifest", p.source_code AS "currentSource", p.status AS "currentStatus", p.updated_at::text AS "currentUpdatedAt"
       FROM plugin_installation_versions v JOIN plugins p ON p.id = v.plugin_id
-      WHERE v.status IN ('pending', 'approved', 'active', 'retired') ORDER BY v.created_at DESC LIMIT 100
+      -- Running and approved versions always appear (their revoke and
+      -- retry controls live here); a flood of newer staged versions must
+      -- not push them off the page.
+      WHERE v.status IN ('active', 'approved')
+        OR v.id IN (SELECT id FROM plugin_installation_versions WHERE status = 'pending'
+                    ORDER BY created_at DESC LIMIT 100)
+        OR v.id IN (SELECT id FROM plugin_installation_versions WHERE status = 'retired'
+                    ORDER BY created_at DESC LIMIT 20)
+      ORDER BY CASE v.status WHEN 'active' THEN 0 WHEN 'approved' THEN 1 WHEN 'pending' THEN 2 ELSE 3 END,
+               v.created_at DESC
     `);
     return ok({
       installations: (
@@ -423,8 +432,11 @@ export const finalizePluginInstallationOp = defineOperation({
       manifest,
       grants.map((g) => g.capability),
     );
+    // The previous active version and any competing approved one (e.g.
+    // approved in another tab) retire: their receipts are revoked below,
+    // so leaving them `approved` would offer a retry that can only fail.
     await tx.execute(
-      sql`UPDATE plugin_installation_versions SET status='retired' WHERE plugin_id=${row.plugin_id}::uuid AND status='active'`,
+      sql`UPDATE plugin_installation_versions SET status='retired' WHERE plugin_id=${row.plugin_id}::uuid AND id<>${input.installationId}::uuid AND status IN ('active','approved')`,
     );
     await tx.execute(
       sql`UPDATE plugin_capability_grants SET revoked_at=now(),revoked_by=${row.approved_by}::uuid WHERE plugin_id=${row.plugin_id}::uuid AND artifact_digest<>${row.artifact_digest} AND revoked_at IS NULL`,

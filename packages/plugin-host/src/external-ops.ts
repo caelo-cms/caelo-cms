@@ -105,6 +105,9 @@ const operatorHasPermissionOp = defineOperation({
   },
 });
 
+/** How long an approval card stays redeemable. */
+const BINDING_TTL = "7 days";
+
 const bindingInput = z
   .object({
     pluginId: z.string().uuid(),
@@ -123,6 +126,12 @@ const recordToolBindingOp = defineOperation({
   input: bindingInput.extend({ chatBranchId: z.string().uuid() }).strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
+    // Approvals expire: a rejected or abandoned card leaves its binding
+    // behind, and nothing else would ever remove it.
+    await tx.execute(sql`
+      DELETE FROM plugin_tool_approval_bindings
+      WHERE created_at < now() - ${BINDING_TTL}::interval
+    `);
     await tx.execute(sql`
       INSERT INTO plugin_tool_approval_bindings
         (plugin_id, chat_branch_id, tool_call_id, operator_actor_id, binding_digest)
@@ -166,6 +175,7 @@ const consumeToolBindingOp = defineOperation({
         AND tool_call_id = ${input.toolCallId}
         AND operator_actor_id = ${input.operatorActorId}::uuid
         AND binding_digest = ${input.bindingDigest}
+        AND created_at >= now() - ${BINDING_TTL}::interval
       RETURNING binding_digest
     `)) as unknown as { binding_digest: string }[];
     // A mismatched call (changed arguments, another operator) deletes

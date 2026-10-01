@@ -52,8 +52,16 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
   }
   const publicOperations = new Set(manifest.publicOperations ?? []);
   const toolOperations = new Set<string>();
+  const toolNames = new Set<string>();
   for (const tool of manifest.tools ?? []) {
     validateExternalToolSchema(tool.inputJsonSchema);
+    // Model providers accept tool names of [a-zA-Z0-9_-]{1,64}; a name
+    // outside that would fail every chat request that lists the tool.
+    if (!/^[a-z0-9_]{1,64}$/.test(tool.name))
+      throw new Error(`Tool name "${tool.name}" must be 1-64 characters of a-z, 0-9 and _`);
+    // The registry keys tools by name: a duplicate would silently replace one.
+    if (toolNames.has(tool.name)) throw new Error(`Duplicate tool name: ${tool.name}`);
+    toolNames.add(tool.name);
     if (toolOperations.has(tool.operationName))
       throw new Error("Tool operations must have exactly one tool declaration");
     toolOperations.add(tool.operationName);

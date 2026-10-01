@@ -385,7 +385,8 @@ export const pluginManifest = z
     /** See `PluginDefinition.deferralsOperation`. Release-signed only:
      *  withholding a module changes what visitors see. */
     hasDeferrals: z.boolean().default(false),
-    /** Tier 1 only. */
+    /** Grants this plugin asks for. A request grants nothing: the Owner
+     *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
     /** Untrusted author explanations, displayed beside each explicit Owner grant. */
     capabilityReasons: z.partialRecord(pluginCapability, z.string().min(1).max(500)).optional(),
@@ -406,7 +407,7 @@ export const pluginManifest = z
       .optional(),
     /** Tier 1 only. */
     workers: z.array(pluginWorkerSpec).optional(),
-    /** Tier 1 only. */
+    /** AI chat tools; needs the `chat_runner_tools` grant. */
     tools: z.array(pluginToolSpec).optional(),
     /** #390 — URL-slot claims (release-signed only). The definition
      *  supplies the matching pure encode/decode pairs. */
@@ -838,7 +839,7 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
     ctx: C,
     args: { pageIds: ReadonlyArray<string> },
   ) => Promise<ReadonlyMap<string, string>> | ReadonlyMap<string, string>;
-  /** Tier 1 only. */
+  /** Grants this plugin asks for; each is approved by the Owner (§14.5). */
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   /**
    * Runs each time the host brings the plugin up — at boot and when an
@@ -854,8 +855,9 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   /** Tier 1 only. Cron-style background workers; the host's scheduler
    *  dispatches `operationName` on each tick. */
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
-  /** Tier 1 only. AI tools registered into the chat-runner catalogue
-   *  at activation. Each tool dispatches to the named operation. */
+  /** AI tools registered into the chat-runner catalogue at activation
+   *  (needs the `chat_runner_tools` grant). Each dispatches to the named
+   *  operation. */
   readonly tools?: ReadonlyArray<PluginToolSpec>;
   /** Tier 1 only. Plugin-emitted system-prompt blocks rendered every
    *  turn. */
