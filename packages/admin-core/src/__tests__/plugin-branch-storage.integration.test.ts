@@ -79,6 +79,11 @@ const plugin = definePlugin({
       await q(ctx).update("notes", a.id, { label: a.label });
       return {};
     },
+    preview: async (ctx) => {
+      const notes = await q(ctx).list("notes", { orderBy: "label", orderDir: "asc" });
+      return { html: `<p>${notes.map((n) => String(n.label)).join(",")}</p>` };
+    },
+    preview_write: async (ctx) => q(ctx).insert("notes", { label: "from-preview" }),
     swap: async (ctx, args) => {
       const a = args as { id: string; from: string; to: string };
       return q(ctx).compareAndSwap("notes", a.id, { label: a.from }, { label: a.to });
@@ -375,5 +380,39 @@ describe("branch-aware plugin storage", () => {
     // Main never saw the branch write.
     expect(await labels(MAIN)).toContain("cas-base");
     expect((await liveRows()).find((r) => r.id === id)?.label).toBe("cas-base");
+  });
+
+  it("previews the author's chat drafts read-only, and main from the panel", async () => {
+    const g = await newChat("g");
+    const added = await call(g.invocation, "add", { label: "draft-g" });
+    if (!added.ok) throw new Error(added.error.message);
+    const preview = async (invocation: PluginInvocation) => {
+      const r = await runPluginOperation({
+        pluginSlug: SLUG,
+        operationName: "preview",
+        args: {},
+        readOnlyPreview: true,
+        invocation,
+      });
+      if (!r.ok) throw new Error(r.error.message);
+      return (r.value as { html: string }).html;
+    };
+    const author: PluginInvocation = {
+      origin: "chat",
+      actorId: HUMAN,
+      operatorActorId: HUMAN,
+      chatBranchId: g.chatBranchId,
+    };
+    expect(await preview(author)).toContain("draft-g");
+    expect(await preview(MAIN)).not.toContain("draft-g");
+    // Only the declared preview operation, and it cannot write.
+    const write = await runPluginOperation({
+      pluginSlug: SLUG,
+      operationName: "preview_write",
+      args: {},
+      readOnlyPreview: true,
+      invocation: author,
+    });
+    expect(write.ok).toBe(false);
   });
 });

@@ -23,6 +23,7 @@
       "dependencies": {
         "@caelo-cms/admin-core": "workspace:*",
         "@caelo-cms/plugin-host": "workspace:*",
+        "@caelo-cms/plugin-sdk": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/redeploy-orchestrator": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
@@ -33,6 +34,7 @@
         "dompurify": "^3",
         "file-type": "^21",
         "html2canvas-pro": "2.3.3",
+        "htmlparser2": "12.0.0",
         "lucide-svelte": "^1.0.1",
         "marked": "^18",
         "mode-watcher": "^1.1.0",

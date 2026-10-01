@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext, PluginManifest } from "@caelo-cms/plugin-sdk";
+import { previewContext } from "./preview-context.js";
 import { buildIsolatedBundle, runSandbox } from "./sandbox-runtime.js";
 
 const manifest: PluginManifest = {
@@ -232,5 +233,27 @@ describe("invocation handed to plugin code", () => {
       branch: "22222222-2222-4222-8222-222222222222",
       frozen: true,
     });
+  });
+});
+
+it("preview denies public/private writes and cross-plugin RPC in the real sandbox", async () => {
+  const readonly = previewContext({ ...context, adminQuery: context.query });
+  const result = await invoke(
+    `
+    const denied = [];
+    for (const target of [ctx.query, ctx.adminQuery]) {
+      const id = "11111111-1111-4111-8111-111111111111";
+      for (const [method, args] of [["insert", ["notes", {body:"changed"}]], ["update", ["notes", id, {body:"changed"}]], ["delete", ["notes", id]], ["compareAndSwap", ["notes", id, {body:"old"}, {body:"changed"}]]]) {
+        try { await target[method](...args); } catch (e) { denied.push(e.message); }
+      }
+    }
+    try { await ctx.api.get({}); } catch (e) { denied.push(e.message); }
+    return { denied, rows: await ctx.adminQuery.list("notes") };
+  `,
+    { context: readonly },
+  );
+  expect(result).toEqual({
+    denied: Array(9).fill("PluginPreviewReadOnly"),
+    rows: [{ body: "host result" }],
   });
 });
