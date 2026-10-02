@@ -46,6 +46,7 @@ export function escapePreviewText(value: string): string {
 export function sanitizePluginPreview(
   html: string,
   images: ReadonlyMap<string, string> = new Map(),
+  targets: ReadonlySet<string> = new Set(),
 ): string {
   let result = "";
   let blocked = 0;
@@ -62,6 +63,8 @@ export function sanitizePluginPreview(
           if (
             ["class", "style", "lang", "dir", "alt", "width", "height", "aria-label"].includes(key)
           )
+            result += ` ${key}="${escapePreviewText(value)}"`;
+          else if (key === "data-caelo-preview-target" && targets.has(value))
             result += ` ${key}="${escapePreviewText(value)}"`;
           else if (
             name === "img" &&
