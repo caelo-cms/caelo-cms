@@ -13,7 +13,7 @@
   {#if form?.ok}<p role="status" class="rounded border p-3">{form.message}</p>{/if}
   <form method="post" action="?/stage" enctype="multipart/form-data" use:enhance class="flex flex-wrap items-end gap-3">
           <input type="hidden" name="_csrf" value={data.csrfToken} />
-    <label class="grid gap-2">Plugin package (.json)<input type="file" name="package" accept=".json,application/json" required /></label>
+    <label class="grid gap-2">Plugin package (.json, .json.gz or .json.br)<input type="file" name="package" accept=".json,.json.gz,.json.br,application/json,application/gzip" required /></label>
     <Button type="submit">Submit package for review</Button>
   </form>
   {#each data.installations as item (item.id)}

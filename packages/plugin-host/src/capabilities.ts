@@ -37,6 +37,7 @@ import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/share
 import { sql } from "drizzle-orm";
 import { hostSystemActorId, type LoadedPlugin, type PluginHostInfra } from "./dispatch.js";
 import { operatorCanAuthor } from "./external-authorization.js";
+import { makePluginImages } from "./images.js";
 import { makePluginPrivateFiles } from "./private-files.js";
 import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
 
@@ -93,6 +94,8 @@ export async function makePluginContext(
     if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return baseCtx;
     const wantsStorage = approval.capabilities.includes("cms_admin_schema");
     const wantsFiles = approval.capabilities.includes("private_files");
+    // Image generation stores its results as private files, so it needs both.
+    const wantsImages = wantsFiles && approval.capabilities.includes("image_generation");
     if (!wantsStorage && !wantsFiles) return baseCtx;
     // Private storage and files are author data: only for someone who may
     // author. Without it the plugin still runs, with the base handles — an
@@ -103,6 +106,7 @@ export async function makePluginContext(
       ...baseCtx,
       ...(wantsStorage ? { adminQuery: makePluginAdminQuery(plugin, infra, invocation) } : {}),
       ...(wantsFiles ? { privateFiles: makePluginPrivateFiles(plugin, infra, invocation) } : {}),
+      ...(wantsImages ? { images: makePluginImages(plugin, infra, invocation) } : {}),
     };
   }
 
@@ -134,6 +138,9 @@ export async function makePluginContext(
     (await authorMayWrite(infra, hostSystemActorId(), invocation))
   ) {
     tier1.privateFiles = makePluginPrivateFiles(plugin, infra, invocation);
+    if (requested.has("image_generation")) {
+      tier1.images = makePluginImages(plugin, infra, invocation);
+    }
   }
   return tier1;
 }
