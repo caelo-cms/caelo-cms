@@ -31,7 +31,7 @@ No visitor browser requests Google Fonts when using pinned fonts.
 `packages/font-service` owns parsing, catalog acquisition and the named Query
 API operations. `font_assets` in `cms_admin` stores each file, its SHA-256,
 provenance, license, family/style/weight, variable axes, glyph count and allowed
-embedding uses. Migration `0222_font_assets.sql` enables and forces RLS. There
+embedding uses. Migration `0223_font_assets.sql` enables and forces RLS. There
 is no update/delete policy or mutable latest-version pointer: importing again
 creates a new ID, even for identical bytes with a different license declaration.
 Database backups therefore retain the font files as well as their metadata.
