@@ -20,6 +20,12 @@
  * the operator wants without locking the session.
  */
 
+import {
+  applyPluginRowState,
+  insertPluginRowSnapshot,
+  type PluginRowState,
+  withPluginScope,
+} from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import type { ChatPublishInput, ExecutionContext } from "@caelo-cms/shared";
 import { chatPublishInput, err, ok } from "@caelo-cms/shared";
@@ -38,6 +44,7 @@ import {
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { refreshLivePathsAfterMerge } from "../content/current-path.js";
 import { scanBranchInternalLinks } from "../content/link-integrity.js";
 
 interface SessionRow {
@@ -45,6 +52,7 @@ interface SessionRow {
   published_at: string | Date | null;
   title: string;
   last_staged_at: string | Date | null;
+  discarded_at: string | Date | null;
 }
 
 interface MergeOptions {
@@ -131,7 +139,7 @@ export async function mergeBranchSnapshotsToMain(
     }
 > {
   const sessionRows = (await tx.execute(sql`
-    SELECT chat_branch_id::text AS chat_branch_id, published_at, title, last_staged_at
+    SELECT chat_branch_id::text AS chat_branch_id, published_at, title, last_staged_at, discarded_at
     FROM chat_sessions
     WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
     LIMIT 1
@@ -141,6 +149,17 @@ export async function mergeBranchSnapshotsToMain(
     return {
       ok: false,
       error: { kind: "HandlerError", operation: options.opKind, message: "session not found" },
+    };
+  }
+  if (session.discarded_at !== null) {
+    // Merging would resurrect the branch-created rows the discard dropped.
+    return {
+      ok: false,
+      error: {
+        kind: "HandlerError",
+        operation: options.opKind,
+        message: "chat was discarded — its changes cannot be published; start a new chat",
+      },
     };
   }
 
@@ -154,7 +173,8 @@ export async function mergeBranchSnapshotsToMain(
       | "pageModuleContent"
       | "structuredSet"
       | "contentInstance"
-      | "theme",
+      | "theme"
+      | "pluginRow",
   ) => input.entities?.filter((e) => e.kind === kind).map((e) => e.entityId) ?? null;
   const wantModules = filterByKind("module");
   const wantTemplates = filterByKind("template");
@@ -199,7 +219,8 @@ export async function mergeBranchSnapshotsToMain(
       | "pageModuleContent"
       | "structuredSet"
       | "contentInstance"
-      | "theme",
+      | "theme"
+      | "pluginRow",
   ) =>
     options.skipAlreadyPublished
       ? sql`
@@ -226,7 +247,8 @@ export async function mergeBranchSnapshotsToMain(
       | "pageModuleContent"
       | "structuredSet"
       | "contentInstance"
-      | "theme",
+      | "theme"
+      | "pluginRow",
   ) =>
     options.honourStageFilter && includeAll && hasStagedMarks
       ? sql`
@@ -365,7 +387,57 @@ export async function mergeBranchSnapshotsToMain(
     WHERE 1=1 ${notYetPublished("theme")} ${stageFilter("theme")} ${inFilter(includeAll ? null : (wantThemes ?? []))}
   `)) as unknown as Row[]);
 
+  // Plugin private-storage rows (docs/branch-aware-plugin-storage.md):
+  // latest branch state per row. Applied after the core entities below,
+  // so rows referencing core rows (ref:pages, ref:modules) find them.
+  const wantPluginRows = filterByKind("pluginRow");
+  const pluginRowRows =
+    !includeAll && (wantPluginRows?.length ?? 0) === 0
+      ? []
+      : ((await tx.execute(sql`
+    SELECT entity_id, state, plugin_id, schema_name, table_name FROM (
+      SELECT DISTINCT ON (prs.row_id)
+             prs.row_id::text AS entity_id, prs.row_id::text AS entity_id_text, prs.state,
+             prs.plugin_id::text AS plugin_id, prs.schema_name, prs.table_name
+      FROM plugin_row_snapshots prs
+      JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+      ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
+    ) sub
+    WHERE 1=1 ${notYetPublished("pluginRow")} ${stageFilter("pluginRow")} ${inFilter(includeAll ? null : (wantPluginRows ?? []))}
+  `)) as unknown as (Row & { plugin_id: string; schema_name: string; table_name: string })[]);
+
+  // Plugin rows can shape page URLs, and the post-merge paths are
+  // composed from the branch view (refreshLivePathsAfterMerge) — which is
+  // only the post-merge state when every plugin row of the branch goes
+  // live together.
+  if (pluginRowRows.length > 0) {
+    const pendingRows = (await tx.execute(sql`
+      SELECT count(DISTINCT prs.row_id)::int AS n
+      FROM plugin_row_snapshots prs
+      JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+        AND prs.row_id::text NOT IN (
+          SELECT entity_id::text FROM chat_branch_publish_marks
+          WHERE chat_branch_id = ${session.chat_branch_id}::uuid
+            AND entity_kind = 'pluginRow' AND stage_state = 'published'
+        )
+    `)) as unknown as { n: number }[];
+    if ((pendingRows[0]?.n ?? 0) !== pluginRowRows.length) {
+      return {
+        ok: false,
+        error: {
+          kind: "HandlerError",
+          operation: options.opKind,
+          message:
+            "plugin changes in this chat must be published together — they can shape page URLs. Include every plugin row, or none",
+        },
+      };
+    }
+  }
+
   const total =
+    pluginRowRows.length +
     moduleRows.length +
     templateRows.length +
     pageRows.length +
@@ -685,6 +757,25 @@ export async function mergeBranchSnapshotsToMain(
     }
   }
 
+  for (const r of pluginRowRows) {
+    const ref = {
+      pluginId: r.plugin_id,
+      schema: r.schema_name,
+      table: r.table_name,
+      rowId: r.entity_id,
+    };
+    const state = parseSnapshotState(r.state) as PluginRowState;
+    await withPluginScope(tx, r.plugin_id, () => applyPluginRowState(tx, ref, state));
+    // The main-line copy under the merge's header: undo after publish.
+    await insertPluginRowSnapshot(tx, result.siteSnapshotId, ref, state);
+  }
+
+  // Plugin rows can carry URL annotations (a locale variant link); now
+  // that they are live, recompose main-line paths and 301 what moved.
+  if (pluginRowRows.length > 0) {
+    await refreshLivePathsAfterMerge(ctx, tx, session.chat_branch_id);
+  }
+
   // v0.9.0 — bulk clear chat_branch_id for any branched-create layouts
   // on this chat's branch. Layouts emit snapshots with entities=[] so
   // the per-entity replay loop above never sees them; query the live
@@ -702,7 +793,11 @@ export async function mergeBranchSnapshotsToMain(
   }
 
   if (options.recordPublishMarks) {
-    for (const e of entities) {
+    const marked = [
+      ...entities.map((e) => ({ kind: e.kind, entityId: e.entityId })),
+      ...pluginRowRows.map((r) => ({ kind: "pluginRow" as const, entityId: r.entity_id })),
+    ];
+    for (const e of marked) {
       await tx.execute(sql`
         INSERT INTO chat_branch_publish_marks
           (chat_branch_id, entity_kind, entity_id, site_snapshot_id)

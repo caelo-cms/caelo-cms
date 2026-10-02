@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/admin-core",
-  "version": "0.10.24",
+  "version": "0.10.26",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
@@ -32,7 +32,8 @@
     "google-auth-library": "^11.1.0",
     "htmlparser2": "^12.0.0",
     "sharp": "^0.35",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@caelo-cms/font-service": "workspace:*"
   },
   "devDependencies": {
     "@caelo-cms/api-gateway": "workspace:*",

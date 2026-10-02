@@ -185,7 +185,7 @@ export function renderIssueBody(args: {
     const unpriced = args.changes.filter((c) => !args.priced.has(c.to));
     if (unpriced.length > 0) {
       lines.push(
-        "2. Add ONE new migration `packages/migrations/migrations/cms_admin/<next number>_p_pricing_<models>.sql` with `ai_pricing` rows, following `0215_p_pricing_sonnet_5_5_opus_5_5.sql` (microcents per 1K tokens; cache write = 1.25x input unless the provider lists it) for:",
+        "2. Add ONE new migration `packages/migrations/migrations/cms_admin/<next number>_p_pricing_<models>.sql` with `ai_pricing` rows, following `0224_p_pricing_sonnet_5_5_opus_5_5.sql` (microcents per 1K tokens; cache write = 1.25x input unless the provider lists it) for:",
       );
       for (const c of unpriced) {
         lines.push(

@@ -422,6 +422,7 @@ function emitTypography(rest: string, value: unknown, out: string[]): void {
   const v = value as Record<string, unknown>;
   if (v.fontFamily !== undefined) out.push(`--font-${rest}:${asString(v.fontFamily)};`);
   if (v.fontSize !== undefined) out.push(`--text-${rest}:${asString(v.fontSize)};`);
+  if (v.fontStyle !== undefined) out.push(`--font-style-${rest}:${asString(v.fontStyle)};`);
   if (v.fontWeight !== undefined) out.push(`--font-weight-${rest}:${asString(v.fontWeight)};`);
   if (v.lineHeight !== undefined) out.push(`--leading-${rest}:${asString(v.lineHeight)};`);
   if (v.letterSpacing !== undefined) out.push(`--tracking-${rest}:${asString(v.letterSpacing)};`);

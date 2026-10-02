@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+import { fontReader } from "@caelo-cms/font-service";
 
 /**
  * Render a page to composed HTML for the admin preview iframe.
@@ -136,6 +137,8 @@ export const renderPagePreviewOp = defineOperation({
     // named the branch explicitly. Either source now widens visibility
     // AND drives the overlays, so the two can never disagree again.
     const chatBranchId = input.chatBranchId ?? ctx.chatBranchId;
+    // Plugin render hooks show the same branch as the core rows below.
+    const renderScope = { chatBranchId: chatBranchId ?? null };
     // v0.9.0 — branch-aware preview. The iframe shows the caller's
     // branched-create pages / templates / layouts (in addition to
     // main). Without this filter, a brand-new chat that just created
@@ -705,7 +708,7 @@ export const renderPagePreviewOp = defineOperation({
     // Plugin data lists for THIS page: the editor preview must show the
     // same thing the deploy will, including the loud marker when a
     // plugin whose list a module iterates has been switched off.
-    const resolvedLists = await resolveDataLists([input.pageId]);
+    const resolvedLists = await resolveDataLists([input.pageId], renderScope);
     const pluginLists = {
       dataLists: resolvedLists.get(input.pageId) ?? {},
       dormantDataLists: Object.fromEntries(pluginDataListsRegistry.dormantNames()),
@@ -968,7 +971,7 @@ export const renderPagePreviewOp = defineOperation({
       });
     }
     const deferredModules = Object.fromEntries(
-      await resolveModuleDeferrals([...candidates.values()]),
+      await resolveModuleDeferrals([...candidates.values()], renderScope),
     );
 
     // v0.11.0 (#45) — `composeTheme` loaded earlier (above the render
@@ -990,6 +993,7 @@ export const renderPagePreviewOp = defineOperation({
     const fontMarkers: string[] = [];
     if (composeTheme !== undefined) {
       const resolvedFonts = await resolveThemeFonts({
+        readFont: fontReader(tx, ctx),
         tokens: composeTheme.tokens,
         cacheDir: defaultFontsCacheDir(process.cwd()),
         publicBasePath: "/_caelo/fonts",
@@ -1162,7 +1166,10 @@ export const renderPagePreviewOp = defineOperation({
     });
     // #391 — plugin head contributions ride the SAME compose call the
     // static generator uses (byte parity by construction).
-    const contributions = await collectContributions([input.pageId], { siteBaseUrl });
+    const contributions = await collectContributions([input.pageId], {
+      siteBaseUrl,
+      ...renderScope,
+    });
     html = injectSeoIntoHead(
       html,
       composeHeadBlock(headBlock, contributions.head.get(input.pageId)),
@@ -1174,7 +1181,11 @@ export const renderPagePreviewOp = defineOperation({
     // never show behaviour the deployed site won't have — a consent
     // dialog that works in preview and is missing on the live site is
     // the failure this parity exists to prevent.
-    html = injectPluginAssets(html, await collectBuildAssets([input.pageId]), "inline");
+    html = injectPluginAssets(
+      html,
+      await collectBuildAssets([input.pageId], renderScope),
+      "inline",
+    );
 
     // issue #156 — surface unknown `var(--…)` references in the page's
     // CSS bundle (layout + template + placed modules) on the existing

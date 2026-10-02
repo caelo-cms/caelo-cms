@@ -39,6 +39,7 @@ import {
   z,
 } from "@caelo-cms/plugin-sdk";
 import { type CategoryRow, DEFAULT_CATEGORIES } from "./categories.js";
+import { defaultPlaceholder } from "./placeholder.js";
 import { buildRuntimeJs, RUNTIME_CSS } from "./runtime.js";
 import { deferralReason, moduleHosts } from "./scan.js";
 import { CONSENT_SKILLS } from "./skills.js";
@@ -96,7 +97,117 @@ const recordConsentArgs = z.object({
   policyVersion: z.number().int().positive(),
 });
 
-/** What core sends the deferrals operation: the render pass, with the content about to ship. */
+/** A module's third-party hosts now, next to the verdict stored for it (if any). */
+interface EmbedScan {
+  readonly moduleId: string;
+  readonly moduleSlug: string;
+  readonly hosts: string[];
+  readonly guard: GuardRow | undefined;
+}
+
+/** The verdict a guard row should hold, as stored fields. */
+type GuardVerdict = Pick<GuardRow, "category_key" | "detected_hosts" | "status" | "decided_by">;
+
+/**
+ * What a module's guard should say given the hosts it reaches now (the
+ * same `moduleHosts` judgement the render-time gate applies):
+ *
+ * - `null` — no third-party host; any stored guard is stale.
+ * - the stored guard — the hosts it was decided about are unchanged.
+ * - a fresh verdict — vendor-table classification, else pending.
+ */
+function verdictFor(scan: EmbedScan): GuardVerdict | null {
+  if (scan.hosts.length === 0) return null;
+  const existing = scan.guard;
+  if (existing && JSON.stringify(existing.detected_hosts ?? []) === JSON.stringify(scan.hosts)) {
+    return existing;
+  }
+  // Hosts changed under an existing verdict (or none was recorded): the
+  // decision was made about a different set, so it no longer applies.
+  const known = classifyHosts(scan.hosts);
+  return {
+    category_key: known ?? existing?.category_key ?? "marketing",
+    detected_hosts: scan.hosts,
+    status: known ? "gated" : "pending",
+    decided_by: known ? "vendor-table" : "",
+  };
+}
+
+/**
+ * Every module with its current hosts and stored guard. Read-only; in a
+ * chat it reads the chat's branch, so the AI sees the modules it just
+ * edited.
+ */
+async function scanEmbeds(ctx: PluginContextTier1): Promise<EmbedScan[]> {
+  const q = adminQueryOf(ctx);
+  const cms = cmsOf(ctx);
+  const modules = await cms.call<{
+    modules: Array<{
+      id: string;
+      slug: string;
+      html: string;
+      css: string;
+      js: string;
+      fields?: unknown;
+    }>;
+  }>("modules.list", {});
+  // The vendor URL is DATA, not markup. Authoring lifts
+  // `src="https://youtube.com/…"` out of the HTML into a field
+  // default, and a placement can point the same module at a
+  // different vendor through its content values. Scanning the HTML
+  // alone would therefore find nothing on exactly the modules that
+  // matter most.
+  const instances = await cms.call<{
+    instances: Array<{ moduleId: string; values: unknown }>;
+  }>("content_instances.list", {});
+  const valuesByModule = new Map<string, unknown[]>();
+  for (const inst of instances.instances) {
+    const bucket = valuesByModule.get(inst.moduleId) ?? [];
+    bucket.push(inst.values ?? {});
+    valuesByModule.set(inst.moduleId, bucket);
+  }
+  const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
+  const byModule = new Map(guards.map((g) => [g.module_id, g]));
+  return modules.modules.map((m) => ({
+    moduleId: m.id,
+    moduleSlug: m.slug,
+    hosts: moduleHosts({ ...m, contentValues: valuesByModule.get(m.id) ?? [] }),
+    guard: byModule.get(m.id),
+  }));
+}
+
+/**
+ * Bring every module's guard row in line with what it reaches now. The
+ * scheduled scan (`scan_modules`, a worker on main) is the only writer;
+ * `list_embeds` reports the same verdicts without storing them.
+ */
+async function syncGuards(ctx: PluginContextTier1): Promise<{ flagged: number; cleared: number }> {
+  const q = adminQueryOf(ctx);
+  let flagged = 0;
+  let cleared = 0;
+  for (const scan of await scanEmbeds(ctx)) {
+    const verdict = verdictFor(scan);
+    const existing = scan.guard;
+    if (verdict === null) {
+      // The module stopped reaching out — drop the guard rather than
+      // leaving a stale one that withholds a now-harmless module.
+      if (existing) {
+        await q.delete("module_guards", existing.id);
+        cleared += 1;
+      }
+      continue;
+    }
+    if (verdict === existing) continue;
+    if (existing) {
+      await q.update("module_guards", existing.id, verdict);
+    } else {
+      await q.insert("module_guards", { module_id: scan.moduleId, ...verdict });
+    }
+    flagged += 1;
+  }
+  return { flagged, cleared };
+}
+
 const deferralsArgs = z.object({
   modules: z.array(
     z.object({
@@ -175,50 +286,55 @@ function adminQueryOf(ctx: unknown): PluginAdminQuery {
 }
 
 /**
- * Read settings, seeding the row on first use.
- *
- * The seed is not a fallback (CLAUDE.md §2): it is the create-time
- * default for a table that has exactly one row, written once and then
- * read like any other data. A missing row after that would be a bug,
- * and `list` returning empty twice in a row would surface it.
+ * Write the create-time defaults — the one settings row and the default
+ * categories — when they are missing. Runs from `onActivate`, on main:
+ * render and visitor calls cannot write private storage, so the read
+ * helpers below never seed (CMS_REQUIREMENTS §14.7).
  */
+async function seedDefaults(q: PluginAdminQuery): Promise<void> {
+  const settings = await q.list("settings", { limit: 1 });
+  if (settings.length === 0) {
+    await q.insert("settings", {
+      policy_version: 1,
+      retention_days: 365,
+      placeholder_module_slug: DEFAULT_PLACEHOLDER_SLUG,
+    });
+  }
+  const categories = await q.list("categories", { limit: 1 });
+  if (categories.length === 0) {
+    for (const c of DEFAULT_CATEGORIES) {
+      await q.insert("categories", {
+        key: c.key,
+        display_name: c.displayName,
+        description: c.description,
+        required: c.required,
+        position: c.position,
+      });
+    }
+  }
+}
+
+/** The settings row. Seeded by `onActivate`; missing means activation did not run. */
 async function settingsOf(q: PluginAdminQuery): Promise<SettingsRow> {
   const rows = (await q.list("settings", { limit: 1 })) as unknown as SettingsRow[];
-  const existing = rows[0];
-  if (existing) return existing;
-  await q.insert("settings", {
-    policy_version: 1,
-    retention_days: 365,
-    placeholder_module_slug: DEFAULT_PLACEHOLDER_SLUG,
-  });
-  const seeded = (await q.list("settings", { limit: 1 })) as unknown as SettingsRow[];
-  const row = seeded[0];
-  if (!row) throw new Error("consent-manager: settings row could not be created");
+  const row = rows[0];
+  if (!row) {
+    throw new Error("consent-manager: settings row missing — onActivate has not seeded it");
+  }
   return row;
 }
 
-/** Categories in display order, seeding the defaults on first use. */
+/** Categories in display order. Seeded by `onActivate`. */
 async function categoriesOf(q: PluginAdminQuery): Promise<CategoryRow[]> {
   const rows = (await q.list("categories", {
     limit: 100,
     orderBy: "position",
     orderDir: "asc",
   })) as unknown as CategoryRow[];
-  if (rows.length > 0) return rows;
-  for (const c of DEFAULT_CATEGORIES) {
-    await q.insert("categories", {
-      key: c.key,
-      display_name: c.displayName,
-      description: c.description,
-      required: c.required,
-      position: c.position,
-    });
+  if (rows.length === 0) {
+    throw new Error("consent-manager: no categories — onActivate has not seeded them");
   }
-  return (await q.list("categories", {
-    limit: 100,
-    orderBy: "position",
-    orderDir: "asc",
-  })) as unknown as CategoryRow[];
+  return rows;
 }
 
 export default definePlugin<PluginContextTier1>({
@@ -327,6 +443,10 @@ export default definePlugin<PluginContextTier1>({
    * whether a tag may fire before anything else loads, and a static
    * site cannot afford a blocking request to find out.
    */
+  onActivate: async (ctx) => {
+    await seedDefaults(adminQueryOf(ctx));
+  },
+
   buildAssets: async (ctx) => {
     const q = adminQueryOf(ctx);
     const settings = await settingsOf(q);
@@ -489,7 +609,15 @@ export default definePlugin<PluginContextTier1>({
       const { modules } = deferralsArgs.parse(args);
       const q = adminQueryOf(ctx);
       const settings = await settingsOf(q);
-      const deferrals: Record<string, { reason: string; placeholderModuleSlug: string }> = {};
+      const labelOf = new Map((await categoriesOf(q)).map((c) => [c.key, c.display_name]));
+      const deferrals: Record<
+        string,
+        {
+          reason: string;
+          placeholderModuleSlug: string;
+          defaultPlaceholder: { html: string; css: string };
+        }
+      > = {};
       for (const m of modules) {
         const hosts = moduleHosts(m);
         if (hosts.length === 0) continue;
@@ -504,6 +632,7 @@ export default definePlugin<PluginContextTier1>({
         deferrals[m.moduleId] = {
           reason,
           placeholderModuleSlug: settings.placeholder_module_slug,
+          defaultPlaceholder: defaultPlaceholder(reason, labelOf.get(reason) ?? null),
         };
       }
       return { deferrals };
@@ -517,102 +646,26 @@ export default definePlugin<PluginContextTier1>({
      * when someone remembered would be a scan that ran after the
      * request went out.
      */
-    scan_modules: async (ctx) => {
-      const q = adminQueryOf(ctx);
-      const cms = cmsOf(ctx);
-      const modules = await cms.call<{
-        modules: Array<{
-          id: string;
-          slug: string;
-          html: string;
-          css: string;
-          js: string;
-          fields?: unknown;
-        }>;
-      }>("modules.list", {});
-      // The vendor URL is DATA, not markup. Authoring lifts
-      // `src="https://youtube.com/…"` out of the HTML into a field
-      // default, and a placement can point the same module at a
-      // different vendor through its content values. Scanning the HTML
-      // alone would therefore find nothing on exactly the modules that
-      // matter most.
-      const instances = await cms.call<{
-        instances: Array<{ moduleId: string; values: unknown }>;
-      }>("content_instances.list", {});
-      const valuesByModule = new Map<string, unknown[]>();
-      for (const inst of instances.instances) {
-        const bucket = valuesByModule.get(inst.moduleId) ?? [];
-        bucket.push(inst.values ?? {});
-        valuesByModule.set(inst.moduleId, bucket);
-      }
-      const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
-      const byModule = new Map(guards.map((g) => [g.module_id, g]));
+    scan_modules: async (ctx) => syncGuards(ctx),
 
-      let flagged = 0;
-      let cleared = 0;
-      for (const m of modules.modules) {
-        const hosts = moduleHosts({
-          ...m,
-          contentValues: valuesByModule.get(m.id) ?? [],
-        });
-        const existing = byModule.get(m.id);
-        if (hosts.length === 0) {
-          // The module stopped reaching out — drop the guard rather than
-          // leaving a stale one that withholds a now-harmless module.
-          if (existing) {
-            await q.delete("module_guards", existing.id);
-            cleared += 1;
-          }
-          continue;
-        }
-        const known = classifyHosts(hosts);
-        if (!existing) {
-          await q.insert("module_guards", {
-            module_id: m.id,
-            category_key: known ?? "marketing",
-            detected_hosts: hosts,
-            status: known ? "gated" : "pending",
-            decided_by: known ? "vendor-table" : "",
-          });
-          flagged += 1;
-          continue;
-        }
-        // Hosts changed under an existing verdict: the decision was made
-        // about a different set, so it no longer applies.
-        const before = JSON.stringify(existing.detected_hosts ?? []);
-        if (before !== JSON.stringify(hosts)) {
-          const rescored = classifyHosts(hosts);
-          await q.update("module_guards", existing.id, {
-            detected_hosts: hosts,
-            category_key: rescored ?? existing.category_key,
-            status: rescored ? "gated" : "pending",
-            decided_by: rescored ? "vendor-table" : "",
-          });
-          flagged += 1;
-        }
-      }
-      return { flagged, cleared };
-    },
-
+    // Read-only: reports the verdict every module would get now, stored
+    // or not, so the list is never older than what the render gate
+    // withholds — without a read tool writing author data.
     list_embeds: async (ctx) => {
-      const q = adminQueryOf(ctx);
-      const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
-      const cms = cmsOf(ctx);
-      const modules = await cms.call<{ modules: Array<{ id: string; slug: string }> }>(
-        "modules.list",
-        {},
-      );
-      const slugOf = new Map(modules.modules.map((m) => [m.id, m.slug]));
-      return {
-        embeds: guards.map((g) => ({
-          moduleId: g.module_id,
-          moduleSlug: slugOf.get(g.module_id) ?? "(deleted)",
-          hosts: g.detected_hosts,
-          status: g.status,
-          category: g.category_key,
-          decidedBy: g.decided_by,
-        })),
-      };
+      const embeds = [];
+      for (const scan of await scanEmbeds(ctx)) {
+        const verdict = verdictFor(scan);
+        if (verdict === null) continue;
+        embeds.push({
+          moduleId: scan.moduleId,
+          moduleSlug: scan.moduleSlug,
+          hosts: verdict.detected_hosts,
+          status: verdict.status,
+          category: verdict.category_key,
+          decidedBy: verdict.decided_by,
+        });
+      }
+      return { embeds };
     },
 
     classify_embed: async (ctx, args) => {
@@ -623,31 +676,31 @@ export default definePlugin<PluginContextTier1>({
       };
       if (typeof moduleId !== "string") throw new Error("classify_embed: `moduleId` is required");
       const q = adminQueryOf(ctx);
-      const rows = (await q.list("module_guards", {
-        module_id: moduleId,
-        limit: 1,
-      })) as unknown as GuardRow[];
-      const row = rows[0];
-      if (!row) {
+      const scan = (await scanEmbeds(ctx)).find((e) => e.moduleId === moduleId);
+      if (!scan || scan.hosts.length === 0) {
         throw new Error(
           `classify_embed: module ${moduleId} has no detected third-party host — nothing to classify. Run list_embeds to see what does.`,
         );
       }
+      let decision: Pick<GuardRow, "category_key" | "status">;
       if (allow === true) {
-        await q.update("module_guards", row.id, { status: "allowed", decided_by: "operator" });
-        return { moduleId, status: "allowed" };
+        decision = { category_key: scan.guard?.category_key ?? "marketing", status: "allowed" };
+      } else {
+        const categories = await categoriesOf(q);
+        const known = new Set(categories.map((c) => c.key));
+        if (typeof category !== "string" || !known.has(category)) {
+          throw new Error(`classify_embed: \`category\` must be one of ${[...known].join(", ")}`);
+        }
+        decision = { category_key: category, status: "gated" };
       }
-      const categories = await categoriesOf(q);
-      const known = new Set(categories.map((c) => c.key));
-      if (typeof category !== "string" || !known.has(category)) {
-        throw new Error(`classify_embed: \`category\` must be one of ${[...known].join(", ")}`);
-      }
-      await q.update("module_guards", row.id, {
-        category_key: category,
-        status: "gated",
-        decided_by: "operator",
-      });
-      return { moduleId, status: "gated", category };
+      // The operator decides about the hosts the module reaches now; the
+      // row may not exist yet, since only the scheduled scan records them.
+      const fields = { ...decision, detected_hosts: scan.hosts, decided_by: "operator" };
+      if (scan.guard) await q.update("module_guards", scan.guard.id, fields);
+      else await q.insert("module_guards", { module_id: moduleId, ...fields });
+      return decision.status === "allowed"
+        ? { moduleId, status: "allowed" }
+        : { moduleId, status: "gated", category: decision.category_key };
     },
 
     /**

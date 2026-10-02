@@ -41,10 +41,24 @@
       "slots": [
         {
           "role": "default",
-          "note": "",
-          "match": "^gemini-\\d+(\\.\\d+)?-pro$",
-          "id": "gemini-1.5-pro",
-          "label": "Gemini 1.5 Pro"
+          "note": "recommended",
+          "match": "^gemini-\\d+(\\.\\d+)?-flash$",
+          "id": "gemini-3.8-flash",
+          "label": "Gemini 3.8 Flash"
+        },
+        {
+          "role": "capable",
+          "note": "most capable, preview",
+          "match": "^gemini-\\d+(\\.\\d+)?-pro(-preview)?$",
+          "id": "gemini-3.1-pro-preview",
+          "label": "Gemini 3.1 Pro (Preview)"
+        },
+        {
+          "role": "fast",
+          "note": "fastest/cheapest",
+          "match": "^gemini-\\d+(\\.\\d+)?-flash-lite$",
+          "id": "gemini-3.5-flash-lite",
+          "label": "Gemini 3.5 Flash-Lite"
         }
       ]
     }

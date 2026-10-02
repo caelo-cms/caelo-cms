@@ -5,6 +5,7 @@
   },
   "include": [],
   "references": [
+    { "path": "./packages/font-service" },
     { "path": "./packages/shared" },
     { "path": "./packages/query-api" },
     { "path": "./packages/admin-core" },

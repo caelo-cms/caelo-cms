@@ -12,7 +12,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { bootstrap, resetPluginHost, resolveModuleDeferrals } from "@caelo-cms/plugin-host";
+import {
+  bootstrap,
+  MAIN_RENDER,
+  resetPluginHost,
+  resolveModuleDeferrals,
+} from "@caelo-cms/plugin-host";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -192,14 +197,39 @@ describe("#450 — module deferrals through the preview op", () => {
     // the gate exists to prevent — the least acceptable silent recovery
     // in this codebase (CLAUDE.md §2).
     verdicts = { [videoModuleId]: { reason: "marketing", placeholderModuleSlug: "t450-nope" } };
-    expect(resolveModuleDeferrals([videoCandidate()])).rejects.toThrow(/does not exist/);
+    expect(resolveModuleDeferrals([videoCandidate()], MAIN_RENDER)).rejects.toThrow(
+      /does not exist/,
+    );
+  });
+
+  it("renders the plugin's built-in placeholder when the site has not designed one", async () => {
+    // A site whose placeholder module was never created must still
+    // render the page — the withheld module stays withheld.
+    verdicts = {
+      [videoModuleId]: {
+        reason: "marketing",
+        placeholderModuleSlug: "t450-nope",
+        defaultPlaceholder: {
+          html: '<div data-t450-default><button data-consent-grant="marketing">Allow</button></div>',
+          css: ".t450d{}",
+        },
+      },
+    };
+    const html = await renderPage();
+    expect(html).toContain("data-t450-default");
+    expect(html).toContain(".t450d{}");
+    expect(html.indexOf("youtube.com")).toBeGreaterThan(
+      html.indexOf("<template data-caelo-deferred-content>"),
+    );
   });
 
   it("rejects a verdict whose reason is not a plain key", async () => {
     verdicts = {
       [videoModuleId]: { reason: "Marketing Cookies!", placeholderModuleSlug: "t450-placeholder" },
     };
-    expect(resolveModuleDeferrals([videoCandidate()])).rejects.toThrow(/invalid verdict/);
+    expect(resolveModuleDeferrals([videoCandidate()], MAIN_RENDER)).rejects.toThrow(
+      /invalid verdict/,
+    );
   });
 
   it("costs nothing when no plugin declares deferrals", async () => {
@@ -207,6 +237,6 @@ describe("#450 — module deferrals through the preview op", () => {
       [videoModuleId]: { reason: "marketing", placeholderModuleSlug: "t450-placeholder" },
     };
     resetPluginHost();
-    expect(await resolveModuleDeferrals([videoCandidate()])).toEqual(new Map());
+    expect(await resolveModuleDeferrals([videoCandidate()], MAIN_RENDER)).toEqual(new Map());
   });
 });

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+export { GOOGLE_IMAGE_MODELS } from "@caelo-cms/shared";
+
 /**
  * Shared model catalogue for the two AI-credential entry points — the
  * first-run wizard (`(auth)/welcome/ai`) and the Owner security panel
@@ -46,14 +48,15 @@ export const MODEL_OPTIONS: Record<string, readonly ModelOption[]> = Object.from
 );
 
 /** Per-provider default model id (the pre-selected option). */
-export const DEFAULT_MODEL_ID: Record<string, string> = Object.fromEntries(
-  CATALOG_PROVIDERS.map((provider) => [provider, catalogModel(provider, "default")]),
-);
+export const DEFAULT_MODEL_ID: Record<string, string> = Object.fromEntries([
+  ...CATALOG_PROVIDERS.map((provider) => [provider, catalogModel(provider, "default")]),
+  // Free-text provider: a sensible pre-fill, not a catalogue entry.
+  ["local-openai-compat", "qwen2.5"],
+]);
 
 /** Short helper copy shown beneath the Model picker. */
-export const MODEL_HELPER_TEXT = `${
-  catalogSlots("anthropic").find((s) => s.role === "default")?.label
-} is the default — a good balance of quality and cost.`;
+export const MODEL_HELPER_TEXT =
+  "Choose a chat model. Preview models may change; image generation uses a separate model.";
 
 /**
  * Models for a provider, or an empty list for providers that use a

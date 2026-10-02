@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * MCP server construction. Registers exactly one tool — `caelo_chat` —
- * and binds it to a stdio transport. The single-tool design is
+ * MCP server construction. Registers `caelo_chat` and the image upload companion
+ * and binds it to a stdio transport. Routing edits through one conversational tool is
  * deliberate: the remote agent talks to Caelo's chat-runner the same
  * way a human in the browser does. Browse / publish / propose actions
  * happen through the chat ("which pages exist?" → agent calls
@@ -15,6 +15,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { sendChat } from "./chat-bridge.js";
+import { UPLOAD_IMAGES_TOOL, uploadedImageSchema, uploadImages } from "./image-upload.js";
 
 export interface StartOpts {
   readonly adminUrl: string;
@@ -23,6 +24,7 @@ export interface StartOpts {
 
 const caeloChatInputSchema = z
   .object({
+    attachments: z.array(uploadedImageSchema).max(4).optional(),
     message: z.string().min(1).max(50_000),
     chatSessionId: z.string().uuid().optional(),
     pageId: z.string().uuid().optional(),
@@ -42,6 +44,7 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
+      UPLOAD_IMAGES_TOOL,
       {
         name: "caelo_chat",
         description:
@@ -50,6 +53,12 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
           type: "object",
           required: ["message"],
           properties: {
+            attachments: {
+              type: "array",
+              maxItems: 4,
+              description: "Attachments returned by caelo_upload_images.",
+              items: z.toJSONSchema(uploadedImageSchema),
+            },
             message: {
               type: "string",
               description: "What you want to say to the Caelo agent.",
@@ -71,6 +80,13 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    if (req.params.name === UPLOAD_IMAGES_TOOL.name) {
+      try {
+        return await uploadImages(opts, req.params.arguments);
+      } catch (e) {
+        return { isError: true, content: [{ type: "text", text: String(e) }] };
+      }
+    }
     if (req.params.name !== "caelo_chat") {
       return {
         isError: true,
@@ -89,6 +105,7 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
         adminUrl: opts.adminUrl,
         token: opts.token,
         message: parsed.data.message,
+        ...(parsed.data.attachments ? { attachments: parsed.data.attachments } : {}),
         ...(parsed.data.chatSessionId ? { chatSessionId: parsed.data.chatSessionId } : {}),
         ...(parsed.data.pageId ? { pageId: parsed.data.pageId } : {}),
       });

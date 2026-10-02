@@ -45,7 +45,7 @@ Tiles:
 - **Telemetry** — `/security/ai/telemetry` — opt-in toggles + payload preview
 - **Costs** — `/security/costs` — five-panel dashboard (totals + budget status + per-day + per-attribution + roll-up)
 - **MCP tokens** — `/security/mcp` — bearer tokens for `bunx @caelo-cms/mcp-server`
-- **Plugins** — `/security/plugins` — Tier 1 + Tier 2 management, awaiting-activation queue
+- **Plugins** — `/security/plugins` — activation, grants and the awaiting-activation queue for every plugin
 - **Email** — `/security/email` — Resend / SMTP / SES selection
 - **Gateway** — `/security/gateway` — rate limits, captcha, body cap, request log
 - **Users + roles** — `/security/users` + `/security/roles`
@@ -69,7 +69,7 @@ Per `CLAUDE.md` §2 invariants:
 
 - Can't write raw HTML to a page (only modules can be raw HTML, and those are versioned)
 - Can't publish a page without your click
-- Can't activate a plugin without your click (Tier 1 ships signed; Tier 2 needs Owner approve)
+- Can't activate a plugin or grant it a capability without your click — shipped plugins included
 - Can't trigger a deploy past staging without an Ops-role human
 - Can't bypass the snapshot system; every write is reversible
 

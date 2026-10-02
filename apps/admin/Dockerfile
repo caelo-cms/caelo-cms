@@ -11,6 +11,8 @@
 # CLAUDE.md §11.C: this image is published to ghcr.io/caelo-cms/admin
 # by .github/workflows/release-images.yml. End-users never build it.
 
+FROM denoland/deno:bin-2.9.6 AS deno
+
 FROM oven/bun:1.4.2 AS builder
 
 # npm is needed to work around Bun's transitive optionalDependencies gap
@@ -37,6 +39,7 @@ COPY apps/static-generator/package.json apps/static-generator/
 COPY packages/shared/package.json packages/shared/
 COPY packages/query-api/package.json packages/query-api/
 COPY packages/admin-core/package.json packages/admin-core/
+COPY packages/font-service/package.json packages/font-service/
 COPY packages/plugin-sdk/package.json packages/plugin-sdk/
 COPY packages/plugin-component-kit/package.json packages/plugin-component-kit/
 COPY packages/plugin-sandbox/package.json packages/plugin-sandbox/
@@ -156,6 +159,8 @@ RUN cd apps/admin && bun x vite build
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.4.2-slim AS runtime
 
+COPY --from=deno /deno /usr/local/bin/deno
+
 # Reproduce the workspace layout under /app so node_modules resolution
 # works the same way it did at build time (Bun nests admin-specific
 # deps in apps/admin/node_modules; the SSR bundle's runtime requires
@@ -192,6 +197,9 @@ COPY --from=builder /repo/apps/static-generator ./apps/static-generator
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# Multipart font imports (8 MiB font + license) and chat images (5 MiB)
+# plus form overhead exceed the adapter's 512 KiB default.
+ENV BODY_SIZE_LIMIT=12M
 EXPOSE 3000
 
 WORKDIR /app/apps/admin

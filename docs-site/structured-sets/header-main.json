@@ -20,7 +20,7 @@
       "href": "/plugins-build",
       "children": [
         { "label": "Build a plugin", "href": "/plugins-build" },
-        { "label": "Tier 2 (sandboxed)", "href": "/plugins-tier-2" }
+        { "label": "Plugin permissions", "href": "/plugins-permissions" }
       ]
     },
     { "label": "MCP", "href": "/mcp" },

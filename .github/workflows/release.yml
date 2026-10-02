@@ -82,6 +82,13 @@ jobs:
         with:
           bun-version: 1.4.2
 
+      # The test suite runs plugins in the Deno sandbox (#473); same pinned
+      # version as ci.yml and the admin/gateway images.
+      - name: Setup Deno for external plugin tests
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
+        with:
+          deno-version: v2.9.6
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 

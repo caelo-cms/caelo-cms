@@ -132,6 +132,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
 
     // Owner creates the form definition (admin context — direct dispatch).
     const create = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "create_form",
       args: {
@@ -172,6 +173,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
 
     // Admin lists the submission.
     const list = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "list_submissions",
       args: { formSlug: FORM_SLUG },
@@ -199,11 +201,13 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
   it("mark_read + archive flip status correctly", async () => {
     await bootstrapForms();
     await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "create_form",
       args: { slug: FORM_SLUG, displayName: "C", schemaJson: {} },
     });
     const sub = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "submit",
       args: { formSlug: FORM_SLUG, data: { x: 1 } },
@@ -212,12 +216,14 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     const id = (sub.value as { submissionId: string }).submissionId;
 
     const r1 = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "mark_read",
       args: { submissionId: id },
     });
     expect(r1.ok).toBe(true);
     const after1 = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "list_submissions",
       args: {},
@@ -228,12 +234,14 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     ).toBe("read");
 
     const r2 = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "archive",
       args: { submissionId: id },
     });
     expect(r2.ok).toBe(true);
     const after2 = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "list_submissions",
       args: { status: "archived" },
@@ -294,11 +302,13 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
 
     // Forms plugin: create + submit one row.
     await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "create_form",
       args: { slug: FORM_SLUG, displayName: "C", schemaJson: {} },
     });
     await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "submit",
       args: { formSlug: FORM_SLUG, data: { secret: "value" } },
@@ -306,6 +316,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
 
     // Other plugin reading its own form_submissions table sees nothing.
     const peek = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "test-p12-other",
       operationName: "peek",
       args: {},

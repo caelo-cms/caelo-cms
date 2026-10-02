@@ -9,6 +9,7 @@
  * in v0.11.0, so the UI inherits chat-keyed Undo without new wiring.
  */
 
+import { type FontMetadata, fontMetadata, fontRef } from "@caelo-cms/font-service";
 import { execute } from "@caelo-cms/query-api";
 import type { Theme } from "@caelo-cms/shared";
 import { error, fail } from "@sveltejs/kit";
@@ -28,7 +29,19 @@ export const load: PageServerLoad = async ({ params, locals }) => {
   if (!theme) {
     throw error(404, `theme '${params.slug}' not found`);
   }
-  return { theme };
+  const fonts: FontMetadata[] = [];
+  const typography = (theme.tokens as Record<string, unknown>).typography;
+  if (typography && typeof typography === "object") {
+    for (const token of Object.values(typography)) {
+      const ref = fontRef.safeParse(
+        (token as { $extensions?: Record<string, unknown> })?.$extensions?.["caelo.font"],
+      );
+      if (!ref.success || fonts.some((f) => f.id === ref.data.id)) continue;
+      const result = await execute(registry, adapter, locals.ctx, "fonts.inspect", ref.data);
+      if (result.ok) fonts.push(fontMetadata.parse(result.value));
+    }
+  }
+  return { theme, fonts };
 };
 
 export const actions: Actions = {

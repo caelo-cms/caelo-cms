@@ -32,7 +32,13 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
     ...(branch ? { chatBranchId: branch } : {}),
   });
   if (!result.ok) {
-    throw error(404, "Page not found");
+    // Only a missing page is a 404. Any other failure (a layout without a
+    // content block, a plugin gate that cannot render its placeholder, …)
+    // is surfaced with its message: reporting it as "not found" hid the
+    // real cause from the operator and the AI alike.
+    const message = "message" in result.error ? String(result.error.message) : result.error.kind;
+    if (message === "page not found") throw error(404, "Page not found");
+    throw error(500, `Preview render failed: ${message}`);
   }
   const composed = result.value as { html: string };
   const scriptTag = `<script data-caelo-edit-overlay>${INJECT_SCRIPT}</script>`;

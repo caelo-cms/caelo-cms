@@ -36,7 +36,12 @@
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
-import type { ChatAttachment, ExecutionContext } from "@caelo-cms/shared";
+import {
+  CHAT_IMAGE_MIMES,
+  CHAT_MAX_ATTACHMENT_BYTES,
+  type ChatAttachment,
+  type ExecutionContext,
+} from "@caelo-cms/shared";
 import { getMediaStorage } from "../../media/storage.js";
 import type {
   ChatMessageInput,
@@ -48,7 +53,7 @@ import { repairToolCallPairing } from "./history-repair.js";
 import type { AccumulatedToolCall } from "./types.js";
 
 /** Provider payload guard — a base64-inflated 20MB PNG breaks calls. */
-const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = CHAT_MAX_ATTACHMENT_BYTES;
 
 export type AttachmentImageLoader = (
   att: ChatAttachment,
@@ -91,6 +96,9 @@ export function createMediaAttachmentLoader(
       }
     ).asset;
     if (!asset) return { failed: `media asset ${att.assetId} not found (deleted?)` };
+    if (!CHAT_IMAGE_MIMES.includes(asset.mime as (typeof CHAT_IMAGE_MIMES)[number])) {
+      return { failed: `media asset ${att.assetId} is not a supported chat image` };
+    }
     if (asset.sizeBytes > MAX_ATTACHMENT_BYTES) {
       return {
         failed: `image ${att.assetId} is ${asset.sizeBytes} bytes — exceeds the ${MAX_ATTACHMENT_BYTES}-byte provider cap`,
@@ -98,10 +106,12 @@ export function createMediaAttachmentLoader(
     }
     try {
       const bytes = await getMediaStorage().get(asset.storageKey);
+      if (bytes.byteLength > MAX_ATTACHMENT_BYTES)
+        return { failed: `image ${att.assetId} exceeds the provider byte cap` };
       return {
         type: "image",
         base64: Buffer.from(bytes).toString("base64"),
-        mediaType: att.mime,
+        mediaType: asset.mime as (typeof CHAT_IMAGE_MIMES)[number],
       };
     } catch (e) {
       return {

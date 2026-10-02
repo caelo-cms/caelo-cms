@@ -24,6 +24,7 @@ import {
   setPlacementContentSchema,
   slugSchema,
 } from "./content.js";
+import { pluginPreviewSelectionSchema } from "./plugin-preview.js";
 
 /**
  * v0.6.2 — `position` argument shared across the three `add_module_to_*`
@@ -381,6 +382,11 @@ export const chatCreateSessionInput = z
   })
   .strict();
 
+/** Raster image types understood by all supported chat providers. */
+export const CHAT_IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+/** Limit originals before upload so every accepted attachment can reach the provider. */
+export const CHAT_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
 /**
  * issue #190 — an operator-attached image riding a user chat message.
  * References a media_assets row (the upload endpoint owns validation
@@ -397,7 +403,7 @@ export const chatAttachmentSchema = z
      * doc comment. Exactly one of `assetId` / `storageKey` is present.
      */
     storageKey: z.string().min(1).max(512).optional(),
-    mime: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif"]),
+    mime: z.enum(CHAT_IMAGE_MIMES),
     alt: z.string().max(2048).optional(),
   })
   .strict()
@@ -416,6 +422,7 @@ export const chatSendMessageInput = z
     // operator content — it re-runs the paused gated turn. A refine below
     // requires exactly one of content / resumeApproval.
     content: z.string().min(1).max(8000).optional(),
+    previewSelection: pluginPreviewSelectionSchema.optional(),
     /** Element-reference chips appended to the message. */
     chips: z
       .array(
@@ -505,6 +512,8 @@ export const chatPublishInput = z
               // surface so chat-branched theme edits replay into live
               // on chat.publish.
               "theme",
+              // A plugin private-storage row written on the branch.
+              "pluginRow",
             ]),
             entityId: z.string().uuid(),
           })

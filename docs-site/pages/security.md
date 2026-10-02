@@ -34,7 +34,7 @@ In scope:
 - The admin app + its API surface
 - The Query API + Database Adapter
 - The plugin host + sandbox (oxc-parser validator + Deno subprocess + RLS scoping)
-- Any of the five core Tier 1 plugins (forms, comments, newsletter, ratings, auth) when run as shipped
+- Any plugin shipped with Caelo (`packages/plugins/<slug>/`) when run as shipped, and the grant model that bounds every plugin (CMS_REQUIREMENTS §14)
 - The provisioning surface — secret handling, IAM scope, network isolation
 - The MCP server (`@caelo-cms/mcp-server`)
 - The static-generator output
@@ -59,7 +59,7 @@ Out of scope (please report upstream):
 
 Three places. Issues with any of them are critical-severity:
 
-- **Tier 1 plugin manifest signatures** — Ed25519 over the manifest JSON. Public key embedded in the host build; rotated on major version bumps.
+- **Shipped-plugin manifest signatures** — Ed25519 over the manifest JSON, proving the installed artifact is the released one (evidence shown at approval; it grants no capability). Public key embedded in the host build; rotated on major version bumps.
 - **Internal API tokens + cookie/CSRF/HMAC secrets** — minted at install via `bunx @caelo-cms/provisioning`; stored in the platform's secrets manager.
 - **MCP token bearer hashes** — sha256 at rest; the plaintext bearer is shown ONCE at mint time on `/security/mcp`.
 

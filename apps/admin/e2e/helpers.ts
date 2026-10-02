@@ -15,13 +15,16 @@ import { spawnSync } from "node:child_process";
  *
  * `bun -e <script>` (not `bun run -e`) is the correct invocation; `bun run`
  * expects a file or package.json script name.
+ *
+ * @returns the script's stdout, for a script that reports a value.
  */
-export function runBunInline(script: string, extraEnv: Record<string, string> = {}): void {
+export function runBunInline(script: string, extraEnv: Record<string, string> = {}): string {
   const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
   const result = spawnSync("bun", ["-e", script], { env, encoding: "utf8" });
   if (result.status !== 0) {
     throw new Error(`bun -e failed (status ${result.status}): ${result.stderr || result.stdout}`);
   }
+  return result.stdout;
 }
 
 /**

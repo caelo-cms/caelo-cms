@@ -10,6 +10,9 @@
  * P11 lifecycle (submit → activate → cms_public schema provisioned).
  */
 
+export { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
+export { pluginManifest } from "@caelo-cms/plugin-sdk";
+export { makePluginContext } from "./capabilities.js";
 export {
   collectBuildAssets,
   injectPluginAssets,
@@ -34,14 +37,19 @@ export {
   TRUST_ROOT_FILENAME,
 } from "./dev-signing.js";
 export {
+  assertInvocationConsistent,
   type EmailTransport,
   hostInfra,
+  hostSystemActorId,
   isPluginDisabled,
   type LoadedPlugin,
   loadedPlugins,
+  MAIN_RENDER,
   type PluginHostInfra,
+  type RenderScope,
   type RunPluginOperationOpts,
   type RunPluginOperationResult,
+  renderInvocation,
   resetDisabledSet,
   runPluginBuildAssets,
   runPluginMetaSignature,
@@ -53,6 +61,8 @@ export {
   setPluginDisabled,
   type VisitorDispatchContext,
 } from "./dispatch.js";
+export { operatorHasPermission } from "./external-authorization.js";
+export { resolvePreviewFonts } from "./font-preview.js";
 export {
   type CollectedContributions,
   collectContributions,
@@ -61,20 +71,31 @@ export {
 } from "./head-composition.js";
 export { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
 export {
+  activateApprovedExternalPlugin,
   type BootstrapOpts,
   bootstrap,
   type LoadReport,
   loadActivatedPlugin,
   resetPluginHost,
 } from "./loader.js";
+export type { PluginRowLocker } from "./private-storage.js";
 export {
   type PromptContextRenderer,
   pluginPromptContextRegistry,
 } from "./prompt-context-registry.js";
 export {
+  applyPluginRowState,
+  discardBranchPluginRows,
+  insertPluginRowSnapshot,
+  type PluginRowRef,
+  type PluginRowState,
+  withPluginScope,
+} from "./row-snapshots.js";
+export {
   pluginWorkerScheduler,
   type ScheduledWorker,
 } from "./scheduler.js";
+export { recordExternalToolApproval } from "./tool-approval-binding.js";
 export {
   pluginToolsRegistry,
   type RegisteredPluginTool,

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
+import { clearLoginRateBucket } from "./helpers.js";
 
 /**
  * Regression (2026-07-12): a signed-in user visiting /login or /setup
@@ -11,6 +12,9 @@ import { expect, test } from "@playwright/test";
  * auth page must land back in the app, never on the setup form.
  */
 
+// Every spec logs in as dev-owner from the same IP; the login limiter
+// (5 per 5 min) would otherwise reject later specs in the batch.
+test.beforeAll(clearLoginRateBucket);
 test("signed-in user visiting /login lands in the app", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("dev-owner@example.com");

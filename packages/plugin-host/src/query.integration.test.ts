@@ -21,6 +21,13 @@ import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { bootstrap, resetPluginHost, runPluginOperation } from "./index.js";
 
+// Every plugin dispatch names who acts (#509): these calls are system
+// work on main, and the visitor call comes through the gateway.
+const SYSTEM_INVOCATION = {
+  origin: "system",
+  actorId: "00000000-0000-0000-0000-000000000000",
+} as const;
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -65,6 +72,10 @@ function makePlugin(slug: string) {
       list_recent: async (ctx, args) => {
         const a = args as { since: string };
         return ctx.query.list("greetings", { since: a.since, orderBy: "created_at", limit: 5 });
+      },
+      change_tags: async (ctx, args) => {
+        const a = args as { id: string; tags: unknown };
+        await ctx.query.update("greetings", a.id, { tags: a.tags });
       },
       change_message: async (ctx, args) => {
         const a = args as { id: string; message: string };
@@ -165,6 +176,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     await provisionPluginSchema(pluginA);
 
     const add = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "add",
       args: { pageId: "page-1", message: "hello" },
@@ -172,6 +184,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     expect(add.ok).toBe(true);
 
     const list = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "list_all",
       args: {},
@@ -199,6 +212,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     await provisionPluginSchema(pluginA);
 
     const add = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "add",
       args: { pageId: "page-1", message: "hi", tags: ["analytics", "marketing"] },
@@ -206,6 +220,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     expect(add.ok).toBe(true);
 
     const list = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "list_all",
       args: {},
@@ -213,6 +228,30 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     if (!list.ok) throw new Error(JSON.stringify(list.error));
     const rows = list.value as Array<{ tags: unknown }>;
     expect(rows[0]?.tags).toEqual(["analytics", "marketing"]);
+    if (!add.ok) throw new Error(add.error.message);
+    const id = (add.value as { id: string }).id;
+    for (const tags of [
+      ["functional", "analytics"],
+      { categories: ["marketing"], accepted: true },
+      [],
+      null,
+    ]) {
+      const updated = await runPluginOperation({
+        invocation: SYSTEM_INVOCATION,
+        pluginSlug: PLUGIN_A,
+        operationName: "change_tags",
+        args: { id, tags },
+      });
+      expect(updated.ok).toBe(true);
+      const reloaded = await runPluginOperation({
+        invocation: SYSTEM_INVOCATION,
+        pluginSlug: PLUGIN_A,
+        operationName: "list_all",
+        args: {},
+      });
+      if (!reloaded.ok) throw new Error(reloaded.error.message);
+      expect((reloaded.value as { tags: unknown }[])[0]?.tags).toEqual(tags);
+    }
   });
 
   it("update + delete work via id", async () => {
@@ -224,6 +263,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     });
     await provisionPluginSchema(pluginA);
     const add = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "add",
       args: { pageId: "p", message: "v1" },
@@ -231,12 +271,14 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     if (!add.ok) throw new Error("add failed");
     const id = (add.value as { id: string }).id;
     const upd = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "change_message",
       args: { id, message: "v2" },
     });
     expect(upd.ok).toBe(true);
     const list = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "list_all",
       args: {},
@@ -245,12 +287,14 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     expect((list.value as Array<{ message: string }>)[0]?.message).toBe("v2");
 
     const del = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "remove",
       args: { id },
     });
     expect(del.ok).toBe(true);
     const after = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "list_all",
       args: {},
@@ -268,6 +312,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     });
     await provisionPluginSchema(pluginA);
     const r = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "try_undeclared_table",
       args: {},
@@ -285,6 +330,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     });
     await provisionPluginSchema(pluginA);
     const r = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "try_undeclared_column",
       args: {},
@@ -305,12 +351,14 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
 
     // Both insert one row each.
     const aAdd = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "add",
       args: { pageId: "p", message: "from-A" },
     });
     expect(aAdd.ok).toBe(true);
     const bAdd = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_B,
       operationName: "add",
       args: { pageId: "p", message: "from-B" },
@@ -319,6 +367,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
 
     // Plugin A lists its own greetings — sees only its row.
     const aList = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_A,
       operationName: "list_all",
       args: {},
@@ -330,6 +379,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
 
     // And vice versa — separate schemas, separate RLS, total isolation.
     const bList = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: PLUGIN_B,
       operationName: "list_all",
       args: {},

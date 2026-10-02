@@ -26,6 +26,7 @@
  * module and ONLY this module — the validator enforces it.
  */
 
+import type { FontMetadata, FontRef } from "@caelo-cms/shared";
 import { z } from "zod";
 
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
@@ -79,11 +80,9 @@ export const pluginSchemaMap = z.record(z.string(), pluginTableSchema);
 export type PluginSchemaMap = z.infer<typeof pluginSchemaMap>;
 
 /** Capability requests. Every capability is runtime-enforced; what is
- *  GRANTABLE is capped by provenance (epic #380 decision 2): a
- *  release-signed plugin may request any capability, a runtime-authored
- *  plugin none beyond the sandbox base (query/api/theme/visitor/captcha).
- *  The validator rejects runtime-authored manifests that reach over the
- *  ceiling. */
+ *  release signature determines origin and execution path. External access
+ *  requires individual installation receipts and an implemented host broker.
+ *  Unsupported external requests fail activation; declarations never grant access. */
 export const pluginCapability = z.enum([
   "cms_admin",
   "cms_admin_schema",
@@ -94,6 +93,13 @@ export const pluginCapability = z.enum([
   "domain_events",
   "email",
   "head_contributions",
+  "url_slots",
+  "client_assets",
+  "data_lists",
+  "companion_skills",
+  "font_assets",
+  "private_files",
+  "image_generation",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -121,8 +127,7 @@ export const pluginWorkerSpec = z.object({
 
 export type PluginWorkerSpec = z.infer<typeof pluginWorkerSpec>;
 
-/** AI tool registration declaration. Tier 1 only — Tier 2 plugins do
- *  not get chat-runner tool registration. */
+/** AI tool declaration. External packages require the chat_runner_tools grant. */
 export const pluginToolSpec = z.object({
   name: z.string().min(1).max(120),
   description: z.string().min(1).max(4000),
@@ -319,6 +324,13 @@ export const moduleDeferralSpec = z
     /** Slug of the module rendered in the withheld one's place. An
      *  ordinary module, so the AI authors and styles it. */
     placeholderModuleSlug: z.string().min(1).max(200),
+    /** The plugin's own built-in placeholder, rendered while no module
+     *  with `placeholderModuleSlug` exists yet. Without it a site whose
+     *  placeholder was never designed cannot render the page at all. */
+    defaultPlaceholder: z
+      .object({ html: z.string().min(1).max(20_000), css: z.string().max(20_000) })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -343,10 +355,13 @@ export interface DeferralCandidate {
 
 export const pluginManifest = z
   .object({
+    // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
+    // truncates identifiers past 63 bytes — two long slugs sharing a
+    // prefix would land in ONE schema, i.e. one plugin's data.
     slug: z
       .string()
       .min(1)
-      .max(120)
+      .max(55)
       .regex(/^[a-z][a-z0-9-]*$/, "must be lowercase, dash-separated"),
     version: z
       .string()
@@ -355,7 +370,7 @@ export const pluginManifest = z
       .regex(/^\d+\.\d+\.\d+(-[a-z0-9.]+)?$/, "must be semver"),
     tier: z.union([z.literal(1), z.literal(2)]),
     schema: pluginSchemaMap,
-    /** #389 — release-signed only: the plugin's own authoring-DB schema,
+    /** The plugin's own authoring-DB schema,
      *  provisioned as `plugin_<slug>` in cms_admin (FORCE RLS, scoped to
      *  the plugin's id). Same declarative table spec as `schema`; `ref:`
      *  columns may FK onto allowlisted core tables. Requires the
@@ -374,11 +389,29 @@ export const pluginManifest = z
     /** See `PluginDefinition.deferralsOperation`. Release-signed only:
      *  withholding a module changes what visitors see. */
     hasDeferrals: z.boolean().default(false),
-    /** Tier 1 only. */
+    /** Grants this plugin asks for. A request grants nothing: the Owner
+     *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
+    /** Untrusted author explanations, displayed beside each explicit Owner grant. */
+    capabilityReasons: z.partialRecord(pluginCapability, z.string().min(1).max(500)).optional(),
+    /** Requested scopes are part of the immutable reviewed artifact. */
+    capabilityConstraints: z
+      .partialRecord(
+        pluginCapability,
+        z
+          .object({
+            operations: z
+              .array(z.string().regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/))
+              .max(100)
+              .optional(),
+            maxDailyCostMicrocents: z.number().int().positive().optional(),
+          })
+          .strict(),
+      )
+      .optional(),
     /** Tier 1 only. */
     workers: z.array(pluginWorkerSpec).optional(),
-    /** Tier 1 only. */
+    /** AI chat tools; needs the `chat_runner_tools` grant. */
     tools: z.array(pluginToolSpec).optional(),
     /** #390 — URL-slot claims (release-signed only). The definition
      *  supplies the matching pure encode/decode pairs. */
@@ -386,7 +419,7 @@ export const pluginManifest = z
     /** #391 — head/sitemap contribution claims (release-signed only,
      *  requires the `head_contributions` capability). */
     contributes: z.array(contributionKind).optional(),
-    /** #393 — plugin-shipped skills (release-signed only). */
+    /** Plugin-shipped instructions; external packages require a companion_skills receipt. */
     skills: z.array(pluginSkillSpec).optional(),
     /**
      * Named lists a module can iterate with `{{#name}}…{{/name}}`,
@@ -441,6 +474,22 @@ export interface PluginQuery {
     patch: Record<string, unknown>,
   ): Promise<void>;
   delete<TableName extends string>(table: TableName, id: string): Promise<void>;
+  /**
+   * Atomically update one row only while every expected value still
+   * matches. Returns false for a stale, missing or inaccessible row.
+   * `null` matches `null`; JSON values compare by JSON equality. Both
+   * `expected` and `patch` take 1–64 declared columns; `id` cannot be
+   * patched. Write a fresh revision token on every successful swap so a
+   * value that returns to an earlier state cannot revive a stale write
+   * (ABA). From a chat the swap runs against the chat's view of the row,
+   * like every other private-storage write.
+   */
+  compareAndSwap<TableName extends string>(
+    table: TableName,
+    id: string,
+    expected: Record<string, unknown>,
+    patch: Record<string, unknown>,
+  ): Promise<boolean>;
 }
 
 /**
@@ -655,21 +704,133 @@ export interface PluginSnapshots {
   }): Promise<{ siteSnapshotId: string }>;
 }
 
-/** Locked context — what every Tier 2 plugin receives. */
+/** Where a plugin call came from (CMS_REQUIREMENTS §14.7). */
+export type PluginInvocationOrigin =
+  | "chat"
+  | "owner-panel"
+  /** An action the Owner approved in the chat (§11.A gate): it applies
+   *  on main, as the approving Owner, never on the chat's branch. */
+  | "approved"
+  | "worker"
+  | "render"
+  | "visitor"
+  | "system";
+
+/**
+ * Who a plugin call acts for and on which chat branch. Every dispatch
+ * site supplies it; the host uses it to decide whether an authoring
+ * write lands on a chat branch or on main (CMS_REQUIREMENTS §14.7).
+ */
+export interface PluginInvocation {
+  readonly origin: PluginInvocationOrigin;
+  /** The acting actor: the AI actor in a chat, the Owner in the panel,
+   *  the system actor for workers/render, the visitor id for visitors. */
+  readonly actorId: string;
+  /** The human a chat belongs to. */
+  readonly operatorActorId?: string;
+  /** Set for origin `chat`: the chat's branch. */
+  readonly chatBranchId?: string;
+  readonly chatTaskId?: string;
+}
+
+/** What every plugin receives. Granted handles extend it (PluginContextTier1). */
 export interface PluginContext {
   readonly query: PluginQuery;
   readonly api: PluginApi;
   readonly theme: PluginTheme;
   readonly visitor: PluginVisitor;
   readonly captcha: PluginCaptcha;
+  /** Who this call acts for, and on which branch. */
+  readonly invocation: PluginInvocation;
 }
 
-/** Tier 1 context — adds the elevated capability handles. The host
- *  ONLY constructs the handles a plugin's `requestedCapabilities`
- *  asked for; unrequested fields are absent. */
+/** Private immutable files, scoped to this installation and an authenticated author.
+ * Fixed-size base64 chunks keep binary data below the isolated RPC message limit.
+ * A ready file cannot be overwritten. Its SHA-256 is its immutable revision.
+ */
+export interface PluginPrivateFile {
+  readonly id: string;
+  readonly mediaType: string;
+  readonly sizeBytes: number;
+  readonly sha256: string;
+  readonly status: "pending" | "ready" | "deleted";
+}
+export interface PluginPrivateFiles {
+  /** Idempotent for the exact same id and metadata; conflicting reuse is rejected. */
+  begin(input: Omit<PluginPrivateFile, "status">): Promise<PluginPrivateFile>;
+  /** Offset is a multiple of 262144; only the final chunk may be shorter. */
+  writeChunk(input: { id: string; offset: number; base64: string }): Promise<void>;
+  /** Requires all bytes and verifies SHA-256 before marking the file ready. */
+  commit(input: { id: string }): Promise<PluginPrivateFile>;
+  stat(input: { id: string }): Promise<PluginPrivateFile>;
+  /** Permanently remove bytes. The identity is retired and cannot be reused. */
+  remove(input: { id: string; sha256: string }): Promise<void>;
+  /** Only ready files; returns one stored chunk, never a provider URL. */
+  readChunk(input: { id: string; offset: number }): Promise<{ base64: string }>;
+}
+
+/** Private image generation. Request IDs are immutable, installation-scoped and
+ * never automatically replay a paid call after an uncertain outcome. */
+export interface PluginImageResult {
+  readonly requestId: string;
+  readonly status: "running" | "ready" | "uncertain";
+  readonly file?: PluginPrivateFile;
+  readonly width?: number;
+  readonly height?: number;
+  readonly model: string;
+  /** Conservative estimate, not a provider invoice. Uncertain calls retain the reservation. */
+  readonly costMicrocents: number;
+}
+/** Bounded local derivative; originals remain immutable and no AI call is made. */
+export interface PluginImageTransform {
+  source: { id: string; sha256: string };
+  width: number;
+  height: number;
+  quality: number;
+}
+export interface PluginImages {
+  transform(
+    input: PluginImageTransform,
+  ): Promise<{ file: PluginPrivateFile; width: number; height: number }>;
+  describe(): Promise<{ model: string; maxCostMicrocents: number; imageSizes: readonly string[] }>;
+  get(input: { requestId: string }): Promise<PluginImageResult | null>;
+  generate(input: {
+    requestId: string;
+    prompt: string;
+    imageSize: "1K" | "2K" | "4K";
+    references: readonly { id: string; sha256: string }[];
+    maxCostMicrocents: number;
+  }): Promise<PluginImageResult>;
+}
+
+/** Extended SDK context (legacy name). The host attaches only authorized handles;
+ * external plugins additionally require exact receipts and a supported broker. */
+/** Read access to Caelo's immutable core font registry; author invocations only. */
+export interface PluginFonts {
+  find(input: {
+    query?: string;
+    limit?: number;
+  }): Promise<{ fonts: FontMetadata[]; hasMore: boolean }>;
+  inspect(input: FontRef): Promise<FontMetadata>;
+  resolve(
+    input: FontRef & {
+      use: "web" | "document";
+      text?: string;
+      formats: ("ttf" | "otf" | "woff" | "woff2")[];
+    },
+  ): Promise<FontMetadata>;
+  readChunk(
+    input: FontRef & { offset: number; length: number },
+  ): Promise<{ dataBase64: string; sizeBytes: number; eof: boolean }>;
+}
+export type { FontMetadata, FontRef } from "@caelo-cms/shared";
+
 export interface PluginContextTier1 extends PluginContext {
+  readonly fonts?: PluginFonts;
   /** #389 — attached when the manifest holds `cms_admin_schema`. */
   readonly adminQuery?: PluginAdminQuery;
+  readonly privateFiles?: PluginPrivateFiles;
+  readonly images?: PluginImages;
   /** #392 — attached when the manifest holds `domain_events`. */
   readonly events?: PluginEvents;
   readonly cms?: PluginCms;
@@ -764,13 +925,25 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
     ctx: C,
     args: { pageIds: ReadonlyArray<string> },
   ) => Promise<ReadonlyMap<string, string>> | ReadonlyMap<string, string>;
-  /** Tier 1 only. */
+  /** Grants this plugin asks for; each is approved by the Owner (§14.5). */
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  /**
+   * Runs each time the host brings the plugin up — at boot and when an
+   * Owner activates it — on main, with `invocation.origin` `"system"`.
+   * The place for create-time defaults (a settings row, seed
+   * categories): render and visitor calls cannot write private storage,
+   * so a read path must never seed. Must be idempotent; a throw fails
+   * the plugin's load loudly.
+   */
+  readonly onActivate?: (ctx: C) => Promise<void> | void;
+  readonly capabilityReasons?: PluginManifest["capabilityReasons"];
+  readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
   /** Tier 1 only. Cron-style background workers; the host's scheduler
    *  dispatches `operationName` on each tick. */
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
-  /** Tier 1 only. AI tools registered into the chat-runner catalogue
-   *  at activation. Each tool dispatches to the named operation. */
+  /** AI tools registered into the chat-runner catalogue at activation
+   *  (needs the `chat_runner_tools` grant). Each dispatches to the named
+   *  operation. */
   readonly tools?: ReadonlyArray<PluginToolSpec>;
   /** Tier 1 only. Plugin-emitted system-prompt blocks rendered every
    *  turn. */
@@ -880,6 +1053,8 @@ export function manifestFromDefinition(def: {
   readonly buildAssets?: unknown;
   readonly deferralsOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  readonly capabilityReasons?: PluginManifest["capabilityReasons"];
+  readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
   readonly tools?: ReadonlyArray<PluginToolSpec>;
   readonly publicOperations?: ReadonlyArray<string>;
@@ -901,8 +1076,11 @@ export function manifestFromDefinition(def: {
     hasBuildAssets: Boolean(def.buildAssets),
     hasDeferrals: Boolean(def.deferralsOperation),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
+    ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
+    ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),
     ...(def.workers ? { workers: [...def.workers] } : {}),
     ...(def.tools ? { tools: [...def.tools] } : {}),
+    ...(def.skills ? { skills: [...def.skills] } : {}),
     ...(def.urlContributions && def.urlContributions.length > 0
       ? { urlContributions: def.urlContributions.map((c) => ({ slot: c.slot })) }
       : {}),
@@ -925,3 +1103,10 @@ export function defineComponent(
 } {
   return Object.freeze({ ...spec, shadowMode: spec.shadowMode ?? "open" });
 }
+
+/** Optional author-preview contract; the host owns navigation and selection scripts. */
+export type {
+  PluginPreviewDocument,
+  PluginPreviewSelection,
+  PluginPreviewTarget,
+} from "@caelo-cms/shared";
