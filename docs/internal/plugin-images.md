@@ -41,7 +41,7 @@ checks the `image_generation` receipt for exactly the running artifact, every
 image budget and the plugin's cost cap in one transaction, serialised against
 all other reservations. The provider call holds no DB transaction. Results are
 stored through `ctx.privateFiles`, which checks its own grant. Migration
-`0221_plugin_image_requests.sql` uses forced RLS with a host-only policy.
+`0222_plugin_image_requests.sql` uses forced RLS with a host-only policy.
 
 Large reviewed bundles are bounded to 4 million source characters (16 MB UTF-8),
 20 MB installation uploads, 256 MiB Deno heap, 1024 SDK calls and 1 MiB RPC messages.
