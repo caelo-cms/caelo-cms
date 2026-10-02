@@ -13,6 +13,7 @@ export {
 export * from "./ai/chat-runner.js";
 // issue #298 — the calls×context import cost model + calibration helpers.
 export * from "./ai/import-cost-model.js";
+export * from "./ai/model-catalog.js";
 export { makePluginImageProvider } from "./ai/plugin-image-provider.js";
 export { transformPluginImage } from "./ai/plugin-image-transform.js";
 // issue #412 — server-side screenshot_page backend: in-process capture

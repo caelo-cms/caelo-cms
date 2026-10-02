@@ -1,0 +1,66 @@
+{
+  "$comment": "Curated model catalog. Refreshed weekly by scripts/refresh-model-catalog.ts (.github/workflows/model-catalog-refresh.yml), which opens a PR. `match` selects the newest model id of a slot from the provider's Models API; `id`/`label` are the current pick.",
+  "providers": {
+    "anthropic": {
+      "slots": [
+        {
+          "role": "default",
+          "note": "recommended",
+          "match": "^claude-sonnet-\\d+(-\\d+)?$",
+          "id": "claude-sonnet-5-5",
+          "label": "Claude Sonnet 5.5"
+        },
+        {
+          "role": "capable",
+          "note": "most capable",
+          "match": "^claude-opus-\\d+(-\\d+)?$",
+          "id": "claude-opus-5-5",
+          "label": "Claude Opus 5.5"
+        },
+        {
+          "role": "fast",
+          "note": "fastest/cheapest",
+          "match": "^claude-haiku-\\d+(-\\d+)?$",
+          "id": "claude-haiku-4-5",
+          "label": "Claude Haiku 4.5"
+        }
+      ]
+    },
+    "openai": {
+      "slots": [
+        {
+          "role": "default",
+          "note": "",
+          "match": "^gpt-\\d+(\\.\\d+)?o?$",
+          "id": "gpt-4o",
+          "label": "GPT-4o"
+        }
+      ]
+    },
+    "google": {
+      "slots": [
+        {
+          "role": "default",
+          "note": "recommended",
+          "match": "^gemini-\\d+(\\.\\d+)?-flash$",
+          "id": "gemini-3.8-flash",
+          "label": "Gemini 3.8 Flash"
+        },
+        {
+          "role": "capable",
+          "note": "most capable, preview",
+          "match": "^gemini-\\d+(\\.\\d+)?-pro(-preview)?$",
+          "id": "gemini-3.1-pro-preview",
+          "label": "Gemini 3.1 Pro (Preview)"
+        },
+        {
+          "role": "fast",
+          "note": "fastest/cheapest",
+          "match": "^gemini-\\d+(\\.\\d+)?-flash-lite$",
+          "id": "gemini-3.5-flash-lite",
+          "label": "Gemini 3.5 Flash-Lite"
+        }
+      ]
+    }
+  }
+}

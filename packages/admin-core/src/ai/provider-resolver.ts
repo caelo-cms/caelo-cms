@@ -21,17 +21,17 @@
  */
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
-import { DEFAULT_GOOGLE_CHAT_MODEL } from "@caelo-cms/shared";
 import { decryptSecret } from "../security/secret-box.js";
+import { catalogModel } from "./model-catalog.js";
 import type { AIProvider, ProviderName } from "./provider.js";
 import { makeProvider } from "./providers/index.js";
 
 const PROVIDER_NAMES = ["anthropic", "openai", "google", "local-openai-compat"] as const;
 
 const DEFAULT_MODEL: Record<ProviderName, string> = {
-  anthropic: "claude-sonnet-5",
-  openai: "gpt-4o",
-  google: DEFAULT_GOOGLE_CHAT_MODEL,
+  anthropic: catalogModel("anthropic", "default"),
+  openai: catalogModel("openai", "default"),
+  google: catalogModel("google", "default"),
   "local-openai-compat": "qwen2.5",
 };
 
