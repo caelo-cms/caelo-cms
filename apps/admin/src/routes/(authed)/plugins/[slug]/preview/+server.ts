@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { resolvePrivatePreviewImages } from "@caelo-cms/admin-core";
-import { runPluginOperation } from "@caelo-cms/plugin-host";
+import { resolvePreviewFonts, runPluginOperation } from "@caelo-cms/plugin-host";
 import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
 import { z } from "zod";
 import { requirePermission } from "$lib/server/guards.js";
-import { privatePluginFiles } from "$lib/server/plugin-files.js";
+import { privatePluginFiles, privatePluginFonts } from "$lib/server/plugin-files.js";
 import { PLUGIN_PREVIEW_CSP, sanitizePluginPreview } from "$lib/server/plugin-preview.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { RequestHandler } from "./$types";
@@ -65,7 +65,10 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
   } catch {
     throw error(422, "Private preview images unavailable");
   }
-  return new Response(sanitizePluginPreview(document.data.html, images), {
+  const html = await resolvePreviewFonts(document.data.html, () =>
+    privatePluginFonts(params.slug, locals),
+  );
+  return new Response(sanitizePluginPreview(html, images), {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",

@@ -20,7 +20,8 @@
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
-    "drizzle-orm": "0.45.2"
+    "drizzle-orm": "0.45.2",
+    "@caelo-cms/font-service": "workspace:*"
   },
   "devDependencies": {
     "@caelo-cms/admin-core": "workspace:*"

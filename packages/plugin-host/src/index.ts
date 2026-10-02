@@ -62,6 +62,7 @@ export {
   type VisitorDispatchContext,
 } from "./dispatch.js";
 export { operatorHasPermission } from "./external-authorization.js";
+export { resolvePreviewFonts } from "./font-preview.js";
 export {
   type CollectedContributions,
   collectContributions,

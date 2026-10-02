@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
-import { runBunInline } from "./helpers.js";
+import { clearLoginRateBucket, runBunInline } from "./helpers.js";
 
 const submitScript = `
   import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
@@ -14,6 +14,9 @@ const submitScript = `
   if (!r.ok) throw new Error(JSON.stringify(r.error));
 `;
 
+// Every spec logs in as dev-owner from the same IP; the login limiter
+// (5 per 5 min) would otherwise reject later specs in the batch.
+test.beforeAll(clearLoginRateBucket);
 test("Owner reviews exact external source; stale approval is rejected", async ({ page }) => {
   const slug = `e2e-external-${Date.now()}`;
   const manifest = {

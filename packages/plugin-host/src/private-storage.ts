@@ -341,7 +341,7 @@ export function privateStorageRefusal(
 export async function privateGrantRefusal(
   tx: TransactionRunner,
   ctx: ExecutionContext,
-  capability: "cms_admin_schema" | "private_files" | "image_generation",
+  capability: "cms_admin_schema" | "private_files" | "image_generation" | "font_assets",
 ): Promise<string | null> {
   if (!ctx.pluginId) return "no plugin id on the context";
   // Statement 1 takes the lock. Statement 2 runs after it, so under READ
@@ -375,6 +375,7 @@ export async function privateGrantRefusal(
       cms_admin_schema: "private storage",
       private_files: "private files",
       image_generation: "image generation",
+      font_assets: "the font library",
     }[capability];
     return `the Owner has not granted (or has revoked) ${what} for this plugin version`;
   }
