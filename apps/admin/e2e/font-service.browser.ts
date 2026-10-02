@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
+import { clearLoginRateBucket } from "./helpers.js";
 
 /** No AI calls, no plugins, no external font provider required. */
+
+// Every spec logs in as dev-owner from the same IP; the login limiter
+// (5 per 5 min) would otherwise reject later specs in the batch.
+test.beforeAll(clearLoginRateBucket);
 test("core font import loads the actual face and reports missing glyphs", async ({
   page,
   browser,
