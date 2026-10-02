@@ -140,9 +140,9 @@ test("plugin pages and exact element references stay beside chat and follow new 
   await expect
     .poll(() => (sent?.previewSelection as { reference?: { part?: string } })?.reference?.part)
     .toBe("page");
-  expect((sent?.previewSelection as { reference: { bookId: string } }).reference.bookId).toBe(
-    currentArgs.bookId,
-  );
+  expect(
+    (sent?.previewSelection as { reference: { bookId: string } } | undefined)?.reference.bookId,
+  ).toBe(currentArgs.bookId);
   await page.getByLabel("Preview page", { exact: true }).selectOption("assets");
   await expect(
     frame.getByRole("heading", { name: "Bilder & Referenzen", exact: true }),
@@ -156,7 +156,8 @@ test("plugin pages and exact element references stay beside chat and follow new 
     .poll(() => (sent?.previewSelection as { reference?: { part?: string } })?.reference?.part)
     .toBe("character.references");
   expect(
-    (sent?.previewSelection as { reference: { characterId: string } }).reference.characterId,
+    (sent?.previewSelection as { reference: { characterId: string } } | undefined)?.reference
+      .characterId,
   ).toMatch(/^[a-f0-9-]{36}$/);
   await page.getByLabel("Preview page", { exact: true }).selectOption("design");
   await expect(
