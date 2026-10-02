@@ -47,10 +47,12 @@
       },
       "devDependencies": {
         "@axe-core/playwright": "^4.12.1",
+        "@modelcontextprotocol/sdk": "1.30.0",
         "@playwright/test": "1.62.1",
         "@sveltejs/kit": "2.70.2",
         "@sveltejs/vite-plugin-svelte": "7.2.0",
         "@tailwindcss/vite": "^4.3.3",
+        "sharp": "^0.35",
         "svelte": "5.56.8",
         "svelte-adapter-bun": "1.0.1",
         "svelte-check": "4.7.4",
