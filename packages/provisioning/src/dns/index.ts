@@ -20,7 +20,7 @@ import { detectCloudflareAuth, makeCloudflareAdapter } from "./cloudflare.js";
 import { makeManualAdapter } from "./manual.js";
 import type { DnsAdapter } from "./types.js";
 
-export type { DnsAdapter, DnsRecord } from "./types.js";
+export type { DnsAdapter } from "./types.js";
 
 /**
  * Pick the right DNS adapter based on environment + interactive

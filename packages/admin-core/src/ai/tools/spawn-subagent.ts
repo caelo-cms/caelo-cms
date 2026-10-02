@@ -73,11 +73,7 @@ import {
   SUBAGENT_MAX_WAVES,
 } from "./subagent-budget.js";
 
-export type {
-  SubagentBatchOutcome,
-  SubagentBatchProgress,
-  SubagentInvocationResult,
-} from "./subagent-batch.js";
+export type { SubagentInvocationResult } from "./subagent-batch.js";
 // issue #268/#304 — the batch/wave core and its types moved to
 // subagent-batch.ts (unit-tested there); re-exported so existing imports
 // (spawn-subagent-batch.test.ts and friends) keep resolving.
