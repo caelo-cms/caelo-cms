@@ -60,6 +60,28 @@ function gcpStackWorkDir(provider: "gcp" | "gcp-firebase" = "gcp"): string {
 }
 
 /**
+ * Pick the stack's `secretReplication` (see stacks/<provider>/index.ts).
+ * A value already in config wins. Otherwise secrets that already exist
+ * in state with `auto` replication keep it — switching would replace
+ * them — and everything else (new stacks) gets `regional`.
+ */
+export function resolveSecretReplication(
+  configured: string | undefined,
+  stateResources: ReadonlyArray<{ type?: string; outputs?: Record<string, unknown> }>,
+): "auto" | "regional" {
+  if (configured === "auto" || configured === "regional") return configured;
+  if (configured !== undefined) {
+    throw new Error(`secretReplication must be "auto" or "regional", got "${configured}"`);
+  }
+  const hasAutoSecret = stateResources.some((r) => {
+    if (r.type !== "gcp:secretmanager/secret:Secret") return false;
+    const replication = r.outputs?.replication as { auto?: unknown } | undefined;
+    return replication?.auto != null;
+  });
+  return hasAutoSecret ? "auto" : "regional";
+}
+
+/**
  * Run `pulumi up` against the GCP stack via the Automation SDK.
  * Streams resource-create events to the supplied onEvent callback so
  * the wizard can render a live progress bar.
@@ -124,6 +146,24 @@ export async function pulumiUpGcp(
       ]),
     ),
   });
+
+  // Read back only after the required keys are set: `pulumi config` refuses to
+  // list a stack that lacks them, which is every fresh stack.
+  const configuredReplication = await stack.getConfig(`${ns}:secretReplication`).then(
+    (v) => v.value,
+    (e: unknown) => {
+      if (/not found/i.test(String(e))) return undefined;
+      throw e;
+    },
+  );
+  const secretReplication = resolveSecretReplication(
+    configuredReplication,
+    ((await stack.exportStack()).deployment?.resources ?? []) as Array<{
+      type?: string;
+      outputs?: Record<string, unknown>;
+    }>,
+  );
+  await stack.setConfig(`${ns}:secretReplication`, { value: secretReplication });
 
   // Refresh state first to detect drift from any out-of-band changes.
   await stack.refresh({ onOutput: (msg) => onEvent("log", msg) });

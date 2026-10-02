@@ -37,6 +37,20 @@ const ownerEmail = cfg.require("ownerEmail");
 const project = cfg.require("project");
 const region = cfg.get("region") ?? "us-central1";
 
+// Where Secret Manager keeps the secret payloads. Fixed at create time —
+// changing it replaces every secret — so the wizard pins it per stack:
+// `regional` (the install region) for new stacks, because orgs with a
+// `gcp.resourceLocations` policy reject `auto` (it resolves to location
+// "global"); `auto` for stacks whose secrets already exist that way.
+const secretReplicationMode = cfg.require("secretReplication");
+if (secretReplicationMode !== "auto" && secretReplicationMode !== "regional") {
+  throw new Error(`secretReplication must be "auto" or "regional", got "${secretReplicationMode}"`);
+}
+const secretReplication =
+  secretReplicationMode === "regional"
+    ? { userManaged: { replicas: [{ location: region }] } }
+    : { auto: {} };
+
 // === Operator-tunable knobs ===
 const cloudSqlTier = cfg.get("cloudSqlTier") ?? "db-f1-micro";
 const cloudSqlHa = cfg.getBoolean("cloudSqlHa") ?? false;
@@ -157,7 +171,7 @@ interface MadeSecret {
 function makeSecret(name: string, value: pulumi.Output<string> | null): MadeSecret {
   const resource = new gcp.secretmanager.Secret(
     `${namePrefix}-${name}`,
-    { secretId: `${namePrefix}-${name}`, replication: { auto: {} } },
+    { secretId: `${namePrefix}-${name}`, replication: secretReplication },
     opts,
   );
   if (value === null) return { resource, version: null };
