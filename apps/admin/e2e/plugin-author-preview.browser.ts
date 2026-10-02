@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
+import { clearLoginRateBucket } from "./helpers.js";
 
+// Every spec logs in as dev-owner from the same IP; the login limiter
+// (5 per 5 min) would otherwise reject later specs in the batch.
+test.beforeAll(clearLoginRateBucket);
 test("plugin preview is authenticated, read-only and inert even when opened directly", async ({
   page,
   browser,
