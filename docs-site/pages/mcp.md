@@ -11,7 +11,7 @@ seo:
 
 `@caelo-cms/mcp-server` connects your Caelo install to Claude Code (or any [Model Context Protocol](https://modelcontextprotocol.io)–aware client) — without opening the browser. It ships **two surfaces**, selected by the token's scope:
 
-- **`caelo_chat`** (token scope `chat`) — one tool that talks to Caelo's **own** AI agent. You describe an outcome; Caelo's chat-runner reasons and does the work. The simplest integration: anyone can wire it up and say "build me a pricing page".
+- **`caelo_chat`** (token scope `chat`) — talks to Caelo's **own** AI agent. You describe an outcome; Caelo's chat-runner reasons and does the work. The simplest integration: anyone can wire it up and say "build me a pricing page".
 - **Power-MCP** (token scope `admin`, binary `caelo-admin-mcp`) — the **full chat-runner tool catalogue** exposed directly, so *your* agent (e.g. Claude Code) drives the tool loop itself. Caelo makes **no provider calls** on this path — the reasoning happens (and is billed) in your own agent. For tool-heavy work like site migrations this cuts the install's AI cost to near zero.
 
 Both surfaces share the same bearer-token model, the same audit trail, and the same security invariants.
@@ -96,7 +96,7 @@ A handful of tools only make sense inside Caelo's own loop and are filtered out 
 
 ## Token scopes, caps, rotation
 
-- **Scopes.** `chat` drives `caelo_chat` only. `admin` additionally unlocks the Power-MCP endpoints. Existing tokens stay `chat`; using one against the Power-MCP returns a 401 naming the fix.
+- **Scopes.** `chat` drives `caelo_chat` and image uploads. `admin` additionally unlocks the Power-MCP endpoints. Existing tokens stay `chat`; using one against the Power-MCP returns a 401 naming the fix.
 - **Cost cap.** `ai_cost_cap_microcents` (set at mint time) bounds a leaked token's wallet impact. On the chat surface the runner checks it during the turn (`cost cap reached: spent ~N µ¢ / cap M µ¢`); on the Power-MCP it gates the tools that make their own provider calls (`generate_image`, `query_page_html`) against the session's accumulated spend. To change a cap, mint a replacement token and revoke the old one.
 - **Rotation.** Tokens TTL out at **90 days** by default. Mint a new one, paste the new snippet, revoke the old at `/security/mcp`. The next call with a revoked bearer returns `auth_error: token revoked`.
 
@@ -110,3 +110,38 @@ A handful of tools only make sense inside Caelo's own loop and are filtered out 
 
 - The [`@caelo-cms/mcp-server` README](https://github.com/caelo-cms/caelo-cms/tree/main/packages/mcp-server) — the source of truth for the SDK shape
 - [Architecture →](/architecture)
+
+## Upload and attach images
+
+Both MCP modes expose `caelo_upload_images`. Supply 1–4 images, each at most **5 MiB**. PNG, JPEG, WebP and GIF are supported. Uploading uses the token owner's current `content.write` permission; revoked or expired tokens and deleted users cannot upload.
+
+For a local file, pass its path **on the machine running the MCP server**:
+
+```json
+{
+  "images": [
+    { "filePath": "/home/me/Pictures/character.png", "alt": "Reference for the main character" }
+  ]
+}
+```
+
+Call `caelo_upload_images` with that input. If the image is available as bytes instead, replace `filePath` with `base64` (raw base64, without a `data:` prefix) and optionally provide `filename`. Do not supply both. File paths are read by the local MCP process, never by the Caelo server.
+
+The result contains an `attachments` array and a `results` entry for each input file. Successful uploads survive other files failing; retry only the failed entries. Pass the returned `attachments` unchanged to `caelo_chat` together with your message and optional `chatSessionId`. The model receives image content, and the images remain part of the persisted chat history. In admin mode, use the returned asset IDs with the regular media/page tools.
+
+Uploads go into the shared **media library**. Admin preview URLs require authentication; uploaded images can subsequently be used on published pages. Uploading alone does not publish a page. Removing an attachment from the composer does not delete the media asset. Use the media library to manage or delete it.
+
+A non-MCP HTTP client can use the same authenticated endpoint:
+
+```sh
+curl --fail-with-body "$CAELO_ADMIN_URL/api/mcp/images?filename=character.png" \
+  -H "x-caelo-mcp-token: $CAELO_MCP_TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @./character.png
+```
+
+The response supplies `assetId`, the server-detected `mime`, and `deduped`. To attach it to a chat, send `{ "message": "Use this character", "attachments": [{ "assetId": "<returned UUID>", "mime": "<returned MIME>" }] }` to `POST /api/mcp/chat` with the same bearer header. Object-store keys are not accepted as MCP attachments.
+
+In the browser chat, click **Add images**, paste an image, or drag files onto the composer. You can review and remove the thumbnails before sending; an image-only message is supported. Sending waits until all uploads finish. The same format and size limits apply.
+
+Container releases set `BODY_SIZE_LIMIT=8M` to accommodate image uploads. When running the Bun build directly, set this environment variable too; reverse proxies must allow at least that request size. The image endpoint still enforces 5 MiB per file independently of the HTTP server limit.
