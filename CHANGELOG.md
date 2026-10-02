@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.10.26
+
+### Features
+- 6c13b207 plugin previews beside the chat in Live Edit (#523)
+- 88b29148 central font library for themes and plugins (#522)
+- f18cde8e private image generation and local derivatives (#521)
+- c4896b03 private immutable files and raster previews (#520)
+- 3f9786e5 current Google chat and image models with shared credentials (#480)
+- ff32955f private read-only author previews and plugin workflow entry (#519)
+- 6423a2a5 reviewed companion skills for installed plugins (#479, ported to the plugin model) (#518)
+
+### Fixes
+- bdf1d48d raw-inserted home pages default to the site root (#524)
+- a123e122 bun.lock follows the version bump; the release gate installs Deno (#517)
+
 ## v0.10.25
 
 ### Features
