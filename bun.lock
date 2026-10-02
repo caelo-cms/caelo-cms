@@ -137,7 +137,7 @@
     },
     "packages/font-service": {
       "name": "@caelo-cms/font-service",
-      "version": "0.10.24",
+      "version": "0.10.25",
       "dependencies": {
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
