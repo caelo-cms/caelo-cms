@@ -1103,3 +1103,10 @@ export function defineComponent(
 } {
   return Object.freeze({ ...spec, shadowMode: spec.shadowMode ?? "open" });
 }
+
+/** Optional author-preview contract; the host owns navigation and selection scripts. */
+export type {
+  PluginPreviewDocument,
+  PluginPreviewSelection,
+  PluginPreviewTarget,
+} from "@caelo-cms/shared";
