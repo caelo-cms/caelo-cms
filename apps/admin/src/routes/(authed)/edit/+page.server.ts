@@ -270,7 +270,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       status: "active",
     });
     if (visible.ok) {
-      const skills = (visible.value as { skills: { slug: string; displayName: string }[] }).skills;
+      const skills = (
+        visible.value as {
+          skills: { slug: string; displayName: string; activatedAt: string | null }[];
+        }
+      ).skills;
       const slugs = new Set(
         loadedPlugins
           .all()
