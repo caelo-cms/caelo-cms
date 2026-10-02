@@ -49,6 +49,7 @@ export interface ChatModule {
 }
 
 export interface ChatMessage {
+  previewSelection?: import("@caelo-cms/shared").PluginPreviewSelection;
   id: string;
   role: "user" | "assistant" | "tool";
   content: string;

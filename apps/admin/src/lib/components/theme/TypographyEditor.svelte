@@ -19,16 +19,18 @@
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
-  import type { ThemeDocument } from "@caelo-cms/shared";
+  import type { FontMetadata, ThemeDocument } from "@caelo-cms/shared";
+  import FontSpecimen from "./FontSpecimen.svelte";
   import FontFamilyPicker from "./FontFamilyPicker.svelte";
 
   interface Props {
+    fonts?: FontMetadata[];
     tokens: ThemeDocument;
     csrfToken: string;
     themeSlug: string;
     onTokensChange: (next: ThemeDocument) => void;
   }
-  let { tokens, csrfToken, themeSlug, onTokensChange }: Props = $props();
+  let { tokens, csrfToken, themeSlug, onTokensChange, fonts = [] }: Props = $props();
 
   const NAMED_STYLES = ["heading", "body", "mono", "display"] as const;
   const TYPE_SCALE = ["xs", "sm", "base", "lg", "xl", "2xl", "3xl", "4xl", "5xl"] as const;
@@ -82,6 +84,7 @@
   <section class="space-y-3">
     <div>
       <h3 class="text-sm font-medium">Named text styles</h3>
+      <a href="/design/fonts" class="text-sm underline">Manage font files, preview exact faces and assign versions</a>
       <p class="text-xs text-muted-foreground">
         Each sub-field maps to a CSS variable
         (<code>--font-heading</code>, <code>--text-heading</code>,
@@ -92,16 +95,13 @@
       {@const fontFamily = read(style, "fontFamily")}
       {@const fontSize = read(style, "fontSize")}
       {@const fontWeight = read(style, "fontWeight")}
+      {@const face = fonts.find(f => f.cssFamily === fontFamily)}
       <div class="rounded-md border p-3 space-y-2">
         <div class="flex items-center gap-2">
           <Label class="text-xs font-mono">typography.{style}</Label>
-          <p
-            class="ml-auto text-xs italic text-muted-foreground truncate max-w-xs"
-            style={`font-family: ${fontFamily || "inherit"}; font-size: ${fontSize || "inherit"}; font-weight: ${fontWeight || "inherit"};`}
-          >
-            Preview: The quick brown fox
-          </p>
+          <p class="ml-auto text-xs text-muted-foreground">{fonts.find(f => f.cssFamily === fontFamily)?.family ?? fontFamily}</p>
         </div>
+        {#if face}<FontSpecimen font={face} size={20} />{:else}<p class="text-xs text-muted-foreground">Family name only. Open Fonts to import and preview an exact font file.</p>{/if}
         <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <div class="grid gap-1">
             <Label for={`t-${style}-ff`} class="text-xs">Font family</Label>

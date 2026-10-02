@@ -10,9 +10,8 @@
  *
  * Capability gating: `ctx.cms` / `ctx.ai` / `ctx.snapshots` are only attached
  * if the plugin's manifest declares the matching `requestedCapabilities`.
- * Runtime-authored plugins NEVER get these — provenance is the grantability
- * ceiling (#388); the function returns the locked base `PluginContext` for
- * them regardless of the manifest.
+ * External plugins require exact Owner receipts as well as a supported broker.
+ * Author storage is never attached to a visitor or render invocation.
  */
 
 import type {
@@ -26,6 +25,7 @@ import type {
   PluginDomainEvent,
   PluginEmail,
   PluginEvents,
+  PluginInvocation,
   PluginQuery,
   PluginQueryFilter,
   PluginSnapshots,
@@ -35,12 +35,18 @@ import type {
 import { execute } from "@caelo-cms/query-api";
 import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
+import { hostSystemActorId, type LoadedPlugin, type PluginHostInfra } from "./dispatch.js";
+import { operatorCanAuthor } from "./external-authorization.js";
+import { makePluginFonts } from "./fonts.js";
+import { makePluginImages } from "./images.js";
+import { makePluginPrivateFiles } from "./private-files.js";
+import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
 
 export interface MakePluginContextOpts {
   readonly plugin: LoadedPlugin;
   readonly infra: PluginHostInfra;
   readonly visitorContext?: VisitorContext;
+  readonly invocation: PluginInvocation;
 }
 
 /**
@@ -68,31 +74,52 @@ export type SessionMutation =
 export async function makePluginContext(
   opts: MakePluginContextOpts,
 ): Promise<PluginContext | PluginContextTier1> {
-  const { plugin, infra, visitorContext } = opts;
+  const { plugin, infra, visitorContext, invocation } = opts;
   const requested = new Set<PluginCapability>(plugin.definition.requestedCapabilities ?? []);
 
   const baseCtx: PluginContext = {
-    query: makePluginQuery(plugin, infra),
+    query: makePluginQuery(plugin, infra, invocation),
     api: makePluginApi(plugin, infra),
     theme: makePluginTheme(),
     visitor: makePluginVisitor(visitorContext),
     captcha: makePluginCaptcha(),
+    invocation: Object.freeze({ ...invocation }),
   };
 
-  // #388 grantability ceiling — provenance, not tier, decides what a
-  // plugin can be GIVEN: runtime-authored plugins get the sandbox base
-  // and nothing else, regardless of what their manifest requests (the
-  // validator rejects such manifests anyway; this is the runtime's
-  // independent enforcement of the same ceiling).
-  if (plugin.provenance === "runtime-authored") return baseCtx;
+  // Runtime-installed plugins run in the sandbox and get only what an
+  // Owner approved for this exact artifact (§14.5) — never on a render or
+  // visitor call, and only when acting for a human who may author content.
+  if (plugin.provenance === "runtime-authored") {
+    const approval = plugin.externalApproval;
+    if (!approval) return baseCtx;
+    if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return baseCtx;
+    const wantsStorage = approval.capabilities.includes("cms_admin_schema");
+    const wantsFiles = approval.capabilities.includes("private_files");
+    // Image generation stores its results as private files, so it needs both.
+    const wantsImages = wantsFiles && approval.capabilities.includes("image_generation");
+    const wantsFonts = approval.capabilities.includes("font_assets");
+    if (!wantsStorage && !wantsFiles && !wantsFonts) return baseCtx;
+    // Private storage and files are author data: only for someone who may
+    // author. Without it the plugin still runs, with the base handles — an
+    // operation that needs them then fails at the sandbox broker
+    // (SandboxCapabilityDenied), not silently.
+    if (!(await authorMayWrite(infra, approval.systemActorId, invocation))) return baseCtx;
+    return {
+      ...baseCtx,
+      ...(wantsStorage ? { adminQuery: makePluginAdminQuery(plugin, infra, invocation) } : {}),
+      ...(wantsFiles ? { privateFiles: makePluginPrivateFiles(plugin, infra, invocation) } : {}),
+      ...(wantsImages ? { images: makePluginImages(plugin, infra, invocation) } : {}),
+      ...(wantsFonts ? { fonts: makePluginFonts(plugin, infra, invocation) } : {}),
+    };
+  }
 
   // Release-signed — attach elevated handles per requestedCapabilities.
   const tier1: Mutable<PluginContextTier1> = { ...baseCtx };
   if (requested.has("cms_admin")) {
-    tier1.cms = makePluginCms(plugin, infra);
+    tier1.cms = makePluginCms(plugin, infra, invocation);
   }
   if (requested.has("cms_admin_schema")) {
-    tier1.adminQuery = makePluginAdminQuery(plugin, infra);
+    tier1.adminQuery = makePluginAdminQuery(plugin, infra, invocation);
   }
   if (requested.has("domain_events")) {
     tier1.events = makePluginEvents(plugin, infra);
@@ -106,10 +133,43 @@ export async function makePluginContext(
   if (requested.has("email")) {
     tier1.email = makePluginEmail(infra);
   }
+  // Shipped plugins get private files on the same author terms as installed ones.
+  if (
+    requested.has("private_files") &&
+    !visitorContext &&
+    AUTHORING_ORIGINS.has(invocation.origin) &&
+    (await authorMayWrite(infra, hostSystemActorId(), invocation))
+  ) {
+    tier1.privateFiles = makePluginPrivateFiles(plugin, infra, invocation);
+    if (requested.has("image_generation")) {
+      tier1.images = makePluginImages(plugin, infra, invocation);
+    }
+  }
+  if (
+    requested.has("font_assets") &&
+    !visitorContext &&
+    AUTHORING_ORIGINS.has(invocation.origin) &&
+    (await authorMayWrite(infra, hostSystemActorId(), invocation))
+  ) {
+    tier1.fonts = makePluginFonts(plugin, infra, invocation);
+  }
   return tier1;
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+/** Whether the human an authoring invocation acts for may author content. */
+async function authorMayWrite(
+  infra: PluginHostInfra,
+  systemActorId: string,
+  invocation: PluginInvocation,
+): Promise<boolean> {
+  const operator = invocation.origin === "chat" ? invocation.operatorActorId : invocation.actorId;
+  return Boolean(operator) && (await operatorCanAuthor(infra, systemActorId, operator as string));
+}
+
+/** Invocations that author content on someone's behalf. */
+const AUTHORING_ORIGINS: ReadonlySet<string> = new Set(["chat", "owner-panel", "approved"]);
 
 // ---------------------------------------------------------------------------
 // PluginQuery (P12 PR1.1) — real cms_public dispatch.
@@ -128,13 +188,16 @@ function pluginSchemaName(slug: string): string {
   return `plugin_${slug.replace(/-/g, "_")}`;
 }
 
+/** Declared column name → its type spec, or null when the table is not
+ *  the plugin's. Callers need the spec, not just the name, to bind a
+ *  jsonb value correctly. */
 function declaredColumnsIn(
   schemaMap: Readonly<Record<string, Readonly<Record<string, string>>>>,
   table: string,
-): Set<string> | null {
+): Map<string, string> | null {
   const tableSpec = schemaMap[table];
   if (!tableSpec) return null;
-  return new Set(Object.keys(tableSpec));
+  return new Map(Object.entries(tableSpec));
 }
 
 function validateIdent(name: string, label: string): void {
@@ -162,71 +225,125 @@ interface QueryScope {
   readonly pool: "public" | "admin";
 }
 
+/**
+ * The plugin's storage handle — a broker over the `plugin_storage.*` /
+ * `plugin_public_storage.*` Query API operations (storage-ops.ts). It
+ * validates each call against the plugin's manifest (so error messages
+ * name the plugin and its schema) and never issues SQL itself
+ * (CMS_REQUIREMENTS §14.7).
+ */
 function makeScopedQuery(
   plugin: LoadedPlugin,
   infra: PluginHostInfra,
+  invocation: PluginInvocation,
   scope: QueryScope,
 ): PluginQuery {
   const schemaName = pluginSchemaName(plugin.slug);
   validateIdent(schemaName, "schema");
-  // P12 review-pass #1 — UUIDs are validated at construction time so we
-  // fail fast (and loudly) the moment an attacker-controlled value
-  // somehow lands in `pluginActorId` / `pluginId`. Even with the
-  // parameterised set_config below this is the second layer of defence.
+  // Validated at construction so a bad id fails the moment the handle is
+  // built; the adapter binds them as parameters either way.
   assertUuid(plugin.pluginActorId, "caelo.actor_id");
   assertUuid(plugin.pluginId, "caelo.plugin_id");
+  const ops = STORAGE_OPS[scope.pool === "admin" ? "private" : "public"];
+  // Private storage follows the invocation's branch: a chat's writes land
+  // on its branch, everything else on main (docs/branch-aware-plugin-
+  // storage.md). Public storage is visitor data and always live.
+  const branch =
+    scope.pool === "admin" && invocation.chatBranchId
+      ? {
+          chatBranchId: invocation.chatBranchId,
+          ...(invocation.chatTaskId ? { chatTaskId: invocation.chatTaskId } : {}),
+        }
+      : {};
+  const ctx = {
+    actorId: plugin.pluginActorId,
+    actorKind: "plugin" as const,
+    pluginId: plugin.pluginId,
+    requestId: `plugin-${plugin.slug}`,
+    ...branch,
+    ...(plugin.externalApproval
+      ? { pluginArtifactDigest: plugin.externalApproval.artifactDigest }
+      : {}),
+  };
 
-  async function withPluginTx<T>(
-    fn: (tx: Parameters<Parameters<typeof infra.adapter.public.transaction>[0]>[0]) => Promise<T>,
-  ): Promise<T> {
-    const pool = scope.pool === "admin" ? infra.adapter.admin : infra.adapter.public;
-    return pool.transaction(async (tx) => {
-      // P12 review-pass #1 — set_config takes parameterised values; the
-      // SETTING NAME is a literal (Postgres doesn't parameterise it).
-      // Guards above make sure the *values* are UUIDs, and `set_config`'s
-      // third arg `true` scopes the setting to the current transaction.
-      await tx.execute(sql`SELECT set_config('caelo.actor_kind', 'plugin', true)`);
-      await tx.execute(sql`SELECT set_config('caelo.actor_id', ${plugin.pluginActorId}, true)`);
-      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${plugin.pluginId}, true)`);
-      return fn(tx);
-    });
+  /**
+   * Rendering and visitor requests are not authoring contexts: a write to
+   * private storage from one would change author data outside any chat or
+   * Owner action (CMS_REQUIREMENTS §14.7). Seed data in `onActivate`.
+   */
+  function assertAuthoring(method: string): void {
+    if (scope.pool !== "admin") {
+      // Public tables hold visitor data and have no branch: a write from a
+      // chat would go live before publish. Installed plugins keep chat
+      // work in private storage (which branches); visitors, the Owner
+      // panel and actions approved by someone who may publish write live.
+      if (plugin.externalApproval && invocation.chatBranchId && invocation.origin !== "render") {
+        throw new Error(
+          `${scope.label}.${method}: plugin "${plugin.slug}" cannot write its public tables from a chat — they are live visitor data; keep chat work in private storage (adminQuery)`,
+        );
+      }
+      return;
+    }
+    if (invocation.origin === "render" || invocation.origin === "visitor") {
+      throw new Error(
+        `${scope.label}.${method}: plugin "${plugin.slug}" cannot write its private storage from a ${invocation.origin} call — write from a chat tool, the Owner panel, a worker or onActivate`,
+      );
+    }
+  }
+
+  /** The table's declared column map, or a loud error naming the plugin. */
+  function tableColumns(method: string, table: string): Record<string, string> {
+    validateIdent(table, "table");
+    const declared = declaredColumnsIn(scope.schemaMap, table);
+    if (!declared) {
+      throw new Error(
+        `${scope.label}.${method}: table "${table}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
+      );
+    }
+    return Object.fromEntries(declared);
+  }
+
+  function assertDeclared(
+    method: string,
+    table: string,
+    columns: Record<string, string>,
+    keys: Iterable<string>,
+  ): void {
+    for (const k of keys) {
+      if (!(k in columns)) {
+        throw new Error(
+          `${scope.label}.${method}: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${table}`,
+        );
+      }
+      validateIdent(k, "column");
+    }
+  }
+
+  async function run<T>(opName: string, input: unknown): Promise<T> {
+    // Registered on first use, not at construction: building a context
+    // must not touch the registry (the handles are lazy by design).
+    registerPluginStorageOps(infra.registry, { lockPluginRow: infra.lockPluginRow });
+    const r = await execute(infra.registry, infra.adapter, ctx, opName, input);
+    if (!r.ok) {
+      throw new Error("message" in r.error ? String(r.error.message) : r.error.kind);
+    }
+    return r.value as T;
   }
 
   return {
     insert: async (table, data) => {
       const tableStr = table as string;
-      validateIdent(tableStr, "table");
-      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
-      if (!declared) {
-        throw new Error(
-          `${scope.label}.insert: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
-        );
-      }
-      const cols: string[] = [];
-      const valueFragments: ReturnType<typeof sql>[] = [];
-      for (const [k, v] of Object.entries(data)) {
-        if (!declared.has(k)) {
-          throw new Error(
-            `${scope.label}.insert: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${tableStr}`,
-          );
-        }
-        validateIdent(k, "column");
-        cols.push(`"${k}"`);
-        valueFragments.push(sql`${v}`);
-      }
-      if (cols.length === 0) {
+      assertAuthoring("insert");
+      const columns = tableColumns("insert", tableStr);
+      assertDeclared("insert", tableStr, columns, Object.keys(data));
+      if (Object.keys(data).length === 0) {
         throw new Error(`${scope.label}.insert: data must include at least one declared column`);
       }
-      const colsSql = sql.raw(cols.join(", "));
-      const valuesSql = sql.join(valueFragments, sql`, `);
-      const fqTable = sql.raw(`"${schemaName}"."${tableStr}"`);
-      return withPluginTx(async (tx) => {
-        const rows = (await tx.execute(
-          sql`INSERT INTO ${fqTable} (${colsSql}) VALUES (${valuesSql}) RETURNING id::text AS id`,
-        )) as unknown as { id: string }[];
-        const id = rows[0]?.id;
-        if (!id) throw new Error(`${scope.label}.insert: no id returned`);
-        return { id };
+      return run<{ id: string }>(ops.insert, {
+        schema: schemaName,
+        table: tableStr,
+        columns,
+        data,
       });
     },
 
@@ -234,127 +351,82 @@ function makeScopedQuery(
       table: string,
       filter?: PluginQueryFilter,
     ): Promise<T[]> => {
-      validateIdent(table, "table");
-      const declared = declaredColumnsIn(scope.schemaMap, table);
-      if (!declared) {
-        throw new Error(
-          `${scope.label}.list: table "${table}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
-        );
-      }
-      const wheres: ReturnType<typeof sql>[] = [];
-      let limit = 100;
-      let orderBy: string | null = null;
-      let orderDir: "asc" | "desc" = "desc";
-      let since: string | null = null;
+      const columns = tableColumns("list", table);
+      const reserved = new Set(["limit", "orderBy", "orderDir", "since"]);
       for (const [k, v] of Object.entries(filter ?? {})) {
-        if (k === "limit") {
-          if (typeof v !== "number" || v <= 0 || v > 1000) {
-            throw new Error(`${scope.label}.list: limit must be 1..1000`);
-          }
-          limit = v;
-          continue;
+        if (k === "limit" && (typeof v !== "number" || v <= 0 || v > 1000)) {
+          throw new Error(`${scope.label}.list: limit must be 1..1000`);
         }
         if (k === "orderBy") {
           if (typeof v !== "string") throw new Error(`${scope.label}.list: orderBy must be string`);
-          if (!declared.has(v)) {
+          if (!(v in columns)) {
             throw new Error(`${scope.label}.list: orderBy "${v}" not declared in schema`);
           }
-          validateIdent(v, "column");
-          orderBy = v;
-          continue;
         }
-        if (k === "orderDir") {
-          if (v !== "asc" && v !== "desc")
-            throw new Error(`${scope.label}.list: orderDir must be asc|desc`);
-          orderDir = v;
-          continue;
+        if (k === "orderDir" && v !== "asc" && v !== "desc") {
+          throw new Error(`${scope.label}.list: orderDir must be asc|desc`);
         }
         if (k === "since") {
-          if (typeof v !== "string")
+          if (typeof v !== "string") {
             throw new Error(`${scope.label}.list: since must be ISO timestamp string`);
-          since = v;
-          continue;
+          }
+          if (!("created_at" in columns)) {
+            throw new Error(`${scope.label}.list: \`since\` requires a created_at column`);
+          }
         }
-        if (!declared.has(k)) {
-          throw new Error(
-            `${scope.label}.list: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${table}`,
-          );
-        }
-        validateIdent(k, "column");
-        const colSql = sql.raw(`"${k}"`);
-        wheres.push(sql`${colSql} = ${v}`);
+        if (!reserved.has(k)) assertDeclared("list", table, columns, [k]);
       }
-      if (since !== null) {
-        if (!declared.has("created_at")) {
-          throw new Error(`${scope.label}.list: \`since\` requires a created_at column`);
-        }
-        wheres.push(sql`"created_at" > ${since}`);
-      }
-      const whereSql =
-        wheres.length === 0 ? sql.raw("") : sql`WHERE ${sql.join(wheres, sql` AND `)}`;
-      const orderSql = orderBy
-        ? sql.raw(`ORDER BY "${orderBy}" ${orderDir.toUpperCase()}`)
-        : sql.raw("");
-      const fqTable = sql.raw(`"${schemaName}"."${table}"`);
-      const limitSql = sql.raw(`LIMIT ${limit}`);
-      return withPluginTx(async (tx) => {
-        const rows = (await tx.execute(
-          sql`SELECT * FROM ${fqTable} ${whereSql} ${orderSql} ${limitSql}`,
-        )) as unknown as T[];
-        return rows;
+      const out = await run<{ rows: T[] }>(ops.list, {
+        schema: schemaName,
+        table,
+        columns,
+        ...(filter ? { filter } : {}),
       });
+      return out.rows;
     },
 
     update: async (table, id, patch) => {
       const tableStr = table as string;
-      validateIdent(tableStr, "table");
-      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
-      if (!declared) {
-        throw new Error(
-          `${scope.label}.update: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
-        );
-      }
-      const sets: ReturnType<typeof sql>[] = [];
-      for (const [k, v] of Object.entries(patch)) {
-        if (k === "id") continue; // never update id
-        if (!declared.has(k)) {
-          throw new Error(
-            `${scope.label}.update: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${tableStr}`,
-          );
-        }
-        validateIdent(k, "column");
-        const colSql = sql.raw(`"${k}"`);
-        sets.push(sql`${colSql} = ${v}`);
-      }
-      if (sets.length === 0) {
+      assertAuthoring("update");
+      const columns = tableColumns("update", tableStr);
+      const keys = Object.keys(patch).filter((k) => k !== "id");
+      assertDeclared("update", tableStr, columns, keys);
+      if (keys.length === 0) {
         throw new Error(`${scope.label}.update: patch must include at least one declared column`);
       }
-      const fqTable = sql.raw(`"${schemaName}"."${tableStr}"`);
-      const setsSql = sql.join(sets, sql`, `);
-      await withPluginTx(async (tx) => {
-        await tx.execute(sql`UPDATE ${fqTable} SET ${setsSql} WHERE id = ${id}::uuid`);
-      });
+      await run(ops.update, { schema: schemaName, table: tableStr, columns, id, patch });
     },
 
     delete: async (table, id) => {
       const tableStr = table as string;
-      validateIdent(tableStr, "table");
-      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
-      if (!declared) {
-        throw new Error(
-          `${scope.label}.delete: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
-        );
-      }
-      const fqTable = sql.raw(`"${schemaName}"."${tableStr}"`);
-      await withPluginTx(async (tx) => {
-        await tx.execute(sql`DELETE FROM ${fqTable} WHERE id = ${id}::uuid`);
+      assertAuthoring("delete");
+      const columns = tableColumns("delete", tableStr);
+      await run(ops.delete, { schema: schemaName, table: tableStr, columns, id });
+    },
+
+    compareAndSwap: async (table, id, expected, patch) => {
+      const tableStr = table as string;
+      assertAuthoring("compareAndSwap");
+      const columns = tableColumns("compareAndSwap", tableStr);
+      const out = await run<{ swapped: boolean }>(ops.compareAndSwap, {
+        schema: schemaName,
+        table: tableStr,
+        columns,
+        id,
+        expected,
+        patch,
       });
+      return out.swapped;
     },
   };
 }
 
-function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQuery {
-  return makeScopedQuery(plugin, infra, {
+function makePluginQuery(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  invocation: PluginInvocation,
+): PluginQuery {
+  return makeScopedQuery(plugin, infra, invocation, {
     label: "ctx.query",
     schemaLabel: "schema",
     schemaMap: plugin.definition.schema,
@@ -369,8 +441,12 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
  * RLS policies scope rows to this plugin's id). Attached by
  * makePluginContext only when the manifest holds `cms_admin_schema`.
  */
-function makePluginAdminQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginAdminQuery {
-  return makeScopedQuery(plugin, infra, {
+function makePluginAdminQuery(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  invocation: PluginInvocation,
+): PluginAdminQuery {
+  return makeScopedQuery(plugin, infra, invocation, {
     label: "ctx.adminQuery",
     schemaLabel: "adminSchema",
     schemaMap: plugin.definition.adminSchema ?? {},
@@ -570,7 +646,26 @@ function makePluginTheme(): PluginTheme {
 // caelo.plugin_id session vars via the adapter's existing runOperation path.
 // ---------------------------------------------------------------------------
 
-function makePluginCms(plugin: LoadedPlugin, infra: PluginHostInfra): PluginCms {
+/**
+ * Core operations for a plugin granted `cms_admin`. Calls inherit the
+ * invocation's branch and task, so core writes a plugin makes from a chat
+ * are branched, locked and snapshotted like the AI's own, and its core
+ * reads see the branch (docs/branch-aware-plugin-storage.md §3). This
+ * must switch together with private storage: a page created on the
+ * branch while the plugin's own row linking it went live would expose an
+ * unpublished page.
+ */
+function makePluginCms(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  invocation: PluginInvocation,
+): PluginCms {
+  const branch = invocation.chatBranchId
+    ? {
+        chatBranchId: invocation.chatBranchId,
+        ...(invocation.chatTaskId ? { chatTaskId: invocation.chatTaskId } : {}),
+      }
+    : {};
   return {
     call: async <Input, Output>(opName: string, input: Input): Promise<Output> => {
       const r = await execute(
@@ -581,6 +676,7 @@ function makePluginCms(plugin: LoadedPlugin, infra: PluginHostInfra): PluginCms 
           actorKind: "plugin",
           requestId: `plugin-${plugin.slug}`,
           pluginId: plugin.pluginId,
+          ...branch,
         },
         opName,
         input as unknown,

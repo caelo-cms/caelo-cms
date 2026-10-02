@@ -23,7 +23,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
-import { recomputeCurrentPaths } from "./current-path.js";
+import { recomputeCurrentPaths, renderScopeOf } from "./current-path.js";
 
 export const setHomePageOp = defineOperation({
   name: "pages.set_home_page",
@@ -95,7 +95,7 @@ export const setHomePageOp = defineOperation({
       ...(previousHomeId && previousHomeId !== input.pageId ? [previousHomeId] : []),
       input.pageId,
     ];
-    await recomputeCurrentPaths(tx, affected);
+    await recomputeCurrentPaths(tx, affected, renderScopeOf(ctx));
     return ok({ pageId: input.pageId });
   },
 });

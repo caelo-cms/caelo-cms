@@ -22,6 +22,7 @@
  * default-locale-bare case) need no operator click at all.
  */
 
+import { MAIN_RENDER } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -61,6 +62,8 @@ export async function computeUrlMigrationDiff(
   const fresh = await resolveCurrentPathsDryRun(
     tx,
     pages.map((p) => ({ id: p.id, slug: p.slug })),
+    // The diff compares live paths against live plugin state.
+    MAIN_RENDER,
   );
   const diff: UrlMigrationDiffEntry[] = [];
   for (const p of pages) {

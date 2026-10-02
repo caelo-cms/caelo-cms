@@ -11,6 +11,8 @@
 # CLAUDE.md §11.C: this image is published to ghcr.io/caelo-cms/admin
 # by .github/workflows/release-images.yml. End-users never build it.
 
+FROM denoland/deno:bin-2.9.6 AS deno
+
 FROM oven/bun:1.4.2 AS builder
 
 # npm is needed to work around Bun's transitive optionalDependencies gap
@@ -37,6 +39,7 @@ COPY apps/static-generator/package.json apps/static-generator/
 COPY packages/shared/package.json packages/shared/
 COPY packages/query-api/package.json packages/query-api/
 COPY packages/admin-core/package.json packages/admin-core/
+COPY packages/font-service/package.json packages/font-service/
 COPY packages/plugin-sdk/package.json packages/plugin-sdk/
 COPY packages/plugin-component-kit/package.json packages/plugin-component-kit/
 COPY packages/plugin-sandbox/package.json packages/plugin-sandbox/
@@ -53,6 +56,7 @@ COPY packages/plugins/newsletter/package.json packages/plugins/newsletter/
 COPY packages/plugins/ratings/package.json packages/plugins/ratings/
 COPY packages/plugins/auth/package.json packages/plugins/auth/
 COPY packages/plugins/international-site/package.json packages/plugins/international-site/
+COPY packages/plugins/consent-manager/package.json packages/plugins/consent-manager/
 
 RUN bun install
 
@@ -130,13 +134,7 @@ RUN bun run --filter @caelo-cms/shared build
 # status='failed'. .dockerignore excludes dist/ from the COPY, so the
 # Dockerfile must produce them itself. tsc -b is incremental, so the
 # cost is negligible after the first cached layer.
-RUN bunx tsc -b \
-  packages/plugins/forms \
-  packages/plugins/comments \
-  packages/plugins/newsletter \
-  packages/plugins/ratings \
-  packages/plugins/auth \
-  packages/plugins/international-site
+RUN bunx tsc -b packages/plugins/*
 
 # #387 one-trust-path — sign the plugin manifests this image ships with a
 # throwaway build key and bake the matching public key as
@@ -160,6 +158,8 @@ RUN cd apps/admin && bun x vite build
 # Runtime stage
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.4.2-slim AS runtime
+
+COPY --from=deno /deno /usr/local/bin/deno
 
 # Reproduce the workspace layout under /app so node_modules resolution
 # works the same way it did at build time (Bun nests admin-specific
@@ -197,6 +197,8 @@ COPY --from=builder /repo/apps/static-generator ./apps/static-generator
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# Multipart font imports: 8 MiB font + license and form overhead.
+ENV BODY_SIZE_LIMIT=12M
 EXPOSE 3000
 
 WORKDIR /app/apps/admin

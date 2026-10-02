@@ -39,6 +39,7 @@ export const actions: Actions = {
       return fail(400, { error: "slug + subject + brief required" });
     }
     const r = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "newsletter",
       operationName: "draft_campaign",
       args: { slug, subject, brief },
@@ -52,6 +53,7 @@ export const actions: Actions = {
     const campaignId = form.get("campaignId");
     if (typeof campaignId !== "string") return fail(400, { error: "campaignId required" });
     const r = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "newsletter",
       operationName: "send_campaign",
       args: { campaignId },

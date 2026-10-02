@@ -104,7 +104,7 @@ A handful of tools only make sense inside Caelo's own loop and are filtered out 
 
 - **HTTP transport** — both servers are stdio only (the universal MCP transport every client supports). Hosting Caelo as a remote multi-tenant MCP service is a later concern.
 - **Publishing over Power-MCP** — the agent stages; the operator reviews and publishes in the admin. Same split as the browser chat.
-- **Tools added by Tier 2 plugins** — Tier 2 plugins can't register chat-runner tools (locked SDK). Tier 1 plugin tools appear in both surfaces.
+- **Plugin tools without a grant** — a plugin's operations become tools only with the Owner-approved chat-tools grant; granted plugin tools appear in both surfaces.
 
 ## Further reading
 

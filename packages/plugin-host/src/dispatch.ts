@@ -18,10 +18,16 @@ import type {
   PluginContext,
   PluginContextTier1,
   PluginDefinition,
+  PluginInvocation,
   PluginProvenance,
 } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { z } from "zod";
+import type { ExternalApproval } from "./external-authorization.js";
+import { previewContext } from "./preview-context.js";
+import type { PluginRowLocker } from "./private-storage.js";
+import { consumeExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
 /** Runtime registry of loaded Tier-1 plugins. Loader writes here at startup;
@@ -61,6 +67,7 @@ class LoadedPluginsRegistry {
 }
 
 export interface LoadedPlugin {
+  readonly externalApproval?: ExternalApproval;
   readonly pluginId: string;
   readonly slug: string;
   readonly version: string;
@@ -76,20 +83,6 @@ export interface LoadedPlugin {
   /** Per-plugin actor row id — set as caelo.actor_id when the plugin's
    *  operations write through the Query API. */
   readonly pluginActorId: string;
-  /** v0.2.16 — true when a Tier-2 plugin's row + schema survived an
-   *  upgrade and was registered from the DB at bootstrap, but the
-   *  Deno-subprocess execution runtime is not yet wired. The plugin
-   *  is visible in `/security/plugins`; runOperation returns
-   *  Tier2RuntimePending. Defaults to undefined for Tier-1 + active
-   *  Tier-2 plugins (when the runtime ships, this flag stops being
-   *  set). */
-  readonly executionStub?: boolean;
-  /** Operation names from the plugin's manifest. Used only when
-   *  `executionStub` is true to distinguish "operation declared but
-   *  runtime missing" (Tier2RuntimePending) from "operation not
-   *  declared at all" (OperationNotDeclared). Real Tier-1 plugins
-   *  read their declared operations from `definition.operations`. */
-  readonly declaredOperationNames?: ReadonlyArray<string>;
 }
 
 export const loadedPlugins = new LoadedPluginsRegistry();
@@ -120,6 +113,32 @@ export function resetDisabledSet(): void {
  *  injects these from the host process (apps/admin) so plugin-host stays
  *  free of upward circular imports on @caelo-cms/admin-core. */
 export interface PluginHostInfra {
+  /** Local image processing, with no provider or network access. */
+  readonly imageTransform?: (input: {
+    bytes: Uint8Array;
+    width: number;
+    height: number;
+    quality: number;
+  }) => Promise<{ bytes: Uint8Array; width: number; height: number }>;
+  readonly imageProvider?: {
+    describe(): Promise<{
+      model: string;
+      maxCostMicrocents: number;
+      imageSizes: readonly string[];
+    }>;
+    generate(input: {
+      model: string;
+      prompt: string;
+      imageSize: "1K" | "2K" | "4K";
+      references: readonly { data: Uint8Array; mediaType: string }[];
+    }): Promise<{
+      bytes: Uint8Array;
+      width: number;
+      height: number;
+      costMicrocents: number;
+      durationMs: number;
+    }>;
+  };
   readonly adapter: DatabaseAdapter;
   readonly registry: OperationRegistry;
   /** Optional — only required if any active plugin requested `ai_provider`. */
@@ -132,6 +151,10 @@ export interface PluginHostInfra {
   /** P12 PR1.3 — optional outbound email transport. When omitted,
    *  ctx.email.send falls back to a no-op stderr stub. */
   readonly emailTransport?: EmailTransport;
+  /** Takes the chat lock for a plugin row written on a branch. Required
+   *  for any chat-origin private-storage write; admin-core supplies it
+   *  (it owns chat locks). A branch write without it fails loudly. */
+  readonly lockPluginRow?: PluginRowLocker;
 }
 
 /** Outbound email transport. Implementations live in the host process
@@ -173,6 +196,8 @@ let makeContext: ((opts: MakeContextOpts) => Promise<PluginContext | PluginConte
 interface MakeContextOpts {
   readonly plugin: LoadedPlugin;
   readonly infra: PluginHostInfra;
+  /** Who the call acts for and on which branch (CMS_REQUIREMENTS §14.7). */
+  readonly invocation: PluginInvocation;
   /** Visitor-facing context if dispatched from the API gateway. */
   readonly visitorContext?: VisitorDispatchContext;
 }
@@ -201,6 +226,14 @@ export function setContextFactory(
 }
 
 export interface RunPluginOperationOpts {
+  /** Host-only: a private preview gets storage reads and no effectful handles. */
+  readonly readOnlyPreview?: boolean;
+  /** Set only by the host after the matching tool approval has completed. */
+  readonly approvedToolName?: string;
+  /** The approved tool call, whose binding was recorded before asking the Owner. */
+  readonly approvedToolCallId?: string;
+  /** The chat the approval card was shown in; its binding is redeemed there only. */
+  readonly approvedChatBranchId?: string;
   readonly pluginSlug: string;
   readonly operationName: string;
   readonly args: unknown;
@@ -208,6 +241,43 @@ export interface RunPluginOperationOpts {
    *  Production callers omit this — dispatch uses `loadedPlugins.bySlug(...).pluginActorId`. */
   readonly pluginActorId?: string;
   readonly visitorContext?: VisitorDispatchContext;
+  /** Required: who the call acts for and on which branch. A call without
+   *  it would silently act as "main, nobody" — the defect §14.7 closes. */
+  readonly invocation: PluginInvocation;
+}
+
+/**
+ * Reject an invocation that contradicts itself, loudly: a visitor call
+ * without a visitor context (or the reverse), a chat call without the
+ * chat's branch, or a branch on a call that cannot have one.
+ */
+export function assertInvocationConsistent(
+  invocation: PluginInvocation,
+  visitorContext: VisitorDispatchContext | undefined,
+): void {
+  if (!invocation || typeof invocation.actorId !== "string" || invocation.actorId.length === 0) {
+    throw new Error("PluginInvocationInvalid: an actorId is required");
+  }
+  if ((invocation.origin === "visitor") !== (visitorContext !== undefined)) {
+    throw new Error(
+      `PluginInvocationInvalid: origin "${invocation.origin}" ${visitorContext ? "with" : "without"} a visitor context`,
+    );
+  }
+  if (invocation.origin === "chat" && !invocation.chatBranchId) {
+    throw new Error("PluginInvocationInvalid: a chat invocation needs the chat's branch");
+  }
+  // A branch is allowed for a chat, a branch preview render, and an
+  // approved action whose approver cannot publish (it stays in the chat).
+  if (
+    invocation.chatBranchId &&
+    invocation.origin !== "chat" &&
+    invocation.origin !== "render" &&
+    invocation.origin !== "approved"
+  ) {
+    throw new Error(
+      `PluginInvocationInvalid: origin "${invocation.origin}" cannot carry a chat branch`,
+    );
+  }
 }
 
 export type RunPluginOperationResult =
@@ -219,8 +289,8 @@ export type RunPluginOperationResult =
           | "PluginNotFound"
           | "PluginDisabled"
           | "OperationNotDeclared"
-          | "OperationFailed"
-          | "Tier2RuntimePending";
+          | "OperationNotPublic"
+          | "OperationFailed";
         readonly message: string;
       };
     };
@@ -236,9 +306,62 @@ export function setHostInfra(infra: PluginHostInfra): void {
   cachedInfra = infra;
 }
 
+/** The bootstrapped adapter + registry, for host-internal passes that
+ *  need to read core through the Query API (never raw SQL). Throws
+ *  rather than returning null — every caller runs inside a render pass
+ *  that a booted host is a precondition for. */
+export function hostInfra(): PluginHostInfra {
+  if (!cachedInfra) throw new Error("plugin host not bootstrapped");
+  return cachedInfra;
+}
+
+let cachedSystemActorId: string | null = null;
+export function setHostSystemActorId(actorId: string): void {
+  cachedSystemActorId = actorId;
+}
+
+/** Actor the host itself reads core as. Host-internal passes are not
+ *  acting for any plugin — attributing their reads to one would put a
+ *  plugin's id on rows it never asked for. */
+export function hostSystemActorId(): string {
+  if (!cachedSystemActorId) throw new Error("plugin host not bootstrapped");
+  return cachedSystemActorId;
+}
+
+/**
+ * Which branch a render pass shows. The admin preview renders the chat's
+ * branch; the static generator and live paths render main (`null`).
+ * Required at every render call site so none can silently read main in a
+ * branch preview (docs/branch-aware-plugin-storage.md §5).
+ */
+export interface RenderScope {
+  readonly chatBranchId: string | null;
+}
+
+/** A render of the deployed site / live state: no branch. */
+export const MAIN_RENDER: RenderScope = Object.freeze({ chatBranchId: null });
+
+/** The invocation a render-time plugin call runs under. */
+export function renderInvocation(scope: RenderScope): PluginInvocation {
+  return {
+    origin: "render",
+    actorId: hostSystemActorId(),
+    ...(scope.chatBranchId ? { chatBranchId: scope.chatBranchId } : {}),
+  };
+}
+
 export async function runPluginOperation(
   opts: RunPluginOperationOpts,
 ): Promise<RunPluginOperationResult> {
+  if (
+    opts.readOnlyPreview &&
+    // A preview is an author reading their own plugin data: from the
+    // panel (main) or in one of their chats (that chat's branch).
+    (!["owner-panel", "chat"].includes(opts.invocation.origin) ||
+      opts.visitorContext ||
+      opts.operationName !== "preview")
+  )
+    return { ok: false, error: { kind: "OperationFailed", message: "Invalid preview context" } };
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) {
     return {
@@ -258,32 +381,6 @@ export async function runPluginOperation(
       },
     };
   }
-  // v0.2.16 — Tier-2 plugin survived upgrade (DB-loaded by loader) but
-  // execution runtime isn't wired yet. Honest error rather than the
-  // stale-feeling OperationNotDeclared (the operation IS declared in
-  // the manifest; we just can't run it).
-  if (plugin.executionStub) {
-    const declared = plugin.declaredOperationNames?.includes(opts.operationName) ?? false;
-    if (!declared) {
-      return {
-        ok: false,
-        error: {
-          kind: "OperationNotDeclared",
-          message: `plugin "${opts.pluginSlug}" does not declare operation "${opts.operationName}"`,
-        },
-      };
-    }
-    return {
-      ok: false,
-      error: {
-        kind: "Tier2RuntimePending",
-        message:
-          `Tier-2 plugin "${opts.pluginSlug}" is registered (source + schema survived the upgrade) ` +
-          `but the Deno-subprocess execution runtime is not yet shipped. ` +
-          `Use Tier-1 (PR-shipped) plugins for runtime functionality, or wait for the runtime ship.`,
-      },
-    };
-  }
   const handler = plugin.definition.operations[opts.operationName];
   if (!handler) {
     return {
@@ -294,6 +391,26 @@ export async function runPluginOperation(
       },
     };
   }
+  // Visitor-facing dispatch is DEFAULT DENY.
+  //
+  // A plugin's operations mix two audiences with no naming rule to tell
+  // them apart — `submit` sits next to `moderate`, `subscribe` next to
+  // `send_campaign`, `me` next to `apply_auth_config` — and every one of
+  // them runs with whatever capabilities the plugin was granted. The
+  // check lives HERE rather than at the gateway route so a second entry
+  // point cannot be added later without it.
+  if (opts.visitorContext) {
+    const allowed = plugin.definition.publicOperations ?? [];
+    if (!allowed.includes(opts.operationName)) {
+      return {
+        ok: false,
+        error: {
+          kind: "OperationNotPublic",
+          message: `operation "${opts.operationName}" of plugin "${opts.pluginSlug}" is not visitor-facing. Add it to the plugin's \`publicOperations\` if it genuinely is.`,
+        },
+      };
+    }
+  }
   if (!cachedInfra || !makeContext) {
     return {
       ok: false,
@@ -303,12 +420,37 @@ export async function runPluginOperation(
       },
     };
   }
+  if (plugin.externalApproval) {
+    const tool = plugin.definition.tools?.find((t) => t.operationName === opts.operationName);
+    if (tool) {
+      try {
+        if (tool.approvalMode && opts.approvedToolName !== tool.name)
+          throw new Error("ExternalToolApprovalRequired");
+        z.fromJSONSchema(tool.inputJsonSchema).parse(opts.args);
+        if (tool.approvalMode)
+          await consumeExternalToolApproval({
+            plugin,
+            infra: cachedInfra,
+            invocation: opts.invocation,
+            toolName: tool.name,
+            operationName: opts.operationName,
+            toolCallId: opts.approvedToolCallId,
+            chatBranchId: opts.approvedChatBranchId,
+            args: opts.args,
+          });
+      } catch (error) {
+        return { ok: false, error: { kind: "OperationFailed", message: (error as Error).message } };
+      }
+    }
+  }
   let ctx: PluginContext | PluginContextTier1;
   try {
+    assertInvocationConsistent(opts.invocation, opts.visitorContext);
     ctx = await makeContext({
       plugin,
       infra: cachedInfra,
       visitorContext: opts.visitorContext,
+      invocation: opts.invocation,
     });
   } catch (e) {
     return {
@@ -320,7 +462,11 @@ export async function runPluginOperation(
     };
   }
   try {
-    const value = await handler(ctx as PluginContext, opts.args);
+    const value = await handler(
+      opts.readOnlyPreview ? previewContext(ctx) : (ctx as PluginContext),
+      opts.args,
+    );
+    if (opts.readOnlyPreview) return { ok: true, value };
     // v0.2.16 — emit an audit_events row so plugin write ops (e.g.
     // `comments.moderate`) are visible to the redeploy orchestrator's
     // poll, allowing per-page incremental rebuild on plugin data
@@ -454,6 +600,7 @@ function extractEntityId(result: unknown): string | null {
 export async function runPluginStaticRender(opts: {
   pluginSlug: string;
   pageId: string;
+  invocation: PluginInvocation;
 }): Promise<string | null> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) return null;
@@ -462,9 +609,41 @@ export async function runPluginStaticRender(opts: {
   if (!cachedInfra || !makeContext) {
     throw new Error("plugin host not bootstrapped");
   }
-  const ctx = await makeContext({ plugin, infra: cachedInfra });
+  assertInvocationConsistent(opts.invocation, undefined);
+  const ctx = await makeContext({ plugin, infra: cachedInfra, invocation: opts.invocation });
   const out = await render(ctx as PluginContext, { pageId: opts.pageId });
   return typeof out === "string" ? out : "";
+}
+
+/**
+ * #449 — invoke the plugin's `buildAssets(...)` once for a build.
+ *
+ * Returns `{}` for a plugin that declares none, so callers can iterate
+ * every plugin without branching. A plugin that DOES declare it and
+ * throws propagates: see `collectBuildAssets` for why a missing runtime
+ * has to stop the build rather than ship a silently inert page.
+ */
+export async function runPluginBuildAssets(opts: {
+  pluginSlug: string;
+  pageIds: ReadonlyArray<string>;
+  invocation: PluginInvocation;
+}): Promise<Record<string, string>> {
+  const plugin = loadedPlugins.bySlug(opts.pluginSlug);
+  if (!plugin) return {};
+  const build = plugin.definition.buildAssets;
+  if (typeof build !== "function") return {};
+  if (!cachedInfra || !makeContext) {
+    throw new Error("plugin host not bootstrapped");
+  }
+  assertInvocationConsistent(opts.invocation, undefined);
+  const ctx = await makeContext({ plugin, infra: cachedInfra, invocation: opts.invocation });
+  const out = await build(ctx as PluginContext, { pageIds: opts.pageIds });
+  if (out === null || typeof out !== "object" || Array.isArray(out)) {
+    throw new Error(
+      `plugin "${opts.pluginSlug}" buildAssets returned ${Array.isArray(out) ? "an array" : typeof out} — expected an object of {fileName: contents}`,
+    );
+  }
+  return out;
 }
 
 /**
@@ -476,6 +655,7 @@ export async function runPluginStaticRender(opts: {
 export async function runPluginMetaSignatureBatch(opts: {
   pluginSlug: string;
   pageIds: ReadonlyArray<string>;
+  invocation: PluginInvocation;
 }): Promise<ReadonlyMap<string, string>> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) return new Map();
@@ -484,7 +664,8 @@ export async function runPluginMetaSignatureBatch(opts: {
   if (!cachedInfra || !makeContext) {
     throw new Error("plugin host not bootstrapped");
   }
-  const ctx = await makeContext({ plugin, infra: cachedInfra });
+  assertInvocationConsistent(opts.invocation, undefined);
+  const ctx = await makeContext({ plugin, infra: cachedInfra, invocation: opts.invocation });
   const out = await (
     sig as (
       c: unknown,
@@ -503,6 +684,7 @@ export async function runPluginMetaSignatureBatch(opts: {
 export async function runPluginMetaSignature(opts: {
   pluginSlug: string;
   pageId: string;
+  invocation: PluginInvocation;
 }): Promise<string> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) return "";
@@ -511,7 +693,8 @@ export async function runPluginMetaSignature(opts: {
   if (!cachedInfra || !makeContext) {
     throw new Error("plugin host not bootstrapped");
   }
-  const ctx = await makeContext({ plugin, infra: cachedInfra });
+  assertInvocationConsistent(opts.invocation, undefined);
+  const ctx = await makeContext({ plugin, infra: cachedInfra, invocation: opts.invocation });
   const out = await (sig as (c: unknown, a: { pageId: string }) => Promise<string> | string)(ctx, {
     pageId: opts.pageId,
   });

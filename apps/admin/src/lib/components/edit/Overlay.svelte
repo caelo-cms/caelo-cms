@@ -57,7 +57,11 @@
     publishedAt: string | null;
   }
 
+  import type { PluginPreviewSelection } from "@caelo-cms/shared";
   interface Props {
+    docked?: boolean;
+    previewSelection?: PluginPreviewSelection | null;
+    onClearPreviewSelection?: () => void;
     /** Onboarding quick replies forwarded to ChatPanel. */
     firstRunSuggestions?: { label: string; message: string }[];
     session: ChatSession;
@@ -85,6 +89,9 @@
     onDragStateChange?: (active: boolean) => void;
   }
   let {
+    docked = false,
+    previewSelection = null,
+    onClearPreviewSelection,
     firstRunSuggestions = [],
     session,
     initialMessages,
@@ -121,7 +128,7 @@
   // swallows the click and the user can't actually use the toolbar.
   let dragState: { startX: number; startY: number; origX: number; origY: number } | null = null;
   function onPointerDownTitle(e: PointerEvent): void {
-    if (layout.pin !== "floating") return;
+    if (docked || layout.pin !== "floating") return;
     const target = e.target as HTMLElement | null;
     if (target && target.closest("button") !== null) return;
     dragState = {
@@ -168,6 +175,7 @@
   const MIN_H = 220;
 
   function startResize(kind: ResizeKind, e: PointerEvent): void {
+    if (docked) return;
     e.stopPropagation();
     e.preventDefault();
     resizeState = {
@@ -219,7 +227,7 @@
 
   // Position styles per pin mode.
   const positionStyle = $derived(
-    layout.collapsed
+    docked ? "position:relative; inset:auto; width:100%; height:100%;" : layout.collapsed
       ? "right: 24px; bottom: 24px; width: 56px; height: 56px;"
       : layout.pin === "pinned-bottom"
         ? `left: 0; right: 0; bottom: 0; height: ${layout.pinnedHeight}px;`
@@ -280,7 +288,7 @@
   }
 </script>
 
-{#if layout.collapsed}
+{#if layout.collapsed && !docked}
   <button
     type="button"
     class="fixed z-40 inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg hover:scale-105"
@@ -301,7 +309,7 @@
     style={positionStyle}
   >
     <!-- Pinned-bottom: top-edge resize handle -->
-    {#if layout.pin === "pinned-bottom"}
+    {#if !docked && layout.pin === "pinned-bottom"}
       <button
         type="button"
         aria-label="Resize chat strip height"
@@ -316,7 +324,7 @@
     {/if}
 
     <!-- Pinned-right: left-edge resize handle -->
-    {#if layout.pin === "pinned-right"}
+    {#if !docked && layout.pin === "pinned-right"}
       <button
         type="button"
         aria-label="Resize chat strip width"
@@ -461,6 +469,7 @@
         </DropdownMenuContent>
       </DropdownMenu>
 
+      {#if !docked}
       <div class="ml-auto flex items-center gap-1">
         <Button
           type="button"
@@ -507,10 +516,13 @@
           <Minimize2 class="size-3" />
         </Button>
       </div>
+      {/if}
     </div>
 
     <!-- Embedded chat panel -->
     <ChatPanel
+      {previewSelection}
+      {onClearPreviewSelection}
       {session}
       {initialMessages}
       {modules}
@@ -532,7 +544,7 @@
     />
 
     <!-- SE-corner resize (floating mode only) -->
-    {#if layout.pin === "floating"}
+    {#if !docked && layout.pin === "floating"}
       <button
         type="button"
         aria-label="Resize overlay"

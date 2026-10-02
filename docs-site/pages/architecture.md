@@ -4,7 +4,7 @@ template: doc-page
 status: published
 seo:
   title: Architecture — Caelo CMS
-  description: Layered permission model, two-database split, Query API chokepoint, snapshot system, two-tier plugin host. The deep architecture overview.
+  description: Layered permission model, two-database split, Query API chokepoint, snapshot system, one plugin model with Owner-approved grants. The deep architecture overview.
 ---
 
 # Architecture
@@ -16,7 +16,7 @@ This page is the public version of `ARCHITECTURE.md` from the source repo — th
 1. **Layered permission model** — Module / Template / Page / Layout / Content / SEO / Redirect / Plugin / Skill / Media / Security / Deployment (i18n is plugin-provided since the plugin-system-v2 cleanup). Each layer constrains what the AI can do without your click.
 2. **Two-database split** — `cms_admin` (authoring) + `cms_public` (visitor + plugin data) with two isolated Postgres roles. **Row-Level Security forced on every table both ways.**
 3. **Module / snapshot architecture** — pages assemble modules by *live reference*, not by raw HTML. Every Query API write emits a snapshot. Reverting one click in chat restores the page.
-4. **Two-tier plugin host** — Tier 1 plugins ship with core (signed, in-process, full SDK). Tier 2 plugins are AI-authored at runtime and run in a Deno subprocess with `--no-read --no-write --no-net` and access to ONLY their own `cms_public.<slug>` schema.
+4. **One plugin model** — every plugin, shipped or AI-built at runtime, gets the same base (its own `cms_public.<slug>` tables) and everything else only as an Owner-approved grant bound to its exact version. Core data is reachable only through named Query API operations of a granted domain, and no plugin writes live directly. Plugin backends run in a Deno subprocess with no file, network or environment access ([Plugin permissions](/plugins-permissions)).
 
 ## What runs where
 
@@ -33,9 +33,9 @@ Postgres
   ├ cms_admin (admin_role)                      ← pages, modules, snapshots, audit
   └ cms_public (public_role + per-plugin scope) ← plugin data, visitor sessions
 
-Plugin host (packages/plugin-host)              ← bootstraps Tier 1 in-process
-  ├ Tier 1 plugins (signed, in-process)         ← forms, comments, newsletter, ...
-  └ Tier 2 plugins (Deno subprocess, sandboxed) ← AI-authored at runtime
+Plugin host (packages/plugin-host)              ← loads active plugins, brokers grants
+  ├ shipped plugins (packages/plugins/<slug>)   ← forms, comments, consent-manager, ...
+  └ runtime-installed plugins (Deno sandbox)    ← built by the AI or pasted by an Owner
 
 Static generator (apps/static-generator)        ← runs at deploy; emits dist/
 API gateway (apps/api-gateway)                  ← public visitor writes; cms_public role

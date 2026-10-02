@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+import { fontReader } from "@caelo-cms/font-service";
 
 /**
  * issue #163 — Site Genesis ops; issue #375 generalises them to
@@ -356,6 +357,7 @@ export const renderDesignDraftOp = defineOperation({
     let fonts: ComposeFonts | undefined;
     if (theme !== undefined) {
       const resolved = await resolveThemeFonts({
+        readFont: fontReader(tx, _ctx),
         tokens: theme.tokens,
         cacheDir: defaultFontsCacheDir(process.cwd()),
         publicBasePath: "/_caelo/fonts",

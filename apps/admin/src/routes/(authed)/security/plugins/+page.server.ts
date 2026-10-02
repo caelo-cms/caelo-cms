@@ -8,7 +8,7 @@
  * with a public-schema rollback on commit failure.
  */
 
-import { loadActivatedPlugin } from "@caelo-cms/plugin-host";
+import { externalArtifactDigest, loadActivatedPlugin } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
@@ -48,7 +48,11 @@ export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "plugins.list", {});
-  const plugins = r.ok ? (r.value as { plugins: PluginRow[] }).plugins : [];
+  const plugins = (r.ok ? (r.value as { plugins: PluginRow[] }).plugins : []).map((p) => ({
+    ...p,
+    artifactDigest:
+      p.tier === 2 ? externalArtifactDigest(p.manifestJson, p.sourceCode ?? "") : undefined,
+  }));
   const tier1 = plugins.filter((p) => p.tier === 1);
   const tier2Active = plugins.filter((p) => p.tier === 2 && p.status === "active");
   const tier2AwaitingActivation = plugins.filter(
@@ -87,11 +91,21 @@ export const actions: Actions = {
     const prepared = prep.value as {
       pluginId: string;
       version: string;
+      artifactDigest: string | null;
       schemaName: string;
       appliedSql: string;
       isReEnable: boolean;
       provisionedByLoader: boolean;
     };
+    if (
+      prepared.artifactDigest !== null &&
+      form.get("artifactDigest") !== prepared.artifactDigest
+    ) {
+      return fail(409, {
+        error:
+          "This plugin changed since you opened the page. Review the current source before approving.",
+      });
+    }
     // Release-signed plugins provision their own schemas when the host
     // loads them (step 4), so the caller runs no DDL and passes none.
     const callerProvisions = !prepared.isReEnable && !prepared.provisionedByLoader;
@@ -115,20 +129,14 @@ export const actions: Actions = {
     // we just created so cms_public doesn't leak.
     const commit = await execute(registry, adapter, locals.ctx, "plugins.activate", {
       slug,
+      artifactDigest: form.get("artifactDigest") || undefined,
       schemaName: callerProvisions ? prepared.schemaName : undefined,
       appliedSql: callerProvisions ? prepared.appliedSql : undefined,
       version: callerProvisions ? prepared.version : undefined,
     });
     if (!commit.ok) {
-      if (callerProvisions) {
-        try {
-          await adapter.dropPluginPublicSchema({ schemaName: prepared.schemaName });
-        } catch (rollbackError) {
-          return fail(500, {
-            error: `commit failed (${commit.error.kind}); ALSO rollback failed: ${(rollbackError as Error).message}. Manual cleanup needed for cms_public schema "${prepared.schemaName}".`,
-          });
-        }
-      }
+      // Provisioning is idempotent. Preserve tables on a stale/failed commit:
+      // they may contain a previous installation's data or belong to a concurrent activation.
       return fail(400, { error: `commit failed: ${commit.error.kind}` });
     }
     // Step 4 — put it in the running host. The loader only RECORDS a
@@ -151,7 +159,10 @@ export const actions: Actions = {
     const form = await request.formData();
     const slug = String(form.get("slug") ?? "");
     const { adapter, registry } = getQueryContext();
-    const r = await execute(registry, adapter, locals.ctx, "plugins.activate", { slug });
+    const r = await execute(registry, adapter, locals.ctx, "plugins.activate", {
+      slug,
+      artifactDigest: form.get("artifactDigest") || undefined,
+    });
     if (!r.ok) {
       const message =
         typeof r.error === "object" && r.error && "message" in r.error

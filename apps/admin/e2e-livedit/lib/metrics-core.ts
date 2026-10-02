@@ -121,6 +121,22 @@ function blocksFor(lines: string[], marker: string): string[] {
   return out;
 }
 
+/**
+ * Decode admin.log from a BYTE offset. The offset comes from
+ * `statSync().size`, which counts bytes; slicing the decoded string with
+ * it counts UTF-16 units instead, and every multibyte character earlier
+ * in the log (em-dashes, umlauts in AI output) pushes the cut further
+ * past the scenario's real start, until whole sessions drop out and the
+ * scenario reports 0 loops / "cache-hit 0%".
+ *
+ * @param bytes - the raw admin.log contents
+ * @param byteOffset - a prior `statSync().size`; clamped to the length
+ */
+export function tailFromByteOffset(bytes: Uint8Array, byteOffset: number): string {
+  const start = Math.min(Math.max(byteOffset, 0), bytes.length);
+  return new TextDecoder().decode(bytes.subarray(start));
+}
+
 /** Parse the loop + tool-token + context-split traces out of a chunk of admin.log text. */
 export function parseChatLog(text: string): {
   loops: LoopRow[];

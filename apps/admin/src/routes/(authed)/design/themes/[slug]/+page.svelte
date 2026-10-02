@@ -91,6 +91,7 @@
         </TabsContent>
         <TabsContent value="typography" class="mt-4">
           <TypographyEditor
+            fonts={data.fonts}
             tokens={editedTokens}
             csrfToken={data.csrfToken}
             themeSlug={data.theme.slug}

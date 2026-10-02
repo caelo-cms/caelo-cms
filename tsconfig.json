@@ -5,6 +5,7 @@
   },
   "include": [],
   "references": [
+    { "path": "./packages/font-service" },
     { "path": "./packages/shared" },
     { "path": "./packages/query-api" },
     { "path": "./packages/admin-core" },
@@ -22,6 +23,7 @@
     { "path": "./packages/plugins/comments" },
     { "path": "./packages/plugins/auth" },
     { "path": "./packages/plugins/international-site" },
+    { "path": "./packages/plugins/consent-manager" },
     { "path": "./packages/provisioning" },
     { "path": "./packages/migrations" },
     { "path": "./apps/admin" },

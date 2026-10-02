@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  adminSchemaFromSpec,
   generateManifestKeyPair,
   schemaFromSpec,
   signManifest,
@@ -309,5 +310,87 @@ describe("manifest signing + verification", () => {
       signatureHex: "00".repeat(64),
     });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("validateSource — host-filesystem escapes via the bundler (#473 review)", () => {
+  const kinds = (source: string) => validateSource({ source, filename: "p.ts" }).map((f) => f.kind);
+
+  it("rejects require() in every spelling", () => {
+    expect(kinds('const s = require("/app/secrets/sa.json");')).toContain("forbidden-require");
+    expect(kinds('const s = module.require("/etc/passwd");')).toContain("forbidden-require");
+    expect(kinds('const s = globalThis.require("/etc/passwd");')).toContain("forbidden-require");
+  });
+
+  it("rejects import.meta", () => {
+    expect(kinds("export const where = import.meta.url;")).toContain("forbidden-import-meta");
+  });
+
+  it("still accepts ordinary plugin code", () => {
+    expect(
+      kinds(
+        'import { definePlugin } from "@caelo-cms/plugin-sdk"; export default definePlugin({} as never);',
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", () => {
+  const PID = "11111111-1111-4111-8111-111111111111";
+
+  it("adds the host-owned branch + history columns to every private table", () => {
+    const { sql } = adminSchemaFromSpec({
+      pluginId: PID,
+      slug: "probe",
+      adminSchema: { settings: { id: "uuid", label: "string" } },
+    });
+    for (const col of [
+      "caelo_chat_branch_id uuid NULL",
+      "caelo_deleted_at timestamptz NULL",
+      "caelo_version integer NOT NULL DEFAULT 1",
+      "caelo_updated_at timestamptz NOT NULL DEFAULT now()",
+    ]) {
+      // In the CREATE for fresh tables and as an additive ALTER for existing ones.
+      expect(sql).toContain(col);
+      expect(sql).toContain(`ADD COLUMN IF NOT EXISTS ${col}`);
+    }
+  });
+
+  it("does not add them to public tables", () => {
+    const { sql } = schemaFromSpec({
+      pluginId: PID,
+      slug: "probe",
+      schema: { signups: { id: "uuid", email: "string" } },
+    });
+    expect(sql).not.toContain("caelo_chat_branch_id");
+  });
+
+  it("rejects a manifest declaring a caelo_ column, in either zone", () => {
+    expect(() =>
+      adminSchemaFromSpec({
+        pluginId: PID,
+        slug: "probe",
+        adminSchema: { t: { id: "uuid", caelo_chat_branch_id: "uuid" } },
+      }),
+    ).toThrow("reserved");
+    expect(() =>
+      schemaFromSpec({
+        pluginId: PID,
+        slug: "probe",
+        schema: { t: { id: "uuid", caelo_x: "string" } },
+      }),
+    ).toThrow("reserved");
+  });
+});
+
+describe("identifiers past Postgres' 63-byte limit (#515 review)", () => {
+  it("refuses them instead of letting Postgres truncate them into a shared name", () => {
+    expect(() =>
+      adminSchemaFromSpec({
+        pluginId: "11111111-1111-4111-8111-111111111111",
+        slug: "probe",
+        adminSchema: { [`t${"x".repeat(64)}`]: { body: "text" } },
+      }),
+    ).toThrow("63-byte");
   });
 });

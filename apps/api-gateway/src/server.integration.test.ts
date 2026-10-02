@@ -48,7 +48,11 @@ const fixturePlugin = definePlugin({
       created_at: "timestamp",
     },
   },
+  // Default deny at the visitor boundary: the fixture has to say
+  // which of its operations the gateway may reach.
+  publicOperations: ["save"],
   operations: {
+    admin_only: async () => ({ secret: "should never be reachable from the gateway" }),
     save: async (ctx, args) => {
       const a = args as { message: string };
       const r = await ctx.query.insert("notes", {
@@ -172,6 +176,21 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
     const body = (await r.json()) as { ok: boolean; data: { visitorSeen: string } };
     expect(body.ok).toBe(true);
     expect(body.data.visitorSeen).toBe(visitorId);
+  });
+
+  it("404s an operation the plugin did not expose to visitors", async () => {
+    // Every declared operation used to be reachable here with the
+    // plugin's full capabilities — that put `comments/moderate`,
+    // `forms/list_submissions`, `newsletter/send_campaign` and
+    // `international-site/set_locales` on the open internet behind
+    // nothing but a rate limit. Dispatch is default-deny now, and the
+    // gateway answers 404 rather than 403 so a prober cannot use the
+    // status to confirm that the operation exists.
+    await bootstrapAndProvision();
+    const r = await handleRequest(postReq(`/api/plugin/${SLUG}/admin_only`, {}));
+    expect(r.status).toBe(404);
+    const body = (await r.json()) as { ok: boolean };
+    expect(body.ok).toBe(false);
   });
 
   it("reuses existing signed visitor cookie on second contact", async () => {

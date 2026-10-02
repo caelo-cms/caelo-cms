@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
+import { clearLoginRateBucket } from "./helpers.js";
 
 /**
  * P2 verification flow exercised through a real browser.
@@ -14,6 +15,9 @@ import { expect, test } from "@playwright/test";
  * level checks against the same op surface.
  */
 
+// Every spec logs in as dev-owner from the same IP; the login limiter
+// (5 per 5 min) would otherwise reject later specs in the batch.
+test.beforeAll(clearLoginRateBucket);
 test("setup → login → dashboard end-to-end", async ({ page }) => {
   const ts = Date.now();
   const email = `e2e-owner+${ts}@example.com`;

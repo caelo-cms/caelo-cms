@@ -75,6 +75,12 @@ const lifecyclePlugin = definePlugin({
       description: "lifecycle test skill",
       body: "Do the t393 thing.",
     },
+    {
+      slug: "t393-archived-skill",
+      displayName: "T393 archived guide",
+      description: "Individual archive survives uninstall",
+      body: "An optional guide.",
+    },
   ],
   urlAnnotationsOperation: "url_annotations",
   urlContributions: [
@@ -272,6 +278,16 @@ describe("#393 — lifecycle completion", () => {
     });
     if (!applied.ok) throw new Error(JSON.stringify(applied.error));
 
+    const archivedGuide = await execute(registry, adapter, HUMAN_CTX, "skills.archive", {
+      slug: "t393-archived-skill",
+    });
+    expect(archivedGuide.ok).toBe(true);
+    const standalone = await execute(registry, adapter, HUMAN_CTX, "skills.set", {
+      slug: "t393-independent",
+      displayName: "Independent guide",
+      body: "This guide does not belong to a plugin.",
+    });
+    expect(standalone.ok).toBe(true);
     // Propose + execute the uninstall.
     const proposed = await execute(registry, adapter, SYS_CTX, "plugins.propose_uninstall", {
       slug: "t393-life",
@@ -318,6 +334,30 @@ describe("#393 — lifecycle completion", () => {
     expect(after.redirect[0]?.to_path).toBe("/t393-page");
     expect(after.schema[0]?.n).toBe(0);
     expect(droppedSchemas).toEqual(["public:plugin_t393_life", "admin:plugin_t393_life"]);
+
+    const ownership = await sqlSystem(
+      async (tx) =>
+        await tx.unsafe(`SELECT plugin_id, plugin_owner_slug, activated_at FROM skills
+        WHERE slug IN ('t393-skill', 't393-archived-skill') ORDER BY slug`),
+    );
+    expect(ownership).toEqual([
+      { plugin_id: null, plugin_owner_slug: "t393-life", activated_at: null },
+      { plugin_id: null, plugin_owner_slug: "t393-life", activated_at: null },
+    ]);
+    for (const actorKind of ["human", "ai"] as const) {
+      const ctx = { ...SYS_CTX, actorKind };
+      for (const slug of ["t393-skill", "t393-archived-skill"]) {
+        const read = await execute(registry, adapter, ctx, "skills.get", { slug });
+        expect(read.ok).toBe(true);
+        expect(read.value).toEqual({ skill: null });
+      }
+      const listed = await execute(registry, adapter, ctx, "skills.list", { status: "any" });
+      expect(listed.ok).toBe(true);
+      const slugs = (listed.value as { skills: { slug: string }[] }).skills.map((s) => s.slug);
+      expect(slugs).not.toContain("t393-skill");
+      expect(slugs).not.toContain("t393-archived-skill");
+      expect(slugs).toContain("t393-independent");
+    }
   });
 
   it("the AI proposes an activation, cannot apply it, and the plugin runs only after the click", async () => {

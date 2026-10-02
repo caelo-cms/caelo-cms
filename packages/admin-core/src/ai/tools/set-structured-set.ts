@@ -17,7 +17,7 @@
  * by the issue #47 real-AI e2e suite, which surfaced
  * `tools.N.custom.input_schema: input_schema does not support oneOf,
  * allOf, or anyOf at the top level`. Reverted to keeping the JSON
- * Schema flat (`items: { type: "array" }`) and letting Zod handle the
+ * Schema flat (`items: { type: "array", items: { type: "object" } }`) and letting Zod handle the
  * per-kind shape.
  *
  * Pre-v0.10.22 there were also kind-specific wrappers (`set_nav_menu`,
@@ -53,7 +53,7 @@ export const setStructuredSetTool: ToolDefinitionWithHandler<
       },
       slug: { type: "string", minLength: 1, maxLength: 120 },
       displayName: { type: "string", minLength: 1, maxLength: 200 },
-      items: { type: "array" },
+      items: { type: "array", items: { type: "object" } },
     },
   },
   handler: async (ctx, input, toolCtx) => {

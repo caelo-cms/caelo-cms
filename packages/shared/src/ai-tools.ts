@@ -24,6 +24,7 @@ import {
   setPlacementContentSchema,
   slugSchema,
 } from "./content.js";
+import { pluginPreviewSelectionSchema } from "./plugin-preview.js";
 
 /**
  * v0.6.2 — `position` argument shared across the three `add_module_to_*`
@@ -416,6 +417,7 @@ export const chatSendMessageInput = z
     // operator content — it re-runs the paused gated turn. A refine below
     // requires exactly one of content / resumeApproval.
     content: z.string().min(1).max(8000).optional(),
+    previewSelection: pluginPreviewSelectionSchema.optional(),
     /** Element-reference chips appended to the message. */
     chips: z
       .array(
@@ -505,6 +507,8 @@ export const chatPublishInput = z
               // surface so chat-branched theme edits replay into live
               // on chat.publish.
               "theme",
+              // A plugin private-storage row written on the branch.
+              "pluginRow",
             ]),
             entityId: z.string().uuid(),
           })

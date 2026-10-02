@@ -155,6 +155,7 @@ describe("email_config ops", () => {
 describe("auth plugin: get_auth_config + apply_auth_config", () => {
   it("get_auth_config returns defaults on a fresh install", async () => {
     const r = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "get_auth_config",
       args: {},
@@ -169,12 +170,14 @@ describe("auth plugin: get_auth_config + apply_auth_config", () => {
 
   it("apply_auth_config persists and is readable via get_auth_config", async () => {
     const apply = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "apply_auth_config",
       args: { signupOpen: false, passwordMinLength: 12 },
     });
     expect(apply.ok).toBe(true);
     const get = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "get_auth_config",
       args: {},
@@ -188,6 +191,7 @@ describe("auth plugin: get_auth_config + apply_auth_config", () => {
 
   it("rejects passwords shorter than 8", async () => {
     const r = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "apply_auth_config",
       args: { signupOpen: true, passwordMinLength: 4 },
@@ -200,6 +204,7 @@ describe("auth plugin: propose/execute split (§11.A)", () => {
   it("propose_auth_config queues a row + does NOT mutate auth_config", async () => {
     // Snapshot current config.
     const before = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "get_auth_config",
       args: {},
@@ -209,6 +214,7 @@ describe("auth plugin: propose/execute split (§11.A)", () => {
 
     // Propose a change.
     const proposal = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "propose_auth_config",
       args: { signupOpen: false, passwordMinLength: 16 },
@@ -220,6 +226,7 @@ describe("auth plugin: propose/execute split (§11.A)", () => {
 
     // Live config NOT yet changed.
     const after = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "get_auth_config",
       args: {},
@@ -229,6 +236,7 @@ describe("auth plugin: propose/execute split (§11.A)", () => {
 
     // Listing surfaces the pending row.
     const list = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "list_pending_proposals",
       args: {},
@@ -240,12 +248,14 @@ describe("auth plugin: propose/execute split (§11.A)", () => {
 
     // execute_proposal applies it; live config now reflects the proposed values.
     const exec = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "execute_proposal",
       args: { proposalId: v.proposalId },
     });
     expect(exec.ok).toBe(true);
     const final = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "get_auth_config",
       args: {},
@@ -256,6 +266,7 @@ describe("auth plugin: propose/execute split (§11.A)", () => {
 
     // Same proposal cannot be executed twice.
     const re = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "execute_proposal",
       args: { proposalId: v.proposalId },
@@ -265,6 +276,7 @@ describe("auth plugin: propose/execute split (§11.A)", () => {
 
   it("reject_proposal stamps reason + status='rejected'; live config unchanged", async () => {
     const before = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "get_auth_config",
       args: {},
@@ -273,6 +285,7 @@ describe("auth plugin: propose/execute split (§11.A)", () => {
     const beforeMin = (before.value as { passwordMinLength: number }).passwordMinLength;
 
     const proposal = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "propose_auth_config",
       args: { signupOpen: true, passwordMinLength: 99 },
@@ -281,6 +294,7 @@ describe("auth plugin: propose/execute split (§11.A)", () => {
     const v = proposal.value as { proposalId: string };
 
     const reject = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "reject_proposal",
       args: { proposalId: v.proposalId, reason: "too aggressive" },
@@ -288,6 +302,7 @@ describe("auth plugin: propose/execute split (§11.A)", () => {
     expect(reject.ok).toBe(true);
 
     const after = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
       operationName: "get_auth_config",
       args: {},
@@ -301,12 +316,14 @@ describe("forms plugin: honeypot lands as spam", () => {
   it("non-empty honeypot field marks the submission as spam", async () => {
     // First, create a form so submit() finds a target.
     const c = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "create_form",
       args: { slug: "contact", displayName: "Contact us", schemaJson: {} },
     });
     expect(c.ok).toBe(true);
     const submit = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "submit",
       args: {
@@ -323,6 +340,7 @@ describe("forms plugin: honeypot lands as spam", () => {
     // The status should be 'spam', not 'new'. List filtered by status='spam'
     // should include the row.
     const list = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "list_submissions",
       args: { status: "spam" },
@@ -336,6 +354,7 @@ describe("forms plugin: honeypot lands as spam", () => {
 
   it("empty honeypot lands as new", async () => {
     const submit = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "submit",
       args: {

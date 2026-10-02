@@ -1,5 +1,74 @@
 # Changelog
 
+## v0.10.26
+
+### Features
+- 6c13b207 plugin previews beside the chat in Live Edit (#523)
+- 88b29148 central font library for themes and plugins (#522)
+- f18cde8e private image generation and local derivatives (#521)
+- c4896b03 private immutable files and raster previews (#520)
+- 3f9786e5 current Google chat and image models with shared credentials (#480)
+- ff32955f private read-only author previews and plugin workflow entry (#519)
+- 6423a2a5 reviewed companion skills for installed plugins (#479, ported to the plugin model) (#518)
+
+### Fixes
+- bdf1d48d raw-inserted home pages default to the site root (#524)
+- a123e122 bun.lock follows the version bump; the release gate installs Deno (#517)
+
+## v0.10.25
+
+### Features
+- 9fd55b25 Owner-approved private storage and chat tools for installed plugins (#515)
+- 620815e2 atomic compare-and-swap for plugin storage (#474, rebuilt on the plugin model) (#514)
+- 8a5548bc execute approved external plugins in isolated Deno runtime (#473)
+- 2be476ae branch-aware plugin storage + render branch (§14.7, steps 3–4) (#511)
+- 1c38e4ce plugin storage through named Query API operations (§14.7, step 2) (#510)
+- ad2304a4 every plugin call carries its invocation context (§14.7, step 1) (#509)
+- f25cba3c consent and tracking management (#448) — plugin client assets, deferred modules, and two fixes found on the way (#456)
+- 0bcf119c data lists — plugins supply the data, modules own the markup (#447)
+- 6d4d2dd9 plugin-system v2 foundation + international-site plugin (#387–#400) (#445)
+- 64307ad2 migrate the chat-runner onto the AI SDK multi-step loop (issue #442) (#444)
+- c0767e41 surface AI-detected bugs in the PR comment (#440)
+- f0772cbf capture the design system as a by-product of the theme + module writes (#436)
+- 26f874c0 get_import_page content-only mode — strip layout-owned chrome, consent noise and preset-token dump (#433)
+- ed269fc1 server-side screenshot_page backend — visual self-verification on headless surfaces (Power-MCP, send_chat, subagents) (#427)
+- 0d40c4b2 default-on boilerplate cleanup in inspect_external_page (#431)
+
+### Fixes
+- 2425bf76 extract-fields reads the branch overlay; moduleize failure names the copy-safe retry (#504)
+- be6fb7f0 withhold only what loads with the page, and never blank a page for a missing placeholder (#506)
+- ce0d1c11 retry transient IAM errors when granting provisioner roles (#497)
+- 155cc580 route cloud init and flags-only invocations to the wizard (#496)
+- 976b10c8 visitor-facing plugin dispatch is default deny (#499)
+- 9a60ed1a locale-aware crawl scope + final-URL persistence (#425) (#435)
+- fa9e51ea emit the media UUID from find_media and import_media_from_urls (#421)
+- dc06df2b mirror signatures with oras, and gate on the AR copy verifying (#429)
+- ac206834 honest nav-menu binding guidance + {{#module-list}} semantics (#419)
+- 019e94a3 verify module-list authoring path + reject numbered-scalar fanout (#417) (#426)
+- 47177da1 Power-MCP prose must never recommend an excluded tool — per-surface playbook, serve-time annotation, consistency tests (#420)
+- 305dd79e attributable input-token breakdown, re-derived ceilings, loud attempt-1 breaches + CDATA write-guard (#432, #438) (#439)
+- ddfacf03 LIST-mode/discovery crawls capture screenshots + design tokens in-session (#423) (#434)
+- 989f8a29 AI can obtain import-page ids — list surface, dual-id notes, overlay-aware inventory (#437)
+
+### Refactors
+- 311649e5 list_embeds is read-only (§14.7, step 5) (#513)
+- 1dedaed7 page identity without locale (#384) (#407)
+
+### Docs
+- 67fc3dec design — branch-aware plugin storage (§14.7) (#508)
+- fffd8bcb one plugin model — grants, data zones and never-live writes for every plugin (#507)
+- a1a57b31 spec and docs follow the cut (#386) (#443)
+
+### Chores
+- 5bbdd85d align Bun 1.4.2 across CI and stop duplicate Dependabot PRs (#498)
+- 555f8815 bump actions/setup-node from 6 to 7 (#341)
+- 6793ba72 bump tailwind-variants from 1.0.0 to 3.3.1 (#462)
+- 5e15d94e bump tailwind-merge from 2.6.1 to 3.7.0 (#492)
+- 5e384be5 bump google-auth-library from 10.9.0 to 11.1.0 (#490)
+- b4c7137d bump the minor-and-patch group across 2 directories with 1 update (#475)
+- c97c53d1 bump the minor-and-patch group across 1 directory with 3 updates (#488)
+- 72ce30f6 bump the AI SDK stack to latest stable (#441)
+
 ## v0.10.24
 
 ### Features

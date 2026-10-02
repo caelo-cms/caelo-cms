@@ -18,6 +18,7 @@ interface CommentRow {
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
   const r = await runPluginOperation({
+    invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
     pluginSlug: "comments",
     operationName: "list_pending",
     args: {},
@@ -39,6 +40,7 @@ export const actions: Actions = {
       return fail(400, { error: "decision must be approved/rejected/spam" });
     }
     const r = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "comments",
       operationName: "moderate",
       args: { commentId: id, decision },
@@ -57,6 +59,7 @@ export const actions: Actions = {
     const commentIds = idsRaw.split(",").filter((s) => s.length > 0);
     if (commentIds.length === 0) return fail(400, { error: "no comments selected" });
     const r = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "comments",
       operationName: "bulk_moderate",
       args: { commentIds, decision },
@@ -71,6 +74,7 @@ export const actions: Actions = {
     const id = form.get("commentId");
     if (typeof id !== "string") return fail(400, { error: "commentId required" });
     const r = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "comments",
       operationName: "ai_moderate",
       args: { commentId: id },

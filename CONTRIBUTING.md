@@ -1,6 +1,6 @@
 # Contributing to Caelo CMS
 
-Thanks for considering a contribution. This document covers everything from "I want to file a bug" to "I want to ship a Tier 1 plugin into core."
+Thanks for considering a contribution. This document covers everything from "I want to file a bug" to "I want to ship a plugin with Caelo."
 
 The engineering principles every contributor (human or AI-assisted) follows are in **[`CLAUDE.md`](./CLAUDE.md)**. Read that first — it's the authoritative answer to "how should code in this repo look + behave". The architecture overview is in **[`ARCHITECTURE.md`](./ARCHITECTURE.md)**.
 
@@ -15,7 +15,7 @@ This document just covers the contribution mechanics.
 
 ## Local development loop
 
-You need: [Bun](https://bun.sh) ≥1.3 + Docker (for Postgres) + the [Anthropic API key](https://console.anthropic.com) (for AI features) + [Deno](https://deno.com) ≥2 (for Tier 2 plugin sandbox).
+You need: [Bun](https://bun.sh) ≥1.3 + Docker (for Postgres) + the [Anthropic API key](https://console.anthropic.com) (for AI features) + [Deno](https://deno.com) ≥2 (for the plugin sandbox).
 
 ```bash
 git clone https://github.com/caelo-cms/caelo-cms.git
@@ -57,21 +57,13 @@ CLAUDE.md §6 mandates coverage gates in CI: **unit ≥ 90%** line coverage and 
 
 Open an issue using the **Bug** template. If you've already got the fix, open the PR directly and link the issue from the description.
 
-### New Tier 2 plugins (AI-authored OR human-authored)
+### New plugins
 
-Tier 2 plugins are sandboxed (Deno subprocess) and AI-authorable. Most plugin contributions will use the AI authoring path — open an issue describing the plugin's purpose, then ask the live-edit chat to draft it. The Owner UI at `/security/plugins` runs the validator + activates after review.
+Every plugin follows one model (CMS_REQUIREMENTS §14): who wrote it grants it nothing. It gets a small base — its own public tables, theme, visitor id, captcha — and everything else is a grant the site's Owner approves for that exact plugin version. See [Plugin permissions](https://caelo-cms.com/plugins-permissions).
 
-For human-authored Tier 2 plugins: scaffold under `packages/plugins/<slug>/`, declare your schema, your operations, your component, your `staticRender`. Submit via the same `submit_plugin` flow OR open a PR adding the source under `packages/plugins/<slug>/source.ts` + the AI tool will pick it up at install time.
-
-### New Tier 1 plugins (core, signed, in-process)
-
-Tier 1 plugins are core code. They're audited, signed with the Caelo Ed25519 key, and run in-process with full SDK access (cross-`cms_admin` writes, snapshot emission, AI provider, chat-runner tool registration). **Only humans contribute Tier 1 source** — AI cannot edit it.
-
-If you want to land a Tier 1 plugin:
-
-1. Open an issue first — Tier 1 surface is intentionally small. We'll discuss whether your plugin belongs in core or as a Tier 2.
-2. If yes: scaffold under `packages/plugins/<slug>/`, declare your `manifest.json` with the capabilities you need, sign it with `bun run plugins:sign`, and open the PR.
-3. The PR description must explain: which `requestedCapabilities` you need + why, every cross-`cms_admin` write you do + which existing op it dispatches to, and how disabling your plugin affects the Owner's site.
+- **For your own site:** ask the live-edit chat to build it. The AI submits it through `submit_plugin`; the validator runs; you approve it and its grants at `/security/plugins`.
+- **From your own repository:** bundle the plugin into one source module and upload a JSON package `{ "manifest": …, "source": "…" }` at `/security/plugins/installations`. The Owner reviews the exact artifact and each grant it requests; the plugin runs in the sandbox like every other.
+- **To ship it with Caelo:** open an issue first so we can agree it belongs in the release, then add it under `packages/plugins/<slug>/` with a manifest listing the grants it needs, and open a PR. The PR description must explain each requested grant and why, every core domain it reads or writes and through which Query API operations, and how disabling it affects a site. Shipping with Caelo gives a plugin a signed manifest (proof of which artifact is installed), not extra permissions.
 
 ### Changes to core (chat-runner, Query API, plugin host, provisioning, etc.)
 

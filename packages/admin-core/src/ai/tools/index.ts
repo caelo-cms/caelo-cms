@@ -37,6 +37,13 @@ import { editModuleTool } from "./edit-module.js";
 import { exportThemeTool } from "./export-theme.js";
 import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
+import {
+  acquireFontTool,
+  findFontsTool,
+  inspectFontTool,
+  listFontVariantsTool,
+  previewTypographyTool,
+} from "./fonts.js";
 import { forkPlacementContentTool } from "./fork-placement-content.js";
 import { generateImageTool } from "./generate-image.js";
 import { getContentInstanceTool } from "./get-content-instance.js";
@@ -410,6 +417,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(cancelProposalTool);
   // v0.11.0 — themes primitive (#45). Routine + the §11.A propose
   // wrappers for create / activate / delete.
+  registry.register(findFontsTool);
+  registry.register(inspectFontTool);
+  registry.register(previewTypographyTool);
+  registry.register(acquireFontTool);
+  registry.register(listFontVariantsTool);
   registry.register(listThemesTool);
   registry.register(getThemeTool);
   registry.register(updateThemeTokensTool);

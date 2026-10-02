@@ -20,6 +20,7 @@ import {
   parseChatLog,
   summarizeScenario,
   THRESHOLDS,
+  tailFromByteOffset,
 } from "./metrics-core.js";
 
 const S1 = "6ac646c7-c905-4e8d-b558-7fab501c3594";
@@ -140,6 +141,28 @@ describe("parseChatLog", () => {
       { name: "build_page", ok: true, tokens: 300 },
       { name: "add_module", ok: true, tokens: 100 },
     ]);
+  });
+});
+
+describe("tailFromByteOffset (admin.log window from a statSync byte offset)", () => {
+  it("keeps the scenario's session when multibyte text precedes the offset", () => {
+    // Earlier scenarios' AI output is full of em-dashes and umlauts; each
+    // is 2-3 bytes but 1 UTF-16 unit. Slicing the decoded string by the
+    // byte offset overshot by that difference and, in CI run 36585166131,
+    // dropped the homepage session entirely ("cache-hit 0%").
+    const earlier = `${"prior scenario — Übersicht ".repeat(400)}\n`;
+    const scenario = loopLine(S1, 1, "stop", [], 40000, 38000);
+    const bytes = new TextEncoder().encode(earlier + scenario);
+    const offset = new TextEncoder().encode(earlier).length;
+
+    expect(parseChatLog(new TextDecoder().decode(bytes).slice(offset)).loops).toHaveLength(0);
+    const tail = tailFromByteOffset(bytes, offset);
+    expect(tail).toBe(scenario);
+    expect(parseChatLog(tail).loops).toHaveLength(1);
+  });
+
+  it("clamps an offset past the end to an empty tail", () => {
+    expect(tailFromByteOffset(new TextEncoder().encode("abc"), 10)).toBe("");
   });
 });
 

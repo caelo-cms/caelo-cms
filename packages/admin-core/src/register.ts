@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import {
+  findFontsOp,
+  importFontOp,
+  inspectFontOp,
+  readFontOp,
+  resolveFontOp,
+} from "@caelo-cms/font-service";
 import type { OperationRegistry } from "@caelo-cms/query-api";
 import { createBugReportOp, listBugReportsOp } from "./ops/ai/bug-reports.js";
 import { logModuleizeAttemptOp } from "./ops/ai/moduleize_log.js";
@@ -18,6 +25,7 @@ import {
   resolveSessionOp,
 } from "./ops/auth.js";
 import { cancelProposalOp } from "./ops/cancel_proposal.js";
+import { discardChatBranchOp } from "./ops/chat/discard.js";
 import { listForeignLocksOp } from "./ops/chat/foreign-locks.js";
 import {
   appendChatMessageOp,
@@ -283,6 +291,14 @@ import {
   commentArchiveListForPageOp,
 } from "./ops/plugins/comment_archive.js";
 import {
+  approvePluginInstallationOp,
+  finalizePluginInstallationOp,
+  getApprovedPluginInstallationOp,
+  listPluginInstallationsOp,
+  revokePluginCapabilityOp,
+  stagePluginInstallationOp,
+} from "./ops/plugins/installations.js";
+import {
   activatePluginOp,
   disablePluginOp,
   getPluginOp,
@@ -457,6 +473,17 @@ import {
 } from "./ops/users.js";
 
 export function registerAdminOps(registry: OperationRegistry): void {
+  registry.register(importFontOp);
+  registry.register(findFontsOp);
+  registry.register(inspectFontOp);
+  registry.register(resolveFontOp);
+  registry.register(readFontOp);
+  registry.register(stagePluginInstallationOp);
+  registry.register(approvePluginInstallationOp);
+  registry.register(getApprovedPluginInstallationOp);
+  registry.register(finalizePluginInstallationOp);
+  registry.register(revokePluginCapabilityOp);
+  registry.register(listPluginInstallationsOp);
   registry.register(createFirstOwnerOp);
   registry.register(isSetupCompleteOp);
   registry.register(insertBootstrapTokenOp);
@@ -609,6 +636,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getChatBranchIdOp);
   registry.register(renameChatSessionOp);
   registry.register(archiveChatSessionOp);
+  registry.register(discardChatBranchOp);
   registry.register(appendChatMessageOp);
   registry.register(markChatMessageInterruptedOp);
   registry.register(setResponseMessagesOp);

@@ -181,6 +181,7 @@ describe("#392 — domain-event outbox", () => {
     });
 
     const firstPoll = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "t392-listener",
       operationName: "poll_events",
       args: {},
@@ -197,6 +198,7 @@ describe("#392 — domain-event outbox", () => {
 
     // Kind filter.
     const filtered = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "t392-listener",
       operationName: "poll_events",
       args: { cursor: 0, kinds: ["page.published"] },
@@ -210,12 +212,14 @@ describe("#392 — domain-event outbox", () => {
 
     // Commit the cursor; the next persisted-cursor poll is empty.
     const commit = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "t392-listener",
       operationName: "commit_cursor",
       args: { cursor: first.nextCursor },
     });
     expect(commit.ok).toBe(true);
     const afterCommit = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "t392-listener",
       operationName: "poll_events",
       args: {},

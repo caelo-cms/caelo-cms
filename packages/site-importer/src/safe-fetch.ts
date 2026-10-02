@@ -468,7 +468,12 @@ function requestOnce(
             const err = new Error(
               `response for ${rawUrl} exceeds the ${maxBytes}-byte cap; aborted`,
             );
-            req.destroy(err);
+            // destroy() WITHOUT the error: from inside a response "data"
+            // handler, Bun >= 1.4 re-emits a destroy(err) error on an
+            // emitter nobody listens on, so it surfaces as an
+            // uncaughtException even though this promise already rejects
+            // with it. The explicit reject below is the one delivery path.
+            req.destroy();
             reject(err);
             return;
           }

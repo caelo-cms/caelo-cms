@@ -26,6 +26,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { generateBootstrapToken } from "./bootstrap-token.js";
 import { type CaddyDomainSpec, generateCaddyfile } from "./caddy.js";
+import { initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
 import { generateDockerCompose } from "./compose.js";
 
 interface CaeloConfig {
@@ -181,9 +182,18 @@ async function init(): Promise<void> {
     );
     process.exit(2);
   }
+  // §11.C — cloud installs are provisioned end-to-end by the wizard
+  // (gcloud bootstrap, cost table, pulumi up, DNS, owner setup URL).
+  // `init` used to print manual Pulumi steps here instead, which pointed
+  // at a stack dir that only exists inside the Caelo repo.
+  if (initDelegatesToWizard(providerArg)) {
+    await wizardCommand();
+    return;
+  }
   if (!domain || !ownerEmail) {
     console.error(
-      "Usage: cms-provision init [--provider gcp|gcp-firebase|aws|azure|self-hosted] --domain example.com --owner-email me@example.com",
+      "Usage: cms-provision init [--provider self-hosted] --domain example.com --owner-email me@example.com\n" +
+        "Cloud providers (gcp | gcp-firebase | aws | azure) run the wizard: cms-provision --provider <name>",
     );
     process.exit(2);
   }
@@ -192,16 +202,6 @@ async function init(): Promise<void> {
     process.exit(2);
   }
   saveProvider(providerArg);
-  if (providerArg !== "self-hosted") {
-    // Cloud providers run via Pulumi at packages/provisioning/stacks/<provider>/.
-    // The CLI doesn't generate compose/caddy for them — point the operator at
-    // the Pulumi flow directly.
-    console.log(`Provider: ${providerArg}`);
-    console.log(
-      `\nNext steps:\n  cd packages/provisioning/stacks/${providerArg}\n  pulumi stack init prod\n  pulumi config set caelo-${providerArg}:domain ${domain}\n  pulumi config set caelo-${providerArg}:ownerEmail ${ownerEmail}\n  pulumi up\n  bunx cms-provision pulumi-output-sync\n`,
-    );
-    return;
-  }
   const cfg: CaeloConfig = {
     domain,
     ownerEmail,
@@ -748,27 +748,25 @@ async function wizardCommand(): Promise<void> {
   const { runWizard } = await import("./wizard.js");
   await runWizard({
     nonInteractive: process.argv.includes("--non-interactive"),
-    provider: arg("provider") as "self-hosted" | "gcp" | "aws" | "azure" | undefined,
+    provider: arg("provider") as Provider | undefined,
     domain: arg("domain"),
     ownerEmail: arg("owner-email"),
     projectId: arg("project-id"),
   });
 }
 
-const handler = cmd ? handlers[cmd] : undefined;
-if (!handler) {
-  // §11.C — bare `cms-provision` (no sub-command) drops into the
-  // wizard. The legacy "print usage" behaviour is preserved via
-  // `--no-wizard` for scripts that depended on the old shape.
-  if (cmd === undefined && !process.argv.includes("--no-wizard")) {
-    await wizardCommand();
-  } else {
-    console.log(
-      "Usage: cms-provision [wizard] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|pulumi-output-sync|version> [options]\n" +
-        "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
-    );
-    process.exit(cmd ? 2 : 0);
-  }
+// §11.C — flags-only invocations (`--provider gcp --domain …`, the
+// documented one-command form) and a bare `cms-provision` drop into the
+// wizard. `--no-wizard` / `--help` keep the legacy "print usage" shape.
+const route = resolveCliRoute(process.argv, Object.keys(handlers));
+if (route.kind === "handler") {
+  await handlers[route.name]?.();
+} else if (route.kind === "wizard") {
+  await wizardCommand();
 } else {
-  await handler();
+  console.log(
+    "Usage: cms-provision [wizard] [--provider <name> --domain <d> --owner-email <e>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|pulumi-output-sync|version> [options]\n" +
+      "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
+  );
+  process.exit(cmd && !cmd.startsWith("-") ? 2 : 0);
 }

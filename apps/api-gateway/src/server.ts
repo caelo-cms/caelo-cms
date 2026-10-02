@@ -591,6 +591,7 @@ export async function handleRequest(req: Request): Promise<Response> {
     pluginSlug: slug,
     operationName,
     args: body,
+    invocation: { origin: "visitor", actorId: visitor.visitorId },
     visitorContext: {
       visitorId: visitor.visitorId,
       sessionToken: visitor.sessionToken,
@@ -620,7 +621,12 @@ export async function handleRequest(req: Request): Promise<Response> {
           ? 503
           : result.error.kind === "OperationNotDeclared"
             ? 400
-            : 500;
+            : // A caller probing for an admin-only operation learns only
+              // that this path serves nothing — the 404 does not confirm
+              // that the operation exists.
+              result.error.kind === "OperationNotPublic"
+              ? 404
+              : 500;
     void recordRequest({
       pluginSlug: slug,
       operation: operationName,

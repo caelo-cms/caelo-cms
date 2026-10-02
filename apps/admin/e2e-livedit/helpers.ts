@@ -252,8 +252,20 @@ export async function loginAsDevOwner(page: Page): Promise<void> {
 export async function activatePluginAsOwner(page: Page, slug: string): Promise<void> {
   await page.goto("/security/plugins");
   const activate = page.getByTestId(`activate-${slug}`);
-  // Already active (a rerun against a warm DB) — nothing to click.
-  if ((await activate.count()) === 0) return;
+  if ((await activate.count()) === 0) {
+    // Absent button, two very different causes. Already active on a
+    // warm DB is fine; the plugin never having loaded is not, and
+    // treating them alike is how a missing plugin masquerades as an AI
+    // that ignored its tools — which is exactly what it looked like
+    // before this check existed, at the cost of a full CI cycle.
+    const known = await page.getByTestId(`plugin-row-${slug}`).count();
+    if (known === 0) {
+      throw new Error(
+        `activatePluginAsOwner: plugin "${slug}" is not installed on this stack, so the AI runs without its tools and skills. Check the admin log for "dist/index.js missing" — the plugin's dist has to be built before boot.`,
+      );
+    }
+    return;
+  }
   await activate.click();
   await expect(page.getByTestId(`activate-${slug}`)).toHaveCount(0, { timeout: 30_000 });
 }
@@ -424,11 +436,46 @@ export async function awaitStageComplete(page: Page): Promise<void> {
   await page.getByTestId("stage-btn").click();
   await page.getByTestId("stage-submit-btn").click();
   const res = await responsePromise;
+  const body = await res.text();
   if (res.status() < 200 || res.status() >= 300) {
     throw new Error(
-      `awaitStageComplete: stageAndDeployStaging returned HTTP ${res.status()}. Response: ${(await res.text()).slice(0, 500)}`,
+      `awaitStageComplete: stageAndDeployStaging returned HTTP ${res.status()}. Response: ${body.slice(0, 500)}`,
     );
   }
+  // A SvelteKit form action's fail() answers HTTP 200 with
+  // {"type":"failure"} — a failed merge or staging build looked like a
+  // successful Stage, and the chat's locks (released only on success)
+  // surfaced later as "orphan locks".
+  if (body.includes('"type":"failure"') || body.includes('"type":"error"')) {
+    throw new Error(`awaitStageComplete: Stage failed. Response: ${body.slice(0, 800)}`);
+  }
+}
+
+/**
+ * Publish a seeded page so a staging build has a page at the site root.
+ * The minimal site seeds its home page as a draft, and staging ships
+ * published pages only — a scenario that Stages without its own
+ * published homepage would fail the build ("no page serves the site
+ * root").
+ */
+export function publishSeededPage(pageId: string): void {
+  const raw = spawnSync(
+    "bun",
+    [
+      "-e",
+      `
+      import { SQL } from "bun";
+      const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx\`UPDATE pages SET status = 'published' WHERE id = \${process.env.PAGE_ID}::uuid\`;
+      });
+      await sql.end();
+      `,
+    ],
+    { env: { ...process.env, PAGE_ID: pageId }, encoding: "utf8" },
+  );
+  if (raw.status !== 0) throw new Error(`publishSeededPage failed: ${raw.stderr || raw.stdout}`);
 }
 
 export async function awaitPublishComplete(page: Page): Promise<void> {

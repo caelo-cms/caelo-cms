@@ -186,6 +186,7 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
 
     // Direct dispatch via runPluginOperation.
     const direct = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: HOST_TEST_SLUG,
       operationName: "greet",
       args: { name: "caelo" },
@@ -196,6 +197,7 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
 
     // Via ctx.cms.call to a real cms_admin op.
     const viaCms = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: HOST_TEST_SLUG,
       operationName: "via_cms",
       args: {},
@@ -206,7 +208,12 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
   });
 
   it("PluginNotFound for missing slug; OperationNotDeclared for missing op", async () => {
-    const r1 = await runPluginOperation({ pluginSlug: "nope", operationName: "x", args: {} });
+    const r1 = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "nope",
+      operationName: "x",
+      args: {},
+    });
     expect(r1.ok).toBe(false);
     if (!r1.ok) expect(r1.error.kind).toBe("PluginNotFound");
 
@@ -217,6 +224,7 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
       testPlugins: [{ definition: helloPluginDef }],
     });
     const r2 = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: HOST_TEST_SLUG,
       operationName: "nonexistent",
       args: {},
@@ -279,6 +287,7 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
     expect(report.failed[0]?.reason).toContain("manifest");
     // Direct dispatch on the good one still works.
     const r = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "test-p115-good",
       operationName: "greet",
       args: { name: "ok" },

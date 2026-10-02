@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P11 — `submit_plugin`. AI authors a Tier 2 plugin against the SDK
- * and submits it for Owner approval. CLAUDE.md §2: AI submits, human
- * Owner activates. The AI tool surface is Tier 2 only — Tier 1 plugins
- * ship via human PR + signed release.
+ * `submit_plugin` — the AI writes a plugin against the SDK and submits it
+ * for the Owner's approval (CMS_REQUIREMENTS §14). The AI submits; a human
+ * Owner activates and grants. It never edits plugins shipped with Caelo.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -15,20 +14,19 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> = {
   name: "submit_plugin",
   description:
-    "Submit a Tier 2 plugin for validation + Owner approval. " +
-    "TWO-STEP: this only validates and queues — an Owner must click Approve at /security/plugins to activate. DO NOT claim the plugin is active. " +
-    "Tier 2 plugins are sandboxed (Deno --no-read --no-write --no-net); source must use ONLY @caelo-cms/plugin-sdk imports (no fetch / Deno / dynamic imports / raw SQL). " +
-    "Manifests must declare `tier: 2`; do NOT include `requestedCapabilities`, `workers`, or `tools` (those are Tier 1 / core only — submitting them gets rejected). " +
-    "Schema invariant: any table with `page_id` MUST also declare `locale`. " +
-    "Inputs: slug (lowercase-with-hyphens, unique site-wide), version (semver), manifest (JSON object: slug, version, tier=2, schema, operations, optional component, hasStaticRender), source (full JS module string). " +
-    "Returns {pluginId, status, validationErrors[]}. On validation failure the AI sees structured `{kind, hint}` errors and can auto-fix + resubmit in the same turn — read each `hint` and adjust the source accordingly.",
+    "Submit a plugin you wrote for the operator's site, for validation and the Owner's approval. Use when the operator needs behaviour no existing tool or module gives (a form that stores entries, a booking list, a private notes tool). " +
+    "TWO-STEP: this validates and queues only. The Owner approves the exact source at /security/plugins (or, if it requests access, at /security/plugins/installations) — say you have submitted it for approval; never claim it is active. " +
+    "The plugin runs sandboxed: import ONLY @caelo-cms/plugin-sdk; no fetch, Deno, dynamic import, eval or SQL. Its own visitor data goes in `schema` (public tables). " +
+    "Extra access must be requested and explained: `cms_admin_schema` for private author storage (declare `adminSchema`) and `chat_runner_tools` for tools you can call in chat (declare `tools`, each named `<slug_with_underscores>__<name>`); give each a reason in `capabilityReasons`. The Owner sees every tool name and description verbatim before approving, so describe honestly what each tool does. Private-storage writes made from a chat stay in the chat until it is published. " +
+    "Inputs: slug (lowercase-with-hyphens, unique), version (semver), manifest (slug, version, tier: 2, schema, operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, hasStaticRender), source (the full JS module; its default export is the plugin definition). " +
+    "Returns {pluginId, status, validationErrors[]}; on failure read each error's `hint`, fix the source and resubmit in the same turn.",
   schema: submitPluginToolInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["slug", "version", "manifest", "source"],
     properties: {
-      slug: { type: "string", pattern: "^[a-z][a-z0-9-]*$", maxLength: 120 },
+      slug: { type: "string", pattern: "^[a-z][a-z0-9-]*$", maxLength: 55 },
       version: {
         type: "string",
         pattern: "^\\d+\\.\\d+\\.\\d+(-[a-z0-9.]+)?$",
@@ -38,10 +36,37 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
         type: "object",
         additionalProperties: true,
       },
-      source: { type: "string", minLength: 1, maxLength: 200_000 },
+      source: { type: "string", minLength: 1, maxLength: 4_000_000 },
     },
   },
   handler: async (ctx, input, toolCtx) => {
+    if (input.manifest.slug !== input.slug || input.manifest.version !== input.version)
+      return {
+        ok: false,
+        content: "submit_plugin failed: slug and version must match the manifest.",
+      };
+    if (
+      Array.isArray(input.manifest.requestedCapabilities) &&
+      input.manifest.requestedCapabilities.length > 0
+    ) {
+      const staged = await execute(
+        toolCtx.registry,
+        toolCtx.adapter,
+        ctx,
+        "plugins.stage_installation",
+        {
+          manifest: input.manifest,
+          source: input.source,
+          origin: "runtime-authored",
+        },
+      );
+      if (!staged.ok)
+        return { ok: false, content: `submit_plugin failed: ${describeError(staged.error)}` };
+      return {
+        ok: true,
+        content: `Submitted plugin ${input.slug} v${input.version} for installation review. An Owner must review its exact source and grant each requested capability at /security/plugins/installations. The package has not been activated.`,
+      };
+    }
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.submit", input);
     if (!r.ok) {
       return { ok: false, content: `submit_plugin failed: ${describeError(r.error)}` };

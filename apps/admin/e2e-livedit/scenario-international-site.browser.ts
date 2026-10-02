@@ -29,7 +29,9 @@ import {
   assertNoChatRunnerDiagWarnings,
   assertNoOrphanLocks,
   attachChatSessionTracker,
+  awaitStageComplete,
   loginAsDevOwner,
+  publishSeededPage,
   resetLiveditFixtures,
   seedMinimalSite,
   sendChatPromptAndWait,
@@ -192,6 +194,12 @@ test("übersetze die Seite ins Deutsche — locale gate, /de/ variant, values-le
     600_000,
   );
   const sessionId = tracker.currentSessionId();
+  // Stage: chat writes — the plugin's own rows included — are on the
+  // chat's branch until merged (CMS_REQUIREMENTS §14.7). The DB
+  // assertions below read live state, and the chat's locks are released
+  // here, so assertNoOrphanLocks checks what it is named for.
+  publishSeededPage(seed.pageId);
+  await awaitStageComplete(page);
 
   const state = readIntlState(seed.pageId);
 
