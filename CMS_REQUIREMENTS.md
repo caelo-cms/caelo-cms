@@ -325,6 +325,7 @@ Handled by the pre-built, hardened **Authentication Plugin**:
 - Uploads go through a dedicated endpoint with type validation (MIME sniffing, not header trust) and size limits
 - Image optimization (resize, compress, convert to WebP) applied automatically on upload
 - Admin panel provides a visual media browser
+- Browser chat supports image selection, clipboard paste and drag-and-drop. Connected MCP clients can upload the same raster images and attach returned asset references to chat messages (at most four images, 5 MiB each). Uploads use the shared media pipeline and current actor permissions.
 - **Usage tracking** on every media asset (`usage_count`, `last_referenced_at`), incremented by the Query API write path whenever a module or SEO field references the asset
 - At deploy time, **frequently used assets are optionally copied to the static hosting CDN for faster delivery**, driven by a usage-threshold + an admin "CDN copy" toggle
 

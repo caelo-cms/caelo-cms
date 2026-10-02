@@ -2,15 +2,16 @@
 
 /**
  * Issue #376 — the Power-MCP server (`caelo-admin-mcp` / `caelo-mcp-server
- * admin`). Where the chat server exposes ONE tool that talks to Caelo's own
+ * admin`). Where the chat server routes editing through a tool that talks to Caelo's own
  * AI, this server exposes the whole chat-runner tool catalogue so the
  * CALLING agent (Claude Code et al.) drives the tool loop itself — no
  * Caelo-side reasoning cost.
  *
  * The catalogue is fetched live from `/api/mcp/tools` at startup (an
  * admin-scoped token is required; 'chat' tokens get a 401 with the fix).
- * Two meta-tools are added locally:
+ * Local companion tools:
  *
+ * - `caelo_upload_images` — uploads local or base64 image references to the media library.
  * - `caelo_open_session` — opens (or resumes) the work session whose
  *   preview branch every subsequent tool call writes to. The session id
  *   is held here in process state so the agent doesn't thread it through
@@ -27,6 +28,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { postAdmin, resolveTimeoutMs } from "./http.js";
+import { UPLOAD_IMAGES_TOOL, uploadImages } from "./image-upload.js";
 
 export interface StartAdminOpts {
   readonly adminUrl: string;
@@ -125,6 +127,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
+      UPLOAD_IMAGES_TOOL,
       OPEN_SESSION_TOOL,
       GET_CONTEXT_TOOL,
       ...catalogue.tools.map((t) => ({
@@ -138,6 +141,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const name = req.params.name;
     try {
+      if (name === UPLOAD_IMAGES_TOOL.name) return await uploadImages(opts, req.params.arguments);
       if (name === OPEN_SESSION_TOOL.name) {
         const parsed = openSessionInput.safeParse(req.params.arguments ?? {});
         if (!parsed.success) {

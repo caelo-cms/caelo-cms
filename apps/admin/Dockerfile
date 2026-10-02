@@ -197,7 +197,8 @@ COPY --from=builder /repo/apps/static-generator ./apps/static-generator
 
 ENV NODE_ENV=production
 ENV PORT=3000
-# Multipart font imports: 8 MiB font + license and form overhead.
+# Multipart font imports (8 MiB font + license) and chat images (5 MiB)
+# plus form overhead exceed the adapter's 512 KiB default.
 ENV BODY_SIZE_LIMIT=12M
 EXPOSE 3000
 
