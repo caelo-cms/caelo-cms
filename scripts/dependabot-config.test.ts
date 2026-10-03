@@ -52,7 +52,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const CONFIG_PATH = join(REPO_ROOT, ".github", "dependabot.yml");
