@@ -56,7 +56,7 @@ test.describe("password reset + change", () => {
     await page.getByLabel("New password", { exact: true }).fill("a-fine-new-secret-9");
     await page.getByLabel("Confirm new password").fill("a-fine-new-secret-9");
     await page.getByRole("button", { name: /change password/i }).click();
-    await expect(page.getByText(/current password is incorrect/i)).toBeVisible();
+    await expect(page.getByRole("alert").getByText(/current password is incorrect/i)).toBeVisible();
   });
 
   test("account: a weak new password is rejected on strength (no change)", async ({ page }) => {
@@ -68,6 +68,6 @@ test.describe("password reset + change", () => {
     await page.getByLabel("New password", { exact: true }).fill("password123");
     await page.getByLabel("Confirm new password").fill("password123");
     await page.getByRole("button", { name: /change password/i }).click();
-    await expect(page.getByText(/too common/i)).toBeVisible();
+    await expect(page.getByRole("alert").getByText(/too common/i)).toBeVisible();
   });
 });

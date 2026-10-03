@@ -30,6 +30,7 @@ import {
   loadModuleState,
   loadModuleStateWithBranchOverlay,
 } from "../../snapshots/index.js";
+import type { ModuleState } from "../../snapshots/state.js";
 import { buildPatchSet, jsonbParam } from "../../sql-helpers.js";
 import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
 
@@ -636,7 +637,7 @@ export const updateModuleOp = defineOperation({
     // dropped each other's fields: edit 1 set html='B' (snapshot only,
     // live still 'A'); edit 2 read live and emitted snapshot 2 with
     // html='A' — edit 1 lost at Stage when merge applied snapshot 2.
-    let state: import("../../snapshots/index.js").ModuleState | null;
+    let state: ModuleState | null;
     if (branchId) {
       const base = await loadModuleStateWithBranchOverlay(tx, input.moduleId, branchId);
       if (!base) {

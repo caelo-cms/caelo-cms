@@ -21,10 +21,7 @@ import {
   externalFetchAllowedHosts,
   takeExternalFetchBudget,
 } from "./_external-fetch-budget.js";
-import {
-  getExternalScreenshotter,
-  setExternalScreenshotterForTests,
-} from "./_external-screenshotter.js";
+import { getExternalScreenshotter } from "./_external-screenshotter.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const input = z
@@ -49,14 +46,6 @@ export function pngDimensions(bytes: Uint8Array): { width: number; height: numbe
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return { width: dv.getUint32(16), height: dv.getUint32(20) };
 }
-
-/**
- * Test seam alias — the screenshotter factory now lives in the shared
- * `_external-screenshotter` module (issue #278) so the inspect facets
- * and this tool swap the same fake. Kept under the original name so
- * existing tests need no change.
- */
-export const setExternalScreenshotDepsForTests = setExternalScreenshotterForTests;
 
 const VIEWPORTS = {
   desktop: { width: 1280, height: 800 },

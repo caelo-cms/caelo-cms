@@ -95,11 +95,15 @@ test("actual Google SDK sends redirect tools without non-string enums", async ()
   const structured = declarations.find(
     (tool: { name: string }) => tool.name === "set_structured_set",
   );
-  expect(structured.parameters.properties.items.items).toEqual({ type: "object" });
+  expect(structured.parametersJsonSchema.properties.items.items).toEqual({ type: "object" });
   const identity = declarations.find((tool: { name: string }) => tool.name === "set_site_identity");
-  expect(identity.parameters.properties.designBrief.type).toBe("object");
-  expect(identity.parameters.properties.designBrief.nullable).toBe(true);
-  expect(identity.parameters.properties.designBrief.properties.audience.type).toBe("string");
+  // The SDK now sends JSON Schema as-is (parametersJsonSchema). A nullable
+  // object stays an anyOf of the object and null, with its properties
+  // inside the object branch rather than beside the anyOf.
+  const designBrief = identity.parametersJsonSchema.properties.designBrief;
+  expect(designBrief.anyOf[0].type).toBe("object");
+  expect(designBrief.anyOf[1]).toEqual({ type: "null" });
+  expect(designBrief.anyOf[0].properties.audience.type).toBe("string");
   expect(events.some((event) => event.kind === "error")).toBe(false);
   expect(
     bulkCreateRedirectsTool.schema.safeParse({

@@ -193,6 +193,9 @@ function stubJudge(verdicts: readonly (boolean | null)[]): {
   return { fn, seen };
 }
 
+/** Every message the loop persisted in the latest runLoop call. */
+const appended: { role?: string; content?: string }[] = [];
+
 function buildFixtureQueryApi(): { registry: OperationRegistry; adapter: DatabaseAdapter } {
   const registry = new OperationRegistry();
   const passthrough = (name: string, value: Record<string, unknown>) =>
@@ -213,7 +216,10 @@ function buildFixtureQueryApi(): { registry: OperationRegistry; adapter: Databas
       database: "cms_admin",
       input: z.looseObject({}),
       output: z.looseObject({}),
-      handler: async () => ok({ messageId: "msg-1" }),
+      handler: async (_ctx, input) => {
+        appended.push(input as { role?: string; content?: string });
+        return ok({ messageId: `msg-${appended.length}` });
+      },
     }),
   );
   passthrough("imports.get_session_budget_state", { gate: null });
@@ -238,6 +244,7 @@ async function runLoop(
 ): Promise<ToolLoopResult> {
   const ctx: ExecutionContext = { actorId: "op-1", actorKind: "human", requestId: "req-1" };
   const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0 };
+  appended.length = 0;
   const fixture = buildFixtureQueryApi();
   // A non-empty catalogue: the guard requires tools to exist before it can
   // demand one be called.
@@ -391,6 +398,13 @@ describe("runToolLoop — narrate-then-stop recovery", () => {
     expect(provider.calls).toBe(3);
     expect(provider.toolChoices.filter((c) => c === "required")).toHaveLength(1);
     expect(result.stopReason).toBe("end_turn");
+    // The forced re-run's narration is persisted like any other answer —
+    // the SDK reports an unhonoured forced tool choice as an error, which
+    // must not drop the text the operator already saw.
+    const narrations = appended.filter(
+      (m) => m.role === "assistant" && m.content?.includes("I'll do it next."),
+    );
+    expect(narrations).toHaveLength(2);
     // The second narration never reaches the judge — `forcedToolRetried`
     // short-circuits ahead of it, so a stuck model costs one judgment, not one
     // per loop.

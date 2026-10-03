@@ -25,6 +25,7 @@ import {
   type ModelMessage,
   NoObjectGeneratedError,
   streamText,
+  ToolChoiceViolationError,
 } from "ai";
 
 import type {
@@ -200,6 +201,9 @@ export async function* translateSDKStream(
   // block below emits a synthetic terminal pair so every stream-end
   // path produces an explicit signal.
   let yieldedDone = false;
+  // Set when the SDK reports a forced tool choice the model did not honour
+  // (see the `error` case); the terminal `finish` then ends the turn.
+  let forcedToolChoiceUnhonoured = false;
 
   try {
     for await (const ev of source) {
@@ -352,7 +356,7 @@ export async function* translateSDKStream(
           yield {
             kind: "done",
             stopReason:
-              reason === "stop"
+              reason === "stop" || forcedToolChoiceUnhonoured
                 ? "end_turn"
                 : reason === "tool-calls"
                   ? "tool_use"
@@ -366,6 +370,17 @@ export async function* translateSDKStream(
         }
         case "error": {
           const errVal = e.error as unknown;
+          // A forced tool choice the model did not honour. The SDK (ai
+          // 7.0.1xx) turns this into an error; for us it is the outcome the
+          // narrate-then-stop recovery already plans for — the one forced
+          // re-run produced no tool call, its text has streamed, and the
+          // turn ends normally instead of surfacing a provider error.
+          if (ToolChoiceViolationError.isInstance(errVal)) {
+            // The terminal `finish` part follows with reason "error"; it
+            // reads this flag.
+            forcedToolChoiceUnhonoured = true;
+            break;
+          }
           const message =
             errVal instanceof Error
               ? errVal.message

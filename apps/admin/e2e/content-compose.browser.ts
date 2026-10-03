@@ -42,7 +42,7 @@ test("compose a page from a module and preview it", async ({ page, request }) =>
 
   // Save the block list.
   await page.getByRole("button", { name: /save blocks/i }).click();
-  await expect(page.getByText(/Saved\./)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("alert").getByText(/Saved\./)).toBeVisible({ timeout: 15_000 });
 
   // Create a module.
   await page.goto("/content/modules");
@@ -73,7 +73,7 @@ test("compose a page from a module and preview it", async ({ page, request }) =>
   expect(modValue).not.toBe("");
   await page.getByLabel("Add module").selectOption(modValue);
   await page.getByRole("button", { name: /save layout/i }).click();
-  await expect(page.getByText(/Saved\./)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("alert").getByText(/Saved\./)).toBeVisible({ timeout: 15_000 });
 
   // Extract the page id from the editor URL and hit the preview endpoint with
   // the authenticated browser context's cookies.
