@@ -70,7 +70,9 @@ test("Advanced History drawer reverts a module", async ({ page }) => {
   // Revert this module.
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: /revert this module/i }).click();
-  await expect(page.getByText(/Module reverted\./)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("alert").getByText(/Module reverted\./)).toBeVisible({
+    timeout: 15_000,
+  });
 
   // Confirm live module is back to v1.
   //
