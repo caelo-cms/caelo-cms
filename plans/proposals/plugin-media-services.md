@@ -1,12 +1,37 @@
 # Proposal: shared media services for plugins
 
-Status: proposed for review; this PR adds no working SDK methods.
+Status: partly delivered (see "Status 2026-10-04" below); the remaining
+work is tracked in #527–#532.
 
 Tracking: [#470](https://github.com/caelo-cms/caelo-cms/issues/470).
 External capability grants: [#469](https://github.com/caelo-cms/caelo-cms/issues/469).
 
 Baseline inspected: `6d4d2dd9debba856286ff769b62cd2c17584cac3`.
 Scope clarified: 2026-09-07.
+
+## Status 2026-10-04
+
+Delivered on `main` (v0.10.26 and later):
+
+| Proposal item | Delivered by |
+| --- | --- |
+| Plugin image generation with reference images, status lookup by request ID, idempotency per installation and input digest, uncertain outcomes never re-billed automatically | #521 (`ctx.images`, `plugin_images.*` ledger ops) |
+| Budget reserved atomically before the paid call; site, per-actor, per-session and per-plugin limits share one reservation | #521 |
+| Separate `image_generation` grant per reviewed artifact, rechecked on every call; a text-AI grant does not authorize images | #515, #521 |
+| Private outputs and references kept out of the public CDN (plugin private files) | #520, #521 |
+| One provider adapter for chat and plugins, through the AI SDK instead of raw HTTP | `image-provider.ts` (#480, #521) |
+| Images uploaded from the chat composer and MCP clients | #526 |
+
+Still open:
+
+| Gap | Issue |
+| --- | --- |
+| The chat `generate_image` tool does not use the plugin lifecycle: no references, no reservation before the call, no idempotency | #527 |
+| Image editing with source and mask | #528 |
+| Capability discovery with reference and mask limits | #529 |
+| Granted plugins using site media library assets as references | #530 |
+| Private visibility for core media library assets | #531 |
+| Persisted provenance (prompt, reference identities, dimensions, derivative lineage) | #532 |
 
 ## Outcome and ownership
 
