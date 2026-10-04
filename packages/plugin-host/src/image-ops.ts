@@ -7,10 +7,9 @@
  *
  * - `reserve` checks the plugin's `image_generation` receipt for exactly
  *   the running artifact (same check as private storage, in this
- *   transaction), every image budget and the plugin's own cost cap, then
- *   records the reservation in `ai_calls` and the request in
- *   `plugin_image_requests`. All reservations serialise, so concurrent
- *   requests cannot both pass a budget.
+ *   transaction), then reserves through the shared ledger (image-ledger.ts,
+ *   also used by the chat's `generate_image`): every image budget and the
+ *   plugin's own cap, under one lock, with provenance recorded.
  * - `finish` / `mark_uncertain` settle it. An uncertain outcome keeps its
  *   reservation and is never retried automatically — retrying would pay
  *   twice; a new request id is a new, deliberate payment.
@@ -26,8 +25,13 @@ import {
   type OperationRegistry,
 } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
 import { z } from "zod";
+import {
+  finishImageRequest,
+  markImageRequestUncertain,
+  readImageRequest,
+  reserveImageRequest,
+} from "./image-ledger.js";
 import { privateGrantRefusal } from "./private-storage.js";
 
 export const IMAGE_OPS = {
@@ -48,6 +52,8 @@ const requestRow = z.object({
   result: z.unknown().nullable(),
   costMicrocents: z.number(),
   createdAt: z.string(),
+  prompt: z.string().nullable(),
+  references: z.array(z.unknown()),
 });
 type RequestRow = z.infer<typeof requestRow>;
 
@@ -57,35 +63,26 @@ function fail(operation: string, message: string) {
   return err({ kind: "HandlerError" as const, operation, message });
 }
 
+/** A plugin's requests live in its own ledger scope. */
+const pluginScope = (pluginId: string) => `plugin:${pluginId}`;
+
 async function readRequest(
   tx: Tx,
   pluginId: string,
   requestId: string,
 ): Promise<RequestRow | null> {
-  const rows = (await tx.execute(sql`
-    SELECT r.id::text AS id, r.input_sha256, r.model, r.status, r.result,
-           c.cost_estimate_microcents AS cost, r.created_at::text AS created_at
-    FROM plugin_image_requests r JOIN ai_calls c ON c.id = r.call_id
-    WHERE r.plugin_id = ${pluginId}::uuid AND r.id = ${requestId}::uuid
-  `)) as unknown as {
-    id: string;
-    input_sha256: string;
-    model: string;
-    status: RequestRow["status"];
-    result: unknown;
-    cost: string | number;
-    created_at: string;
-  }[];
-  const row = rows[0];
-  if (!row) return null;
+  const r = await readImageRequest(tx, pluginScope(pluginId), requestId);
+  if (!r) return null;
   return {
-    id: row.id,
-    inputSha256: row.input_sha256,
-    model: row.model,
-    status: row.status,
-    result: typeof row.result === "string" ? JSON.parse(row.result) : (row.result ?? null),
-    costMicrocents: Number(row.cost),
-    createdAt: row.created_at,
+    id: r.id,
+    inputSha256: r.inputSha256,
+    model: r.model,
+    status: r.status,
+    result: r.result,
+    costMicrocents: r.costMicrocents,
+    createdAt: r.createdAt,
+    prompt: r.prompt,
+    references: r.references,
   };
 }
 
@@ -116,6 +113,12 @@ const reserveOp = defineOperation({
       maxCostMicrocents: z.number().int().min(1),
       operatorActorId: uuid,
       chatBranchId: uuid.optional(),
+      // #532 provenance.
+      prompt: z.string().min(1).max(16000),
+      references: z
+        .array(z.object({ id: uuid, sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict())
+        .max(14),
+      requested: z.record(z.string(), z.unknown()),
     })
     .strict(),
   output: z.object({ existing: requestRow.nullable(), callId: z.string().nullable() }),
@@ -129,65 +132,38 @@ const reserveOp = defineOperation({
     };
     const refused = await privateGrantRefusal(tx, pluginCtx, "image_generation");
     if (refused) return fail(op, `${op}: ${refused}`);
-    // Every plugin image reservation serialises against every other.
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(220, 1)`);
-    const existing = await readRequest(tx, input.pluginId, input.requestId);
-    if (existing) {
-      if (existing.inputSha256 !== input.inputSha256) {
-        return fail(op, "PluginImageRequestConflict: this request id was used for another request");
-      }
-      return ok({ existing, callId: null });
+    const reserved = await reserveImageRequest(tx, {
+      scope: pluginScope(input.pluginId),
+      requestId: input.requestId,
+      inputSha256: input.inputSha256,
+      operation: "generate",
+      prompt: input.prompt,
+      references: input.references.map((r) => ({ kind: "plugin-file", ...r })),
+      requested: input.requested,
+      provider: "google",
+      model: input.model,
+      maxCostMicrocents: input.maxCostMicrocents,
+      actorId: input.operatorActorId,
+      pluginId: input.pluginId,
+      sessionTag: `plugin-images-chat:${input.chatBranchId ?? "none"}`,
+    });
+    if ("refused" in reserved) {
+      const why = reserved.refused;
+      return fail(
+        op,
+        why.kind === "conflict"
+          ? "PluginImageRequestConflict: this request id was used for another request"
+          : why.kind === "session-required"
+            ? "PluginImageSessionRequired: a per-session image budget needs a chat"
+            : why.kind === "budget"
+              ? `PluginImageBudgetExceeded:${why.scope}`
+              : "PluginImagePluginBudgetExceeded",
+      );
     }
-    const sessionTag = `plugin-images-chat:${input.chatBranchId ?? "none"}`;
-    const budgets = (await tx.execute(sql`
-      SELECT scope, cap_microcents FROM ai_budgets
-      WHERE operation_type = 'image' AND cap_microcents IS NOT NULL
-    `)) as unknown as { scope: string; cap_microcents: string }[];
-    for (const budget of budgets) {
-      if (budget.scope === "session" && !input.chatBranchId) {
-        return fail(op, "PluginImageSessionRequired: a per-session image budget needs a chat");
-      }
-      const scope =
-        budget.scope === "day-per-actor"
-          ? sql`AND actor_id = ${input.operatorActorId}::uuid`
-          : budget.scope === "session"
-            ? sql`AND request_id = ${sessionTag}`
-            : sql``;
-      const since =
-        budget.scope === "session" ? sql`` : sql`AND created_at > now() - interval '24 hours'`;
-      const usage = (await tx.execute(sql`
-        SELECT coalesce(sum(cost_estimate_microcents), 0)::bigint AS spent FROM ai_calls
-        WHERE operation_type = 'image' ${since} ${scope}
-      `)) as unknown as { spent: string }[];
-      if (Number(usage[0]?.spent ?? 0) + input.maxCostMicrocents > Number(budget.cap_microcents)) {
-        return fail(op, `PluginImageBudgetExceeded:${budget.scope}`);
-      }
+    if ("existing" in reserved) {
+      return ok({ existing: await readRequest(tx, input.pluginId, input.requestId), callId: null });
     }
-    const pluginBudget = (await tx.execute(sql`
-      SELECT p.ai_cost_cap_microcents AS cap,
-             coalesce((SELECT sum(cost_estimate_microcents) FROM ai_calls
-                       WHERE plugin_id = p.id AND created_at > now() - interval '24 hours'), 0)::bigint AS spent
-      FROM plugins p WHERE p.id = ${input.pluginId}::uuid
-    `)) as unknown as { cap: string | null; spent: string }[];
-    const cap = pluginBudget[0]?.cap;
-    if (cap !== null && cap !== undefined) {
-      if (Number(pluginBudget[0]?.spent) + input.maxCostMicrocents > Number(cap)) {
-        return fail(op, "PluginImagePluginBudgetExceeded");
-      }
-    }
-    const callId = crypto.randomUUID();
-    await tx.execute(sql`
-      INSERT INTO ai_calls (id, actor_id, plugin_id, provider, model, input_tokens, output_tokens,
-        cached_tokens, cost_estimate_microcents, succeeded, operation_type, image_count, request_id)
-      VALUES (${callId}::uuid, ${input.operatorActorId}::uuid, ${input.pluginId}::uuid, 'google',
-        ${input.model}, 0, 0, 0, ${input.maxCostMicrocents}, false, 'image', 1, ${sessionTag})
-    `);
-    await tx.execute(sql`
-      INSERT INTO plugin_image_requests (plugin_id, id, input_sha256, call_id, model, status)
-      VALUES (${input.pluginId}::uuid, ${input.requestId}::uuid, ${input.inputSha256},
-        ${callId}::uuid, ${input.model}, 'running')
-    `);
-    return ok({ existing: null, callId });
+    return ok({ existing: null, callId: reserved.callId });
   },
 });
 
@@ -206,15 +182,14 @@ const finishOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
-    await tx.execute(sql`
-      UPDATE plugin_image_requests SET status = 'ready', result = ${sql.param(input.result)}
-      WHERE plugin_id = ${input.pluginId}::uuid AND id = ${input.requestId}::uuid
-    `);
-    await tx.execute(sql`
-      UPDATE ai_calls SET cost_estimate_microcents = ${input.costMicrocents},
-        duration_ms = ${input.durationMs}, succeeded = true
-      WHERE id = ${input.callId}::uuid
-    `);
+    await finishImageRequest(tx, {
+      scope: pluginScope(input.pluginId),
+      requestId: input.requestId,
+      callId: input.callId,
+      result: input.result,
+      costMicrocents: input.costMicrocents,
+      durationMs: input.durationMs,
+    });
     return ok({});
   },
 });
@@ -227,10 +202,7 @@ const markUncertainOp = defineOperation({
   input: request,
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
-    await tx.execute(sql`
-      UPDATE plugin_image_requests SET status = 'uncertain'
-      WHERE plugin_id = ${input.pluginId}::uuid AND id = ${input.requestId}::uuid
-    `);
+    await markImageRequestUncertain(tx, pluginScope(input.pluginId), input.requestId);
     return ok({});
   },
 });

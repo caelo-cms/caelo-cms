@@ -75,6 +75,18 @@ const mediaAssetRow = z.object({
   variants: z.array(mediaVariantRow),
 });
 
+/** #532 — provenance of a generated or edited image. */
+const mediaGenerationRow = z.object({
+  operation: z.enum(["generate", "edit"]),
+  prompt: z.string().nullable(),
+  /** Immutable sources: the media id and the exact bytes' sha256. */
+  references: z.array(z.object({ id: z.string(), sha256: z.string() }).passthrough()),
+  requested: z.record(z.string(), z.unknown()),
+  provider: z.string().nullable(),
+  model: z.string(),
+  createdAt: z.string(),
+});
+
 type AssetDbRow = {
   id: string;
   slug: string;
@@ -352,7 +364,16 @@ export const mediaGetOp = defineOperation({
   // so the resolver looks the ref up by id when it's a UUID, else by slug
   // among live rows.
   input: z.object({ assetId: z.string().min(1) }).strict(),
-  output: z.object({ asset: mediaAssetRow.nullable() }),
+  output: z.object({
+    asset: mediaAssetRow
+      .extend({
+        /** #532 — the asset this one was made from (an edit, an upscale). */
+        derivedFromId: z.string().nullable(),
+        /** #532 — how a generated/edited image was made; null otherwise. */
+        generation: mediaGenerationRow.nullable(),
+      })
+      .nullable(),
+  }),
   handler: async (_ctx, input, tx) => {
     const isUuid = z.string().uuid().safeParse(input.assetId).success;
     const refCondition = isUuid ? sql`id = ${input.assetId}::uuid` : sql`slug = ${input.assetId}`;
@@ -381,7 +402,46 @@ export const mediaGetOp = defineOperation({
       storage_key: string;
     }[];
 
-    return ok({ asset: rowToAsset(r, variants) });
+    const lineage = (await tx.execute(sql`
+      SELECT derived_from_id::text AS derived_from_id FROM media_assets WHERE id = ${r.id}::uuid
+    `)) as unknown as { derived_from_id: string | null }[];
+    // Chat requests are the site's own provenance (RLS: readable by any
+    // authenticated actor); plugin requests stay private to the plugin.
+    const generation = (await tx.execute(sql`
+      SELECT operation, prompt, references_json, requested, provider, model,
+             created_at::text AS created_at
+      FROM image_requests
+      WHERE output_media_id = ${r.id}::uuid AND scope LIKE 'chat:%'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `)) as unknown as {
+      operation: "generate" | "edit";
+      prompt: string | null;
+      references_json: unknown;
+      requested: unknown;
+      provider: string | null;
+      model: string;
+      created_at: string;
+    }[];
+    const g = generation[0];
+    const json = (v: unknown) => (typeof v === "string" ? JSON.parse(v) : v);
+    return ok({
+      asset: {
+        ...rowToAsset(r, variants),
+        derivedFromId: lineage[0]?.derived_from_id ?? null,
+        generation: g
+          ? {
+              operation: g.operation,
+              prompt: g.prompt,
+              references: (json(g.references_json) as { id: string; sha256: string }[]) ?? [],
+              requested: (json(g.requested) as Record<string, unknown>) ?? {},
+              provider: g.provider,
+              model: g.model,
+              createdAt: g.created_at,
+            }
+          : null,
+      },
+    });
   },
 });
 

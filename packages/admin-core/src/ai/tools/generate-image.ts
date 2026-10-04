@@ -1,45 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P16 — `generate_image` AI tool. Takes a natural-language prompt,
- * dispatches to the primary image-capable provider's image endpoint,
- * persists the result via media.upload_object, returns the new mediaId.
- *
- * Image generation has its own daily budget separate from text. When the
- * image budget is exhausted the tool returns a structured failure that
- * the AI surfaces back to the user; text generation stays unaffected.
- *
- * Dispatch path: ai_providers.list → find isPrimary=true row →
- * config.imageModel must be set (the operator picks per-provider in
- * /security/ai). If absent, tool returns "image generation
- * is not configured on the active provider".
+ * `generate_image` — a new image from a prompt, optionally guided by
+ * reference images from the media library (#527). Runs through the shared
+ * image lifecycle (ai/image-service.ts): capability check, budget reserved
+ * before the paid call, persisted to the media library, actual cost
+ * settled, provenance recorded. A replayed call never pays twice.
  */
 
-import { execute } from "@caelo-cms/query-api";
-import { buildMediaUrl, pickAiImageVariant } from "@caelo-cms/shared";
 import { z } from "zod";
-import { runMediaPipeline } from "../../media/pipeline.js";
-import { getMediaStorage, getMediaStorageProvider } from "../../media/storage.js";
-import { FakeImageProvider, isFakeImageEnabled, makeImageProvider } from "../image-provider.js";
-import { getImageProviderApiKey } from "../provider-resolver.js";
-import { describeError } from "./_describe-error.js";
+import { loadSourceImages, resolveImageModel, runImageRequest } from "../image-service.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
-
-async function sha256Hex(body: Uint8Array): Promise<string> {
-  // crypto.subtle.digest needs an ArrayBuffer; slice to avoid the
-  // SharedArrayBuffer-vs-ArrayBuffer typing wrinkle.
-  const view = new Uint8Array(body);
-  const hash = await crypto.subtle.digest("SHA-256", view.buffer.slice(0));
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
 
 const generateImageInput = z
   .object({
     prompt: z.string().min(1).max(4000),
     size: z.enum(["1024x1024", "1792x1024", "1024x1792"]).default("1024x1024"),
     quality: z.enum(["standard", "hd"]).default("standard"),
+    /** Native resolution on models that offer it (see get_image_capabilities). */
+    imageSize: z.enum(["1K", "2K", "4K"]).optional(),
+    /** Media ids or slugs whose look the image should follow. */
+    references: z.array(z.string().min(1).max(200)).max(14).default([]),
     /** Owner-readable label saved alongside the media row's title. */
     altText: z.string().max(500).optional(),
   })
@@ -50,10 +31,10 @@ export type GenerateImageInput = z.infer<typeof generateImageInput>;
 export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = {
   name: "generate_image",
   description:
-    "Generate an image from a natural-language prompt via the active AI provider's image endpoint (DALL·E for OpenAI, Nano Banana for Gemini). " +
-    "Use for marketing visuals, product mockups, hero illustrations. The result is uploaded to media; the returned `mediaId` " +
-    "is suitable for `add_module` HTML referencing `<img src='/media/<id>'>`. " +
-    "Image generation has its own daily budget separate from text — if exhausted you'll get a structured `ImageBudgetExceeded` error. " +
+    "Generate a NEW image from a prompt with the configured image model; the result is saved to the media library and returned as mediaId + url (use the url verbatim in <img src>). " +
+    'Pass `references` (media ids or slugs from find_media — reference images included: find_media with visibility "reference") to keep a character, product or style consistent. ' +
+    "To change an EXISTING image, use edit_image instead. Check limits first with get_image_capabilities (how many references, sizes, resolutions); requests outside them are refused before anything is paid. " +
+    "Each call reserves the image budget before the paid call; when a budget is used up you get `ImageBudgetExceeded` — tell the operator instead of retrying. " +
     "Verify the prompt is on-brand before calling; image generation is rarely cheap.",
   schema: generateImageInput,
   inputSchema: {
@@ -64,185 +45,27 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
       prompt: { type: "string" },
       size: { type: "string", enum: ["1024x1024", "1792x1024", "1024x1792"] },
       quality: { type: "string", enum: ["standard", "hd"] },
+      imageSize: { type: "string", enum: ["1K", "2K", "4K"] },
+      references: { type: "array", items: { type: "string" }, maxItems: 14 },
       altText: { type: "string" },
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    // 1. Resolve the image provider. In e2e (isFakeImageEnabled) a
-    // deterministic placeholder provider stands in for the real image API
-    // — no config, no key, no cost — so the generate_image → media →
-    // page-reference wiring runs in the default suite. Never in production.
-    let provider: import("../image-provider.js").ImageProvider;
-    let providerName: "openai" | "google";
-    let imageModel: string;
-    let apiKey: string;
-    if (isFakeImageEnabled()) {
-      provider = new FakeImageProvider();
-      providerName = "openai";
-      imageModel = "fake-image";
-      apiKey = "fake-image-key";
-    } else {
-      const provs = await execute(toolCtx.registry, toolCtx.adapter, ctx, "ai_providers.list", {});
-      if (!provs.ok) {
-        return { ok: false, content: `generate_image: ${describeError(provs.error)}` };
-      }
-      const providers = (
-        provs.value as {
-          providers: Array<{
-            name: "anthropic" | "openai" | "google" | "local-openai-compat";
-            displayName: string;
-            config: Record<string, unknown>;
-            isActive: boolean;
-          }>;
-        }
-      ).providers;
-      // Pick the IMAGE-capable provider, not the primary chat provider —
-      // Anthropic (the usual primary) can't generate images, so image gen
-      // needs a separate active openai/google provider that has an
-      // imageModel set. Prefer is_primary among those, else the first.
-      const imageCapable = providers.filter(
-        (p) =>
-          p.isActive &&
-          (p.name === "openai" || p.name === "google") &&
-          typeof (p.config as { imageModel?: string }).imageModel === "string" &&
-          ((p.config as { imageModel?: string }).imageModel ?? "").length > 0,
-      );
-      const primary =
-        imageCapable.find((p) => (p.config as { isPrimary?: boolean }).isPrimary) ??
-        imageCapable[0];
-      if (!primary) {
-        return {
-          ok: false,
-          content:
-            "generate_image: no image-capable provider configured — needs an active OpenAI or Google provider with an imageModel set. Owner sets one at /security/ai.",
-        };
-      }
-      const cfg = primary.config as { imageModel: string; apiKey?: string; baseUrl?: string };
-      // The filter guarantees openai|google; narrow for the typed union.
-      const kind = primary.name as "openai" | "google";
-      const resolvedKey = await getImageProviderApiKey(kind);
-      if (!resolvedKey)
-        return { ok: false, content: "generate_image: configure the provider key at /security/ai" };
-      provider = makeImageProvider({ kind, model: cfg.imageModel, baseUrl: cfg.baseUrl });
-      providerName = kind;
-      imageModel = cfg.imageModel;
-      apiKey = resolvedKey;
-    }
-
-    // 2. Dispatch.
-    let result: Awaited<ReturnType<typeof provider.generate>>;
-    try {
-      result = await provider.generate({
-        prompt: input.prompt,
-        model: imageModel,
-        size: input.size,
-        quality: input.quality,
-        apiKey,
-      });
-    } catch (e) {
-      return { ok: false, content: `generate_image dispatch failed: ${(e as Error).message}` };
-    }
-
-    // 3. Download bytes + upload to media. Provider-hosted URLs are
-    // ephemeral; we MUST persist before returning to the AI.
-    let bytes: Uint8Array;
-    try {
-      const r = await fetch(result.imageUrl, { signal: AbortSignal.timeout(15_000) });
-      if (!r.ok) throw new Error(`provider image fetch ${r.status}`);
-      bytes = new Uint8Array(await r.arrayBuffer());
-    } catch (e) {
-      return { ok: false, content: `generate_image: download failed: ${(e as Error).message}` };
-    }
-
-    // 4. Persist via the media pipeline (same flow the HTTP upload
-    //    endpoint uses): hash bytes → run sharp pipeline (variants +
-    //    width/height) → storage.put each variant → media.upload op.
-    //    Provider URLs are ephemeral; we MUST persist before returning
-    //    to the AI so the resulting <img src> isn't dead in 24h.
-    let assetId: string;
-    let mediaUrl: string;
-    try {
-      const sha = await sha256Hex(bytes);
-      const pipeline = await runMediaPipeline(sha, "image/png", bytes);
-      const storage = getMediaStorage();
-      for (const v of pipeline.variants) {
-        await storage.put(v.storageKey, v.body, v.contentType);
-      }
-      // media.upload is human+system by design (no DIRECT AI media writes).
-      // generate_image is a SANCTIONED, system-mediated persist of an image
-      // the AI asked for, so elevate to a system actor for this write —
-      // same pattern as verify-import-fidelity's system-context ops.
-      const upload = await execute(
-        toolCtx.registry,
-        toolCtx.adapter,
-        { ...ctx, actorKind: "system" },
-        "media.upload",
-        {
-          sha256: sha,
-          originalName: `ai-generated-${Date.now()}.png`,
-          // Meaningful public URL segment: the alt/subject the AI asked for
-          // (e.g. "hero background") slugified into `/_caelo/media/<slug>`.
-          name: (input.altText ?? input.prompt).slice(0, 200),
-          mime: "image/png",
-          sizeBytes: bytes.byteLength,
-          width: pipeline.width,
-          height: pipeline.height,
-          alt: (input.altText ?? input.prompt).slice(0, 2048),
-          storageKey: pipeline.variants[0]?.storageKey ?? `${sha}/orig`,
-          storageProvider: getMediaStorageProvider(),
-          // Media provenance (0181) — stamp the generating provider/model.
-          sourceKind: "ai_generated",
-          sourceDetail: `${providerName}/${imageModel}`,
-          license: "AI-generated",
-          variants: pipeline.variants.map((v) => ({
-            variant: v.variant,
-            format: v.format,
-            width: v.width,
-            height: v.height,
-            sizeBytes: v.sizeBytes,
-            storageKey: v.storageKey,
-          })),
-        },
-      );
-      if (!upload.ok) {
-        return {
-          ok: false,
-          content: `generate_image: media.upload failed: ${describeError(upload.error)}`,
-        };
-      }
-      const v = upload.value as { assetId: string; slug: string };
-      assetId = v.assetId;
-      // URL is built from the SLUG (meaningful public segment); the id stays
-      // internal. Use the shared AI-variant policy (the same one find_media
-      // applies): prefer webp-800, else the best available webp, else the
-      // always-present original — so the <img src> both resolves AND is a
-      // sensible display size.
-      mediaUrl = buildMediaUrl(
-        v.slug,
-        pickAiImageVariant(pipeline.variants.map((pv) => pv.variant)),
-      );
-    } catch (e) {
-      return { ok: false, content: `generate_image: persist failed: ${(e as Error).message}` };
-    }
-
-    // 5. Record the AI call (image op_type, image_count=1) so the
-    // cost dashboard surfaces it. Pricing read from ai_pricing table by
-    // recordAiCall (P16 PR2).
-    await execute(toolCtx.registry, toolCtx.adapter, ctx, "chat.record_ai_call", {
-      provider: providerName,
-      model: imageModel,
-      operationType: "image",
-      inputTokens: 0,
-      outputTokens: 0,
-      cachedTokens: 0,
-      imageCount: 1,
-      durationMs: result.durationMs,
-      succeeded: true,
-    }).catch(() => undefined);
-
-    return {
-      ok: true,
-      content: `Generated image (mediaId=${assetId}, url=${mediaUrl}). Reference in HTML as <img src="${mediaUrl}" alt="${input.altText ?? input.prompt.slice(0, 80)}" />.${result.revisedPrompt ? `\n\nProvider revised prompt: ${result.revisedPrompt}` : ""}`,
-    };
+    const configured = await resolveImageModel(ctx, toolCtx);
+    if ("error" in configured) return { ok: false, content: `generate_image: ${configured.error}` };
+    const sources = await loadSourceImages(ctx, toolCtx, input.references);
+    if ("error" in sources) return { ok: false, content: `generate_image: ${sources.error}` };
+    return runImageRequest({
+      ctx,
+      toolCtx,
+      configured,
+      operation: "generate",
+      prompt: input.prompt,
+      sources,
+      size: input.size,
+      quality: input.quality,
+      ...(input.imageSize ? { imageSize: input.imageSize } : {}),
+      ...(input.altText ? { altText: input.altText } : {}),
+    });
   },
 };

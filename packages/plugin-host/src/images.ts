@@ -45,21 +45,28 @@ interface RequestRow {
   result: PluginImageResult | null;
   costMicrocents: number;
   createdAt: string;
+  prompt: string | null;
+  references: { id: string; sha256: string }[];
 }
 
 /** A running request older than the provider deadline is reported as uncertain. */
 function toResult(row: RequestRow): PluginImageResult {
-  return (
-    row.result ?? {
-      requestId: row.id,
-      model: row.model,
-      status:
-        row.status === "running" && Date.now() - new Date(row.createdAt).getTime() > 210_000
-          ? "uncertain"
-          : row.status,
-      costMicrocents: row.costMicrocents,
-    }
-  );
+  // #532 — every result carries how it was requested.
+  const provenance = {
+    prompt: row.prompt,
+    references: row.references.map(({ id, sha256 }) => ({ id, sha256 })),
+  };
+  if (row.result) return { ...row.result, provenance };
+  return {
+    requestId: row.id,
+    model: row.model,
+    status:
+      row.status === "running" && Date.now() - new Date(row.createdAt).getTime() > 210_000
+        ? "uncertain"
+        : row.status,
+    costMicrocents: row.costMicrocents,
+    provenance,
+  };
 }
 
 export function makePluginImages(
@@ -165,6 +172,9 @@ export function makePluginImages(
           maxCostMicrocents: config.maxCostMicrocents,
           operatorActorId: operatorId,
           ...(invocation.chatBranchId ? { chatBranchId: invocation.chatBranchId } : {}),
+          prompt: value.prompt,
+          references: value.references,
+          requested: { imageSize: value.imageSize },
         },
       );
       if (reserved.existing) return toResult(reserved.existing);
@@ -201,6 +211,10 @@ export function makePluginImages(
           height: generated.height,
           model: config.model,
           costMicrocents: generated.costMicrocents,
+          provenance: {
+            prompt: value.prompt,
+            references: value.references.map(({ id, sha256 }) => ({ id, sha256 })),
+          },
         };
         await run(IMAGE_OPS.finish, {
           pluginId: plugin.pluginId,

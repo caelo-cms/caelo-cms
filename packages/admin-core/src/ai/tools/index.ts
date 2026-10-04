@@ -47,6 +47,7 @@ import {
 import { forkPlacementContentTool } from "./fork-placement-content.js";
 import { generateImageTool } from "./generate-image.js";
 import { getContentInstanceTool } from "./get-content-instance.js";
+import { getImageCapabilitiesTool } from "./get-image-capabilities.js";
 import { getImportPageTool } from "./get-import-page.js";
 import { getImportPageScreenshotTool } from "./get-import-page-screenshot.js";
 import { getPageLogTool } from "./get-page-log.js";
@@ -331,6 +332,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(regenerateMediaVariantsTool);
   // P16 — AI image generation via the active provider's image endpoint.
   registry.register(generateImageTool);
+  registry.register(getImageCapabilitiesTool);
   // P8 — SEO sidecar tools.
   registry.register(setPageSeoTool);
   // Bulk `_many` variant via the DRY makeBulkTool factory (CLAUDE.md §11).

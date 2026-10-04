@@ -3,19 +3,15 @@
 import type { PluginHostInfra } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import sharp from "sharp";
+import {
+  imageCapabilities,
+  imageReserveMicrocents,
+  SUPPORTED_IMAGE_MODELS,
+  settleImageCostMicrocents,
+} from "./image-models.js";
 import { makeImageProvider } from "./image-provider.js";
 import { getImageProviderApiKey } from "./provider-resolver.js";
 
-/** Current bounded Google image models. Reserve a conservative upper estimate;
- * actual usage is also estimated conservatively at the image output rate because
- * the SDK's common usage shape combines text and image tokens. Never an invoice.
- * Sources: ai.google.dev/gemini-api/docs/pricing (2026-09-14).
- */
-const rates: Record<string, { input: number; output: number; reserve: number }> = {
-  "gemini-3.1-flash-image": { input: 0.5, output: 60, reserve: 100_000_000 },
-  "gemini-3.1-flash-lite-image": { input: 0.25, output: 30, reserve: 100_000_000 },
-  "gemini-3-pro-image": { input: 2, output: 120, reserve: 200_000_000 },
-};
 export function makePluginImageProvider(
   infra: Pick<PluginHostInfra, "adapter" | "registry">,
 ): NonNullable<PluginHostInfra["imageProvider"]> {
@@ -34,15 +30,24 @@ export function makePluginImageProvider(
         }
       ).providers.find((p) => p.name === "google" && p.isActive);
       const model = google?.config.imageModel;
-      if (!model || !rates[model])
-        throw new Error("Configure a supported Google image model at /security/ai");
+      // Plugin images are Google-only and need native resolutions (#521).
+      const capabilities = model ? imageCapabilities(model) : null;
+      const reserve = model ? imageReserveMicrocents(model) : null;
+      if (!model || !capabilities || reserve === null || capabilities.imageSizes.length === 0)
+        throw new Error(
+          `Configure a supported Google image model at /security/ai (${SUPPORTED_IMAGE_MODELS.filter((m) => m.startsWith("gemini-")).join(", ")})`,
+        );
       if (!(await getImageProviderApiKey("google")))
         throw new Error("Configure the Google key at /security/ai");
-      return { model, maxCostMicrocents: rates[model].reserve, imageSizes: ["1K", "2K", "4K"] };
+      return {
+        model,
+        maxCostMicrocents: reserve,
+        imageSizes: capabilities.imageSizes,
+        capabilities,
+      };
     },
     async generate(input) {
-      const rate = rates[input.model];
-      if (!rate) throw new Error("Unsupported private image model");
+      if (!imageCapabilities(input.model)) throw new Error("Unsupported private image model");
       const apiKey = await getImageProviderApiKey("google");
       if (!apiKey) throw new Error("Google image key unavailable");
       const references = [];
@@ -77,13 +82,7 @@ export function makePluginImageProvider(
         .toColourspace("srgb")
         .jpeg({ quality: 85, chromaSubsampling: "4:4:4", mozjpeg: true })
         .toBuffer({ resolveWithObject: true });
-      const cost =
-        result.usage && result.usage.outputTokens > 0
-          ? Math.ceil(
-              (result.usage.inputTokens * rate.input + result.usage.outputTokens * rate.output) *
-                100,
-            )
-          : rate.reserve;
+      const cost = settleImageCostMicrocents(input.model, {}, result.usage);
       return {
         bytes: output.data,
         width: output.info.width,
