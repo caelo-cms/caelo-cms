@@ -117,7 +117,7 @@
         </div>
         <div class="space-y-2">
           <Label for="model">Model</Label>
-          <Input id="model" name="model" type="text" required placeholder="claude-sonnet-5" />
+          <Input id="model" name="model" type="text" required placeholder="claude-sonnet-5-5" />
         </div>
         <div class="space-y-2">
           <Label for="operationType">Operation type</Label>

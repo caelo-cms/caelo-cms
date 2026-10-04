@@ -12,8 +12,12 @@
   "ignoreExportsUsedInFile": true,
   "ignoreIssues": {
     "apps/admin/e2e-livedit/helpers.ts": ["exports"],
+    "apps/admin/src/lib/components/ui/alert/index.ts": ["exports", "types"],
+    "apps/admin/src/lib/components/ui/badge/index.ts": ["exports", "types"],
+    "apps/admin/src/lib/components/ui/button/index.ts": ["exports", "types"],
     "apps/admin/src/lib/components/ui/dialog/index.ts": ["exports"],
     "apps/admin/src/lib/components/ui/dropdown-menu/index.ts": ["exports"],
+    "apps/admin/src/lib/components/ui/sonner/index.ts": ["exports", "types"],
     "apps/admin/src/lib/server/internal-jwt.ts": ["exports"],
     "apps/admin/src/lib/server/query.ts": ["exports"],
     "packages/admin-core/src/branch.ts": ["exports"],

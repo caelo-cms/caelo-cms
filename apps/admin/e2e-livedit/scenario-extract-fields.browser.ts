@@ -87,10 +87,21 @@ function snapshotWelcomeHeroModule(): ExtractedModuleSnapshot {
             // The module's content instances — with explicit AI-authored
             // fields, the original copy may live in values (placement
             // content) rather than fields[].default.
+            // A chat turn writes on its branch: content_instances.set_values
+            // leaves the main row untouched and records the values in the
+            // branch overlay (content_instance_snapshots) until publish —
+            // the store loadContentInstanceStateWithBranchOverlay reads.
+            // Checking only the main row reported the copy as lost when the
+            // AI had passed it correctly as \`values\`.
             const ciRows = await tx\`
               SELECT values::text AS values_text
               FROM content_instances
               WHERE module_id = \${r.id}::uuid AND deleted_at IS NULL
+              UNION ALL
+              SELECT cis.state::text AS values_text
+              FROM content_instance_snapshots cis
+                JOIN content_instances ci ON ci.id = cis.content_instance_id
+              WHERE ci.module_id = \${r.id}::uuid AND ci.deleted_at IS NULL
             \`;
             const contentValuesText = ciRows.map((c) => c.values_text).join("\\n");
             payload = JSON.stringify({

@@ -28,6 +28,7 @@
  * the judgment delays only the turn's close, never the visible answer.
  */
 
+import { catalogModel } from "../model-catalog.js";
 import { getActiveProviderForModel } from "../provider-resolver.js";
 
 /**
@@ -35,7 +36,7 @@ import { getActiveProviderForModel } from "../provider-resolver.js";
  * single well-scoped classification, and it must not add meaningful latency to
  * the close of every read-only turn.
  */
-export const JUDGE_MODEL = "claude-sonnet-5";
+export const JUDGE_MODEL = catalogModel("anthropic", "default");
 
 const VERDICT_SCHEMA = {
   type: "object",

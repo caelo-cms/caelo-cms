@@ -140,6 +140,21 @@ export interface ComposeInput {
   readonly theme?: ComposeTheme;
   /** issue #150 — resolved web fonts; undefined = system stacks only. */
   readonly fonts?: ComposeFonts;
+  /**
+   * Plugin-provided lists for the page being composed, plus the names
+   * declared by installed-but-inactive plugins. Threaded so a module
+   * iterating `{{#language_links}}` renders the same on deploy as in
+   * the editor — including the loud marker when its plugin is off.
+   */
+  readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
+  readonly dormantDataLists?: Readonly<Record<string, string>>;
+  /**
+   * #450 — modules withheld by a plugin, keyed by module id. Resolved
+   * by the host before composing; absent means the module renders
+   * normally, which is the case for every module on a site with no
+   * gating plugin active.
+   */
+  readonly deferredModules?: Readonly<Record<string, ComposeDeferral>>;
 }
 
 export interface ComposeOutput {
@@ -169,7 +184,10 @@ function injectBefore(source: string, marker: RegExp, fragment: string): string 
 export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | null {
   if (fonts === undefined) return null;
   const links = fonts.preloads
-    .map((href) => `<link rel="preload" as="font" type="font/woff2" crossorigin href="${href}">`)
+    .map((href) => {
+      const format = /\.(woff2?|ttf|otf)(?:[?#]|$)/.exec(href)?.[1];
+      return `<link rel="preload" as="font"${format ? ` type="font/${format}"` : ""} crossorigin href="${href}">`;
+    })
     .join("");
   const style =
     fonts.css.trim().length > 0 ? `<style data-source="fonts">${fonts.css}</style>` : "";
@@ -178,6 +196,13 @@ export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | nul
 }
 
 export function composePagePreview(input: ComposeInput): ComposeOutput {
+  // No withholding path here; rendering a withheld module would ship it
+  // ungated, so refuse instead of degrading silently (CLAUDE.md §2).
+  if (input.deferredModules && Object.keys(input.deferredModules).length > 0) {
+    throw new Error(
+      "composePagePreview cannot withhold modules; compose pages with deferrals through composePageWithLayout",
+    );
+  }
   const contentByName = new Map<string, string>();
   const allCss: string[] = [];
   const allJs: string[] = [];
@@ -204,7 +229,7 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
         navRendered = true;
         baseHtml = renderNavMenuHtml(navMenuItems);
       } else {
-        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
+        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme, input);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
@@ -389,11 +414,18 @@ function applyFieldSubstitution(
   fields: readonly { name: string; kind?: ModuleFieldKind; default?: unknown }[] | undefined,
   contentValues: Readonly<Record<string, unknown>> | undefined,
   theme: ComposeTheme | undefined,
+  lists: {
+    readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
+    readonly dormantDataLists?: Readonly<Record<string, string>>;
+  },
 ): string {
   // The substitution engine (renderTemplate) already unwraps CDATA
   // guards; cover the no-op early-return path so a chrome module with no
   // fields/values/theme is cleaned too.
-  if (!fields && !contentValues && !theme) return stripCdataGuards(html);
+  const hasLists =
+    Object.keys(lists.dataLists ?? {}).length > 0 ||
+    Object.keys(lists.dormantDataLists ?? {}).length > 0;
+  if (!fields && !contentValues && !theme && !hasLists) return stripCdataGuards(html);
   const engineFields: TemplateField[] = (fields ?? []).map((f) => ({
     name: f.name,
     kind: f.kind ?? "text",
@@ -403,6 +435,8 @@ function applyFieldSubstitution(
     html,
     fields: engineFields,
     contentValues,
+    dataLists: lists.dataLists,
+    dormantDataLists: lists.dormantDataLists,
     // v0.11.1 (issue #76) — thread the active theme's asset URLs so
     // module HTML carrying `{{theme_logo_url}}` etc. resolves. Unbound
     // slots emit loud-raw + `theme-asset-unbound:<slot>` markers.
@@ -445,6 +479,58 @@ export function tagModuleId(html: string, moduleId: string): string {
  * static generator) surface it as a structured failure rather than
  * silently emitting broken HTML.
  */
+/**
+ * A module withheld from this render, as resolved by the plugin host
+ * (#450). The composer never decides this — it only knows the verdict.
+ */
+export interface ComposeDeferral {
+  readonly pluginSlug: string;
+  readonly reason: string;
+  readonly placeholderModuleSlug: string;
+  readonly placeholderHtml: string;
+  readonly placeholderCss: string;
+}
+
+/**
+ * Emit a withheld module: the visible placeholder, plus the real markup
+ * parked in an inert `<template>`.
+ *
+ * `<template>` is the whole point. Browsers parse its contents but
+ * instantiate nothing — no image, iframe, script or stylesheet inside
+ * one is ever fetched. So a video module behind a consent gate does not
+ * touch YouTube until the plugin's runtime clones the content out,
+ * which is a fact about the network rather than a promise about the
+ * DOM. Hiding the module with CSS or stripping attributes in script
+ * would both leave the request already sent.
+ *
+ * The module's CSS and JS go into the same `<template>` and NEVER into
+ * the page-wide bundles: a `url(https://maps.gstatic.com/…)` in its CSS
+ * or a `fetch()` in its JS reaches the vendor exactly as surely as an
+ * `<iframe src>` does. The JS is parked as `type="text/plain"` (inert
+ * even once cloned) and the plugin runtime executes it once per module,
+ * after the markup it expects is in the DOM.
+ */
+function wrapDeferredModule(
+  moduleHtml: string,
+  module: Pick<ComposeModule, "moduleId" | "slug" | "css" | "js">,
+  deferral: ComposeDeferral,
+): string {
+  const attr = (v: string): string =>
+    v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+  const css =
+    module.css.trim().length > 0 ? `<style data-source="module">${module.css}</style>` : "";
+  const js =
+    module.js.trim().length > 0
+      ? `<script type="text/plain" data-caelo-deferred-script="${attr(module.moduleId)}">${module.js}</script>`
+      : "";
+  return [
+    `<div data-caelo-deferred="${attr(deferral.pluginSlug)}" data-reason="${attr(deferral.reason)}" data-module="${attr(module.slug)}">`,
+    `<div data-caelo-deferred-placeholder>${deferral.placeholderHtml}</div>`,
+    `<template data-caelo-deferred-content>${css}${moduleHtml}${js}</template>`,
+    `</div>`,
+  ].join("");
+}
+
 export interface ComposeLayoutBlock {
   readonly blockName: string;
   readonly modules: readonly ComposeModule[];
@@ -537,31 +623,44 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   // Duplicate rule blocks made the cascade order-dependent and bloated
   // every page the same module appeared on twice.
   const seenAssetModules = new Set<string>();
+  // Placeholder CSS, keyed by placeholder slug: one withheld module's
+  // placeholder used on five placements is emitted once.
+  const deferredCss = new Map<string, string>();
   if (input.layoutCss.trim().length > 0) cssParts.push(input.layoutCss);
   if (input.templateCss.trim().length > 0) cssParts.push(input.templateCss);
 
   // 1. Render the page modules into the template (slot replacement only;
   //    no head/body manipulation here — that belongs to the layout).
   const templateContentByName = new Map<string, string>();
-  for (const block of input.blocks) {
-    const renderedModuleHtml = block.modules.map((m) => {
-      const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
-      let baseHtml: string;
-      if (navMenuItems !== null) {
-        navRendered = true;
-        baseHtml = renderNavMenuHtml(navMenuItems);
-      } else {
-        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
-      }
-      return tagModuleId(baseHtml, m.moduleId);
-    });
-    templateContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
-    for (const m of block.modules) {
-      if (seenAssetModules.has(m.moduleId)) continue;
-      seenAssetModules.add(m.moduleId);
-      if (m.css.trim().length > 0) cssParts.push(m.css);
-      if (m.js.trim().length > 0) jsParts.push(m.js);
+  const renderPlaced = (m: ComposeModule): string => {
+    const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
+    let baseHtml: string;
+    if (navMenuItems !== null) {
+      navRendered = true;
+      baseHtml = renderNavMenuHtml(navMenuItems);
+    } else {
+      baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme, input);
     }
+    const tagged = tagModuleId(baseHtml, m.moduleId);
+    const deferral = input.deferredModules?.[m.moduleId];
+    if (!deferral) return tagged;
+    deferredCss.set(deferral.placeholderModuleSlug, deferral.placeholderCss);
+    return wrapDeferredModule(tagged, m, deferral);
+  };
+  // A withheld module's CSS/JS travel inside its <template> (see
+  // wrapDeferredModule); only modules that render normally feed the
+  // page-wide bundles.
+  const collectAssets = (m: ComposeModule): void => {
+    if (seenAssetModules.has(m.moduleId)) return;
+    seenAssetModules.add(m.moduleId);
+    if (input.deferredModules?.[m.moduleId]) return;
+    if (m.css.trim().length > 0) cssParts.push(m.css);
+    if (m.js.trim().length > 0) jsParts.push(m.js);
+  };
+  for (const block of input.blocks) {
+    const renderedModuleHtml = block.modules.map(renderPlaced);
+    templateContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
+    for (const m of block.modules) collectAssets(m);
   }
   const renderedTemplate = applySlotReplacements(input.templateHtml, {
     contentByName: templateContentByName,
@@ -576,24 +675,13 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   layoutContentByName.set("content", innerBody);
   for (const block of input.layoutBlocks) {
     if (block.blockName === "content") continue; // reserved for the page body
-    const renderedModuleHtml = block.modules.map((m) => {
-      const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
-      let baseHtml: string;
-      if (navMenuItems !== null) {
-        navRendered = true;
-        baseHtml = renderNavMenuHtml(navMenuItems);
-      } else {
-        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
-      }
-      return tagModuleId(baseHtml, m.moduleId);
-    });
+    const renderedModuleHtml = block.modules.map(renderPlaced);
     layoutContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
-    for (const m of block.modules) {
-      if (seenAssetModules.has(m.moduleId)) continue;
-      seenAssetModules.add(m.moduleId);
-      if (m.css.trim().length > 0) cssParts.push(m.css);
-      if (m.js.trim().length > 0) jsParts.push(m.js);
-    }
+    for (const m of block.modules) collectAssets(m);
+  }
+
+  for (const css of deferredCss.values()) {
+    if (css.trim().length > 0) cssParts.push(css);
   }
 
   if (navRendered) {

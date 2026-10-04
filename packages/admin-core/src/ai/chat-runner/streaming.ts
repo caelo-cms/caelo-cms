@@ -356,6 +356,32 @@ export async function* streamProviderTurn(
 
   const fatalPersist = (): boolean => result.sessionGone || result.persistFailureMessage !== null;
 
+  /**
+   * Answer a tool call without dispatching it: a failed tool row, persisted
+   * and streamed like a real result, so every tool_use keeps its
+   * tool_result (a dangling pair 400s every later turn of the chat).
+   */
+  const answerWithoutDispatch = async (
+    s: StepState,
+    toolCallId: string,
+    toolName: string,
+    input: unknown,
+    content: string,
+  ): Promise<string> => {
+    queue.push({ kind: "tool-start", toolCallId, name: toolName, arguments: input });
+    queue.push({ kind: "tool-result", toolCallId, ok: false, content });
+    await execute(registry, adapter, humanCtx, "chat.append_message", {
+      chatSessionId: args.chatSessionId,
+      role: "tool",
+      content,
+      toolCallId,
+      source: `tool result (${toolName})`,
+    });
+    s.toolRows.push({ role: "tool", content, toolCallId });
+    args.toolResultOrigins.set(toolCallId, { loop: s.index, ok: false });
+    return content;
+  };
+
   /** One wrapped dispatch — runs under the serial gate, after the anchor. */
   const runWrappedDispatch = async (
     toolCallId: string,
@@ -381,38 +407,20 @@ export async function* streamProviderTurn(
       // Theme B, inverted for the SDK loop: instead of dropping the
       // unanswered tool_use from the persisted row, answer it with a
       // synthetic failed result so the pairing stays complete.
-      const content = "Tool call not executed: the operator interrupted the turn.";
-      queue.push({ kind: "tool-start", toolCallId, name: toolName, arguments: input });
-      queue.push({ kind: "tool-result", toolCallId, ok: false, content });
-      await execute(registry, adapter, humanCtx, "chat.append_message", {
-        chatSessionId: args.chatSessionId,
-        role: "tool",
-        content,
+      return answerWithoutDispatch(
+        s,
         toolCallId,
-        source: `tool result (${toolName})`,
-      });
-      s.toolRows.push({ role: "tool", content, toolCallId });
-      args.toolResultOrigins.set(toolCallId, { loop: s.index, ok: false });
-      return content;
+        toolName,
+        input,
+        "Tool call not executed: the operator interrupted the turn.",
+      );
     }
     // Breaker: an identical (tool + args) call already failed identically
     // twice this turn. Don't re-run it — reply with a synthetic failed
     // result so the tool_use/tool_result pairing stays complete without
     // spending another dispatch on a call known to fail the same way.
     if (args.failureTracker.isBlocked(toolName, input)) {
-      const content = blockedCallResult(toolName);
-      queue.push({ kind: "tool-start", toolCallId, name: toolName, arguments: input });
-      queue.push({ kind: "tool-result", toolCallId, ok: false, content });
-      await execute(registry, adapter, humanCtx, "chat.append_message", {
-        chatSessionId: args.chatSessionId,
-        role: "tool",
-        content,
-        toolCallId,
-        source: `tool result (${toolName})`,
-      });
-      s.toolRows.push({ role: "tool", content, toolCallId });
-      args.toolResultOrigins.set(toolCallId, { loop: s.index, ok: false });
-      return content;
+      return answerWithoutDispatch(s, toolCallId, toolName, input, blockedCallResult(toolName));
     }
     await dispatchToolCall(
       { id: toolCallId, name: toolName, arguments: input },
@@ -473,6 +481,43 @@ export async function* streamProviderTurn(
     };
   });
 
+  /**
+   * The SDK executes client tools only when the model call ended on "stop"
+   * or "tool-calls" (`isToolExecutionAllowedFinishReason`, ai 7.0.1xx). A
+   * max_tokens ("length") stop right after complete tool calls — adaptive
+   * thinking spending the output budget after an `offer_choices` — leaves
+   * those calls unanswered. Dispatch them here, through the same wrapper,
+   * so the pairing invariant holds whatever the stop reason. A gated tool
+   * is never applied this way (its execute is the post-approval apply); a
+   * call that already has an approval request is answered on resume.
+   */
+  const dispatchCallsTheSdkSkipped = async (s: StepState, finishReason: string) => {
+    if (finishReason === "stop" || finishReason === "tool-calls") return;
+    const awaitingApproval = new Set(result.approvalRequests.map((r) => r.toolCallId));
+    for (const call of s.clientCalls) {
+      if (s.executedIds.has(call.id) || awaitingApproval.has(call.id)) continue;
+      const gated = args.filteredTools.find((t) => t.name === call.name)?.execute !== undefined;
+      if (gated) {
+        await ensureAnchor(s);
+        s.executedIds.add(call.id);
+        await answerWithoutDispatch(
+          s,
+          call.id,
+          call.name,
+          call.arguments,
+          "Tool call not executed: the response was cut off before it could be approved. Call it again if it is still needed.",
+        );
+        continue;
+      }
+      const run = serialDispatch.then(() => runWrappedDispatch(call.id, call.name, call.arguments));
+      serialDispatch = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      await run;
+    }
+  };
+
   /** Per-step persistence + history append — the SDK awaits this. */
   const onStepFinish = async (info: {
     stepIndex: number;
@@ -486,6 +531,7 @@ export async function* streamProviderTurn(
       throw new Error("[chat-runner] onStepFinish without an active step — sequencing broke");
     }
     if (result.sessionGone) return;
+    await dispatchCallsTheSdkSkipped(s, info.finishReason);
     const text = s.text.join("");
     const slice = [
       ...info.initialResponseMessages,

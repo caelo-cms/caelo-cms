@@ -4,8 +4,7 @@
 #
 # Ships per CLAUDE.md §3 "Dependabot/renovate on; security advisories
 # block merges". Three ecosystem entries:
-#   - bun            workspace JS (root + apps/* + packages/* +
-#                    packages/plugins/*)
+#   - bun            workspace JS (one root entry covers every workspace)
 #   - github-actions .github/workflows/*
 #   - docker         apps/{admin,api-gateway}/Dockerfile + root docker-compose.yml
 #
@@ -14,19 +13,26 @@
 # - The workspace block uses package-ecosystem: "bun" (Dependabot's
 #   Bun-lockfile support, GA 2025). If Dependabot reports bun.lock parse
 #   errors, swap to "npm" — same directories, same fields, lower fidelity
-#   (manifest-only updates; the existing "Lockfile freshness" CI gate
-#   then runs `bun install` on the Dependabot branch to reconcile
-#   bun.lock).
+#   (manifest-only updates: the "Lockfile freshness" CI gate only
+#   verifies bun.lock, it does not rewrite it, so such PRs need a manual
+#   `bun install` commit).
+#
+# - The bun entry lists ONLY "/". A root run resolves the whole workspace
+#   from root package.json and updates every affected manifest plus the
+#   single root bun.lock in one PR. Per-workspace directories ("/apps/*",
+#   "/packages/*") produced a duplicate PR per bump that edited only that
+#   workspace's package.json, never bun.lock, and so always failed the
+#   "Lockfile freshness" gate.
 #
 # - versioning-strategy is "increase", NOT "lockfile-only", because every
 #   workspace package.json uses exact pins (no `^`/`~` ranges). Under
 #   lockfile-only Dependabot only updates the lockfile, but the lockfile
 #   cannot move without the manifest changing first when the constraint
 #   is exact, so it would produce zero PRs in this repo. `increase`
-#   updates the manifest to the new exact version and lets the existing
-#   "Lockfile freshness" CI gate reconcile bun.lock on the same branch.
+#   updates the manifest to the new exact version and the root bun.lock
+#   in the same PR.
 #
-# - minor + patch are grouped per directory; majors stay individual so
+# - minor + patch are grouped per ecosystem; majors stay individual so
 #   each breaking change gets a focused review (issue #25 scope).
 #
 # - "Security advisory triggers an immediate PR" (AC #3) is governed by
@@ -45,13 +51,7 @@ updates:
   # 1. Workspace JS deps (Bun)
   # ────────────────────────────────────────────────────────────────────
   - package-ecosystem: "bun"
-    # Globs mirror the workspaces field in root package.json so a new
-    # workspace is auto-picked up by Dependabot the moment it lands.
-    directories:
-      - "/"
-      - "/apps/*"
-      - "/packages/*"
-      - "/packages/plugins/*"
+    directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -67,6 +67,13 @@ updates:
       prefix-development: "chore(deps-dev)"
     cooldown:
       default-days: 3
+    ignore:
+      # TypeScript 7 ships only the native compiler; its package drops the
+      # classic JS compiler API that madge (via @typescript-eslint),
+      # svelte-check and knip still load, so the `circular` lint step
+      # crashes. Lift once that toolchain supports TS7.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch:
         update-types:

@@ -113,3 +113,20 @@ export const DEPTH_AND_SURFACE_HINTS =
   "a near-invisible background wash; tint `color.surface-alt` a few percent off `background` so " +
   "sections can alternate; grade `shadow.sm…xl` as a real elevation ramp. Flat single-hue " +
   "palettes read as unfinished — reserve strict flatness for brands that explicitly demand it.";
+
+/** Typographic intent shared by theme creation, edits and the persistent author context. */
+export const TYPOGRAPHY_COMPOSITION_HINTS =
+  "Design typography by role: body for sustained reading, heading for navigation and hierarchy, " +
+  "and an optional typography.display composite for expressive hero or campaign titles. " +
+  "Choose real, resolvable font families and supported numeric weights for the brief; use one or two " +
+  "complementary families unless the existing brand calls for more. A display title needs deliberate " +
+  "size, line breaks, weight, spacing and composition, not just a body font enlarged or rainbow-colored. " +
+  "Record intended use and exclusions in each token's $description; reference --font-display, " +
+  "--text-display, --font-weight-display and --tracking-display only after creating those tokens. " +
+  "Preserve established brand typography unless the operator asks for a redesign. " +
+  "Preview actual rendered fonts with the operator's text, including accents and non-Latin characters; " +
+  "a family name in a picker does not prove its face loaded. Check mobile line breaks and reading contrast. " +
+  "Use the existing self-hosted font resolver and surface unresolved families; do not add external font links. " +
+  "AI-generated lettering is a separate image asset, never a reusable font or editable text. Use it only " +
+  "when explicitly requested, verify exact spelling, and retain accessible semantic text without drawing " +
+  "a duplicate visible title. Do not claim that web-font availability establishes PDF embedding support.";

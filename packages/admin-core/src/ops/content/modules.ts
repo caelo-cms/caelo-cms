@@ -6,6 +6,7 @@
  * scope here — `actorScope: ["human", "system"]` until P5 widens it.
  */
 
+import { pluginDataListsRegistry } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   deriveModuleType,
@@ -29,6 +30,7 @@ import {
   loadModuleState,
   loadModuleStateWithBranchOverlay,
 } from "../../snapshots/index.js";
+import type { ModuleState } from "../../snapshots/state.js";
 import { buildPatchSet, jsonbParam } from "../../sql-helpers.js";
 import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
 
@@ -233,7 +235,12 @@ export const listModulesOp = defineOperation({
   // CLAUDE.md §11: read surfaces are open to AI. The AI uses this
   // to plan cross-module changes (e.g. "find every module with a
   // hero in its slug").
-  actorScope: ["human", "ai", "system"],
+  //
+  // #453 — plugin actors read too. A plugin that reasons ABOUT modules
+  // rather than about its own rows (consent-manager scanning each one
+  // for third-party hosts) has no other way to see them, and this is a
+  // read: the write path stays closed to plugins.
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({ includeDeleted: z.boolean().default(false) }),
   output: z.object({ modules: z.array(moduleRowSchema) }),
@@ -282,6 +289,18 @@ export const getModuleOp = defineOperation({
   },
 });
 
+/**
+ * Every data-list name a plugin claims, running or not (#447). Dormant
+ * names count: a module written while a plugin ran must stay editable
+ * after it is switched off, or turning a plugin off would make its
+ * modules unsaveable.
+ */
+function claimedDataListNames(): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const entry of pluginDataListsRegistry.catalogue()) names.add(entry.name);
+  return names;
+}
+
 export const createModuleOp = defineOperation({
   name: "modules.create",
   // P6.7.3 — AI can create modules via the `add_module_to_page` tool
@@ -328,7 +347,11 @@ export const createModuleOp = defineOperation({
     // legitimate intermediate state (the AI may add the placeholder in
     // a follow-up update; tests use literal HTML for assertion).
     if (extracted) {
-      const validation = validateTemplatizedModule(candidateHtml, candidateFields);
+      const validation = validateTemplatizedModule(
+        candidateHtml,
+        candidateFields,
+        claimedDataListNames(),
+      );
       if (!validation.ok) {
         await recordAudit(tx, {
           actorId: ctx.actorId,
@@ -527,7 +550,11 @@ export const updateModuleOp = defineOperation({
     let extractedSurfacedToCaller: ModuleField[] | undefined;
     if (input.html !== undefined && shouldExtract) {
       const extracted = extractModuleStructure(input.html, prevFields);
-      const validation = validateTemplatizedModule(extracted.templatizedHtml, extracted.fields);
+      const validation = validateTemplatizedModule(
+        extracted.templatizedHtml,
+        extracted.fields,
+        claimedDataListNames(),
+      );
       if (!validation.ok) {
         await recordAudit(tx, {
           actorId: ctx.actorId,
@@ -610,7 +637,7 @@ export const updateModuleOp = defineOperation({
     // dropped each other's fields: edit 1 set html='B' (snapshot only,
     // live still 'A'); edit 2 read live and emitted snapshot 2 with
     // html='A' — edit 1 lost at Stage when merge applied snapshot 2.
-    let state: import("../../snapshots/index.js").ModuleState | null;
+    let state: ModuleState | null;
     if (branchId) {
       const base = await loadModuleStateWithBranchOverlay(tx, input.moduleId, branchId);
       if (!base) {

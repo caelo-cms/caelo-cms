@@ -17,7 +17,9 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
   collectContributions,
+  MAIN_RENDER,
   resetPluginHost,
+  resolveDataLists,
   runPluginOperation,
   runPluginStaticRender,
 } from "@caelo-cms/plugin-host";
@@ -25,6 +27,7 @@ import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
+  renderTemplate,
   type SiteDefaultsSetSeoInput,
   siteDefaultsSetSeoInputSchema,
 } from "@caelo-cms/shared";
@@ -110,6 +113,7 @@ afterAll(async () => {
 
 async function op<T>(operationName: string, args: unknown): Promise<T> {
   const r = await runPluginOperation({
+    invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
     pluginSlug: "international-site",
     operationName,
     args,
@@ -172,13 +176,17 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
 
     // Only source published → group below threshold → NO contributions.
     await sysOp("pages.set_status", { pageId: sourceId, status: "published" });
-    const below = await collectContributions([sourceId, soloId], { siteBaseUrl: BASE });
+    const below = await collectContributions([sourceId, soloId], {
+      ...MAIN_RENDER,
+      siteBaseUrl: BASE,
+    });
     expect(below.head.size).toBe(0);
     expect(below.sitemap.size).toBe(0);
 
     // Publish de; fr stays draft → en + de + x-default, never fr.
     await sysOp("pages.set_status", { pageId: de.pageId, status: "published" });
     const collected = await collectContributions([sourceId, de.pageId, fr.pageId, soloId], {
+      ...MAIN_RENDER,
       siteBaseUrl: BASE,
     });
     const sourceHead = collected.head.get(sourceId);
@@ -211,6 +219,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     // Language selector: build-time HTML, links to both published
     // variants, aria-current on self, display names as labels.
     const html = await runPluginStaticRender({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       pageId: de.pageId,
     });
@@ -223,6 +232,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     expect(html).not.toContain("<script");
     // Below-threshold page renders nothing at all.
     const solo = await runPluginStaticRender({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       pageId: soloId,
     });
@@ -242,10 +252,66 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
       ],
     });
     await op("refresh_locales", {});
-    const hostCollected = await collectContributions([sourceId], { siteBaseUrl: BASE });
+    const hostCollected = await collectContributions([sourceId], {
+      ...MAIN_RENDER,
+      siteBaseUrl: BASE,
+    });
     const hostLinks = (hostCollected.head.get(sourceId) ?? []).map((e) =>
       e.kind === "link" ? e.href : "",
     );
     expect(hostLinks.some((h) => h.startsWith("https://de.example.com/"))).toBe(true);
+  }, 60_000);
+
+  it("offers language_links as a data list a module renders with its OWN markup", async () => {
+    const sourceId = await seedPage("t398-lang-pricing");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const de = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t398-lang-preise",
+    });
+    await sysOp("pages.set_status", { pageId: sourceId, status: "published" });
+    await sysOp("pages.set_status", { pageId: de.pageId, status: "published" });
+
+    const lists = await resolveDataLists([sourceId], MAIN_RENDER);
+    const items = lists.get(sourceId)?.language_links ?? [];
+    expect(items.map((i) => i.locale).sort()).toEqual(["de", "en"]);
+    // Flat strings only — anything else would substitute as
+    // "[object Object]" into the page.
+    for (const item of items) {
+      for (const v of Object.values(item)) expect(typeof v).toBe("string");
+    }
+    expect(items.find((i) => i.locale === "de")?.label).toBe("Deutsch");
+    expect(items.find((i) => i.locale === "en")?.is_current).toBe("true");
+
+    // The whole point: the MODULE owns the markup. Nothing about this
+    // shape comes from the plugin.
+    const rendered = renderTemplate({
+      html: '<ul>{{#language_links}}<li class="lang"><a href="{{href}}">{{label}}</a></li>{{/language_links}}</ul>',
+      fields: [],
+      dataLists: lists.get(sourceId) ?? {},
+    });
+    expect(rendered.html).toContain('<li class="lang"><a href="');
+    expect(rendered.html).toContain(">Deutsch</a>");
+    expect(rendered.missingSlots).toEqual([]);
+
+    // Switch the plugin off: the module still says {{#language_links}}.
+    // It must stay visible and name the plugin, not silently vanish.
+    resetPluginHost();
+    const off = renderTemplate({
+      html: "<ul>{{#language_links}}<li>{{label}}</li>{{/language_links}}</ul>",
+      fields: [],
+      dataLists: {},
+      dormantDataLists: { language_links: "international-site" },
+    });
+    expect(off.html).toContain("{{#language_links}}");
+    expect(off.missingSlots).toContain(
+      "plugin-list-unavailable:language_links plugin=international-site",
+    );
   }, 60_000);
 });

@@ -62,7 +62,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const WORKFLOW_PATH = resolve(REPO_ROOT, ".github/workflows/ci.yml");

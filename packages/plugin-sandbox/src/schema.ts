@@ -62,6 +62,7 @@ function emitCreateTable(
   const colDefs: string[] = [];
   let hasId = false;
   for (const [colName, spec] of Object.entries(columns)) {
+    assertNotHostColumn(colName, tableName);
     if (colName === "id") hasId = true;
     colDefs.push(emitColumnDef(colName, spec));
   }
@@ -74,6 +75,12 @@ function emitCreateTable(
     `CREATE TABLE IF NOT EXISTS ${fqTable} (`,
     `  ${colDefs.join(",\n  ")}`,
     `);`,
+    ...Object.entries(columns)
+      .filter(([name]) => name !== "id")
+      .map(
+        ([name, spec]) =>
+          `ALTER TABLE ${fqTable} ADD COLUMN IF NOT EXISTS ${emitColumnDef(name, spec)};`,
+      ),
     `ALTER TABLE ${fqTable} ENABLE ROW LEVEL SECURITY;`,
     `ALTER TABLE ${fqTable} FORCE  ROW LEVEL SECURITY;`,
     `DROP POLICY IF EXISTS ${quoteIdent(policyName)} ON ${fqTable};`,
@@ -127,6 +134,13 @@ function quoteIdent(s: string): string {
   if (!/^[a-z_][a-z0-9_]*$/.test(s)) {
     throw new Error(`schemaFromSpec: refusing to quote identifier "${s}"`);
   }
+  // Postgres truncates identifiers past 63 bytes without an error, so two
+  // distinct long names would address the same schema, table or policy.
+  if (s.length > 63) {
+    throw new Error(
+      `schemaFromSpec: identifier "${s}" is longer than Postgres' 63-byte limit — shorten the plugin slug or table name`,
+    );
+  }
   return `"${s}"`;
 }
 
@@ -160,6 +174,23 @@ export const ADMIN_REF_ALLOWLIST: ReadonlySet<string> = new Set([
  *     (additive-only pre-1.0; destructive change = drop + recreate).
  * Same per-plugin RLS shape: FORCE + policy on caelo.plugin_id.
  */
+/** Host-owned columns every private-zone plugin table carries. */
+const PRIVATE_HOST_COLUMN_DEFS = [
+  "caelo_chat_branch_id uuid NULL",
+  "caelo_deleted_at timestamptz NULL",
+  "caelo_version integer NOT NULL DEFAULT 1",
+  "caelo_updated_at timestamptz NOT NULL DEFAULT now()",
+] as const;
+
+/** `caelo_` columns belong to the host; a manifest declaring one is rejected. */
+function assertNotHostColumn(column: string, table: string): void {
+  if (column.startsWith("caelo_")) {
+    throw new Error(
+      `plugin schema: column "${column}" on table "${table}" uses the reserved "caelo_" prefix — rename it; those columns are host-owned`,
+    );
+  }
+}
+
 export function adminSchemaFromSpec(opts: {
   pluginId: string;
   slug: string;
@@ -177,6 +208,7 @@ export function adminSchemaFromSpec(opts: {
     const evolveStmts: string[] = [];
     let hasId = false;
     for (const [colName, spec] of Object.entries(columns)) {
+      assertNotHostColumn(colName, tableName);
       if (colName === "id") hasId = true;
       const def = emitAdminColumnDef(colName, spec);
       colDefs.push(def);
@@ -186,6 +218,13 @@ export function adminSchemaFromSpec(opts: {
     }
     if (!hasId) {
       colDefs.unshift(`id uuid PRIMARY KEY DEFAULT gen_random_uuid()`);
+    }
+    // Host-owned branch + history columns (docs/branch-aware-plugin-
+    // storage.md). Only the storage operations write them; a plugin can
+    // neither declare, read nor write a caelo_ column.
+    for (const def of PRIVATE_HOST_COLUMN_DEFS) {
+      colDefs.push(def);
+      evolveStmts.push(`ALTER TABLE ${fqTable} ADD COLUMN IF NOT EXISTS ${def};`);
     }
     const policyName = `${schemaName}_${tableName}_plugin_scope`;
     stmts.push(

@@ -24,7 +24,13 @@ import {
   type SitemapContribution,
   sitemapContribution,
 } from "@caelo-cms/plugin-sdk";
-import { isPluginDisabled, loadedPlugins, runPluginOperation } from "./dispatch.js";
+import {
+  isPluginDisabled,
+  loadedPlugins,
+  type RenderScope,
+  renderInvocation,
+  runPluginOperation,
+} from "./dispatch.js";
 
 interface ContributionSource {
   readonly pluginSlug: string;
@@ -74,7 +80,7 @@ export interface CollectedContributions {
  */
 export async function collectContributions(
   pageIds: ReadonlyArray<string>,
-  opts: { siteBaseUrl: string },
+  opts: { siteBaseUrl: string } & RenderScope,
 ): Promise<CollectedContributions> {
   const head = new Map<string, HeadEntry[]>();
   const headKeys = new Map<string, Map<string, { value: string; source: string }>>();
@@ -83,6 +89,7 @@ export async function collectContributions(
 
   for (const source of contributingPlugins()) {
     const r = await runPluginOperation({
+      invocation: renderInvocation(opts),
       pluginSlug: source.pluginSlug,
       operationName: source.operationName,
       args: { pageIds: [...pageIds], siteBaseUrl: opts.siteBaseUrl },

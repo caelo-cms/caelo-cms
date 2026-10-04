@@ -119,6 +119,7 @@ afterAll(async () => {
 
 async function op<T>(operationName: string, args: unknown): Promise<T> {
   const r = await runPluginOperation({
+    invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
     pluginSlug: "international-site",
     operationName,
     args,
@@ -202,6 +203,7 @@ describe("#397 — context-aware translation", () => {
       }),
     );
     const refused = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       operationName: "translate_variant",
       args: { variantPageId: variant.pageId },

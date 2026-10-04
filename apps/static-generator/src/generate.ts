@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+import { fontReader } from "@caelo-cms/font-service";
 
 /**
  * Static generator entry point. Takes a transaction handle on `cms_admin`
@@ -22,8 +23,16 @@
  * production produce the same HTML byte-for-byte.
  */
 
-import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import {
+  collectBuildAssets,
+  injectPluginAssets,
+  MAIN_RENDER,
+  pluginDataListsRegistry,
+  resolveDataLists,
+  resolveModuleDeferrals,
+} from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -41,6 +50,7 @@ import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { buildRobotsTxtWithSitemap, readSeoSettings, runSeoPass } from "./seo-pass.js";
+import { syncContents } from "./sync-contents.js";
 
 export interface DeployTarget {
   readonly id: string;
@@ -522,6 +532,11 @@ export async function generateSite(args: {
   let themeFontFiles: readonly { cachePath: string; relPath: string }[] = [];
   if (activeTheme !== undefined) {
     const resolved = await resolveThemeFonts({
+      readFont: fontReader(tx, {
+        actorId: "00000000-0000-0000-0000-00000000ffff",
+        actorKind: "system",
+        requestId: "font-build",
+      }),
       tokens: activeTheme.tokens,
       cacheDir: defaultFontsCacheDir(root),
       publicBasePath: "/_assets/fonts",
@@ -556,6 +571,54 @@ export async function generateSite(args: {
   }[] = [];
   // P13 — per-slug bake target for the plugin render pass.
   const bakeTargets = new Map<string, BakeTarget>();
+  // Plugin data lists for the whole deploy, resolved in ONE call per
+  // contributing plugin rather than per page. Names declared by
+  // installed-but-inactive plugins come along so a module still
+  // iterating a switched-off plugin's list emits the loud marker here
+  // exactly as it does in the editor preview.
+  const allLists = await resolveDataLists(
+    pageRows.map((p) => p.page_id),
+    MAIN_RENDER,
+  );
+  const dormantLists = Object.fromEntries(pluginDataListsRegistry.dormantNames());
+  // #450 — withheld modules, resolved ONCE for the build. Asking per
+  // page would be one plugin round-trip per page for a verdict that is
+  // per MODULE; the module set is the same question every time.
+  // The gate judges the content this build ships — module code plus
+  // every main-line content instance — not a verdict a background scan
+  // recorded before the latest edit.
+  const candidateRows = (await tx.execute(sql`
+    SELECT m.id::text AS id, m.html, m.css, m.js, m.fields::text AS fields,
+           COALESCE(
+             json_agg(ci.values) FILTER (WHERE ci.id IS NOT NULL),
+             '[]'::json
+           )::text AS content_values
+    FROM modules m
+      LEFT JOIN content_instances ci
+        ON ci.module_id = m.id AND ci.chat_branch_id IS NULL
+    WHERE m.deleted_at IS NULL
+    GROUP BY m.id
+  `)) as unknown as {
+    id: string;
+    html: string;
+    css: string;
+    js: string;
+    fields: string | null;
+    content_values: string;
+  }[];
+  const deferredModules = Object.fromEntries(
+    await resolveModuleDeferrals(
+      candidateRows.map((r) => ({
+        moduleId: r.id,
+        html: r.html,
+        css: r.css,
+        js: r.js,
+        fields: r.fields ? JSON.parse(r.fields) : [],
+        contentValues: JSON.parse(r.content_values) as unknown[],
+      })),
+      MAIN_RENDER,
+    ),
+  );
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];
     if (!page) continue;
@@ -608,6 +671,9 @@ export async function generateSite(args: {
         layoutCss: page.layout_css,
         layoutBlocks,
         layoutSlug: page.layout_slug,
+        dataLists: allLists.get(page.page_id) ?? {},
+        dormantDataLists: dormantLists,
+        deferredModules,
       });
     } catch (e) {
       if (e instanceof ComposeError) {
@@ -709,6 +775,25 @@ export async function generateSite(args: {
       pages: composedPages,
       bakeTargets,
     });
+  }
+
+  // #449 — plugin client assets: one call per contributing plugin for
+  // the whole build, written under `_caelo/plugin/<slug>/` with the
+  // content hash in the name, then referenced from every page. Runs
+  // AFTER the plugin render pass so a runtime that hydrates baked
+  // markup is guaranteed to find it already in the document.
+  const clientAssets = await collectBuildAssets(
+    pageRows.map((p) => p.page_id),
+    MAIN_RENDER,
+  );
+  for (const asset of clientAssets) {
+    const assetPath = join(buildDir, asset.relPath);
+    await mkdir(dirname(assetPath), { recursive: true });
+    await writeFile(assetPath, asset.content, "utf8");
+    fileCount += 1;
+  }
+  for (const p of composedPages) {
+    p.html = injectPluginAssets(p.html, clientAssets, "linked");
   }
 
   // v0.2.85 — per-key Content-Type sidecar. When pageUrlStyle is
@@ -928,55 +1013,6 @@ export async function generateSite(args: {
   await pruneOldBuilds(buildsDir, runId, 5);
 
   return { pageCount: pageRows.length, fileCount, durationMs: Date.now() - start, buildDir };
-}
-
-/**
- * Mirror `src` into `dst` so dst contains exactly src's tree. Files are
- * overwritten in place; files in dst not present in src are removed.
- * Empty subdirectories are pruned bottom-up. Tolerates EFAULT on rm
- * (Docker Desktop quirk on rm-inside-bind-mount on macOS) so a build
- * never fails the whole deploy because a stale child couldn't be
- * unlinked.
- */
-async function syncContents(src: string, dst: string): Promise<void> {
-  const tryRm = async (path: string, opts: Parameters<typeof rm>[1] = {}) => {
-    try {
-      await rm(path, opts);
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException | undefined)?.code;
-      if (code !== "EFAULT" && code !== "ENOENT") throw e;
-    }
-  };
-  const srcFiles = new Set<string>();
-  const collect = async (rel: string): Promise<void> => {
-    const entries = await readdir(join(src, rel), { withFileTypes: true });
-    for (const entry of entries) {
-      const childRel = rel ? join(rel, entry.name) : entry.name;
-      if (entry.isDirectory()) await collect(childRel);
-      else srcFiles.add(childRel);
-    }
-  };
-  await collect("");
-  for (const rel of srcFiles) {
-    await mkdir(join(dst, rel, ".."), { recursive: true });
-    await copyFile(join(src, rel), join(dst, rel));
-  }
-  const sweep = async (rel: string): Promise<void> => {
-    const here = join(dst, rel);
-    if (!(await stat(here).catch(() => null))) return;
-    const entries = await readdir(here, { withFileTypes: true });
-    for (const entry of entries) {
-      const childRel = rel ? join(rel, entry.name) : entry.name;
-      if (entry.isDirectory()) {
-        await sweep(childRel);
-        const remaining = await readdir(join(dst, childRel)).catch(() => []);
-        if (remaining.length === 0) await tryRm(join(dst, childRel), { recursive: false });
-      } else if (!srcFiles.has(childRel)) {
-        await tryRm(join(dst, childRel), { force: true });
-      }
-    }
-  };
-  await sweep("");
 }
 
 async function pruneOldBuilds(buildsDir: string, keepRunId: string, retain: number): Promise<void> {

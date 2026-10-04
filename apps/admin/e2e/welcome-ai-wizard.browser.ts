@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
+import { clearLoginRateBucket } from "./helpers.js";
 
 /**
  * First-run AI wizard guards (/welcome/ai).
@@ -13,6 +14,9 @@ import { expect, test } from "@playwright/test";
  * validation and dogfood verification.
  */
 
+// Every spec logs in as dev-owner from the same IP; the login limiter
+// (5 per 5 min) would otherwise reject later specs in the batch.
+test.beforeAll(clearLoginRateBucket);
 test("unauthenticated /welcome/ai redirects to /login", async ({ page }) => {
   await page.goto("/welcome/ai");
   await expect(page).toHaveURL(/\/login$/, { timeout: 15_000 });

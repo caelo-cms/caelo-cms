@@ -25,6 +25,7 @@ import {
   type ModelMessage,
   NoObjectGeneratedError,
   streamText,
+  ToolChoiceViolationError,
 } from "ai";
 
 import type {
@@ -46,6 +47,7 @@ import { normalizeToolArgs } from "../tools/normalize-args.js";
  * paths).
  */
 export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessage[] {
+  const toolNames = new Map<string, string>();
   return messages.flatMap((m): ModelMessage[] => {
     // Option C (CLAUDE.md §12) — a replayed assistant turn carrying the
     // SDK's own `response.messages` is spliced back verbatim. The SDK
@@ -54,6 +56,12 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
     // exactly what dropped the paired tool-search result and 400'd run-B6.
     // One history row expands to N ModelMessages here.
     if (m.sdkMessages && m.sdkMessages.length > 0) {
+      for (const message of m.sdkMessages as ModelMessage[]) {
+        if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+        for (const part of message.content) {
+          if (part.type === "tool-call") toolNames.set(part.toolCallId, part.toolName);
+        }
+      }
       return m.sdkMessages as ModelMessage[];
     }
     if (m.role === "user") {
@@ -130,6 +138,7 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
       // stays captured/persisted for audit + the wire log; it just isn't
       // sent back to the provider.
       for (const tc of m.toolCalls ?? []) {
+        toolNames.set(tc.id, tc.name);
         content.push({
           type: "tool-call",
           toolCallId: tc.id,
@@ -139,7 +148,10 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
       }
       return [{ role: "assistant", content: content as ModelMessage["content"] } as ModelMessage];
     }
-    // role === "tool"
+    // Legacy tool rows persist only the call ID; recover the name from its call.
+    const toolName = toolNames.get(m.toolCallId ?? "");
+    if (!toolName)
+      throw new Error(`Tool result has no matching call: ${m.toolCallId ?? "missing ID"}`);
     return [
       {
         role: "tool",
@@ -147,7 +159,7 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
           {
             type: "tool-result",
             toolCallId: m.toolCallId ?? "",
-            toolName: "",
+            toolName,
             output: { type: "text", value: m.content },
           },
         ],
@@ -189,6 +201,9 @@ export async function* translateSDKStream(
   // block below emits a synthetic terminal pair so every stream-end
   // path produces an explicit signal.
   let yieldedDone = false;
+  // Set when the SDK reports a forced tool choice the model did not honour
+  // (see the `error` case); the terminal `finish` then ends the turn.
+  let forcedToolChoiceUnhonoured = false;
 
   try {
     for await (const ev of source) {
@@ -341,7 +356,7 @@ export async function* translateSDKStream(
           yield {
             kind: "done",
             stopReason:
-              reason === "stop"
+              reason === "stop" || forcedToolChoiceUnhonoured
                 ? "end_turn"
                 : reason === "tool-calls"
                   ? "tool_use"
@@ -355,6 +370,17 @@ export async function* translateSDKStream(
         }
         case "error": {
           const errVal = e.error as unknown;
+          // A forced tool choice the model did not honour. The SDK (ai
+          // 7.0.1xx) turns this into an error; for us it is the outcome the
+          // narrate-then-stop recovery already plans for — the one forced
+          // re-run produced no tool call, its text has streamed, and the
+          // turn ends normally instead of surfacing a provider error.
+          if (ToolChoiceViolationError.isInstance(errVal)) {
+            // The terminal `finish` part follows with reason "error"; it
+            // reads this flag.
+            forcedToolChoiceUnhonoured = true;
+            break;
+          }
           const message =
             errVal instanceof Error
               ? errVal.message
@@ -782,6 +808,7 @@ export async function runSDKGenerateObject(args: {
         cause?: unknown;
         text?: string;
         finishReason?: string;
+        response?: { id?: string; modelId?: string; headers?: Record<string, string> };
       };
       console.error("[generateObject] NoObjectGenerated — model output did not parse to schema", {
         model: modelId,
@@ -791,6 +818,13 @@ export async function runSDKGenerateObject(args: {
         rawTextLen: typeof err.text === "string" ? err.text.length : 0,
         inputTokens: e.usage?.inputTokens ?? 0,
         outputTokens: e.usage?.outputTokens ?? 0,
+        // The provider's own identifiers for this exact call, so a
+        // degenerate output can be traced with the provider instead of
+        // being re-argued from our side (CLAUDE.md §4).
+        responseId: err.response?.id ?? null,
+        responseModelId: err.response?.modelId ?? null,
+        providerRequestId:
+          err.response?.headers?.["request-id"] ?? err.response?.headers?.["x-request-id"] ?? null,
       });
       return {
         object: undefined,

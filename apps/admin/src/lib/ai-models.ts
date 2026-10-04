@@ -1,17 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
+export { GOOGLE_IMAGE_MODELS } from "@caelo-cms/shared";
+
 /**
  * Shared model catalogue for the two AI-credential entry points — the
  * first-run wizard (`(auth)/welcome/ai`) and the Owner security panel
  * (`(authed)/security/ai`). Both import from here so the option list
  * and per-provider default live in exactly one place.
  *
- * The `id` values are the exact provider model-id strings threaded into
- * `ai_providers.config.model`; the resolver reads that key
- * (`provider-resolver.ts`) with `DEFAULT_MODEL[row.name]` as the
- * fallback. Keep the Anthropic default at `claude-sonnet-5` in lockstep
- * with the resolver's default.
+ * The ids come from `@caelo-cms/admin-core/model-catalog` (the curated
+ * `model-catalog.json`, refreshed weekly by `scripts/refresh-model-catalog.ts`),
+ * the same source the resolver's per-provider default reads — so picker
+ * and resolver cannot drift apart. The `id` values are the exact provider
+ * model-id strings threaded into `ai_providers.config.model`.
  */
+
+import {
+  type CatalogProvider,
+  catalogModel,
+  catalogSlots,
+  MODEL_CATALOG,
+} from "@caelo-cms/admin-core/model-catalog";
 
 /** A selectable model: the config value plus the human-facing label. */
 export type ModelOption = {
@@ -21,31 +30,33 @@ export type ModelOption = {
   label: string;
 };
 
+const CATALOG_PROVIDERS = Object.keys(MODEL_CATALOG) as CatalogProvider[];
+
 /**
  * Provider → its selectable models. Anthropic (Claude) is the primary,
  * best-tested provider and leads the list. Providers not present here
  * (e.g. `local-openai-compat`) take a free-text model field instead.
  */
-export const MODEL_OPTIONS: Record<string, readonly ModelOption[]> = {
-  anthropic: [
-    { id: "claude-sonnet-5", label: "Sonnet 5 (recommended)" },
-    { id: "claude-opus-4-8", label: "Opus 4.8 (most capable)" },
-    { id: "claude-haiku-4-5", label: "Haiku 4.5 (fastest/cheapest)" },
-  ],
-  openai: [{ id: "gpt-4o", label: "GPT-4o" }],
-  google: [{ id: "gemini-1.5-pro", label: "Gemini 1.5 Pro" }],
-} as const;
+export const MODEL_OPTIONS: Record<string, readonly ModelOption[]> = Object.fromEntries(
+  CATALOG_PROVIDERS.map((provider) => [
+    provider,
+    catalogSlots(provider).map((slot) => ({
+      id: slot.id,
+      label: slot.note ? `${slot.label} (${slot.note})` : slot.label,
+    })),
+  ]),
+);
 
 /** Per-provider default model id (the pre-selected option). */
-export const DEFAULT_MODEL_ID: Record<string, string> = {
-  anthropic: "claude-sonnet-5",
-  openai: "gpt-4o",
-  google: "gemini-1.5-pro",
-} as const;
+export const DEFAULT_MODEL_ID: Record<string, string> = Object.fromEntries([
+  ...CATALOG_PROVIDERS.map((provider) => [provider, catalogModel(provider, "default")]),
+  // Free-text provider: a sensible pre-fill, not a catalogue entry.
+  ["local-openai-compat", "qwen2.5"],
+]);
 
 /** Short helper copy shown beneath the Model picker. */
 export const MODEL_HELPER_TEXT =
-  "Claude's Sonnet 5 is the default — a good balance of quality and cost.";
+  "Choose a chat model. Preview models may change; image generation uses a separate model.";
 
 /**
  * Models for a provider, or an empty list for providers that use a

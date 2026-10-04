@@ -34,7 +34,7 @@ test("Advanced History drawer reverts a module", async ({ page }) => {
   await page.getByRole("button", { name: /create/i }).click();
   await expect(page).toHaveURL(/\/content\/templates\/[0-9a-f-]+$/, { timeout: 15_000 });
   await page.getByRole("button", { name: /save blocks/i }).click();
-  await expect(page.getByText(/Saved\./)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("alert").getByText(/Saved\./)).toBeVisible({ timeout: 15_000 });
 
   // Create the module at v1 then update to v2.
   await page.goto("/content/modules");
@@ -49,7 +49,7 @@ test("Advanced History drawer reverts a module", async ({ page }) => {
   // Edit to v2.
   await page.locator('textarea[name="html"]').fill(`<p>${V2_TEXT}</p>`);
   await page.getByRole("button", { name: /^save$/i }).click();
-  await expect(page.getByText(/Saved\./)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("alert").getByText(/Saved\./)).toBeVisible({ timeout: 15_000 });
 
   // Open the history drawer; v2 should be the most recent module-update entry.
   await page.goto("/content/history");
@@ -70,7 +70,9 @@ test("Advanced History drawer reverts a module", async ({ page }) => {
   // Revert this module.
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: /revert this module/i }).click();
-  await expect(page.getByText(/Module reverted\./)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("alert").getByText(/Module reverted\./)).toBeVisible({
+    timeout: 15_000,
+  });
 
   // Confirm live module is back to v1.
   //

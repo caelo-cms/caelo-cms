@@ -28,6 +28,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { fetchRenderedHtml, htmlToMarkdown } from "@caelo-cms/site-importer";
 import { z } from "zod";
+import { catalogModel } from "../model-catalog.js";
 import { getActiveProviderForModel } from "../provider-resolver.js";
 import {
   describeFetchBudgetDenied,
@@ -38,8 +39,8 @@ import { getExternalScreenshotter } from "./_external-screenshotter.js";
 import { getPageInspection, putPageInspection } from "./_page-inspection-cache.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
-/** The cheap extraction model for `describe`. Anthropic Haiku 4.5. */
-const SMALL_MODEL = "claude-haiku-4-5";
+/** The cheap extraction model for `describe` — the catalog's fast Anthropic model. */
+const SMALL_MODEL = catalogModel("anthropic", "fast");
 /** HTML handed to the small model is capped so it fits comfortably. Sized
  *  above a typical rendered page (a real WordPress page runs ~270 KB) so we
  *  don't truncate away the content the caller is asking about; Haiku's

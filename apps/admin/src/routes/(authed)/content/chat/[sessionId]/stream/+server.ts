@@ -20,6 +20,7 @@
  */
 
 import { getActiveProvider, resolveTestProvider, runChatTurn } from "@caelo-cms/admin-core";
+import { pluginPreviewSelectionSchema } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
@@ -43,6 +44,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   const body = (await request.json()) as {
     content?: string;
     chips?: unknown[];
+    previewSelection?: unknown;
     activePageId?: string;
     attachments?: unknown;
     // issue #29 — 'system' marks an auto-injected nudge (crawl completion,
@@ -54,6 +56,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   };
   // issue #29 — Zod at the boundary; anything other than the literal
   // "system" (including absent) is treated as operator-authored.
+  const selection = pluginPreviewSelectionSchema.optional().safeParse(body.previewSelection);
+  if (!selection.success) throw error(400, "Invalid preview selection");
   const origin = body.origin === "system" ? ("system" as const) : undefined;
   // Plan B — validate a resume decision at the boundary (approvalId +
   // boolean approved). Present ⇒ this is a resume, not an operator message.
@@ -217,6 +221,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
               ? (body.chips as { moduleId: string; selector: string; label: string }[])
               : [],
             attachments: attachmentsParse.data,
+            ...(selection.data && !resumeApproval ? { previewSelection: selection.data } : {}),
             ...(origin ? { origin } : {}),
             ...(typeof body.activePageId === "string" && body.activePageId.length > 0
               ? { activePageId: body.activePageId }

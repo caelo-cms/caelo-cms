@@ -530,7 +530,10 @@ async function stepGrantRoles(
   s.start(`Granting ${PROVISIONER_ROLE_LIST.length} IAM roles to the provisioner SA...`);
   const { granted, failed } = await grantProvisionerRoles(projectId, saEmail);
   if (failed.length > 0) {
-    s.stop(red(`Granted ${granted}; failed ${failed.length}: ${failed.join(", ")}`));
+    s.stop(
+      red(`Granted ${granted}; failed ${failed.length}: ${failed.map((f) => f.role).join(", ")}`),
+    );
+    for (const f of failed) log.error(`${f.role}: ${f.error}`);
     log.error(
       `Some role bindings failed. You can re-run safely (idempotent), or grant the failed roles manually via gcloud.`,
     );

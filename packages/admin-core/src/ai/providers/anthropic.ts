@@ -400,14 +400,62 @@ function buildSystemAndMessages(
 }
 
 /**
- * Claude 4.6+ models (Sonnet 5, Opus 4.6/4.7/4.8, Fable, Mythos) drop
- * the pre-4.6 sampling/thinking knobs: they reject `budget_tokens` AND
+ * Claude 4.6+ models (Sonnet 5/5.5, Opus 4.6/4.7/4.8/5/5.5, Fable, Mythos)
+ * drop the pre-4.6 sampling/thinking knobs: they reject `budget_tokens` AND
  * `temperature` with a 400 and take adaptive thinking instead. Older
  * models still accept both. Centralised here so every param that these
  * models deprecate is gated on ONE predicate.
  */
 export function isAdaptiveModel(model: string): boolean {
-  return /sonnet-5|opus-4-7|opus-4-8|opus-4-6|sonnet-4-6|fable|mythos/.test(model);
+  return /sonnet-5|opus-5|opus-4-7|opus-4-8|opus-4-6|sonnet-4-6|fable|mythos/.test(model);
+}
+
+/**
+ * Sonnet 5.5, Opus 5.5, Fable 5.1 and Mythos 5.1 reject forced tool use
+ * (`tool_choice` `any`/`tool`) with a 400. For them a `"required"` request is
+ * sent as `auto` — the RECOVER re-run then relies on its nudge instead of
+ * the API forcing a call. Review this list whenever a new Claude model lands
+ * in `model-catalog.json`.
+ */
+export function rejectsForcedToolChoice(model: string): boolean {
+  return /sonnet-5-5|opus-5-5|fable-5-1|mythos-5-1/.test(model);
+}
+
+/**
+ * Adapts a provider-neutral request to what `model` accepts: strips
+ * `temperature` for the adaptive class and forced tool choice for models that
+ * reject it. Returns `input` itself when nothing needs changing.
+ */
+export function adaptGenerateInput(model: string, input: GenerateInput): GenerateInput {
+  const withoutTemperature =
+    input.temperature !== undefined && isAdaptiveModel(model)
+      ? { ...input, temperature: undefined }
+      : input;
+  return rejectsForcedToolChoice(model)
+    ? withoutForcedToolChoice(withoutTemperature)
+    : withoutTemperature;
+}
+
+/** Drops `toolChoice: "required"` (top-level and per-step) for models that reject it. */
+function withoutForcedToolChoice(input: GenerateInput): GenerateInput {
+  const loop = input.loop;
+  return {
+    ...input,
+    ...(input.toolChoice === "required" ? { toolChoice: undefined } : {}),
+    ...(loop
+      ? {
+          loop: {
+            ...loop,
+            prepareStep: async (info) => {
+              const override = await loop.prepareStep(info);
+              if (override?.toolChoice !== "required") return override;
+              const { toolChoice: _dropped, ...rest } = override;
+              return Object.keys(rest).length > 0 ? rest : undefined;
+            },
+          },
+        }
+      : {}),
+  };
 }
 
 /**
@@ -572,14 +620,11 @@ export class AnthropicProvider implements AIProvider {
       : undefined;
     // Claude 4.6+ models reject `temperature` with a 400 ("temperature
     // is deprecated for this model") — the request dies before the model
-    // runs. Strip it for the adaptive class so a caller-supplied
-    // temperature (e.g. the e2e harness's CAELO_CHAT_TEMPERATURE=0, or an
-    // operator sampling setting) can't 400 the whole turn. Older Anthropic
-    // models keep it.
-    const effectiveInput =
-      input.temperature !== undefined && isAdaptiveModel(this.model)
-        ? { ...input, temperature: undefined }
-        : input;
+    // runs — and the 5.5 generation also rejects forced tool choice. Adapt
+    // the request so a caller-supplied temperature (e.g. the e2e harness's
+    // CAELO_CHAT_TEMPERATURE=0) or the RECOVER re-run's forced tool choice
+    // can't 400 the whole turn. Older Anthropic models keep both.
+    const effectiveInput = adaptGenerateInput(this.model, input);
     const stream = runSDKStream({
       model: this.#model,
       input: effectiveInput,

@@ -45,6 +45,7 @@ import {
   THEME_DOCUMENT_SKELETON,
   TOKEN_ROLE_HINTS,
   TOKEN_SHAPE_HINTS,
+  TYPOGRAPHY_COMPOSITION_HINTS,
 } from "../theme-guidance.js";
 import type { ToolContext, ToolResult } from "./dispatch.js";
 
@@ -156,7 +157,7 @@ export async function checkColdStartGate(
         `${THEME_DOCUMENT_SKELETON}. The primary must carry real chroma — never default to neutral grayscale ` +
         `on a real site. Anchor-hue inspiration: ${ANCHOR_HUE_HINTS} — the hue anchors the palette, the rest ` +
         `of the document is still yours to compose. ${DEPTH_AND_SURFACE_HINTS} ${TOKEN_SHAPE_HINTS} ` +
-        `${SPACING_RHYTHM_HINTS} ${TOKEN_ROLE_HINTS} ` +
+        `${SPACING_RHYTHM_HINTS} ${TOKEN_ROLE_HINTS} ${TYPOGRAPHY_COMPOSITION_HINTS} ` +
         "`description` records WHY the palette fits the brand. " +
         "Then tell the operator to approve it at /security/themes/pending.",
     );
@@ -172,7 +173,7 @@ export async function checkColdStartGate(
         "primaryColor with real chroma plus the supporting colors that should follow it (accent, ring, " +
         "secondary where the brand calls for it), and typography if the brand voice suggests one. " +
         `Anchor-hue inspiration: ${ANCHOR_HUE_HINTS}. ${DEPTH_AND_SURFACE_HINTS} ${SPACING_RHYTHM_HINTS} ` +
-        `${TOKEN_ROLE_HINTS} Never leave a real site on the neutral grayscale seed.`,
+        `${TOKEN_ROLE_HINTS} ${TYPOGRAPHY_COMPOSITION_HINTS} Never leave a real site on the neutral grayscale seed.`,
     );
     steps.push(
       "`set_theme_meta({description: '<why this palette fits the brand>'})` — required: the gate clears only " +

@@ -84,7 +84,7 @@ Disable the offending plugin via UI or:
 UPDATE plugins SET status='disabled' WHERE slug='<slug>';
 ```
 
-Restart the admin (the plugin host re-bootstraps). Tier 2 plugins should never crash the host (Deno sandbox); if one did, file a security issue + revoke the plugin's actor.
+Restart the admin (the plugin host re-bootstraps). A plugin should never crash the host (Deno sandbox); if one did, file a security issue, disable the plugin and revoke its grants.
 
 ## §E — Edge router serving wrong variant / 404
 

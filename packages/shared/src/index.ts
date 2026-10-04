@@ -12,9 +12,11 @@ export * from "./context.js";
 export * from "./css-gradient-scan.js";
 export * from "./css-var-scan.js";
 export * from "./design-draft-shell.js";
+export * from "./font-assets.js";
 export * from "./fonts.js";
 export * from "./genesis.js";
 export * from "./genesis-inventory.js";
+export * from "./google-models.js";
 export * from "./interactions.js";
 export {
   type LogContext,
@@ -29,6 +31,7 @@ export {
 } from "./logger.js";
 export * from "./media.js";
 export * from "./page-log.js";
+export * from "./plugin-preview.js";
 export * from "./preview-compose.js";
 export * from "./preview-scanner.js";
 export * from "./proposal-status.js";

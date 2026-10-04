@@ -47,6 +47,7 @@ function makeLoaded(overrides: Partial<LoadedPlugin>): LoadedPlugin {
 describe("#388 — provenance grantability ceiling at the capability factory", () => {
   it("release-signed: requested elevated handles are attached", async () => {
     const ctx = (await makePluginContext({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       plugin: makeLoaded({}),
       infra: FAKE_INFRA,
     })) as PluginContextTier1;
@@ -59,6 +60,7 @@ describe("#388 — provenance grantability ceiling at the capability factory", (
 
   it("runtime-authored: the SAME definition gets the sandbox base only", async () => {
     const ctx = (await makePluginContext({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       plugin: makeLoaded({ provenance: "runtime-authored", tier: 2 }),
       infra: FAKE_INFRA,
     })) as PluginContextTier1;
@@ -75,6 +77,7 @@ describe("#388 — provenance grantability ceiling at the capability factory", (
     // A drifted row/registration where tier and provenance disagree must
     // fail CLOSED: provenance is the authority.
     const ctx = (await makePluginContext({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       plugin: makeLoaded({ provenance: "runtime-authored", tier: 1 }),
       infra: FAKE_INFRA,
     })) as PluginContextTier1;

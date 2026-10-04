@@ -15,6 +15,7 @@ export const PERMISSIONS = [
   "deploy.trigger",
   "ops.view",
   "plugins.approve",
+  "plugins.install",
   "users.manage",
   "roles.manage",
   "settings.read",

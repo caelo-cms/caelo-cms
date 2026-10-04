@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/static-generator",
-  "version": "0.10.24",
+  "version": "0.10.26",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
@@ -20,7 +20,8 @@
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
-    "drizzle-orm": "0.45.2"
+    "drizzle-orm": "0.45.3",
+    "@caelo-cms/font-service": "workspace:*"
   },
   "devDependencies": {
     "@caelo-cms/admin-core": "workspace:*"

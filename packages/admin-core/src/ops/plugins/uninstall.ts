@@ -212,6 +212,12 @@ export const executeUninstallPluginOp = defineOperation({
       });
     }
 
+    // Preserve provenance even for an already archived guide. The FK clears
+    // plugin_id on deletion; a null id must not turn it into a standalone skill.
+    await tx.execute(sql`
+      UPDATE skills SET plugin_owner_slug = ${slug}, activated_at = NULL
+      WHERE plugin_id = ${payload.pluginId}::uuid
+    `);
     // 1. Archive plugin-shipped skills (rows survive; surface gone).
     const archived = (await tx.execute(sql`
       UPDATE skills SET status = 'archived', decided_by = ${ctx.actorId}::uuid, decided_at = now()

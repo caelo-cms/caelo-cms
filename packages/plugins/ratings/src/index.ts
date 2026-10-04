@@ -54,6 +54,9 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   requestedCapabilities: ["background_workers"],
+  /** Visitor-facing surface (default deny — everything else is
+   *  refused a visitor-context dispatch). */
+  publicOperations: ["submit", "list_aggregates"],
   operations: {
     submit: async (ctx, args) => {
       const input = args as SubmitInput;

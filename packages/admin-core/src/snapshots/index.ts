@@ -3,7 +3,6 @@
 export {
   emitSnapshot,
   type SnapshotEntity,
-  type SnapshotInput,
   type SnapshotOpKind,
 } from "./emit.js";
 export {
@@ -13,7 +12,6 @@ export {
   loadModuleStateWithBranchOverlay,
   loadPageLayoutState,
   loadPageLayoutStateWithBranchOverlay,
-  loadPageModuleContentState,
   loadPageState,
   loadPageStateWithBranchOverlay,
   loadTemplateState,
@@ -32,23 +30,7 @@ export function parseSnapshotState<T>(raw: unknown): T {
   return raw as T;
 }
 
-export {
-  classifySeverity,
-  defaultTemplateBlockIsHeader,
-  type Severity,
-  type SeverityInput,
-  type SeverityResult,
-} from "./severity.js";
-export type {
-  ContentInstanceState,
-  ModuleState,
-  PageLayoutState,
-  PageModuleContentState,
-  PageState,
-  StateSchemaVersion,
-  TemplateState,
-  ThemeState,
-} from "./state.js";
+export { classifySeverity, defaultTemplateBlockIsHeader } from "./severity.js";
 export {
   parseAndUpgradeModuleState,
   parseAndUpgradePageLayoutState,
