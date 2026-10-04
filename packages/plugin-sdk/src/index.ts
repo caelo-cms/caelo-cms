@@ -100,6 +100,7 @@ export const pluginCapability = z.enum([
   "font_assets",
   "private_files",
   "image_generation",
+  "site_media_read",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -769,6 +770,39 @@ export interface PluginPrivateFiles {
   readChunk(input: { id: string; offset: number }): Promise<{ base64: string }>;
 }
 
+/** #530 — a site media-library image, as a plugin granted `site_media_read` sees it. */
+export interface PluginSiteMediaAsset {
+  readonly id: string;
+  readonly slug: string;
+  readonly mime: string;
+  readonly sha256: string;
+  readonly sizeBytes: number;
+  readonly width: number | null;
+  readonly height: number | null;
+  readonly alt: string;
+  /** `reference` images guide generation and are never published. */
+  readonly visibility: "library" | "reference";
+  /** Set when the image was made from another (an edit). */
+  readonly derivedFromId: string | null;
+}
+/**
+ * #530 — read access to the site's media library (`site_media_read`).
+ * Every call rechecks that the human the plugin acts for may author
+ * content; the grant is checked for the running artifact on each call.
+ */
+export interface PluginSiteMedia {
+  /** Search by alt text or filename; images only. */
+  find(input: {
+    query?: string;
+    visibility?: "library" | "reference" | "all";
+    limit?: number;
+  }): Promise<PluginSiteMediaAsset[]>;
+  /** Metadata for specific assets (id or slug); unknown ids are omitted. */
+  inspect(input: { ids: readonly string[] }): Promise<PluginSiteMediaAsset[]>;
+  /** One 262144-byte chunk of the original, verified against `sha256`. */
+  readChunk(input: { id: string; sha256: string; offset: number }): Promise<{ base64: string }>;
+}
+
 /** Private image generation. Request IDs are immutable, installation-scoped and
  * never automatically replay a paid call after an uncertain outcome. */
 export interface PluginImageResult {
@@ -808,6 +842,12 @@ export interface PluginImageCapabilities {
   readonly sizes: readonly string[];
   readonly imageSizes: readonly string[];
 }
+/** An image a request reads: a private file (default) or site media (#530). */
+export interface PluginImageSourceRef {
+  readonly id: string;
+  readonly sha256: string;
+  readonly source?: "private-file" | "site-media";
+}
 export interface PluginImages {
   transform(
     input: PluginImageTransform,
@@ -820,11 +860,12 @@ export interface PluginImages {
     capabilities: PluginImageCapabilities;
   }>;
   get(input: { requestId: string }): Promise<PluginImageResult | null>;
+  /** References are private files, or site media (`source: "site-media"`, #530). */
   generate(input: {
     requestId: string;
     prompt: string;
     imageSize: "1K" | "2K" | "4K";
-    references: readonly { id: string; sha256: string }[];
+    references: readonly PluginImageSourceRef[];
     maxCostMicrocents: number;
   }): Promise<PluginImageResult>;
   /**
@@ -834,11 +875,11 @@ export interface PluginImages {
    */
   edit(input: {
     requestId: string;
-    source: { id: string; sha256: string };
-    mask?: { id: string; sha256: string };
+    source: PluginImageSourceRef;
+    mask?: PluginImageSourceRef;
     prompt: string;
     imageSize: "1K" | "2K" | "4K";
-    references: readonly { id: string; sha256: string }[];
+    references: readonly PluginImageSourceRef[];
     maxCostMicrocents: number;
   }): Promise<PluginImageResult>;
 }
@@ -871,6 +912,8 @@ export interface PluginContextTier1 extends PluginContext {
   readonly adminQuery?: PluginAdminQuery;
   readonly privateFiles?: PluginPrivateFiles;
   readonly images?: PluginImages;
+  /** #530 — attached when the manifest holds (and the Owner granted) `site_media_read`. */
+  readonly siteMedia?: PluginSiteMedia;
   /** #392 — attached when the manifest holds `domain_events`. */
   readonly events?: PluginEvents;
   readonly cms?: PluginCms;

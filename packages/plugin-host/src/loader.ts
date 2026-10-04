@@ -624,6 +624,7 @@ export async function activateApprovedExternalPlugin(
       "font_assets",
       "private_files",
       "image_generation",
+      "site_media_read",
     ]);
     for (const capability of manifest.requestedCapabilities ?? [])
       if (!supported.has(capability))

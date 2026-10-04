@@ -16,11 +16,16 @@ import { sql } from "drizzle-orm";
 import sharp from "sharp";
 
 import { transformPluginImage } from "../ai/plugin-image-transform.js";
+import { runMediaPipeline } from "../media/pipeline.js";
+import { LocalVolumeAdapter } from "../media/storage.js";
 import { registerAdminOps } from "../register.js";
 
 let calls = 0;
 let lastProviderInput: { editSource?: unknown; references: readonly unknown[] } | null = null;
 let failProvider = false;
+/** #530 — a site media image the first plugin (granted site_media_read) reads. */
+let siteImage = { id: "", sha256: "", bytes: new Uint8Array() };
+let siteStorage: LocalVolumeAdapter;
 let adapter: DatabaseAdapter;
 let root: string;
 const registry = new OperationRegistry();
@@ -42,11 +47,17 @@ async function op<T>(
   if (!result.ok) throw new Error(`${name}: ${JSON.stringify(result.error)}`);
   return result.value as T;
 }
-async function run<T>(action: string, input: unknown, index = 0, preview = false): Promise<T> {
+async function run<T>(
+  action: string,
+  input: unknown,
+  index = 0,
+  preview = false,
+  target: "images" | "siteMedia" = "images",
+): Promise<T> {
   const result = await runPluginOperation({
     pluginSlug: items[index]!.slug,
     operationName: preview ? "preview" : "run",
-    args: { action, input },
+    args: { action, input, target },
     invocation: author,
     ...(preview ? { readOnlyPreview: true } : {}),
   });
@@ -62,6 +73,36 @@ beforeAll(async () => {
   });
   registerAdminOps(registry);
   root = await mkdtemp(join(tmpdir(), "caelo-private-images-test-"));
+  // #530 — one image in the site media library.
+  siteStorage = new LocalVolumeAdapter(join(root, "site-media"));
+  const png = new Uint8Array(
+    await sharp({ create: { width: 64, height: 48, channels: 3, background: "teal" } })
+      .png()
+      .toBuffer(),
+  );
+  const siteSha = new Bun.CryptoHasher("sha256").update(png).digest("hex");
+  const pipeline = await runMediaPipeline(siteSha, "image/png", png);
+  for (const v of pipeline.variants) await siteStorage.put(v.storageKey, v.body, v.contentType);
+  const uploaded = await op<{ assetId: string }>("media.upload", {
+    sha256: siteSha,
+    originalName: "site-reference.png",
+    name: "Site reference",
+    mime: "image/png",
+    sizeBytes: png.byteLength,
+    width: pipeline.width,
+    height: pipeline.height,
+    alt: "site reference",
+    storageKey: pipeline.variants[0]!.storageKey,
+    variants: pipeline.variants.map((v) => ({
+      variant: v.variant,
+      format: v.format,
+      width: v.width,
+      height: v.height,
+      sizeBytes: v.sizeBytes,
+      storageKey: v.storageKey,
+    })),
+  });
+  siteImage = { id: uploaded.assetId, sha256: siteSha, bytes: png };
   await adapter.withAdminTransaction(system, async (tx) => {
     await tx.execute(
       sql`INSERT INTO actors(id,kind,display_name) VALUES (${owner.actorId}::uuid,'human','Private images test')`,
@@ -76,6 +117,7 @@ beforeAll(async () => {
   await bootstrap({
     infra: {
       imageTransform: transformPluginImage,
+      siteMediaBytes: (storageKey: string) => siteStorage.get(storageKey),
       adapter,
       registry,
       imageProvider: {
@@ -125,7 +167,7 @@ beforeAll(async () => {
   for (let i = 0; i < 2; i++) {
     const slug = `private-images-${crypto.randomUUID().slice(0, 8)}`;
     const source = `export default {slug:"${slug}",version:"1.0.0",tier:2,operations:{
-      run:async(ctx,args)=>ctx.images ? ctx.images[args.action](args.input) : "absent",
+      run:async(ctx,args)=>ctx[args.target] ? ctx[args.target][args.action](args.input) : "absent",
       preview:async(ctx,args)=>ctx.images ? ctx.images[args.action](args.input) : "absent"
     }};`;
     const manifest = {
@@ -134,10 +176,16 @@ beforeAll(async () => {
       tier: 2,
       schema: {},
       operations: ["run", "preview"],
-      requestedCapabilities: ["private_files", "image_generation"],
+      // Only the first plugin asks for (and gets) site media (#530).
+      requestedCapabilities: [
+        "private_files",
+        "image_generation",
+        ...(i === 0 ? ["site_media_read"] : []),
+      ],
       capabilityReasons: {
         private_files: "Store unpublished files privately",
         image_generation: "Create private test illustrations",
+        ...(i === 0 ? { site_media_read: "Use site images as references" } : {}),
       },
     };
     const staged = await op<{ installationId: string; pluginId: string; artifactDigest: string }>(
@@ -157,7 +205,11 @@ beforeAll(async () => {
         artifactDigest: staged.artifactDigest,
         expectedStateDigest: list.installations.find((item) => item.id === staged.installationId)!
           .currentStateDigest,
-        capabilities: ["private_files", "image_generation"],
+        capabilities: [
+          "private_files",
+          "image_generation",
+          ...(i === 0 ? ["site_media_read"] : []),
+        ],
       },
       owner,
     );
@@ -285,6 +337,63 @@ test("edit changes a private image into a new file and refuses masks the model c
     "PluginImageUnsupported",
   );
   expect(calls - before).toBe(1);
+}, 30000);
+test("a plugin granted site_media_read reads site images and uses them as references (#530)", async () => {
+  type Asset = { id: string; sha256: string; sizeBytes: number; mime: string };
+  const found = await run<Asset[]>("find", { query: "site reference" }, 0, false, "siteMedia");
+  expect(found.map((a) => a.id)).toContain(siteImage.id);
+  const [inspected] = await run<Asset[]>("inspect", { ids: [siteImage.id] }, 0, false, "siteMedia");
+  expect(inspected).toMatchObject({
+    id: siteImage.id,
+    sha256: siteImage.sha256,
+    mime: "image/png",
+  });
+  const chunk = await run<{ base64: string }>(
+    "readChunk",
+    { id: siteImage.id, sha256: siteImage.sha256, offset: 0 },
+    0,
+    false,
+    "siteMedia",
+  );
+  expect(new Uint8Array(Buffer.from(chunk.base64, "base64"))).toEqual(siteImage.bytes);
+  await expect(
+    run(
+      "readChunk",
+      { id: siteImage.id, sha256: "0".repeat(64), offset: 0 },
+      0,
+      false,
+      "siteMedia",
+    ),
+  ).rejects.toThrow("SiteMediaNotFound");
+
+  // As a reference for a paid request; the ledger records where it came from.
+  const before = calls;
+  const generated = await run<PluginImageResult>("generate", {
+    ...request(),
+    references: [{ id: siteImage.id, sha256: siteImage.sha256, source: "site-media" }],
+  });
+  expect(generated.status).toBe("ready");
+  expect(lastProviderInput?.references).toHaveLength(1);
+  expect(calls - before).toBe(1);
+  const ledger = (await adapter.withAdminTransaction(system, (tx) =>
+    tx.execute(
+      sql`SELECT references_json FROM image_requests WHERE scope = ${`plugin:${items[0]!.pluginId}`} AND id = ${generated.requestId}::uuid`,
+    ),
+  )) as unknown as { references_json: { kind: string; id: string }[] }[];
+  expect(ledger[0]!.references_json[0]).toMatchObject({ kind: "site-media", id: siteImage.id });
+
+  // The second plugin was not granted site media: no handle, and no way in through images.
+  expect(await run("find", {}, 1, false, "siteMedia")).toBe("absent");
+  await expect(
+    run(
+      "generate",
+      {
+        ...request(),
+        references: [{ id: siteImage.id, sha256: siteImage.sha256, source: "site-media" }],
+      },
+      1,
+    ),
+  ).rejects.toThrow("PluginSiteMediaDenied");
 }, 30000);
 test("global image budget reserves concurrent requests before paid calls", async () => {
   const budgets = await op<{

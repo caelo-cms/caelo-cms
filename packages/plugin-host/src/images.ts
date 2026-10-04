@@ -24,9 +24,17 @@ import { operatorCanAuthor } from "./external-authorization.js";
 import { IMAGE_OPS, registerPluginImageOps } from "./image-ops.js";
 import { transformPrivateImage } from "./image-transform.js";
 import { makePluginPrivateFiles } from "./private-files.js";
+import { makePluginSiteMedia } from "./site-media.js";
 
 const uuid = z.string().uuid();
-const fileRef = z.object({ id: uuid, sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+/** A private file (default) or, with `site_media_read`, a site media image (#530). */
+const fileRef = z
+  .object({
+    id: uuid,
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    source: z.enum(["private-file", "site-media"]).optional(),
+  })
+  .strict();
 const identity = z.object({ requestId: uuid }).strict();
 const generateInput = identity
   .extend({
@@ -108,8 +116,19 @@ export function makePluginImages(
       })
     ).request;
 
-  /** A private file's bytes, after checking it is ready and unchanged. */
-  async function loadFile(ref: { id: string; sha256: string }) {
+  /** An image's bytes — a private file, or site media through `ctx.siteMedia`. */
+  async function loadFile(ref: z.infer<typeof fileRef>) {
+    if (ref.source === "site-media") {
+      // Same grant + author checks as ctx.siteMedia (the ops refuse without the grant).
+      const site = makePluginSiteMedia(plugin, infra, invocation);
+      const [found] = await site.inspect({ ids: [ref.id] });
+      if (!found || found.sha256 !== ref.sha256) throw new Error("PluginImageReferenceInvalid");
+      const chunks: Buffer[] = [];
+      for (let offset = 0; offset < found.sizeBytes; offset += 262_144) {
+        chunks.push(Buffer.from((await site.readChunk({ ...ref, offset })).base64, "base64"));
+      }
+      return { data: Buffer.concat(chunks), mediaType: found.mime, bytes: found.sizeBytes };
+    }
     const meta = await files.stat({ id: ref.id });
     if (meta.status !== "ready" || meta.sha256 !== ref.sha256) {
       throw new Error("PluginImageReferenceInvalid");
