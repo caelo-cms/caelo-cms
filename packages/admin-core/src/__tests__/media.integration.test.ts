@@ -36,6 +36,7 @@ const systemCtx: ExecutionContext = {
 const TEST_PREFIX = "deadbeef";
 const SHA1 = `${TEST_PREFIX}${"a".repeat(56)}`;
 const SHA2 = `${TEST_PREFIX}${"b".repeat(56)}`;
+const SHA_REUPLOAD = `${TEST_PREFIX}${"d".repeat(56)}`;
 const SHA3 = `${TEST_PREFIX}${"c".repeat(56)}`;
 const MOD_SLUG_A = "p7-media-test-a";
 const MOD_SLUG_B = "p7-media-test-b";
@@ -146,6 +147,38 @@ describe("P7 media ops", () => {
       (a) => a.sha256 === SHA1,
     );
     expect(seen.length).toBe(1);
+  });
+
+  it("re-uploading content whose asset was deleted creates a new live asset", async () => {
+    // Regression: sha256 was unique across deleted rows too, so this failed
+    // on the constraint instead of saving.
+    const first = await execute(
+      registry,
+      adapter,
+      systemCtx,
+      "media.upload",
+      uploadInput(SHA_REUPLOAD),
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const firstId = (first.value as { assetId: string }).assetId;
+    const del = await execute(registry, adapter, systemCtx, "media.delete", {
+      assetId: firstId,
+      force: true,
+    });
+    expect(del.ok).toBe(true);
+    const again = await execute(
+      registry,
+      adapter,
+      systemCtx,
+      "media.upload",
+      uploadInput(SHA_REUPLOAD),
+    );
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    const value = again.value as { assetId: string; deduped: boolean };
+    expect(value.deduped).toBe(false);
+    expect(value.assetId).not.toBe(firstId);
   });
 
   it("media.update_alt updates the alt field", async () => {
