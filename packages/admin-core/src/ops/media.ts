@@ -28,6 +28,7 @@ import {
   mediaRecordUsageInputSchema,
   mediaSetCdnInputSchema,
   mediaSetSourceInputSchema,
+  mediaSetVisibilityInputSchema,
   mediaUpdateAltInputSchema,
   mediaUploadInputSchema,
   ok,
@@ -69,6 +70,8 @@ const mediaAssetRow = z.object({
   sourceKind: z.enum(["upload", "ai_generated", "imported", "external"]).nullable(),
   sourceDetail: z.string().nullable(),
   license: z.string().nullable(),
+  /** #531 — `reference` assets guide generation and never ship on a page. */
+  visibility: z.enum(["library", "reference"]),
   variants: z.array(mediaVariantRow),
 });
 
@@ -101,6 +104,7 @@ type AssetDbRow = {
   source_kind: "upload" | "ai_generated" | "imported" | "external" | null;
   source_detail: string | null;
   license: string | null;
+  visibility: "library" | "reference";
 };
 
 const iso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : String(v));
@@ -134,6 +138,7 @@ function rowToAsset(
     sourceKind: r.source_kind,
     sourceDetail: r.source_detail,
     license: r.license,
+    visibility: r.visibility,
     variants: variants.map((v) => ({
       variant: v.variant,
       format: v.format,
@@ -197,7 +202,7 @@ export const mediaUploadOp = defineOperation({
     const inserted = (await tx.execute(sql`
       INSERT INTO media_assets (
         sha256, slug, original_name, mime, size_bytes, width, height, alt, storage_key, storage_provider,
-        source_kind, source_detail, license, created_by
+        source_kind, source_detail, license, visibility, created_by
       )
       VALUES (
         ${input.sha256},
@@ -213,6 +218,7 @@ export const mediaUploadOp = defineOperation({
         ${input.sourceKind ?? null},
         ${input.sourceDetail ?? null},
         ${input.license ?? null},
+        ${input.visibility ?? "library"},
         ${ctx.actorId}::uuid
       )
       RETURNING id::text AS id
@@ -284,21 +290,23 @@ export const mediaListOp = defineOperation({
         ? sql`AND (alt ILIKE ${`%${input.query}%`} OR original_name ILIKE ${`%${input.query}%`})`
         : sql``;
     const mimeCondition = input.mime !== undefined ? sql`AND mime = ${input.mime}` : sql``;
+    const visibilityCondition =
+      input.visibility === "all" ? sql`` : sql`AND visibility = ${input.visibility}`;
 
     const rows = (await tx.execute(sql`
       SELECT
         id::text AS id, slug, sha256, original_name, mime, size_bytes, width, height, alt,
         storage_key, usage_count, last_used_at, created_at,
-        source_kind, source_detail, license
+        source_kind, source_detail, license, visibility
       FROM media_assets
-      WHERE deleted_at IS NULL ${queryCondition} ${mimeCondition}
+      WHERE deleted_at IS NULL ${queryCondition} ${mimeCondition} ${visibilityCondition}
       ${orderBy}
       LIMIT ${input.limit} OFFSET ${input.offset}
     `)) as unknown as AssetDbRow[];
 
     const totalRows = (await tx.execute(sql`
       SELECT count(*)::int AS count FROM media_assets
-      WHERE deleted_at IS NULL ${queryCondition} ${mimeCondition}
+      WHERE deleted_at IS NULL ${queryCondition} ${mimeCondition} ${visibilityCondition}
     `)) as unknown as { count: number }[];
 
     if (rows.length === 0) {
@@ -373,7 +381,7 @@ export const mediaGetOp = defineOperation({
       SELECT
         id::text AS id, slug, sha256, original_name, mime, size_bytes, width, height, alt,
         storage_key, usage_count, last_used_at, created_at,
-        source_kind, source_detail, license
+        source_kind, source_detail, license, visibility
       FROM media_assets
       WHERE ${refCondition} AND deleted_at IS NULL
       LIMIT 1
@@ -512,6 +520,45 @@ export const mediaSetSourceOp = defineOperation({
       succeeded: true,
       entityId: input.assetId,
       resultSummary: `kind=${input.sourceKind ?? "-"},license=${input.license ?? "-"}`,
+    });
+    return ok({ assetId: input.assetId });
+  },
+});
+
+// ---------------------------------------------------------------------
+// media.set_visibility (#531) — library ⇄ reference.
+// ---------------------------------------------------------------------
+
+export const mediaSetVisibilityOp = defineOperation({
+  name: "media.set_visibility",
+  // CLAUDE.md §11: routine and undoable by the reverse call. Marking an
+  // asset `reference` never unpublishes anything silently — a page that
+  // uses it fails its next deploy with the fix spelled out.
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: mediaSetVisibilityInputSchema,
+  output: z.object({ assetId: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE media_assets SET visibility = ${input.visibility}
+      WHERE id = ${input.assetId}::uuid AND deleted_at IS NULL
+      RETURNING 1
+    `)) as unknown as { exists: number }[];
+    if (rows.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "media.set_visibility",
+        message: 'media asset not found — take the id from find_media (visibility: "all")',
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "media.set_visibility",
+      input,
+      succeeded: true,
+      entityId: input.assetId,
+      resultSummary: `visibility=${input.visibility}`,
     });
     return ok({ assetId: input.assetId });
   },

@@ -184,6 +184,14 @@ export function extractMediaRefs(html: string): MediaRef[] {
 
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/, "must be hex sha256");
 
+/**
+ * #531 — `library` assets are listed and placeable on pages; `reference`
+ * assets exist only to guide image generation/editing: hidden from the
+ * default listing and refused by the static generator on a page.
+ */
+export const mediaVisibilitySchema = z.enum(["library", "reference"]);
+export type MediaVisibility = z.infer<typeof mediaVisibilitySchema>;
+
 export const mediaUploadInputSchema = z
   .object({
     sha256: sha256Schema,
@@ -213,6 +221,8 @@ export const mediaUploadInputSchema = z
     sourceKind: z.enum(["upload", "ai_generated", "imported", "external"]).optional(),
     sourceDetail: z.string().max(2048).optional(),
     license: z.string().max(200).optional(),
+    /** Defaults to `library`; a re-upload of existing content keeps its visibility. */
+    visibility: mediaVisibilitySchema.optional(),
     variants: z
       .array(
         z.object({
@@ -234,6 +244,8 @@ export const mediaListInputSchema = z
     query: z.string().max(256).optional(),
     mime: z.enum(MEDIA_ALLOWED_MIMES).optional(),
     sort: z.enum(["recent", "most_used"]).default("recent"),
+    /** `library` (default) hides reference images; `all` lists both. */
+    visibility: z.enum(["library", "reference", "all"]).default("library"),
     limit: z.number().int().positive().max(200).default(60),
     offset: z.number().int().nonnegative().default(0),
   })
@@ -263,6 +275,15 @@ export const mediaSetSourceInputSchema = z
   })
   .strict();
 export type MediaSetSourceInput = z.infer<typeof mediaSetSourceInputSchema>;
+
+/** media.set_visibility (#531) — move an asset between library and reference. */
+export const mediaSetVisibilityInputSchema = z
+  .object({
+    assetId: z.string().uuid(),
+    visibility: mediaVisibilitySchema,
+  })
+  .strict();
+export type MediaSetVisibilityInput = z.infer<typeof mediaSetVisibilityInputSchema>;
 
 export const mediaDeleteInputSchema = z
   .object({

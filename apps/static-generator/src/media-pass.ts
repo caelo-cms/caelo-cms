@@ -50,6 +50,7 @@ interface VariantRow {
   format: string;
   storage_key: string;
   usage_count: number;
+  visibility: "library" | "reference";
 }
 
 /**
@@ -136,7 +137,8 @@ export async function runMediaPass(args: {
                    mv.variant,
                    mv.format,
                    mv.storage_key,
-                   ma.usage_count
+                   ma.usage_count,
+                   ma.visibility
             FROM media_assets ma
             JOIN media_variants mv ON mv.asset_id = ma.id
             WHERE ma.slug = ${ref}
@@ -147,7 +149,8 @@ export async function runMediaPass(args: {
                    mv.variant,
                    mv.format,
                    mv.storage_key,
-                   ma.usage_count
+                   ma.usage_count,
+                   ma.visibility
             FROM media_variants mv
             JOIN media_assets ma ON ma.id = mv.asset_id
             WHERE mv.asset_id = ${ref}::uuid
@@ -156,6 +159,21 @@ export async function runMediaPass(args: {
     const variants = new Map<string, VariantRow>();
     for (const r of rows) variants.set(r.variant, r);
     resolved.set(ref, { ref, isSlug: info.isSlug, variants });
+  }
+
+  // #531 — a reference image guides generation/editing and never ships
+  // on a page. Refuse loudly with the fix, rather than publishing it.
+  const references = [...resolved.values()]
+    .filter((r) => [...r.variants.values()].some((v) => v.visibility === "reference"))
+    .map((r) => r.ref);
+  if (references.length > 0) {
+    throw new Error(
+      `static-generator: pages reference media marked as reference images: ${references.join(", ")}. ` +
+        "Reference images guide image generation/editing and are never published. Next step: either " +
+        "replace them in the page/module HTML with a library image (find_media), or, if the operator " +
+        "wants them on the page, mark them as library images (AI tool: set_media_visibility_many with " +
+        'visibility: "library").',
+    );
   }
 
   // 3. Verify every referenced (ref, variant) is resolvable. Per the

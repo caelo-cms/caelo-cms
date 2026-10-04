@@ -264,6 +264,35 @@ describe("media-pass", () => {
     expect(manifest.entries[0]?.assetId).toBe(assetId);
   });
 
+  it("refuses to publish a page that uses a reference image, naming the fix", async () => {
+    const mark = async (visibility: "library" | "reference") => {
+      const r = await execute(registry, adapter, systemCtx, "media.set_visibility_many", {
+        items: [{ assetId, visibility }],
+      });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+    };
+    await mark("reference");
+    let thrown: unknown = null;
+    try {
+      await adapter.withAdminTransaction(systemCtx, async (tx) => {
+        await runMediaPass({
+          tx,
+          buildDir,
+          pages: [{ html: `<img src="/_caelo/media/${assetSlug}" alt="x" />`, pageSlug: "ref" }],
+          mediaRoot,
+          settings: { cdnEnabled: false, threshold: 5 },
+        });
+      });
+    } catch (e) {
+      thrown = e;
+    } finally {
+      await mark("library");
+    }
+    expect((thrown as Error).message).toContain("reference images");
+    expect((thrown as Error).message).toContain(assetSlug);
+    expect((thrown as Error).message).toContain("set_media_visibility_many");
+  });
+
   it("throws when a page references an asset/variant that doesn't exist", async () => {
     const pages = [
       {

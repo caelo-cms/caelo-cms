@@ -28,6 +28,7 @@ const imageInput = z
       .optional(),
     filename: z.string().min(1).max(512).optional(),
     alt: z.string().max(2048).optional(),
+    reference: z.boolean().optional(),
   })
   .strict()
   .refine(
@@ -43,7 +44,9 @@ export const UPLOAD_IMAGES_TOOL = {
   description:
     "Upload 1–4 PNG, JPEG, WebP or GIF images (5 MiB each) to the Caelo media library. " +
     "Prefer filePath for files on the machine running this MCP server; otherwise supply raw base64 (no data URL). " +
-    "Files become shared CMS media assets. Returns attachments for caelo_chat " +
+    "Files become shared CMS media assets. Set reference: true for images that only guide image generation or editing " +
+    "(character sheets, style samples): they stay out of the page-image library and are never published. " +
+    "Returns attachments for caelo_chat " +
     "or asset IDs for page tools. Uploading does not send a chat message or publish a page. " +
     "Results are per file: retry only failures. Requires the token owner's current content.write permission.",
   inputSchema: {
@@ -69,6 +72,11 @@ export const UPLOAD_IMAGES_TOOL = {
             },
             filename: { type: "string", description: "Optional media filename." },
             alt: { type: "string", description: "Optional description of the image." },
+            reference: {
+              type: "boolean",
+              description:
+                "True for an image that only guides generation/editing; it is never placed on a page.",
+            },
           },
           oneOf: [{ required: ["filePath"] }, { required: ["base64"] }],
         },
@@ -114,6 +122,7 @@ export async function uploadImages(opts: { adminUrl: string; token: string }, in
       const filename = image.filename ?? (image.filePath ? basename(image.filePath) : "image");
       const query = new URLSearchParams({ filename });
       if (image.alt) query.set("alt", image.alt);
+      if (image.reference) query.set("visibility", "reference");
       const response = await fetch(`${opts.adminUrl.replace(/\/+$/, "")}/api/mcp/images?${query}`, {
         method: "POST",
         headers: { "x-caelo-mcp-token": opts.token, "content-type": "application/octet-stream" },

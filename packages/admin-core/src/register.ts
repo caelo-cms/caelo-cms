@@ -274,6 +274,7 @@ import {
   mediaListUsagesOp,
   mediaRecordUsageOp,
   mediaSetSourceOp,
+  mediaSetVisibilityOp,
   mediaUpdateAltOp,
   mediaUploadOp,
   proposeAltOp,
@@ -282,7 +283,11 @@ import {
   setMediaCdnOp,
 } from "./ops/media.js";
 import { regenerateMediaVariantsOp } from "./ops/media_regenerate.js";
-import { mediaSetSourceManyOp, mediaUpdateAltManyOp } from "./ops/media-bulk.js";
+import {
+  mediaSetSourceManyOp,
+  mediaSetVisibilityManyOp,
+  mediaUpdateAltManyOp,
+} from "./ops/media-bulk.js";
 import { aggregateNotificationsOp } from "./ops/notifications.js";
 import {
   anyBootstrapTokenIssuedOp,
@@ -946,9 +951,11 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mediaGetOp);
   registry.register(mediaUpdateAltOp);
   registry.register(mediaSetSourceOp);
+  registry.register(mediaSetVisibilityOp);
   // Bulk `_many` variants via the DRY defineBulkOp factory (CLAUDE.md §11).
   registry.register(mediaUpdateAltManyOp);
   registry.register(mediaSetSourceManyOp);
+  registry.register(mediaSetVisibilityManyOp);
   registry.register(imageRequestsReadOp);
   registry.register(imageRequestsReserveOp);
   registry.register(imageRequestsFinishOp);
