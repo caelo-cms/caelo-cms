@@ -16,6 +16,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import sharp from "sharp";
 import type { ToolContext } from "../ai/tools/dispatch.js";
+import { editImageTool } from "../ai/tools/edit-image.js";
 import { generateImageTool } from "../ai/tools/generate-image.js";
 import { getImageCapabilitiesTool } from "../ai/tools/get-image-capabilities.js";
 import { runMediaPipeline } from "../media/pipeline.js";
@@ -38,6 +39,8 @@ let registry: OperationRegistry;
 let chatSessionId = "";
 let referenceId = "";
 let referenceSha = "";
+/** The fake provider's (constant) output, as the first generate stored it. */
+let generatedId = "";
 const mediaRoot = mkdtempSync(join(tmpdir(), "caelo-chat-images-"));
 
 const toolCtx = (toolCallId: string): ToolContext =>
@@ -141,6 +144,7 @@ test("generate_image with a reference records provenance and is replay-safe", as
   expect(first.ok).toBe(true);
   const mediaId = /mediaId=([0-9a-f-]{36})/.exec(first.content)?.[1];
   expect(mediaId).toBeDefined();
+  generatedId = mediaId!;
 
   const rows = await requestsInSession();
   expect(rows).toHaveLength(1);
@@ -209,4 +213,61 @@ test("get_image_capabilities reports the configured model's limits", async () =>
   const caps = JSON.parse(r.content) as { operations: string[]; references: { max: number } };
   expect(caps.operations).toContain("generate");
   expect(caps.references.max).toBeGreaterThan(0);
+});
+
+test("edit_image makes a new asset linked to its source, with mask and provenance (#528)", async () => {
+  // The fake provider returns the same bytes every time; retire the earlier
+  // asset so the edit's output is a fresh row (media.upload dedupes live rows).
+  const retired = await execute(registry, adapter, SYSTEM, "media.delete", {
+    assetId: generatedId,
+    force: true,
+  });
+  expect(retired.ok).toBe(true);
+  const edited = await editImageTool.handler(
+    AI,
+    editImageTool.schema.parse({
+      source: referenceId,
+      mask: referenceId,
+      prompt: "make the background dusk",
+    }),
+    toolCtx("toolu_edit_1"),
+  );
+  if (!edited.ok) throw new Error(edited.content);
+  expect(edited.content).toContain("Edited image");
+  const mediaId = /mediaId=([0-9a-f-]{36})/.exec(edited.content)?.[1];
+  const got = await execute(registry, adapter, AI, "media.get", { assetId: mediaId! });
+  const asset = (
+    got.value as {
+      asset: {
+        derivedFromId: string | null;
+        generation: { operation: string; references: { kind?: string; id: string }[] };
+      };
+    }
+  ).asset;
+  expect(asset.derivedFromId).toBe(referenceId);
+  expect(asset.generation.operation).toBe("edit");
+  const rows = await sql(
+    async (tx) =>
+      (await tx`SELECT operation, mask_json, references_json FROM image_requests
+                WHERE scope = ${`chat:${chatSessionId}`} AND operation = 'edit'`) as unknown as {
+        operation: string;
+        mask_json: { id: string } | null;
+        references_json: { kind: string; id: string }[];
+      }[],
+  );
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.references_json[0]).toMatchObject({ kind: "source", id: referenceId });
+  expect(rows[0]!.mask_json?.id).toBe(referenceId);
+});
+
+test("edit_image without the source refuses before anything is reserved", async () => {
+  const before = (await requestsInSession()).length;
+  const r = await editImageTool.handler(
+    AI,
+    editImageTool.schema.parse({ source: "no-such-media", prompt: "x" }),
+    toolCtx("toolu_edit_missing"),
+  );
+  expect(r.ok).toBe(false);
+  expect(r.content).toContain("not found");
+  expect((await requestsInSession()).length).toBe(before);
 });

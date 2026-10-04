@@ -49,7 +49,10 @@ site's own provenance.
 
 Each request records its provenance (#532): prompt, references (id + sha256),
 what was requested and the model. `get` and repeated `generate` calls return it
-as `provenance`. `describe()` returns the model's `capabilities` (#529) —
+as `provenance`. `edit()` (#528) changes a private image (`source`) into a new
+private file through the same ledger; a `mask` PNG limits the change on models
+whose capabilities report `mask: true` (Gemini does not — the request is refused
+before anything is reserved). `describe()` returns the model's `capabilities` (#529) —
 operations, reference limits, mask support, sizes and resolutions — from the
 same model profiles the chat uses (`admin-core/src/ai/image-models.ts`), which
 also hold the prices.

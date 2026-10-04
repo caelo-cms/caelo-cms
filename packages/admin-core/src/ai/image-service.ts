@@ -177,8 +177,14 @@ function requestIdFor(toolCallId: string): string {
 }
 
 /** What a finished chat request returns to the AI (and on replay). */
-function resultText(media: { assetId: string; url: string }, alt: string, extra = ""): string {
-  return `Generated image (mediaId=${media.assetId}, url=${media.url}). Reference in HTML as <img src="${media.url}" alt="${alt}" />.${extra}`;
+function resultText(
+  operation: "generate" | "edit",
+  media: { assetId: string; url: string },
+  alt: string,
+  extra = "",
+): string {
+  const what = operation === "edit" ? "Edited image" : "Generated image";
+  return `${what} (mediaId=${media.assetId}, url=${media.url}). Reference in HTML as <img src="${media.url}" alt="${alt}" />.${extra}`;
 }
 
 /**
@@ -191,7 +197,10 @@ export async function runImageRequest(args: {
   configured: ConfiguredImageModel;
   operation: "generate" | "edit";
   prompt: string;
+  /** For an edit, the first source is the image being edited; the rest are references. */
   sources: readonly SourceImage[];
+  /** #528 — PNG whose transparent area marks what an edit may change. */
+  mask?: SourceImage;
   size?: "1024x1024" | "1792x1024" | "1024x1792";
   quality?: "standard" | "hd";
   imageSize?: "1K" | "2K" | "4K";
@@ -204,21 +213,36 @@ export async function runImageRequest(args: {
     // id, and a replay would pay twice.
     return { ok: false, content: `${tool}: needs a chat session and tool call id` };
   }
+  if (args.operation === "edit" && args.sources.length === 0) {
+    return { ok: false, content: "edit_image: name the image to edit as `source`" };
+  }
   const refusal = capabilityRefusal(configured.capabilities, {
     operation: args.operation,
     references: args.sources.map((s) => ({ bytes: s.data.byteLength, mediaType: s.mediaType })),
-    mask: false,
+    mask: args.mask !== undefined,
     ...(args.size ? { size: args.size } : {}),
     ...(args.imageSize ? { imageSize: args.imageSize } : {}),
   });
   if (refusal) return { ok: false, content: `${tool}: ${refusal} (see get_image_capabilities)` };
+  if (args.mask && args.mask.mediaType !== "image/png") {
+    return {
+      ok: false,
+      content: `${tool}: the mask must be a PNG with transparency marking the area to change`,
+    };
+  }
 
   const requested = {
     ...(args.size ? { size: args.size } : {}),
     ...(args.quality ? { quality: args.quality } : {}),
     ...(args.imageSize ? { imageSize: args.imageSize } : {}),
   };
-  const references = args.sources.map((s) => ({ kind: "media", id: s.id, sha256: s.sha256 }));
+  // Provenance: an edit's first source is the image it changes.
+  const references = args.sources.map((s, i) => ({
+    kind: args.operation === "edit" && i === 0 ? "source" : "media",
+    id: s.id,
+    sha256: s.sha256,
+  }));
+  const mask = args.mask ? { kind: "mask", id: args.mask.id, sha256: args.mask.sha256 } : undefined;
   const key = { chatSessionId: toolCtx.chatSessionId, requestId: requestIdFor(toolCtx.toolCallId) };
   const system: ExecutionContext = { ...ctx, actorKind: "system" };
   const alt = (args.altText ?? args.prompt).slice(0, 2048);
@@ -236,6 +260,7 @@ export async function runImageRequest(args: {
           op: args.operation,
           prompt: args.prompt,
           references,
+          mask,
           requested,
           model: configured.model,
         }),
@@ -243,6 +268,7 @@ export async function runImageRequest(args: {
       operation: args.operation,
       prompt: args.prompt,
       references,
+      ...(mask ? { mask } : {}),
       requested,
       provider: configured.providerName,
       model: configured.model,
@@ -257,7 +283,10 @@ export async function runImageRequest(args: {
   if (value.existing) {
     const r = value.existing.result as { assetId?: string; url?: string } | null;
     if (value.existing.status === "ready" && r?.assetId && r.url) {
-      return { ok: true, content: resultText({ assetId: r.assetId, url: r.url }, alt) };
+      return {
+        ok: true,
+        content: resultText(args.operation, { assetId: r.assetId, url: r.url }, alt),
+      };
     }
     return {
       ok: false,
@@ -274,9 +303,21 @@ export async function runImageRequest(args: {
       ...(args.size ? { size: args.size } : {}),
       ...(args.quality ? { quality: args.quality } : {}),
       ...(args.imageSize ? { imageSize: args.imageSize } : {}),
-      ...(args.sources.length
-        ? { referenceImages: args.sources.map((s) => ({ data: s.data, mediaType: s.mediaType })) }
-        : {}),
+      ...(args.operation === "edit"
+        ? {
+            editSource: { data: args.sources[0]!.data, mediaType: args.sources[0]!.mediaType },
+            referenceImages: args.sources
+              .slice(1)
+              .map((s) => ({ data: s.data, mediaType: s.mediaType })),
+            ...(args.mask
+              ? { mask: { data: args.mask.data, mediaType: "image/png" as const } }
+              : {}),
+          }
+        : args.sources.length
+          ? {
+              referenceImages: args.sources.map((s) => ({ data: s.data, mediaType: s.mediaType })),
+            }
+          : {}),
       abortSignal: AbortSignal.timeout(180_000),
     });
     // Provider URLs are ephemeral (data: or short-lived https): persist now.
@@ -291,7 +332,7 @@ export async function runImageRequest(args: {
     // system-mediated persist of an image the AI asked for.
     const upload = await execute(toolCtx.registry, toolCtx.adapter, system, "media.upload", {
       sha256: sha,
-      originalName: `ai-generated-${Date.now()}.png`,
+      originalName: `ai-${args.operation === "edit" ? "edited" : "generated"}-${Date.now()}.png`,
       name: (args.altText ?? args.prompt).slice(0, 200),
       mime: "image/png",
       sizeBytes: bytes.byteLength,
@@ -301,6 +342,8 @@ export async function runImageRequest(args: {
       storageKey: pipeline.variants[0]?.storageKey ?? `${sha}/orig`,
       storageProvider: getMediaStorageProvider(),
       sourceKind: "ai_generated",
+      // #528/#532 — an edit points at the image it was made from.
+      ...(args.operation === "edit" ? { derivedFromId: args.sources[0]!.id } : {}),
       sourceDetail: `${configured.providerName}/${configured.model}`,
       license: "AI-generated",
       variants: pipeline.variants.map((v) => ({
@@ -336,6 +379,7 @@ export async function runImageRequest(args: {
     return {
       ok: true,
       content: resultText(
+        args.operation,
         { assetId: media.assetId, url },
         alt,
         generated.revisedPrompt ? `\n\nProvider revised prompt: ${generated.revisedPrompt}` : "",

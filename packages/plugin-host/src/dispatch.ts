@@ -133,6 +133,10 @@ export interface PluginHostInfra {
       prompt: string;
       imageSize: "1K" | "2K" | "4K";
       references: readonly { data: Uint8Array; mediaType: string }[];
+      /** #528 — the image to change; references then guide the edit. */
+      editSource?: { data: Uint8Array; mediaType: string };
+      /** #528 — PNG marking where the edit may change the source. */
+      mask?: { data: Uint8Array; mediaType: "image/png" };
     }): Promise<{
       bytes: Uint8Array;
       width: number;

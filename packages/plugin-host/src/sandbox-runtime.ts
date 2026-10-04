@@ -47,6 +47,8 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
         return images.get(args[0] as Parameters<typeof images.get>[0]);
       case "images.generate":
         return images.generate(args[0] as Parameters<typeof images.generate>[0]);
+      case "images.edit":
+        return images.edit(args[0] as Parameters<typeof images.edit>[0]);
     }
   }
   if (method.startsWith("fonts.")) {

@@ -17,6 +17,7 @@
 import { createHash } from "node:crypto";
 import type { PluginImageResult, PluginImages, PluginInvocation } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
+import { capabilityRefusal } from "@caelo-cms/shared";
 import { z } from "zod";
 import { hostSystemActorId, type LoadedPlugin, type PluginHostInfra } from "./dispatch.js";
 import { operatorCanAuthor } from "./external-authorization.js";
@@ -25,17 +26,22 @@ import { transformPrivateImage } from "./image-transform.js";
 import { makePluginPrivateFiles } from "./private-files.js";
 
 const uuid = z.string().uuid();
+const fileRef = z.object({ id: uuid, sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 const identity = z.object({ requestId: uuid }).strict();
 const generateInput = identity
   .extend({
     prompt: z.string().min(1).max(16000),
     imageSize: z.enum(["1K", "2K", "4K"]),
-    references: z
-      .array(z.object({ id: uuid, sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict())
-      .max(4),
+    references: z.array(fileRef).max(4),
     maxCostMicrocents: z.number().int().min(1).max(200_000_000),
   })
   .strict();
+/** #528 — change a private image; the mask (a PNG) limits where, when supported. */
+const editInput = generateInput.extend({ source: fileRef, mask: fileRef.optional() }).strict();
+type PaidRequest = z.infer<typeof generateInput> & {
+  source?: z.infer<typeof fileRef>;
+  mask?: z.infer<typeof fileRef>;
+};
 
 interface RequestRow {
   id: string;
@@ -102,6 +108,137 @@ export function makePluginImages(
       })
     ).request;
 
+  /** A private file's bytes, after checking it is ready and unchanged. */
+  async function loadFile(ref: { id: string; sha256: string }) {
+    const meta = await files.stat({ id: ref.id });
+    if (meta.status !== "ready" || meta.sha256 !== ref.sha256) {
+      throw new Error("PluginImageReferenceInvalid");
+    }
+    const chunks: Buffer[] = [];
+    for (let offset = 0; offset < meta.sizeBytes; offset += 262_144) {
+      chunks.push(Buffer.from((await files.readChunk({ id: ref.id, offset })).base64, "base64"));
+    }
+    return { data: Buffer.concat(chunks), mediaType: meta.mediaType, bytes: meta.sizeBytes };
+  }
+
+  /** One paid request (generate or edit) through the shared ledger. */
+  async function paidRequest(
+    operation: "generate" | "edit",
+    value: PaidRequest,
+  ): Promise<PluginImageResult> {
+    const operatorId = await authorized();
+    if (!infra.imageProvider) throw new Error("PluginImageProviderUnavailable");
+    const hash = createHash("sha256")
+      .update(JSON.stringify({ operation, ...value }))
+      .digest("hex");
+    const previous = await read(value.requestId);
+    if (previous) {
+      if (previous.inputSha256 !== hash) throw new Error("PluginImageRequestConflict");
+      return toResult(previous);
+    }
+    const config = await infra.imageProvider.describe();
+    if (config.maxCostMicrocents > value.maxCostMicrocents) {
+      throw new Error("PluginImageRequestBudgetExceeded");
+    }
+    // An edit's source travels first, like the chat's edit_image.
+    const sourceRefs = [...(value.source ? [value.source] : []), ...value.references];
+    const sources = [];
+    for (const ref of sourceRefs) sources.push(await loadFile(ref));
+    const mask = value.mask ? await loadFile(value.mask) : undefined;
+    // Refuse what the model cannot do before anything is reserved.
+    const refusal = capabilityRefusal(config.capabilities, {
+      operation,
+      references: sources.map((s) => ({ bytes: s.bytes, mediaType: s.mediaType })),
+      mask: mask !== undefined,
+      imageSize: value.imageSize,
+    });
+    if (refusal) throw new Error(`PluginImageUnsupported: ${refusal}`);
+    if (mask && mask.mediaType !== "image/png") throw new Error("PluginImageMaskMustBePng");
+    const reserved = await run<{ existing: RequestRow | null; callId: string | null }>(
+      IMAGE_OPS.reserve,
+      {
+        pluginId: plugin.pluginId,
+        requestId: value.requestId,
+        ...(plugin.externalApproval
+          ? { pluginArtifactDigest: plugin.externalApproval.artifactDigest }
+          : {}),
+        inputSha256: hash,
+        model: config.model,
+        maxCostMicrocents: config.maxCostMicrocents,
+        operatorActorId: operatorId,
+        ...(invocation.chatBranchId ? { chatBranchId: invocation.chatBranchId } : {}),
+        operation,
+        prompt: value.prompt,
+        references: sourceRefs,
+        ...(value.mask ? { mask: value.mask } : {}),
+        requested: { imageSize: value.imageSize },
+      },
+    );
+    if (reserved.existing) return toResult(reserved.existing);
+    const callId = reserved.callId as string;
+    try {
+      const [editSource, ...references] = value.source ? sources : [undefined, ...sources];
+      const generated = await infra.imageProvider.generate({
+        model: config.model,
+        prompt: value.prompt,
+        imageSize: value.imageSize,
+        references: references.map((r) => ({ data: r!.data, mediaType: r!.mediaType })),
+        ...(editSource
+          ? { editSource: { data: editSource.data, mediaType: editSource.mediaType } }
+          : {}),
+        ...(mask ? { mask: { data: mask.data, mediaType: "image/png" } } : {}),
+      });
+      const sha256 = createHash("sha256").update(generated.bytes).digest("hex");
+      const meta = await files.begin({
+        id: crypto.randomUUID(),
+        sha256,
+        mediaType: "image/jpeg",
+        sizeBytes: generated.bytes.byteLength,
+      });
+      for (let offset = 0; offset < generated.bytes.byteLength; offset += 262_144) {
+        await files.writeChunk({
+          id: meta.id,
+          offset,
+          base64: Buffer.from(generated.bytes.subarray(offset, offset + 262_144)).toString(
+            "base64",
+          ),
+        });
+      }
+      const file = await files.commit({ id: meta.id });
+      const output: PluginImageResult = {
+        requestId: value.requestId,
+        status: "ready",
+        file,
+        width: generated.width,
+        height: generated.height,
+        model: config.model,
+        costMicrocents: generated.costMicrocents,
+        provenance: {
+          prompt: value.prompt,
+          references: sourceRefs.map(({ id, sha256 }) => ({ id, sha256 })),
+        },
+      };
+      await run(IMAGE_OPS.finish, {
+        pluginId: plugin.pluginId,
+        requestId: value.requestId,
+        callId,
+        result: output,
+        costMicrocents: generated.costMicrocents,
+        durationMs: generated.durationMs,
+      });
+      return output;
+    } catch {
+      // No provider headers, prompts or credentials reach the sandbox.
+      await run(IMAGE_OPS.markUncertain, {
+        pluginId: plugin.pluginId,
+        requestId: value.requestId,
+      });
+      throw new Error(
+        "PluginImageOutcomeUncertain: inspect this request; retrying requires a new paid request ID",
+      );
+    }
+  }
+
   return Object.freeze({
     async transform(input) {
       await authorized();
@@ -119,122 +256,7 @@ export function makePluginImages(
       const row = await read(requestId);
       return row ? toResult(row) : null;
     },
-    async generate(input) {
-      const value = generateInput.parse(input);
-      const operatorId = await authorized();
-      if (!infra.imageProvider) throw new Error("PluginImageProviderUnavailable");
-      const hash = createHash("sha256").update(JSON.stringify(value)).digest("hex");
-      const previous = await read(value.requestId);
-      if (previous) {
-        if (previous.inputSha256 !== hash) throw new Error("PluginImageRequestConflict");
-        return toResult(previous);
-      }
-      const config = await infra.imageProvider.describe();
-      if (config.maxCostMicrocents > value.maxCostMicrocents) {
-        throw new Error("PluginImageRequestBudgetExceeded");
-      }
-      if (!config.imageSizes.includes(value.imageSize)) {
-        throw new Error("PluginImageResolutionUnsupported");
-      }
-      const references: { data: Uint8Array; mediaType: string }[] = [];
-      let total = 0;
-      for (const ref of value.references) {
-        const meta = await files.stat({ id: ref.id });
-        if (
-          meta.status !== "ready" ||
-          meta.sha256 !== ref.sha256 ||
-          !["image/png", "image/jpeg", "image/webp"].includes(meta.mediaType)
-        ) {
-          throw new Error("PluginImageReferenceInvalid");
-        }
-        total += meta.sizeBytes;
-        if (meta.sizeBytes > 10_000_000 || total > 20_000_000) {
-          throw new Error("PluginImageReferenceTooLarge");
-        }
-        const chunks: Buffer[] = [];
-        for (let offset = 0; offset < meta.sizeBytes; offset += 262_144) {
-          chunks.push(
-            Buffer.from((await files.readChunk({ id: ref.id, offset })).base64, "base64"),
-          );
-        }
-        references.push({ data: Buffer.concat(chunks), mediaType: meta.mediaType });
-      }
-      const reserved = await run<{ existing: RequestRow | null; callId: string | null }>(
-        IMAGE_OPS.reserve,
-        {
-          pluginId: plugin.pluginId,
-          requestId: value.requestId,
-          ...(plugin.externalApproval
-            ? { pluginArtifactDigest: plugin.externalApproval.artifactDigest }
-            : {}),
-          inputSha256: hash,
-          model: config.model,
-          maxCostMicrocents: config.maxCostMicrocents,
-          operatorActorId: operatorId,
-          ...(invocation.chatBranchId ? { chatBranchId: invocation.chatBranchId } : {}),
-          prompt: value.prompt,
-          references: value.references,
-          requested: { imageSize: value.imageSize },
-        },
-      );
-      if (reserved.existing) return toResult(reserved.existing);
-      const callId = reserved.callId as string;
-      try {
-        const generated = await infra.imageProvider.generate({
-          model: config.model,
-          prompt: value.prompt,
-          imageSize: value.imageSize,
-          references,
-        });
-        const sha256 = createHash("sha256").update(generated.bytes).digest("hex");
-        const meta = await files.begin({
-          id: crypto.randomUUID(),
-          sha256,
-          mediaType: "image/jpeg",
-          sizeBytes: generated.bytes.byteLength,
-        });
-        for (let offset = 0; offset < generated.bytes.byteLength; offset += 262_144) {
-          await files.writeChunk({
-            id: meta.id,
-            offset,
-            base64: Buffer.from(generated.bytes.subarray(offset, offset + 262_144)).toString(
-              "base64",
-            ),
-          });
-        }
-        const file = await files.commit({ id: meta.id });
-        const output: PluginImageResult = {
-          requestId: value.requestId,
-          status: "ready",
-          file,
-          width: generated.width,
-          height: generated.height,
-          model: config.model,
-          costMicrocents: generated.costMicrocents,
-          provenance: {
-            prompt: value.prompt,
-            references: value.references.map(({ id, sha256 }) => ({ id, sha256 })),
-          },
-        };
-        await run(IMAGE_OPS.finish, {
-          pluginId: plugin.pluginId,
-          requestId: value.requestId,
-          callId,
-          result: output,
-          costMicrocents: generated.costMicrocents,
-          durationMs: generated.durationMs,
-        });
-        return output;
-      } catch {
-        // No provider headers, prompts or credentials reach the sandbox.
-        await run(IMAGE_OPS.markUncertain, {
-          pluginId: plugin.pluginId,
-          requestId: value.requestId,
-        });
-        throw new Error(
-          "PluginImageOutcomeUncertain: inspect this request; retrying requires a new paid request ID",
-        );
-      }
-    },
+    generate: (input) => paidRequest("generate", generateInput.parse(input)),
+    edit: (input) => paidRequest("edit", editInput.parse(input)),
   } satisfies PluginImages);
 }

@@ -19,6 +19,7 @@ import { transformPluginImage } from "../ai/plugin-image-transform.js";
 import { registerAdminOps } from "../register.js";
 
 let calls = 0;
+let lastProviderInput: { editSource?: unknown; references: readonly unknown[] } | null = null;
 let failProvider = false;
 let adapter: DatabaseAdapter;
 let root: string;
@@ -82,9 +83,24 @@ beforeAll(async () => {
           model: "test-image-model",
           maxCostMicrocents: 100,
           imageSizes: ["4K"],
+          capabilities: {
+            provider: "google",
+            model: "test-image-model",
+            operations: ["generate", "edit"],
+            references: {
+              max: 14,
+              maxBytesEach: 10_000_000,
+              maxBytesTotal: 20_000_000,
+              mediaTypes: ["image/png", "image/jpeg", "image/webp"],
+            },
+            mask: false,
+            sizes: ["1024x1024"],
+            imageSizes: ["4K"],
+          },
         }),
-        generate: async () => {
+        generate: async (input) => {
           calls++;
+          lastProviderInput = input;
           if (failProvider) throw new Error("secret-key-not-for-errors");
           await new Promise<void>((resolve) => {
             setTimeout(resolve, 150);
@@ -252,6 +268,23 @@ test("uncertain calls retain their reservation and cannot silently spend twice",
   expect(result.costMicrocents).toBe(100);
   expect(calls - before).toBe(1);
   failProvider = false;
+}, 30000);
+test("edit changes a private image into a new file and refuses masks the model cannot use (#528)", async () => {
+  const sourceRun = await run<PluginImageResult>("generate", request());
+  const source = { id: sourceRun.file!.id, sha256: sourceRun.file!.sha256 };
+  const before = calls;
+  const edited = await run<PluginImageResult>("edit", { ...request(), source });
+  expect(edited.status).toBe("ready");
+  expect(edited.file!.id).not.toBe(source.id);
+  expect(edited.provenance!.references[0]).toEqual(source);
+  expect(lastProviderInput?.editSource).toBeDefined();
+  expect(calls - before).toBe(1);
+
+  // test-image-model reports mask: false — refused before anything is paid.
+  await expect(run("edit", { ...request(), source, mask: source })).rejects.toThrow(
+    "PluginImageUnsupported",
+  );
+  expect(calls - before).toBe(1);
 }, 30000);
 test("global image budget reserves concurrent requests before paid calls", async () => {
   const budgets = await op<{
