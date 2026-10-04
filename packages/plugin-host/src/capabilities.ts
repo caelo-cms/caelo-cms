@@ -40,6 +40,7 @@ import { operatorCanAuthor } from "./external-authorization.js";
 import { makePluginFonts } from "./fonts.js";
 import { makePluginImages } from "./images.js";
 import { makePluginPrivateFiles } from "./private-files.js";
+import { makePluginSiteMedia } from "./site-media.js";
 import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
 
 export interface MakePluginContextOpts {
@@ -98,7 +99,8 @@ export async function makePluginContext(
     // Image generation stores its results as private files, so it needs both.
     const wantsImages = wantsFiles && approval.capabilities.includes("image_generation");
     const wantsFonts = approval.capabilities.includes("font_assets");
-    if (!wantsStorage && !wantsFiles && !wantsFonts) return baseCtx;
+    const wantsSiteMedia = approval.capabilities.includes("site_media_read");
+    if (!wantsStorage && !wantsFiles && !wantsFonts && !wantsSiteMedia) return baseCtx;
     // Private storage and files are author data: only for someone who may
     // author. Without it the plugin still runs, with the base handles — an
     // operation that needs them then fails at the sandbox broker
@@ -110,6 +112,7 @@ export async function makePluginContext(
       ...(wantsFiles ? { privateFiles: makePluginPrivateFiles(plugin, infra, invocation) } : {}),
       ...(wantsImages ? { images: makePluginImages(plugin, infra, invocation) } : {}),
       ...(wantsFonts ? { fonts: makePluginFonts(plugin, infra, invocation) } : {}),
+      ...(wantsSiteMedia ? { siteMedia: makePluginSiteMedia(plugin, infra, invocation) } : {}),
     };
   }
 
@@ -152,6 +155,14 @@ export async function makePluginContext(
     (await authorMayWrite(infra, hostSystemActorId(), invocation))
   ) {
     tier1.fonts = makePluginFonts(plugin, infra, invocation);
+  }
+  if (
+    requested.has("site_media_read") &&
+    !visitorContext &&
+    AUTHORING_ORIGINS.has(invocation.origin) &&
+    (await authorMayWrite(infra, hostSystemActorId(), invocation))
+  ) {
+    tier1.siteMedia = makePluginSiteMedia(plugin, infra, invocation);
   }
   return tier1;
 }

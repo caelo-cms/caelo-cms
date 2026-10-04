@@ -117,10 +117,22 @@ const reserveOp = defineOperation({
       operation: z.enum(["generate", "edit"]).default("generate"),
       prompt: z.string().min(1).max(16000),
       references: z
-        .array(z.object({ id: uuid, sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict())
+        .array(
+          z
+            .object({
+              id: uuid,
+              sha256: z.string().regex(/^[a-f0-9]{64}$/),
+              source: z.enum(["private-file", "site-media"]).optional(),
+            })
+            .strict(),
+        )
         .max(15),
       mask: z
-        .object({ id: uuid, sha256: z.string().regex(/^[a-f0-9]{64}$/) })
+        .object({
+          id: uuid,
+          sha256: z.string().regex(/^[a-f0-9]{64}$/),
+          source: z.enum(["private-file", "site-media"]).optional(),
+        })
         .strict()
         .optional(),
       requested: z.record(z.string(), z.unknown()),
@@ -144,11 +156,17 @@ const reserveOp = defineOperation({
       operation: input.operation,
       prompt: input.prompt,
       // An edit's first file is the image it changes.
-      references: input.references.map((r, i) => ({
-        kind: input.operation === "edit" && i === 0 ? "source" : "plugin-file",
-        ...r,
+      references: input.references.map(({ id, sha256, source }, i) => ({
+        kind:
+          input.operation === "edit" && i === 0
+            ? "source"
+            : source === "site-media"
+              ? "site-media"
+              : "plugin-file",
+        id,
+        sha256,
       })),
-      mask: input.mask ? { kind: "mask", ...input.mask } : null,
+      mask: input.mask ? { kind: "mask", id: input.mask.id, sha256: input.mask.sha256 } : null,
       requested: input.requested,
       provider: "google",
       model: input.model,

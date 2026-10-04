@@ -36,6 +36,7 @@ export function externalPluginDefinition(opts: {
         "font_assets",
         "private_files",
         "image_generation",
+        "site_media_read",
       ].includes(capability)
     )
       throw new Error(`External capability broker unavailable: ${capability}`);

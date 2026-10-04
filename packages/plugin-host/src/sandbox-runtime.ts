@@ -51,6 +51,19 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
         return images.edit(args[0] as Parameters<typeof images.edit>[0]);
     }
   }
+  if (method.startsWith("siteMedia.")) {
+    const siteMedia = (ctx as PluginContextTier1).siteMedia;
+    if (!siteMedia) throw new Error("SandboxCapabilityDenied: site_media_read");
+    if (args.length !== 1) throw new Error("SandboxArgumentsInvalid");
+    switch (method) {
+      case "siteMedia.find":
+        return siteMedia.find(args[0] as Parameters<typeof siteMedia.find>[0]);
+      case "siteMedia.inspect":
+        return siteMedia.inspect(args[0] as Parameters<typeof siteMedia.inspect>[0]);
+      case "siteMedia.readChunk":
+        return siteMedia.readChunk(args[0] as Parameters<typeof siteMedia.readChunk>[0]);
+    }
+  }
   if (method.startsWith("fonts.")) {
     const fonts = (ctx as PluginContextTier1).fonts;
     if (!fonts) throw new Error("SandboxCapabilityDenied: font_assets");
@@ -285,6 +298,7 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
       hasImages: Boolean((context as PluginContextTier1).images),
       hasFonts: Boolean((context as PluginContextTier1).fonts),
       hasPrivateFiles: Boolean((context as PluginContextTier1).privateFiles),
+      hasSiteMedia: Boolean((context as PluginContextTier1).siteMedia),
       // No sessionToken: it is the visitor's HttpOnly `caelo_session`
       // bearer credential. Handing it to runtime-authored code would let
       // a plugin collect tokens in its own schema and replay them to take

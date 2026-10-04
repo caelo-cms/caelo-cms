@@ -214,6 +214,8 @@ async function bootstrapPlugins(): Promise<void> {
       aiProvider,
       imageTransform: transformPluginImage,
       imageProvider: makePluginImageProvider({ adapter, registry }),
+      // #530 — originals of site media for plugins granted site_media_read.
+      siteMediaBytes: (storageKey: string) => getMediaStorage().get(storageKey),
       emitSnapshot: emitter,
       emailTransport,
       lockPluginRow,

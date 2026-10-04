@@ -114,6 +114,8 @@ export function resetDisabledSet(): void {
  *  injects these from the host process (apps/admin) so plugin-host stays
  *  free of upward circular imports on @caelo-cms/admin-core. */
 export interface PluginHostInfra {
+  /** #530 — the original bytes of a site media asset, by storage key. */
+  readonly siteMediaBytes?: (storageKey: string) => Promise<Uint8Array>;
   /** Local image processing, with no provider or network access. */
   readonly imageTransform?: (input: {
     bytes: Uint8Array;
