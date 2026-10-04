@@ -882,6 +882,20 @@ export interface PluginImages {
     references: readonly PluginImageSourceRef[];
     maxCostMicrocents: number;
   }): Promise<PluginImageResult>;
+  /**
+   * #528 — change a private image (`source`) from a prompt into a NEW private
+   * file; `mask` (a PNG) limits where, on models whose capabilities allow it.
+   * Same ledger, budget and idempotency rules as `generate`.
+   */
+  edit(input: {
+    requestId: string;
+    source: { id: string; sha256: string };
+    mask?: { id: string; sha256: string };
+    prompt: string;
+    imageSize: "1K" | "2K" | "4K";
+    references: readonly { id: string; sha256: string }[];
+    maxCostMicrocents: number;
+  }): Promise<PluginImageResult>;
 }
 
 /** Extended SDK context (legacy name). The host attaches only authorized handles;
