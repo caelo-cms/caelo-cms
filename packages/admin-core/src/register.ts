@@ -213,6 +213,12 @@ import {
   renderDesignDraftOp,
   selectGenesisDraftOp,
 } from "./ops/genesis.js";
+import {
+  imageRequestsFinishOp,
+  imageRequestsMarkUncertainOp,
+  imageRequestsReadOp,
+  imageRequestsReserveOp,
+} from "./ops/image_requests.js";
 import { importMediaUrlsOp, listPageAssetsOp } from "./ops/import_media.js";
 import {
   acceptImportedPageOp,
@@ -943,6 +949,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // Bulk `_many` variants via the DRY defineBulkOp factory (CLAUDE.md §11).
   registry.register(mediaUpdateAltManyOp);
   registry.register(mediaSetSourceManyOp);
+  registry.register(imageRequestsReadOp);
+  registry.register(imageRequestsReserveOp);
+  registry.register(imageRequestsFinishOp);
+  registry.register(imageRequestsMarkUncertainOp);
   registry.register(mediaDeleteOp);
   registry.register(mediaDeleteManyOp);
   registry.register(mediaRecordUsageOp);

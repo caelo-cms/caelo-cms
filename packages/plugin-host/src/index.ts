@@ -69,6 +69,13 @@ export {
   composeHeadBlock,
   renderHeadEntries,
 } from "./head-composition.js";
+export {
+  finishImageRequest,
+  type ImageRequestRecord,
+  markImageRequestUncertain,
+  readImageRequest,
+  reserveImageRequest,
+} from "./image-ledger.js";
 export { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
 export {
   activateApprovedExternalPlugin,

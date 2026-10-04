@@ -35,13 +35,24 @@ between a provider response and durable storage cannot guarantee recovered bytes
 this is exposed as uncertain, not silently retried. Cancellation of a plugin's
 queue does not cancel a request that has already reached the provider.
 
-Author permissions are checked on every call. The ledger is the named
-operations `plugin_images.read / reserve / finish / mark_uncertain`; `reserve`
-checks the `image_generation` receipt for exactly the running artifact, every
-image budget and the plugin's cost cap in one transaction, serialised against
-all other reservations. The provider call holds no DB transaction. Results are
-stored through `ctx.privateFiles`, which checks its own grant. Migration
-`0222_plugin_image_requests.sql` uses forced RLS with a host-only policy.
+Author permissions are checked on every call. The ledger is shared with the
+chat's `generate_image` (#527): `plugin-host/src/image-ledger.ts`, wrapped as
+`plugin_images.read / reserve / finish / mark_uncertain` here and as
+`image_requests.*` for the chat. `reserve` checks the `image_generation` receipt
+for exactly the running artifact, then every image budget and the plugin's cost
+cap in one transaction, serialised against all other reservations (chat and
+plugins alike). The provider call holds no DB transaction. Results are stored
+through `ctx.privateFiles`, which checks its own grant. The table is
+`image_requests` (migration 0226, formerly 0222's `plugin_image_requests`):
+plugin rows stay host-only under forced RLS; chat rows are readable as the
+site's own provenance.
+
+Each request records its provenance (#532): prompt, references (id + sha256),
+what was requested and the model. `get` and repeated `generate` calls return it
+as `provenance`. `describe()` returns the model's `capabilities` (#529) —
+operations, reference limits, mask support, sizes and resolutions — from the
+same model profiles the chat uses (`admin-core/src/ai/image-models.ts`), which
+also hold the prices.
 
 Large reviewed bundles are bounded to 4 million source characters (16 MB UTF-8),
 20 MB installation uploads, 256 MiB Deno heap, 1024 SDK calls and 1 MiB RPC messages.

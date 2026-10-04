@@ -780,6 +780,11 @@ export interface PluginImageResult {
   readonly model: string;
   /** Conservative estimate, not a provider invoice. Uncertain calls retain the reservation. */
   readonly costMicrocents: number;
+  /** #532 — how the image was requested; returned by `get`. */
+  readonly provenance?: {
+    readonly prompt: string | null;
+    readonly references: readonly { readonly id: string; readonly sha256: string }[];
+  };
 }
 /** Bounded local derivative; originals remain immutable and no AI call is made. */
 export interface PluginImageTransform {
@@ -788,11 +793,32 @@ export interface PluginImageTransform {
   height: number;
   quality: number;
 }
+/** What the configured image model accepts (#529) — check before a paid call. */
+export interface PluginImageCapabilities {
+  readonly provider: string;
+  readonly model: string;
+  readonly operations: readonly ("generate" | "edit")[];
+  readonly references: {
+    readonly max: number;
+    readonly maxBytesEach: number;
+    readonly maxBytesTotal: number;
+    readonly mediaTypes: readonly string[];
+  };
+  readonly mask: boolean;
+  readonly sizes: readonly string[];
+  readonly imageSizes: readonly string[];
+}
 export interface PluginImages {
   transform(
     input: PluginImageTransform,
   ): Promise<{ file: PluginPrivateFile; width: number; height: number }>;
-  describe(): Promise<{ model: string; maxCostMicrocents: number; imageSizes: readonly string[] }>;
+  /** The configured model, its in-flight reservation and what it can do (#529). */
+  describe(): Promise<{
+    model: string;
+    maxCostMicrocents: number;
+    imageSizes: readonly string[];
+    capabilities: PluginImageCapabilities;
+  }>;
   get(input: { requestId: string }): Promise<PluginImageResult | null>;
   generate(input: {
     requestId: string;

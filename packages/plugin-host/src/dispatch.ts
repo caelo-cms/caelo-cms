@@ -18,6 +18,7 @@ import type {
   PluginContext,
   PluginContextTier1,
   PluginDefinition,
+  PluginImageCapabilities,
   PluginInvocation,
   PluginProvenance,
 } from "@caelo-cms/plugin-sdk";
@@ -125,6 +126,7 @@ export interface PluginHostInfra {
       model: string;
       maxCostMicrocents: number;
       imageSizes: readonly string[];
+      capabilities: PluginImageCapabilities;
     }>;
     generate(input: {
       model: string;
