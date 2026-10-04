@@ -152,7 +152,13 @@ describe("P7 media ops", () => {
   it("re-uploading content whose asset was deleted creates a new live asset", async () => {
     // Regression: sha256 was unique across deleted rows too, so this failed
     // on the constraint instead of saving.
-    const first = await execute(registry, adapter, systemCtx, "media.upload", uploadInput(SHA_REUPLOAD));
+    const first = await execute(
+      registry,
+      adapter,
+      systemCtx,
+      "media.upload",
+      uploadInput(SHA_REUPLOAD),
+    );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     const firstId = (first.value as { assetId: string }).assetId;
@@ -161,7 +167,13 @@ describe("P7 media ops", () => {
       force: true,
     });
     expect(del.ok).toBe(true);
-    const again = await execute(registry, adapter, systemCtx, "media.upload", uploadInput(SHA_REUPLOAD));
+    const again = await execute(
+      registry,
+      adapter,
+      systemCtx,
+      "media.upload",
+      uploadInput(SHA_REUPLOAD),
+    );
     expect(again.ok).toBe(true);
     if (!again.ok) return;
     const value = again.value as { assetId: string; deduped: boolean };
