@@ -4,7 +4,8 @@
   /**
    * P7 — Media library list view. Grid of asset thumbnails (WebP-400
    * variant where present, original otherwise). Supports a free-text
-   * filter on alt + filename via the `q` param and a sort toggle.
+   * filter on alt + filename via the `q` param, a sort toggle, and the
+   * library / reference-images view (#531).
    */
 
   import { buildMediaUrl } from "@caelo-cms/shared";
@@ -28,6 +29,16 @@
     "image/avif",
     "image/gif",
   ]);
+
+  /** Same list with one parameter changed; keeps the search and the other toggle. */
+  function listHref(change: { sort?: string; visibility?: string }): string {
+    const params = new URLSearchParams({
+      sort: change.sort ?? data.sort,
+      visibility: change.visibility ?? data.visibility,
+    });
+    if (data.query) params.set("q", data.query);
+    return `?${params.toString()}`;
+  }
 
   function thumbUrl(a: (typeof data.assets)[number]): string {
     const variant = a.variants.find((v) => v.variant === "webp-400")
@@ -62,6 +73,7 @@
       <CardTitle class="text-base">Library</CardTitle>
       <form method="get" class="flex items-center gap-2">
         <input type="hidden" name="sort" value={data.sort} />
+        <input type="hidden" name="visibility" value={data.visibility} />
         <div class="relative">
           <Search class="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -74,16 +86,30 @@
         </div>
         <Button type="submit" variant="outline" size="sm">Search</Button>
         <a
-          href={`?sort=recent${data.query ? `&q=${encodeURIComponent(data.query)}` : ""}`}
+          href={listHref({ sort: "recent" })}
           class={buttonVariants({ variant: data.sort === "recent" ? "default" : "outline", size: "sm" })}
         >
           Recent
         </a>
         <a
-          href={`?sort=most_used${data.query ? `&q=${encodeURIComponent(data.query)}` : ""}`}
+          href={listHref({ sort: "most_used" })}
           class={buttonVariants({ variant: data.sort === "most_used" ? "default" : "outline", size: "sm" })}
         >
           Most used
+        </a>
+        <a
+          href={listHref({ visibility: "library" })}
+          class={buttonVariants({ variant: data.visibility === "library" ? "default" : "outline", size: "sm" })}
+          title="Images you can place on pages"
+        >
+          Library
+        </a>
+        <a
+          href={listHref({ visibility: "reference" })}
+          class={buttonVariants({ variant: data.visibility === "reference" ? "default" : "outline", size: "sm" })}
+          title="Images that only guide image generation and editing; never published"
+        >
+          References
         </a>
       </form>
     </CardHeader>

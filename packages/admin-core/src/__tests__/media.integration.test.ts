@@ -36,7 +36,7 @@ const systemCtx: ExecutionContext = {
 const TEST_PREFIX = "deadbeef";
 const SHA1 = `${TEST_PREFIX}${"a".repeat(56)}`;
 const SHA2 = `${TEST_PREFIX}${"b".repeat(56)}`;
-const _SHA3 = `${TEST_PREFIX}${"c".repeat(56)}`;
+const SHA3 = `${TEST_PREFIX}${"c".repeat(56)}`;
 const MOD_SLUG_A = "p7-media-test-a";
 const MOD_SLUG_B = "p7-media-test-b";
 
@@ -262,5 +262,53 @@ describe("P7 media ops", () => {
     const v = r.value as { cdnCopyEnabled: boolean; cdnUsageThreshold: number };
     expect(typeof v.cdnCopyEnabled).toBe("boolean");
     expect(v.cdnUsageThreshold).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("#531 reference images", () => {
+  async function list(visibility?: "library" | "reference" | "all"): Promise<string[]> {
+    const r = await execute(registry, adapter, systemCtx, "media.list", {
+      query: SHA3.slice(0, 8),
+      ...(visibility ? { visibility } : {}),
+    });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    return (r.value as { assets: { sha256: string }[] }).assets.map((a) => a.sha256);
+  }
+
+  it("an upload marked reference is hidden from the default listing and found on request", async () => {
+    const up = await execute(registry, adapter, systemCtx, "media.upload", {
+      ...(uploadInput(SHA3, "character sheet") as Record<string, unknown>),
+      visibility: "reference",
+    });
+    expect(up.ok).toBe(true);
+    if (!up.ok) return;
+    const assetId = (up.value as { assetId: string }).assetId;
+    expect(await list()).not.toContain(SHA3);
+    expect(await list("reference")).toContain(SHA3);
+    expect(await list("all")).toContain(SHA3);
+    const get = await execute(registry, adapter, systemCtx, "media.get", { assetId });
+    expect(get.ok && (get.value as { asset: { visibility: string } }).asset.visibility).toBe(
+      "reference",
+    );
+
+    // Re-uploading the same content does not silently change what it is.
+    const again = await execute(registry, adapter, systemCtx, "media.upload", uploadInput(SHA3));
+    expect(again.ok && (again.value as { deduped: boolean }).deduped).toBe(true);
+    expect(await list("reference")).toContain(SHA3);
+
+    // Bulk switch back to the library (and an unknown id aborts the batch).
+    const bad = await execute(registry, adapter, systemCtx, "media.set_visibility_many", {
+      items: [
+        { assetId, visibility: "library" },
+        { assetId: "00000000-0000-0000-0000-000000000000", visibility: "library" },
+      ],
+    });
+    expect(bad.ok).toBe(false);
+    expect(await list("reference")).toContain(SHA3);
+    const ok = await execute(registry, adapter, systemCtx, "media.set_visibility_many", {
+      items: [{ assetId, visibility: "library" }],
+    });
+    expect(ok.ok).toBe(true);
+    expect(await list()).toContain(SHA3);
   });
 });

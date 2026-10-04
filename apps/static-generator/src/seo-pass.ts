@@ -126,7 +126,7 @@ export async function runSeoPass(args: {
     // output (`/_assets/<slug>.<ext>` for orig, `/_assets/<slug>/<variant>.<ext>`
     // for a named variant); the UUID id stays internal.
     const rows = (await args.tx.execute(sql`
-      SELECT ma.slug, mv.variant, mv.format
+      SELECT ma.slug, ma.visibility, mv.variant, mv.format
       FROM media_variants mv
       JOIN media_assets ma ON ma.id = mv.asset_id
       WHERE mv.asset_id = ${id}::uuid
@@ -140,11 +140,24 @@ export async function runSeoPass(args: {
           ELSE 4
         END
       LIMIT 1
-    `)) as unknown as { slug: string; variant: string; format: string }[];
+    `)) as unknown as {
+      slug: string;
+      visibility: "library" | "reference";
+      variant: string;
+      format: string;
+    }[];
     const v = rows[0];
     if (!v) {
       throw new Error(
         `static-generator: og:image asset ${id} has no variants — deploy aborted (no-fallbacks)`,
+      );
+    }
+    if (v.visibility === "reference") {
+      // #531 — same rule as page images: references are never published.
+      throw new Error(
+        `static-generator: og:image asset ${v.slug} is a reference image and is never published. ` +
+          "Next step: pick a library image for the page's og:image, or mark this one as a library " +
+          'image (AI tool: set_media_visibility_many with visibility: "library").',
       );
     }
     const ext = v.format === "jpeg" ? "jpg" : v.format;

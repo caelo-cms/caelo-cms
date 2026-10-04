@@ -129,6 +129,7 @@ import { setMediaAltTool } from "./set-media-alt.js";
 import { setMediaAltManyTool } from "./set-media-alt-many.js";
 import { setMediaSourceTool } from "./set-media-source.js";
 import { setMediaSourceManyTool } from "./set-media-source-many.js";
+import { setMediaVisibilityManyTool } from "./set-media-visibility-many.js";
 import { setPageModuleContentTool } from "./set-page-module-content.js";
 import { setPageModuleContentManyTool } from "./set-page-module-content-many.js";
 import { setPageSeoTool } from "./set-page-seo.js";
@@ -325,6 +326,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // Bulk `_many` variants via the DRY makeBulkTool factory (CLAUDE.md §11).
   registry.register(setMediaAltManyTool);
   registry.register(setMediaSourceManyTool);
+  registry.register(setMediaVisibilityManyTool);
   // run #10 D4 — recovery for "media references unresolved" deploy failures.
   registry.register(regenerateMediaVariantsTool);
   // P16 — AI image generation via the active provider's image endpoint.

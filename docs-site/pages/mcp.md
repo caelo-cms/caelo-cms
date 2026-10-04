@@ -129,7 +129,7 @@ Call `caelo_upload_images` with that input. If the image is available as bytes i
 
 The result contains an `attachments` array and a `results` entry for each input file. Successful uploads survive other files failing; retry only the failed entries. Pass the returned `attachments` unchanged to `caelo_chat` together with your message and optional `chatSessionId`. The model receives image content, and the images remain part of the persisted chat history. In admin mode, use the returned asset IDs with the regular media/page tools.
 
-Uploads go into the shared **media library**. Admin preview URLs require authentication; uploaded images can subsequently be used on published pages. Uploading alone does not publish a page. Removing an attachment from the composer does not delete the media asset. Use the media library to manage or delete it.
+Uploads go into the shared **media library**. Admin preview URLs require authentication; uploaded images can subsequently be used on published pages. Uploading alone does not publish a page. Set `reference: true` on an image that only guides image generation or editing (a character sheet, a style sample): it is kept under **Media → References**, the AI does not pick it for pages, and a deploy refuses a page that uses it. The AI can move an image between library and references with `set_media_visibility_many`; the HTTP endpoint accepts `visibility=reference` as a query parameter. Removing an attachment from the composer does not delete the media asset. Use the media library to manage or delete it.
 
 A non-MCP HTTP client can use the same authenticated endpoint:
 

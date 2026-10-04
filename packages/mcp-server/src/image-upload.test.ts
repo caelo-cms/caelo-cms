@@ -12,6 +12,7 @@ const png = Buffer.from(
 );
 const assetId = "11111111-1111-4111-8111-111111111111";
 let chatBody: unknown;
+let lastUploadQuery = new URLSearchParams();
 const server = Bun.serve({
   port: 0,
   async fetch(request) {
@@ -20,6 +21,7 @@ const server = Bun.serve({
       chatBody = await request.json();
       return Response.json({ assistant: "ok" });
     }
+    lastUploadQuery = new URL(request.url).searchParams;
     expect(request.headers.get("content-type")).toBe("application/octet-stream");
     expect(Buffer.from(await request.arrayBuffer())).toEqual(png);
     return Response.json({ assetId, mime: "image/png", deduped: false });
@@ -40,6 +42,15 @@ test("base64 upload returns references and caelo_chat forwards them", async () =
   expect(attachments).toEqual([{ assetId, mime: "image/png", alt: "reference.png" }]);
   await sendChat({ ...opts, message: "Use this character", attachments });
   expect(chatBody).toEqual({ message: "Use this character", attachments });
+});
+
+test("reference uploads are sent as visibility=reference (#531)", async () => {
+  await uploadImages(opts, {
+    images: [{ base64: png.toString("base64"), filename: "sheet.png", reference: true }],
+  });
+  expect(lastUploadQuery.get("visibility")).toBe("reference");
+  await uploadImages(opts, { images: [{ base64: png.toString("base64") }] });
+  expect(lastUploadQuery.has("visibility")).toBe(false);
 });
 
 test("local files avoid passing large base64 through the calling model; partial errors retain successes", async () => {

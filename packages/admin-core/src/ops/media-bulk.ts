@@ -12,7 +12,7 @@
  */
 
 import { defineBulkOp } from "./_bulk.js";
-import { mediaSetSourceOp, mediaUpdateAltOp } from "./media.js";
+import { mediaSetSourceOp, mediaSetVisibilityOp, mediaUpdateAltOp } from "./media.js";
 
 /**
  * Replace the alt text on N assets in one transaction. Reuses
@@ -30,4 +30,13 @@ export const mediaUpdateAltManyOp = defineBulkOp({
 export const mediaSetSourceManyOp = defineBulkOp({
   name: "media.set_source_many",
   singular: mediaSetSourceOp,
+});
+
+/**
+ * #531 — move N assets between library and reference in one transaction.
+ * Reuses `media.set_visibility` per item.
+ */
+export const mediaSetVisibilityManyOp = defineBulkOp({
+  name: "media.set_visibility_many",
+  singular: mediaSetVisibilityOp,
 });
