@@ -202,7 +202,7 @@ export const mediaUploadOp = defineOperation({
     const inserted = (await tx.execute(sql`
       INSERT INTO media_assets (
         sha256, slug, original_name, mime, size_bytes, width, height, alt, storage_key, storage_provider,
-        source_kind, source_detail, license, visibility, created_by
+        source_kind, source_detail, license, visibility, derived_from_id, created_by
       )
       VALUES (
         ${input.sha256},
@@ -219,6 +219,7 @@ export const mediaUploadOp = defineOperation({
         ${input.sourceDetail ?? null},
         ${input.license ?? null},
         ${input.visibility ?? "library"},
+        ${input.derivedFromId ?? null}::uuid,
         ${ctx.actorId}::uuid
       )
       RETURNING id::text AS id

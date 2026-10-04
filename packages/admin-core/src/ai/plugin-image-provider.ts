@@ -50,23 +50,29 @@ export function makePluginImageProvider(
       if (!imageCapabilities(input.model)) throw new Error("Unsupported private image model");
       const apiKey = await getImageProviderApiKey("google");
       if (!apiKey) throw new Error("Google image key unavailable");
-      const references = [];
-      for (const ref of input.references) {
-        const source = sharp(ref.data, { limitInputPixels: 40_000_000, animated: false });
+      // Normalise every source image the same way (sRGB JPEG, rotation
+      // applied); the edit source travels first and keeps its role.
+      const normalise = async (data: Uint8Array) => {
+        const source = sharp(data, { limitInputPixels: 40_000_000, animated: false });
         const info = await source.metadata();
         if (!["png", "jpeg", "webp"].includes(info.format ?? "") || (info.pages ?? 1) > 1)
           throw new Error("Invalid image reference");
-        references.push({
+        return {
           data: await source.rotate().toColourspace("srgb").jpeg({ quality: 95 }).toBuffer(),
           mediaType: "image/jpeg" as const,
-        });
-      }
+        };
+      };
+      const editSource = input.editSource ? await normalise(input.editSource.data) : undefined;
+      const references = [];
+      for (const ref of input.references) references.push(await normalise(ref.data));
       const result = await makeImageProvider({ kind: "google", model: input.model }).generate({
         apiKey,
         model: input.model,
         prompt: input.prompt,
         imageSize: input.imageSize,
         referenceImages: references,
+        ...(editSource ? { editSource } : {}),
+        ...(input.mask ? { mask: input.mask } : {}),
         maxOutputTokens: 8192,
         abortSignal: AbortSignal.timeout(180_000),
       });

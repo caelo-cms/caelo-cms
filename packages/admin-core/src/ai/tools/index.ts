@@ -33,6 +33,7 @@ import { ToolRegistry } from "./dispatch.js";
 import { duplicatePageTool } from "./duplicate-page.js";
 import { duplicateThemeTool } from "./duplicate-theme.js";
 import { editContentTool } from "./edit-content.js";
+import { editImageTool } from "./edit-image.js";
 import { editModuleTool } from "./edit-module.js";
 import { exportThemeTool } from "./export-theme.js";
 import { findMediaTool } from "./find-media.js";
@@ -332,6 +333,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(regenerateMediaVariantsTool);
   // P16 — AI image generation via the active provider's image endpoint.
   registry.register(generateImageTool);
+  registry.register(editImageTool);
   registry.register(getImageCapabilitiesTool);
   // P8 — SEO sidecar tools.
   registry.register(setPageSeoTool);

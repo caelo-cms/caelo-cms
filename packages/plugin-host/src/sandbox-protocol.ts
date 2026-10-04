@@ -14,6 +14,7 @@ export const sandboxMethod = z.enum([
   "fonts.readChunk",
   "images.transform",
   "images.describe",
+  "images.edit",
   "images.get",
   "images.generate",
   "privateFiles.begin",

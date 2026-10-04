@@ -114,10 +114,15 @@ const reserveOp = defineOperation({
       operatorActorId: uuid,
       chatBranchId: uuid.optional(),
       // #532 provenance.
+      operation: z.enum(["generate", "edit"]).default("generate"),
       prompt: z.string().min(1).max(16000),
       references: z
         .array(z.object({ id: uuid, sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict())
-        .max(14),
+        .max(15),
+      mask: z
+        .object({ id: uuid, sha256: z.string().regex(/^[a-f0-9]{64}$/) })
+        .strict()
+        .optional(),
       requested: z.record(z.string(), z.unknown()),
     })
     .strict(),
@@ -136,9 +141,14 @@ const reserveOp = defineOperation({
       scope: pluginScope(input.pluginId),
       requestId: input.requestId,
       inputSha256: input.inputSha256,
-      operation: "generate",
+      operation: input.operation,
       prompt: input.prompt,
-      references: input.references.map((r) => ({ kind: "plugin-file", ...r })),
+      // An edit's first file is the image it changes.
+      references: input.references.map((r, i) => ({
+        kind: input.operation === "edit" && i === 0 ? "source" : "plugin-file",
+        ...r,
+      })),
+      mask: input.mask ? { kind: "mask", ...input.mask } : null,
       requested: input.requested,
       provider: "google",
       model: input.model,

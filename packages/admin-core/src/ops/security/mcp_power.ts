@@ -68,6 +68,7 @@ export const POWER_MCP_EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
  */
 const AI_SPENDING_TOOLS: ReadonlySet<string> = new Set([
   "generate_image",
+  "edit_image",
   "query_page_html",
   "translate_page",
   "start_translation_job",

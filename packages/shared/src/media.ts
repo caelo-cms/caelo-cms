@@ -223,6 +223,8 @@ export const mediaUploadInputSchema = z
     license: z.string().max(200).optional(),
     /** Defaults to `library`; a re-upload of existing content keeps its visibility. */
     visibility: mediaVisibilitySchema.optional(),
+    /** #528/#532 — the asset this one was made from (an edit). */
+    derivedFromId: z.string().uuid().optional(),
     variants: z
       .array(
         z.object({

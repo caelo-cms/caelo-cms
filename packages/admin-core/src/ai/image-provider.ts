@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { generateText } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
+import { generateImage, generateText } from "ai";
 
 /**
  * P16 — Image generation provider abstraction.
@@ -16,8 +17,11 @@ import { generateText } from "ai";
  * dispatches to whichever provider's `image_model` field is set on the
  * primary `ai_provider_configs` row.
  *
- * OpenAI uses DALL·E 3; Google uses Gemini native image generation through
- * the AI SDK. Google image and chat models are configured separately.
+ * Both providers go through the AI SDK (CLAUDE.md §12): OpenAI image
+ * models via `generateImage` (generation, and editing with an optional
+ * mask on gpt-image models); Google via Gemini's multimodal `generateText`.
+ * Google image and chat models are configured separately. What each model
+ * accepts is in image-models.ts; callers check it before a paid call.
  */
 
 export interface ImageRequest {
@@ -35,6 +39,13 @@ export interface ImageRequest {
   }[];
   /** Explicit native Gemini resolution; unsupported models fail before a paid call. */
   readonly imageSize?: "1K" | "2K" | "4K";
+  /** #528 — edit this image instead of generating from scratch. */
+  readonly editSource?: {
+    data: Uint8Array;
+    mediaType: "image/png" | "image/jpeg" | "image/webp";
+  };
+  /** #528 — PNG whose transparent area marks where an edit may change the source. */
+  readonly mask?: { data: Uint8Array; mediaType: "image/png" };
   readonly maxOutputTokens?: number;
   readonly apiKey: string;
   readonly fetchImpl?: typeof fetch;
@@ -58,54 +69,72 @@ export interface ImageProvider {
   generate(opts: ImageRequest): Promise<ImageResponse>;
 }
 
+/** gpt-image models take their own shapes; DALL·E 3 keeps the classic ones. */
+function openAiSize(model: string, size: ImageRequest["size"]): `${number}x${number}` {
+  const shape = size ?? "1024x1024";
+  if (!model.startsWith("gpt-image")) return shape;
+  return shape === "1792x1024" ? "1536x1024" : shape === "1024x1792" ? "1024x1536" : "1024x1024";
+}
+
 /**
- * OpenAI DALL·E 3 image adapter.
+ * OpenAI image adapter via the AI SDK's `generateImage`. DALL·E 3
+ * generates only; gpt-image models also edit (source + references + an
+ * optional mask). Bytes come back inline — no provider URL to follow.
  */
 export class OpenAiImageProvider implements ImageProvider {
   readonly name = "openai" as const;
   readonly model: string;
-  readonly #baseUrl: string;
+  readonly #baseUrl: string | undefined;
   constructor(opts: { model: string; baseUrl?: string }) {
     this.model = opts.model;
-    this.#baseUrl = opts.baseUrl ?? "https://api.openai.com";
+    this.#baseUrl = opts.baseUrl;
   }
 
   async generate(opts: ImageRequest): Promise<ImageResponse> {
-    if (opts.referenceImages?.length || opts.imageSize)
-      throw new Error(
-        "This image adapter does not support reference images or native resolution controls",
-      );
+    const model = opts.model || this.model;
+    if (opts.imageSize) throw new Error("OpenAI image models have no native resolution control");
+    const edit = opts.editSource !== undefined;
+    if (!edit && (opts.referenceImages?.length || opts.mask))
+      throw new Error("OpenAI takes reference images and masks only when editing a source image");
     const start = Date.now();
-    const fetchImpl = opts.fetchImpl ?? fetch;
-    const res = await fetchImpl(`${this.#baseUrl}/v1/images/generations`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${opts.apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: opts.model || this.model,
-        prompt: opts.prompt,
-        size: opts.size ?? "1024x1024",
-        quality: opts.quality ?? "standard",
-        n: 1,
-        response_format: "url",
-      }),
-      signal: opts.abortSignal,
+    const provider = createOpenAI({
+      apiKey: opts.apiKey,
+      ...(this.#baseUrl ? { baseURL: `${this.#baseUrl.replace(/\/+$/, "")}/v1` } : {}),
+      ...(opts.fetchImpl ? { fetch: opts.fetchImpl } : {}),
     });
-    if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(`openai image ${res.status}: ${detail.slice(0, 500)}`);
-    }
-    const data = (await res.json()) as {
-      data: Array<{ url: string; revised_prompt?: string }>;
-    };
-    const first = data.data?.[0];
-    if (!first?.url) throw new Error("openai image: missing url in response");
+    const quality = model.startsWith("gpt-image")
+      ? opts.quality === "hd"
+        ? "high"
+        : "medium"
+      : (opts.quality ?? "standard");
+    const result = await generateImage({
+      model: provider.image(model),
+      prompt: edit
+        ? {
+            images: [opts.editSource!.data, ...(opts.referenceImages ?? []).map((r) => r.data)],
+            text: opts.prompt,
+            ...(opts.mask ? { mask: opts.mask.data } : {}),
+          }
+        : opts.prompt,
+      size: openAiSize(model, opts.size),
+      providerOptions: { openai: { quality } },
+      // Paid call: never retried by the SDK (an uncertain outcome is ours to record).
+      maxRetries: 0,
+      ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+    });
+    const image = result.image;
     return {
-      imageUrl: first.url,
-      revisedPrompt: first.revised_prompt ?? null,
+      imageUrl: `data:${image.mediaType};base64,${image.base64}`,
+      revisedPrompt: null,
       durationMs: Date.now() - start,
+      ...(result.usage?.inputTokens !== undefined || result.usage?.outputTokens !== undefined
+        ? {
+            usage: {
+              inputTokens: result.usage.inputTokens ?? 0,
+              outputTokens: result.usage.outputTokens ?? 0,
+            },
+          }
+        : {}),
     };
   }
 }
@@ -132,7 +161,12 @@ export class GeminiSdkImageProvider implements ImageProvider {
 
   async generate(opts: ImageRequest): Promise<ImageResponse> {
     const model = opts.model || this.model;
-    const references = opts.referenceImages ?? [];
+    if (opts.mask) throw new Error("Gemini image models cannot limit an edit to a mask");
+    // Gemini edits by taking the source image as the first image part.
+    const references = [
+      ...(opts.editSource ? [opts.editSource] : []),
+      ...(opts.referenceImages ?? []),
+    ];
     const modernImage = [
       "gemini-3.1-flash-image",
       "gemini-3.1-flash-lite-image",
