@@ -22,7 +22,7 @@ export async function uploadMedia(
   request: Request,
   ctx: ExecutionContext,
   chatImage = false,
-  rawImage?: { filename: string; alt?: string },
+  rawImage?: { filename: string; alt?: string; visibility?: "library" | "reference" },
 ) {
   const contentLength = Number(request.headers.get("content-length") ?? "0");
   if (contentLength > MEDIA_HARD_LIMIT_BYTES) {
@@ -61,6 +61,7 @@ export async function uploadMedia(
       form = new FormData();
       form.set("file", new File([bytes], rawImage.filename));
       if (rawImage.alt) form.set("alt", rawImage.alt);
+      if (rawImage.visibility) form.set("visibility", rawImage.visibility);
     } else {
       form = await new Response(bytes, { headers: request.headers }).formData();
     }
@@ -70,6 +71,11 @@ export async function uploadMedia(
   const file = form.get("file");
   const altRaw = form.get("alt");
   const nameRaw = form.get("name");
+  // #531 — an upload meant only to guide generation/editing.
+  const visibilityRaw = form.get("visibility");
+  if (visibilityRaw !== null && visibilityRaw !== "library" && visibilityRaw !== "reference") {
+    throw error(400, "visibility must be 'library' or 'reference'");
+  }
   if (!(file instanceof File)) {
     throw error(400, "missing 'file' field");
   }
@@ -144,6 +150,7 @@ export async function uploadMedia(
     storageProvider: getMediaStorageProvider(),
     // Media provenance (0181) — a direct operator upload.
     sourceKind: "upload",
+    ...(visibilityRaw !== null ? { visibility: visibilityRaw } : {}),
     variants: result.variants.map((v) => ({
       variant: v.variant,
       format: v.format,

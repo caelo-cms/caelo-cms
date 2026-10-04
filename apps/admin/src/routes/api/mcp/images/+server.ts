@@ -31,16 +31,23 @@ export const POST: RequestHandler = async ({ request, url }) => {
   if (request.headers.get("content-type")?.split(";")[0] !== "application/octet-stream") {
     throw error(
       415,
-      "Send image bytes as application/octet-stream; filename and alt are query parameters.",
+      "Send image bytes as application/octet-stream; filename, alt and visibility are query parameters.",
     );
   }
   const metadata = z
-    .object({ filename: z.string().min(1).max(512), alt: z.string().max(2048).optional() })
+    .object({
+      filename: z.string().min(1).max(512),
+      alt: z.string().max(2048).optional(),
+      visibility: z.enum(["library", "reference"]).optional(),
+    })
     .safeParse({
       filename: url.searchParams.get("filename") ?? "image",
       ...(url.searchParams.has("alt") ? { alt: url.searchParams.get("alt") } : {}),
+      ...(url.searchParams.has("visibility")
+        ? { visibility: url.searchParams.get("visibility") }
+        : {}),
     });
-  if (!metadata.success) throw error(400, "Invalid image filename or alt text");
+  if (!metadata.success) throw error(400, "Invalid image filename, alt text or visibility");
   return json(
     await uploadMedia(request, { actorId, actorKind: "human", requestId }, true, metadata.data),
   );

@@ -10,14 +10,17 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const { adapter, registry } = getQueryContext();
   const query = url.searchParams.get("q") ?? undefined;
   const sort = url.searchParams.get("sort") === "most_used" ? "most_used" : "recent";
+  // #531 — reference images (guides for generation/editing) live in their own view.
+  const visibility = url.searchParams.get("visibility") === "reference" ? "reference" : "library";
   const result = await execute(registry, adapter, locals.ctx, "media.list", {
     query,
     sort,
+    visibility,
     limit: 60,
     offset: 0,
   });
   if (!result.ok) {
-    return { assets: [], totalCount: 0, query: query ?? "", sort };
+    return { assets: [], totalCount: 0, query: query ?? "", sort, visibility };
   }
   const { assets, totalCount } = result.value as {
     assets: {
@@ -35,5 +38,5 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     }[];
     totalCount: number;
   };
-  return { assets, totalCount, query: query ?? "", sort };
+  return { assets, totalCount, query: query ?? "", sort, visibility };
 };

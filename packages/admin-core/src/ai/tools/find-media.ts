@@ -27,6 +27,8 @@ const findMediaInput = z
         "video/mp4",
       ])
       .optional(),
+    /** #531 — `library` (default) hides reference images; `all` lists both. */
+    visibility: z.enum(["library", "reference", "all"]).optional(),
   })
   .strict();
 
@@ -41,6 +43,7 @@ interface MediaRow {
   sourceKind: string | null;
   sourceDetail: string | null;
   license: string | null;
+  visibility: "library" | "reference";
   variants: { variant: string }[];
 }
 
@@ -50,16 +53,25 @@ export const findMediaTool = makeListReadTool<z.infer<typeof findMediaInput>, Me
     "Search the media library (TOON rows: id, name, mime, dims, alt, url). `filter` matches alt/filename server-side; optional `mime`; `limit`/`offset`/`full` as usual. " +
     "The `id` column is the media UUID that `set_theme_asset` / `set_media_alt` / `regenerate_media_variants` require — take it from here; never invent one. " +
     "The `url` column always points at a variant that EXISTS on the asset — use it verbatim in <img src> via edit_module; do NOT rewrite the variant segment. " +
+    'Reference images (guides for generate/edit, not placeable on pages) are hidden unless you pass `visibility: "reference"` or `"all"`. ' +
     "Use when the user references an asset by description. This searches the EXISTING Caelo library only — during a site migration it is empty, so import source-site images with import_media_from_urls instead of this tool.",
   opName: "media.list",
   input: findMediaInput,
   buildOpInput: (
-    input: { mime?: string; filter?: string; limit?: number; offset?: number; full?: boolean },
+    input: {
+      mime?: string;
+      visibility?: "library" | "reference" | "all";
+      filter?: string;
+      limit?: number;
+      offset?: number;
+      full?: boolean;
+    },
     _ctx: ExecutionContext,
     _toolCtx: ToolContext,
   ) => ({
     ...(input.filter !== undefined ? { query: input.filter } : {}),
     ...(input.mime !== undefined ? { mime: input.mime } : {}),
+    ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
     sort: "most_used",
     limit: input.full ? 50 : Math.min(input.limit ?? 15, 50),
     offset: input.offset ?? 0,
@@ -75,6 +87,7 @@ export const findMediaTool = makeListReadTool<z.infer<typeof findMediaInput>, Me
     { key: "mime", value: (a) => a.mime },
     { key: "dims", value: (a) => (a.width && a.height ? `${a.width}x${a.height}` : "") },
     { key: "alt", value: (a) => a.alt },
+    { key: "visibility", value: (a) => a.visibility },
     {
       key: "url",
       value: (a) => buildMediaUrl(a.slug, pickAiImageVariant(a.variants.map((v) => v.variant))),
