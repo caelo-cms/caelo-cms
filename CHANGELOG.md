@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.10.27
+
+### Features
+- 153de29f site media as image references for granted plugins (#537)
+- f186a664 edit images with an optional mask, for chat and plugins (#536)
+- e34eadb7 one image lifecycle for chat and plugins (#527, #532, #529) (#534)
+- 649bf3db reference images that guide generation and never publish (#531) (#533)
+- 244cc08a single model catalog + weekly update via Copilot coding agent (#505)
+- 6a5ee42e upload images from the composer and connected MCP clients (#526)
+
+### Fixes
+- 18e8e15f re-uploading content whose asset was deleted saves a new asset (#535)
+- 72f66d13 keep Secret Manager secrets in the install region (#500)
+
+### Docs
+- c8324501 propose shared media services for chat and plugins (#472)
+
+### Chores
+- 0f8ce875 bump the minor-and-patch group across 1 directory with 40 updates (#501)
+- 7f86fa23 bump js-yaml from 4.3.0 to 5.4.2 (#491)
+- 51b28f23 bump @google-cloud/storage from 7.21.0 to 8.2.0 (#503)
+- a69e8821 bump file-type from 21.3.4 to 22.1.1 (#502)
+
 ## v0.10.26
 
 ### Features
