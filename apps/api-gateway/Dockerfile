@@ -10,7 +10,7 @@
 # CLAUDE.md §11.C: published to ghcr.io/caelo-cms/gateway by the
 # .github/workflows/release-images.yml workflow on every release.
 
-FROM denoland/deno:bin-2.9.6 AS deno
+FROM denoland/deno:bin-2.9.7 AS deno
 
 FROM oven/bun:1.4.2 AS builder
 
