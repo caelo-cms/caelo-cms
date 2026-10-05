@@ -196,7 +196,7 @@ jobs:
 
       - name: Install oras (referrer-aware registry copy)
         if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
-        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
 
       - name: Mirror image (+ signatures) to GCP public AR
         if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
