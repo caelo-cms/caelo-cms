@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@caelo-cms/admin-core": "workspace:*",
+    "@caelo-cms/font-service": "workspace:*",
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/plugin-sdk": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
@@ -39,15 +40,14 @@
     "svelte-sonner": "^1.2.1",
     "tailwind-merge": "^3.7.0",
     "tailwind-variants": "^3.3.1",
-    "zod": "4.6.5",
-    "@caelo-cms/font-service": "workspace:*"
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
     "@modelcontextprotocol/sdk": "1.31.0",
     "@playwright/test": "1.63.0",
-    "@sveltejs/adapter-node": "5.5.7",
-    "@sveltejs/kit": "2.70.3",
+    "@sveltejs/adapter-node": "^6.0.0",
+    "@sveltejs/kit": "^3.0.0",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@tailwindcss/vite": "^4.3.3",
     "sharp": "^0.35",
