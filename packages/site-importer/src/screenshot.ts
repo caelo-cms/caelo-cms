@@ -8,14 +8,12 @@
  * same render session, persisting the pixels + design tokens as the
  * live-inspect payload the theme proposal consumes.
  *
- * Playwright is intentionally NOT a hard dependency of @caelo-cms/site-importer
- * — it ships in the admin app's devDeps already (apps/admin/package.json)
- * and the orchestrator runs in the same process tree as the admin in
- * self-hosted Compose, so the binary is reachable. For Tier 2 / cloud
- * deployments where Playwright isn't bundled, the importerTick skips
- * screenshot capture and `diff_status` stays NULL — the gating policy
- * treats NULL as "not blocking", which preserves backward-compat with
- * the v1 ship that didn't take screenshots at all.
+ * Playwright is a pinned dependency of this package, and the admin image
+ * bundles the matching Chromium (#428), so every install can capture —
+ * chat `screenshot_page`, MCP sessions, migration ground truth. It is still
+ * loaded with a dynamic import (see createPlaywrightScreenshotter) so the
+ * admin's server bundle never inlines it; a runtime without a browser gets
+ * a null screenshotter, and callers report that loudly (issue #247).
  *
  * Callers pass a screenshotter implementation; this file ships only the
  * abstraction + a thin Playwright-backed factory.
@@ -237,7 +235,11 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
   // biome-ignore lint/suspicious/noExplicitAny: opaque browser handle
   let browser: any;
   try {
-    browser = await pw.chromium.launch({ headless: true });
+    // `channel: "chromium"` runs the full Chromium build in headless mode
+    // rather than the stripped chromium-headless-shell: the image installs
+    // only the full build (#428), which also speaks the complete DevTools
+    // protocol a later Lighthouse-style audit needs (#553).
+    browser = await pw.chromium.launch({ headless: true, channel: "chromium" });
   } catch (e) {
     console.warn(
       "[site-importer] Playwright chromium launch failed — install the repo-pinned build with `bun node_modules/playwright/cli.js install chromium` (bunx may fetch a mismatched registry version). Skipping screenshot capture.",
