@@ -1,5 +1,6 @@
-// SPDX-License-Identifier: MPL-2.0
+import type { Handle } from "@sveltejs/kit/hooks";
 
+// SPDX-License-Identifier: MPL-2.0
 // v0.5.9 — process-level handlers. Catches every async-leaked rejection
 // and uncaught exception that would otherwise vanish into Bun's default
 // (kill the process on uncaughtException; silently drop unhandledRejection
@@ -55,7 +56,6 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import type { Handle } from "@sveltejs/kit";
 import { SESSION_COOKIE } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 
