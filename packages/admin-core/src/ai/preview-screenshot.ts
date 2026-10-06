@@ -58,7 +58,7 @@ export type PreviewScreenshotResult =
  * Resolve the base URL under which THIS admin process serves HTTP, for
  * the headless browser's localhost navigation. Resolution order:
  * `CAELO_PREVIEW_SELF_ORIGIN` (explicit override) → `127.0.0.1:$PORT`
- * (svelte-adapter-bun serves on PORT; loopback bypasses IAP/identity
+ * (the adapter-node server listens on PORT; loopback bypasses IAP/identity
  * proxies, which would otherwise block a public-`ORIGIN` round-trip) →
  * `ORIGIN` (adapter convention). No silent default port (CLAUDE.md §2
  * no-fallbacks): a guessed-wrong port would screenshot someone else's

@@ -29,7 +29,7 @@ interface UploadBody {
   /**
    * Run #9 CI fix (issue #262) — ChatPanel captures as JPEG by default
    * now (a full-viewport PNG runs ~1 MB base64 and trips
-   * svelte-adapter-bun's 512K default BODY_SIZE_LIMIT with a 413).
+   * the adapter's 512K default BODY_SIZE_LIMIT with a 413).
    * Optional for back-compat with tabs still running the PNG-only
    * client; absent means PNG.
    */

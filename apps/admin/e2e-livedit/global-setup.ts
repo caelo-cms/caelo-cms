@@ -150,7 +150,7 @@ export default async function globalSetup(): Promise<void> {
     // pending proposals as the Owner would, exercising the full
     // propose→execute path. Test admin ONLY — never production.
     CAELO_E2E_AUTO_APPROVE_PROPOSALS: "1",
-    // Run #9 CI fix (issue #262) — svelte-adapter-bun defaults
+    // Run #9 CI fix (issue #262) — the adapter (@sveltejs/adapter-node) defaults
     // BODY_SIZE_LIMIT to 512K, and the chat screenshot postback can
     // exceed it (selector captures of image-heavy elements even as
     // JPEG). A 413 here kills the AI's screenshot tool round-trip and

@@ -187,7 +187,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Playwright admin shell smoke. Runs against the production build under
-    # `vite preview` via the adapter-bun output, matching the configuration
+    # `vite preview` via the adapter-node output, matching the configuration
     # that ships. #36 fixed the original SSR module-not-found by building
     # @caelo-cms/shared (the step below); #52 fixed the follow-on Bun /
     # Rollup native-binding SIGILL via two root-cause changes (no
@@ -297,7 +297,7 @@ jobs:
     # Issue #55 — complements release-images.yml's PR build gate (#54)
     # with a boot smoke. release-images builds + publishes; this job
     # builds the admin image alone (no push, no sign, no mirror) and
-    # `docker run`s it to confirm the SvelteKit + adapter-bun server
+    # `docker run`s it to confirm the SvelteKit + adapter-node server
     # actually boots. The bug class #53 fixed (Cannot find module
     # "oxc-parser") succeeds at Docker build time and only crashes on
     # `docker run` — release-images alone cannot catch it.

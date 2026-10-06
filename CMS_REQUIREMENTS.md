@@ -762,7 +762,7 @@ Extended built-in plugins (§14.11) each ship matching companion skills (`schedu
 | Component | Decision | Status |
 |---|---|---|
 | Runtime | Bun | Decided |
-| Admin Framework | SvelteKit + svelte-adapter-bun | Decided |
+| Admin Framework | SvelteKit + @sveltejs/adapter-node, served by Bun | Decided (2026-10: replaced svelte-adapter-bun, which does not support SvelteKit 3) |
 | Static Output | Astro + Bun | Decided |
 | Plugin sandbox runtime | Deno (subprocess) | Decided |
 | Plugin frontend | Web Components (native browser) | Decided |

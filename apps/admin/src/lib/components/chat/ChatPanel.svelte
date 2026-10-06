@@ -734,7 +734,7 @@
       // toBlob → base64 (raw, no data: prefix — the upload endpoint
       // expects bare base64). JPEG at quality 0.85, NOT PNG: a
       // full-viewport PNG of a real page runs 0.8-1.1 MB, which blows
-      // through svelte-adapter-bun's default BODY_SIZE_LIMIT (512K) —
+      // through the adapter's default BODY_SIZE_LIMIT (512K) —
       // the server answers 413 before SvelteKit sees the request, the
       // AI's screenshot tool times out, and the operator gets a red
       // console error (run #9 CI, issue #262). JPEG is 5-10x smaller

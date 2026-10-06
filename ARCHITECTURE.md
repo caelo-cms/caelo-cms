@@ -15,7 +15,7 @@ graph TD
   end
 
   subgraph apps["apps/"]
-    Admin["apps/admin<br/>SvelteKit + svelte-adapter-bun<br/>authoring UI · /edit · /security · API"]
+    Admin["apps/admin<br/>SvelteKit + adapter-node (on Bun)<br/>authoring UI · /edit · /security · API"]
     StaticGen["apps/static-generator<br/>subprocess invoked at deploy<br/>emits HTML to output/&lt;env&gt;/"]
     Gateway["apps/api-gateway<br/>P12+ · public plugin writes<br/>cms_public role only"]
   end

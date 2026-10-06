@@ -36,9 +36,9 @@ export default defineConfig({
   webServer: {
     // `vite preview` runs under Node, which doesn't expose the `bun` built-in
     // we import from in `$lib/server/query.ts`. Instead build once, then start
-    // the adapter-bun output directly under Bun.
+    // the adapter-node output directly under Bun.
     //
-    // ORIGIN is load-bearing: svelte-adapter-bun does not infer it, so without
+    // ORIGIN is load-bearing: the adapter does not infer it, so without
     // an explicit value SvelteKit's cross-site Origin check 403s every form
     // POST (login, setup, role creation). Behind a real reverse proxy this is
     // the public URL; for the smoke server it's the loopback baseURL.

@@ -7,7 +7,7 @@
  * #55 adds the `admin-prod-image` job — a complementary, cheaper gate
  * to release-images.yml (#54). release-images builds + publishes the
  * admin image; admin-prod-image builds it and `docker run`s it to
- * verify the SvelteKit + adapter-bun server actually boots. The bug
+ * verify the SvelteKit + adapter-node server actually boots. The bug
  * class #53 fixed (`Cannot find module "oxc-parser"`) succeeds at
  * Docker build time and only crashes on `docker run` — release-images
  * alone cannot catch it.
