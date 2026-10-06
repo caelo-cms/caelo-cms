@@ -1,0 +1,7 @@
+-- SPDX-License-Identifier: MPL-2.0
+--
+-- 0228 — GPT-5.5 pricing.
+--
+-- OpenAI's official pricing page is https://openai.com/api/pricing/.
+-- It was unreachable due to DNS lookup failure during this change, so no
+-- ai_pricing row is seeded rather than guessing the model's rates.
