@@ -27,7 +27,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // The admin install's public URL — surfaces in the `claude mcp add`
   // snippet the create-flow shows. Best-effort: derive from request URL.
   const adminUrl = `${url.protocol}//${url.host}`;
-  return { tokens, adminUrl };
+  // Issue #37 — set by the provisioner on IAP-protected installs; the MCP
+  // shim needs it to get through IAP.
+  const iapServiceAccount = process.env.CAELO_MCP_IAP_SERVICE_ACCOUNT?.trim() || null;
+  return { tokens, adminUrl, iapServiceAccount };
 };
 
 export const actions: Actions = {
