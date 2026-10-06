@@ -166,7 +166,11 @@ interface BuildChunk {
 
 function readBuildChunks(): readonly BuildChunk[] | null {
   if (!existsSync(BUILD_CHUNKS_DIR)) return null;
-  const jsFiles = readdirSync(BUILD_CHUNKS_DIR).filter((f) => f.endsWith(".js"));
+  // Recursive: @sveltejs/adapter-node nests shared chunks one level deeper
+  // (chunks/chunks/); a flat scan would let B1 fail and B2/B3 pass vacuously.
+  const jsFiles = readdirSync(BUILD_CHUNKS_DIR, { recursive: true })
+    .map(String)
+    .filter((f) => f.endsWith(".js"));
   if (jsFiles.length === 0) return null;
   return jsFiles.map((f) => {
     const p = resolve(BUILD_CHUNKS_DIR, f);

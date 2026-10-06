@@ -30,7 +30,7 @@
  * Capture formats the browser-side ChatPanel may upload. JPEG became
  * the default in the run #9 CI fix (issue #262): a full-viewport PNG
  * of a real page runs 0.8-1.1 MB base64, which exceeds
- * svelte-adapter-bun's default BODY_SIZE_LIMIT (512K) and the upload
+ * the adapter's default BODY_SIZE_LIMIT (512K) and the upload
  * dies with 413 before SvelteKit ever sees it. JPEG at quality 0.85
  * is 5-10x smaller at no cost to the vision-model verdict.
  */

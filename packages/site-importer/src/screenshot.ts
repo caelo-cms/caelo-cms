@@ -224,7 +224,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
   let pw: any;
   try {
     // The specifier goes through a variable so bundlers CANNOT
-    // statically follow it: rolldown/adapter-bun otherwise inlines
+    // statically follow it: rolldown/the adapter build otherwise inlines
     // playwright → playwright-core → fsevents.node and the macOS
     // server build dies on the native binary ("stream did not
     // contain valid UTF-8"). The old `"playwright" as string` cast

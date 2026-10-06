@@ -79,7 +79,7 @@ These cannot be violated by any change, AI-generated or human:
 
 ## 3. Dependency & version policy
 
-- **Always verify the current version** of a package before adding it — do not trust training-data recall. Fetch the latest stable from the npm registry (or vendor docs via context7) and pin in `package.json`. If the requirements doc specifies a library (Bun, SvelteKit, Astro, Zod, Arctic, Pulumi, oxc-parser, Deno, svelte-adapter-bun, sharp, drizzle/atlas), use it — don't re-evaluate mid-project.
+- **Always verify the current version** of a package before adding it — do not trust training-data recall. Fetch the latest stable from the npm registry (or vendor docs via context7) and pin in `package.json`. If the requirements doc specifies a library (Bun, SvelteKit, Astro, Zod, Arctic, Pulumi, oxc-parser, Deno, @sveltejs/adapter-node (run under Bun), sharp, drizzle/atlas), use it — don't re-evaluate mid-project.
 - **Project licence: MPL 2.0.** Maximum freedom for developers, hosting providers, and AI-generated modules; modifications to core files must stay open; patent protection included; one licence, no dual-licensing complexity (same licence as Firefox, Brave, LibreOffice). All dependencies must be **MPL-2.0-compatible** — MPL-2.0, Apache-2.0, MIT, BSD, ISC. GPL/AGPL/SSPL/proprietary deps are blockers and must be rejected in PR review. Record the license of every new dep in the PR description.
 - **Prefer fewer, well-maintained dependencies** over clever micro-libraries. OSS contributors will audit this tree.
 - **Upgrade, don't pin forever.** Dependabot/renovate on; security advisories block merges.
