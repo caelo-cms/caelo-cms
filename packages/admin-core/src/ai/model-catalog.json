@@ -32,8 +32,8 @@
           "role": "default",
           "note": "",
           "match": "^gpt-\\d+(\\.\\d+)?o?$",
-          "id": "gpt-4o",
-          "label": "GPT-4o"
+          "id": "gpt-5.5",
+          "label": "GPT-5.5"
         }
       ]
     },
