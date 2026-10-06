@@ -510,6 +510,9 @@ const adminSvc = cloudRunService({
     { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl },
     // Use the input string (known at config time) — resource output
     // is Output<string | undefined> which Input<string> rejects.
+    // #551 — the public site URL; the admin seeds site_defaults.site_base_url
+    // from it (canonical, og:url, sitemap) when it is not configured yet.
+    { name: "CAELO_SITE_URL", value: `https://${domain}` },
     { name: "CAELO_FIREBASE_SITE", value: firebaseSiteId },
     { name: "CAELO_GENERATOR_CLI", value: "/app/apps/static-generator/src/cli.ts" },
     // v0.3.1 — Firebase publisher needs the gateway service name +
