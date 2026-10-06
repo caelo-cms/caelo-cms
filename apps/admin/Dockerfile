@@ -11,7 +11,7 @@
 # CLAUDE.md §11.C: this image is published to ghcr.io/caelo-cms/admin
 # by .github/workflows/release-images.yml. End-users never build it.
 
-FROM denoland/deno:bin-2.9.6 AS deno
+FROM denoland/deno:bin-2.9.7 AS deno
 
 FROM oven/bun:1.4.2 AS builder
 
