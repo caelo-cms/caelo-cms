@@ -13,6 +13,17 @@ process.on("unhandledRejection", (reason, p) => {
 process.on("uncaughtException", (e) => {
   console.error("[uncaught.exception]", e);
 });
+// adapter-node answers SIGTERM/SIGINT by closing the HTTP server, letting
+// in-flight requests finish, then emitting `sveltekit:shutdown` and waiting
+// for the event loop to drain. Ours never drains: the bootstrapped workers
+// below (redeploy, GC sweeps, release check, plugin host) poll on timers and
+// hold pg pools. Without this exit, Cloud Run and `docker stop` fall back to
+// SIGKILL after their grace period. The workers keep no in-memory state the
+// database does not already hold, so exiting once requests are done is safe.
+process.on("sveltekit:shutdown", (reason: string) => {
+  console.error(`[shutdown] ${reason}: HTTP server drained, exiting`);
+  process.exit(0);
+});
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
