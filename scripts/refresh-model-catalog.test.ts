@@ -11,6 +11,7 @@ import {
   pricedModels,
   refreshCatalog,
   renderIssueBody,
+  withAliases,
 } from "./refresh-model-catalog.js";
 
 const slot = (role: string, match: string, id: string) => ({
@@ -112,6 +113,53 @@ describe("refreshCatalog", () => {
   });
 });
 
+describe("dated snapshots (regression: Anthropic lists Haiku only as claude-haiku-4-5-20251001)", () => {
+  it("adds the alias of a dated-only id", () => {
+    expect(withAliases([{ id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" }])).toEqual([
+      { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+      { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+    ]);
+  });
+
+  it("does not duplicate an alias the provider already lists", () => {
+    const models = [
+      { id: "claude-sonnet-5-5", label: "S" },
+      { id: "claude-sonnet-5-5-20260901", label: "S" },
+    ];
+    expect(withAliases(models)).toHaveLength(2);
+  });
+
+  it("a dated-only family matches its slot and the alias is not treated as retired", () => {
+    const { changes, unmatched } = refreshCatalog(catalog(), {
+      anthropic: [
+        { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+        { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+      ],
+    });
+    expect(unmatched).toEqual([]);
+    expect(changes).toEqual([]);
+  });
+
+  it("a newer dated-only model moves the slot to its alias", () => {
+    const { changes } = refreshCatalog(catalog(), {
+      anthropic: [
+        { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+        { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+        { id: "claude-haiku-5-20261001", label: "Claude Haiku 5" },
+      ],
+    });
+    expect(changes).toEqual([
+      {
+        provider: "anthropic",
+        role: "fast",
+        from: "claude-haiku-4-5",
+        to: "claude-haiku-5",
+        label: "Claude Haiku 5",
+      },
+    ]);
+  });
+});
+
 describe("issue body for the coding agent", () => {
   const body = renderIssueBody({
     changes: [
@@ -121,6 +169,7 @@ describe("issue body for the coding agent", () => {
     skipped: ["openai"],
     unmatched: [],
     priced: new Set(["gemini-2.5-pro"]),
+    pricingExample: "0224_p_pricing_sonnet_5_5_opus_5_5.sql",
   });
 
   it("carries the exact slot changes (the agent has no provider keys)", () => {
@@ -142,9 +191,41 @@ describe("issue body for the coding agent", () => {
     expect(body).toContain("_Not checked (no API key configured): openai._");
   });
 
+  it("numbers tasks consecutively when there is no Anthropic task (regression: list jumped 2 → 4)", () => {
+    const numbered = body
+      .split("\n")
+      .filter((l) => /^\d+\. /.test(l))
+      .map((l) => Number(l.split(".")[0]));
+    expect(numbered).toEqual(numbered.map((_, i) => i + 1));
+    const openAiOnly = renderIssueBody({
+      changes: [
+        { provider: "openai", role: "default", from: "gpt-4o", to: "gpt-5.5", label: "GPT-5.5" },
+      ],
+      skipped: [],
+      unmatched: [],
+      priced: new Set(),
+      pricingExample: "0224_p_pricing_sonnet_5_5_opus_5_5.sql",
+    });
+    expect(openAiOnly).toContain("\n3. Check that the installed");
+    expect(openAiOnly).toContain("\n4. Run `bun test");
+    expect(openAiOnly).not.toContain("\n5. ");
+  });
+
+  it("names the newest pricing migration as the pattern and forbids SQL-less migrations", () => {
+    expect(body).toContain("following `0224_p_pricing_sonnet_5_5_opus_5_5.sql`");
+    expect(body).toContain("add no migration file at all");
+    expect(body).toContain("Do not add tests that pin the catalog");
+  });
+
   it("says so when nothing changed", () => {
     expect(
-      renderIssueBody({ changes: [], skipped: [], unmatched: [], priced: new Set() }),
+      renderIssueBody({
+        changes: [],
+        skipped: [],
+        unmatched: [],
+        priced: new Set(),
+        pricingExample: "x.sql",
+      }),
     ).toContain("up to date");
   });
 

@@ -83,6 +83,27 @@ export function pickNewest(models: readonly ListedModel[], match: string): Liste
  * moves when its current id is no longer served (retired), even if the
  * replacement's version isn't higher. Providers missing from `listed` stay as-is.
  */
+const DATED_SNAPSHOT = /-\d{8}$/;
+
+/**
+ * Adds the alias of every dated snapshot the provider lists without its alias
+ * (Anthropic lists `claude-haiku-4-5-20251001` but not `claude-haiku-4-5`).
+ * Slots track aliases, so without this a dated-only family never matches its
+ * regex and the catalog's alias looks retired.
+ */
+export function withAliases(models: readonly ListedModel[]): ListedModel[] {
+  const ids = new Set(models.map((m) => m.id));
+  const out = [...models];
+  for (const m of models) {
+    const alias = m.id.replace(DATED_SNAPSHOT, "");
+    if (alias !== m.id && !ids.has(alias)) {
+      ids.add(alias);
+      out.push({ id: alias, label: m.label });
+    }
+  }
+  return out;
+}
+
 export function refreshCatalog(
   catalog: Catalog,
   listed: Partial<Record<Provider, readonly ListedModel[]>>,
@@ -91,8 +112,11 @@ export function refreshCatalog(
   const changes: SlotChange[] = [];
   const unmatched: string[] = [];
   for (const provider of Object.keys(next.providers) as Provider[]) {
-    const models = listed[provider];
-    if (!models) continue;
+    const listedModels = listed[provider];
+    if (!listedModels) continue;
+    // Slots track aliases; a dated id would otherwise slip through regexes like
+    // `^claude-haiku-\d+(-\d+)?$` (the date reads as a minor version).
+    const models = withAliases(listedModels).filter((m) => !DATED_SNAPSHOT.test(m.id));
     for (const slot of next.providers[provider].slots) {
       const newest = pickNewest(models, slot.match);
       if (!newest) {
@@ -160,6 +184,8 @@ export function renderIssueBody(args: {
   skipped: readonly string[];
   unmatched: readonly string[];
   priced: ReadonlySet<string>;
+  /** Newest existing pricing migration, shown as the pattern to follow. */
+  pricingExample: string;
 }): string {
   const lines: string[] = [];
   if (args.changes.length === 0) {
@@ -176,38 +202,43 @@ export function renderIssueBody(args: {
     for (const c of args.changes) {
       lines.push(`| ${c.provider} | ${c.role} | \`${c.from}\` | \`${c.to}\` | ${c.label} |`);
     }
-    lines.push(
-      "",
-      "## Tasks",
-      "",
-      "1. In `packages/admin-core/src/ai/model-catalog.json`, set each slot above to the new `id` and `label` (keep `role`, `note`, `match`).",
-    );
+    const tasks: string[][] = [
+      [
+        "In `packages/admin-core/src/ai/model-catalog.json`, set each slot above to the new `id` and `label` (keep `role`, `note`, `match`).",
+      ],
+    ];
     const unpriced = args.changes.filter((c) => !args.priced.has(c.to));
     if (unpriced.length > 0) {
-      lines.push(
-        "2. Add ONE new migration `packages/migrations/migrations/cms_admin/<next number>_p_pricing_<models>.sql` with `ai_pricing` rows, following `0224_p_pricing_sonnet_5_5_opus_5_5.sql` (microcents per 1K tokens; cache write = 1.25x input unless the provider lists it) for:",
-      );
-      for (const c of unpriced) {
-        lines.push(
-          `   - \`${c.provider}\` / \`${c.to}\` — prices from ${DOCS[c.provider].pricing}`,
-        );
-      }
-      lines.push(
-        "   Take every number from the official pricing page and cite it in the migration header. If a page is unreachable or does not list the model, do NOT guess: leave that row out and say so in the PR description.",
-      );
+      tasks.push([
+        `Add ONE new migration \`packages/migrations/migrations/cms_admin/<next number>_p_pricing_<models>.sql\` with \`ai_pricing\` rows, following \`${args.pricingExample}\` (microcents per 1K tokens; cache write = 1.25x input for Anthropic, = input for providers that don't bill cache writes separately) for:`,
+        ...unpriced.map(
+          (c) => `   - \`${c.provider}\` / \`${c.to}\` — prices from ${DOCS[c.provider].pricing}`,
+        ),
+        "   Take every number from the official pricing page and cite it in the migration header. If a page is unreachable or does not list a model, do NOT guess: leave that row out — and if no row is left, add no migration file at all — and name the missing price in the PR description.",
+      ]);
     } else {
-      lines.push("2. Pricing: every new id already has an `ai_pricing` row — no migration needed.");
+      tasks.push(["Pricing: every new id already has an `ai_pricing` row — no migration needed."]);
     }
     if (args.changes.some((c) => c.provider === "anthropic")) {
-      lines.push(
-        `3. Anthropic: read ${DOCS.anthropic.models} for each new Claude id and update the capability predicates in \`packages/admin-core/src/ai/providers/anthropic.ts\` — \`isAdaptiveModel\` (rejects \`temperature\` / \`budget_tokens\`) and \`rejectsForcedToolChoice\` (rejects \`tool_choice\` any/tool). Extend \`packages/admin-core/src/ai/__tests__/thinking-option.test.ts\` for the new ids.`,
-      );
+      tasks.push([
+        `Anthropic: read ${DOCS.anthropic.models} for each new Claude id and update the capability predicates in \`packages/admin-core/src/ai/providers/anthropic.ts\` — \`isAdaptiveModel\` (rejects \`temperature\` / \`budget_tokens\`) and \`rejectsForcedToolChoice\` (rejects \`tool_choice\` any/tool). Extend \`packages/admin-core/src/ai/__tests__/thinking-option.test.ts\` for the new ids.`,
+      ]);
     }
+    tasks.push(
+      [
+        "Check that the installed `@ai-sdk/<provider>` package (`packages/admin-core/package.json`) recognises each new id (search its `dist/index.js` for the model name). If it does not, bump that package and `ai` to the newest compatible versions.",
+      ],
+      [
+        "Run `bun test ./scripts ./packages/admin-core/src/ai`, `bunx biome check .` and `bunx tsc -b packages/admin-core`; all must pass. Do not add tests that pin the catalog's exact ids — the weekly update would break them.",
+      ],
+    );
+    lines.push("", "## Tasks", "");
+    tasks.forEach(([first, ...rest], i) => {
+      lines.push(`${i + 1}. ${first}`, ...rest);
+    });
     lines.push(
-      "4. Check that the installed `@ai-sdk/<provider>` package (`packages/admin-core/package.json`) recognises each new id (search its `dist/index.js` for the model name). If it does not, bump that package and `ai` to the newest compatible versions.",
-      "5. Run `bun test ./scripts ./packages/admin-core/src/ai`, `bunx biome check .` and `bunx tsc -b packages/admin-core`; all must pass.",
       "",
-      "Follow `CLAUDE.md` and `CONTRIBUTING.md` (conventional commit `chore(ai): …`, PR template). Existing installs keep their stored model — do not write a data migration for `ai_providers.config`.",
+      "Follow `CLAUDE.md` and `CONTRIBUTING.md` (conventional commit `chore(ai): …`, PR description from `.github/PULL_REQUEST_TEMPLATE.md`). Existing installs keep their stored model — do not write a data migration for `ai_providers.config`.",
     );
   }
   if (args.skipped.length > 0) {
@@ -277,12 +308,13 @@ async function main(): Promise<void> {
 
   const current = JSON.parse(readFileSync(CATALOG_PATH, "utf8")) as Catalog;
   const { catalog, changes, unmatched } = refreshCatalog(current, listed);
-  const priced = pricedModels(
-    readdirSync(MIGRATIONS_DIR)
-      .filter((f) => f.endsWith(".sql"))
-      .map((f) => readFileSync(join(MIGRATIONS_DIR, f), "utf8")),
-  );
-  const body = renderIssueBody({ changes, skipped, unmatched, priced });
+  const migrations = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith(".sql"))
+    .sort();
+  const priced = pricedModels(migrations.map((f) => readFileSync(join(MIGRATIONS_DIR, f), "utf8")));
+  const pricingExample = migrations.filter((f) => f.includes("_p_pricing_")).at(-1);
+  if (!pricingExample) throw new Error(`no *_p_pricing_*.sql migration found in ${MIGRATIONS_DIR}`);
+  const body = renderIssueBody({ changes, skipped, unmatched, priced, pricingExample });
 
   if (writeCatalog && changes.length > 0) {
     writeFileSync(CATALOG_PATH, `${JSON.stringify(catalog, null, 2)}\n`);
