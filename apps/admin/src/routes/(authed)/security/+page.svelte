@@ -6,7 +6,7 @@
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
 
   const tiles = [
     { href: "/security/users", label: "Users", desc: "Create, update, delete admin users", icon: Users },

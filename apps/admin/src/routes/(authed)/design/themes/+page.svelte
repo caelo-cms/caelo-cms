@@ -1,17 +1,17 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   // v0.11.1 (issue #76) — /design/themes list-view.
-  import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { buttonVariants } from "$lib/components/ui/button/button-variants.js";
+  import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { buttonVariants } from "#lib/components/ui/button/button-variants.js";
   import {
     Card,
     CardContent,
     CardFooter,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
   import {
     Dialog,
     DialogContent,
@@ -19,10 +19,10 @@
     DialogFooter,
     DialogHeader,
     DialogTitle,
-  } from "$lib/components/ui/dialog/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
-  import { parseColor } from "$lib/color/oklch.js";
+  } from "#lib/components/ui/dialog/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
+  import { parseColor } from "#lib/color/oklch.js";
   import { Palette, Plus } from "lucide-svelte";
 
   let { data, form } = $props();

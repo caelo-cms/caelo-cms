@@ -10,7 +10,7 @@
    */
 
   import { Pencil } from "lucide-svelte";
-  import { Badge } from "$lib/components/ui/badge/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
 
   interface Props {
     content: string;

@@ -2,16 +2,16 @@
   // SPDX-License-Identifier: MPL-2.0
   import { FlaskConical } from "lucide-svelte";
   import { enhance } from "$app/forms";
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
+  } from "#lib/components/ui/card/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
 
   let { data, form } = $props();
 

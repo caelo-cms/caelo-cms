@@ -16,9 +16,9 @@
    * Both sections post to ?/updateTokens with loose names; the server
    * normalizer maps to canonical DTCG paths.
    */
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
   import type { FontMetadata, ThemeDocument } from "@caelo-cms/shared";
   import FontSpecimen from "./FontSpecimen.svelte";
   import FontFamilyPicker from "./FontFamilyPicker.svelte";

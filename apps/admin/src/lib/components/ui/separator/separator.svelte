@@ -1,6 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { cn } from "$lib/utils.js";
+  import { cn } from "#lib/utils.js";
 
   type Props = {
     orientation?: "horizontal" | "vertical";

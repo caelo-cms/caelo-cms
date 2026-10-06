@@ -2,8 +2,8 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
-import { opErrorMessage } from "$lib/server/op-error.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { opErrorMessage } from "#lib/server/op-error.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 /** The token rides in the query string of the emailed link. */

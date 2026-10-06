@@ -2,15 +2,15 @@
   // SPDX-License-Identifier: MPL-2.0
   import { Mail } from "lucide-svelte";
   import { enhance } from "$app/forms";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
+  } from "#lib/components/ui/card/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
 
   let { form } = $props();
 </script>

@@ -25,9 +25,9 @@
 import { execute } from "@caelo-cms/query-api";
 import type { Theme } from "@caelo-cms/shared";
 import { fail, redirect } from "@sveltejs/kit";
-import { assertCsrfToken } from "$lib/server/csrf.js";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { assertCsrfToken } from "#lib/server/csrf.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {

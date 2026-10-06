@@ -2,7 +2,7 @@
 
 import { error } from "@sveltejs/kit";
 import { z } from "zod";
-import { privatePluginFiles } from "$lib/server/plugin-files.js";
+import { privatePluginFiles } from "#lib/server/plugin-files.js";
 import type { RequestHandler } from "./$types";
 
 /** Generic private download: never serve plugin bytes as executable same-origin content. */

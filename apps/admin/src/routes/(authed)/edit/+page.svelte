@@ -22,22 +22,22 @@
   import { enhance } from "$app/forms";
   import { goto, invalidateAll } from "$app/navigation";
   import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
-  import CaeloMascot from "$lib/components/CaeloMascot.svelte";
+  import CaeloMascot from "#lib/components/CaeloMascot.svelte";
   import { onMount } from "svelte";
-  import CrossChatBanner from "$lib/components/edit/CrossChatBanner.svelte";
-  import DiffPanel from "$lib/components/edit/DiffPanel.svelte";
-  import PluginPreview from "$lib/components/edit/PluginPreview.svelte";
-  import { localPluginPreview, previewFromResult } from "$lib/components/edit/plugin-preview.js";
+  import CrossChatBanner from "#lib/components/edit/CrossChatBanner.svelte";
+  import DiffPanel from "#lib/components/edit/DiffPanel.svelte";
+  import PluginPreview from "#lib/components/edit/PluginPreview.svelte";
+  import { localPluginPreview, previewFromResult } from "#lib/components/edit/plugin-preview.js";
   import type { PluginPreviewSelection } from "@caelo-cms/shared";
-  import Overlay from "$lib/components/edit/Overlay.svelte";
-  import StageDeployButton from "$lib/components/edit/StageDeployButton.svelte";
+  import Overlay from "#lib/components/edit/Overlay.svelte";
+  import StageDeployButton from "#lib/components/edit/StageDeployButton.svelte";
   import {
     type CaeloMessage,
     isCaeloMessage,
-  } from "$lib/components/edit/iframe-protocol.js";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { Combobox } from "$lib/components/ui/combobox/index.js";
-  import { cn } from "$lib/utils.js";
+  } from "#lib/components/edit/iframe-protocol.js";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { Combobox } from "#lib/components/ui/combobox/index.js";
+  import { cn } from "#lib/utils.js";
   import {
     Dialog,
     DialogContent,
@@ -45,7 +45,7 @@
     DialogFooter,
     DialogHeader,
     DialogTitle,
-  } from "$lib/components/ui/dialog/index.js";
+  } from "#lib/components/ui/dialog/index.js";
 
   let { data, form } = $props();
   let activePageId = $state(data.activePageId ?? "");

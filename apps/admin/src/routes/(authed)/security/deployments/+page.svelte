@@ -2,19 +2,19 @@
   // SPDX-License-Identifier: MPL-2.0
   import { Rocket } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
-  import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
-  import { Badge, type BadgeVariant } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
+  import { Badge, type BadgeVariant } from "#lib/components/ui/badge/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
-  import { Progress } from "$lib/components/ui/progress/index.js";
-  import { Select } from "$lib/components/ui/select/index.js";
+  } from "#lib/components/ui/card/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
+  import { Progress } from "#lib/components/ui/progress/index.js";
+  import { Select } from "#lib/components/ui/select/index.js";
   import {
     Table,
     TableBody,
@@ -22,7 +22,7 @@
     TableHead,
     TableHeader,
     TableRow,
-  } from "$lib/components/ui/table/index.js";
+  } from "#lib/components/ui/table/index.js";
 
   let { data } = $props();
 

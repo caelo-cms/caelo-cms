@@ -3,9 +3,9 @@
   // v0.11.1 (issue #76) — Shadows tab. Shows a preview card per stop,
   // plus the raw composite (color/offsetX/offsetY/blur/spread) sub-
   // fields editable inline.
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
   import type { ThemeDocument } from "@caelo-cms/shared";
 
   interface Props {

@@ -1,7 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import type { HTMLButtonAttributes } from "svelte/elements";
-  import { cn } from "$lib/utils.js";
+  import { cn } from "#lib/utils.js";
   import { buttonVariants, type ButtonSize, type ButtonVariant } from "./button-variants.js";
 
   type Props = HTMLButtonAttributes & {

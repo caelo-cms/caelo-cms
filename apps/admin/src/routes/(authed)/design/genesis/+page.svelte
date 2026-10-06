@@ -9,7 +9,7 @@
    */
   import { enhance } from "$app/forms";
   import { page } from "$app/stores";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import type { PageData } from "./$types";
 
   let { data }: { data: PageData } = $props();

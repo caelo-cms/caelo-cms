@@ -2,8 +2,8 @@
 import { execute } from "@caelo-cms/query-api";
 import { error, json } from "@sveltejs/kit";
 import { z } from "zod";
-import { uploadMedia } from "$lib/server/media-upload.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { uploadMedia } from "#lib/server/media-upload.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 /** Bearer-only upload; cookies never grant access to this MCP surface. */

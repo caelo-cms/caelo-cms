@@ -15,9 +15,9 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
-import { INJECT_SCRIPT } from "$lib/components/edit/inject-script.js";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { INJECT_SCRIPT } from "#lib/components/edit/inject-script.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 const BODY_CLOSE_RE = /<\/body\s*>/i;

@@ -63,5 +63,9 @@
     "@rollup/rollup-linux-arm64-musl": "^4",
     "@rollup/rollup-linux-x64-gnu": "^4",
     "@rollup/rollup-linux-x64-musl": "^4"
+  },
+  "imports": {
+    "#lib": "./src/lib/index.js",
+    "#lib/*": "./src/lib/*"
   }
 }

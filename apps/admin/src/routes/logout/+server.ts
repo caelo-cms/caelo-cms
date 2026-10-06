@@ -2,8 +2,8 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { redirect } from "@sveltejs/kit";
-import { SESSION_COOKIE } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { SESSION_COOKIE } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 export const POST: RequestHandler = async ({ cookies, locals }) => {
