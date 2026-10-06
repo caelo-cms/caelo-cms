@@ -171,6 +171,15 @@ active theme's bound assets at render time. Unbound slots stay loud-raw
 (the `{{…}}` survives in output and `theme-asset-unbound:<slot>` lands in
 `missingSlots`) per the no-fallbacks rule.
 
+The favicon is document metadata, not module content: when the active
+theme has a `favicon` bound, the composer emits
+`<link rel="icon" href="…" type="<media mime>">` into `<head>` on every
+page — in the editor preview (`/_caelo/media/<slug>`) and in the static
+build (the media pass rewrites it to `/_assets/<slug>.<ext>` and ships the
+file). No module needs to carry an icon tag; one hand-written in a chrome
+module lands in `<body>` and only duplicates the platform's tag. With no
+favicon bound nothing is emitted.
+
 ## Verification
 
 - Unit: `packages/admin-core/src/ai/__tests__/cold-start-gate.test.ts`

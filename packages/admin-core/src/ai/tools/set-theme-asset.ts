@@ -32,7 +32,9 @@ export const setThemeAssetTool: ToolDefinitionWithHandler<SetThemeAssetToolInput
     "uploaded media row. Pass `mediaId: null` to clear a slot. The mediaId is the media UUID " +
     "from a `find_media` row's `id` column, an `import_media_from_urls` result line, or a " +
     "`generate_image` result — never a slug or URL, and never invented. Targets the active " +
-    "theme by default; pass `themeSlug` to bind on a specific theme.",
+    "theme by default; pass `themeSlug` to bind on a specific theme. A bound favicon is emitted " +
+    'as `<link rel="icon">` in every page\'s <head> by the platform — never hand-write an icon ' +
+    "tag into a module.",
   schema: setThemeAssetToolInput,
   inputSchema: {
     type: "object",

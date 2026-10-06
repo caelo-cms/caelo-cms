@@ -31,6 +31,7 @@ import {
   ComposeError,
   type ComposeFonts,
   type ComposeTheme,
+  type ComposeThemeAsset,
   composePageWithLayout,
   enrichResponsiveImages,
   err,
@@ -1242,12 +1243,16 @@ export async function loadActiveThemeForCompose(
       t.tokens                       AS tokens,
       t.logo_media_id::text          AS logo_media_id,
       la.slug                        AS logo_slug,
+      la.mime                        AS logo_mime,
       t.logo_dark_media_id::text     AS logo_dark_media_id,
       lda.slug                       AS logo_dark_slug,
+      lda.mime                       AS logo_dark_mime,
       t.favicon_media_id::text       AS favicon_media_id,
       fa.slug                        AS favicon_slug,
+      fa.mime                        AS favicon_mime,
       t.social_share_media_id::text  AS social_share_media_id,
-      ssa.slug                       AS social_share_slug
+      ssa.slug                       AS social_share_slug,
+      ssa.mime                       AS social_share_mime
     FROM themes t
     LEFT JOIN media_assets la  ON la.id  = t.logo_media_id         AND la.deleted_at  IS NULL
     LEFT JOIN media_assets lda ON lda.id = t.logo_dark_media_id    AND lda.deleted_at IS NULL
@@ -1260,12 +1265,16 @@ export async function loadActiveThemeForCompose(
     tokens: unknown;
     logo_media_id: string | null;
     logo_slug: string | null;
+    logo_mime: string | null;
     logo_dark_media_id: string | null;
     logo_dark_slug: string | null;
+    logo_dark_mime: string | null;
     favicon_media_id: string | null;
     favicon_slug: string | null;
+    favicon_mime: string | null;
     social_share_media_id: string | null;
     social_share_slug: string | null;
+    social_share_mime: string | null;
   }>;
   const row = rows[0];
   if (!row) return undefined;
@@ -1297,19 +1306,24 @@ export async function loadActiveThemeForCompose(
   }
 
   // URL is built from the SLUG (public form); the id stays the mediaId.
-  // A null slug means the bound asset was deleted — drop the binding.
+  // A null slug means the bound asset was deleted — drop the binding
+  // (slug and mime come from the same joined row, so they are null
+  // together).
   const asset = (
     id: string | null,
     slug: string | null,
-  ): { mediaId: string; url: string } | null =>
-    id === null || slug === null ? null : { mediaId: id, url: buildMediaUrl(slug, "orig") };
+    mime: string | null,
+  ): ComposeThemeAsset | null =>
+    id === null || slug === null || mime === null
+      ? null
+      : { mediaId: id, url: buildMediaUrl(slug, "orig"), mime };
   return {
     tokens,
     assets: {
-      logo: asset(row.logo_media_id, row.logo_slug),
-      logoDark: asset(row.logo_dark_media_id, row.logo_dark_slug),
-      favicon: asset(row.favicon_media_id, row.favicon_slug),
-      socialShare: asset(row.social_share_media_id, row.social_share_slug),
+      logo: asset(row.logo_media_id, row.logo_slug, row.logo_mime),
+      logoDark: asset(row.logo_dark_media_id, row.logo_dark_slug, row.logo_dark_mime),
+      favicon: asset(row.favicon_media_id, row.favicon_slug, row.favicon_mime),
+      socialShare: asset(row.social_share_media_id, row.social_share_slug, row.social_share_mime),
     },
   };
 }

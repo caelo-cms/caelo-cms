@@ -102,6 +102,12 @@ export interface ComposeStructuredSets {
 export interface ComposeThemeAsset {
   readonly mediaId: string;
   readonly url: string;
+  /**
+   * `media_assets.mime` of the bound asset — the content type of the
+   * `orig` bytes the URL serves. Carried so `<head>` metadata that
+   * declares a type (`<link rel="icon" type=…>`) states the real one.
+   */
+  readonly mime: string;
 }
 
 export interface ComposeTheme {
@@ -195,6 +201,25 @@ export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | nul
   return fragment.length > 0 ? fragment : null;
 }
 
+/**
+ * Head fragment for the active theme's document-level brand metadata:
+ * `<link rel="icon">` when a favicon is bound. The favicon is page
+ * METADATA, not body content — it must sit in `<head>` on every page
+ * regardless of which layout or chrome modules the page uses, so the
+ * composer emits it from the theme binding instead of relying on a
+ * module to carry the tag. The href is the media URL as composed
+ * (`/_caelo/media/<slug>`); the static generator's media pass rewrites
+ * it to the published `/_assets/<slug>.<ext>` and copies the bytes, the
+ * same as any other media reference. Returns null when no theme is
+ * threaded or no favicon is bound (nothing to declare; browsers fall
+ * back to their own `/favicon.ico` probe exactly as before).
+ */
+function themeHeadFragment(theme: ComposeTheme | undefined): string | null {
+  const favicon = theme?.assets.favicon;
+  if (!favicon) return null;
+  return `<link rel="icon" href="${escapeAttr(favicon.url)}" type="${escapeAttr(favicon.mime)}">`;
+}
+
 export function composePagePreview(input: ComposeInput): ComposeOutput {
   // No withholding path here; rendering a withheld module would ship it
   // ungated, so refuse instead of degrading silently (CLAUDE.md §2).
@@ -251,7 +276,15 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   const replaced = applySlotReplacements(input.templateHtml, { contentByName });
   let html = replaced.html;
 
-  // issue #150 — @font-face + preloads before everything else so the
+  // Theme brand metadata (favicon) leads the injected head block — it
+  // is document metadata, not styling, and is independent of the
+  // cascade order the style tags below depend on.
+  const themeHeadLinks = themeHeadFragment(input.theme);
+  if (themeHeadLinks !== null) {
+    html = injectBefore(html, HEAD_CLOSE_RE, themeHeadLinks);
+  }
+
+  // issue #150 — @font-face + preloads ahead of the style tags so the
   // browser discovers font URLs as early as possible.
   const fontsFragment = fontsHeadFragment(input.fonts);
   if (fontsFragment !== null) {
@@ -694,6 +727,12 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     contentByName: layoutContentByName,
   });
   let html = replaced.html;
+
+  // Theme brand metadata (favicon) — see composePagePreview.
+  const themeHeadLinks = themeHeadFragment(input.theme);
+  if (themeHeadLinks !== null) {
+    html = injectBefore(html, HEAD_CLOSE_RE, themeHeadLinks);
+  }
 
   // issue #150 — fonts first (URL discovery), then theme vars, then
   // aggregated CSS; source order in <head> mirrors injection order.

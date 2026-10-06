@@ -203,6 +203,38 @@ describe("media-pass", () => {
     expect(copied.byteLength).toBe(4);
   });
 
+  it("rewrites the theme favicon <link> in <head> without stealing the body's LCP preload", async () => {
+    // The composer emits `<link rel="icon" href="/_caelo/media/<slug>">`
+    // in <head> for a bound theme favicon. The media pass must publish
+    // it like any other ref — and the LCP preload ("first image") must
+    // be chosen from the BODY: a head-inclusive scan matched the favicon
+    // first, found no webp ladder for it, and emitted no preload at all
+    // for the real hero image.
+    const pages = [
+      {
+        html: `<html><head><link rel="icon" href="/_caelo/media/${assetSlug}" type="image/png"></head><body><img src="/_caelo/media/${heroSlug}/webp-800" alt="hero" /></body></html>`,
+        pageSlug: "favicon-page",
+      },
+    ];
+    await adapter.withAdminTransaction(systemCtx, async (tx) => {
+      await runMediaPass({
+        tx,
+        buildDir,
+        pages,
+        mediaRoot,
+        settings: { cdnEnabled: false, threshold: 5 },
+      });
+    });
+    const html = pages[0]?.html ?? "";
+    expect(html).toContain(`<link rel="icon" href="/_assets/${assetSlug}.png" type="image/png">`);
+    expect(html).not.toContain("/_caelo/media");
+    expect(html).toContain(
+      `<link rel="preload" as="image" imagesrcset="/_assets/${heroSlug}/webp-400.webp 400w`,
+    );
+    const copied = await readFile(join(buildDir, "_assets", `${assetSlug}.png`));
+    expect(copied.byteLength).toBe(4);
+  });
+
   it("keeps the legacy _assets/<id>/<variant>.<ext> shape for a legacy uuid embed", async () => {
     const pages = [
       {

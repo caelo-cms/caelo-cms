@@ -360,7 +360,11 @@ function injectLcpPreload(html: string, variantsByRef: Map<string, VariantInfo[]
   // Match flat (`_assets/<slug>.png`) and nested
   // (`_assets/<ref>/<variant>.webp`) image URLs; the image-only extension
   // set keeps font files (`_assets/fonts/*.woff2`) from short-circuiting.
-  const firstAssetMatch = html.match(
+  // Scan the BODY only: `<head>` carries media that is never painted
+  // content (the theme's `<link rel="icon">`), and a PNG favicon there
+  // would otherwise win "first image" and be preloaded as the LCP image.
+  const bodyStart = html.search(/<body\b/i);
+  const firstAssetMatch = (bodyStart >= 0 ? html.slice(bodyStart) : html).match(
     /\/_assets\/([a-z0-9][a-z0-9-]{0,63})(?:\/([a-z][a-z0-9-]{0,63}))?\.(?:png|jpe?g|webp|avif|gif)/,
   );
   if (!firstAssetMatch) return html;
