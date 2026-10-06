@@ -461,7 +461,22 @@ jobs:
           done
           git add "$DEST_REL"
           git commit -qm "e2e-livedit: PR #${PR_NUMBER} run ${RUN_ID} screenshots"
-          git push -q origin "$BRANCH"
+          # Parallel PR runs push to the same branch; a plain push loses the
+          # race ("fetch first") and failed the whole job after every scenario
+          # had passed. Each run writes only its own pr-N/run-M directory, so
+          # rebasing onto the newer tip never conflicts — fetch, rebase, retry.
+          pushed=0
+          for attempt in 1 2 3 4 5; do
+            if git push -q origin "$BRANCH"; then pushed=1; break; fi
+            echo "screenshot push rejected (attempt ${attempt}); rebasing onto the remote tip"
+            git fetch -q origin "$BRANCH"
+            git rebase -q FETCH_HEAD
+            sleep $((attempt * 2))
+          done
+          if [ "$pushed" -ne 1 ]; then
+            echo "::error::could not push screenshots to ${BRANCH} after 5 attempts"
+            exit 1
+          fi
 
           # PR #61 follow-up — surface the actual error text next to the
           # screenshots, not just a URL. Playwright drops a per-attempt
