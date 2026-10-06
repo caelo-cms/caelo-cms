@@ -16,7 +16,7 @@
    * tool messages flow through here.
    */
 
-  import { browser } from "$app/environment";
+  import { browser } from '$app/env';
   import DOMPurify from "dompurify";
   import { marked } from "marked";
 
