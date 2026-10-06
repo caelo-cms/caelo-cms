@@ -243,7 +243,12 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
   });
 }
 
-const adminApp = containerApp({ serviceName: "admin" });
+// The admin seeds site_defaults.site_base_url (canonical / og:url /
+// sitemap) from the public site URL (src/site-base-url.ts).
+const adminApp = containerApp({
+  serviceName: "admin",
+  extraEnv: [{ name: "CAELO_SITE_BASE_URL", value: `https://${domain}` }],
+});
 const _gatewayApp = containerApp({ serviceName: "gateway" });
 const _orchestratorApp = containerApp({ serviceName: "orchestrator" });
 const _runnerApp = containerApp({ serviceName: "runner" });

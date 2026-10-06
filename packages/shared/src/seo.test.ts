@@ -3,11 +3,14 @@
 import { describe, expect, it } from "bun:test";
 import {
   injectSeoIntoHead,
+  isLoopbackBaseUrl,
+  localSiteBaseUrlError,
   renderSeoHead,
   resolveCanonicalUrl,
   seoAutofillInputSchema,
   seoOptimizeInputSchema,
   seoSetInputSchema,
+  siteBaseUrlToSeed,
   siteDefaultsSetSeoInputSchema,
 } from "./seo.js";
 
@@ -190,5 +193,117 @@ describe("schemas", () => {
       organizationJson: {},
     });
     expect(r.success).toBe(false);
+  });
+});
+
+// Regression: provisioned installs shipped canonical / og:url / JSON-LD /
+// sitemap / robots.txt pointing at the migration's dev default
+// `http://localhost:8082`, in staging and production alike.
+describe("isLoopbackBaseUrl", () => {
+  it("flags local addresses", () => {
+    for (const url of [
+      "http://localhost:8082",
+      "http://LOCALHOST",
+      "http://site.localhost:3000/",
+      "http://127.0.0.1:8082",
+      "http://127.10.0.5",
+      "http://[::1]:8082",
+      "http://0.0.0.0:8082",
+    ]) {
+      expect(isLoopbackBaseUrl(url)).toBe(true);
+    }
+  });
+
+  it("accepts public hosts, including ones that merely contain 'localhost'", () => {
+    for (const url of [
+      "https://example.com",
+      "https://localhost.example.com",
+      "https://127.example.com",
+      "http://10.0.0.1",
+    ]) {
+      expect(isLoopbackBaseUrl(url)).toBe(false);
+    }
+  });
+
+  it("is false for a non-URL", () => {
+    expect(isLoopbackBaseUrl("not a url")).toBe(false);
+  });
+});
+
+describe("siteBaseUrlToSeed", () => {
+  it("replaces the migration's dev default with the declared public URL", () => {
+    expect(siteBaseUrlToSeed("http://localhost:8082", "https://example.com")).toBe(
+      "https://example.com",
+    );
+  });
+
+  it("never overwrites an operator-set public URL", () => {
+    expect(siteBaseUrlToSeed("https://www.example.com", "https://example.com")).toBeNull();
+  });
+
+  it("does nothing without a usable declared public URL", () => {
+    expect(siteBaseUrlToSeed("http://localhost:8082", undefined)).toBeNull();
+    expect(siteBaseUrlToSeed("http://localhost:8082", "  ")).toBeNull();
+    expect(siteBaseUrlToSeed("http://localhost:8082", "example.com")).toBeNull();
+    expect(siteBaseUrlToSeed("http://localhost:8082", "ftp://example.com")).toBeNull();
+    expect(siteBaseUrlToSeed("http://localhost:8082", "http://localhost:8082")).toBeNull();
+  });
+
+  it("trims the declared URL", () => {
+    expect(siteBaseUrlToSeed("http://127.0.0.1", " https://example.com ")).toBe(
+      "https://example.com",
+    );
+  });
+});
+
+describe("localSiteBaseUrlError", () => {
+  it("fails a cloud build whose base URL is still localhost", () => {
+    for (const provider of ["gcp", "gcp-firebase", "aws", "azure"]) {
+      const msg = localSiteBaseUrlError({
+        siteBaseUrl: "http://localhost:8082",
+        provider,
+        declaredSiteBaseUrl: undefined,
+      });
+      expect(msg).toContain("http://localhost:8082");
+      expect(msg).toContain("cms-provision upgrade");
+    }
+  });
+
+  it("fails any install that declares a public URL but still stores localhost", () => {
+    const msg = localSiteBaseUrlError({
+      siteBaseUrl: "http://localhost:8082",
+      provider: undefined,
+      declaredSiteBaseUrl: "https://example.com",
+    });
+    expect(msg).toContain("CAELO_SITE_BASE_URL=https://example.com");
+  });
+
+  it("lets a local dev box build against localhost", () => {
+    for (const provider of [undefined, "self-hosted"]) {
+      expect(
+        localSiteBaseUrlError({
+          siteBaseUrl: "http://localhost:8082",
+          provider,
+          declaredSiteBaseUrl: undefined,
+        }),
+      ).toBeNull();
+    }
+    expect(
+      localSiteBaseUrlError({
+        siteBaseUrl: "http://localhost:8082",
+        provider: undefined,
+        declaredSiteBaseUrl: "http://localhost:8082",
+      }),
+    ).toBeNull();
+  });
+
+  it("passes a public base URL everywhere", () => {
+    expect(
+      localSiteBaseUrlError({
+        siteBaseUrl: "https://example.com",
+        provider: "gcp-firebase",
+        declaredSiteBaseUrl: "https://example.com",
+      }),
+    ).toBeNull();
   });
 });

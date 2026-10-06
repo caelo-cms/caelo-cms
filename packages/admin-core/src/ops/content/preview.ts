@@ -1117,15 +1117,25 @@ export const renderPagePreviewOp = defineOperation({
       organization_json: string | null;
     }[];
     const settingsRow = settingsRows[0];
+    if (!settingsRow) {
+      // Same no-fallback rule as the static generator's readSeoSettings:
+      // a missing singleton is schema drift, not a cue to invent a base URL.
+      return err({
+        kind: "HandlerError",
+        operation: "pages.render_preview",
+        message:
+          "site_defaults row (id = 1) is missing — re-run the cms_admin migrations (0027 seeds it).",
+      });
+    }
     let organization: SiteSeoSettings["organization"] = {};
-    if (settingsRow?.organization_json) {
+    if (settingsRow.organization_json) {
       try {
         organization = JSON.parse(settingsRow.organization_json) as SiteSeoSettings["organization"];
       } catch {
         organization = {};
       }
     }
-    const siteBaseUrl = settingsRow?.site_base_url ?? "http://localhost:8082";
+    const siteBaseUrl = settingsRow.site_base_url;
 
     let ogImageUrl: string | null = null;
     if (seoRow?.og_image_asset_id) {

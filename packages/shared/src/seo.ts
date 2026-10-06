@@ -107,6 +107,104 @@ export interface SiteSeoSettings {
 }
 
 /**
+ * Env var through which the provisioner declares an install's public
+ * site URL (`https://<domain>`). Set on the admin service by every
+ * provisioning stack that knows the domain, and by `cms-provision
+ * upgrade` for installs provisioned before it existed. The admin seeds
+ * `site_defaults.site_base_url` from it (`siteBaseUrlToSeed`); it is
+ * never read as a render-time fallback.
+ */
+export const SITE_BASE_URL_ENV = "CAELO_SITE_BASE_URL";
+
+/**
+ * True when `url` points at the local machine (localhost, `*.localhost`,
+ * 127.0.0.0/8, ::1, 0.0.0.0). Such a base URL is only meaningful on a
+ * dev box — `site_defaults.site_base_url` ships with the dev value
+ * `http://localhost:8082` (migration 0027) — and must never reach a
+ * public site's canonical / og:url / sitemap.
+ *
+ * @returns false for a string that is not an absolute URL; callers that
+ *   need a valid URL validate it separately.
+ */
+export function isLoopbackBaseUrl(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host === "[::1]" || host === "0.0.0.0") return true;
+  return /^127(\.\d{1,3}){3}$/.test(host);
+}
+
+function isAbsoluteHttpUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" || u.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decide whether the admin should seed `site_defaults.site_base_url`
+ * from the provisioner-declared public URL. Seeds only while the stored
+ * value is still a local address (the migration's dev default, or any
+ * other loopback URL) — an operator-chosen public URL is never
+ * overwritten.
+ *
+ * @param stored   the current `site_defaults.site_base_url`.
+ * @param declared the `CAELO_SITE_BASE_URL` value, if the install has one.
+ * @returns the URL to write, or null when nothing should change.
+ */
+export function siteBaseUrlToSeed(stored: string, declared: string | undefined): string | null {
+  const next = declared?.trim();
+  if (!next || !isAbsoluteHttpUrl(next) || isLoopbackBaseUrl(next)) return null;
+  if (!isLoopbackBaseUrl(stored)) return null;
+  return next;
+}
+
+const CLOUD_PROVIDERS: ReadonlySet<string> = new Set(["gcp", "gcp-firebase", "aws", "azure"]);
+
+/**
+ * Guard for every static build: a site whose base URL is still a local
+ * address would ship canonical, og:url, JSON-LD `url`, sitemap `<loc>`
+ * and the robots.txt `Sitemap:` line pointing at localhost. That is
+ * fatal for a public install — which a build is when it runs on a cloud
+ * provider, or when the provisioner declared a public URL for the
+ * install. A local dev box (no provider, no declared URL) keeps building
+ * against `http://localhost:8082`.
+ *
+ * Applies to staging builds too: production either rebuilds or promotes
+ * the staged build byte-for-byte, so the staged canonical IS the
+ * production canonical.
+ *
+ * @returns the error message to throw, or null when the build may proceed.
+ */
+export function localSiteBaseUrlError(args: {
+  siteBaseUrl: string;
+  /** `CAELO_PROVIDER` of the running install. */
+  provider: string | undefined;
+  /** `CAELO_SITE_BASE_URL` of the running install. */
+  declaredSiteBaseUrl: string | undefined;
+}): string | null {
+  if (!isLoopbackBaseUrl(args.siteBaseUrl)) return null;
+  const declared = args.declaredSiteBaseUrl?.trim();
+  const declaredPublic = !!declared && !isLoopbackBaseUrl(declared);
+  const isCloud = args.provider !== undefined && CLOUD_PROVIDERS.has(args.provider);
+  if (!isCloud && !declaredPublic) return null;
+  return (
+    `site base URL is '${args.siteBaseUrl}', a local address — canonical links, og:url, JSON-LD, sitemap.xml and robots.txt would all point at it on the public site. ` +
+    "Set the public site URL (e.g. https://example.com) at Security → SEO (op `site_defaults.set_seo`), " +
+    (declaredPublic
+      ? `or restart the admin so it adopts the provisioned ${SITE_BASE_URL_ENV}=${declared}, `
+      : `or run \`cms-provision upgrade\`, which sets ${SITE_BASE_URL_ENV} from the install's domain, `) +
+    "then re-run the deploy."
+  );
+}
+
+/**
  * Resolve the canonical URL for a page. If `pages_seo.canonical_url`
  * is set it wins; otherwise `<siteBaseUrl><pagePath>` — where
  * `pagePath` is the COMPOSED public path from `pages.current_path`

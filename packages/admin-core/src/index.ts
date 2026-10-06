@@ -113,5 +113,8 @@ export {
   generateKekHex,
   kekFingerprint,
 } from "./security/secret-box.js";
+// Seeds site_defaults.site_base_url from the provisioner-declared
+// CAELO_SITE_BASE_URL (bootstrap from hooks.server.ts).
+export { type SiteBaseUrlSeedResult, seedSiteBaseUrl } from "./site-base-url-seed.js";
 export { emitSnapshot } from "./snapshots/emit.js";
 export * from "./tokens.js";

@@ -377,10 +377,20 @@ export const siteDefaultsGetSeoOp = defineOperation({
       organization_json: Record<string, unknown>;
     }[];
     const r = rows[0];
+    if (!r) {
+      // Migration 0027 seeds the singleton; its absence is schema drift,
+      // not a state to paper over with a made-up base URL (CLAUDE.md §2).
+      return err({
+        kind: "HandlerError",
+        operation: "site_defaults.get_seo",
+        message:
+          "site_defaults row (id = 1) is missing — re-run the cms_admin migrations (0027 seeds it).",
+      });
+    }
     return ok({
-      siteBaseUrl: r?.site_base_url ?? "http://localhost:8082",
-      sitemapEnabled: r?.sitemap_enabled ?? true,
-      organizationJson: r?.organization_json ?? {},
+      siteBaseUrl: r.site_base_url,
+      sitemapEnabled: r.sitemap_enabled,
+      organizationJson: r.organization_json ?? {},
     });
   },
 });

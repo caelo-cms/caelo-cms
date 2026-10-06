@@ -22,6 +22,7 @@ import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { gcloud } from "./gcloud.js";
 import { type InstallMetadata, installRoot, readMetadata, readSecret } from "./install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
+import { adminEnvUpdateArgs, SITE_BASE_URL_ENV, siteBaseUrlForDomain } from "./site-base-url.js";
 
 /** Find the single install on this machine — or warn if 0/multiple. */
 function findActiveInstall(): { installId: string; meta: InstallMetadata } | null {
@@ -539,6 +540,15 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     }
   }
 
+  // The admin revision always carries the install's public URL so it
+  // seeds site_defaults.site_base_url (canonical / og:url / sitemap) from
+  // the domain. Installs provisioned before the stacks set it pick it up
+  // here, with no operator config.
+  const adminEnv: Array<readonly [string, string]> = [
+    [SITE_BASE_URL_ENV, siteBaseUrlForDomain(meta.domain)],
+  ];
+  if (mcpServiceAccount) adminEnv.push(["CAELO_MCP_IAP_SERVICE_ACCOUNT", mcpServiceAccount]);
+
   // ────────────────────────────────────────────────────────────────
   // Phase 2: roll each service, probe health, auto-rollback on fail.
   // If admin succeeds but gateway fails, also roll admin back so the
@@ -559,9 +569,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       meta.projectId,
       "--image",
       plan.imageRef,
-      ...(plan.slug === "admin" && mcpServiceAccount
-        ? [`--update-env-vars=CAELO_MCP_IAP_SERVICE_ACCOUNT=${mcpServiceAccount}`]
-        : []),
+      ...(plan.slug === "admin" ? adminEnvUpdateArgs(adminEnv) : []),
       "--quiet",
     ]);
     if (!upd.ok) {

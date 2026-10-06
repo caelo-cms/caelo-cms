@@ -41,7 +41,9 @@ import {
   type ComposeTheme,
   composePageWithLayout,
   fontUnresolvableMarker,
+  localSiteBaseUrlError,
   type ModuleFieldKind,
+  SITE_BASE_URL_ENV,
   type ThemeDocument,
   trimSlashes,
 } from "@caelo-cms/shared";
@@ -316,6 +318,18 @@ export async function generateSite(args: {
   const buildsDir = join(outDir, "builds");
   const buildDir = join(buildsDir, runId);
   const currentLink = join(outDir, "current");
+
+  // Read + vet the site base URL before anything is written: every
+  // canonical, og:url, JSON-LD url, sitemap <loc> and the robots.txt
+  // Sitemap: line derive from it, so a local address on a public install
+  // must abort the build rather than ship localhost links.
+  const seoSettings = await readSeoSettings(tx);
+  const baseUrlError = localSiteBaseUrlError({
+    siteBaseUrl: seoSettings.siteBaseUrl,
+    provider: process.env.CAELO_PROVIDER,
+    declaredSiteBaseUrl: process.env[SITE_BASE_URL_ENV],
+  });
+  if (baseUrlError !== null) throw new Error(`static-generator: ${baseUrlError}`);
 
   await mkdir(buildDir, { recursive: true });
 
@@ -753,7 +767,6 @@ export async function generateSite(args: {
   // env isn't noindex (staging stays out of the sitemap regardless).
   // Mutates each composedPages[i].html in place, same pattern as
   // runMediaPass.
-  const seoSettings = await readSeoSettings(tx);
   const seoResult = await runSeoPass({
     tx,
     buildDir,

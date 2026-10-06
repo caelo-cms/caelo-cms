@@ -39,6 +39,7 @@ import {
   getMediaStorage,
   lockPluginRow,
   makePluginImageProvider,
+  seedSiteBaseUrl,
   startChatImageGcWorker,
   startDomainEventGcWorker,
   startProposalGcWorker,
@@ -54,7 +55,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, SITE_BASE_URL_ENV } from "@caelo-cms/shared";
 import type { Handle } from "@sveltejs/kit";
 import { SESSION_COOKIE } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
@@ -302,6 +303,29 @@ async function consumePendingBootstrapToken(): Promise<void> {
   }
 }
 
+// Provisioned installs declare their public URL (CAELO_SITE_BASE_URL =
+// https://<domain>, set by the stack and by `cms-provision upgrade`).
+// Adopt it into site_defaults.site_base_url while that still holds the
+// dev default, so canonical / og:url / sitemap point at the real domain
+// without the operator having to find the SEO settings. Once per process;
+// a failure is logged loudly and the static generator refuses to build
+// a public install with a local base URL anyway.
+let siteBaseUrlSeeded = false;
+async function bootstrapSiteBaseUrl(): Promise<void> {
+  if (siteBaseUrlSeeded) return;
+  siteBaseUrlSeeded = true;
+  const { adapter, registry } = getQueryContext();
+  const r = await seedSiteBaseUrl({
+    registry,
+    adapter,
+    ctx: SYSTEM_CTX,
+    declared: process.env[SITE_BASE_URL_ENV],
+  });
+  if (r.kind === "seeded") {
+    console.log(`[hooks] site base URL ${r.from} → ${r.to} (from ${SITE_BASE_URL_ENV})`);
+  }
+}
+
 // P13 — debounced auto-redeploy + gateway log GC. Polls audit_events
 // for "publishable" op kinds (driven by site_settings.auto_redeploy_*)
 // and fires deploy.trigger after `auto_redeploy_debounce_ms` of quiet.
@@ -406,6 +430,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapDomainEventGc();
   bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
+  bootstrapSiteBaseUrl().catch((e) => console.error("[bootstrap.site-base-url] failed", e));
   const { adapter, registry } = getQueryContext();
   const token = event.cookies.get(SESSION_COOKIE);
   let user: App.Locals["user"] = null;

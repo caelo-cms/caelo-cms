@@ -519,6 +519,11 @@ const adminSvc = cloudRunService({
     { name: "CAELO_GATEWAY_REGION", value: region },
     // Issue #37 — shown in the /security/mcp `claude mcp add` command.
     { name: "CAELO_MCP_IAP_SERVICE_ACCOUNT", value: mcpServiceAccountEmail },
+    // The public site URL — the admin seeds site_defaults.site_base_url
+    // (canonical / og:url / sitemap) from it; the generator refuses a
+    // localhost base URL on a cloud install. Same value `cms-provision
+    // upgrade` sets on older installs (src/site-base-url.ts).
+    { name: "CAELO_SITE_BASE_URL", value: `https://${domain}` },
   ],
 });
 

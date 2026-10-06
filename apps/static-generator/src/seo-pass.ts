@@ -263,9 +263,10 @@ function enc(s: string): string {
 }
 
 /**
- * Read the SEO settings from `site_defaults` for the deploy run.
- * Falls back to a sensible local default when unseeded — same shape
- * as `site_defaults.get_seo` in the admin op layer.
+ * Read the SEO settings from `site_defaults` for the deploy run — same
+ * shape as `site_defaults.get_seo` in the admin op layer. The singleton
+ * row is seeded by migration 0027; its absence is schema drift, so this
+ * throws instead of substituting a base URL (CLAUDE.md §2 no-fallbacks).
  */
 export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSettings> {
   const rows = (await tx.execute(sql`
@@ -278,8 +279,13 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
     organization_json: string | null;
   }[];
   const r = rows[0];
+  if (!r) {
+    throw new Error(
+      "static-generator: site_defaults row (id = 1) is missing — cannot resolve the site base URL for canonical/sitemap. Re-run the cms_admin migrations (0027 seeds it), then re-run the deploy.",
+    );
+  }
   let organization: SiteSeoSettings["organization"] = {};
-  if (r?.organization_json) {
+  if (r.organization_json) {
     try {
       organization = JSON.parse(r.organization_json) as SiteSeoSettings["organization"];
     } catch {
@@ -288,8 +294,8 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
     }
   }
   return {
-    siteBaseUrl: r?.site_base_url ?? "http://localhost:8082",
-    sitemapEnabled: r?.sitemap_enabled ?? true,
+    siteBaseUrl: r.site_base_url,
+    sitemapEnabled: r.sitemap_enabled,
     organization,
   };
 }
