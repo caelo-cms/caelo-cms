@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: MPL-2.0
+
+import { describe, expect, it } from "bun:test";
+import {
+  applyDocumentLanguage,
+  languageTagSchema,
+  resolveDocumentLanguage,
+} from "./document-language.js";
+
+describe("applyDocumentLanguage", () => {
+  // Regression: every composed page started with a bare `<html>`, so
+  // Lighthouse flagged html-has-lang on the whole site.
+  it("adds lang to a bare <html>", () => {
+    expect(applyDocumentLanguage("<!doctype html><html><head></head></html>", "en")).toBe(
+      '<!doctype html><html lang="en"><head></head></html>',
+    );
+  });
+
+  it("replaces a layout-authored lang (quoted, single-quoted, unquoted, bare)", () => {
+    for (const tag of [
+      '<html lang="xx">',
+      "<html lang='xx'>",
+      "<html lang=xx>",
+      "<html lang>",
+      '<html LANG="xx">',
+    ]) {
+      expect(applyDocumentLanguage(`${tag}<head></head>`, "de")).toBe(
+        '<html lang="de"><head></head>',
+      );
+    }
+  });
+
+  it("keeps other attributes, including xml:lang and `>` inside quoted values", () => {
+    expect(
+      applyDocumentLanguage(
+        '<html class="dark" data-x="a>b" xml:lang="xx" lang="xx" dir="ltr"><head></head>',
+        "pt-BR",
+      ),
+    ).toBe('<html lang="pt-BR" class="dark" data-x="a>b" xml:lang="xx" dir="ltr"><head></head>');
+  });
+
+  it("only touches the first <html> start tag, never look-alikes", () => {
+    const html = '<html-widget lang="xx"></html-widget><html><body><html></body></html>';
+    expect(applyDocumentLanguage(html, "en")).toBe(
+      '<html-widget lang="xx"></html-widget><html lang="en"><body><html></body></html>',
+    );
+  });
+
+  it("inserts an <html> start tag after the doctype when the layout omits it", () => {
+    expect(applyDocumentLanguage("<!DOCTYPE html>\n<head></head><body></body>", "en")).toBe(
+      '<!DOCTYPE html><html lang="en">\n<head></head><body></body>',
+    );
+    expect(applyDocumentLanguage("<head></head><body></body>", "en")).toBe(
+      '<html lang="en"><head></head><body></body>',
+    );
+  });
+
+  it("escapes the value", () => {
+    expect(applyDocumentLanguage("<html>", 'a"b')).toBe('<html lang="a&quot;b">');
+  });
+});
+
+describe("resolveDocumentLanguage", () => {
+  it("prefers the plugin-contributed per-page language", () => {
+    expect(resolveDocumentLanguage({ contributed: "de", siteLanguage: "en" })).toBe("de");
+  });
+
+  it("uses the stored site language when no plugin assigns one", () => {
+    expect(resolveDocumentLanguage({ contributed: undefined, siteLanguage: "fr" })).toBe("fr");
+  });
+});
+
+describe("languageTagSchema", () => {
+  it("accepts BCP 47 shaped tags", () => {
+    for (const tag of ["en", "de", "pt-BR", "zh-Hant-TW", "es-419", "gsw"]) {
+      expect(languageTagSchema.safeParse(tag).success).toBe(true);
+    }
+  });
+
+  it("rejects malformed tags", () => {
+    for (const tag of ["", "e", "en_US", "en-", "-en", 'en" onload="x', "x".repeat(36)]) {
+      expect(languageTagSchema.safeParse(tag).success).toBe(false);
+    }
+  });
+});

@@ -98,6 +98,9 @@ export interface PageSeoRow {
 export interface SiteSeoSettings {
   siteBaseUrl: string;
   sitemapEnabled: boolean;
+  /** `site_defaults.site_language` — the `<html lang>` of every page no
+   *  plugin assigns its own locale to (see document-language.ts). */
+  siteLanguage: string;
   organization: {
     name?: string;
     url?: string;

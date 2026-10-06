@@ -188,6 +188,13 @@ describe("P6 deploy.trigger", () => {
     expect(html).toContain(">hello world</p>");
     expect(html).toContain("data-caelo-module-id=");
     expect(html).toContain("color:red");
+    // Every deployed page carries the stored site language as
+    // `<html lang>` (Lighthouse html-has-lang; migration 0229).
+    const defaults = await execute(registry, adapter, HUMAN, "site_defaults.get", {});
+    if (!defaults.ok) throw new Error(JSON.stringify(defaults.error));
+    const siteLanguage = (defaults.value as { defaults: { siteLanguage: string } }).defaults
+      .siteLanguage;
+    expect(html).toContain(`<html lang="${siteLanguage}"`);
     // P6.7 — the live-edit overlay's injected runtime (`caelo:ready` /
     // `caelo:element-clicked` / `caelo:reload`) must NEVER ship in the
     // deployed build. It only lives in the admin's preview endpoint at

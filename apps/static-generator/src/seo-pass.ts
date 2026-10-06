@@ -22,9 +22,11 @@ import { join } from "node:path";
 import { collectContributions, composeHeadBlock, MAIN_RENDER } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
+  applyDocumentLanguage,
   injectSeoIntoHead,
   renderSeoHead,
   resolveCanonicalUrl,
+  resolveDocumentLanguage,
   type SiteSeoSettings,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -206,6 +208,14 @@ export async function runSeoPass(args: {
       p.html,
       composeHeadBlock(headBlock, contributions.head.get(bundle.pageId)),
     );
+    // `<html lang>` — same resolution as the admin preview.
+    p.html = applyDocumentLanguage(
+      p.html,
+      resolveDocumentLanguage({
+        contributed: contributions.lang.get(bundle.pageId),
+        siteLanguage: args.settings.siteLanguage,
+      }),
+    );
   }
 
   // sitemap.xml — only when enabled AND env isn't noindex.
@@ -264,22 +274,32 @@ function enc(s: string): string {
 
 /**
  * Read the SEO settings from `site_defaults` for the deploy run.
- * Falls back to a sensible local default when unseeded — same shape
- * as `site_defaults.get_seo` in the admin op layer.
+ * Same shape as `site_defaults.get_seo` in the admin op layer. The
+ * singleton row must exist: it carries the stored site language.
  */
 export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSettings> {
   const rows = (await tx.execute(sql`
-    SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json
+    SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json,
+           site_language
     FROM site_defaults WHERE id = 1
     LIMIT 1
   `)) as unknown as {
     site_base_url: string;
     sitemap_enabled: boolean;
     organization_json: string | null;
+    site_language: string;
   }[];
   const r = rows[0];
+  if (!r) {
+    // No row means no stored language to render as `<html lang>`; a
+    // guessed one would mislabel the whole site (CLAUDE.md §2).
+    throw new Error(
+      "static-generator: the site_defaults row is missing, so pages have no stored language for <html lang>. " +
+        "Next step: run the migrations / onboarding bootstrap that creates it (site_defaults.set), then redeploy.",
+    );
+  }
   let organization: SiteSeoSettings["organization"] = {};
-  if (r?.organization_json) {
+  if (r.organization_json) {
     try {
       organization = JSON.parse(r.organization_json) as SiteSeoSettings["organization"];
     } catch {
@@ -288,8 +308,9 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
     }
   }
   return {
-    siteBaseUrl: r?.site_base_url ?? "http://localhost:8082",
-    sitemapEnabled: r?.sitemap_enabled ?? true,
+    siteBaseUrl: r.site_base_url,
+    sitemapEnabled: r.sitemap_enabled,
+    siteLanguage: r.site_language,
     organization,
   };
 }

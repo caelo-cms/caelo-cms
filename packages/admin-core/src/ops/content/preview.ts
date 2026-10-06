@@ -27,6 +27,7 @@ import {
 import type { DeferralCandidate } from "@caelo-cms/plugin-sdk";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
+  applyDocumentLanguage,
   buildMediaUrl,
   ComposeError,
   type ComposeFonts,
@@ -42,6 +43,7 @@ import {
   ok,
   renderSeoHead,
   resolveCanonicalUrl,
+  resolveDocumentLanguage,
   type SiteSeoSettings,
   scanCssVars,
   type ThemeDocument,
@@ -1109,23 +1111,35 @@ export const renderPagePreviewOp = defineOperation({
     }[];
     const seoRow = seoRows[0];
     const settingsRows = (await tx.execute(sql`
-      SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json
+      SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json,
+             site_language
       FROM site_defaults WHERE id = 1 LIMIT 1
     `)) as unknown as {
       site_base_url: string;
       sitemap_enabled: boolean;
       organization_json: string | null;
+      site_language: string;
     }[];
     const settingsRow = settingsRows[0];
+    if (!settingsRow) {
+      // No row → no stored language for `<html lang>` (CLAUDE.md §2:
+      // fail loudly instead of rendering a guessed language).
+      return err({
+        kind: "HandlerError",
+        operation: "pages.render_preview",
+        message:
+          "site_defaults row is missing, so the page has no stored language for <html lang>. Next step: create it via site_defaults.set (onboarding bootstrap).",
+      });
+    }
     let organization: SiteSeoSettings["organization"] = {};
-    if (settingsRow?.organization_json) {
+    if (settingsRow.organization_json) {
       try {
         organization = JSON.parse(settingsRow.organization_json) as SiteSeoSettings["organization"];
       } catch {
         organization = {};
       }
     }
-    const siteBaseUrl = settingsRow?.site_base_url ?? "http://localhost:8082";
+    const siteBaseUrl = settingsRow.site_base_url;
 
     let ogImageUrl: string | null = null;
     if (seoRow?.og_image_asset_id) {
@@ -1173,6 +1187,14 @@ export const renderPagePreviewOp = defineOperation({
     html = injectSeoIntoHead(
       html,
       composeHeadBlock(headBlock, contributions.head.get(input.pageId)),
+    );
+    // `<html lang>` — same resolution as the static generator's SEO pass.
+    html = applyDocumentLanguage(
+      html,
+      resolveDocumentLanguage({
+        contributed: contributions.lang.get(input.pageId),
+        siteLanguage: settingsRow.site_language,
+      }),
     );
 
     // #449 — plugin client assets. The deploy LINKS these files; the

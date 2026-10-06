@@ -23,7 +23,7 @@ const noInput = z.object({}).strict();
 export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
   name: "get_site_defaults",
   description:
-    "Fetch the CURRENT site defaults + identity: default layout/template (slug + UUID), siteName, sitePurpose, design brief. " +
+    "Fetch the CURRENT site defaults + identity: default layout/template (slug + UUID), siteName, sitePurpose, siteLanguage (`<html lang>`), design brief. " +
     "The `# Site defaults` / `## Site identity` context blocks are a snapshot from turn start — call this when you changed defaults or identity THIS turn (set_site_defaults / set_site_identity) and need the fresh state, instead of repeating the write.",
   opName: "site_defaults.get",
   input: noInput,
@@ -37,6 +37,7 @@ export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
           defaultTemplateId: string;
           siteName: string | null;
           sitePurpose: string | null;
+          siteLanguage: string;
         } | null;
       }
     ).defaults;
@@ -46,6 +47,7 @@ export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
       `default template: ${d.defaultTemplateSlug} (id=${d.defaultTemplateId})`,
       `siteName: ${d.siteName ?? "(not set)"}`,
       `sitePurpose: ${d.sitePurpose ?? "(not set)"}`,
+      `siteLanguage: ${d.siteLanguage}`,
     ].join("\n");
   },
 });

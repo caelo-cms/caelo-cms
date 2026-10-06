@@ -355,6 +355,33 @@ function defaultLocale(): LocaleRow | null {
   return null;
 }
 
+/**
+ * The locale each page belongs to: its variant row's locale, or the
+ * default locale for pages outside any variant group (the zero-diff
+ * retrofit invariant). Empty when no locales are registered — then the
+ * plugin has no opinion about any page. Expects a fresh locale cache.
+ */
+async function localesByPage(
+  q: PluginAdminQuery,
+  pageIds: readonly string[],
+): Promise<Map<string, LocaleRow>> {
+  const out = new Map<string, LocaleRow>();
+  if (localeCache.size === 0) return out;
+  const def = defaultLocale();
+  const variants = await loadVariantsByPage(q, pageIds);
+  for (const id of pageIds) {
+    const variant = variants.get(id);
+    const locale = variant ? localeCache.get(variant.locale_code) : def;
+    if (!locale) {
+      throw new Error(
+        `international-site: page ${id} references locale "${variant?.locale_code}" which is not registered`,
+      );
+    }
+    out.set(id, locale);
+  }
+  return out;
+}
+
 /** Shared by link_page_variants and create_variant: join `pageId` into
  *  `groupPageId`'s variant group (minting the group with the anchor as
  *  source when none exists), then refresh the composed path. */
@@ -597,12 +624,11 @@ export default definePlugin<PluginContextTier1>({
       const q = adminQueryOf(ctx);
       await refreshLocaleCache(q);
       const annotations: Record<string, Record<string, unknown>> = {};
-      const def = defaultLocale();
       if (localeCache.size === 0) {
         for (const id of pageIds) annotations[id] = {};
         return { annotations };
       }
-      const variants = await loadVariantsByPage(q, pageIds);
+      const locales = await localesByPage(q, pageIds);
       // Which of these pages is the home page IN ITS OWN LOCALE. The
       // site has exactly one designated home (site_defaults), so core
       // composes every other page as `<prefix>/<slug>` — which put the
@@ -613,14 +639,7 @@ export default definePlugin<PluginContextTier1>({
       // is variant-group knowledge, so it is answered here rather than
       // worked around by duplicating a slug.
       const homeVariantIds = await localeRootPageIds(ctx, q, pageIds);
-      for (const id of pageIds) {
-        const variant = variants.get(id);
-        const locale = variant ? localeCache.get(variant.locale_code) : def;
-        if (!locale) {
-          throw new Error(
-            `international-site: page ${id} references locale "${variant?.locale_code}" which is not registered`,
-          );
-        }
+      for (const [id, locale] of locales) {
         annotations[id] = {
           locale: locale.code,
           isDefaultLocale: locale.is_default,
@@ -1019,11 +1038,19 @@ export default definePlugin<PluginContextTier1>({
      * for EVERY published variant including itself, plus x-default on
      * the default locale's variant; sitemap alternates mirror the same
      * set (byte-parity between generator and preview comes free — both
-     * consume collectContributions).
+     * consume collectContributions). Every requested page — grouped or
+     * not — also gets its locale as the document language (`<html
+     * lang>`), so a German variant is announced as German even though
+     * the site's stored language is the default locale's.
      */
     head_contributions: async (ctx, args) => {
       const { pageIds, siteBaseUrl } = args as { pageIds: string[]; siteBaseUrl: string };
+      // Refreshes the locale cache that localesByPage reads.
       const matrix = await publishedVariantMatrix(ctx, pageIds, siteBaseUrl);
+      const lang: Record<string, string> = {};
+      for (const [pageId, locale] of await localesByPage(adminQueryOf(ctx), pageIds)) {
+        lang[pageId] = locale.code;
+      }
       const head: Record<string, unknown[]> = {};
       const sitemap: Record<string, unknown> = {};
       for (const [pageId, variants] of matrix) {
@@ -1045,7 +1072,7 @@ export default definePlugin<PluginContextTier1>({
           ],
         };
       }
-      return { head, sitemap };
+      return { head, sitemap, lang };
     },
 
     /**

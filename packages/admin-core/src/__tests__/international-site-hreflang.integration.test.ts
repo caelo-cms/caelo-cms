@@ -182,6 +182,11 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     });
     expect(below.head.size).toBe(0);
     expect(below.sitemap.size).toBe(0);
+    // The document language does NOT depend on the alternate threshold:
+    // every page is announced in its own locale (`<html lang>`), and a
+    // page outside any variant group belongs to the default locale.
+    expect(below.lang.get(sourceId)).toBe("en");
+    expect(below.lang.get(soloId)).toBe("en");
 
     // Publish de; fr stays draft → en + de + x-default, never fr.
     await sysOp("pages.set_status", { pageId: de.pageId, status: "published" });
@@ -207,6 +212,12 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
       expect(entries.some((e) => e.kind === "link" && e.hreflang === "fr")).toBe(false);
     }
     expect(collected.head.get(soloId)).toBeUndefined();
+    expect(Object.fromEntries(collected.lang)).toEqual({
+      [sourceId]: "en",
+      [de.pageId]: "de",
+      [fr.pageId]: "fr",
+      [soloId]: "en",
+    });
 
     const sitemap = collected.sitemap.get(sourceId);
     expect(sitemap?.exclude).toBeUndefined();
