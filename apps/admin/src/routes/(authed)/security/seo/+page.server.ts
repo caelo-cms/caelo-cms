@@ -23,11 +23,11 @@ export const load: PageServerLoad = async ({ locals }) => {
   return {
     settings: settings.ok
       ? (settings.value as {
-          siteBaseUrl: string;
+          siteBaseUrl: string | null;
           sitemapEnabled: boolean;
           organizationJson: Record<string, unknown>;
         })
-      : { siteBaseUrl: "", sitemapEnabled: true, organizationJson: {} },
+      : { siteBaseUrl: null, sitemapEnabled: true, organizationJson: {} },
     stale: stale.ok
       ? (
           stale.value as {

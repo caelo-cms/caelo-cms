@@ -72,6 +72,8 @@ export function buildStatusLine(args: {
   layoutsValue: unknown;
   templatesValue: unknown;
   siteDefaultsValue: unknown;
+  /** `site_defaults.get_seo` result; null when the read failed. */
+  seoValue?: unknown;
   activeTheme: { origin?: string | null; description?: string | null } | null;
 }): string | undefined {
   const missing: string[] = [];
@@ -87,6 +89,14 @@ export function buildStatusLine(args: {
     missing.push(
       "Site identity: not captured (set_site_identity — do this FIRST, from the user's own words)",
     );
+  // #551 — Owner-only setting (site_defaults.set_seo), so the entry names
+  // where the operator sets it rather than a tool.
+  const seo = args.seoValue as { siteBaseUrl?: string | null } | null | undefined;
+  if (seo && seo.siteBaseUrl === null) {
+    missing.push(
+      "Site URL: not configured — publishing fails until the Owner sets the public site address at /security/seo (you cannot set it; tell the operator before they publish)",
+    );
+  }
   if (!args.activeTheme || (args.activeTheme.origin ?? "seed") === "seed") {
     missing.push(
       "Theme: needs setup — active theme is a gray SEED; compose a full brand palette via set_theme_tokens + set_theme_meta BEFORE authoring visitor-facing pages",
@@ -158,16 +168,18 @@ export async function buildSystemContextBlocks(deps: {
   // what base setup is still missing (cheap counts; the line is undefined — no
   // reads matter — once the foundation exists). Fetched here rather than dumped
   // as prompt blocks; the line itself rides on the user message.
-  const [layoutsR, templatesR, defaultsR, themeR] = await Promise.all([
+  const [layoutsR, templatesR, defaultsR, themeR, seoR] = await Promise.all([
     execute(registry, adapter, humanCtxWithBranch, "layouts.list", { includeDeleted: false }),
     execute(registry, adapter, humanCtxWithBranch, "templates.list", { includeDeleted: false }),
     execute(registry, adapter, humanCtxWithBranch, "site_defaults.get", {}),
     execute(registry, adapter, humanCtxWithBranch, "themes.get_active", {}),
+    execute(registry, adapter, humanCtxWithBranch, "site_defaults.get_seo", {}),
   ]);
   const statusLine = buildStatusLine({
     layoutsValue: layoutsR.ok ? layoutsR.value : null,
     templatesValue: templatesR.ok ? templatesR.value : null,
     siteDefaultsValue: defaultsR.ok ? defaultsR.value : null,
+    seoValue: seoR.ok ? seoR.value : null,
     activeTheme: themeR.ok
       ? (themeR.value as { theme: { origin?: string | null } | null }).theme
       : null,

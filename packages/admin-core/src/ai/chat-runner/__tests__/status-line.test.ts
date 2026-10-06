@@ -46,6 +46,17 @@ describe("buildStatusLine", () => {
     expect(line).not.toContain("Site defaults: needs setup");
   });
 
+  it("#551: flags an unset site URL and points at /security/seo, not a tool", () => {
+    const line = buildStatusLine({ ...COMPLETE, seoValue: { siteBaseUrl: null } });
+    expect(line).toContain("Site URL: not configured");
+    expect(line).toContain("/security/seo");
+    expect(buildStatusLine({ ...COMPLETE, seoValue: { siteBaseUrl: "https://x.example" } })).toBe(
+      undefined,
+    );
+    // A failed read is not evidence of an unset URL.
+    expect(buildStatusLine({ ...COMPLETE, seoValue: null })).toBe(undefined);
+  });
+
   it("treats a seed-origin theme as needing setup even when one is active", () => {
     const line = buildStatusLine({ ...COMPLETE, activeTheme: { origin: "seed" } });
     expect(line).toContain("Theme: needs setup");
