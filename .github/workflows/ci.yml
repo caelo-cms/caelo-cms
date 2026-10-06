@@ -378,6 +378,19 @@ jobs:
             exit 1
           fi
 
+          # SIGTERM must end the process cleanly. `docker stop` escalates to
+          # SIGKILL (exit 137) after the timeout, which is what happens when
+          # the bootstrapped workers keep the event loop alive and nothing
+          # exits on adapter-node's `sveltekit:shutdown`.
+          docker stop -t 15 smoke
+          exit_code=$(docker inspect -f '{{.State.ExitCode}}' smoke)
+          if [ "$exit_code" != "0" ]; then
+            echo "::error::Admin did not exit cleanly on SIGTERM (exit code $exit_code; 137 = killed after timeout)"
+            docker logs smoke 2>&1 | tail -50 || true
+            docker rm -f smoke || true
+            exit 1
+          fi
+
           echo "--- container log tail (success path) ---"
           docker logs smoke 2>&1 | head -50 || true
           docker rm -f smoke

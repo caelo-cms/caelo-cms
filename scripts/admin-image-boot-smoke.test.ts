@@ -49,6 +49,10 @@
  *     Without it, a failing curl, docker inspect, or docker logs
  *     silently exits 0 and passes the job. The hygiene token is the
  *     load-bearing guard for AC #2 (fails closed on errors).
+ * C10: The boot-smoke step stops the container with `docker stop` and
+ *     requires exit code 0. A process that ignores SIGTERM is SIGKILLed
+ *     after the timeout (137), so this catches the admin no longer
+ *     exiting on adapter-node's `sveltekit:shutdown`.
  * R1: The ruleset's required-status-checks list contains
  *     `Admin production image — boot smoke`. Removing it means a
  *     broken boot no longer blocks merge — AC #5 fails.
@@ -215,6 +219,17 @@ describe("ci.yml — issue #55 admin-prod-image boot-smoke contract", () => {
       .map((l) => l.trim())
       .find((l) => l.length > 0);
     expect(firstNonBlank).toBe("set -euo pipefail");
+  });
+
+  it("C10: boot-smoke step stops the container and requires a clean exit (code 0)", () => {
+    const bootStep = runSteps(job).find(
+      (s) => s.run.includes("docker run") && s.run.includes("--name smoke"),
+    );
+    expect(bootStep).toBeDefined();
+    if (!bootStep || typeof bootStep.run !== "string") return;
+    expect(bootStep.run).toContain("docker stop");
+    expect(bootStep.run).toContain("{{.State.ExitCode}}");
+    expect(bootStep.run).toContain('"$exit_code" != "0"');
   });
 });
 
