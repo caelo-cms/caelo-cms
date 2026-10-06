@@ -83,7 +83,9 @@
     clearAll();
   });
 
-  afterNavigate(() => {
+  afterNavigate(({ shallow }) => {
+    if (shallow) return;
+
     clearAll();
   });
 </script>
