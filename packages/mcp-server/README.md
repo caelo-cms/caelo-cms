@@ -42,6 +42,19 @@ with these env vars set:
 |---|---|---|
 | `CAELO_ADMIN_URL` | yes | `https://admin.example.com` — point at your install. |
 | `CAELO_MCP_TOKEN` | yes | Bearer minted at `/security/mcp`. |
+| `CAELO_IAP_SERVICE_ACCOUNT` | on GCP installs | The admin's MCP service account. `/security/mcp` includes it in the `claude mcp add` command when the admin is behind Google IAP. |
+
+### Installs behind Google IAP (GCP)
+
+On `gcp` and `gcp-firebase` installs the admin sits behind Identity-Aware Proxy, which rejects every request before Caelo sees it unless it carries a Google credential. With `CAELO_IAP_SERVICE_ACCOUNT` set, the server signs a short-lived JWT as that service account (IAM Credentials `signJwt`, using your Application Default Credentials) and sends it in `Authorization` next to `x-caelo-mcp-token`: IAP checks the first, Caelo the second.
+
+One-time setup on your machine:
+
+```bash
+gcloud auth application-default login
+```
+
+The provisioner creates the service account (`caelo-mcp@<project>`), allowlists it on IAP and lets everyone on the IAP allowlist sign as it — on new installs via Pulumi, on existing ones during `cms-provision upgrade`. No service-account keys are involved.
 
 ## The `caelo_chat` tool
 

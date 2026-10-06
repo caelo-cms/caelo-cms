@@ -21,6 +21,7 @@ import { cancel, confirm, isCancel, log, note, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { gcloud } from "./gcloud.js";
 import { type InstallMetadata, installRoot, readMetadata, readSecret } from "./install-state.js";
+import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
 
 /** Find the single install on this machine — or warn if 0/multiple. */
 function findActiveInstall(): { installId: string; meta: InstallMetadata } | null {
@@ -345,6 +346,31 @@ async function rollbackTraffic(
   return r.ok;
 }
 
+/**
+ * The admin's IAP resource: the Cloud Run service itself on gcp-firebase
+ * (native IAP), the LB backend service on gcp (Pulumi-suffixed name).
+ */
+async function resolveAdminIapResource(
+  meta: InstallMetadata,
+  region: string,
+  adminServiceName: string,
+): Promise<IapResource | null> {
+  if (meta.provider === "gcp-firebase") {
+    return { kind: "cloud-run", service: adminServiceName, region };
+  }
+  const r = await gcloud([
+    "compute",
+    "backend-services",
+    "list",
+    "--global",
+    `--project=${meta.projectId}`,
+    "--filter=name~^caelo-production-admin-backend",
+    "--format=value(name)",
+  ]);
+  const name = r.ok ? r.stdout.trim().split("\n")[0]?.trim() : "";
+  return name ? { kind: "backend-services", service: name } : null;
+}
+
 export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   const { meta } = requireInstall();
   // v0.5.15 — extended to cover gcp-firebase too. Both providers share
@@ -485,6 +511,35 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   sMig.stop(green("Migrations applied"));
 
   // ────────────────────────────────────────────────────────────────
+  // Issue #37 — MCP through IAP. Idempotently ensure the MCP service
+  // account + its IAP/token-creator bindings, then hand its email to the
+  // new admin revision (CAELO_MCP_IAP_SERVICE_ACCOUNT) so /security/mcp
+  // shows a working `claude mcp add` command. Installs provisioned before
+  // this existed get it here, with no operator config. A failure only
+  // costs MCP access, so it warns instead of aborting the upgrade.
+  // ────────────────────────────────────────────────────────────────
+  let mcpServiceAccount: string | null = null;
+  if (adminPlan) {
+    const sMcp = spinner();
+    sMcp.start("Ensuring MCP access through IAP...");
+    const resource = await resolveAdminIapResource(meta, region, adminPlan.serviceName);
+    const mcp = resource
+      ? await ensureMcpIapAccess({ projectId: meta.projectId, resource })
+      : { ok: false as const, error: "admin IAP backend service not found" };
+    if (mcp.ok) {
+      mcpServiceAccount = mcp.serviceAccount;
+      sMcp.stop(
+        green(`MCP access ready (${mcp.serviceAccount}; ${mcp.operators.length} operator(s))`),
+      );
+    } else {
+      sMcp.stop(yellow(`MCP access not configured: ${mcp.error}`));
+      log.warn(
+        "The upgrade continues; external MCP clients stay blocked by IAP until this succeeds.",
+      );
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────
   // Phase 2: roll each service, probe health, auto-rollback on fail.
   // If admin succeeds but gateway fails, also roll admin back so the
   // operator never ends up on a mismatched-version pair.
@@ -504,6 +559,9 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       meta.projectId,
       "--image",
       plan.imageRef,
+      ...(plan.slug === "admin" && mcpServiceAccount
+        ? [`--update-env-vars=CAELO_MCP_IAP_SERVICE_ACCOUNT=${mcpServiceAccount}`]
+        : []),
       "--quiet",
     ]);
     if (!upd.ok) {

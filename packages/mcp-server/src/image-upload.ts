@@ -6,6 +6,7 @@ import { open } from "node:fs/promises";
 import { basename } from "node:path";
 import { z } from "zod";
 import { resolveTimeoutMs } from "./http.js";
+import { describeIapRejection, ingressHeaders } from "./ingress-auth.js";
 
 const MAX_BYTES = 5 * 1024 * 1024;
 /** Uploaded media references accepted by caelo_chat; never accept object-store keys. */
@@ -125,12 +126,20 @@ export async function uploadImages(opts: { adminUrl: string; token: string }, in
       if (image.reference) query.set("visibility", "reference");
       const response = await fetch(`${opts.adminUrl.replace(/\/+$/, "")}/api/mcp/images?${query}`, {
         method: "POST",
-        headers: { "x-caelo-mcp-token": opts.token, "content-type": "application/octet-stream" },
+        headers: {
+          ...(await ingressHeaders()),
+          "x-caelo-mcp-token": opts.token,
+          "content-type": "application/octet-stream",
+        },
         body: new Uint8Array(bytes),
         signal: AbortSignal.timeout(resolveTimeoutMs(120_000)),
       });
-      if (!response.ok)
-        throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 500)}`);
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(
+          describeIapRejection(response, text) ?? `HTTP ${response.status}: ${text.slice(0, 500)}`,
+        );
+      }
       const value = (await response.json()) as Record<string, unknown>;
       const attachment = uploadedImageSchema.parse({
         assetId: value.assetId,

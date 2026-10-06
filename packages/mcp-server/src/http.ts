@@ -4,11 +4,15 @@
  * Shared HTTP plumbing for both MCP surfaces (chat + admin). One POST
  * per call against the admin install's /api/mcp/* endpoints, bearer in
  * the `x-caelo-mcp-token` header, with an abortable client-side timeout.
+ * On IAP-protected installs the IAP credential rides along in
+ * `authorization` (see ingress-auth.ts).
  *
  * Timeouts default per call site (chat 30s, tool execution 120s — bulk
  * ops and media imports legitimately run long) and can be overridden
  * globally via `CAELO_MCP_TIMEOUT_MS`.
  */
+
+import { describeIapRejection, ingressHeaders } from "./ingress-auth.js";
 
 export interface AdminPostOpts {
   readonly adminUrl: string;
@@ -35,6 +39,7 @@ export async function postAdmin<T>(opts: AdminPostOpts): Promise<T> {
     const res = await fetch(url, {
       method: "POST",
       headers: {
+        ...(await ingressHeaders()),
         "content-type": "application/json",
         "x-caelo-mcp-token": opts.token,
       },
@@ -43,7 +48,9 @@ export async function postAdmin<T>(opts: AdminPostOpts): Promise<T> {
     });
     if (!res.ok) {
       const body = await safeText(res);
-      throw new Error(`HTTP ${res.status}: ${body || res.statusText}`);
+      throw new Error(
+        describeIapRejection(res, body) ?? `HTTP ${res.status}: ${body || res.statusText}`,
+      );
     }
     return (await res.json()) as T;
   } catch (e) {

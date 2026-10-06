@@ -1,6 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
+  import { claudeMcpAddCommand } from "$lib/mcp-command.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import {
@@ -39,21 +40,14 @@
     return "destructive";
   }
 
-  // Admin-scoped tokens wire the Power-MCP binary (full tool catalogue,
-  // external agent drives the loop); chat tokens wire the caelo_chat shim.
-  // `claude mcp add` syntax: options first, the server command after `--`
-  // (there is no --command flag in the Claude Code CLI).
   const claudeMcpAddSnippet = $derived(
     form?.ok && form?.plaintextToken
-      ? form?.scope === "admin"
-        ? `claude mcp add caelo-admin \\
-  --env CAELO_ADMIN_URL=${data.adminUrl} \\
-  --env CAELO_MCP_TOKEN=${form.plaintextToken} \\
-  -- bunx --package @caelo-cms/mcp-server caelo-admin-mcp`
-        : `claude mcp add caelo \\
-  --env CAELO_ADMIN_URL=${data.adminUrl} \\
-  --env CAELO_MCP_TOKEN=${form.plaintextToken} \\
-  -- bunx @caelo-cms/mcp-server`
+      ? claudeMcpAddCommand({
+          scope: String(form?.scope ?? ""),
+          adminUrl: data.adminUrl,
+          token: form.plaintextToken,
+          iapServiceAccount: data.iapServiceAccount,
+        })
       : null,
   );
 </script>
@@ -80,6 +74,12 @@
         <pre class="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code>{form.plaintextToken}</code></pre>
         <p class="font-medium">Wire it into Claude Code:</p>
         <pre class="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code>{claudeMcpAddSnippet}</code></pre>
+        {#if data.iapServiceAccount}
+          <p class="text-sm text-muted-foreground">
+            This admin is protected by Google IAP. The MCP server gets through it with your Google
+            login — run <code>gcloud auth application-default login</code> once on this machine.
+          </p>
+        {/if}
       </AlertDescription>
     </Alert>
   {/if}

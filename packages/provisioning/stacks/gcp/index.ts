@@ -603,6 +603,9 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
   );
 }
 
+// Issue #37 — deterministic, so the admin env can carry it as a plain string.
+const mcpServiceAccountEmail = `caelo-mcp@${project}.iam.gserviceaccount.com`;
+
 const adminSvc = cloudRunService({
   serviceName: "admin",
   minInstances: adminMinInstances,
@@ -630,6 +633,8 @@ const adminSvc = cloudRunService({
     { name: "CAELO_STATIC_BUCKET", value: staticBucket.name },
     { name: "CAELO_STAGING_BUCKET", value: stagingBucket.name },
     { name: "CAELO_GENERATOR_CLI", value: "/app/apps/static-generator/src/cli.ts" },
+    // Issue #37 — shown in the /security/mcp `claude mcp add` command.
+    { name: "CAELO_MCP_IAP_SERVICE_ACCOUNT", value: mcpServiceAccountEmail },
   ],
 });
 const gatewaySvc = cloudRunService({
@@ -822,6 +827,58 @@ for (const principal of iapAllowlist) {
     opts,
   );
 }
+
+// =========================================================================
+// MCP through IAP (issue #37)
+// =========================================================================
+//
+// External MCP clients (`@caelo-cms/mcp-server`) can't use the browser's IAP
+// login, and IAP's Google-managed OAuth client allows no programmatic user
+// tokens. They present a JWT signed by this service account instead (signed
+// via IAM Credentials `signJwt` with the operator's own ADC — no keys).
+// Everyone on the IAP allowlist may sign as it, so MCP access matches admin
+// browser access. `cms-provision upgrade` ensures the same for installs that
+// predate this (packages/provisioning/src/mcp-iap.ts), hence
+// createIgnoreAlreadyExists.
+const mcpServiceAccount = new gcp.serviceaccount.Account(
+  `${namePrefix}-mcp-sa`,
+  {
+    project,
+    accountId: "caelo-mcp",
+    displayName: "Caelo MCP (IAP ingress)",
+    description:
+      "Signs the IAP credential external MCP clients use to reach the admin (issue #37).",
+    createIgnoreAlreadyExists: true,
+  },
+  opts,
+);
+
+for (const principal of iapAllowlist) {
+  const slug = principal
+    .replace(/[^a-z0-9]/gi, "-")
+    .slice(0, 40)
+    .toLowerCase();
+  new gcp.serviceaccount.IAMMember(
+    `${namePrefix}-mcp-token-creator-${slug}`,
+    {
+      serviceAccountId: mcpServiceAccount.name,
+      role: "roles/iam.serviceAccountTokenCreator",
+      member: principal,
+    },
+    opts,
+  );
+}
+
+new gcp.iap.WebBackendServiceIamMember(
+  `${namePrefix}-admin-iap-mcp`,
+  {
+    project,
+    webBackendService: adminBackendService.name,
+    role: "roles/iap.httpsResourceAccessor",
+    member: pulumi.interpolate`serviceAccount:${mcpServiceAccount.email}`,
+  },
+  opts,
+);
 
 // URL map: routes by host header.
 //   admin.<domain>  → admin backend (IAP-gated)

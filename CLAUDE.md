@@ -280,7 +280,7 @@ The admin app must **never be reachable from the public internet without authent
 
 ### Tier 3 — API gateway (public visitor writes, WAF-gated)
 
-The gateway accepts public POSTs (form submissions, comments, ratings, newsletter signups, MCP `caelo_chat` calls). It is the only piece that handles untrusted traffic.
+The gateway accepts public POSTs (form submissions, comments, ratings, newsletter signups). It is the only piece that handles untrusted traffic. MCP calls (`caelo_chat`, Power-MCP) are NOT gateway traffic: they hit the admin's `/api/mcp/*` (Tier 2) and pass IAP with a service-account JWT plus Caelo's own MCP bearer (issue #37).
 
 - **Primitive:** managed serverless container behind a cloud-native WAF (rate limiting + OWASP rule pack + bot detection), routed via the Tier-1 LB's URL map (`/api/*` path prefix → gateway backend).
   - GCP: Cloud Run + Cloud Armor SecurityPolicy attached to the gateway BackendService.
