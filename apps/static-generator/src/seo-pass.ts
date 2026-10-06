@@ -288,7 +288,7 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
     }
   }
   return {
-    siteBaseUrl: r?.site_base_url ?? "http://localhost:8082",
+    siteBaseUrl: r?.site_base_url ?? "",
     sitemapEnabled: r?.sitemap_enabled ?? true,
     organization,
   };
