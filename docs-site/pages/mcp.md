@@ -34,8 +34,10 @@ The browser chat is one consumer of the chat-runner; `caelo_chat` is another. Th
 claude mcp add caelo \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=mcp_<32-bytes-hex> \
-  -- bunx @caelo-cms/mcp-server
+  -- bunx @caelo-cms/mcp-server@<admin-version>
 ```
+
+The snippet pins the package to your admin's version. An unpinned `bunx @caelo-cms/mcp-server` resolves `@latest` once and then keeps serving that cached copy, so after a Caelo upgrade the MCP server can lag behind the admin (for example, missing IAP support the admin already expects). After upgrading Caelo, re-add the server with the new version.
 
 ### The tool
 
@@ -66,17 +68,18 @@ Mint a token with scope **`admin`** at `/security/mcp`, then:
 claude mcp add caelo-admin \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=mcp_<32-bytes-hex> \
-  -- bunx --package @caelo-cms/mcp-server caelo-admin-mcp
+  -- bunx --package @caelo-cms/mcp-server@<admin-version> caelo-admin-mcp
 ```
 
 (`caelo-mcp-server admin` is the same server; the separate binary keeps the snippet flag-free.)
 
 ### Working model
 
-Two meta-tools frame every Power-MCP session:
+The server's MCP `instructions` (which Claude Code and other clients put into the model's context on connect) tell the agent this order, so a freshly connected agent loads the site context by itself:
 
 1. **`caelo_open_session`** — call once before any other tool. Opens (or, with `chatSessionId`, resumes) the work session whose preview branch all subsequent calls write to.
-2. **`caelo_get_context`** — the composed site context Caelo's own AI gets in its system prompt: the module model, the tool playbook, staging rules, site memory, and the active-skills index. Load it once; load individual skills on demand via the regular `load_skill` tool.
+2. **`caelo_get_context`** — the composed site context Caelo's own AI gets in its system prompt: the module model, the tool playbook, staging rules, site memory, and the active-skills index. Load it once.
+3. **`load_skill`** — the regular catalogue tool. The agent loads every skill the index lists as ALWAYS APPLIES (e.g. brand-voice-guard) plus the skills matching the task before working.
 
 Then work with the catalogue directly. Tool failures come back AI-actionable (naming valid choices and next steps), the same error surfaces Caelo's own agent self-corrects from.
 
@@ -85,8 +88,10 @@ Then work with the catalogue directly. Tool failures come back AI-actionable (na
 For a checked-in variant of `caelo_get_context`, run:
 
 ```bash
-CAELO_ADMIN_URL=… CAELO_MCP_TOKEN=… bunx @caelo-cms/mcp-server export --out .
+CAELO_ADMIN_URL=… CAELO_MCP_TOKEN=… bunx --package @caelo-cms/mcp-server@<admin-version> caelo-mcp-server export --out .
 ```
+
+`/security/mcp` shows this command, filled in, after you mint an `admin` token.
 
 This writes a `CLAUDE.md` plus one `.claude/skills/<slug>/SKILL.md` per active skill into the working directory — Claude Code picks both up automatically at session start. Re-run the export after skills or site memory change.
 

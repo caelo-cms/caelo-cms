@@ -16,6 +16,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { z } from "zod";
 import { sendChat } from "./chat-bridge.js";
 import { UPLOAD_IMAGES_TOOL, uploadedImageSchema, uploadImages } from "./image-upload.js";
+import { MCP_SERVER_VERSION } from "./version.js";
 
 export interface StartOpts {
   readonly adminUrl: string;
@@ -31,14 +32,33 @@ const caeloChatInputSchema = z
   })
   .strict();
 
+/**
+ * MCP `instructions` for the initialize result — clients put these into
+ * the model's context on connect. Short on purpose: the Caelo agent on
+ * the other end of caelo_chat already holds the site context.
+ */
+export const CHAT_MCP_INSTRUCTIONS = [
+  "Caelo CMS chat bridge: caelo_chat talks to the Caelo install's own AI agent, which knows the site and does the editing.",
+  "Describe the outcome you want in plain language rather than step-by-step module operations, and pass the returned chatSessionId to continue the same conversation.",
+  "Edits land on a preview branch; the operator reviews and publishes in the Caelo admin. To share images, call caelo_upload_images first and pass its attachments to caelo_chat.",
+].join("\n");
+
 export async function startMcpServer(opts: StartOpts): Promise<void> {
+  const server = createMcpServer(opts);
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+/** Builds the chat server without binding a transport (tests bind an in-memory pair). */
+export function createMcpServer(opts: StartOpts): Server {
   const server = new Server(
     {
       name: "caelo-mcp-server",
-      version: "0.1.0",
+      version: MCP_SERVER_VERSION,
     },
     {
       capabilities: { tools: {} },
+      instructions: CHAT_MCP_INSTRUCTIONS,
     },
   );
 
@@ -140,6 +160,5 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
     }
   });
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  return server;
 }

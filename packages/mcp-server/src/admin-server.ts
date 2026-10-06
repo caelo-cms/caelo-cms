@@ -29,6 +29,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { z } from "zod";
 import { postAdmin, resolveTimeoutMs } from "./http.js";
 import { UPLOAD_IMAGES_TOOL, uploadImages } from "./image-upload.js";
+import { MCP_SERVER_VERSION } from "./version.js";
 
 export interface StartAdminOpts {
   readonly adminUrl: string;
@@ -106,6 +107,22 @@ const GET_CONTEXT_TOOL = {
   inputSchema: { type: "object", properties: {} },
 } as const;
 
+/**
+ * MCP `instructions` for the initialize result. Clients (Claude Code et
+ * al.) put these into the model's context on connect, so a freshly
+ * connected agent knows the session -> context -> skills order without
+ * the operator explaining it. Kept short and about ORDER only: the
+ * substance (site model, brand voice, staging rules, skills index) lives
+ * in `caelo_get_context`, composed live by the install.
+ */
+export const ADMIN_MCP_INSTRUCTIONS = [
+  "Caelo CMS Power-MCP: you edit a Caelo website with the site's own tool catalogue. Before any other work:",
+  "1. Call caelo_open_session (once per task; pass chatSessionId to resume). Every other catalogue tool, reads included, fails without an open session. Writes land on the session's preview branch; the operator reviews and publishes in the Caelo admin.",
+  "2. Call caelo_get_context and read it: site model, staging rules, site memory (brand voice, glossary) and the skills index.",
+  "3. Call load_skill({slugs}) for every skill the index lists as ALWAYS APPLIES and every skill matching the task, then follow them.",
+  "Then work towards the outcome the operator described; pick modules, pages and copy yourself.",
+].join("\n");
+
 export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
   // Fetch the live catalogue up front — a bad URL or a chat-scoped token
   // should fail loudly at startup, not on the first tool call.
@@ -116,13 +133,28 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
     body: {},
     timeoutMs: resolveTimeoutMs(60_000),
   });
+  const server = createAdminMcpServer(opts, catalogue.tools);
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+/**
+ * Builds the Power-MCP server around an already-fetched remote catalogue,
+ * without binding a transport (startAdminMcpServer binds stdio; tests bind
+ * an in-memory pair).
+ */
+export function createAdminMcpServer(
+  opts: StartAdminOpts,
+  remoteTools: ReadonlyArray<RemoteTool>,
+): Server {
+  const catalogue = { tools: remoteTools };
   const remoteByName = new Map(catalogue.tools.map((t) => [t.name, t]));
 
   let currentSession: OpenSessionResponse | null = null;
 
   const server = new Server(
-    { name: "caelo-admin-mcp", version: "0.1.0" },
-    { capabilities: { tools: {} } },
+    { name: "caelo-admin-mcp", version: MCP_SERVER_VERSION },
+    { capabilities: { tools: {} }, instructions: ADMIN_MCP_INSTRUCTIONS },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -240,8 +272,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
     }
   });
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  return server;
 }
 
 function errorResult(text: string): {

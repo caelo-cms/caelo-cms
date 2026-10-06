@@ -28,12 +28,23 @@ In your Caelo install:
    etc.), optionally set an AI-spend cap (microcents), and copy the
    bearer that's shown ONCE.
 3. The page renders the exact `claude mcp add` snippet — copy + run it.
+   For `admin` tokens it also shows the optional `export` command (see
+   below).
+
+The snippet pins the package to your admin's version
+(`@caelo-cms/mcp-server@<admin-version>`). Keep it pinned: an unpinned
+`bunx @caelo-cms/mcp-server` resolves `@latest` once and then serves that
+cached copy indefinitely, so after a Caelo upgrade the server can lag
+behind the admin (e.g. a pre-IAP-support version against an IAP-protected
+admin fails with `Invalid IAP credentials: empty token`). After upgrading
+Caelo, re-add the server with the new version.
 
 Manual setup if your client isn't Claude Code:
 
 ```bash
-# stdio server invoked by your MCP-aware client
-bunx @caelo-cms/mcp-server
+# stdio server invoked by your MCP-aware client — use your admin's version
+bunx @caelo-cms/mcp-server@<admin-version>                                   # caelo_chat
+bunx --package @caelo-cms/mcp-server@<admin-version> caelo-admin-mcp         # Power-MCP
 ```
 
 with these env vars set:
@@ -55,6 +66,26 @@ gcloud auth application-default login
 ```
 
 The provisioner creates the service account (`caelo-mcp@<project>`), allowlists it on IAP and lets everyone on the IAP allowlist sign as it — on new installs via Pulumi, on existing ones during `cms-provision upgrade`. No service-account keys are involved.
+
+## Getting the agent started
+
+Both servers send MCP `instructions` in their initialize result, which
+Claude Code (and other clients) put into the model's context on connect.
+The Power-MCP instructions tell the agent to call `caelo_open_session`
+first (every catalogue tool fails without an open session), then
+`caelo_get_context` (site model, staging rules, brand voice, skills
+index), then `load_skill` for every ALWAYS APPLIES skill and every skill
+matching the task. You don't have to explain any of this to the agent.
+
+For a persistent, checked-in context (admin token required):
+
+```bash
+CAELO_ADMIN_URL=… CAELO_MCP_TOKEN=… \
+  bunx --package @caelo-cms/mcp-server@<admin-version> caelo-mcp-server export --out .
+```
+
+writes `CLAUDE.md` + `.claude/skills/<slug>/SKILL.md` into the directory;
+re-run after skills or site memory change.
 
 ## The `caelo_chat` tool
 

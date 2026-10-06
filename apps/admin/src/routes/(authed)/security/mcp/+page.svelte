@@ -1,7 +1,8 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { CAELO_VERSION } from "@caelo-cms/shared";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
-  import { claudeMcpAddCommand } from "$lib/mcp-command.js";
+  import { caeloMcpExportCommand, claudeMcpAddCommand } from "$lib/mcp-command.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import {
@@ -47,6 +48,17 @@
           adminUrl: data.adminUrl,
           token: form.plaintextToken,
           iapServiceAccount: data.iapServiceAccount,
+          version: CAELO_VERSION,
+        })
+      : null,
+  );
+  const exportSnippet = $derived(
+    form?.ok && form?.plaintextToken && form?.scope === "admin"
+      ? caeloMcpExportCommand({
+          adminUrl: data.adminUrl,
+          token: form.plaintextToken,
+          iapServiceAccount: data.iapServiceAccount,
+          version: CAELO_VERSION,
         })
       : null,
   );
@@ -74,6 +86,23 @@
         <pre class="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code>{form.plaintextToken}</code></pre>
         <p class="font-medium">Wire it into Claude Code:</p>
         <pre class="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code>{claudeMcpAddSnippet}</code></pre>
+        <p class="text-sm text-muted-foreground">
+          Pinned to this admin's version (v{CAELO_VERSION}) so the MCP server always matches it. After
+          upgrading Caelo, re-add the server with the new version number.
+        </p>
+        {#if exportSnippet}
+          <p class="text-sm text-muted-foreground">
+            After connecting, the agent loads the site context (brand voice, staging rules, skills)
+            itself. Optionally, for a persistent context checked into a repo, this writes CLAUDE.md +
+            <code>.claude/skills/</code> into the current directory (re-run when skills or site memory
+            change):
+          </p>
+          <pre class="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code>{exportSnippet}</code></pre>
+        {:else}
+          <p class="text-sm text-muted-foreground">
+            After connecting, just describe what you want — Caelo's own AI already knows the site.
+          </p>
+        {/if}
         {#if data.iapServiceAccount}
           <p class="text-sm text-muted-foreground">
             This admin is protected by Google IAP. The MCP server gets through it with your Google
