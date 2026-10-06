@@ -12,8 +12,8 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { json } from "@sveltejs/kit";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ locals, params }) => {

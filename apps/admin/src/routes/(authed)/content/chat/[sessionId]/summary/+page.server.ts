@@ -10,8 +10,8 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { PageServerLoad } from "./$types";
 
 interface ToolBreakdown {

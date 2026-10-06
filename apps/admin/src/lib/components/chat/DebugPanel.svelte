@@ -22,14 +22,14 @@
    * URL flag + a permission check before mounting.
    */
 
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
 
   interface Props {

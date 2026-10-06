@@ -21,9 +21,9 @@
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
-import { INJECT_SCRIPT } from "$lib/components/edit/inject-script.js";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { INJECT_SCRIPT } from "#lib/components/edit/inject-script.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 interface PageRow {

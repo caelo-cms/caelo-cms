@@ -3,7 +3,7 @@
 import { deliverPasswordResetEmail } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
-import { getQueryContext } from "$lib/server/query.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { Actions } from "./$types";
 
 /**

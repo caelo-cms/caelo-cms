@@ -1,12 +1,12 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { MessageSquare } from "lucide-svelte";
-  import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
-  import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { Card, CardContent, CardHeader, CardTitle } from "$lib/components/ui/card/index.js";
-  import { Skeleton } from "$lib/components/ui/skeleton/index.js";
+  import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
+  import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { Card, CardContent, CardHeader, CardTitle } from "#lib/components/ui/card/index.js";
+  import { Skeleton } from "#lib/components/ui/skeleton/index.js";
   import {
     Table,
     TableBody,
@@ -14,7 +14,7 @@
     TableHead,
     TableHeader,
     TableRow,
-  } from "$lib/components/ui/table/index.js";
+  } from "#lib/components/ui/table/index.js";
 
   let { data, form } = $props();
 </script>

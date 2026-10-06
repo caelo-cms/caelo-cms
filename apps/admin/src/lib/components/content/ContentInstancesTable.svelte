@@ -7,7 +7,7 @@
    * view. CLAUDE.md §6A — `cn()` for class composition, shadcn-svelte
    * Table primitive, no custom <style> block.
    */
-  import { Badge } from "$lib/components/ui/badge/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
   import {
     Table,
     TableBody,
@@ -15,7 +15,7 @@
     TableHead,
     TableHeader,
     TableRow,
-  } from "$lib/components/ui/table/index.js";
+  } from "#lib/components/ui/table/index.js";
 
   interface Instance {
     id: string;

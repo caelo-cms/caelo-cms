@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MPL-2.0
-
 // v0.5.9 — process-level handlers. Catches every async-leaked rejection
 // and uncaught exception that would otherwise vanish into Bun's default
 // (kill the process on uncaughtException; silently drop unhandledRejection
@@ -55,9 +54,9 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import type { Handle } from "@sveltejs/kit";
-import { SESSION_COOKIE } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import type { Handle } from "@sveltejs/kit/hooks";
+import { SESSION_COOKIE } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 
 // Dev-mode KEK auto-gen. secret-box reads CAELO_SECRET_KEK lazily
 // (only at first encrypt/decrypt), so populating it before any DB

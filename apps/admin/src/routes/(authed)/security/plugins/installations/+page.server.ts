@@ -7,10 +7,10 @@ import {
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
-import { assertCsrfToken } from "$lib/server/csrf.js";
-import { requirePermission } from "$lib/server/guards.js";
-import { readPluginPackage } from "$lib/server/plugin-package.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { assertCsrfToken } from "#lib/server/csrf.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { readPluginPackage } from "#lib/server/plugin-package.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {

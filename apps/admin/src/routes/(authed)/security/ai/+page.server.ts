@@ -3,10 +3,10 @@
 import { checkProviderKeyHealth, type ProviderKeyHealth } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
-import { defaultModelForProvider } from "$lib/ai-models.js";
-import { assertCsrfToken } from "$lib/server/csrf.js";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { defaultModelForProvider } from "#lib/ai-models.js";
+import { assertCsrfToken } from "#lib/server/csrf.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 const KNOWN_PROVIDERS = ["anthropic", "openai", "google", "local-openai-compat"] as const;

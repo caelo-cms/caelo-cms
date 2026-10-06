@@ -34,9 +34,9 @@
    * See commit e6a9f0e9 for the failure mode + the structural fix.
    * ════════════════════════════════════════════════════════════════════
    */
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
   import type { ThemeDocument } from "@caelo-cms/shared";
 
   interface Props {
