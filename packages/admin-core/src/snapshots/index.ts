@@ -6,6 +6,7 @@ export {
   type SnapshotOpKind,
 } from "./emit.js";
 export {
+  loadBranchedModuleStates,
   loadContentInstanceState,
   loadContentInstanceStateWithBranchOverlay,
   loadModuleState,

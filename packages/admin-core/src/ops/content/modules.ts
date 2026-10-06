@@ -27,6 +27,7 @@ import { emitDomainEvent } from "../../domain-events.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
+  loadBranchedModuleStates,
   loadModuleState,
   loadModuleStateWithBranchOverlay,
 } from "../../snapshots/index.js";
@@ -153,6 +154,47 @@ function rowToModule(r: {
   };
 }
 
+type ModuleDbRow = Parameters<typeof rowToModule>[0];
+
+/**
+ * Overlay the caller's chat-branch edits onto live `modules` rows, so a
+ * chat reads the module as its own preview renders it.
+ *
+ * Branched `modules.update` leaves the live row at main and records the
+ * new state only as a branched snapshot. Without this overlay a chat's
+ * reads returned main: read_content showed the pre-edit body, edit_content
+ * rebuilt its edit (and its `expectedSha` guard) on main's body and wrote
+ * that back into the branch — silently reverting the chat's earlier edits.
+ *
+ * Only the columns a module snapshot carries are overlaid; `description` /
+ * `kind` / timestamps / `deleted_at` stay live (the snapshot state has no
+ * such fields). Callers without a branch get the rows unchanged.
+ */
+async function overlayBranchEdits(
+  ctx: { chatBranchId?: string | null },
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  rows: ModuleDbRow[],
+  moduleIds?: readonly string[],
+): Promise<ModuleDbRow[]> {
+  if (!ctx.chatBranchId || rows.length === 0) return rows;
+  const branched = await loadBranchedModuleStates(tx, ctx.chatBranchId, moduleIds);
+  if (branched.size === 0) return rows;
+  return rows.map((r) => {
+    const s = branched.get(r.id);
+    if (!s) return r;
+    return {
+      ...r,
+      slug: s.slug,
+      display_name: s.displayName,
+      type: s.type,
+      html: s.html,
+      css: s.css,
+      js: s.js,
+      fields: s.fields,
+    };
+  });
+}
+
 /**
  * v0.12.0 — module usage signal for the AI's `## Modules`
  * decision-support block. Per CLAUDE.md §1A every domain object the
@@ -260,8 +302,9 @@ export const listModulesOp = defineOperation({
                    created_at, updated_at, deleted_at
             FROM modules WHERE deleted_at IS NULL ${branchFilter} ORDER BY created_at ASC
           `,
-    )) as unknown as Parameters<typeof rowToModule>[0][];
-    return ok({ modules: rows.map(rowToModule) });
+    )) as unknown as ModuleDbRow[];
+    const effective = await overlayBranchEdits(ctx, tx, rows);
+    return ok({ modules: effective.map(rowToModule) });
   },
 });
 
@@ -274,14 +317,15 @@ export const getModuleOp = defineOperation({
   output: z.object({ module: moduleRowSchema }),
   handler: async (ctx, input, tx) => {
     // v0.9.0 — branch-aware read so a chat can fetch its own
-    // branched-create modules immediately after creating them.
+    // branched-create modules immediately after creating them; the
+    // overlay then layers the chat's own branched edits on top.
     const branchFilter = branchVisibilityFilter(ctx);
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, display_name, description, kind, type, html, css, js, fields,
              created_at, updated_at, deleted_at
       FROM modules WHERE id = ${input.moduleId}::uuid ${branchFilter} LIMIT 1
-    `)) as unknown as Parameters<typeof rowToModule>[0][];
-    const row = rows[0];
+    `)) as unknown as ModuleDbRow[];
+    const [row] = await overlayBranchEdits(ctx, tx, rows, [input.moduleId]);
     if (!row) {
       return err({ kind: "HandlerError", operation: "modules.get", message: "module not found" });
     }
@@ -533,14 +577,41 @@ export const updateModuleOp = defineOperation({
       });
     }
 
+    const branchId = ctx.chatBranchId ?? null;
+
+    // For branched writes the base is the module as THIS branch sees it —
+    // the latest branched snapshot when the chat already edited it, else
+    // the live row. A partial update (fields-only, css-only, …) keeps every
+    // other column at its branch value, and the extractor decision below
+    // looks at the branch's field schema, not main's.
+    //
+    // v0.10.0 — without the overlay, chained branched edits silently
+    // dropped each other's fields: edit 1 set html='B' (snapshot only,
+    // live still 'A'); edit 2 read live and emitted snapshot 2 with
+    // html='A' — edit 1 lost at Stage when merge applied snapshot 2.
+    const branchBase = branchId
+      ? await loadModuleStateWithBranchOverlay(tx, input.moduleId, branchId)
+      : null;
+    if (branchId && !branchBase) {
+      return err({
+        kind: "HandlerError",
+        operation: "modules.update",
+        message: "module not found while building branched state",
+      });
+    }
+
     // v0.12.2 — auto-extract content from new HTML ONLY when the caller
-    // didn't supply explicit fields AND the live module didn't already
+    // didn't supply explicit fields AND the module didn't already
     // declare fields. If either is present, the caller is in control of
     // the field schema and we persist the HTML verbatim. Mirrors the
     // modules.create conservative-extraction rule above so the rewriter
     // / media-usage / chained-edit fixtures don't get their literal
     // hrefs / srcs templatised out from under them.
-    const rawPrevFields = typeof prev.fields === "string" ? JSON.parse(prev.fields) : prev.fields;
+    const rawPrevFields = branchBase
+      ? branchBase.fields
+      : typeof prev.fields === "string"
+        ? JSON.parse(prev.fields)
+        : prev.fields;
     const prevFields = Array.isArray(rawPrevFields) ? (rawPrevFields as ModuleField[]) : [];
     const explicitFieldsPresent = input.fields !== undefined && input.fields.length > 0;
     const liveFieldsPresent = prevFields.length > 0;
@@ -580,8 +651,6 @@ export const updateModuleOp = defineOperation({
     // `undefined` because an update may leave html untouched.
     const persistedHtml = extractedHtml === undefined ? undefined : stripCdataGuards(extractedHtml);
     const persistedFields = extractedFields ?? input.fields;
-
-    const branchId = ctx.chatBranchId ?? null;
 
     // v0.5.1 — branched writes skip the live UPDATE. Module code stays
     // visible to other chats at its pre-edit state until publish merges
@@ -628,25 +697,12 @@ export const updateModuleOp = defineOperation({
         .join(",")}${branchId ? " (branch)" : ""}`,
     });
 
-    // For branched writes, construct the new state from the LATEST
-    // branched snapshot (if any) + input; for live writes, re-load to
-    // capture defaults applied by the DB.
-    //
-    // v0.10.0 — uses `loadModuleStateWithBranchOverlay` instead of the
-    // live row. Without the overlay, chained branched edits silently
-    // dropped each other's fields: edit 1 set html='B' (snapshot only,
-    // live still 'A'); edit 2 read live and emitted snapshot 2 with
-    // html='A' — edit 1 lost at Stage when merge applied snapshot 2.
+    // For branched writes, construct the new state from the branch base
+    // (above) + input; for live writes, re-load to capture defaults
+    // applied by the DB.
     let state: ModuleState | null;
-    if (branchId) {
-      const base = await loadModuleStateWithBranchOverlay(tx, input.moduleId, branchId);
-      if (!base) {
-        return err({
-          kind: "HandlerError",
-          operation: "modules.update",
-          message: "module not found while building branched state",
-        });
-      }
+    if (branchBase) {
+      const base = branchBase;
       state = {
         ...base,
         displayName: input.displayName ?? base.displayName,
