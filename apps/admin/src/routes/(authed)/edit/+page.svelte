@@ -20,7 +20,7 @@
    */
 
   import { enhance } from "$app/forms";
-  import { goto, invalidateAll } from "$app/navigation";
+  import { goto, refreshAll } from "$app/navigation";
   import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
   import CaeloMascot from "#lib/components/CaeloMascot.svelte";
   import { onMount } from "svelte";
@@ -133,7 +133,7 @@
   // The pre-v0.8 path kept a local mutable counter that incremented on
   // every AI tool result (overcounting — tool calls != entity writes,
   // and layout-module edits had no counter delta at all). v0.8 fixes
-  // branch_change_count to cover layout-module snapshots; invalidateAll
+  // branch_change_count to cover layout-module snapshots; refreshAll
   // in onAiToolResult re-runs the server load after each tool, so the
   // derived value stays fresh without manual increments.
   const pendingChanges = $derived(data.branchChangeCount ?? 0);
@@ -190,7 +190,7 @@
     activePageId = value;
     const url = new URL(window.location.href);
     url.searchParams.set("page", value);
-    void goto(url.toString(), { replaceState: false, noScroll: true, keepFocus: true });
+    void goto(url.toString(), { reset: false });
   }
 
   function dialogStay(): void {
@@ -254,11 +254,7 @@
           activePageId = msg.pageId;
           const url = new URL(window.location.href);
           url.searchParams.set("page", msg.pageId);
-          void goto(url.toString(), {
-            replaceState: true,
-            noScroll: true,
-            keepFocus: true,
-          });
+          void goto(url.toString(), { replace: true, reset: false });
         }
       }
     };
@@ -330,13 +326,13 @@
     arguments?: Record<string, unknown>;
   }): void {
     // v0.8.0 — no manual counter increment; pendingChanges is $derived
-    // from data.branchChangeCount, which invalidateAll() below refreshes.
+    // from data.branchChangeCount, which refreshAll() below refreshes.
 
     // v0.3.22 — auto-follow the AI's edit target. When a tool's
     // arguments name a different pageId than what's currently
     // shown, switch the iframe to it. Layout / module-only edits
     // omit pageId; we stay on the current page in that case.
-    // Stale `data.pages` here is fine — we run invalidateAll() right
+    // Stale `data.pages` here is fine — we run refreshAll() right
     // after, so the next tool-result picks up the fresh list.
     if (payload.ok && payload.content) {
       const next = previewFromResult(payload.content, location.origin);
@@ -354,7 +350,7 @@
     // created pages / layouts surface in the page picker + activate
     // automatically on fresh installs. Without this, `activePage`
     // stays null and the iframe shows nothing while the AI builds.
-    void invalidateAll();
+    void refreshAll();
 
     scheduleReload();
   }

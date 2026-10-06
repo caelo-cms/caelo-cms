@@ -115,7 +115,17 @@ export default defineConfig({
   plugins: [
     forceOxcParserNativeEntry(),
     tailwindcss(),
-    sveltekit({ preprocess: vitePreprocess(), adapter: adapter() }),
+    sveltekit({
+      preprocess: vitePreprocess(),
+      adapter: adapter(),
+      // SvelteKit 3 / adapter-node 6 no longer read ORIGIN at runtime; the
+      // trusted origin is fixed at build time. A local http server (the
+      // Playwright webServer builds with ORIGIN set) needs it, or the app
+      // assumes https and its CSRF check rejects every form post. Image
+      // builds leave it unset: behind Cloud Run the origin comes from the
+      // Host header with https, as before.
+      ...(process.env.ORIGIN ? { paths: { origin: process.env.ORIGIN } } : {}),
+    }),
   ],
   server: { port: 5173, strictPort: false },
   ssr: {

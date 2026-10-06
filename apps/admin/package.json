@@ -12,9 +12,9 @@
     "preview": "bun --bun vite preview",
     "seed:dev": "bun --env-file=../../.env run scripts/seed-dev-owner.ts",
     "e2e": "playwright test",
-    "e2e-livedit": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts",
-    "e2e-livedit:headed": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed",
-    "e2e-livedit:debug": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed --debug --workers=1",
+    "e2e-livedit": "svelte-kit sync && bun run plugins:build && ORIGIN=http://localhost:4173 bun --bun vite build && playwright test --config playwright.livedit.config.ts",
+    "e2e-livedit:headed": "svelte-kit sync && bun run plugins:build && ORIGIN=http://localhost:4173 bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed",
+    "e2e-livedit:debug": "svelte-kit sync && bun run plugins:build && ORIGIN=http://localhost:4173 bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed --debug --workers=1",
     "plugins:build": "tsc -b --force ../../packages/plugins/*"
   },
   "dependencies": {
@@ -46,8 +46,8 @@
     "@axe-core/playwright": "^4.13.0",
     "@modelcontextprotocol/sdk": "1.31.0",
     "@playwright/test": "1.63.0",
-    "@sveltejs/adapter-node": "^6.0.0",
-    "@sveltejs/kit": "^3.0.0",
+    "@sveltejs/adapter-node": "6.0.0",
+    "@sveltejs/kit": "3.0.1",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@tailwindcss/vite": "^4.3.3",
     "sharp": "^0.35",
