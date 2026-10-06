@@ -14,6 +14,13 @@
 
 :80 {
 	root * /srv/current
+	# Content-hashed build outputs (fonts, plugin bundles) never change
+	# under the same URL — cache them for a year. Keep this pattern in
+	# sync with CONTENT_HASHED_PATH_PATTERN in @caelo-cms/shared
+	# (enforced by packages/provisioning/src/index.test.ts). Pages and
+	# slug-addressed media keep file_server's ETag/Last-Modified default.
+	@content_hashed path_regexp content_hashed ^/(?:_app/immutable/.+|_assets/fonts/[^/]+/[0-9a-f]{16,64}\.(?:woff2|woff|ttf|otf)|_caelo/plugin/[^/]+/[^/]+\.[0-9a-f]{12}\.(?:js|css))$
+	header @content_hashed Cache-Control "public, max-age=31536000, immutable"
 	encode gzip
 	header X-Robots-Tag "noindex, nofollow"
 	try_files {path} {path}/index.html
