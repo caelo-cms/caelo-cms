@@ -13,13 +13,23 @@
 
 FROM denoland/deno:bin-2.9.7 AS deno
 
+FROM node:24.21.0-bookworm-slim AS node
+
 FROM oven/bun:1.4.2 AS builder
 
-# npm is needed to work around Bun's transitive optionalDependencies gap
-# (oven-sh/bun#14918). Bun fails to install Rollup's per-platform native
-# binding even when listed; npm handles it correctly. We use npm only to
-# fix up the rollup install — Bun stays the workspace package manager.
-RUN apt-get update && apt-get install -y --no-install-recommends npm && rm -rf /var/lib/apt/lists/*
+# Node + npm come from the official image, not Debian's apt package
+# (Node 18 on bookworm). Two consumers:
+# - npm works around Bun's transitive optionalDependencies gap
+#   (oven-sh/bun#14918): Bun fails to install Rollup's per-platform native
+#   binding even when listed; npm handles it correctly. We use npm only to
+#   fix up the rollup install — Bun stays the workspace package manager.
+# - `bun x vite build` below runs Vite under this Node, and SvelteKit 3
+#   requires Node >= 22.17 (Promise.withResolvers et al.).
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
+    node --version && npm --version
 
 WORKDIR /repo
 
