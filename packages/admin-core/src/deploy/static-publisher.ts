@@ -94,14 +94,23 @@ export interface StaticPublisher {
    * cross-bucket server-side object copy from the private staging
    * bucket to the public static bucket. Per-target overrides
    * (robots.txt, routing-manifest.json) are applied so production's
-   * robots reads `index` even when promoting a `noindex` staging
-   * artifact.
+   * robots reads `index` — with the `Sitemap:` line when the build
+   * carries a sitemap.xml — even when promoting a `noindex` staging
+   * artifact. Env-level response headers (staging's
+   * `X-Robots-Tag: noindex`) follow the DESTINATION target, never the
+   * source. The page HTML and sitemap.xml ship verbatim: the generator
+   * renders them env-independently (apps/static-generator/src/seo-pass.ts).
+   * A source build whose manifest says its pages carry the source
+   * env's noindex is refused (`manifestBakesEnvNoindex`).
    */
   promoteToProduction(args: {
     sourceRunId: string;
     sourceBuildDir: string;
     fromTarget: DeployTarget;
     toTarget: DeployTarget;
+    /** site_defaults.site_base_url — the absolute base of the
+     *  destination robots.txt `Sitemap:` line. */
+    siteBaseUrl: string;
   }): Promise<PromoteSummary>;
 
   /**
@@ -115,6 +124,10 @@ export interface StaticPublisher {
     targetBuildId: string;
     sourceBuildDir: string;
     target: DeployTarget;
+    /** site_defaults.site_base_url — publishers that re-derive the
+     *  target's robots.txt on rollback (Firebase) need it for the
+     *  `Sitemap:` line. */
+    siteBaseUrl: string;
   }): Promise<PublishSummary>;
 }
 

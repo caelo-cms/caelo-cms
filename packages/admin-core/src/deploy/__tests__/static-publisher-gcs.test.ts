@@ -12,7 +12,9 @@
  *     upload (proves the rsync-over-GCS optimisation works)
  *   - promoteToProduction copies _staging/<runId>/* → static bucket
  *     root via server-side .copy()
- *   - per-target robots.txt + routing-manifest patches applied
+ *   - per-target robots.txt (with the Sitemap: line) + routing-manifest
+ *     patches applied; a legacy staging build with env noindex baked
+ *     into its HTML is refused
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
@@ -144,7 +146,7 @@ mock.module("@google-cloud/storage", () => ({
 }));
 
 // NOTE: no mock.module("@caelo-cms/static-generator") here. The publisher
-// only uses buildRobotsTxt, which is a pure two-branch string function —
+// only uses pure robots/manifest helpers from it —
 // mocking the whole package used to clobber its other exports
 // (resolveThemeFonts, generateSite, …) for every test file that ran after
 // this one in a shared-process run (issue #305).
@@ -274,8 +276,53 @@ describe("gcsStaticPublisher.publishStaging", () => {
 });
 
 describe("gcsStaticPublisher.promoteToProduction", () => {
+  // A staging build as the generator writes it since the env-independent
+  // SEO pass: sitemap included, manifest flags no env noindex in HTML.
+  async function writeGeneratorArtefacts(manifest: Record<string, unknown>): Promise<void> {
+    await writeFile(join(buildDir, "sitemap.xml"), "<urlset></urlset>", "utf8");
+    await writeFile(join(buildDir, "routing-manifest.json"), JSON.stringify(manifest), "utf8");
+  }
+
+  it("Publish live serves production robots.txt with the Sitemap line and the staged sitemap", async () => {
+    await writeGeneratorArtefacts({ env: "staging", envNoindexInHtml: false });
+    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-seo", target: TARGET });
+    await gcsStaticPublisher.promoteToProduction({
+      sourceRunId: "run-seo",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://www.example.com/",
+    });
+    expect(staticBucket.files.get("sitemap.xml")?.body?.toString("utf8")).toBe("<urlset></urlset>");
+    expect(staticBucket.files.get("robots.txt")?.body?.toString("utf8")).toBe(
+      "User-agent: *\nAllow: /\n\nSitemap: https://www.example.com/sitemap.xml\n",
+    );
+    const manifest = JSON.parse(
+      staticBucket.files.get("routing-manifest.json")?.body?.toString("utf8") ?? "{}",
+    ) as { env?: string };
+    expect(manifest.env).toBe("production");
+  });
+
+  it("refuses a legacy staging build whose pages carry staging's noindex", async () => {
+    await writeGeneratorArtefacts({ env: "staging" });
+    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-legacy", target: TARGET });
+    await expect(
+      gcsStaticPublisher.promoteToProduction({
+        sourceRunId: "run-legacy",
+        sourceBuildDir: buildDir,
+        fromTarget: TARGET,
+        toTarget: PROD_TARGET,
+        siteBaseUrl: "https://www.example.com",
+      }),
+    ).rejects.toThrow("run Stage again");
+    expect(staticBucket.files.has("en/about/index.html")).toBe(false);
+  });
+
   it("copies staging objects to static bucket root and patches robots.txt", async () => {
     // First publish to populate staging.
+    await writeGeneratorArtefacts({ env: "staging", envNoindexInHtml: false });
     const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
     await gcsStaticPublisher.publishStaging({
       buildDir,
@@ -289,6 +336,7 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
       sourceBuildDir: buildDir,
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
+      siteBaseUrl: "https://example.com",
     });
     expect(summary.provider).toBe("gcp");
     expect(summary.location).toBe("gs://test-static/");

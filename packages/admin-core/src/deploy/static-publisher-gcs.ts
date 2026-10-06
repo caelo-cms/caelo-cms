@@ -111,7 +111,7 @@ export const gcsStaticPublisher: StaticPublisher = {
     };
   },
 
-  async promoteToProduction({ sourceRunId, fromTarget: _from, toTarget }) {
+  async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl }) {
     const h = await bucketHandles();
     // List everything under the staging prefix — the only files there
     // are the ones publishStaging actually changed. Server-side copy
@@ -122,6 +122,22 @@ export const gcsStaticPublisher: StaticPublisher = {
       throw new Error(
         `promoteToProduction: no staged files found under gs://${h.stagingBucketName}/${prefix}. Run Stage first.`,
       );
+    }
+    const { buildRobotsTxtWithSitemap, envNoindexBuildError, manifestBakesEnvNoindex } =
+      await import("@caelo-cms/static-generator");
+    // routing-manifest.json changes every build (runId, builtAt), so the
+    // hash-skip never leaves it out of the staging prefix.
+    const stagingManifest = h.stagingBucket.file(`${prefix}routing-manifest.json`);
+    const [stagingManifestExists] = await stagingManifest.exists();
+    const stagingManifestBody = stagingManifestExists
+      ? (await stagingManifest.download())[0].toString("utf8")
+      : null;
+    if (
+      fromTarget.robotsDefault === "noindex" &&
+      toTarget.robotsDefault === "index" &&
+      manifestBakesEnvNoindex(parseJsonOrNull(stagingManifestBody))
+    ) {
+      throw envNoindexBuildError(sourceRunId);
     }
     let copied = 0;
     await runBatched(stagedFiles, PARALLEL_COPIES, async (stagedFile) => {
@@ -138,18 +154,19 @@ export const gcsStaticPublisher: StaticPublisher = {
       });
       copied += 1;
     });
-    // Apply per-target robots.txt + routing-manifest overrides.
-    const { buildRobotsTxt } = await import("@caelo-cms/static-generator");
-    const robotsBody = buildRobotsTxt(toTarget.robotsDefault);
+    // Apply per-target robots.txt + routing-manifest overrides. After
+    // the copy loop the sitemap is live whether it changed (copied just
+    // now) or was hash-skipped as unchanged. Staging's X-Robots-Tag
+    // lives only on the staging-preview proxy response, never in object
+    // metadata, so there is no header to strip here.
+    const [sitemapLive] = await h.staticBucket.file("sitemap.xml").exists();
+    const robotsBody = buildRobotsTxtWithSitemap(toTarget.robotsDefault, siteBaseUrl, sitemapLive);
     await uploadBytes(h.staticBucket, "robots.txt", Buffer.from(robotsBody, "utf8"), "text/plain");
     copied += 1;
     // Refresh the routing manifest if staging produced one.
-    const stagingManifest = h.stagingBucket.file(`${prefix}routing-manifest.json`);
-    const [stagingManifestExists] = await stagingManifest.exists();
-    if (stagingManifestExists) {
-      const [body] = await stagingManifest.download();
+    if (stagingManifestBody !== null) {
       try {
-        const manifest = JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+        const manifest = JSON.parse(stagingManifestBody) as Record<string, unknown>;
         manifest.target = toTarget.name;
         manifest.env = toTarget.env;
         await uploadBytes(
@@ -217,6 +234,15 @@ export const gcsStaticPublisher: StaticPublisher = {
     };
   },
 };
+
+function parseJsonOrNull(raw: string | null): unknown {
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
 async function readLiveManifest(staticBucket: Bucket): Promise<BuildManifest | null> {
   const file = staticBucket.file(MANIFEST_KEY);

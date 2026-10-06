@@ -42,7 +42,7 @@ import {
   type OperationRegistry,
 } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
-import type { DeployTarget } from "@caelo-cms/static-generator";
+import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { loadStaticPublisher } from "../deploy/static-publisher.js";
@@ -588,18 +588,20 @@ export const triggerDeployOp = defineOperation({
 });
 
 /**
- * P6.2 promote — re-target the destination's `current` symlink at the
- * source target's currently-active build. No tree copy. Per-target
- * files (robots.txt, routing-manifest.json) regenerate by re-running
- * the generator if the operator wants — promote intentionally ships
- * staging's exact build to production so what staging shows is what
- * production gets.
+ * P6.2 promote ("Publish live") — ship the source target's
+ * currently-active build to the destination through the provider's
+ * StaticPublisher. Promote intentionally ships staging's exact build to
+ * production so what staging shows is what production gets: page HTML
+ * and sitemap.xml are copied verbatim, which is safe because the
+ * generator renders them env-independently (no env-level `noindex`
+ * meta; the sitemap is written for every env — seo-pass.ts).
  *
- * Caveat: the source's robots.txt was rendered with staging's
- * robotsDefault (`noindex`), so production's symlink would serve a
- * `Disallow: /` body. We patch the per-target files in the build dir
- * after the symlink swap. This is acceptable because the generator
- * never re-uses a build dir across targets — each runId is unique.
+ * Only the per-target artefacts are rewritten for the destination:
+ * robots.txt (the destination's policy, with the `Sitemap:` line built
+ * from site_defaults.site_base_url), routing-manifest.json, and — on
+ * publishers that attach response headers to a release (Firebase) —
+ * the env-level `X-Robots-Tag` header. A source build from before the
+ * env-independent SEO pass is refused with a "Stage again" next step.
  */
 export const promoteDeployOp = defineOperation({
   name: "deploy.promote",
@@ -680,11 +682,13 @@ export const promoteDeployOp = defineOperation({
       // overlay; cloud does cross-bucket server-side object copies.
       const provider = process.env.CAELO_PROVIDER;
       const publisher = await loadStaticPublisher(provider);
+      const { siteBaseUrl } = await readSeoSettings(tx);
       const summary = await publisher.promoteToProduction({
         sourceRunId: buildId,
         sourceBuildDir: fromBuildDir,
         fromTarget,
         toTarget,
+        siteBaseUrl,
       });
       await tx.execute(sql`
         UPDATE deploy_runs
@@ -766,10 +770,12 @@ export const rollbackDeployOp = defineOperation({
       // v0.2.78 — delegate to the per-provider StaticPublisher.
       const provider = process.env.CAELO_PROVIDER;
       const publisher = await loadStaticPublisher(provider);
+      const { siteBaseUrl } = await readSeoSettings(tx);
       await publisher.rollback({
         targetBuildId: buildId,
         sourceBuildDir: buildDir,
         target: rowToTarget(target),
+        siteBaseUrl,
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

@@ -7,9 +7,20 @@
  *    Open Graph, Twitter card, and JSON-LD WebPage. hreflang returns
  *    as a head contribution from the international-site plugin (#398).
  *  - sitemap.xml writer — flat list of every published non-noindex
- *    page, with lastmod/changefreq/priority. Skipped entirely when
- *    site_defaults.sitemap_enabled = false.
+ *    page, with lastmod/changefreq/priority.
  *  - robots.txt extension — adds `Sitemap:` line in production.
+ *
+ * Environment-independent on purpose: a staging build is byte-for-byte
+ * what "Publish live" ships to production (deploy.promote copies it),
+ * so nothing here may depend on the target's `robotsDefault`. The page
+ * `<meta name="robots">` carries ONLY the page's own SEO setting, and
+ * the sitemap is written for every env. Keeping staging out of search
+ * engines is the job of the per-env artefacts that promote rewrites or
+ * drops: robots.txt (`Disallow: /`, no `Sitemap:` line) and the
+ * `X-Robots-Tag: noindex` response header the staging serving layer
+ * adds (Caddy staging vhost, Firebase staging version config, the GCS
+ * staging-preview proxy). Baking the env's noindex into the HTML is
+ * what made every promoted page `noindex` in production.
  *
  * Ordering: runs AFTER `media-pass` (URLs already rewritten to
  * /_assets/...) so the og:image href resolves to the deployed asset
@@ -55,9 +66,6 @@ export async function runSeoPass(args: {
   buildDir: string;
   pages: SeoPagesContext[];
   settings: SiteSeoSettings;
-  /** `noindex` deploy target overrides per-page settings — staging
-      stays out of the sitemap entirely regardless of the page flag. */
-  envIsNoindex: boolean;
   /** v0.2.85 — per-target page emission style. Drives canonical
    *  trailing-slash decisions to match what the bucket serves. */
   pageUrlStyle?: "directory" | "no-extension";
@@ -198,7 +206,7 @@ export async function runSeoPass(args: {
       title: bundle.title,
       metaDescription: bundle.metaDescription,
       canonical,
-      noindex: bundle.noindex || args.envIsNoindex,
+      noindex: bundle.noindex,
       ogImageUrl,
       organization: args.settings.organization,
     });
@@ -208,8 +216,10 @@ export async function runSeoPass(args: {
     );
   }
 
-  // sitemap.xml — only when enabled AND env isn't noindex.
-  const sitemapEnabled = !args.envIsNoindex && args.settings.siteBaseUrl.length > 0;
+  // sitemap.xml — written for every env (see the file header): staging
+  // never references it (its robots.txt has no `Sitemap:` line and the
+  // host answers `X-Robots-Tag: noindex`), and promote ships it as-is.
+  const sitemapEnabled = args.settings.siteBaseUrl.length > 0;
   if (sitemapEnabled) {
     const entries = seoBundles
       .filter((b) => !b.noindex)
@@ -297,6 +307,8 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
 /**
  * Build a robots.txt body that includes the Sitemap: line in
  * production. Staging stays Disallow:/ regardless of sitemap state.
+ * Used by the generator AND by every publisher's promote, which
+ * rewrites robots.txt for the destination target.
  */
 export function buildRobotsTxtWithSitemap(
   robots: "index" | "noindex",

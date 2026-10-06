@@ -174,7 +174,6 @@ describe("#391 — generator/preview parity + sitemap contributions", () => {
           sitemapEnabled: true,
           organization: {},
         },
-        envIsNoindex: false,
       });
     });
     const expectedBlock = renderHeadEntries(ENTRIES);

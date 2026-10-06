@@ -36,6 +36,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { createGzip } from "node:zlib";
+import type { DeployTarget } from "@caelo-cms/static-generator";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
 const FIREBASE_HOSTING_API = "https://firebasehosting.googleapis.com/v1beta1";
@@ -124,6 +125,64 @@ export const VERSION_CONFIG_HEADERS = [
 ] as const;
 
 /**
+ * Response header that keeps a non-indexable target (staging) out of
+ * search engines at the serving layer — CMS_REQUIREMENTS §16.5, same
+ * rule as the Caddy staging vhost. The generator no longer bakes the
+ * env's `noindex` into page HTML (a staging build is what production
+ * gets), so on Firebase this version-config header is what marks a
+ * staging version non-indexable — together with its robots.txt.
+ */
+const ROBOTS_HEADER = "X-Robots-Tag";
+
+interface FirebaseHeaderEntry {
+  glob?: string;
+  regex?: string;
+  headers: Record<string, string>;
+}
+/** The slice of a Hosting version `config` this publisher inspects;
+ *  every other field (rewrites, …) passes through untouched. */
+interface FirebaseVersionConfig {
+  headers?: ReadonlyArray<FirebaseHeaderEntry>;
+  [field: string]: unknown;
+}
+
+function isRobotsHeaderEntry(entry: FirebaseHeaderEntry): boolean {
+  return Object.keys(entry.headers ?? {}).some(
+    (k) => k.toLowerCase() === ROBOTS_HEADER.toLowerCase(),
+  );
+}
+
+/**
+ * Return `config` with its env-level robots header set for `robots`:
+ * every X-Robots-Tag entry is dropped, and a `noindex` target gets one
+ * covering every path. Promote and rollback pass the SOURCE version's
+ * config through this with the DESTINATION target — that is how a
+ * staging version's `noindex` header stays out of the live release
+ * while its rewrites + cache headers carry over unchanged.
+ */
+export function withTargetRobotsHeader(
+  config: FirebaseVersionConfig,
+  robots: "index" | "noindex",
+): FirebaseVersionConfig {
+  const kept = (config.headers ?? []).filter((e) => !isRobotsHeaderEntry(e));
+  const headers =
+    robots === "noindex"
+      ? [...kept, { glob: "**", headers: { [ROBOTS_HEADER]: "noindex" } }]
+      : kept;
+  return { ...config, headers };
+}
+
+/**
+ * True when a version config carries the env-level robots header.
+ * Staging versions published before the generator stopped baking the
+ * env's `noindex` into page HTML lack it (they relied on that meta), so
+ * promote uses its absence to refuse such a legacy staging version.
+ */
+function hasRobotsHeader(config: FirebaseVersionConfig): boolean {
+  return (config.headers ?? []).some(isRobotsHeaderEntry);
+}
+
+/**
  * Gzip a file's contents + compute the sha256 of the gzipped bytes.
  * Firebase Hosting's populateFiles API keys on this hash.
  */
@@ -142,8 +201,8 @@ async function gzipAndHash(absolutePath: string): Promise<{ body: Buffer; sha256
 
 /**
  * v0.10.11 — Same as `gzipAndHash` but for in-memory bytes. Used by
- * `promoteToProduction` to patch robots.txt with the destination
- * target's robotsDefault before re-releasing on the live channel.
+ * `releaseAsTarget` to patch robots.txt with the destination target's
+ * policy before releasing on the live channel.
  */
 async function gzipAndHashBytes(input: Buffer): Promise<{ body: Buffer; sha256: string }> {
   return await new Promise((resolve, reject) => {
@@ -245,8 +304,132 @@ async function uploadGzippedFile(
   }
 }
 
+function channelIdFor(runId: string): string {
+  return `runid-${runId.replace(/[^a-z0-9-]/gi, "").toLowerCase()}`.slice(0, 63);
+}
+
+/** The version behind the latest release on a runId's preview channel. */
+async function channelHeadVersion(
+  site: string,
+  runId: string,
+  token: string,
+  op: "promote" | "rollback",
+): Promise<string> {
+  const channelId = channelIdFor(runId);
+  type ListReleasesResponse = { releases?: { name: string; version: { name: string } }[] };
+  const releases = await firebaseFetch<ListReleasesResponse>(
+    `sites/${site}/channels/${channelId}/releases`,
+    { token },
+  );
+  const head = releases.releases?.[0];
+  if (!head) {
+    throw new Error(
+      `firebase publisher ${op}: no releases found on channel ${channelId} for runId=${runId}. Run Stage first.`,
+    );
+  }
+  return head.version.name;
+}
+
+async function versionConfig(
+  site: string,
+  versionName: string,
+  token: string,
+): Promise<FirebaseVersionConfig> {
+  const versionId = versionName.split("/").pop() ?? "";
+  const version = await firebaseFetch<{ config?: FirebaseVersionConfig }>(
+    `sites/${site}/versions/${versionId}`,
+    { token },
+  );
+  return version.config ?? {};
+}
+
+/**
+ * Release a copy of `sourceVersionName` on the live channel, rewritten
+ * for `target`: same files except robots.txt (the target's policy, with
+ * the `Sitemap:` line when the version carries a sitemap.xml), same
+ * config except the env-level robots header (see
+ * withTargetRobotsHeader). Page HTML + sitemap.xml are reused by hash —
+ * the generator renders them env-independently.
+ */
+async function releaseAsTarget(args: {
+  site: string;
+  token: string;
+  sourceVersionName: string;
+  sourceConfig: FirebaseVersionConfig;
+  target: DeployTarget;
+  siteBaseUrl: string;
+}): Promise<{ versionName: string; uploadedCount: number; skippedUnchangedCount: number }> {
+  const { site, token } = args;
+  const sourceVersionId = args.sourceVersionName.split("/").pop() ?? "";
+
+  // List the source version's full file manifest. Firebase paginates —
+  // walk until exhausted. Every path is needed so the new version is
+  // identical except for the patched robots.txt.
+  type FileEntry = { path: string; hash: string; status: string };
+  type ListFilesResponse = { files?: FileEntry[]; nextPageToken?: string };
+  const allFiles: FileEntry[] = [];
+  let pageToken: string | undefined;
+  do {
+    const url = `sites/${site}/versions/${sourceVersionId}/files${pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+    const page = await firebaseFetch<ListFilesResponse>(url, { token });
+    for (const f of page.files ?? []) allFiles.push(f);
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+
+  const { buildRobotsTxtWithSitemap } = await import("@caelo-cms/static-generator");
+  const robotsBody = buildRobotsTxtWithSitemap(
+    args.target.robotsDefault,
+    args.siteBaseUrl,
+    allFiles.some((f) => f.path === "/sitemap.xml"),
+  );
+  const { body: robotsGzipped, sha256: robotsSha256 } = await gzipAndHashBytes(
+    Buffer.from(robotsBody, "utf-8"),
+  );
+  const filesMap: Record<string, string> = {};
+  for (const f of allFiles) filesMap[f.path] = f.hash;
+  filesMap["/robots.txt"] = robotsSha256;
+
+  const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
+    method: "POST",
+    body: JSON.stringify({
+      config: withTargetRobotsHeader(args.sourceConfig, args.target.robotsDefault),
+    }),
+    token,
+  });
+  const versionName = created.name;
+  const versionId = versionName.split("/").pop() ?? "";
+
+  // populateFiles — the server returns which hashes still need upload.
+  // That is at most the patched robots.txt: every other file is already
+  // content-addressed in the site's storage from the staging upload.
+  const populate = await firebaseFetch<PopulateFilesResponse>(
+    `sites/${site}/versions/${versionId}:populateFiles`,
+    { method: "POST", body: JSON.stringify({ files: filesMap }), token },
+  );
+  const required = new Set(populate.uploadRequiredHashes ?? []);
+  if (required.has(robotsSha256)) {
+    await uploadGzippedFile(populate.uploadUrl, robotsSha256, robotsGzipped, token);
+  }
+
+  await firebaseFetch(`sites/${site}/versions/${versionId}?updateMask=status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status: "FINALIZED" }),
+    token,
+  });
+  await firebaseFetch(`sites/${site}/releases?versionName=${versionName}`, {
+    method: "POST",
+    body: JSON.stringify({}),
+    token,
+  });
+  return {
+    versionName,
+    uploadedCount: required.size,
+    skippedUnchangedCount: Object.keys(filesMap).length - required.size,
+  };
+}
+
 export const firebaseHostingPublisher: StaticPublisher = {
-  async publishStaging({ buildDir, runId, target: _target }) {
+  async publishStaging({ buildDir, runId, target }) {
     const site = siteName();
     const token = await googleAuthToken();
 
@@ -282,15 +465,18 @@ export const firebaseHostingPublisher: StaticPublisher = {
         "static-publisher-firebase: CAELO_GATEWAY_SERVICE / CAELO_GATEWAY_REGION not set. The gcp-firebase Pulumi stack must set these env vars on the admin Cloud Run service.",
       );
     }
-    const versionConfig = {
-      rewrites: [
-        {
-          glob: "/api/**",
-          run: { serviceId: gatewayService, region: gatewayRegion },
-        },
-      ],
-      headers: VERSION_CONFIG_HEADERS,
-    };
+    const versionConfig = withTargetRobotsHeader(
+      {
+        rewrites: [
+          {
+            glob: "/api/**",
+            run: { serviceId: gatewayService, region: gatewayRegion },
+          },
+        ],
+        headers: VERSION_CONFIG_HEADERS,
+      },
+      target.robotsDefault,
+    );
     const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
       method: "POST",
       body: JSON.stringify({ config: versionConfig }),
@@ -332,7 +518,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
     // 6. Create a per-runId preview channel with a 7-day TTL.
     //    Firebase channel IDs must be lowercase alphanumeric +
     //    dashes; sanitise the runId UUID (already alphanumeric+dashes).
-    const channelId = `runid-${runId.replace(/[^a-z0-9-]/gi, "").toLowerCase()}`.slice(0, 63);
+    const channelId = channelIdFor(runId);
     const channel = await firebaseFetch<CreateChannelResponse>(
       `sites/${site}/channels?channelId=${channelId}`,
       {
@@ -368,142 +554,62 @@ export const firebaseHostingPublisher: StaticPublisher = {
     return summary;
   },
 
-  async promoteToProduction({ sourceRunId, fromTarget: _from, toTarget }) {
+  async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl }) {
     const site = siteName();
     const token = await googleAuthToken();
-    // Find the preview channel for the source runId + its latest
-    // release. The release's version is what we promote.
-    const channelId = `runid-${sourceRunId.replace(/[^a-z0-9-]/gi, "").toLowerCase()}`.slice(0, 63);
-    type Release = { name: string; version: { name: string } };
-    type ListReleasesResponse = { releases?: Release[] };
-    const releases = await firebaseFetch<ListReleasesResponse>(
-      `sites/${site}/channels/${channelId}/releases`,
-      { token },
-    );
-    const head = releases.releases?.[0];
-    if (!head) {
-      throw new Error(
-        `firebase publisher promote: no releases found on channel ${channelId}. Run Stage first.`,
-      );
+    // The preview channel for the source runId — its latest release's
+    // version is what we promote.
+    const sourceVersionName = await channelHeadVersion(site, sourceRunId, token, "promote");
+    const sourceConfig = await versionConfig(site, sourceVersionName, token);
+    if (
+      fromTarget.robotsDefault === "noindex" &&
+      toTarget.robotsDefault === "index" &&
+      !hasRobotsHeader(sourceConfig)
+    ) {
+      const { envNoindexBuildError } = await import("@caelo-cms/static-generator");
+      throw envNoindexBuildError(sourceRunId);
     }
-
-    // v0.10.11 — patch robots.txt with the DESTINATION target's
-    // robotsDefault before releasing. The staging version was rendered
-    // with `noindex` (Disallow: /); without this patch production
-    // serves the staging body verbatim. Self-hosted + GCS publishers
-    // do the same patch — this brings Firebase parity.
-    const stagingVersionName = head.version.name;
-    const stagingVersionId = stagingVersionName.split("/").pop() ?? "";
-
-    const { buildRobotsTxt } = await import("@caelo-cms/static-generator");
-    const patchedBody = buildRobotsTxt(toTarget.robotsDefault);
-    const { body: patchedGzipped, sha256: patchedSha256 } = await gzipAndHashBytes(
-      Buffer.from(patchedBody, "utf-8"),
-    );
-
-    // Fetch the staging version's config so the new version keeps the
-    // same rewrites (gateway /api/**) + cache headers.
-    const stagingVersion = await firebaseFetch<{ config?: unknown }>(
-      `sites/${site}/versions/${stagingVersionId}`,
-      { token },
-    );
-
-    // List the staging version's full file manifest. Firebase paginates
-    // — walk until exhausted. We need every path so the new version is
-    // identical except for the patched robots.txt.
-    type FileEntry = { path: string; hash: string; status: string };
-    type ListFilesResponse = { files?: FileEntry[]; nextPageToken?: string };
-    const allFiles: FileEntry[] = [];
-    let pageToken: string | undefined;
-    do {
-      const url = `sites/${site}/versions/${stagingVersionId}/files${pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : ""}`;
-      const page = await firebaseFetch<ListFilesResponse>(url, { token });
-      for (const f of page.files ?? []) allFiles.push(f);
-      pageToken = page.nextPageToken;
-    } while (pageToken);
-
-    // Build new files map: every file from staging, robots.txt
-    // overridden with the patched hash.
-    const filesMap: Record<string, string> = {};
-    for (const f of allFiles) filesMap[f.path] = f.hash;
-    filesMap["/robots.txt"] = patchedSha256;
-
-    // Create a new version with the same config as staging.
-    const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
-      method: "POST",
-      body: JSON.stringify({ config: stagingVersion.config ?? {} }),
+    const released = await releaseAsTarget({
+      site,
       token,
+      sourceVersionName,
+      sourceConfig,
+      target: toTarget,
+      siteBaseUrl,
     });
-    const newVersionName = created.name;
-    const newVersionId = newVersionName.split("/").pop() ?? "";
-
-    // populateFiles — server returns which hashes still need upload.
-    // For the promote case that's just the patched robots.txt (every
-    // other file is already content-addressed in the site's storage
-    // from the staging upload).
-    const populate = await firebaseFetch<PopulateFilesResponse>(
-      `sites/${site}/versions/${newVersionId}:populateFiles`,
-      { method: "POST", body: JSON.stringify({ files: filesMap }), token },
-    );
-    const required = new Set(populate.uploadRequiredHashes ?? []);
-    if (required.has(patchedSha256)) {
-      await uploadGzippedFile(populate.uploadUrl, patchedSha256, patchedGzipped, token);
-    }
-
-    // Finalize the new version + release it to the live channel.
-    await firebaseFetch(`sites/${site}/versions/${newVersionId}?updateMask=status`, {
-      method: "PATCH",
-      body: JSON.stringify({ status: "FINALIZED" }),
-      token,
-    });
-    await firebaseFetch(`sites/${site}/releases?versionName=${newVersionName}`, {
-      method: "POST",
-      body: JSON.stringify({}),
-      token,
-    });
-
     const summary: PromoteSummary = {
       provider: "gcp-firebase",
-      uploadedCount: required.size,
-      skippedUnchangedCount:
-        allFiles.length - required.size + (required.has(patchedSha256) ? 0 : 1),
-      location: newVersionName,
+      uploadedCount: released.uploadedCount,
+      skippedUnchangedCount: released.skippedUnchangedCount,
+      location: released.versionName,
       destinationBuildId: sourceRunId,
     };
     return summary;
   },
 
-  async rollback({ targetBuildId, target: _target }): Promise<PublishSummary> {
+  async rollback({ targetBuildId, target, siteBaseUrl }): Promise<PublishSummary> {
     const site = siteName();
     const token = await googleAuthToken();
-    // Look up the version-name for the source runId via the channel's
-    // release history. Same shape as promoteToProduction.
-    const channelId = `runid-${targetBuildId.replace(/[^a-z0-9-]/gi, "").toLowerCase()}`.slice(
-      0,
-      63,
-    );
-    type Release = { name: string; version: { name: string } };
-    type ListReleasesResponse = { releases?: Release[] };
-    const releases = await firebaseFetch<ListReleasesResponse>(
-      `sites/${site}/channels/${channelId}/releases`,
-      { token },
-    );
-    const head = releases.releases?.[0];
-    if (!head) {
-      throw new Error(
-        `firebase publisher rollback: no releases found on channel ${channelId} for runId=${targetBuildId}.`,
-      );
-    }
-    await firebaseFetch(`sites/${site}/releases?versionName=${head.version.name}`, {
-      method: "POST",
-      body: JSON.stringify({}),
+    // The channel for a promoted build holds the STAGING version (a
+    // promoted run's build id is the staging runId), so re-releasing it
+    // verbatim would put staging's robots.txt + noindex header live.
+    // Re-derive the release for the rollback target instead — the same
+    // path promote takes, and a no-op rewrite for a build that was
+    // staged straight to this target.
+    const sourceVersionName = await channelHeadVersion(site, targetBuildId, token, "rollback");
+    const released = await releaseAsTarget({
+      site,
       token,
+      sourceVersionName,
+      sourceConfig: await versionConfig(site, sourceVersionName, token),
+      target,
+      siteBaseUrl,
     });
     return {
       provider: "gcp-firebase",
-      uploadedCount: 0,
-      skippedUnchangedCount: 0,
-      location: head.version.name,
+      uploadedCount: released.uploadedCount,
+      skippedUnchangedCount: released.skippedUnchangedCount,
+      location: released.versionName,
     };
   },
 };

@@ -290,6 +290,33 @@ export function buildRobotsTxt(robots: "index" | "noindex"): string {
   return "User-agent: *\nAllow: /\n";
 }
 
+/**
+ * True when a build's routing-manifest.json says (or, by omission,
+ * implies) that its HTML carries the target env's `noindex` robots meta.
+ * Builds from before the env-independent SEO pass baked staging's
+ * `noindex` into every page and omit the `envNoindexInHtml: false`
+ * flag; promoting one of those to an indexable target would ship
+ * `noindex` on every production page, so promote refuses them
+ * (see {@link envNoindexBuildError}).
+ */
+export function manifestBakesEnvNoindex(manifest: unknown): boolean {
+  if (typeof manifest !== "object" || manifest === null) return true;
+  return (manifest as { envNoindexInHtml?: unknown }).envNoindexInHtml !== false;
+}
+
+/**
+ * The operator/AI-facing refusal every publisher's promote throws for a
+ * source build whose pages carry the source env's `noindex` meta.
+ */
+export function envNoindexBuildError(sourceBuildId: string): Error {
+  return new Error(
+    `staged build ${sourceBuildId} was rendered with the staging target's noindex baked into every page, ` +
+      "so publishing it would drop the live site out of search engines. " +
+      "Next step: run Stage again (deploy.trigger on the staging target) and then Publish live — " +
+      "a fresh staging build carries no environment-level noindex.",
+  );
+}
+
 export async function generateSite(args: {
   tx: TransactionRunner;
   target: DeployTarget;
@@ -748,9 +775,10 @@ export async function generateSite(args: {
   // cdn_manifest.json is always written by runMediaPass.
   fileCount += 1;
 
-  // P8 — SEO pass. Injects per-page <head> meta + canonical + JSON-LD.
-  // Emits sitemap.xml when site_defaults.sitemap_enabled is on AND the
-  // env isn't noindex (staging stays out of the sitemap regardless).
+  // P8 — SEO pass. Injects per-page <head> meta + canonical + JSON-LD
+  // and emits sitemap.xml. Env-independent so promote can ship a staging
+  // build verbatim; staging's noindex lives in robots.txt + the
+  // X-Robots-Tag header (see seo-pass.ts header).
   // Mutates each composedPages[i].html in place, same pattern as
   // runMediaPass.
   const seoSettings = await readSeoSettings(tx);
@@ -759,7 +787,6 @@ export async function generateSite(args: {
     buildDir,
     pages: composedPages,
     settings: seoSettings,
-    envIsNoindex: target.robotsDefault === "noindex",
     pageUrlStyle: target.pageUrlStyle,
   });
   if (seoResult.sitemapEmitted) fileCount += 1;
@@ -890,6 +917,8 @@ export async function generateSite(args: {
       outputPath: pageOutputPath(p.current_path, target.pageUrlStyle),
     })),
     variants: variantEntries,
+    // Promote guard — see manifestBakesEnvNoindex.
+    envNoindexInHtml: false,
   };
   await writeFile(
     join(buildDir, "routing-manifest.json"),
