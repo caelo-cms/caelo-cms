@@ -34,8 +34,10 @@ The browser chat is one consumer of the chat-runner; `caelo_chat` is another. Th
 claude mcp add caelo \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=mcp_<32-bytes-hex> \
-  -- bunx @caelo-cms/mcp-server
+  -- bunx @caelo-cms/mcp-server@<your Caelo version>
 ```
+
+The snippet pins `@caelo-cms/mcp-server` to your install's release: `bunx` caches an unversioned package indefinitely, so after upgrading Caelo, generate a new command at `/security/mcp` (the shim and the admin ship in lockstep).
 
 ### The tool
 
@@ -66,8 +68,10 @@ Mint a token with scope **`admin`** at `/security/mcp`, then:
 claude mcp add caelo-admin \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=mcp_<32-bytes-hex> \
-  -- bunx --package @caelo-cms/mcp-server caelo-admin-mcp
+  -- bunx --package @caelo-cms/mcp-server@<your Caelo version> caelo-admin-mcp
 ```
+
+On connect the server sends MCP `instructions`, which Claude Code and other clients put into the agent's context: open a session with `caelo_open_session`, load `caelo_get_context`, then load the skills marked ALWAYS APPLIES. No extra prompt is needed.
 
 (`caelo-mcp-server admin` is the same server; the separate binary keeps the snippet flag-free.)
 
