@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.10.28
+
+### Features
+- 2d06ef39 reach IAP-protected admins via a service-account JWT (#37) (#546)
+
+### Fixes
+- b910c4ee model check sees dated-only models; clearer agent tasks (#545)
+
+### Chores
+- cdb727c4 update model catalog to GPT-5.5 (#544)
+- 35b42101 bump the minor-and-patch group across 1 directory with 17 updates (#540)
+- c0d430d3 bump the minor-and-patch group across 2 directories with 1 update (#538)
+- ddf0131a bump oras-project/setup-oras (#539)
+
 ## v0.10.27
 
 ### Features
