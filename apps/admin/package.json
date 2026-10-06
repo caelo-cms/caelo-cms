@@ -25,12 +25,12 @@
     "@caelo-cms/redeploy-orchestrator": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
     "@google-cloud/storage": "^8.2.0",
-    "bits-ui": "^2.19.3",
+    "bits-ui": "^2.19.4",
     "clsx": "^2.1.1",
     "colorjs.io": "^0.7.1",
     "dompurify": "^3",
     "file-type": "^22",
-    "html2canvas-pro": "2.4.5",
+    "html2canvas-pro": "2.5.0",
     "htmlparser2": "12.0.0",
     "lucide-svelte": "^1.0.1",
     "marked": "^18",
@@ -54,7 +54,7 @@
     "svelte-adapter-bun": "1.0.1",
     "svelte-check": "4.7.6",
     "tailwindcss": "^4.3.3",
-    "vite": "8.3.1"
+    "vite": "8.3.2"
   },
   "optionalDependencies": {
     "@rollup/rollup-darwin-arm64": "^4",

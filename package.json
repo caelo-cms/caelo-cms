@@ -34,12 +34,12 @@
     "e2e-livedit": "bun run --filter '@caelo-cms/admin' e2e-livedit"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "0.129.0",
-    "@biomejs/biome": "2.5.14",
+    "@anthropic-ai/sdk": "0.131.0",
+    "@biomejs/biome": "2.5.15",
     "@playwright/mcp": "0.0.83",
     "@types/bun": "1.4.2",
     "js-yaml": "5.4.2",
-    "knip": "6.38.0",
+    "knip": "6.39.0",
     "license-checker-rseidelsohn": "5.0.1",
     "madge": "8.0.0",
     "typescript": "6.0.3",
