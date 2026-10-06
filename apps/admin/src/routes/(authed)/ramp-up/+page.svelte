@@ -2,7 +2,7 @@
   // SPDX-License-Identifier: MPL-2.0
   import { onDestroy } from "svelte";
   import { invalidate } from "$app/navigation";
-  import { page } from "$app/stores";
+  import { page } from '$app/state';
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -61,8 +61,15 @@
 
   <!-- Stepper -->
   <ol class="flex items-center gap-2 text-xs">
-    {#each [{ k: "preferences", label: "0. Preferences" }, { k: "welcome", label: "1. URL" }, { k: "crawling", label: "2. Crawling" }, { k: "review", label: "3. Review" }, { k: "done", label: "4. Done" }] as s}
-      {@const active = data.step === s.k || (s.k === "done" && form?.composed)}
+    {#each [
+      { k: "preferences", label: "0. Preferences" },
+      { k: "welcome", label: "1. URL" },
+      { k: "crawling", label: "2. Crawling" },
+      { k: "review", label: "3. Review" },
+      { k: "done", label: "4. Done" }
+    ] as s}
+      {@const active = data.step === s.k || s.k === "done" && form?.composed}
+
       <li class="flex items-center gap-2">
         <span class={active ? "rounded-full bg-primary px-3 py-1 text-primary-foreground" : "rounded-full border px-3 py-1 text-muted-foreground"}>
           {s.label}
@@ -108,8 +115,17 @@
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <form method="post" action="?/savePreferences" class="space-y-4">
-          <input type="hidden" name="_csrf" value={$page.data.csrfToken} />
+        <form
+          method="post"
+          action="?/savePreferences"
+          class="space-y-4"
+        >
+          <input
+            type="hidden"
+            name="_csrf"
+            value={page.data.csrfToken}
+          />
+
           <div class="space-y-2">
             <Label for="purpose">Site purpose</Label>
             <textarea
@@ -167,7 +183,12 @@
       </CardHeader>
       <CardContent>
         <form method="post" action="?/start" class="space-y-4">
-          <input type="hidden" name="_csrf" value={$page.data.csrfToken} />
+          <input
+            type="hidden"
+            name="_csrf"
+            value={page.data.csrfToken}
+          />
+
           <div class="space-y-2">
             <Label for="sourceUrl">Source URL</Label>
             <Input
@@ -245,7 +266,12 @@
           </div>
         {/each}
         <form method="post" action="?/compose" class="pt-2">
-          <input type="hidden" name="_csrf" value={$page.data.csrfToken} />
+          <input
+            type="hidden"
+            name="_csrf"
+            value={page.data.csrfToken}
+          />
+
           <input type="hidden" name="runId" value={data.run.id} />
           <Button type="submit">Synthesise site →</Button>
         </form>

@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: MPL-2.0 -->
 <script lang="ts">
   /**
    * issue #163 / #375 — design-draft gallery. Site-scope Genesis
@@ -8,16 +7,23 @@
    * see +page.server.ts for the full stance).
    */
   import { enhance } from "$app/forms";
-  import { page } from "$app/stores";
+  import { page } from '$app/state';
   import { Button } from "#lib/components/ui/button/index.js";
   import type { PageData } from "./$types";
 
   let { data }: { data: PageData } = $props();
 
-  const csrf = $derived($page.data.csrfToken ?? "");
+  const csrf = $derived(page.data.csrfToken ?? "");
 </script>
 
-{#snippet draftMeta(draft: { direction: string; rationale: string; status: string; id: string })}
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+
+{#snippet draftMeta(draft: { 
+  direction: string;
+  rationale: string;
+  status: string;
+  id: string
+ })}
   <div class="flex items-start justify-between gap-4 p-4">
     <div class="min-w-0">
       <div class="font-medium">
