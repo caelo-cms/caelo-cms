@@ -94,10 +94,13 @@ RUN bun install
 # via npm in /tmp (so npm doesn't see the workspace:* protocol). Then
 # copy each into apps/admin/node_modules. xargs avoids the shell variable
 # expansion fragility that bit a previous iteration.
+# musl variants are skipped: builder and runtime are Debian (glibc), and
+# npm >= 10 rejects a libc mismatch with EBADPLATFORM instead of
+# installing an unusable binding.
 RUN set -e && \
     mkdir -p /tmp/native-bin && cd /tmp/native-bin && \
     grep -oE '"[a-zA-Z0-9@/_.-]+-linux-x64(-gnu|-musl)?@[^"]+' /repo/bun.lock \
-      | sed 's/^"//' | sort -u > /tmp/native-list && \
+      | sed 's/^"//' | grep -v -- '-musl@' | sort -u > /tmp/native-list && \
     test -s /tmp/native-list || (echo "no linux-x64 native deps found" && exit 1) && \
     echo "Installing native bindings:" && cat /tmp/native-list && \
     xargs -a /tmp/native-list npm install --no-save --no-package-lock && \
