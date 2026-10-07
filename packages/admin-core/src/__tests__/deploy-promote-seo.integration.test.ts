@@ -31,6 +31,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
+import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -40,6 +41,11 @@ let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let testRoot: string;
 let prevSkipServeCheck: string | undefined;
+let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
+
+// #551 — site_base_url has no default; promote reads it for the
+// production robots.txt `Sitemap:` line, so the test pins it.
+const SITE_BASE_URL = "https://example.com";
 
 const HUMAN: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -69,23 +75,6 @@ async function wipe(): Promise<void> {
       await tx`DELETE FROM modules WHERE slug = ${MOD_SLUG}`;
       await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL_SLUG})`;
       await tx`DELETE FROM templates WHERE slug = ${TPL_SLUG}`;
-    });
-  } finally {
-    await sql.end();
-  }
-}
-
-async function siteBaseUrl(): Promise<string> {
-  const sql = new SQL(ADMIN_URL!);
-  try {
-    return await sql.begin(async (tx) => {
-      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      const rows = (await tx`SELECT site_base_url FROM site_defaults WHERE id = 1`) as {
-        site_base_url: string;
-      }[];
-      const base = rows[0]?.site_base_url;
-      if (!base) throw new Error("site_defaults row missing — run migrations");
-      return base;
     });
   } finally {
     await sql.end();
@@ -133,6 +122,7 @@ async function seedSite(): Promise<void> {
 
 beforeAll(async () => {
   await wipe();
+  restoreSiteBaseUrl = await pinSiteBaseUrl(ADMIN_URL!, SITE_BASE_URL);
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
@@ -148,13 +138,13 @@ afterAll(async () => {
   if (prevSkipServeCheck === undefined) delete process.env.CAELO_SKIP_STAGING_SERVE_CHECK;
   else process.env.CAELO_SKIP_STAGING_SERVE_CHECK = prevSkipServeCheck;
   await wipe();
+  await restoreSiteBaseUrl?.();
   await rm(testRoot, { recursive: true, force: true });
   await adapter.close();
 });
 
 describe("deploy.promote ships production SEO semantics", () => {
   it("staging build → Publish live: no env noindex, sitemap + Sitemap line, per-page noindex kept", async () => {
-    const base = (await siteBaseUrl()).replace(/\/$/, "");
     const staged = await ok<{ buildId: string }>("deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
@@ -194,7 +184,7 @@ describe("deploy.promote ships production SEO semantics", () => {
     const liveRobots = await readFile(join(production, "robots.txt"), "utf8");
     expect(liveRobots).toContain("Allow: /");
     expect(liveRobots).not.toContain("Disallow: /");
-    expect(liveRobots).toContain(`Sitemap: ${base}/sitemap.xml`);
+    expect(liveRobots).toContain(`Sitemap: ${SITE_BASE_URL}/sitemap.xml`);
 
     const manifest = JSON.parse(
       await readFile(join(production, "routing-manifest.json"), "utf8"),
