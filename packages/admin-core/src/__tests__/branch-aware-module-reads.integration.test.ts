@@ -162,6 +162,27 @@ describe("branch-effective module reads (read_content / edit_content / edit_modu
 
     // Main is untouched — branch isolation still holds for main readers.
     expect(await getHtml(SYSTEM, moduleId)).toBe(MAIN_HTML);
+
+    // A second chat never sees this chat's pending edit: the overlay is
+    // keyed on the caller's own branch only (CLAUDE.md §2).
+    const other = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+      title: `${SESSION_PREFIX}read-other`,
+    });
+    if (!other.ok) throw new Error("second session");
+    const otherCtx: ExecutionContext = {
+      ...aiCtx,
+      requestId: "branch-reads-read-other",
+      chatBranchId: (other.value as { chatBranchId: string }).chatBranchId,
+      chatTaskId: (other.value as { chatSessionId: string }).chatSessionId,
+    };
+    expect(await getHtml(otherCtx, moduleId)).toBe(MAIN_HTML);
+    const otherListed = await execute(registry, adapter, otherCtx, "modules.list", {});
+    if (!otherListed.ok) throw new Error("modules.list (other chat)");
+    expect(
+      (otherListed.value as { modules: { id: string; html: string }[] }).modules.find(
+        (m) => m.id === moduleId,
+      )?.html,
+    ).toBe(MAIN_HTML);
   });
 
   it("edit_content accepts the sha returned by the previous edit_content and chains on the branch body", async () => {
