@@ -126,6 +126,7 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   "domains.list_pending": PENDING_QUEUE,
   "experiments.list_pending": PENDING_QUEUE,
   "plugins.list_pending": PENDING_QUEUE,
+  "plugins.list_pending_actions": PENDING_QUEUE,
   "imports.list_pending_proposals": PENDING_QUEUE,
   "gateway.list_pending_rate_limit_proposals": PENDING_QUEUE,
   "owner_settings.list_pending": PENDING_QUEUE,
@@ -446,7 +447,4 @@ export const HUMAN_ONLY_PENDING: Readonly<Record<string, string>> = {
   "plugins.get_approved_installation": `TODO(${PARALLEL_PROPOSE_PR}): plugin installation lifecycle`,
   "plugins.finalize_installation": `TODO(${PARALLEL_PROPOSE_PR}): plugin installation lifecycle`,
   "plugins.list_installations": `TODO(${PARALLEL_PROPOSE_PR}): plugin installation lifecycle`,
-  "plugins.revoke_capability": `TODO(${PARALLEL_PROPOSE_PR}): propose capability revoke`,
-  "plugins.reject": `TODO(${PARALLEL_PROPOSE_PR}): plugin lifecycle`,
-  "plugins.revalidate": `TODO(${PARALLEL_PROPOSE_PR}): plugin lifecycle`,
 };
