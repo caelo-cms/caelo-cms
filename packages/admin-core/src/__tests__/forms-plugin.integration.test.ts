@@ -252,6 +252,51 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     ).toBe("archived");
   });
 
+  it("set_submission_status (the AI tool's op) changes many rows and validates input", async () => {
+    await bootstrapForms();
+    const sys = { origin: "system" as const, actorId: "00000000-0000-0000-0000-000000000000" };
+    await runPluginOperation({
+      invocation: sys,
+      pluginSlug: "forms",
+      operationName: "create_form",
+      args: { slug: FORM_SLUG, displayName: "C", schemaJson: {} },
+    });
+    const ids: string[] = [];
+    for (const n of [1, 2]) {
+      const sub = await runPluginOperation({
+        invocation: sys,
+        pluginSlug: "forms",
+        operationName: "submit",
+        args: { formSlug: FORM_SLUG, data: { n } },
+      });
+      if (!sub.ok) throw new Error("submit failed");
+      ids.push((sub.value as { submissionId: string }).submissionId);
+    }
+    const r = await runPluginOperation({
+      invocation: sys,
+      pluginSlug: "forms",
+      operationName: "set_submission_status",
+      args: { submissionIds: ids, status: "archived" },
+    });
+    expect(r.ok).toBe(true);
+    const archived = await runPluginOperation({
+      invocation: sys,
+      pluginSlug: "forms",
+      operationName: "list_submissions",
+      args: { status: "archived" },
+    });
+    if (!archived.ok) throw new Error("list failed");
+    expect((archived.value as { submissions: unknown[] }).submissions).toHaveLength(2);
+
+    const bad = await runPluginOperation({
+      invocation: sys,
+      pluginSlug: "forms",
+      operationName: "set_submission_status",
+      args: { submissionIds: ids, status: "deleted" },
+    });
+    expect(bad.ok).toBe(false);
+  });
+
   it("submit refuses unknown form slug", async () => {
     await bootstrapForms();
     const r = await handleRequest(

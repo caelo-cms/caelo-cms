@@ -11,6 +11,14 @@
  *   subscribers   — email_hash, confirm_token, confirmed_at, unsub_token, unsubscribed_at
  *   campaigns     — slug, subject, body_html, status (draft/queued/sending/sent), sent_at
  *   sends         — campaign_id, subscriber_id, sent_at, status (pending/sent/failed)
+ *
+ * AI tools (the agent's path to everything the owner panel does):
+ *   list_newsletter_campaigns — campaigns + confirmed-subscriber count. Read.
+ *   draft_newsletter_campaign — AI-drafted campaign saved as `draft`. Direct:
+ *                               nothing leaves the site until a send.
+ *   send_newsletter_campaign  — queues a draft to every confirmed subscriber.
+ *                               APPROVAL-GATED (§11.A): an email that went
+ *                               out cannot be recalled.
  */
 
 import {
@@ -21,7 +29,17 @@ import {
   postPluginJson,
   setStatus,
 } from "@caelo-cms/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { defineComponent, definePlugin, type PluginContextTier1, z } from "@caelo-cms/plugin-sdk";
+
+const draftCampaignArgs = z
+  .object({
+    slug: z.string().min(1).max(120),
+    subject: z.string().min(1).max(300),
+    brief: z.string().min(1).max(8000),
+  })
+  .strict();
+
+const sendCampaignArgs = z.object({ campaignId: z.string().uuid() }).strict();
 
 function hashEmail(email: string): string {
   // Deterministic non-cryptographic hash for de-dupe + analytics. Email lookups
@@ -69,7 +87,7 @@ export default definePlugin<PluginContextTier1>({
       sent_at: "timestamp_nullable",
     },
   },
-  requestedCapabilities: ["ai_provider", "email", "background_workers"],
+  requestedCapabilities: ["ai_provider", "email", "background_workers", "chat_runner_tools"],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
   publicOperations: ["subscribe", "confirm", "unsubscribe"],
@@ -131,8 +149,39 @@ export default definePlugin<PluginContextTier1>({
       return { unsubscribed: matches[0].id };
     },
 
+    /** Campaigns (newest first) + how many confirmed subscribers a send reaches. */
+    list_campaigns: async (ctx, _args) => {
+      const campaigns = await ctx.query.list<
+        "campaigns",
+        {
+          id: string;
+          slug: string;
+          subject: string;
+          status: string;
+          created_at: string;
+          sent_at: string | null;
+        }
+      >("campaigns", { orderBy: "created_at", orderDir: "desc", limit: 100 });
+      const subs = await ctx.query.list<
+        "subscribers",
+        { confirmed_at: string | null; unsubscribed_at: string | null }
+      >("subscribers", { limit: 1000 });
+      const subscriberCount = subs.filter((s) => s.confirmed_at && !s.unsubscribed_at).length;
+      return {
+        campaigns: campaigns.map(({ id, slug, subject, status, created_at, sent_at }) => ({
+          id,
+          slug,
+          subject,
+          status,
+          created_at,
+          sent_at,
+        })),
+        subscriberCount,
+      };
+    },
+
     draft_campaign: async (ctx, args) => {
-      const input = args as { slug: string; subject: string; brief: string };
+      const input = draftCampaignArgs.parse(args);
       if (!ctx.ai) throw new Error("draft_campaign: ai_provider capability required");
       const completion = await ctx.ai.complete({
         system:
@@ -150,12 +199,19 @@ export default definePlugin<PluginContextTier1>({
     },
 
     send_campaign: async (ctx, args) => {
-      const input = args as { campaignId: string };
+      const input = sendCampaignArgs.parse(args);
       const campaign = await ctx.query.list<"campaigns", { id: string; status: string }>(
         "campaigns",
         { id: input.campaignId, limit: 1 },
       );
       if (!campaign[0]) throw new Error("send_campaign: campaign not found");
+      // Only a draft is sendable: re-queuing a queued/sent campaign would
+      // email every subscriber a second time, and that cannot be recalled.
+      if (campaign[0].status !== "draft") {
+        throw new Error(
+          `send_campaign: campaign is '${campaign[0].status}', not 'draft' — it was already sent or queued`,
+        );
+      }
       const subs = await ctx.query.list<
         "subscribers",
         { id: string; confirmed_at: string | null; unsubscribed_at: string | null }
@@ -221,6 +277,48 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   workers: [{ name: "drain_sends", cron: "0 * * * * *", operationName: "_drain_sends" }],
+  tools: [
+    {
+      name: "list_newsletter_campaigns",
+      description:
+        "List newsletter campaigns (id, slug, subject, status draft/queued/sending/sent, dates) and how many confirmed subscribers a send would reach. " +
+        "Use before sending, to find a draft's id, or when the operator asks what went out.",
+      operationName: "list_campaigns",
+      inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
+    },
+    {
+      name: "draft_newsletter_campaign",
+      description:
+        "Draft a newsletter campaign from a brief: the newsletter's own writer produces the HTML and it is saved as a DRAFT — nothing is sent. " +
+        "Pass a unique slug, the subject line, and a brief with the content, tone and call to action. Send it later with send_newsletter_campaign.",
+      operationName: "draft_campaign",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["slug", "subject", "brief"],
+        properties: {
+          slug: { type: "string", minLength: 1, maxLength: 120 },
+          subject: { type: "string", minLength: 1, maxLength: 300 },
+          brief: { type: "string", minLength: 1, maxLength: 8000 },
+        },
+      },
+    },
+    {
+      name: "send_newsletter_campaign",
+      description:
+        "Send a DRAFT newsletter campaign to every confirmed subscriber. " +
+        "APPROVAL-GATED: this PAUSES for the operator's Approve in the chat before anything is queued — emails that went out cannot be recalled. " +
+        "Before calling, tell the operator the subject and the recipient count (list_newsletter_campaigns). Do not claim it was sent until approved. Only drafts can be sent.",
+      operationName: "send_campaign",
+      approvalMode: "user-approval",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["campaignId"],
+        properties: { campaignId: { type: "string", format: "uuid" } },
+      },
+    },
+  ],
   /**
    * Web Component `<caelo-newsletter-form>` — visitor signup form.
    *

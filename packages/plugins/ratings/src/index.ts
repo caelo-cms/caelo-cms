@@ -14,7 +14,13 @@
  * Operations:
  *   submit            — PUBLIC. Visitor scores 1-5; ON CONFLICT updates.
  *   list_aggregates   — PUBLIC read. Used by static-render + delta-fetch.
- *   _refresh          — INTERNAL worker. Recomputes aggregates from raw votes.
+ *   _refresh          — worker (every 5 min) + owner panel + AI tool.
+ *                       Recomputes aggregates from raw votes; idempotent.
+ *
+ * AI tools:
+ *   list_rating_aggregates   — per-page count + average. Read.
+ *   refresh_rating_aggregates — recompute now instead of waiting for the
+ *                               worker. Direct: idempotent, derived data only.
  */
 
 import { KIT_CSS, postPluginJson } from "@caelo-cms/plugin-component-kit";
@@ -53,7 +59,7 @@ export default definePlugin<PluginContextTier1>({
       updated_at: "timestamp",
     },
   },
-  requestedCapabilities: ["background_workers"],
+  requestedCapabilities: ["background_workers", "chat_runner_tools"],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
   publicOperations: ["submit", "list_aggregates"],
@@ -140,6 +146,27 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   workers: [{ name: "refresh_aggregates", cron: "0 0/5 * * * *", operationName: "_refresh" }],
+  tools: [
+    {
+      name: "list_rating_aggregates",
+      description:
+        "Read visitor star ratings per page: vote count, sum and average (average is ×100, so 437 = 4.37 stars). Optional pageId to scope to one page. " +
+        "Aggregates are recomputed every 5 minutes; call refresh_rating_aggregates first if the operator needs the very latest votes.",
+      operationName: "list_aggregates",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: { pageId: { type: "string" } },
+      },
+    },
+    {
+      name: "refresh_rating_aggregates",
+      description:
+        "Recompute the per-page rating aggregates from the raw votes now, instead of waiting for the 5-minute refresh. Safe to repeat; it only rebuilds derived numbers.",
+      operationName: "_refresh",
+      inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
+    },
+  ],
   /**
    * Web Component `<caelo-rating>` — five-star rating widget. Posts the
    * vote to /api/plugin/ratings/submit and re-renders the running average.

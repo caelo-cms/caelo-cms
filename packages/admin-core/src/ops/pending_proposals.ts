@@ -94,7 +94,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
           FROM url_migration_pending_actions WHERE status = 'pending'
         UNION ALL
         SELECT 'plugins', kind, id::text, proposed_by::text, created_at,
-               'uninstall ' || COALESCE(preview->>'slug', 'plugin'),
+               replace(kind, '_', ' ') || ' ' || COALESCE(preview->>'slug', 'plugin'),
                chat_session_id::text
           FROM plugin_pending_actions WHERE status = 'pending'
         UNION ALL

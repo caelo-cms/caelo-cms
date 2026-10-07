@@ -18,6 +18,7 @@ import authPlugin from "@caelo-cms/plugin-auth";
 import commentsPlugin from "@caelo-cms/plugin-comments";
 import {
   bootstrap as bootstrapPluginHost,
+  pluginToolsRegistry,
   resetPluginHost,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
@@ -286,6 +287,64 @@ describe("Newsletter plugin", () => {
     expect(drain.ok).toBe(true);
     if (!drain.ok) return;
     expect((drain.value as { sent: number }).sent).toBe(1);
+
+    // list_campaigns — the AI tool's (and the owner panel's) read.
+    const listed = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "newsletter",
+      operationName: "list_campaigns",
+      args: {},
+    });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const v = listed.value as {
+      campaigns: Array<{ id: string; status: string; body_html?: string }>;
+      subscriberCount: number;
+    };
+    expect(v.subscriberCount).toBe(1);
+    expect(v.campaigns.find((c) => c.id === campaignId)?.status).toBe("queued");
+    expect(v.campaigns[0]?.body_html).toBeUndefined();
+
+    // Only a draft is sendable: a second send would email everyone again.
+    const resend = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "newsletter",
+      operationName: "send_campaign",
+      args: { campaignId },
+    });
+    expect(resend.ok).toBe(false);
+    if (resend.ok) return;
+    expect(resend.error.message).toContain("not 'draft'");
+  });
+
+  it("send_campaign refuses a malformed campaignId before any write", async () => {
+    await bootstrapAll();
+    const r = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "newsletter",
+      operationName: "send_campaign",
+      args: { campaignId: "not-a-uuid" },
+    });
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe("Owner-panel actions are AI tools too", () => {
+  it("newsletter + ratings register their tools; only the send is approval-gated", async () => {
+    await bootstrapAll();
+    const byName = new Map(pluginToolsRegistry.list().map((t) => [t.spec.name, t]));
+    for (const name of [
+      "list_newsletter_campaigns",
+      "draft_newsletter_campaign",
+      "send_newsletter_campaign",
+      "list_rating_aggregates",
+      "refresh_rating_aggregates",
+    ]) {
+      expect(byName.has(name)).toBe(true);
+    }
+    expect(byName.get("send_newsletter_campaign")?.spec.approvalMode).toBe("user-approval");
+    expect(byName.get("draft_newsletter_campaign")?.spec.approvalMode).toBeUndefined();
+    expect(byName.get("refresh_rating_aggregates")?.spec.operationName).toBe("_refresh");
   });
 });
 
