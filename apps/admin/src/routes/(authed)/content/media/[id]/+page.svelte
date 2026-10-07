@@ -109,7 +109,7 @@
               class="max-h-[60vh] w-auto"
               loading="eager"
             />
-          {:else if asset.mime === "image/svg+xml"}
+          {:else if asset.mime === "image/svg+xml" || asset.mime === "image/x-icon"}
             <img
               src={previewUrl("orig")}
               alt={asset.alt}

@@ -105,7 +105,7 @@
         {/if}
         <Input
           type="file"
-          accept="image/jpeg,image/png,image/webp,image/avif,image/gif,image/svg+xml,application/pdf,video/mp4"
+          accept="image/jpeg,image/png,image/webp,image/avif,image/gif,image/svg+xml,image/x-icon,image/vnd.microsoft.icon,.ico,application/pdf,video/mp4"
           onchange={(e) => pick((e.currentTarget as HTMLInputElement).files)}
         />
       </div>

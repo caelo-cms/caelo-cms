@@ -68,6 +68,14 @@ describe("media size caps + allowlist", () => {
     }
   });
 
+  it("allows .ico under the single canonical image/x-icon, capped at 1 MiB", () => {
+    const allowed: readonly string[] = MEDIA_ALLOWED_MIMES;
+    expect(allowed).toContain("image/x-icon");
+    // The IANA alias is normalised on the way in, never stored.
+    expect(allowed).not.toContain("image/vnd.microsoft.icon");
+    expect(MEDIA_SIZE_CAPS["image/x-icon"]).toBe(1024 * 1024);
+  });
+
   it("variant widths cover the non-orig tags only", () => {
     for (const t of MEDIA_VARIANT_TAGS) {
       if (t === "orig") continue;

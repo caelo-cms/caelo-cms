@@ -6,16 +6,12 @@ import {
   CHAT_IMAGE_MIMES,
   CHAT_MAX_ATTACHMENT_BYTES,
   type ExecutionContext,
-  MEDIA_ALLOWED_MIMES,
   MEDIA_HARD_LIMIT_BYTES,
   MEDIA_SIZE_CAPS,
-  type MediaMime,
 } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
-import { fileTypeFromBuffer } from "file-type";
+import { sniffUploadMime } from "./media-sniff.js";
 import { getQueryContext } from "./query.js";
-
-const ALLOWED_SET = new Set<string>(MEDIA_ALLOWED_MIMES);
 
 /** Validate an upload and persist it through the media Query API, attributed to ctx. */
 export async function uploadMedia(
@@ -88,25 +84,12 @@ export async function uploadMedia(
   }
 
   const buf = new Uint8Array(await file.arrayBuffer());
-  // Sniff MIME server-side (declared types are user-controlled).
-  // file-type returns undefined for SVG (it's text); accept the declared
-  // type only when it's image/svg+xml AND the body looks like XML.
-  const sniffed = await fileTypeFromBuffer(buf);
-  let mime: MediaMime | null = null;
-  if (sniffed && ALLOWED_SET.has(sniffed.mime)) {
-    mime = sniffed.mime as MediaMime;
-  } else if (
-    !sniffed &&
-    file.type === "image/svg+xml" &&
-    new TextDecoder().decode(buf.subarray(0, 256)).trimStart().startsWith("<")
-  ) {
-    mime = "image/svg+xml";
-  }
+  const { mime, sniffedMime } = await sniffUploadMime(buf, file.type);
   if (
     !mime ||
     (chatImage && !CHAT_IMAGE_MIMES.includes(mime as (typeof CHAT_IMAGE_MIMES)[number]))
   ) {
-    throw error(415, `unsupported media type${sniffed ? `: ${sniffed.mime}` : ""}`);
+    throw error(415, `unsupported media type${sniffedMime ? `: ${sniffedMime}` : ""}`);
   }
   if (file.size > MEDIA_SIZE_CAPS[mime]) {
     throw error(413, `payload too large for ${mime}: max ${MEDIA_SIZE_CAPS[mime]} bytes`);

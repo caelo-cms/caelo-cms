@@ -10,7 +10,7 @@
  * preserved. Quality fixed at 80 — high enough to avoid visible
  * artefacts, low enough to halve original bytes on most photos.
  *
- * Non-image kinds (PDF, MP4, SVG) emit only `orig`. SVG is sanitised
+ * Non-raster kinds (PDF, MP4, SVG, ICO, fonts) emit only `orig`. SVG is sanitised
  * before persistence to drop `<script>` and event handlers.
  */
 
@@ -113,7 +113,9 @@ export async function runMediaPipeline(
   }
 
   if (!IMAGE_RASTER_MIMES.has(mime)) {
-    // PDF / MP4 / unknown: store the original as-is, no derived variants.
+    // PDF / MP4 / ICO / fonts: store the original as-is, no derived
+    // variants. ICO stays out of sharp entirely (libvips cannot read the
+    // container, and a favicon must ship its own embedded sizes intact).
     const ext = pickExtension(mime);
     return {
       variants: [
@@ -303,6 +305,8 @@ function pickExtension(mime: MediaMime): string {
       return "gif";
     case "image/svg+xml":
       return "svg";
+    case "image/x-icon":
+      return "ico";
     case "application/pdf":
       return "pdf";
     case "video/mp4":

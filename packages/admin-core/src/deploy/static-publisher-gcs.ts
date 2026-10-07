@@ -454,6 +454,8 @@ function contentTypeFor(key: string): string {
       return "application/json; charset=utf-8";
     case ".svg":
       return "image/svg+xml";
+    case ".ico":
+      return "image/x-icon";
     case ".png":
       return "image/png";
     case ".jpg":

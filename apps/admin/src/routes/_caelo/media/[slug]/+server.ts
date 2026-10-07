@@ -85,6 +85,8 @@ function contentTypeFor(format: string): string {
       return "image/gif";
     case "svg":
       return "image/svg+xml";
+    case "ico":
+      return "image/x-icon";
     case "pdf":
       return "application/pdf";
     case "mp4":

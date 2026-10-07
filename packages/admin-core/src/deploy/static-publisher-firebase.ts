@@ -150,6 +150,13 @@ export const FIREBASE_SHORT_CACHE_PATH_PATTERN =
  * slug-addressed media under `/_assets/<slug>…` (stable URL, bytes
  * replaceable — must not be immutable) and the `/api/**` rewrite to
  * the gateway (its own headers stay authoritative).
+ *
+ * A third entry pins `Content-Type: image/x-icon` on `.ico` files (theme
+ * favicons): the one icon MIME the media library stores and the
+ * `<link rel="icon" type>` declares, instead of whatever name Hosting's
+ * extension table picks. It sets no Cache-Control, so overlapping a
+ * Cache-Control entry on the path never makes two entries set the same
+ * header.
  */
 export const VERSION_CONFIG_HEADERS = [
   {
@@ -159,6 +166,10 @@ export const VERSION_CONFIG_HEADERS = [
   {
     regex: FIREBASE_SHORT_CACHE_PATH_PATTERN,
     headers: { "Cache-Control": HTML_CACHE_CONTROL },
+  },
+  {
+    regex: "\\.ico$",
+    headers: { "Content-Type": "image/x-icon" },
   },
 ] as const;
 

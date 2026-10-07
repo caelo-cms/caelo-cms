@@ -163,7 +163,7 @@
                 title={`${a.originalName} — ${a.alt || "(no alt)"}`}
               >
                 <div class="aspect-square bg-muted/50">
-                  {#if RASTER.has(a.mime) || a.mime === "image/svg+xml"}
+                  {#if RASTER.has(a.mime) || a.mime === "image/svg+xml" || a.mime === "image/x-icon"}
                     <img
                       src={buildMediaUrl(a.slug, thumbVariant(a))}
                       alt={a.alt}

@@ -24,6 +24,10 @@
 		file
 	}
 	header @content_hashed Cache-Control "public, max-age=31536000, immutable"
+	# Favicons ship as the one icon MIME the media library stores and the
+	# page's <link rel="icon" type> declares, not the host mime.types name.
+	@ico path *.ico
+	header @ico Content-Type "image/x-icon"
 	encode gzip
 	try_files {path} {path}/index.html
 	file_server

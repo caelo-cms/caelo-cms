@@ -86,16 +86,19 @@ describe("VERSION_CONFIG_HEADERS — Firebase Hosting REST API shape", () => {
  * here are all `regex` (RE2); the patterns stay inside the
  * RE2 ∩ ECMAScript subset, so `RegExp` gives the same answer.
  */
-function cacheControlsFor(path: string): string[] {
+function headerValuesFor(path: string, header: string): string[] {
   const out: string[] = [];
   for (const entry of VERSION_CONFIG_HEADERS) {
     const { regex } = entry as { regex?: string };
     if (regex === undefined) throw new Error("glob entries are not evaluated by this helper");
-    if (new RegExp(regex).test(path)) {
-      out.push((entry.headers as Record<string, string>)["Cache-Control"] ?? "");
-    }
+    const value = (entry.headers as Record<string, string>)[header];
+    if (value !== undefined && new RegExp(regex).test(path)) out.push(value);
   }
   return out;
+}
+
+function cacheControlsFor(path: string): string[] {
+  return headerValuesFor(path, "Cache-Control");
 }
 
 describe("VERSION_CONFIG_HEADERS — Cache-Control per path class", () => {
@@ -139,6 +142,24 @@ describe("VERSION_CONFIG_HEADERS — Cache-Control per path class", () => {
       "/api/forms/submit",
     ]) {
       expect(cacheControlsFor(p)).toEqual([]);
+    }
+  });
+});
+
+describe("VERSION_CONFIG_HEADERS — Content-Type for favicons", () => {
+  it("serves .ico media as image/x-icon (the stored + declared icon type), nothing else", () => {
+    for (const p of ["/_assets/brand-favicon.ico", "/favicon.ico"]) {
+      expect(headerValuesFor(p, "Content-Type")).toEqual(["image/x-icon"]);
+    }
+    for (const p of ["/_assets/brand-favicon.png", "/about/", "/_assets/ico/webp-400.webp"]) {
+      expect(headerValuesFor(p, "Content-Type")).toEqual([]);
+    }
+  });
+
+  it("no path gets the same header from two entries", () => {
+    for (const p of ["/favicon.ico", "/_assets/brand-favicon.ico", "/about/"]) {
+      expect(cacheControlsFor(p).length).toBeLessThanOrEqual(1);
+      expect(headerValuesFor(p, "Content-Type").length).toBeLessThanOrEqual(1);
     }
   });
 });

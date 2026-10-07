@@ -26,6 +26,13 @@ export const MEDIA_ALLOWED_MIMES = [
   "image/avif",
   "image/gif",
   "image/svg+xml",
+  // Favicons (.ico). `image/x-icon` is the one canonical stored value:
+  // it is what the upload sniffer (file-type) reports, what browsers send
+  // and what MDN's `<link rel="icon" type>` examples use. The IANA name
+  // `image/vnd.microsoft.icon` is normalised to it on the way in (see
+  // `normalizeAssetMime` in admin-core) and never stored. Stored as-is
+  // (no derived variants) — the ICO container carries its own sizes.
+  "image/x-icon",
   "application/pdf",
   "video/mp4",
   // issue #249 — webfonts. Migrated sites reference their own font
@@ -47,6 +54,7 @@ export const MEDIA_SIZE_CAPS: Record<MediaMime, number> = {
   "image/avif": 10 * 1024 * 1024,
   "image/gif": 8 * 1024 * 1024,
   "image/svg+xml": 1 * 1024 * 1024,
+  "image/x-icon": 1 * 1024 * 1024,
   "application/pdf": 20 * 1024 * 1024,
   "video/mp4": 50 * 1024 * 1024,
   "font/woff2": 5 * 1024 * 1024,
