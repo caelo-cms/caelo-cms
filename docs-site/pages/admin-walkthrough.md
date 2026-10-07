@@ -54,6 +54,7 @@ Tiles:
 - **Subagents** — `/security/subagents` — observability for spawn_subagent runs
 - **Deployments** — `/security/deployments` — Ops view with promote / rollback
 - **DNS** — `/security/dns` — records the active Pulumi stack expects
+- **SEO** — `/security/seo` — public site URL, sitemap toggle, Organization JSON-LD and site language. Publishing stops until the site URL and language are set; you can enter them here or tell the AI (it proposes the site URL with `propose_set_site_seo` and you approve, here or in the chat)
 
 ## Where the AI lives
 

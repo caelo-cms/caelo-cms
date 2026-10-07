@@ -24,6 +24,10 @@ export const load: PageServerLoad = async ({ locals }) => {
   // The site language lives on the identity half of site_defaults
   // (written by site_defaults.set_identity, which the AI can call too).
   const defaults = await execute(registry, adapter, locals.ctx, "site_defaults.get", {});
+  // AI proposals (propose_set_site_seo) waiting for the Owner. A chat
+  // approves them inline; a Power-MCP caller has no in-chat card, so its
+  // proposals are approved here.
+  const pending = await execute(registry, adapter, locals.ctx, "site_defaults.list_pending", {});
   // Null = not configured (migration 0232 dropped the `en` default); the
   // page shows that state, and publishing fails until it is set.
   const defaultsRow = defaults.ok
@@ -36,6 +40,20 @@ export const load: PageServerLoad = async ({ locals }) => {
       ? "site_defaults row is missing — set the default layout + template at /security/site-defaults first."
       : null;
   return {
+    pendingProposals: pending.ok
+      ? (
+          pending.value as {
+            proposals: {
+              id: string;
+              createdAt: string;
+              preview: { changes?: Record<string, { from: unknown; to: unknown }> };
+            }[];
+          }
+        ).proposals
+      : [],
+    pendingError: pending.ok
+      ? null
+      : `site_defaults.list_pending failed: ${describeError(pending.error)}`,
     siteLanguage,
     siteLanguageError,
     settings: settings.ok
@@ -94,6 +112,32 @@ export const actions: Actions = {
       return fail(400, { error: message });
     }
     return { ok: true, message: "Saved." };
+  },
+  // `approve` / `reject` are the standard pending-queue action names: the
+  // chat's pending strip posts here for site_defaults proposals.
+  approve: async ({ request, locals }) => {
+    requirePermission(locals, "roles.manage");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const r = await execute(registry, adapter, locals.ctx, "site_defaults.execute_proposal", {
+      proposalId: String(form.get("proposalId") ?? ""),
+    });
+    if (!r.ok) return fail(400, { error: describeError(r.error) });
+    return { ok: true, message: "Proposal approved — the SEO settings are updated." };
+  },
+  reject: async ({ request, locals }) => {
+    requirePermission(locals, "roles.manage");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const reason = String(form.get("reason") ?? "").trim();
+    const r = await execute(registry, adapter, locals.ctx, "site_defaults.reject_proposal", {
+      proposalId: String(form.get("proposalId") ?? ""),
+      ...(reason ? { reason } : {}),
+    });
+    if (!r.ok) return fail(400, { error: describeError(r.error) });
+    return { ok: true, message: "Proposal rejected." };
   },
   saveLanguage: async ({ request, locals }) => {
     requirePermission(locals, "roles.manage");

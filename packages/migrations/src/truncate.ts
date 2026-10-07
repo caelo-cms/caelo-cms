@@ -129,6 +129,7 @@ const ADMIN_TABLES = [
   "plugin_pending",
   "rate_limit_pending",
   "role_pending",
+  "site_defaults_pending_actions",
   "template_pending",
   "user_pending",
 
