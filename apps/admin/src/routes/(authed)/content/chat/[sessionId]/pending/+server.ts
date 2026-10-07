@@ -23,6 +23,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { error, json } from "@sveltejs/kit";
+import { pendingQueueUrlFor } from "#lib/components/chat/proposal-parser.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
@@ -33,7 +34,7 @@ interface PendingItem {
   kind: string;
   summary: string;
   proposedAt: string;
-  /** /security/<domain>/pending — where Approve / Reject post. */
+  /** /security/<domain>/pending (see pendingQueueUrlFor) — where Approve / Reject post. */
   queueUrl: string;
 }
 
@@ -65,7 +66,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
       kind: i.kind,
       summary: i.summary,
       proposedAt: i.proposedAt,
-      queueUrl: `/security/${i.domain}/pending`,
+      queueUrl: pendingQueueUrlFor(i.domain),
     }));
   return json({ items });
 };

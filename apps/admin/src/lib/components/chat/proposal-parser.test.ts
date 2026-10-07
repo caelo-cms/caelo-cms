@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { parseProposalContent } from "./proposal-parser.js";
+import { parseProposalContent, pendingQueueUrlFor } from "./proposal-parser.js";
 
 const UUID = "d2d5a41a-0ecb-4f70-aab1-73963240e9f1";
 
@@ -72,5 +72,17 @@ describe("parseProposalContent", () => {
   it("returns null for deprecated locales domain (route removed in #382)", () => {
     const content = `Queued proposal ${UUID}: add locale 'de'. Approve it on the proposal card in this chat (queue: /security/locales/pending).`;
     expect(parseProposalContent(content)).toBeNull();
+  });
+});
+
+describe("pendingQueueUrlFor", () => {
+  it("derives /security/<domain>/pending by default", () => {
+    expect(pendingQueueUrlFor("layouts")).toBe("/security/layouts/pending");
+  });
+
+  // Regression: site_defaults proposals are approved on the SEO page, not at
+  // a nonexistent /security/site_defaults/pending.
+  it("routes site_defaults to the SEO page", () => {
+    expect(pendingQueueUrlFor("site_defaults")).toBe("/security/seo");
   });
 });

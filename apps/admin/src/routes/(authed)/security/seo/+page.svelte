@@ -60,12 +60,12 @@
               proposed {new Date(p.createdAt).toISOString().slice(0, 19)}Z
             </p>
             <div class="flex items-center gap-2">
-              <form method="post" action="?/approveProposal">
+              <form method="post" action="?/approve">
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="proposalId" value={p.id} />
                 <Button type="submit">Approve</Button>
               </form>
-              <form method="post" action="?/rejectProposal" class="flex items-center gap-2">
+              <form method="post" action="?/reject" class="flex items-center gap-2">
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="proposalId" value={p.id} />
                 <Input name="reason" placeholder="reject reason (optional)" class="h-8 text-xs" />

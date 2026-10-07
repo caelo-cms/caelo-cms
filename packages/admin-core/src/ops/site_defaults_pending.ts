@@ -112,6 +112,17 @@ export const proposeSiteSeoSetOp = defineOperation({
     if (!current) {
       return err({ kind: "HandlerError", operation: op, message: MISSING_ROW_MESSAGE });
     }
+    if (payload.siteBaseUrl === undefined && !current.siteBaseUrl) {
+      // `set_seo` writes all three fields and needs a base URL; a
+      // sitemap- or organization-only proposal could never be applied
+      // while none is stored, so refuse it before the Owner sees a card.
+      return err({
+        kind: "HandlerError",
+        operation: op,
+        message:
+          "the site base URL is not configured yet, so this change cannot be applied on its own — propose again with `siteBaseUrl` (the public https origin) included alongside the other fields",
+      });
+    }
     const changes: Record<string, { from: unknown; to: unknown }> = {};
     if (payload.siteBaseUrl !== undefined && payload.siteBaseUrl !== current.siteBaseUrl) {
       changes.siteBaseUrl = { from: current.siteBaseUrl, to: payload.siteBaseUrl };
@@ -279,18 +290,28 @@ export const rejectSiteDefaultsProposalOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    await tx.execute(sql`
+    const op = "site_defaults.reject_proposal";
+    const updated = (await tx.execute(sql`
       UPDATE site_defaults_pending_actions
       SET status = 'rejected',
           decided_at = now(),
           decided_by = ${ctx.actorId}::uuid,
           decision_reason = ${input.reason ?? null}
       WHERE id = ${input.proposalId}::uuid AND status = 'pending'
-    `);
+      RETURNING id
+    `)) as unknown as { id: string }[];
+    if (updated.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: op,
+        message:
+          "proposal not found or no longer pending — it may already be applied, rejected or cancelled (list the open ones with site_defaults.list_pending)",
+      });
+    }
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
-      operation: "site_defaults.reject_proposal",
+      operation: op,
       input,
       succeeded: true,
       entityId: input.proposalId,

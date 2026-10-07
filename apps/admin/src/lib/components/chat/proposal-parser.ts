@@ -21,6 +21,20 @@ export const PROPOSAL_CONTENT_PATTERN = /^Queued proposal ([0-9a-f-]{36}):\s*([^
 /** Queue URL embedded in the content, e.g. `/security/layouts/pending`. */
 export const PROPOSAL_QUEUE_URL_PATTERN = /(\/security\/([^\s/.]+)\/pending)/;
 
+/**
+ * Domains whose Approve / Reject actions live on a settings page rather
+ * than at `/security/<domain>/pending`. Each page exposes the same
+ * `?/approve` + `?/reject` form actions (taking `proposalId`).
+ */
+const QUEUE_URL_OVERRIDES: Readonly<Record<string, string>> = {
+  site_defaults: "/security/seo",
+};
+
+/** Where the chat's pending strip posts Approve / Reject for `domain`. */
+export function pendingQueueUrlFor(domain: string): string {
+  return QUEUE_URL_OVERRIDES[domain] ?? `/security/${domain}/pending`;
+}
+
 export interface ParsedProposal {
   readonly proposalId: string;
   readonly summary: string;

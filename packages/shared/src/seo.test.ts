@@ -289,4 +289,14 @@ describe("checkPublicSiteBaseUrl", () => {
     });
     expect(checkPublicSiteBaseUrl("http://127.0.0.1:8082", "self-hosted").ok).toBe(true);
   });
+
+  it("rejects wildcard bind addresses on every provider, self-hosted included", () => {
+    for (const provider of [undefined, "self-hosted", "gcp"]) {
+      for (const raw of ["http://0.0.0.0:8082", "https://0.0.0.0", "http://[::]:8082"]) {
+        const r = checkPublicSiteBaseUrl(raw, provider);
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.message).toContain("bind address");
+      }
+    }
+  });
 });

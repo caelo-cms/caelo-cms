@@ -24,7 +24,8 @@ export const proposeSetSiteSeoTool = makeProposeTool({
     "Set the site-wide SEO settings: `siteBaseUrl` (the public origin every canonical URL, og:url, hreflang " +
     "target and sitemap entry is built from — publishing FAILS while it is unset), `sitemapEnabled` (emit " +
     "sitemap.xml + the robots.txt Sitemap line) and `organizationJson` (Organization JSON-LD: name, url, logo, " +
-    "sameAs — replaces the whole object). Pass only the fields you change; omitted ones keep their value. " +
+    "sameAs — replaces the whole object). Pass only the fields you change; omitted ones keep their value — " +
+    "except while the base URL is unset, when every proposal must include `siteBaseUrl`. " +
     "Use it when the site status says `Site URL: not configured`, a publish failed with `Site base URL is not " +
     "configured`, the preview flags `site-base-url-unset`, or the operator names the site's domain or asks for " +
     "sitemap / organization changes. `siteBaseUrl` must be the bare https origin (`https://www.example.com` — " +

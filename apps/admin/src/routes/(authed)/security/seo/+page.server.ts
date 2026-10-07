@@ -113,7 +113,9 @@ export const actions: Actions = {
     }
     return { ok: true, message: "Saved." };
   },
-  approveProposal: async ({ request, locals }) => {
+  // `approve` / `reject` are the standard pending-queue action names: the
+  // chat's pending strip posts here for site_defaults proposals.
+  approve: async ({ request, locals }) => {
     requirePermission(locals, "roles.manage");
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
@@ -124,7 +126,7 @@ export const actions: Actions = {
     if (!r.ok) return fail(400, { error: describeError(r.error) });
     return { ok: true, message: "Proposal approved — the SEO settings are updated." };
   },
-  rejectProposal: async ({ request, locals }) => {
+  reject: async ({ request, locals }) => {
     requirePermission(locals, "roles.manage");
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();

@@ -338,6 +338,48 @@ describe("propose_set_site_seo — Power-MCP path (no in-chat card)", () => {
 });
 
 describe("site_defaults SEO proposal guards", () => {
+  // Field-only proposals need a stored base URL (see the unset-base test).
+  beforeEach(async () => {
+    await asSystem(
+      (tx) => tx`UPDATE site_defaults SET site_base_url = 'https://guards.example' WHERE id = 1`,
+    );
+  });
+
+  it("refuses a sitemap- or organization-only proposal while no base URL is stored", async () => {
+    await asSystem((tx) => tx`UPDATE site_defaults SET site_base_url = NULL WHERE id = 1`);
+    for (const input of [
+      { sitemapEnabled: !(await readSeo()).sitemapEnabled },
+      { organizationJson: { name: "Unset Base Co" } },
+    ]) {
+      const r = await execute(registry, adapter, AI, "site_defaults.propose_set_seo", input);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(JSON.stringify(r.error)).toContain("siteBaseUrl");
+    }
+    const rows = await asSystem((tx) => tx`SELECT id FROM site_defaults_pending_actions`);
+    expect(rows).toEqual([]);
+  });
+
+  it("rejecting a proposal that is not pending fails instead of reporting success", async () => {
+    const missing = await execute(registry, adapter, OWNER, "site_defaults.reject_proposal", {
+      proposalId: crypto.randomUUID(),
+    });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(JSON.stringify(missing.error)).toContain("no longer pending");
+
+    const proposed = await execute(registry, adapter, AI, "site_defaults.propose_set_seo", {
+      siteBaseUrl: "https://twice-rejected.example",
+    });
+    const { proposalId } = (proposed as { ok: true; value: { proposalId: string } }).value;
+    const first = await execute(registry, adapter, OWNER, "site_defaults.reject_proposal", {
+      proposalId,
+    });
+    expect(first.ok).toBe(true);
+    const second = await execute(registry, adapter, OWNER, "site_defaults.reject_proposal", {
+      proposalId,
+    });
+    expect(second.ok).toBe(false);
+  });
+
   it("the AI cannot approve its own proposal", async () => {
     const proposed = await execute(registry, adapter, AI, "site_defaults.propose_set_seo", {
       sitemapEnabled: !(await readSeo()).sitemapEnabled,

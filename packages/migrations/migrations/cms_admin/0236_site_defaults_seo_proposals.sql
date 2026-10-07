@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0234 — site_defaults_pending_actions: the §11.A proposal table for the
+-- 0236 — site_defaults_pending_actions: the §11.A proposal table for the
 -- site SEO settings (base URL, sitemap toggle, Organization JSON-LD).
 --
 -- Until now `site_defaults.set_seo` was reachable only from the Owner's

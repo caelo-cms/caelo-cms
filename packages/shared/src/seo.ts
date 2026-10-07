@@ -109,7 +109,10 @@ export type SiteSeoProposalInput = z.infer<typeof siteSeoProposalInputSchema>;
 /** Result of {@link checkPublicSiteBaseUrl}. */
 export type PublicSiteBaseUrlCheck = { ok: true; url: string } | { ok: false; message: string };
 
-const LOOPBACK_HOST = /^(localhost|.+\.localhost|127(\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)$/i;
+const LOOPBACK_HOST = /^(localhost|.+\.localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
+
+/** Wildcard bind addresses: a server listens on them, no browser can visit them. */
+const WILDCARD_HOST = /^(0\.0\.0\.0|\[::\])$/;
 
 /**
  * Validate a public site base URL and normalise it to its origin
@@ -146,6 +149,12 @@ export function checkPublicSiteBaseUrl(
     return {
       ok: false,
       message: `the site URL must be the origin only, without path, query or fragment — use ${origin}`,
+    };
+  }
+  if (WILDCARD_HOST.test(u.hostname)) {
+    return {
+      ok: false,
+      message: `${u.hostname} is a bind address, not an address visitors can open — use the public domain (e.g. https://www.example.com) or, on a local self-hosted install, http://localhost:<port>`,
     };
   }
   const selfHosted = !provider || provider === "self-hosted";
