@@ -35,7 +35,7 @@ import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-
+import { describeOperatorAccessSync, type OperatorAccessSync } from "../../ops/user_access.js";
 import { describePersistError } from "../chat-runner/persistence.js";
 import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
 import { approvedPluginInvocation } from "../plugin-invocation.js";
@@ -119,9 +119,60 @@ export function attachGatedExecute(
           };
         }
       }
+      if (gated.afterApply === "sync-operator-access") {
+        return {
+          ok: true,
+          value: await withOperatorAccessSync(
+            registry,
+            adapter,
+            ownerCtxLive,
+            applied.value as Record<string, unknown>,
+          ),
+        };
+      }
       return { ok: true, value: applied.value };
     },
   };
+}
+
+/**
+ * After an approved users.* change: bring the cloud identity gate (Google
+ * IAP) in line and fold the outcome into the tool result. A failed sync stays
+ * `ok: true` — the user change IS applied, and reporting a failure would send
+ * the AI re-proposing it — but carries a `warning` the AI must relay, with
+ * the next step, so the operator never finds out from a 403.
+ */
+async function withOperatorAccessSync(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ownerCtxLive: ExecutionContext,
+  applied: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const userId = applied.userId;
+  if (typeof userId !== "string") return applied;
+  // System kind clears the self-or-system RLS on `users` (the Owner ctx would
+  // only see its own row); actorId stays the approving Owner for the audit.
+  const synced = await execute(
+    registry,
+    adapter,
+    { ...ownerCtxLive, actorKind: "system" },
+    "users.sync_operator_access",
+    { userIds: [userId] },
+  );
+  const sync: OperatorAccessSync = synced.ok
+    ? (synced.value as OperatorAccessSync)
+    : {
+        status: "failed",
+        target: "the admin's identity gate",
+        changes: [],
+        error: describePersistError(synced.error),
+        nextStep: "Approve the change again; if it keeps failing, report it with `bug_report`.",
+      };
+  const message = describeOperatorAccessSync(sync);
+  if (sync.status === "failed") {
+    return { ...applied, operatorAccess: sync, warning: `${message} Tell the operator this.` };
+  }
+  return { ...applied, operatorAccess: sync, ...(message ? { note: message } : {}) };
 }
 
 /**

@@ -25,7 +25,9 @@
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
   {/if}
   {#if form?.ok}
-    <Alert><AlertDescription>Saved.</AlertDescription></Alert>
+    <Alert>
+      <AlertDescription>Saved.{typeof form.ok === "string" ? ` ${form.ok}` : ""}</AlertDescription>
+    </Alert>
   {/if}
 
   <Card>

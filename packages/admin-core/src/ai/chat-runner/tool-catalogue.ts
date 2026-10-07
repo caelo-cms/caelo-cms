@@ -64,8 +64,11 @@ export type FilteredTool = ToolDefinition & {
      * `load-activated-plugin` puts a just-approved plugin into the
      * running host; it cannot run inside the op because the loader
      * opens its own transaction and takes the same plugins row.
+     * `sync-operator-access` updates the cloud identity gate (Google IAP)
+     * for the user an approved users.* proposal touched — a cloud call
+     * that must neither hold nor undo the apply transaction.
      */
-    afterApply?: "load-activated-plugin";
+    afterApply?: "load-activated-plugin" | "sync-operator-access";
   };
   /** #388 — a plugin tool that declared `approvalMode` in its spec. The
    *  chat-runner attaches an SDK `execute` that dispatches the plugin

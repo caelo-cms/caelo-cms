@@ -5,6 +5,7 @@ import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { opErrorMessage } from "#lib/server/op-error.js";
+import { syncOperatorAccess } from "#lib/server/operator-access.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -63,7 +64,7 @@ export const actions: Actions = {
       roleNames,
     });
     if (!result.ok) return fail(400, { error: "Could not create user." });
-    return { ok: true };
+    return syncOperatorAccess(locals, (result.value as { userId: string }).userId);
   },
 
   setRoles: async ({ request, locals }) => {
@@ -80,7 +81,7 @@ export const actions: Actions = {
       roleNames,
     });
     if (!result.ok) return fail(400, { error: "Could not update roles." });
-    return { ok: true };
+    return syncOperatorAccess(locals, userId);
   },
 
   delete: async ({ request, locals }) => {
@@ -92,7 +93,7 @@ export const actions: Actions = {
     const userId = String(form.get("userId") ?? "");
     const result = await execute(registry, adapter, asSystem(locals), "users.delete", { userId });
     if (!result.ok) return fail(400, { error: "Could not delete user." });
-    return { ok: true };
+    return syncOperatorAccess(locals, userId);
   },
 
   resetPassword: async ({ request, locals }) => {
