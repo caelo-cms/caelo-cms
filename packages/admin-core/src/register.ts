@@ -291,6 +291,14 @@ import {
 } from "./ops/media-bulk.js";
 import { aggregateNotificationsOp } from "./ops/notifications.js";
 import {
+  executeOwnerSettingsProposalOp,
+  listPendingOwnerSettingsProposalsOp,
+  proposeSetAiBudgetOp,
+  proposeSetAiPricingOp,
+  proposeSetGatewaySettingsOp,
+  rejectOwnerSettingsProposalOp,
+} from "./ops/owner_settings_pending.js";
+import {
   anyBootstrapTokenIssuedOp,
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
@@ -840,6 +848,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeEmailConfigProposalOp);
   registry.register(rejectEmailConfigProposalOp);
   registry.register(listPendingEmailConfigProposalsOp);
+  // §11.A gate for AI budgets / AI pricing / gateway settings — the AI
+  // proposes, the operator approves (owner_settings_pending.ts).
+  registry.register(proposeSetAiBudgetOp);
+  registry.register(proposeSetAiPricingOp);
+  registry.register(proposeSetGatewaySettingsOp);
+  registry.register(executeOwnerSettingsProposalOp);
+  registry.register(rejectOwnerSettingsProposalOp);
+  registry.register(listPendingOwnerSettingsProposalsOp);
   // P14 — domains registry.
   registry.register(listDomainsOp);
   registry.register(addDomainOp);
