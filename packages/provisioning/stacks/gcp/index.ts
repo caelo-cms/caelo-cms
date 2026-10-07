@@ -726,6 +726,15 @@ const wafPolicy = new gcp.compute.SecurityPolicy(
 );
 
 // Tier 1 backend — static GCS bucket via Cloud CDN
+//
+// The GCS publisher sets an explicit Cache-Control on every object
+// (static-publisher-gcs.ts): content-hashed fonts / plugin bundles are
+// `max-age=31536000, immutable`, pages `max-age=60` + SWR. In
+// CACHE_ALL_STATIC mode `clientTtl` CLAMPS the max-age sent to
+// browsers and `maxTtl` caps the edge TTL, so both must allow a year
+// or the immutable policy is silently cut back to the old 1h. Objects
+// that state a shorter max-age keep it; `defaultTtl` still applies only
+// to responses without one.
 const staticBackendBucket = new gcp.compute.BackendBucket(
   `${namePrefix}-static-backend`,
   {
@@ -734,8 +743,8 @@ const staticBackendBucket = new gcp.compute.BackendBucket(
     cdnPolicy: {
       cacheMode: "CACHE_ALL_STATIC",
       defaultTtl: 3600,
-      maxTtl: 86400,
-      clientTtl: 3600,
+      maxTtl: 31536000,
+      clientTtl: 31536000,
     },
   },
   opts,
