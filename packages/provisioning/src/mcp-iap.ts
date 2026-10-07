@@ -35,7 +35,8 @@ export type IapResource =
   | { readonly kind: "cloud-run"; readonly service: string; readonly region: string }
   | { readonly kind: "backend-services"; readonly service: string };
 
-function iapResourceArgs(resource: IapResource): string[] {
+/** `gcloud iap web …` flags addressing {@link IapResource}. */
+export function iapResourceArgs(resource: IapResource): string[] {
   return resource.kind === "cloud-run"
     ? ["--resource-type=cloud-run", `--service=${resource.service}`, `--region=${resource.region}`]
     : ["--resource-type=backend-services", `--service=${resource.service}`];

@@ -22,6 +22,7 @@ import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { gcloud } from "./gcloud.js";
 import { type InstallMetadata, installRoot, readMetadata, readSecret } from "./install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
+import { ensureOperatorAccessGrants } from "./operator-access.js";
 
 /** Find the single install on this machine — or warn if 0/multiple. */
 function findActiveInstall(): { installId: string; meta: InstallMetadata } | null {
@@ -371,6 +372,46 @@ async function resolveAdminIapResource(
   return name ? { kind: "backend-services", service: name } : null;
 }
 
+/**
+ * Let the admin manage IAP operators itself (operator-access.ts). Like MCP
+ * access, a failure only costs that feature, so it warns instead of aborting.
+ */
+async function upgradeOperatorAccess(
+  meta: InstallMetadata & { projectId: string },
+  region: string,
+  adminServiceName: string,
+  resource: IapResource,
+): Promise<void> {
+  const s = spinner();
+  s.start("Ensuring the admin can manage operator access...");
+  const sa = await gcloud([
+    "run",
+    "services",
+    "describe",
+    adminServiceName,
+    `--region=${region}`,
+    `--project=${meta.projectId}`,
+    "--format=value(spec.template.spec.serviceAccountName)",
+  ]);
+  const adminServiceAccount = sa.ok ? sa.stdout.trim() : "";
+  const r = adminServiceAccount
+    ? await ensureOperatorAccessGrants({
+        projectId: meta.projectId,
+        provider: meta.provider === "gcp-firebase" ? "gcp-firebase" : "gcp",
+        resource,
+        adminServiceAccount,
+      })
+    : { ok: false as const, error: `admin runtime service account not found: ${sa.stderr.trim()}` };
+  if (r.ok) {
+    s.stop(green(`Operator access ready (${r.granted.length} grant(s))`));
+  } else {
+    s.stop(yellow(`Operator access not configured: ${r.error}`));
+    log.warn(
+      "The upgrade continues; approving a user change will report that Google IAP could not be updated until this succeeds.",
+    );
+  }
+}
+
 export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   const { meta } = requireInstall();
   // v0.5.15 — extended to cover gcp-firebase too. Both providers share
@@ -531,6 +572,14 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       sMcp.stop(
         green(`MCP access ready (${mcp.serviceAccount}; ${mcp.operators.length} operator(s))`),
       );
+      if (resource) {
+        await upgradeOperatorAccess(
+          { ...meta, projectId: meta.projectId },
+          region,
+          adminPlan.serviceName,
+          resource,
+        );
+      }
     } else {
       sMcp.stop(yellow(`MCP access not configured: ${mcp.error}`));
       log.warn(

@@ -22,6 +22,10 @@ import * as pulumi from "@pulumi/pulumi";
 import * as random from "@pulumi/random";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
+import {
+  ADMIN_RUNTIME_OPERATOR_ACCESS_GRANTS,
+  type CustomRoleSpec,
+} from "../../dist/operator-access-grants.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -891,6 +895,82 @@ new gcp.iap.WebBackendServiceIamMember(
   },
   opts,
 );
+
+// =========================================================================
+// Operator access — the admin manages its own IAP allowlist
+// =========================================================================
+//
+// When an Owner approves creating / deleting a user, the admin (as runSa)
+// allows or removes that person on IAP and on the MCP service account
+// (packages/admin-core/src/security/operator-access/gcp-iap.ts). Least
+// privilege: custom roles with only get/setIamPolicy, bound on exactly those
+// resources — see packages/provisioning/src/operator-access-grants.ts, the
+// list `cms-provision upgrade` also converges older installs onto.
+const adminRuntimeMember = pulumi.interpolate`serviceAccount:${runSa.email}`;
+const operatorAccessGrants = ADMIN_RUNTIME_OPERATOR_ACCESS_GRANTS.filter((g) =>
+  g.providers.includes("gcp"),
+);
+const customRoles = new Map<CustomRoleSpec, gcp.projects.IAMCustomRole>();
+for (const role of new Set(operatorAccessGrants.map((g) => g.role))) {
+  customRoles.set(
+    role,
+    new gcp.projects.IAMCustomRole(
+      `${namePrefix}-role-${role.roleId.toLowerCase()}`,
+      {
+        project,
+        roleId: role.roleId,
+        title: role.title,
+        description: role.description,
+        permissions: [...role.permissions],
+        stage: "GA",
+      },
+      opts,
+    ),
+  );
+}
+const roleRef = (role: CustomRoleSpec): pulumi.Output<string> => {
+  const created = customRoles.get(role);
+  if (!created) throw new Error(`custom role ${role.roleId} was not declared`);
+  return created.name;
+};
+for (const grant of operatorAccessGrants) {
+  switch (grant.scope) {
+    case "admin-iap-resource":
+      new gcp.iap.WebBackendServiceIamMember(
+        `${namePrefix}-admin-iap-operator-access`,
+        {
+          project,
+          webBackendService: adminBackendService.name,
+          role: roleRef(grant.role),
+          member: adminRuntimeMember,
+        },
+        opts,
+      );
+      break;
+    case "mcp-service-account":
+      new gcp.serviceaccount.IAMMember(
+        `${namePrefix}-mcp-operator-access`,
+        {
+          serviceAccountId: mcpServiceAccount.name,
+          role: roleRef(grant.role),
+          member: adminRuntimeMember,
+        },
+        opts,
+      );
+      break;
+    case "project":
+      new gcp.projects.IAMMember(
+        `${namePrefix}-admin-${grant.role.roleId.toLowerCase()}`,
+        {
+          project,
+          role: roleRef(grant.role),
+          member: adminRuntimeMember,
+        },
+        opts,
+      );
+      break;
+  }
+}
 
 // URL map: routes by host header.
 //   admin.<domain>  → admin backend (IAP-gated)

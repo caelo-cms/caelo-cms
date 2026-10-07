@@ -1128,10 +1128,9 @@ async function stepFinalize(installId: string): Promise<void> {
           "",
           bold("Admin custom domain (admin.<domain>):"),
           `  Not configured — using the Cloud Run URL above.`,
-          `  To bind ${cyan(`admin.${meta.domain}`)}: verify the domain at`,
-          `  ${cyan("https://search.google.com/search-console")}, then set`,
-          `  ${dim(`pulumi config set caelo-gcp-firebase:provisionAdminDomain true`)} + ${dim("pulumi up")}`,
-          `  in ${dim(installRoot(installId))}.`,
+          `  To bind ${cyan(`admin.${meta.domain}`)}, run`,
+          `  ${dim("bunx @caelo-cms/provisioning admin-domain enable")}`,
+          `  (it walks you through the one-time Search Console verification and prints the DNS record).`,
         ]
       : [];
 
