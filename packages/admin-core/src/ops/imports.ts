@@ -21,6 +21,7 @@
 import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
 import {
   deriveModuleType,
+  type ExecutionContext,
   err,
   formatGenesisInventory,
   inventoryGenesisDraft,
@@ -52,6 +53,7 @@ import {
   type ComposeSkip,
   classifyComposeRunStatus,
 } from "./compose-eligibility.js";
+import { buildPageOp } from "./content/build-page.js";
 import {
   computeRunCost,
   deriveCeilingFromEstimate,
@@ -481,6 +483,8 @@ export const listImportPagesOp = defineOperation({
 
 export const createImportRunOp = defineOperation({
   name: "imports.create_run",
+  // Why human-only: Owner-direct crawl start (spends crawl budget without a proposal); the AI
+  // starts crawls through propose_site_import (Owner-approved).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -677,6 +681,8 @@ export const listPendingImportProposalsOp = defineOperation({
  */
 export const executeImportProposalOp = defineOperation({
   name: "imports.execute_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -783,6 +789,8 @@ export const executeImportProposalOp = defineOperation({
 
 export const rejectImportProposalOp = defineOperation({
   name: "imports.reject_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid(), reason: z.string().max(500).optional() }).strict(),
@@ -808,6 +816,7 @@ export const rejectImportProposalOp = defineOperation({
 
 export const updateImportRunStatusOp = defineOperation({
   name: "imports.update_run_status",
+  // Why system-only: crawl-worker write-back; the AI reads run state, it does not author it.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
@@ -955,6 +964,8 @@ export const logImportRunEventsOp = defineOperation({
  */
 export const updatePageCaptureOp = defineOperation({
   name: "imports.update_page_capture",
+  // Why system-only: crawl-worker write-back of observed screenshots/tokens — ground truth the AI
+  // reads, never writes.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
@@ -998,6 +1009,8 @@ export const updatePageCaptureOp = defineOperation({
  */
 export const setPageCapturesByUrlOp = defineOperation({
   name: "imports.set_page_captures_by_url",
+  // Why system-only: crawl-worker write-back of observed captures — ground truth the AI reads,
+  // never writes.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
@@ -1062,6 +1075,8 @@ export const setPageCapturesByUrlOp = defineOperation({
  */
 export const setRunDesignTokensOp = defineOperation({
   name: "imports.set_run_design_tokens",
+  // Why system-only: crawl-worker write-back of the observed design tokens — ground truth the AI
+  // reads, never writes.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
@@ -1337,6 +1352,8 @@ export const getImportPageGistOp = defineOperation({
 
 export const writeExtractedPagesOp = defineOperation({
   name: "imports.write_extracted_pages",
+  // Why system-only: crawl-worker write-back of the extracted pages — ground truth the AI reads,
+  // never writes.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
@@ -1412,136 +1429,166 @@ export const writeExtractedPagesOp = defineOperation({
   },
 });
 
+const acceptImportedPageInput = z
+  .object({
+    importPageId: z.string().uuid(),
+    /** Template for the new page; omitted = the site's default template. */
+    templateId: z.string().uuid().optional(),
+  })
+  .strict();
+
+type AcceptImportedPageInput = z.infer<typeof acceptImportedPageInput>;
+
 /**
- * P14 — Owner clicks Accept on an import_pages row. Promotes the
- * staged content into a real `pages` row with status='draft'. Modules
- * are inserted as new `modules` rows + linked via `page_modules`.
+ * Promote ONE crawled page verbatim: a draft page carrying the crawl's
+ * extracted modules (header/footer excluded — layout-owned chrome, #253).
  *
- * Does NOT publish — promoted page stays at status='draft' so the
- * standard preview→publish flow is unchanged.
+ * Delegates to `pages.build_page` with `importPageId`, so an accept is an
+ * ordinary authoring write: branch-scoped inside a chat (lands on the
+ * preview, reaches main on publish), snapshotted (chat-keyed Undo), with
+ * template block validation, `current_path` composition and the
+ * `accepted_page_id` linkage the per-page import reads rely on. (Before,
+ * it inserted pages/modules/page_modules with raw SQL — no snapshot, no
+ * branch, unvalidated block names.) Runs on the caller's tx; a failure
+ * after the first write throws so the whole accept rolls back.
+ */
+async function acceptImportedPage(
+  ctx: ExecutionContext,
+  input: AcceptImportedPageInput,
+  tx: TransactionRunner,
+  operation: "imports.accept_page" | "imports.accept_pages",
+): Promise<{ ok: true; pageId: string; slug: string } | { ok: false; message: string }> {
+  // "Already accepted" means the pointer resolves to a page that still
+  // exists — the same rule `pages.build_page` uses for its rebuild target.
+  // A discarded chat soft-deletes its branch-created page but leaves the
+  // pointer, and that acceptance must be retryable.
+  const rows = (await tx.execute(sql`
+    SELECT ip.proposed_slug, ip.proposed_title, ip.proposed_modules,
+           p.id::text AS accepted_page_id
+    FROM import_pages ip
+    LEFT JOIN pages p ON p.id = ip.accepted_page_id AND p.deleted_at IS NULL
+    WHERE ip.id = ${input.importPageId}::uuid LIMIT 1
+  `)) as unknown as Array<{
+    proposed_slug: string;
+    proposed_title: string;
+    // jsonb may come back as an already-decoded array OR a JSON string
+    // depending on the SQL client + how the column was written.
+    proposed_modules: unknown;
+    accepted_page_id: string | null;
+  }>;
+  const r = rows[0];
+  if (!r) return { ok: false, message: `import page ${input.importPageId} not found` };
+  if (r.accepted_page_id) {
+    return {
+      ok: false,
+      message: `import page ${input.importPageId} was already accepted (page ${r.accepted_page_id}) — edit that page instead, or rebuild it with build_page({page:{importPageId}})`,
+    };
+  }
+  const proposedModules = (
+    typeof r.proposed_modules === "string" ? JSON.parse(r.proposed_modules) : r.proposed_modules
+  ) as Array<{ blockName: string; position: number; html: string; displayName: string }>;
+  const title = r.proposed_title || r.proposed_slug;
+  const built = await buildPageOp.handler(
+    ctx,
+    {
+      page: {
+        slug: r.proposed_slug,
+        title,
+        name: title,
+        status: "draft",
+        importPageId: input.importPageId,
+        ...(input.templateId ? { templateId: input.templateId } : {}),
+      },
+      modules: [...proposedModules]
+        .filter((m) => m.blockName !== "header" && m.blockName !== "footer")
+        .sort((a, b) => a.position - b.position)
+        .map((m) => ({ blockName: m.blockName, displayName: m.displayName, html: m.html })),
+    },
+    tx,
+  );
+  if (!built.ok) {
+    const message = "message" in built.error ? built.error.message : built.error.kind;
+    return { ok: false, message: `${operation}: ${message}` };
+  }
+  return { ok: true, pageId: (built.value as { pageId: string }).pageId, slug: r.proposed_slug };
+}
+
+/**
+ * P14 — Accept one import_pages row (the Owner's "Accept" button). Does
+ * NOT publish — the page is a draft, so the standard preview → publish
+ * flow is unchanged. See {@link acceptImportedPage}.
  */
 export const acceptImportedPageOp = defineOperation({
   name: "imports.accept_page",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z
-    .object({
-      importPageId: z.string().uuid(),
-      templateId: z.string().uuid(),
-      layoutId: z.string().uuid().optional(),
-    })
-    .strict(),
+  input: acceptImportedPageInput,
   output: z.object({ pageId: z.string() }),
   handler: async (ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
-      SELECT proposed_slug, proposed_title, proposed_modules, accepted_page_id
-      FROM import_pages WHERE id = ${input.importPageId}::uuid LIMIT 1
-    `)) as unknown as Array<{
-      proposed_slug: string;
-      proposed_title: string;
-      // jsonb may come back as an already-decoded array OR a JSON
-      // string depending on the underlying SQL client + the way the
-      // column was written. Normalise via the same conditional idiom
-      // several jsonb-writing ops use for preview/payload columns.
-      proposed_modules: unknown;
-      accepted_page_id: string | null;
-    }>;
-    const r = rows[0];
-    if (!r) {
-      return err({
-        kind: "HandlerError",
-        operation: "imports.accept_page",
-        message: "import_page not found",
-      });
+    const r = await acceptImportedPage(ctx, input, tx, "imports.accept_page");
+    if (!r.ok) {
+      return err({ kind: "HandlerError", operation: "imports.accept_page", message: r.message });
     }
-    if (r.accepted_page_id) {
-      return err({
-        kind: "HandlerError",
-        operation: "imports.accept_page",
-        message: "already accepted",
-      });
-    }
-    const proposedModules = (
-      typeof r.proposed_modules === "string" ? JSON.parse(r.proposed_modules) : r.proposed_modules
-    ) as Array<{
-      blockName: string;
-      position: number;
-      html: string;
-      displayName: string;
-    }>;
-    // Insert the page row.
-    const pageRows = (await tx.execute(sql`
-      INSERT INTO pages (slug, title, name, status, template_id, version)
-      VALUES (
-        ${r.proposed_slug},
-        ${r.proposed_title || r.proposed_slug},
-        ${r.proposed_title || r.proposed_slug},
-        'draft', ${input.templateId}::uuid, 1
-      )
-      RETURNING id::text AS id
-    `)) as unknown as Array<{ id: string }>;
-    const pageId = pageRows[0]?.id;
-    if (!pageId) {
-      return err({
-        kind: "HandlerError",
-        operation: "imports.accept_page",
-        message: "page insert returned no id",
-      });
-    }
-    // Insert modules + page_modules per extracted module.
-    // issue #253 — header/footer are layout-owned chrome; compose_from_run
-    // binds them once at the layout. A per-page accept never mints
-    // per-page chrome placements (the imported templates carry no
-    // header/footer blocks anymore, so such rows would be invisible).
-    for (const m of proposedModules.filter(
-      (pm) => pm.blockName !== "header" && pm.blockName !== "footer",
-    )) {
-      const modRows = (await tx.execute(sql`
-        INSERT INTO modules (slug, display_name, type, html, css, js)
-        VALUES (
-          ${`imported-${pageId.slice(0, 8)}-${m.blockName}-${m.position}`},
-          ${m.displayName}, ${deriveModuleType(m.displayName)}, ${m.html}, '', ''
-        )
-        RETURNING id::text AS id
-      `)) as unknown as Array<{ id: string }>;
-      const moduleId = modRows[0]?.id;
-      if (!moduleId) continue;
-      // v0.12.0 — mint a fresh unsynced content_instance per placement
-      // so page_modules.content_instance_id NOT NULL is satisfied.
-      const ciRow = (await tx.execute(sql`
-        INSERT INTO content_instances (module_id, "values")
-        VALUES (${moduleId}::uuid, '{}'::jsonb)
-        RETURNING id::text AS id
-      `)) as unknown as Array<{ id: string }>;
-      const newCiId = ciRow[0]?.id;
-      if (!newCiId) continue;
-      await tx.execute(sql`
-        INSERT INTO page_modules
-          (page_id, block_name, position, module_id, content_instance_id, sync_mode)
-        VALUES (
-          ${pageId}::uuid,
-          ${m.blockName},
-          ${m.position},
-          ${moduleId}::uuid,
-          ${newCiId}::uuid,
-          'unsynced'
-        )
-      `);
-    }
-    await tx.execute(sql`
-      UPDATE import_pages
-         SET accepted_page_id = ${pageId}::uuid, accepted_at = now()
-       WHERE id = ${input.importPageId}::uuid
-    `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
       operation: "imports.accept_page",
       input,
       succeeded: true,
-      resultSummary: `promoted ${r.proposed_slug} → page ${pageId}`,
+      resultSummary: `promoted ${r.slug} → page ${r.pageId}`,
     });
-    return ok({ pageId });
+    return ok({ pageId: r.pageId });
+  },
+});
+
+/**
+ * Bulk accept (CLAUDE.md §11) — promote up to 50 crawled pages verbatim in
+ * ONE transaction. All-or-nothing: the first page that cannot be accepted
+ * aborts the batch and the error names it, so the AI fixes that id and
+ * re-sends instead of reconciling a half-applied batch.
+ */
+export const acceptImportedPagesOp = defineOperation({
+  name: "imports.accept_pages",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      importPageIds: z.array(z.string().uuid()).min(1).max(50),
+      templateId: z.string().uuid().optional(),
+    })
+    .strict(),
+  output: z.object({
+    accepted: z.array(z.object({ importPageId: z.string(), pageId: z.string(), slug: z.string() })),
+  }),
+  handler: async (ctx, input, tx) => {
+    const accepted: { importPageId: string; pageId: string; slug: string }[] = [];
+    for (const importPageId of new Set(input.importPageIds)) {
+      const r = await acceptImportedPage(
+        ctx,
+        { importPageId, ...(input.templateId ? { templateId: input.templateId } : {}) },
+        tx,
+        "imports.accept_pages",
+      );
+      if (!r.ok) {
+        const error = {
+          kind: "HandlerError" as const,
+          operation: "imports.accept_pages",
+          message: `${r.message} (no page of this batch was accepted — drop or fix this id and call again)`,
+        };
+        if (accepted.length === 0) return err(error);
+        throw new OperationAbortError(error);
+      }
+      accepted.push({ importPageId, pageId: r.pageId, slug: r.slug });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.accept_pages",
+      input,
+      succeeded: true,
+      resultSummary: `promoted ${accepted.length} page(s): ${accepted.map((a) => a.slug).join(", ")}`,
+    });
+    return ok({ accepted });
   },
 });
 
@@ -2775,6 +2822,8 @@ export const getSessionBudgetStateOp = defineOperation({
  */
 export const recordBudgetGateEventOp = defineOperation({
   name: "imports.record_budget_gate_event",
+  // Why human-only: the budget-gate transition is detected by runner code, not chosen by the model
+  // (see above).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -2978,30 +3027,44 @@ export const getRunCalibrationOp = defineOperation({
 
 export const cleanupImportRunOp = defineOperation({
   name: "imports.cleanup_run",
+  // Why human-only: irreversibly drops the crawl ground truth; the AI reaches it only through
+  // cleanup_import_run, a needsApproval card whose handler runs with the approving Owner's context.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid() }).strict(),
-  output: z.object({}),
+  output: z.object({
+    /** Number of un-accepted import_pages rows deleted. */
+    droppedPages: z.number().int(),
+    /**
+     * Screenshot object keys of exactly the rows this call deleted
+     * (`DELETE … RETURNING`), so the caller removes those storage objects
+     * after commit — never a screenshot of a page accepted concurrently.
+     */
+    droppedScreenshotKeys: z.array(z.string()),
+  }),
   handler: async (ctx, input, tx) => {
     await tx.execute(sql`
       UPDATE import_runs SET status = 'completed' WHERE id = ${input.runId}::uuid
     `);
-    // Remove non-accepted import_pages rows (cascading screenshot cleanup
-    // happens via pgBackRest backups; MinIO objects are GCed by P14
-    // review pass).
-    await tx.execute(sql`
+    // Remove non-accepted import_pages rows. Storage IO stays out of the
+    // tx: the caller deletes the returned screenshot objects after commit.
+    const dropped = (await tx.execute(sql`
       DELETE FROM import_pages
        WHERE run_id = ${input.runId}::uuid AND accepted_page_id IS NULL
-    `);
+      RETURNING screenshot_object_key
+    `)) as unknown as { screenshot_object_key: string | null }[];
+    const droppedScreenshotKeys = dropped.flatMap((r) =>
+      r.screenshot_object_key ? [r.screenshot_object_key] : [],
+    );
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
       operation: "imports.cleanup_run",
       input,
       succeeded: true,
-      resultSummary: `cleaned up ${input.runId}`,
+      resultSummary: `cleaned up ${input.runId}: dropped ${dropped.length} page(s)`,
     });
-    return ok({});
+    return ok({ droppedPages: dropped.length, droppedScreenshotKeys });
   },
 });
 

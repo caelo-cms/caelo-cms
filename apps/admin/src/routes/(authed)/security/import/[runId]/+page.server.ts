@@ -84,30 +84,19 @@ export const actions: Actions = {
     const runId = form.get("runId");
     if (typeof runId !== "string") return fail(400, { error: "runId required" });
     const { adapter, registry } = getQueryContext();
-    // issue #198 — collect the run's screenshot keys BEFORE cleanup
-    // drops the rows, then delete the objects best-effort after. The
-    // DB tx stays free of storage IO; a failed object delete leaves a
-    // harmless orphan, never a broken run.
-    const keys: string[] = [];
-    const before = await execute(registry, adapter, locals.ctx, "imports.get", { runId });
-    if (before.ok) {
-      for (const pg of (
-        before.value as {
-          pages: {
-            screenshotObjectKey: string | null;
-          }[];
-        }
-      ).pages) {
-        if (pg.screenshotObjectKey) keys.push(pg.screenshotObjectKey);
-      }
-    }
+    // issue #198 — the op returns the screenshot keys of exactly the rows
+    // it dropped (un-accepted pages only); delete those objects best-effort
+    // after the commit. The DB tx stays free of storage IO; a failed object
+    // delete leaves a harmless orphan, never a broken run. Accepted pages
+    // keep their screenshots — the per-page import reads still use them.
     const r = await execute(registry, adapter, locals.ctx, "imports.cleanup_run", {
       runId,
     });
     if (!r.ok) return fail(400, { error: r.error.kind });
+    const { droppedScreenshotKeys } = r.value as { droppedScreenshotKeys: string[] };
     const { getMediaStorage } = await import("@caelo-cms/admin-core");
     const storage = getMediaStorage();
-    await Promise.all(keys.map((k) => storage.delete(k).catch(() => undefined)));
+    await Promise.all(droppedScreenshotKeys.map((k) => storage.delete(k).catch(() => undefined)));
     return { ok: true, message: "Run cleaned up. Accepted pages stay; un-accepted rows dropped." };
   },
 };

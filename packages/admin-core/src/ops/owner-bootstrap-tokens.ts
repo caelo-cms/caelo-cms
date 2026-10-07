@@ -25,6 +25,8 @@ const tokenShape = z.string().regex(/^[0-9a-f]{64}$/);
 
 export const insertBootstrapTokenOp = defineOperation({
   name: "owner_bootstrap_tokens.insert",
+  // Why system-only: a bootstrap token is the credential that creates the first Owner; only the
+  // provisioning/boot path may mint one.
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({
@@ -62,6 +64,8 @@ export const insertBootstrapTokenOp = defineOperation({
  */
 export const consumeBootstrapTokenOp = defineOperation({
   name: "owner_bootstrap_tokens.consume",
+  // Why system-only: /setup redeems the token unauthenticated — the token IS the proof of identity,
+  // so no actor exists yet.
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({
@@ -106,6 +110,7 @@ export const consumeBootstrapTokenOp = defineOperation({
  */
 export const anyBootstrapTokenIssuedOp = defineOperation({
   name: "owner_bootstrap_tokens.any_issued",
+  // Why system-only: /setup's unauthenticated pre-check; there is no caller identity yet.
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({}),

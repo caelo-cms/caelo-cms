@@ -7,7 +7,8 @@
  *
  * Also pins:
  *   - staging robots.txt blocks crawlers (`Disallow: /`).
- *   - AI actor can call deploy.trigger (trigger-only AI surface).
+ *   - AI actor can call deploy.trigger for non-production targets
+ *     (trigger-only AI surface); a production target is refused.
  *   - deploy_runs row records succeeded + counts.
  */
 
@@ -19,6 +20,7 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
@@ -271,6 +273,41 @@ describe("P6 deploy.trigger", () => {
       repoRoot: testRoot,
     });
     expect(result.ok).toBe(true);
+  });
+
+  it("AI actor cannot trigger a production deploy — production ships via propose_deploy_promote", async () => {
+    const result = await execute(registry, adapter, AI, "deploy.trigger", {
+      targetName: "production",
+      repoRoot: testRoot,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    const message = (result.error as { message?: string }).message ?? "";
+    expect(message).toContain("propose_deploy_promote");
+  });
+
+  it("deploy_staging tool: the AI rebuilds staging (and only staging) through the real op", async () => {
+    const tools = createDefaultToolRegistry();
+    process.env.CAELO_OUTPUT_ROOT = testRoot;
+    process.env.CAELO_SKIP_STAGING_SERVE_CHECK = "1";
+    try {
+      const built = await tools.dispatch("deploy_staging", {}, AI, { adapter, registry });
+      expect(built.ok).toBe(true);
+      expect(built.content).toContain('Staging "staging" rebuilt');
+      const out = built.value as { runId: string; pageCount: number };
+      expect(out.pageCount).toBeGreaterThanOrEqual(1);
+      expect(existsSync(join(testRoot, "output", "staging", "builds", out.runId))).toBe(true);
+
+      const prod = await tools.dispatch("deploy_staging", { targetName: "production" }, AI, {
+        adapter,
+        registry,
+      });
+      expect(prod.ok).toBe(false);
+      expect(prod.content).toContain("propose_deploy_promote");
+    } finally {
+      delete process.env.CAELO_OUTPUT_ROOT;
+      delete process.env.CAELO_SKIP_STAGING_SERVE_CHECK;
+    }
   });
 
   it("incremental deploy with changedPageIds re-bakes only those pages", async () => {

@@ -150,6 +150,8 @@ export const proposeAiProvidersClearKeyOp = defineOperation({
 
 export const executeAiProvidersProposalOp = defineOperation({
   name: "ai_providers.execute_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -245,6 +247,8 @@ export const executeAiProvidersProposalOp = defineOperation({
 
 export const rejectAiProvidersProposalOp = defineOperation({
   name: "ai_providers.reject_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z

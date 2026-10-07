@@ -7,7 +7,7 @@
  * SES are placeholders today; resend + none are fully wired.
  */
 
-import { buildEmailTransport, type EmailConfigRow } from "@caelo-cms/admin-core";
+import { describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
@@ -94,30 +94,11 @@ export const actions: Actions = {
     if (typeof to !== "string" || !to.includes("@")) {
       return fail(400, { error: "Provide a valid 'to' address." });
     }
+    // One code path for the panel and the AI's send_test_email tool.
     const { adapter, registry } = getQueryContext();
-    const r = await execute(registry, adapter, locals.ctx, "email_config.get", {});
-    if (!r.ok) return fail(500, { error: `Could not load email config: ${r.error.kind}` });
-    const cfg = (r.value as { config: EmailConfigRow }).config;
-    if (cfg.transport === "none") {
-      return fail(400, {
-        error: "Transport is `none` — sends are no-ops. Pick `resend` and save before testing.",
-      });
-    }
-    const transport = buildEmailTransport(cfg);
-    if (!transport) {
-      return fail(400, {
-        error: "Transport not implemented (SMTP/SES land in P15). Pick `resend`.",
-      });
-    }
-    try {
-      const result = await transport.send({
-        to,
-        subject: "Caelo email transport test",
-        html: "<p>If you're reading this, the configured transport works.</p>",
-      });
-      return { ok: true, message: `Sent test email (id ${result.messageId}).` };
-    } catch (e) {
-      return fail(500, { error: `Send failed: ${(e as Error).message}` });
-    }
+    const r = await execute(registry, adapter, locals.ctx, "email_config.send_test", { to });
+    if (!r.ok) return fail(400, { error: describeError(r.error) });
+    const v = r.value as { messageId: string };
+    return { ok: true, message: `Sent test email (id ${v.messageId}).` };
   },
 };

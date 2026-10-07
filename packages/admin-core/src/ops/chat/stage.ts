@@ -449,6 +449,8 @@ const stageInput = z
  */
 export const stageChatChangesOp = defineOperation({
   name: "chat.stage",
+  // Why human-only: staging moves a chat's changes toward publish — the operator's review step; AI
+  // (and Power-MCP) writes stay on the preview branch until a human stages them.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: stageInput,
@@ -705,6 +707,8 @@ const unstageInput = z
  */
 export const unstageChatChangesOp = defineOperation({
   name: "chat.unstage",
+  // Why human-only: undoes the operator's stage gesture (see chat.stage) — part of the human review
+  // step.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: unstageInput,

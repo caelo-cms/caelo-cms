@@ -68,6 +68,8 @@ export const listAiMemoryOp = defineOperation({
 
 export const setAiMemoryOp = defineOperation({
   name: "ai_memory.set",
+  // Why human-only: CLAUDE.md §2 — AI-written site memory is proposal-gated; the AI suggests via
+  // site_memory_propose and the Owner applies.
   // Owner-only writes — route layer enforces settings.write before the call.
   actorScope: ["human", "system"],
   database: "cms_admin",

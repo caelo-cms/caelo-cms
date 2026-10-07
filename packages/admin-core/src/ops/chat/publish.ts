@@ -46,6 +46,7 @@ import {
 import { jsonbParam } from "../../sql-helpers.js";
 import { refreshLivePathsAfterMerge } from "../content/current-path.js";
 import { scanBranchInternalLinks } from "../content/link-integrity.js";
+import { applyMediaUsageDelta } from "../content/media-usage.js";
 
 interface SessionRow {
   chat_branch_id: string;
@@ -690,6 +691,21 @@ export async function mergeBranchSnapshotsToMain(
         WHERE id = ${e.entityId}::uuid
       `);
     } else if (e.kind === "module") {
+      // P7 usage-tracker: branched module writes skipped the live
+      // usage_count delta; apply it now between what the live row counts
+      // (its HTML while not soft-deleted — media-usage.ts invariant) and
+      // the merged state.
+      const live = (await tx.execute(sql`
+        SELECT html, deleted_at FROM modules WHERE id = ${e.entityId}::uuid
+      `)) as unknown as { html: string; deleted_at: Date | null }[];
+      const liveRow = live[0];
+      if (liveRow) {
+        await applyMediaUsageDelta(
+          tx,
+          liveRow.deleted_at === null ? liveRow.html : "",
+          e.state.deletedAt ? "" : e.state.html,
+        );
+      }
       // v0.9.0 — also clears chat_branch_id so branched-create
       // modules graduate to main on merge.
       await tx.execute(sql`

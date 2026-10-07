@@ -96,6 +96,8 @@ export interface GenerateResult {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Mirrors the experiments.create label rule: one safe path segment. */
+const SAFE_VARIANT_LABEL = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 function uuidArrayLiteral(ids: ReadonlyArray<string>): string {
   for (const id of ids) {
     if (!UUID_RE.test(id)) throw new Error(`uuidArrayLiteral: not a UUID: ${id}`);
@@ -922,6 +924,14 @@ export async function generateSite(args: {
       const cp = pageById.get(e.page_id);
       if (!cp) continue;
       for (const v of e.variants) {
+        // experiments.create constrains labels to one safe path segment;
+        // a stored row that predates that rule must not write outside
+        // the build dir — fail the build loudly instead (no fallbacks).
+        if (!SAFE_VARIANT_LABEL.test(v.label)) {
+          throw new Error(
+            `experiment "${e.slug}" has variant label ${JSON.stringify(v.label)}, which is not a safe path segment — rename the variant (letters, digits, '-', '_') and redeploy`,
+          );
+        }
         const variantPath = `_variants/${e.slug}__${v.label}/${cp.relPath}`;
         const fullPath = join(buildDir, variantPath);
         await mkdir(join(fullPath, ".."), { recursive: true });

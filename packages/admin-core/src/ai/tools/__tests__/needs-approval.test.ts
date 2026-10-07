@@ -168,4 +168,26 @@ describe("ToolRegistry needsApproval gate (W5)", () => {
     expect(handlerRan).toBe(true);
     expect(result.content).toBe("handler ran");
   });
+
+  it("does not re-gate the Owner's approved dispatch (human ctx runs the handler)", async () => {
+    // The tool-approvals Approve action re-dispatches the SAME tool with the
+    // Owner's context. Gating that dispatch again just queued a fresh card
+    // for the click already given — with an unconditional predicate
+    // (set_migration_budget) the approval could never apply.
+    let handlerRan = false;
+    const reg = new ToolRegistry();
+    reg.register(
+      makeGatedTool({
+        name: "always_gated",
+        needsApproval: () => true,
+        onHandler: () => {
+          handlerRan = true;
+        },
+      }),
+    );
+    const owner: ExecutionContext = { ...ctx, actorKind: "human" };
+    const r = await reg.dispatch("always_gated", { go: true }, owner, toolCtx);
+    expect(handlerRan).toBe(true);
+    expect(r.content).toBe("handler ran");
+  });
 });

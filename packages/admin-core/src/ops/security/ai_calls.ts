@@ -304,6 +304,8 @@ async function buildAttribution(
  */
 export const spendWindowOp = defineOperation({
   name: "ai_calls.spend_window",
+  // Why human-only: header spend badge read on every authed page load; not an agent action (spend
+  // questions belong to ai_calls.aggregate).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ days: z.number().int().min(1).max(365).default(7) }).strict(),

@@ -171,7 +171,7 @@ import {
   setDomainTlsStatusOp,
   verifyDomainOp,
 } from "./ops/domains.js";
-import { getEmailConfigOp, setEmailConfigOp } from "./ops/email_config.js";
+import { getEmailConfigOp, sendTestEmailOp, setEmailConfigOp } from "./ops/email_config.js";
 import {
   executeEmailConfigProposalOp,
   listPendingEmailConfigProposalsOp,
@@ -222,6 +222,7 @@ import {
 import { importMediaUrlsOp, listPageAssetsOp } from "./ops/import_media.js";
 import {
   acceptImportedPageOp,
+  acceptImportedPagesOp,
   addImportPageNotesOp,
   assignImportPageClusterOp,
   checkImportPageInventoryOp,
@@ -854,6 +855,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);
+  registry.register(sendTestEmailOp);
   // v0.2.25 — email_config propose/execute pair. AI proposes
   // transport+fromAddress+config-without-secrets; Owner supplies the
   // smtp password / resend apiKey / SES key inline at approve time
@@ -931,6 +933,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setRunDesignTokensOp);
   registry.register(writeExtractedPagesOp);
   registry.register(acceptImportedPageOp);
+  registry.register(acceptImportedPagesOp);
   registry.register(cleanupImportRunOp);
   registry.register(composeFromImportRunOp);
   // Explicit, URL-driven media import (replaces the scan-and-download

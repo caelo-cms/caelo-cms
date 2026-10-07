@@ -489,6 +489,8 @@ export const lookupLinksInModulesOp = defineOperation({
 
 export const rewriteModuleLinksOp = defineOperation({
   name: "pages.rewrite_module_links",
+  // Why system-only: side-effect of a slug change, run inside pages.update / pages.update_many on
+  // the same tx; the AI triggers it by changing a slug.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
