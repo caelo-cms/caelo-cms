@@ -169,6 +169,8 @@ export const proposeEmailConfigSetOp = defineOperation({
 
 export const executeEmailConfigProposalOp = defineOperation({
   name: "email_config.execute_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -249,6 +251,8 @@ export const executeEmailConfigProposalOp = defineOperation({
 
 export const rejectEmailConfigProposalOp = defineOperation({
   name: "email_config.reject_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z

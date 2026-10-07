@@ -10,6 +10,8 @@ import { withSystemRls } from "./_helpers.js";
 
 export const createFirstOwnerOp = defineOperation({
   name: "users.create_first_owner",
+  // Why system-only: /setup mints the very first Owner before any session exists (bootstrap-token
+  // gated); there is no actor yet to run it as.
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({
@@ -98,6 +100,7 @@ export const createFirstOwnerOp = defineOperation({
 
 export const isSetupCompleteOp = defineOperation({
   name: "users.is_setup_complete",
+  // Why human-only (+system): auth-page read (see below); the agent has no use for it.
   // human + system: the /login and /setup loads run this with the
   // REQUEST's ctx, which is a human actor whenever a session cookie
   // is present. System-only scoping made every logged-in visit to
@@ -475,6 +478,7 @@ export const changePasswordOp = defineOperation({
  */
 export const adminSetPasswordOp = defineOperation({
   name: "users.admin_set_password",
+  // Why human-only: sets another user's password — credentials never pass through the AI.
   // The route elevates to a system kind after a `users.manage` permission
   // check, so the cross-user write clears RLS. A bare human actor is blocked.
   actorScope: ["human", "system"],

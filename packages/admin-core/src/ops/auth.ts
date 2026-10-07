@@ -17,6 +17,8 @@ import {
 
 export const loginOp = defineOperation({
   name: "auth.login",
+  // Why system-only: authentication itself: runs before any actor is resolved (the credential in
+  // the input is the identity); the AI never authenticates as a user.
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({ email: z.string().email(), password: z.string().min(1).max(256) }),
@@ -108,6 +110,7 @@ export const logoutOp = defineOperation({
 
 export const resolveSessionOp = defineOperation({
   name: "auth.resolve_session",
+  // Why system-only: maps a session cookie to an actor on every request, before any actor exists.
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({ token: z.string() }),
@@ -197,6 +200,8 @@ export const resolveSessionOp = defineOperation({
  */
 export const requestPasswordResetOp = defineOperation({
   name: "auth.request_password_reset",
+  // Why system-only: unauthenticated self-service reset (see the doc comment above); the AI
+  // never handles credentials or reset tokens.
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({ email: z.string().email().max(254) }),
@@ -249,6 +254,8 @@ export const requestPasswordResetOp = defineOperation({
  */
 export const resetPasswordOp = defineOperation({
   name: "auth.reset_password",
+  // Why system-only: unauthenticated token redemption (see the doc comment above); the AI never
+  // handles credentials or reset tokens.
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({

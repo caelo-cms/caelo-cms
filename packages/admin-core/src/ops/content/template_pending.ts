@@ -132,6 +132,8 @@ export const proposeTemplateDeleteOp = defineOperation({
 
 export const executeTemplateProposalOp = defineOperation({
   name: "templates.execute_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
@@ -203,6 +205,8 @@ export const executeTemplateProposalOp = defineOperation({
 
 export const rejectTemplateProposalOp = defineOperation({
   name: "templates.reject_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z

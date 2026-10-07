@@ -464,6 +464,9 @@ export const finalizePluginInstallationOp = defineOperation({
 
 export const revokePluginCapabilityOp = defineOperation({
   name: "plugins.revoke_capability",
+  // Why human-only: the direct Owner action; the AI reaches it through the
+  // §11.A-gated revoke proposal (plugin-lifecycle-tools.ts), applied on the
+  // Owner's approval.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ installationId: z.string().uuid(), capability: pluginCapability }).strict(),

@@ -98,6 +98,19 @@ This writes a `CLAUDE.md` plus one `.claude/skills/<slug>/SKILL.md` per active s
 
 A handful of tools only make sense inside Caelo's own loop and are filtered out (calling them anyway returns the reason + the routing alternative): `spawn_subagent`/`spawn_subagents` (your agent brings its own parallelism), `offer_choices`, `submit_result`. `screenshot_page` IS served: on this surface it renders the session branch's preview in server-side Chromium and returns the pixels as an MCP image content block.
 
+### Panel buttons your agent can press too
+
+The rule is that an operator never has to do by hand what the agent cannot do. Routine, undoable actions run directly; hard-to-revert ones become an Owner approval. Some examples:
+
+- **Staging deploys:** `deploy_staging` rebuilds staging from the published content. Production is never deployed directly. The agent calls `propose_deploy_promote` and the Owner approves.
+- **Experiments:** `create_experiment` creates a draft A/B test, and `list_experiments` and `get_experiment_results` read experiments back. Activating or completing a test is a `propose_*` approval.
+- **DNS checks:** `verify_domains` and `verify_dns_records` check the records the installer asked for.
+- **Clean-up:** `delete_media_many` and `delete_modules_many` delete only assets and modules that nothing uses any more. Anything still in use is reported back instead of deleted.
+- **Imports:** `accept_import_pages` takes crawled pages over as drafts. `cleanup_import_run` queues an approval card, and the crawl data is only deleted once the Owner approves.
+- **Email:** `send_test_email` sends the fixed transport test email. The agent may only address it to the sender's own domain.
+
+Approval cards from these tools wait in `/security/tool-approvals/pending` when no chat is open to show them.
+
 ## Google Cloud installs (IAP)
 
 On `gcp` and `gcp-firebase` installs the admin sits behind Google Identity-Aware Proxy, so the `claude mcp add` command from `/security/mcp` carries one more variable, `CAELO_IAP_SERVICE_ACCOUNT`, and you run `gcloud auth application-default login` once. The MCP server then signs a short-lived Google credential as the install's `caelo-mcp` service account and sends it next to your Caelo token.

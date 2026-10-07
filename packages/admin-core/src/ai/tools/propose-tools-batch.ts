@@ -413,7 +413,7 @@ export const proposeExperimentActivateTool = makeProposeTool({
   pendingQueuePath: "/security/experiments/pending",
   when:
     "Propose activating a draft A/B experiment so it starts assigning real visitor traffic. " +
-    "Use AFTER experiments.create has minted the draft.",
+    "Use AFTER `create_experiment` returned the draft's experimentId (`list_experiments` finds existing drafts).",
   schema: z.object({ experimentId: uuid }).strict(),
   inputSchema: {
     type: "object",

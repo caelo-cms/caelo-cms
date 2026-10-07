@@ -444,6 +444,8 @@ export const getChatBranchIdOp = defineOperation({
 
 export const setChatExtendedThinkingOp = defineOperation({
   name: "chat.set_extended_thinking",
+  // Why human-only: the operator's per-chat cost/latency preference; the AI does not raise its own
+  // reasoning budget.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z

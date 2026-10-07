@@ -23,6 +23,7 @@
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   err,
+  extractMediaRefs,
   mediaDeleteInputSchema,
   mediaListInputSchema,
   mediaRecordUsageInputSchema,
@@ -37,6 +38,8 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { resolveUniqueMediaSlug } from "../media/slug.js";
+import { loadBranchedModuleStates } from "../snapshots/load.js";
+import { findContentInstancesContaining } from "./content/content-instance-refs.js";
 
 // ---------------------------------------------------------------------
 // Row shapes returned to callers.
@@ -156,6 +159,8 @@ function rowToAsset(
 
 export const mediaUploadOp = defineOperation({
   name: "media.upload",
+  // Why human-only: the HTTP upload endpoint writes the bytes, then this row; the AI's media intake
+  // (import_media_from_urls, generate_image, edit_image) writes through its own ops.
   // Humans + system. AI uploads live in P11+ (plugin SDK) or the
   // `import-site` skill; the routine surface is human-driven so the
   // audit trail is unambiguous.
@@ -648,6 +653,7 @@ export const mediaDeleteOp = defineOperation({
 
 export const mediaRecordUsageOp = defineOperation({
   name: "media.record_usage",
+  // Why system-only: usage-count bookkeeping driven by module writes (see above).
   actorScope: ["system"],
   database: "cms_admin",
   input: mediaRecordUsageInputSchema,
@@ -975,6 +981,8 @@ export const getProcessingStatusOp = defineOperation({
 
 export const proposeAltOp = defineOperation({
   name: "media.propose_alt",
+  // Why system-only: proposals come from the alt-text scanner (see below); the AI writes alt text
+  // directly with set_media_alt_many.
   // System-only — proposals come from a scanner CLI / future cron job.
   // AI cannot write directly to alt; the audit path stays unambiguous.
   actorScope: ["system"],
@@ -1170,6 +1178,20 @@ export const mediaDeleteManyOp = defineOperation({
   handler: async (ctx, input, tx) => {
     let deleted = 0;
     const blocked: { assetId: string; referencingModuleSlugs: string[] }[] = [];
+    // `usage_count` only follows LIVE module HTML. Two more places can
+    // embed an asset without bumping it, and both are checked here:
+    //   - a chat's module edits live in branched snapshots until merge
+    //     (the merge applies the delta), so an asset the chat just
+    //     embedded reads as unused on main;
+    //   - content-instance values (`image` fields) never touch the count.
+    // Without these the delete succeeds and the page renders a broken
+    // image. Matching is exact on the parsed media refs (slug or legacy
+    // id), so `hero` is not "used" by an embed of `hero-dark`.
+    const branchedModules = ctx.chatBranchId
+      ? [...(await loadBranchedModuleStates(tx, ctx.chatBranchId)).values()].filter(
+          (m) => m.deletedAt === null,
+        )
+      : [];
     for (const assetId of input.assetIds) {
       const rows = (await tx.execute(sql`
         SELECT slug, usage_count FROM media_assets
@@ -1178,14 +1200,42 @@ export const mediaDeleteManyOp = defineOperation({
       const target = rows[0];
       if (!target) continue;
       const usage = Number(target.usage_count);
-      if (usage > 0 && !input.force) {
+      const refersToTarget = (text: string) =>
+        extractMediaRefs(text).some((r) => (r.isSlug ? r.ref === target.slug : r.ref === assetId));
+      const branchRefs = branchedModules.filter((m) => refersToTarget(m.html)).map((m) => m.slug);
+      const instanceRefs = (
+        await findContentInstancesContaining(tx, ctx.chatBranchId, [
+          `/_caelo/media/${target.slug}`,
+          `/_caelo/media/${assetId}/`,
+        ])
+      ).filter((ci) => refersToTarget(ci.valuesText));
+      const instanceModuleSlugs =
+        instanceRefs.length === 0
+          ? []
+          : (
+              (await tx.execute(sql`
+                SELECT slug FROM modules
+                 WHERE id IN (${sql.join(
+                   [...new Set(instanceRefs.map((ci) => ci.moduleId))].map(
+                     (id) => sql`${id}::uuid`,
+                   ),
+                   sql`, `,
+                 )})
+              `)) as unknown as { slug: string }[]
+            ).map((r) => r.slug);
+      if ((usage > 0 || branchRefs.length > 0 || instanceRefs.length > 0) && !input.force) {
         const refs = (await tx.execute(sql`
           SELECT slug FROM modules
           WHERE deleted_at IS NULL
             AND (html LIKE ${`%/_caelo/media/${target.slug}%`}
                  OR html LIKE ${`%/_caelo/media/${assetId}/%`})
         `)) as unknown as { slug: string }[];
-        blocked.push({ assetId, referencingModuleSlugs: refs.map((r) => r.slug) });
+        blocked.push({
+          assetId,
+          referencingModuleSlugs: [
+            ...new Set([...refs.map((r) => r.slug), ...branchRefs, ...instanceModuleSlugs]),
+          ],
+        });
         continue;
       }
       await tx.execute(sql`

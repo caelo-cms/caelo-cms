@@ -140,6 +140,8 @@ export const readToolApprovalForExecuteOp = defineOperation({
 
 export const markToolApprovalResultOp = defineOperation({
   name: "tool_approvals.mark_result",
+  // Why human-only: records the outcome of the Owner-approved dispatch on its approval row; written
+  // by the approve route, never by the proposer.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -174,6 +176,8 @@ export const markToolApprovalResultOp = defineOperation({
 
 export const rejectToolApprovalOp = defineOperation({
   name: "tool_approvals.reject_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z

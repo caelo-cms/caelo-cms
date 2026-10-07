@@ -208,6 +208,8 @@ export const proposeRoleDeleteOp = defineOperation({
 
 export const executeRoleProposalOp = defineOperation({
   name: "roles.execute_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
@@ -293,6 +295,8 @@ export const executeRoleProposalOp = defineOperation({
 
 export const rejectRoleProposalOp = defineOperation({
   name: "roles.reject_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
