@@ -8,6 +8,9 @@ import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
+/** System kind for cross-user writes on self-or-system RLS tables (see create). */
+const asSystem = (locals: App.Locals) => ({ ...locals.ctx, actorKind: "system" as const });
+
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "users.manage");
   const { adapter, registry } = getQueryContext();
@@ -50,7 +53,10 @@ export const actions: Actions = {
     const displayName = String(form.get("displayName") ?? "").trim();
     const roleNames = form.getAll("roleNames").map(String).filter(Boolean);
 
-    const result = await execute(registry, adapter, locals.ctx, "users.create", {
+    // Elevated like resetPassword below: creating ANOTHER user's actor/users
+    // rows clears self-or-system RLS only as system (a bare human owner is
+    // blocked). `users.manage` was checked above; the owner id stays on audit.
+    const result = await execute(registry, adapter, asSystem(locals), "users.create", {
       email,
       password,
       displayName,
@@ -84,7 +90,7 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
 
     const userId = String(form.get("userId") ?? "");
-    const result = await execute(registry, adapter, locals.ctx, "users.delete", { userId });
+    const result = await execute(registry, adapter, asSystem(locals), "users.delete", { userId });
     if (!result.ok) return fail(400, { error: "Could not delete user." });
     return { ok: true };
   },

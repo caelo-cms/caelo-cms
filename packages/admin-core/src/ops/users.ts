@@ -6,6 +6,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../audit.js";
 import { hashPassword, validatePasswordStrength, verifyPassword } from "../password.js";
+import { withSystemRls } from "./_helpers.js";
 
 export const createFirstOwnerOp = defineOperation({
   name: "users.create_first_owner",
@@ -139,17 +140,22 @@ export const listUsersOp = defineOperation({
       }),
     ),
   }),
-  handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(
-      input.includeDeleted
-        ? sql`
+  handler: async (ctx, input, tx) => {
+    // users RLS is self-or-system; without this the list held only the
+    // caller's own row (nothing at all for the AI), so list_users could
+    // never name the user a propose_set_user_roles / propose_delete_user
+    // targets. See withSystemRls.
+    const rows = (await withSystemRls(tx, ctx, () =>
+      tx.execute(
+        input.includeDeleted
+          ? sql`
             SELECT u.id::text AS id, u.email AS email, a.display_name AS "displayName",
                    u.is_first_owner AS "isFirstOwner", u.created_at AS "createdAt",
                    u.deleted_at AS "deletedAt"
             FROM users u JOIN actors a ON a.id = u.id
             ORDER BY u.created_at ASC
           `
-        : sql`
+          : sql`
             SELECT u.id::text AS id, u.email AS email, a.display_name AS "displayName",
                    u.is_first_owner AS "isFirstOwner", u.created_at AS "createdAt",
                    u.deleted_at AS "deletedAt"
@@ -157,6 +163,7 @@ export const listUsersOp = defineOperation({
             WHERE u.deleted_at IS NULL
             ORDER BY u.created_at ASC
           `,
+      ),
     )) as unknown as {
       id: string;
       email: string;
