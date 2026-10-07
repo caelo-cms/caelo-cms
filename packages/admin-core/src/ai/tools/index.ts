@@ -138,6 +138,7 @@ import {
   proposeUserSetRolesTool,
 } from "./propose-tools-batch.js";
 import {
+  checkStageAuditTool,
   getQualityAuditTool,
   listQualityAcceptancesTool,
   listQualityAuditsTool,
@@ -381,6 +382,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(findRedirectsTool);
   // #553 — quality gate read surface (Lighthouse audits after a Stage).
   registry.register(getQualityAuditTool);
+  registry.register(checkStageAuditTool);
   registry.register(listQualityAuditsTool);
   registry.register(listQualityAcceptancesTool);
   // #553 PR 2 — the Publish gate: read, retry, and the two in-chat

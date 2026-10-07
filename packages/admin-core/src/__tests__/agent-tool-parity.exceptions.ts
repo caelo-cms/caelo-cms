@@ -270,13 +270,15 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     reason: "previews for the Owner exactly what telemetry would send before they consent",
   },
 
-  // ── gaps: the agent should be able to do this (follow-ups) ────────────
-  "quality_audits.classify_stage": {
-    kind: "gap",
+  // ── #553 quality gate ─────────────────────────────────────────────────
+  "quality_audits.list_pending": PENDING_QUEUE,
+  "quality_audits.chat_status": {
+    kind: "internal",
     reason:
-      "the AI cannot ask whether its next Stage will trigger a Lighthouse audit (and why) before telling the operator what to expect; #583 shipped the op AI-scoped without a tool",
-    followUp: "#553 quality gate (PR 2/3): add the classify_stage read to quality-audit-tools.ts",
+      "backing read of the chat panel's / toolbar's quality poller (newest audit of a chat + the message the chat should get); the agent reads the same state through get_quality_audit and get_publish_gate",
   },
+
+  // ── gaps: the agent should be able to do this (follow-ups) ────────────
   "tool_approvals.list_pending": {
     kind: "gap",
     reason:

@@ -22,6 +22,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import {
+  checkStageAuditTool,
   getQualityAuditTool,
   listQualityAcceptancesTool,
   listQualityAuditsTool,
@@ -250,6 +251,14 @@ describe("quality_audits.classify_stage", () => {
     expect(c.classification.auditNeeded).toBe(true);
     expect(c.classification.reasons.map((r) => r.rule)).toEqual(["module_code"]);
     expect(c.touchedPageIds).toEqual([aboutId]);
+    // The AI asks the same question through check_stage_audit.
+    const told = await checkStageAuditTool.handler(AI, {}, {
+      adapter,
+      registry,
+      chatSessionId,
+    } as ToolContext);
+    expect(told.content).toContain("will be quality-checked");
+    expect(told.content).toContain("module_code");
     await op(SYS, "chat.discard_branch", { chatSessionId });
   });
 
