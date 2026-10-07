@@ -746,14 +746,30 @@ async function lifecycleTruncate(): Promise<void> {
 async function adminDomain(): Promise<void> {
   const sub = process.argv[3];
   if (sub !== "enable") {
-    console.log("Usage: cms-provision admin-domain enable");
+    console.log("Usage: cms-provision admin-domain enable [--install <install-id>]");
     process.exit(2);
   }
   const { listInstalls } = await import("./install-state.js");
   const { enableAdminDomain } = await import("./admin-domain.js");
-  const meta = listInstalls()[0];
-  if (!meta?.projectId) {
-    console.error("No cloud install found on this machine (~/.caelo-<install-id>/install.json).");
+  const flag = process.argv.indexOf("--install");
+  const wanted = flag >= 0 ? process.argv[flag + 1] : undefined;
+  const cloud = listInstalls().filter((m) => m.projectId);
+  const candidates = wanted ? cloud.filter((m) => m.installId === wanted) : cloud;
+  if (candidates.length !== 1) {
+    // Guessing among several installs could map the domain in the wrong project.
+    console.error(
+      candidates.length === 0
+        ? `No cloud install${wanted ? ` "${wanted}"` : ""} found on this machine (~/.caelo-<install-id>/install.json).`
+        : `Several installs on this machine: ${candidates.map((m) => `${m.installId} (${m.domain})`).join(", ")}.\nPick one with --install <install-id>.`,
+    );
+    process.exit(1);
+  }
+  const meta = candidates[0];
+  if (!meta?.projectId) process.exit(1);
+  if (!meta.region) {
+    console.error(
+      `install ${meta.installId} has no region recorded in install.json; re-run the wizard to record it.`,
+    );
     process.exit(1);
   }
   if (meta.provider !== "gcp-firebase") {
@@ -766,7 +782,7 @@ async function adminDomain(): Promise<void> {
   }
   const r = await enableAdminDomain({
     projectId: meta.projectId,
-    region: meta.region ?? "europe-west1",
+    region: meta.region,
     domain: meta.domain,
   });
   if (r.status === "failed") {

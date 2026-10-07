@@ -73,11 +73,23 @@ export async function enableAdminDomain(opts: {
     "--filter=metadata.name~^caelo-production-admin",
     "--format=value(metadata.name)",
   ]);
-  const service = services.ok ? services.stdout.trim().split("\n")[0]?.trim() : "";
+  if (!services.ok) {
+    return { status: "failed", error: `list Cloud Run services: ${services.stderr.trim()}` };
+  }
+  const matches = services.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  // Fail closed like the other admin lookups: with a leftover service from a
+  // failed deploy, picking one would bind the domain to the wrong revision.
+  const service = matches.length === 1 ? matches[0] : undefined;
   if (!service) {
     return {
       status: "failed",
-      error: `admin Cloud Run service not found: ${services.stderr.trim() || "no caelo-production-admin* service"}`,
+      error:
+        matches.length === 0
+          ? "admin Cloud Run service not found: no caelo-production-admin* service"
+          : `expected exactly one caelo-production-admin* Cloud Run service, found ${matches.length} (${matches.join(", ")}); delete the stale one first`,
     };
   }
 
@@ -101,9 +113,19 @@ export async function enableAdminDomain(opts: {
   }
 
   const verified = await run(["domains", "list-user-verified", "--format=value(id)"]);
-  const verifiedIds = verified.ok ? verified.stdout.split("\n").map((s) => s.trim()) : [];
+  if (!verified.ok) {
+    // Expired credentials or a missing gcloud component — not "unverified".
+    return { status: "failed", error: `list verified domains: ${verified.stderr.trim()}` };
+  }
+  const verifiedIds = verified.stdout.split("\n").map((s) => s.trim());
   if (!verifiedIds.includes(opts.domain) && !verifiedIds.includes(hostname)) {
-    await run(["domains", "verify", opts.domain]);
+    const verify = await run(["domains", "verify", opts.domain]);
+    if (!verify.ok) {
+      return {
+        status: "failed",
+        error: `start domain verification for ${opts.domain}: ${verify.stderr.trim()}`,
+      };
+    }
     return { status: "needs-verification", hostname, verifyDomain: opts.domain };
   }
 

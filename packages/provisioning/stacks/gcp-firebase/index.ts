@@ -32,7 +32,7 @@ import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import {
   ADMIN_RUNTIME_OPERATOR_ACCESS_GRANTS,
-  type CustomRoleSpec,
+  customRoleName,
 } from "../../dist/operator-access-grants.js";
 
 const cfg = new pulumi.Config();
@@ -797,29 +797,12 @@ const adminRuntimeMember = pulumi.interpolate`serviceAccount:${runSa.email}`;
 const operatorAccessGrants = ADMIN_RUNTIME_OPERATOR_ACCESS_GRANTS.filter((g) =>
   g.providers.includes("gcp-firebase"),
 );
-const customRoles = new Map<CustomRoleSpec, gcp.projects.IAMCustomRole>();
-for (const role of new Set(operatorAccessGrants.map((g) => g.role))) {
-  customRoles.set(
-    role,
-    new gcp.projects.IAMCustomRole(
-      `${namePrefix}-role-${role.roleId.toLowerCase()}`,
-      {
-        project,
-        roleId: role.roleId,
-        title: role.title,
-        description: role.description,
-        permissions: [...role.permissions],
-        stage: "GA",
-      },
-      opts,
-    ),
-  );
-}
-const roleRef = (role: CustomRoleSpec): pulumi.Output<string> => {
-  const created = customRoles.get(role);
-  if (!created) throw new Error(`custom role ${role.roleId} was not declared`);
-  return created.name;
-};
+// The custom roles themselves are NOT Pulumi resources: a project custom
+// role id is project-global (a second stack in the project, or the copy
+// `cms-provision upgrade` creates on older installs, would collide with
+// "already exists"), and a deleted id stays reserved for weeks. The CLI owns
+// them — the wizard creates them before `pulumi up` (ensureOperatorAccessRoles)
+// and `upgrade` converges them — so the stack only binds them by name.
 for (const grant of operatorAccessGrants) {
   switch (grant.scope) {
     case "admin-iap-resource":
@@ -829,7 +812,7 @@ for (const grant of operatorAccessGrants) {
           project,
           location: region,
           cloudRunServiceName: adminSvc.name,
-          role: roleRef(grant.role),
+          role: customRoleName(project, grant.role),
           member: adminRuntimeMember,
         },
         opts,
@@ -840,7 +823,7 @@ for (const grant of operatorAccessGrants) {
         `${namePrefix}-mcp-operator-access`,
         {
           serviceAccountId: mcpServiceAccount.name,
-          role: roleRef(grant.role),
+          role: customRoleName(project, grant.role),
           member: adminRuntimeMember,
         },
         opts,
@@ -851,7 +834,7 @@ for (const grant of operatorAccessGrants) {
         `${namePrefix}-admin-${grant.role.roleId.toLowerCase()}`,
         {
           project,
-          role: roleRef(grant.role),
+          role: customRoleName(project, grant.role),
           member: adminRuntimeMember,
         },
         opts,

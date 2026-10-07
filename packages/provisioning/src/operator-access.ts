@@ -4,8 +4,14 @@
  * Converge an existing IAP install onto {@link ADMIN_RUNTIME_OPERATOR_ACCESS_GRANTS}
  * — the rights the admin's runtime service account needs to add and remove
  * operators itself when an Owner approves a user change. New installs get
- * them from the Pulumi stacks; `cms-provision upgrade` calls this so installs
- * provisioned earlier get the same, with no operator config.
+ * the bindings from the Pulumi stacks; `cms-provision upgrade` calls this so
+ * installs provisioned earlier get the same, with no operator config.
+ *
+ * The custom roles themselves are owned here, never by Pulumi: a custom role
+ * id is project-global and stays reserved for weeks after deletion, so a
+ * Pulumi-declared copy would collide with this one (or with a second stack
+ * in the same project). The wizard calls {@link ensureOperatorAccessRoles}
+ * before `pulumi up`; the stacks only bind the roles by name.
  *
  * Every step is create-if-missing or an additive IAM binding, so re-running
  * is a no-op. Runs as the operator's gcloud identity (project Owner).
@@ -68,6 +74,28 @@ async function ensureCustomRole(
   return update.ok ? null : `update role ${role.roleId}: ${update.stderr.trim()}`;
 }
 
+/**
+ * Create (or bring to spec) every custom role {@link ADMIN_RUNTIME_OPERATOR_ACCESS_GRANTS}
+ * uses on `provider`. Idempotent; runs as the operator's gcloud identity.
+ */
+export async function ensureOperatorAccessRoles(opts: {
+  projectId: string;
+  provider: IapProvider;
+  run?: Run;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const run = opts.run ?? defaultGcloud;
+  const roles = new Set(
+    ADMIN_RUNTIME_OPERATOR_ACCESS_GRANTS.filter((g) => g.providers.includes(opts.provider)).map(
+      (g) => g.role,
+    ),
+  );
+  for (const role of roles) {
+    const error = await ensureCustomRole(run, opts.projectId, role);
+    if (error) return { ok: false, error };
+  }
+  return { ok: true };
+}
+
 export async function ensureOperatorAccessGrants(opts: {
   projectId: string;
   provider: IapProvider;
@@ -83,11 +111,12 @@ export async function ensureOperatorAccessGrants(opts: {
     g.providers.includes(opts.provider),
   );
 
-  const roles = [...new Set(grants.map((g) => g.role))];
-  for (const role of roles) {
-    const error = await ensureCustomRole(run, opts.projectId, role);
-    if (error) return { ok: false, error };
-  }
+  const roles = await ensureOperatorAccessRoles({
+    projectId: opts.projectId,
+    provider: opts.provider,
+    run,
+  });
+  if (!roles.ok) return roles;
 
   const granted: string[] = [];
   for (const grant of grants) {

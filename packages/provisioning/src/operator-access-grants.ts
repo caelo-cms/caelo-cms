@@ -22,7 +22,11 @@
  * applies the same list to installs provisioned before it existed.
  */
 
-/** A project-level custom role the stacks and `upgrade` both create. */
+/**
+ * A project-level custom role. Created by the CLI (the wizard before
+ * `pulumi up`, and `upgrade`), never declared in the stacks — see
+ * operator-access.ts.
+ */
 export interface CustomRoleSpec {
   readonly roleId: string;
   readonly title: string;

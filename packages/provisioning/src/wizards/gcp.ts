@@ -54,6 +54,7 @@ import {
   writeMetadata,
   writeSecret,
 } from "../install-state.js";
+import { ensureOperatorAccessRoles } from "../operator-access.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { pulumiUpGcp } from "./gcp-pulumi.js";
 
@@ -114,6 +115,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   const saEmail = `${SA_ACCOUNT_ID}@${projectId}.iam.gserviceaccount.com`;
   await stepServiceAccount(installId, projectId, saEmail);
   await stepGrantRoles(installId, projectId, saEmail);
+  await stepOperatorAccessRoles(projectId, opts.provider ?? "gcp");
   const keyPath = await stepMintKey(installId, projectId, saEmail, secretsDir);
 
   // === 7. Pulumi passphrase ===
@@ -542,6 +544,29 @@ async function stepGrantRoles(
   }
   s.stop(green(`${granted} IAM roles granted`));
   markStepDone(installId, stepName, { granted });
+}
+
+/**
+ * Create the custom roles the stack binds to the admin's runtime SA so it can
+ * manage IAP operators itself (operator-access.ts). Runs as the operator's
+ * gcloud identity, before `pulumi up`: the roles are CLI-owned, not Pulumi
+ * resources (a project-global role id would collide with `upgrade`'s copy).
+ * Idempotent, so it runs on every wizard pass instead of being checkpointed.
+ */
+async function stepOperatorAccessRoles(
+  projectId: string,
+  provider: "gcp" | "gcp-firebase",
+): Promise<void> {
+  const s = spinner();
+  s.start("Creating the admin's operator-access IAM roles...");
+  const r = await ensureOperatorAccessRoles({ projectId, provider });
+  if (!r.ok) {
+    s.stop(red(`Failed: ${r.error}`));
+    log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(green("Operator-access IAM roles ready"));
 }
 
 async function stepMintKey(

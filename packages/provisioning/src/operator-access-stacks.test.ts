@@ -19,7 +19,11 @@ describe.each(["gcp", "gcp-firebase"])("%s stack — operator access", (provider
   it("derives roles and bindings from the shared grants list", () => {
     expect(src).toContain('from "../../dist/operator-access-grants.js"');
     expect(src).toContain(`g.providers.includes("${provider}")`);
-    expect(src).toContain("new gcp.projects.IAMCustomRole(");
+  });
+
+  it("binds the CLI-owned custom roles by name and never declares them (project-global ids collide)", () => {
+    expect(src).not.toContain("IAMCustomRole");
+    expect(src).toContain("role: customRoleName(project, grant.role),");
   });
 
   it("binds the custom role on the admin's own IAP resource, not project-wide", () => {

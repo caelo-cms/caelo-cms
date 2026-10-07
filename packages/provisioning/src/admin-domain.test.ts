@@ -75,6 +75,38 @@ describe("enableAdminDomain", () => {
     expect(calls.some((c) => c.includes("create"))).toBe(false);
   });
 
+  it("refuses to pick when more than one admin service matches", async () => {
+    const { run, calls } = fakeGcloud({
+      "run services list": [ok("caelo-production-admin-abc\ncaelo-production-admin-old\n")],
+    });
+    const r = await enableAdminDomain({ ...base, run });
+    expect(r.status === "failed" && r.error).toContain("exactly one");
+    expect(calls.some((c) => c.includes("create"))).toBe(false);
+  });
+
+  it("fails (not needs-verification) when gcloud cannot list or start verification", async () => {
+    const listFails = fakeGcloud({
+      "run services list": [ok("caelo-production-admin-abc\n")],
+      "beta run domain-mappings describe": [fail("NOT_FOUND")],
+      "domains list-user-verified": [fail("Reauthentication required")],
+    });
+    expect(await enableAdminDomain({ ...base, run: listFails.run })).toEqual({
+      status: "failed",
+      error: "list verified domains: Reauthentication required",
+    });
+
+    const verifyFails = fakeGcloud({
+      "run services list": [ok("caelo-production-admin-abc\n")],
+      "beta run domain-mappings describe": [fail("NOT_FOUND")],
+      "domains list-user-verified": [ok("other.org\n")],
+      "domains verify": [fail("could not open a browser")],
+    });
+    expect(await enableAdminDomain({ ...base, run: verifyFails.run })).toEqual({
+      status: "failed",
+      error: "start domain verification for example.com: could not open a browser",
+    });
+  });
+
   it("fails loudly when the admin service cannot be found or the create is refused", async () => {
     const missing = fakeGcloud({ "run services list": [ok("")] });
     expect((await enableAdminDomain({ ...base, run: missing.run })).status).toBe("failed");
