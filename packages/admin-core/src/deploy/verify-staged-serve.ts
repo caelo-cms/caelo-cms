@@ -65,7 +65,7 @@ async function checkOnce(args: {
   runId: string;
   timeoutMs?: number;
 }): Promise<StagedServeCheck> {
-  const base = args.stagingBaseUrl.replace(/\/+$/, "");
+  const base = trimTrailingSlashes(args.stagingBaseUrl);
   const url = `${base}/routing-manifest.json`;
   let res: Response;
   try {
@@ -110,4 +110,15 @@ async function checkOnce(args: {
     };
   }
   return { served: true };
+}
+
+/**
+ * `s` without trailing slashes. A loop instead of `/\/+$/`: that regex is
+ * polynomial on long runs of `/` (CodeQL js/polynomial-redos), and base
+ * URLs come from env / provider data.
+ */
+export function trimTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47) end -= 1;
+  return s.slice(0, end);
 }
