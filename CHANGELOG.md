@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.10.29
+
+### Features
+- 42695556 accept .ico uploads so the theme favicon can be an ICO (#571)
+- ca2c0ff4 session-protocol instructions on both servers; pin the mcp-server version in the generated command (#552) (#565)
+- 861f1c66 bundle Chromium in the admin image for server-side screenshots (#428) (#563)
+
+### Fixes
+- 1a68a806 site language has no default; unset is NULL, never a silent en (#572)
+- 6a7422ad emit the bound theme favicon as <link rel="icon"> in <head> (#562)
+- 6cacb828 Publish live ships production robots semantics, not staging's (#561)
+- d6a22bd4 read modules branch-effective inside a chat branch (#557)
+- 13fa80a8 emit <html lang> on every rendered page (#559)
+- d7561067 serve content-hashed static assets with immutable caching (#555)
+- 6a4e2fe2 no localhost site URL in production builds; provisioning seeds it (#551) (#560)
+- 105b51e1 exit on adapter-node's sveltekit:shutdown (#549)
+
+### Chores
+- b8006bd4 migrate the admin to SvelteKit 3 (#550)
+- 91994bc8 serve the admin with @sveltejs/adapter-node on Bun (#548)
+
+### Other
+- 1fd2c8c8 run the AI review and the real-AI suite once per PR until they pass (#568)
+- ea2d857d retry the screenshot-branch push with a rebase (#564)
+
 ## v0.10.28
 
 ### Features

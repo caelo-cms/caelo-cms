@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/plugin-consent-manager",
-  "version": "0.10.28",
+  "version": "0.10.29",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
