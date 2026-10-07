@@ -48,7 +48,7 @@ Tiles:
 - **Plugins** — `/security/plugins` — activation, grants and the awaiting-activation queue for every plugin
 - **Email** — `/security/email` — Resend / SMTP / SES selection
 - **Gateway** — `/security/gateway` — rate limits, captcha, body cap, request log
-- **Users + roles** — `/security/users` + `/security/roles`
+- **Users + roles** — `/security/users` + `/security/roles`. On Google Cloud installs, adding a user with a role also lets them through Google IAP (browser and MCP); deleting them or removing their last role takes that away again. You can also just ask the AI to invite or remove someone — it prepares the change and you click Approve.
 - **Skills** — `/security/skills` — AI behaviour bodies, AI-proposed queue
 - **Subagents** — `/security/subagents` — observability for spawn_subagent runs
 - **Deployments** — `/security/deployments` — Ops view with promote / rollback

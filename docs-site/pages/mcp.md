@@ -98,6 +98,12 @@ This writes a `CLAUDE.md` plus one `.claude/skills/<slug>/SKILL.md` per active s
 
 A handful of tools only make sense inside Caelo's own loop and are filtered out (calling them anyway returns the reason + the routing alternative): `spawn_subagent`/`spawn_subagents` (your agent brings its own parallelism), `offer_choices`, `submit_result`. `screenshot_page` IS served: on this surface it renders the session branch's preview in server-side Chromium and returns the pixels as an MCP image content block.
 
+## Google Cloud installs (IAP)
+
+On `gcp` and `gcp-firebase` installs the admin sits behind Google Identity-Aware Proxy, so the `claude mcp add` command from `/security/mcp` carries one more variable, `CAELO_IAP_SERVICE_ACCOUNT`, and you run `gcloud auth application-default login` once. The MCP server then signs a short-lived Google credential as the install's `caelo-mcp` service account and sends it next to your Caelo token.
+
+Who may sign it follows the user list: when the Owner adds a user (in `/security/users`, or by approving the AI's `propose_create_user` card) the admin lets that person's Google account sign as `caelo-mcp`; deleting the user, or removing their last role, revokes it again. No `gcloud` commands, no re-running the provisioner. The person still needs their own Caelo MCP token — Google's credential only gets the request past IAP.
+
 ## Token scopes, caps, rotation
 
 - **Scopes.** `chat` drives `caelo_chat` and image uploads. `admin` additionally unlocks the Power-MCP endpoints. Existing tokens stay `chat`; using one against the Power-MCP returns a 401 naming the fix.

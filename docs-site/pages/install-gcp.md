@@ -83,11 +83,35 @@ A small docs-site-shaped install runs ~$45/mo on GCP:
 
 Heavier installs scale Cloud Run + Cloud SQL tier; the admin's `/security/costs` aggregates AI spend separately.
 
+## Who can open the admin (Google IAP)
+
+The admin sits behind Google Identity-Aware Proxy: Google checks who you are before Caelo's own login page even loads. The provisioner lets the Owner through. Everyone else gets through the moment you add them as a Caelo user:
+
+- **Add a user** at `/security/users`, or ask the AI ("invite anna@example.com as an editor") and click **Approve** on the card. The admin then allows that email on IAP and lets them sign the MCP credential, so they can use the browser and MCP right away.
+- **Delete a user**, or take away their last role, and both are removed again.
+- Use the person's **Google account** address (Gmail or Google Workspace). IAP only admits Google identities; any other address is refused, and the approval says so.
+
+The admin makes these changes itself, as its own service account. That account can change who may pass IAP on the admin and on the `caelo-mcp` service account, and nothing else: a custom role with only `getIamPolicy`/`setIamPolicy`, bound on exactly those two resources (on `--provider gcp` also a role that may list load-balancer backends, so the admin can find its own). If a change cannot be made, the approval result says so, together with the next step — you never find out from a 403.
+
+Installs created before this feature get the role on their next `bunx @caelo-cms/provisioning upgrade`. Until then an approved user change reports that Google IAP could not be updated.
+
+## Admin on your own domain (`gcp-firebase`)
+
+With `--provider gcp-firebase`, the admin starts out on its Cloud Run URL (`https://caelo-production-admin-….run.app`). To serve it at `admin.<your domain>`:
+
+```bash
+bunx @caelo-cms/provisioning admin-domain enable
+```
+
+Google only maps a domain for a verified owner of it. If you have not verified yours yet, the command opens Search Console for you: add the TXT record it shows at your registrar, click **Verify**, then run the command again. It creates the mapping as your own gcloud account and prints the DNS record to add (usually a `CNAME` to `ghs.googlehosted.com.`); TLS follows once DNS resolves. Running it again is safe. (`--provider gcp` needs none of this: its load balancer serves `admin.<your domain>` from the start.)
+
 ## Day-2 operations
 
 | Task | How |
 |---|---|
 | Apply migrations on a new release | `bunx @caelo-cms/provisioning upgrade` |
+| Give someone admin access | Add them at `/security/users` (or ask the AI) — IAP follows automatically |
+| Serve the admin at `admin.<domain>` (gcp-firebase) | `bunx @caelo-cms/provisioning admin-domain enable` |
 | Read logs | Cloud Logging — filter by `resource.labels.service_name="caelo-admin-prod"` |
 | Restore from PITR | `gcloud sql backups restore` — see [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
 | Rotate the Anthropic key | Secret Manager → version add → admin Cloud Run service redeploys |
@@ -97,6 +121,7 @@ Heavier installs scale Cloud Run + Cloud SQL tier; the admin's `/security/costs`
 
 - **TLS cert stuck on `provisioning`** — DNS hasn't propagated. `dig caelo.example.com` should return the load balancer IP. Wait 10-30 min; Google-managed certs poll for a valid challenge.
 - **`Cannot allocate memory` from Cloud SQL** — bump tier from `db-g1-small` to `db-custom-2-7680` via `gcloud sql instances patch`.
+- **A new user gets "You don't have access" from Google** — the approval result says why. Most often their email is not a Google account, or the install predates operator access: run `bunx @caelo-cms/provisioning upgrade` once, then remove and re-add the user's role.
 - **Cloud Run cold-starts feel slow** — set `--min-instances=1` on the admin service. Costs ~$15/mo extra; eliminates first-request latency.
 
 ## Next
