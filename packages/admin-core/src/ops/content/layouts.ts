@@ -178,6 +178,8 @@ export const getLayoutOp = defineOperation({
 
 export const createLayoutOp = defineOperation({
   name: "layouts.create",
+  // Why human-only: §11.A — site-wide chrome; the AI creates layouts through create_layout (an
+  // Owner-approved proposal).
   // Owner-only. AI calls reject at the validator and surface a
   // permission message to the user.
   actorScope: ["human", "system"],

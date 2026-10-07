@@ -280,8 +280,8 @@ export const proposeDeployRollbackOp = defineOperation({
 
 export const executeDeployProposalOp = defineOperation({
   name: "deploy.execute_proposal",
-  // human-only by design: this is the "Go button" half. AI cannot
-  // self-approve its own proposal.
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
@@ -381,6 +381,8 @@ export const executeDeployProposalOp = defineOperation({
 
 export const rejectDeployProposalOp = defineOperation({
   name: "deploy.reject_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z

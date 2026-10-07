@@ -7,11 +7,11 @@
  */
 
 import { pluginDataListsRegistry } from "@caelo-cms/plugin-host";
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
 import {
   deriveModuleType,
+  type ExecutionContext,
   err,
-  extractMediaRefs,
   type ModuleField,
   moduleCreateSchema,
   moduleFieldSchema,
@@ -34,60 +34,13 @@ import {
 import type { ModuleState } from "../../snapshots/state.js";
 import { buildPatchSet, jsonbParam } from "../../sql-helpers.js";
 import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
-
-/**
- * Resolve every media reference in an HTML string to a set of asset ids.
- * `extractMediaRefs` yields slug refs (current embeds) and legacy UUID id
- * refs; the slug refs are batch-resolved to ids in one query so the
- * usage-count diff below operates purely on ids.
- */
-async function resolveHtmlToAssetIds(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  html: string,
-): Promise<Set<string>> {
-  const ids = new Set<string>();
-  const slugs = new Set<string>();
-  for (const ref of extractMediaRefs(html)) {
-    if (ref.isSlug) slugs.add(ref.ref);
-    else ids.add(ref.ref);
-  }
-  if (slugs.size > 0) {
-    const slugFrags = [...slugs].map((s) => sql`${s}`);
-    const rows = (await tx.execute(sql`
-      SELECT id::text AS id FROM media_assets
-      WHERE slug IN (${sql.join(slugFrags, sql`, `)}) AND deleted_at IS NULL
-    `)) as unknown as { id: string }[];
-    for (const r of rows) ids.add(r.id);
-  }
-  return ids;
-}
-
-/**
- * Diff media references between two HTML strings and apply usage-count
- * deltas. Called from create / update / delete handlers so AI-facing
- * surfaces (find_media's `most_used` sort) rank frequently-used assets
- * first.
- */
-async function applyMediaUsageDelta(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  prevHtml: string,
-  nextHtml: string,
-): Promise<void> {
-  const prev = await resolveHtmlToAssetIds(tx, prevHtml);
-  const next = await resolveHtmlToAssetIds(tx, nextHtml);
-  const deltas = new Map<string, number>();
-  for (const id of next) if (!prev.has(id)) deltas.set(id, (deltas.get(id) ?? 0) + 1);
-  for (const id of prev) if (!next.has(id)) deltas.set(id, (deltas.get(id) ?? 0) - 1);
-  if (deltas.size === 0) return;
-  for (const [assetId, delta] of deltas) {
-    await tx.execute(sql`
-      UPDATE media_assets
-      SET usage_count = GREATEST(0, usage_count + ${delta}),
-          last_used_at = CASE WHEN ${delta} > 0 THEN now() ELSE last_used_at END
-      WHERE id = ${assetId}::uuid AND deleted_at IS NULL
-    `);
-  }
-}
+import { applyMediaUsageDelta } from "./media-usage.js";
+import {
+  describePlacements,
+  findModulePlacements,
+  isPlaced,
+  type ModulePlacements,
+} from "./module-placements.js";
 
 const moduleRowSchema = z.object({
   id: z.string(),
@@ -167,8 +120,11 @@ type ModuleDbRow = Parameters<typeof rowToModule>[0];
  * that back into the branch — silently reverting the chat's earlier edits.
  *
  * Only the columns a module snapshot carries are overlaid; `description` /
- * `kind` / timestamps / `deleted_at` stay live (the snapshot state has no
- * such fields). Callers without a branch get the rows unchanged.
+ * `kind` / timestamps stay live (the snapshot state has no such fields).
+ * A branched DELETE (`deletedAt` set) marks the row deleted for this chat,
+ * so the chat stops seeing a module it deleted before publish; a branched
+ * edit never un-deletes a live-deleted row. Callers without a branch get
+ * the rows unchanged.
  */
 async function overlayBranchEdits(
   ctx: { chatBranchId?: string | null },
@@ -191,6 +147,7 @@ async function overlayBranchEdits(
       css: s.css,
       js: s.js,
       fields: s.fields,
+      deleted_at: s.deletedAt ?? r.deleted_at,
     };
   });
 }
@@ -304,7 +261,11 @@ export const listModulesOp = defineOperation({
           `,
     )) as unknown as ModuleDbRow[];
     const effective = await overlayBranchEdits(ctx, tx, rows);
-    return ok({ modules: effective.map(rowToModule) });
+    // A module this chat deleted (branched) is hidden like a live-deleted one.
+    const visible = input.includeDeleted
+      ? effective
+      : effective.filter((r) => r.deleted_at === null);
+    return ok({ modules: visible.map(rowToModule) });
   },
 });
 
@@ -674,7 +635,7 @@ export const updateModuleOp = defineOperation({
         UPDATE modules SET ${sets} WHERE id = ${input.moduleId}::uuid
       `);
       // P7 usage-tracker: only diff when html changed AND we wrote live.
-      // For branched writes, usage delta is applied at publish time.
+      // For branched writes, usage delta is applied at merge time.
       if (persistedHtml !== undefined) {
         await applyMediaUsageDelta(tx, prev.html, persistedHtml);
       }
@@ -739,55 +700,127 @@ export const updateModuleOp = defineOperation({
   },
 });
 
+/**
+ * Soft-delete one module. Shared by `modules.delete` and
+ * `modules.delete_many` so the two can never drift.
+ *
+ * Branch-aware like `pages.delete` (v0.5.3): inside a chat the live row is
+ * left alone and a branched snapshot with `deletedAt` carries the delete
+ * to publish (merge propagates `state.deletedAt`), so an AI delete never
+ * reaches the live site before the operator publishes. A module CREATED on
+ * this branch is soft-deleted live too — its row is invisible outside the
+ * chat, and freeing it releases the per-branch slug.
+ *
+ * In-use guard (AI actors only, the redirects-cap precedent of §11.A): a
+ * module still placed on a page or layout — as the chat sees the site —
+ * is refused with the placements named, so the AI removes it with
+ * `remove_module_from` first instead of stranding empty slots. Humans keep
+ * the panel's direct delete; they are the decision the guard stands in for.
+ */
+async function softDeleteModule(
+  ctx: ExecutionContext,
+  moduleId: string,
+  tx: TransactionRunner,
+  operation: "modules.delete" | "modules.delete_many",
+  /** Pre-resolved placements (bulk path: one batched lookup for all ids). */
+  placementsById?: ReadonlyMap<string, ModulePlacements>,
+): Promise<
+  | { outcome: "deleted" | "already-deleted" | "not-found" }
+  | { outcome: "refused"; error: QueryError }
+> {
+  const lock = await checkAndAcquireEntityLock(tx, {
+    kind: "module",
+    entityId: moduleId,
+    chatBranchId: ctx.chatBranchId,
+    holderKey: ctx.chatTaskId,
+  });
+  if (!lock.permitted) {
+    return {
+      outcome: "refused",
+      error: await entityWriteBlockedError(tx, operation, "module", moduleId, lock),
+    };
+  }
+  const branchId = ctx.chatBranchId ?? null;
+  const rows = (await tx.execute(sql`
+    SELECT deleted_at, html, chat_branch_id::text AS chat_branch_id
+    FROM modules WHERE id = ${moduleId}::uuid ${branchVisibilityFilter(ctx)}
+  `)) as unknown as { deleted_at: Date | null; html: string; chat_branch_id: string | null }[];
+  const target = rows[0];
+  if (!target) return { outcome: "not-found" };
+  const current = branchId ? await loadModuleStateWithBranchOverlay(tx, moduleId, branchId) : null;
+  if (target.deleted_at !== null || (current !== null && current.deletedAt !== null)) {
+    return { outcome: "already-deleted" };
+  }
+
+  if (ctx.actorKind === "ai") {
+    const placements = (placementsById ?? (await findModulePlacements(tx, ctx, [moduleId]))).get(
+      moduleId,
+    );
+    if (placements && isPlaced(placements)) {
+      const slug = current?.slug ?? (await loadModuleState(tx, moduleId))?.slug ?? moduleId;
+      return {
+        outcome: "refused",
+        error: {
+          kind: "HandlerError",
+          operation,
+          message:
+            `module "${slug}" is still placed on ${describePlacements(placements)} — deleting it would leave empty slots. ` +
+            "Remove it from each page/layout with remove_module_from first (a nested use: drop it from the parent's module field with set_content_instance_values), or keep it; then delete.",
+        },
+      };
+    }
+  }
+
+  let state: ModuleState | null;
+  if (branchId) {
+    // Branched: the live row stays at main until publish, EXCEPT a row this
+    // branch created (invisible elsewhere) — that one is freed now.
+    if (target.chat_branch_id !== null && target.chat_branch_id === branchId) {
+      await tx.execute(sql`UPDATE modules SET deleted_at = now() WHERE id = ${moduleId}::uuid`);
+      // The live row stops being counted the moment it is soft-deleted
+      // (media-usage.ts invariant); the merge then sees a deleted row.
+      await applyMediaUsageDelta(tx, target.html, "");
+    }
+    state = current ? { ...current, deletedAt: new Date().toISOString() } : null;
+  } else {
+    await tx.execute(sql`UPDATE modules SET deleted_at = now() WHERE id = ${moduleId}::uuid`);
+    // P7 usage-tracker: deletion drops every reference the module held.
+    // Branched deletes apply the delta at merge, like branched updates.
+    await applyMediaUsageDelta(tx, target.html, "");
+    state = await loadModuleState(tx, moduleId);
+  }
+  if (state) {
+    await emitSnapshot(tx, {
+      actorId: ctx.actorId,
+      opKind: "modules.delete",
+      description: `${operation} slug=${state.slug}${branchId ? " (branched)" : ""}`,
+      chatTaskId: ctx.chatTaskId ?? null,
+      chatBranchId: branchId,
+      entities: [{ kind: "module", entityId: moduleId, state }],
+    });
+  }
+  return { outcome: "deleted" };
+}
+
 export const deleteModuleOp = defineOperation({
   name: "modules.delete",
   // CLAUDE.md §11: AI cleans up stale modules in routine maintenance.
-  // Soft-delete only; revert via the snapshots.revert_module path.
+  // Soft-delete only (branched inside a chat); revert via the
+  // snapshots.revert_module path. AI actors cannot delete a placed module.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ moduleId: z.string().uuid() }),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    // v0.5.0 — per-entity lock.
-    const lock = await checkAndAcquireEntityLock(tx, {
-      kind: "module",
-      entityId: input.moduleId,
-      chatBranchId: ctx.chatBranchId,
-      holderKey: ctx.chatTaskId,
-    });
-    if (!lock.permitted) {
-      return err(
-        await entityWriteBlockedError(tx, "modules.delete", "module", input.moduleId, lock),
-      );
-    }
-    const rows = (await tx.execute(sql`
-      SELECT deleted_at, html FROM modules WHERE id = ${input.moduleId}::uuid
-    `)) as unknown as { deleted_at: Date | null; html: string }[];
-    const target = rows[0];
-    if (!target) {
+    const r = await softDeleteModule(ctx, input.moduleId, tx, "modules.delete");
+    if (r.outcome === "refused") return err(r.error);
+    if (r.outcome === "not-found") {
       return err({
         kind: "HandlerError",
         operation: "modules.delete",
         message: "module not found",
       });
     }
-    if (target.deleted_at !== null) {
-      await recordAudit(tx, {
-        actorId: ctx.actorId,
-        requestId: ctx.requestId,
-        operation: "modules.delete",
-        input,
-        succeeded: true,
-        entityId: input.moduleId,
-        resultSummary: "already-deleted",
-      });
-      return ok({});
-    }
-    await tx.execute(sql`
-      UPDATE modules SET deleted_at = now() WHERE id = ${input.moduleId}::uuid
-    `);
-    // P7 usage-tracker: deletion drops every reference the module held.
-    await applyMediaUsageDelta(tx, target.html, "");
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -795,27 +828,22 @@ export const deleteModuleOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.moduleId,
-      resultSummary: "soft-deleted",
+      resultSummary:
+        r.outcome === "already-deleted"
+          ? "already-deleted"
+          : ctx.chatBranchId
+            ? "branched soft-delete"
+            : "soft-deleted",
     });
-    const state = await loadModuleState(tx, input.moduleId);
-    if (state) {
-      await emitSnapshot(tx, {
-        actorId: ctx.actorId,
-        opKind: "modules.delete",
-        description: `modules.delete slug=${state.slug}`,
-        chatTaskId: ctx.chatTaskId ?? null,
-        chatBranchId: ctx.chatBranchId ?? null,
-        entities: [{ kind: "module", entityId: input.moduleId, state }],
-      });
-    }
     return ok({});
   },
 });
 
 // ---------------------------------------------------------------------
-// modules.delete_many — bulk variant per CLAUDE.md §11. Soft-deletes
-// in a single tx; the same media-usage delta runs per affected module
-// so usage_count drops atomically.
+// modules.delete_many — bulk variant per CLAUDE.md §11. Runs the same
+// soft-delete as the singular op per id in a single tx; ids the guard or
+// a foreign lock refuses are reported in `refused` and the rest of the
+// batch still applies (matches pages.delete_many / media.delete_many).
 // ---------------------------------------------------------------------
 
 export const deleteModulesManyOp = defineOperation({
@@ -831,40 +859,26 @@ export const deleteModulesManyOp = defineOperation({
     deleted: z.number().int(),
     alreadyDeleted: z.number().int(),
     notFound: z.number().int(),
+    /** Ids not deleted because they are still placed (AI) or locked by another chat. */
+    refused: z.array(z.object({ moduleId: z.string(), reason: z.string() })),
   }),
   handler: async (ctx, input, tx) => {
     let deleted = 0;
     let alreadyDeleted = 0;
     let notFound = 0;
-    for (const id of input.moduleIds) {
-      const rows = (await tx.execute(sql`
-        SELECT deleted_at, html FROM modules WHERE id = ${id}::uuid
-      `)) as unknown as { deleted_at: Date | null; html: string }[];
-      const target = rows[0];
-      if (!target) {
-        notFound += 1;
-        continue;
-      }
-      if (target.deleted_at !== null) {
-        alreadyDeleted += 1;
-        continue;
-      }
-      await tx.execute(sql`
-        UPDATE modules SET deleted_at = now() WHERE id = ${id}::uuid
-      `);
-      await applyMediaUsageDelta(tx, target.html, "");
-      const state = await loadModuleState(tx, id);
-      if (state) {
-        await emitSnapshot(tx, {
-          actorId: ctx.actorId,
-          opKind: "modules.delete",
-          description: `modules.delete_many slug=${state.slug}`,
-          chatTaskId: ctx.chatTaskId ?? null,
-          chatBranchId: ctx.chatBranchId ?? null,
-          entities: [{ kind: "module", entityId: id, state }],
-        });
-      }
-      deleted += 1;
+    const refused: { moduleId: string; reason: string }[] = [];
+    const ids = [...new Set(input.moduleIds)];
+    // One batched placement lookup for the whole list (AI guard only).
+    const placements =
+      ctx.actorKind === "ai" ? await findModulePlacements(tx, ctx, ids) : undefined;
+    for (const id of ids) {
+      const r = await softDeleteModule(ctx, id, tx, "modules.delete_many", placements);
+      if (r.outcome === "refused") {
+        const message = (r.error as { message?: string }).message ?? r.error.kind;
+        refused.push({ moduleId: id, reason: message });
+      } else if (r.outcome === "deleted") deleted += 1;
+      else if (r.outcome === "already-deleted") alreadyDeleted += 1;
+      else notFound += 1;
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -872,9 +886,9 @@ export const deleteModulesManyOp = defineOperation({
       operation: "modules.delete_many",
       input,
       succeeded: true,
-      resultSummary: `deleted=${deleted},alreadyDeleted=${alreadyDeleted},notFound=${notFound}`,
+      resultSummary: `deleted=${deleted},alreadyDeleted=${alreadyDeleted},notFound=${notFound},refused=${refused.length}`,
     });
-    return ok({ deleted, alreadyDeleted, notFound });
+    return ok({ deleted, alreadyDeleted, notFound, refused });
   },
 });
 
