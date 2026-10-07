@@ -44,6 +44,13 @@ export interface MakeReadToolArgs<I> {
    * transcript (e.g. ai_providers.list's config can include API keys).
    */
   readonly includeValue?: boolean;
+  /**
+   * Execute the op as the human operator (`toolCtx.humanCtx`) when there is
+   * one, instead of the AI actor. For actor-sensitive reads — e.g. per-actor
+   * budget spend, which is recorded against the operator — where the AI
+   * actor's own view would be empty. Reads only; never set on a write.
+   */
+  readonly runAsOperator?: boolean;
 }
 
 /** Build a read tool: Zod schema in, JSON Schema + standard handler out. */
@@ -57,7 +64,8 @@ export function makeReadTool<I>(args: MakeReadToolArgs<I>): ToolDefinitionWithHa
     inputSchema: zod.toJSONSchema(args.input) as Record<string, unknown>,
     handler: async (ctx, input, toolCtx) => {
       const opInput = args.buildOpInput ? args.buildOpInput(input, ctx, toolCtx) : input;
-      const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, args.opName, opInput);
+      const execCtx = args.runAsOperator && toolCtx.humanCtx ? toolCtx.humanCtx : ctx;
+      const r = await execute(toolCtx.registry, toolCtx.adapter, execCtx, args.opName, opInput);
       if (!r.ok) {
         return { ok: false, content: `${args.opName} failed: ${describeError(r.error)}` };
       }

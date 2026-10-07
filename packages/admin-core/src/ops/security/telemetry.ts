@@ -72,6 +72,15 @@ export const getTelemetryOp = defineOperation({
 
 export const setTelemetryOp = defineOperation({
   name: "telemetry.set",
+  // Why human-only (deliberately NO propose_* path): opting in is the
+  // operator's CONSENT to send data from this install to the Caelo
+  // project. Consent has to be the human's own act, made on the page that
+  // shows exactly what would be transmitted (`telemetry.test_send` on
+  // /security/ai/telemetry). An AI-drafted proposal approved with one click
+  // in the middle of an unrelated chat is not that, and it is the one
+  // setting where "the agent can do it for you" is the wrong product. It
+  // has no effect on how the site works, so no agent workflow is ever
+  // blocked on it; the AI points the operator to /security/ai/telemetry.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
