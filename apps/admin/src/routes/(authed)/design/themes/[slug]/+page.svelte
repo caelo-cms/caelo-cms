@@ -9,21 +9,21 @@
    * the preview re-renders without a server round-trip; submission
    * (per-tab form action) commits via themes.update_tokens.
    */
-  import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
-  import { Badge } from "$lib/components/ui/badge/index.js";
+  import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
   import {
     Tabs,
     TabsContent,
     TabsList,
     TabsTrigger,
-  } from "$lib/components/ui/tabs/index.js";
-  import AssetsEditor from "$lib/components/theme/AssetsEditor.svelte";
-  import ColorEditor from "$lib/components/theme/ColorEditor.svelte";
-  import LivePreview from "$lib/components/theme/LivePreview.svelte";
-  import RadiiEditor from "$lib/components/theme/RadiiEditor.svelte";
-  import ShadowsEditor from "$lib/components/theme/ShadowsEditor.svelte";
-  import SpacingEditor from "$lib/components/theme/SpacingEditor.svelte";
-  import TypographyEditor from "$lib/components/theme/TypographyEditor.svelte";
+  } from "#lib/components/ui/tabs/index.js";
+  import AssetsEditor from "#lib/components/theme/AssetsEditor.svelte";
+  import ColorEditor from "#lib/components/theme/ColorEditor.svelte";
+  import LivePreview from "#lib/components/theme/LivePreview.svelte";
+  import RadiiEditor from "#lib/components/theme/RadiiEditor.svelte";
+  import ShadowsEditor from "#lib/components/theme/ShadowsEditor.svelte";
+  import SpacingEditor from "#lib/components/theme/SpacingEditor.svelte";
+  import TypographyEditor from "#lib/components/theme/TypographyEditor.svelte";
   import type { ThemeDocument } from "@caelo-cms/shared";
 
   let { data, form } = $props();

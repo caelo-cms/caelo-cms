@@ -22,7 +22,7 @@
 
 import { CAELO_VERSION } from "@caelo-cms/shared";
 import { json } from "@sveltejs/kit";
-import { getQueryContext } from "$lib/server/query.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async () => {

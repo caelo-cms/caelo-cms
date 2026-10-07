@@ -13,7 +13,7 @@
    * just suggests matches. Picking a row replaces the input value;
    * dismissing the dropdown leaves whatever the operator typed.
    */
-  import { Input } from "$lib/components/ui/input/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
 
   interface FontEntry {
     family: string;

@@ -2,9 +2,9 @@
   // SPDX-License-Identifier: MPL-2.0
   import { Bug, Copy, Download } from "lucide-svelte";
   import { toast } from "svelte-sonner";
-  import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { cn } from "$lib/utils.js";
+  import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { cn } from "#lib/utils.js";
   import type { BugReport } from "./+page.server";
 
   let { data }: { data: { reports: BugReport[] } } = $props();

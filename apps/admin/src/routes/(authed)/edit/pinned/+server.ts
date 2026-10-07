@@ -11,8 +11,8 @@
 import { verifyCsrfToken } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { error, json } from "@sveltejs/kit";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 interface PinnedElementInput {

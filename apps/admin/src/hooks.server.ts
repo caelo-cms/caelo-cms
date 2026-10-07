@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MPL-2.0
-
 // v0.5.9 — process-level handlers. Catches every async-leaked rejection
 // and uncaught exception that would otherwise vanish into Bun's default
 // (kill the process on uncaughtException; silently drop unhandledRejection
@@ -55,9 +54,9 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import type { Handle } from "@sveltejs/kit";
-import { SESSION_COOKIE } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import type { Handle } from "@sveltejs/kit/hooks";
+import { SESSION_COOKIE } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 
 // Dev-mode KEK auto-gen. secret-box reads CAELO_SECRET_KEK lazily
 // (only at first encrypt/decrypt), so populating it before any DB
@@ -302,6 +301,42 @@ async function consumePendingBootstrapToken(): Promise<void> {
   }
 }
 
+// #551 — seed site_defaults.site_base_url from CAELO_SITE_URL, which
+// provisioning sets to https://<install domain>. Fills an unset value only
+// (the op never overwrites), so it covers fresh installs and upgrades of
+// installs that never configured it, without touching an Owner's choice.
+// Awaited by the first request(s) so a deploy can never race the seed;
+// memoised so it runs once per process (retried after a transient failure).
+let siteBaseUrlSeed: Promise<void> | null = null;
+function seedSiteBaseUrl(): Promise<void> {
+  if (siteBaseUrlSeed) return siteBaseUrlSeed;
+  siteBaseUrlSeed = (async () => {
+    const url = process.env.CAELO_SITE_URL?.trim();
+    if (!url) return;
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, SYSTEM_CTX, "site_defaults.seed_site_base_url", {
+      siteBaseUrl: url,
+      source: "CAELO_SITE_URL",
+    });
+    if (!r.ok) {
+      // A malformed CAELO_SITE_URL is permanent; anything else (database
+      // not reachable yet, …) is retried by the next request.
+      if (r.error.kind === "ValidationFailed") {
+        console.error("[bootstrap.site_base_url] CAELO_SITE_URL rejected", r.error);
+        return;
+      }
+      throw new Error(`seed_site_base_url failed: ${JSON.stringify(r.error)}`);
+    }
+    if ((r.value as { seeded: boolean }).seeded) {
+      console.log(`[bootstrap.site_base_url] site base URL set to ${url}`);
+    }
+  })().catch((e) => {
+    console.error("[bootstrap.site_base_url] failed", e);
+    siteBaseUrlSeed = null;
+  });
+  return siteBaseUrlSeed;
+}
+
 // P13 — debounced auto-redeploy + gateway log GC. Polls audit_events
 // for "publishable" op kinds (driven by site_settings.auto_redeploy_*)
 // and fires deploy.trigger after `auto_redeploy_debounce_ms` of quiet.
@@ -406,6 +441,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapDomainEventGc();
   bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
+  await seedSiteBaseUrl();
   const { adapter, registry } = getQueryContext();
   const token = event.cookies.get(SESSION_COOKIE);
   let user: App.Locals["user"] = null;

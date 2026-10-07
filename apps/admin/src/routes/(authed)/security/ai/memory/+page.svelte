@@ -1,14 +1,14 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
-  import { Textarea } from "$lib/components/ui/textarea/index.js";
+  } from "#lib/components/ui/card/index.js";
+  import { Textarea } from "#lib/components/ui/textarea/index.js";
 
   let { data, form } = $props();
   function bodyFor(slot: string): string {

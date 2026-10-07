@@ -2,9 +2,9 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
-import { assertCsrfToken } from "$lib/server/csrf.js";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { assertCsrfToken } from "#lib/server/csrf.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 /**
@@ -23,11 +23,11 @@ export const load: PageServerLoad = async ({ locals }) => {
   return {
     settings: settings.ok
       ? (settings.value as {
-          siteBaseUrl: string;
+          siteBaseUrl: string | null;
           sitemapEnabled: boolean;
           organizationJson: Record<string, unknown>;
         })
-      : { siteBaseUrl: "", sitemapEnabled: true, organizationJson: {} },
+      : { siteBaseUrl: null, sitemapEnabled: true, organizationJson: {} },
     stale: stale.ok
       ? (
           stale.value as {

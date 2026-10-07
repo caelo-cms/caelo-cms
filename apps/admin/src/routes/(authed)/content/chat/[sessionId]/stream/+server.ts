@@ -22,8 +22,8 @@
 import { getActiveProvider, resolveTestProvider, runChatTurn } from "@caelo-cms/admin-core";
 import { pluginPreviewSelectionSchema } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 const AI_ACTOR_ID = "00000000-0000-0000-0000-000000000a1a";

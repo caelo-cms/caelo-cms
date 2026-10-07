@@ -2,10 +2,10 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
-import { assertCsrfToken } from "$lib/server/csrf.js";
-import { SESSION_COOKIE } from "$lib/server/guards.js";
-import { opErrorMessage } from "$lib/server/op-error.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { assertCsrfToken } from "#lib/server/csrf.js";
+import { SESSION_COOKIE } from "#lib/server/guards.js";
+import { opErrorMessage } from "#lib/server/op-error.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = ({ locals }) => {

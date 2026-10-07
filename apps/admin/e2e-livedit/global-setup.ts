@@ -134,6 +134,11 @@ export default async function globalSetup(): Promise<void> {
     NODE_ENV: "development",
     PORT: "4173",
     ORIGIN: ADMIN_BASE_URL,
+    // #551 — seeds site_defaults.site_base_url on the fresh DB so the
+    // production build's canonicals and sitemap point at the URL the
+    // scenarios fetch (same source as helpers.ts getProductionUrl(), which
+    // imports this module and so cannot be imported back).
+    CAELO_SITE_URL: process.env.CAELO_PRODUCTION_BASE_URL ?? "http://localhost:8082",
     ANTHROPIC_API_KEY: apiKey,
     // Pin the chat model + temperature via the resolver's env hooks.
     CAELO_CHAT_MODEL_OVERRIDE: E2E_LIVEDIT_MODEL,

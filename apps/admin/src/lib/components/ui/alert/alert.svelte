@@ -1,7 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import type { HTMLAttributes } from "svelte/elements";
-  import { cn } from "$lib/utils.js";
+  import { cn } from "#lib/utils.js";
   import { alertVariants, type AlertVariant } from "./alert-variants.js";
 
   type Props = HTMLAttributes<HTMLDivElement> & { variant?: AlertVariant; class?: string };

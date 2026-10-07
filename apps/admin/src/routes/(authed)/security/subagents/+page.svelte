@@ -14,7 +14,7 @@
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
   import {
     Table,
     TableBody,
@@ -22,7 +22,7 @@
     TableHead,
     TableHeader,
     TableRow,
-  } from "$lib/components/ui/table/index.js";
+  } from "#lib/components/ui/table/index.js";
 
   let { data } = $props();
 

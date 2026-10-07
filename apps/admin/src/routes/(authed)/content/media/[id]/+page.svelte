@@ -8,14 +8,14 @@
 
   import { buildMediaUrl } from "@caelo-cms/shared";
   import { Trash2 } from "lucide-svelte";
-  import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
   import {
     Dialog,
     DialogContent,
@@ -23,9 +23,9 @@
     DialogFooter,
     DialogHeader,
     DialogTitle,
-  } from "$lib/components/ui/dialog/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
-  import { Textarea } from "$lib/components/ui/textarea/index.js";
+  } from "#lib/components/ui/dialog/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
+  import { Textarea } from "#lib/components/ui/textarea/index.js";
 
   let { data, form } = $props();
 

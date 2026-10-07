@@ -1,13 +1,13 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { ArrowLeft, CircleCheck, CircleX, Clock, ListTree } from "lucide-svelte";
-  import { buttonVariants } from "$lib/components/ui/button/index.js";
+  import { buttonVariants } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
 
   let { data } = $props();
   const s = $derived(data.summary);

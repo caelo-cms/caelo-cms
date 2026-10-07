@@ -25,9 +25,9 @@
    */
 
   import { Check, ExternalLink, X } from "lucide-svelte";
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { buttonVariants } from "$lib/components/ui/button/button-variants.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { buttonVariants } from "#lib/components/ui/button/button-variants.js";
   // v0.5.13 — extracted to a shared module so ChatPanel's optimistic
   // pending-strip push and ProposeCard parse from one place.
   import { parseProposalContent } from "../proposal-parser.js";

@@ -54,12 +54,13 @@ let registry: OperationRegistry;
  * base (it takes `siteBaseUrl`), but `staticRender` READS it from
  * `site_defaults.get_seo`. Asserting the selector's absolute hrefs
  * against a hardcoded BASE therefore only holds if the site happens to
- * be configured that way — CI seeds `http://localhost:8082`, a dev box
- * holds whatever the operator set. Pin it for the duration of the file
+ * be configured that way — a fresh database has it unset (#551), a dev
+ * box holds whatever the operator set. Pin it for the duration of the file
  * so both halves of the contract are measured against one base, and
  * put it back afterwards so the file leaves no config drift behind.
  */
 let seoBeforeFile: SiteDefaultsSetSeoInput | null = null;
+let seoBaseUnset = false;
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -101,12 +102,22 @@ beforeAll(async () => {
   if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
   // Parse rather than cast: an ambient config that no longer satisfies
   // the write schema should fail here, loudly, not silently reshape.
-  seoBeforeFile = siteDefaultsSetSeoInputSchema.parse(await sysOp("site_defaults.get_seo", {}));
+  // #551 — an unset base URL (NULL) is a valid ambient state; it has no
+  // set_seo form, so it is restored by clearing the column afterwards.
+  const before = (await sysOp("site_defaults.get_seo", {})) as { siteBaseUrl: string | null };
+  seoBaseUnset = before.siteBaseUrl === null;
+  seoBeforeFile = siteDefaultsSetSeoInputSchema.parse({
+    ...before,
+    siteBaseUrl: before.siteBaseUrl ?? BASE,
+  });
   await sysOp("site_defaults.set_seo", { ...seoBeforeFile, siteBaseUrl: BASE });
 });
 
 afterAll(async () => {
   if (seoBeforeFile) await sysOp("site_defaults.set_seo", seoBeforeFile);
+  if (seoBaseUnset) {
+    await sqlSystem((tx) => tx`UPDATE site_defaults SET site_base_url = NULL WHERE id = 1`);
+  }
   await cleanup();
   await adapter.close();
 });

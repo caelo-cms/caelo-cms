@@ -1,9 +1,9 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
-  import FontSpecimen from "$lib/components/theme/FontSpecimen.svelte";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
+  import FontSpecimen from "#lib/components/theme/FontSpecimen.svelte";
   let { data, form } = $props();
   let specimen = $state("Große Geschichten beginnen mit kleinen Buchstaben. ÄÖÜ äöü ß 0123456789");
   let size = $state(32);

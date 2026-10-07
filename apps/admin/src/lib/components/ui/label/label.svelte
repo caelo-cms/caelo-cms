@@ -1,7 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import type { HTMLLabelAttributes } from "svelte/elements";
-  import { cn } from "$lib/utils.js";
+  import { cn } from "#lib/utils.js";
 
   type Props = HTMLLabelAttributes & { class?: string };
   let { class: className, children, ...rest }: Props = $props();

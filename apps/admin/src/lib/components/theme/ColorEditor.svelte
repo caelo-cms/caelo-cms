@@ -16,10 +16,10 @@
    * WCAG contrast badges appear next to obvious paired tokens
    * (foreground vs background, each *-foreground vs * pair).
    */
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
-  import { parseColor } from "$lib/color/oklch.js";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
+  import { parseColor } from "#lib/color/oklch.js";
   import type { ThemeDocument } from "@caelo-cms/shared";
   import ContrastWarning from "./ContrastWarning.svelte";
 

@@ -1,18 +1,18 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { Layout } from "lucide-svelte";
-  import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
-  import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
+  import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
+  } from "#lib/components/ui/card/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
   import {
     Table,
     TableBody,
@@ -20,8 +20,8 @@
     TableHead,
     TableHeader,
     TableRow,
-  } from "$lib/components/ui/table/index.js";
-  import { Textarea } from "$lib/components/ui/textarea/index.js";
+  } from "#lib/components/ui/table/index.js";
+  import { Textarea } from "#lib/components/ui/textarea/index.js";
 
   let { data, form } = $props();
 </script>

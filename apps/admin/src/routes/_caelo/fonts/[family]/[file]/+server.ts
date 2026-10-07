@@ -17,7 +17,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defaultFontsCacheDir } from "@caelo-cms/admin-core";
 import { error } from "@sveltejs/kit";
-import { requireUserOrPreviewScreenshotToken } from "$lib/server/preview-screenshot-auth.js";
+import { requireUserOrPreviewScreenshotToken } from "#lib/server/preview-screenshot-auth.js";
 import type { RequestHandler } from "./$types";
 
 const FAMILY_RE = /^[a-z0-9-]{1,80}$/;

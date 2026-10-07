@@ -264,8 +264,11 @@ function enc(s: string): string {
 
 /**
  * Read the SEO settings from `site_defaults` for the deploy run.
- * Falls back to a sensible local default when unseeded — same shape
- * as `site_defaults.get_seo` in the admin op layer.
+ *
+ * Throws when the site base URL is not configured (#551): every canonical,
+ * og:url, JSON-LD url and sitemap entry is absolute, and a substituted
+ * localhost default shipped unreachable canonicals to production. The
+ * message names the setting and how to set it.
  */
 export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSettings> {
   const rows = (await tx.execute(sql`
@@ -273,11 +276,24 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
     FROM site_defaults WHERE id = 1
     LIMIT 1
   `)) as unknown as {
-    site_base_url: string;
+    site_base_url: string | null;
     sitemap_enabled: boolean;
     organization_json: string | null;
   }[];
   const r = rows[0];
+  if (!r) {
+    throw new Error(
+      "site_defaults row (id=1) is missing — the cms_admin migrations did not seed it",
+    );
+  }
+  if (!r.site_base_url) {
+    throw new Error(
+      "Site base URL is not configured (site_defaults.site_base_url is NULL). Canonical " +
+        "URLs, og:url, JSON-LD and the sitemap need the public site URL. Set it under " +
+        "Security → SEO in the admin, or set CAELO_SITE_URL on the admin service " +
+        "(provisioning does this from the install domain) and restart it.",
+    );
+  }
   let organization: SiteSeoSettings["organization"] = {};
   if (r?.organization_json) {
     try {
@@ -288,8 +304,8 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
     }
   }
   return {
-    siteBaseUrl: r?.site_base_url ?? "http://localhost:8082",
-    sitemapEnabled: r?.sitemap_enabled ?? true,
+    siteBaseUrl: r.site_base_url,
+    sitemapEnabled: r.sitemap_enabled,
     organization,
   };
 }

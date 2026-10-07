@@ -1,13 +1,13 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { buttonVariants } from "$lib/components/ui/button/button-variants.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
+  import { buttonVariants } from "#lib/components/ui/button/button-variants.js";
   import {
     Card,
     CardContent,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
 
   let { data } = $props();
 

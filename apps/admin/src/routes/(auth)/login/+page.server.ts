@@ -2,8 +2,8 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { error, fail, redirect } from "@sveltejs/kit";
-import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals, url }) => {

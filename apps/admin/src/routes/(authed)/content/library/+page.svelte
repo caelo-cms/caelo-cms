@@ -7,16 +7,16 @@
    * edit view → save → all bound pages reflect the new values.
    */
   import { Package } from "lucide-svelte";
-  import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
-  import ContentInstancesTable from "$lib/components/content/ContentInstancesTable.svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
+  import ContentInstancesTable from "#lib/components/content/ContentInstancesTable.svelte";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
 
   let { data } = $props();
 

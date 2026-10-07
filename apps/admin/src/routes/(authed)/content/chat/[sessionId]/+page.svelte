@@ -3,7 +3,7 @@
   import { Eye, EyeOff } from "lucide-svelte";
   import { onMount } from "svelte";
   import { page } from "$app/state";
-  import ChatPanel from "$lib/components/chat/ChatPanel.svelte";
+  import ChatPanel from "#lib/components/chat/ChatPanel.svelte";
 
   let { data, form } = $props();
 

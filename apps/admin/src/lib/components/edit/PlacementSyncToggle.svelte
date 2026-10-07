@@ -18,8 +18,8 @@
    * The Fork affordance is the "make local edits" shortcut the issue
    * AC #8 specifies — a single click detaches without leaving the page.
    */
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
 
   interface Props {
     pageId: string;

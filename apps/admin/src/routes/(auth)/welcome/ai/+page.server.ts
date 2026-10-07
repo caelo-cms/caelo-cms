@@ -16,10 +16,10 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
-import { defaultModelForProvider, modelsForProvider } from "$lib/ai-models.js";
-import { assertCsrfToken } from "$lib/server/csrf.js";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { defaultModelForProvider, modelsForProvider } from "#lib/ai-models.js";
+import { assertCsrfToken } from "#lib/server/csrf.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 // The wizard offers the three hosted providers. local-openai-compat

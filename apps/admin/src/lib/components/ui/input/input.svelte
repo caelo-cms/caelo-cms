@@ -1,7 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import type { HTMLInputAttributes } from "svelte/elements";
-  import { cn } from "$lib/utils.js";
+  import { cn } from "#lib/utils.js";
 
   type Props = HTMLInputAttributes & { class?: string };
   let { class: className, value = $bindable(), ...rest }: Props = $props();

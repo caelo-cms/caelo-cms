@@ -10,15 +10,15 @@
 
   import { Puzzle } from "lucide-svelte";
   import { enhance } from "$app/forms";
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
   import {
     Table,
     TableBody,
@@ -26,7 +26,7 @@
     TableHead,
     TableHeader,
     TableRow,
-  } from "$lib/components/ui/table/index.js";
+  } from "#lib/components/ui/table/index.js";
 
   // #388 — the granted capability set is the stored manifest's
   // requestedCapabilities (grants == requests for a loaded plugin; the

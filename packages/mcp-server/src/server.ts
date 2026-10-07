@@ -12,6 +12,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { sendChat } from "./chat-bridge.js";
@@ -20,7 +21,20 @@ import { UPLOAD_IMAGES_TOOL, uploadedImageSchema, uploadImages } from "./image-u
 export interface StartOpts {
   readonly adminUrl: string;
   readonly token: string;
+  /** Defaults to stdio; tests pass an in-memory transport. */
+  readonly transport?: Transport;
 }
+
+/**
+ * MCP `instructions` for the chat-scope server (#552), injected into the
+ * connecting agent's context so it uses caelo_chat as a conversation with
+ * the site's own agent rather than a one-shot command.
+ */
+export const CHAT_MCP_INSTRUCTIONS = [
+  "This server talks to a Caelo CMS site's own AI agent through caelo_chat; describe the outcome you want and the agent decides how to build it.",
+  "Pass the chatSessionId from a reply to continue the same conversation; omit it only to start a new one.",
+  "Changes land on that chat's preview branch; nothing reaches the live site until the operator publishes in the Caelo admin. Some actions wait for the operator's approval click there.",
+].join("\n");
 
 const caeloChatInputSchema = z
   .object({
@@ -39,6 +53,7 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
     },
     {
       capabilities: { tools: {} },
+      instructions: CHAT_MCP_INSTRUCTIONS,
     },
   );
 
@@ -140,6 +155,5 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
     }
   });
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await server.connect(opts.transport ?? new StdioServerTransport());
 }

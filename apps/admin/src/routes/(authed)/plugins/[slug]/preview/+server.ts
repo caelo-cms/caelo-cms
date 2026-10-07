@@ -7,11 +7,11 @@ import { execute } from "@caelo-cms/query-api";
 import { pluginPreviewDocumentSchema } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { z } from "zod";
-import { requirePermission } from "$lib/server/guards.js";
-import { privatePluginFiles, privatePluginFonts } from "$lib/server/plugin-files.js";
-import { PLUGIN_PREVIEW_CSP, sanitizePluginPreview } from "$lib/server/plugin-preview.js";
-import { previewBridge } from "$lib/server/plugin-preview-bridge.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { privatePluginFiles, privatePluginFonts } from "#lib/server/plugin-files.js";
+import { PLUGIN_PREVIEW_CSP, sanitizePluginPreview } from "#lib/server/plugin-preview.js";
+import { previewBridge } from "#lib/server/plugin-preview-bridge.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 /** Generic private plugin document, not a published CMS page. */

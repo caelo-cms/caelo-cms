@@ -2,8 +2,8 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { getCapLookupHealth } from "@caelo-cms/shared";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { PageServerLoad } from "./$types";
 
 type AggregateValue = {
