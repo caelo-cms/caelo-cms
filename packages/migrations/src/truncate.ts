@@ -125,6 +125,7 @@ const ADMIN_TABLES = [
   "layout_pending",
   "locale_pending",
   "mcp_token_pending_actions",
+  "owner_settings_pending_actions",
   "plugin_pending",
   "rate_limit_pending",
   "role_pending",
