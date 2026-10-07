@@ -13,6 +13,7 @@
  * `current/`.
  */
 
+import { existsSync } from "node:fs";
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
@@ -35,7 +36,7 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     };
   },
 
-  async promoteToProduction({ sourceBuildDir, fromTarget, toTarget }) {
+  async promoteToProduction({ sourceBuildDir, fromTarget, toTarget, siteBaseUrl }) {
     if (fromTarget.name === toTarget.name) {
       throw new Error("fromTarget and toTarget must differ");
     }
@@ -74,13 +75,33 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     const toCurrent = join(toDir, "current");
     const overlayBuildId = `${basename(sourceBuildDir)}-${toTarget.name}`;
     const overlayDir = join(toBuildsDir, overlayBuildId);
-    await mkdir(overlayDir, { recursive: true });
-    const { buildRobotsTxt } = await import("@caelo-cms/static-generator");
-    await copyTreeExcept(sourceBuildDir, overlayDir, ["robots.txt", "routing-manifest.json"]);
-    await writeFile(join(overlayDir, "robots.txt"), buildRobotsTxt(toTarget.robotsDefault), "utf8");
+    const { buildRobotsTxtWithSitemap, envNoindexBuildError, manifestBakesEnvNoindex } =
+      await import("@caelo-cms/static-generator");
     const manifestRaw = await Bun.file(join(sourceBuildDir, "routing-manifest.json"))
       .text()
       .catch(() => "{}");
+    if (
+      fromTarget.robotsDefault === "noindex" &&
+      toTarget.robotsDefault === "index" &&
+      manifestBakesEnvNoindex(parseJsonOrNull(manifestRaw))
+    ) {
+      throw envNoindexBuildError(basename(sourceBuildDir));
+    }
+    await mkdir(overlayDir, { recursive: true });
+    await copyTreeExcept(sourceBuildDir, overlayDir, ["robots.txt", "routing-manifest.json"]);
+    // The env-level staging noindex lives in robots.txt + the staging
+    // vhost's X-Robots-Tag header (Caddyfile.staging) — the production
+    // vhost sends no such header, so rewriting robots.txt for the
+    // destination is all promote has to do.
+    await writeFile(
+      join(overlayDir, "robots.txt"),
+      buildRobotsTxtWithSitemap(
+        toTarget.robotsDefault,
+        siteBaseUrl,
+        existsSync(join(sourceBuildDir, "sitemap.xml")),
+      ),
+      "utf8",
+    );
     try {
       const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
       manifest.target = toTarget.name;
@@ -121,6 +142,14 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     };
   },
 };
+
+function parseJsonOrNull(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
 function basename(p: string): string {
   const i = p.lastIndexOf("/");

@@ -235,7 +235,6 @@ describe("#391 — generator/preview parity + sitemap contributions", () => {
           siteLanguage: SITE_LANGUAGE,
           organization: {},
         },
-        envIsNoindex: false,
       });
     });
     const expectedBlock = renderHeadEntries(ENTRIES);

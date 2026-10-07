@@ -12,8 +12,10 @@ export {
 export {
   buildRobotsTxt,
   type DeployTarget,
+  envNoindexBuildError,
   type GenerateResult,
   generateSite,
+  manifestBakesEnvNoindex,
   pageOutputPath,
 } from "./generate.js";
-export { runSeoPass } from "./seo-pass.js";
+export { buildRobotsTxtWithSitemap, readSeoSettings, runSeoPass } from "./seo-pass.js";
