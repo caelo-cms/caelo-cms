@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  checkPublicSiteBaseUrl,
   injectSeoIntoHead,
   renderSeoHead,
   resolveCanonicalUrl,
@@ -9,6 +10,7 @@ import {
   seoOptimizeInputSchema,
   seoSetInputSchema,
   siteDefaultsSetSeoInputSchema,
+  siteSeoProposalInputSchema,
 } from "./seo.js";
 
 describe("resolveCanonicalUrl", () => {
@@ -198,5 +200,103 @@ describe("schemas", () => {
       organizationJson: {},
     });
     expect(r.success).toBe(false);
+  });
+});
+
+describe("siteSeoProposalInputSchema", () => {
+  it("accepts any single field", () => {
+    expect(siteSeoProposalInputSchema.safeParse({ siteBaseUrl: "https://a.example" }).success).toBe(
+      true,
+    );
+    expect(siteSeoProposalInputSchema.safeParse({ sitemapEnabled: false }).success).toBe(true);
+    expect(
+      siteSeoProposalInputSchema.safeParse({ organizationJson: { name: "Acme" } }).success,
+    ).toBe(true);
+  });
+
+  it("rejects an empty proposal with a message naming the fields", () => {
+    const r = siteSeoProposalInputSchema.safeParse({});
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error?.issues)).toContain("siteBaseUrl");
+  });
+
+  it("rejects unknown keys at the top level and inside organizationJson", () => {
+    expect(siteSeoProposalInputSchema.safeParse({ sitemapEnabled: true, x: 1 }).success).toBe(
+      false,
+    );
+    expect(
+      siteSeoProposalInputSchema.safeParse({ organizationJson: { name: "A", script: "<x>" } })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe("checkPublicSiteBaseUrl", () => {
+  it("normalises a valid https URL to its origin", () => {
+    expect(checkPublicSiteBaseUrl("https://www.Example.com/", "gcp")).toEqual({
+      ok: true,
+      url: "https://www.example.com",
+    });
+    expect(checkPublicSiteBaseUrl(" https://example.com:8443 ", undefined)).toEqual({
+      ok: true,
+      url: "https://example.com:8443",
+    });
+  });
+
+  it("rejects a path, query or fragment and names the origin to use instead", () => {
+    for (const raw of [
+      "https://example.com/blog",
+      "https://example.com/?a=1",
+      "https://example.com/#top",
+    ]) {
+      const r = checkPublicSiteBaseUrl(raw, "aws");
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.message).toContain("use https://example.com");
+    }
+  });
+
+  it("rejects non-URLs and credentials", () => {
+    expect(checkPublicSiteBaseUrl("example.com", "gcp").ok).toBe(false);
+    expect(checkPublicSiteBaseUrl("https://u:p@example.com", "gcp").ok).toBe(false);
+  });
+
+  it("requires https for public hosts on every provider", () => {
+    expect(checkPublicSiteBaseUrl("http://example.com", "gcp").ok).toBe(false);
+    expect(checkPublicSiteBaseUrl("http://example.com", "self-hosted").ok).toBe(false);
+    expect(checkPublicSiteBaseUrl("ftp://example.com", undefined).ok).toBe(false);
+  });
+
+  it("rejects loopback hosts on cloud providers", () => {
+    for (const provider of ["gcp", "gcp-firebase", "aws", "azure"]) {
+      for (const raw of [
+        "https://localhost",
+        "http://localhost:8082",
+        "https://127.0.0.1",
+        "https://[::1]",
+        "https://app.localhost",
+      ]) {
+        const r = checkPublicSiteBaseUrl(raw, provider);
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.message).toContain("public domain");
+      }
+    }
+  });
+
+  it("allows http://localhost on a self-hosted install (local dev)", () => {
+    expect(checkPublicSiteBaseUrl("http://localhost:8082", undefined)).toEqual({
+      ok: true,
+      url: "http://localhost:8082",
+    });
+    expect(checkPublicSiteBaseUrl("http://127.0.0.1:8082", "self-hosted").ok).toBe(true);
+  });
+
+  it("rejects wildcard bind addresses on every provider, self-hosted included", () => {
+    for (const provider of [undefined, "self-hosted", "gcp"]) {
+      for (const raw of ["http://0.0.0.0:8082", "https://0.0.0.0", "http://[::]:8082"]) {
+        const r = checkPublicSiteBaseUrl(raw, provider);
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.message).toContain("bind address");
+      }
+    }
   });
 });

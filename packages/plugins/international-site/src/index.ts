@@ -505,7 +505,9 @@ async function requireSiteBaseUrl(cms: CmsHandle): Promise<string> {
   if (!seo.siteBaseUrl) {
     throw new Error(
       "international-site needs the site base URL for language links and hreflang, but it is " +
-        "not configured. Set it under Security → SEO in the admin.",
+        "not configured. Next step: the AI sets it with propose_set_site_seo({siteBaseUrl: " +
+        '"https://<public domain>"}) (Owner-approved), or a human sets it under Security → SEO ' +
+        "in the admin.",
     );
   }
   return seo.siteBaseUrl;

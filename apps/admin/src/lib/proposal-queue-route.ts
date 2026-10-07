@@ -15,6 +15,9 @@ const QUEUE_ROUTE_OVERRIDES: Readonly<Record<string, string>> = {
   ai_providers: "/security/ai/pending",
   mcp_tokens: "/security/mcp/pending",
   owner_settings: "/security/owner-settings/pending",
+  // Site SEO proposals are approved on the SEO settings page, which exposes
+  // the same `?/approve` + `?/reject` actions.
+  site_defaults: "/security/seo",
 };
 
 /** The pending-queue page for a `pending_proposals.list` domain. */
