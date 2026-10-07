@@ -1,0 +1,507 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Issue #553 — the audit-run lifecycle:
+ *
+ *   quality_audits.enqueue        after a successful staging deploy, decide
+ *                                 (from the Stage's classification plus the
+ *                                 install-wide rules) whether to audit, and
+ *                                 which pages; writes a queued or skipped run.
+ *   quality_audits.claim_next     the in-admin worker takes the oldest queued
+ *                                 run (multi-instance safe), superseding runs
+ *                                 whose build staging no longer serves.
+ *   quality_audits.record_result  the worker reports the Lighthouse outcome;
+ *                                 the op applies acceptances + the ratchet,
+ *                                 persists pages and baselines, and settles
+ *                                 the run (passed / problems / errored).
+ *
+ * An infrastructure failure always ends as `errored` with the reason on the
+ * run — never as a silent pass, never as an unexplained block.
+ */
+
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, ok } from "@caelo-cms/shared";
+import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { recordAudit } from "../../audit.js";
+import { withInstallRules } from "../../quality/classify.js";
+import { pageMeasurementSchema } from "../../quality/lighthouse-protocol.js";
+import {
+  type BaselineState,
+  evaluatePage,
+  type HeldBackSignal,
+  type PageMeasurement,
+  type QualityCategory,
+} from "../../quality/ratchet.js";
+import { jsonbParam } from "../../sql-helpers.js";
+import { iso, json, stageClassificationSchema, uuidList } from "./_shared.js";
+
+type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
+
+/** Pages audited per Stage: the homepage plus changed pages, capped so an
+ *  audit stays within minutes (each page costs 3 Lighthouse runs). */
+export const QUALITY_AUDIT_PAGE_CAP = 5;
+
+/** Performance runs per page (median of 3, per #553). */
+const PERFORMANCE_RUNS = 3;
+
+/** A `running` audit older than this belongs to a process that died. */
+const STALE_RUNNING_MINUTES = 30;
+
+/** Statuses after which a Stage counts as cleanly audited. */
+const CLEAN_STATUSES = new Set(["passed", "skipped"]);
+
+/**
+ * The latest audit of the staging deploy that ran right before this one.
+ * A previous succeeded Stage WITHOUT any audit row (its enqueue failed)
+ * comes back as status `missing`, so it counts as not clean.
+ */
+async function previousStagingAudit(
+  tx: Tx,
+  deployRunId: string,
+): Promise<{ id: string; status: string; target_page_ids: string[] } | null> {
+  const rows = (await tx.execute(sql`
+    WITH prev AS (
+      SELECT r.id FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+      WHERE t.env = 'staging' AND r.status = 'succeeded' AND r.id <> ${deployRunId}::uuid
+        AND r.started_at < (SELECT started_at FROM deploy_runs WHERE id = ${deployRunId}::uuid)
+      ORDER BY r.started_at DESC LIMIT 1
+    )
+    SELECT COALESCE(q.id::text, prev.id::text) AS id,
+           COALESCE(q.status, 'missing') AS status,
+           q.target_page_ids::text[] AS target_page_ids
+    FROM prev
+    LEFT JOIN LATERAL (
+      SELECT id, status, target_page_ids FROM quality_audit_runs
+      WHERE deploy_run_id = prev.id ORDER BY created_at DESC LIMIT 1
+    ) q ON TRUE
+  `)) as unknown as { id: string; status: string; target_page_ids: string[] | null }[];
+  const row = rows[0];
+  return row ? { ...row, target_page_ids: row.target_page_ids ?? [] } : null;
+}
+
+export const enqueueAuditOp = defineOperation({
+  name: "quality_audits.enqueue",
+  // Why human-only: called by the Stage flow right after the staging
+  // deploy the human triggered, with the classification it computed before
+  // the merge. Letting the AI enqueue would let it hand in its own
+  // "nothing to audit" verdict; the AI re-runs audits by re-staging.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      deployRunId: z.string().uuid(),
+      /** The chat whose Stage produced the deploy; null outside a chat. */
+      chatSessionId: z.string().uuid().nullable(),
+      /** `quality_audits.classify_stage` output, taken BEFORE the merge.
+       *  Required with a chat, null without one. */
+      branch: z
+        .object({
+          classification: stageClassificationSchema,
+          touchedPageIds: z.array(z.string().uuid()),
+        })
+        .strict()
+        .nullable(),
+      /** Pages the caller staged on purpose outside a chat (the pages
+       *  list's Stage of one page); audited after the homepage. */
+      pageIds: z.array(z.string().uuid()).max(50).default([]),
+    })
+    .strict()
+    .refine((v) => (v.chatSessionId === null) === (v.branch === null), {
+      message: "pass the pre-merge classification exactly when a chatSessionId is given",
+    }),
+  output: z.object({
+    auditRunId: z.string(),
+    status: z.enum(["queued", "skipped"]),
+    classification: stageClassificationSchema,
+    targetPageIds: z.array(z.string()),
+  }),
+  handler: async (ctx, input, tx) => {
+    const runRows = (await tx.execute(sql`
+      SELECT r.status, t.env
+      FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+      WHERE r.id = ${input.deployRunId}::uuid
+    `)) as unknown as { status: string; env: string }[];
+    const run = runRows[0];
+    if (run?.env !== "staging" || run.status !== "succeeded") {
+      return err({
+        kind: "HandlerError",
+        operation: "quality_audits.enqueue",
+        message: run
+          ? `deploy run ${input.deployRunId} is a ${run.status} ${run.env} run — only a succeeded staging deploy is audited`
+          : `deploy run ${input.deployRunId} not found`,
+      });
+    }
+
+    const firstRows = (await tx.execute(sql`
+      SELECT NOT EXISTS (
+        SELECT 1 FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+        WHERE t.env = 'staging' AND r.status = 'succeeded' AND r.id <> ${input.deployRunId}::uuid
+          AND r.started_at < (SELECT started_at FROM deploy_runs WHERE id = ${input.deployRunId}::uuid)
+      ) AS first_stage,
+      (
+        SELECT max(r.started_at) FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+        WHERE t.env = 'staging' AND r.status = 'succeeded' AND r.id <> ${input.deployRunId}::uuid
+          AND r.started_at < (SELECT started_at FROM deploy_runs WHERE id = ${input.deployRunId}::uuid)
+      ) AS previous_stage_at
+    `)) as unknown as { first_stage: boolean; previous_stage_at: string | Date | null }[];
+    const firstStage = firstRows[0]?.first_stage ?? true;
+    const previousStageAt = firstRows[0]?.previous_stage_at ?? null;
+
+    const activatedPlugins =
+      previousStageAt === null
+        ? []
+        : ((await tx.execute(sql`
+            SELECT id::text AS id, slug FROM plugins
+            WHERE status = 'active' AND activated_at > ${iso(previousStageAt)}::timestamptz
+            ORDER BY slug
+          `)) as unknown as { id: string; slug: string }[]);
+
+    const previous = await previousStagingAudit(tx, input.deployRunId);
+    const classification = withInstallRules(input.branch?.classification ?? null, {
+      firstStage,
+      activatedPlugins,
+      previousNotClean:
+        previous && !CLEAN_STATUSES.has(previous.status)
+          ? { auditRunId: previous.id, status: previous.status }
+          : null,
+    });
+
+    // Target pages: homepage first, then the Stage's pages, then pages an
+    // unclean previous audit covered — live (merged, published) only.
+    const candidates = new Set([
+      ...(input.branch?.touchedPageIds ?? []),
+      ...input.pageIds,
+      ...(classification.reasons.some((r) => r.rule === "previous_not_clean")
+        ? (previous?.target_page_ids ?? [])
+        : []),
+    ]);
+    const targetRows = (await tx.execute(sql`
+      WITH cand AS (
+        SELECT c.id, c.ord FROM unnest(${uuidList([...candidates])}) WITH ORDINALITY AS c(id, ord)
+      )
+      SELECT p.id::text AS id
+      FROM pages p
+      LEFT JOIN cand ON cand.id = p.id
+      WHERE p.status = 'published' AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
+        AND (p.current_path = '/' OR cand.id IS NOT NULL)
+      ORDER BY (p.current_path = '/') DESC, cand.ord NULLS LAST, p.current_path
+    `)) as unknown as { id: string }[];
+    const targetPageIds = targetRows.map((r) => r.id).slice(0, QUALITY_AUDIT_PAGE_CAP);
+
+    const noPages = classification.auditNeeded && targetPageIds.length === 0;
+    const status = classification.auditNeeded && !noPages ? "queued" : "skipped";
+    const finalClassification = noPages
+      ? {
+          ...classification,
+          auditNeeded: false,
+          skipped: [...classification.skipped, "no published pages on staging to audit"],
+        }
+      : classification;
+
+    const inserted = (await tx.execute(sql`
+      INSERT INTO quality_audit_runs
+        (deploy_run_id, chat_session_id, requested_by, status, classification,
+         target_page_ids, performance_runs, finished_at)
+      VALUES (
+        ${input.deployRunId}::uuid,
+        ${input.chatSessionId}::uuid,
+        ${ctx.actorId}::uuid,
+        ${status},
+        ${jsonbParam(finalClassification)},
+        ${status === "queued" ? uuidList(targetPageIds) : sql`'{}'::uuid[]`},
+        ${PERFORMANCE_RUNS},
+        ${status === "skipped" ? sql`now()` : sql`NULL`}
+      )
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const auditRunId = inserted[0]?.id;
+    if (!auditRunId) {
+      return err({
+        kind: "HandlerError",
+        operation: "quality_audits.enqueue",
+        message: "could not create the audit run",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "quality_audits.enqueue",
+      input,
+      succeeded: true,
+      entityId: auditRunId,
+      resultSummary: `${status}: ${finalClassification.reasons.map((r) => r.rule).join(",") || "no rendering changes"}`,
+    });
+    return ok({
+      auditRunId,
+      status,
+      classification: finalClassification,
+      targetPageIds: status === "queued" ? targetPageIds : [],
+    });
+  },
+});
+
+const claimedRunSchema = z.object({
+  auditRunId: z.string(),
+  deployRunId: z.string(),
+  performanceRuns: z.number().int(),
+  pageUrlStyle: z.enum(["directory", "no-extension"]),
+  /** Provider preview URL of the staged build (Firebase channels). */
+  previewUrl: z.string().nullable(),
+  pages: z.array(z.object({ pageId: z.string(), currentPath: z.string() })),
+});
+
+export const claimNextAuditOp = defineOperation({
+  name: "quality_audits.claim_next",
+  // Why human-only: worker-internal — only the in-admin audit worker
+  // (system) takes queued runs; humans and the AI retry by re-staging.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({ run: claimedRunSchema.nullable(), superseded: z.number().int() }),
+  handler: async (_ctx, _input, tx) => {
+    await tx.execute(sql`
+      UPDATE quality_audit_runs
+         SET status = 'errored', finished_at = now(), error_code = 'interrupted',
+             error_message = ${`the audit was still running after ${STALE_RUNNING_MINUTES} minutes — the admin process that ran it stopped. Re-stage to audit again.`}
+       WHERE status = 'running' AND started_at < now() - make_interval(mins => ${STALE_RUNNING_MINUTES})
+    `);
+    // Staging serves only its newest build: a queued audit of an older one
+    // can no longer measure what it was queued for. The newer Stage's
+    // enqueue already folded these pages in (previous_not_clean).
+    const superseded = (await tx.execute(sql`
+      UPDATE quality_audit_runs q
+         SET status = 'superseded', finished_at = now()
+       WHERE q.status = 'queued'
+         AND EXISTS (
+           SELECT 1 FROM deploy_runs newer
+           JOIN deploy_targets t ON t.id = newer.target_id
+           JOIN deploy_runs mine ON mine.id = q.deploy_run_id
+           WHERE t.env = 'staging' AND newer.status = 'succeeded'
+             AND newer.target_id = mine.target_id AND newer.started_at > mine.started_at
+         )
+      RETURNING q.id
+    `)) as unknown as { id: string }[];
+    const claimed = (await tx.execute(sql`
+      UPDATE quality_audit_runs
+         SET status = 'running', started_at = now()
+       WHERE id = (
+         SELECT id FROM quality_audit_runs WHERE status = 'queued'
+         ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED
+       )
+      RETURNING id::text AS id, deploy_run_id::text AS deploy_run_id, performance_runs,
+                target_page_ids::text[] AS target_page_ids
+    `)) as unknown as {
+      id: string;
+      deploy_run_id: string;
+      performance_runs: number;
+      target_page_ids: string[];
+    }[];
+    const row = claimed[0];
+    if (!row) return ok({ run: null, superseded: superseded.length });
+    const runInfo = (await tx.execute(sql`
+      SELECT t.page_url_style, r.publish_summary->>'previewUrl' AS preview_url
+      FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+      WHERE r.id = ${row.deploy_run_id}::uuid
+    `)) as unknown as {
+      page_url_style: "directory" | "no-extension";
+      preview_url: string | null;
+    }[];
+    const pages = (await tx.execute(sql`
+      SELECT t.id::text AS page_id, p.current_path
+      FROM unnest(${uuidList(row.target_page_ids)}) WITH ORDINALITY AS t(id, ord)
+      JOIN pages p ON p.id = t.id
+      WHERE p.status = 'published' AND p.deleted_at IS NULL
+      ORDER BY t.ord
+    `)) as unknown as { page_id: string; current_path: string }[];
+    return ok({
+      run: {
+        auditRunId: row.id,
+        deployRunId: row.deploy_run_id,
+        performanceRuns: row.performance_runs,
+        pageUrlStyle: runInfo[0]?.page_url_style ?? "directory",
+        previewUrl: runInfo[0]?.preview_url ?? null,
+        pages: pages.map((p) => ({ pageId: p.page_id, currentPath: p.current_path })),
+      },
+      superseded: superseded.length,
+    });
+  },
+});
+
+const auditedPageInput = z
+  .object({
+    pageId: z.string().uuid(),
+    url: z.string(),
+    finalUrl: z.string().optional(),
+    measurement: pageMeasurementSchema,
+    performanceRuns: z.array(z.number().int().min(0).max(100)).min(1),
+  })
+  .strict();
+
+const pageErrorInput = z
+  .object({
+    pageId: z.string().uuid(),
+    url: z.string(),
+    code: z.string(),
+    message: z.string().min(1),
+  })
+  .strict();
+
+async function loadRatchetState(
+  tx: Tx,
+  auditRunId: string,
+  pageId: string,
+): Promise<{
+  baselines: Partial<Record<QualityCategory, BaselineState>>;
+  accepted: Set<string>;
+  previousHeldBack: Set<string>;
+}> {
+  const baselineRows = (await tx.execute(sql`
+    SELECT category, baseline, below_streak FROM quality_baselines WHERE page_id = ${pageId}::uuid
+  `)) as unknown as { category: QualityCategory; baseline: number; below_streak: number }[];
+  const baselines: Partial<Record<QualityCategory, BaselineState>> = {};
+  for (const b of baselineRows) {
+    baselines[b.category] = { baseline: b.baseline, belowStreak: b.below_streak };
+  }
+  const acceptedRows = (await tx.execute(sql`
+    SELECT audit_id FROM quality_acceptances
+    WHERE page_id = ${pageId}::uuid AND kind = 'finding' AND revoked_at IS NULL
+  `)) as unknown as { audit_id: string }[];
+  const prevRows = (await tx.execute(sql`
+    SELECT qp.held_back FROM quality_audit_pages qp
+    WHERE qp.page_id = ${pageId}::uuid AND qp.audit_run_id <> ${auditRunId}::uuid
+      AND qp.status <> 'errored'
+    ORDER BY qp.created_at DESC LIMIT 1
+  `)) as unknown as { held_back: unknown }[];
+  const previousHeldBack = new Set<string>();
+  for (const h of json<HeldBackSignal[]>(prevRows[0]?.held_back ?? [])) {
+    if (h.kind === "performance_finding") previousHeldBack.add(h.auditId);
+  }
+  return { baselines, accepted: new Set(acceptedRows.map((r) => r.audit_id)), previousHeldBack };
+}
+
+export const recordAuditResultOp = defineOperation({
+  name: "quality_audits.record_result",
+  // Why human-only: worker-internal — the Lighthouse outcome comes from the
+  // in-admin audit worker (system); nobody else may write scores.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      auditRunId: z.string().uuid(),
+      /** Staging origin the pages were fetched from (null when it could
+       *  not even be resolved). */
+      baseUrl: z.string().nullable(),
+      outcome: z.discriminatedUnion("kind", [
+        z
+          .object({
+            kind: z.literal("completed"),
+            pages: z.array(auditedPageInput),
+            pageErrors: z.array(pageErrorInput),
+          })
+          .strict(),
+        z
+          .object({ kind: z.literal("failed"), code: z.string(), message: z.string().min(1) })
+          .strict(),
+      ]),
+    })
+    .strict(),
+  output: z.object({
+    status: z.enum(["passed", "problems", "errored"]),
+    problemCount: z.number().int(),
+  }),
+  handler: async (ctx, input, tx) => {
+    const runRows = (await tx.execute(sql`
+      SELECT status FROM quality_audit_runs WHERE id = ${input.auditRunId}::uuid FOR UPDATE
+    `)) as unknown as { status: string }[];
+    if (runRows[0]?.status !== "running") {
+      return err({
+        kind: "HandlerError",
+        operation: "quality_audits.record_result",
+        message: `audit run ${input.auditRunId} is ${runRows[0]?.status ?? "missing"}, not running — results are only recorded once, by the worker that claimed it`,
+      });
+    }
+
+    let status: "passed" | "problems" | "errored";
+    let problemCount = 0;
+    let errorCode: string | null = null;
+    let errorMessage: string | null = null;
+
+    if (input.outcome.kind === "failed") {
+      status = "errored";
+      errorCode = input.outcome.code;
+      errorMessage = input.outcome.message;
+    } else {
+      for (const page of input.outcome.pages) {
+        const state = await loadRatchetState(tx, input.auditRunId, page.pageId);
+        const evaluation = evaluatePage({
+          measurement: page.measurement as PageMeasurement,
+          baselines: state.baselines,
+          acceptedAuditIds: state.accepted,
+          previousHeldBackFindings: state.previousHeldBack,
+        });
+        problemCount += evaluation.problems.length;
+        await tx.execute(sql`
+          INSERT INTO quality_audit_pages
+            (audit_run_id, page_id, url, status, scores, performance_runs,
+             failing_audits, problems, held_back)
+          VALUES (
+            ${input.auditRunId}::uuid, ${page.pageId}::uuid, ${page.finalUrl ?? page.url},
+            ${evaluation.problems.length > 0 ? "problems" : "clean"},
+            ${jsonbParam(page.measurement.scores)},
+            ARRAY(SELECT jsonb_array_elements_text(${jsonbParam(page.performanceRuns)})::int),
+            ${jsonbParam(page.measurement.failingAudits)},
+            ${jsonbParam(evaluation.problems)},
+            ${jsonbParam(evaluation.heldBack)}
+          )
+        `);
+        for (const [category, next] of Object.entries(evaluation.nextBaselines)) {
+          await tx.execute(sql`
+            INSERT INTO quality_baselines (page_id, category, baseline, below_streak, updated_by_run)
+            VALUES (${page.pageId}::uuid, ${category}, ${next.baseline}, ${next.belowStreak},
+                    ${input.auditRunId}::uuid)
+            ON CONFLICT (page_id, category) DO UPDATE
+              SET baseline = EXCLUDED.baseline, below_streak = EXCLUDED.below_streak,
+                  updated_at = now(), updated_by_run = EXCLUDED.updated_by_run
+          `);
+        }
+      }
+      for (const e of input.outcome.pageErrors) {
+        await tx.execute(sql`
+          INSERT INTO quality_audit_pages
+            (audit_run_id, page_id, url, status, error_code, error_message)
+          VALUES (${input.auditRunId}::uuid, ${e.pageId}::uuid, ${e.url}, 'errored', ${e.code}, ${e.message})
+        `);
+      }
+      if (input.outcome.pageErrors.length > 0) {
+        status = "errored";
+        errorCode = "page-failed";
+        errorMessage = `${input.outcome.pageErrors.length} page(s) could not be audited: ${input.outcome.pageErrors
+          .map((e) => `${e.url} (${e.code}: ${e.message.slice(0, 160)})`)
+          .join("; ")}`;
+      } else {
+        status = problemCount > 0 ? "problems" : "passed";
+      }
+    }
+
+    await tx.execute(sql`
+      UPDATE quality_audit_runs
+         SET status = ${status}, finished_at = now(), base_url = ${input.baseUrl},
+             error_code = ${errorCode}, error_message = ${errorMessage},
+             problem_count = ${problemCount}
+       WHERE id = ${input.auditRunId}::uuid
+    `);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "quality_audits.record_result",
+      input: { auditRunId: input.auditRunId, outcome: input.outcome.kind },
+      succeeded: true,
+      entityId: input.auditRunId,
+      resultSummary: errorMessage
+        ? `${status}: ${errorMessage.slice(0, 200)}`
+        : `${status}: ${problemCount} problem(s)`,
+    });
+    return ok({ status, problemCount });
+  },
+});

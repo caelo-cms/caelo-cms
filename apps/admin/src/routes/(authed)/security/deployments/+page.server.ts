@@ -4,6 +4,7 @@ import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { enqueueStagingAudit } from "#lib/server/quality-audit.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -60,6 +61,14 @@ export const actions: Actions = {
     const targetName = String(form.get("targetName") ?? "");
     const result = await execute(registry, adapter, locals.ctx, "deploy.trigger", { targetName });
     if (!result.ok) return fail(500, { error: `Deploy failed for ${targetName}.` });
+    // #553 — a staging rebuild from Ops is audited like any Stage outside
+    // a chat (no-op for other targets).
+    await enqueueStagingAudit(locals.ctx, {
+      deployRunId: (result.value as { runId: string }).runId,
+      targetName,
+      chatSessionId: null,
+      branch: null,
+    });
     throw redirect(303, "/security/deployments");
   },
   promote: async ({ request, locals }) => {
