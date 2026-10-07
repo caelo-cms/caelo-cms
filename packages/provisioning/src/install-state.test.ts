@@ -83,5 +83,7 @@ describe("recordImageDigests (regression C4)", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
-  });
+    // A fresh bun process (own HOME) cold-starts and transpiles the module
+    // graph; on a loaded runner that alone can pass the 5s default.
+  }, 30_000);
 });
