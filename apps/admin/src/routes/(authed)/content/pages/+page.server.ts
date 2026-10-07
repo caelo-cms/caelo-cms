@@ -5,6 +5,7 @@ import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { enqueueStagingAudit } from "#lib/server/quality-audit.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { stagingPreviewPath } from "#lib/server/staging-preview-path.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -98,8 +99,17 @@ export const actions: Actions = {
       fileCount: number;
       buildId: string;
       runId: string;
+      targetName: string;
       previewUrl?: string;
     };
+    // #553 — a Stage outside a chat has no branch to classify; it audits.
+    await enqueueStagingAudit(locals.ctx, {
+      deployRunId: summary.runId,
+      targetName: summary.targetName,
+      chatSessionId: null,
+      branch: null,
+      pageIds: [pageId],
+    });
 
     let previewUrl: string;
     // v0.3.0 — gcp-firebase publishes to a Firebase preview channel

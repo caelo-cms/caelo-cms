@@ -31,6 +31,7 @@
     "drizzle-orm": "0.45.3",
     "google-auth-library": "^11.1.0",
     "htmlparser2": "^12.0.0",
+    "lighthouse": "13.5.0",
     "sharp": "^0.35",
     "zod": "4.6.5",
     "@caelo-cms/font-service": "workspace:*"
