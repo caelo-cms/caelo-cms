@@ -237,13 +237,16 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
     const staged = fake.versions.get("v1");
-    expect(robotsHeaders(staged!.config)).toEqual([
+    const { VERSION_CONFIG_HEADERS } = await import("../static-publisher-firebase.js");
+    // #555's cache entries + the staging-only robots entry, nothing else.
+    expect(staged!.config.headers).toEqual([
+      ...VERSION_CONFIG_HEADERS,
       { glob: "**", headers: { "X-Robots-Tag": "noindex" } },
     ]);
 
     await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-b", target: PRODUCTION });
     const direct = [...fake.versions.values()].at(-1);
-    expect(robotsHeaders(direct!.config)).toEqual([]);
+    expect(direct!.config.headers).toEqual([...VERSION_CONFIG_HEADERS]);
   });
 
   it("Publish live drops the noindex header, keeps content, and serves production robots + sitemap", async () => {
@@ -266,7 +269,10 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
     // the config (gateway rewrite, cache headers) carries over.
     expect(robotsHeaders(live.config)).toEqual([]);
     expect(live.config.rewrites).toEqual(staged.config.rewrites);
-    expect(live.config.headers?.length).toBe((staged.config.headers?.length ?? 0) - 1);
+    // #555 — the live release keeps exactly the immutable (content-hashed)
+    // and short-cache (pages, robots, sitemap) entries.
+    const { VERSION_CONFIG_HEADERS } = await import("../static-publisher-firebase.js");
+    expect(live.config.headers).toEqual([...VERSION_CONFIG_HEADERS]);
 
     // What staging shows is what production gets: every file but
     // robots.txt is the very same content hash.
@@ -312,6 +318,8 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
     });
     const live = fake.liveVersion();
     expect(robotsHeaders(live.config)).toEqual([]);
+    const { VERSION_CONFIG_HEADERS } = await import("../static-publisher-firebase.js");
+    expect(live.config.headers).toEqual([...VERSION_CONFIG_HEADERS]);
     expect(fake.fileBody(live, "/robots.txt")).toContain("Allow: /");
     expect(fake.fileBody(live, "/robots.txt")).toContain("Sitemap:");
   });

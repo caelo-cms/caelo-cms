@@ -21,6 +21,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HTML_CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 // Imported for real up front so afterAll can restore the genuine module
 // after the mock.module() below — bun's mock.module is process-global and
@@ -28,6 +29,7 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
 // (issue #305). Snapshot the exports BEFORE mock.module patches the
 // namespace's live bindings.
 import * as realGcsStorage from "@google-cloud/storage";
+import { CACHE_POLICY_VERSION } from "../static-publisher-gcs.js";
 
 const realGcsStorageExports = { ...realGcsStorage };
 
@@ -260,7 +262,11 @@ describe("gcsStaticPublisher.publishStaging", () => {
     staticBucket.files.set("_state/last-build-manifest.json", {
       ...makeFile(staticBucket, "_state/last-build-manifest.json"),
       body: Buffer.from(
-        JSON.stringify({ buildId: "prev", files: { "en/about/index.html": knownCrc } }),
+        JSON.stringify({
+          buildId: "prev",
+          files: { "en/about/index.html": knownCrc },
+          cachePolicyVersion: CACHE_POLICY_VERSION,
+        }),
       ),
     });
     const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
@@ -345,6 +351,123 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
     // robots.txt was patched with the destination's robotsDefault.
     const robots = staticBucket.files.get("robots.txt");
     expect(robots?.body?.toString("utf8")).toContain("Allow: /");
+  });
+});
+
+describe("gcsStaticPublisher — Cache-Control per path class", () => {
+  const FONT = "_assets/fonts/inter/29ede7bd4be32ab0.woff2";
+  const PINNED_FONT = `_assets/fonts/pinned/${"d".repeat(64)}.woff2`;
+  const PLUGIN_JS = "_caelo/plugin/consent-manager/runtime.0123456789ab.js";
+  const MEDIA = "_assets/searchviu-logo.png";
+  const MEDIA_VARIANT = "_assets/hero/w800.webp";
+
+  async function seedAssets(): Promise<void> {
+    for (const rel of [FONT, PINNED_FONT, PLUGIN_JS, MEDIA, MEDIA_VARIANT]) {
+      await mkdir(join(buildDir, rel, ".."), { recursive: true });
+      await writeFile(join(buildDir, rel), `bytes of ${rel}`, "utf8");
+    }
+    await writeFile(join(buildDir, "sitemap.xml"), "<urlset/>", "utf8");
+    await writePromotableManifest();
+  }
+
+  // A post-#561 staging build: promote refuses manifests without the
+  // env-independent SEO flag (see manifestBakesEnvNoindex).
+  async function writePromotableManifest(): Promise<void> {
+    await writeFile(
+      join(buildDir, "routing-manifest.json"),
+      JSON.stringify({ env: "staging", envNoindexInHtml: false }),
+      "utf8",
+    );
+  }
+
+  function cacheControlOf(bucket: MockBucket, key: string): string | undefined {
+    return (bucket.files.get(key)?.metadata as { cacheControl?: string } | undefined)?.cacheControl;
+  }
+
+  it("content-hashed fonts + plugin bundles are immutable on staging AND after promote", async () => {
+    await seedAssets();
+    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-cc", target: TARGET });
+    for (const rel of [FONT, PINNED_FONT, PLUGIN_JS]) {
+      expect(cacheControlOf(stagingBucket, `run-cc/${rel}`)).toBe(IMMUTABLE_CACHE_CONTROL);
+    }
+    await gcsStaticPublisher.promoteToProduction({
+      sourceRunId: "run-cc",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://example.com",
+    });
+    for (const rel of [FONT, PINNED_FONT, PLUGIN_JS]) {
+      expect(cacheControlOf(staticBucket, rel)).toBe(IMMUTABLE_CACHE_CONTROL);
+    }
+    // Pages stay short + revalidating; slug media / sitemap never immutable.
+    expect(cacheControlOf(staticBucket, "en/about/index.html")).toBe(HTML_CACHE_CONTROL);
+    expect(cacheControlOf(staticBucket, MEDIA)).toBe("public, max-age=3600");
+    expect(cacheControlOf(staticBucket, MEDIA_VARIANT)).toBe("public, max-age=3600");
+    expect(cacheControlOf(staticBucket, "sitemap.xml")).toBe("public, max-age=300");
+    expect(cacheControlOf(staticBucket, "robots.txt")).toBe("public, max-age=300");
+  });
+
+  it("promote keeps a bare-slug page's staged text/html Content-Type + HTML policy", async () => {
+    await rm(buildDir, { recursive: true, force: true });
+    buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-noext-promote-"));
+    await mkdir(join(buildDir, "en"), { recursive: true });
+    await writeFile(join(buildDir, "en", "about"), "<html>about</html>", "utf8");
+    await writeFile(
+      join(buildDir, "_content-types.json"),
+      JSON.stringify({ "en/about": "text/html; charset=utf-8" }),
+      "utf8",
+    );
+    await writePromotableManifest();
+    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-ne", target: TARGET });
+    await gcsStaticPublisher.promoteToProduction({
+      sourceRunId: "run-ne",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://example.com",
+    });
+    const meta = staticBucket.files.get("en/about")?.metadata as {
+      contentType?: string;
+      cacheControl?: string;
+    };
+    expect(meta.contentType).toContain("text/html");
+    expect(meta.cacheControl).toBe(HTML_CACHE_CONTROL);
+  });
+
+  it("a live manifest from an older cache policy is ignored so unchanged files get new metadata", async () => {
+    await seedAssets();
+    const fontCrc = computeCrc32cBase64(Buffer.from(`bytes of ${FONT}`, "utf8"));
+    staticBucket.files.set("_state/last-build-manifest.json", {
+      ...makeFile(staticBucket, "_state/last-build-manifest.json"),
+      // Pre-policy manifest: no cachePolicyVersion. Without the bump the
+      // byte-identical font would be skipped and keep max-age=3600.
+      body: Buffer.from(JSON.stringify({ buildId: "prev", files: { [FONT]: fontCrc } })),
+    });
+    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    const summary = await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-pv",
+      target: TARGET,
+    });
+    expect(summary.skippedUnchangedCount).toBe(0);
+    expect(cacheControlOf(stagingBucket, `run-pv/${FONT}`)).toBe(IMMUTABLE_CACHE_CONTROL);
+
+    // And the manifest written by promote carries the current version,
+    // so the NEXT publish hash-skips again.
+    await gcsStaticPublisher.promoteToProduction({
+      sourceRunId: "run-pv",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://example.com",
+    });
+    const written = JSON.parse(
+      staticBucket.files.get("_state/last-build-manifest.json")?.body?.toString("utf8") ?? "{}",
+    ) as { cachePolicyVersion?: number };
+    expect(written.cachePolicyVersion).toBe(CACHE_POLICY_VERSION);
   });
 });
 

@@ -6,7 +6,9 @@
  * the SAME code path (collectContributions + composeHeadBlock), so the
  * contributed block in the preview HTML is byte-identical to what the
  * generator injects — and the sitemap carries contributed alternates
- * and honours exclusions.
+ * and honours exclusions. The document language (`<html lang>`) rides
+ * the same contributions: a plugin-contributed per-page language wins,
+ * every other page carries the stored site language — on both surfaces.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -36,7 +38,14 @@ const SYS_CTX: ExecutionContext = {
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let pageId = "";
+let plainPageId = "";
 let buildDir = "";
+let siteLanguageBefore = "";
+/** Stored site language for the run; distinct from the seeded `en` so
+ *  a hard-coded default could not pass the assertions. */
+const SITE_LANGUAGE = "fr";
+/** What the test plugin contributes for `pageId` only. */
+const CONTRIBUTED_LANGUAGE = "de-AT";
 
 const ENTRIES: HeadEntry[] = [
   { kind: "link", rel: "alternate", hreflang: "de", href: "https://example.com/de/t391p-page" },
@@ -106,6 +115,27 @@ beforeAll(async () => {
     status: "published",
   });
   if (!pub.ok) throw new Error("publish failed");
+  const plain = await execute(registry, adapter, SYS_CTX, "pages.create", {
+    slug: "t391p-plain",
+    title: "Plain",
+    templateId,
+  });
+  if (!plain.ok) throw new Error(`page seed failed: ${JSON.stringify(plain.error)}`);
+  plainPageId = (plain.value as { pageId: string }).pageId;
+  const pubPlain = await execute(registry, adapter, SYS_CTX, "pages.set_status", {
+    pageId: plainPageId,
+    status: "published",
+  });
+  if (!pubPlain.ok) throw new Error("publish failed");
+
+  const defaults = await execute(registry, adapter, SYS_CTX, "site_defaults.get", {});
+  if (!defaults.ok) throw new Error(JSON.stringify(defaults.error));
+  siteLanguageBefore = (defaults.value as { defaults: { siteLanguage: string } }).defaults
+    .siteLanguage;
+  const setLang = await execute(registry, adapter, SYS_CTX, "site_defaults.set_identity", {
+    siteLanguage: SITE_LANGUAGE,
+  });
+  if (!setLang.ok) throw new Error(JSON.stringify(setLang.error));
 
   const contributorDef = definePlugin({
     slug: "t391p-intl",
@@ -120,9 +150,11 @@ beforeAll(async () => {
         const { pageIds } = args as { pageIds: string[] };
         const head: Record<string, HeadEntry[]> = {};
         const sitemap: Record<string, unknown> = {};
+        const lang: Record<string, string> = {};
         for (const id of pageIds) {
           if (id !== pageId) continue;
           head[id] = ENTRIES;
+          lang[id] = CONTRIBUTED_LANGUAGE;
           sitemap[id] = {
             alternates: [
               { hreflang: "de", href: "https://example.com/de/t391p-page" },
@@ -130,7 +162,7 @@ beforeAll(async () => {
             ],
           };
         }
-        return { head, sitemap };
+        return { head, sitemap, lang };
       },
     },
   });
@@ -144,6 +176,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (siteLanguageBefore) {
+    await execute(registry, adapter, SYS_CTX, "site_defaults.set_identity", {
+      siteLanguage: siteLanguageBefore,
+    });
+  }
   await cleanup();
   await restoreSiteBaseUrl?.();
   rmSync(buildDir, { recursive: true, force: true });
@@ -161,25 +198,49 @@ describe("#391 — generator/preview parity + sitemap contributions", () => {
     expect(html).toContain(expectedBlock);
   });
 
+  it("preview <html lang>: contributed per-page language wins, else the stored site language", async () => {
+    const contributed = await execute(registry, adapter, SYS_CTX, "pages.render_preview", {
+      pageId,
+    });
+    if (!contributed.ok) throw new Error(JSON.stringify(contributed.error));
+    const contributedHtml = (contributed.value as { html: string }).html;
+    expect(contributedHtml).toContain(`<html lang="${CONTRIBUTED_LANGUAGE}"`);
+    expect(contributedHtml.match(/<html\b/gi)?.length).toBe(1);
+
+    const plain = await execute(registry, adapter, SYS_CTX, "pages.render_preview", {
+      pageId: plainPageId,
+    });
+    if (!plain.ok) throw new Error(JSON.stringify(plain.error));
+    expect((plain.value as { html: string }).html).toContain(`<html lang="${SITE_LANGUAGE}"`);
+  });
+
   it("seo-pass injects the SAME block and the sitemap carries alternates", async () => {
     const page = {
       pageSlug: "t391p-page",
       html: "<html><head><title>x</title></head><body>b</body></html>",
     };
+    // A layout-authored lang is replaced by the resolved one.
+    const plainPage = {
+      pageSlug: "t391p-plain",
+      html: '<!doctype html><html lang="xx"><head><title>x</title></head><body>b</body></html>',
+    };
     await adapter.withAdminTransaction(SYS_CTX, async (tx) => {
       await runSeoPass({
         tx,
         buildDir,
-        pages: [page],
+        pages: [page, plainPage],
         settings: {
           siteBaseUrl: "https://example.com",
           sitemapEnabled: true,
+          siteLanguage: SITE_LANGUAGE,
           organization: {},
         },
       });
     });
     const expectedBlock = renderHeadEntries(ENTRIES);
     expect(page.html).toContain(expectedBlock);
+    expect(page.html).toStartWith(`<html lang="${CONTRIBUTED_LANGUAGE}">`);
+    expect(plainPage.html).toStartWith(`<!doctype html><html lang="${SITE_LANGUAGE}">`);
 
     const sitemap = readFileSync(join(buildDir, "sitemap.xml"), "utf8");
     expect(sitemap).toContain(
