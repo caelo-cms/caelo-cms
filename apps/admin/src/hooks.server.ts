@@ -41,6 +41,7 @@ import {
   startChatImageGcWorker,
   startDomainEventGcWorker,
   startProposalGcWorker,
+  startQualityAuditWorker,
   startReleaseCheckWorker,
   transformPluginImage,
 } from "@caelo-cms/admin-core";
@@ -337,6 +338,18 @@ function seedSiteBaseUrl(): Promise<void> {
   return siteBaseUrlSeed;
 }
 
+// #553 — quality-audit worker. Lighthouse runs against the staged build
+// after a substantial Stage; the worker claims queued audit runs (written by
+// the Stage flow's quality_audits.enqueue) and records the results. Runs
+// the audit itself in a child process, so this process only waits on it.
+let qualityAuditBootstrapped = false;
+function bootstrapQualityAudits(): void {
+  if (qualityAuditBootstrapped) return;
+  qualityAuditBootstrapped = true;
+  const { adapter, registry } = getQueryContext();
+  startQualityAuditWorker({ adapter, registry });
+}
+
 // P13 — debounced auto-redeploy + gateway log GC. Polls audit_events
 // for "publishable" op kinds (driven by site_settings.auto_redeploy_*)
 // and fires deploy.trigger after `auto_redeploy_debounce_ms` of quiet.
@@ -439,6 +452,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapChatImageGc();
   bootstrapMcpBridge();
   bootstrapDomainEventGc();
+  bootstrapQualityAudits();
   bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   await seedSiteBaseUrl();

@@ -151,7 +151,9 @@ export {
   safeExternalFetchBinary,
 } from "./safe-fetch.js";
 export {
+  type BundledChromiumLaunch,
   createPlaywrightScreenshotter,
+  launchBundledChromium,
   type RenderedHtml,
   type Screenshot,
   type Screenshotter,

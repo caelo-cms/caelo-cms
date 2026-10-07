@@ -263,6 +263,10 @@ export function liveDatabaseHost(
 export function planContractEnv(
   install: ServiceEnvInputs,
   services: Readonly<Record<CloudRunSlug, DeployedService>>,
+  opts: {
+    /** Contract vars to leave exactly as the services have them. */
+    readonly leaveUntouched?: readonly string[];
+  } = {},
 ):
   | {
       readonly ok: true;
@@ -296,15 +300,17 @@ export function planContractEnv(
   } else {
     inputs = { ...runtime, provider: "gcp" };
   }
+  const skip = new Set(opts.leaveUntouched ?? []);
+  const owned = (contract: readonly CloudRunEnvVar[]) => contract.filter((e) => !skip.has(e.name));
   const admin = planEnvUpdate(
     services.admin.liveEnv,
-    adminEnvContract(inputs),
+    owned(adminEnvContract(inputs)),
     RETIRED_SERVICE_ENV.admin,
   );
   if (!admin.ok) return { ok: false, error: `admin: ${admin.error}` };
   const gateway = planEnvUpdate(
     services.gateway.liveEnv,
-    gatewayEnvContract(runtime),
+    owned(gatewayEnvContract(runtime)),
     RETIRED_SERVICE_ENV.gateway,
   );
   if (!gateway.ok) return { ok: false, error: `gateway: ${gateway.error}` };
@@ -403,6 +409,9 @@ export function policyGrants(policyJson: string, role: string, member: string): 
   );
 }
 
+/** gcloud's error when the resource a binding targets does not exist. */
+const RESOURCE_MISSING = /NOT_FOUND|not found|does not exist/i;
+
 async function ensureIam(
   invariants: readonly IamInvariant[],
   install: InstallTarget,
@@ -450,15 +459,19 @@ async function ensureIam(
       "--quiet",
       "--format=none",
     ]);
-    outcomes.push(
-      add.ok
-        ? { ...base, status: "applied" }
-        : {
-            ...base,
-            status: "failed",
-            error: policy.ok ? add.stderr.trim() : `${policy.error}; ${add.stderr.trim()}`,
-          },
-    );
+    if (add.ok) {
+      outcomes.push({ ...base, status: "applied" });
+      continue;
+    }
+    const error = policy.ok ? add.stderr.trim() : `${policy.error}; ${add.stderr.trim()}`;
+    outcomes.push({
+      ...base,
+      status: "failed",
+      // upgrade only adds bindings; it never creates the resource itself.
+      error: RESOURCE_MISSING.test(error)
+        ? `${error}\n    The ${targetLabel(inv.target)} or the account it grants to does not exist on this install (the install predates it). Re-run the installer (bunx @caelo-cms/provisioning) to create it — it keeps the release this install runs — then re-run upgrade.`
+        : error,
+    });
   }
   return outcomes;
 }

@@ -125,6 +125,12 @@ export function publicSiteUrl(domain: string): string {
   return `https://${domain}`;
 }
 
+/**
+ * The admin env var naming the MCP service account (issue #37). `upgrade`
+ * leaves it untouched when it could not set that account up.
+ */
+export const MCP_ENV_VAR = "CAELO_MCP_IAP_SERVICE_ACCOUNT";
+
 /** Where the admin image ships the static-generator CLI. */
 const GENERATOR_CLI = "/app/apps/static-generator/src/cli.ts";
 
@@ -262,7 +268,7 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     { name: "CAELO_SITE_URL", value: publicSiteUrl(domain) },
     { name: "CAELO_GENERATOR_CLI", value: GENERATOR_CLI },
     // Issue #37 — shown in the /security/mcp `claude mcp add` command.
-    { name: "CAELO_MCP_IAP_SERVICE_ACCOUNT", value: mcpIapServiceAccountEmail(projectId) },
+    { name: MCP_ENV_VAR, value: mcpIapServiceAccountEmail(projectId) },
   ];
   if (inputs.provider === "gcp") {
     // v0.2.78 — the GCS StaticPublisher: Stage uploads to staging,

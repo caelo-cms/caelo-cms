@@ -26,6 +26,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
+import { chooseImageDigests, readDeployedImageDigests } from "../deployed-release.js";
 import { pickDnsAdapter } from "../dns/index.js";
 import {
   activeAccount,
@@ -178,16 +179,26 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // which also migrates the database before shifting traffic. Without this
   // a re-run silently rolled a pinned/rc install back to `:latest`.
   //
-  // A new install resolves the floating `:latest` tag to a fixed sha256
-  // digest: Cloud Run keys revisions by image reference, so a tag would
-  // never trigger a new revision.
-  const recorded = meta ? recordedImageDigests(meta) : null;
-  if (recorded) {
+  // An install provisioned before the record existed keeps what its
+  // services run. A new install resolves the floating `:latest` tag to a
+  // fixed sha256 digest: Cloud Run keys revisions by image reference, so a
+  // tag would never trigger a new revision.
+  const choice = await chooseImageDigests({
+    recorded: meta ? recordedImageDigests(meta) : null,
+    deployed: isStepDone(installId, `pulumi-up-${projectId}`),
+    readLive: () => readDeployedImageDigests({ projectId, region }),
+    resolveLatest: resolveImageDigests,
+  });
+  if (!choice.ok) {
+    cancel(choice.error);
+    process.exit(1);
+  }
+  const imageDigests = choice.digests;
+  if (choice.source !== "latest") {
     log.info(
-      `Keeping the release this install runs (admin ${dim(`${recorded.admin.slice(0, 19)}...`)}). Change versions with ${bold("upgrade")}.`,
+      `Keeping the release this install runs (admin ${dim(`${imageDigests.admin.slice(0, 19)}...`)}). Change versions with ${bold("upgrade")}.`,
     );
   }
-  const imageDigests = recorded ?? (await resolveImageDigests());
 
   // === 9.5. Drain the legacy `caelo_admin` SQL user before pulumi-up ===
   // The 3a81c37 rename (caelo_admin → admin_role) leaves the old role
