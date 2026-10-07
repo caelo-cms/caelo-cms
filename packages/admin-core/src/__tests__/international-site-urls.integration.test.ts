@@ -78,7 +78,7 @@ async function cleanup(): Promise<void> {
     await tx.unsafe('DROP SCHEMA IF EXISTS "plugin_international_site" CASCADE');
     await tx.unsafe("DELETE FROM url_migration_pending_actions");
     await tx.unsafe(
-      "DELETE FROM redirects WHERE from_path LIKE '/t395-%' OR from_path LIKE '/de/t395-%'",
+      "DELETE FROM redirects WHERE from_path LIKE '/t395-%' OR from_path LIKE '/de/t395-%' OR from_path = '/de'",
     );
     await tx.unsafe(`DELETE FROM audit_events WHERE actor_id IN (
       SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'international-site')
@@ -472,5 +472,190 @@ describe("create_variant — the slug the caller cannot invent", () => {
     });
     if (!ok.ok) throw new Error(JSON.stringify(ok.error));
     expect((ok.value as { isLocaleRoot: boolean }).isLocaleRoot).toBe(false);
+  });
+});
+
+/**
+ * `prefixDefaultLocale` — a de (default) + en site serving /de/<slug>
+ * and /en/<slug>, with the German home answering at "/" itself (no
+ * redirect hop for the bare domain) and "/de" 301ing to it. Every
+ * surface that reads the materialized path (canonical, sitemap,
+ * language links) inherits the shape; hreflang is asserted directly.
+ */
+describe("prefixDefaultLocale — every locale prefixed, default home at '/'", () => {
+  const sys = { origin: "system" as const, actorId: "00000000-0000-0000-0000-000000000000" };
+
+  async function pluginOp<T>(operationName: string, args: unknown): Promise<T> {
+    const r = await runPluginOperation({
+      invocation: sys,
+      pluginSlug: "international-site",
+      operationName,
+      args,
+    });
+    if (!r.ok) throw new Error(`${operationName}: ${r.error.message}`);
+    return r.value as T;
+  }
+
+  async function pathOf(pageId: string): Promise<string | undefined> {
+    const rows = (await sqlSystem((tx) =>
+      tx.unsafe(`SELECT current_path FROM pages WHERE id = '${pageId}'`),
+    )) as { current_path: string }[];
+    return rows[0]?.current_path;
+  }
+
+  async function redirectTo(fromPath: string): Promise<string | undefined> {
+    const rows = (await sqlSystem((tx) =>
+      tx.unsafe(`SELECT to_path FROM redirects WHERE from_path = '${fromPath}'`),
+    )) as { to_path: string }[];
+    return rows[0]?.to_path;
+  }
+
+  async function migrate(): Promise<void> {
+    const proposed = await execute(
+      registry,
+      adapter,
+      SYS_CTX,
+      "url_migrations.propose_migrate",
+      {},
+    );
+    if (!proposed.ok) throw new Error(JSON.stringify(proposed.error));
+    const applied = await execute(registry, adapter, HUMAN_CTX, "url_migrations.execute_proposal", {
+      proposalId: (proposed.value as { proposalId: string }).proposalId,
+    });
+    if (!applied.ok) throw new Error(JSON.stringify(applied.error));
+  }
+
+  it("refuses the setting for a default locale outside the subdirectory strategy", async () => {
+    await cleanup();
+    await bootPlugin();
+    const r = await runPluginOperation({
+      invocation: sys,
+      pluginSlug: "international-site",
+      operationName: "set_locales",
+      args: {
+        locales: [
+          { code: "de", displayName: "Deutsch", urlStrategy: "none", isDefault: true },
+          { code: "en", displayName: "English", urlStrategy: "subdirectory", isDefault: false },
+        ],
+        prefixDefaultLocale: true,
+      },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toContain("subdirectory");
+  });
+
+  it("composes /, /de/<slug>, /en, /en/<slug>; /de 301s to /; hreflang + x-default agree", async () => {
+    await cleanup();
+    const homeId = await seedPage("t395-px-startseite");
+    const preiseId = await seedPage("t395-px-preise");
+    const setHome = await execute(registry, adapter, SYS_CTX, "pages.set_home_page", {
+      pageId: homeId,
+    });
+    if (!setHome.ok) throw new Error(JSON.stringify(setHome.error));
+    await bootPlugin();
+
+    // Bare default first: the setting is opt-in and off by default.
+    const first = await pluginOp<{ prefixDefaultLocale: boolean }>("set_locales", {
+      locales: [
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: true },
+        { code: "en", displayName: "English", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    expect(first.prefixDefaultLocale).toBe(false);
+    const enHome = await pluginOp<{ pageId: string }>("create_variant", {
+      sourcePageId: homeId,
+      localeCode: "en",
+    });
+    const enPricing = await pluginOp<{ pageId: string }>("create_variant", {
+      sourcePageId: preiseId,
+      localeCode: "en",
+      slug: "t395-px-pricing",
+    });
+    expect(await pathOf(preiseId)).toBe("/t395-px-preise");
+    expect(await pathOf(enPricing.pageId)).toBe("/en/t395-px-pricing");
+
+    // Opt in. An omitted flag on a later call keeps the stored value.
+    const on = await pluginOp<{
+      prefixDefaultLocale: boolean;
+      rootRedirect: { fromPath: string; toPath: string };
+      nextStep: string;
+    }>("set_locales", {
+      locales: [
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: true },
+        { code: "en", displayName: "English", urlStrategy: "subdirectory", isDefault: false },
+      ],
+      prefixDefaultLocale: true,
+    });
+    expect(on.prefixDefaultLocale).toBe(true);
+    expect(on.rootRedirect).toEqual({ fromPath: "/de", toPath: "/" });
+    expect(on.nextStep).toContain("propose_url_migration");
+    const kept = await pluginOp<{ prefixDefaultLocale: boolean }>("set_locales", {
+      locales: [
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: true },
+        { code: "en", displayName: "English", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    expect(kept.prefixDefaultLocale).toBe(true);
+    const status = await pluginOp<{ prefixDefaultLocale: boolean }>("intl_status", {});
+    expect(status.prefixDefaultLocale).toBe(true);
+
+    // The move is the generic, separately approved URL migration.
+    await migrate();
+    expect(await pathOf(homeId)).toBe("/");
+    expect(await pathOf(preiseId)).toBe("/de/t395-px-preise");
+    expect(await pathOf(enHome.pageId)).toBe("/en");
+    expect(await pathOf(enPricing.pageId)).toBe("/en/t395-px-pricing");
+    expect(await redirectTo("/t395-px-preise")).toBe("/de/t395-px-preise");
+    expect(await redirectTo("/de")).toBe("/");
+    expect(decodePagePath("/de/t395-px-preise")).toEqual({
+      slug: "t395-px-preise",
+      annotations: { locale: "de" },
+    });
+
+    for (const id of [homeId, preiseId, enHome.pageId, enPricing.pageId]) {
+      const pub = await execute(registry, adapter, SYS_CTX, "pages.set_status", {
+        pageId: id,
+        status: "published",
+      });
+      if (!pub.ok) throw new Error(JSON.stringify(pub.error));
+    }
+    const base = "https://t395.example";
+    const contributions = await pluginOp<{
+      head: Record<string, { hreflang: string; href: string }[]>;
+      sitemap: Record<string, { alternates: { hreflang: string; href: string }[] }>;
+    }>("head_contributions", {
+      pageIds: [homeId, preiseId],
+      siteBaseUrl: base,
+    });
+    const alternates = (pageId: string) =>
+      Object.fromEntries(
+        (contributions.head[pageId] ?? []).map((e) => [e.hreflang, e.href] as const),
+      );
+    expect(alternates(homeId)).toEqual({
+      de: `${base}/`,
+      en: `${base}/en`,
+      "x-default": `${base}/`,
+    });
+    expect(alternates(preiseId)).toEqual({
+      de: `${base}/de/t395-px-preise`,
+      en: `${base}/en/t395-px-pricing`,
+      "x-default": `${base}/de/t395-px-preise`,
+    });
+    expect(contributions.sitemap[homeId]?.alternates).toContainEqual({
+      hreflang: "x-default",
+      href: `${base}/`,
+    });
+
+    // Opting out reverses the move through the same diff engine.
+    await pluginOp("set_locales", {
+      locales: [
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: true },
+        { code: "en", displayName: "English", urlStrategy: "subdirectory", isDefault: false },
+      ],
+      prefixDefaultLocale: false,
+    });
+    await migrate();
+    expect(await pathOf(preiseId)).toBe("/t395-px-preise");
+    expect(await pathOf(homeId)).toBe("/");
   });
 });

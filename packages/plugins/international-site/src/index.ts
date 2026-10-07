@@ -20,7 +20,9 @@
  * URL shape rides the #390 composition point: this plugin claims the
  * `path-prefix` and `host` slots. Non-default locales get `/<code>/`;
  * the default locale serves BARE (the "one variant without prefix"
- * requirement). Activating on an existing single-language site is a
+ * requirement) unless the site-wide `prefixDefaultLocale` setting is
+ * on — then it is prefixed too and only its home stays at `/` (rules
+ * in ./url.ts). Activating on an existing single-language site is a
  * ZERO-DIFF retrofit: every page starts without a variant row, the
  * annotation op reports the default locale, the prefix encodes to []
  * — no URL moves, no Owner click (#395).
@@ -52,6 +54,13 @@ import {
   translationResultPayload,
   validateStructuralLock,
 } from "./translation.js";
+import {
+  decodeLocalePrefix,
+  defaultLocaleRootRedirect,
+  encodeLocalePrefix,
+  PREFIX_DEFAULT_LOCALE_ANNOTATION,
+  prefixDefaultLocaleError,
+} from "./url.js";
 
 export interface LocaleRow {
   id: string;
@@ -78,6 +87,23 @@ export interface PageVariantRow {
  * which always receives fresh per-page annotations.
  */
 const localeCache = new Map<string, LocaleRow>();
+
+/**
+ * Mirror of the `prefix_default_locale` setting, refreshed together with
+ * {@link localeCache} — the pure decode half needs it, encode receives
+ * it per page as an annotation.
+ */
+let prefixDefaultLocaleCache = false;
+
+/** `settings` row key of the site-wide "prefix the default locale too"
+ *  switch. Absent row = off (the original bare-default behaviour). */
+const PREFIX_DEFAULT_LOCALE_KEY = "prefix_default_locale";
+
+interface SettingRow {
+  id: string;
+  key: string;
+  value: unknown;
+}
 
 interface CmsHandle {
   call: <O>(opName: string, input: unknown) => Promise<O>;
@@ -326,7 +352,31 @@ async function refreshLocaleCache(q: PluginAdminQuery): Promise<LocaleRow[]> {
   const rows = (await q.list("locales", { limit: 500 })) as unknown as LocaleRow[];
   localeCache.clear();
   for (const row of rows) localeCache.set(row.code, row);
+  prefixDefaultLocaleCache = (await loadPrefixDefaultLocaleSetting(q)).enabled;
   return rows;
+}
+
+/**
+ * Read the `prefix_default_locale` setting. A row whose value is not the
+ * shape this plugin writes is schema drift — fail loudly instead of
+ * guessing a URL shape (CLAUDE.md §2).
+ */
+async function loadPrefixDefaultLocaleSetting(
+  q: PluginAdminQuery,
+): Promise<{ enabled: boolean; rowId: string | null }> {
+  const rows = (await q.list("settings", {
+    key: PREFIX_DEFAULT_LOCALE_KEY,
+    limit: 1,
+  })) as unknown as SettingRow[];
+  const row = rows[0];
+  if (!row) return { enabled: false, rowId: null };
+  const value = row.value as { enabled?: unknown } | null;
+  if (typeof value?.enabled !== "boolean") {
+    throw new Error(
+      `international-site: setting "${PREFIX_DEFAULT_LOCALE_KEY}" holds ${JSON.stringify(row.value)}, expected {"enabled": boolean}. Re-run set_locales with prefixDefaultLocale to rewrite it.`,
+    );
+  }
+  return { enabled: value.enabled, rowId: row.id };
 }
 
 async function loadVariantsByPage(
@@ -661,6 +711,10 @@ export default definePlugin<PluginContextTier1>({
           urlStrategy: locale.url_strategy,
           ...(locale.url_host ? { urlHost: locale.url_host } : {}),
           ...(homeVariantIds.has(id) ? { isLocaleRoot: true } : {}),
+          // Encode is pure, so the site-wide switch rides per page.
+          ...(locale.is_default && prefixDefaultLocaleCache
+            ? { [PREFIX_DEFAULT_LOCALE_ANNOTATION]: true }
+            : {}),
         };
       }
       return { annotations };
@@ -753,6 +807,8 @@ export default definePlugin<PluginContextTier1>({
           urlHost: l.url_host,
           isDefault: l.is_default,
         })),
+        // Site-wide: the default locale is prefixed too (home stays at "/").
+        prefixDefaultLocale: prefixDefaultLocaleCache,
         groups: [...groups.entries()].map(([groupId, vs]) => ({ groupId, variants: vs })),
         // Pages without a variant row belong to the default locale and
         // have NO translations yet — the AI's to-do surface.
@@ -878,7 +934,7 @@ export default definePlugin<PluginContextTier1>({
      * blast radii separately approved.
      */
     set_locales: async (ctx, args) => {
-      const { locales } = args as {
+      const { locales, prefixDefaultLocale } = args as {
         locales: Array<{
           code: string;
           displayName: string;
@@ -886,6 +942,7 @@ export default definePlugin<PluginContextTier1>({
           urlHost?: string;
           isDefault: boolean;
         }>;
+        prefixDefaultLocale?: boolean;
       };
       if (!Array.isArray(locales) || locales.length === 0) {
         throw new Error("set_locales: pass the FULL desired locale list (min 1)");
@@ -902,6 +959,12 @@ export default definePlugin<PluginContextTier1>({
         }
       }
       const q = adminQueryOf(ctx);
+      // Omitted = keep the stored value, so a routine registry edit can
+      // never move every default-locale URL by accident.
+      const storedSetting = await loadPrefixDefaultLocaleSetting(q);
+      const prefixDefault = prefixDefaultLocale ?? storedSetting.enabled;
+      const prefixError = prefixDefaultLocaleError(prefixDefault, locales);
+      if (prefixError) throw new Error(prefixError);
       const existing = (await q.list("locales", { limit: 500 })) as unknown as LocaleRow[];
       const keep = new Set(locales.map((l) => l.code));
       for (const row of existing) {
@@ -927,11 +990,33 @@ export default definePlugin<PluginContextTier1>({
           });
         }
       }
+      if (storedSetting.rowId) {
+        await q.update("settings", storedSetting.rowId, { value: { enabled: prefixDefault } });
+      } else if (prefixDefault) {
+        await q.insert("settings", {
+          key: PREFIX_DEFAULT_LOCALE_KEY,
+          value: { enabled: prefixDefault },
+        });
+      }
+      let rootRedirect: { fromPath: string; toPath: string } | null = null;
+      if (prefixDefault) {
+        // The default home serves at "/"; its prefixed address must not
+        // be a second, empty root. Upsert, so re-running is idempotent.
+        const def = locales.find((l) => l.isDefault);
+        if (!def) throw new Error("set_locales: exactly one locale must be isDefault");
+        const redirect = defaultLocaleRootRedirect(def.code);
+        await cmsOf(ctx).call("redirects.create", redirect);
+        rootRedirect = { fromPath: redirect.fromPath, toPath: redirect.toPath };
+      }
       await refreshLocaleCache(q);
+      const prefixChanged = prefixDefault !== storedSetting.enabled;
       return {
         locales: locales.length,
-        nextStep:
-          "Locale registry updated. If existing pages' URLs are affected, call propose_url_migration next — the Owner approves the move separately.",
+        prefixDefaultLocale: prefixDefault,
+        ...(rootRedirect ? { rootRedirect } : {}),
+        nextStep: prefixChanged
+          ? "Locale registry updated and the default-locale prefix setting changed — every default-locale page except the home moves. Call propose_url_migration next; the Owner approves the move (with its 301s) separately."
+          : "Locale registry updated. If existing pages' URLs are affected, call propose_url_migration next — the Owner approves the move separately.",
       };
     },
 
@@ -1220,7 +1305,8 @@ export default definePlugin<PluginContextTier1>({
       description:
         "Replace the site's locale registry (pass the FULL desired list; exactly one isDefault; subdomain/domain strategies require urlHost). " +
         "APPROVAL-GATED: the turn pauses on an in-chat card and the operator clicks Approve before anything is written — say 'I prepared the locale change — please approve' and do NOT claim it is applied. " +
-        "Changing locales does NOT move existing pages by itself: when URLs are affected, call propose_url_migration afterwards (a separately approved step with its own blast-radius preview).",
+        "Changing locales does NOT move existing pages by itself: when URLs are affected, call propose_url_migration afterwards (a separately approved step with its own blast-radius preview). " +
+        "prefixDefaultLocale (optional, site-wide): true prefixes the DEFAULT locale too (/de/preise next to /en/pricing) while the default home stays at '/' with no redirect, and '/<default code>' 301s to '/'. Needs the default locale on the subdirectory strategy. Omit it to keep the current value; set it only when the operator asks for every language to carry its prefix.",
       operationName: "set_locales",
       approvalMode: "user-approval",
       inputJsonSchema: {
@@ -1246,6 +1332,11 @@ export default definePlugin<PluginContextTier1>({
                 isDefault: { type: "boolean" },
               },
             },
+          },
+          prefixDefaultLocale: {
+            type: "boolean",
+            description:
+              "Prefix the default locale too (home stays at '/'). Omit to keep the current setting.",
           },
         },
       },
@@ -1397,7 +1488,7 @@ export default definePlugin<PluginContextTier1>({
         "You are adding a language to a Caelo site. This is a TWO-APPROVAL flow — never claim a step is applied before the operator clicked.",
         "",
         "1. Call intl_status to see the current registry.",
-        "2. Call set_locales with the FULL desired list (existing locales + the new one; exactly one isDefault). The turn pauses for the Owner's in-chat Approve. Pick the URL strategy from what the operator wants: subdirectory (/de/...) is the safe default; subdomain/domain need urlHost.",
+        "2. Call set_locales with the FULL desired list (existing locales + the new one; exactly one isDefault). The turn pauses for the Owner's in-chat Approve. Pick the URL strategy from what the operator wants: subdirectory (/de/...) is the safe default; subdomain/domain need urlHost. The default locale serves bare (/preise) unless the operator wants EVERY language prefixed (/de/preise + /en/pricing): then pass prefixDefaultLocale: true — the default home stays at '/' (no redirect) and '/<default code>' 301s to it.",
         "3. If existing pages' URLs are affected by the change, call propose_url_migration next — it previews the URL fan-out and the 301 redirects, and the Owner approves it SEPARATELY.",
         "4. Seed the language: for each core page the operator cares about, create_variant with a localized slug (omit the slug for the home page — its counterpart is the locale root), then translate_variant. Do not mass-create variants for every page unprompted — ask which pages matter, or start with the pages the operator named.",
         "5. hreflang links and sitemap alternates appear automatically once variants are PUBLISHED (drafts are invisible to search engines by design — a missing translation is a clean 404, never a fallback).",
@@ -1437,26 +1528,8 @@ export default definePlugin<PluginContextTier1>({
   urlContributions: [
     {
       slot: "path-prefix",
-      encode: (page) => {
-        const locale = page.annotations.locale;
-        if (typeof locale !== "string") return [];
-        const isDefault = page.annotations.isDefaultLocale === true;
-        const strategy = page.annotations.urlStrategy;
-        // The default locale serves BARE; only the subdirectory
-        // strategy produces a path prefix (subdomain/domain ride the
-        // host slot; "none" opts a locale out of URL shaping).
-        if (isDefault || strategy !== "subdirectory") return [];
-        return [locale];
-      },
-      decode: (segments) => {
-        const head = segments[0];
-        if (head === undefined) return null;
-        const locale = localeCache.get(head);
-        if (!locale || locale.is_default || locale.url_strategy !== "subdirectory") {
-          return null;
-        }
-        return { consumed: 1, annotations: { locale: locale.code } };
-      },
+      encode: (page) => encodeLocalePrefix(page),
+      decode: (segments) => decodeLocalePrefix(segments, localeCache, prefixDefaultLocaleCache),
     },
     {
       slot: "host",
