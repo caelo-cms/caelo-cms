@@ -2,7 +2,7 @@
 
 /**
  * Owner queue for AI-proposed Owner-settings changes (AI budgets, AI
- * pricing, gateway settings) — `owner_settings.*` ops, migration 0234.
+ * pricing, gateway settings) — `owner_settings.*` ops, migration 0235.
  *
  * In the chat the operator approves on the inline card and the row is
  * written + applied atomically, so it never waits here. Rows land here when

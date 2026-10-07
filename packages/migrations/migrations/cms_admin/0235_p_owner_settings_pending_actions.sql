@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0234 — owner_settings_pending_actions: the §11.A propose/execute gate for
+-- 0235 — owner_settings_pending_actions: the §11.A propose/execute gate for
 -- the Owner-only settings the agent had no path to at all.
 --
 -- AI budgets (ai_budgets.set), AI pricing (ai_pricing.set) and the gateway

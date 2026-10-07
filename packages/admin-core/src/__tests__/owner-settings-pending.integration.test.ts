@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * owner_settings.* (migration 0234) — the §11.A gate for AI budgets, AI
+ * owner_settings.* (migration 0235) — the §11.A gate for AI budgets, AI
  * pricing and gateway settings, against a real Postgres.
  *
  * Per kind: propose (AI) lands a pending row with a before→after preview;
@@ -549,8 +549,8 @@ describe("owner_settings — chat gated execute (the in-chat Approve path)", () 
 });
 
 describe("Owner panel writes (regressions fixed alongside the gate)", () => {
-  it("ai_budgets.set and ai_pricing.set succeed for a human actor (0234 RLS fix)", async () => {
-    // Before 0234 both tables' WITH CHECK admitted only actor_kind=system,
+  it("ai_budgets.set and ai_pricing.set succeed for a human actor (0235 RLS fix)", async () => {
+    // Before 0235 both tables' WITH CHECK admitted only actor_kind=system,
     // so the /security/ai/budgets and /security/ai/pricing forms (human
     // actor) were RLS-denied on every save.
     value(

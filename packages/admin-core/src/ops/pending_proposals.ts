@@ -151,7 +151,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                chat_session_id::text
           FROM theme_pending_actions WHERE status = 'pending'
         UNION ALL
-        -- 0234 — AI budgets / AI pricing / gateway settings.
+        -- 0235 — AI budgets / AI pricing / gateway settings.
         SELECT 'owner_settings', kind, id::text, proposed_by::text, created_at,
                COALESCE(LEFT(preview->>'summary', 120), kind),
                chat_session_id::text
