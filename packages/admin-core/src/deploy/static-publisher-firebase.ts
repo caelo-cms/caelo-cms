@@ -526,7 +526,11 @@ export const firebaseHostingPublisher: StaticPublisher = {
         `static-publisher-firebase: ${join(buildDir, "_redirects")} is missing (${(e as Error).message}). The static generator writes it on every build; re-run the build instead of deploying a partial directory.`,
       );
     }
-    const redirects = firebaseRedirectsFromFile(redirectsFile, target.pageUrlStyle ?? "directory");
+    const redirects = firebaseRedirectsFromFile(
+      redirectsFile,
+      target.pageUrlStyle ?? "directory",
+      new Set(walked.map((f) => f.relativePath)),
+    );
     const versionConfig = withTargetRobotsHeader(
       {
         redirects,

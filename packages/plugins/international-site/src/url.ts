@@ -85,7 +85,8 @@ export function prefixDefaultLocaleError(
   if (def.urlStrategy !== "subdirectory") {
     return (
       `set_locales: prefixDefaultLocale needs the default locale "${def.code}" to use the subdirectory strategy ` +
-      `(it uses "${def.urlStrategy}"). Set its urlStrategy to "subdirectory", or leave prefixDefaultLocale off.`
+      `(it uses "${def.urlStrategy}"). Set its urlStrategy to "subdirectory", or pass prefixDefaultLocale: false ` +
+      `(omitting it keeps the stored value).`
     );
   }
   return null;

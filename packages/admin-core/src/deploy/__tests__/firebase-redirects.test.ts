@@ -19,9 +19,11 @@ const FILE = [
   "",
 ].join("\n");
 
+const NO_FILES: ReadonlySet<string> = new Set();
+
 describe("firebaseRedirectsFromFile", () => {
   it("matches each from-path with and without trailing slash and points at the directory URL", () => {
-    expect(firebaseRedirectsFromFile(FILE, "directory")).toEqual([
+    expect(firebaseRedirectsFromFile(FILE, "directory", NO_FILES)).toEqual([
       { regex: "^/de/?$", location: "/", statusCode: 301 },
       { regex: "^/preise/?$", location: "/de/preise/", statusCode: 301 },
       { regex: "^/old\\.html/?$", location: "/new.pdf", statusCode: 302 },
@@ -29,25 +31,46 @@ describe("firebaseRedirectsFromFile", () => {
   });
 
   it("keeps slash-less locations in the no-extension style", () => {
-    const rules = firebaseRedirectsFromFile(FILE, "no-extension");
+    const rules = firebaseRedirectsFromFile(FILE, "no-extension", NO_FILES);
     expect(rules.map((r) => r.location)).toEqual(["/", "/de/preise", "/new.pdf"]);
   });
 
   it("matches the bare root exactly", () => {
-    expect(firebaseRedirectsFromFile("/ /de 302\n", "directory")).toEqual([
+    expect(firebaseRedirectsFromFile("/ /de 302\n", "directory", NO_FILES)).toEqual([
       { regex: "^/$", location: "/de/", statusCode: 302 },
     ]);
   });
 
   it("escapes regex metacharacters in stored paths", () => {
-    const [rule] = firebaseRedirectsFromFile("/a+b(c) /x 301\n", "directory");
+    const [rule] = firebaseRedirectsFromFile("/a+b(c) /x 301\n", "directory", NO_FILES);
     expect(rule?.regex).toBe("^/a\\+b\\(c\\)/?$");
     expect(new RegExp(rule?.regex ?? "").test("/a+b(c)/")).toBe(true);
     expect(new RegExp(rule?.regex ?? "").test("/aab(c)")).toBe(false);
   });
 
   it("fails loudly on a malformed line instead of dropping a redirect", () => {
-    expect(() => firebaseRedirectsFromFile("/a b /c 301\n", "directory")).toThrow(/line 1/);
-    expect(() => firebaseRedirectsFromFile("/a /b 200\n", "directory")).toThrow(/301, 302, 307/);
+    expect(() => firebaseRedirectsFromFile("/a b /c 301\n", "directory", NO_FILES)).toThrow(
+      /line 1/,
+    );
+    expect(() => firebaseRedirectsFromFile("/a /b 200\n", "directory", NO_FILES)).toThrow(
+      /301, 302, 307/,
+    );
+  });
+
+  // Hosting applies redirects BEFORE static content, so a recorded row
+  // whose from-path is a live page again (here: the prefix opted out,
+  // /preise back at /preise while /preise → /de/preise stays recorded
+  // next to /de/preise → /preise) would shadow the page and loop.
+  it("leaves out rules whose from-path a build file serves — the live page wins", () => {
+    const file = "/preise /de/preise 301\n/de/preise /preise 301\n/de / 301\n/ /de 302\n";
+    const directory = new Set(["index.html", "preise/index.html"]);
+    expect(firebaseRedirectsFromFile(file, "directory", directory)).toEqual([
+      { regex: "^/de/preise/?$", location: "/preise/", statusCode: 301 },
+      { regex: "^/de/?$", location: "/", statusCode: 301 },
+    ]);
+    const noExtension = new Set(["index.html", "preise"]);
+    expect(
+      firebaseRedirectsFromFile(file, "no-extension", noExtension).map((r) => r.regex),
+    ).toEqual(["^/de/preise/?$", "^/de/?$"]);
   });
 });

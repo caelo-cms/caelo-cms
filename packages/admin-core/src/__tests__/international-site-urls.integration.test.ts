@@ -542,6 +542,20 @@ describe("prefixDefaultLocale — every locale prefixed, default home at '/'", (
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.message).toContain("subdirectory");
+    // A non-boolean must not read as truthy and move every URL.
+    const notBool = await runPluginOperation({
+      invocation: sys,
+      pluginSlug: "international-site",
+      operationName: "set_locales",
+      args: {
+        locales: [
+          { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: true },
+        ],
+        prefixDefaultLocale: "false",
+      },
+    });
+    expect(notBool.ok).toBe(false);
+    if (!notBool.ok) expect(notBool.error.message).toContain("true or false");
   });
 
   it("composes /, /de/<slug>, /en, /en/<slug>; /de 301s to /; hreflang + x-default agree", async () => {

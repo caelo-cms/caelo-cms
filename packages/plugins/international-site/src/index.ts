@@ -958,6 +958,11 @@ export default definePlugin<PluginContextTier1>({
           );
         }
       }
+      if (prefixDefaultLocale !== undefined && typeof prefixDefaultLocale !== "boolean") {
+        throw new Error(
+          `set_locales: prefixDefaultLocale must be true or false (got ${JSON.stringify(prefixDefaultLocale)}); omit it to keep the stored value`,
+        );
+      }
       const q = adminQueryOf(ctx);
       // Omitted = keep the stored value, so a routine registry edit can
       // never move every default-locale URL by accident.

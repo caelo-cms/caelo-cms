@@ -13,9 +13,16 @@
  *
  * Matching: Caelo stores paths without a trailing slash, but in the
  * directory page style the same URL is also requested as `/old/`, so
- * each rule matches both spellings. Hosting serves an existing file
- * before it consults redirects, so a redirect from a path that is a
- * live page again never shadows the page.
+ * each rule matches both spellings.
+ *
+ * Precedence: Hosting consults `config.redirects` BEFORE exact-match
+ * static content, the reverse of every other Caelo surface (the admin's
+ * 404 fallback, `redirects.lookup`), where a live page always wins over
+ * a recorded redirect. A row whose `from` is a live page again (slug
+ * ping-pong, a URL migration undone — `/x` → `/de/x` stays recorded
+ * after `/de/x` → `/x` moved the page back) would otherwise shadow that
+ * page, or loop with the reverse row. Rules whose `from` path is served
+ * by a file in this build are therefore left out.
  *
  * Location: in the directory style a page's URL is `/<path>/` (the
  * canonical form, see `resolveCanonicalUrl`), and Hosting itself 301s
@@ -47,6 +54,15 @@ function locationFor(toPath: string, pageUrlStyle: "directory" | "no-extension")
   return `${toPath}/`;
 }
 
+/** Does a file of the build answer `bare` (no trailing slash)? Hosting
+ *  serves `/x` from the file `x` and from the directory index
+ *  `x/index.html`. */
+function servedByBuild(bare: string, servedFiles: ReadonlySet<string>): boolean {
+  if (bare === "/") return servedFiles.has("index.html");
+  const rel = bare.slice(1);
+  return servedFiles.has(rel) || servedFiles.has(`${rel}/index.html`);
+}
+
 /**
  * Translate the generator's `_redirects` file into Hosting redirect
  * rules. Throws on a malformed line — a rule silently dropped is a 404
@@ -54,14 +70,18 @@ function locationFor(toPath: string, pageUrlStyle: "directory" | "no-extension")
  *
  * 410 rows are left out: Hosting can only answer a redirect rule with a
  * 3xx, and a gone page with no file already answers 404, the closest
- * status Hosting can give.
+ * status Hosting can give. Rows whose `from` path a build file serves
+ * are left out too — the live page wins (see the module comment).
  *
  * @param redirectsFile Contents of `<buildDir>/_redirects`.
  * @param pageUrlStyle  The deploy target's page emission style.
+ * @param servedFiles   Every file of the build, relative to the build
+ *                      root without a leading slash (`de/preise/index.html`).
  */
 export function firebaseRedirectsFromFile(
   redirectsFile: string,
   pageUrlStyle: "directory" | "no-extension",
+  servedFiles: ReadonlySet<string>,
 ): FirebaseRedirect[] {
   const out: FirebaseRedirect[] = [];
   const lines = redirectsFile.split("\n");
@@ -83,6 +103,7 @@ export function firebaseRedirectsFromFile(
       );
     }
     const bare = from.length > 1 && from.endsWith("/") ? from.slice(0, -1) : from;
+    if (servedByBuild(bare, servedFiles)) continue;
     const regex = bare === "/" ? "^/$" : `^${escapeRe2(bare)}/?$`;
     out.push({
       regex,

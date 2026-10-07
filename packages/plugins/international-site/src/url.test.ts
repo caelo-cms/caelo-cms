@@ -118,6 +118,8 @@ describe("prefixDefaultLocaleError", () => {
     const msg = prefixDefaultLocaleError(true, list("none"));
     expect(msg).toContain('"de"');
     expect(msg).toContain("subdirectory");
+    // Omission keeps a stored `true`, so the fix must name the explicit off.
+    expect(msg).toContain("prefixDefaultLocale: false");
   });
 });
 
