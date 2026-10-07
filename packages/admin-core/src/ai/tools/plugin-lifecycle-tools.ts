@@ -26,6 +26,7 @@ interface GrantRow {
   slug: string;
   installationId: string;
   installationStatus: string;
+  pluginStatus: string;
   capability: string;
   approvedAt: string;
 }
@@ -37,7 +38,7 @@ const listGrantsInput = z
 export const listPluginGrantsTool = makeListReadTool<z.infer<typeof listGrantsInput>, GrantRow>({
   name: "list_plugin_grants",
   description:
-    "List the capabilities the Owner has granted to installed (runtime-installed) plugins: one row per grant, with whether it belongs to the RUNNING version (`active`) or a pending update (`approved`). " +
+    "List the capabilities the Owner has granted to installed (runtime-installed) plugins: one row per grant, with whether it belongs to the current version or a pending update, and the plugin's status (a `disabled` plugin holds grants but is not running). " +
     "Use before propose_revoke_plugin_capability, or when the operator asks what a plugin is allowed to do.",
   opName: "plugins.list_capability_grants",
   input: listGrantsInput,
@@ -45,7 +46,8 @@ export const listPluginGrantsTool = makeListReadTool<z.infer<typeof listGrantsIn
   rows: (value) => (value as { grants: GrantRow[] }).grants,
   columns: [
     { key: "slug", value: (g) => g.slug },
-    { key: "version", value: (g) => (g.installationStatus === "active" ? "running" : "update") },
+    { key: "version", value: (g) => (g.installationStatus === "active" ? "current" : "update") },
+    { key: "pluginStatus", value: (g) => g.pluginStatus },
     { key: "capability", value: (g) => g.capability },
     { key: "approvedAt", value: (g) => g.approvedAt },
   ],
@@ -58,7 +60,7 @@ export const proposeRevokePluginCapabilityTool = makeProposeTool({
   pendingQueuePath: "/security/pending",
   when:
     "Propose taking one granted capability away from an installed plugin (e.g. its image generation or private file storage). " +
-    "Revoking a grant of the RUNNING version (target `running`, the default) DISABLES the plugin — its data is kept, but running it again needs a new Owner approval; target `pending_update` only strips the grant from an update that has not started. " +
+    "Revoking a grant of the RUNNING version (target `running`, the default) DISABLES the plugin — its data is kept, but running it again needs a new Owner approval; target `pending_update` abandons an update that has not started (it must be staged and approved again). " +
     "Check list_plugin_grants first, and tell the operator what stops working.",
   schema: proposeRevokeCapabilityInput,
   inputSchema: generateInputSchema(proposeRevokeCapabilityInput),

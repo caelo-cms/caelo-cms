@@ -177,6 +177,23 @@ export default definePlugin<PluginContextTier1>({
 
     set_submission_status: async (ctx, args) => {
       const input = setSubmissionStatusArgs.parse(args);
+      // The query handle has no multi-row transaction, so resolve every id
+      // first: an unknown id refuses the whole batch before any write,
+      // instead of leaving it half-applied. Each update is idempotent, so
+      // re-running after a mid-batch failure completes it.
+      const missing: string[] = [];
+      for (const id of input.submissionIds) {
+        const found = await ctx.query.list<"form_submissions", { id: string }>("form_submissions", {
+          id,
+          limit: 1,
+        });
+        if (!found[0]) missing.push(id);
+      }
+      if (missing.length > 0) {
+        throw new Error(
+          `set_submission_status: unknown submission id(s) ${missing.join(", ")} — nothing was changed`,
+        );
+      }
       for (const id of input.submissionIds) {
         await ctx.query.update("form_submissions", id, { status: input.status });
       }
@@ -257,8 +274,9 @@ export default definePlugin<PluginContextTier1>({
       name: "set_form_submission_status",
       description:
         "Change the status of visitor form submissions in the Owner's inbox: mark them read, archive them, flag spam, or move them back to new. " +
-        "Pass every affected id in ONE call (up to 200). Use list_form_submissions to find the ids. Reversible with this same tool.",
+        "Pass every affected id in ONE call (up to 200); an unknown id refuses the whole batch. Use list_form_submissions to find the ids. Reversible with this same tool, and safe to repeat.",
       operationName: "set_submission_status",
+      requiredPermission: "settings.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,

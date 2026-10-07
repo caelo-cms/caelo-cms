@@ -187,6 +187,48 @@ describe("propose_revoke_plugin_capability", () => {
     expect(after.grants).toHaveLength(0);
   });
 
+  it("refuses a stale approval when the targeted pending update went live in between", async () => {
+    const inst = await runningInstallation("stale");
+    // Stage + approve an update (status 'approved', not yet running).
+    const update = await call<{ installationId: string; artifactDigest: string }>(
+      "plugins.stage_installation",
+      { manifest: manifestFor(inst.slug), source: `${sourceFor(inst.slug)}\n// v2` },
+    );
+    const list = await call<{ installations: { id: string; currentStateDigest: string }[] }>(
+      "plugins.list_installations",
+      {},
+    );
+    const approved = await call<{ grantIds: string[] }>(
+      "plugins.approve_installation",
+      {
+        installationId: update.installationId,
+        artifactDigest: update.artifactDigest,
+        expectedStateDigest: list.installations.find((i) => i.id === update.installationId)
+          ?.currentStateDigest,
+        capabilities: ["cms_admin_schema"],
+      },
+      inst.owner,
+    );
+    const proposed = await call<{ proposalId: string; preview: { disablesPlugin: boolean } }>(
+      "plugins.propose_revoke_capability",
+      { slug: inst.slug, capability: "cms_admin_schema", target: "pending_update" },
+      ai,
+    );
+    expect(proposed.preview.disablesPlugin).toBe(false);
+    // The update goes live before the operator clicks.
+    await call("plugins.finalize_installation", {
+      installationId: update.installationId,
+      artifactDigest: update.artifactDigest,
+      grantIds: approved.grantIds,
+    });
+    const r = await execute(registry, adapter, inst.owner, "plugins.execute_proposal", {
+      proposalId: proposed.proposalId,
+    });
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain("stale proposal");
+    expect(await pluginStatus(inst.slug)).toBe("active");
+  });
+
   it("refuses a capability the plugin does not hold", async () => {
     const inst = await runningInstallation("nogrant");
     const r = await execute(registry, adapter, ai, "plugins.propose_revoke_capability", {

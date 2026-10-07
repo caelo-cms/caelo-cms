@@ -43,6 +43,9 @@ const grantRow = z.object({
   installationId: z.string(),
   /** `active` = the running version; `approved` = an update waiting to run. */
   installationStatus: z.string(),
+  /** The plugin's own status: an `active` installation of a `disabled`
+   *  plugin holds grants but is not running. */
+  pluginStatus: z.string(),
   capability: z.string(),
   approvedAt: z.string(),
 });
@@ -56,7 +59,7 @@ export const listPluginCapabilityGrantsOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT p.slug, v.id::text AS installation_id, v.status AS installation_status,
-             g.capability, g.approved_at
+             p.status AS plugin_status, g.capability, g.approved_at
       FROM plugin_capability_grants g
       JOIN plugins p ON p.id = g.plugin_id
       JOIN plugin_installation_versions v
@@ -69,6 +72,7 @@ export const listPluginCapabilityGrantsOp = defineOperation({
       slug: string;
       installation_id: string;
       installation_status: string;
+      plugin_status: string;
       capability: string;
       approved_at: string | Date;
     }>;
@@ -77,6 +81,7 @@ export const listPluginCapabilityGrantsOp = defineOperation({
         slug: r.slug,
         installationId: r.installation_id,
         installationStatus: r.installation_status,
+        pluginStatus: r.plugin_status,
         capability: r.capability,
         approvedAt: r.approved_at instanceof Date ? r.approved_at.toISOString() : r.approved_at,
       })),
@@ -105,7 +110,7 @@ export const proposeRevokePluginCapabilityOp = defineOperation({
     const versionStatus = input.target === "running" ? "active" : "approved";
     const rows = (await tx.execute(sql`
       SELECT v.id::text AS installation_id, v.plugin_id::text AS plugin_id, v.artifact_digest,
-             p.manifest_json, p.source_code
+             p.manifest_json, p.source_code, p.status AS plugin_status
       FROM plugin_installation_versions v JOIN plugins p ON p.id = v.plugin_id
       WHERE p.slug = ${input.slug} AND v.status = ${versionStatus}
       ORDER BY v.created_at DESC LIMIT 1
@@ -115,6 +120,7 @@ export const proposeRevokePluginCapabilityOp = defineOperation({
       artifact_digest: string;
       manifest_json: unknown;
       source_code: string | null;
+      plugin_status: string;
     }>;
     const v = rows[0];
     if (!v) {
@@ -141,20 +147,29 @@ export const proposeRevokePluginCapabilityOp = defineOperation({
     // is actually running disables the plugin.
     const disables =
       externalArtifactDigest(v.manifest_json, v.source_code ?? "") === v.artifact_digest;
+    // Stored so the apply step can refuse a stale approval: if the target
+    // version changed state in between (a pending update went live), the
+    // effect the operator approved is no longer the effect that would run.
     const payload = {
       slug: input.slug,
       pluginId: v.plugin_id,
       installationId: v.installation_id,
       capability: input.capability,
+      expectedInstallationStatus: versionStatus,
+      expectedDisables: disables,
     };
+    const running = v.plugin_status === "active";
     const preview = {
       slug: input.slug,
       capability: input.capability,
       target: input.target,
+      pluginStatus: v.plugin_status,
       disablesPlugin: disables,
       effect: disables
-        ? `"${input.slug}" stops running (its data is kept). Running it again needs a new Owner approval of the installation.`
-        : `the pending update of "${input.slug}" loses this grant; the running version is unchanged.`,
+        ? running
+          ? `"${input.slug}" stops running (its data is kept). Running it again needs a new Owner approval of the installation.`
+          : `"${input.slug}" (currently ${v.plugin_status}) can no longer be re-enabled without a new Owner approval of the installation; its data is kept.`
+        : `the pending update of "${input.slug}" is abandoned (it has to be staged and approved again); the running version is unchanged.`,
       ...(input.reason ? { reason: input.reason } : {}),
     };
     const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
@@ -209,10 +224,41 @@ export async function applyRevokeCapabilityProposal(
   proposalId: string,
   rawPayload: unknown,
 ) {
-  const payload = parsePayload<{ slug: string; installationId: string; capability: string }>(
-    rawPayload,
-  );
+  const payload = parsePayload<{
+    slug: string;
+    installationId: string;
+    capability: string;
+    expectedInstallationStatus?: string;
+    expectedDisables?: boolean;
+  }>(rawPayload);
   const capability = pluginCapability.parse(payload.capability);
+  const now = (await tx.execute(sql`
+    SELECT v.status, v.artifact_digest, p.manifest_json, p.source_code
+    FROM plugin_installation_versions v JOIN plugins p ON p.id = v.plugin_id
+    WHERE v.id = ${payload.installationId}::uuid
+  `)) as unknown as Array<{
+    status: string;
+    artifact_digest: string;
+    manifest_json: unknown;
+    source_code: string | null;
+  }>;
+  const current = now[0];
+  const disablesNow =
+    current !== undefined &&
+    externalArtifactDigest(current.manifest_json, current.source_code ?? "") ===
+      current.artifact_digest;
+  if (
+    current &&
+    ((payload.expectedInstallationStatus !== undefined &&
+      current.status !== payload.expectedInstallationStatus) ||
+      (payload.expectedDisables !== undefined && disablesNow !== payload.expectedDisables))
+  ) {
+    return err({
+      kind: "HandlerError" as const,
+      operation: "plugins.execute_proposal",
+      message: `stale proposal: the targeted version of "${payload.slug}" changed since it was proposed (now ${current.status}), so the approved effect no longer holds. Reject it and propose again.`,
+    });
+  }
   const r = await revokePluginCapabilityOp.handler(
     ctx,
     { installationId: payload.installationId, capability },

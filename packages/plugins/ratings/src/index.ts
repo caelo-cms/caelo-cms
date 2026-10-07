@@ -31,6 +31,9 @@ interface SubmitInput {
   score: 1 | 2 | 3 | 4 | 5;
 }
 
+/** Most rows one `ctx.query.list` returns (the SDK's cap). */
+const QUERY_LIST_CAP = 1000;
+
 interface AggregateRow {
   page_id: string;
   count: number;
@@ -111,7 +114,7 @@ export default definePlugin<PluginContextTier1>({
     _refresh: async (ctx, _args) => {
       const ratings = await ctx.query.list<"ratings", { page_id: string; score: number }>(
         "ratings",
-        { limit: 1000 },
+        { limit: QUERY_LIST_CAP },
       );
       // Bucket.
       const buckets = new Map<string, { page_id: string; count: number; sum: number }>();
@@ -126,23 +129,37 @@ export default definePlugin<PluginContextTier1>({
         b.sum += r.score;
         buckets.set(key, b);
       }
-      // Wipe + reinsert. Cheap for v1; production scale wants UPSERT.
-      const existing = await ctx.query.list<"rating_aggregates", { id: string }>(
+      // Upsert per page instead of wipe + reinsert: a refresh that overlaps
+      // another (the 5-minute worker and an on-demand refresh) then never
+      // leaves a page without its aggregate, and any duplicate row an
+      // overlap did create is removed by the next run.
+      const existing = await ctx.query.list<"rating_aggregates", { id: string; page_id: string }>(
         "rating_aggregates",
-        { limit: 1000 },
+        { limit: QUERY_LIST_CAP },
       );
-      for (const e of existing) await ctx.query.delete("rating_aggregates", e.id);
+      const byPage = new Map<string, string[]>();
+      for (const e of existing) byPage.set(e.page_id, [...(byPage.get(e.page_id) ?? []), e.id]);
       let written = 0;
       for (const b of buckets.values()) {
-        await ctx.query.insert("rating_aggregates", {
+        const row = {
           page_id: b.page_id,
           count: b.count,
           sum: b.sum,
           average: Math.round((b.sum / b.count) * 100), // 2-decimal int (×100)
-        });
+        };
+        const [keep, ...extra] = byPage.get(b.page_id) ?? [];
+        if (keep) await ctx.query.update("rating_aggregates", keep, row);
+        else await ctx.query.insert("rating_aggregates", row);
+        for (const id of extra) await ctx.query.delete("rating_aggregates", id);
         written += 1;
       }
-      return { refreshed: written };
+      for (const [pageId, ids] of byPage) {
+        if (buckets.has(pageId)) continue;
+        for (const id of ids) await ctx.query.delete("rating_aggregates", id);
+      }
+      // At the query handle's row cap the votes read are not all of them;
+      // say so instead of reporting a partial recount as complete.
+      return { refreshed: written, truncated: ratings.length >= QUERY_LIST_CAP };
     },
   },
   workers: [{ name: "refresh_aggregates", cron: "0 0/5 * * * *", operationName: "_refresh" }],
@@ -162,8 +179,9 @@ export default definePlugin<PluginContextTier1>({
     {
       name: "refresh_rating_aggregates",
       description:
-        "Recompute the per-page rating aggregates from the raw votes now, instead of waiting for the 5-minute refresh. Safe to repeat; it only rebuilds derived numbers.",
+        "Recompute the per-page rating aggregates from the raw votes now, instead of waiting for the 5-minute refresh. Safe to repeat; it only rebuilds derived numbers. `truncated: true` means the site has more votes than one refresh can read, so the averages are approximate.",
       operationName: "_refresh",
+      requiredPermission: "settings.write",
       inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
     },
   ],

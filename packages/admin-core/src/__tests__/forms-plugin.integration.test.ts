@@ -295,6 +295,23 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
       args: { submissionIds: ids, status: "deleted" },
     });
     expect(bad.ok).toBe(false);
+
+    // One unknown id refuses the whole batch: nothing moves to `read`.
+    const partial = await runPluginOperation({
+      invocation: sys,
+      pluginSlug: "forms",
+      operationName: "set_submission_status",
+      args: { submissionIds: [...ids, crypto.randomUUID()], status: "read" },
+    });
+    expect(partial.ok).toBe(false);
+    const read = await runPluginOperation({
+      invocation: sys,
+      pluginSlug: "forms",
+      operationName: "list_submissions",
+      args: { status: "read" },
+    });
+    if (!read.ok) throw new Error("list failed");
+    expect((read.value as { submissions: unknown[] }).submissions).toHaveLength(0);
   });
 
   it("submit refuses unknown form slug", async () => {

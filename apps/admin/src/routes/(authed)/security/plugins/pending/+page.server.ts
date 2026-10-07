@@ -6,7 +6,7 @@
  * agent queued over the Power-MCP, where there is no in-chat card. Approve
  * dispatches to the row's own executor; an approved activation is then
  * loaded into the running host, exactly as the in-chat gated tool does.
- * Revoking a grant additionally needs `plugins.install` (checked by the op).
+ * Approving needs `plugins.install` as well as `settings.write`.
  */
 
 import { loadActivatedPlugin } from "@caelo-cms/plugin-host";
@@ -42,7 +42,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 export const actions: Actions = {
   approve: async ({ request, locals }) => {
+    // Activating runs code, uninstalling drops data, revoking disables:
+    // the same installation permission /security/plugins/installations
+    // requires, not just settings.write.
     requirePermission(locals, "settings.write");
+    requirePermission(locals, "plugins.install");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const proposalId = String(form.get("proposalId") ?? "");

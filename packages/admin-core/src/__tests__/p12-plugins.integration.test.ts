@@ -329,6 +329,126 @@ describe("Newsletter plugin", () => {
   });
 });
 
+async function humanWithRole(role: string): Promise<string> {
+  const id = crypto.randomUUID();
+  await adapter.withAdminTransaction(
+    { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "p12-user" },
+    async (tx) => {
+      await tx.execute(
+        sql`INSERT INTO actors (id, kind, display_name) VALUES (${id}::uuid, 'human', ${role})`,
+      );
+      await tx.execute(
+        sql`INSERT INTO users (id, email, password_hash) VALUES (${id}::uuid, ${`${id}@p12.test`}, 'test-only')`,
+      );
+      await tx.execute(
+        sql`INSERT INTO user_roles (user_id, role_id) SELECT ${id}::uuid, id FROM roles WHERE name = ${role}`,
+      );
+    },
+  );
+  return id;
+}
+
+async function seedDraftWithOneSubscriber(slug: string): Promise<string> {
+  await pluginScopedQuery<unknown>(
+    "newsletter",
+    sql`INSERT INTO plugin_newsletter.subscribers (email, email_hash, confirm_token, unsub_token, confirmed_at)
+        VALUES (${`${slug}@example.com`}, ${slug}, ${`c-${slug}`}, ${`u-${slug}`}, now())`,
+  );
+  await pluginScopedQuery<unknown>(
+    "newsletter",
+    sql`INSERT INTO plugin_newsletter.campaigns (slug, subject, body_html, status) VALUES (${slug}, 'Hi', '<p>hi</p>', 'draft')`,
+  );
+  const rows = await pluginScopedQuery<{ id: string }>(
+    "newsletter",
+    sql`SELECT id::text AS id FROM plugin_newsletter.campaigns WHERE slug = ${slug}`,
+  );
+  const id = rows[0]?.id;
+  if (!id) throw new Error("seed failed");
+  return id;
+}
+
+describe("Newsletter send — the chat path is bound to the panel's permission", () => {
+  it("a chat call for an editor is refused; for an Owner it queues", async () => {
+    await bootstrapAll();
+    const campaignId = await seedDraftWithOneSubscriber(`perm-${Date.now()}`);
+    const aiActor = "00000000-0000-0000-0000-00000000aaaa";
+    const editor = await humanWithRole("editor");
+    const denied = await runPluginOperation({
+      invocation: {
+        origin: "chat",
+        actorId: aiActor,
+        operatorActorId: editor,
+        chatBranchId: crypto.randomUUID(),
+      },
+      pluginSlug: "newsletter",
+      operationName: "send_campaign",
+      args: { campaignId },
+    });
+    expect(denied.ok).toBe(false);
+    if (denied.ok) return;
+    expect(denied.error.message).toContain("settings.write");
+
+    const owner = await humanWithRole("owner");
+    const approved = await runPluginOperation({
+      invocation: { origin: "approved", actorId: owner },
+      pluginSlug: "newsletter",
+      operationName: "send_campaign",
+      args: { campaignId },
+    });
+    expect(approved.ok).toBe(true);
+  });
+
+  it("two overlapping sends of one draft queue it exactly once", async () => {
+    await bootstrapAll();
+    const campaignId = await seedDraftWithOneSubscriber(`race-${Date.now()}`);
+    const send = () =>
+      runPluginOperation({
+        invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+        pluginSlug: "newsletter",
+        operationName: "send_campaign",
+        args: { campaignId },
+      });
+    const results = await Promise.all([send(), send()]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    const sends = await pluginScopedQuery<{ n: number }>(
+      "newsletter",
+      sql`SELECT count(*)::int AS n FROM plugin_newsletter.sends WHERE campaign_id = ${campaignId}`,
+    );
+    expect(sends[0]?.n).toBe(1);
+  });
+});
+
+describe("Ratings refresh upserts", () => {
+  it("repeated refreshes keep one aggregate per page and drop pages without votes", async () => {
+    await bootstrapAll();
+    const sys = { origin: "system" as const, actorId: "00000000-0000-0000-0000-000000000000" };
+    await runPluginOperation({
+      invocation: sys,
+      pluginSlug: "ratings",
+      operationName: "submit",
+      args: { pageId: "keep", score: 3 },
+    });
+    await pluginScopedQuery<unknown>(
+      "ratings",
+      sql`INSERT INTO plugin_ratings.rating_aggregates (page_id, count, sum, average) VALUES ('gone', 1, 5, 500), ('keep', 9, 9, 100)`,
+    );
+    for (let i = 0; i < 2; i++) {
+      const r = await runPluginOperation({
+        invocation: sys,
+        pluginSlug: "ratings",
+        operationName: "_refresh",
+        args: {},
+      });
+      expect(r.ok).toBe(true);
+    }
+    const aggs = await pluginScopedQuery<{ page_id: string; count: number }>(
+      "ratings",
+      sql`SELECT page_id, count FROM plugin_ratings.rating_aggregates ORDER BY page_id`,
+    );
+    expect(aggs).toEqual([{ page_id: "keep", count: 1 }]);
+  });
+});
+
 describe("Owner-panel actions are AI tools too", () => {
   it("newsletter + ratings register their tools; only the send is approval-gated", async () => {
     await bootstrapAll();

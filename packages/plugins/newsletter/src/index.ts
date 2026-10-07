@@ -41,6 +41,9 @@ const draftCampaignArgs = z
 
 const sendCampaignArgs = z.object({ campaignId: z.string().uuid() }).strict();
 
+/** Most rows one `ctx.query.list` returns (the SDK's cap). */
+const SUBSCRIBER_LIST_CAP = 1000;
+
 function hashEmail(email: string): string {
   // Deterministic non-cryptographic hash for de-dupe + analytics. Email lookups
   // use this; the raw email is stored alongside for sending. P13 may swap
@@ -165,9 +168,12 @@ export default definePlugin<PluginContextTier1>({
       const subs = await ctx.query.list<
         "subscribers",
         { confirmed_at: string | null; unsubscribed_at: string | null }
-      >("subscribers", { limit: 1000 });
+      >("subscribers", { limit: SUBSCRIBER_LIST_CAP });
       const subscriberCount = subs.filter((s) => s.confirmed_at && !s.unsubscribed_at).length;
       return {
+        // The query handle reads at most SUBSCRIBER_LIST_CAP rows; at the
+        // cap the count is a lower bound and send_campaign refuses.
+        subscriberListTruncated: subs.length >= SUBSCRIBER_LIST_CAP,
         campaigns: campaigns.map(({ id, slug, subject, status, created_at, sent_at }) => ({
           id,
           slug,
@@ -215,7 +221,26 @@ export default definePlugin<PluginContextTier1>({
       const subs = await ctx.query.list<
         "subscribers",
         { id: string; confirmed_at: string | null; unsubscribed_at: string | null }
-      >("subscribers", { limit: 1000 });
+      >("subscribers", { limit: SUBSCRIBER_LIST_CAP });
+      // Fail loudly rather than silently mail only the first page.
+      if (subs.length >= SUBSCRIBER_LIST_CAP) {
+        throw new Error(
+          `send_campaign: ${SUBSCRIBER_LIST_CAP}+ subscriber rows — this sender cannot reach all of them yet, so nothing was queued`,
+        );
+      }
+      // Claim the draft atomically BEFORE enqueueing: two overlapping sends
+      // (a double-click, a retried tool call) both read 'draft' above, but
+      // only one wins this swap — the other would otherwise enqueue every
+      // subscriber a second time.
+      const claimed = await ctx.query.compareAndSwap(
+        "campaigns",
+        input.campaignId,
+        { status: "draft" },
+        { status: "sending" },
+      );
+      if (!claimed) {
+        throw new Error("send_campaign: campaign is no longer a draft — another send claimed it");
+      }
       let queued = 0;
       for (const s of subs) {
         if (!s.confirmed_at || s.unsubscribed_at) continue;
@@ -284,6 +309,7 @@ export default definePlugin<PluginContextTier1>({
         "List newsletter campaigns (id, slug, subject, status draft/queued/sending/sent, dates) and how many confirmed subscribers a send would reach. " +
         "Use before sending, to find a draft's id, or when the operator asks what went out.",
       operationName: "list_campaigns",
+      requiredPermission: "settings.write",
       inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
     },
     {
@@ -292,6 +318,7 @@ export default definePlugin<PluginContextTier1>({
         "Draft a newsletter campaign from a brief: the newsletter's own writer produces the HTML and it is saved as a DRAFT — nothing is sent. " +
         "Pass a unique slug, the subject line, and a brief with the content, tone and call to action. Send it later with send_newsletter_campaign.",
       operationName: "draft_campaign",
+      requiredPermission: "settings.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -310,6 +337,7 @@ export default definePlugin<PluginContextTier1>({
         "APPROVAL-GATED: this PAUSES for the operator's Approve in the chat before anything is queued — emails that went out cannot be recalled. " +
         "Before calling, tell the operator the subject and the recipient count (list_newsletter_campaigns). Do not claim it was sent until approved. Only drafts can be sent.",
       operationName: "send_campaign",
+      requiredPermission: "settings.write",
       approvalMode: "user-approval",
       inputJsonSchema: {
         type: "object",
