@@ -16,7 +16,21 @@ Caelo's i18n is a first-party plugin, not a core subsystem: activate `internatio
 Say *"add German to the site"*. The AI drafts the locale registry — language, display name, URL shape — and the turn pauses on an approval card in the chat. Two decisions ride on that click:
 
 - **URL strategy.** `subdirectory` (`/de/preise`) is the safe default. `subdomain` (`de.example.com`) and `domain` (`example.de`) are available when you own the hosts.
-- **Default language.** Exactly one locale is the default; its pages keep their bare URLs.
+- **Default language.** Exactly one locale is the default; its pages keep their bare URLs — unless you prefix it too (below).
+
+### Prefixing the default language too
+
+Some sites want every language to carry its prefix — `/de/preise` next to `/en/pricing` — instead of a bare default. Say *"put the German pages under /de/ as well"* and the AI turns on **`prefixDefaultLocale`** in the same approval-gated locale change (the `set_locales` tool; it needs the default language on the `subdirectory` strategy). With it on:
+
+| | Default language (`de`) | Other languages (`en`) |
+|---|---|---|
+| Home page | `/` — served directly, no redirect | `/en/` |
+| Other pages | `/de/<slug>/` | `/en/<slug>/` |
+| `/de/` | 301 to `/` | — |
+
+The default home stays at `/` so visitors and crawlers reaching the bare domain get the page on the first request instead of a redirect hop; `/de/` 301s to it so the home has a single canonical address. Canonicals, sitemap entries, hreflang (the home's `de` and `x-default` alternates both point at `/`), the language switcher and the page list in the admin all follow, because they read the same composed page address.
+
+Turning it on (or off) moves every default-language page except the home. As with any URL change, the AI follows up with a **URL migration proposal** that previews the moves and creates a 301 from each old address — nothing moves until you approve it. Links you wrote by hand in page content or menus keep their old address and reach the page through that 301; ask the AI to update them afterwards. The setting is off by default, and leaving it out of a later locale change keeps its current value.
 
 If the change moves existing URLs, the AI follows up with a **URL migration proposal** — a second, separate approval that previews every moved page and the 301 redirects that will be created. Nothing moves until you click.
 
