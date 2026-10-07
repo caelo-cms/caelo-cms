@@ -22,7 +22,10 @@ import { createLayoutTool } from "./create-layout.js";
 import { createTemplateTool } from "./create-template.js";
 import { deleteContentInstanceTool } from "./delete-content-instance.js";
 import { deleteContentInstancesTool } from "./delete-content-instances.js";
+import { deleteMediaManyTool } from "./delete-media-many.js";
+import { deleteModulesManyTool } from "./delete-modules-many.js";
 import { deleteStructuredSetTool } from "./delete-structured-set.js";
+import { deployStagingTool } from "./deploy-staging.js";
 import {
   listDesignDraftsTool,
   presentDesignVariantsTool,
@@ -30,11 +33,17 @@ import {
   selectDesignDraftTool,
 } from "./design-draft-tools.js";
 import { ToolRegistry } from "./dispatch.js";
+import { verifyDnsRecordsTool, verifyDomainsTool } from "./dns-verification.js";
 import { duplicatePageTool } from "./duplicate-page.js";
 import { duplicateThemeTool } from "./duplicate-theme.js";
 import { editContentTool } from "./edit-content.js";
 import { editImageTool } from "./edit-image.js";
 import { editModuleTool } from "./edit-module.js";
+import {
+  createExperimentTool,
+  getExperimentResultsTool,
+  listExperimentsTool,
+} from "./experiments.js";
 import { exportThemeTool } from "./export-theme.js";
 import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
@@ -56,6 +65,7 @@ import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
 import { grepContentTool } from "./grep-content.js";
 import { importMediaFromUrlsTool } from "./import-media-from-urls.js";
+import { acceptImportPagesTool, cleanupImportRunTool } from "./import-run-actions.js";
 import { addImportPageNotesTool, getImportRunReportTool } from "./import-run-report.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
@@ -124,6 +134,7 @@ import { repointPageTemplateTool } from "./repoint-page-template.js";
 import { revertChatChangesTool } from "./revert-chat-changes.js";
 import { screenshotExternalPageTool } from "./screenshot-external-page.js";
 import { screenshotPageTool } from "./screenshot-page.js";
+import { sendTestEmailTool } from "./send-test-email.js";
 import { setContentInstanceValuesTool } from "./set-content-instance-values.js";
 import { setContentInstanceValuesManyTool } from "./set-content-instance-values-many.js";
 import { setHomePageTool } from "./set-home-page.js";
@@ -441,6 +452,21 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeCreateThemeTool);
   registry.register(proposeActivateThemeTool);
   registry.register(proposeDeleteThemeTool);
+  // Agent-tool parity (CLAUDE.md §11: "an op the AI could call but has no
+  // tool for" is a review-pass item). Each closes an operator button the
+  // AI could not press; src/__tests__/agent-tool-parity.test.ts keeps the
+  // op ↔ tool parity from regressing.
+  registry.register(deployStagingTool);
+  registry.register(createExperimentTool);
+  registry.register(listExperimentsTool);
+  registry.register(getExperimentResultsTool);
+  registry.register(verifyDomainsTool);
+  registry.register(verifyDnsRecordsTool);
+  registry.register(deleteMediaManyTool);
+  registry.register(deleteModulesManyTool);
+  registry.register(acceptImportPagesTool);
+  registry.register(cleanupImportRunTool);
+  registry.register(sendTestEmailTool);
   return registry;
 }
 

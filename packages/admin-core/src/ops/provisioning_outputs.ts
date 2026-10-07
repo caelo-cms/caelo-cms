@@ -22,6 +22,8 @@ const environmentEnum = z.enum(["dev", "staging", "production"]);
 
 export const setProvisioningOutputsOp = defineOperation({
   name: "provisioning_outputs.set",
+  // Why system-only: written by the provisioning CLI with the stack outputs (DNS records, bootstrap
+  // URL) — infrastructure facts, not an authoring choice; the AI reads them via verify_dns_records.
   actorScope: ["system"],
   database: "cms_admin",
   input: z

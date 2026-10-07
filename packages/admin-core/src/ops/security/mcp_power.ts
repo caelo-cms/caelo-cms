@@ -201,6 +201,8 @@ export const mcpListToolsOp = defineOperation({
 
 export const mcpOpenSessionOp = defineOperation({
   name: "mcp.open_session",
+  // Why system-only: the bearer token is in the input (same reason as mcp.list_tools) — the HTTP
+  // shell dispatches as system and the handler resolves the real actor.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
@@ -272,6 +274,8 @@ export const mcpOpenSessionOp = defineOperation({
 
 export const mcpExecuteToolOp = defineOperation({
   name: "mcp.execute_tool",
+  // Why system-only: the bearer token is in the input — the handler resolves the token's actor and
+  // dispatches the tool AS the AI actor bound to it.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
@@ -507,6 +511,8 @@ const contextSkillRow = z.object({
 
 export const mcpGetContextOp = defineOperation({
   name: "mcp.get_context",
+  // Why system-only: the bearer token is in the input — the handler resolves the real actor from
+  // it.
   actorScope: ["system"],
   database: "cms_admin",
   input: z

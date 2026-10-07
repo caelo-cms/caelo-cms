@@ -175,6 +175,8 @@ export const setAiProvidersOp = defineOperation({
 
 export const clearAiProviderKeyOp = defineOperation({
   name: "ai_providers.clear_key",
+  // Why human-only: credential write; the AI reaches it only through propose_clear_ai_provider_key
+  // (Owner-approved).
   // Owner-only — wipes the encrypted key + falls back to env-var (or
   // null source if no env). Requires conscious user click.
   actorScope: ["human", "system"],

@@ -308,7 +308,8 @@ export const proposeDeleteThemeOp = defineOperation({
 
 export const executeThemeProposalOp = defineOperation({
   name: "themes.execute_proposal",
-  // Human-only by design — this is the "Go button" half of §11.A.
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
@@ -538,6 +539,8 @@ export const executeThemeProposalOp = defineOperation({
 
 export const rejectThemeProposalOp = defineOperation({
   name: "themes.reject_proposal",
+  // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
+  // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z

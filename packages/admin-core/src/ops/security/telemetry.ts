@@ -72,6 +72,8 @@ export const getTelemetryOp = defineOperation({
 
 export const setTelemetryOp = defineOperation({
   name: "telemetry.set",
+  // Why human-only: telemetry opt-in is the Owner's privacy consent — data leaving the install
+  // needs a human decision.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z

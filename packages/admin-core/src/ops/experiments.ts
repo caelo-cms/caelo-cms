@@ -50,21 +50,27 @@ const experimentRow = z.object({
   createdAt: z.string(),
 });
 
+/**
+ * `experiments.create` input — exported so the `create_experiment` AI tool
+ * validates against the exact same shape (one source, no drift).
+ */
+export const experimentCreateInputSchema = z
+  .object({
+    slug: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z][a-z0-9-]*$/),
+    pageId: z.string().uuid(),
+    variants: z.array(variantSpec).min(2).max(10),
+  })
+  .strict();
+
 export const createExperimentOp = defineOperation({
   name: "experiments.create",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z
-    .object({
-      slug: z
-        .string()
-        .min(1)
-        .max(120)
-        .regex(/^[a-z][a-z0-9-]*$/),
-      pageId: z.string().uuid(),
-      variants: z.array(variantSpec).min(2).max(10),
-    })
-    .strict(),
+  input: experimentCreateInputSchema,
   output: z.object({ experimentId: z.string() }),
   handler: async (ctx, input, tx) => {
     const totalWeight = input.variants.reduce((acc, v) => acc + v.weight, 0);
@@ -106,6 +112,8 @@ export const createExperimentOp = defineOperation({
 
 export const activateExperimentOp = defineOperation({
   name: "experiments.activate",
+  // Why human-only: §11.A — starts serving variants to real visitors; the AI reaches it through
+  // propose_activate_experiment (Owner-approved).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ experimentId: z.string().uuid() }).strict(),
@@ -138,6 +146,8 @@ export const activateExperimentOp = defineOperation({
 
 export const completeExperimentOp = defineOperation({
   name: "experiments.complete",
+  // Why human-only: §11.A — ends a live test and fixes the winner; the AI reaches it through
+  // propose_complete_experiment (Owner-approved).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -261,6 +271,8 @@ export const getExperimentResultsOp = defineOperation({
 
 export const recordAssignmentOp = defineOperation({
   name: "experiments.record_assignment",
+  // Why system-only: the gateway's /api/variant/assign endpoint records visitor assignments —
+  // traffic data, not an authoring action.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
