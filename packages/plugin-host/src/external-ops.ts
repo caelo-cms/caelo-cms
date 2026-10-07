@@ -77,7 +77,8 @@ const approvalOp = defineOperation({
  * Whether the human a plugin call acts for holds a permission:
  * `content.write` to author (the precondition for author storage),
  * `deploy.trigger` to publish (an approved action goes live only for
- * someone who could publish it anyway).
+ * someone who could publish it anyway), or whatever a plugin tool's
+ * `requiredPermission` names (e.g. `settings.write`).
  */
 const operatorHasPermissionOp = defineOperation({
   name: EXTERNAL_OPS.operatorHasPermission,
@@ -87,7 +88,7 @@ const operatorHasPermissionOp = defineOperation({
   input: z
     .object({
       actorId: z.string().uuid(),
-      permission: z.enum(["content.write", "deploy.trigger"]),
+      permission: z.enum(["content.write", "settings.write", "deploy.trigger"]),
     })
     .strict(),
   output: z.object({ allowed: z.boolean() }),

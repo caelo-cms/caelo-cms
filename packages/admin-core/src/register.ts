@@ -290,6 +290,14 @@ import {
 } from "./ops/media-bulk.js";
 import { aggregateNotificationsOp } from "./ops/notifications.js";
 import {
+  executeOwnerSettingsProposalOp,
+  listPendingOwnerSettingsProposalsOp,
+  proposeSetAiBudgetOp,
+  proposeSetAiPricingOp,
+  proposeSetGatewaySettingsOp,
+  rejectOwnerSettingsProposalOp,
+} from "./ops/owner_settings_pending.js";
+import {
   anyBootstrapTokenIssuedOp,
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
@@ -297,6 +305,10 @@ import {
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
+import {
+  listPluginCapabilityGrantsOp,
+  proposeRevokePluginCapabilityOp,
+} from "./ops/plugins/capability_proposals.js";
 import {
   commentArchiveInsertOp,
   commentArchiveListForPageOp,
@@ -309,6 +321,7 @@ import {
   revokePluginCapabilityOp,
   stagePluginInstallationOp,
 } from "./ops/plugins/installations.js";
+import { listPluginPendingActionsOp, rejectPluginProposalOp } from "./ops/plugins/pending_queue.js";
 import {
   activatePluginOp,
   disablePluginOp,
@@ -603,6 +616,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
   registry.register(proposeUninstallPluginOp);
+  // §11.A — revoking a plugin grant (plugins.execute_proposal applies it).
+  registry.register(proposeRevokePluginCapabilityOp);
+  registry.register(listPluginCapabilityGrantsOp);
+  // Owner queue for plugin proposals that wait (Power-MCP has no in-chat card).
+  registry.register(listPluginPendingActionsOp);
+  registry.register(rejectPluginProposalOp);
   registry.register(executeUninstallPluginOp);
   registry.register(proposePluginActivationOp);
   registry.register(executePluginActivationOp);
@@ -864,6 +883,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeEmailConfigProposalOp);
   registry.register(rejectEmailConfigProposalOp);
   registry.register(listPendingEmailConfigProposalsOp);
+  // §11.A gate for AI budgets / AI pricing / gateway settings — the AI
+  // proposes, the operator approves (owner_settings_pending.ts).
+  registry.register(proposeSetAiBudgetOp);
+  registry.register(proposeSetAiPricingOp);
+  registry.register(proposeSetGatewaySettingsOp);
+  registry.register(executeOwnerSettingsProposalOp);
+  registry.register(rejectOwnerSettingsProposalOp);
+  registry.register(listPendingOwnerSettingsProposalsOp);
   // P14 — domains registry.
   registry.register(listDomainsOp);
   registry.register(addDomainOp);

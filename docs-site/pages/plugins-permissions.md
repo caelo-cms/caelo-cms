@@ -36,7 +36,7 @@ These rules bind every plugin identically — shipped with a release or installe
 | Client assets | A browser runtime on every page of the site |
 | Contributions | Structured head/sitemap entries, URL slots, data lists, deferred modules |
 
-Grants are bound to the plugin's exact artifact. A new version asks again; a revoked grant stops working before the next call.
+Grants are bound to the plugin's exact artifact. A new version asks again; a revoked grant stops working before the next call. You can revoke a grant at `/security/plugins/installations`, or ask the AI. It lists the grants (`list_plugin_grants`) and proposes the revoke (`propose_revoke_plugin_capability`), and nothing changes until you click Approve. Revoking a grant of the running version disables the plugin but keeps its data.
 
 ## Rules no grant can lift
 

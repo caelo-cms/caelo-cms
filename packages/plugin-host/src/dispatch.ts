@@ -25,7 +25,7 @@ import type {
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import type { ExternalApproval } from "./external-authorization.js";
+import { type ExternalApproval, operatorHasPermission } from "./external-authorization.js";
 import { previewContext } from "./preview-context.js";
 import type { PluginRowLocker } from "./private-storage.js";
 import { consumeExternalToolApproval } from "./tool-approval-binding.js";
@@ -427,6 +427,34 @@ export async function runPluginOperation(
         message: "plugin host not bootstrapped — call bootstrap() before dispatch",
       },
     };
+  }
+  // A tool's `requiredPermission` binds the chat path to the permission
+  // the plugin's owner panel requires: the human a chat call acts for (or
+  // who approved a gated one) must hold it. Panel, worker and render calls
+  // are authorised where they originate and are not re-checked here.
+  const requiredPermission = plugin.definition.tools?.find(
+    (t) => t.operationName === opts.operationName && t.requiredPermission,
+  )?.requiredPermission;
+  if (
+    requiredPermission &&
+    (opts.invocation.origin === "chat" || opts.invocation.origin === "approved")
+  ) {
+    const operator =
+      opts.invocation.origin === "approved"
+        ? opts.invocation.actorId
+        : opts.invocation.operatorActorId;
+    const allowed =
+      operator !== undefined &&
+      (await operatorHasPermission(cachedInfra, hostSystemActorId(), operator, requiredPermission));
+    if (!allowed) {
+      return {
+        ok: false,
+        error: {
+          kind: "OperationFailed",
+          message: `permission_denied: "${opts.operationName}" of plugin "${opts.pluginSlug}" needs the ${requiredPermission} permission for the person this chat acts for. Tell the operator an Owner has to do this.`,
+        },
+      };
+    }
   }
   if (plugin.externalApproval) {
     const tool = plugin.definition.tools?.find((t) => t.operationName === opts.operationName);

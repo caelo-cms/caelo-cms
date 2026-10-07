@@ -27,6 +27,8 @@
     templates: "/security/templates/pending",
     domains: "/security/domains/pending",
     themes: "/security/themes/pending",
+    plugins: "/security/plugins/pending",
+    owner_settings: "/security/owner-settings/pending",
     quality: "/security/quality/pending",
     gateway: "/security/gateway",
     site_memory: "/security/ai/memory-proposals",
