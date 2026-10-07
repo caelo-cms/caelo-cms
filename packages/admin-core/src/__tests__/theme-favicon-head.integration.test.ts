@@ -34,6 +34,7 @@ if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 const PREFIX = "tfavh";
 // media.upload keys on sha256; a recognisable prefix makes cleanup exact.
 const SHA = `fa71c0de${"c".repeat(56)}`;
+const PDF_SHA = `fa71c0de${"d".repeat(56)}`;
 const SYS_CTX: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
   actorKind: "system",
@@ -77,7 +78,7 @@ async function cleanup(): Promise<void> {
       `DELETE FROM theme_snapshots WHERE theme_id IN (SELECT id FROM themes WHERE slug = '${THEME_SLUG}')`,
     );
     await tx.unsafe(`DELETE FROM themes WHERE slug = '${THEME_SLUG}' AND is_active = false`);
-    await tx.unsafe(`DELETE FROM media_assets WHERE sha256 = '${SHA}'`);
+    await tx.unsafe(`DELETE FROM media_assets WHERE sha256 IN ('${SHA}', '${PDF_SHA}')`);
   });
 }
 
@@ -219,5 +220,38 @@ describe("theme favicon is emitted into <head>", () => {
     expect(html).not.toContain(faviconId);
     const shipped = await readFile(join(result.buildDir, "_assets", `${faviconSlug}.png`));
     expect(shipped.byteLength).toBe(4);
+  });
+
+  it("refuses to bind a non-image asset to the favicon slot", async () => {
+    // The bound favicon becomes `<link rel="icon" type="<mime>">` on every
+    // page, so a PDF or video there would ship an unusable icon.
+    const pdf = (await run("media.upload", {
+      sha256: PDF_SHA,
+      originalName: "brochure.pdf",
+      name: "Tfavh Brochure",
+      mime: "application/pdf",
+      sizeBytes: 4,
+      width: null,
+      height: null,
+      alt: "",
+      storageKey: `${PDF_SHA}/orig.pdf`,
+      variants: [
+        {
+          variant: "orig",
+          format: "pdf",
+          width: null,
+          height: null,
+          sizeBytes: 4,
+          storageKey: `${PDF_SHA}/orig.pdf`,
+        },
+      ],
+    })) as { assetId: string };
+    const r = await execute(registry, adapter, SYS_CTX, "themes.set_asset", {
+      slot: "favicon",
+      mediaId: pdf.assetId,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(JSON.stringify(r.error)).toContain("not an image");
   });
 });

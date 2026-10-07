@@ -691,14 +691,24 @@ export const setThemeAssetOp = defineOperation({
     // Verify the media row exists before binding (no-fallbacks: a
     // dangling FK would silently render a broken image).
     if (input.mediaId) {
-      const exists = (await tx.execute(sql`
-        SELECT 1 FROM media_assets WHERE id = ${input.mediaId}::uuid AND deleted_at IS NULL LIMIT 1
-      `)) as unknown as Array<{ exists: number }>;
-      if (exists.length === 0) {
+      const found = (await tx.execute(sql`
+        SELECT mime FROM media_assets WHERE id = ${input.mediaId}::uuid AND deleted_at IS NULL LIMIT 1
+      `)) as unknown as Array<{ mime: string }>;
+      const media = found[0];
+      if (!media) {
         return err({
           kind: "HandlerError",
           operation: "themes.set_asset",
           message: `media asset ${input.mediaId} not found — upload one via /api/media/upload first`,
+        });
+      }
+      // The favicon is emitted as `<link rel="icon" type="<mime>">` in every
+      // page's <head>; a PDF or video bound here would ship an unusable icon.
+      if (input.slot === "favicon" && !media.mime.startsWith("image/")) {
+        return err({
+          kind: "HandlerError",
+          operation: "themes.set_asset",
+          message: `media asset ${input.mediaId} is ${media.mime}, not an image — the favicon slot needs an image (PNG or SVG); pick an image row from find_media`,
         });
       }
     }
