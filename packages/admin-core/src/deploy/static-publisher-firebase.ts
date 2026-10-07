@@ -32,7 +32,7 @@
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { createGzip } from "node:zlib";
@@ -42,6 +42,7 @@ import {
   IMMUTABLE_CACHE_CONTROL,
 } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
+import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
 const FIREBASE_HOSTING_API = "https://firebasehosting.googleapis.com/v1beta1";
@@ -514,8 +515,25 @@ export const firebaseHostingPublisher: StaticPublisher = {
         "static-publisher-firebase: CAELO_GATEWAY_SERVICE / CAELO_GATEWAY_REGION not set. The gcp-firebase Pulumi stack must set these env vars on the admin Cloud Run service.",
       );
     }
+    // The redirects table rides the version config — Hosting ignores the
+    // `_redirects` file the generator writes. Every build carries that
+    // file; a build without it is not one the generator produced.
+    let redirectsFile: string;
+    try {
+      redirectsFile = await readFile(join(buildDir, "_redirects"), "utf8");
+    } catch (e) {
+      throw new Error(
+        `static-publisher-firebase: ${join(buildDir, "_redirects")} is missing (${(e as Error).message}). The static generator writes it on every build; re-run the build instead of deploying a partial directory.`,
+      );
+    }
+    const redirects = firebaseRedirectsFromFile(
+      redirectsFile,
+      target.pageUrlStyle ?? "directory",
+      new Set(walked.map((f) => f.relativePath)),
+    );
     const versionConfig = withTargetRobotsHeader(
       {
+        redirects,
         rewrites: [
           {
             glob: "/api/**",

@@ -32,8 +32,11 @@ export const createRedirectOp = defineOperation({
   name: "redirects.create",
   // P6.7.5 — the page-update + page-delete ops write here (slug-change 301s and
   // dead-URL redirects); the AI reaches those via update_pages_many /
-  // delete_pages_many.
-  actorScope: ["human", "ai", "system"],
+  // delete_pages_many. `plugin`: a URL-contributing plugin owns URL
+  // shapes core cannot derive — `international-site` writes the
+  // `/<default locale>` → `/` 301 when it prefixes the default locale
+  // (the same upsert pages.refresh_current_path already runs for it).
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z
     .object({
