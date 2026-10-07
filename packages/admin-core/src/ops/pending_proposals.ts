@@ -157,6 +157,12 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                  'settings'),
                chat_session_id::text
           FROM site_defaults_pending_actions WHERE status = 'pending'
+        UNION ALL
+        -- 0235 — AI budgets / AI pricing / gateway settings.
+        SELECT 'owner_settings', kind, id::text, proposed_by::text, created_at,
+               COALESCE(LEFT(preview->>'summary', 120), kind),
+               chat_session_id::text
+          FROM owner_settings_pending_actions WHERE status = 'pending'
         -- Older proposal tables (varying shape; aliased into common columns).
         UNION ALL
         -- 0124 — import runs awaiting the crawl approval (status
@@ -223,6 +229,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         UNION ALL SELECT 'domains' FROM domain_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'themes' FROM theme_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'site_defaults' FROM site_defaults_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'owner_settings' FROM owner_settings_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'gateway' FROM plugin_rate_limit_proposals WHERE status = 'pending'
         UNION ALL SELECT 'site_memory' FROM site_memory_proposals WHERE status = 'pending'
         UNION ALL SELECT 'skills' FROM skill_proposals WHERE status = 'pending'

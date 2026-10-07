@@ -51,6 +51,8 @@ const PENDING_TABLES = [
   "url_migration_pending_actions",
   "plugin_pending_actions",
   "site_defaults_pending_actions",
+  // 0235 — AI budgets / AI pricing / gateway settings.
+  "owner_settings_pending_actions",
 ] as const;
 
 let workerHandle: ReturnType<typeof setInterval> | null = null;

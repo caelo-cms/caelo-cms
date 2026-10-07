@@ -28,6 +28,7 @@
     domains: "/security/domains/pending",
     themes: "/security/themes/pending",
     site_defaults: "/security/seo",
+    owner_settings: "/security/owner-settings/pending",
     gateway: "/security/gateway",
     site_memory: "/security/ai/memory-proposals",
     skills: "/security/skills",

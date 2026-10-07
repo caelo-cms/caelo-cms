@@ -60,6 +60,7 @@ bypass — `execute_proposal`'s `actorScope` is `["human", "system"]`.
 | `domains` | `propose_add`, `propose_remove` | `settings.write` |
 | `site_defaults` (SEO settings; approve on `/security/seo`) | `propose_set_seo` | `roles.manage` |
 | `gateway` | `propose_rate_limit` | `settings.write` |
+| `owner_settings` (0235) | `propose_set_ai_budget`, `propose_set_ai_pricing`, `propose_set_gateway_settings` — one table, `kind` discriminator | `settings.write` |
 | `themes` (v0.11.0, #45; create reshaped by #112 — see [themes.md](./themes.md)) | `propose_create`, `propose_activate`, `propose_delete` | `roles.manage` |
 
 Plus three older proposal flows that share the spirit but predate

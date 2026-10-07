@@ -36,7 +36,12 @@ export interface MakeProposeToolArgs<I> {
    */
   readonly when: string;
   readonly schema: z.ZodType<I>;
-  readonly inputSchema: Record<string, unknown>;
+  /**
+   * Provider JSON Schema. Optional: when omitted the tool registry derives
+   * it from `schema` (issue #251), which is the preferred path — one source
+   * of truth, no drift.
+   */
+  readonly inputSchema?: Record<string, unknown>;
   /** Render a one-line operator-readable summary from the preview. */
   readonly summarize: (input: I, preview: Record<string, unknown>) => string;
   /**
@@ -64,7 +69,7 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
     name: args.toolName,
     description,
     schema: args.schema,
-    inputSchema: args.inputSchema,
+    ...(args.inputSchema ? { inputSchema: args.inputSchema } : {}),
     // Marks the tool SDK-executed + gated; the chat-runner attaches the real
     // execute (propose → execute_proposal). approvalMode makes the SDK pause.
     approvalMode: "user-approval",
