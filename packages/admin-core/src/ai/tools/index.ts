@@ -81,7 +81,6 @@ import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-deploy-promote.js";
-import { getSiteSeoTool, proposeSetSiteSeoTool } from "./propose-set-site-seo.js";
 import {
   getAiBudgetsTool,
   getGatewaySettingsTool,
@@ -90,6 +89,7 @@ import {
   proposeSetAiPricingTool,
   proposeSetGatewaySettingsTool,
 } from "./propose-owner-settings.js";
+import { getSiteSeoTool, proposeSetSiteSeoTool } from "./propose-set-site-seo.js";
 import { proposeSiteImportTool } from "./propose-site-import.js";
 import { proposeSkillTool } from "./propose-skill.js";
 import {
