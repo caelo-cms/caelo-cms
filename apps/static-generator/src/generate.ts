@@ -50,7 +50,12 @@ import { sql } from "drizzle-orm";
 import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
-import { buildRobotsTxtWithSitemap, readSeoSettings, runSeoPass } from "./seo-pass.js";
+import {
+  buildRobotsTxtWithSitemap,
+  readSeoSettings,
+  requireSiteLanguage,
+  runSeoPass,
+} from "./seo-pass.js";
 import { syncContents } from "./sync-contents.js";
 
 export interface DeployTarget {
@@ -347,7 +352,7 @@ export async function generateSite(args: {
 
   // #551 — read first: a missing site base URL or site language fails the
   // run before any file is written, not halfway through the page passes.
-  const seoSettings = await readSeoSettings(tx);
+  const seoSettings = requireSiteLanguage(await readSeoSettings(tx));
 
   await mkdir(buildDir, { recursive: true });
 

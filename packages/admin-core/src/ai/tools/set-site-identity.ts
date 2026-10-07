@@ -63,7 +63,7 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
     "turn — infer `siteName` and `sitePurpose` from the operator's chat prompt and capture them BEFORE " +
     "authoring any modules. Example: operator says 'build me a homepage for an AI-first CMS called Caelo, " +
     "trustworthy and developer-focused' → call `set_site_identity({siteName: 'Caelo', sitePurpose: 'An " +
-    "AI-first CMS for developers — trustworthy, branched edits, plugin sandbox'})`. If the operator " +
+    "AI-first CMS for developers — trustworthy, branched edits, plugin sandbox', siteLanguage: 'en'})` (they wrote in English). If the operator " +
     "hasn't given you enough to infer (e.g. they ask 'add a contact form' on an unconfigured install), " +
     "ASK them for the missing essentials before guessing. " +
     "Pass `null` to clear a field. " +

@@ -289,12 +289,15 @@ function enc(s: string): string {
  *
  * Throws when the site base URL is not configured (#551): every canonical,
  * og:url, JSON-LD url and sitemap entry is absolute, and a substituted
- * localhost default shipped unreachable canonicals to production. Throws
- * likewise when the site language is not configured (migration 0232):
- * every page needs a real `<html lang>`, and a substituted `en` mislabels
- * every non-English site. Each message names the setting and how to set it.
+ * localhost default shipped unreachable canonicals to production. The
+ * message names the setting and how to set it.
+ *
+ * The site language comes back as stored, `null` when unset (migration
+ * 0232): promote and rollback read this only for the base URL and ship an
+ * already-built tree, so they must not be blocked by it. A new build goes
+ * through {@link requireSiteLanguage}.
  */
-export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSettings> {
+export async function readSeoSettings(tx: TransactionRunner): Promise<StoredSeoSettings> {
   const rows = (await tx.execute(sql`
     SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json,
            site_language
@@ -324,14 +327,6 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
         "(provisioning does this from the install domain) and restart it.",
     );
   }
-  if (!r.site_language) {
-    throw new Error(
-      "Site language is not configured (site_defaults.site_language is NULL). Every page " +
-        "needs <html lang> for screen readers and search engines. Tell the AI in the editor " +
-        "chat which language the site is written in (it sets it with set_site_identity), or " +
-        "set it under Security → SEO in the admin, then publish again.",
-    );
-  }
   let organization: SiteSeoSettings["organization"] = {};
   if (r.organization_json) {
     try {
@@ -347,6 +342,30 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
     siteLanguage: r.site_language,
     organization,
   };
+}
+
+/** {@link SiteSeoSettings} as stored: the site language may be unset. */
+export type StoredSeoSettings = Omit<SiteSeoSettings, "siteLanguage"> & {
+  siteLanguage: string | null;
+};
+
+/**
+ * Narrow the stored settings for a new build. Throws when the site language
+ * is not configured (migration 0232): every built page needs a real
+ * `<html lang>`, and a substituted `en` mislabels every non-English site.
+ * The message names the setting and how to set it.
+ */
+export function requireSiteLanguage(settings: StoredSeoSettings): SiteSeoSettings {
+  const { siteLanguage } = settings;
+  if (!siteLanguage) {
+    throw new Error(
+      "Site language is not configured (site_defaults.site_language is NULL). Every page " +
+        "needs <html lang> for screen readers and search engines. Tell the AI in the editor " +
+        "chat which language the site is written in (it sets it with set_site_identity), or " +
+        "set it under Security → SEO in the admin, then publish again.",
+    );
+  }
+  return { ...settings, siteLanguage };
 }
 
 /**

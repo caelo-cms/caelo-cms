@@ -16,7 +16,7 @@ import { DatabaseAdapter } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { generateSite } from "./generate.js";
-import { readSeoSettings } from "./seo-pass.js";
+import { readSeoSettings, requireSiteLanguage } from "./seo-pass.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -126,14 +126,19 @@ describe("#551 site base URL in the static generator", () => {
 });
 
 describe("migration 0232 site language in the static generator", () => {
-  it("readSeoSettings throws an actionable error when the site language is unset", async () => {
+  // Promote + rollback read the settings only for the base URL and ship an
+  // already-built tree; an unset language must not block them. A new build
+  // narrows through requireSiteLanguage, which refuses with the next step.
+  it("readSeoSettings reports an unset language as null; requireSiteLanguage refuses it", async () => {
     await setBase("https://site-551.example");
     await setLanguage(null);
     try {
-      const read = () => adapter.withAdminTransaction(systemCtx, (tx) => readSeoSettings(tx));
-      await expect(read()).rejects.toThrow("Site language is not configured");
-      await expect(read()).rejects.toThrow("set_site_identity");
-      await expect(read()).rejects.toThrow("Security → SEO");
+      const s = await adapter.withAdminTransaction(systemCtx, (tx) => readSeoSettings(tx));
+      expect(s.siteLanguage).toBeNull();
+      expect(s.siteBaseUrl).toBe("https://site-551.example");
+      expect(() => requireSiteLanguage(s)).toThrow("Site language is not configured");
+      expect(() => requireSiteLanguage(s)).toThrow("set_site_identity");
+      expect(() => requireSiteLanguage(s)).toThrow("Security → SEO");
     } finally {
       await setLanguage("en");
     }
