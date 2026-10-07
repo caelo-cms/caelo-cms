@@ -1,6 +1,7 @@
 name: AI Security Review
 
-# Runs anthropics/claude-code-security-review on every PR. Posts inline +
+# Runs anthropics/claude-code-security-review on every PR (on later commits
+# only until it has passed once — see the prior-success job). Posts inline +
 # summary review comments. INFORMATIONAL — not blocking. The branch-protection
 # ruleset (.github/rulesets/main.json) does NOT require this check; this is the
 # deliberate design called out in issue #24 ("does not block merge").
@@ -55,13 +56,65 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Cost gate: once the AI security review has succeeded on a PR, later commits to the
+  # same PR skip it (Claude Code Security Reviewer reports SKIPPED; it is not a required check).
+  # A new or reopened PR always runs. Accepted trade-off: a later commit
+  # that breaks something this run would catch goes unchecked until main
+  # (push-to-main still runs) — rerun by closing/reopening the PR.
+  prior-success:
+    name: Prior AI run check
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: read
+    outputs:
+      passed: ${{ steps.check.outputs.passed }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_CREATED: ${{ github.event.pull_request.created_at }}
+          RUN_ID: ${{ github.run_id }}
+          WORKFLOW_FILE: security-review.yml
+          JOB_NAME: Claude Code Security Reviewer
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ] || [ "$ACTION" != "synchronize" ]; then
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Successful runs of this workflow for this PR (same head repo +
+          # branch, created since the PR was opened), newest first.
+          runs=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?event=pull_request&status=success&branch=$HEAD_REF&per_page=50" \
+            --jq "[.workflow_runs[] | select(.head_repository.full_name == \"$HEAD_REPO\" and .created_at >= \"$PR_CREATED\" and .id != $RUN_ID) | .id] | .[]")
+          passed=false
+          for id in $runs; do
+            # A green workflow is not enough (the AI job may have been
+            # skipped itself); require the AI job's own success.
+            hit=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
+              --jq "[.jobs[] | select(.name == \"$JOB_NAME\" and .conclusion == \"success\")] | length")
+            if [ "$hit" -gt 0 ]; then
+              passed=true
+              echo "::notice::the AI security review already passed on this PR (run $id); skipping it for this commit."
+              break
+            fi
+          done
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
+
   security-review:
     name: Claude Code Security Reviewer
+    needs: prior-success
     runs-on: ubuntu-latest
     # Belt-and-suspenders above the action's internal claudecode-timeout
     # (which only governs the analysis step, not install / comment-post).
     timeout-minutes: 20
     if: >-
+      needs.prior-success.outputs.passed != 'true' &&
       github.event.pull_request.user.type != 'Bot' &&
       github.event.pull_request.draft == false &&
       !contains(github.event.pull_request.labels.*.name, 'skip-ai-review') &&

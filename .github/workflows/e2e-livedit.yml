@@ -29,7 +29,8 @@ name: E2E Live Edit (real AI)
 # the operator; it became meaningful once #297 fixed the missing
 # ai_pricing row that had been zeroing cost_estimate_microcents.
 
-# Runs on every PR to main (the real-AI regression gate — issue #47), on push to
+# Runs on every PR to main (the real-AI regression gate — issue #47; on later
+# commits only until it has passed once on that PR — see prior-success), on push to
 # main, and on demand via workflow_dispatch. The `pull_request` trigger was
 # temporarily removed in #325 while the #315 `scenario-extract-fields` regression
 # kept the suite red; it is restored here per operator direction. This suite is
@@ -88,10 +89,60 @@ jobs:
             echo "::notice::ANTHROPIC_API_KEY_E2E secret not configured; skipping e2e-livedit suite. Add the secret in repo Settings → Secrets and variables → Actions to enable it on subsequent runs."
           fi
 
+  # Cost gate: once the real-AI live-edit suite has succeeded on a PR, later commits to the
+  # same PR skip it (Real-AI live-edit scenario reports SKIPPED; it is not a required check).
+  # A new or reopened PR always runs. Accepted trade-off: a later commit
+  # that breaks something this run would catch goes unchecked until main
+  # (push-to-main still runs) — rerun by closing/reopening the PR.
+  prior-success:
+    name: Prior AI run check
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: read
+    outputs:
+      passed: ${{ steps.check.outputs.passed }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_CREATED: ${{ github.event.pull_request.created_at }}
+          RUN_ID: ${{ github.run_id }}
+          WORKFLOW_FILE: e2e-livedit.yml
+          JOB_NAME: Real-AI live-edit scenario
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ] || [ "$ACTION" != "synchronize" ]; then
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Successful runs of this workflow for this PR (same head repo +
+          # branch, created since the PR was opened), newest first.
+          runs=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?event=pull_request&status=success&branch=$HEAD_REF&per_page=50" \
+            --jq "[.workflow_runs[] | select(.head_repository.full_name == \"$HEAD_REPO\" and .created_at >= \"$PR_CREATED\" and .id != $RUN_ID) | .id] | .[]")
+          passed=false
+          for id in $runs; do
+            # A green workflow is not enough (the AI job may have been
+            # skipped itself); require the AI job's own success.
+            hit=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
+              --jq "[.jobs[] | select(.name == \"$JOB_NAME\" and .conclusion == \"success\")] | length")
+            if [ "$hit" -gt 0 ]; then
+              passed=true
+              echo "::notice::the real-AI live-edit suite already passed on this PR (run $id); skipping it for this commit."
+              break
+            fi
+          done
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
+
   e2e-livedit:
     name: Real-AI live-edit scenario
-    needs: preflight
-    if: needs.preflight.outputs.enabled == 'true'
+    needs: [preflight, prior-success]
+    if: needs.preflight.outputs.enabled == 'true' && needs.prior-success.outputs.passed != 'true'
     runs-on: ubuntu-latest
     # The full chat → Stage → Publish → re-edit loop runs ~5 min per
     # scenario at Opus 4.7 plus compose spin-up + admin build. The
