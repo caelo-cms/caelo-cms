@@ -44,6 +44,7 @@
   {:else}
     <div class="space-y-4">
       {#each data.proposals as p (p.id)}
+        <div data-testid="plugin-proposal">
         <Card>
           <CardHeader>
             <CardTitle class="flex items-center gap-2 text-base">
@@ -68,7 +69,6 @@
               <form method="post" action="?/approve">
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="proposalId" value={p.id} />
-                <input type="hidden" name="kind" value={p.kind} />
                 <Button type="submit">Approve</Button>
               </form>
               <form method="post" action="?/reject" class="flex items-center gap-2">
@@ -77,6 +77,7 @@
                 <input
                   type="text"
                   name="reason"
+                  aria-label="Reject reason (optional)"
                   placeholder="reject reason (optional)"
                   class="rounded-md border bg-background p-1.5 text-xs"
                 />
@@ -85,6 +86,7 @@
             </div>
           </CardContent>
         </Card>
+        </div>
       {/each}
     </div>
   {/if}

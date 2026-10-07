@@ -11,7 +11,7 @@
 
 import { loadActivatedPlugin } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
-import { fail } from "@sveltejs/kit";
+import { error, fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
@@ -35,8 +35,9 @@ export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "plugins.list_pending_actions", {});
-  const proposals = r.ok ? (r.value as { proposals: Proposal[] }).proposals : [];
-  return { proposals };
+  // An approval queue that fails to load must not read as "nothing pending".
+  if (!r.ok) throw error(500, messageOf(r.error, "could not load pending plugin proposals"));
+  return { proposals: (r.value as { proposals: Proposal[] }).proposals };
 };
 
 export const actions: Actions = {
@@ -45,8 +46,17 @@ export const actions: Actions = {
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const proposalId = String(form.get("proposalId") ?? "");
-    const kind = String(form.get("kind") ?? "");
     const { adapter, registry } = getQueryContext();
+    // The row's kind picks the executor. Read it server-side: the chat's
+    // proposal card posts only the proposalId.
+    const pending = await execute(registry, adapter, locals.ctx, "plugins.list_pending_actions", {
+      limit: 200,
+    });
+    if (!pending.ok) return fail(500, { error: messageOf(pending.error, "approve failed") });
+    const kind = (pending.value as { proposals: Proposal[] }).proposals.find(
+      (p) => p.id === proposalId,
+    )?.kind;
+    if (!kind) return fail(404, { error: "That proposal is no longer pending." });
     const executor =
       kind === "activate" ? "plugins.execute_activation" : "plugins.execute_proposal";
     const r = await execute(registry, adapter, locals.ctx, executor, { proposalId });
