@@ -40,7 +40,11 @@ function fakeGoogle(...responders: Responder[]) {
     fetch: fetchImpl,
     accessToken: async () => "tok",
     metadata: async (path) =>
-      path === "project/project-id" ? "p\n" : "projects/123/regions/europe-west1",
+      path === "project/project-id"
+        ? "p\n"
+        : path === "project/numeric-project-id"
+          ? "123\n"
+          : "projects/123/regions/europe-west1",
   };
   return { deps, calls };
 }
@@ -51,7 +55,7 @@ const FIREBASE_ENV: GcpIapEnv = {
   CAELO_MCP_IAP_SERVICE_ACCOUNT: "caelo-mcp@p.iam.gserviceaccount.com",
 };
 const IAP =
-  "https://iap.googleapis.com/v1/projects/p/iap_web/cloud_run-europe-west1/services/caelo-production-admin-abc";
+  "https://iap.googleapis.com/v1/projects/123/iap_web/cloud_run-europe-west1/services/caelo-production-admin-abc";
 const SA =
   "https://iam.googleapis.com/v1/projects/-/serviceAccounts/caelo-mcp%40p.iam.gserviceaccount.com";
 
@@ -126,7 +130,7 @@ describe("gcpIapBackendFromEnv", () => {
       "https://compute.googleapis.com/compute/v1/projects/p/global/backendServices?filter=name eq caelo-production-admin-backend.*",
     );
     expect(calls[1]?.url).toBe(
-      "https://iap.googleapis.com/v1/projects/p/iap_web/compute/services/caelo-production-admin-backend-1a2b3c4:getIamPolicy",
+      "https://iap.googleapis.com/v1/projects/123/iap_web/compute/services/caelo-production-admin-backend-1a2b3c4:getIamPolicy",
     );
   });
 
@@ -134,10 +138,22 @@ describe("gcpIapBackendFromEnv", () => {
     const { deps } = fakeGoogle((c) =>
       c.url.includes("/backendServices?") ? { status: 200, body: {} } : undefined,
     );
-    const backend = gcpIapBackendFromEnv({ ...FIREBASE_ENV, CAELO_PROVIDER: "gcp" }, deps);
+    const backend = gcpIapBackendFromEnv(
+      { ...FIREBASE_ENV, CAELO_PROVIDER: "gcp", CAELO_ENV: "production" },
+      deps,
+    );
     await expect(backend?.setAccess("user:new@x.com", true)).rejects.toThrow(
       /exactly one IAP-enabled backend service/,
     );
+  });
+
+  it("gcp: refuses to guess the backend prefix when CAELO_ENV is missing", async () => {
+    const { deps, calls } = fakeGoogle();
+    const backend = gcpIapBackendFromEnv({ ...FIREBASE_ENV, CAELO_PROVIDER: "gcp" }, deps);
+    await expect(backend?.setAccess("user:new@x.com", true)).rejects.toThrow(
+      /CAELO_ENV is not set/,
+    );
+    expect(calls).toEqual([]);
   });
 
   it("a 403 points at `cms-provision upgrade` (install predates the admin's grants)", async () => {

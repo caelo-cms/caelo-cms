@@ -58,7 +58,9 @@ export const actions: Actions = {
       return fail(400, { error: message });
     }
     const v = r.value as { userId: string | null; temporaryPassword: string | null };
-    const access = v.userId ? await syncOperatorAccess(locals, v.userId) : { ok: true as const };
+    const access = v.userId
+      ? await syncOperatorAccess(locals, { userIds: [v.userId] })
+      : { ok: true as const };
     return {
       ok: true,
       // Google IAP sync outcome; `error` makes the layout toast it loudly.

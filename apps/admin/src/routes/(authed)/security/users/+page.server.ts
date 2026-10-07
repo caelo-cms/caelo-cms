@@ -64,7 +64,9 @@ export const actions: Actions = {
       roleNames,
     });
     if (!result.ok) return fail(400, { error: "Could not create user." });
-    return syncOperatorAccess(locals, (result.value as { userId: string }).userId);
+    return syncOperatorAccess(locals, {
+      userIds: [(result.value as { userId: string }).userId],
+    });
   },
 
   setRoles: async ({ request, locals }) => {
@@ -81,7 +83,7 @@ export const actions: Actions = {
       roleNames,
     });
     if (!result.ok) return fail(400, { error: "Could not update roles." });
-    return syncOperatorAccess(locals, userId);
+    return syncOperatorAccess(locals, { userIds: [userId] });
   },
 
   delete: async ({ request, locals }) => {
@@ -93,7 +95,19 @@ export const actions: Actions = {
     const userId = String(form.get("userId") ?? "");
     const result = await execute(registry, adapter, asSystem(locals), "users.delete", { userId });
     if (!result.ok) return fail(400, { error: "Could not delete user." });
-    return syncOperatorAccess(locals, userId);
+    return syncOperatorAccess(locals, { userIds: [userId] });
+  },
+
+  /**
+   * Recompute Google IAP access for every user, deleted ones included — the
+   * retry path when an automatic sync after a user change failed (the change
+   * itself was saved, so it cannot be approved again).
+   */
+  resyncOperatorAccess: async ({ request, locals }) => {
+    requirePermission(locals, "users.manage");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    return syncOperatorAccess(locals, { allUsers: true });
   },
 
   resetPassword: async ({ request, locals }) => {

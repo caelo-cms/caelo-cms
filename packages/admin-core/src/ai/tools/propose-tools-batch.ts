@@ -311,9 +311,12 @@ export const proposeRoleUpdatePermissionsTool = makeProposeTool({
 
 export const proposeRoleDeleteTool = makeProposeTool({
   toolName: "propose_delete_role",
+  afterApply: "sync-operator-access",
   opName: "roles.propose_delete",
   pendingQueuePath: "/security/roles/pending",
-  when: "Propose deleting a custom role. Built-in roles cannot be deleted; users in the deleted role lose those permissions.",
+  when:
+    "Propose deleting a custom role. Built-in roles cannot be deleted; users in the deleted role lose those permissions. " +
+    "On Google Cloud installs, anyone left with no role also loses Google IAP access; relay any `warning` in the result.",
   schema: z.object({ roleId: uuid }).strict(),
   inputSchema: {
     type: "object",

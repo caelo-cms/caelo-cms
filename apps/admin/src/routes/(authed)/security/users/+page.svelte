@@ -16,9 +16,17 @@
 </script>
 
 <div class="space-y-6">
-  <div>
-    <h1 class="text-2xl font-semibold tracking-tight">Users</h1>
-    <p class="text-sm text-muted-foreground">Create, update, delete admin users; assign roles.</p>
+  <div class="flex flex-wrap items-start justify-between gap-3">
+    <div>
+      <h1 class="text-2xl font-semibold tracking-tight">Users</h1>
+      <p class="text-sm text-muted-foreground">Create, update, delete admin users; assign roles.</p>
+    </div>
+    <!-- Retry path when an automatic Google IAP sync after a user change
+         failed: recomputes every user's access, deleted users included. -->
+    <form method="post" action="?/resyncOperatorAccess">
+      <input type="hidden" name="_csrf" value={data.csrfToken} />
+      <Button type="submit" size="sm" variant="outline">Re-sync Google IAP access</Button>
+    </form>
   </div>
 
   {#if form?.error}

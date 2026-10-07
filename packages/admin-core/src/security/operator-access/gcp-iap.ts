@@ -61,8 +61,16 @@ export interface GcpIapDeps {
   readonly metadata: (path: string) => Promise<string>;
 }
 
-const UPGRADE_HINT =
-  "Run `cms-provision upgrade` from the machine that provisioned this install: it grants the admin's service account the operator-access role it needs.";
+/**
+ * How to retry a sync once its cause is fixed. The user change itself is
+ * already saved and its proposal applied, so "approve again" is impossible —
+ * the /security/users re-sync button recomputes every user's access
+ * (including deleted users', whose revocation is the case that matters).
+ */
+export const RESYNC_HINT =
+  'Then open /security/users and click "Re-sync Google IAP access" — the user change itself is already saved.';
+
+const UPGRADE_HINT = `Run \`cms-provision upgrade\` from the machine that provisioned this install: it grants the admin's service account the operator-access role it needs. ${RESYNC_HINT}`;
 
 /**
  * The IAP backend for this process, or `null` when the admin is not behind
@@ -130,7 +138,9 @@ async function resolveIapResource(
   env: GcpIapEnv,
   deps: GcpIapDeps,
 ): Promise<string> {
-  const project = (await deps.metadata("project/project-id")).trim();
+  // IAP resource names use the project NUMBER (cloud.google.com/iap/docs/
+  // managing-access#resources_and_permissions); the Compute API takes the id.
+  const projectNumber = (await deps.metadata("project/numeric-project-id")).trim();
   if (provider === "gcp-firebase") {
     const service = env.K_SERVICE?.trim();
     if (!service) {
@@ -141,13 +151,21 @@ async function resolveIapResource(
     }
     // `projects/<n>/regions/<region>` → `<region>`
     const region = (await deps.metadata("instance/region")).trim().split("/").pop() ?? "";
-    return `projects/${project}/iap_web/cloud_run-${region}/services/${service}`;
+    return `projects/${projectNumber}/iap_web/cloud_run-${region}/services/${service}`;
   }
   // gcp: IAP sits on the LB backend service, whose Pulumi-generated name the
   // admin cannot know up front (the backend references the admin service, so
   // the reverse reference would be a cycle). Same lookup `cms-provision
   // upgrade` does, narrowed to IAP-enabled backends.
-  const prefix = `caelo-${env.CAELO_ENV ?? "production"}-admin-backend`;
+  const caeloEnv = env.CAELO_ENV?.trim();
+  if (!caeloEnv) {
+    throw new OperatorAccessError(
+      "CAELO_ENV is not set on the admin, so it cannot tell which load-balancer backend is its own.",
+      UPGRADE_HINT,
+    );
+  }
+  const project = (await deps.metadata("project/project-id")).trim();
+  const prefix = `caelo-${caeloEnv}-admin-backend`;
   const filter = encodeURIComponent(`name eq ${prefix}.*`);
   const res = await call(
     deps,
@@ -162,10 +180,10 @@ async function resolveIapResource(
   if (items.length !== 1) {
     throw new OperatorAccessError(
       `Expected exactly one IAP-enabled backend service named ${prefix}*, found ${items.length}${items.length > 1 ? ` (${items.join(", ")})` : ""}.`,
-      "Check the load balancer in the Cloud Console; `cms-provision status` shows the install's resources.",
+      `Check the load balancer in the Cloud Console; \`cms-provision status\` shows the install's resources. ${RESYNC_HINT}`,
     );
   }
-  return `projects/${project}/iap_web/compute/services/${items[0]}`;
+  return `projects/${projectNumber}/iap_web/compute/services/${items[0]}`;
 }
 
 interface MembershipChange {
@@ -200,7 +218,7 @@ async function updateMembership(deps: GcpIapDeps, c: MembershipChange): Promise<
       throw e instanceof EtagConflict
         ? new OperatorAccessError(
             `update ${c.what}: the policy kept changing underneath (${MAX_ATTEMPTS} attempts).`,
-            "Approve the change again in a moment.",
+            `Wait a moment. ${RESYNC_HINT}`,
           )
         : e;
     }
@@ -245,10 +263,13 @@ async function call(
   if (res.status === 400 && /does not exist|not found|invalid member|is of type/i.test(text)) {
     throw new OperatorAccessError(
       `${action}: Google rejected the principal (HTTP 400: ${text}).`,
-      "Google IAP only admits Google identities: the user's email must be a Google account (Gmail or Google Workspace). Change the user's email to their Google sign-in address.",
+      "Google IAP only admits Google identities: the user's email must be a Google account (Gmail or Google Workspace). Delete this user and create them again with their Google sign-in address.",
     );
   }
-  throw new OperatorAccessError(`${action}: HTTP ${res.status}: ${text}`, "Approve again later.");
+  throw new OperatorAccessError(
+    `${action}: HTTP ${res.status}: ${text}`,
+    `If this persists, report it with \`bug_report\`. ${RESYNC_HINT}`,
+  );
 }
 
 function defaultDeps(): GcpIapDeps {

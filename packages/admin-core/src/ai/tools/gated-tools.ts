@@ -36,6 +36,7 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { describeOperatorAccessSync, type OperatorAccessSync } from "../../ops/user_access.js";
+import { RESYNC_HINT } from "../../security/operator-access/gcp-iap.js";
 import { describePersistError } from "../chat-runner/persistence.js";
 import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
 import { approvedPluginInvocation } from "../plugin-invocation.js";
@@ -136,8 +137,10 @@ export function attachGatedExecute(
 }
 
 /**
- * After an approved users.* change: bring the cloud identity gate (Google
- * IAP) in line and fold the outcome into the tool result. A failed sync stays
+ * After an approved users.* change (or role deletion, which can strip a
+ * user's last role): bring the cloud identity gate (Google IAP) in line and
+ * fold the outcome into the tool result. A result naming a `userId` syncs that
+ * user; one without (a role proposal) re-syncs every user. A failed sync stays
  * `ok: true` — the user change IS applied, and reporting a failure would send
  * the AI re-proposing it — but carries a `warning` the AI must relay, with
  * the next step, so the operator never finds out from a 403.
@@ -149,7 +152,6 @@ async function withOperatorAccessSync(
   applied: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const userId = applied.userId;
-  if (typeof userId !== "string") return applied;
   // System kind clears the self-or-system RLS on `users` (the Owner ctx would
   // only see its own row); actorId stays the approving Owner for the audit.
   const synced = await execute(
@@ -157,7 +159,7 @@ async function withOperatorAccessSync(
     adapter,
     { ...ownerCtxLive, actorKind: "system" },
     "users.sync_operator_access",
-    { userIds: [userId] },
+    typeof userId === "string" ? { userIds: [userId] } : { allUsers: true },
   );
   const sync: OperatorAccessSync = synced.ok
     ? (synced.value as OperatorAccessSync)
@@ -166,7 +168,7 @@ async function withOperatorAccessSync(
         target: "the admin's identity gate",
         changes: [],
         error: describePersistError(synced.error),
-        nextStep: "Approve the change again; if it keeps failing, report it with `bug_report`.",
+        nextStep: `If it keeps failing, report it with \`bug_report\`. ${RESYNC_HINT}`,
       };
   const message = describeOperatorAccessSync(sync);
   if (sync.status === "failed") {

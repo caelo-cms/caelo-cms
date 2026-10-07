@@ -65,8 +65,9 @@ export type FilteredTool = ToolDefinition & {
      * running host; it cannot run inside the op because the loader
      * opens its own transaction and takes the same plugins row.
      * `sync-operator-access` updates the cloud identity gate (Google IAP)
-     * for the user an approved users.* proposal touched — a cloud call
-     * that must neither hold nor undo the apply transaction.
+     * for the user an approved users.* proposal touched (every user after
+     * a role deletion) — a cloud call that must neither hold nor undo the
+     * apply transaction.
      */
     afterApply?: "load-activated-plugin" | "sync-operator-access";
   };

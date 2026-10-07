@@ -14,6 +14,7 @@ import { SQL } from "bun";
 import type { FilteredTool } from "../ai/chat-runner/tool-catalogue.js";
 import { attachGatedExecute } from "../ai/tools/gated-tools.js";
 import {
+  proposeRoleDeleteTool,
   proposeUserCreateTool,
   proposeUserDeleteTool,
   proposeUserSetRolesTool,
@@ -50,7 +51,10 @@ const EMAILS = [
   "opaccess-new@example.com",
   "opaccess-noroles@example.com",
   "opaccess-chat@example.com",
+  "opaccess-gone@example.com",
+  "opaccess-customrole@example.com",
 ] as const;
+const CUSTOM_ROLE = "opaccess-temp-role";
 
 /** Records every grant/revoke; optionally fails like Google would. */
 function recordingBackend(failWith?: OperatorAccessError) {
@@ -87,6 +91,8 @@ async function wipe(): Promise<void> {
       await tx`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email = ${email})`;
       await tx`DELETE FROM users WHERE email = ${email}`;
     }
+    await tx`DELETE FROM role_pending_actions WHERE proposed_by = ${AI.actorId}::uuid`;
+    await tx`DELETE FROM roles WHERE name = ${CUSTOM_ROLE}`;
   });
 }
 
@@ -208,6 +214,33 @@ describe("users.sync_operator_access", () => {
     expect(r.ok).toBe(false);
   });
 
+  it("allUsers recomputes every user on the list, deleted ones included (the retry path)", async () => {
+    const goneId = await createUser(EMAILS[4], ["editor"]);
+    const del = await execute(registry, adapter, SYSTEM, "users.delete", { userId: goneId });
+    expect(del.ok).toBe(true);
+    const { backend, calls } = recordingBackend();
+    setOperatorAccessBackendForTests({ backend });
+    const r = await execute(registry, adapter, SYSTEM, "users.sync_operator_access", {
+      allUsers: true,
+    });
+    expect(r.ok && (r.value as OperatorAccessSync).status).toBe("synced");
+    const ours = calls.filter((c) => EMAILS.some((e) => c.principal === `user:${e}`));
+    expect(ours).toContainEqual({ principal: `user:${OWNER_EMAIL}`, allow: true });
+    expect(ours).toContainEqual({ principal: `user:${EMAILS[1]}`, allow: true });
+    expect(ours).toContainEqual({ principal: `user:${EMAILS[4]}`, allow: false });
+    // Only emails on the user list are touched — never anything else on IAP.
+    expect(calls.every((c) => c.principal.startsWith("user:"))).toBe(true);
+  });
+
+  it("allUsers refuses a human ctx (RLS would show only the caller) instead of syncing one row", async () => {
+    setOperatorAccessBackendForTests(recordingBackend());
+    const r = await execute(registry, adapter, OWNER, "users.sync_operator_access", {
+      allUsers: true,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(JSON.stringify(r.error)).toContain("system ctx");
+  });
+
   it("is not reachable by the AI directly", async () => {
     const r = await execute(registry, adapter, AI, "users.sync_operator_access", {
       userIds: [OWNER.actorId],
@@ -218,7 +251,9 @@ describe("users.sync_operator_access", () => {
 });
 
 describe("gated user tools — afterApply sync-operator-access", () => {
-  const gatedTool = (tool: typeof proposeUserCreateTool): FilteredTool =>
+  const gatedTool = (
+    tool: typeof proposeUserCreateTool | typeof proposeRoleDeleteTool,
+  ): FilteredTool =>
     ({
       name: tool.name,
       description: tool.description,
@@ -269,6 +304,26 @@ describe("gated user tools — afterApply sync-operator-access", () => {
     };
     expect(deleted).toMatchObject({ ok: true });
     expect(calls.at(-1)).toEqual({ principal: `user:${EMAILS[3]}`, allow: false });
+  });
+
+  it("an approved role deletion revokes IAP for anyone it left without a role", async () => {
+    const created = await execute(registry, adapter, SYSTEM, "roles.create", {
+      name: CUSTOM_ROLE,
+      description: "temporary",
+      permissions: [],
+    });
+    expect(created.ok).toBe(true);
+    const roleId = created.ok ? (created.value as { roleId: string }).roleId : "";
+    await createUser(EMAILS[5], [CUSTOM_ROLE]);
+    const { backend, calls } = recordingBackend();
+    setOperatorAccessBackendForTests({ backend });
+    expect(proposeRoleDeleteTool.gated?.afterApply).toBe("sync-operator-access");
+    const del = attachGatedExecute(gatedTool(proposeRoleDeleteTool), registry, adapter, AI, OWNER);
+    const r = (await del.execute?.({ roleId })) as { ok: boolean; value: Record<string, unknown> };
+    expect(r).toMatchObject({ ok: true, value: { kind: "delete" } });
+    expect((r.value.operatorAccess as OperatorAccessSync).status).toBe("synced");
+    expect(calls).toContainEqual({ principal: `user:${EMAILS[5]}`, allow: false });
+    expect(calls).toContainEqual({ principal: `user:${OWNER_EMAIL}`, allow: true });
   });
 
   it("a failed sync keeps the applied change but carries a warning the AI must relay", async () => {

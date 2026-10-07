@@ -18,7 +18,17 @@
  * it comes back as `status: "failed"` with the next step, and is audited as
  * a failed op.
  *
- * Non-IAP installs (self-hosted, AWS, Azure) return `not-applicable`.
+ * Two input shapes: `{ userIds }` after a change to specific users, and
+ * `{ allUsers: true }` to recompute every email ever on the user list
+ * (deleted users included — revoking them is the case that matters). The
+ * latter is the retry path for a failed sync (the /security/users "Re-sync"
+ * button) and runs after a role deletion, which can strip a user's last
+ * role without touching their row.
+ *
+ * Non-IAP installs (self-hosted, AWS, Azure) return `not-applicable`: their
+ * identity proxies (ALB + Cognito, Easy Auth + Entra ID, Caddy forward_auth)
+ * are allowlisted by group in the provider's IdP, which Caelo does not manage
+ * yet — the Owner keeps that group in step by hand there.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -30,6 +40,7 @@ import {
   gcpIapBackendFromEnv,
   type OperatorAccessBackend,
   OperatorAccessError,
+  RESYNC_HINT,
 } from "../security/operator-access/gcp-iap.js";
 
 let backendOverride: { backend: OperatorAccessBackend | null } | null = null;
@@ -79,7 +90,10 @@ export const syncOperatorAccessOp = defineOperation({
   // approving Owner) after the approved change committed.
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: z.object({ userIds: z.array(z.string().uuid()).min(1).max(50) }).strict(),
+  input: z.union([
+    z.object({ userIds: z.array(z.string().uuid()).min(1).max(50) }).strict(),
+    z.object({ allUsers: z.literal(true) }).strict(),
+  ]),
   output: operatorAccessSyncSchema,
   handler: async (ctx, input, tx) => {
     const backend = currentBackend();
@@ -89,26 +103,39 @@ export const syncOperatorAccessOp = defineOperation({
         reason: "The admin is not behind Google IAP on this install; Caelo's login is the gate.",
       });
     }
-    const ids = sql.join(
-      input.userIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    );
     // `users` RLS is self-or-system, so a human ctx would see only its own
     // row and this would "sync" nothing while reporting success. Callers
     // run it as system; a missing row is a loud failure either way.
-    const found = (await tx.execute(sql`
-      SELECT id::text AS id FROM users WHERE id IN (${ids})
-    `)) as unknown as { id: string }[];
-    const missing = input.userIds.filter((id) => !found.some((f) => f.id === id));
-    if (missing.length > 0) {
+    let targetUsers = sql`SELECT email FROM users`;
+    if ("userIds" in input) {
+      const ids = sql.join(
+        input.userIds.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      );
+      const found = (await tx.execute(sql`
+        SELECT id::text AS id FROM users WHERE id IN (${ids})
+      `)) as unknown as { id: string }[];
+      const missing = input.userIds.filter((id) => !found.some((f) => f.id === id));
+      if (missing.length > 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "users.sync_operator_access",
+          message: `user(s) not found: ${missing.join(", ")} — run this op with a system ctx (users RLS hides other users from a human actor).`,
+        });
+      }
+      targetUsers = sql`SELECT email FROM users WHERE id IN (${ids})`;
+    } else if (ctx.actorKind !== "system") {
+      // Under a human ctx RLS shows only the caller's own row, and an "all
+      // users" sync over that would report success while revoking no one.
       return err({
         kind: "HandlerError",
         operation: "users.sync_operator_access",
-        message: `user(s) not found: ${missing.join(", ")} — run this op with a system ctx (users RLS hides other users from a human actor).`,
+        message:
+          "allUsers needs a system ctx (users RLS hides other users from a human actor); the route elevates after its users.manage check.",
       });
     }
     const rows = (await tx.execute(sql`
-      WITH target AS (SELECT DISTINCT lower(email) AS email FROM users WHERE id IN (${ids}))
+      WITH target AS (SELECT DISTINCT lower(email) AS email FROM (${targetUsers}) t)
       SELECT t.email,
         EXISTS (
           SELECT 1 FROM users u JOIN user_roles ur ON ur.user_id = u.id
@@ -136,7 +163,7 @@ export const syncOperatorAccessOp = defineOperation({
         nextStep:
           e instanceof OperatorAccessError
             ? e.nextStep
-            : "Approve the change again; if it keeps failing, report it with `bug_report`.",
+            : `If it keeps failing, report it with \`bug_report\`. ${RESYNC_HINT}`,
       };
     }
     await recordAudit(tx, {
