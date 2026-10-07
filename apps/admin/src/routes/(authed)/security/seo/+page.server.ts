@@ -24,15 +24,17 @@ export const load: PageServerLoad = async ({ locals }) => {
   // The site language lives on the identity half of site_defaults
   // (written by site_defaults.set_identity, which the AI can call too).
   const defaults = await execute(registry, adapter, locals.ctx, "site_defaults.get", {});
-  const siteLanguage = defaults.ok
-    ? ((defaults.value as { defaults: { siteLanguage: string } | null }).defaults?.siteLanguage ??
-      null)
+  // Null = not configured (migration 0232 dropped the `en` default); the
+  // page shows that state, and publishing fails until it is set.
+  const defaultsRow = defaults.ok
+    ? (defaults.value as { defaults: { siteLanguage: string | null } | null }).defaults
     : null;
-  const siteLanguageError = defaults.ok
-    ? siteLanguage === null
+  const siteLanguage = defaultsRow?.siteLanguage ?? null;
+  const siteLanguageError = !defaults.ok
+    ? `site_defaults.get failed: ${describeError(defaults.error)}`
+    : defaultsRow === null
       ? "site_defaults row is missing — set the default layout + template at /security/site-defaults first."
-      : null
-    : `site_defaults.get failed: ${describeError(defaults.error)}`;
+      : null;
   return {
     siteLanguage,
     siteLanguageError,

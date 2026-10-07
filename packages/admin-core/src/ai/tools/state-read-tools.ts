@@ -37,7 +37,7 @@ export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
           defaultTemplateId: string;
           siteName: string | null;
           sitePurpose: string | null;
-          siteLanguage: string;
+          siteLanguage: string | null;
         } | null;
       }
     ).defaults;
@@ -47,7 +47,7 @@ export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
       `default template: ${d.defaultTemplateSlug} (id=${d.defaultTemplateId})`,
       `siteName: ${d.siteName ?? "(not set)"}`,
       `sitePurpose: ${d.sitePurpose ?? "(not set)"}`,
-      `siteLanguage: ${d.siteLanguage}`,
+      `siteLanguage: ${d.siteLanguage ?? "(not set — publishing fails until set_site_identity sets it)"}`,
     ].join("\n");
   },
 });
