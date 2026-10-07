@@ -98,7 +98,7 @@ export const revalidatePluginTool: ToolDefinitionWithHandler<z.infer<typeof reva
   name: "revalidate_plugin",
   description:
     "Re-run the plugin validator over a submitted plugin that is NOT running (draft, awaiting activation or rejected) — after a Caelo upgrade, or to re-file a rejected submission. " +
-    "Passing moves it to awaiting activation (activate_plugin then proposes turning it on); failing returns the validator errors to fix. Refused for running plugins.",
+    "Passing moves it to awaiting activation (activate_plugin then proposes turning it on); failing returns the validator errors to fix. Refused for running, disabled or failed plugins — those are the Owner's call.",
   schema: revalidateInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.revalidate", input);

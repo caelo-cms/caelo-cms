@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0235 — revoking a plugin capability joins the plugin pending queue.
+-- 0237 — revoking a plugin capability joins the plugin pending queue.
 --
 -- `plugins.revoke_capability` was reachable only from the Owner's
 -- /security/plugins/installations page, so an agent asked to "take the
@@ -15,9 +15,6 @@
 -- The status CHECK also gains 'cancelled' (the v0.2.35 unified shape every
 -- other pending table has), so `pending_proposals.cancel` can withdraw an
 -- AI's own plugin proposal like any other.
---
--- (Migration number: if the owner-settings PR lands first it holds 0234;
--- this file only widens a CHECK and is order-independent of it.)
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';

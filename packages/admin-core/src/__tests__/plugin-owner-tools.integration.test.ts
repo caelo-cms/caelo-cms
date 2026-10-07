@@ -306,7 +306,7 @@ describe("plugins.execute_proposal kind guard", () => {
 });
 
 describe("reject_plugin / revalidate_plugin for the AI", () => {
-  it("rejects a submission, re-files it, and refuses to revalidate a running plugin", async () => {
+  it("rejects a submission, re-files it, and refuses to revalidate a running or disabled plugin", async () => {
     const slug = `owner-tools-submit-${RUN}`;
     const { adminSchema: _a, capabilityReasons: _c, ...manifest } = manifestFor(slug);
     await call(
@@ -332,6 +332,15 @@ describe("reject_plugin / revalidate_plugin for the AI", () => {
     const running = await execute(registry, adapter, ai, "plugins.revalidate", { slug });
     expect(running.ok).toBe(false);
     expect(await pluginStatus(slug)).toBe("active");
+
+    // Nor may it re-file a plugin the Owner disabled as a new activation
+    // request.
+    await adapter.withAdminTransaction(system, (tx) =>
+      tx.execute(sql`UPDATE plugins SET status = 'disabled' WHERE slug = ${slug}`),
+    );
+    const disabled = await execute(registry, adapter, ai, "plugins.revalidate", { slug });
+    expect(disabled.ok).toBe(false);
+    expect(await pluginStatus(slug)).toBe("disabled");
     await adapter.withAdminTransaction(system, (tx) =>
       tx.execute(sql`DELETE FROM plugins WHERE slug = ${slug}`),
     );
