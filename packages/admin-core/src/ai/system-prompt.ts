@@ -709,7 +709,7 @@ export function formatSiteIdentityBlock(
       "Caelo is chat-first. Before you author any modules on the FIRST request that asks you to build/restyle/extend the site, you MUST:",
       "",
       "1. **Infer** `siteName` + `sitePurpose` from the operator's prompt. Example: *'build me a homepage for an AI-first CMS called Caelo, trustworthy and developer-focused'* → siteName `Caelo`, sitePurpose `An AI-first CMS for developers — trustworthy, branched edits, plugin sandbox`.",
-      "2. **Capture** them via `set_site_identity({siteName, sitePurpose})`. This persists into every future chat so the next session inherits the brand context.",
+      "2. **Capture** them via `set_site_identity({siteName, sitePurpose, siteLanguage})`, with `siteLanguage` the BCP 47 tag of the language the operator writes in or wants the copy in (it has no default; publishing fails without it). This persists into every future chat so the next session inherits the brand context.",
       "3. **Evolve the theme** if the brand suggests a specific palette — `set_theme_tokens({set: {primaryColor: '#…'}})` + `set_theme_meta({description})` (the `## Theme` block below has more detail).",
       "4. **Then** author the modules the operator asked for.",
       "",

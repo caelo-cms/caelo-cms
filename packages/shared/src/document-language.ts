@@ -15,11 +15,12 @@
  *   1. the per-page language a plugin contributes through the head
  *      contribution point (the `international-site` plugin knows each
  *      page's locale — core does not, since epic #380), else
- *   2. the site's stored language (`site_defaults.site_language`,
- *      seeded `en` by migration and edited via `set_site_identity`).
- * Step 2 is stored data, not a read-time fallback (CLAUDE.md §2): the
- * column is NOT NULL, so there is no "missing language" state to
- * paper over.
+ *   2. the site's stored language (`site_defaults.site_language`, set
+ *      by the AI via `set_site_identity` or by the Owner at /security/seo).
+ * The stored language has no default (migration 0232, CLAUDE.md §2): NULL
+ * means nobody chose one yet. Nothing here substitutes a language for it —
+ * the preview renders `<html>` without `lang` and flags
+ * `site-language-unset`, and the static generator refuses to build.
  */
 
 import { z } from "zod";
@@ -43,11 +44,14 @@ export const languageTagSchema = z
  * Pick the language for one page: a plugin-contributed per-page value
  * wins over the site's stored language. Exported so preview and build
  * resolve through the same expression.
+ *
+ * @returns `null` when no plugin assigns one and the site language is not
+ *   configured — the caller surfaces that state, never a guessed tag.
  */
 export function resolveDocumentLanguage(args: {
   readonly contributed: string | undefined;
-  readonly siteLanguage: string;
-}): string {
+  readonly siteLanguage: string | null;
+}): string | null {
   return args.contributed ?? args.siteLanguage;
 }
 
@@ -123,14 +127,19 @@ function escapeAttr(s: string): string {
  * optional in HTML) gets one inserted right after the doctype, which
  * parses to the same document with the language attached. An `<html`
  * start tag that never closes is malformed and treated as absent.
+ *
+ * `lang: null` (no language configured) removes every layout-authored
+ * `lang` and adds none: core owns the value, so a hand-written one must
+ * not pass for a configured language.
  */
-export function applyDocumentLanguage(html: string, lang: string): string {
-  const attr = ` lang="${escapeAttr(lang)}"`;
+export function applyDocumentLanguage(html: string, lang: string | null): string {
+  const attr = lang === null ? "" : ` lang="${escapeAttr(lang)}"`;
   const open = HTML_TAG_OPENER_RE.exec(html);
   const tag = open ? stripLangAttributes(html, open.index + "<html".length) : null;
   if (open && tag) {
     return `${html.slice(0, open.index)}<html${attr}${tag.attrs}>${html.slice(tag.end)}`;
   }
+  if (lang === null) return html;
   const doctype = DOCTYPE_RE.exec(html);
   const at = doctype ? doctype[0].length : 0;
   return `${html.slice(0, at)}<html${attr}>${html.slice(at)}`;

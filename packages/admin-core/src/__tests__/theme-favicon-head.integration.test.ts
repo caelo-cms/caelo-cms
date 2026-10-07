@@ -27,6 +27,7 @@ import { generateSite, pageOutputPath } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
+import { pinSiteLanguage } from "./fixtures/site-language.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -52,6 +53,7 @@ let faviconSlug = "";
 /** Slug of the theme active before this test — re-activated after. */
 let previousActiveSlug: string | null = null;
 let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
+let restoreSiteLanguage: (() => Promise<void>) | null = null;
 const THEME_SLUG = `${PREFIX}-theme`;
 
 async function run(name: string, input: unknown): Promise<unknown> {
@@ -91,6 +93,7 @@ beforeAll(async () => {
   await cleanup();
   // #551: the generator refuses to build without a configured site URL.
   restoreSiteBaseUrl = await pinSiteBaseUrl(ADMIN_URL, "https://favicon-test.invalid");
+  restoreSiteLanguage = await pinSiteLanguage(ADMIN_URL, "en");
   repoRoot = mkdtempSync(join(tmpdir(), `${PREFIX}-root-`));
 
   // A PNG favicon, with its orig bytes on disk where the generator's
@@ -179,6 +182,7 @@ afterAll(async () => {
     });
   }
   await restoreSiteBaseUrl?.();
+  await restoreSiteLanguage?.();
   await cleanup();
   rmSync(repoRoot, { recursive: true, force: true });
   await adapter.close();

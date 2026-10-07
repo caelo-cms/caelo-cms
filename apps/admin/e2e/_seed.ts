@@ -176,7 +176,7 @@ export const SETUP_SCRIPT = `
  * cold-start state to exercise `set_site_identity` + `set_theme_tokens`.
  *
  * Mirrors what the AI's cold-start sequence would have produced on its
- * first chat: site identity captured, theme origin flipped to
+ * first chat: site identity + language captured, theme origin flipped to
  * `operator` (the actor that seeds state in this script), indigo
  * primary so theme-aware modules render in brand colors.
  *
@@ -199,7 +199,8 @@ export const POST_CHAT_SEED_SCRIPT = `
       UPDATE site_defaults
       SET site_name = COALESCE(site_name, 'Caelo'),
           site_purpose = COALESCE(site_purpose,
-            'A content management system built around an AI co-editor. Modern, developer-focused, trustworthy.')
+            'A content management system built around an AI co-editor. Modern, developer-focused, trustworthy.'),
+          site_language = COALESCE(site_language, 'en')
       WHERE id = 1
     \`;
     await tx.unsafe(\`

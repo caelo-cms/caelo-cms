@@ -68,7 +68,7 @@ function resetToUntouchedInstall(): void {
         const sql = new SQL(process.env.ADMIN_DATABASE_URL);
         await sql.begin(async (tx) => {
           await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-          await tx\`UPDATE site_defaults SET site_name = NULL, site_purpose = NULL, design_brief = NULL WHERE id = 1\`;
+          await tx\`UPDATE site_defaults SET site_name = NULL, site_purpose = NULL, design_brief = NULL, site_language = NULL WHERE id = 1\`;
           await tx\`DELETE FROM import_pages\`;
           await tx\`DELETE FROM import_runs\`;
           await tx\`DELETE FROM genesis_drafts\`;

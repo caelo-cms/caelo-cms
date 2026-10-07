@@ -114,11 +114,21 @@
               required
               maxlength={35}
               pattern={"[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*"}
-              value={data.siteLanguage}
+              placeholder="en"
+              value={data.siteLanguage ?? ""}
             />
           </div>
           <Button type="submit">Save language</Button>
         </form>
+        {#if data.siteLanguage === null}
+          <Alert variant="destructive" class="mt-4" data-testid="site-language-unset">
+            <AlertDescription>
+              Not set yet. Publishing fails until it is: every page needs its language for screen
+              readers and search engines. Tell the AI in the editor chat which language your site is
+              written in, or enter the tag here.
+            </AlertDescription>
+          </Alert>
+        {/if}
       {/if}
     </CardContent>
   </Card>

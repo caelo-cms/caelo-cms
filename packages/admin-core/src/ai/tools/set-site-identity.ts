@@ -47,7 +47,8 @@ const setSiteIdentityToolInput = z
     /**
      * BCP 47 language of the site's content (`en`, `de`, `pt-BR`).
      * Rendered as `<html lang>` on every page — screen readers and
-     * search engines read it. Stored, never null (seeded `en`).
+     * search engines read it. No default (migration 0232): it stays
+     * unset, and publishing fails, until the AI or the Owner sets it.
      */
     siteLanguage: languageTagSchema.optional(),
   })
@@ -62,12 +63,12 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
     "turn — infer `siteName` and `sitePurpose` from the operator's chat prompt and capture them BEFORE " +
     "authoring any modules. Example: operator says 'build me a homepage for an AI-first CMS called Caelo, " +
     "trustworthy and developer-focused' → call `set_site_identity({siteName: 'Caelo', sitePurpose: 'An " +
-    "AI-first CMS for developers — trustworthy, branched edits, plugin sandbox'})`. If the operator " +
+    "AI-first CMS for developers — trustworthy, branched edits, plugin sandbox', siteLanguage: 'en'})` (they wrote in English). If the operator " +
     "hasn't given you enough to infer (e.g. they ask 'add a contact form' on an unconfigured install), " +
     "ASK them for the missing essentials before guessing. " +
     "Pass `null` to clear a field. " +
     "During Site Genesis, ALSO pass `designBrief` ({audience, moodWords, tone, industry, differentiators, imageryDirection, avoid}) — it feeds the parallel draft subagents and every future design decision. " +
-    "`siteLanguage` is the BCP 47 language the site's content is written in (`en`, `de`, `pt-BR`); every page renders it as `<html lang>` for screen readers and search engines. It starts as `en` — set it whenever the site is written in another language: infer it from the language the operator wants the copy in, or, when migrating a site, from the `Lang:` that inspect_external_page reports. " +
+    "`siteLanguage` is the BCP 47 language the site's content is written in (`en`, `de`, `pt-BR`); every page renders it as `<html lang>` for screen readers and search engines. It has NO default: until it is set, publishing fails and the preview flags `site-language-unset`. Set it in the same call that captures the identity — infer it from the language the operator writes in or wants the copy in, or, when migrating a site, from the `Lang:` that inspect_external_page reports; ask only if those genuinely disagree. " +
     "On a multilingual site the international-site plugin assigns each translated page its own locale; `siteLanguage` stays the language of the pages it does not assign (the default locale).",
   schema: setSiteIdentityToolInput,
   inputSchema: {

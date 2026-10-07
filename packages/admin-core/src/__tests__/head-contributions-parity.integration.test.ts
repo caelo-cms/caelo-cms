@@ -23,6 +23,7 @@ import { runSeoPass } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
+import { pinSiteLanguage } from "./fixtures/site-language.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -40,9 +41,8 @@ let registry: OperationRegistry;
 let pageId = "";
 let plainPageId = "";
 let buildDir = "";
-let siteLanguageBefore = "";
-/** Stored site language for the run; distinct from the seeded `en` so
- *  a hard-coded default could not pass the assertions. */
+/** Stored site language for the run; deliberately not `en` so a
+ *  hard-coded language could not pass the assertions. */
 const SITE_LANGUAGE = "fr";
 /** What the test plugin contributes for `pageId` only. */
 const CONTRIBUTED_LANGUAGE = "de-AT";
@@ -81,6 +81,7 @@ async function cleanup(): Promise<void> {
 }
 
 let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
+let restoreSiteLanguage: (() => Promise<void>) | null = null;
 
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
@@ -128,14 +129,7 @@ beforeAll(async () => {
   });
   if (!pubPlain.ok) throw new Error("publish failed");
 
-  const defaults = await execute(registry, adapter, SYS_CTX, "site_defaults.get", {});
-  if (!defaults.ok) throw new Error(JSON.stringify(defaults.error));
-  siteLanguageBefore = (defaults.value as { defaults: { siteLanguage: string } }).defaults
-    .siteLanguage;
-  const setLang = await execute(registry, adapter, SYS_CTX, "site_defaults.set_identity", {
-    siteLanguage: SITE_LANGUAGE,
-  });
-  if (!setLang.ok) throw new Error(JSON.stringify(setLang.error));
+  restoreSiteLanguage = await pinSiteLanguage(ADMIN_URL, SITE_LANGUAGE);
 
   const contributorDef = definePlugin({
     slug: "t391p-intl",
@@ -176,13 +170,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (siteLanguageBefore) {
-    await execute(registry, adapter, SYS_CTX, "site_defaults.set_identity", {
-      siteLanguage: siteLanguageBefore,
-    });
-  }
   await cleanup();
   await restoreSiteBaseUrl?.();
+  await restoreSiteLanguage?.();
   rmSync(buildDir, { recursive: true, force: true });
   await adapter.close();
 });

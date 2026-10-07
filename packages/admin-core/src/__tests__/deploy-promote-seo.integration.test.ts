@@ -32,6 +32,7 @@ import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
+import { pinSiteLanguage } from "./fixtures/site-language.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -42,6 +43,7 @@ let registry: OperationRegistry;
 let testRoot: string;
 let prevSkipServeCheck: string | undefined;
 let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
+let restoreSiteLanguage: (() => Promise<void>) | null = null;
 
 // #551 — site_base_url has no default; promote reads it for the
 // production robots.txt `Sitemap:` line, so the test pins it.
@@ -123,6 +125,7 @@ async function seedSite(): Promise<void> {
 beforeAll(async () => {
   await wipe();
   restoreSiteBaseUrl = await pinSiteBaseUrl(ADMIN_URL!, SITE_BASE_URL);
+  restoreSiteLanguage = await pinSiteLanguage(ADMIN_URL!, "en");
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
@@ -139,6 +142,7 @@ afterAll(async () => {
   else process.env.CAELO_SKIP_STAGING_SERVE_CHECK = prevSkipServeCheck;
   await wipe();
   await restoreSiteBaseUrl?.();
+  await restoreSiteLanguage?.();
   await rm(testRoot, { recursive: true, force: true });
   await adapter.close();
 });

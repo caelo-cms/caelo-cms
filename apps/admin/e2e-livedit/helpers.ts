@@ -207,6 +207,13 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
         RETURNING id::text AS id
       \`;
       const pageId = pg[0].id;
+
+      // The seeded site stands in for an onboarded one, so it has a
+      // language (migration 0232 dropped the 'en' default and Stage
+      // refuses to build without one). Fill-only: a language the AI set
+      // in an earlier scenario stays. The cold-start homepage scenario
+      // skips this helper and leaves the language to the AI.
+      await tx\`UPDATE site_defaults SET site_language = COALESCE(site_language, 'en') WHERE id = 1\`;
       result = { pageId, templateId };
     });
     console.log(JSON.stringify(result));
