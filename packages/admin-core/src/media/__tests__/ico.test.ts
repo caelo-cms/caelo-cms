@@ -30,6 +30,41 @@ describe("ICO media", () => {
     expect(orig?.body).toEqual(ico);
   });
 
+  it("refuses an ICO whose directory or image data is broken (no decode step catches it)", async () => {
+    const ico = minimalIco();
+    const truncated = ico.slice(0, ico.byteLength - 10);
+    await expect(runMediaPipeline(SHA, "image/x-icon", truncated)).rejects.toThrow(
+      "outside the file",
+    );
+    const cursor = ico.slice();
+    cursor[2] = 2;
+    await expect(runMediaPipeline(SHA, "image/x-icon", cursor)).rejects.toThrow("type 1");
+    const empty = ico.slice();
+    empty[4] = 0;
+    await expect(runMediaPipeline(SHA, "image/x-icon", empty)).rejects.toThrow("no images");
+    const garbage = ico.slice();
+    garbage.fill(0x41, 22, 30);
+    await expect(runMediaPipeline(SHA, "image/x-icon", garbage)).rejects.toThrow(
+      "neither PNG nor BMP",
+    );
+    await expect(
+      runMediaPipeline(SHA, "image/x-icon", new Uint8Array([0, 0, 1, 0, 1, 0])),
+    ).rejects.toThrow("directory truncated");
+  });
+
+  it("accepts an ICO whose image is an embedded PNG", async () => {
+    const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0];
+    const ico = new Uint8Array(22 + png.length);
+    const v = new DataView(ico.buffer);
+    v.setUint16(2, 1, true);
+    v.setUint16(4, 1, true);
+    v.setUint32(14, png.length, true);
+    v.setUint32(18, 22, true);
+    ico.set(png, 22);
+    const out = await runMediaPipeline(SHA, "image/x-icon", ico);
+    expect(out.variants[0]?.body).toEqual(ico);
+  });
+
   it("regenerate never expects a ladder for an ICO", () => {
     const gap = computeVariantGap({
       mime: "image/x-icon",
