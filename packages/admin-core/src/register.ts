@@ -334,6 +334,9 @@ import {
   setProvisioningOutputsOp,
   verifyDnsRecordOp,
 } from "./ops/provisioning_outputs.js";
+import { classifyStageOp } from "./ops/quality/classify_stage.js";
+import { claimNextAuditOp, enqueueAuditOp, recordAuditResultOp } from "./ops/quality/lifecycle.js";
+import { getAuditOp, listAcceptancesOp, listAuditsOp } from "./ops/quality/read.js";
 import {
   createRedirectOp,
   createRedirectsManyOp,
@@ -618,6 +621,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(deletePagesManyOp);
   registry.register(updatePagesManyOp);
   registry.register(renderPagePreviewOp);
+  // #553 quality gate (Lighthouse audits after a substantial Stage)
+  registry.register(classifyStageOp);
+  registry.register(enqueueAuditOp);
+  registry.register(claimNextAuditOp);
+  registry.register(recordAuditResultOp);
+  registry.register(listAuditsOp);
+  registry.register(getAuditOp);
+  registry.register(listAcceptancesOp);
   // P4 snapshots
   registry.register(listSnapshotsOp);
   registry.register(getSnapshotWithEntitiesOp);

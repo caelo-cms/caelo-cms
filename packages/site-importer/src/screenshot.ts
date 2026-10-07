@@ -199,6 +199,79 @@ export function sameOriginHeaderPatch(
   return { ...existingHeaders, ...headers };
 }
 
+/** Result of `launchBundledChromium`. `browser` is Playwright's opaque
+ *  Browser handle (dynamic import, no @types). */
+export type BundledChromiumLaunch =
+  | {
+      readonly ok: true;
+      // biome-ignore lint/suspicious/noExplicitAny: opaque Playwright Browser handle
+      readonly browser: any;
+      /** DevTools port on 127.0.0.1, present exactly when requested. */
+      readonly remoteDebuggingPort?: number;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "playwright-unavailable" | "launch-failed";
+      readonly message: string;
+    };
+
+/**
+ * The ONE place Caelo launches Chromium: the full build the admin image
+ * bundles (#428), through the repo-pinned Playwright. Screenshots, the
+ * importer and the #553 Lighthouse audit all start their browser here, so
+ * there is a single browser stack to install, pin and upgrade.
+ *
+ * `remoteDebuggingPort` additionally opens the Chrome DevTools Protocol on
+ * 127.0.0.1 at that port (loopback only), which Lighthouse drives the
+ * browser through. Playwright itself keeps talking over its pipe.
+ */
+export async function launchBundledChromium(opts?: {
+  readonly remoteDebuggingPort?: number;
+}): Promise<BundledChromiumLaunch> {
+  // Playwright is intentionally NOT a static dependency — see file
+  // header. Dynamic + cast-to-unknown so the type-check doesn't need
+  // @types/playwright in this package.
+  // biome-ignore lint/suspicious/noExplicitAny: opt-in dynamic import
+  let pw: any;
+  try {
+    // The specifier goes through a variable so bundlers CANNOT
+    // statically follow it: rolldown/the adapter build otherwise inlines
+    // playwright → playwright-core → fsevents.node and the macOS
+    // server build dies on the native binary ("stream did not
+    // contain valid UTF-8"). The old `"playwright" as string` cast
+    // only fooled TypeScript — it compiles to a static specifier.
+    const specifier = "playwright";
+    pw = await import(/* @vite-ignore */ specifier);
+  } catch (e) {
+    return {
+      ok: false,
+      reason: "playwright-unavailable",
+      message: e instanceof Error ? e.message : String(e),
+    };
+  }
+  const port = opts?.remoteDebuggingPort;
+  try {
+    // `channel: "chromium"` runs the full Chromium build in headless mode
+    // rather than the stripped chromium-headless-shell: the image installs
+    // only the full build (#428), which also speaks the complete DevTools
+    // protocol the Lighthouse audit needs (#553).
+    const browser = await pw.chromium.launch({
+      headless: true,
+      channel: "chromium",
+      ...(port !== undefined
+        ? { args: [`--remote-debugging-port=${port}`, "--remote-debugging-address=127.0.0.1"] }
+        : {}),
+    });
+    return { ok: true, browser, ...(port !== undefined ? { remoteDebuggingPort: port } : {}) };
+  } catch (e) {
+    return {
+      ok: false,
+      reason: "launch-failed",
+      message: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
 /**
  * Returns a Playwright-backed screenshotter, or null if Playwright isn't
  * importable in the current runtime. issue #247: a null return is NOT a
@@ -215,38 +288,17 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
   /** issue #191 — hostnames exempt from the external-capture guard. */
   readonly allowedHosts?: readonly string[];
 }): Promise<Screenshotter | null> {
-  // Playwright is intentionally NOT a static dependency — see file
-  // header. Dynamic + cast-to-unknown so the type-check doesn't need
-  // @types/playwright in this package.
-  // biome-ignore lint/suspicious/noExplicitAny: opt-in dynamic import
-  let pw: any;
-  try {
-    // The specifier goes through a variable so bundlers CANNOT
-    // statically follow it: rolldown/the adapter build otherwise inlines
-    // playwright → playwright-core → fsevents.node and the macOS
-    // server build dies on the native binary ("stream did not
-    // contain valid UTF-8"). The old `"playwright" as string` cast
-    // only fooled TypeScript — it compiles to a static specifier.
-    const specifier = "playwright";
-    pw = await import(/* @vite-ignore */ specifier);
-  } catch {
+  const launched = await launchBundledChromium();
+  if (!launched.ok) {
+    if (launched.reason === "launch-failed") {
+      console.warn(
+        "[site-importer] Playwright chromium launch failed — install the repo-pinned build with `bun node_modules/playwright/cli.js install chromium` (bunx may fetch a mismatched registry version). Skipping screenshot capture.",
+        launched.message,
+      );
+    }
     return null;
   }
-  // biome-ignore lint/suspicious/noExplicitAny: opaque browser handle
-  let browser: any;
-  try {
-    // `channel: "chromium"` runs the full Chromium build in headless mode
-    // rather than the stripped chromium-headless-shell: the image installs
-    // only the full build (#428), which also speaks the complete DevTools
-    // protocol a later Lighthouse-style audit needs (#553).
-    browser = await pw.chromium.launch({ headless: true, channel: "chromium" });
-  } catch (e) {
-    console.warn(
-      "[site-importer] Playwright chromium launch failed — install the repo-pinned build with `bun node_modules/playwright/cli.js install chromium` (bunx may fetch a mismatched registry version). Skipping screenshot capture.",
-      e,
-    );
-    return null;
-  }
+  const browser = launched.browser;
   const allowedHosts = guardOpts?.allowedHosts ?? [];
 
   /**
