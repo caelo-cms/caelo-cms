@@ -193,26 +193,70 @@ export async function loadModuleStateWithBranchOverlay(
   chatBranchId: string | null | undefined,
 ): Promise<ModuleState | null> {
   if (chatBranchId) {
-    const rows = (await tx.execute(sql`
-      SELECT ms.state
-        FROM module_snapshots ms
-        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-       WHERE ms.module_id = ${moduleId}::uuid
-         AND ss.chat_branch_id = ${chatBranchId}::uuid
-       ORDER BY ss.created_at DESC
-       LIMIT 1
-    `)) as unknown as { state: unknown }[];
-    const row = rows[0];
-    if (row !== undefined) {
-      const raw = (
-        typeof row.state === "string" ? JSON.parse(row.state) : row.state
-      ) as ModuleState;
-      // v0.12.3 — a branched snapshot written before 0103 lacks `type`;
-      // fall back to slug so downstream consumers always see a value.
-      return raw.type ? raw : { ...raw, type: raw.slug };
-    }
+    const branched = await loadBranchedModuleStates(tx, chatBranchId, [moduleId]);
+    const state = branched.get(moduleId);
+    if (state !== undefined) return state;
   }
   return loadModuleState(tx, moduleId);
+}
+
+/**
+ * The module states a chat branch has written: the LATEST branched
+ * `module_snapshots.state` per module, keyed by module id. Modules the
+ * branch never edited are absent — the caller keeps the live row for
+ * those.
+ *
+ * Branched `modules.update` never touches the live `modules` row, so this
+ * is the only place a chat's own module edits are visible before publish.
+ * Every branch-aware module READ (modules.get / modules.list, hence
+ * read_content / edit_content / grep_content) overlays it with the same
+ * "latest branched snapshot wins" rule as the write path above and the
+ * preview renderer. A reader that skipped it would hand the AI main's
+ * body, and the next write built on that body would clobber the branch's
+ * earlier edit.
+ *
+ * Only snapshots written AFTER the chat's last Stage count
+ * (`chat_sessions.last_staged_at`, strict `>` — the same pending-changes
+ * boundary `chat.merge_to_main` and `chat.list_pending_changes` use).
+ * Stage consumed everything before it into main and released the chat's
+ * locks, so another chat may since have changed the module on main; an
+ * already-consumed branch snapshot is stale, and overlaying it would
+ * hand this chat the pre-change body and let its next write revert main
+ * at the following Stage.
+ *
+ * @param moduleIds restrict to these ids; omit to load every module the
+ *   branch touched (bounded by the branch's own edit count).
+ */
+export async function loadBranchedModuleStates(
+  tx: TransactionRunner,
+  chatBranchId: string,
+  moduleIds?: readonly string[],
+): Promise<Map<string, ModuleState>> {
+  const out = new Map<string, ModuleState>();
+  if (moduleIds !== undefined && moduleIds.length === 0) return out;
+  const idFilter =
+    moduleIds === undefined
+      ? sql``
+      : sql`AND ms.module_id IN (${sql.join(
+          moduleIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})`;
+  const rows = (await tx.execute(sql`
+    SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
+      FROM module_snapshots ms
+      JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+      LEFT JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
+     WHERE ss.chat_branch_id = ${chatBranchId}::uuid ${idFilter}
+       AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
+     ORDER BY ms.module_id, ss.created_at DESC
+  `)) as unknown as { module_id: string; state: unknown }[];
+  for (const row of rows) {
+    const raw = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as ModuleState;
+    // v0.12.3 — a branched snapshot written before 0103 lacks `type`;
+    // fall back to slug so downstream consumers always see a value.
+    out.set(row.module_id, raw.type ? raw : { ...raw, type: raw.slug });
+  }
+  return out;
 }
 
 export async function loadPageStateWithBranchOverlay(

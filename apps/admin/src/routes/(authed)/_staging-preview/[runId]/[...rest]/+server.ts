@@ -107,6 +107,11 @@ export const GET: RequestHandler = async ({ params }) => {
         // Don't let the operator's browser cache the staging preview —
         // they may re-Stage and want fresh bytes immediately.
         "Cache-Control": "private, no-cache, max-age=0, must-revalidate",
+        // Staged pages carry no env-level noindex meta (the generator
+        // renders them env-independently so promote can ship them
+        // verbatim) — the serving layer marks staging non-indexable,
+        // as the Caddy staging vhost does (CMS_REQUIREMENTS §16.5).
+        "X-Robots-Tag": "noindex",
       },
     });
   }
@@ -123,6 +128,7 @@ export const GET: RequestHandler = async ({ params }) => {
       headers: {
         "Content-Type": (meta.contentType as string | undefined) ?? "application/octet-stream",
         "Cache-Control": "private, no-cache, max-age=0, must-revalidate",
+        "X-Robots-Tag": "noindex",
       },
     });
   }

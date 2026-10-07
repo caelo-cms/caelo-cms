@@ -3,10 +3,13 @@
 import { describe, expect, it } from "bun:test";
 import {
   buildRobotsTxt,
+  envNoindexBuildError,
+  manifestBakesEnvNoindex,
   missingRootPageError,
   pageOutputPath,
   zeroPageBuildError,
 } from "./generate.js";
+import { buildRobotsTxtWithSitemap } from "./seo-pass.js";
 
 describe("pageOutputPath", () => {
   // #390 — input is the COMPOSED path (pages.current_path): home
@@ -53,6 +56,37 @@ describe("buildRobotsTxt", () => {
 
   it("allows crawlers when index (production default)", () => {
     expect(buildRobotsTxt("index")).toContain("Allow: /");
+  });
+});
+
+describe("buildRobotsTxtWithSitemap (promote rewrites robots.txt with it)", () => {
+  it("staging never references the sitemap, even when the build ships one", () => {
+    expect(buildRobotsTxtWithSitemap("noindex", "https://example.com", true)).toBe(
+      "User-agent: *\nDisallow: /\n",
+    );
+  });
+
+  it("production points crawlers at the sitemap", () => {
+    expect(buildRobotsTxtWithSitemap("index", "https://example.com/", true)).toBe(
+      "User-agent: *\nAllow: /\n\nSitemap: https://example.com/sitemap.xml\n",
+    );
+    expect(buildRobotsTxtWithSitemap("index", "https://example.com", false)).toBe(
+      "User-agent: *\nAllow: /\n",
+    );
+  });
+});
+
+describe("manifestBakesEnvNoindex (promote guard)", () => {
+  it("trusts only an explicit envNoindexInHtml: false", () => {
+    expect(manifestBakesEnvNoindex({ envNoindexInHtml: false })).toBe(false);
+    // Legacy manifests (pre env-independent SEO pass) omit the flag.
+    expect(manifestBakesEnvNoindex({ env: "staging" })).toBe(true);
+    expect(manifestBakesEnvNoindex(null)).toBe(true);
+    expect(manifestBakesEnvNoindex("{}")).toBe(true);
+  });
+
+  it("the refusal names the next step", () => {
+    expect(envNoindexBuildError("run-1").message).toContain("run Stage again");
   });
 });
 
