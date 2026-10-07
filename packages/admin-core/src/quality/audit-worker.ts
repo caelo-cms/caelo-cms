@@ -128,6 +128,10 @@ async function record(
     // The run stays `running` and is closed as `interrupted` by the stale
     // sweep; log loudly so the cause is in the server log.
     console.error("[quality-audit-worker] record_result failed", { auditRunId, error: r.error });
+  } else if ((r.value as { status: string }).status === "discarded") {
+    console.log(
+      `[quality-audit-worker] audit ${auditRunId} was deleted while it ran; result dropped`,
+    );
   }
 }
 

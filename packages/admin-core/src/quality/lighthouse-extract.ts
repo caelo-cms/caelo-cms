@@ -28,7 +28,12 @@ export interface LhrLike {
       string,
       {
         readonly score: number | null;
-        readonly auditRefs: readonly { readonly id: string; readonly group?: string }[];
+        readonly auditRefs: readonly {
+          readonly id: string;
+          readonly group?: string;
+          /** Lighthouse's scoring weight (0 for not-applicable audits). */
+          readonly weight?: number;
+        }[];
       }
     >
   >;
@@ -70,6 +75,16 @@ const SCORED_MODES = new Set(["binary", "numeric", "metricSavings"]);
  *  already measures. */
 const NON_FINDING_GROUPS = new Set(["hidden", "metrics"]);
 
+/**
+ * Audits that measure staging itself, not the page. Staging is `noindex`
+ * by design (CLAUDE.md §2: X-Robots-Tag + robots.txt), so `is-crawlable`
+ * fails on every staged page; production gets its own robots semantics at
+ * promote (#561). Exempt audits are neither findings nor part of the
+ * category score: the score is recomputed without them, the way Lighthouse
+ * scores a category (weighted mean, 2 decimals).
+ */
+export const STAGING_EXEMPT_AUDITS: ReadonlySet<string> = new Set(["is-crawlable"]);
+
 function assertUsable(lhr: LhrLike): void {
   if (lhr.runtimeError) {
     throw new LighthouseRunError(lhr.runtimeError.code, lhr.runtimeError.message);
@@ -85,8 +100,8 @@ export function categoryScores(
   assertUsable(lhr);
   const out = {} as Record<QualityCategory, number>;
   for (const c of categories) {
-    const score = lhr.categories[c]?.score;
-    if (score === null || score === undefined) {
+    const score = stagingCategoryScore(lhr, c);
+    if (score === null) {
       throw new LighthouseRunError(
         "CATEGORY_UNSCORED",
         `Lighthouse returned no ${c} score for ${lhr.requestedUrl ?? "the page"}`,
@@ -97,6 +112,25 @@ export function categoryScores(
   return out;
 }
 
+/** A category's 0..1 score with the staging-exempt audits taken out;
+ *  null when Lighthouse could not score it. */
+function stagingCategoryScore(lhr: LhrLike, category: QualityCategory): number | null {
+  const cat = lhr.categories[category];
+  if (!cat || cat.score === null) return null;
+  const refs = cat.auditRefs.filter((r) => (r.weight ?? 0) > 0);
+  if (!refs.some((r) => STAGING_EXEMPT_AUDITS.has(r.id))) return cat.score;
+  let sum = 0;
+  let weight = 0;
+  for (const ref of refs) {
+    if (STAGING_EXEMPT_AUDITS.has(ref.id)) continue;
+    const audit = lhr.audits[ref.id];
+    if (!audit || audit.score === null) return null;
+    sum += audit.score * (ref.weight ?? 0);
+    weight += ref.weight ?? 0;
+  }
+  return weight === 0 ? 1 : Math.round((sum / weight) * 100) / 100;
+}
+
 /** Failing audits of one run, with the gated categories that reference
  *  each (ordered by audit id for stable output). */
 export function failingAudits(lhr: LhrLike): FailingAudit[] {
@@ -105,6 +139,7 @@ export function failingAudits(lhr: LhrLike): FailingAudit[] {
   for (const category of QUALITY_CATEGORIES) {
     for (const ref of lhr.categories[category]?.auditRefs ?? []) {
       if (ref.group !== undefined && NON_FINDING_GROUPS.has(ref.group)) continue;
+      if (STAGING_EXEMPT_AUDITS.has(ref.id)) continue;
       const list = categoriesOf.get(ref.id) ?? [];
       list.push(category);
       categoriesOf.set(ref.id, list);

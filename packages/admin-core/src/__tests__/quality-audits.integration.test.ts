@@ -686,3 +686,83 @@ describe("read surfaces", () => {
     }
   });
 });
+
+describe("data deleted while an audit runs", () => {
+  async function publishedPage(slug: string): Promise<string> {
+    return (
+      await op<{ pageId: string }>(SYS, "pages.create", {
+        slug: `${PFX}${slug}`,
+        title: slug,
+        templateId,
+        status: "published",
+      })
+    ).pageId;
+  }
+
+  async function hardDelete(pageId: string): Promise<void> {
+    await withSql(async (tx) => {
+      await tx`DELETE FROM pages WHERE id = ${pageId}::uuid`;
+    });
+  }
+
+  it("drops pages deleted outright and still settles the run", async () => {
+    const goneId = await publishedPage("gone");
+    await op(SYS, "quality_audits.enqueue", {
+      deployRunId: await deployRun("staging", 200),
+      chatSessionId: null,
+      branch: null,
+      pageIds: [goneId],
+    });
+    const run = await claim();
+    expect(run?.pages.map((p) => p.pageId)).toEqual([homeId, goneId]);
+    await hardDelete(goneId);
+    const r = await record(run?.auditRunId as string, [
+      pageResult(homeId, {}),
+      pageResult(goneId, { accessibility: 50 }),
+    ]);
+    expect(r).toEqual({ status: "passed", problemCount: 0 });
+  });
+
+  it("every page gone → errored, with a next step", async () => {
+    const goneId = await publishedPage("gone2");
+    await op(SYS, "quality_audits.enqueue", {
+      deployRunId: await deployRun("staging", 210),
+      chatSessionId: null,
+      branch: null,
+      pageIds: [goneId],
+    });
+    const run = await claim();
+    await hardDelete(goneId);
+    await hardDelete(homeId);
+    const r = await record(run?.auditRunId as string, [
+      pageResult(homeId, {}),
+      pageResult(goneId, {}),
+    ]);
+    expect(r.status).toBe("errored");
+    const got = await op<{ run: { errorCode: string; errorMessage: string } }>(
+      SYS,
+      "quality_audits.get",
+      { auditRunId: run?.auditRunId },
+    );
+    expect(got.run.errorCode).toBe("pages-deleted");
+    expect(got.run.errorMessage).toContain("Stage again");
+  });
+
+  it("a run deleted with its deploy run is discarded, not an error", async () => {
+    const deployRunId = await deployRun("staging", 220);
+    await op(SYS, "quality_audits.enqueue", {
+      deployRunId,
+      chatSessionId: null,
+      branch: null,
+      pageIds: [aboutId],
+    });
+    const run = await claim();
+    await withSql(async (tx) => {
+      await tx`DELETE FROM deploy_runs WHERE id = ${deployRunId}::uuid`;
+    });
+    expect(await record(run?.auditRunId as string, [pageResult(aboutId, {})])).toEqual({
+      status: "discarded",
+      problemCount: 0,
+    });
+  });
+});

@@ -407,18 +407,22 @@ export const recordAuditResultOp = defineOperation({
     })
     .strict(),
   output: z.object({
-    status: z.enum(["passed", "problems", "errored"]),
+    /** `discarded`: the run no longer exists (its deploy run was deleted
+     *  while the audit ran), so there is nothing to record on. */
+    status: z.enum(["passed", "problems", "errored", "discarded"]),
     problemCount: z.number().int(),
   }),
   handler: async (ctx, input, tx) => {
     const runRows = (await tx.execute(sql`
       SELECT status FROM quality_audit_runs WHERE id = ${input.auditRunId}::uuid FOR UPDATE
     `)) as unknown as { status: string }[];
-    if (runRows[0]?.status !== "running") {
+    const current = runRows[0];
+    if (!current) return ok({ status: "discarded" as const, problemCount: 0 });
+    if (current.status !== "running") {
       return err({
         kind: "HandlerError",
         operation: "quality_audits.record_result",
-        message: `audit run ${input.auditRunId} is ${runRows[0]?.status ?? "missing"}, not running — results are only recorded once, by the worker that claimed it`,
+        message: `audit run ${input.auditRunId} is ${current.status}, not running — results are only recorded once, by the worker that claimed it`,
       });
     }
 
@@ -426,13 +430,30 @@ export const recordAuditResultOp = defineOperation({
     let problemCount = 0;
     let errorCode: string | null = null;
     let errorMessage: string | null = null;
+    let vanished: string[] = [];
 
     if (input.outcome.kind === "failed") {
       status = "errored";
       errorCode = input.outcome.code;
       errorMessage = input.outcome.message;
     } else {
-      for (const page of input.outcome.pages) {
+      // A page deleted outright while the audit ran has nothing left to
+      // gate; its measurement is dropped and named in the audit record.
+      const ids = [
+        ...input.outcome.pages.map((p) => p.pageId),
+        ...input.outcome.pageErrors.map((e) => e.pageId),
+      ];
+      const existing = new Set(
+        (
+          (await tx.execute(sql`
+            SELECT id::text AS id FROM pages WHERE id = ANY(${uuidList(ids)})
+          `)) as unknown as { id: string }[]
+        ).map((r) => r.id),
+      );
+      vanished = ids.filter((id) => !existing.has(id));
+      const pages = input.outcome.pages.filter((p) => existing.has(p.pageId));
+      const pageErrors = input.outcome.pageErrors.filter((e) => existing.has(e.pageId));
+      for (const page of pages) {
         const state = await loadRatchetState(tx, input.auditRunId, page.pageId);
         const evaluation = evaluatePage({
           measurement: page.measurement as PageMeasurement,
@@ -466,19 +487,24 @@ export const recordAuditResultOp = defineOperation({
           `);
         }
       }
-      for (const e of input.outcome.pageErrors) {
+      for (const e of pageErrors) {
         await tx.execute(sql`
           INSERT INTO quality_audit_pages
             (audit_run_id, page_id, url, status, error_code, error_message)
           VALUES (${input.auditRunId}::uuid, ${e.pageId}::uuid, ${e.url}, 'errored', ${e.code}, ${e.message})
         `);
       }
-      if (input.outcome.pageErrors.length > 0) {
+      if (pageErrors.length > 0) {
         status = "errored";
         errorCode = "page-failed";
-        errorMessage = `${input.outcome.pageErrors.length} page(s) could not be audited: ${input.outcome.pageErrors
+        errorMessage = `${pageErrors.length} page(s) could not be audited: ${pageErrors
           .map((e) => `${e.url} (${e.code}: ${e.message.slice(0, 160)})`)
           .join("; ")}`;
+      } else if (pages.length === 0) {
+        status = "errored";
+        errorCode = "pages-deleted";
+        errorMessage =
+          "every audited page was deleted while the audit ran — Stage again to audit the current pages";
       } else {
         status = problemCount > 0 ? "problems" : "passed";
       }
@@ -498,9 +524,11 @@ export const recordAuditResultOp = defineOperation({
       input: { auditRunId: input.auditRunId, outcome: input.outcome.kind },
       succeeded: true,
       entityId: input.auditRunId,
-      resultSummary: errorMessage
-        ? `${status}: ${errorMessage.slice(0, 200)}`
-        : `${status}: ${problemCount} problem(s)`,
+      resultSummary: `${
+        errorMessage
+          ? `${status}: ${errorMessage.slice(0, 200)}`
+          : `${status}: ${problemCount} problem(s)`
+      }${vanished.length > 0 ? `; dropped deleted page(s) ${vanished.join(", ")}` : ""}`,
     });
     return ok({ status, problemCount });
   },

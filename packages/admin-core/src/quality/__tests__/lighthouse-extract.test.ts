@@ -111,6 +111,47 @@ describe("failingAudits", () => {
   });
 });
 
+describe("staging-exempt audits", () => {
+  // Staging is noindex by design, so `is-crawlable` fails on every staged
+  // page (seen in the e2e-livedit run: SEO 58 from that audit alone).
+  const staged: LhrLike = {
+    requestedUrl: "http://localhost:8081/",
+    categories: {
+      seo: {
+        score: 0.58,
+        auditRefs: [
+          { id: "is-crawlable", weight: 4.043 },
+          { id: "meta-description", weight: 1 },
+          { id: "document-title", weight: 1 },
+          { id: "hreflang", weight: 0 },
+        ],
+      },
+    },
+    audits: {
+      "is-crawlable": audit("is-crawlable", 0),
+      "meta-description": audit("meta-description", 0),
+      "document-title": audit("document-title", 1),
+      hreflang: audit("hreflang", null, "notApplicable"),
+    },
+  };
+
+  it("are no finding", () => {
+    expect(failingAudits(staged).map((f) => f.id)).toEqual(["meta-description"]);
+  });
+
+  it("are taken out of the category score (weighted mean of the rest)", () => {
+    expect(categoryScores(staged, ["seo"]).seo).toBe(50);
+  });
+
+  it("leave categories without them untouched", () => {
+    const clean: LhrLike = {
+      ...staged,
+      categories: { seo: { score: 0.92, auditRefs: [{ id: "document-title", weight: 1 }] } },
+    };
+    expect(categoryScores(clean, ["seo"]).seo).toBe(92);
+  });
+});
+
 describe("measurementFromRuns", () => {
   it("uses the Performance median and majority-filters Performance-only findings", () => {
     const full = lhr({
