@@ -25,7 +25,7 @@
    *                             without triggering it.
    */
   import { enhance } from "$app/forms";
-  import { Button } from "$lib/components/ui/button";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Dialog,
     DialogContent,
@@ -33,7 +33,7 @@
     DialogFooter,
     DialogHeader,
     DialogTitle,
-  } from "$lib/components/ui/dialog";
+  } from "#lib/components/ui/dialog/index.js";
   import { formResultError, publishButtonState } from "./stage-deploy-state.js";
 
   interface PendingEntity {

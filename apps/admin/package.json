@@ -12,13 +12,14 @@
     "preview": "bun --bun vite preview",
     "seed:dev": "bun --env-file=../../.env run scripts/seed-dev-owner.ts",
     "e2e": "playwright test",
-    "e2e-livedit": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts",
-    "e2e-livedit:headed": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed",
-    "e2e-livedit:debug": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed --debug --workers=1",
+    "e2e-livedit": "svelte-kit sync && bun run plugins:build && ORIGIN=http://localhost:4173 bun --bun vite build && playwright test --config playwright.livedit.config.ts",
+    "e2e-livedit:headed": "svelte-kit sync && bun run plugins:build && ORIGIN=http://localhost:4173 bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed",
+    "e2e-livedit:debug": "svelte-kit sync && bun run plugins:build && ORIGIN=http://localhost:4173 bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed --debug --workers=1",
     "plugins:build": "tsc -b --force ../../packages/plugins/*"
   },
   "dependencies": {
     "@caelo-cms/admin-core": "workspace:*",
+    "@caelo-cms/font-service": "workspace:*",
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/plugin-sdk": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
@@ -39,15 +40,14 @@
     "svelte-sonner": "^1.2.1",
     "tailwind-merge": "^3.7.0",
     "tailwind-variants": "^3.3.1",
-    "zod": "4.6.5",
-    "@caelo-cms/font-service": "workspace:*"
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
     "@modelcontextprotocol/sdk": "1.31.0",
     "@playwright/test": "1.63.0",
-    "@sveltejs/adapter-node": "5.5.7",
-    "@sveltejs/kit": "2.70.3",
+    "@sveltejs/adapter-node": "6.0.0",
+    "@sveltejs/kit": "3.0.1",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@tailwindcss/vite": "^4.3.3",
     "sharp": "^0.35",
@@ -63,5 +63,9 @@
     "@rollup/rollup-linux-arm64-musl": "^4",
     "@rollup/rollup-linux-x64-gnu": "^4",
     "@rollup/rollup-linux-x64-musl": "^4"
+  },
+  "imports": {
+    "#lib": "./src/lib/index.js",
+    "#lib/*": "./src/lib/*"
   }
 }

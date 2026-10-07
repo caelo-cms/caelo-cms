@@ -2,8 +2,8 @@
   // SPDX-License-Identifier: MPL-2.0
   import { page } from "$app/state";
   import { toast } from "svelte-sonner";
-  import AppShell from "$lib/components/AppShell.svelte";
-  import CommandPalette from "$lib/components/CommandPalette.svelte";
+  import AppShell from "#lib/components/AppShell.svelte";
+  import CommandPalette from "#lib/components/CommandPalette.svelte";
 
   let { data, children } = $props();
 

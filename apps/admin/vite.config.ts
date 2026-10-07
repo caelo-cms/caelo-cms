@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
+import adapter from "@sveltejs/adapter-node";
+
+import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
+
+// SPDX-License-Identifier: MPL-2.0
 //
 // Issue trail for `forceOxcParserNativeEntry` below — read the chain
 // before touching the hook:
@@ -107,11 +112,22 @@ function forceOxcParserNativeEntry(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [forceOxcParserNativeEntry(), tailwindcss(), sveltekit()],
-  server: {
-    port: 5173,
-    strictPort: false,
-  },
+  plugins: [
+    forceOxcParserNativeEntry(),
+    tailwindcss(),
+    sveltekit({
+      preprocess: vitePreprocess(),
+      adapter: adapter(),
+      // SvelteKit 3 / adapter-node 6 no longer read ORIGIN at runtime; the
+      // trusted origin is fixed at build time. A local http server (the
+      // Playwright webServer builds with ORIGIN set) needs it, or the app
+      // assumes https and its CSRF check rejects every form post. Image
+      // builds leave it unset: behind Cloud Run the origin comes from the
+      // Host header with https, as before.
+      ...(process.env.ORIGIN ? { paths: { origin: process.env.ORIGIN } } : {}),
+    }),
+  ],
+  server: { port: 5173, strictPort: false },
   ssr: {
     // Playwright deps are devDependencies, never imported from
     // `apps/admin/src/`, but with bun's hoisted linker (see

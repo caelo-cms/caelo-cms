@@ -5,7 +5,7 @@
    * to show the operator which pages will be affected by an edit
    * (synced → propagates; unsynced → page-local).
    */
-  import { Badge } from "$lib/components/ui/badge/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
 
   interface Placement {
     pageId: string;

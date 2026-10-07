@@ -2,7 +2,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { redirect } from "@sveltejs/kit";
-import { getQueryContext } from "$lib/server/query.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { LayoutServerLoad } from "./$types";
 
 /**

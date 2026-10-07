@@ -445,6 +445,21 @@ interface PublishedVariant {
   displayName: string;
 }
 
+/**
+ * The site's public base URL, which every variant link and hreflang target
+ * is built from. Throws when it is not configured (#551) instead of
+ * emitting links to a substituted host.
+ */
+async function requireSiteBaseUrl(cms: CmsHandle): Promise<string> {
+  const seo = await cms.call<{ siteBaseUrl: string | null }>("site_defaults.get_seo", {});
+  if (!seo.siteBaseUrl) {
+    throw new Error(
+      "international-site needs the site base URL for language links and hreflang, but it is " +
+        "not configured. Set it under Security → SEO in the admin.",
+    );
+  }
+  return seo.siteBaseUrl;
+}
 /** Absolute URL for a variant. Path-strategy locales ride on the site
  *  base URL; host-strategy locales swap in their own host (scheme
  *  inherited from the base URL). */
@@ -660,8 +675,7 @@ export default definePlugin<PluginContextTier1>({
     language_links: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
       const cms = cmsOf(ctx);
-      const seo = await cms.call<{ siteBaseUrl: string }>("site_defaults.get_seo", {});
-      const matrix = await publishedVariantMatrix(ctx, pageIds, seo.siteBaseUrl);
+      const matrix = await publishedVariantMatrix(ctx, pageIds, await requireSiteBaseUrl(cms));
       const lists: Record<string, Record<string, Array<Record<string, string>>>> = {};
       for (const pageId of pageIds) {
         const variants = matrix.get(pageId);
@@ -1314,8 +1328,7 @@ export default definePlugin<PluginContextTier1>({
    */
   staticRender: async (ctx, { pageId }) => {
     const cms = cmsOf(ctx);
-    const seo = await cms.call<{ siteBaseUrl: string }>("site_defaults.get_seo", {});
-    const matrix = await publishedVariantMatrix(ctx, [pageId], seo.siteBaseUrl);
+    const matrix = await publishedVariantMatrix(ctx, [pageId], await requireSiteBaseUrl(cms));
     const variants = matrix.get(pageId);
     if (!variants) return "";
     const items = variants

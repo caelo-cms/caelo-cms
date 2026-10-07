@@ -16,8 +16,8 @@
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { json, type RequestHandler } from "@sveltejs/kit";
-import { requireInternalAuth } from "$lib/server/internal-jwt.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { requireInternalAuth } from "#lib/server/internal-jwt.js";
+import { getQueryContext } from "#lib/server/query.js";
 
 const SCOPE = "provisioning-outputs.sync";
 const SYSTEM_CTX: ExecutionContext = {

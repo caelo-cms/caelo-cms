@@ -5,16 +5,16 @@ import { loadedPlugins } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error, fail, redirect } from "@sveltejs/kit";
-import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
+import type { ChatMessage, ChatModule, ChatSession } from "#lib/components/chat/types.js";
 import {
   DEFAULT_LAYOUT,
   type OverlayLayout,
-} from "$lib/components/edit/use-overlay-layout.svelte.js";
-import { assertCsrfToken } from "$lib/server/csrf.js";
-import { requirePermission, requireUser } from "$lib/server/guards.js";
-import { pluginWorkflowSuggestions } from "$lib/server/plugin-workflows.js";
-import { getQueryContext } from "$lib/server/query.js";
-import { stagingPreviewPath } from "$lib/server/staging-preview-path.js";
+} from "#lib/components/edit/use-overlay-layout.svelte.js";
+import { assertCsrfToken } from "#lib/server/csrf.js";
+import { requirePermission, requireUser } from "#lib/server/guards.js";
+import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
+import { getQueryContext } from "#lib/server/query.js";
+import { stagingPreviewPath } from "#lib/server/staging-preview-path.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 interface PageRow {

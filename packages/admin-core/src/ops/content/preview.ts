@@ -1115,20 +1115,17 @@ export const renderPagePreviewOp = defineOperation({
              site_language
       FROM site_defaults WHERE id = 1 LIMIT 1
     `)) as unknown as {
-      site_base_url: string;
+      site_base_url: string | null;
       sitemap_enabled: boolean;
       organization_json: string | null;
       site_language: string;
     }[];
     const settingsRow = settingsRows[0];
     if (!settingsRow) {
-      // No row → no stored language for `<html lang>` (CLAUDE.md §2:
-      // fail loudly instead of rendering a guessed language).
       return err({
         kind: "HandlerError",
         operation: "pages.render_preview",
-        message:
-          "site_defaults row is missing, so the page has no stored language for <html lang>. Next step: create it via site_defaults.set (onboarding bootstrap).",
+        message: "site_defaults row (id=1) is missing — the cms_admin migrations did not seed it",
       });
     }
     let organization: SiteSeoSettings["organization"] = {};
@@ -1139,7 +1136,12 @@ export const renderPagePreviewOp = defineOperation({
         organization = {};
       }
     }
+    // #551 — no substituted base URL. Unset, the preview renders without
+    // canonical / og:url / plugin head contributions (which need absolute
+    // URLs) and flags `site-base-url-unset` on the missing-content
+    // surface; the static generator refuses to build in that state.
     const siteBaseUrl = settingsRow.site_base_url;
+    const seoMarkers: string[] = siteBaseUrl ? [] : ["site-base-url-unset"];
 
     let ogImageUrl: string | null = null;
     if (seoRow?.og_image_asset_id) {
@@ -1165,11 +1167,14 @@ export const renderPagePreviewOp = defineOperation({
     }
     // #390 — canonical follows the MATERIALIZED composed path (home
     // designation + plugin URL shape are baked into current_path).
-    const canonical = resolveCanonicalUrl({
-      siteBaseUrl,
-      pagePath: pageRow.current_path,
-      override: seoRow?.canonical_url ?? null,
-    });
+    const canonicalOverride = seoRow?.canonical_url || null;
+    const canonical = siteBaseUrl
+      ? resolveCanonicalUrl({
+          siteBaseUrl,
+          pagePath: pageRow.current_path,
+          override: canonicalOverride,
+        })
+      : canonicalOverride;
     const headBlock = renderSeoHead({
       title: pageRow.title,
       metaDescription: seoRow?.meta_description ?? "",
@@ -1180,19 +1185,22 @@ export const renderPagePreviewOp = defineOperation({
     });
     // #391 — plugin head contributions ride the SAME compose call the
     // static generator uses (byte parity by construction).
-    const contributions = await collectContributions([input.pageId], {
-      siteBaseUrl,
-      ...renderScope,
-    });
+    // Plugin contributions need absolute URLs, so with no base URL none are
+    // collected and `<html lang>` carries the stored site language. That
+    // state is flagged `site-base-url-unset` and the static generator
+    // refuses to build in it, so no published page diverges from this.
+    const contributions = siteBaseUrl
+      ? await collectContributions([input.pageId], { siteBaseUrl, ...renderScope })
+      : null;
     html = injectSeoIntoHead(
       html,
-      composeHeadBlock(headBlock, contributions.head.get(input.pageId)),
+      composeHeadBlock(headBlock, contributions?.head.get(input.pageId)),
     );
     // `<html lang>` — same resolution as the static generator's SEO pass.
     html = applyDocumentLanguage(
       html,
       resolveDocumentLanguage({
-        contributed: contributions.lang.get(input.pageId),
+        contributed: contributions?.lang.get(input.pageId),
         siteLanguage: settingsRow.site_language,
       }),
     );
@@ -1238,7 +1246,7 @@ export const renderPagePreviewOp = defineOperation({
       // issue #150 + #156 — unresolvable web fonts and unknown CSS vars
       // ride the missing-content surface (`theme-font-unresolvable:` /
       // `unknown-css-var:`), same convention as theme-asset-unbound.
-      missingSlots: [...composed.missingSlots, ...fontMarkers, ...cssVarMarkers],
+      missingSlots: [...composed.missingSlots, ...fontMarkers, ...cssVarMarkers, ...seoMarkers],
       pageSlug: pageRow.slug,
     });
   },

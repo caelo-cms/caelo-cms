@@ -3,7 +3,7 @@
   import { Dialog as DialogPrimitive } from "bits-ui";
   import { X } from "lucide-svelte";
   import DialogOverlay from "../dialog/dialog-overlay.svelte";
-  import { cn } from "$lib/utils.js";
+  import { cn } from "#lib/utils.js";
   import { sheetVariants, type SheetSide } from "./sheet-variants.js";
 
   type Props = DialogPrimitive.ContentProps & { class?: string; side?: SheetSide };

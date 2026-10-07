@@ -390,6 +390,7 @@ import {
   pagesSeoSetOp,
   rewriteModuleLinksOp,
   siteDefaultsGetSeoOp,
+  siteDefaultsSeedSiteBaseUrlOp,
   siteDefaultsSetSeoOp,
 } from "./ops/seo.js";
 import { pagesSeoSetManyOp } from "./ops/seo-bulk.js";
@@ -987,6 +988,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(pagesSeoOptimizeManyOp);
   registry.register(pagesSeoListStaleOp);
   registry.register(siteDefaultsGetSeoOp);
+  registry.register(siteDefaultsSeedSiteBaseUrlOp);
   registry.register(siteDefaultsSetSeoOp);
   registry.register(lookupLinksInModulesOp);
   registry.register(rewriteModuleLinksOp);

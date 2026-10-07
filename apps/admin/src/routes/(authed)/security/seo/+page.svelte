@@ -1,18 +1,18 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
 
-  import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
-  import { Textarea } from "$lib/components/ui/textarea/index.js";
+  } from "#lib/components/ui/card/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
+  import { Textarea } from "#lib/components/ui/textarea/index.js";
 
   let { data, form } = $props();
 </script>
@@ -50,8 +50,17 @@
             name="siteBaseUrl"
             type="url"
             required
-            value={data.settings.siteBaseUrl}
+            placeholder="https://example.com"
+            value={data.settings.siteBaseUrl ?? ""}
           />
+          {#if data.settings.siteBaseUrl === null}
+            <Alert variant="destructive" data-testid="site-base-url-unset">
+              <AlertDescription>
+                Not set yet. Publishing fails until it is: canonical links, the sitemap and
+                social previews all need your site's public address.
+              </AlertDescription>
+            </Alert>
+          {/if}
         </div>
         <div class="flex items-center gap-2">
           <input

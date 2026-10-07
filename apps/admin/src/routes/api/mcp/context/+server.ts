@@ -12,7 +12,7 @@
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error, json } from "@sveltejs/kit";
-import { getQueryContext } from "$lib/server/query.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 const SYSTEM_CTX: ExecutionContext = {

@@ -35,13 +35,14 @@ export default defineConfig({
   },
   webServer: {
     // `vite preview` runs under Node, which doesn't expose the `bun` built-in
-    // we import from in `$lib/server/query.ts`. Instead build once, then start
+    // we import from in `#lib/server/query.ts`. Instead build once, then start
     // the adapter-node output directly under Bun.
     //
-    // ORIGIN is load-bearing: the adapter does not infer it, so without
-    // an explicit value SvelteKit's cross-site Origin check 403s every form
-    // POST (login, setup, role creation). Behind a real reverse proxy this is
-    // the public URL; for the smoke server it's the loopback baseURL.
+    // ORIGIN is load-bearing at BUILD time: SvelteKit 3 bakes it into
+    // `paths.origin` (vite.config.ts). Without it the server assumes https,
+    // and the CSRF Origin check 403s every form POST (login, setup, role
+    // creation) against this http loopback server. `env` below covers the
+    // build step of `command` as well as the server.
     // #400 — the disk loader needs every release-signed plugin's dist/
     // at boot; CI checkouts have none (locally they exist as tsc side
     // effects, which is how this went unnoticed until the first plugin
@@ -57,6 +58,10 @@ export default defineConfig({
       PUBLIC_ADMIN_DATABASE_URL: process.env.PUBLIC_ADMIN_DATABASE_URL ?? "",
       PUBLIC_DATABASE_URL: process.env.PUBLIC_DATABASE_URL ?? "",
       ORIGIN: origin,
+      // #551 — the admin seeds site_defaults.site_base_url from this on a
+      // fresh database (provisioning sets it on real installs); specs that
+      // render canonicals or hreflang need it configured.
+      CAELO_SITE_URL: "http://localhost:8082",
       // NODE_ENV must be unset / non-production for the test-provider
       // registry (`/__test/providers`) to accept registrations. The
       // production build runtime sets NODE_ENV=production by default

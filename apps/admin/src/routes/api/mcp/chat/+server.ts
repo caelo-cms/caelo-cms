@@ -22,7 +22,7 @@ import {
 } from "@caelo-cms/shared";
 import { error, json } from "@sveltejs/kit";
 import { z } from "zod";
-import { getQueryContext } from "$lib/server/query.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 const SYSTEM_CTX: ExecutionContext = {

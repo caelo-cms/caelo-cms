@@ -21,6 +21,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
+import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -29,6 +30,7 @@ if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let testRoot: string;
+let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
 
 const HUMAN: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -68,6 +70,8 @@ async function wipe(): Promise<void> {
 
 beforeAll(async () => {
   await wipe();
+  // #551 — canonicals need a configured base URL (no localhost default).
+  restoreSiteBaseUrl = await pinSiteBaseUrl(ADMIN_URL!, "https://example.com");
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
@@ -80,6 +84,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await wipe();
+  await restoreSiteBaseUrl?.();
   await rm(testRoot, { recursive: true, force: true });
   await adapter.close();
 });
@@ -189,7 +194,7 @@ describe("P6 deploy.trigger", () => {
     expect(html).toContain("data-caelo-module-id=");
     expect(html).toContain("color:red");
     // Every deployed page carries the stored site language as
-    // `<html lang>` (Lighthouse html-has-lang; migration 0229).
+    // `<html lang>` (Lighthouse html-has-lang; migration 0230).
     const defaults = await execute(registry, adapter, HUMAN, "site_defaults.get", {});
     if (!defaults.ok) throw new Error(JSON.stringify(defaults.error));
     const siteLanguage = (defaults.value as { defaults: { siteLanguage: string } }).defaults

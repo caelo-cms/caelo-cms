@@ -276,6 +276,11 @@ function enc(s: string): string {
  * Read the SEO settings from `site_defaults` for the deploy run.
  * Same shape as `site_defaults.get_seo` in the admin op layer. The
  * singleton row must exist: it carries the stored site language.
+ *
+ * Throws when the site base URL is not configured (#551): every canonical,
+ * og:url, JSON-LD url and sitemap entry is absolute, and a substituted
+ * localhost default shipped unreachable canonicals to production. The
+ * message names the setting and how to set it.
  */
 export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSettings> {
   const rows = (await tx.execute(sql`
@@ -284,18 +289,27 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
     FROM site_defaults WHERE id = 1
     LIMIT 1
   `)) as unknown as {
-    site_base_url: string;
+    site_base_url: string | null;
     sitemap_enabled: boolean;
     organization_json: string | null;
     site_language: string;
   }[];
   const r = rows[0];
   if (!r) {
-    // No row means no stored language to render as `<html lang>`; a
-    // guessed one would mislabel the whole site (CLAUDE.md §2).
+    // No row means no stored language for `<html lang>` either; a guessed
+    // one would mislabel the whole site (CLAUDE.md §2).
     throw new Error(
-      "static-generator: the site_defaults row is missing, so pages have no stored language for <html lang>. " +
-        "Next step: run the migrations / onboarding bootstrap that creates it (site_defaults.set), then redeploy.",
+      "site_defaults row (id=1) is missing — the cms_admin migrations did not seed it. " +
+        "Without it pages have no stored language for <html lang> and no site URL. " +
+        "Next step: run the cms_admin migrations, then redeploy.",
+    );
+  }
+  if (!r.site_base_url) {
+    throw new Error(
+      "Site base URL is not configured (site_defaults.site_base_url is NULL). Canonical " +
+        "URLs, og:url, JSON-LD and the sitemap need the public site URL. Set it under " +
+        "Security → SEO in the admin, or set CAELO_SITE_URL on the admin service " +
+        "(provisioning does this from the install domain) and restart it.",
     );
   }
   let organization: SiteSeoSettings["organization"] = {};

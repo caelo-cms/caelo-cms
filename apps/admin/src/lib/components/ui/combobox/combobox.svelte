@@ -14,7 +14,7 @@
 
   import { Combobox as ComboboxPrimitive } from "bits-ui";
   import { Check, ChevronsUpDown } from "lucide-svelte";
-  import { cn } from "$lib/utils.js";
+  import { cn } from "#lib/utils.js";
 
   interface Item {
     value: string;

@@ -45,7 +45,7 @@ const siteDefaultsRow = z.object({
   /** issue #163 — structured Design Brief from the Genesis discovery dialog. */
   designBrief: designBriefSchema.nullable(),
   /** BCP 47 `<html lang>` for every page no plugin assigns a locale to
-   *  (migration 0229; stored, seeded `en`). */
+   *  (migration 0230; stored, seeded `en`). */
   siteLanguage: z.string(),
   updatedAt: z.string(),
 });
