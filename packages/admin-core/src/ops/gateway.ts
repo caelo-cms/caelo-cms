@@ -18,6 +18,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { jsonbParam } from "../sql-helpers.js";
 
 const captchaProvider = z.enum(["off", "pow", "turnstile", "hcaptcha"]);
 
@@ -90,20 +91,55 @@ export const getGatewaySettingsOp = defineOperation({
   },
 });
 
+/**
+ * The full gateway-settings row `gateway.set_settings` writes. Exported so
+ * `owner_settings.propose_set_gateway_settings` can validate a merged
+ * proposal against exactly what the apply step accepts.
+ */
+export const gatewaySettingsInput = z
+  .object({
+    maxBodyBytes: z
+      .number()
+      .int()
+      .min(512)
+      .max(1_048_576)
+      .describe("Largest public POST body the gateway accepts, in bytes."),
+    autoRedeployEnabled: z
+      .boolean()
+      .describe("Rebuild + publish production automatically after publishable writes."),
+    autoRedeployDebounceMs: z
+      .number()
+      .int()
+      .min(1000)
+      .max(600_000)
+      .describe("Quiet period after the last publishable write before the auto-redeploy fires."),
+    autoRedeployOpKinds: z
+      .array(z.string().min(1).max(120))
+      .max(50)
+      .describe(
+        "Audit op names that count as publishable writes (e.g. a plugin's visitor-write op). Never 'deploy.trigger'.",
+      ),
+    captchaProvider: captchaProvider.describe(
+      "Challenge on public writes: pow (built-in proof-of-work), turnstile, hcaptcha, or off.",
+    ),
+    captchaPowTargetPrefix: z
+      .string()
+      .regex(/^[0-9a-f]{1,16}$/)
+      .describe("Proof-of-work difficulty as a hex prefix; longer = harder for bots and visitors."),
+  })
+  .strict();
+
 export const setGatewaySettingsOp = defineOperation({
   name: "gateway.set_settings",
+  // Why human-only: the direct write is the Owner's /security/gateway form.
+  // Captcha + body cap are the public write surface's abuse defences and
+  // auto-redeploy decides when live changes ship — a wrong value is felt by
+  // visitors before anyone notices. The AI reaches it only through the
+  // §11.A gate (`owner_settings.propose_set_gateway_settings` → the
+  // operator's Approve → `owner_settings.execute_proposal`).
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: z
-    .object({
-      maxBodyBytes: z.number().int().min(512).max(1_048_576),
-      autoRedeployEnabled: z.boolean(),
-      autoRedeployDebounceMs: z.number().int().min(1000).max(600_000),
-      autoRedeployOpKinds: z.array(z.string().min(1).max(120)).max(50),
-      captchaProvider,
-      captchaPowTargetPrefix: z.string().regex(/^[0-9a-f]{1,16}$/),
-    })
-    .strict(),
+  input: gatewaySettingsInput,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
     // P13 audit fix #6 — never accept `deploy.trigger` in the
@@ -117,12 +153,19 @@ export const setGatewaySettingsOp = defineOperation({
           "auto_redeploy_op_kinds must not include 'deploy.trigger' (would cause an infinite redeploy loop)",
       });
     }
+    // auto_redeploy_op_kinds is text[]: binding the JS array directly made
+    // drizzle expand it into a row constructor `($4, $5, …)`, which Postgres
+    // rejects — every save with a non-empty list (the seeded default has
+    // four) failed. A jsonb parameter unpacked server-side binds any length,
+    // including empty.
     await tx.execute(sql`
       UPDATE site_settings SET
         gateway_max_body_bytes     = ${input.maxBodyBytes},
         auto_redeploy_enabled      = ${input.autoRedeployEnabled},
         auto_redeploy_debounce_ms  = ${input.autoRedeployDebounceMs},
-        auto_redeploy_op_kinds     = ${input.autoRedeployOpKinds},
+        auto_redeploy_op_kinds     = ARRAY(
+          SELECT jsonb_array_elements_text(${jsonbParam(input.autoRedeployOpKinds)})
+        ),
         captcha_provider           = ${input.captchaProvider},
         captcha_pow_target_prefix  = ${input.captchaPowTargetPrefix},
         updated_at                 = now()
