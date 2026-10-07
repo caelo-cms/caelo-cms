@@ -8,7 +8,7 @@
     "packages/provisioning/stacks/aws/edge-handler-bundle.js"
   ],
   "ignoreBinaries": ["cms-provision", "gcloud"],
-  "ignoreDependencies": ["@playwright/mcp", "@caelo-cms/shared", "playwright"],
+  "ignoreDependencies": ["@playwright/mcp", "@caelo-cms/shared", "playwright", "lighthouse"],
   "ignoreExportsUsedInFile": true,
   "ignoreIssues": {
     "apps/admin/e2e-livedit/helpers.ts": ["exports"],
@@ -42,7 +42,11 @@
       ]
     },
     "packages/admin-core": {
-      "entry": ["src/healthcheck.ts"]
+      "entry": [
+        "src/healthcheck.ts",
+        "src/quality/lighthouse-child.ts",
+        "scripts/lighthouse-smoke.ts"
+      ]
     },
     "packages/migrations": {
       "entry": ["src/truncate.ts", "drizzle.config.cms-admin.ts", "drizzle.config.cms-public.ts"]
