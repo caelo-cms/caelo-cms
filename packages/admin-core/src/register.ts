@@ -328,6 +328,7 @@ import {
 } from "./ops/provisioning_outputs.js";
 import { classifyStageOp } from "./ops/quality/classify_stage.js";
 import {
+  ackChatNotificationOp,
   chatStatusOp,
   claimChatNotificationOp,
   gateStatusOp,
@@ -639,6 +640,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(retryAuditOp);
   registry.register(chatStatusOp);
   registry.register(claimChatNotificationOp);
+  registry.register(ackChatNotificationOp);
   registry.register(publishAnywayOp);
   registry.register(proposeAcceptOp);
   registry.register(proposePublishAnywayOp);

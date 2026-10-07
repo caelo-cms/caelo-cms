@@ -10,7 +10,7 @@
  */
 
 import type { defineOperation } from "@caelo-cms/query-api";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import {
   decideGate,
   findingKey,
@@ -25,11 +25,20 @@ type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
 /** The newest audit of `deployRunId`, shaped for the gate (null = none). */
 export async function loadGateAudit(tx: Tx, deployRunId: string): Promise<GateAudit | null> {
+  return loadGateAuditWhere(tx, sql`deploy_run_id = ${deployRunId}::uuid`);
+}
+
+/** One audit run by id, shaped for the gate (null = none). */
+export async function loadGateAuditById(tx: Tx, auditRunId: string): Promise<GateAudit | null> {
+  return loadGateAuditWhere(tx, sql`id = ${auditRunId}::uuid`);
+}
+
+async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null> {
   const runs = (await tx.execute(sql`
     SELECT id::text AS id, status, error_code, error_message,
            publish_override_by::text AS publish_override_by, publish_override_reason
     FROM quality_audit_runs
-    WHERE deploy_run_id = ${deployRunId}::uuid
+    WHERE ${where}
     ORDER BY created_at DESC LIMIT 1
   `)) as unknown as {
     id: string;
@@ -44,7 +53,9 @@ export async function loadGateAudit(tx: Tx, deployRunId: string): Promise<GateAu
   const pages = (await tx.execute(sql`
     SELECT qp.page_id::text AS page_id, p.current_path, qp.problems
     FROM quality_audit_pages qp
-    JOIN pages p ON p.id = qp.page_id AND p.deleted_at IS NULL
+    -- Deliberately NOT filtered on deleted_at: the staged build is frozen
+    -- and still contains a page deleted after its audit, problems and all.
+    JOIN pages p ON p.id = qp.page_id
     WHERE qp.audit_run_id = ${run.id}::uuid
     ORDER BY (p.current_path = '/') DESC, p.current_path
   `)) as unknown as { page_id: string; current_path: string; problems: unknown }[];

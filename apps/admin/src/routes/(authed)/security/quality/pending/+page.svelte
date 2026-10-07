@@ -68,7 +68,6 @@
               <form method="post" action="?/approve">
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="proposalId" value={p.id} />
-                <input type="hidden" name="kind" value={p.kind} />
                 <Button type="submit" variant={p.kind === "publish_anyway" ? "destructive" : "default"}>
                   Approve
                 </Button>

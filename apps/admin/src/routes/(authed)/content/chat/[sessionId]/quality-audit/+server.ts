@@ -6,10 +6,13 @@
  * GET  → the newest audit of THIS chat's Stages, the message the chat
  *        should get about it, and the site-wide Publish gate. The chat panel
  *        and the toolbar poll it.
- * POST {action:"claim", auditRunId} → claim the audit's chat message once
- *        (two open tabs never post it twice). A status note is appended
- *        here; an AI turn comes back as `send` and the panel sends it as a
- *        system-origin turn, which is what starts the AI's fix round.
+ * POST {action:"claim", auditRunId} → take the delivery of the audit's
+ *        message (a short lease, so two tabs never post it twice). A status
+ *        note is appended and marked delivered in one transaction; an AI turn
+ *        comes back as `send` — the panel sends it as a system-origin turn
+ *        (which starts the AI's fix round) and then acknowledges it.
+ * POST {action:"ack", auditRunId} → that acknowledgement. Without it the
+ *        lease runs out and the next poll delivers the nudge again.
  * POST {action:"retry"} → re-run a failed / missing check of the staged build.
  */
 
@@ -72,6 +75,14 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     return json({ ok: true, ...(r.value as object) });
   }
 
+  if (body?.action === "ack" && typeof body.auditRunId === "string") {
+    const r = await execute(registry, adapter, locals.ctx, "quality_audits.ack_chat_notification", {
+      auditRunId: body.auditRunId,
+    });
+    if (!r.ok) throw error(500, describeError(r.error));
+    return json({ ok: true });
+  }
+
   if (body?.action === "claim" && typeof body.auditRunId === "string") {
     // Re-read: only the chat's own newest audit can be claimed here, and the
     // message is computed server-side (never trusted from the client).
@@ -79,27 +90,24 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     if (!status.audit || status.audit.id !== body.auditRunId || !status.feedback) {
       return json({ ok: true, send: null });
     }
+    const isNote = status.feedback.kind === "note";
     const claimed = await execute(
       registry,
       adapter,
       locals.ctx,
       "quality_audits.claim_chat_notification",
-      { auditRunId: body.auditRunId },
+      {
+        auditRunId: body.auditRunId,
+        ...(isNote
+          ? { note: { chatSessionId: params.sessionId, text: status.feedback.text } }
+          : {}),
+      },
     );
     if (!claimed.ok) throw error(500, describeError(claimed.error));
     if (!(claimed.value as { claimed: boolean }).claimed) return json({ ok: true, send: null });
-    if (status.feedback.kind === "ai-turn") {
-      return json({ ok: true, send: status.feedback.text });
-    }
-    const note = await execute(registry, adapter, locals.ctx, "chat.append_message", {
-      chatSessionId: params.sessionId,
-      role: "user",
-      origin: "system",
-      content: status.feedback.text,
-      source: "quality-audit status note",
-    });
-    if (!note.ok) throw error(500, describeError(note.error));
-    return json({ ok: true, send: null, note: status.feedback.text });
+    return isNote
+      ? json({ ok: true, send: null, note: status.feedback.text })
+      : json({ ok: true, send: status.feedback.text });
   }
 
   throw error(400, "unknown action");

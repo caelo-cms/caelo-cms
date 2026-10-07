@@ -106,7 +106,10 @@ export function qualityStatusFor(chatSessionId: string): QualityStatusPoller {
 export async function postQualityAction(
   chatSessionId: string,
   csrfToken: string,
-  body: { action: "claim"; auditRunId: string } | { action: "retry" },
+  body:
+    | { action: "claim"; auditRunId: string }
+    | { action: "ack"; auditRunId: string }
+    | { action: "retry" },
 ): Promise<{ ok: boolean; send?: string | null; note?: string; error?: string }> {
   const res = await fetch(`/content/chat/${chatSessionId}/quality-audit`, {
     method: "POST",

@@ -41,10 +41,19 @@ export const actions: Actions = {
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const proposalId = String(form.get("proposalId") ?? "");
-    if (String(form.get("kind") ?? "") === "publish_anyway") {
-      requirePermission(locals, "deploy.trigger");
-    }
     const { adapter, registry } = getQueryContext();
+    // The permission follows the STORED kind, never a form field: a
+    // publish_anyway proposal needs deploy.trigger like Publish live.
+    // (quality_audits.execute_proposal re-checks it for the chat path.)
+    const listed = await execute(registry, adapter, locals.ctx, "quality_audits.list_pending", {
+      limit: 200,
+    });
+    if (!listed.ok) return fail(400, { error: describeError(listed.error) });
+    const proposal = (listed.value as { proposals: Proposal[] }).proposals.find(
+      (p) => p.id === proposalId,
+    );
+    if (!proposal) return fail(404, { error: "proposal not found or no longer pending" });
+    if (proposal.kind === "publish_anyway") requirePermission(locals, "deploy.trigger");
     const r = await execute(registry, adapter, locals.ctx, "quality_audits.execute_proposal", {
       proposalId,
     });

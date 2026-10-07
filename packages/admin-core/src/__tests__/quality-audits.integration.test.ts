@@ -630,7 +630,15 @@ describe("read surfaces", () => {
       "quality_acceptances.list",
       {},
     );
-    expect(all.acceptances.map((a) => a.auditId ?? "score").sort()).toEqual(["image-alt", "score"]);
+    // The accepted Accessibility 92 was spent when /about scored 100 again
+    // (ratchet): it is revoked, so only the finding acceptance is live.
+    expect(all.acceptances.map((a) => a.auditId ?? "score")).toEqual(["image-alt"]);
+    const withRevoked = await op<{ acceptances: { revokedAt: string | null }[] }>(
+      SYS,
+      "quality_acceptances.list",
+      { includeRevoked: true },
+    );
+    expect(withRevoked.acceptances.filter((a) => a.revokedAt !== null)).toHaveLength(1);
     const byQuery = await op<{ acceptances: unknown[] }>(SYS, "quality_acceptances.list", {
       query: "decorative",
     });

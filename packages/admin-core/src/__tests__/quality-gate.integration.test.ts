@@ -41,8 +41,16 @@ const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 const SYSTEM_ID = "00000000-0000-0000-0000-00000000ffff";
-/** The operator (a human click). */
-const HUMAN: ExecutionContext = { actorId: SYSTEM_ID, actorKind: "human", requestId: "qg-553" };
+/** The operator: an Owner (content.write + deploy.trigger) clicking. */
+const OWNER_ID = crypto.randomUUID();
+/** A reviewer: no content.write, no deploy.trigger. */
+const REVIEWER_ID = crypto.randomUUID();
+const HUMAN: ExecutionContext = { actorId: OWNER_ID, actorKind: "human", requestId: "qg-553" };
+const REVIEWER: ExecutionContext = {
+  actorId: REVIEWER_ID,
+  actorKind: "human",
+  requestId: "qg-553",
+};
 const AI: ExecutionContext = { actorId: SYSTEM_ID, actorKind: "ai", requestId: "qg-553" };
 const PFX = "qg553-";
 
@@ -84,6 +92,17 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM modules WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM templates WHERE slug LIKE ${`${PFX}%`}`;
+    await tx`DELETE FROM user_roles WHERE user_id IN (${OWNER_ID}::uuid, ${REVIEWER_ID}::uuid)`;
+    await tx`DELETE FROM users WHERE id IN (${OWNER_ID}::uuid, ${REVIEWER_ID}::uuid)`;
+  });
+}
+
+async function seedUser(id: string, role: "owner" | "reviewer"): Promise<void> {
+  await withSql(async (tx) => {
+    await tx`INSERT INTO actors (id, kind, display_name) VALUES (${id}::uuid, 'human', ${`qg ${role}`})
+             ON CONFLICT (id) DO NOTHING`;
+    await tx`INSERT INTO users (id, email, password_hash) VALUES (${id}::uuid, ${`${id}@example.test`}, 'test-only')`;
+    await tx`INSERT INTO user_roles (user_id, role_id) SELECT ${id}::uuid, id FROM roles WHERE name = ${role}`;
   });
 }
 
@@ -212,6 +231,8 @@ beforeAll(async () => {
   registerAdminOps(registry);
   setDeployBridge({ registry, adapter });
   await wipe();
+  await seedUser(OWNER_ID, "owner");
+  await seedUser(REVIEWER_ID, "reviewer");
   restoreBase = await pinSiteBaseUrl(ADMIN_URL as string, "https://example.com");
   restoreLang = await pinSiteLanguage(ADMIN_URL as string, "en");
   testRoot = await mkdtemp(join(tmpdir(), "caelo-quality-gate-"));
@@ -304,22 +325,29 @@ describe("block → fix → publish", () => {
     expect(st.audit.fixRound).toBe(0);
     expect(st.feedback.kind).toBe("ai-turn");
     expect(st.feedback.text).toContain("Fix round 1 of 2");
-    // The chat is told exactly once.
+    // The chat is told exactly once: one tab holds the delivery lease; the
+    // ack (after the panel sent the turn) marks it delivered.
     const auditRunId = st.audit.id;
-    expect(
-      (
-        await op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", {
-          auditRunId,
-        })
-      ).claimed,
-    ).toBe(true);
-    expect(
-      (
-        await op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", {
-          auditRunId,
-        })
-      ).claimed,
-    ).toBe(false);
+    const claim = () =>
+      op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", { auditRunId });
+    expect((await claim()).claimed).toBe(true);
+    expect((await claim()).claimed).toBe(false);
+    // A delivery that never acknowledged (tab closed) is offered again once
+    // the lease ran out.
+    await withSql(async (tx) => {
+      await tx`UPDATE quality_audit_runs SET chat_notify_claimed_at = now() - interval '5 minutes'
+               WHERE id = ${auditRunId}::uuid`;
+    });
+    expect((await claim()).claimed).toBe(true);
+    await op(HUMAN, "quality_audits.ack_chat_notification", { auditRunId });
+    const after = await op<{ notified: boolean }>(HUMAN, "quality_audits.chat_status", {
+      chatSessionId,
+    });
+    expect(after.notified).toBe(true);
+    await withSql(async (tx) => {
+      await tx`UPDATE quality_audit_runs SET chat_notify_claimed_at = NULL WHERE id = ${auditRunId}::uuid`;
+    });
+    expect((await claim()).claimed).toBe(false);
   });
 
   it("the fix is re-staged (round 1), the audit passes, and Publish live ships", async () => {
@@ -332,6 +360,23 @@ describe("block → fix → publish", () => {
     }>(HUMAN, "quality_audits.chat_status", { chatSessionId });
     expect(st.audit).toMatchObject({ status: "passed", fixRound: 1 });
     expect(st.feedback.kind).toBe("note");
+    // A status note is appended and marked delivered in one transaction.
+    expect(
+      (
+        await op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", {
+          auditRunId: (st.audit as unknown as { id: string }).id,
+          note: { chatSessionId, text: (st.feedback as unknown as { text: string }).text },
+        })
+      ).claimed,
+    ).toBe(true);
+    const notes = await withSql(
+      async (tx) =>
+        (await tx`SELECT content FROM chat_messages WHERE chat_session_id = ${chatSessionId}::uuid
+                  AND origin = 'system'`) as unknown as { content: string }[],
+    );
+    expect(notes.map((n) => n.content)).toContain(
+      (st.feedback as unknown as { text: string }).text,
+    );
     expect(await gate()).toMatchObject({ open: true, state: "clean" });
     const p = await promote();
     expect(p).toEqual({ ok: true, message: "" });
@@ -385,10 +430,17 @@ describe("acceptances in the chat", () => {
     const pending = await op<{ items: { domain: string }[] }>(AI, "pending_proposals.list", {});
     expect(pending.items.some((i) => i.domain === "quality")).toBe(true);
 
-    // The AI cannot apply its own proposal.
+    // The AI cannot apply its own proposal, nor can a user without
+    // content.write (the card applies as the chat's operator, so the op
+    // itself checks the permission).
     expect(
       await opErr(AI, "quality_audits.execute_proposal", { proposalId: proposal.proposalId }),
     ).toContain("ActorScopeRejected");
+    expect(
+      await opErr(REVIEWER, "quality_audits.execute_proposal", {
+        proposalId: proposal.proposalId,
+      }),
+    ).toContain("content.write");
     // The editor's click applies it.
     expect(
       await op<{ accepted: number }>(HUMAN, "quality_audits.execute_proposal", {
@@ -411,6 +463,57 @@ describe("acceptances in the chat", () => {
         }[],
     );
     expect(baseline[0]?.baseline).toBe(92);
+  });
+
+  it("an acceptance proposed for an older audit cannot be applied after a newer one", async () => {
+    // Propose against the current audit, then a new Stage replaces it.
+    const s = await op<{ chatSessionId: string; chatBranchId: string }>(
+      HUMAN,
+      "chat.create_session",
+      { title: `${PFX}stale` },
+    );
+    await editModule({ ...HUMAN, chatBranchId: s.chatBranchId }, "<p>stale-1</p>");
+    await stage(s.chatSessionId);
+    await audit(fakeLighthouse(() => ({ failing: [imageAlt] })));
+    const old = (await gate()).auditRunId as string;
+    const stale = await op<{ proposalId: string }>(AI, "quality_audits.propose_accept", {
+      auditRunId: old,
+      items: [{ pagePath: "/", auditId: "image-alt" }],
+      reason: "decorative",
+    });
+    await editModule({ ...HUMAN, chatBranchId: s.chatBranchId }, "<p>stale-2</p>");
+    await stage(s.chatSessionId);
+    await audit(fakeLighthouse(() => ({})));
+    expect(
+      await opErr(HUMAN, "quality_audits.execute_proposal", { proposalId: stale.proposalId }),
+    ).toContain("not the current quality check");
+    const rows = await withSql(
+      async (tx) =>
+        (await tx`SELECT status FROM quality_pending_actions WHERE id = ${stale.proposalId}::uuid`) as unknown as {
+          status: string;
+        }[],
+    );
+    expect(rows[0]?.status).toBe("superseded");
+    // And proposing against a stale audit is refused up front.
+    expect(
+      await opErr(AI, "quality_audits.propose_accept", {
+        auditRunId: old,
+        items: [{ pagePath: "/", auditId: "image-alt" }],
+        reason: "decorative",
+      }),
+    ).toContain("not the current quality check");
+  });
+
+  it("the about page scoring 100 again spends its accepted drop (ratchet)", async () => {
+    const live = await withSql(
+      async (tx) =>
+        (await tx`SELECT a.revoked_at FROM quality_acceptances a JOIN pages p ON p.id = a.page_id
+                  WHERE p.slug = ${`${PFX}about`} AND a.kind = 'score'`) as unknown as {
+          revoked_at: Date | null;
+        }[],
+    );
+    // The clean audit above measured accessibility 100 > accepted 92.
+    expect(live.every((r) => r.revoked_at !== null)).toBe(true);
   });
 
   it("the same finding on another page still blocks", async () => {
@@ -474,6 +577,9 @@ describe("a failed quality check", () => {
     expect(
       await opErr(AI, "quality_audits.publish_anyway", { auditRunId, reason: "deadline" }),
     ).toContain("ActorScopeRejected");
+    expect(
+      await opErr(REVIEWER, "quality_audits.publish_anyway", { auditRunId, reason: "deadline" }),
+    ).toContain("deploy.trigger");
     // The AI proposes; the editor's click on the card publishes.
     const proposal = await op<{ proposalId: string }>(AI, "quality_audits.propose_publish_anyway", {
       auditRunId,
@@ -492,7 +598,7 @@ describe("a failed quality check", () => {
       { auditRunId },
     );
     expect(run.run.publishOverride).toMatchObject({
-      by: SYSTEM_ID,
+      by: OWNER_ID,
       reason: "launch deadline, the checker is down",
     });
     const trail = await withSql(

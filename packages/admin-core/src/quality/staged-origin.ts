@@ -65,9 +65,16 @@ export function localBuildSource(buildDir: string): StagedFileSource {
   const contentTypes = () => {
     // The generator's sidecar for keys whose type the extension cannot
     // tell (bare-slug pages in 'no-extension' builds).
-    overrides ??= readFile(join(buildDir, "_content-types.json"), "utf8")
-      .then((t) => JSON.parse(t) as Record<string, string>)
-      .catch(() => ({}));
+    overrides ??= readFile(join(buildDir, "_content-types.json"), "utf8").then(
+      (t) => JSON.parse(t) as Record<string, string>,
+      (e: NodeJS.ErrnoException) => {
+        // Only an ABSENT sidecar (older builds) means "no overrides". An
+        // unreadable or malformed one would serve no-extension pages with
+        // the wrong type and audit something staging never serves — fail.
+        if (e.code === "ENOENT") return {};
+        throw e;
+      },
+    );
     return overrides;
   };
   return {

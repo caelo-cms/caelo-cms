@@ -30,8 +30,27 @@ import {
   parsePayload,
   resolveChatSessionId,
 } from "../_propose-helpers.js";
+import { actorHasPermission } from "./_permissions.js";
 import { categorySchema, iso, json } from "./_shared.js";
 import { publishAnywayOp } from "./gate.js";
+import { latestSucceededRun, publishGateForRun } from "./gate-loader.js";
+
+/**
+ * The audit the gate currently decides on (the newest audit of the build
+ * staging serves). Acceptances only make sense against it: accepting from
+ * an older audit could lower a baseline a newer, better audit raised.
+ */
+async function currentGateAuditId(tx: Tx): Promise<string | null> {
+  const run = await latestSucceededRun(tx, "staging");
+  if (!run) return null;
+  return (await publishGateForRun(tx, run.id)).auditRunId;
+}
+
+function staleAuditMessage(auditRunId: string, current: string | null): string {
+  return current
+    ? `audit ${auditRunId} is not the current quality check of the staged build (that is ${current}) — call get_quality_audit and accept from the current one`
+    : "nothing is staged — Stage first";
+}
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -193,6 +212,14 @@ export const proposeAcceptOp = defineOperation({
   input: proposeAcceptInput,
   output: proposeOutput,
   handler: async (ctx, input, tx) => {
+    const current = await currentGateAuditId(tx);
+    if (current !== input.auditRunId) {
+      return err({
+        kind: "HandlerError",
+        operation: "quality_audits.propose_accept",
+        message: staleAuditMessage(input.auditRunId, current),
+      });
+    }
     const r = await resolveItems(tx, input);
     if (!r.ok) {
       return err({
@@ -339,13 +366,34 @@ export const executeQualityProposalOp = defineOperation({
         message: row ? `proposal is already ${row.status}` : "proposal not found",
       });
     }
+    // The approval card applies this op as the chat's operator without a
+    // route in front, so the persisted kind decides the permission here.
+    const needed = row.kind === "accept" ? "content.write" : "deploy.trigger";
+    if (!(await actorHasPermission(tx, ctx, needed))) {
+      return err({
+        kind: "HandlerError",
+        operation: "quality_audits.execute_proposal",
+        message: `this decision needs the ${needed} permission — ask an editor who has it`,
+      });
+    }
     let result: { kind: "accept" | "publish_anyway"; accepted?: number; toRunId?: string };
     if (row.kind === "accept") {
-      const applied = await applyAcceptances(
-        tx,
-        ctx,
-        proposeAcceptInput.parse(parsePayload(row.payload)),
-      );
+      const payload = proposeAcceptInput.parse(parsePayload(row.payload));
+      const current = await currentGateAuditId(tx);
+      if (current !== payload.auditRunId) {
+        await tx.execute(sql`
+          UPDATE quality_pending_actions
+             SET status = 'superseded', decided_at = now(), decided_by = ${ctx.actorId}::uuid,
+                 decision_reason = 'a newer quality check replaced the audit it was made for'
+           WHERE id = ${input.proposalId}::uuid
+        `);
+        return err({
+          kind: "HandlerError",
+          operation: "quality_audits.execute_proposal",
+          message: staleAuditMessage(payload.auditRunId, current),
+        });
+      }
+      const applied = await applyAcceptances(tx, ctx, payload);
       if (!applied.ok) {
         return err({
           kind: "HandlerError",

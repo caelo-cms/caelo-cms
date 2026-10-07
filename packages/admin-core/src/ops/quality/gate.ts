@@ -14,14 +14,16 @@
  *                                            publish over a FAILED audit.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { chatFeedbackFor } from "../../quality/chat-feedback.js";
 import type { QualityProblem } from "../../quality/ratchet.js";
+import { appendChatMessageOp } from "../chat/messages.js";
 import { promoteDeployOp } from "../deploy.js";
+import { actorHasPermission } from "./_permissions.js";
 import { json } from "./_shared.js";
 import { latestSucceededRun, publishGateForRun } from "./gate-loader.js";
 import { enqueueAuditOp } from "./lifecycle.js";
@@ -108,9 +110,21 @@ export const retryAuditOp = defineOperation({
     if (!prev || prev.status === "superseded") {
       // Never audited (e.g. staged before the gate existed, or the enqueue
       // failed): audit it like a Stage outside a chat.
+      // Nothing says which pages this Stage touched, so audit the pages
+      // edited most recently (the homepage is always added first).
+      const recent = (await tx.execute(sql`
+        SELECT id::text AS id FROM pages
+        WHERE status = 'published' AND deleted_at IS NULL AND chat_branch_id IS NULL
+        ORDER BY updated_at DESC LIMIT 10
+      `)) as unknown as { id: string }[];
       const r = await enqueueAuditOp.handler(
         ctx,
-        { deployRunId: run.id, chatSessionId: null, branch: null, pageIds: [] },
+        {
+          deployRunId: run.id,
+          chatSessionId: null,
+          branch: null,
+          pageIds: recent.map((p) => p.id),
+        },
         tx,
       );
       if (!r.ok) return r;
@@ -200,26 +214,90 @@ export const chatStatusOp = defineOperation({
       errorMessage: audit.errorMessage,
       skippedBecause: audit.classification.skipped,
     });
-    return ok({ audit, notified: row.chat_notified_at !== null, feedback, ...gate });
+    // Only the audit of the build staging serves NOW may drive the chat: a
+    // chat whose Stage another chat has since replaced must not start an
+    // obsolete fix round (or claim Publish is available).
+    const current = gate.deployRunId === null || gate.deployRunId === audit.deployRunId;
+    return ok({
+      audit,
+      notified: row.chat_notified_at !== null,
+      feedback: current ? feedback : null,
+      ...gate,
+    });
   },
 });
 
+/** How long a chat tab may hold the delivery of an audit's message
+ *  before another poll may deliver it instead. */
+const NOTIFY_LEASE_SECONDS = 120;
+
 export const claimChatNotificationOp = defineOperation({
   name: "quality_audits.claim_chat_notification",
-  // Why human-only: the chat panel of the operator claims the message it
-  // is about to post; claiming it from anywhere else would swallow it.
+  // Why human-only: the chat panel of the operator claims the message it is
+  // about to deliver; a claim from anywhere else would swallow it.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      auditRunId: z.string().uuid(),
+      /** A status note to append to the chat in the SAME transaction, which
+       *  then also marks the audit notified (delivery and claim are one). */
+      note: z
+        .object({ chatSessionId: z.string().uuid(), text: z.string().min(1).max(2000) })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+  output: z.object({ claimed: z.boolean() }),
+  handler: async (ctx, input, tx) => {
+    // A lease, not a final mark: an AI-turn nudge is delivered by the
+    // browser after this call; only its acknowledgement
+    // (ack_chat_notification) marks the audit notified. A tab that closes
+    // or a send that fails lets the lease run out and the next poll retries.
+    const rows = (await tx.execute(sql`
+      UPDATE quality_audit_runs SET chat_notify_claimed_at = now()
+      WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
+        AND status IN ('passed', 'problems', 'errored', 'skipped')
+        AND (chat_notify_claimed_at IS NULL
+             OR chat_notify_claimed_at < now() - make_interval(secs => ${NOTIFY_LEASE_SECONDS}))
+      RETURNING id
+    `)) as unknown as { id: string }[];
+    if (rows.length !== 1) return ok({ claimed: false });
+    if (input.note) {
+      const appended = await appendChatMessageOp.handler(
+        ctx,
+        {
+          chatSessionId: input.note.chatSessionId,
+          role: "user",
+          origin: "system",
+          content: input.note.text,
+          source: "quality-audit status note",
+        },
+        tx,
+      );
+      if (!appended.ok) throw new OperationAbortError(appended.error);
+      await tx.execute(sql`
+        UPDATE quality_audit_runs SET chat_notified_at = now() WHERE id = ${input.auditRunId}::uuid
+      `);
+    }
+    return ok({ claimed: true });
+  },
+});
+
+export const ackChatNotificationOp = defineOperation({
+  name: "quality_audits.ack_chat_notification",
+  // Why human-only: the chat panel acknowledges the AI-turn nudge it has
+  // just sent (persisted by the chat stream) — see claim_chat_notification.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ auditRunId: z.string().uuid() }).strict(),
-  output: z.object({ claimed: z.boolean() }),
+  output: z.object({}),
   handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
+    await tx.execute(sql`
       UPDATE quality_audit_runs SET chat_notified_at = now()
       WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
-        AND status IN ('passed', 'problems', 'errored', 'skipped')
-      RETURNING id
-    `)) as unknown as { id: string }[];
-    return ok({ claimed: rows.length === 1 });
+    `);
+    return ok({});
   },
 });
 
@@ -240,6 +318,14 @@ export const publishAnywayOp = defineOperation({
     .strict(),
   output: z.object({ fromRunId: z.string(), toRunId: z.string(), buildId: z.string() }),
   handler: async (ctx, input, tx) => {
+    if (!(await actorHasPermission(tx, ctx, "deploy.trigger"))) {
+      return err({
+        kind: "HandlerError",
+        operation: "quality_audits.publish_anyway",
+        message:
+          "publishing needs the deploy.trigger permission — ask an editor who may publish to decide",
+      });
+    }
     const run = await latestSucceededRun(tx, input.fromTarget);
     const gate = run ? await publishGateForRun(tx, run.id) : null;
     if (!gate || gate.auditRunId !== input.auditRunId || gate.state !== "errored") {
@@ -269,13 +355,15 @@ export const publishAnywayOp = defineOperation({
       entityId: input.auditRunId,
       resultSummary: `published over a failed quality check: ${input.reason}`,
     });
-    // The decision stands even if the copy below fails (it is about the
-    // audit, not the copy): a later Publish live then passes the gate as
-    // "overridden", and promote records its own failure on its deploy run.
-    return promoteDeployOp.handler(
+    const promoted = await promoteDeployOp.handler(
       ctx,
       { fromTarget: input.fromTarget, toTarget: input.toTarget },
       tx,
     );
+    // Nothing went live: roll the override and its audit event back with
+    // it, so the trail never claims a publish that did not happen and the
+    // decision can be made again (an approval card stays retryable).
+    if (!promoted.ok) throw new OperationAbortError(promoted.error);
+    return promoted;
   },
 });

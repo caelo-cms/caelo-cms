@@ -25,6 +25,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { withInstallRules } from "../../quality/classify.js";
+import { decideGate } from "../../quality/gate.js";
 import { pageMeasurementSchema } from "../../quality/lighthouse-protocol.js";
 import {
   type BaselineState,
@@ -35,6 +36,7 @@ import {
 } from "../../quality/ratchet.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { iso, json, stageClassificationSchema, uuidList } from "./_shared.js";
+import { loadAcceptances, loadGateAuditById } from "./gate-loader.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -82,21 +84,26 @@ async function previousStagingAudit(
 
 /**
  * The fix round of a chat's next audit (#553 2-round cap): one more than
- * the chat's previous audit when that one found problems (the Stage being
- * audited is the AI's fix attempt), carried over unchanged across failed
- * or superseded audits (nothing was measured), and 0 after a clean one.
- * Stages outside a chat have no fix loop: always 0.
+ * the chat's previous audit when that one left problems open (the Stage
+ * being audited is the AI's fix attempt), carried over unchanged across
+ * failed or superseded audits (nothing was measured), and 0 after a clean
+ * one — including problems an editor has since accepted in full. Stages
+ * outside a chat have no fix loop: always 0.
  */
 async function nextFixRound(tx: Tx, chatSessionId: string | null): Promise<number> {
   if (chatSessionId === null) return 0;
   const rows = (await tx.execute(sql`
-    SELECT status, fix_round FROM quality_audit_runs
+    SELECT id::text AS id, status, fix_round FROM quality_audit_runs
     WHERE chat_session_id = ${chatSessionId}::uuid
     ORDER BY created_at DESC LIMIT 1
-  `)) as unknown as { status: string; fix_round: number }[];
+  `)) as unknown as { id: string; status: string; fix_round: number }[];
   const prev = rows[0];
   if (!prev) return 0;
-  if (prev.status === "problems") return prev.fix_round + 1;
+  if (prev.status === "problems") {
+    const audit = await loadGateAuditById(tx, prev.id);
+    const acceptances = await loadAcceptances(tx, audit?.pages.map((p) => p.pageId) ?? []);
+    return decideGate(audit, acceptances).open ? 0 : prev.fix_round + 1;
+  }
   if (prev.status === "passed" || prev.status === "skipped") return 0;
   return prev.fix_round;
 }
@@ -526,6 +533,15 @@ export const recordAuditResultOp = defineOperation({
             ON CONFLICT (page_id, category) DO UPDATE
               SET baseline = EXCLUDED.baseline, below_streak = EXCLUDED.below_streak,
                   updated_at = now(), updated_by_run = EXCLUDED.updated_by_run
+          `);
+          // Ratchet: once the page scores above an accepted drop, that
+          // acceptance is spent — a later drop below the new baseline must
+          // block again, not hide behind the old acceptance.
+          await tx.execute(sql`
+            UPDATE quality_acceptances
+               SET revoked_at = now(), revoked_by = ${ctx.actorId}::uuid
+             WHERE page_id = ${page.pageId}::uuid AND kind = 'score' AND category = ${category}
+               AND revoked_at IS NULL AND accepted_score < ${next.baseline}
           `);
         }
       }

@@ -494,7 +494,7 @@
     poller.acquire();
     return () => poller.release();
   });
-  let pendingQualityNudge = $state<string | null>(null);
+  let pendingQualityNudge = $state<{ auditRunId: string; text: string } | null>(null);
   let qualityRetryError = $state<string | null>(null);
   const claimedQualityAudits = new Set<string>();
   $effect(() => {
@@ -507,7 +507,7 @@
       try {
         const r = await postQualityAction(session.id, csrfToken, { action: "claim", auditRunId });
         if (r.send) {
-          pendingQualityNudge = r.send;
+          pendingQualityNudge = { auditRunId, text: r.send };
         } else if (r.note) {
           messages = [
             ...messages,
@@ -528,9 +528,19 @@
     if (streaming) return;
     if (pendingQualityNudge === null) return;
     if (composer.trim().length > 0) return;
-    const text = pendingQualityNudge;
+    const nudge = pendingQualityNudge;
     pendingQualityNudge = null;
-    void sendAutoMessage(text);
+    void (async () => {
+      await sendAutoMessage(nudge.text);
+      // Delivered (the stream persisted the turn): mark it so no other tab
+      // sends it again. Without this ack the server lease runs out and the
+      // nudge is offered again — a failed send never silently ends the loop.
+      await postQualityAction(session.id, csrfToken, {
+        action: "ack",
+        auditRunId: nudge.auditRunId,
+      }).catch(() => undefined);
+      claimedQualityAudits.delete(nudge.auditRunId);
+    })();
   });
 
   async function retryQualityCheck(): Promise<void> {

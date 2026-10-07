@@ -7,8 +7,11 @@
 --                      1, 2 for each re-Stage while problems remain. The
 --                      chat asks the AI to fix automatically only while
 --                      fix_round < 2 (the 2-round cap of #553).
---   chat_notified_at   when the originating chat was told the result —
---                      claimed once, so two open tabs never nudge twice.
+--   chat_notified_at   when the originating chat got the result (delivered
+--                      and acknowledged), so it is posted exactly once.
+--   chat_notify_claimed_at  a short lease while one chat tab delivers it;
+--                      an expired lease (tab closed, send failed) lets the
+--                      next poll deliver it again.
 --   retry_of           the failed audit a retry re-runs.
 --   publish_override_* an editor's explicit "publish anyway" over a
 --                      FAILED audit (never over problems): who, why, when.
@@ -25,6 +28,7 @@ SET LOCAL caelo.actor_kind = 'system';
 ALTER TABLE quality_audit_runs
   ADD COLUMN fix_round integer NOT NULL DEFAULT 0 CHECK (fix_round >= 0),
   ADD COLUMN chat_notified_at timestamptz NULL,
+  ADD COLUMN chat_notify_claimed_at timestamptz NULL,
   ADD COLUMN retry_of uuid NULL REFERENCES quality_audit_runs(id) ON DELETE SET NULL,
   ADD COLUMN publish_override_by uuid NULL REFERENCES actors(id),
   ADD COLUMN publish_override_reason text NULL,

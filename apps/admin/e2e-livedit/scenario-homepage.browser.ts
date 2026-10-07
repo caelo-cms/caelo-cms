@@ -35,7 +35,12 @@ import {
   sendChatPromptAndWait,
   verifyPublishedPageWithVision,
 } from "./helpers.js";
-import { logOffset, metricsSince, recordScenarioMetrics } from "./livedit-metrics.js";
+import {
+  logOffset,
+  metricsBetween,
+  metricsExcluding,
+  recordScenarioMetrics,
+} from "./livedit-metrics.js";
 
 // issue #112 — the prompt states design intent the way a real operator
 // would ("nicely designed", "fitting color scheme", "nice header
@@ -401,7 +406,9 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     // The staged homepage is audited (Lighthouse on the bundled Chromium);
     // problems block Publish live until the AI fixed them (re-Staged) or
     // an editor accepted them. This is the block → fix → publish E2E.
+    const qualityLogStart = logOffset(ADMIN_LOG_PATH);
     const quality = await awaitQualityGateOpen(page, chatSessionId);
+    const qualityLogEnd = logOffset(ADMIN_LOG_PATH);
     console.log(
       `[scenario-homepage] quality gate open (${quality.state}) after ${quality.restages} fix re-Stage(s)`,
     );
@@ -578,7 +585,16 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     // Token/cache metrics gate: print the per-turn/loop + per-tool report,
     // write the PR artifact, and fail if caching or token behaviour
     // regressed past the homepage thresholds (see THRESHOLDS.homepage).
-    const metrics = metricsSince(ADMIN_LOG_PATH, metricsOffset);
+    // The quality fix loop (#553) is the AI fixing its own audit findings —
+    // a separate, bounded flow (2 rounds). Report it on its own line and
+    // keep the homepage thresholds about building + re-editing the page.
+    recordScenarioMetrics(
+      "homepage-quality-loop",
+      metricsBetween(ADMIN_LOG_PATH, qualityLogStart, qualityLogEnd),
+    );
+    const metrics = metricsExcluding(ADMIN_LOG_PATH, metricsOffset, [
+      [qualityLogStart, qualityLogEnd],
+    ]);
     const violations = recordScenarioMetrics("homepage", metrics);
     expect(
       violations,
