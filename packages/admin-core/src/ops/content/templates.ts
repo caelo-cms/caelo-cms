@@ -345,6 +345,8 @@ export const createTemplateOp = defineOperation({
 
 export const updateTemplateOp = defineOperation({
   name: "templates.update",
+  // Why human-only: §11.A — a template edit cascades to every page on it; the AI edits through
+  // propose_update_template (Owner-approved) and re-points layouts via templates.set_layout.
   // Human-only writes. AI re-points layouts via the narrow
   // `templates.set_layout` op below — never via this surface.
   actorScope: ["human", "system"],

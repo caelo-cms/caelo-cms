@@ -109,6 +109,8 @@ const manualOverride = z
 
 export const setEngagedSkillsOp = defineOperation({
   name: "chat.set_engaged_skills",
+  // Why human-only: CLAUDE.md §2 — manual skill (dis)engagement is the operator's override and
+  // always wins; the AI loads skills with load_skill instead.
   // Per-chat manual overrides. Owner / editor curates their chat;
   // AI doesn't override its own engagement set (CLAUDE.md §2 — manual
   // disengagement always wins).

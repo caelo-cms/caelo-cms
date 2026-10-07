@@ -36,7 +36,7 @@ export const proposeDeployPromoteTool = makeProposeTool<Input>({
     "Propose promoting one deploy target's latest succeeded build into another target (typically staging → production). " +
     "The preview carries sourceBuildId, pageCount, fileCount — restate them to the operator. " +
     "Use when the operator says 'ship to production', 'go live', 'promote staging'. " +
-    "The fromTarget needs at least one succeeded build (run `deploy.trigger` for staging first if not).",
+    "The fromTarget needs at least one succeeded build — call `deploy_staging` first if it has none or is outdated.",
   schema: inputSchema,
   inputSchema: {
     type: "object",

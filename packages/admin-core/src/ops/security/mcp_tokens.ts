@@ -104,6 +104,8 @@ export const listMcpTokensOp = defineOperation({
 
 export const createMcpTokenOp = defineOperation({
   name: "mcp_tokens.create",
+  // Why human-only: mints a bearer credential; the AI reaches it only through
+  // propose_create_mcp_token (Owner-approved) and never sees a plaintext token.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -159,6 +161,8 @@ export const createMcpTokenOp = defineOperation({
 
 export const revokeMcpTokenOp = defineOperation({
   name: "mcp_tokens.revoke",
+  // Why human-only: credential lifecycle; the AI reaches it only through propose_revoke_mcp_token
+  // (Owner-approved).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ id: z.string().uuid() }).strict(),
