@@ -89,6 +89,12 @@ export function publicSiteUrl(domain: string): string {
   return `https://${domain}`;
 }
 
+/**
+ * The admin env var naming the MCP service account (issue #37). `upgrade`
+ * leaves it untouched when it could not set that account up.
+ */
+export const MCP_ENV_VAR = "CAELO_MCP_IAP_SERVICE_ACCOUNT";
+
 /** Where the admin image ships the static-generator CLI. */
 const GENERATOR_CLI = "/app/apps/static-generator/src/cli.ts";
 
@@ -126,7 +132,7 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     { name: "CAELO_SITE_URL", value: publicSiteUrl(domain) },
     { name: "CAELO_GENERATOR_CLI", value: GENERATOR_CLI },
     // Issue #37 — shown in the /security/mcp `claude mcp add` command.
-    { name: "CAELO_MCP_IAP_SERVICE_ACCOUNT", value: mcpIapServiceAccountEmail(projectId) },
+    { name: MCP_ENV_VAR, value: mcpIapServiceAccountEmail(projectId) },
   ];
   if (inputs.provider === "gcp") {
     // v0.2.78 — the GCS StaticPublisher: Stage uploads to staging,
@@ -207,21 +213,39 @@ export interface IamInvariant {
 
 const SECRET_ACCESSOR = "roles/secretmanager.secretAccessor";
 
-/** Runtime secrets the run SA reads, per provider (the stacks' accessor loop). */
+/** Secrets the stacks give the run SA read access to, per provider (the stacks' accessor loop). */
 const RUNTIME_SECRETS: Record<GcpProvider, readonly string[]> = {
   gcp: ["postgres-password", "csrf-secret", "cookie-secret", "secret-kek", "resend-api-key"],
   "gcp-firebase": ["postgres-password", "csrf-secret", "cookie-secret", "secret-kek"],
 };
 
+/**
+ * Secrets the stacks create and grant but no running code reads: CSRF
+ * secrets are per session in the database, the gateway cookie secret lives
+ * in `site_settings`, the Resend key in the email config. A missing binding
+ * on one of these (or the secret itself, deleted by an operator) must not
+ * block an upgrade.
+ */
+const UNREAD_SECRETS: ReadonlySet<string> = new Set([
+  "csrf-secret",
+  "cookie-secret",
+  "resend-api-key",
+]);
+
 function secretAccessors(provider: GcpProvider): IamInvariant[] {
-  return RUNTIME_SECRETS[provider].map((name) => ({
-    stackResource: `${name}-binding`,
-    role: SECRET_ACCESSOR,
-    member: "run-sa",
-    target: { kind: "secret", name },
-    onFailure: "abort",
-    why: `admin + gateway read ${name} from Secret Manager at boot`,
-  }));
+  return RUNTIME_SECRETS[provider].map((name) => {
+    const unread = UNREAD_SECRETS.has(name);
+    return {
+      stackResource: `${name}-binding`,
+      role: SECRET_ACCESSOR,
+      member: "run-sa",
+      target: { kind: "secret", name },
+      onFailure: unread ? "warn" : "abort",
+      why: unread
+        ? `the stack grants ${name}, but nothing reads it at runtime`
+        : `admin + gateway read ${name} from Secret Manager at boot`,
+    };
+  });
 }
 
 /** v0.6.6 — a custom runtime SA gets no telemetry roles implicitly. */

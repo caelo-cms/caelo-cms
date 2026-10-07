@@ -17,6 +17,7 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
+import { join, resolve as resolvePath } from "node:path";
 import { cancel, confirm, isCancel, log, note, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { gcloud } from "./gcloud.js";
@@ -30,6 +31,7 @@ import {
   recordImageDigests,
 } from "./install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
+import { MCP_ENV_VAR } from "./stack-contract.js";
 import {
   type DeployedService,
   type EnvChange,
@@ -508,24 +510,23 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       liveEnv: liveContainerEnv(serviceJson),
     });
   }
-  const envPlan = planContractEnv(
-    {
-      provider: meta.provider,
-      projectId: meta.projectId,
-      env: GCP_STACK_ENV,
-      domain: meta.domain,
-      region,
-    },
-    Object.fromEntries(
-      plans.map((p) => [p.slug, { serviceName: p.serviceName, liveEnv: p.liveEnv }]),
-    ) as Record<"admin" | "gateway", DeployedService>,
-  );
+  const install = {
+    provider: meta.provider,
+    projectId: meta.projectId,
+    env: GCP_STACK_ENV,
+    domain: meta.domain,
+    region,
+  };
+  const deployed = Object.fromEntries(
+    plans.map((p) => [p.slug, { serviceName: p.serviceName, liveEnv: p.liveEnv }]),
+  ) as Record<"admin" | "gateway", DeployedService>;
+  const envPlan = planContractEnv(install, deployed);
   if (!envPlan.ok) {
     sPre.stop(red("Pre-flight failed: the install's env contract can't be applied"));
     log.error(envPlan.error);
     return;
   }
-  const rolls: RollPlan[] = plans.map((p) => ({
+  let rolls: RollPlan[] = plans.map((p) => ({
     ...p,
     envFlags: envPlan.services[p.slug].flags,
     envChanges: envPlan.services[p.slug].changes,
@@ -654,6 +655,17 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       log.warn(
         "The upgrade continues; external MCP clients stay blocked by IAP until this succeeds.",
       );
+      // Don't hand the admin an MCP service account that may not exist or
+      // lacks its bindings: /security/mcp would print a `claude mcp add`
+      // command that can't work. Leave the var as the service has it.
+      const replan = planContractEnv(install, deployed, { leaveUntouched: [MCP_ENV_VAR] });
+      if (replan.ok) {
+        rolls = rolls.map((r) => ({
+          ...r,
+          envFlags: replan.services[r.slug].flags,
+          envChanges: replan.services[r.slug].changes,
+        }));
+      }
     }
   }
 
@@ -746,19 +758,27 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
 /**
  * Record the digests just rolled so nothing re-deploys an older release:
  * install.json (what a wizard re-run deploys) and the Pulumi stack config
- * (what a plain `pulumi up` deploys). The roll already succeeded, so a
- * failure here warns with the manual fix instead of failing the upgrade.
+ * (what a plain `pulumi up` deploys). The roll already succeeded, so each
+ * write that fails warns with the exact manual fix instead of failing the
+ * upgrade, and one failing never skips the other.
  */
 async function recordRolledDigests(
   installId: string,
   provider: "gcp" | "gcp-firebase",
   digests: ImageDigests,
 ): Promise<void> {
-  recordImageDigests(installId, digests);
+  const reason = (e: unknown) => (e instanceof Error ? e.message.split("\n")[0] : String(e));
+  try {
+    recordImageDigests(installId, digests);
+  } catch (e) {
+    log.warn(
+      yellow(
+        `Could not record the rolled digests in ${installRoot(installId)}/install.json (${reason(e)}). Add this before re-running the installer, or it deploys the newest release instead:\n  "imageDigests": ${JSON.stringify(digests)}`,
+      ),
+    );
+  }
+  const manual = stackConfigRecovery(installId, provider, digests);
   const passphrase = readSecret(installId, "pulumi-passphrase");
-  const manual = Object.entries(digests)
-    .map(([svc, d]) => `  pulumi config set caelo-${provider}:image-digest-${svc} ${d}`)
-    .join("\n");
   if (!passphrase) {
     log.warn(
       yellow(
@@ -769,20 +789,52 @@ async function recordRolledDigests(
   }
   try {
     const { writeImageDigestsToStack } = await import("./wizards/gcp-pulumi.js");
-    await writeImageDigestsToStack({
+    const { removedOverrides } = await writeImageDigestsToStack({
       installRoot: installRoot(installId),
       pulumiPassphrase: passphrase,
       provider,
       digests,
     });
     log.info(dim("Pinned the rolled image digests in the Pulumi stack config."));
+    if (removedOverrides.length > 0) {
+      log.warn(
+        yellow(
+          `Removed ${removedOverrides.join(", ")} from the stack config: those image overrides win over the digest pins, so a later \`pulumi up\` would have rolled back to them.`,
+        ),
+      );
+    }
   } catch (e) {
     log.warn(
       yellow(
-        `Could not pin the rolled digests in the Pulumi stack config (${e instanceof Error ? e.message.split("\n")[0] : String(e)}). Before any manual \`pulumi up\`, run:\n${manual}`,
+        `Could not pin the rolled digests in the Pulumi stack config (${reason(e)}). Before any manual \`pulumi up\`, run:\n${manual}`,
       ),
     );
   }
+}
+
+/**
+ * Shell commands that pin `digests` in the install's own Pulumi stack, with
+ * the same workspace, backend, stack and passphrase the CLI uses — run from
+ * any directory, they cannot hit an unrelated stack.
+ */
+function stackConfigRecovery(
+  installId: string,
+  provider: "gcp" | "gcp-firebase",
+  digests: ImageDigests,
+): string {
+  const root = installRoot(installId);
+  const env = `PULUMI_BACKEND_URL=file://${join(root, "state")} PULUMI_CONFIG_PASSPHRASE="$(cat ${join(root, "secrets", "pulumi-passphrase")})"`;
+  const cwd = `--cwd ${resolvePath(import.meta.dir, "../stacks", provider)} --stack ${GCP_STACK_ENV}`;
+  const lines = Object.entries(digests).map(
+    ([svc, d]) => `  ${env} pulumi config set ${cwd} caelo-${provider}:image-digest-${svc} ${d}`,
+  );
+  if (provider === "gcp") {
+    lines.push(
+      `  ${env} pulumi config rm ${cwd} caelo-gcp:image-admin  # only if set`,
+      `  ${env} pulumi config rm ${cwd} caelo-gcp:image-gateway  # only if set`,
+    );
+  }
+  return lines.join("\n");
 }
 
 /**

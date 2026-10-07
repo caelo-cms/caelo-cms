@@ -74,6 +74,24 @@ export function recordedImageDigests(meta: InstallMetadata): ImageDigests | null
   return d;
 }
 
+/**
+ * The metadata a non-interactive re-run of an existing install writes: the
+ * inputs it was given over what install.json already holds. Everything else
+ * (createdAt, region, the recorded `imageDigests`) survives, so the re-run
+ * keeps the release the install runs instead of looking like a new install.
+ */
+export function resumedMetadata(
+  existing: InstallMetadata,
+  inputs: { domain: string; ownerEmail: string; projectId: string | null },
+): InstallMetadata {
+  return {
+    ...existing,
+    domain: inputs.domain,
+    ownerEmail: inputs.ownerEmail,
+    projectId: inputs.projectId ?? existing.projectId,
+  };
+}
+
 /** Record the image digests an install now runs (see {@link InstallMetadata.imageDigests}). */
 export function recordImageDigests(installId: string, digests: ImageDigests): void {
   const meta = readMetadata(installId);

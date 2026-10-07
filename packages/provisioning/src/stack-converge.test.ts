@@ -170,6 +170,31 @@ describe("planContractEnv", () => {
     expect(plan.services.gateway.flags).toEqual([]);
   });
 
+  it("leaves the MCP service account untouched when upgrade couldn't set it up", () => {
+    const live = liveContainerEnv(
+      serviceJson([{ name: "CAELO_FIREBASE_SITE", value: "caelo-production-site-abc123" }]),
+    );
+    const plan = planContractEnv(
+      {
+        provider: "gcp-firebase",
+        projectId: "acme",
+        env: "production",
+        domain: "acme.com",
+        region: "europe-west1",
+      },
+      {
+        admin: { serviceName: "caelo-production-admin-aaa", liveEnv: live },
+        gateway: { serviceName: "caelo-production-gateway-bbb", liveEnv: new Map() },
+      },
+      { leaveUntouched: ["CAELO_MCP_IAP_SERVICE_ACCOUNT"] },
+    );
+    if (!plan.ok) throw new Error(plan.error);
+    expect(plan.services.admin.changes.map((c) => c.name)).not.toContain(
+      "CAELO_MCP_IAP_SERVICE_ACCOUNT",
+    );
+    expect(plan.services.admin.changes.map((c) => c.name)).toContain("CAELO_SITE_URL");
+  });
+
   it("fails loudly when the Firebase site id can't be discovered", () => {
     const plan = planContractEnv(
       { provider: "gcp-firebase", projectId: "a", env: "production", domain: "a.com", region: "r" },
@@ -301,6 +326,41 @@ describe("ensureStackInvariants", () => {
     expect(failed).toHaveLength(1);
     expect(failed[0]?.id).toContain("roles/run.viewer");
     expect(failed[0]?.error).toContain("PERMISSION_DENIED");
+  });
+
+  it("points a binding on a resource the install predates at the installer", async () => {
+    const answers = fullFirebase();
+    answers["secrets get-iam-policy caelo-production-secret-kek"] = [
+      fail("NOT_FOUND: Secret [caelo-production-secret-kek] not found"),
+    ];
+    answers["secrets add-iam-policy-binding caelo-production-secret-kek"] = [
+      fail("NOT_FOUND: Secret [caelo-production-secret-kek] not found"),
+    ];
+    const { run } = fakeGcloud(answers);
+    const report = await ensureStackInvariants(firebase, { run, sleep: async () => {} });
+    expect(report.mustAbort).toBe(true);
+    const failed = report.outcomes.find((o) => o.status === "failed");
+    expect(failed?.error).toContain("Re-run the installer");
+  });
+
+  it("only warns for secrets the stack grants but nothing reads (csrf/cookie/resend)", async () => {
+    const answers = fullFirebase();
+    for (const name of ["csrf-secret", "cookie-secret"]) {
+      answers[`secrets get-iam-policy caelo-production-${name}`] = [fail("NOT_FOUND")];
+      answers[`secrets add-iam-policy-binding caelo-production-${name}`] = [fail("NOT_FOUND")];
+    }
+    const { run } = fakeGcloud(answers);
+    const report = await ensureStackInvariants(firebase, { run, sleep: async () => {} });
+    expect(report.mustAbort).toBe(false);
+    expect(report.outcomes.filter((o) => o.status === "failed")).toHaveLength(2);
+    const gcpUnread = stackIamInvariants("gcp").filter(
+      (i) => i.target.kind === "secret" && i.onFailure === "warn",
+    );
+    expect(gcpUnread.map((i) => i.target.kind === "secret" && i.target.name).sort()).toEqual([
+      "cookie-secret",
+      "csrf-secret",
+      "resend-api-key",
+    ]);
   });
 
   it("only warns when a telemetry role can't be added", async () => {

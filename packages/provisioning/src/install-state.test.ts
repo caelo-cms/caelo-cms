@@ -4,7 +4,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { type InstallMetadata, recordedImageDigests } from "./install-state.js";
+import { type InstallMetadata, recordedImageDigests, resumedMetadata } from "./install-state.js";
 
 const A = `sha256:${"a".repeat(64)}`;
 const B = `sha256:${"b".repeat(64)}`;
@@ -35,6 +35,26 @@ describe("recordedImageDigests", () => {
     expect(() =>
       recordedImageDigests({ ...meta, imageDigests: { admin: "latest", gateway: B } }),
     ).toThrow(/malformed/);
+  });
+});
+
+describe("resumedMetadata", () => {
+  it("keeps the recorded release on a non-interactive re-run", () => {
+    const existing = { ...meta, imageDigests: { admin: A, gateway: B } };
+    expect(
+      resumedMetadata(existing, {
+        domain: "acme.com",
+        ownerEmail: "new@acme.com",
+        projectId: null,
+      }),
+    ).toEqual({ ...existing, ownerEmail: "new@acme.com" });
+  });
+
+  it("takes an explicit project id over the stored one", () => {
+    expect(
+      resumedMetadata(meta, { domain: "acme.com", ownerEmail: "o@acme.com", projectId: "acme-2" })
+        .projectId,
+    ).toBe("acme-2");
   });
 });
 

@@ -82,16 +82,20 @@ export function imageDigestConfig(
 /**
  * Write the digests `upgrade` rolled to into the install's Pulumi stack
  * config, without running `pulumi up`, so a later `pulumi up` keeps them
- * instead of re-resolving the floating tag. Needs the `pulumi` CLI (the
- * Automation API shells out to it); throws when the CLI or the stack is
- * missing — the caller reports that.
+ * instead of re-resolving the floating tag. On `gcp`, an `image-<service>`
+ * override wins over the digest pin (stacks/gcp `imageTag`), so any such
+ * override is removed: it no longer describes what the service runs.
+ * Needs the `pulumi` CLI (the Automation API shells out to it); throws when
+ * the CLI or the stack is missing — the caller reports that.
+ *
+ * @returns the override keys it removed.
  */
 export async function writeImageDigestsToStack(inputs: {
   installRoot: string;
   pulumiPassphrase: string;
   provider: "gcp" | "gcp-firebase";
   digests: ImageDigests;
-}): Promise<void> {
+}): Promise<{ removedOverrides: string[] }> {
   const stack = await pulumi.LocalWorkspace.selectStack(
     { stackName: GCP_STACK_ENV, workDir: gcpStackWorkDir(inputs.provider) },
     {
@@ -102,6 +106,18 @@ export async function writeImageDigestsToStack(inputs: {
     },
   );
   await stack.setAllConfig(imageDigestConfig(inputs.provider, inputs.digests));
+  const config = await stack.getAllConfig();
+  const removedOverrides = imageOverrideKeys(inputs.provider).filter((k) => k in config);
+  if (removedOverrides.length > 0) await stack.removeAllConfig(removedOverrides);
+  return { removedOverrides };
+}
+
+/**
+ * Stack config keys that override the image a service runs, ahead of the
+ * digest pin. Only the `gcp` stack reads them.
+ */
+function imageOverrideKeys(provider: "gcp" | "gcp-firebase"): string[] {
+  return provider === "gcp" ? ["caelo-gcp:image-admin", "caelo-gcp:image-gateway"] : [];
 }
 
 /**
