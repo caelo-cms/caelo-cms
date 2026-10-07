@@ -114,6 +114,11 @@ import {
   proposeUserDeleteTool,
   proposeUserSetRolesTool,
 } from "./propose-tools-batch.js";
+import {
+  getQualityAuditTool,
+  listQualityAcceptancesTool,
+  listQualityAuditsTool,
+} from "./quality-audit-tools.js";
 import { queryPageHtmlTool } from "./query-page-html.js";
 import { readContentTool } from "./read-content.js";
 import { readPageMoreTool } from "./read-page-more.js";
@@ -344,6 +349,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(optimizePageSeoTool);
   // P8 AI-first review pass — bulk variants + redirect surface.
   registry.register(findRedirectsTool);
+  // #553 — quality gate read surface (Lighthouse audits after a Stage).
+  registry.register(getQualityAuditTool);
+  registry.register(listQualityAuditsTool);
+  registry.register(listQualityAcceptancesTool);
   // v0.2.69 — render inspection. AI uses this BEFORE proposing CSS
   // / layout fixes so it sees the actual cascade instead of guessing.
   registry.register(inspectPageRenderTool);

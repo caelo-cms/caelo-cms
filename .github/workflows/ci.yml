@@ -396,6 +396,16 @@ jobs:
             docker rm -f smoke || true
             exit 1
           fi
+          # #553 — the quality gate's Lighthouse audit must run in the image:
+          # the admin spawns the audit child under the image's Bun, which
+          # drives the same bundled Chromium over CDP. Audits a loopback page
+          # (3 Performance runs) and asserts scores + a planted finding.
+          if ! docker exec smoke bun /app/packages/admin-core/scripts/lighthouse-smoke.ts; then
+            echo "::error::The Lighthouse quality audit cannot run inside the admin image"
+            docker logs smoke 2>&1 | tail -50 || true
+            docker rm -f smoke || true
+            exit 1
+          fi
           echo "Image size: $(docker image inspect caelo-admin:smoke --format '{{.Size}}' | awk '{printf "%.0f MB", $1/1000000}')"
 
           # SIGTERM must end the process cleanly. `docker stop` escalates to
