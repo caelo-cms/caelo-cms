@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -20,7 +21,21 @@ export const load: PageServerLoad = async ({ locals }) => {
   const stale = await execute(registry, adapter, locals.ctx, "pages_seo.list_stale", {
     limit: 50,
   });
+  // The site language lives on the identity half of site_defaults
+  // (written by site_defaults.set_identity, which the AI can call too).
+  const defaults = await execute(registry, adapter, locals.ctx, "site_defaults.get", {});
+  const siteLanguage = defaults.ok
+    ? ((defaults.value as { defaults: { siteLanguage: string } | null }).defaults?.siteLanguage ??
+      null)
+    : null;
+  const siteLanguageError = defaults.ok
+    ? siteLanguage === null
+      ? "site_defaults row is missing — set the default layout + template at /security/site-defaults first."
+      : null
+    : `site_defaults.get failed: ${describeError(defaults.error)}`;
   return {
+    siteLanguage,
+    siteLanguageError,
     settings: settings.ok
       ? (settings.value as {
           siteBaseUrl: string | null;
@@ -77,5 +92,17 @@ export const actions: Actions = {
       return fail(400, { error: message });
     }
     return { ok: true, message: "Saved." };
+  },
+  saveLanguage: async ({ request, locals }) => {
+    requirePermission(locals, "roles.manage");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const siteLanguage = String(form.get("siteLanguage") ?? "").trim();
+    const r = await execute(registry, adapter, locals.ctx, "site_defaults.set_identity", {
+      siteLanguage,
+    });
+    if (!r.ok) return fail(400, { error: describeError(r.error) });
+    return { ok: true, message: "Site language saved." };
   },
 };

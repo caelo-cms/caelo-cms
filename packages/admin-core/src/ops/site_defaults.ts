@@ -20,7 +20,7 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { type DesignBrief, designBriefSchema, err, ok } from "@caelo-cms/shared";
+import { type DesignBrief, designBriefSchema, err, languageTagSchema, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -44,6 +44,9 @@ const siteDefaultsRow = z.object({
   sitePurpose: z.string().nullable(),
   /** issue #163 — structured Design Brief from the Genesis discovery dialog. */
   designBrief: designBriefSchema.nullable(),
+  /** BCP 47 `<html lang>` for every page no plugin assigns a locale to
+   *  (migration 0230; stored, seeded `en`). */
+  siteLanguage: z.string(),
   updatedAt: z.string(),
 });
 
@@ -76,6 +79,7 @@ export const getSiteDefaultsOp = defineOperation({
         sd.site_name                  AS site_name,
         sd.site_purpose               AS site_purpose,
         sd.design_brief               AS design_brief,
+        sd.site_language              AS site_language,
         sd.updated_at                 AS updated_at
       FROM site_defaults sd
       JOIN layouts l   ON l.id   = sd.default_layout_id
@@ -91,6 +95,7 @@ export const getSiteDefaultsOp = defineOperation({
       site_name: string | null;
       site_purpose: string | null;
       design_brief: unknown;
+      site_language: string;
       updated_at: string | Date;
     }[];
     const r = rows[0];
@@ -105,6 +110,7 @@ export const getSiteDefaultsOp = defineOperation({
         siteName: r.site_name,
         sitePurpose: r.site_purpose,
         designBrief: parseDesignBrief(r.design_brief),
+        siteLanguage: r.site_language,
         updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
       },
     });
@@ -199,7 +205,8 @@ export const setSiteDefaultsOp = defineOperation({
 });
 
 /**
- * v0.11.4 (issue #76 follow-up) — write site identity (name + purpose).
+ * v0.11.4 (issue #76 follow-up) — write site identity (name + purpose,
+ * design brief, and the document language rendered as `<html lang>`).
  *
  * Captured by the AI from the operator's first chat: when the user
  * opens /edit and says *"build me a homepage for an AI-first CMS
@@ -233,11 +240,19 @@ export const setSiteIdentityOp = defineOperation({
       sitePurpose: z.string().min(1).max(2000).nullable().optional(),
       /** issue #163 — structured Design Brief from the Genesis discovery dialog. */
       designBrief: designBriefSchema.nullable().optional(),
+      /** BCP 47 document language (`<html lang>`) of the site's content. */
+      siteLanguage: languageTagSchema.optional(),
     })
     .strict()
     .refine(
-      (v) => v.siteName !== undefined || v.sitePurpose !== undefined || v.designBrief !== undefined,
-      { message: "pass at least one of `siteName`, `sitePurpose`, or `designBrief`" },
+      (v) =>
+        v.siteName !== undefined ||
+        v.sitePurpose !== undefined ||
+        v.designBrief !== undefined ||
+        v.siteLanguage !== undefined,
+      {
+        message: "pass at least one of `siteName`, `sitePurpose`, `designBrief`, or `siteLanguage`",
+      },
     ),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
@@ -264,6 +279,9 @@ export const setSiteIdentityOp = defineOperation({
     if (input.designBrief !== undefined) {
       setClauses.push(sql`design_brief = ${jsonbParam(input.designBrief)}`);
     }
+    if (input.siteLanguage !== undefined) {
+      setClauses.push(sql`site_language = ${input.siteLanguage}`);
+    }
     setClauses.push(sql`updated_at = now()`);
     setClauses.push(sql`updated_by = ${ctx.actorId}::uuid`);
     // Stitch clauses with literal `, ` separators. Drizzle's sql.join
@@ -282,7 +300,7 @@ export const setSiteIdentityOp = defineOperation({
       operation: "site_defaults.set_identity",
       input,
       succeeded: true,
-      resultSummary: `siteName=${input.siteName !== undefined} sitePurpose=${input.sitePurpose !== undefined} designBrief=${input.designBrief !== undefined}`,
+      resultSummary: `siteName=${input.siteName !== undefined} sitePurpose=${input.sitePurpose !== undefined} designBrief=${input.designBrief !== undefined} siteLanguage=${input.siteLanguage ?? "unchanged"}`,
     });
     return ok({});
   },

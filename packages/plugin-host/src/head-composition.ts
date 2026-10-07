@@ -24,6 +24,7 @@ import {
   type SitemapContribution,
   sitemapContribution,
 } from "@caelo-cms/plugin-sdk";
+import { languageTagSchema } from "@caelo-cms/shared";
 import {
   isPluginDisabled,
   loadedPlugins,
@@ -69,6 +70,9 @@ function headEntryValue(e: HeadEntry): string {
 export interface CollectedContributions {
   readonly head: Map<string, HeadEntry[]>;
   readonly sitemap: Map<string, SitemapContribution>;
+  /** Per-page document language (`<html lang>`), when a plugin knows it
+   *  (e.g. the page's locale). Absent → the site's stored language. */
+  readonly lang: Map<string, string>;
 }
 
 /**
@@ -85,7 +89,9 @@ export async function collectContributions(
   const head = new Map<string, HeadEntry[]>();
   const headKeys = new Map<string, Map<string, { value: string; source: string }>>();
   const sitemap = new Map<string, SitemapContribution>();
-  if (pageIds.length === 0) return { head, sitemap };
+  const lang = new Map<string, string>();
+  const langSource = new Map<string, string>();
+  if (pageIds.length === 0) return { head, sitemap, lang };
 
   for (const source of contributingPlugins()) {
     const r = await runPluginOperation({
@@ -102,6 +108,7 @@ export async function collectContributions(
     const value = r.value as {
       head?: Record<string, unknown[]>;
       sitemap?: Record<string, unknown>;
+      lang?: Record<string, unknown>;
     };
 
     for (const [pageId, rawEntries] of Object.entries(value.head ?? {})) {
@@ -161,9 +168,26 @@ export async function collectContributions(
         ...(mergedAlternates.length > 0 ? { alternates: mergedAlternates } : {}),
       });
     }
+
+    for (const [pageId, raw] of Object.entries(value.lang ?? {})) {
+      const parsed = languageTagSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new Error(
+          `head-composition: plugin "${source.pluginSlug}" returned an invalid document language for page ${pageId}: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
+        );
+      }
+      const existing = lang.get(pageId);
+      if (existing !== undefined && existing !== parsed.data) {
+        throw new Error(
+          `head-composition: contradictory document languages for page ${pageId}: "${existing}" (from ${langSource.get(pageId)}) vs "${parsed.data}" (from ${source.pluginSlug}). Contributions must agree or stay disjoint.`,
+        );
+      }
+      lang.set(pageId, parsed.data);
+      langSource.set(pageId, source.pluginSlug);
+    }
   }
 
-  return { head, sitemap };
+  return { head, sitemap, lang };
 }
 
 // ---------------------------------------------------------------------------

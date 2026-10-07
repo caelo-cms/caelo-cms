@@ -1065,9 +1065,12 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * #391 — the I/O half of head/sitemap contributions: an operation in
    * `operations` taking `{pageIds: string[], siteBaseUrl: string}` and
    * returning `{head?: Record<pageId, HeadEntry[]>, sitemap?:
-   * Record<pageId, SitemapContribution>}`. The host Zod-validates every
-   * entry and serializes them itself — a plugin can never inject raw
-   * head HTML.
+   * Record<pageId, SitemapContribution>, lang?: Record<pageId, string>}`.
+   * `lang` is the page's document language (BCP 47, set as `<html
+   * lang>`; e.g. the page's locale) and overrides the site's stored
+   * language for that page — it rides the `head` contribution kind. The
+   * host Zod-validates every entry and serializes them itself — a plugin
+   * can never inject raw head HTML.
    */
   readonly contributionsOperation?: string;
   /** See `pluginManifest.dataLists`. Release-signed only. */

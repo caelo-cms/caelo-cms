@@ -19,7 +19,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { designBriefSchema } from "@caelo-cms/shared";
+import { designBriefSchema, languageTagSchema } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -44,6 +44,12 @@ const setSiteIdentityToolInput = z
      * imageryDirection, avoid). Drives the parallel draft subagents.
      */
     designBrief: designBriefSchema.nullable().optional(),
+    /**
+     * BCP 47 language of the site's content (`en`, `de`, `pt-BR`).
+     * Rendered as `<html lang>` on every page — screen readers and
+     * search engines read it. Stored, never null (seeded `en`).
+     */
+    siteLanguage: languageTagSchema.optional(),
   })
   .strict();
 type SetSiteIdentityToolInput = z.infer<typeof setSiteIdentityToolInput>;
@@ -60,7 +66,9 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
     "hasn't given you enough to infer (e.g. they ask 'add a contact form' on an unconfigured install), " +
     "ASK them for the missing essentials before guessing. " +
     "Pass `null` to clear a field. " +
-    "During Site Genesis, ALSO pass `designBrief` ({audience, moodWords, tone, industry, differentiators, imageryDirection, avoid}) — it feeds the parallel draft subagents and every future design decision.",
+    "During Site Genesis, ALSO pass `designBrief` ({audience, moodWords, tone, industry, differentiators, imageryDirection, avoid}) — it feeds the parallel draft subagents and every future design decision. " +
+    "`siteLanguage` is the BCP 47 language the site's content is written in (`en`, `de`, `pt-BR`); every page renders it as `<html lang>` for screen readers and search engines. It starts as `en` — set it whenever the site is written in another language: infer it from the language the operator wants the copy in, or, when migrating a site, from the `Lang:` that inspect_external_page reports. " +
+    "On a multilingual site the international-site plugin assigns each translated page its own locale; `siteLanguage` stays the language of the pages it does not assign (the default locale).",
   schema: setSiteIdentityToolInput,
   inputSchema: {
     type: "object",
@@ -68,6 +76,7 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
     properties: {
       siteName: { type: ["string", "null"], minLength: 1, maxLength: 200 },
       sitePurpose: { type: ["string", "null"], minLength: 1, maxLength: 2000 },
+      siteLanguage: { type: "string", minLength: 2, maxLength: 35 },
       designBrief: {
         type: ["object", "null"],
         additionalProperties: false,
@@ -91,12 +100,13 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
     if (
       input.siteName === undefined &&
       input.sitePurpose === undefined &&
-      input.designBrief === undefined
+      input.designBrief === undefined &&
+      input.siteLanguage === undefined
     ) {
       return {
         ok: false,
         content:
-          "set_site_identity needs at least one of `siteName`, `sitePurpose`, or `designBrief`.",
+          "set_site_identity needs at least one of `siteName`, `sitePurpose`, `designBrief`, or `siteLanguage`.",
       };
     }
     const r = await execute(
@@ -117,6 +127,9 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
     }
     if (input.sitePurpose !== undefined) {
       parts.push(input.sitePurpose === null ? "cleared site purpose" : "set sitePurpose");
+    }
+    if (input.siteLanguage !== undefined) {
+      parts.push(`set siteLanguage='${input.siteLanguage}'`);
     }
     return { ok: true, content: parts.join(", ") };
   },
