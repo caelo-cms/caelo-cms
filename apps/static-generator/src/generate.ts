@@ -39,6 +39,7 @@ import {
   ComposeError,
   type ComposeFonts,
   type ComposeTheme,
+  type ComposeThemeAsset,
   composePageWithLayout,
   fontUnresolvableMarker,
   type ModuleFieldKind,
@@ -515,21 +516,51 @@ export async function generateSite(args: {
 
   // v0.11.0 — load the active theme once for the whole build. The
   // renderer emits <style data-source="theme"> from these tokens; the
-  // four asset URLs are surfaced for modules that reference them.
+  // four asset URLs feed the `{{theme_*_url}}` placeholders and the
+  // composer's `<link rel="icon">` head tag.
+  //
+  // Asset URLs are built from the media SLUG (`/_caelo/media/<slug>`),
+  // never the id: the media pass classifies a bare single-segment ref
+  // as a slug, so an id-built `/_caelo/media/<uuid>` would be looked up
+  // as a slug and fail the deploy as unresolved. Same join as the
+  // preview's `loadActiveThemeForCompose`, so both surfaces emit the
+  // same URL. A deleted asset (no live media row) drops the binding.
   const themeRows = (await tx.execute(sql`
     SELECT
-      tokens                       AS tokens,
-      logo_media_id::text          AS logo_media_id,
-      logo_dark_media_id::text     AS logo_dark_media_id,
-      favicon_media_id::text       AS favicon_media_id,
-      social_share_media_id::text  AS social_share_media_id
-    FROM themes WHERE is_active = true LIMIT 1
+      t.tokens                       AS tokens,
+      t.logo_media_id::text          AS logo_media_id,
+      la.slug                        AS logo_slug,
+      la.mime                        AS logo_mime,
+      t.logo_dark_media_id::text     AS logo_dark_media_id,
+      lda.slug                       AS logo_dark_slug,
+      lda.mime                       AS logo_dark_mime,
+      t.favicon_media_id::text       AS favicon_media_id,
+      fa.slug                        AS favicon_slug,
+      fa.mime                        AS favicon_mime,
+      t.social_share_media_id::text  AS social_share_media_id,
+      ssa.slug                       AS social_share_slug,
+      ssa.mime                       AS social_share_mime
+    FROM themes t
+    LEFT JOIN media_assets la  ON la.id  = t.logo_media_id         AND la.deleted_at  IS NULL
+    LEFT JOIN media_assets lda ON lda.id = t.logo_dark_media_id    AND lda.deleted_at IS NULL
+    LEFT JOIN media_assets fa  ON fa.id  = t.favicon_media_id      AND fa.deleted_at  IS NULL
+    LEFT JOIN media_assets ssa ON ssa.id = t.social_share_media_id AND ssa.deleted_at IS NULL
+    WHERE t.is_active = true
+    LIMIT 1
   `)) as unknown as Array<{
     tokens: unknown;
     logo_media_id: string | null;
+    logo_slug: string | null;
+    logo_mime: string | null;
     logo_dark_media_id: string | null;
+    logo_dark_slug: string | null;
+    logo_dark_mime: string | null;
     favicon_media_id: string | null;
+    favicon_slug: string | null;
+    favicon_mime: string | null;
     social_share_media_id: string | null;
+    social_share_slug: string | null;
+    social_share_mime: string | null;
   }>;
   let activeTheme: ComposeTheme | undefined;
   const tr = themeRows[0];
@@ -538,15 +569,21 @@ export async function generateSite(args: {
       typeof tr.tokens === "string"
         ? (JSON.parse(tr.tokens) as ThemeDocument)
         : (tr.tokens as ThemeDocument);
-    const asset = (id: string | null): { mediaId: string; url: string } | null =>
-      id === null ? null : { mediaId: id, url: buildMediaUrl(id, "orig") };
+    const asset = (
+      id: string | null,
+      slug: string | null,
+      mime: string | null,
+    ): ComposeThemeAsset | null =>
+      id === null || slug === null || mime === null
+        ? null
+        : { mediaId: id, url: buildMediaUrl(slug, "orig"), mime };
     activeTheme = {
       tokens,
       assets: {
-        logo: asset(tr.logo_media_id),
-        logoDark: asset(tr.logo_dark_media_id),
-        favicon: asset(tr.favicon_media_id),
-        socialShare: asset(tr.social_share_media_id),
+        logo: asset(tr.logo_media_id, tr.logo_slug, tr.logo_mime),
+        logoDark: asset(tr.logo_dark_media_id, tr.logo_dark_slug, tr.logo_dark_mime),
+        favicon: asset(tr.favicon_media_id, tr.favicon_slug, tr.favicon_mime),
+        socialShare: asset(tr.social_share_media_id, tr.social_share_slug, tr.social_share_mime),
       },
     };
   }

@@ -651,3 +651,85 @@ it("preloads pinned TTF/OTF/WOFF files with their actual format", () => {
   expect(html).toContain('type="font/otf"');
   expect(html).toContain('type="font/woff"');
 });
+
+// The theme's favicon is document metadata: binding it via
+// `set_theme_asset({slot:"favicon"})` must put a `<link rel="icon">` into
+// <head> on every page, without any module carrying the tag. Before this,
+// nothing was emitted and browsers fell back to a 404ing /favicon.ico.
+describe("theme favicon in <head>", () => {
+  const layoutHtml = `<!doctype html><html><head><title>t</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`;
+  const templateHtml = `<body><caelo-slot name="content">_</caelo-slot></body>`;
+  const themeWith = (favicon: { url: string; mime: string } | null) => ({
+    tokens: {},
+    assets: {
+      logo: null,
+      logoDark: null,
+      favicon:
+        favicon === null ? null : { mediaId: "44444444-4444-4444-8444-444444444444", ...favicon },
+      socialShare: null,
+    },
+  });
+  const headOf = (html: string): string => html.slice(0, html.indexOf("</head>"));
+  const bodyOf = (html: string): string => html.slice(html.indexOf("</head>"));
+
+  it("composePageWithLayout emits <link rel=icon> with the bound media URL + mime", () => {
+    const out = composePageWithLayout({
+      templateHtml,
+      templateCss: "",
+      blocks: [],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+      theme: themeWith({ url: "/_caelo/media/viu-one-favicon", mime: "image/svg+xml" }),
+    });
+    const tag = '<link rel="icon" href="/_caelo/media/viu-one-favicon" type="image/svg+xml">';
+    expect(headOf(out.html)).toContain(tag);
+    expect(bodyOf(out.html)).not.toContain('rel="icon"');
+    // Exactly once per page.
+    expect(out.html.split('rel="icon"').length - 1).toBe(1);
+  });
+
+  it("composePagePreview emits the same tag", () => {
+    const out = composePagePreview({
+      templateHtml: `<html><head></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
+      templateCss: "",
+      blocks: [],
+      theme: themeWith({ url: "/_caelo/media/fav", mime: "image/png" }),
+    });
+    expect(headOf(out.html)).toContain(
+      '<link rel="icon" href="/_caelo/media/fav" type="image/png">',
+    );
+  });
+
+  it("emits no icon link when the theme has no favicon bound, or no theme is threaded", () => {
+    const base = {
+      templateHtml,
+      templateCss: "",
+      blocks: [],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+    };
+    expect(composePageWithLayout({ ...base, theme: themeWith(null) }).html).not.toContain(
+      'rel="icon"',
+    );
+    expect(composePageWithLayout(base).html).not.toContain('rel="icon"');
+  });
+
+  it("attribute-escapes the URL and mime", () => {
+    const out = composePageWithLayout({
+      templateHtml,
+      templateCss: "",
+      blocks: [],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+      theme: themeWith({ url: '/x"><script>', mime: "image/png" }),
+    });
+    expect(out.html).toContain('href="/x&quot;&gt;&lt;script&gt;"');
+    expect(out.html).not.toContain('/x"><script>');
+  });
+});

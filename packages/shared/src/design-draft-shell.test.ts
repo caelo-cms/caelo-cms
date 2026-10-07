@@ -21,7 +21,11 @@ const TOKENS = {
 const THEME: ComposeTheme = {
   tokens: TOKENS,
   assets: {
-    logo: { mediaId: "11111111-1111-4111-8111-111111111111", url: "/_caelo/media/logo/orig" },
+    logo: {
+      mediaId: "11111111-1111-4111-8111-111111111111",
+      url: "/_caelo/media/logo/orig",
+      mime: "image/png",
+    },
     logoDark: null,
     favicon: null,
     socialShare: null,
