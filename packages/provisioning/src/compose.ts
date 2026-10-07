@@ -97,6 +97,7 @@ services:
       ADMIN_DATABASE_URL: "postgres://caelo:${escapeYaml(spec.postgresPassword)}@postgres:5432/cms_admin"
       PUBLIC_ADMIN_DATABASE_URL: "postgres://caelo:${escapeYaml(spec.postgresPassword)}@postgres:5432/cms_public"
       CAELO_SECRET_KEK: "${escapeYaml(spec.caeloSecretKek)}"
+      CAELO_SITE_URL: "https://${escapeYaml(spec.domain)}"
       NODE_ENV: production
 ${env("ANTHROPIC_API_KEY", spec.anthropicApiKey)}
 ${env("RESEND_API_KEY", spec.resendApiKey)}

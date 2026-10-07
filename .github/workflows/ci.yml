@@ -378,6 +378,26 @@ jobs:
             exit 1
           fi
 
+          # #428 — the image must be able to take screenshots: launch the
+          # bundled full Chromium the way the screenshotter does (channel
+          # "chromium") and render a page, inside the running container.
+          if ! docker exec smoke bun -e '
+            const pw = await import("playwright");
+            const b = await pw.chromium.launch({ headless: true, channel: "chromium" });
+            const p = await b.newPage();
+            await p.setContent("<h1>caelo</h1>");
+            const png = await p.screenshot();
+            await b.close();
+            if (png.length < 100) throw new Error("empty screenshot");
+            console.log("Chromium OK:", b.version(), png.length, "bytes");
+          '; then
+            echo "::error::Bundled Chromium cannot launch or capture inside the admin image"
+            docker logs smoke 2>&1 | tail -50 || true
+            docker rm -f smoke || true
+            exit 1
+          fi
+          echo "Image size: $(docker image inspect caelo-admin:smoke --format '{{.Size}}' | awk '{printf "%.0f MB", $1/1000000}')"
+
           # SIGTERM must end the process cleanly. `docker stop` escalates to
           # SIGKILL (exit 137) after the timeout, which is what happens when
           # the bootstrapped workers keep the event loop alive and nothing

@@ -58,6 +58,10 @@ export default defineConfig({
       PUBLIC_ADMIN_DATABASE_URL: process.env.PUBLIC_ADMIN_DATABASE_URL ?? "",
       PUBLIC_DATABASE_URL: process.env.PUBLIC_DATABASE_URL ?? "",
       ORIGIN: origin,
+      // #551 — the admin seeds site_defaults.site_base_url from this on a
+      // fresh database (provisioning sets it on real installs); specs that
+      // render canonicals or hreflang need it configured.
+      CAELO_SITE_URL: "http://localhost:8082",
       // NODE_ENV must be unset / non-production for the test-provider
       // registry (`/__test/providers`) to accept registrations. The
       // production build runtime sets NODE_ENV=production by default

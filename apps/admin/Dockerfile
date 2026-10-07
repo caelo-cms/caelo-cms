@@ -174,6 +174,23 @@ FROM oven/bun:1.4.2-slim AS runtime
 
 COPY --from=deno /deno /usr/local/bin/deno
 
+# #428 — Chromium for server-side screenshots (chat + MCP screenshot_page,
+# screenshot_external_page, migration ground truth). Without it every
+# capture path failed on real installs; there is nothing to install later
+# on Cloud Run. Installed from the repo-pinned Playwright so the browser
+# build matches the library exactly. Only the playwright package is
+# copied first, so this large layer is rebuilt on a Playwright bump, not on
+# every dependency change.
+# `--no-shell`: the full Chromium build only (launched with
+# channel "chromium"), not the stripped headless shell — the full build
+# also serves a later Lighthouse-style staging audit (#553).
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+# playwright@1.63.0 carries its matching playwright-core nested (the root
+# playwright-core is a different version pulled in by @playwright/mcp).
+COPY --from=builder /repo/node_modules/playwright /tmp/pw/node_modules/playwright
+RUN bun /tmp/pw/node_modules/playwright/cli.js install --with-deps --no-shell chromium && \
+    rm -rf /tmp/pw /var/lib/apt/lists/*
+
 # Reproduce the workspace layout under /app so node_modules resolution
 # works the same way it did at build time (Bun nests admin-specific
 # deps in apps/admin/node_modules; the SSR bundle's runtime requires
