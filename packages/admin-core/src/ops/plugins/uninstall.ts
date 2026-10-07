@@ -37,6 +37,7 @@ import {
   resolveChatSessionId,
 } from "../_propose-helpers.js";
 import { applyUrlMigrationDiff, computeUrlMigrationDiff } from "../content/url_migrations.js";
+import { applyRevokeCapabilityProposal } from "./capability_proposals.js";
 
 /** Schema-drop hooks, configured by the host at bootstrap (the ops
  *  layer has no adapter handle; DDL on both pools lives there). */
@@ -168,24 +169,30 @@ export const proposeUninstallPluginOp = defineOperation({
 
 export const executeUninstallPluginOp = defineOperation({
   name: "plugins.execute_proposal",
-  // Why human-only (+system): §11.A — dropping schemas is data loss; the
-  // Owner's click is the whole point of the gate.
+  // Why human-only (+system): §11.A — dropping schemas is data loss and a
+  // revoked grant disables the plugin; the Owner's click is the whole
+  // point of the gate.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
+  // One executor for the uniform `propose_*` plugin tools (uninstall,
+  // revoke_capability); the result fields depend on the row's kind.
+  // Activation keeps its own executor (`plugins.execute_activation`).
   output: z.object({
     slug: z.string(),
-    pagesMoved: z.number(),
-    redirectsCreated: z.number(),
-    skillsArchived: z.number(),
+    pagesMoved: z.number().optional(),
+    redirectsCreated: z.number().optional(),
+    skillsArchived: z.number().optional(),
+    revokedCapability: z.string().optional(),
+    disabled: z.boolean().optional(),
   }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, status, payload
+      SELECT id::text AS id, kind, status, payload
       FROM plugin_pending_actions
       WHERE id = ${input.proposalId}::uuid
       FOR UPDATE
-    `)) as unknown as { id: string; status: string; payload: unknown }[];
+    `)) as unknown as { id: string; kind: string; status: string; payload: unknown }[];
     const row = rows[0];
     if (!row) {
       return err({
@@ -199,6 +206,18 @@ export const executeUninstallPluginOp = defineOperation({
         kind: "HandlerError",
         operation: "plugins.execute_proposal",
         message: `proposal is '${row.status}', not pending`,
+      });
+    }
+    if (row.kind === "revoke_capability") {
+      return applyRevokeCapabilityProposal(ctx, tx, input.proposalId, row.payload);
+    }
+    // Anything else that is not an uninstall (an activation row) must
+    // never fall through to the schema-dropping path below.
+    if (row.kind !== "uninstall") {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.execute_proposal",
+        message: `proposal is a '${row.kind}' action — apply it with its own executor`,
       });
     }
     const payload = row.payload as { slug: string; pluginId: string };
