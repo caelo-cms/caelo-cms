@@ -72,8 +72,10 @@ describe("Caddy cache policy for content-hashed assets", () => {
   it("public vhosts mark only CONTENT_HASHED_PATH_PATTERN paths immutable", () => {
     const out = generateCaddyfile(spec);
     const publicBlock = out.match(/\nexample\.com \{[\s\S]*?\n\}/)?.[0] ?? "";
+    // `file` ANDs an existence check onto the path match, so a 404 for
+    // a hashed URL is never served with a year-long Cache-Control.
     expect(publicBlock).toContain(
-      `@content_hashed path_regexp content_hashed ${CONTENT_HASHED_PATH_PATTERN}\n`,
+      `@content_hashed {\n    path_regexp content_hashed ${CONTENT_HASHED_PATH_PATTERN}\n    file\n  }\n`,
     );
     expect(publicBlock).toContain(
       `header @content_hashed Cache-Control "${IMMUTABLE_CACHE_CONTROL}"`,
@@ -89,7 +91,7 @@ describe("Caddy cache policy for content-hashed assets", () => {
     for (const name of ["Caddyfile.production", "Caddyfile.staging"]) {
       const body = readFileSync(join(import.meta.dir, "..", "caddy", name), "utf8");
       expect(body).toContain(
-        `@content_hashed path_regexp content_hashed ${CONTENT_HASHED_PATH_PATTERN}\n`,
+        `@content_hashed {\n\t\tpath_regexp content_hashed ${CONTENT_HASHED_PATH_PATTERN}\n\t\tfile\n\t}\n`,
       );
       expect(body).toContain(`header @content_hashed Cache-Control "${IMMUTABLE_CACHE_CONTROL}"`);
     }
