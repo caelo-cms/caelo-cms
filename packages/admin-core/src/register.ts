@@ -306,6 +306,10 @@ import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
+  listPluginCapabilityGrantsOp,
+  proposeRevokePluginCapabilityOp,
+} from "./ops/plugins/capability_proposals.js";
+import {
   commentArchiveInsertOp,
   commentArchiveListForPageOp,
 } from "./ops/plugins/comment_archive.js";
@@ -317,6 +321,7 @@ import {
   revokePluginCapabilityOp,
   stagePluginInstallationOp,
 } from "./ops/plugins/installations.js";
+import { listPluginPendingActionsOp, rejectPluginProposalOp } from "./ops/plugins/pending_queue.js";
 import {
   activatePluginOp,
   disablePluginOp,
@@ -602,6 +607,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
   registry.register(proposeUninstallPluginOp);
+  // §11.A — revoking a plugin grant (plugins.execute_proposal applies it).
+  registry.register(proposeRevokePluginCapabilityOp);
+  registry.register(listPluginCapabilityGrantsOp);
+  // Owner queue for plugin proposals that wait (Power-MCP has no in-chat card).
+  registry.register(listPluginPendingActionsOp);
+  registry.register(rejectPluginProposalOp);
   registry.register(executeUninstallPluginOp);
   registry.register(proposePluginActivationOp);
   registry.register(executePluginActivationOp);

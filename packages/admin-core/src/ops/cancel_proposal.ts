@@ -39,6 +39,7 @@ const PENDING_TABLES = [
   "template_pending_actions",
   "domain_pending_actions",
   "site_defaults_pending_actions",
+  "plugin_pending_actions",
   "owner_settings_pending_actions",
 ] as const;
 
@@ -199,6 +200,13 @@ async function runCancelOnTable(
         WHERE id=${proposalId}::uuid AND status='pending' AND proposed_by=${actorId}::uuid
         RETURNING id::text AS id
       `)) as unknown as { id: string }[];
+    case "plugin_pending_actions":
+      return (await tx.execute(sql`
+        UPDATE plugin_pending_actions SET status='cancelled', decided_at=now(),
+          decided_by=${actorId}::uuid, decision_reason=${reason}
+        WHERE id=${proposalId}::uuid AND status='pending' AND proposed_by=${actorId}::uuid
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
     case "owner_settings_pending_actions":
       return (await tx.execute(sql`
         UPDATE owner_settings_pending_actions SET status='cancelled', decided_at=now(),
@@ -216,6 +224,7 @@ function tableToDomain(table: string): string {
   if (table === "mcp_token_pending_actions") return "mcp_tokens";
   if (table === "email_config_pending_actions") return "email_config";
   if (table === "site_defaults_pending_actions") return "site_defaults";
+  if (table === "plugin_pending_actions") return "plugins";
   if (table === "owner_settings_pending_actions") return "owner_settings";
   return table.replace(/_pending_actions$/, "") + "s".replace(/ss$/, "s");
 }

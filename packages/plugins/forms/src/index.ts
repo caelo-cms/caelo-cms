@@ -17,12 +17,18 @@
  *   list_submissions   — admin. Optional filter by form slug + status.
  *   mark_read          — admin. status='new' → 'read'.
  *   archive            — admin. Any status → 'archived'.
+ *   set_submission_status — admin. Bulk status change (the AI's path to the
+ *                        same mark-read / archive the owner panel offers).
  *   create_form        — admin. Owner-curated form definition.
  *   summarize          — admin. Calls ctx.ai.complete on recent submissions.
  *
  * AI tools:
- *   list_form_submissions     — read-only browse for the chat-runner.
+ *   list_form_submissions      — read-only browse for the chat-runner.
  *   summarize_form_submissions — wraps the summarize op.
+ *   set_form_submission_status — mark read / archive / spam / back to new,
+ *                                many at once. Direct (not approval-gated):
+ *                                a status flag on the Owner's own inbox,
+ *                                undone by the same tool.
  */
 
 import {
@@ -34,7 +40,7 @@ import {
   postPluginJson,
   setStatus,
 } from "@caelo-cms/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { defineComponent, definePlugin, type PluginContextTier1, z } from "@caelo-cms/plugin-sdk";
 
 const SLUG = "forms";
 
@@ -52,6 +58,16 @@ interface ListSubmissionsInput {
   status?: "new" | "read" | "archived" | "spam";
   limit?: number;
 }
+
+const submissionStatus = z.enum(["new", "read", "archived", "spam"]);
+
+/** Bulk status change — the AI tool's boundary, validated before any write. */
+const setSubmissionStatusArgs = z
+  .object({
+    submissionIds: z.array(z.string().uuid()).min(1).max(200),
+    status: submissionStatus,
+  })
+  .strict();
 
 interface SubmissionRow {
   id: string;
@@ -159,6 +175,31 @@ export default definePlugin<PluginContextTier1>({
       return { updated: input.submissionId };
     },
 
+    set_submission_status: async (ctx, args) => {
+      const input = setSubmissionStatusArgs.parse(args);
+      // The query handle has no multi-row transaction, so resolve every id
+      // first: an unknown id refuses the whole batch before any write,
+      // instead of leaving it half-applied. Each update is idempotent, so
+      // re-running after a mid-batch failure completes it.
+      const missing: string[] = [];
+      for (const id of input.submissionIds) {
+        const found = await ctx.query.list<"form_submissions", { id: string }>("form_submissions", {
+          id,
+          limit: 1,
+        });
+        if (!found[0]) missing.push(id);
+      }
+      if (missing.length > 0) {
+        throw new Error(
+          `set_submission_status: unknown submission id(s) ${missing.join(", ")} — nothing was changed`,
+        );
+      }
+      for (const id of input.submissionIds) {
+        await ctx.query.update("form_submissions", id, { status: input.status });
+      }
+      return { updated: input.submissionIds.length, status: input.status };
+    },
+
     create_form: async (ctx, args) => {
       const input = args as {
         slug: string;
@@ -226,6 +267,28 @@ export default definePlugin<PluginContextTier1>({
           formSlug: { type: "string" },
           status: { type: "string", enum: ["new", "read", "archived", "spam"] },
           limit: { type: "number", minimum: 1, maximum: 200 },
+        },
+      },
+    },
+    {
+      name: "set_form_submission_status",
+      description:
+        "Change the status of visitor form submissions in the Owner's inbox: mark them read, archive them, flag spam, or move them back to new. " +
+        "Pass every affected id in ONE call (up to 200); an unknown id refuses the whole batch. Use list_form_submissions to find the ids. Reversible with this same tool, and safe to repeat.",
+      operationName: "set_submission_status",
+      requiredPermission: "settings.write",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["submissionIds", "status"],
+        properties: {
+          submissionIds: {
+            type: "array",
+            minItems: 1,
+            maxItems: 200,
+            items: { type: "string", format: "uuid" },
+          },
+          status: { type: "string", enum: ["new", "read", "archived", "spam"] },
         },
       },
     },

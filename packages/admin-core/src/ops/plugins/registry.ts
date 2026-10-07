@@ -848,7 +848,14 @@ export const disablePluginOp = defineOperation({
 
 export const rejectPluginOp = defineOperation({
   name: "plugins.reject",
-  actorScope: ["human", "system"],
+  // AI-callable without a gate (§11 routine): rejecting only moves a Tier 2
+  // submission that is NOT running (draft / awaiting_activation) to
+  // `rejected`, keeping source + validator errors, and `plugins.revalidate`
+  // puts it back in one call. Nothing stops running and no capability
+  // changes, so there is no hard-to-revert step for a click to guard. The
+  // typical caller is the AI withdrawing its own submission on the
+  // operator's word.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({
@@ -897,9 +904,23 @@ export const rejectPluginOp = defineOperation({
 // something the older version missed.
 // ---------------------------------------------------------------------------
 
+/** Statuses an AI actor may revalidate: submissions that never ran. */
+const AI_REVALIDATABLE_STATUSES: ReadonlySet<string> = new Set([
+  "draft",
+  "awaiting_activation",
+  "rejected",
+]);
+
 export const revalidatePluginOp = defineOperation({
   name: "plugins.revalidate",
-  actorScope: ["human", "system"],
+  // AI-callable only for submissions that never ran (draft /
+  // awaiting_activation / rejected): re-running the validator over stored
+  // source is deterministic and only re-files the submission. Every other
+  // status stays with the Owner (refused for AI actors below): revalidating
+  // an ACTIVE plugin flips its row out of `active` while it keeps running
+  // in the host, and revalidating a DISABLED or FAILED one would turn the
+  // Owner's stop into a fresh activation request.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ slug: z.string().min(1).max(120) }).strict(),
   output: z.object({
@@ -908,12 +929,13 @@ export const revalidatePluginOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, tier, manifest_json, source_code
+      SELECT id::text AS id, tier, status, manifest_json, source_code
       FROM plugins WHERE slug = ${input.slug}
       FOR UPDATE
     `)) as unknown as Array<{
       id: string;
       tier: number;
+      status: string;
       manifest_json: unknown;
       source_code: string | null;
     }>;
@@ -923,6 +945,13 @@ export const revalidatePluginOp = defineOperation({
         kind: "HandlerError",
         operation: "plugins.revalidate",
         message: `no plugin with slug "${input.slug}"`,
+      });
+    }
+    if (ctx.actorKind === "ai" && !AI_REVALIDATABLE_STATUSES.has(r.status)) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.revalidate",
+        message: `"${input.slug}" is ${r.status}; you can only revalidate a submission that never ran (draft, awaiting activation or rejected). Re-filing a ${r.status} plugin is the Owner's call at /security/plugins — tell the operator instead of retrying.`,
       });
     }
     if (r.tier !== 2 || r.source_code === null) {
