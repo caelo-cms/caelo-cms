@@ -323,7 +323,9 @@ export const pagesSeoListStaleOp = defineOperation({
 
 export const siteDefaultsSetSeoOp = defineOperation({
   name: "site_defaults.set_seo",
-  // Why human-only: Owner-only — site-level config (base URL, sitemap toggle, organization JSON).
+  // Why human-only: Owner-only — site-level config (base URL, sitemap toggle,
+  // organization JSON) published on every page. The AI reaches it through the
+  // §11.A gate: site_defaults.propose_set_seo → execute_proposal (Owner).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: siteDefaultsSetSeoInputSchema,

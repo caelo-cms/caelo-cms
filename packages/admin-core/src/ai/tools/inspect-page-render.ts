@@ -331,7 +331,11 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
         htmlBytes: m.html.length,
         cssBytes: m.css.length,
       })),
-      slots: { replaced: rendered.replacedSlots, missing: rendered.missingSlots },
+      slots: {
+        replaced: rendered.replacedSlots,
+        missing: rendered.missingSlots,
+        ...siteSettingNextSteps(rendered.missingSlots),
+      },
       hint:
         "SUMMARY only. For the visual impression call `screenshot_page`. For full bodies call inspect_page_render " +
         'again with target: "composed" | "layout" | "template" | "theme" | "<moduleId>", or pass `search` to grep the composed HTML.',
@@ -339,6 +343,29 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
     return okJson(summary);
   },
 };
+
+/**
+ * Site-wide settings the preview flags on every page (pages.render_preview's
+ * `seoMarkers`). They are not slots the AI fills on the page, and each blocks
+ * publishing, so the summary names the tool that clears it.
+ */
+const SITE_SETTING_NEXT_STEPS: Readonly<Record<string, string>> = {
+  "site-base-url-unset":
+    "The site's public URL is not configured; publishing fails until it is. Call propose_set_site_seo({siteBaseUrl: 'https://<public domain>'}) — the Owner approves.",
+  "site-language-unset":
+    "The site language is not set; publishing fails until it is. Call set_site_identity({siteLanguage: '<BCP 47 tag, e.g. de>'}).",
+};
+
+/** `{ nextSteps }` for the flagged site-wide settings, or `{}` when none is flagged. */
+function siteSettingNextSteps(missing: readonly string[]): { nextSteps?: Record<string, string> } {
+  const steps = Object.fromEntries(
+    missing.flatMap((m) => {
+      const step = SITE_SETTING_NEXT_STEPS[m];
+      return step ? [[m, step]] : [];
+    }),
+  );
+  return Object.keys(steps).length > 0 ? { nextSteps: steps } : {};
+}
 
 /** Serialize a value as the tool's pretty-printed JSON result. */
 function okJson(value: unknown): { ok: true; content: string } {
