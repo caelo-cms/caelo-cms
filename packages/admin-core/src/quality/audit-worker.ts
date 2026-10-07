@@ -20,7 +20,7 @@
 
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
+import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import type { AuditJob } from "./lighthouse-protocol.js";
 import { type AuditJobResult, runAuditJob } from "./lighthouse-runner.js";
 
@@ -95,10 +95,10 @@ export function stagedPageUrl(
   currentPath: string,
   style: "directory" | "no-extension",
 ): string {
-  const base = baseUrl.replace(/\/+$/, "");
+  const base = trimTrailingSlashes(baseUrl);
   const path = currentPath.startsWith("/") ? currentPath : `/${currentPath}`;
   if (path === "/") return `${base}/`;
-  const trimmed = path.replace(/\/+$/, "");
+  const trimmed = trimTrailingSlashes(path);
   return style === "directory" ? `${base}${trimmed}/` : `${base}${trimmed}`;
 }
 

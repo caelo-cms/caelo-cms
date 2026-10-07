@@ -27,6 +27,12 @@ describe("stagedPageUrl", () => {
     );
   });
 
+  it("collapses trailing slashes on the origin and the path", () => {
+    expect(stagedPageUrl(`https://s${"/".repeat(5000)}`, "/a///", "directory")).toBe(
+      "https://s/a/",
+    );
+  });
+
   it("matches the no-extension layout", () => {
     expect(stagedPageUrl("https://x--ch.web.app", "/pricing/", "no-extension")).toBe(
       "https://x--ch.web.app/pricing",
