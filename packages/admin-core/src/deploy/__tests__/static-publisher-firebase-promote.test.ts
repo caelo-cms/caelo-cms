@@ -51,6 +51,7 @@ interface HeaderEntry {
 interface VersionConfig {
   headers?: HeaderEntry[];
   rewrites?: unknown[];
+  redirects?: unknown[];
 }
 interface FakeVersion {
   config: VersionConfig;
@@ -216,6 +217,7 @@ beforeEach(async () => {
   await writeFile(join(buildDir, "index.html"), PAGE_HTML, "utf8");
   await writeFile(join(buildDir, "sitemap.xml"), "<urlset></urlset>", "utf8");
   await writeFile(join(buildDir, "robots.txt"), "User-agent: *\nDisallow: /\n", "utf8");
+  await writeFile(join(buildDir, "_redirects"), "# generated\n/de / 301\n", "utf8");
   await writeFile(
     join(buildDir, "routing-manifest.json"),
     JSON.stringify({ env: "staging", envNoindexInHtml: false }),
@@ -269,6 +271,10 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
     // the config (gateway rewrite, cache headers) carries over.
     expect(robotsHeaders(live.config)).toEqual([]);
     expect(live.config.rewrites).toEqual(staged.config.rewrites);
+    // The redirects table ships as Hosting redirect rules and survives
+    // the promote (gcp-firebase serves no `_redirects` file).
+    expect(staged.config.redirects).toEqual([{ regex: "^/de/?$", location: "/", statusCode: 301 }]);
+    expect(live.config.redirects).toEqual(staged.config.redirects);
     // #555 — the live release keeps exactly the immutable (content-hashed)
     // and short-cache (pages, robots, sitemap) entries.
     const { VERSION_CONFIG_HEADERS } = await import("../static-publisher-firebase.js");
