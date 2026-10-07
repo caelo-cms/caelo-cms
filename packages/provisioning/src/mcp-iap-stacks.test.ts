@@ -9,7 +9,8 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { MCP_IAP_SERVICE_ACCOUNT_ID } from "./mcp-iap.js";
+import { mcpIapServiceAccountEmail } from "./gcp-names.js";
+import { adminEnvContract } from "./stack-contract.js";
 
 const stack = (provider: string) =>
   readFileSync(resolve(import.meta.dir, `../stacks/${provider}/index.ts`), "utf8");
@@ -18,7 +19,7 @@ describe.each(["gcp", "gcp-firebase"])("%s stack — MCP through IAP", (provider
   const src = stack(provider);
 
   it("creates the MCP service account under the id upgrade uses, tolerating one upgrade created", () => {
-    expect(src).toContain(`accountId: "${MCP_IAP_SERVICE_ACCOUNT_ID}"`);
+    expect(src).toContain("accountId: MCP_IAP_SERVICE_ACCOUNT_ID,");
     expect(src).toContain("createIgnoreAlreadyExists: true");
   });
 
@@ -38,12 +39,19 @@ describe.each(["gcp", "gcp-firebase"])("%s stack — MCP through IAP", (provider
     );
   });
 
-  it("hands the email to the admin for the /security/mcp command", () => {
-    expect(src).toContain(
-      '{ name: "CAELO_MCP_IAP_SERVICE_ACCOUNT", value: mcpServiceAccountEmail }',
-    );
-    expect(src).toContain(
-      `const mcpServiceAccountEmail = \`${MCP_IAP_SERVICE_ACCOUNT_ID}@\${project}.iam.gserviceaccount.com\`;`,
-    );
+  it("hands the email to the admin for the /security/mcp command (via the env contract)", () => {
+    // The stack builds the admin env from adminEnvContract (parity test);
+    // the contract carries the SA upgrade ensures.
+    const env = adminEnvContract({
+      provider: "gcp",
+      projectId: "p",
+      env: "production",
+      domain: "d.com",
+      region: "r",
+    });
+    expect(env).toContainEqual({
+      name: "CAELO_MCP_IAP_SERVICE_ACCOUNT",
+      value: mcpIapServiceAccountEmail("p"),
+    });
   });
 });

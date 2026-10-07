@@ -22,13 +22,9 @@
  * `claude mcp add` command.
  */
 
-import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
-
-export const MCP_IAP_SERVICE_ACCOUNT_ID = "caelo-mcp";
-
-export function mcpIapServiceAccountEmail(projectId: string): string {
-  return `${MCP_IAP_SERVICE_ACCOUNT_ID}@${projectId}.iam.gserviceaccount.com`;
-}
+import { gcloud as defaultGcloud } from "./gcloud.js";
+import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
+import { MCP_IAP_SERVICE_ACCOUNT_ID, mcpIapServiceAccountEmail } from "./gcp-names.js";
 
 /** The admin's IAP resource, as `gcloud iap web` addresses it. */
 export type IapResource =
@@ -52,32 +48,21 @@ export function iapOperators(policyJson: string): string[] {
   return [...new Set(members.filter((m) => m.startsWith("user:") || m.startsWith("group:")))];
 }
 
-const SA_NOT_YET_VISIBLE = /does not exist|not found|NOT_FOUND/i;
-const RETRY_DELAYS_MS: readonly number[] = [2_000, 4_000, 8_000, 16_000];
-
 export async function ensureMcpIapAccess(opts: {
   projectId: string;
   resource: IapResource;
-  run?: (args: string[]) => Promise<GcloudResult>;
-  sleep?: (ms: number) => Promise<void>;
+  run?: GcloudRunner;
+  sleep?: Sleep;
 }): Promise<
   { ok: true; serviceAccount: string; operators: string[] } | { ok: false; error: string }
 > {
   const run = opts.run ?? defaultGcloud;
-  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const sleep = opts.sleep ?? realSleep;
   const project = `--project=${opts.projectId}`;
   const sa = mcpIapServiceAccountEmail(opts.projectId);
 
   // A freshly created SA takes a few seconds to become bindable.
-  const withRetry = async (args: string[]): Promise<GcloudResult> => {
-    let r = await run(args);
-    for (const delay of RETRY_DELAYS_MS) {
-      if (r.ok || !SA_NOT_YET_VISIBLE.test(r.stderr)) break;
-      await sleep(delay);
-      r = await run(args);
-    }
-    return r;
-  };
+  const withRetry = (args: string[]) => runWithRetry(run, sleep, args);
 
   const describe = await run([
     "iam",

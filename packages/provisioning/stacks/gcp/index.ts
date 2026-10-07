@@ -22,6 +22,18 @@ import * as pulumi from "@pulumi/pulumi";
 import * as random from "@pulumi/random";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
+import {
+  gcpBucketName,
+  MCP_IAP_SERVICE_ACCOUNT_ID,
+  runServiceAccountId,
+  staticPublisherServiceAccountId,
+} from "../../dist/gcp-names.js";
+import {
+  adminEnvContract,
+  type CloudRunEnvVar,
+  gatewayEnvContract,
+  STATIC_CDN_POLICY,
+} from "../../dist/stack-contract.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -318,7 +330,7 @@ void pgPublicUser;
 const mediaBucket = new gcp.storage.Bucket(
   `${namePrefix}-media`,
   {
-    name: `${project}-${namePrefix}-media`,
+    name: gcpBucketName(project, env, "media"),
     location: region.toUpperCase(),
     uniformBucketLevelAccess: true,
     forceDestroy: env !== "production",
@@ -330,7 +342,7 @@ const mediaBucket = new gcp.storage.Bucket(
 const staticBucket = new gcp.storage.Bucket(
   `${namePrefix}-static`,
   {
-    name: `${project}-${namePrefix}-static`,
+    name: gcpBucketName(project, env, "static"),
     location: region.toUpperCase(),
     uniformBucketLevelAccess: true,
     forceDestroy: env !== "production",
@@ -366,7 +378,7 @@ new gcp.storage.BucketIAMMember(
 const stagingBucket = new gcp.storage.Bucket(
   `${namePrefix}-staging`,
   {
-    name: `${project}-${namePrefix}-staging`,
+    name: gcpBucketName(project, env, "staging"),
     location: region.toUpperCase(),
     uniformBucketLevelAccess: true,
     forceDestroy: env !== "production",
@@ -384,7 +396,7 @@ const stagingBucket = new gcp.storage.Bucket(
 const runSa = new gcp.serviceaccount.Account(
   `${namePrefix}-run-sa`,
   {
-    accountId: `${namePrefix}-run-sa`,
+    accountId: runServiceAccountId(env),
     displayName: `Caelo ${env} Cloud Run service account`,
   },
   opts,
@@ -455,6 +467,31 @@ new gcp.storage.BucketIAMMember(
   opts,
 );
 
+// Cloud Run telemetry IAM (the gcp-firebase stack has had these since
+// v0.6.6). A Cloud Run service running as a CUSTOM SA gets no telemetry
+// roles implicitly — only the default Compute SA does:
+//   - roles/logging.logWriter: container stdout → Cloud Logging
+//   - roles/monitoring.metricWriter: CPU/memory metrics → autoscaler
+// Project-scoped (telemetry endpoints are project-level resources).
+new gcp.projects.IAMMember(
+  `${namePrefix}-run-log-writer`,
+  {
+    project,
+    role: "roles/logging.logWriter",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
+new gcp.projects.IAMMember(
+  `${namePrefix}-run-metric-writer`,
+  {
+    project,
+    role: "roles/monitoring.metricWriter",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
+
 // `static-publisher` SA used by `bunx @caelo-cms/provisioning deploy` to
 // upload the static-generator output to the bucket. Pre-v0.2.78 this
 // was the only path; admin Cloud Run now does the publish in-process
@@ -462,11 +499,10 @@ new gcp.storage.BucketIAMMember(
 // a manual gsutil rsync from CI as a backup or for bulk re-uploads.
 // Account-id max 30 chars; collapse "production" → "prod" so dev/staging/prod
 // all fit within the budget.
-const envShort = env === "production" ? "prod" : env === "staging" ? "stg" : "dev";
 const staticPublisherSa = new gcp.serviceaccount.Account(
   `${namePrefix}-static-publisher`,
   {
-    accountId: `caelo-${envShort}-publisher`,
+    accountId: staticPublisherServiceAccountId(env),
     displayName: `Caelo ${env} static publisher`,
   },
   opts,
@@ -518,7 +554,7 @@ function imageTag(service: string): pulumi.Output<string> {
 }
 
 interface CloudRunArgs {
-  readonly serviceName: string;
+  readonly serviceName: "admin" | "gateway";
   readonly minInstances: number;
   readonly maxInstances: number;
   readonly memory: string;
@@ -530,8 +566,20 @@ interface CloudRunArgs {
    * legitimately need longer.
    */
   readonly timeout?: string;
-  readonly extraEnv?: ReadonlyArray<{ name: string; value: pulumi.Input<string> }>;
+  /**
+   * Env vars carrying secrets (database URLs), on top of the plain env
+   * contract (src/stack-contract.ts) every service gets. Kept out of the
+   * contract until secrets move to Secret Manager references.
+   */
+  readonly secretEnv: ReadonlyArray<CloudRunEnvVar<pulumi.Input<string>>>;
+  /** The service's plain env vars: its env contract (src/stack-contract.ts). */
+  readonly contractEnv: ReadonlyArray<CloudRunEnvVar<pulumi.Input<string>>>;
 }
+
+// Inputs of the admin + gateway env contracts. The contracts are shared with
+// `cms-provision upgrade`, which applies them to installs it rolls — add new
+// plain env vars there, not here.
+const envContractInputs = { provider: "gcp", projectId: project, env, domain, region } as const;
 
 function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
   return new gcp.cloudrunv2.Service(
@@ -563,10 +611,8 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
           {
             image: imageTag(args.serviceName),
             envs: [
-              { name: "CAELO_PROVIDER", value: "gcp" },
-              { name: "CAELO_ENV", value: env },
+              ...args.contractEnv,
               { name: "ADMIN_DATABASE_URL", value: adminDatabaseUrl },
-              { name: "MEDIA_STORAGE_URL", value: pulumi.interpolate`gs://${mediaBucket.name}` },
               // P18 — project KEK is mounted from Secret Manager so AI
               // provider keys (and any future at-rest secrets) can be
               // decrypted at runtime. Failing to bind would surface as
@@ -578,7 +624,7 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
                   secretKeyRef: { secret: kekSecret.resource.secretId, version: "latest" },
                 },
               },
-              ...(args.extraEnv ?? []),
+              ...args.secretEnv,
             ],
             resources: { limits: { cpu: "1", memory: args.memory } },
           },
@@ -595,6 +641,11 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
         pgAdminUser,
         cmsAdminDb,
         cmsPublicDb,
+        // The env contract names the buckets as strings; keep them ordered
+        // before the services that use them.
+        mediaBucket,
+        staticBucket,
+        stagingBucket,
         ...(pgSecret.version ? [pgSecret.version] : []),
         // KEK must exist before Cloud Run can mount it via secretKeyRef.
         ...(kekSecret.version ? [kekSecret.version] : []),
@@ -602,9 +653,6 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
     },
   );
 }
-
-// Issue #37 — deterministic, so the admin env can carry it as a plain string.
-const mcpServiceAccountEmail = `caelo-mcp@${project}.iam.gserviceaccount.com`;
 
 const adminSvc = cloudRunService({
   serviceName: "admin",
@@ -620,25 +668,8 @@ const adminSvc = cloudRunService({
   timeout: "3600s",
   // Admin's second pool: admin_role on cms_public for cross-DB reads
   // + DDL + migrations. NOT public_role (write-limited).
-  // v0.2.78 — CAELO_STATIC_BUCKET / CAELO_STAGING_BUCKET drive the
-  // GCS StaticPublisher (Stage uploads to staging, Confirm-publish
-  // copies to static). CAELO_GENERATOR_CLI points at the absolute
-  // path the Dockerfile shipped the static-generator source to —
-  // the cwd-walk fallback in resolveGeneratorCli landed at
-  // /app/apps/apps/static-generator/... (doubled apps/) before
-  // v0.2.78 because the SSR bundle's import.meta.dirname doesn't
-  // sit where the walk expects.
-  extraEnv: [
-    { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl },
-    // #551 — the public site URL; the admin seeds site_defaults.site_base_url
-    // from it (canonical, og:url, sitemap) when it is not configured yet.
-    { name: "CAELO_SITE_URL", value: `https://${domain}` },
-    { name: "CAELO_STATIC_BUCKET", value: staticBucket.name },
-    { name: "CAELO_STAGING_BUCKET", value: stagingBucket.name },
-    { name: "CAELO_GENERATOR_CLI", value: "/app/apps/static-generator/src/cli.ts" },
-    // Issue #37 — shown in the /security/mcp `claude mcp add` command.
-    { name: "CAELO_MCP_IAP_SERVICE_ACCOUNT", value: mcpServiceAccountEmail },
-  ],
+  contractEnv: adminEnvContract(envContractInputs),
+  secretEnv: [{ name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl }],
 });
 const gatewaySvc = cloudRunService({
   serviceName: "gateway",
@@ -647,7 +678,8 @@ const gatewaySvc = cloudRunService({
   memory: "512Mi",
   // Gateway's only DB pool: public_role on cms_public, write-limited
   // per CLAUDE.md (gateway must NEVER hold admin_role creds).
-  extraEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
+  contractEnv: gatewayEnvContract(envContractInputs),
+  secretEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
 });
 
 // =========================================================================
@@ -725,27 +757,15 @@ const wafPolicy = new gcp.compute.SecurityPolicy(
   opts,
 );
 
-// Tier 1 backend — static GCS bucket via Cloud CDN
-//
-// The GCS publisher sets an explicit Cache-Control on every object
-// (static-publisher-gcs.ts): content-hashed fonts / plugin bundles are
-// `max-age=31536000, immutable`, pages `max-age=60` + SWR. In
-// CACHE_ALL_STATIC mode `clientTtl` CLAMPS the max-age sent to
-// browsers and `maxTtl` caps the edge TTL, so both must allow a year
-// or the immutable policy is silently cut back to the old 1h. Objects
-// that state a shorter max-age keep it; `defaultTtl` still applies only
-// to responses without one.
+// Tier 1 backend — static GCS bucket via Cloud CDN. The CDN policy (one-year
+// client/edge TTL so immutable assets stay immutable, #555) is shared with
+// `cms-provision upgrade`, which applies it to existing installs.
 const staticBackendBucket = new gcp.compute.BackendBucket(
   `${namePrefix}-static-backend`,
   {
     bucketName: staticBucket.name,
     enableCdn: true,
-    cdnPolicy: {
-      cacheMode: "CACHE_ALL_STATIC",
-      defaultTtl: 3600,
-      maxTtl: 31536000,
-      clientTtl: 31536000,
-    },
+    cdnPolicy: { ...STATIC_CDN_POLICY },
   },
   opts,
 );
@@ -856,7 +876,7 @@ const mcpServiceAccount = new gcp.serviceaccount.Account(
   `${namePrefix}-mcp-sa`,
   {
     project,
-    accountId: "caelo-mcp",
+    accountId: MCP_IAP_SERVICE_ACCOUNT_ID,
     displayName: "Caelo MCP (IAP ingress)",
     description:
       "Signs the IAP credential external MCP clients use to reach the admin (issue #37).",

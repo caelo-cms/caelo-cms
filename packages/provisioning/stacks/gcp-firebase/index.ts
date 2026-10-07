@@ -30,6 +30,16 @@ import * as pulumi from "@pulumi/pulumi";
 import * as random from "@pulumi/random";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
+import {
+  gcpBucketName,
+  MCP_IAP_SERVICE_ACCOUNT_ID,
+  runServiceAccountId,
+} from "../../dist/gcp-names.js";
+import {
+  adminEnvContract,
+  type CloudRunEnvVar,
+  gatewayEnvContract,
+} from "../../dist/stack-contract.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -256,7 +266,7 @@ const publicDatabaseUrl = pulumi.interpolate`postgres://public_role:${postgresPa
 const mediaBucket = new gcp.storage.Bucket(
   `${namePrefix}-media`,
   {
-    name: `${project}-${namePrefix}-media`,
+    name: gcpBucketName(project, env, "media"),
     location: region.toUpperCase(),
     uniformBucketLevelAccess: true,
     forceDestroy: env !== "production",
@@ -272,7 +282,7 @@ const mediaBucket = new gcp.storage.Bucket(
 const runSa = new gcp.serviceaccount.Account(
   `${namePrefix}-run-sa`,
   {
-    accountId: `${namePrefix}-run-sa`,
+    accountId: runServiceAccountId(env),
     displayName: `Caelo ${env} Cloud Run service account`,
   },
   opts,
@@ -394,12 +404,19 @@ const firebaseCustomDomain = new gcp.firebase.HostingCustomDomain(
 // =========================================================================
 
 interface CloudRunArgs {
-  readonly serviceName: string;
+  readonly serviceName: "admin" | "gateway";
   readonly minInstances: number;
   readonly maxInstances: number;
   readonly memory: string;
   readonly timeout: string;
-  readonly extraEnv?: ReadonlyArray<{ name: string; value: pulumi.Input<string> }>;
+  /**
+   * Env vars carrying secrets (database URLs), on top of the plain env
+   * contract (src/stack-contract.ts) every service gets. Kept out of the
+   * contract until secrets move to Secret Manager references.
+   */
+  readonly secretEnv: ReadonlyArray<CloudRunEnvVar<pulumi.Input<string>>>;
+  /** The service's plain env vars: its env contract (src/stack-contract.ts). */
+  readonly contractEnv: ReadonlyArray<CloudRunEnvVar<pulumi.Input<string>>>;
   /** v0.3.1 — admin: ALL (so IAP gates internet traffic). gateway:
    *  INTERNAL_LOAD_BALANCER (locked down; only Firebase Hosting
    *  rewrites + run.invoker-authorised callers can reach it). */
@@ -444,17 +461,15 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
           {
             image: imageRef(args.serviceName),
             envs: [
-              { name: "CAELO_PROVIDER", value: "gcp-firebase" },
-              { name: "CAELO_ENV", value: env },
+              ...args.contractEnv,
               { name: "ADMIN_DATABASE_URL", value: adminDatabaseUrl },
-              { name: "MEDIA_STORAGE_URL", value: pulumi.interpolate`gs://${mediaBucket.name}` },
               {
                 name: "CAELO_SECRET_KEK",
                 valueSource: {
                   secretKeyRef: { secret: kekSecret.resource.secretId, version: "latest" },
                 },
               },
-              ...(args.extraEnv ?? []),
+              ...args.secretEnv,
             ],
             resources: { limits: { cpu: "1", memory: args.memory } },
           },
@@ -471,12 +486,26 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
         pgAdminUser,
         cmsAdminDb,
         cmsPublicDb,
+        // The env contract names the media bucket as a string; keep it
+        // ordered before the services that use it.
+        mediaBucket,
         ...(pgSecret.version ? [pgSecret.version] : []),
         ...(kekSecret.version ? [kekSecret.version] : []),
       ],
     },
   );
 }
+
+// Inputs of the admin + gateway env contracts. The contracts are shared with
+// `cms-provision upgrade`, which applies them to installs it rolls — add new
+// plain env vars there, not here.
+const envContractInputs = {
+  provider: "gcp-firebase",
+  projectId: project,
+  env,
+  domain,
+  region,
+} as const;
 
 // Gateway provisioned first so we can pass its name/region into the
 // admin's env (the Firebase publisher needs them to wire rewrites).
@@ -490,11 +519,9 @@ const gatewaySvc = cloudRunService({
   // rewrites or any caller holding roles/run.invoker on the
   // service. Anonymous internet traffic gets a Cloud Run 403.
   ingress: "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER",
-  extraEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
+  contractEnv: gatewayEnvContract(envContractInputs),
+  secretEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
 });
-
-// Issue #37 — deterministic, so the admin env can carry it as a plain string.
-const mcpServiceAccountEmail = `caelo-mcp@${project}.iam.gserviceaccount.com`;
 
 const adminSvc = cloudRunService({
   serviceName: "admin",
@@ -506,23 +533,15 @@ const adminSvc = cloudRunService({
   // native IAP. iapEnabled flips the IAP integration on the service.
   ingress: "INGRESS_TRAFFIC_ALL",
   iapEnabled: true,
-  extraEnv: [
-    { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl },
-    // Use the input string (known at config time) — resource output
-    // is Output<string | undefined> which Input<string> rejects.
-    // #551 — the public site URL; the admin seeds site_defaults.site_base_url
-    // from it (canonical, og:url, sitemap) when it is not configured yet.
-    { name: "CAELO_SITE_URL", value: `https://${domain}` },
-    { name: "CAELO_FIREBASE_SITE", value: firebaseSiteId },
-    { name: "CAELO_GENERATOR_CLI", value: "/app/apps/static-generator/src/cli.ts" },
-    // v0.3.1 — Firebase publisher needs the gateway service name +
-    // region to declare the /api/** rewrite when creating each
-    // version.
-    { name: "CAELO_GATEWAY_SERVICE", value: gatewaySvc.name },
-    { name: "CAELO_GATEWAY_REGION", value: region },
-    // Issue #37 — shown in the /security/mcp `claude mcp add` command.
-    { name: "CAELO_MCP_IAP_SERVICE_ACCOUNT", value: mcpServiceAccountEmail },
-  ],
+  // Use the input string (known at config time) for the site — the
+  // resource output is Output<string | undefined>, which Input<string>
+  // rejects.
+  contractEnv: adminEnvContract({
+    ...envContractInputs,
+    firebaseSiteId,
+    gatewayService: gatewaySvc.name,
+  }),
+  secretEnv: [{ name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl }],
 });
 
 // =========================================================================
@@ -737,7 +756,7 @@ const mcpServiceAccount = new gcp.serviceaccount.Account(
   `${namePrefix}-mcp-sa`,
   {
     project,
-    accountId: "caelo-mcp",
+    accountId: MCP_IAP_SERVICE_ACCOUNT_ID,
     displayName: "Caelo MCP (IAP ingress)",
     description:
       "Signs the IAP credential external MCP clients use to reach the admin (issue #37).",

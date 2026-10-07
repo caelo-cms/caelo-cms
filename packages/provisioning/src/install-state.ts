@@ -41,6 +41,47 @@ export interface InstallMetadata {
   ownerEmail: string;
   region: string | null;
   createdAt: string;
+  /**
+   * sha256 digests of the release images the install runs, recorded by the
+   * wizard after `pulumi up` and by `upgrade` after a roll. A wizard re-run
+   * deploys these instead of re-resolving `:latest`, so it never undoes a
+   * pinned or rc upgrade; versions change through `upgrade` only. Absent on
+   * installs that predate it.
+   */
+  imageDigests?: ImageDigests;
+}
+
+/** Release image digest per Cloud Run service. */
+export interface ImageDigests {
+  readonly admin: string;
+  readonly gateway: string;
+}
+
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+/**
+ * The image digests recorded for an install, or null when none are. Throws
+ * on a malformed record rather than deploying a guess.
+ */
+export function recordedImageDigests(meta: InstallMetadata): ImageDigests | null {
+  const d = meta.imageDigests;
+  if (d === undefined) return null;
+  if (!DIGEST.test(d.admin ?? "") || !DIGEST.test(d.gateway ?? "")) {
+    throw new Error(
+      `install.json imageDigests is malformed (${JSON.stringify(d)}); fix or remove it, then re-run.`,
+    );
+  }
+  return d;
+}
+
+/** Record the image digests an install now runs (see {@link InstallMetadata.imageDigests}). */
+export function recordImageDigests(installId: string, digests: ImageDigests): void {
+  const meta = readMetadata(installId);
+  if (!meta) throw new Error(`No install.json for install '${installId}'.`);
+  writeMetadata(installId, {
+    ...meta,
+    imageDigests: { admin: digests.admin, gateway: digests.gateway },
+  });
 }
 
 export interface ProgressCheckpoint {
