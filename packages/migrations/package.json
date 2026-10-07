@@ -20,6 +20,7 @@
     "migrate": "bun run migrate:admin && bun run migrate:public"
   },
   "dependencies": {
+    "@caelo-cms/shared": "workspace:*",
     "drizzle-orm": "0.45.3"
   },
   "devDependencies": {

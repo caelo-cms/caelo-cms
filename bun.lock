@@ -165,6 +165,7 @@
       "name": "@caelo-cms/migrations",
       "version": "0.10.29",
       "dependencies": {
+        "@caelo-cms/shared": "workspace:*",
         "drizzle-orm": "0.45.3",
       },
       "devDependencies": {

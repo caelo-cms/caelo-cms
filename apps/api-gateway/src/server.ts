@@ -31,6 +31,7 @@ import {
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { databaseUrlFromEnv } from "@caelo-cms/shared";
 // Read SQL via globalThis.Bun rather than a value-import of "bun".
 // The type-only import is erased at compile; the runtime constructor
 // comes from Bun's globals. Keeps this file bundler-safe for any
@@ -66,8 +67,8 @@ import {
   verifySignedCookie,
 } from "./middleware/signed-cookie.js";
 
-const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
-const PUBLIC_URL = process.env.PUBLIC_DATABASE_URL ?? process.env.PUBLIC_ADMIN_DATABASE_URL;
+const ADMIN_URL = databaseUrlFromEnv(["ADMIN_DATABASE_URL"]);
+const PUBLIC_URL = databaseUrlFromEnv(["PUBLIC_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL"]);
 const SYSTEM_ACTOR_ID = process.env.CAELO_SYSTEM_ACTOR_ID ?? "00000000-0000-0000-0000-00000000ffff";
 // Cloud Run sets PORT=8080 on every container; read that first so a
 // platform deploy needs no extra config. GATEWAY_PORT is the historical

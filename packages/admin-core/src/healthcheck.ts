@@ -9,10 +9,11 @@
  */
 
 import { DatabaseAdapter } from "@caelo-cms/query-api";
+import { databaseUrlFromEnv } from "@caelo-cms/shared";
 
 async function main(): Promise<number> {
-  const adminUrl = process.env.ADMIN_DATABASE_URL;
-  const publicUrl = process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_DATABASE_URL;
+  const adminUrl = databaseUrlFromEnv(["ADMIN_DATABASE_URL"]);
+  const publicUrl = databaseUrlFromEnv(["PUBLIC_ADMIN_DATABASE_URL", "PUBLIC_DATABASE_URL"]);
   if (!adminUrl) {
     console.error("ADMIN_DATABASE_URL is required");
     return 1;

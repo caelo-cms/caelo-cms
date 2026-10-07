@@ -12,6 +12,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { databaseUrlFromEnv } from "@caelo-cms/shared";
 // Read SQL via globalThis.Bun (Bun's runtime sets it natively). The
 // type-only import is erased at compile time so the bundler never sees
 // a value-import of "bun" — avoids the SvelteKit/Vite chain inlining
@@ -32,8 +33,9 @@ if (target !== "admin" && target !== "public") {
   process.exit(1);
 }
 
-const url =
-  target === "admin" ? process.env.ADMIN_DATABASE_URL : process.env.PUBLIC_ADMIN_DATABASE_URL;
+const url = databaseUrlFromEnv([
+  target === "admin" ? "ADMIN_DATABASE_URL" : "PUBLIC_ADMIN_DATABASE_URL",
+]);
 if (!url) {
   console.error(
     `missing env var: ${target === "admin" ? "ADMIN_DATABASE_URL" : "PUBLIC_ADMIN_DATABASE_URL"}`,
