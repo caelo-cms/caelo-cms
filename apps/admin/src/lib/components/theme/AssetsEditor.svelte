@@ -29,7 +29,11 @@
   const SLOTS: Array<{ key: Slot; label: string; hint: string }> = [
     { key: "logo", label: "Logo", hint: "Site logo. `{{theme_logo_url}}` in modules resolves to this." },
     { key: "logoDark", label: "Logo (dark)", hint: "Dark-mode logo. `{{theme_logo_dark_url}}` substitutes." },
-    { key: "favicon", label: "Favicon", hint: "`{{theme_favicon_url}}` for <link rel='icon'>." },
+    {
+      key: "favicon",
+      label: "Favicon",
+      hint: "Emitted as <link rel='icon'> in every page's <head>; no module markup needed.",
+    },
     {
       key: "socialShare",
       label: "Social share image",
@@ -60,7 +64,8 @@
     Bind brand assets to the four theme slots. Module HTML carrying
     <code>{`{{theme_logo_url}}`}</code> / <code>{`{{theme_logo_dark_url}}`}</code> /
     <code>{`{{theme_favicon_url}}`}</code> / <code>{`{{theme_social_share_url}}`}</code> resolves
-    to the URLs below at render time.
+    to the URLs below at render time. A bound favicon is also emitted into every page's
+    <code>&lt;head&gt;</code> automatically.
   </p>
 
   <div class="space-y-3">
