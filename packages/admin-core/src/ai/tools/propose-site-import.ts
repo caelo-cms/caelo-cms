@@ -100,7 +100,7 @@ export function describeEstimate(est: CrawlScopeEstimate): string {
   // issue #298 — an unpriced band is said out loud, never papered over
   // with a made-up number; the Owner then approves with an explicit budget.
   if (e.aiCostUsd === null) {
-    return `Scope: ${basis}; crawl ≈ ${e.crawlMinutes} min; AI rebuild cost UNPRICED (${e.costNote ?? "no pricing available"}) — tell the Owner to set rates at /security/ai/pricing or approve with an explicit budget.`;
+    return `Scope: ${basis}; crawl ≈ ${e.crawlMinutes} min; AI rebuild cost UNPRICED (${e.costNote ?? "no pricing available"}) — propose the model's rates with propose_set_ai_pricing (the operator approves them in the chat), or have the Owner approve this import with an explicit budget.`;
   }
   const modelNote =
     e.estimatedCalls !== undefined
@@ -162,12 +162,12 @@ async function priceScopeEstimate(
   const row = rows.find((x) => x.model === provider.model) ?? rows.find((x) => x.model === "*");
   if (!row) {
     return unpriced(
-      `no ai_pricing row for ${provider.name}/${provider.model} — set rates at /security/ai/pricing`,
+      `no ai_pricing row for ${provider.name}/${provider.model} — propose its rates with propose_set_ai_pricing`,
     );
   }
   if (row.outputMicrocents === null) {
     return unpriced(
-      `ai_pricing row for ${provider.name}/${row.model} has no output rate — fix it at /security/ai/pricing`,
+      `ai_pricing row for ${provider.name}/${row.model} has no output rate — propose the corrected row with propose_set_ai_pricing`,
     );
   }
   const rates: ImportModelRates = {

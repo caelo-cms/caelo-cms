@@ -81,6 +81,14 @@ import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-deploy-promote.js";
+import {
+  getAiBudgetsTool,
+  getGatewaySettingsTool,
+  listAiPricingTool,
+  proposeSetAiBudgetTool,
+  proposeSetAiPricingTool,
+  proposeSetGatewaySettingsTool,
+} from "./propose-owner-settings.js";
 import { proposeSiteImportTool } from "./propose-site-import.js";
 import { proposeSkillTool } from "./propose-skill.js";
 import {
@@ -419,6 +427,14 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeTemplateDeleteTool);
   registry.register(proposeDomainAddTool);
   registry.register(proposeDomainRemoveTool);
+  // §11.A — Owner settings the AI had no path to: AI budgets, AI pricing,
+  // gateway settings. Read companions + gated proposals.
+  registry.register(getAiBudgetsTool);
+  registry.register(listAiPricingTool);
+  registry.register(getGatewaySettingsTool);
+  registry.register(proposeSetAiBudgetTool);
+  registry.register(proposeSetAiPricingTool);
+  registry.register(proposeSetGatewaySettingsTool);
   // v0.2.37 — AI can withdraw its own pending proposals.
   registry.register(cancelProposalTool);
   // v0.11.0 — themes primitive (#45). Routine + the §11.A propose

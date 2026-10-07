@@ -64,18 +64,42 @@ export const listAiBudgetsOp = defineOperation({
   },
 });
 
+/**
+ * One budget cell as the Owner (or an approved AI proposal) writes it.
+ * Exported so `owner_settings.propose_set_ai_budget` validates exactly what
+ * the apply step accepts. `capMicrocents` is microcents (1e-8 USD); NULL =
+ * unlimited.
+ */
+export const aiBudgetCellInput = z
+  .object({
+    scope: z.enum(["session", "day-global", "day-per-actor"]),
+    operationType: z.enum(["text", "image"]),
+    capMicrocents: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .describe("Cap in microcents (1e-8 USD): $10 = 1000000000. null = unlimited."),
+    warnAtPct: z
+      .number()
+      .min(0)
+      .max(1)
+      .default(0.8)
+      .describe("Fraction of the cap at which the chat warns before blocking (default 0.8)."),
+  })
+  .strict();
+
 export const setAiBudgetOp = defineOperation({
   name: "ai_budgets.set",
+  // Why human-only: the direct write is the Owner's /security/ai/budgets
+  // form. A spend cap is the guard that keeps AI cost bounded; an AI that
+  // could raise its own cap defeats it (the set_migration_budget incident,
+  // 2026-07-27). The AI reaches it only through the §11.A gate
+  // (`owner_settings.propose_set_ai_budget` → the operator's Approve →
+  // `owner_settings.execute_proposal`).
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: z
-    .object({
-      scope: z.enum(["session", "day-global", "day-per-actor"]),
-      operationType: z.enum(["text", "image"]),
-      capMicrocents: z.number().int().nonnegative().nullable(),
-      warnAtPct: z.number().min(0).max(1).default(0.8),
-    })
-    .strict(),
+  input: aiBudgetCellInput,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
     await tx.execute(sql`
