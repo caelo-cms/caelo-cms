@@ -16,8 +16,9 @@
  * Two tools because they answer different questions about different rows:
  * a domain can resolve (verify_domains: ok) while the certificate's TXT
  * challenge record is still missing (verify_dns_records: pending).
- * Both are read-only lookups; `dns.verify_record` keeps its AI hostname
- * denylist (internal/reserved suffixes) at the op.
+ * Both are read-only lookups. `dns.verify_record` limits AI lookups to
+ * site-owned hostnames at the op (an arbitrary hostname would be a DNS
+ * exfil channel), on top of its internal/reserved-suffix denylist.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -154,7 +155,7 @@ export const verifyDnsRecordsTool: ToolDefinitionWithHandler<VerifyDnsRecordsInp
   description:
     "Check that specific DNS records are published with the expected value — status per record: ok | pending (nothing published yet / propagating) | mismatch (a different value is published). " +
     "Omit `records` to check every record the installer stored as REQUIRED for this site (A/CNAME for the site and admin, TXT for certificate validation); the result names each record's purpose so you can tell the operator exactly which one to add or fix at their registrar. " +
-    "Use when the site or a certificate is not coming up, or after the operator says they changed DNS. Read-only; public hostnames only. " +
+    "Use when the site or a certificate is not coming up, or after the operator says they changed DNS. Read-only. Explicit `records` must be on this site's own domains (registered domains, the base-URL host, the installer's records, or their subdomains) — other hostnames are refused. " +
     "For a quick 'does the domain resolve at all' check of registered domains, use `verify_domains`.",
   schema: verifyDnsRecordsInput,
   handler: async (ctx, input, toolCtx) => {

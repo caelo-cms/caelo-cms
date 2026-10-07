@@ -10,7 +10,7 @@
  *     page consumes the latest snapshot per (provider, environment).
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -190,6 +190,57 @@ function isHostnameDenied(hostname: string): boolean {
   return false;
 }
 
+function normaliseHost(hostname: string): string {
+  return hostname.toLowerCase().replace(/\.$/, "");
+}
+
+/**
+ * The hostnames this site owns, for the AI-actor allowlist below: every
+ * registered domain, the host of `site_defaults.site_base_url`, and every
+ * hostname the provisioner stored as a required record. A lookup must be
+ * one of these or a subdomain of one (`_acme-challenge.<domain>`).
+ */
+async function siteOwnedHostnames(tx: TransactionRunner): Promise<Set<string>> {
+  const owned = new Set<string>();
+  const domains = (await tx.execute(sql`SELECT hostname FROM domains`)) as unknown as {
+    hostname: string;
+  }[];
+  for (const d of domains) owned.add(normaliseHost(d.hostname));
+  const defaults = (await tx.execute(sql`
+    SELECT site_base_url FROM site_defaults WHERE id = 1 LIMIT 1
+  `)) as unknown as { site_base_url: string | null }[];
+  const base = defaults[0]?.site_base_url;
+  if (base) {
+    try {
+      owned.add(normaliseHost(new URL(base).hostname));
+    } catch {
+      // A malformed stored base URL owns nothing; the SEO settings surface it.
+    }
+  }
+  const outputs = (await tx.execute(sql`
+    SELECT outputs_json FROM provisioning_outputs
+  `)) as unknown as { outputs_json: unknown }[];
+  for (const r of outputs) {
+    const json = (
+      typeof r.outputs_json === "string" ? JSON.parse(r.outputs_json) : r.outputs_json
+    ) as {
+      dnsRecordsRequired?: { hostname?: unknown }[];
+    };
+    for (const rec of json.dnsRecordsRequired ?? []) {
+      if (typeof rec.hostname === "string") owned.add(normaliseHost(rec.hostname));
+    }
+  }
+  return owned;
+}
+
+function isOwnedHostname(hostname: string, owned: ReadonlySet<string>): boolean {
+  const host = normaliseHost(hostname);
+  for (const o of owned) {
+    if (host === o || host.endsWith(`.${o}`)) return true;
+  }
+  return false;
+}
+
 export const verifyDnsRecordOp = defineOperation({
   name: "dns.verify_record",
   actorScope: ["human", "ai", "system"],
@@ -222,6 +273,31 @@ export const verifyDnsRecordOp = defineOperation({
         message:
           "hostname matches internal/reserved denylist — AI lookups are restricted to public domains",
       });
+    }
+    // An arbitrary public hostname is still an exfil channel: a lookup of
+    // `<secret>.attacker.example` lands in the attacker's authoritative
+    // query log. The AI only ever needs to check the site's OWN records,
+    // so an AI lookup is limited to site-owned hostnames (and their
+    // subdomains); the denylist above stays as the first wall.
+    if (ctx.actorKind === "ai") {
+      const owned = await siteOwnedHostnames(tx);
+      if (!isOwnedHostname(input.hostname, owned)) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "dns.verify_record",
+          input,
+          succeeded: false,
+          resultSummary: `denied: hostname ${input.hostname} is not a site-owned domain`,
+        });
+        return err({
+          kind: "HandlerError",
+          operation: "dns.verify_record",
+          message:
+            `hostname ${input.hostname} is not one of this site's domains — AI lookups are limited to registered domains (list_domains), ` +
+            "the site's base URL host, the installer's required records, and their subdomains. Omit `records` to check the required records, or register the domain first (propose_add_domain).",
+        });
+      }
     }
     const dns = await import("node:dns/promises");
     const r = dns.Resolver ? new dns.Resolver({ timeout: 3000, tries: 1 }) : dns;

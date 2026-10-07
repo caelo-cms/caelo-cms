@@ -25,7 +25,17 @@ import { jsonbParam } from "../sql-helpers.js";
  * verbatim — no escaping, no regex.
  */
 const variantSpec = z.object({
-  label: z.string().min(1).max(120),
+  // The label becomes a path segment (`_variants/<slug>__<label>/…` in the
+  // static build, `/_caelo-variant/<id>/<label>/…` at the edge), so it is a
+  // single safe segment — no `/`, `.` or `..` that could leave the build dir.
+  label: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(
+      /^[A-Za-z0-9][A-Za-z0-9_-]*$/,
+      "variant label must be letters, digits, '-' or '_' (e.g. 'control', 'b', 'short-cta') — it becomes a URL/file path segment",
+    ),
   weight: z.number().min(0).max(1),
   htmlPatches: z
     .array(

@@ -12,7 +12,6 @@ import {
   deriveModuleType,
   type ExecutionContext,
   err,
-  extractMediaRefs,
   type ModuleField,
   moduleCreateSchema,
   moduleFieldSchema,
@@ -35,66 +34,13 @@ import {
 import type { ModuleState } from "../../snapshots/state.js";
 import { buildPatchSet, jsonbParam } from "../../sql-helpers.js";
 import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
+import { applyMediaUsageDelta } from "./media-usage.js";
 import {
   describePlacements,
   findModulePlacements,
   isPlaced,
   type ModulePlacements,
 } from "./module-placements.js";
-
-/**
- * Resolve every media reference in an HTML string to a set of asset ids.
- * `extractMediaRefs` yields slug refs (current embeds) and legacy UUID id
- * refs; the slug refs are batch-resolved to ids in one query so the
- * usage-count diff below operates purely on ids.
- */
-async function resolveHtmlToAssetIds(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  html: string,
-): Promise<Set<string>> {
-  const ids = new Set<string>();
-  const slugs = new Set<string>();
-  for (const ref of extractMediaRefs(html)) {
-    if (ref.isSlug) slugs.add(ref.ref);
-    else ids.add(ref.ref);
-  }
-  if (slugs.size > 0) {
-    const slugFrags = [...slugs].map((s) => sql`${s}`);
-    const rows = (await tx.execute(sql`
-      SELECT id::text AS id FROM media_assets
-      WHERE slug IN (${sql.join(slugFrags, sql`, `)}) AND deleted_at IS NULL
-    `)) as unknown as { id: string }[];
-    for (const r of rows) ids.add(r.id);
-  }
-  return ids;
-}
-
-/**
- * Diff media references between two HTML strings and apply usage-count
- * deltas. Called from create / update / delete handlers so AI-facing
- * surfaces (find_media's `most_used` sort) rank frequently-used assets
- * first.
- */
-async function applyMediaUsageDelta(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  prevHtml: string,
-  nextHtml: string,
-): Promise<void> {
-  const prev = await resolveHtmlToAssetIds(tx, prevHtml);
-  const next = await resolveHtmlToAssetIds(tx, nextHtml);
-  const deltas = new Map<string, number>();
-  for (const id of next) if (!prev.has(id)) deltas.set(id, (deltas.get(id) ?? 0) + 1);
-  for (const id of prev) if (!next.has(id)) deltas.set(id, (deltas.get(id) ?? 0) - 1);
-  if (deltas.size === 0) return;
-  for (const [assetId, delta] of deltas) {
-    await tx.execute(sql`
-      UPDATE media_assets
-      SET usage_count = GREATEST(0, usage_count + ${delta}),
-          last_used_at = CASE WHEN ${delta} > 0 THEN now() ELSE last_used_at END
-      WHERE id = ${assetId}::uuid AND deleted_at IS NULL
-    `);
-  }
-}
 
 const moduleRowSchema = z.object({
   id: z.string(),
@@ -689,7 +635,7 @@ export const updateModuleOp = defineOperation({
         UPDATE modules SET ${sets} WHERE id = ${input.moduleId}::uuid
       `);
       // P7 usage-tracker: only diff when html changed AND we wrote live.
-      // For branched writes, usage delta is applied at publish time.
+      // For branched writes, usage delta is applied at merge time.
       if (persistedHtml !== undefined) {
         await applyMediaUsageDelta(tx, prev.html, persistedHtml);
       }
@@ -819,7 +765,7 @@ async function softDeleteModule(
           operation,
           message:
             `module "${slug}" is still placed on ${describePlacements(placements)} — deleting it would leave empty slots. ` +
-            "Remove it from each page/layout with remove_module_from first (or keep it), then delete.",
+            "Remove it from each page/layout with remove_module_from first (a nested use: drop it from the parent's module field with set_content_instance_values), or keep it; then delete.",
         },
       };
     }
@@ -831,12 +777,15 @@ async function softDeleteModule(
     // branch created (invisible elsewhere) — that one is freed now.
     if (target.chat_branch_id !== null && target.chat_branch_id === branchId) {
       await tx.execute(sql`UPDATE modules SET deleted_at = now() WHERE id = ${moduleId}::uuid`);
+      // The live row stops being counted the moment it is soft-deleted
+      // (media-usage.ts invariant); the merge then sees a deleted row.
+      await applyMediaUsageDelta(tx, target.html, "");
     }
     state = current ? { ...current, deletedAt: new Date().toISOString() } : null;
   } else {
     await tx.execute(sql`UPDATE modules SET deleted_at = now() WHERE id = ${moduleId}::uuid`);
     // P7 usage-tracker: deletion drops every reference the module held.
-    // Branched deletes apply the delta at publish, like branched updates.
+    // Branched deletes apply the delta at merge, like branched updates.
     await applyMediaUsageDelta(tx, target.html, "");
     state = await loadModuleState(tx, moduleId);
   }

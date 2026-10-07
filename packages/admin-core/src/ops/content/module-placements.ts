@@ -15,6 +15,17 @@
  *   - a page deleted on this branch (branched page snapshot with
  *     `deletedAt`) does not count.
  *
+ * Only branch snapshots written after the chat's last Stage count
+ * (`chat_sessions.last_staged_at`, strict `>` — the boundary every
+ * branch-overlay reader uses): Stage consumed the older ones into main,
+ * so an already-staged unplacement must not hide a placement another
+ * chat has since made live.
+ *
+ * A module nested inside another module's content (a `module` /
+ * `module-list` field of a content instance, rendered recursively with no
+ * `page_modules` row of its own) is placed too — `nestedIn` names the
+ * parent modules.
+ *
  * Layout placements are always live: layout writes are Owner-approved
  * proposals that apply to main, there is no branched layout state.
  *
@@ -26,12 +37,16 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { loadBranchedModuleStates } from "../../snapshots/load.js";
 import type { PageLayoutState, PageState } from "../../snapshots/state.js";
+import { findContentInstancesContaining } from "./content-instance-refs.js";
 
 /** Pages + layouts that still place one module (slugs, sorted, deduped). */
 export interface ModulePlacements {
   readonly pages: readonly string[];
   readonly layouts: readonly string[];
+  /** Slugs of modules whose content instances nest this module. */
+  readonly nestedIn: readonly string[];
 }
 
 function parseState<T>(raw: unknown): T {
@@ -73,7 +88,9 @@ export async function findModulePlacements(
       SELECT DISTINCT ON (pls.page_id) pls.page_id::text AS page_id, pls.state
         FROM page_layout_snapshots pls
         JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
+        LEFT JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
        WHERE ss.chat_branch_id = ${branchId}::uuid
+         AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
        ORDER BY pls.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const r of layoutRows) {
@@ -83,7 +100,9 @@ export async function findModulePlacements(
       SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
         FROM page_snapshots ps
         JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+        LEFT JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
        WHERE ss.chat_branch_id = ${branchId}::uuid
+         AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
        ORDER BY ps.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const r of pageRows) {
@@ -140,11 +159,45 @@ export async function findModulePlacements(
   `)) as unknown as { module_id: string; slug: string }[];
   for (const r of layoutRows) layoutsByModule.get(r.module_id)?.add(r.slug);
 
+  // Nested references from content instances (live + this branch's view).
+  const nestedByModule = new Map<string, Set<string>>();
+  const nesting = await findContentInstancesContaining(tx, branchId, moduleIds);
+  const parentIds = new Set<string>();
+  for (const ref of nesting) {
+    for (const id of moduleIds) {
+      if (ref.moduleId === id || !ref.valuesText.includes(id)) continue;
+      const set = nestedByModule.get(id) ?? new Set<string>();
+      set.add(ref.moduleId);
+      nestedByModule.set(id, set);
+      parentIds.add(ref.moduleId);
+    }
+  }
+  const parentSlugs = new Map<string, string>();
+  if (parentIds.size > 0) {
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id, slug FROM modules
+       WHERE id IN (${idList([...parentIds])}) AND deleted_at IS NULL
+    `)) as unknown as { id: string; slug: string }[];
+    for (const r of rows) parentSlugs.set(r.id, r.slug);
+    // …and one this chat deleted (branched) no longer renders it either.
+    if (branchId) {
+      const branchedParents = await loadBranchedModuleStates(tx, branchId, [...parentIds]);
+      for (const [id, state] of branchedParents) if (state.deletedAt) parentSlugs.delete(id);
+    }
+  }
+
   const out = new Map<string, ModulePlacements>();
   for (const id of moduleIds) {
     out.set(id, {
       pages: [...(pagesByModule.get(id) ?? [])].sort(),
       layouts: [...(layoutsByModule.get(id) ?? [])].sort(),
+      // A parent that is itself deleted no longer renders the child.
+      nestedIn: [...(nestedByModule.get(id) ?? [])]
+        .flatMap((parentId) => {
+          const slug = parentSlugs.get(parentId);
+          return slug === undefined ? [] : [slug];
+        })
+        .sort(),
     });
   }
   return out;
@@ -152,7 +205,7 @@ export async function findModulePlacements(
 
 /** True when the module is placed anywhere the caller can see. */
 export function isPlaced(p: ModulePlacements | undefined): boolean {
-  return p !== undefined && (p.pages.length > 0 || p.layouts.length > 0);
+  return p !== undefined && (p.pages.length > 0 || p.layouts.length > 0 || p.nestedIn.length > 0);
 }
 
 /** "3 page(s) (about, home, pricing) and layout(s) site-default" — for error copy. */
@@ -163,5 +216,8 @@ export function describePlacements(p: ModulePlacements): string {
     parts.push(`${p.pages.length} page(s) (${sample}${p.pages.length > 5 ? ", …" : ""})`);
   }
   if (p.layouts.length > 0) parts.push(`layout(s) ${p.layouts.join(", ")}`);
+  if (p.nestedIn.length > 0) {
+    parts.push(`the content of module(s) ${p.nestedIn.join(", ")} (nested module field)`);
+  }
   return parts.join(" and ");
 }

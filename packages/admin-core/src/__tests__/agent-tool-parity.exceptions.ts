@@ -269,6 +269,12 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   },
 
   // ── gaps: the agent should be able to do this (follow-ups) ────────────
+  "quality_audits.classify_stage": {
+    kind: "gap",
+    reason:
+      "the AI cannot ask whether its next Stage will trigger a Lighthouse audit (and why) before telling the operator what to expect; #583 shipped the op AI-scoped without a tool",
+    followUp: "#553 quality gate (PR 2/3): add the classify_stage read to quality-audit-tools.ts",
+  },
   "tool_approvals.list_pending": {
     kind: "gap",
     reason:

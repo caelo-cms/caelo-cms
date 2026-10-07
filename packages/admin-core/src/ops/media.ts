@@ -23,6 +23,7 @@
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   err,
+  extractMediaRefs,
   mediaDeleteInputSchema,
   mediaListInputSchema,
   mediaRecordUsageInputSchema,
@@ -38,6 +39,7 @@ import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { resolveUniqueMediaSlug } from "../media/slug.js";
 import { loadBranchedModuleStates } from "../snapshots/load.js";
+import { findContentInstancesContaining } from "./content/content-instance-refs.js";
 
 // ---------------------------------------------------------------------
 // Row shapes returned to callers.
@@ -1176,11 +1178,15 @@ export const mediaDeleteManyOp = defineOperation({
   handler: async (ctx, input, tx) => {
     let deleted = 0;
     const blocked: { assetId: string; referencingModuleSlugs: string[] }[] = [];
-    // A chat's module edits live only in branched snapshots until publish
-    // (the live `usage_count` is bumped at merge), so an asset the chat
-    // just embedded reads as unused on main. Count the caller's branched
-    // module bodies as references too — otherwise the delete succeeds and
-    // the chat's own edit publishes a broken image.
+    // `usage_count` only follows LIVE module HTML. Two more places can
+    // embed an asset without bumping it, and both are checked here:
+    //   - a chat's module edits live in branched snapshots until merge
+    //     (the merge applies the delta), so an asset the chat just
+    //     embedded reads as unused on main;
+    //   - content-instance values (`image` fields) never touch the count.
+    // Without these the delete succeeds and the page renders a broken
+    // image. Matching is exact on the parsed media refs (slug or legacy
+    // id), so `hero` is not "used" by an embed of `hero-dark`.
     const branchedModules = ctx.chatBranchId
       ? [...(await loadBranchedModuleStates(tx, ctx.chatBranchId)).values()].filter(
           (m) => m.deletedAt === null,
@@ -1194,14 +1200,30 @@ export const mediaDeleteManyOp = defineOperation({
       const target = rows[0];
       if (!target) continue;
       const usage = Number(target.usage_count);
-      const branchRefs = branchedModules
-        .filter(
-          (m) =>
-            m.html.includes(`/_caelo/media/${target.slug}`) ||
-            m.html.includes(`/_caelo/media/${assetId}/`),
-        )
-        .map((m) => m.slug);
-      if ((usage > 0 || branchRefs.length > 0) && !input.force) {
+      const refersToTarget = (text: string) =>
+        extractMediaRefs(text).some((r) => (r.isSlug ? r.ref === target.slug : r.ref === assetId));
+      const branchRefs = branchedModules.filter((m) => refersToTarget(m.html)).map((m) => m.slug);
+      const instanceRefs = (
+        await findContentInstancesContaining(tx, ctx.chatBranchId, [
+          `/_caelo/media/${target.slug}`,
+          `/_caelo/media/${assetId}/`,
+        ])
+      ).filter((ci) => refersToTarget(ci.valuesText));
+      const instanceModuleSlugs =
+        instanceRefs.length === 0
+          ? []
+          : (
+              (await tx.execute(sql`
+                SELECT slug FROM modules
+                 WHERE id IN (${sql.join(
+                   [...new Set(instanceRefs.map((ci) => ci.moduleId))].map(
+                     (id) => sql`${id}::uuid`,
+                   ),
+                   sql`, `,
+                 )})
+              `)) as unknown as { slug: string }[]
+            ).map((r) => r.slug);
+      if ((usage > 0 || branchRefs.length > 0 || instanceRefs.length > 0) && !input.force) {
         const refs = (await tx.execute(sql`
           SELECT slug FROM modules
           WHERE deleted_at IS NULL
@@ -1210,7 +1232,9 @@ export const mediaDeleteManyOp = defineOperation({
         `)) as unknown as { slug: string }[];
         blocked.push({
           assetId,
-          referencingModuleSlugs: [...new Set([...refs.map((r) => r.slug), ...branchRefs])],
+          referencingModuleSlugs: [
+            ...new Set([...refs.map((r) => r.slug), ...branchRefs, ...instanceModuleSlugs]),
+          ],
         });
         continue;
       }

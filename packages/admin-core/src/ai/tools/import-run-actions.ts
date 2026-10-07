@@ -98,24 +98,25 @@ export const cleanupImportRunTool: ToolDefinitionWithHandler<CleanupImportRunInp
     if (!before.ok) {
       return { ok: false, content: `imports.get failed: ${describeError(before.error)}` };
     }
-    const snapshot = before.value as {
-      run: { id: string } | null;
-      pages: { acceptedPageId: string | null; screenshotObjectKey: string | null }[];
-    };
+    const snapshot = before.value as { run: { id: string } | null };
     if (!snapshot.run) {
       return { ok: false, content: `Import run ${input.runId} not found.` };
     }
-    const dropped = snapshot.pages.filter((p) => p.acceptedPageId === null);
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.cleanup_run", {
       runId: input.runId,
     });
     if (!r.ok) {
       return { ok: false, content: `imports.cleanup_run failed: ${describeError(r.error)}` };
     }
-    // Screenshot objects of the dropped rows, after the DB commit and best
-    // effort: a failed object delete leaves a harmless orphan, never a
-    // broken run (same contract as the Owner panel's cleanup action).
-    const keys = dropped.flatMap((p) => (p.screenshotObjectKey ? [p.screenshotObjectKey] : []));
+    // The op returns the screenshot keys of exactly the rows it deleted, so
+    // a page accepted between the approval and this call keeps its
+    // screenshot. Object deletes run after the DB commit and best effort:
+    // a failed one leaves a harmless orphan, never a broken run (same
+    // contract as the Owner panel's cleanup action).
+    const { droppedPages, droppedScreenshotKeys: keys } = r.value as {
+      droppedPages: number;
+      droppedScreenshotKeys: string[];
+    };
     let orphaned = 0;
     if (keys.length > 0) {
       const storage = getMediaStorage();
@@ -125,8 +126,7 @@ export const cleanupImportRunTool: ToolDefinitionWithHandler<CleanupImportRunInp
     return {
       ok: true,
       content:
-        `Import run ${input.runId} closed: ${dropped.length} un-built crawled page(s) and ${keys.length - orphaned} screenshot(s) deleted; ` +
-        `${snapshot.pages.length - dropped.length} built page(s) kept.` +
+        `Import run ${input.runId} closed: ${droppedPages} un-built crawled page(s) and ${keys.length - orphaned} screenshot(s) deleted; built pages kept.` +
         (orphaned > 0
           ? ` ${orphaned} screenshot object(s) could not be deleted (harmless orphans).`
           : ""),

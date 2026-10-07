@@ -27,9 +27,12 @@
  * no longer needs it fails, so the lists only ever shrink honestly.
  *
  * Why a source scan for (a) and not a runtime trace: tools call ops through
- * `execute(registry, adapter, ctx, "<op>", …)` (or a factory's `opName:`),
- * always with a literal op name; the knip gate keeps `src/ai/tools` free of
- * unregistered dead files, so a literal there is a reachable tool path.
+ * `execute(registry, adapter, ctx, "<op>", …)` (or a factory's `opName:` /
+ * `proposeOp:`), always with a literal op name; the knip gate keeps
+ * `src/ai/tools` free of unregistered dead files, so a literal there is a
+ * reachable tool path. Comments are stripped first so a doc mention never
+ * counts. Matching only `execute(` call sites would miss the factory and
+ * table-driven forms, so the scan stays on string literals in code.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -74,8 +77,17 @@ const humanOnlyOps = [...opScopes].filter(([, scope]) => !scope.includes("ai")).
 
 const tools = createDefaultToolRegistry();
 const toolNames = new Set(tools.catalogue().map((t) => t.name));
+/**
+ * Comments removed, so an op name mentioned in a doc block or a `//` note
+ * never counts as a tool reaching it. (Line comments only when the `//`
+ * starts the line — a `//` inside a string such as a URL stays.)
+ */
+function stripComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+}
+
 const toolSource = sourceFiles(join(ADMIN_CORE_SRC, "ai", "tools"))
-  .map((f) => readFileSync(f, "utf8"))
+  .map((f) => stripComments(readFileSync(f, "utf8")))
   .join("\n");
 
 /** Op names the tool sources reference as a string literal. */
@@ -103,6 +115,15 @@ describe("agent-tool parity (a): every AI-scoped op has a tool or a reviewed exc
         "widgets.list": { kind: "internal", reason: "x" },
       }),
     ).toEqual(["widgets.delete"]);
+  });
+
+  it("an op named only in a comment does not count as reached", () => {
+    const source = stripComments(
+      '/** Wraps "widgets.create". */\n// see "widgets.delete"\nexecute(r, a, c, "widgets.list", {});',
+    );
+    expect(
+      uncoveredAiOps(["widgets.create", "widgets.delete", "widgets.list"], source, {}),
+    ).toEqual(["widgets.create", "widgets.delete"]);
   });
 
   it("no AI-scoped op is unreachable for the agent", () => {

@@ -170,6 +170,15 @@ describe("experiments tools", () => {
       h.toolCtx,
     );
     expect(one.ok).toBe(false);
+    // A label is a build/URL path segment — traversal never reaches the op.
+    for (const label of ["x/../../../../target", "..", "a b", ".hidden"]) {
+      const traversal = await run(
+        createExperimentTool,
+        { slug: "hero-cta", pageId: U1, variants: [variants[0], { label, weight: 0.5 }] },
+        h.toolCtx,
+      );
+      expect(traversal.ok).toBe(false);
+    }
     expect(h.calls).toHaveLength(0);
   });
 
@@ -388,7 +397,7 @@ describe("cleanup_import_run — Owner-approval gated", () => {
     expect(r.content).toContain("[needs-approval, non-persisted]");
   });
 
-  it("the approved (Owner) dispatch runs cleanup and deletes only the dropped pages' screenshots", async () => {
+  it("the approved (Owner) dispatch deletes exactly the screenshots the op reports dropped", async () => {
     const deletedKeys: string[] = [];
     setMediaStorage({
       delete: async (k: string) => {
@@ -397,15 +406,21 @@ describe("cleanup_import_run — Owner-approval gated", () => {
     } as never);
     const h = harness(
       {
+        // The pre-read is stale on purpose: a page accepted between the
+        // approval and the cleanup must keep its screenshot — only the
+        // op's DELETE … RETURNING keys are authoritative.
         "imports.get": () => ({
           run: { id: U1 },
           pages: [
             { acceptedPageId: null, screenshotObjectKey: "shots/a.png" },
-            { acceptedPageId: U2, screenshotObjectKey: "shots/kept.png" },
+            { acceptedPageId: null, screenshotObjectKey: "shots/accepted-meanwhile.png" },
             { acceptedPageId: null, screenshotObjectKey: null },
           ],
         }),
-        "imports.cleanup_run": () => ({}),
+        "imports.cleanup_run": () => ({
+          droppedPages: 2,
+          droppedScreenshotKeys: ["shots/a.png"],
+        }),
       },
       { "imports.cleanup_run": ["human", "system"] },
     );
@@ -413,7 +428,7 @@ describe("cleanup_import_run — Owner-approval gated", () => {
     expect(r.ok).toBe(true);
     expect(deletedKeys).toEqual(["shots/a.png"]);
     expect(r.content).toContain("2 un-built crawled page(s)");
-    expect(r.content).toContain("1 built page(s) kept");
+    expect(r.content).toContain("built pages kept");
   });
 
   it("states the two-step contract", () => {

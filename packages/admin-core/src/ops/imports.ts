@@ -1458,9 +1458,16 @@ async function acceptImportedPage(
   tx: TransactionRunner,
   operation: "imports.accept_page" | "imports.accept_pages",
 ): Promise<{ ok: true; pageId: string; slug: string } | { ok: false; message: string }> {
+  // "Already accepted" means the pointer resolves to a page that still
+  // exists — the same rule `pages.build_page` uses for its rebuild target.
+  // A discarded chat soft-deletes its branch-created page but leaves the
+  // pointer, and that acceptance must be retryable.
   const rows = (await tx.execute(sql`
-    SELECT proposed_slug, proposed_title, proposed_modules, accepted_page_id
-    FROM import_pages WHERE id = ${input.importPageId}::uuid LIMIT 1
+    SELECT ip.proposed_slug, ip.proposed_title, ip.proposed_modules,
+           p.id::text AS accepted_page_id
+    FROM import_pages ip
+    LEFT JOIN pages p ON p.id = ip.accepted_page_id AND p.deleted_at IS NULL
+    WHERE ip.id = ${input.importPageId}::uuid LIMIT 1
   `)) as unknown as Array<{
     proposed_slug: string;
     proposed_title: string;
@@ -3025,27 +3032,39 @@ export const cleanupImportRunOp = defineOperation({
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid() }).strict(),
-  output: z.object({}),
+  output: z.object({
+    /** Number of un-accepted import_pages rows deleted. */
+    droppedPages: z.number().int(),
+    /**
+     * Screenshot object keys of exactly the rows this call deleted
+     * (`DELETE … RETURNING`), so the caller removes those storage objects
+     * after commit — never a screenshot of a page accepted concurrently.
+     */
+    droppedScreenshotKeys: z.array(z.string()),
+  }),
   handler: async (ctx, input, tx) => {
     await tx.execute(sql`
       UPDATE import_runs SET status = 'completed' WHERE id = ${input.runId}::uuid
     `);
-    // Remove non-accepted import_pages rows (cascading screenshot cleanup
-    // happens via pgBackRest backups; MinIO objects are GCed by P14
-    // review pass).
-    await tx.execute(sql`
+    // Remove non-accepted import_pages rows. Storage IO stays out of the
+    // tx: the caller deletes the returned screenshot objects after commit.
+    const dropped = (await tx.execute(sql`
       DELETE FROM import_pages
        WHERE run_id = ${input.runId}::uuid AND accepted_page_id IS NULL
-    `);
+      RETURNING screenshot_object_key
+    `)) as unknown as { screenshot_object_key: string | null }[];
+    const droppedScreenshotKeys = dropped.flatMap((r) =>
+      r.screenshot_object_key ? [r.screenshot_object_key] : [],
+    );
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
       operation: "imports.cleanup_run",
       input,
       succeeded: true,
-      resultSummary: `cleaned up ${input.runId}`,
+      resultSummary: `cleaned up ${input.runId}: dropped ${dropped.length} page(s)`,
     });
-    return ok({});
+    return ok({ droppedPages: dropped.length, droppedScreenshotKeys });
   },
 });
 
