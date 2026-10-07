@@ -72,6 +72,9 @@ const AI_SPENDING_TOOLS: ReadonlySet<string> = new Set([
   "query_page_html",
   "translate_page",
   "start_translation_job",
+  // Plugin tools whose operation calls ctx.ai (forms / newsletter writers).
+  "summarize_form_submissions",
+  "draft_newsletter_campaign",
 ]);
 
 const toolCatalogueEntry = z.object({

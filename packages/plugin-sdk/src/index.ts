@@ -143,6 +143,13 @@ export const pluginToolSpec = z.object({
    *  bypass where plugin tools skipped the approvals surface entirely
    *  (#388). The tool's description must state the two-step contract. */
   approvalMode: z.literal("user-approval").optional(),
+  /** The permission the HUMAN a chat call acts for must hold — for the
+   *  direct call, or for the approver of an approval-gated one. Use the
+   *  permission the plugin's own owner panel requires, so the chat is not
+   *  a way around it (e.g. sending a newsletter needs `settings.write`
+   *  in the panel and therefore in the chat). Enforced by the host for
+   *  `chat` and `approved` invocations, including the Power-MCP. */
+  requiredPermission: z.enum(["content.write", "settings.write", "deploy.trigger"]).optional(),
 });
 
 export type PluginToolSpec = z.infer<typeof pluginToolSpec>;

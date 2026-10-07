@@ -105,7 +105,7 @@ export async function operatorHasPermission(
   infra: PluginHostInfra,
   systemActorId: string,
   actorId: string,
-  permission: "content.write" | "deploy.trigger",
+  permission: "content.write" | "settings.write" | "deploy.trigger",
 ): Promise<boolean> {
   registerExternalPluginOps(infra.registry);
   const r = await execute(

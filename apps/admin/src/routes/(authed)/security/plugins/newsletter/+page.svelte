@@ -12,7 +12,7 @@
   } from "#lib/components/ui/card/index.js";
   import { Input } from "#lib/components/ui/input/index.js";
 
-  let { form } = $props();
+  let { data, form } = $props();
 </script>
 
 <div class="space-y-6">
@@ -62,7 +62,7 @@
 
   <Card>
     <CardHeader>
-      <CardTitle>Send a queued campaign</CardTitle>
+      <CardTitle>Send a draft campaign</CardTitle>
       <CardDescription>Queues per-subscriber sends; the worker drains them within a minute.</CardDescription>
     </CardHeader>
     <CardContent>
@@ -75,10 +75,35 @@
           <Button type="submit">Queue sends</Button>
         </div>
       </form>
-      <p class="mt-3 text-xs text-muted-foreground">
-        Subscriber list view + clickable campaign list will surface in a follow-up; for now use the
-        AI to <code>list_subscribers</code> via chat.
-      </p>
+    </CardContent>
+  </Card>
+
+  <Card>
+    <CardHeader>
+      <CardTitle>Campaigns</CardTitle>
+      <CardDescription>
+        {data.subscriberCount === null
+          ? "Subscriber count unavailable."
+          : `${data.subscriberCount} confirmed subscriber(s) receive a send.`}
+        The AI can list, draft and (with your approval) send campaigns too.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      {#if data.error}
+        <p class="text-sm text-red-700 dark:text-red-300">{data.error}</p>
+      {:else if data.campaigns.length === 0}
+        <p class="text-sm text-muted-foreground">No campaigns yet.</p>
+      {:else}
+        <ul class="space-y-1 text-sm">
+          {#each data.campaigns as c (c.id)}
+            <li class="flex flex-wrap items-center gap-2">
+              <span class="font-medium">{c.subject}</span>
+              <span class="text-xs text-muted-foreground">{c.slug} · {c.status}</span>
+              <code class="text-xs">{c.id}</code>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </CardContent>
   </Card>
 </div>

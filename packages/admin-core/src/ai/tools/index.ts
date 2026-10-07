@@ -90,6 +90,12 @@ import { checkRunBudgetTool, setMigrationBudgetTool } from "./migration-budget.j
 import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
+import {
+  listPluginGrantsTool,
+  proposeRevokePluginCapabilityTool,
+  rejectPluginTool,
+  revalidatePluginTool,
+} from "./plugin-lifecycle-tools.js";
 import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-deploy-promote.js";
 import {
   getAiBudgetsTool,
@@ -425,6 +431,12 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeLayoutUpdateTool);
   registry.register(proposeUrlMigrationTool);
   registry.register(proposeUninstallPluginTool);
+  // Plugin lifecycle steps that were Owner-panel-only: grants (read +
+  // gated revoke) and the routine reject / revalidate of a submission.
+  registry.register(listPluginGrantsTool);
+  registry.register(proposeRevokePluginCapabilityTool);
+  registry.register(rejectPluginTool);
+  registry.register(revalidatePluginTool);
   registry.register(proposeLayoutDeleteTool);
   registry.register(proposeUserCreateTool);
   registry.register(proposeUserSetRolesTool);
