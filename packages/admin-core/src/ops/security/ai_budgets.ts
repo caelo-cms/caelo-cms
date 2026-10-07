@@ -131,6 +131,8 @@ const statusRow = z.object({
   // without a sessionId. UI renders NULL as "—" for session rows so
   // operators don't misread it as "$0 spent."
   spentMicrocents: z.number().int().nonnegative().nullable(),
+  /** The configured warning threshold — so a reader can keep it unchanged. */
+  warnAtPct: z.number().min(0).max(1),
   pct: z.number().min(0).nullable(),
   status: z.enum(["ok", "warn", "blocked", "unknown"]),
 });
@@ -221,6 +223,7 @@ export const aiBudgetsStatusOp = defineOperation({
           operationType: b.operation_type,
           capMicrocents: cap,
           spentMicrocents: spent,
+          warnAtPct: warnPct,
           pct,
           status,
         };

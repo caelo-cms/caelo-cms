@@ -60,7 +60,7 @@ describe("owner-settings tools — registration + gate", () => {
 });
 
 describe("owner-settings tools — schemas", () => {
-  it("budget: accepts several cells, defaults warnAtPct, rejects a repeated cell", () => {
+  it("budget: accepts several cells (warnAtPct optional), rejects a repeated cell", () => {
     const ok = proposeSetAiBudgetTool.schema.safeParse({
       budgets: [
         { scope: "session", operationType: "text", capMicrocents: 1_000_000_000 },

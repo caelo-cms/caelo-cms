@@ -58,6 +58,11 @@ function usd(microcents: number | null): string | null {
   return microcents === null ? null : `$${(microcents / 100_000_000).toFixed(2)}`;
 }
 
+/** Microcents → "$0.04" with sub-cent precision kept (image prices). */
+function usdExact(microcents: number): string {
+  return `$${Number((microcents / 100_000_000).toFixed(6))}`;
+}
+
 /** Per-1K-token microcents → "$3/MTok", the unit providers publish. */
 function perMTok(microcents: number | null | undefined): string | null {
   return microcents === null || microcents === undefined
@@ -67,8 +72,23 @@ function perMTok(microcents: number | null | undefined): string | null {
 
 // ─── inputs ──────────────────────────────────────────────────────────
 
+/**
+ * A proposed budget cell. `warnAtPct` is optional here (unlike the Owner
+ * form's default of 0.8): omitted means "keep the cell's current
+ * threshold", resolved at propose time and stored, so asking only for a
+ * new cap never silently resets a customised warning level.
+ */
+const proposedBudgetCell = aiBudgetCellInput.extend({
+  warnAtPct: z
+    .number()
+    .min(0)
+    .max(1)
+    .optional()
+    .describe("Fraction of the cap at which the chat warns. Omit to keep the current threshold."),
+});
+
 export const proposeAiBudgetInput = z
-  .object({ budgets: z.array(aiBudgetCellInput).min(1).max(6) })
+  .object({ budgets: z.array(proposedBudgetCell).min(1).max(6) })
   .strict()
   .refine(
     (v) => new Set(v.budgets.map((b) => `${b.scope}/${b.operationType}`)).size === v.budgets.length,
@@ -175,7 +195,13 @@ export const proposeSetAiBudgetOp = defineOperation({
     const current = await listAiBudgetsOp.handler(ctx, {}, tx);
     if (!current.ok) return handlerError("owner_settings.propose_set_ai_budget", "read failed");
     const byKey = new Map(current.value.rows.map((r) => [`${r.scope}/${r.operationType}`, r]));
-    const changes = input.budgets.map((b) => {
+    const resolved = {
+      budgets: input.budgets.map((b) => ({
+        ...b,
+        warnAtPct: b.warnAtPct ?? byKey.get(`${b.scope}/${b.operationType}`)?.warnAtPct ?? 0.8,
+      })),
+    };
+    const changes = resolved.budgets.map((b) => {
       const cur = byKey.get(`${b.scope}/${b.operationType}`);
       return {
         scope: b.scope,
@@ -201,7 +227,7 @@ export const proposeSetAiBudgetOp = defineOperation({
       tx,
       ctx,
       "set_ai_budget",
-      input,
+      resolved,
       { changes, summary },
       "owner_settings.propose_set_ai_budget",
       summary,
@@ -223,17 +249,24 @@ export const proposeSetAiPricingOp = defineOperation({
     const byKey = new Map(
       current.value.rows.map((r) => [`${r.provider}/${r.model}/${r.operationType}`, r]),
     );
+    // Text rates are per 1K tokens (shown $/MTok); an image row's input
+    // rate is the price of ONE generated image (call-cost.ts multiplies it
+    // by imageCount), so it is shown per image.
     const rate = (r: {
+      operationType: "text" | "image";
       inputMicrocents: number;
       outputMicrocents: number | null;
       cachedMicrocents: number | null;
       cacheCreationMicrocents?: number | null;
-    }) => ({
-      input: perMTok(r.inputMicrocents),
-      output: perMTok(r.outputMicrocents),
-      cacheRead: perMTok(r.cachedMicrocents),
-      cacheWrite: perMTok(r.cacheCreationMicrocents),
-    });
+    }) =>
+      r.operationType === "image"
+        ? { perImage: `${usdExact(r.inputMicrocents)}/image` }
+        : {
+            input: perMTok(r.inputMicrocents),
+            output: perMTok(r.outputMicrocents),
+            cacheRead: perMTok(r.cachedMicrocents),
+            cacheWrite: perMTok(r.cacheCreationMicrocents),
+          };
     const changes = input.rows.map((r) => {
       const cur = byKey.get(`${r.provider}/${r.model}/${r.operationType}`);
       return {
@@ -248,7 +281,10 @@ export const proposeSetAiPricingOp = defineOperation({
       };
     });
     const summary = changes
-      .map((c) => `${c.provider}/${c.model} (${c.operationType}) input ${c.to.input}`)
+      .map(
+        (c) =>
+          `${c.provider}/${c.model} (${c.operationType}) ${"perImage" in c.to ? c.to.perImage : `input ${c.to.input}`}`,
+      )
       .join("; ");
     return queueProposal(
       tx,
@@ -319,6 +355,21 @@ export const proposeSetGatewaySettingsOp = defineOperation({
 
 // ─── execute / reject / list_pending ─────────────────────────────────
 
+/** System always; a human only with settings.write on an active user. */
+async function approverMayChangeSettings(tx: Tx, ctx: Ctx): Promise<boolean> {
+  if (ctx.actorKind === "system") return true;
+  if (ctx.actorKind !== "human") return false;
+  const rows = (await tx.execute(sql`
+    SELECT 1 AS ok FROM users u
+    JOIN user_roles ur ON ur.user_id = u.id
+    JOIN role_permissions rp ON rp.role_id = ur.role_id
+    JOIN permissions p ON p.id = rp.permission_id
+    WHERE u.id = ${ctx.actorId}::uuid AND u.deleted_at IS NULL AND p.name = 'settings.write'
+    LIMIT 1
+  `)) as unknown as unknown[];
+  return rows.length > 0;
+}
+
 export const executeOwnerSettingsProposalOp = defineOperation({
   name: "owner_settings.execute_proposal",
   // Why human-only (+system): §11.A — this is the operator's Approve. The
@@ -329,6 +380,16 @@ export const executeOwnerSettingsProposalOp = defineOperation({
   output: z.object({ kind: ownerSettingsKind, summary: z.string() }),
   handler: async (ctx, input, tx) => {
     const op = "owner_settings.execute_proposal";
+    // The in-chat Approve runs this with the operator's own context, and
+    // anyone who can chat (content.read) sees the approval card. Budgets,
+    // pricing and the gateway are settings.write decisions — the same
+    // permission the Owner pages require — so the approver must hold it.
+    if (!(await approverMayChangeSettings(tx, ctx))) {
+      return handlerError(
+        op,
+        "permission_denied: approving a settings change needs the settings.write permission (an Owner). Ask an Owner to approve it.",
+      );
+    }
     const rows = (await tx.execute(sql`
       SELECT kind, payload, preview, status
       FROM owner_settings_pending_actions
@@ -347,7 +408,11 @@ export const executeOwnerSettingsProposalOp = defineOperation({
     if (row.kind === "set_ai_budget") {
       const payload = proposeAiBudgetInput.parse(parsePayload(row.payload));
       for (const cell of payload.budgets) {
-        const r = await setAiBudgetOp.handler(ctx, cell, tx);
+        const r = await setAiBudgetOp.handler(
+          ctx,
+          { ...cell, warnAtPct: cell.warnAtPct ?? 0.8 },
+          tx,
+        );
         if (!r.ok) return handlerError(op, `ai_budgets.set failed: ${errorMessage(r.error)}`);
       }
     } else if (row.kind === "set_ai_pricing") {

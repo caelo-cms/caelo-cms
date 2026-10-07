@@ -11,7 +11,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { fail } from "@sveltejs/kit";
+import { error, fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
@@ -37,8 +37,9 @@ export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "owner_settings.list_pending", {});
-  const proposals = r.ok ? (r.value as { proposals: Proposal[] }).proposals : [];
-  return { proposals };
+  // An approval queue that fails to load must not read as "nothing pending".
+  if (!r.ok) throw error(500, messageOf(r.error, "could not load pending settings proposals"));
+  return { proposals: (r.value as { proposals: Proposal[] }).proposals };
 };
 
 export const actions: Actions = {

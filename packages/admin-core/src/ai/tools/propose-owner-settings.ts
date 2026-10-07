@@ -52,7 +52,7 @@ export const proposeSetAiPricingTool = makeProposeTool({
   when:
     "Propose AI pricing rows (what each provider/model call is billed at — drives cost tracking and every budget gate). " +
     "Use when a tool reports 'no ai_pricing row' / UNPRICED spend for a model, or the provider changed its prices. Several rows go in ONE call (`rows` array). " +
-    "Rates are microcents PER 1K TOKENS: $3 per million tokens = 300000. Take rates from the provider's published price list or the operator — never guess; if you do not know the price, ask. " +
+    "Units: text rows are microcents PER 1K TOKENS ($3 per million tokens = 300000); an image row's inputMicrocents is the price of ONE generated image ($0.04 = 4000000) with outputMicrocents null. Take rates from the provider's published price list or the operator — never guess; if you do not know the price, ask. " +
     "For dated prices (intro pricing, an announced change) send one row per window with validFrom/validTo and distinct effectiveFrom. Read the rows in force first with list_ai_pricing.",
   schema: proposeAiPricingInput,
   summarize: (_input, preview) => `AI pricing: ${String(preview.summary ?? "set rates")}`,
@@ -87,6 +87,9 @@ export const getAiBudgetsTool = makeReadTool({
     "Use before propose_set_ai_budget, or when a budget warning/block needs explaining. Amounts are shown in USD and raw microcents.",
   opName: "ai_budgets.status",
   input: noInput,
+  // day-per-actor spend is recorded against the human operator, not the AI
+  // actor — read it as the operator so the row describes THEIR budget.
+  runAsOperator: true,
   format: (value) => {
     const rows = (value as OpValue<typeof aiBudgetsStatusOp>).rows;
     if (rows.length === 0) return "No AI budgets configured — every scope is unlimited.";
@@ -94,7 +97,7 @@ export const getAiBudgetsTool = makeReadTool({
       .map(
         (r) =>
           `${r.scope}/${r.operationType}: cap ${usd(r.capMicrocents)} (${r.capMicrocents ?? "null"}µ¢), ` +
-          `spent ${r.spentMicrocents === null ? "n/a (per session)" : usd(r.spentMicrocents)}, status ${r.status}`,
+          `warnAtPct ${r.warnAtPct}, spent ${r.spentMicrocents === null ? "n/a (per session)" : usd(r.spentMicrocents)}, status ${r.status}`,
       )
       .join("\n");
   },
@@ -103,7 +106,7 @@ export const getAiBudgetsTool = makeReadTool({
 export const listAiPricingTool = makeReadTool({
   name: "list_ai_pricing",
   description:
-    "List the AI pricing rows currently in force (provider, model, text/image, rates). Rates are microcents PER 1K TOKENS ($3/MTok = 300000). " +
+    "List the AI pricing rows currently in force (provider, model, text/image, rates). Text rates are microcents PER 1K TOKENS ($3/MTok = 300000); an image row's input is microcents per generated image. " +
     "Use before propose_set_ai_pricing, or when a cost report says a model is unpriced.",
   opName: "ai_pricing.list",
   input: noInput,

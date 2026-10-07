@@ -44,6 +44,7 @@
   {:else}
     <div class="space-y-4">
       {#each data.proposals as p (p.id)}
+        <div data-testid="owner-settings-proposal">
         <Card>
           <CardHeader>
             <CardTitle class="flex items-center gap-2 text-base">
@@ -72,6 +73,7 @@
                 <input
                   type="text"
                   name="reason"
+                  aria-label="Reject reason (optional)"
                   placeholder="reject reason (optional)"
                   class="rounded-md border bg-background p-1.5 text-xs"
                 />
@@ -80,6 +82,7 @@
             </div>
           </CardContent>
         </Card>
+        </div>
       {/each}
     </div>
   {/if}

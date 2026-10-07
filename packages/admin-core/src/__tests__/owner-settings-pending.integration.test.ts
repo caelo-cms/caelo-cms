@@ -21,6 +21,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { attachGatedExecute } from "../ai/tools/gated-tools.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
+import { getAiBudgetsTool } from "../ai/tools/propose-owner-settings.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -34,6 +35,11 @@ const OWNER: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-0000000005e1",
   actorKind: "human",
   requestId: "owner-settings-test-owner",
+};
+const EDITOR: ExecutionContext = {
+  actorId: "00000000-0000-0000-0000-0000000005e3",
+  actorKind: "human",
+  requestId: "owner-settings-test-editor",
 };
 const AI: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-0000000005e2",
@@ -87,7 +93,16 @@ function value<T>(r: { ok: boolean }): T {
 
 beforeAll(async () => {
   await asSystem(async (tx) => {
-    await tx`INSERT INTO actors (id, kind, display_name) VALUES (${OWNER.actorId}::uuid, 'human', 'owner-settings-owner') ON CONFLICT DO NOTHING`;
+    // OWNER and EDITOR are real users: execute_proposal checks the
+    // approver's settings.write through their roles.
+    for (const [ctx, role] of [
+      [OWNER, "owner"],
+      [EDITOR, "editor"],
+    ] as const) {
+      await tx`INSERT INTO actors (id, kind, display_name) VALUES (${ctx.actorId}::uuid, 'human', ${`owner-settings-${role}`}) ON CONFLICT DO NOTHING`;
+      await tx`INSERT INTO users (id, email, password_hash) VALUES (${ctx.actorId}::uuid, ${`${ctx.actorId}@owner-settings.test`}, 'test-only') ON CONFLICT DO NOTHING`;
+      await tx`INSERT INTO user_roles (user_id, role_id) SELECT ${ctx.actorId}::uuid, id FROM roles WHERE name = ${role} ON CONFLICT DO NOTHING`;
+    }
     await tx`INSERT INTO actors (id, kind, display_name) VALUES (${AI.actorId}::uuid, 'ai', 'owner-settings-ai') ON CONFLICT DO NOTHING`;
     savedBudgets =
       (await tx`SELECT scope, operation_type, cap_microcents::text AS cap_microcents, warn_at_pct::text AS warn_at_pct FROM ai_budgets`) as BudgetRow[];
@@ -174,6 +189,15 @@ describe("owner_settings — AI budget", () => {
     expect((r as { error: { kind: string } }).error.kind).toBe("ActorScopeRejected");
   });
 
+  it("a human without settings.write cannot approve it (the in-chat card is visible to editors)", async () => {
+    const r = await execute(registry, adapter, EDITOR, "owner_settings.execute_proposal", {
+      proposalId,
+    });
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain("settings.write");
+    expect((await pendingRow(proposalId))?.status).toBe("pending");
+  });
+
   it("Owner approve applies ai_budgets.set and marks the row applied", async () => {
     const v = value<{ kind: string }>(
       await execute(registry, adapter, OWNER, "owner_settings.execute_proposal", { proposalId }),
@@ -204,7 +228,140 @@ describe("owner_settings — AI budget", () => {
   });
 });
 
+describe("owner_settings — AI budget keeps the warn threshold", () => {
+  it("an omitted warnAtPct keeps the cell's current threshold instead of resetting to 0.8", async () => {
+    value(
+      await execute(registry, adapter, OWNER, "ai_budgets.set", {
+        scope: "session",
+        operationType: "text",
+        capMicrocents: 100,
+        warnAtPct: 0.33,
+      }),
+    );
+    const p = value<{ proposalId: string }>(
+      await execute(registry, adapter, AI, "owner_settings.propose_set_ai_budget", {
+        budgets: [{ scope: "session", operationType: "text", capMicrocents: 200 }],
+      }),
+    );
+    value(
+      await execute(registry, adapter, OWNER, "owner_settings.execute_proposal", {
+        proposalId: p.proposalId,
+      }),
+    );
+    const rows = value<{
+      rows: Array<{
+        scope: string;
+        operationType: string;
+        capMicrocents: number;
+        warnAtPct: number;
+      }>;
+    }>(await execute(registry, adapter, OWNER, "ai_budgets.status", {})).rows;
+    const cell = rows.find((r) => r.scope === "session" && r.operationType === "text");
+    expect(cell?.capMicrocents).toBe(200);
+    expect(cell?.warnAtPct).toBeCloseTo(0.33);
+  });
+});
+
+describe("get_ai_budgets reads per-actor spend as the operator", () => {
+  it("day-per-actor shows the operator's spend, not the (empty) AI actor's", async () => {
+    value(
+      await execute(registry, adapter, OWNER, "ai_budgets.set", {
+        scope: "day-per-actor",
+        operationType: "image",
+        capMicrocents: 1_000_000_000,
+        warnAtPct: 0.8,
+      }),
+    );
+    await asSystem(
+      (tx) =>
+        tx`INSERT INTO ai_calls (actor_id, provider, model, input_tokens, output_tokens,
+                                 cost_estimate_microcents, operation_type)
+           VALUES (${OWNER.actorId}::uuid, ${PROVIDER}, 'm', 1, 1, 250000000, 'image')`,
+    );
+    const r = await getAiBudgetsTool.handler(AI, {}, {
+      registry,
+      adapter,
+      humanCtx: OWNER,
+    } as unknown as Parameters<typeof getAiBudgetsTool.handler>[2]);
+    expect(r.ok).toBe(true);
+    expect(r.content).toMatch(/day-per-actor\/image: cap \$10\.00 .* spent \$2\.50/);
+    await asSystem((tx) => tx`DELETE FROM ai_calls WHERE provider = ${PROVIDER}`);
+  });
+});
+
 describe("owner_settings — AI pricing", () => {
+  it("previews an image row per generated image, not per token", async () => {
+    const p = value<{ preview: { changes: Array<{ to: Record<string, string> }> } }>(
+      await execute(registry, adapter, AI, "owner_settings.propose_set_ai_pricing", {
+        rows: [
+          {
+            provider: PROVIDER,
+            model: "img-1",
+            operationType: "image",
+            inputMicrocents: 4_000_000,
+            outputMicrocents: null,
+            cachedMicrocents: null,
+          },
+        ],
+      }),
+    );
+    expect(p.preview.changes[0]?.to).toEqual({ perImage: "$0.04/image" });
+  });
+
+  it("ai_pricing.list reports the row in force, honouring validity windows", async () => {
+    const set = (effectiveFrom: string, input: number, validFrom: string | null) =>
+      execute(registry, adapter, OWNER, "ai_pricing.set", {
+        provider: PROVIDER,
+        model: "windowed",
+        operationType: "text",
+        inputMicrocents: input,
+        outputMicrocents: 1,
+        cachedMicrocents: null,
+        effectiveFrom,
+        validFrom,
+      });
+    value(await set("2026-01-01T00:00:00Z", 100, null));
+    // Effective already, but its window only opens in the future.
+    value(await set("2026-02-01T00:00:00Z", 999, "2099-01-01T00:00:00Z"));
+    const rows = value<{
+      rows: Array<{ provider: string; model: string; inputMicrocents: number }>;
+    }>(await execute(registry, adapter, AI, "ai_pricing.list", {})).rows;
+    expect(
+      rows.find((r) => r.provider === PROVIDER && r.model === "windowed")?.inputMicrocents,
+    ).toBe(100);
+  });
+
+  it("re-saving a row without the newer columns keeps them", async () => {
+    const base = {
+      provider: PROVIDER,
+      model: "keep",
+      operationType: "text" as const,
+      outputMicrocents: 1,
+      cachedMicrocents: null,
+      effectiveFrom: "2026-03-01T00:00:00Z",
+    };
+    value(
+      await execute(registry, adapter, OWNER, "ai_pricing.set", {
+        ...base,
+        inputMicrocents: 10,
+        cacheCreationMicrocents: 13,
+        validTo: "2099-01-01T00:00:00Z",
+      }),
+    );
+    value(
+      await execute(registry, adapter, OWNER, "ai_pricing.set", { ...base, inputMicrocents: 11 }),
+    );
+    const rows = await asSystem(
+      (tx) =>
+        tx`SELECT input_microcents::int AS input, cache_creation_microcents::int AS cw,
+                  valid_to IS NOT NULL AS dated
+           FROM ai_pricing WHERE provider = ${PROVIDER} AND model = 'keep'` as Promise<
+          Array<{ input: number; cw: number; dated: boolean }>
+        >,
+    );
+    expect(rows).toEqual([{ input: 11, cw: 13, dated: true }]);
+  });
+
   it("propose → approve writes all rate columns + the validity window", async () => {
     const proposed = value<{
       proposalId: string;
@@ -239,7 +396,7 @@ describe("owner_settings — AI pricing", () => {
       (tx) =>
         tx`SELECT input_microcents::int AS input, cache_creation_microcents::int AS cw,
                   valid_to IS NOT NULL AS dated
-           FROM ai_pricing WHERE provider = ${PROVIDER}` as Promise<
+           FROM ai_pricing WHERE provider = ${PROVIDER} AND model = 'm-1'` as Promise<
           Array<{ input: number; cw: number; dated: boolean }>
         >,
     );

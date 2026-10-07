@@ -13,7 +13,7 @@
 
 import { defineOperation } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { invalidatePricingEntry } from "../../ai/pricing-cache.js";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
@@ -41,7 +41,11 @@ export const listAiPricingOp = defineOperation({
   input: z.object({}).strict(),
   output: z.object({ rows: z.array(pricingRow) }),
   handler: async (_ctx, _input, tx) => {
-    // Latest effective_from per (provider, model, operation_type).
+    // The row IN FORCE now per (provider, model, operation_type), with the
+    // same eligibility + precedence billing uses (pricing-cache.ts
+    // pickPricingRow): effective_from passed and the validity window
+    // contains now; a dated window beats the undated row, then the
+    // latest-starting window, then the latest effective_from.
     const rows = (await tx.execute(sql`
       SELECT DISTINCT ON (provider, model, operation_type)
         provider, model, operation_type,
@@ -49,7 +53,12 @@ export const listAiPricingOp = defineOperation({
         cache_creation_microcents, effective_from, valid_from, valid_to
       FROM ai_pricing
       WHERE effective_from <= now()
-      ORDER BY provider, model, operation_type, effective_from DESC
+        AND (valid_from IS NULL OR valid_from <= now())
+        AND (valid_to IS NULL OR valid_to >= now())
+      ORDER BY provider, model, operation_type,
+        (valid_from IS NOT NULL OR valid_to IS NOT NULL) DESC,
+        valid_from DESC NULLS LAST,
+        effective_from DESC
     `)) as unknown as Array<{
       provider: string;
       model: string;
@@ -107,13 +116,15 @@ export const aiPricingRowInput = z
       .number()
       .int()
       .nonnegative()
-      .describe("Input rate in microcents PER 1K TOKENS: $3 per million tokens = 300000."),
+      .describe(
+        "text: input rate in microcents PER 1K TOKENS ($3 per million tokens = 300000). image: the price of ONE generated image in microcents ($0.04 = 4000000).",
+      ),
     outputMicrocents: z
       .number()
       .int()
       .nonnegative()
       .nullable()
-      .describe("Output rate, microcents per 1K tokens; null for image rows priced per call."),
+      .describe("text: output rate, microcents per 1K tokens. image: null (priced per image)."),
     cachedMicrocents: z
       .number()
       .int()
@@ -151,6 +162,16 @@ export const aiPricingRowInput = z
     path: ["validTo"],
   });
 
+/**
+ * Updating an existing row (same key + effectiveFrom): a field the caller
+ * OMITTED keeps its stored value; an explicit null clears it. Without this
+ * the Owner form, which predates these columns and never sends them, would
+ * wipe a dated window or cache-write rate on every re-save.
+ */
+function keepUnlessGiven(value: unknown, existing: SQL, incoming: SQL): SQL {
+  return value === undefined ? existing : incoming;
+}
+
 export const setAiPricingOp = defineOperation({
   name: "ai_pricing.set",
   // Why human-only: the direct write is the Owner's /security/ai/pricing
@@ -179,9 +200,9 @@ export const setAiPricingOp = defineOperation({
         SET input_microcents = EXCLUDED.input_microcents,
             output_microcents = EXCLUDED.output_microcents,
             cached_microcents = EXCLUDED.cached_microcents,
-            cache_creation_microcents = EXCLUDED.cache_creation_microcents,
-            valid_from = EXCLUDED.valid_from,
-            valid_to = EXCLUDED.valid_to
+            cache_creation_microcents = ${keepUnlessGiven(input.cacheCreationMicrocents, sql`ai_pricing.cache_creation_microcents`, sql`EXCLUDED.cache_creation_microcents`)},
+            valid_from = ${keepUnlessGiven(input.validFrom, sql`ai_pricing.valid_from`, sql`EXCLUDED.valid_from`)},
+            valid_to = ${keepUnlessGiven(input.validTo, sql`ai_pricing.valid_to`, sql`EXCLUDED.valid_to`)}
     `);
     // P16 hardening — invalidate the per-process pricing LRU on every
     // node listening to channel `caelo_ai_pricing`. Payload is the
