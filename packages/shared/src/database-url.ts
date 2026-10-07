@@ -52,9 +52,10 @@ export function withDatabasePassword(
   if (!parsed.username) {
     throw new Error(`${label} names no user to attach the password to`);
   }
-  // The URL setter percent-encodes reserved characters, which postgres
-  // clients decode again.
-  parsed.password = password;
+  // Encode first: the URL setter leaves a literal `%` alone, so `p%40ss`
+  // would decode to `p@ss` and `p%ss` would be an invalid escape. Postgres
+  // clients decode the userinfo again.
+  parsed.password = encodeURIComponent(password);
   return parsed.toString();
 }
 

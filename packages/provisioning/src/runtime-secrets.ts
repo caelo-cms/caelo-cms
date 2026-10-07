@@ -24,8 +24,10 @@ import {
   CLI_GENERATED_SECRETS,
   type CloudRunSlug,
   type RuntimeSecret,
+  SERVICE_SECRET_ENV,
   serviceSecrets,
 } from "./stack-contract.js";
+import { liveContainerEnv } from "./stack-converge.js";
 
 export interface RuntimeDeps {
   readonly run?: GcloudRunner;
@@ -90,6 +92,22 @@ export async function ensureGatewayServiceAccount(
 // Generated secrets
 // ===========================================================================
 
+/**
+ * Values of CLI-generated secrets a service runs with as plain env vars,
+ * for {@link ensureGeneratedSecrets}'s `seed`.
+ */
+export function plainGeneratedSecretSeed(
+  liveEnv: ReadonlyMap<string, { readonly kind: string; readonly value?: string }>,
+): Partial<Record<(typeof CLI_GENERATED_SECRETS)[number], string>> {
+  const seed: Partial<Record<(typeof CLI_GENERATED_SECRETS)[number], string>> = {};
+  for (const [name, secret] of Object.entries(SERVICE_SECRET_ENV.admin)) {
+    const generated = CLI_GENERATED_SECRETS.find((g) => g === secret);
+    const live = liveEnv.get(name);
+    if (generated && live?.kind === "value" && live.value) seed[generated] = live.value;
+  }
+  return seed;
+}
+
 /** Where Secret Manager keeps a secret's payload. */
 export type SecretReplication =
   | { readonly kind: "automatic" }
@@ -150,12 +168,18 @@ function replicationArgs(replication: SecretReplication): string[] {
  * Create each secret in `CLI_GENERATED_SECRETS` that is missing, and give
  * one that exists without an enabled version a first version. A secret that
  * already has an enabled version is never touched, so re-runs keep values.
+ *
+ * `seed` carries values a service already runs with as plain env vars (an
+ * operator-set `CAELO_INTERNAL_SECRET`): the new secret starts with that
+ * value, so moving the var to Secret Manager migrates the credential
+ * instead of silently rotating it under callers that sign with it.
  */
 export async function ensureGeneratedSecrets(
   install: {
     readonly projectId: string;
     readonly env: string;
     readonly replication: SecretReplication;
+    readonly seed?: Readonly<Partial<Record<(typeof CLI_GENERATED_SECRETS)[number], string>>>;
   },
   deps: RuntimeDeps = {},
 ): Promise<EnsureOutcome[]> {
@@ -184,7 +208,7 @@ export async function ensureGeneratedSecrets(
           "--data-file=-",
           "--quiet",
         ],
-        { stdin: generate() },
+        { stdin: install.seed?.[name] || generate() },
       );
       if (create.ok) {
         outcomes.push({ id, status: "applied" });
@@ -214,7 +238,7 @@ export async function ensureGeneratedSecrets(
       outcomes.push({ id, status: "present" });
       continue;
     }
-    const add = await addVersion(run, secretId, project, generate());
+    const add = await addVersion(run, secretId, project, install.seed?.[name] || generate());
     outcomes.push(add.ok ? { id, status: "applied" } : { id, status: "failed", error: add.error });
   }
   return outcomes;
@@ -281,27 +305,174 @@ export interface RotationReport {
 const DATABASE_ROLES = ["admin_role", "public_role"] as const;
 
 /**
+ * The env vars each reader of `secret` must take from Secret Manager at
+ * `latest` for a new revision to pick up a rotated value. An install
+ * `upgrade` hasn't moved over still has the password inline in its URLs (a
+ * label-only roll would copy it unchanged), and a reference pinned to an
+ * older version would keep the old value — rotating either would report
+ * success and leave the services on a value the database no longer accepts.
+ */
+async function checkRotationReaders(
+  run: GcloudRunner,
+  target: RotationTarget,
+  secret: RotatableSecret,
+): Promise<string | null> {
+  const secretId = gcpSecretId(target.env, secret);
+  for (const service of ["admin", "gateway"] as const) {
+    const vars = Object.entries(SERVICE_SECRET_ENV[service])
+      .filter(([, s]) => s === secret)
+      .map(([name]) => name);
+    if (vars.length === 0) continue;
+    const name = target.services[service];
+    const describe = await run([
+      "run",
+      "services",
+      "describe",
+      name,
+      "--region",
+      target.region,
+      `--project=${target.projectId}`,
+      "--format=json",
+    ]);
+    if (!describe.ok) return `read the ${service} (${name}): ${describe.stderr.trim()}`;
+    const env = liveContainerEnv(describe.stdout);
+    const wrong = vars.filter((v) => {
+      const live = env.get(v);
+      return (
+        live?.kind !== "secret" ||
+        !(live.secret === secretId || live.secret.endsWith(`/secrets/${secretId}`)) ||
+        live.version !== "latest"
+      );
+    });
+    if (wrong.length > 0) {
+      return `the ${service} (${name}) does not read ${wrong.join(", ")} from ${secretId} at latest, so a rotated value would not reach it. Run \`cms-provision upgrade\` first (it moves the services onto Secret Manager references), then rotate. Nothing was changed.`;
+    }
+  }
+  return null;
+}
+
+/** Minimal `fetch` the Cloud SQL Admin API calls need (injectable for tests). */
+export type HttpFetch = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body?: string },
+) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+
+const SQL_ADMIN = "https://sqladmin.googleapis.com/v1";
+const SQL_OPERATION_POLLS = 60;
+
+/**
+ * Set a Cloud SQL user's password through the Cloud SQL Admin API, with the
+ * password in the request body. `gcloud sql users set-password` only takes
+ * it on argv (visible in process listings and exec logs) or from a tty
+ * prompt, so it is not used. The bearer token comes from the operator's
+ * gcloud session, like every other call here.
+ */
+async function setSqlUserPassword(
+  run: GcloudRunner,
+  http: HttpFetch,
+  sleep: Sleep,
+  user: { projectId: string; instance: string; role: string; password: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const token = await run(["auth", "print-access-token"]);
+  const bearer = token.ok ? token.stdout.trim() : "";
+  if (!bearer) {
+    return {
+      ok: false,
+      error: `gcloud auth print-access-token: ${token.stderr.trim() || "empty"}`,
+    };
+  }
+  const headers = { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" };
+  const project = `${SQL_ADMIN}/projects/${encodeURIComponent(user.projectId)}`;
+  const failed = async (what: string, res: { status: number; text(): Promise<string> }) => ({
+    ok: false as const,
+    error: `${what}: HTTP ${res.status} ${(await res.text()).slice(0, 500)}`,
+  });
+  const put = await http(
+    `${project}/instances/${encodeURIComponent(user.instance)}/users?name=${encodeURIComponent(user.role)}`,
+    { method: "PUT", headers, body: JSON.stringify({ name: user.role, password: user.password }) },
+  );
+  if (!put.ok) return failed("update the user", put);
+  type Operation = {
+    name?: string;
+    status?: string;
+    error?: { errors?: { message?: string }[] };
+  };
+  let op = JSON.parse(await put.text()) as Operation;
+  for (let i = 0; op.status !== "DONE" && i < SQL_OPERATION_POLLS; i++) {
+    if (!op.name) return { ok: false, error: "the Cloud SQL API returned no operation name" };
+    await sleep(2_000);
+    const poll = await http(`${project}/operations/${encodeURIComponent(op.name)}`, {
+      method: "GET",
+      headers,
+    });
+    if (!poll.ok) return failed(`poll operation ${op.name}`, poll);
+    op = JSON.parse(await poll.text()) as Operation;
+  }
+  if (op.status !== "DONE") {
+    return { ok: false, error: `operation ${op.name ?? "?"} did not finish in time` };
+  }
+  if (op.error) {
+    return {
+      ok: false,
+      error: (op.error.errors ?? []).map((e) => e.message ?? "?").join("; ") || "operation failed",
+    };
+  }
+  return { ok: true };
+}
+
+/** The two gcloud calls that roll `name` onto the `latest` version of its secrets. */
+function rollArgs(name: string, region: string, projectId: string): string[][] {
+  const location = ["--region", region, `--project=${projectId}`];
+  return [
+    // A label change copies to the revision template, so it creates a new
+    // revision, which resolves `latest` again.
+    [
+      "run",
+      "services",
+      "update",
+      name,
+      ...location,
+      `--update-labels=caelo-secret-rotated=${Date.now()}`,
+      "--quiet",
+    ],
+    ["run", "services", "update-traffic", name, ...location, "--to-latest", "--quiet"],
+  ];
+}
+
+/**
  * Rotate one runtime secret: store a new value as a new Secret Manager
  * version and roll every service that reads it, so new revisions resolve
  * `latest` to the new value.
  *
+ * Nothing changes unless every reader takes the secret from Secret Manager
+ * at `latest` ({@link checkRotationReaders}).
+ *
  * `postgres-password` also changes the password of both database roles,
  * first, so the new version never holds a password the database rejects.
- * If a step fails the roles are set back to the previous value. Between
- * the password change and the roll, instances of the old revision keep
- * their open connections but cannot open new ones — the roll follows
- * immediately.
+ * The password goes to the Cloud SQL Admin API in a request body, never on
+ * argv. If a step before the new version is stored fails, the roles are
+ * set back to the previous value. Between the password change and the
+ * roll, instances of the old revision keep their open connections but
+ * cannot open new ones — the roll follows immediately, and it is attempted
+ * for every reader even when one fails, so one failed service never leaves
+ * the other behind. A failed roll is resumed with the printed commands
+ * (rolling again picks up the stored value; it does not rotate again).
  */
 export async function rotateRuntimeSecret(
   target: RotationTarget,
   secret: RotatableSecret,
-  deps: RuntimeDeps = {},
+  deps: RuntimeDeps & { readonly http?: HttpFetch } = {},
 ): Promise<RotationReport> {
   const run = deps.run ?? defaultGcloud;
+  const sleep = deps.sleep ?? realSleep;
+  const http = deps.http ?? (fetch as unknown as HttpFetch);
   const generate = deps.generate ?? generateSecretValue;
   const project = `--project=${target.projectId}`;
   const secretId = gcpSecretId(target.env, secret);
   const steps: string[] = [];
+
+  const notReady = await checkRotationReaders(run, target, secret);
+  if (notReady) return { ok: false, steps, error: notReady };
   const value = generate();
 
   if (secret === "postgres-password") {
@@ -322,16 +493,12 @@ export async function rotateRuntimeSecret(
     }
     const previous = current.stdout;
     const setPassword = (role: string, password: string) =>
-      run([
-        "sql",
-        "users",
-        "set-password",
+      setSqlUserPassword(run, http, sleep, {
+        projectId: target.projectId,
+        instance,
         role,
-        `--instance=${instance}`,
-        project,
-        `--password=${password}`,
-        "--quiet",
-      ]);
+        password,
+      });
     const changed: string[] = [];
     const restore = async (): Promise<string> => {
       const failed: string[] = [];
@@ -349,7 +516,7 @@ export async function rotateRuntimeSecret(
         return {
           ok: false,
           steps,
-          error: `set the ${role} password: ${r.stderr.trim()}${restored}`,
+          error: `set the ${role} password: ${r.error}${restored}`,
         };
       }
       changed.push(role);
@@ -369,40 +536,27 @@ export async function rotateRuntimeSecret(
   }
   steps.push(`added a new version to ${secretId}`);
 
+  const failures: string[] = [];
   for (const service of ["admin", "gateway"] as const) {
     if (!serviceSecrets(service).includes(secret)) continue;
     const name = target.services[service];
-    const location = ["--region", target.region, project];
-    // A label change copies to the revision template, so it creates a new
-    // revision, which resolves `latest` again.
-    const roll = await run([
-      "run",
-      "services",
-      "update",
-      name,
-      ...location,
-      `--update-labels=caelo-secret-rotated=${Date.now()}`,
-      "--quiet",
-    ]);
-    const flip = roll.ok
-      ? await run([
-          "run",
-          "services",
-          "update-traffic",
-          name,
-          ...location,
-          "--to-latest",
-          "--quiet",
-        ])
-      : roll;
-    if (!flip.ok) {
-      return {
-        ok: false,
-        steps,
-        error: `roll the ${service} (${name}) onto the new value: ${flip.stderr.trim()}. The new value is stored; re-running \`cms-provision rotate-secret ${secret}\` rotates again and rolls the services.`,
-      };
+    const [update, flip] = rollArgs(name, target.region, target.projectId) as [string[], string[]];
+    const rolled = await run(update);
+    const flipped = rolled.ok ? await run(flip) : rolled;
+    if (flipped.ok) {
+      steps.push(`rolled the ${service} onto the new value`);
+      continue;
     }
-    steps.push(`rolled the ${service} onto the new value`);
+    failures.push(
+      `roll the ${service} (${name}) onto the new value: ${flipped.stderr.trim()}\n  resume with:\n    gcloud ${update.join(" ")}\n    gcloud ${flip.join(" ")}`,
+    );
+  }
+  if (failures.length > 0) {
+    return {
+      ok: false,
+      steps,
+      error: `The new value is stored${secret === "postgres-password" ? " and the database uses it" : ""}, but not every service runs on it yet. Do not rotate again — roll the remaining services onto it:\n${failures.join("\n")}`,
+    };
   }
   return { ok: true, steps };
 }

@@ -37,12 +37,23 @@ gcloud auth configure-docker us-central1-docker.pkg.dev
 gcloud builds submit ... --tag us-central1-docker.pkg.dev/$PROJECT/caelo/admin:latest
 # Repeat for gateway, orchestrator, runner, edge-router.
 
+# The stack references two secrets it does not create (the CLI wizard and
+# `upgrade` create them; a direct `pulumi up` needs them first). Values go
+# on stdin, never argv. Match --replication-policy to the stack's
+# secretReplication config (`automatic` or `user-managed --locations=<region>`).
+for s in internal-secret tool-approval-secret; do
+  openssl rand -hex 32 | tr -d '\n' | gcloud secrets create "caelo-production-$s" \
+    --project=$PROJECT --replication-policy=automatic --data-file=-
+done
+
 # Bring the stack up.
 pulumi up
 
 # Sync outputs into cms_admin.provisioning_outputs so the admin's
 # /security/dns page surfaces the required DNS records.
-ADMIN_DATABASE_URL=$(pulumi stack output adminDatabaseUrlOut --show-secrets) \
+CAELO_INTERNAL_SECRET=$(gcloud secrets versions access latest \
+    --secret=caelo-production-internal-secret --project=$PROJECT) \
+  CAELO_ADMIN_URL=https://admin.example.com \
   bunx cms-provision pulumi-output-sync --environment production
 ```
 

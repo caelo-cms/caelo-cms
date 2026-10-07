@@ -37,7 +37,17 @@ interface AdminConfig {
   readonly databaseHost: string;
   readonly networkRef: string;
   readonly subnetRef: string;
+  /**
+   * Whether the admin already reads the database password from Secret
+   * Manager. If not, its image may predate `databaseUrlFromEnv` and can't
+   * run a job with password-less URLs.
+   */
+  readonly secretEnv: boolean;
 }
+
+/** Why a job on the installed admin image would fail, for an install `upgrade` hasn't moved over. */
+const NEEDS_UPGRADE =
+  "the admin still reads the database password from its plain env, so its image may predate Secret Manager runtime secrets and can't run a job with password-less URLs. Run `upgrade` first.";
 
 /**
  * The database env of a migration/truncate job: the admin's URLs (no
@@ -95,9 +105,16 @@ async function readAdminConfig(opts: MigrationRunnerOpts): Promise<AdminConfig |
     "--format=json",
   ]);
   if (!descr.ok) return null;
+  return parseAdminConfig(descr.stdout);
+}
 
+/**
+ * The job config from the admin service (`gcloud run services describe
+ * --format=json`), or null when something the job needs is missing.
+ */
+export function parseAdminConfig(serviceJson: string): AdminConfig | null {
   try {
-    const d = JSON.parse(descr.stdout) as {
+    const d = JSON.parse(serviceJson) as {
       spec: {
         template: {
           metadata?: { annotations?: Record<string, string> };
@@ -110,7 +127,8 @@ async function readAdminConfig(opts: MigrationRunnerOpts): Promise<AdminConfig |
     };
     const c = d.spec.template.spec.containers[0];
     const imageRef = c?.image ?? "";
-    const host = liveDatabaseHost(liveContainerEnv(descr.stdout));
+    const liveEnv = liveContainerEnv(serviceJson);
+    const host = liveDatabaseHost(liveEnv);
     let networkRef = "";
     let subnetRef = "";
     const niAnnotation =
@@ -130,7 +148,13 @@ async function readAdminConfig(opts: MigrationRunnerOpts): Promise<AdminConfig |
       subnetRef ||= ni?.subnetwork ?? "";
     }
     if (!imageRef || !host.ok || !networkRef || !subnetRef) return null;
-    return { imageRef, databaseHost: host.host, networkRef, subnetRef };
+    return {
+      imageRef,
+      databaseHost: host.host,
+      networkRef,
+      subnetRef,
+      secretEnv: liveEnv.get("ADMIN_DATABASE_PASSWORD")?.kind === "secret",
+    };
   } catch {
     return null;
   }
@@ -160,6 +184,10 @@ export async function truncateViaCloudRunJob(
   if (!cfg) {
     sAdmin.stop(red("Couldn't resolve admin config — admin may not be deployed yet"));
     return { ok: false, error: "admin-config-unresolved" };
+  }
+  if (!cfg.secretEnv) {
+    sAdmin.stop(red(`Not truncating: ${NEEDS_UPGRADE}`));
+    return { ok: false, error: NEEDS_UPGRADE };
   }
   sAdmin.stop(green(`Admin config resolved (${cfg.imageRef.slice(-19)})`));
 
@@ -247,6 +275,12 @@ export async function runMigrationsViaCloudRunJob(
   if (!cfg) {
     sAdmin.stop(red("Couldn't resolve admin config — admin may not be deployed yet"));
     return { ok: false, error: "admin-config-unresolved" };
+  }
+  // With an override (upgrade) the job runs the NEW release, which reads
+  // the split env; without one it runs the installed image.
+  if (!opts.imageOverride && !cfg.secretEnv) {
+    sAdmin.stop(red(`Not migrating: ${NEEDS_UPGRADE}`));
+    return { ok: false, error: NEEDS_UPGRADE };
   }
   const migrationImage = opts.imageOverride ?? cfg.imageRef;
   if (opts.imageOverride && opts.imageOverride !== cfg.imageRef) {

@@ -215,7 +215,13 @@ export function planEnvUpdate(
     const current = live.get(name);
     if (!current) continue;
     (current.kind === "value" ? removePlain : removeSecrets).push(name);
-    changes.push({ name, from: describeLive(current), to: undefined });
+    // A retired var may hold a secret value (a plain KEK), so a literal is
+    // never printed.
+    changes.push({
+      name,
+      from: current.kind === "value" ? "(plain value)" : describeLive(current),
+      to: undefined,
+    });
   }
   const flags = [
     ...(removePlain.length > 0 ? [listFlag("--remove-env-vars", removePlain)] : []),

@@ -34,6 +34,7 @@ import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
 import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
+  plainGeneratedSecretSeed,
   ROTATABLE_SECRETS,
   type RotatableSecret,
   readSecretReplication,
@@ -583,7 +584,11 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   const runtime = [
     await ensureGatewayServiceAccount(secretsTarget),
     ...(replication.ok
-      ? await ensureGeneratedSecrets({ ...secretsTarget, replication: replication.replication })
+      ? await ensureGeneratedSecrets({
+          ...secretsTarget,
+          replication: replication.replication,
+          seed: plainGeneratedSecretSeed(deployed.admin.liveEnv),
+        })
       : [{ id: "secret replication", status: "failed" as const, error: replication.error }]),
   ];
   const runtimeFailed = runtime.filter((o) => o.status === "failed");

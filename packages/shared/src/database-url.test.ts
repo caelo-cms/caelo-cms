@@ -25,6 +25,13 @@ describe("withDatabasePassword", () => {
     ).toBe("postgresql://admin_role:0123abcd@10.20.0.3:5432/cms_admin?sslmode=require");
   });
 
+  it("keeps literal percent signs in the password (p%40ss stays p%40ss, p%ss stays valid)", () => {
+    for (const password of ["p%40ss", "p%ss", "100%"]) {
+      const parsed = new URL(withDatabasePassword("postgres://u@h:5432/d", password));
+      expect(decodeURIComponent(parsed.password)).toBe(password);
+    }
+  });
+
   it("percent-encodes reserved characters so the URL stays parseable", () => {
     const url = withDatabasePassword("postgres://u@h:5432/d", "p@ss/w:rd#?");
     const parsed = new URL(url);

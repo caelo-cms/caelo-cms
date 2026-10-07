@@ -188,6 +188,17 @@ describe("planEnvUpdate", () => {
     expect(toPlain.ok).toBe(false);
   });
 
+  it("never prints a retired literal (a plain KEK)", () => {
+    const plan = planEnvUpdate(
+      new Map<string, LiveEnvValue>([
+        ["CAELO_SECRET_KEK", { kind: "value", value: "kek-literal" }],
+      ]),
+      [],
+      ["CAELO_SECRET_KEK"],
+    );
+    expect(JSON.stringify(plan)).not.toContain("kek-literal");
+  });
+
   it("removes retired vars of either kind", () => {
     const plan = planEnvUpdate(
       new Map<string, LiveEnvValue>([
@@ -200,7 +211,7 @@ describe("planEnvUpdate", () => {
     expect(plan).toEqual({
       ok: true,
       changes: [
-        { name: "OLD_PLAIN", from: "x", to: undefined },
+        { name: "OLD_PLAIN", from: "(plain value)", to: undefined },
         { name: "CAELO_SECRET_KEK", from: "secret:kek:latest", to: undefined },
       ],
       flags: ["--remove-env-vars=OLD_PLAIN", "--remove-secrets=CAELO_SECRET_KEK"],
