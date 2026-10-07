@@ -708,7 +708,7 @@ export const setThemeAssetOp = defineOperation({
         return err({
           kind: "HandlerError",
           operation: "themes.set_asset",
-          message: `media asset ${input.mediaId} is ${media.mime}, not an image — the favicon slot needs an image (PNG or SVG); pick an image row from find_media`,
+          message: `media asset ${input.mediaId} is ${media.mime}, not an image — the favicon slot needs an image (ICO, PNG or SVG); pick an image row from find_media`,
         });
       }
     }

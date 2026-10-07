@@ -25,7 +25,9 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { generateSite, pageOutputPath } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
+import { runMediaPipeline } from "../media/pipeline.js";
 import { registerAdminOps } from "../register.js";
+import { minimalIco } from "./fixtures/ico.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -37,6 +39,7 @@ const PREFIX = "tfavh";
 // media.upload keys on sha256; a recognisable prefix makes cleanup exact.
 const SHA = `fa71c0de${"c".repeat(56)}`;
 const PDF_SHA = `fa71c0de${"d".repeat(56)}`;
+const ICO_SHA = `fa71c0de${"e".repeat(56)}`;
 const SYS_CTX: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
   actorKind: "system",
@@ -53,6 +56,7 @@ let faviconSlug = "";
 /** Slug of the theme active before this test — re-activated after. */
 let previousActiveSlug: string | null = null;
 let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
+let mediaRoot = "";
 let restoreSiteLanguage: (() => Promise<void>) | null = null;
 const THEME_SLUG = `${PREFIX}-theme`;
 
@@ -82,7 +86,9 @@ async function cleanup(): Promise<void> {
       `DELETE FROM theme_snapshots WHERE theme_id IN (SELECT id FROM themes WHERE slug = '${THEME_SLUG}')`,
     );
     await tx.unsafe(`DELETE FROM themes WHERE slug = '${THEME_SLUG}' AND is_active = false`);
-    await tx.unsafe(`DELETE FROM media_assets WHERE sha256 IN ('${SHA}', '${PDF_SHA}')`);
+    await tx.unsafe(
+      `DELETE FROM media_assets WHERE sha256 IN ('${SHA}', '${PDF_SHA}', '${ICO_SHA}')`,
+    );
   });
 }
 
@@ -121,7 +127,7 @@ beforeAll(async () => {
   })) as { assetId: string; slug: string };
   faviconId = upload.assetId;
   faviconSlug = upload.slug;
-  const mediaRoot = resolve(repoRoot, process.env.MEDIA_ROOT_DIR ?? "data/media");
+  mediaRoot = resolve(repoRoot, process.env.MEDIA_ROOT_DIR ?? "data/media");
   await mkdir(join(mediaRoot, SHA), { recursive: true });
   await writeFile(join(mediaRoot, SHA, "orig.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
@@ -262,5 +268,65 @@ describe("theme favicon is emitted into <head>", () => {
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(JSON.stringify(r.error)).toContain("not an image");
+  });
+  it("an uploaded .ico is stored as-is and becomes the favicon in preview and build as image/x-icon", async () => {
+    // Same path an operator upload takes after sniffing: the pipeline
+    // keeps the ICO byte-for-byte as the only (orig) variant.
+    const ico = minimalIco();
+    const pipeline = await runMediaPipeline(ICO_SHA, "image/x-icon", ico);
+    expect(pipeline.variants.map((v) => v.variant)).toEqual(["orig"]);
+    for (const v of pipeline.variants) {
+      await mkdir(join(mediaRoot, ICO_SHA), { recursive: true });
+      await writeFile(join(mediaRoot, v.storageKey), v.body);
+    }
+    const upload = (await run("media.upload", {
+      sha256: ICO_SHA,
+      originalName: "favicon.ico",
+      name: "Tfavh Favicon Ico",
+      mime: "image/x-icon",
+      sizeBytes: ico.byteLength,
+      width: pipeline.width,
+      height: pipeline.height,
+      alt: "",
+      storageKey: pipeline.variants[0]?.storageKey ?? "",
+      variants: pipeline.variants.map((v) => ({
+        variant: v.variant,
+        format: v.format,
+        width: v.width,
+        height: v.height,
+        sizeBytes: v.sizeBytes,
+        storageKey: v.storageKey,
+      })),
+    })) as { assetId: string; slug: string };
+    // image/* → the favicon slot accepts it.
+    await run("themes.set_asset", { slot: "favicon", mediaId: upload.assetId });
+
+    const preview = (await run("pages.render_preview", { pageId })) as { html: string };
+    expect(headOf(preview.html)).toContain(
+      `<link rel="icon" href="/_caelo/media/${upload.slug}" type="image/x-icon">`,
+    );
+
+    const result = await adapter.withAdminTransaction(SYS_CTX, (tx) =>
+      generateSite({
+        tx,
+        runId: crypto.randomUUID(),
+        repoRoot,
+        changedPageIds: [pageId],
+        target: {
+          id: crypto.randomUUID(),
+          name: "favicon-ico-test",
+          env: "dev",
+          outDir: "site-ico",
+          baseUrl: "https://favicon-test.invalid",
+          robotsDefault: "noindex",
+        },
+      }),
+    );
+    const html = await readFile(join(result.buildDir, pageOutputPath(pagePath)), "utf8");
+    expect(headOf(html)).toContain(
+      `<link rel="icon" href="/_assets/${upload.slug}.ico" type="image/x-icon">`,
+    );
+    const shipped = await readFile(join(result.buildDir, "_assets", `${upload.slug}.ico`));
+    expect(new Uint8Array(shipped)).toEqual(ico);
   });
 });

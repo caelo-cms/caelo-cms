@@ -94,7 +94,16 @@ describe("Caddy cache policy for content-hashed assets", () => {
         `@content_hashed {\n\t\tpath_regexp content_hashed ${CONTENT_HASHED_PATH_PATTERN}\n\t\tfile\n\t}\n`,
       );
       expect(body).toContain(`header @content_hashed Cache-Control "${IMMUTABLE_CACHE_CONTROL}"`);
+      expect(body).toContain('\t@ico path *.ico\n\theader @ico Content-Type "image/x-icon"\n');
     }
+  });
+
+  it("public vhosts serve .ico favicons as image/x-icon; admin vhosts are untouched", () => {
+    const out = generateCaddyfile(spec);
+    const publicBlock = out.match(/\nexample\.com \{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(publicBlock).toContain('  @ico path *.ico\n  header @ico Content-Type "image/x-icon"\n');
+    const adminBlock = out.match(/admin\.example\.com \{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(adminBlock).not.toContain("@ico");
   });
 });
 

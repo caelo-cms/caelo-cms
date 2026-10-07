@@ -25,6 +25,11 @@
  * matcher also requires the file to exist (`file`), so a 404 for a
  * hashed URL (an old page requesting an asset the new build dropped)
  * is never cached for a year.
+ *
+ * `.ico` files (theme favicons) are served as `image/x-icon`, the one
+ * icon MIME the media library stores and `<link rel="icon" type>`
+ * declares. file_server only fills Content-Type when no earlier handler
+ * set it, so the `header` line wins over the host's mime.types name.
  */
 
 import { CONTENT_HASHED_PATH_PATTERN, IMMUTABLE_CACHE_CONTROL } from "@caelo-cms/shared";
@@ -89,6 +94,8 @@ function vhost(d: CaddyDomainSpec, spec: CaddyfileSpec): string {
     file
   }
   header @content_hashed Cache-Control "${IMMUTABLE_CACHE_CONTROL}"
+  @ico path *.ico
+  header @ico Content-Type "image/x-icon"
   handle /api/* {
     reverse_proxy localhost:${spec.gatewayPort}
   }

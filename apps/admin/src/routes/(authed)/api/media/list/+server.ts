@@ -19,6 +19,7 @@ const ALLOWED_MIMES = new Set([
   "image/avif",
   "image/gif",
   "image/svg+xml",
+  "image/x-icon",
   "application/pdf",
   "video/mp4",
 ]);

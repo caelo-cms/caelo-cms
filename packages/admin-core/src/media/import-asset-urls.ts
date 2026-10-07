@@ -201,6 +201,11 @@ const MIME_ALIASES: Record<string, MediaMime> = {
   "image/avif": "image/avif",
   "image/gif": "image/gif",
   "image/svg+xml": "image/svg+xml",
+  // One canonical icon type is stored; the IANA name and the legacy
+  // `image/ico` some servers still send fold into it.
+  "image/x-icon": "image/x-icon",
+  "image/vnd.microsoft.icon": "image/x-icon",
+  "image/ico": "image/x-icon",
   "application/pdf": "application/pdf",
   "video/mp4": "video/mp4",
   "font/woff2": "font/woff2",
@@ -247,6 +252,9 @@ export function magicBytesMatchMime(mime: MediaMime, bytes: Uint8Array): boolean
       return startsWith([0xff, 0xd8, 0xff]);
     case "image/gif":
       return ascii("GIF8");
+    case "image/x-icon":
+      // ICONDIR header: reserved 0, type 1 (icon). Type 2 is a cursor.
+      return startsWith([0x00, 0x00, 0x01, 0x00]);
     case "image/webp":
       return ascii("RIFF") && ascii("WEBP", 8);
     case "image/avif":

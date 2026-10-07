@@ -180,6 +180,15 @@ file). No module needs to carry an icon tag; one hand-written in a chrome
 module lands in `<body>` and only duplicates the platform's tag. With no
 favicon bound nothing is emitted.
 
+The favicon slot takes any image row: `.ico`, PNG or SVG. An `.ico`
+upload is stored exactly as uploaded (no WebP variants; the container
+keeps its own sizes) under the media MIME `image/x-icon` — uploads or
+imports declared as `image/vnd.microsoft.icon` are normalised to it — so
+the emitted tag reads `type="image/x-icon"`, and every static publisher
+(GCS, Firebase Hosting, Caddy) serves `.ico` files with that same
+Content-Type. Cursor files (`.cur`) share the container but are refused.
+ICO uploads are capped at 1 MiB.
+
 ## Verification
 
 - Unit: `packages/admin-core/src/ai/__tests__/cold-start-gate.test.ts`

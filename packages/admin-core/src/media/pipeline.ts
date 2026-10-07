@@ -10,7 +10,7 @@
  * preserved. Quality fixed at 80 — high enough to avoid visible
  * artefacts, low enough to halve original bytes on most photos.
  *
- * Non-image kinds (PDF, MP4, SVG) emit only `orig`. SVG is sanitised
+ * Non-raster kinds (PDF, MP4, SVG, ICO, fonts) emit only `orig`. SVG is sanitised
  * before persistence to drop `<script>` and event handlers.
  */
 
@@ -113,7 +113,12 @@ export async function runMediaPipeline(
   }
 
   if (!IMAGE_RASTER_MIMES.has(mime)) {
-    // PDF / MP4 / unknown: store the original as-is, no derived variants.
+    // PDF / MP4 / ICO / fonts: store the original as-is, no derived
+    // variants. ICO stays out of sharp entirely (libvips cannot read the
+    // container, and a favicon must ship its own embedded sizes intact).
+    // Without a decode step the ICO directory is checked structurally
+    // instead, so a truncated file fails here like an undecodable raster.
+    if (mime === "image/x-icon") assertValidIco(body);
     const ext = pickExtension(mime);
     return {
       variants: [
@@ -289,6 +294,40 @@ export function sanitizeSvg(svg: string): string {
 
 // ---------------------------------------------------------------------
 
+const ICO_HEADER_BYTES = 6;
+const ICO_ENTRY_BYTES = 16;
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/**
+ * Structural check of an ICO file: an ICONDIR of type 1 (icon) with at
+ * least one entry, and every entry's image fully inside the file and
+ * starting with a PNG signature or a 40-byte BITMAPINFOHEADER. Throws
+ * with what is wrong, which the upload endpoint turns into a 422.
+ */
+function assertValidIco(body: Uint8Array): void {
+  const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
+  if (body.byteLength < ICO_HEADER_BYTES) throw new Error("ICO: file shorter than its header");
+  if (view.getUint16(0, true) !== 0 || view.getUint16(2, true) !== 1) {
+    throw new Error("ICO: not an icon directory (reserved 0, type 1)");
+  }
+  const count = view.getUint16(4, true);
+  if (count === 0) throw new Error("ICO: directory lists no images");
+  if (body.byteLength < ICO_HEADER_BYTES + count * ICO_ENTRY_BYTES) {
+    throw new Error("ICO: directory truncated");
+  }
+  for (let i = 0; i < count; i++) {
+    const entry = ICO_HEADER_BYTES + i * ICO_ENTRY_BYTES;
+    const size = view.getUint32(entry + 8, true);
+    const offset = view.getUint32(entry + 12, true);
+    if (size === 0 || offset + size > body.byteLength) {
+      throw new Error(`ICO: image ${i + 1} of ${count} lies outside the file`);
+    }
+    const isPng = PNG_SIGNATURE.every((b, k) => body[offset + k] === b);
+    const isBmp = size >= 40 && view.getUint32(offset, true) === 40;
+    if (!isPng && !isBmp) throw new Error(`ICO: image ${i + 1} of ${count} is neither PNG nor BMP`);
+  }
+}
+
 function pickExtension(mime: MediaMime): string {
   switch (mime) {
     case "image/jpeg":
@@ -303,6 +342,8 @@ function pickExtension(mime: MediaMime): string {
       return "gif";
     case "image/svg+xml":
       return "svg";
+    case "image/x-icon":
+      return "ico";
     case "application/pdf":
       return "pdf";
     case "video/mp4":

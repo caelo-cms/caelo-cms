@@ -34,7 +34,8 @@ export const setThemeAssetTool: ToolDefinitionWithHandler<SetThemeAssetToolInput
     "`generate_image` result — never a slug or URL, and never invented. Targets the active " +
     "theme by default; pass `themeSlug` to bind on a specific theme. A bound favicon is emitted " +
     'as `<link rel="icon">` in every page\'s <head> by the platform — never hand-write an icon ' +
-    "tag into a module.",
+    "tag into a module. The favicon must be an image row (ICO, PNG or SVG); an uploaded .ico " +
+    "is fine as-is.",
   schema: setThemeAssetToolInput,
   inputSchema: {
     type: "object",

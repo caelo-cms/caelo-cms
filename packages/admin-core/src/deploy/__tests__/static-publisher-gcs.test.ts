@@ -409,6 +409,28 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
     expect(cacheControlOf(staticBucket, "robots.txt")).toBe("public, max-age=300");
   });
 
+  it("a theme favicon .ico ships as image/x-icon on staging AND after promote", async () => {
+    const ICO = "_assets/brand-favicon.ico";
+    await mkdir(join(buildDir, "_assets"), { recursive: true });
+    await writeFile(join(buildDir, ICO), new Uint8Array([0, 0, 1, 0, 1, 0]));
+    await writePromotableManifest();
+    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-ico", target: TARGET });
+    const contentTypeOf = (bucket: MockBucket, key: string): string | undefined =>
+      (bucket.files.get(key)?.metadata as { contentType?: string } | undefined)?.contentType;
+    expect(contentTypeOf(stagingBucket, `run-ico/${ICO}`)).toBe("image/x-icon");
+    await gcsStaticPublisher.promoteToProduction({
+      sourceRunId: "run-ico",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://example.com",
+    });
+    expect(contentTypeOf(staticBucket, ICO)).toBe("image/x-icon");
+    // Slug-addressed media: replaceable bytes, never immutable.
+    expect(cacheControlOf(staticBucket, ICO)).toBe("public, max-age=3600");
+  });
+
   it("promote keeps a bare-slug page's staged text/html Content-Type + HTML policy", async () => {
     await rm(buildDir, { recursive: true, force: true });
     buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-noext-promote-"));
