@@ -8,7 +8,10 @@
  *   1. edit_content on module X's html (drop an aria-label) → new sha; the
  *      branch preview showed the change.
  *   2. edit_module on X with ONLY `fields` → success.
- *   3. X's html was back to the original — the step-1 edit was lost.
+ *   3. X's html then READ as the original. The branched snapshot from
+ *      step 2 actually kept the step-1 html (modules.update already built
+ *      on the latest branched snapshot); only the main-only read path made
+ *      it look reverted.
  *   4. read_content kept returning main's html + sha, and edit_content with
  *      the sha returned by the previous edit_content was rejected as stale.
  *
@@ -305,5 +308,60 @@ describe("branch-effective module reads (read_content / edit_content / edit_modu
 
     // Main never saw any of it.
     expect(await getHtml(SYSTEM, moduleId)).toBe(MAIN_HTML);
+  });
+
+  it("ignores branch snapshots consumed by a Stage once main moves on", async () => {
+    // Stage merges the branch into main, stamps last_staged_at and releases
+    // the chat's locks — so another writer may change the module on main
+    // afterwards. The chat's pre-Stage snapshot is then stale: overlaying it
+    // would hand the AI the old body, and its next write would revert main
+    // at the following Stage.
+    const { moduleId, aiCtx } = await setup("staged");
+    const edit = await tools.dispatch(
+      "edit_content",
+      { entityKind: "module", entityId: moduleId, field: "html", edits: [DROP_ARIA] },
+      aiCtx,
+      toolCtx,
+    );
+    expect(edit.ok).toBe(true);
+
+    const staged = await execute(registry, adapter, SYSTEM, "chat.merge_to_main", {
+      chatSessionId: aiCtx.chatTaskId as string,
+    });
+    if (!staged.ok) throw new Error(`merge_to_main: ${JSON.stringify(staged.error)}`);
+
+    // Main moves on after the Stage (another writer, outside this chat).
+    const NEWER_MAIN_HTML =
+      '<nav class="menu menu--newer">\n  {{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}\n</nav>';
+    const mainEdit = await execute(registry, adapter, SYSTEM, "modules.update", {
+      moduleId,
+      html: NEWER_MAIN_HTML,
+    });
+    if (!mainEdit.ok) throw new Error(`main edit: ${JSON.stringify(mainEdit.error)}`);
+
+    // The chat reads the newer main, not its consumed snapshot.
+    expect(await getHtml(aiCtx, moduleId)).toBe(NEWER_MAIN_HTML);
+    const read = await tools.dispatch(
+      "read_content",
+      { entityKind: "module", entityId: moduleId, field: "html" },
+      aiCtx,
+      toolCtx,
+    );
+    expect((read.value as { sha: string }).sha).toBe(contentSha(NEWER_MAIN_HTML));
+
+    // A partial write in the chat builds on the newer main too (the write
+    // path shares the loader), so the next Stage cannot revert it.
+    const cssOnly = await tools.dispatch(
+      "edit_module",
+      { moduleId, css: ".menu{gap:1rem}", bindThemeLiterals: false },
+      aiCtx,
+      toolCtx,
+    );
+    expect(cssOnly.ok).toBe(true);
+    const after = await execute(registry, adapter, aiCtx, "modules.get", { moduleId });
+    if (!after.ok) throw new Error("modules.get");
+    const m = (after.value as { module: { html: string; css: string } }).module;
+    expect(m.html).toBe(NEWER_MAIN_HTML);
+    expect(m.css).toBe(".menu{gap:1rem}");
   });
 });

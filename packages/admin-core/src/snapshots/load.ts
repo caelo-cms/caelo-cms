@@ -215,6 +215,15 @@ export async function loadModuleStateWithBranchOverlay(
  * body, and the next write built on that body would clobber the branch's
  * earlier edit.
  *
+ * Only snapshots written AFTER the chat's last Stage count
+ * (`chat_sessions.last_staged_at`, strict `>` — the same pending-changes
+ * boundary `chat.merge_to_main` and `chat.list_pending_changes` use).
+ * Stage consumed everything before it into main and released the chat's
+ * locks, so another chat may since have changed the module on main; an
+ * already-consumed branch snapshot is stale, and overlaying it would
+ * hand this chat the pre-change body and let its next write revert main
+ * at the following Stage.
+ *
  * @param moduleIds restrict to these ids; omit to load every module the
  *   branch touched (bounded by the branch's own edit count).
  */
@@ -236,7 +245,9 @@ export async function loadBranchedModuleStates(
     SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
       FROM module_snapshots ms
       JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+      LEFT JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
      WHERE ss.chat_branch_id = ${chatBranchId}::uuid ${idFilter}
+       AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
      ORDER BY ms.module_id, ss.created_at DESC
   `)) as unknown as { module_id: string; state: unknown }[];
   for (const row of rows) {
