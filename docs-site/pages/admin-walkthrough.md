@@ -40,14 +40,15 @@ The Owner-only controls. This is where you configure the AI provider, set budget
 Tiles:
 
 - **AI provider** — `/security/ai` — pick + configure the active provider (Anthropic / OpenAI / Google / local OpenAI-compat)
-- **Pricing** — `/security/ai/pricing` — per-model rates that drive cost calculation
-- **Budgets** — `/security/ai/budgets` — six caps (3 scopes × 2 op-types) with status badges
-- **Telemetry** — `/security/ai/telemetry` — opt-in toggles + payload preview
+- **Pricing** — `/security/ai/pricing` — per-model rates that drive cost calculation. The AI can also propose rates (`propose_set_ai_pricing`), e.g. for a model it finds unpriced; you approve the card in the chat.
+- **Budgets** — `/security/ai/budgets` — six caps (3 scopes × 2 op-types) with status badges. Ask the AI to change a cap and it proposes it (`propose_set_ai_budget`) for your approval.
+- **Telemetry** — `/security/ai/telemetry` — opt-in toggles + payload preview. Telemetry consent is yours alone: the AI has no tool for it.
 - **Costs** — `/security/costs` — five-panel dashboard (totals + budget status + per-day + per-attribution + roll-up)
 - **MCP tokens** — `/security/mcp` — bearer tokens for `bunx @caelo-cms/mcp-server`
 - **Plugins** — `/security/plugins` — activation, grants and the awaiting-activation queue for every plugin
 - **Email** — `/security/email` — Resend / SMTP / SES selection
-- **Gateway** — `/security/gateway` — rate limits, captcha, body cap, request log
+- **Gateway** — `/security/gateway` — rate limits, captcha, body cap, request log. The AI can propose captcha / body-cap / auto-redeploy changes (`propose_set_gateway_settings`) for your approval.
+- **Pending settings changes** — `/security/owner-settings/pending` — budget, pricing and gateway proposals queued by an external agent over MCP (in the chat you approve on the card instead)
 - **Users + roles** — `/security/users` + `/security/roles`. On Google Cloud installs, adding a user with a role also lets them through Google IAP (browser and MCP); deleting them or removing their last role takes that away again. You can also just ask the AI to invite or remove someone — it prepares the change and you click Approve.
 - **Skills** — `/security/skills` — AI behaviour bodies, AI-proposed queue
 - **Subagents** — `/security/subagents` — observability for spawn_subagent runs
