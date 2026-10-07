@@ -58,7 +58,7 @@ Because the executing context is identical to a chat turn, **every invariant car
 - **AI actor.** Calls run as an AI actor bound to the token's owner. An external model is an AI actor no matter who runs it — human-only ops stay unreachable, and actor-scope gates apply unchanged.
 - **Preview branch.** Every call runs inside a work session (a chat session). Writes land on its preview branch, invisible to the live site until the operator reviews and publishes in the admin — publishing is not exposed to the agent.
 - **Snapshots + undo.** Every write emits a snapshot grouped under the session, so chat-keyed undo works exactly as if the work had happened in the browser chat.
-- **Approval gates.** `propose_*` tools queue an Owner proposal ("Queued proposal `<uuid>`…") in the per-domain pending queue at `/security/<domain>/pending` — the agent is told to say "I prepared this — click Approve", and cannot apply it itself.
+- **Approval gates.** `propose_*` tools queue an Owner proposal ("Queued proposal `<uuid>`… the Owner approves it at `<path>`") — usually the per-domain queue at `/security/<domain>/pending`; site SEO settings (`propose_set_site_seo`: site URL, sitemap, Organization JSON-LD) are approved on `/security/seo`. Every waiting proposal is also listed at `/security/pending`. The agent is told to say "I prepared this — click Approve", and cannot apply it itself.
 
 ### Install
 

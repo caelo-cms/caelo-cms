@@ -81,6 +81,7 @@ import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-deploy-promote.js";
+import { getSiteSeoTool, proposeSetSiteSeoTool } from "./propose-set-site-seo.js";
 import { proposeSiteImportTool } from "./propose-site-import.js";
 import { proposeSkillTool } from "./propose-skill.js";
 import {
@@ -419,6 +420,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeTemplateDeleteTool);
   registry.register(proposeDomainAddTool);
   registry.register(proposeDomainRemoveTool);
+  // Site SEO settings (base URL, sitemap, Organization JSON-LD): §11.A gated
+  // write + the read the AI checks first.
+  registry.register(proposeSetSiteSeoTool);
+  registry.register(getSiteSeoTool);
   // v0.2.37 — AI can withdraw its own pending proposals.
   registry.register(cancelProposalTool);
   // v0.11.0 — themes primitive (#45). Routine + the §11.A propose

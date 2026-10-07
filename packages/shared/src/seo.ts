@@ -61,6 +61,16 @@ export const seoOptimizeInputSchema = z
   .strict();
 export type SeoOptimizeInput = z.infer<typeof seoOptimizeInputSchema>;
 
+/** Organization JSON-LD fields — structured only, never raw markup (CLAUDE.md §2). */
+const organizationJsonSchema = z
+  .object({
+    name: z.string().max(256).optional(),
+    url: z.string().max(2048).optional(),
+    logo: z.string().max(2048).optional(),
+    sameAs: z.array(z.string().max(2048)).max(20).optional(),
+  })
+  .strict();
+
 export const siteDefaultsSetSeoInputSchema = z
   .object({
     siteBaseUrl: z
@@ -69,18 +79,91 @@ export const siteDefaultsSetSeoInputSchema = z
       .max(2048)
       .url("siteBaseUrl must be an absolute URL (https://example.com)"),
     sitemapEnabled: z.boolean(),
-    organizationJson: z
-      .object({
-        name: z.string().max(256).optional(),
-        url: z.string().max(2048).optional(),
-        logo: z.string().max(2048).optional(),
-        sameAs: z.array(z.string().max(2048)).max(20).optional(),
-      })
-      .strict()
-      .default({}),
+    organizationJson: organizationJsonSchema.default({}),
   })
   .strict();
 export type SiteDefaultsSetSeoInput = z.infer<typeof siteDefaultsSetSeoInputSchema>;
+
+/**
+ * Input of `site_defaults.propose_set_seo` — the AI's path to the site SEO
+ * settings (CLAUDE.md §11.A). Every field is optional so the AI changes only
+ * what the operator asked for; an omitted field keeps its stored value when
+ * the Owner approves. `organizationJson` replaces the whole object.
+ */
+export const siteSeoProposalInputSchema = z
+  .object({
+    siteBaseUrl: z.string().min(1).max(2048).optional(),
+    sitemapEnabled: z.boolean().optional(),
+    organizationJson: organizationJsonSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (v) =>
+      v.siteBaseUrl !== undefined ||
+      v.sitemapEnabled !== undefined ||
+      v.organizationJson !== undefined,
+    "pass at least one of `siteBaseUrl`, `sitemapEnabled`, `organizationJson`",
+  );
+export type SiteSeoProposalInput = z.infer<typeof siteSeoProposalInputSchema>;
+
+/** Result of {@link checkPublicSiteBaseUrl}. */
+export type PublicSiteBaseUrlCheck = { ok: true; url: string } | { ok: false; message: string };
+
+const LOOPBACK_HOST = /^(localhost|.+\.localhost|127(\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)$/i;
+
+/**
+ * Validate a public site base URL and normalise it to its origin
+ * (`https://example.com`, no trailing slash).
+ *
+ * Every canonical, og:url, JSON-LD url, hreflang target and sitemap entry is
+ * `<base><path>`, so the base must be exactly the origin visitors reach: no
+ * path, query, fragment or credentials. On a cloud install (`provider` is a
+ * `CAELO_PROVIDER` other than self-hosted) it must be https and not a
+ * loopback host — a localhost base there ships unreachable canonicals to
+ * production. A self-hosted install may use `http://localhost:<port>`, the
+ * documented local-dev value; any other host still needs https.
+ *
+ * @param provider - `CAELO_PROVIDER` of the install; `undefined`/`""`/`"self-hosted"` = self-hosted.
+ */
+export function checkPublicSiteBaseUrl(
+  raw: string,
+  provider: string | undefined,
+): PublicSiteBaseUrlCheck {
+  let u: URL;
+  try {
+    u = new URL(raw.trim());
+  } catch {
+    return {
+      ok: false,
+      message: `"${raw}" is not an absolute URL — pass the public origin, e.g. https://www.example.com`,
+    };
+  }
+  const origin = `${u.protocol}//${u.host}`;
+  if (u.username || u.password) {
+    return { ok: false, message: "the site URL must not contain credentials" };
+  }
+  if ((u.pathname !== "/" && u.pathname !== "") || u.search || u.hash) {
+    return {
+      ok: false,
+      message: `the site URL must be the origin only, without path, query or fragment — use ${origin}`,
+    };
+  }
+  const selfHosted = !provider || provider === "self-hosted";
+  const loopback = LOOPBACK_HOST.test(u.hostname);
+  if (loopback && !selfHosted) {
+    return {
+      ok: false,
+      message: `${origin} is a local address; on this ${provider} install the site URL must be the public domain visitors use (e.g. https://www.example.com)`,
+    };
+  }
+  if (u.protocol !== "https:" && !(selfHosted && loopback && u.protocol === "http:")) {
+    return {
+      ok: false,
+      message: `the site URL must use https (got ${u.protocol.replace(":", "")}) — use https://${u.host}`,
+    };
+  }
+  return { ok: true, url: origin };
+}
 
 export interface PageSeoRow {
   pageId: string;

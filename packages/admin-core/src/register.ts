@@ -396,6 +396,12 @@ import {
 import { pagesSeoSetManyOp } from "./ops/seo-bulk.js";
 import { getSiteDefaultsOp, setSiteDefaultsOp, setSiteIdentityOp } from "./ops/site_defaults.js";
 import {
+  executeSiteDefaultsProposalOp,
+  listPendingSiteDefaultsProposalsOp,
+  proposeSiteSeoSetOp,
+  rejectSiteDefaultsProposalOp,
+} from "./ops/site_defaults_pending.js";
+import {
   listPinDefaultsOp,
   setEngagedSkillsOp,
   setPinDefaultsOp,
@@ -990,6 +996,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(siteDefaultsGetSeoOp);
   registry.register(siteDefaultsSeedSiteBaseUrlOp);
   registry.register(siteDefaultsSetSeoOp);
+  // §11.A gate in front of set_seo: the AI proposes (propose_set_site_seo),
+  // the Owner approves in the chat or on Security → SEO.
+  registry.register(proposeSiteSeoSetOp);
+  registry.register(executeSiteDefaultsProposalOp);
+  registry.register(rejectSiteDefaultsProposalOp);
+  registry.register(listPendingSiteDefaultsProposalsOp);
   registry.register(lookupLinksInModulesOp);
   registry.register(rewriteModuleLinksOp);
   // P10A — skills system.

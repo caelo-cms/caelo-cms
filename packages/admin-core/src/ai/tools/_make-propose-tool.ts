@@ -84,7 +84,9 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
       const v = r.value as { proposalId: string; preview: Record<string, unknown> };
       return {
         ok: true,
-        content: `Queued proposal ${v.proposalId}: ${args.summarize(input, v.preview)}.`,
+        // Reached on the Power-MCP surface, which has no in-chat Approve
+        // card: name the queue where the Owner approves the pending row.
+        content: `Queued proposal ${v.proposalId}: ${args.summarize(input, v.preview)}. Not applied yet — the Owner approves it at ${args.pendingQueuePath}.`,
       };
     },
   };

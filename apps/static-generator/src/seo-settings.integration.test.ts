@@ -109,6 +109,10 @@ describe("#551 site base URL in the static generator", () => {
     await expect(
       adapter.withAdminTransaction(systemCtx, (tx) => readSeoSettings(tx)),
     ).rejects.toThrow("Security → SEO");
+    // The agent reads this error too: it names the tool that clears it.
+    await expect(
+      adapter.withAdminTransaction(systemCtx, (tx) => readSeoSettings(tx)),
+    ).rejects.toThrow("propose_set_site_seo");
   });
 
   it("readSeoSettings returns the configured base URL, never a substitute", async () => {

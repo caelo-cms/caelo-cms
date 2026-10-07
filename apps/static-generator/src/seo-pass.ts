@@ -322,9 +322,11 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<StoredSeoS
   if (!r.site_base_url) {
     throw new Error(
       "Site base URL is not configured (site_defaults.site_base_url is NULL). Canonical " +
-        "URLs, og:url, JSON-LD and the sitemap need the public site URL. Set it under " +
-        "Security → SEO in the admin, or set CAELO_SITE_URL on the admin service " +
-        "(provisioning does this from the install domain) and restart it.",
+        "URLs, og:url, JSON-LD and the sitemap need the public site URL. Next step: ask the " +
+        "AI in the editor chat to set it — it calls propose_set_site_seo({siteBaseUrl: " +
+        '"https://<your domain>"}) and the Owner approves — or set it under Security → SEO ' +
+        "in the admin, or set CAELO_SITE_URL on the admin service (provisioning does this " +
+        "from the install domain) and restart it. Then publish again.",
     );
   }
   let organization: SiteSeoSettings["organization"] = {};
@@ -360,9 +362,10 @@ export function requireSiteLanguage(settings: StoredSeoSettings): SiteSeoSetting
   if (!siteLanguage) {
     throw new Error(
       "Site language is not configured (site_defaults.site_language is NULL). Every page " +
-        "needs <html lang> for screen readers and search engines. Tell the AI in the editor " +
-        "chat which language the site is written in (it sets it with set_site_identity), or " +
-        "set it under Security → SEO in the admin, then publish again.",
+        "needs <html lang> for screen readers and search engines. Next step: tell the AI in " +
+        "the editor chat which language the site is written in — it calls " +
+        'set_site_identity({siteLanguage: "<BCP 47 tag, e.g. de>"}) — or set it under ' +
+        "Security → SEO in the admin, then publish again.",
     );
   }
   return { ...settings, siteLanguage };

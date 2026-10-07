@@ -50,6 +50,7 @@ const PENDING_TABLES = [
   // #390 — URL-migration proposals use the standard pending shape.
   "url_migration_pending_actions",
   "plugin_pending_actions",
+  "site_defaults_pending_actions",
 ] as const;
 
 let workerHandle: ReturnType<typeof setInterval> | null = null;
