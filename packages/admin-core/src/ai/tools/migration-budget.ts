@@ -177,7 +177,7 @@ export const checkRunBudgetTool: ToolDefinitionWithHandler<CheckBudgetInput> = {
     const ceiling = money(v.ceilingMicrocents);
     const unpricedNote =
       v.unpricedCallCount > 0
-        ? ` WARNING: ${v.unpricedCallCount} AI call(s) recorded no cost because no ai_pricing row matches their model — real spend is HIGHER than shown; tell the operator to add the model at /security/ai.`
+        ? ` WARNING: ${v.unpricedCallCount} AI call(s) recorded no cost because no ai_pricing row matches their model — real spend is HIGHER than shown; propose the missing rates with propose_set_ai_pricing (list_ai_pricing shows what is priced) so the operator can approve them.`
         : "";
     const noteSuffix = (v.currencyNote ? ` (${v.currencyNote})` : "") + unpricedNote;
 

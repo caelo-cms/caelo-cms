@@ -114,7 +114,7 @@ export function evaluateGateLevel(
 /** The `(N call(s) have no pricing …)` suffix when spend is understated. */
 function unpricedSuffix(gate: BudgetGateState): string {
   return gate.unpricedCallCount > 0
-    ? ` Note: ${gate.unpricedCallCount} AI call(s) have no pricing configured (/security/ai), so real spend is HIGHER than this figure.`
+    ? ` Note: ${gate.unpricedCallCount} AI call(s) have no pricing configured, so real spend is HIGHER than this figure — the AI can propose the missing rates (propose_set_ai_pricing) for the operator to approve.`
     : "";
 }
 

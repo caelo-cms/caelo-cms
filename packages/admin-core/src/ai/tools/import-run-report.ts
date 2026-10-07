@@ -227,7 +227,7 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
       // unpriced; an understated total must never read as a cheap run.
       const unpriced =
         c.unpricedCallCount > 0
-          ? ` WARNING: ${c.unpricedCallCount} AI call(s) have no ai_pricing row (cost recorded as 0) — real spend is higher; the operator should add the model at /security/ai.`
+          ? ` WARNING: ${c.unpricedCallCount} AI call(s) have no ai_pricing row (cost recorded as 0) — real spend is higher; propose the missing rates with propose_set_ai_pricing so the operator can approve them.`
           : "";
       costLine =
         (c.ceilingMicrocents === null

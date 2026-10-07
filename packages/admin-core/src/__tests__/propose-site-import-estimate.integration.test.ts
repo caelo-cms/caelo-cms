@@ -78,17 +78,21 @@ describe("describeEstimate", () => {
     expect(s).toContain("≈107 AI calls");
   });
 
-  it("renders an unpriced band loudly, pointing at the rates page (#298)", () => {
+  it("renders an unpriced band loudly, naming the tool that fixes it (#298)", () => {
     const s = describeEstimate({
       pages: 14,
       basis: "list",
       truncated: false,
       crawlMinutes: 1,
       aiCostUsd: null,
-      costNote: "no ai_pricing row for anthropic/claude-test — set rates at /security/ai/pricing",
+      costNote:
+        "no ai_pricing row for anthropic/claude-test — propose its rates with propose_set_ai_pricing",
     });
     expect(s).toContain("UNPRICED");
-    expect(s).toContain("/security/ai/pricing");
+    // The agent can fix this itself (§11.A proposal) — it must not be sent
+    // to an Owner page it cannot reach.
+    expect(s).toContain("propose_set_ai_pricing");
+    expect(s).not.toContain("/security/ai/pricing");
   });
 
   it("renders a failed estimate as an explicit unknown", () => {
