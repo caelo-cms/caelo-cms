@@ -83,6 +83,25 @@ async function wipe(): Promise<void> {
   }
 }
 
+/**
+ * #553 — Publish live is gated on the staged build's quality audit; this
+ * suite is about SEO semantics, so it records a passed audit directly.
+ */
+async function markAudited(deployRunId: string): Promise<void> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`
+        INSERT INTO quality_audit_runs (deploy_run_id, requested_by, status, classification, finished_at)
+        VALUES (${deployRunId}::uuid, ${HUMAN.actorId}::uuid, 'passed',
+                '{"auditNeeded":true,"reasons":[],"skipped":[]}'::jsonb, now())`;
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
 async function ok<T>(op: string, input: unknown): Promise<T> {
   const r = await execute(registry, adapter, HUMAN, op, input);
   if (!r.ok) throw new Error(`${op} failed: ${JSON.stringify(r.error)}`);
@@ -149,10 +168,11 @@ afterAll(async () => {
 
 describe("deploy.promote ships production SEO semantics", () => {
   it("staging build → Publish live: no env noindex, sitemap + Sitemap line, per-page noindex kept", async () => {
-    const staged = await ok<{ buildId: string }>("deploy.trigger", {
+    const staged = await ok<{ buildId: string; runId: string }>("deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
     });
+    await markAudited(staged.runId);
     const staging = join(testRoot, "output", "staging", "current");
     const production = join(testRoot, "output", "production", "current");
 
@@ -198,10 +218,11 @@ describe("deploy.promote ships production SEO semantics", () => {
   });
 
   it("refuses to promote a legacy staging build whose pages carry staging's noindex", async () => {
-    const staged = await ok<{ buildId: string }>("deploy.trigger", {
+    const staged = await ok<{ buildId: string; runId: string }>("deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
     });
+    await markAudited(staged.runId);
     // Simulate a build from before the env-independent SEO pass: its
     // manifest lacks the `envNoindexInHtml: false` flag.
     const manifestPath = join(

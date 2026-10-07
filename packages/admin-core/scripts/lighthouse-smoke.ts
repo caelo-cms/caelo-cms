@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #553 — end-to-end smoke of the quality-audit browser stack: serve
- * a small page on loopback, run the real Lighthouse child against it
- * through the bundled Chromium, and assert that all four category scores
- * and the planted findings come back.
+ * Issue #553 — end-to-end smoke of the quality-audit stack: write a tiny
+ * staged build to a temp dir, serve it through the loopback origin the
+ * worker uses on providers without a reachable staging URL, run the real
+ * Lighthouse child against it through the bundled Chromium, and assert
+ * that all four category scores and the planted finding come back.
  *
  *   bun packages/admin-core/scripts/lighthouse-smoke.ts
  *
@@ -13,7 +14,11 @@
  * production runtime (Bun on linux/amd64, image-installed browser).
  */
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runAuditJob } from "../src/quality/lighthouse-runner.js";
+import { localBuildSource, serveStagedBuild } from "../src/quality/staged-origin.js";
 
 const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Caelo audit smoke</title>
@@ -22,26 +27,20 @@ const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 
 const PIXEL = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>`;
 
-const server = Bun.serve({
-  hostname: "127.0.0.1",
-  port: 0,
-  fetch(req) {
-    const path = new URL(req.url).pathname;
-    if (path === "/pixel.svg")
-      return new Response(PIXEL, { headers: { "content-type": "image/svg+xml" } });
-    if (path === "/robots.txt") return new Response("User-agent: *\nAllow: /\n");
-    return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
-  },
-});
+const build = mkdtempSync(join(tmpdir(), "caelo-lh-smoke-"));
+mkdirSync(build, { recursive: true });
+writeFileSync(join(build, "index.html"), PAGE);
+writeFileSync(join(build, "pixel.svg"), PIXEL);
+writeFileSync(join(build, "robots.txt"), "User-agent: *\nAllow: /\n");
+const origin = await serveStagedBuild(localBuildSource(build));
 
 const started = Date.now();
 const result = await runAuditJob({
-  pages: [
-    { pageId: "00000000-0000-4000-8000-000000000553", url: `http://127.0.0.1:${server.port}/` },
-  ],
+  pages: [{ pageId: "00000000-0000-4000-8000-000000000553", url: `${origin.baseUrl}/` }],
   performanceRuns: 3,
 });
-server.stop(true);
+await origin.close();
+rmSync(build, { recursive: true, force: true });
 
 if (!result.ok) {
   console.error(

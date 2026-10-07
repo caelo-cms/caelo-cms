@@ -26,13 +26,14 @@
  */
 
 import { readdir, readFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { join } from "node:path";
 import {
   HTML_CACHE_CONTROL,
   IMMUTABLE_CACHE_CONTROL,
   isContentHashedPath,
 } from "@caelo-cms/shared";
 import type { Bucket, Storage as StorageType } from "@google-cloud/storage";
+import { cacheControlForContentType, contentTypeFor } from "./static-file-policy.js";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
 const PARALLEL_UPLOADS = 100;
@@ -406,28 +407,6 @@ async function readContentTypeOverrides(buildDir: string): Promise<Record<string
   }
 }
 
-function cacheControlForContentType(contentType: string, key: string): string {
-  // Content-hashed outputs (fonts, plugin bundles, Vite chunks) are
-  // immutable regardless of content-type — the hash in the path is the
-  // signal. Slug-addressed media stays on the 1h default below.
-  if (isContentHashedPath(key)) {
-    return IMMUTABLE_CACHE_CONTROL;
-  }
-  if (contentType.startsWith("text/html")) {
-    return HTML_CACHE_CONTROL;
-  }
-  if (key === "routing-manifest.json" || key === "_content-types.json") {
-    return "public, max-age=10";
-  }
-  if (contentType.startsWith("application/json")) {
-    return "public, max-age=60";
-  }
-  if (key === "robots.txt" || key === "sitemap.xml") {
-    return "public, max-age=300";
-  }
-  return "public, max-age=3600";
-}
-
 async function uploadBytes(
   bucket: Bucket,
   key: string,
@@ -438,42 +417,6 @@ async function uploadBytes(
     contentType,
     metadata: { cacheControl: cacheControlFor(key) },
   });
-}
-
-function contentTypeFor(key: string): string {
-  const ext = extname(key).toLowerCase();
-  switch (ext) {
-    case ".html":
-      return "text/html; charset=utf-8";
-    case ".css":
-      return "text/css; charset=utf-8";
-    case ".js":
-    case ".mjs":
-      return "application/javascript; charset=utf-8";
-    case ".json":
-      return "application/json; charset=utf-8";
-    case ".svg":
-      return "image/svg+xml";
-    case ".ico":
-      return "image/x-icon";
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".webp":
-      return "image/webp";
-    case ".woff2":
-      return "font/woff2";
-    case ".woff":
-      return "font/woff";
-    case ".txt":
-      return "text/plain; charset=utf-8";
-    case ".xml":
-      return "application/xml; charset=utf-8";
-    default:
-      return "application/octet-stream";
-  }
 }
 
 function cacheControlFor(key: string): string {

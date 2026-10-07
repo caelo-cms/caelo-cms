@@ -27,6 +27,7 @@
     templates: "/security/templates/pending",
     domains: "/security/domains/pending",
     themes: "/security/themes/pending",
+    quality: "/security/quality/pending",
     gateway: "/security/gateway",
     site_memory: "/security/ai/memory-proposals",
     skills: "/security/skills",

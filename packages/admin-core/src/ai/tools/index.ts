@@ -118,6 +118,12 @@ import {
   listQualityAcceptancesTool,
   listQualityAuditsTool,
 } from "./quality-audit-tools.js";
+import {
+  acceptQualityFindingsTool,
+  getPublishGateTool,
+  publishDespiteFailedAuditTool,
+  retryQualityAuditTool,
+} from "./quality-gate-tools.js";
 import { queryPageHtmlTool } from "./query-page-html.js";
 import { readContentTool } from "./read-content.js";
 import { readPageMoreTool } from "./read-page-more.js";
@@ -352,6 +358,12 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(getQualityAuditTool);
   registry.register(listQualityAuditsTool);
   registry.register(listQualityAcceptancesTool);
+  // #553 PR 2 — the Publish gate: read, retry, and the two in-chat
+  // approval cards (accept findings / publish over a failed check).
+  registry.register(getPublishGateTool);
+  registry.register(retryQualityAuditTool);
+  registry.register(acceptQualityFindingsTool);
+  registry.register(publishDespiteFailedAuditTool);
   // v0.2.69 — render inspection. AI uses this BEFORE proposing CSS
   // / layout fixes so it sees the actual cascade instead of guessing.
   registry.register(inspectPageRenderTool);
