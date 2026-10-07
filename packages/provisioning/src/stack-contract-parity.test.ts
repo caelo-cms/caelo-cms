@@ -17,6 +17,7 @@ import { resolve } from "node:path";
 import {
   type GcpProvider,
   type IamInvariant,
+  runtimeSecretBindings,
   STACK_IAM_NOT_ENSURED,
   stackIamInvariants,
 } from "./stack-contract.js";
@@ -44,14 +45,21 @@ function declaredBindings(src: string): DeclaredBinding[] {
   return out;
 }
 
-/** Secret names of the stack's accessor loop (`for (const made of [{ name: "x", made: … }])`). */
-function accessorLoopSecrets(src: string): string[] {
-  const loop = src.match(/for \(const made of \[([\s\S]*?)\]\)/)?.[1] ?? "";
-  return [...loop.matchAll(/name: "([^"]+)", made:/g)].map((m) => m[1] as string);
-}
+/**
+ * The stacks declare the secret accessors in one loop over
+ * `runtimeSecretBindings()` — the same list upgrade's invariants come from —
+ * named `${namePrefix}-${binding.stackResource}`. The parser sees that as `*`.
+ */
+const SECRET_LOOP_NAME = "*";
+const secretBindingNames = () => runtimeSecretBindings().map((b) => b.stackResource);
+
+const expand = (d: DeclaredBinding) =>
+  d.name === SECRET_LOOP_NAME ? secretBindingNames() : [d.name];
 
 const MEMBER_EXPR: Record<IamInvariant["member"], string> = {
   "run-sa": "runSa.email",
+  // The secret loop resolves the SA per service through `serviceSa`.
+  "gateway-sa": "gatewaySa.email",
   "static-publisher-sa": "staticPublisherSa.email",
   "iap-service-agent": "iapServiceIdentity.email",
   allUsers: 'member: "allUsers"',
@@ -73,18 +81,6 @@ function targetExpr(inv: IamInvariant): { type: RegExp; ref?: string } {
   }
 }
 
-/**
- * Plain env vars set in a stack outside the contract. Only the secrets the
- * Secret Manager follow-up moves may stay — everything else belongs in
- * adminEnvContract / gatewayEnvContract so upgrade applies it too.
- */
-const ENV_OUTSIDE_CONTRACT = new Set([
-  "ADMIN_DATABASE_URL",
-  "PUBLIC_ADMIN_DATABASE_URL",
-  "PUBLIC_DATABASE_URL",
-  "CAELO_SECRET_KEK",
-]);
-
 describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (provider) => {
   const src = stack(provider);
   const declared = declaredBindings(src);
@@ -95,13 +91,22 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
     expect(declared.length).toBeGreaterThan(8);
   });
 
+  it("declares the secret accessors from runtimeSecretBindings(), per service SA", () => {
+    const loop = declared.filter((d) => d.name === SECRET_LOOP_NAME);
+    expect(loop).toHaveLength(1);
+    expect(loop[0]?.type).toBe("secretmanager.SecretIamMember");
+    expect(src).toContain("for (const binding of runtimeSecretBindings())");
+    expect(loop[0]?.body).toContain("serviceSa[binding.service].email");
+    expect(src).toMatch(
+      /const serviceSa: Record<CloudRunSlug, [^>]+> = \{\s*admin: runSa,\s*gateway: gatewaySa,/,
+    );
+    expect(src).toContain("serviceAccount: serviceSa[args.serviceName].email");
+  });
+
   it("every IAM binding the stack declares is ensured by upgrade or exempted with a reason", () => {
-    const secrets = accessorLoopSecrets(src);
-    expect(secrets.length).toBeGreaterThan(0);
     const unhandled: string[] = [];
     for (const d of declared) {
-      const names = d.name === "*-binding" ? secrets.map((s) => `${s}-binding`) : [d.name];
-      for (const name of names) {
+      for (const name of expand(d)) {
         if (exempt[name]) continue;
         const inv = invariants.find((i) => i.stackResource === name);
         if (!inv) {
@@ -110,7 +115,7 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
         }
         const role = d.body.match(/role: "([^"]+)"/)?.[1];
         expect(`${name}: ${role}`).toBe(`${name}: ${inv.role}`);
-        expect(d.body).toContain(MEMBER_EXPR[inv.member]);
+        if (d.name !== SECRET_LOOP_NAME) expect(d.body).toContain(MEMBER_EXPR[inv.member]);
         const target = targetExpr(inv);
         expect(d.type).toMatch(target.type);
         if (target.ref) expect(d.body).toContain(target.ref);
@@ -120,12 +125,7 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
   });
 
   it("every invariant and exemption names a binding the stack still declares", () => {
-    const secrets = accessorLoopSecrets(src);
-    const names = new Set(
-      declared.flatMap((d) =>
-        d.name === "*-binding" ? secrets.map((s) => `${s}-binding`) : [d.name],
-      ),
-    );
+    const names = new Set(declared.flatMap(expand));
     for (const inv of invariants) expect(names).toContain(inv.stackResource);
     for (const key of Object.keys(exempt)) expect(names).toContain(key);
   });
@@ -133,13 +133,25 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
   it("builds the admin + gateway env from the shared contracts", () => {
     expect(src).toMatch(/serviceName: "admin",[\s\S]*?contractEnv: adminEnvContract\(/);
     expect(src).toMatch(/serviceName: "gateway",[\s\S]*?contractEnv: gatewayEnvContract\(/);
-    expect(src).toContain("...args.contractEnv,");
+    expect(src).toContain("envs: [...args.contractEnv],");
   });
 
-  it("sets no plain env var outside the contract", () => {
+  it("sets no env var outside the contract (C1: no secret value in a plain var)", () => {
     const envNames = [...src.matchAll(/\{\s*name: "([A-Z][A-Z0-9_]+)"/g)].map((m) => m[1]);
-    expect(envNames.length).toBeGreaterThan(0);
-    expect(envNames.filter((n) => !ENV_OUTSIDE_CONTRACT.has(n as string))).toEqual([]);
+    expect(envNames).toEqual([]);
+    expect(src).not.toMatch(/valueSource:/);
+  });
+
+  it("builds no database URL with a password in it", () => {
+    expect(src).not.toMatch(/:\$\{postgresPassword\}@|\$\{pw\}@/);
+    expect(src).toContain("sqlInstance.privateIpAddress.apply(databaseUrls)");
+  });
+
+  it("references the CLI-generated secrets by id instead of creating them", () => {
+    for (const secret of ["internal-secret", "tool-approval-secret"]) {
+      expect(src).toContain(`"${secret}": gcpSecretId(env, "${secret}")`);
+      expect(src).not.toContain(`makeSecret("${secret}"`);
+    }
   });
 
   it("names buckets and the run SA with the helpers upgrade uses", () => {

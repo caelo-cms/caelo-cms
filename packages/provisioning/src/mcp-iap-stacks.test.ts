@@ -10,7 +10,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mcpIapServiceAccountEmail } from "./gcp-names.js";
-import { adminEnvContract } from "./stack-contract.js";
+import { adminEnvContract, databaseUrls } from "./stack-contract.js";
 
 const stack = (provider: string) =>
   readFileSync(resolve(import.meta.dir, `../stacks/${provider}/index.ts`), "utf8");
@@ -48,6 +48,7 @@ describe.each(["gcp", "gcp-firebase"])("%s stack — MCP through IAP", (provider
       env: "production",
       domain: "d.com",
       region: "r",
+      databaseUrls: databaseUrls("10.0.0.3"),
     });
     expect(env).toContainEqual({
       name: "CAELO_MCP_IAP_SERVICE_ACCOUNT",

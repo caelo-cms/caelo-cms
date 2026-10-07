@@ -6,14 +6,15 @@
  * state comes from stack-contract.ts, which the stacks use too.
  *
  *   - {@link planEnvUpdate}: the env-var flags for the `services update` that
- *     rolls the image, so env changes ride the same new revision.
+ *     rolls the image, so env changes ride the same new revision — including
+ *     moving a plain var to a Secret Manager reference.
  *   - {@link ensureStackInvariants}: IAM bindings + CDN settings. Each binding
  *     is checked against the resource's policy first and only added when
  *     missing, so an operator without IAM-admin rights can still upgrade an
  *     install that is already in shape.
  */
 
-import { gcloud as defaultGcloud } from "./gcloud.js";
+import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import { gcpBucketName, gcpSecretId } from "./gcp-names.js";
 import {
@@ -21,11 +22,14 @@ import {
   adminEnvContract,
   type CloudRunEnvVar,
   type CloudRunSlug,
+  databaseUrls,
   type GcpProvider,
   gatewayEnvContract,
   type IamInvariant,
   type IamTarget,
   iamMember,
+  RETIRED_SERVICE_ENV,
+  type RuntimeEnvInputs,
   type ServiceEnvInputs,
   STATIC_CDN_POLICY,
   stackIamInvariants,
@@ -68,26 +72,67 @@ export function liveContainerEnv(serviceJson: string): Map<string, LiveEnvValue>
     out.set(
       e.name,
       ref
-        ? { kind: "secret", secret: ref.name, version: ref.key }
+        ? { kind: "secret", secret: secretIdOf(ref.name), version: ref.key }
         : { kind: "value", value: e.value ?? "" },
     );
   }
   return out;
 }
 
+/** `projects/<p>/secrets/<id>` → `<id>`; a bare id stays as it is. */
+function secretIdOf(name: string): string {
+  return name.slice(name.lastIndexOf("/") + 1);
+}
+
+/** The service account the service's revisions run as (`undefined`: the default compute SA). */
+export function liveServiceAccount(serviceJson: string): string | undefined {
+  const svc = JSON.parse(serviceJson) as {
+    spec?: { template?: { spec?: { serviceAccountName?: string } } };
+  };
+  return svc.spec?.template?.spec?.serviceAccountName || undefined;
+}
+
 export interface EnvChange {
   readonly name: string;
   /** `undefined` when the service does not have the var yet. */
   readonly from: string | undefined;
-  readonly to: string;
+  /** `undefined` when the var is removed. */
+  readonly to: string | undefined;
 }
 
 export type EnvUpdatePlan =
   | { readonly ok: true; readonly changes: EnvChange[]; readonly flags: string[] }
   | { readonly ok: false; readonly error: string };
 
+/**
+ * A live value as upgrade prints it. Passwords in URLs are masked: before
+ * the move to Secret Manager the database URLs carried them inline.
+ */
 function describeLive(v: LiveEnvValue): string {
-  return v.kind === "value" ? v.value : `secret:${v.secret}:${v.version}`;
+  return v.kind === "value" ? maskUrlPassword(v.value) : `secret:${v.secret}:${v.version}`;
+}
+
+/**
+ * Whether a service still carries a URL with an inline password in a plain
+ * var — the pre-Secret Manager shape. Such a password is in every revision
+ * Cloud Run keeps, so it should be rotated once the services moved off it.
+ */
+export function liveEnvHasInlinePassword(liveEnv: ReadonlyMap<string, LiveEnvValue>): boolean {
+  return [...liveEnv.values()].some(
+    (v) => v.kind === "value" && maskUrlPassword(v.value) !== v.value,
+  );
+}
+
+function maskUrlPassword(value: string): string {
+  if (!value.includes("://")) return value;
+  try {
+    const url = new URL(value);
+    if (!url.password) return value;
+    url.password = "***";
+    return url.toString();
+  } catch {
+    return value;
+  }
 }
 
 /**
@@ -104,20 +149,28 @@ function listFlag(flag: string, pairs: string[]): string {
 
 /**
  * The `gcloud run services update` flags that bring `live` to `desired`.
- * Only vars that differ are touched; vars the contract does not own (the
- * database URLs, the KEK, operator additions) are left alone.
+ * Only vars that differ are touched; vars the contract does not own
+ * (operator additions) are left alone, and the `retired` ones are removed.
  *
- * A var that would switch between a plain value and a Secret Manager
- * reference is refused: Cloud Run rejects that change inside one update, so
- * it needs a deliberate migration step rather than a silent attempt.
+ * A plain var that becomes a Secret Manager reference moves in the same
+ * update: `--remove-env-vars=X --update-secrets=X=…`. gcloud applies all
+ * literal env changes (removals included) before the secret changes of one
+ * `services update` (googlecloudsdk/command_lib/run/flags.py
+ * `_GetConfigurationChanges`), so the new revision has X as a secret and no
+ * revision is ever without X. The reverse — a secret becoming a plain value
+ * — cannot be expressed in one update (the literal is set while X is still
+ * a secret, which gcloud rejects), so it is refused rather than attempted.
  */
 export function planEnvUpdate(
   live: ReadonlyMap<string, LiveEnvValue>,
   desired: readonly CloudRunEnvVar[],
+  retired: readonly string[] = [],
 ): EnvUpdatePlan {
   const changes: EnvChange[] = [];
   const plain: string[] = [];
   const secrets: string[] = [];
+  const removePlain: string[] = [];
+  const removeSecrets: string[] = [];
   for (const entry of desired) {
     const current = live.get(entry.name);
     if ("value" in entry) {
@@ -129,26 +182,45 @@ export function planEnvUpdate(
       }
       if (current?.value === entry.value) continue;
       plain.push(`${entry.name}=${entry.value}`);
-      changes.push({ name: entry.name, from: current?.value, to: entry.value });
-    } else {
-      const { secret, version } = entry.valueSource.secretKeyRef;
-      if (current?.kind === "value") {
-        return {
-          ok: false,
-          error: `${entry.name} is a plain value on the service but a Secret Manager reference in the contract`,
-        };
-      }
-      if (current?.secret === secret && current.version === version) continue;
-      secrets.push(`${entry.name}=${secret}:${version}`);
       changes.push({
         name: entry.name,
         from: current ? describeLive(current) : undefined,
+        to: entry.value,
+      });
+    } else {
+      const { secret, version } = entry.valueSource.secretKeyRef;
+      if (current?.kind === "secret" && current.secret === secret && current.version === version) {
+        continue;
+      }
+      // Plain → secret: drop the literal in the same update (see above).
+      // The old literal may be a secret value, so it is never printed.
+      if (current?.kind === "value") removePlain.push(entry.name);
+      secrets.push(`${entry.name}=${secret}:${version}`);
+      changes.push({
+        name: entry.name,
+        from:
+          current === undefined
+            ? undefined
+            : current.kind === "value"
+              ? "(plain value)"
+              : describeLive(current),
         to: `secret:${secret}:${version}`,
       });
     }
   }
+  for (const name of retired) {
+    if (desired.some((e) => e.name === name)) {
+      return { ok: false, error: `${name} is both in the contract and retired` };
+    }
+    const current = live.get(name);
+    if (!current) continue;
+    (current.kind === "value" ? removePlain : removeSecrets).push(name);
+    changes.push({ name, from: describeLive(current), to: undefined });
+  }
   const flags = [
+    ...(removePlain.length > 0 ? [listFlag("--remove-env-vars", removePlain)] : []),
     ...(plain.length > 0 ? [listFlag("--update-env-vars", plain)] : []),
+    ...(removeSecrets.length > 0 ? [listFlag("--remove-secrets", removeSecrets)] : []),
     ...(secrets.length > 0 ? [listFlag("--update-secrets", secrets)] : []),
   ];
   return { ok: true, changes, flags };
@@ -162,10 +234,31 @@ export interface DeployedService {
 }
 
 /**
+ * The Cloud SQL host the admin connects to, from its live `ADMIN_DATABASE_URL`
+ * (with or without an inline password — before and after the move to Secret
+ * Manager).
+ */
+export function liveDatabaseHost(
+  liveEnv: ReadonlyMap<string, LiveEnvValue>,
+): { ok: true; host: string } | { ok: false; error: string } {
+  const url = liveEnv.get("ADMIN_DATABASE_URL");
+  if (url?.kind !== "value" || !url.value) {
+    return { ok: false, error: "it has no plain ADMIN_DATABASE_URL" };
+  }
+  try {
+    const host = new URL(url.value).hostname;
+    if (host) return { ok: true, host };
+  } catch {
+    // falls through to the error below
+  }
+  return { ok: false, error: "its ADMIN_DATABASE_URL is not a valid URL" };
+}
+
+/**
  * The env changes that bring both deployed services to their env contract
  * (stack-contract.ts — the contract the stacks deploy). Values Pulumi
- * generated at install time are read from the live services. Fails instead
- * of guessing when one can't be determined.
+ * generated at install time (database host, Firebase site) are read from the
+ * live services. Fails instead of guessing when one can't be determined.
  */
 export function planContractEnv(
   install: ServiceEnvInputs,
@@ -176,6 +269,14 @@ export function planContractEnv(
       readonly services: Record<CloudRunSlug, { flags: string[]; changes: EnvChange[] }>;
     }
   | { readonly ok: false; readonly error: string } {
+  const host = liveDatabaseHost(services.admin.liveEnv);
+  if (!host.ok) {
+    return {
+      ok: false,
+      error: `the Cloud SQL host is unknown: the admin service (${services.admin.serviceName}) ${host.error}`,
+    };
+  }
+  const runtime: RuntimeEnvInputs = { ...install, databaseUrls: databaseUrls(host.host) };
   let inputs: AdminEnvInputs;
   if (install.provider === "gcp-firebase") {
     // The site id carries a random suffix Pulumi generated at install time.
@@ -187,17 +288,25 @@ export function planContractEnv(
       };
     }
     inputs = {
-      ...install,
+      ...runtime,
       provider: "gcp-firebase",
       firebaseSiteId: site.value,
       gatewayService: services.gateway.serviceName,
     };
   } else {
-    inputs = { ...install, provider: "gcp" };
+    inputs = { ...runtime, provider: "gcp" };
   }
-  const admin = planEnvUpdate(services.admin.liveEnv, adminEnvContract(inputs));
+  const admin = planEnvUpdate(
+    services.admin.liveEnv,
+    adminEnvContract(inputs),
+    RETIRED_SERVICE_ENV.admin,
+  );
   if (!admin.ok) return { ok: false, error: `admin: ${admin.error}` };
-  const gateway = planEnvUpdate(services.gateway.liveEnv, gatewayEnvContract(inputs));
+  const gateway = planEnvUpdate(
+    services.gateway.liveEnv,
+    gatewayEnvContract(runtime),
+    RETIRED_SERVICE_ENV.gateway,
+  );
   if (!gateway.ok) return { ok: false, error: `gateway: ${gateway.error}` };
   return {
     ok: true,
@@ -467,13 +576,15 @@ export async function ensureStackInvariants(
 
 /**
  * The single `gcloud run services update` that rolls a service to a new
- * image and applies its env changes, so both land in one new revision.
+ * image, its run SA and its env changes, so all land in one new revision.
  */
 export function serviceRollArgs(roll: {
   readonly serviceName: string;
   readonly region: string;
   readonly projectId: string;
   readonly imageRef: string;
+  /** The SA the new revision runs as (stack-contract.ts per-service SAs). */
+  readonly serviceAccount: string;
   readonly envFlags: readonly string[];
 }): string[] {
   return [
@@ -487,7 +598,37 @@ export function serviceRollArgs(roll: {
     roll.projectId,
     "--image",
     roll.imageRef,
+    `--service-account=${roll.serviceAccount}`,
     ...roll.envFlags,
     "--quiet",
   ];
+}
+
+/**
+ * Cloud Run checks at deploy time that the revision's SA can read every
+ * secret it references. A `secretAccessor` binding upgrade added seconds
+ * earlier (a new secret, the new gateway SA) can take a while to reach that
+ * check, so the deploy fails with a permission error that resolves itself.
+ */
+const SECRET_ACCESS_PROPAGATING = /Permission denied on secret|secretmanager\.versions\.access/i;
+const ROLL_RETRY_DELAYS_MS: readonly number[] = [10_000, 20_000, 30_000, 60_000];
+
+/**
+ * Run a roll (`serviceRollArgs`), retrying while it fails only because a
+ * fresh secret binding has not propagated yet. Any other failure returns at
+ * once.
+ */
+export async function rollService(
+  args: string[],
+  deps: { run?: GcloudRunner; sleep?: Sleep } = {},
+): Promise<GcloudResult> {
+  const run = deps.run ?? defaultGcloud;
+  const sleep = deps.sleep ?? realSleep;
+  let r = await run(args);
+  for (const delay of ROLL_RETRY_DELAYS_MS) {
+    if (r.ok || !SECRET_ACCESS_PROPAGATING.test(r.stderr)) break;
+    await sleep(delay);
+    r = await run(args);
+  }
+  return r;
 }

@@ -8,9 +8,12 @@ import {
   type InstallTarget,
   type LiveEnvValue,
   liveContainerEnv,
+  liveDatabaseHost,
+  liveServiceAccount,
   planContractEnv,
   planEnvUpdate,
   policyGrants,
+  rollService,
   serviceRollArgs,
 } from "./stack-converge.js";
 
@@ -40,6 +43,11 @@ const policy = (bindings: { role: string; members: string[]; condition?: unknown
   ok(JSON.stringify({ bindings }));
 
 const RUN_SA = "serviceAccount:caelo-production-run-sa@acme.iam.gserviceaccount.com";
+const GW_SA = "serviceAccount:caelo-production-gateway-sa@acme.iam.gserviceaccount.com";
+const GW_TELEMETRY = [
+  { role: "roles/logging.logWriter", members: [GW_SA] },
+  { role: "roles/monitoring.metricWriter", members: [GW_SA] },
+];
 const IAP_AGENT = "serviceAccount:service-42@gcp-sa-iap.iam.gserviceaccount.com";
 
 const firebase: InstallTarget = {
@@ -71,6 +79,47 @@ describe("liveContainerEnv", () => {
       secret: "caelo-production-secret-kek",
       version: "latest",
     });
+  });
+});
+
+describe("liveContainerEnv / liveServiceAccount / liveDatabaseHost", () => {
+  it("normalises a fully qualified secret name to its id", () => {
+    const env = liveContainerEnv(
+      serviceJson([
+        {
+          name: "X",
+          valueFrom: {
+            secretKeyRef: { name: "projects/123/secrets/caelo-production-x", key: "latest" },
+          },
+        },
+      ]),
+    );
+    expect(env.get("X")).toEqual({
+      kind: "secret",
+      secret: "caelo-production-x",
+      version: "latest",
+    });
+  });
+
+  it("reads the revision service account", () => {
+    const json = JSON.stringify({
+      spec: { template: { spec: { serviceAccountName: "a@p.iam.gserviceaccount.com" } } },
+    });
+    expect(liveServiceAccount(json)).toBe("a@p.iam.gserviceaccount.com");
+    expect(liveServiceAccount("{}")).toBeUndefined();
+  });
+
+  it("finds the Cloud SQL host in ADMIN_DATABASE_URL with or without an inline password", () => {
+    for (const url of [
+      "postgresql://admin_role:pw@10.20.0.3:5432/cms_admin?sslmode=require",
+      "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+    ]) {
+      const host = liveDatabaseHost(
+        new Map([["ADMIN_DATABASE_URL", { kind: "value", value: url }]]),
+      );
+      expect(host).toEqual({ ok: true, host: "10.20.0.3" });
+    }
+    expect(liveDatabaseHost(new Map()).ok).toBe(false);
   });
 });
 
@@ -111,13 +160,62 @@ describe("planEnvUpdate", () => {
     expect(plan.ok && plan.flags).toEqual(["--update-secrets=CSRF=csrf:3"]);
   });
 
-  it("refuses to flip a var between plain value and secret reference", () => {
-    const toSecret = planEnvUpdate(live, [
-      { name: "CAELO_ENV", valueSource: { secretKeyRef: { secret: "x", version: "1" } } },
+  it("moves a plain var to a secret reference inside the same update, never printing the old value", () => {
+    const withPlainSecret = new Map<string, LiveEnvValue>([
+      ["CAELO_INTERNAL_SECRET", { kind: "value", value: "hand-set-plaintext" }],
     ]);
-    expect(toSecret.ok).toBe(false);
+    const plan = planEnvUpdate(withPlainSecret, [
+      {
+        name: "CAELO_INTERNAL_SECRET",
+        valueSource: { secretKeyRef: { secret: "internal", version: "latest" } },
+      },
+    ]);
+    expect(plan).toEqual({
+      ok: true,
+      changes: [
+        { name: "CAELO_INTERNAL_SECRET", from: "(plain value)", to: "secret:internal:latest" },
+      ],
+      flags: [
+        "--remove-env-vars=CAELO_INTERNAL_SECRET",
+        "--update-secrets=CAELO_INTERNAL_SECRET=internal:latest",
+      ],
+    });
+    expect(JSON.stringify(plan)).not.toContain("hand-set-plaintext");
+  });
+
+  it("refuses to flip a secret reference to a plain value (gcloud can't do it in one revision)", () => {
     const toPlain = planEnvUpdate(live, [{ name: "CAELO_SECRET_KEK", value: "raw" }]);
     expect(toPlain.ok).toBe(false);
+  });
+
+  it("removes retired vars of either kind", () => {
+    const plan = planEnvUpdate(
+      new Map<string, LiveEnvValue>([
+        ["OLD_PLAIN", { kind: "value", value: "x" }],
+        ["CAELO_SECRET_KEK", { kind: "secret", secret: "kek", version: "latest" }],
+      ]),
+      [],
+      ["OLD_PLAIN", "CAELO_SECRET_KEK", "NEVER_SET"],
+    );
+    expect(plan).toEqual({
+      ok: true,
+      changes: [
+        { name: "OLD_PLAIN", from: "x", to: undefined },
+        { name: "CAELO_SECRET_KEK", from: "secret:kek:latest", to: undefined },
+      ],
+      flags: ["--remove-env-vars=OLD_PLAIN", "--remove-secrets=CAELO_SECRET_KEK"],
+    });
+  });
+
+  it("masks a password in a URL it reports as the old value", () => {
+    const plan = planEnvUpdate(
+      new Map<string, LiveEnvValue>([
+        ["ADMIN_DATABASE_URL", { kind: "value", value: "postgres://admin_role:hunter2@h:5432/db" }],
+      ]),
+      [{ name: "ADMIN_DATABASE_URL", value: "postgresql://admin_role@h:5432/db" }],
+    );
+    expect(plan.ok && plan.changes[0]?.from).toBe("postgres://admin_role:***@h:5432/db");
+    expect(JSON.stringify(plan)).not.toContain("hunter2");
   });
 
   it("escapes values containing commas", () => {
@@ -128,6 +226,39 @@ describe("planEnvUpdate", () => {
     expect(plan.ok && plan.flags).toEqual(["--update-env-vars=^@^A=x,y@B=z"]);
   });
 });
+
+/** The env a service carries once this contract applied (database + secrets). */
+const secretRef = (name: string, secret: string) => ({
+  name,
+  valueFrom: { secretKeyRef: { name: `caelo-production-${secret}`, key: "latest" } },
+});
+const CONVERGED_ADMIN_DB = [
+  {
+    name: "ADMIN_DATABASE_URL",
+    value: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+  },
+  {
+    name: "PUBLIC_ADMIN_DATABASE_URL",
+    value: "postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
+  },
+  secretRef("ADMIN_DATABASE_PASSWORD", "postgres-password"),
+  secretRef("PUBLIC_ADMIN_DATABASE_PASSWORD", "postgres-password"),
+  secretRef("CAELO_SECRET_KEK", "secret-kek"),
+  secretRef("CAELO_INTERNAL_SECRET", "internal-secret"),
+  secretRef("CAELO_TOOL_APPROVAL_SECRET", "tool-approval-secret"),
+];
+const CONVERGED_GATEWAY_DB = [
+  {
+    name: "PUBLIC_DATABASE_URL",
+    value: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
+  },
+  {
+    name: "ADMIN_DATABASE_URL",
+    value: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+  },
+  secretRef("PUBLIC_DATABASE_PASSWORD", "postgres-password"),
+  secretRef("ADMIN_DATABASE_PASSWORD", "postgres-password"),
+];
 
 describe("planContractEnv", () => {
   it("regression A1: an install without CAELO_SITE_URL gets it on the admin roll", () => {
@@ -141,6 +272,7 @@ describe("planContractEnv", () => {
         { name: "CAELO_GENERATOR_CLI", value: "/app/apps/static-generator/src/cli.ts" },
         { name: "CAELO_GATEWAY_SERVICE", value: "caelo-production-gateway-bbb" },
         { name: "CAELO_GATEWAY_REGION", value: "europe-west1" },
+        ...CONVERGED_ADMIN_DB,
       ]),
     );
     const gatewayLive = liveContainerEnv(
@@ -148,6 +280,7 @@ describe("planContractEnv", () => {
         { name: "CAELO_PROVIDER", value: "gcp-firebase" },
         { name: "CAELO_ENV", value: "production" },
         { name: "MEDIA_STORAGE_URL", value: "gs://acme-caelo-production-media" },
+        ...CONVERGED_GATEWAY_DB,
       ]),
     );
     const plan = planContractEnv(
@@ -174,12 +307,24 @@ describe("planContractEnv", () => {
     const plan = planContractEnv(
       { provider: "gcp-firebase", projectId: "a", env: "production", domain: "a.com", region: "r" },
       {
-        admin: { serviceName: "adm", liveEnv: new Map() },
+        admin: { serviceName: "adm", liveEnv: liveContainerEnv(serviceJson(CONVERGED_ADMIN_DB)) },
         gateway: { serviceName: "gw", liveEnv: new Map() },
       },
     );
     expect(plan.ok).toBe(false);
     expect(!plan.ok && plan.error).toContain("CAELO_FIREBASE_SITE");
+  });
+
+  it("fails loudly when the Cloud SQL host can't be discovered", () => {
+    const plan = planContractEnv(
+      { provider: "gcp", projectId: "a", env: "production", domain: "a.com", region: "r" },
+      {
+        admin: { serviceName: "adm", liveEnv: new Map() },
+        gateway: { serviceName: "gw", liveEnv: new Map() },
+      },
+    );
+    expect(plan.ok).toBe(false);
+    expect(!plan.ok && plan.error).toContain("ADMIN_DATABASE_URL");
   });
 });
 
@@ -191,6 +336,7 @@ describe("serviceRollArgs", () => {
         region: "europe-west1",
         projectId: "acme",
         imageRef: "img@sha256:1",
+        serviceAccount: "caelo-production-run-sa@acme.iam.gserviceaccount.com",
         envFlags: ["--update-env-vars=CAELO_SITE_URL=https://acme.com"],
       }),
     ).toEqual([
@@ -204,9 +350,45 @@ describe("serviceRollArgs", () => {
       "acme",
       "--image",
       "img@sha256:1",
+      "--service-account=caelo-production-run-sa@acme.iam.gserviceaccount.com",
       "--update-env-vars=CAELO_SITE_URL=https://acme.com",
       "--quiet",
     ]);
+  });
+});
+
+describe("rollService", () => {
+  it("retries while a fresh secret binding has not propagated, then succeeds", async () => {
+    const { run, calls } = fakeGcloud({
+      "run services update": [
+        fail(
+          "ERROR: (gcloud.run.services.update) spec.template.spec.containers[0].env[3].value_from.secret_key_ref.name: Permission denied on secret: projects/1/secrets/caelo-production-postgres-password/versions/latest for Revision service account caelo-production-gateway-sa@acme.iam.gserviceaccount.com.",
+        ),
+        ok(),
+      ],
+    });
+    const slept: number[] = [];
+    const r = await rollService(["run", "services", "update", "gw"], {
+      run,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(slept).toEqual([10_000]);
+  });
+
+  it("returns any other failure at once", async () => {
+    const { run, calls } = fakeGcloud({
+      "run services update": [fail("ERROR: revision failed readiness check")],
+    });
+    const r = await rollService(["run", "services", "update", "gw"], {
+      run,
+      sleep: async () => {},
+    });
+    expect(r.ok).toBe(false);
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -233,10 +415,11 @@ describe("ensureStackInvariants", () => {
         { role: "roles/firebasehosting.admin", members: [RUN_SA] },
         { role: "roles/logging.logWriter", members: [RUN_SA] },
         { role: "roles/monitoring.metricWriter", members: [RUN_SA] },
+        ...GW_TELEMETRY,
       ]),
     ],
     "secrets get-iam-policy": [
-      policy([{ role: "roles/secretmanager.secretAccessor", members: [RUN_SA] }]),
+      policy([{ role: "roles/secretmanager.secretAccessor", members: [RUN_SA, GW_SA] }]),
     ],
     "storage buckets get-iam-policy": [
       policy([{ role: "roles/storage.objectAdmin", members: [RUN_SA] }]),
@@ -264,7 +447,7 @@ describe("ensureStackInvariants", () => {
   it("regression A5: adds the gateway run.viewer + telemetry roles an older install lacks", async () => {
     const answers = fullFirebase();
     answers["projects get-iam-policy"] = [
-      policy([{ role: "roles/firebasehosting.admin", members: [RUN_SA] }]),
+      policy([{ role: "roles/firebasehosting.admin", members: [RUN_SA] }, ...GW_TELEMETRY]),
     ];
     answers["run services get-iam-policy caelo-production-gateway-bbb"] = [
       policy([{ role: "roles/run.invoker", members: ["allUsers"] }]),
@@ -306,7 +489,7 @@ describe("ensureStackInvariants", () => {
   it("only warns when a telemetry role can't be added", async () => {
     const answers = fullFirebase();
     answers["projects get-iam-policy"] = [
-      policy([{ role: "roles/firebasehosting.admin", members: [RUN_SA] }]),
+      policy([{ role: "roles/firebasehosting.admin", members: [RUN_SA] }, ...GW_TELEMETRY]),
     ];
     answers["projects add-iam-policy-binding"] = [fail("PERMISSION_DENIED: setIamPolicy")];
     const { run } = fakeGcloud(answers);
@@ -321,6 +504,7 @@ describe("ensureStackInvariants", () => {
       policy([
         { role: "roles/firebasehosting.admin", members: [RUN_SA] },
         { role: "roles/monitoring.metricWriter", members: [RUN_SA] },
+        ...GW_TELEMETRY,
       ]),
     ];
     answers["projects add-iam-policy-binding"] = [
@@ -356,10 +540,11 @@ describe("ensureStackInvariants", () => {
         policy([
           { role: "roles/logging.logWriter", members: [RUN_SA] },
           { role: "roles/monitoring.metricWriter", members: [RUN_SA] },
+          ...GW_TELEMETRY,
         ]),
       ],
       "secrets get-iam-policy": [
-        policy([{ role: "roles/secretmanager.secretAccessor", members: [RUN_SA] }]),
+        policy([{ role: "roles/secretmanager.secretAccessor", members: [RUN_SA, GW_SA] }]),
       ],
       "storage buckets get-iam-policy": [
         policy([
@@ -445,6 +630,27 @@ describe("ensureStackInvariants", () => {
       expect(calls).toContain(
         `secrets add-iam-policy-binding caelo-production-secret-kek --project=acme --member=${RUN_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
       );
+    });
+
+    it("grants the gateway SA the database password and nothing admin-only", async () => {
+      const answers = {
+        ...fullGcp(),
+        "secrets get-iam-policy": [policy([])],
+        "compute backend-buckets describe": [ok(JSON.stringify({ cdnPolicy: STATIC_CDN_POLICY }))],
+      };
+      const { run, calls } = fakeGcloud(answers);
+      await ensureStackInvariants(gcp, { run, sleep: async () => {} });
+      const gatewayGrants = calls.filter(
+        (c) => c.startsWith("secrets add-iam-policy-binding") && c.includes(GW_SA),
+      );
+      expect(gatewayGrants).toEqual([
+        `secrets add-iam-policy-binding caelo-production-postgres-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+      ]);
+      for (const secret of ["internal-secret", "tool-approval-secret", "secret-kek"]) {
+        expect(calls).toContain(
+          `secrets add-iam-policy-binding caelo-production-${secret} --project=acme --member=${RUN_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+        );
+      }
     });
   });
 });

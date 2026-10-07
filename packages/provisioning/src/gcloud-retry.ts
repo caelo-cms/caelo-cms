@@ -9,7 +9,11 @@
 
 import type { GcloudResult } from "./gcloud.js";
 
-export type GcloudRunner = (args: string[]) => Promise<GcloudResult>;
+/** Runs one gcloud command; `stdin` feeds secret payloads (`--data-file=-`). */
+export type GcloudRunner = (
+  args: string[],
+  opts?: { readonly stdin?: string },
+) => Promise<GcloudResult>;
 export type Sleep = (ms: number) => Promise<void>;
 
 /** Errors worth retrying: propagation delay and policy write races. */

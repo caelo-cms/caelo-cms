@@ -13,10 +13,11 @@
  * (Firebase Hosting deploys 403'd), the telemetry roles, the one-year CDN
  * TTLs. Three parts close that gap:
  *
- *   - {@link adminEnvContract} / {@link gatewayEnvContract}: the plain env
- *     vars of the two Cloud Run services. The stacks spread them into the
- *     Cloud Run `envs`; upgrade applies them with `--update-env-vars` in the
- *     same `services update` that rolls the image.
+ *   - {@link adminEnvContract} / {@link gatewayEnvContract}: the complete
+ *     env of the two Cloud Run services — plain values and Secret Manager
+ *     references. The stacks deploy them as the Cloud Run `envs`; upgrade
+ *     applies them (`--update-env-vars` / `--update-secrets`) in the same
+ *     `services update` that rolls the image.
  *   - {@link stackIamInvariants} + {@link STATIC_CDN_POLICY}: the IAM
  *     bindings and CDN settings upgrade ensures with gcloud.
  *   - {@link STACK_IAM_NOT_ENSURED}: bindings upgrade deliberately leaves to
@@ -25,18 +26,19 @@
  *     binding that is in neither list, so a new binding cannot ship without
  *     a decision about existing installs.
  *
- * Secrets are not part of the env contract yet. {@link CloudRunEnvVar}
- * already models Secret Manager references (`valueSource.secretKeyRef`, the
- * shape Pulumi's Cloud Run v2 `envs` takes), and upgrade renders them as
- * `--update-secrets`, so moving a secret into the contract is a matter of
- * adding its entry.
+ * No secret value is ever a plain env var: database URLs carry no password
+ * (the apps add it from the `<NAME>_PASSWORD` var, @caelo-cms/shared
+ * `databaseUrlFromEnv`), and every secret is a `secretKeyRef` to Secret
+ * Manager. Anyone with `run.services.get` sees secret names, never values.
  *
  * Pure module — the stacks import it from `dist/`.
  */
 
 import {
+  gatewayServiceAccountEmail,
   gcpBucketName,
   gcpNamePrefix,
+  gcpSecretId,
   mcpIapServiceAccountEmail,
   runServiceAccountEmail,
   staticPublisherServiceAccountId,
@@ -59,7 +61,7 @@ export type CloudRunEnvVar<V = string> =
       };
     };
 
-/** What every service's env derives from: install metadata only. */
+/** Install metadata every service's env derives from. */
 export interface ServiceEnvInputs {
   readonly provider: GcpProvider;
   readonly projectId: string;
@@ -70,15 +72,49 @@ export interface ServiceEnvInputs {
   readonly region: string;
 }
 
+/** The password-less connection URLs of the install's Cloud SQL databases. */
+export interface DatabaseUrls<V = string> {
+  /** admin_role on cms_admin — the admin's primary pool. */
+  readonly admin: V;
+  /** admin_role on cms_public — the admin's second pool (DDL, migrations). */
+  readonly publicAdmin: V;
+  /** public_role on cms_public — the gateway's visitor-write pool. */
+  readonly public: V;
+}
+
+/** Port Cloud SQL Postgres listens on (private IP). */
+const DATABASE_PORT = 5432;
+
+/**
+ * Password-less connection URLs for a Cloud SQL instance at `host`. The
+ * password reaches the apps separately, as a Secret Manager reference
+ * ({@link SERVICE_SECRET_ENV}).
+ */
+export function databaseUrls(host: string): DatabaseUrls {
+  const url = (role: string, db: string) =>
+    `postgresql://${role}@${host}:${DATABASE_PORT}/${db}?sslmode=require`;
+  return {
+    admin: url("admin_role", "cms_admin"),
+    publicAdmin: url("admin_role", "cms_public"),
+    public: url("public_role", "cms_public"),
+  };
+}
+
+/** What a running service's env derives from: install metadata + the database. */
+export interface RuntimeEnvInputs<V = string> extends ServiceEnvInputs {
+  /** From the Cloud SQL private IP — an Output in the stacks. */
+  readonly databaseUrls: DatabaseUrls<V>;
+}
+
 /**
  * What the admin's env derives from. Most values come from install metadata;
- * the few Pulumi generates (Firebase site id, the gateway's auto-named Cloud
- * Run service) are passed in — as Outputs by the stack, as discovered strings
- * by upgrade.
+ * the few Pulumi generates (database host, Firebase site id, the gateway's
+ * auto-named Cloud Run service) are passed in — as Outputs by the stack, as
+ * discovered strings by upgrade.
  */
 export type AdminEnvInputs<V = string> =
-  | (ServiceEnvInputs & { readonly provider: "gcp" })
-  | (ServiceEnvInputs & {
+  | (RuntimeEnvInputs<V> & { readonly provider: "gcp" })
+  | (RuntimeEnvInputs<V> & {
       readonly provider: "gcp-firebase";
       readonly firebaseSiteId: V;
       readonly gatewayService: V;
@@ -92,12 +128,92 @@ export function publicSiteUrl(domain: string): string {
 /** Where the admin image ships the static-generator CLI. */
 const GENERATOR_CLI = "/app/apps/static-generator/src/cli.ts";
 
+// ===========================================================================
+// Runtime secrets
+// ===========================================================================
+
 /**
- * The plain (non-secret) env vars of the gateway service — also the first
- * entries of the admin's. Order is stable so the stacks see no spurious
- * diffs.
+ * The Secret Manager secrets admin + gateway read at runtime, by logical
+ * name ({@link gcpSecretId} gives the secret id).
  */
-export function gatewayEnvContract(inputs: ServiceEnvInputs): CloudRunEnvVar[] {
+export type RuntimeSecret =
+  | "postgres-password"
+  | "secret-kek"
+  | "internal-secret"
+  | "tool-approval-secret";
+
+/**
+ * Secrets the CLI generates and stores (runtime-secrets.ts
+ * `ensureGeneratedSecrets`) rather than Pulumi: the wizard creates them
+ * before `pulumi up`, upgrade creates them on installs that predate them.
+ * Pulumi only references them, so a `pulumi up` after an upgrade never
+ * collides with a secret upgrade created.
+ */
+export const CLI_GENERATED_SECRETS = [
+  "internal-secret",
+  "tool-approval-secret",
+] as const satisfies readonly RuntimeSecret[];
+
+/**
+ * Each service's Secret Manager-backed env vars and the secret each reads.
+ * The services' run SAs get `secretAccessor` on exactly these secrets
+ * ({@link runtimeSecretBindings}), so this table is also the least-privilege
+ * boundary between the two services.
+ */
+export const SERVICE_SECRET_ENV: Readonly<
+  Record<CloudRunSlug, Readonly<Record<string, RuntimeSecret>>>
+> = {
+  admin: {
+    ADMIN_DATABASE_PASSWORD: "postgres-password",
+    PUBLIC_ADMIN_DATABASE_PASSWORD: "postgres-password",
+    // P18 — encrypts AI provider keys and other at-rest secrets in cms_admin.
+    CAELO_SECRET_KEK: "secret-kek",
+    // P15.1 — HMAC key of the /api/internal/* bearer tokens (internal-jwt.ts).
+    CAELO_INTERNAL_SECRET: "internal-secret",
+    // Binds an AI tool-approval to the exact call the operator approved
+    // (admin-core ai/providers/_sdk-shared.ts).
+    CAELO_TOOL_APPROVAL_SECRET: "tool-approval-secret",
+  },
+  gateway: {
+    // Known gap against CLAUDE.md §2 ("never let the API Gateway hold
+    // admin_role credentials"): the gateway reads site_settings, rate
+    // limits, captcha challenges, the request log and the plugin registry
+    // through an admin_role pool (apps/api-gateway/src/server.ts), and fails
+    // to boot without it. Until that moves behind a narrower role the
+    // gateway needs this credential; it is no longer a plain env var.
+    ADMIN_DATABASE_PASSWORD: "postgres-password",
+    PUBLIC_DATABASE_PASSWORD: "postgres-password",
+  },
+};
+
+/** The secrets `service` reads (deduplicated, table order). */
+export function serviceSecrets(service: CloudRunSlug): RuntimeSecret[] {
+  return [...new Set(Object.values(SERVICE_SECRET_ENV[service]))];
+}
+
+/**
+ * Env vars an older stack set that the contract no longer gives a service;
+ * upgrade removes them. The gateway never used the KEK, and its run SA
+ * cannot read it.
+ */
+export const RETIRED_SERVICE_ENV: Readonly<Record<CloudRunSlug, readonly string[]>> = {
+  admin: [],
+  gateway: ["CAELO_SECRET_KEK"],
+};
+
+function secretEnv(service: CloudRunSlug, env: string): CloudRunEnvVar[] {
+  return Object.entries(SERVICE_SECRET_ENV[service]).map(([name, secret]) => ({
+    name,
+    valueSource: { secretKeyRef: { secret: gcpSecretId(env, secret), version: "latest" } },
+  }));
+}
+
+// ===========================================================================
+// Env contracts
+// ===========================================================================
+
+/** Env vars both services carry. */
+function commonEnv(inputs: ServiceEnvInputs): CloudRunEnvVar[] {
   return [
     { name: "CAELO_PROVIDER", value: inputs.provider },
     { name: "CAELO_ENV", value: inputs.env },
@@ -109,18 +225,38 @@ export function gatewayEnvContract(inputs: ServiceEnvInputs): CloudRunEnvVar[] {
 }
 
 /**
- * The plain (non-secret) env vars of the admin service.
+ * The env of the gateway service. Order is stable so the stacks see no
+ * spurious diffs.
+ */
+export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvVar<V | string>[] {
+  return [
+    ...commonEnv(inputs),
+    { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
+    // See the known gap noted on SERVICE_SECRET_ENV.gateway.
+    { name: "ADMIN_DATABASE_URL", value: inputs.databaseUrls.admin },
+    ...secretEnv("gateway", inputs.env),
+  ];
+}
+
+/**
+ * The env of the admin service.
  *
  * @example
  *   adminEnvContract({ provider: "gcp", projectId: "p", env: "production",
- *     domain: "example.com", region: "europe-west1" })
+ *     domain: "example.com", region: "europe-west1",
+ *     databaseUrls: databaseUrls("10.20.0.3") })
  *   // → [{ name: "CAELO_PROVIDER", value: "gcp" }, …,
- *   //    { name: "CAELO_SITE_URL", value: "https://example.com" }, …]
+ *   //    { name: "CAELO_SITE_URL", value: "https://example.com" }, …,
+ *   //    { name: "CAELO_SECRET_KEK", valueSource: { secretKeyRef: … } }, …]
  */
 export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V | string>[] {
   const { projectId, env, domain } = inputs;
   const admin: CloudRunEnvVar<V | string>[] = [
-    ...gatewayEnvContract(inputs),
+    ...commonEnv(inputs),
+    { name: "ADMIN_DATABASE_URL", value: inputs.databaseUrls.admin },
+    // admin_role on cms_public: cross-DB reads, plugin DDL, migrations.
+    // Not public_role (write-limited).
+    { name: "PUBLIC_ADMIN_DATABASE_URL", value: inputs.databaseUrls.publicAdmin },
     // #551 — the admin seeds site_defaults.site_base_url from it (canonical,
     // og:url, sitemap) when it is not configured yet.
     { name: "CAELO_SITE_URL", value: publicSiteUrl(domain) },
@@ -144,6 +280,7 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
       { name: "CAELO_GATEWAY_REGION", value: inputs.region },
     );
   }
+  admin.push(...secretEnv("admin", env));
   return admin;
 }
 
@@ -169,8 +306,10 @@ export const STATIC_CDN_POLICY = {
 
 /** Who an IAM invariant grants a role to. */
 export type IamPrincipal =
-  /** The runtime SA admin + gateway run as. */
+  /** The runtime SA the admin (and the migration jobs) run as. */
   | "run-sa"
+  /** The runtime SA the gateway runs as. */
+  | "gateway-sa"
   /** The `gcp` stack's static-publisher SA. */
   | "static-publisher-sa"
   /** IAP's Google-managed service agent (forwards IAP traffic to Cloud Run). */
@@ -207,20 +346,37 @@ export interface IamInvariant {
 
 const SECRET_ACCESSOR = "roles/secretmanager.secretAccessor";
 
-/** Runtime secrets the run SA reads, per provider (the stacks' accessor loop). */
-const RUNTIME_SECRETS: Record<GcpProvider, readonly string[]> = {
-  gcp: ["postgres-password", "csrf-secret", "cookie-secret", "secret-kek", "resend-api-key"],
-  "gcp-firebase": ["postgres-password", "csrf-secret", "cookie-secret", "secret-kek"],
-};
+/** One `secretAccessor` binding a stack declares for a service's run SA. */
+export interface RuntimeSecretBinding {
+  readonly service: CloudRunSlug;
+  readonly secret: RuntimeSecret;
+  /** Logical stack resource name, without the `${namePrefix}-` prefix. */
+  readonly stackResource: string;
+}
 
-function secretAccessors(provider: GcpProvider): IamInvariant[] {
-  return RUNTIME_SECRETS[provider].map((name) => ({
-    stackResource: `${name}-binding`,
+/**
+ * The `secretAccessor` bindings both stacks declare: each service's run SA
+ * on exactly the secrets its env reads ({@link SERVICE_SECRET_ENV}).
+ */
+export function runtimeSecretBindings(): RuntimeSecretBinding[] {
+  return (["admin", "gateway"] as const).flatMap((service) =>
+    serviceSecrets(service).map((secret) => ({
+      service,
+      secret,
+      // The admin's keep the names they had when one SA served both.
+      stackResource: service === "admin" ? `${secret}-binding` : `gateway-${secret}-binding`,
+    })),
+  );
+}
+
+function secretAccessors(): IamInvariant[] {
+  return runtimeSecretBindings().map((b) => ({
+    stackResource: b.stackResource,
     role: SECRET_ACCESSOR,
-    member: "run-sa",
-    target: { kind: "secret", name },
+    member: b.service === "admin" ? "run-sa" : "gateway-sa",
+    target: { kind: "secret", name: b.secret },
     onFailure: "abort",
-    why: `admin + gateway read ${name} from Secret Manager at boot`,
+    why: `the ${b.service} reads ${b.secret} from Secret Manager at boot`,
   }));
 }
 
@@ -241,6 +397,22 @@ const TELEMETRY: readonly IamInvariant[] = [
     target: { kind: "project" },
     onFailure: "warn",
     why: "CPU/memory metrics reach Cloud Monitoring (autoscaling signals)",
+  },
+  {
+    stackResource: "gateway-log-writer",
+    role: "roles/logging.logWriter",
+    member: "gateway-sa",
+    target: { kind: "project" },
+    onFailure: "warn",
+    why: "gateway container logs reach Cloud Logging",
+  },
+  {
+    stackResource: "gateway-metric-writer",
+    role: "roles/monitoring.metricWriter",
+    member: "gateway-sa",
+    target: { kind: "project" },
+    onFailure: "warn",
+    why: "gateway CPU/memory metrics reach Cloud Monitoring (autoscaling signals)",
   },
 ];
 
@@ -341,7 +513,7 @@ const GCP_FIREBASE_ONLY: readonly IamInvariant[] = [
 /** Every IAM binding upgrade ensures on an install of `provider`. */
 export function stackIamInvariants(provider: GcpProvider): IamInvariant[] {
   return [
-    ...secretAccessors(provider),
+    ...secretAccessors(),
     ...(provider === "gcp" ? GCP_ONLY : GCP_FIREBASE_ONLY),
     ...TELEMETRY,
   ];
@@ -379,6 +551,8 @@ export function iamMember(
   switch (principal) {
     case "run-sa":
       return `serviceAccount:${runServiceAccountEmail(install.projectId, install.env)}`;
+    case "gateway-sa":
+      return `serviceAccount:${gatewayServiceAccountEmail(install.projectId, install.env)}`;
     case "static-publisher-sa":
       return `serviceAccount:${staticPublisherServiceAccountId(install.env)}@${install.projectId}.iam.gserviceaccount.com`;
     case "iap-service-agent":

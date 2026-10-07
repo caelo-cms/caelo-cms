@@ -14,6 +14,7 @@ import { join, resolve as resolvePath } from "node:path";
 import * as pulumi from "@pulumi/pulumi/automation";
 import { GCP_STACK_ENV } from "../gcp-names.js";
 import type { ImageDigests } from "../install-state.js";
+import { ensureGeneratedSecrets, stackSecretReplication } from "../runtime-secrets.js";
 
 export interface PulumiUpInputs {
   installId: string;
@@ -204,6 +205,20 @@ export async function pulumiUpGcp(
     }>,
   );
   await stack.setConfig(`${ns}:secretReplication`, { value: secretReplication });
+
+  // The stack references the CLI-generated runtime secrets (stack-contract.ts
+  // CLI_GENERATED_SECRETS) by id, so they must exist before `up`.
+  const generated = await ensureGeneratedSecrets({
+    projectId: inputs.projectId,
+    env: stackName,
+    replication: stackSecretReplication(secretReplication, inputs.region),
+  });
+  const notEnsured = generated.filter((o) => o.status === "failed");
+  if (notEnsured.length > 0) {
+    throw new Error(
+      `could not create the runtime secrets: ${notEnsured.map((o) => `${o.id}: ${o.error ?? ""}`).join("; ")}`,
+    );
+  }
 
   // Refresh state first to detect drift from any out-of-band changes.
   await stack.refresh({ onOutput: (msg) => onEvent("log", msg) });

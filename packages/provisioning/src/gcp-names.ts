@@ -42,6 +42,21 @@ export function runServiceAccountEmail(projectId: string, env: string): string {
 }
 
 /**
+ * Account id of the service account the gateway runs as. Separate from the
+ * admin's so the public-facing gateway can read only the secrets it needs
+ * (stack-contract.ts `SERVICE_SECRET_ENV`), never the KEK or the admin-only
+ * secrets.
+ */
+export function gatewayServiceAccountId(env: string): string {
+  return `${gcpNamePrefix(env)}-gateway-sa`;
+}
+
+/** Email of the service account the gateway runs as. */
+export function gatewayServiceAccountEmail(projectId: string, env: string): string {
+  return `${gatewayServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+}
+
+/**
  * Account id of the `gcp` stack's static-publisher service account. Account
  * ids max out at 30 chars, so the env is shortened.
  */

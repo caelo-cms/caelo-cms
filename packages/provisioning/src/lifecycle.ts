@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { cancel, confirm, isCancel, log, note, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { gcloud } from "./gcloud.js";
-import { GCP_STACK_ENV } from "./gcp-names.js";
+import { GCP_STACK_ENV, gatewayServiceAccountEmail, runServiceAccountEmail } from "./gcp-names.js";
 import {
   type ImageDigests,
   type InstallMetadata,
@@ -31,12 +31,23 @@ import {
 } from "./install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
 import {
+  ensureGatewayServiceAccount,
+  ensureGeneratedSecrets,
+  ROTATABLE_SECRETS,
+  type RotatableSecret,
+  readSecretReplication,
+  rotateRuntimeSecret,
+  rotationRefusal,
+} from "./runtime-secrets.js";
+import {
   type DeployedService,
   type EnvChange,
   ensureStackInvariants,
   type LiveEnvValue,
   liveContainerEnv,
+  liveEnvHasInlinePassword,
   planContractEnv,
+  rollService,
   serviceRollArgs,
 } from "./stack-converge.js";
 
@@ -534,7 +545,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   for (const roll of rolls) {
     for (const c of roll.envChanges) {
       log.info(
-        `${roll.slug} env ${bold(c.name)}: ${c.from === undefined ? dim("(unset)") : c.from} → ${c.to}`,
+        `${roll.slug} env ${bold(c.name)}: ${c.from === undefined ? dim("(unset)") : c.from} → ${c.to === undefined ? dim("(removed)") : c.to}`,
       );
     }
   }
@@ -556,6 +567,33 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   } else {
     log.warn(yellow("--skip-verify set — image signatures NOT verified."));
   }
+
+  // ────────────────────────────────────────────────────────────────
+  // Runtime identities + secrets the env contract references: the
+  // gateway's own run SA and the CLI-generated secrets
+  // (runtime-secrets.ts). Created once, never overwritten. Must exist
+  // before the IAM invariants bind them and before the rolls reference
+  // them, so any failure aborts here.
+  // ────────────────────────────────────────────────────────────────
+  const sRt = spinner();
+  sRt.start("Ensuring the gateway service account + generated runtime secrets...");
+  const install = { projectId: meta.projectId, env: GCP_STACK_ENV };
+  const replication = await readSecretReplication(install);
+  const runtime = [
+    await ensureGatewayServiceAccount(install),
+    ...(replication.ok
+      ? await ensureGeneratedSecrets({ ...install, replication: replication.replication })
+      : [{ id: "secret replication", status: "failed" as const, error: replication.error }]),
+  ];
+  const runtimeFailed = runtime.filter((o) => o.status === "failed");
+  if (runtimeFailed.length > 0) {
+    sRt.stop(red("Runtime identities/secrets could not be ensured. Aborting upgrade."));
+    for (const o of runtimeFailed) log.error(red(`  FAILED: ${o.id}\n    ${o.error ?? ""}`));
+    log.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
+    return;
+  }
+  sRt.stop(green("Gateway service account + runtime secrets ok"));
+  for (const o of runtime.filter((o) => o.status === "applied")) log.info(`  created: ${o.id}`);
 
   // ────────────────────────────────────────────────────────────────
   // Converge the infrastructure the stack declares but upgrade can't get
@@ -662,18 +700,23 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   // If admin succeeds but gateway fails, also roll admin back so the
   // operator never ends up on a mismatched-version pair. The env
   // contract's changes ride the same `services update` as the image, so
-  // they land in the new revision (and roll back with it).
+  // they land in the new revision (and roll back with it). So does the
+  // service's run SA: the gateway moves to its own SA here.
   // ────────────────────────────────────────────────────────────────
   const rolled: ServicePlan[] = [];
   for (const plan of rolls) {
     const s = spinner();
     s.start(`Rolling ${plan.slug} → ${plan.digest.slice(0, 19)}...`);
-    const upd = await gcloud(
+    const upd = await rollService(
       serviceRollArgs({
         serviceName: plan.serviceName,
         region,
         projectId: meta.projectId,
         imageRef: plan.imageRef,
+        serviceAccount:
+          plan.slug === "admin"
+            ? runServiceAccountEmail(meta.projectId, GCP_STACK_ENV)
+            : gatewayServiceAccountEmail(meta.projectId, GCP_STACK_ENV),
         envFlags: plan.envFlags,
       }),
     );
@@ -731,6 +774,15 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     rolled.push(plan);
   }
   log.success(`Upgrade to ${bold(targetTag)} complete (admin + gateway revisions Ready).`);
+  if (rolls.some((r) => liveEnvHasInlinePassword(r.liveEnv))) {
+    // The services just moved their database password to Secret Manager,
+    // but every earlier revision still shows it in its env.
+    log.warn(
+      yellow(
+        `The database password was stored in plain env vars before this upgrade and stays readable in the services' old revisions. Rotate it now: ${bold("bunx @caelo-cms/provisioning rotate-secret postgres-password")}`,
+      ),
+    );
+  }
 
   const digestOf = (slug: "admin" | "gateway"): string => {
     const roll = rolls.find((r) => r.slug === slug);
@@ -978,39 +1030,60 @@ export async function backupCommand(): Promise<void> {
 export async function rotateSecretCommand(name: string | undefined): Promise<void> {
   if (!name) {
     log.error(red("Usage: caelo-cms rotate-secret <name>"));
-    log.warn(
-      `Names: ${[
-        "postgres-password",
-        "csrf-secret",
-        "cookie-secret",
-        "secret-kek",
-        "anthropic-api-key",
-        "resend-api-key",
-      ].join(", ")}`,
-    );
+    log.warn(`Names: ${ROTATABLE_SECRETS.join(", ")}`);
     process.exit(2);
   }
+  const refusal = rotationRefusal(name);
+  if (refusal) {
+    log.error(red(refusal));
+    process.exit(2);
+  }
+  const secret = name as RotatableSecret;
   const { meta } = requireInstall();
-  if (meta.provider !== "gcp") {
+  if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") {
     log.warn(`rotate-secret for provider ${meta.provider} not yet implemented.`);
     return;
   }
-  log.warn(
-    yellow(
-      `Secret rotation v1 prints the gcloud command for you to run. Full automation lands in a follow-up.`,
-    ),
+  if (!meta.projectId) return;
+  const region = meta.region ?? "europe-west1";
+
+  const s = spinner();
+  s.start(`Rotating ${secret}...`);
+  const services: Partial<Record<"admin" | "gateway", string>> = {};
+  for (const slug of ["admin", "gateway"] as const) {
+    const serviceName = await resolveGcpResourceName(
+      "run-service",
+      `caelo-production-${slug}`,
+      meta.projectId,
+      region,
+    );
+    if (!serviceName) {
+      s.stop(red(`Could not find caelo-production-${slug}* Cloud Run service — nothing rotated`));
+      return;
+    }
+    services[slug] = serviceName;
+  }
+  const sqlInstance =
+    secret === "postgres-password"
+      ? await resolveGcpResourceName("sql-instance", "caelo-production-pg", meta.projectId)
+      : null;
+  const report = await rotateRuntimeSecret(
+    {
+      projectId: meta.projectId,
+      region,
+      env: GCP_STACK_ENV,
+      services: services as Record<"admin" | "gateway", string>,
+      ...(sqlInstance ? { sqlInstance } : {}),
+    },
+    secret,
   );
-  note(
-    [
-      bold("Run this from your terminal:"),
-      "",
-      `  ${cyan(`echo -n "<new-value>" | gcloud secrets versions add caelo-production-${name} --data-file=- --project=${meta.projectId}`)}`,
-      "",
-      `Then redeploy admin + gateway to pick up the new value:`,
-      `  ${cyan(`bunx @caelo-cms/provisioning upgrade`)}`,
-    ].join("\n"),
-    "Rotate secret",
-  );
+  if (report.ok) {
+    s.stop(green(`${secret} rotated`));
+  } else {
+    s.stop(red(`Rotating ${secret} failed`));
+  }
+  for (const step of report.steps) log.info(`  ${step}`);
+  if (report.error) log.error(red(report.error));
 }
 
 // =========================================================================
