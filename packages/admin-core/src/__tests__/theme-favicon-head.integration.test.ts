@@ -26,6 +26,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { generateSite, pageOutputPath } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -50,6 +51,7 @@ let faviconId = "";
 let faviconSlug = "";
 /** Slug of the theme active before this test — re-activated after. */
 let previousActiveSlug: string | null = null;
+let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
 const THEME_SLUG = `${PREFIX}-theme`;
 
 async function run(name: string, input: unknown): Promise<unknown> {
@@ -87,6 +89,8 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
   await cleanup();
+  // #551: the generator refuses to build without a configured site URL.
+  restoreSiteBaseUrl = await pinSiteBaseUrl(ADMIN_URL, "https://favicon-test.invalid");
   repoRoot = mkdtempSync(join(tmpdir(), `${PREFIX}-root-`));
 
   // A PNG favicon, with its orig bytes on disk where the generator's
@@ -174,6 +178,7 @@ afterAll(async () => {
       await tx.unsafe(`UPDATE themes SET is_active = true WHERE slug = '${slug}'`);
     });
   }
+  await restoreSiteBaseUrl?.();
   await cleanup();
   rmSync(repoRoot, { recursive: true, force: true });
   await adapter.close();
