@@ -51,13 +51,63 @@ export function resolveDocumentLanguage(args: {
   return args.contributed ?? args.siteLanguage;
 }
 
-// `<html` followed by attributes up to the closing `>`, tolerating `>`
-// inside quoted attribute values.
-const HTML_OPEN_TAG_RE = /<html(?=[\s>/])(?:"[^"]*"|'[^']*'|[^'">])*>/i;
-// A `lang` attribute (quoted, unquoted, or bare). The leading
-// whitespace requirement keeps `xml:lang` untouched.
-const LANG_ATTR_RE = /\s+lang(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+))?(?=[\s>/])/gi;
+// The `<html` start-tag opener; the lookahead keeps look-alikes such as
+// `<html-widget>` out. Fixed-width, so matching is linear.
+const HTML_TAG_OPENER_RE = /<html(?=[\s>/])/i;
 const DOCTYPE_RE = /^\s*<!doctype[^>]*>/i;
+// HTML's ASCII whitespace (the tokenizer's attribute separators).
+const HTML_WS = new Set(["\t", "\n", "\f", "\r", " "]);
+
+/**
+ * Scan the attributes of the start tag beginning at `from` (just past
+ * `<html`) and return them with every `lang` attribute removed, plus the
+ * index just past the closing `>`. `null` when the tag never closes.
+ *
+ * A single forward pass over the tag, character by character: layout
+ * HTML is AI- or operator-authored input, and a backtracking regex over
+ * it (`\s+lang…` with a global flag) is polynomial on long whitespace
+ * runs (CodeQL js/polynomial-redos). Quoted values may contain `>`.
+ * `xml:lang` and `data-lang` are different attribute names and survive.
+ */
+function stripLangAttributes(
+  html: string,
+  from: number,
+): { readonly attrs: string; readonly end: number } | null {
+  const n = html.length;
+  let i = from;
+  let attrs = "";
+  while (i < n) {
+    const segmentStart = i;
+    while (i < n && HTML_WS.has(html[i] as string)) i++;
+    if (i >= n) return null;
+    if (html[i] === ">") return { attrs: attrs + html.slice(segmentStart, i), end: i + 1 };
+    const nameStart = i;
+    // An attribute name runs to whitespace, `=`, `>` or `/`; a stray `=`
+    // or `/` is consumed as a one-character name so the scan always moves.
+    i++;
+    while (i < n && !HTML_WS.has(html[i] as string) && !"=>/".includes(html[i] as string)) i++;
+    const name = html.slice(nameStart, i).toLowerCase();
+    const afterName = i;
+    while (i < n && HTML_WS.has(html[i] as string)) i++;
+    if (html[i] === "=") {
+      i++;
+      while (i < n && HTML_WS.has(html[i] as string)) i++;
+      const quote = html[i];
+      if (quote === '"' || quote === "'") {
+        const close = html.indexOf(quote, i + 1);
+        if (close === -1) return null;
+        i = close + 1;
+      } else {
+        while (i < n && !HTML_WS.has(html[i] as string) && html[i] !== ">") i++;
+      }
+    } else {
+      // No value: the whitespace belongs to the next attribute.
+      i = afterName;
+    }
+    if (name !== "lang") attrs += html.slice(segmentStart, i);
+  }
+  return null;
+}
 
 function escapeAttr(s: string): string {
   return s
@@ -71,15 +121,15 @@ function escapeAttr(s: string): string {
  * Set `lang` on the document's `<html>` start tag, replacing any value
  * the layout carried. A layout with no `<html>` start tag (the tag is
  * optional in HTML) gets one inserted right after the doctype, which
- * parses to the same document with the language attached.
+ * parses to the same document with the language attached. An `<html`
+ * start tag that never closes is malformed and treated as absent.
  */
 export function applyDocumentLanguage(html: string, lang: string): string {
   const attr = ` lang="${escapeAttr(lang)}"`;
-  const open = HTML_OPEN_TAG_RE.exec(html);
-  if (open) {
-    const rest = open[0].slice("<html".length).replace(LANG_ATTR_RE, "");
-    const tag = `<html${attr}${rest}`;
-    return html.slice(0, open.index) + tag + html.slice(open.index + open[0].length);
+  const open = HTML_TAG_OPENER_RE.exec(html);
+  const tag = open ? stripLangAttributes(html, open.index + "<html".length) : null;
+  if (open && tag) {
+    return `${html.slice(0, open.index)}<html${attr}${tag.attrs}>${html.slice(tag.end)}`;
   }
   const doctype = DOCTYPE_RE.exec(html);
   const at = doctype ? doctype[0].length : 0;

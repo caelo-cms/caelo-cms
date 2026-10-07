@@ -55,6 +55,23 @@ describe("applyDocumentLanguage", () => {
     );
   });
 
+  it("keeps data-lang and self-closing slashes, drops every lang", () => {
+    expect(applyDocumentLanguage('<html data-lang="x" lang=a\tlang="b" />', "en")).toBe(
+      '<html lang="en" data-lang="x" />',
+    );
+  });
+
+  // Regression (CodeQL js/polynomial-redos): the attribute strip was a
+  // global `\s+lang…` regex that backtracked quadratically over long
+  // whitespace runs in layout HTML.
+  it("stays linear on long whitespace runs", () => {
+    const ws = "\t".repeat(200_000);
+    const started = performance.now();
+    expect(applyDocumentLanguage(`<html${ws}x${ws}>`, "en")).toBe(`<html lang="en"${ws}x${ws}>`);
+    expect(applyDocumentLanguage(`<html${ws}`, "en")).toBe(`<html lang="en"><html${ws}`);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   it("escapes the value", () => {
     expect(applyDocumentLanguage("<html>", 'a"b')).toBe('<html lang="a&quot;b">');
   });
