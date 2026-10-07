@@ -72,6 +72,17 @@ describe("applyDocumentLanguage", () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
+  // Migration 0232: an unconfigured site language renders no `lang`
+  // rather than a substituted one.
+  it("with no language, strips a layout-authored lang and adds none", () => {
+    expect(applyDocumentLanguage('<html lang="en" class="x"><head></head>', null)).toBe(
+      '<html class="x"><head></head>',
+    );
+    expect(applyDocumentLanguage("<!doctype html><head></head>", null)).toBe(
+      "<!doctype html><head></head>",
+    );
+  });
+
   it("escapes the value", () => {
     expect(applyDocumentLanguage("<html>", 'a"b')).toBe('<html lang="a&quot;b">');
   });
@@ -84,6 +95,11 @@ describe("resolveDocumentLanguage", () => {
 
   it("uses the stored site language when no plugin assigns one", () => {
     expect(resolveDocumentLanguage({ contributed: undefined, siteLanguage: "fr" })).toBe("fr");
+  });
+
+  it("returns null when neither a plugin nor the site sets a language — never 'en'", () => {
+    expect(resolveDocumentLanguage({ contributed: undefined, siteLanguage: null })).toBeNull();
+    expect(resolveDocumentLanguage({ contributed: "de", siteLanguage: null })).toBe("de");
   });
 });
 

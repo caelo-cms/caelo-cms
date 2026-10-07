@@ -345,8 +345,8 @@ export async function generateSite(args: {
   const buildDir = join(buildsDir, runId);
   const currentLink = join(outDir, "current");
 
-  // #551 — read first: a missing site base URL fails the run before any
-  // file is written, not halfway through the page passes.
+  // #551 — read first: a missing site base URL or site language fails the
+  // run before any file is written, not halfway through the page passes.
   const seoSettings = await readSeoSettings(tx);
 
   await mkdir(buildDir, { recursive: true });

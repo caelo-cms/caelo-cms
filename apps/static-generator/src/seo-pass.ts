@@ -289,8 +289,10 @@ function enc(s: string): string {
  *
  * Throws when the site base URL is not configured (#551): every canonical,
  * og:url, JSON-LD url and sitemap entry is absolute, and a substituted
- * localhost default shipped unreachable canonicals to production. The
- * message names the setting and how to set it.
+ * localhost default shipped unreachable canonicals to production. Throws
+ * likewise when the site language is not configured (migration 0232):
+ * every page needs a real `<html lang>`, and a substituted `en` mislabels
+ * every non-English site. Each message names the setting and how to set it.
  */
 export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSettings> {
   const rows = (await tx.execute(sql`
@@ -302,7 +304,7 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
     site_base_url: string | null;
     sitemap_enabled: boolean;
     organization_json: string | null;
-    site_language: string;
+    site_language: string | null;
   }[];
   const r = rows[0];
   if (!r) {
@@ -320,6 +322,14 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<SiteSeoSet
         "URLs, og:url, JSON-LD and the sitemap need the public site URL. Set it under " +
         "Security → SEO in the admin, or set CAELO_SITE_URL on the admin service " +
         "(provisioning does this from the install domain) and restart it.",
+    );
+  }
+  if (!r.site_language) {
+    throw new Error(
+      "Site language is not configured (site_defaults.site_language is NULL). Every page " +
+        "needs <html lang> for screen readers and search engines. Tell the AI in the editor " +
+        "chat which language the site is written in (it sets it with set_site_identity), or " +
+        "set it under Security → SEO in the admin, then publish again.",
     );
   }
   let organization: SiteSeoSettings["organization"] = {};

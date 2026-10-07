@@ -57,6 +57,33 @@ describe("buildStatusLine", () => {
     expect(buildStatusLine({ ...COMPLETE, seoValue: null })).toBe(undefined);
   });
 
+  it("0232: flags an unset site language and names set_site_identity", () => {
+    const line = buildStatusLine({
+      ...COMPLETE,
+      siteDefaultsValue: { defaults: { siteName: "Acme", siteLanguage: null } },
+    });
+    expect(line).toContain("Site language: not set");
+    expect(line).toContain("set_site_identity({siteLanguage})");
+    expect(line).not.toContain("Site identity: not captured");
+    expect(
+      buildStatusLine({
+        ...COMPLETE,
+        siteDefaultsValue: { defaults: { siteName: "Acme", siteLanguage: "de" } },
+      }),
+    ).toBeUndefined();
+    // Only an explicit null counts — a read without the field is not evidence.
+    expect(buildStatusLine(COMPLETE)).toBeUndefined();
+  });
+
+  it("0232: an untouched install names both identity and language", () => {
+    const line = buildStatusLine({
+      ...COMPLETE,
+      siteDefaultsValue: { defaults: { siteName: null, siteLanguage: null } },
+    });
+    expect(line).toContain("Site identity: not captured");
+    expect(line).toContain("Site language: not set");
+  });
+
   it("treats a seed-origin theme as needing setup even when one is active", () => {
     const line = buildStatusLine({ ...COMPLETE, activeTheme: { origin: "seed" } });
     expect(line).toContain("Theme: needs setup");

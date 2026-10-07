@@ -1119,7 +1119,7 @@ export const renderPagePreviewOp = defineOperation({
       site_base_url: string | null;
       sitemap_enabled: boolean;
       organization_json: string | null;
-      site_language: string;
+      site_language: string | null;
     }[];
     const settingsRow = settingsRows[0];
     if (!settingsRow) {
@@ -1143,6 +1143,11 @@ export const renderPagePreviewOp = defineOperation({
     // surface; the static generator refuses to build in that state.
     const siteBaseUrl = settingsRow.site_base_url;
     const seoMarkers: string[] = siteBaseUrl ? [] : ["site-base-url-unset"];
+    // Migration 0232 — likewise no substituted language. Unset, pages no
+    // plugin assigns a locale to render `<html>` without `lang`, and the
+    // marker stays up even when this page has a contributed locale: the
+    // static generator refuses to build the site until it is set.
+    if (!settingsRow.site_language) seoMarkers.push("site-language-unset");
 
     let ogImageUrl: string | null = null;
     if (seoRow?.og_image_asset_id) {
@@ -1187,9 +1192,10 @@ export const renderPagePreviewOp = defineOperation({
     // #391 — plugin head contributions ride the SAME compose call the
     // static generator uses (byte parity by construction).
     // Plugin contributions need absolute URLs, so with no base URL none are
-    // collected and `<html lang>` carries the stored site language. That
-    // state is flagged `site-base-url-unset` and the static generator
-    // refuses to build in it, so no published page diverges from this.
+    // collected and `<html lang>` carries the stored site language (or none
+    // when that is unset too). Both states are flagged on the missing-content
+    // surface and the static generator refuses to build in either, so no
+    // published page diverges from this.
     const contributions = siteBaseUrl
       ? await collectContributions([input.pageId], { siteBaseUrl, ...renderScope })
       : null;

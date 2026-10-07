@@ -80,14 +80,23 @@ export function buildStatusLine(args: {
   const layouts = (args.layoutsValue as { layouts?: unknown[] } | null)?.layouts ?? [];
   const templates = (args.templatesValue as { templates?: unknown[] } | null)?.templates ?? [];
   const defaults =
-    (args.siteDefaultsValue as { defaults?: { siteName?: string | null } | null } | null)
-      ?.defaults ?? null;
+    (
+      args.siteDefaultsValue as {
+        defaults?: { siteName?: string | null; siteLanguage?: string | null } | null;
+      } | null
+    )?.defaults ?? null;
   if (layouts.length === 0) missing.push("Layout: needs setup (create_layout)");
   if (templates.length === 0) missing.push("Template: needs setup (create_template)");
   if (!defaults) missing.push("Site defaults: needs setup (set_site_defaults)");
   else if (!defaults.siteName)
     missing.push(
       "Site identity: not captured (set_site_identity — do this FIRST, from the user's own words)",
+    );
+  // Migration 0232 — no `en` default; publishing fails until it is set.
+  // Strictly null: an absent field (failed or partial read) is not evidence.
+  if (defaults && defaults.siteLanguage === null)
+    missing.push(
+      "Site language: not set — publishing fails until it is (set_site_identity({siteLanguage}) with the BCP 47 tag of the language the operator writes in or wants the copy in, e.g. 'de'; for a migration, the source site's Lang:)",
     );
   // #551 — Owner-only setting (site_defaults.set_seo), so the entry names
   // where the operator sets it rather than a tool.

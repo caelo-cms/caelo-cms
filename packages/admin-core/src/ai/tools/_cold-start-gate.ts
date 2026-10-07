@@ -140,9 +140,9 @@ export async function checkColdStartGate(
   const steps: string[] = [];
   if (noIdentity) {
     steps.push(
-      "`set_site_identity({siteName: '<inferred from user prompt>', sitePurpose: '<one or two sentences>'})`. " +
+      "`set_site_identity({siteName: '<inferred from user prompt>', sitePurpose: '<one or two sentences>', siteLanguage: '<BCP 47 tag of the language the site is written in>'})`. " +
         "Example: user says 'build me a homepage for an AI-first CMS called Caelo, trustworthy and developer-focused' → " +
-        "siteName 'Caelo', sitePurpose 'An AI-first CMS for developers — trustworthy, branched edits, plugin sandbox'.",
+        "siteName 'Caelo', sitePurpose 'An AI-first CMS for developers — trustworthy, branched edits, plugin sandbox', siteLanguage 'en' (they wrote in English).",
     );
   }
   if (seedTheme && noActiveTheme) {

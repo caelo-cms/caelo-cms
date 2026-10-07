@@ -11,6 +11,7 @@ import { generateSite, resolveThemeFonts } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
+import { pinSiteLanguage } from "./fixtures/site-language.js";
 
 const adapter = new DatabaseAdapter({
   adminDatabaseUrl: process.env.ADMIN_DATABASE_URL!,
@@ -43,12 +44,15 @@ async function run(name: string, input: unknown, identity = ctx) {
   return result.value;
 }
 let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
+let restoreSiteLanguage: (() => Promise<void>) | null = null;
 beforeAll(async () => {
   // #551 — the build half of the parity check needs a configured base URL.
   restoreSiteBaseUrl = await pinSiteBaseUrl(process.env.ADMIN_DATABASE_URL!, "https://example.com");
+  restoreSiteLanguage = await pinSiteLanguage(process.env.ADMIN_DATABASE_URL!, "en");
 });
 afterAll(async () => {
   await restoreSiteBaseUrl?.();
+  await restoreSiteLanguage?.();
   await adapter.withAdminTransaction(ctx, async (tx) => {
     await tx.execute(
       sql`DELETE FROM theme_snapshots WHERE theme_id IN (SELECT id FROM themes WHERE slug=${THEME_SLUG})`,

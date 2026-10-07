@@ -13,6 +13,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
+import { pinSiteLanguage } from "./fixtures/site-language.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -21,6 +22,7 @@ if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
+let restoreSiteLanguage: (() => Promise<void>) | null = null;
 
 const systemCtx: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -28,9 +30,17 @@ const systemCtx: ExecutionContext = {
   requestId: "content-preview-test",
 };
 
+const aiCtx: ExecutionContext = {
+  actorId: "00000000-0000-0000-0000-0000000232a1",
+  actorKind: "ai",
+  requestId: "content-preview-test-ai",
+};
+
 const TPL_SLUG = "p3-preview-tpl";
 const MOD_SLUGS = ["p3-preview-mod-a", "p3-preview-mod-b"] as const;
 const PAGE_SLUG = "p3-preview-page";
+/** Set by the compose test; the site-language test re-renders it. */
+let previewPageId = "";
 
 async function wipe(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
@@ -50,8 +60,21 @@ async function wipe(): Promise<void> {
 
 beforeAll(async () => {
   await wipe();
+  // site_defaults.updated_by + audit_events.actor_id FK into actors.
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`INSERT INTO actors (id, kind, display_name)
+               VALUES (${aiCtx.actorId}::uuid, 'ai', 'content-preview test ai')
+               ON CONFLICT (id) DO NOTHING`;
+    });
+  } finally {
+    await sql.end();
+  }
   // #551 — canonicals need a configured base URL (no localhost default).
   restoreSiteBaseUrl = await pinSiteBaseUrl(ADMIN_URL!, "https://example.com");
+  restoreSiteLanguage = await pinSiteLanguage(ADMIN_URL!, "en");
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
@@ -60,6 +83,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await wipe();
   await restoreSiteBaseUrl?.();
+  await restoreSiteLanguage?.();
   await adapter.close();
 });
 
@@ -102,6 +126,7 @@ describe("pages.render_preview", () => {
     });
     if (!pg.ok) throw new Error("page seed");
     const pageId = (pg.value as { pageId: string }).pageId;
+    previewPageId = pageId;
     await execute(registry, adapter, systemCtx, "pages.set_modules", {
       pageId,
       blocks: [
@@ -145,5 +170,44 @@ describe("pages.render_preview", () => {
     expect(html).toContain(`<script defer data-source="modules">`);
     expect(html).toContain("window.A=1;");
     expect(html).toContain("window.B=1;");
+  });
+
+  // Migration 0232 — the site language has no `en` default. Unset, the
+  // preview must not invent one: no `lang` on <html> (the template's
+  // bare <html> stays bare) and `site-language-unset` on the
+  // missing-content surface. The AI then sets it through set_identity.
+  it("an unset site language renders no lang and flags it; the AI's set_identity fills it", async () => {
+    expect(previewPageId).not.toBe("");
+    const render = async () => {
+      const r = await execute(registry, adapter, systemCtx, "pages.render_preview", {
+        pageId: previewPageId,
+      });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      return r.value as { html: string; missingSlots: string[] };
+    };
+    const siteLanguage = async () => {
+      const r = await execute(registry, adapter, systemCtx, "site_defaults.get", {});
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      return (r.value as { defaults: { siteLanguage: string | null } }).defaults.siteLanguage;
+    };
+
+    const restore = await pinSiteLanguage(ADMIN_URL!, null);
+    try {
+      expect(await siteLanguage()).toBeNull();
+      const unset = await render();
+      expect(unset.missingSlots).toContain("site-language-unset");
+      expect(unset.html).not.toMatch(/<html[^>]*\slang=/);
+    } finally {
+      await restore();
+    }
+
+    const set = await execute(registry, adapter, aiCtx, "site_defaults.set_identity", {
+      siteLanguage: "de",
+    });
+    if (!set.ok) throw new Error(JSON.stringify(set.error));
+    expect(await siteLanguage()).toBe("de");
+    const filled = await render();
+    expect(filled.missingSlots).not.toContain("site-language-unset");
+    expect(filled.html).toContain('<html lang="de"');
   });
 });

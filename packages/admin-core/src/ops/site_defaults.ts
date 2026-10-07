@@ -45,8 +45,9 @@ const siteDefaultsRow = z.object({
   /** issue #163 — structured Design Brief from the Genesis discovery dialog. */
   designBrief: designBriefSchema.nullable(),
   /** BCP 47 `<html lang>` for every page no plugin assigns a locale to
-   *  (migration 0230; stored, seeded `en`). */
-  siteLanguage: z.string(),
+   *  (migration 0230). Null = not configured (0232 dropped the `en`
+   *  default): the static build refuses to run until it is set. */
+  siteLanguage: z.string().nullable(),
   updatedAt: z.string(),
 });
 
@@ -95,7 +96,7 @@ export const getSiteDefaultsOp = defineOperation({
       site_name: string | null;
       site_purpose: string | null;
       design_brief: unknown;
-      site_language: string;
+      site_language: string | null;
       updated_at: string | Date;
     }[];
     const r = rows[0];

@@ -99,7 +99,8 @@ export interface SiteSeoSettings {
   siteBaseUrl: string;
   sitemapEnabled: boolean;
   /** `site_defaults.site_language` — the `<html lang>` of every page no
-   *  plugin assigns its own locale to (see document-language.ts). */
+   *  plugin assigns its own locale to (see document-language.ts). Always
+   *  set here: the static generator refuses to build while it is NULL. */
   siteLanguage: string;
   organization: {
     name?: string;
