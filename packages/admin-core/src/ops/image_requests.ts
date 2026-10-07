@@ -51,6 +51,8 @@ const record = z.object({
 
 export const imageRequestsReadOp = defineOperation({
   name: "image_requests.read",
+  // Why system-only: idempotency ledger the image service writes around each provider call —
+  // infrastructure under generate_image / edit_image, not a separate action.
   actorScope: ["system"],
   database: "cms_admin",
   input: key,
@@ -63,6 +65,8 @@ export const imageRequestsReadOp = defineOperation({
 
 export const imageRequestsReserveOp = defineOperation({
   name: "image_requests.reserve",
+  // Why system-only: idempotency ledger the image service writes around each provider call —
+  // infrastructure under generate_image / edit_image, not a separate action.
   actorScope: ["system"],
   database: "cms_admin",
   input: key
@@ -119,6 +123,8 @@ export const imageRequestsReserveOp = defineOperation({
 
 export const imageRequestsFinishOp = defineOperation({
   name: "image_requests.finish",
+  // Why system-only: idempotency ledger the image service writes around each provider call —
+  // infrastructure under generate_image / edit_image, not a separate action.
   actorScope: ["system"],
   database: "cms_admin",
   input: key
@@ -147,6 +153,8 @@ export const imageRequestsFinishOp = defineOperation({
 
 export const imageRequestsMarkUncertainOp = defineOperation({
   name: "image_requests.mark_uncertain",
+  // Why system-only: idempotency ledger the image service writes around each provider call —
+  // infrastructure under generate_image / edit_image, not a separate action.
   actorScope: ["system"],
   database: "cms_admin",
   input: key,

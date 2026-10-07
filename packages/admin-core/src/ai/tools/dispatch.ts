@@ -650,7 +650,13 @@ export class ToolRegistry {
     // the inline Approve / Reject buttons. The Approve action at
     // /security/tool-approvals/pending atomically claims the row and
     // dispatches the tool with the persisted args.
-    if (tool.needsApproval) {
+    //
+    // The gate applies to AI actors only. The approve action re-dispatches
+    // the SAME tool with the Owner's (human) context — that dispatch IS the
+    // approved execution, so gating it again would just queue a fresh
+    // proposal for the click that was already given (an unconditional
+    // predicate like set_migration_budget's would loop forever).
+    if (tool.needsApproval && ctx.actorKind === "ai") {
       let gated = false;
       try {
         gated = await tool.needsApproval(parsed.data, ctx);

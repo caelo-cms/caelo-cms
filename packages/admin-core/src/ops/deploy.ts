@@ -422,6 +422,19 @@ export const triggerDeployOp = defineOperation({
           : "no default target configured",
       });
     }
+    // Production reaches visitors, so it ships only through the §11.A
+    // gate (deploy.propose_promote → Owner Approve), never through a
+    // direct AI trigger. Dev/staging rebuilds stay AI-callable — staging
+    // is noindex and exists precisely to be rebuilt and inspected.
+    if (ctx.actorKind === "ai" && target.env === "production") {
+      return err({
+        kind: "HandlerError",
+        operation: "deploy.trigger",
+        message:
+          `target "${target.name}" is a production target — the AI cannot deploy it directly. ` +
+          "Rebuild staging with deploy_staging, then call propose_deploy_promote (fromTarget = the staging target) so the Owner approves the go-live.",
+      });
+    }
 
     const runIdRows = (await tx.execute(sql`
       INSERT INTO deploy_runs (target_id, actor_id, status)

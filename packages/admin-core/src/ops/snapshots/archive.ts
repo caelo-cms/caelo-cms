@@ -19,6 +19,8 @@ import { recordAudit } from "../../audit.js";
 
 export const archiveOlderThanOp = defineOperation({
   name: "snapshots.archive_older_than",
+  // Why system-only: retention sweep run by the background worker on a schedule; archiving history
+  // is not an editing action.
   actorScope: ["system"],
   database: "cms_admin",
   input: archiveOlderThanInput,

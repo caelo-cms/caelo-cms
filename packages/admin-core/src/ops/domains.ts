@@ -93,6 +93,8 @@ export const listDomainsOp = defineOperation({
 
 export const addDomainOp = defineOperation({
   name: "domains.add",
+  // Why human-only: §11.A — DNS/TLS-affecting; the AI reaches it through propose_add_domain (Owner-
+  // approved).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -135,6 +137,8 @@ export const addDomainOp = defineOperation({
 
 export const removeDomainOp = defineOperation({
   name: "domains.remove",
+  // Why human-only: §11.A — takes a hostname off the site; the AI reaches it through
+  // propose_remove_domain (Owner-approved).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ domainId: z.string().uuid() }).strict(),
@@ -214,6 +218,8 @@ export const verifyDomainOp = defineOperation({
 
 export const setDomainTlsStatusOp = defineOperation({
   name: "domains.set_tls_status",
+  // Why system-only: written by the TLS/ACME status probe — an observation, not something the AI
+  // may assert.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
