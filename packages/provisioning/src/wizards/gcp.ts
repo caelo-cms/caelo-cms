@@ -26,7 +26,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
-import { chooseImageDigests, readDeployedImageDigests } from "../deployed-release.js";
+import {
+  checkDeployedRuntimeEnv,
+  chooseImageDigests,
+  readDeployedImageDigests,
+} from "../deployed-release.js";
 import { pickDnsAdapter } from "../dns/index.js";
 import {
   activeAccount,
@@ -183,9 +187,18 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // services run. A new install resolves the floating `:latest` tag to a
   // fixed sha256 digest: Cloud Run keys revisions by image reference, so a
   // tag would never trigger a new revision.
+  const deployed = isStepDone(installId, `pulumi-up-${projectId}`);
+  if (deployed) {
+    // The kept release must be able to use the env the stack deploys.
+    const runtimeEnv = await checkDeployedRuntimeEnv({ projectId, region });
+    if (!runtimeEnv.ok) {
+      cancel(runtimeEnv.error);
+      process.exit(1);
+    }
+  }
   const choice = await chooseImageDigests({
     recorded: meta ? recordedImageDigests(meta) : null,
-    deployed: isStepDone(installId, `pulumi-up-${projectId}`),
+    deployed,
     readLive: () => readDeployedImageDigests({ projectId, region }),
     resolveLatest: resolveImageDigests,
   });

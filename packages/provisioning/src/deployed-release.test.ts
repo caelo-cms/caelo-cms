@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  checkDeployedRuntimeEnv,
   chooseImageDigests,
   digestFromImageRef,
   readDeployedImageDigests,
@@ -75,6 +76,51 @@ describe("readDeployedImageDigests", () => {
     const { run } = fakeGcloud({ "services list": [fail("PERMISSION_DENIED")] });
     const r = await readDeployedImageDigests({ projectId: "p", region: "r", run });
     expect(r).toEqual({ ok: false, error: "list Cloud Run services: PERMISSION_DENIED" });
+  });
+});
+
+describe("checkDeployedRuntimeEnv", () => {
+  const svc = (env: unknown[]) =>
+    ok(JSON.stringify({ spec: { template: { spec: { containers: [{ env }] } } } }));
+  const secret = (name: string) => ({
+    name,
+    valueFrom: { secretKeyRef: { name: "caelo-production-postgres-password", key: "latest" } },
+  });
+  const lists = () => ({
+    "metadata.name~^caelo-production-admin": [ok("caelo-production-admin-abc\n")],
+    "metadata.name~^caelo-production-gateway": [ok("caelo-production-gateway-def\n")],
+  });
+
+  it("passes once both services read the password from Secret Manager", async () => {
+    const { run } = fakeGcloud({
+      ...lists(),
+      "describe caelo-production-admin-abc": [
+        svc([secret("ADMIN_DATABASE_PASSWORD"), secret("PUBLIC_ADMIN_DATABASE_PASSWORD")]),
+      ],
+      "describe caelo-production-gateway-def": [
+        svc([secret("ADMIN_DATABASE_PASSWORD"), secret("PUBLIC_DATABASE_PASSWORD")]),
+      ],
+    });
+    expect(await checkDeployedRuntimeEnv({ projectId: "p", region: "r", run })).toEqual({
+      ok: true,
+    });
+  });
+
+  it("stops a wizard re-run on an install upgrade hasn't moved over (password in the URL)", async () => {
+    const { run } = fakeGcloud({
+      ...lists(),
+      "describe caelo-production-admin-abc": [
+        svc([
+          { name: "ADMIN_DATABASE_URL", value: "postgres://admin_role:pw@10.0.0.3:5432/cms_admin" },
+        ]),
+      ],
+    });
+    const r = await checkDeployedRuntimeEnv({ projectId: "p", region: "r", run });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("Run `upgrade` first");
+      expect(r.error).not.toContain(":pw@");
+    }
   });
 });
 
