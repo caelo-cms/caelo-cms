@@ -3,8 +3,9 @@
 /**
  * #391 — head/sitemap contribution collection against the real host:
  * additive merge across two plugins, identical-duplicate dedup, LOUD
- * contradiction, capability enforcement at the validator, and the
- * serializer's deterministic ordering.
+ * contradiction, capability enforcement at the validator, the
+ * serializer's deterministic ordering, and the per-page document
+ * language (`lang`) channel.
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
@@ -36,6 +37,7 @@ function contributor(
   slug: string,
   headByPage: Record<string, HeadEntry[]>,
   sitemapByPage: Record<string, unknown> = {},
+  langByPage: Record<string, unknown> = {},
 ) {
   return definePlugin({
     slug,
@@ -46,7 +48,7 @@ function contributor(
     contributes: ["head", "sitemap"],
     contributionsOperation: "contribute",
     operations: {
-      contribute: async () => ({ head: headByPage, sitemap: sitemapByPage }),
+      contribute: async () => ({ head: headByPage, sitemap: sitemapByPage, lang: langByPage }),
     },
   });
 }
@@ -198,6 +200,33 @@ describe("#391 — head/sitemap contribution collection", () => {
       exclude: true,
       alternates: [{ hreflang: "de", href: "https://example.com/de" }],
     });
+  });
+
+  it("document language: agreeing plugins merge; invalid or contradictory values fail loudly", async () => {
+    const boot = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+      bootstrap({
+        infra,
+        pluginsRoot: "/dev/null/unused",
+        systemActorId: SYSTEM_ACTOR_ID,
+        testPlugins: [
+          { definition: contributor("t391-a", {}, {}, a) },
+          { definition: contributor("t391-b", {}, {}, b) },
+        ],
+      });
+    const collect = () =>
+      collectContributions([PAGE_A], { ...MAIN_RENDER, siteBaseUrl: "https://example.com" });
+
+    await boot({ [PAGE_A]: "de-AT" }, { [PAGE_A]: "de-AT" });
+    expect((await collect()).lang.get(PAGE_A)).toBe("de-AT");
+
+    await cleanup();
+    await boot({ [PAGE_A]: "de" }, { [PAGE_A]: "fr" });
+    await expect(collect()).rejects.toThrow(/contradictory document languages/);
+
+    await cleanup();
+    // A value that would break out of the attribute is not a language tag.
+    await boot({ [PAGE_A]: 'en" onload="x' }, {});
+    await expect(collect()).rejects.toThrow(/invalid document language/);
   });
 
   it("ceiling: contributes without the capability is refused at validation", async () => {

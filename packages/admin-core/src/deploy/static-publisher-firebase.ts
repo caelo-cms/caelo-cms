@@ -36,6 +36,11 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { createGzip } from "node:zlib";
+import {
+  CONTENT_HASHED_PATH_PATTERN,
+  HTML_CACHE_CONTROL,
+  IMMUTABLE_CACHE_CONTROL,
+} from "@caelo-cms/shared";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
 const FIREBASE_HOSTING_API = "https://firebasehosting.googleapis.com/v1beta1";
@@ -94,6 +99,16 @@ async function walkBuildDir(buildDir: string): Promise<WalkedFile[]> {
 }
 
 /**
+ * RE2 pattern for "every path whose first segment neither starts with
+ * `_` nor is exactly `api`" — RE2 has no lookahead, so the `api`
+ * exclusion is spelled out character by character. Matches `/`,
+ * `/about/`, `/about`, `/apiary`, `/robots.txt`; rejects `/_assets/…`,
+ * `/api`, `/api/…`. See VERSION_CONFIG_HEADERS for why.
+ */
+export const FIREBASE_SHORT_CACHE_PATH_PATTERN =
+  "^/(?:(?:[^_a/][^/]*|a(?:[^p/][^/]*)?|ap(?:[^i/][^/]*)?|api[^/]+)(?:/.*)?)?$";
+
+/**
  * v0.6.3 — per-path response headers attached to every Firebase
  * Hosting version we publish. Exported so the regression test in
  * __tests__/static-publisher-firebase-headers.test.ts can pin the
@@ -109,17 +124,40 @@ async function walkBuildDir(buildDir: string): Promise<WalkedFile[]> {
  *
  * Spec: https://firebase.google.com/docs/reference/hosting/rest/v1beta1/sites.versions#Header
  *
- * Hashed Vite assets get immutable; HTML gets short max-age + SWR
- * (mirrors cacheControlForContentType in static-publisher-gcs.ts).
+ * MATCHING CONTRACT: each entry's `glob` / `regex` is matched against
+ * the REQUEST URL path (Firebase discovery doc, `Header.regex`: "RE2
+ * regular expression to match against the request URL path"), not
+ * the file that ends up served. A page requested as `/about/` is
+ * served from `/about/index.html` but never matched the old
+ * `*.html` glob — which is why pages fell through to Firebase's
+ * default `max-age=3600`, as did the content-hashed fonts.
+ *
+ * The two entries are DISJOINT on purpose: Firebase applies every
+ * matching entry and does not document which one wins when two set
+ * the same header, so no path may match both.
+ *
+ *   1. Content-hashed build outputs (fonts, plugin bundles — see
+ *      `@caelo-cms/shared` static-cache-policy.ts) → immutable, 1 year.
+ *      All of them live under a `/_…` top-level directory.
+ *   2. Every path whose first segment does NOT start with `_` and is
+ *      not `api` → short + stale-while-revalidate: pages (`/`,
+ *      `/about/`, `/about.html`, bare-slug `/about`), robots.txt,
+ *      sitemap.xml, root manifests. A publish creates a new release
+ *      (Firebase purges its CDN) and visitors pick it up within 60s.
+ *
+ * Paths matching neither keep Firebase's default (`max-age=3600`):
+ * slug-addressed media under `/_assets/<slug>…` (stable URL, bytes
+ * replaceable — must not be immutable) and the `/api/**` rewrite to
+ * the gateway (its own headers stay authoritative).
  */
 export const VERSION_CONFIG_HEADERS = [
   {
-    glob: "/_app/immutable/**",
-    headers: { "Cache-Control": "public, max-age=31536000, immutable" },
+    regex: CONTENT_HASHED_PATH_PATTERN,
+    headers: { "Cache-Control": IMMUTABLE_CACHE_CONTROL },
   },
   {
-    glob: "/**/*.html",
-    headers: { "Cache-Control": "public, max-age=60, stale-while-revalidate=86400" },
+    regex: FIREBASE_SHORT_CACHE_PATH_PATTERN,
+    headers: { "Cache-Control": HTML_CACHE_CONTROL },
   },
 ] as const;
 

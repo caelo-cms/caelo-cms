@@ -24,6 +24,7 @@
 
 import { describe, expect, it } from "bun:test";
 
+import { HTML_CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL } from "@caelo-cms/shared";
 import { VERSION_CONFIG_HEADERS } from "../static-publisher-firebase.js";
 
 describe("VERSION_CONFIG_HEADERS — Firebase Hosting REST API shape", () => {
@@ -32,10 +33,13 @@ describe("VERSION_CONFIG_HEADERS — Firebase Hosting REST API shape", () => {
     expect(VERSION_CONFIG_HEADERS.length).toBeGreaterThan(0);
   });
 
-  it("every entry has glob: string + headers: object (map, NOT array)", () => {
+  it("every entry has exactly one of glob / regex + headers: object (map, NOT array)", () => {
     for (const entry of VERSION_CONFIG_HEADERS) {
-      expect(typeof entry.glob).toBe("string");
-      expect(entry.glob.length).toBeGreaterThan(0);
+      const e = entry as { glob?: unknown; regex?: unknown };
+      const matchers = [e.glob, e.regex].filter((m) => m !== undefined);
+      expect(matchers.length).toBe(1);
+      expect(typeof matchers[0]).toBe("string");
+      expect((matchers[0] as string).length).toBeGreaterThan(0);
 
       // The bug: an earlier version emitted `headers: [{key, value}]`
       // (the Firebase CLI's firebase.json shape). Reject arrays here.
@@ -51,7 +55,7 @@ describe("VERSION_CONFIG_HEADERS — Firebase Hosting REST API shape", () => {
     }
   });
 
-  it("includes Cache-Control for hashed Vite assets + HTML (the two policies the GCS publisher mirrors)", () => {
+  it("includes Cache-Control for hashed assets + HTML (the two policies the GCS publisher mirrors)", () => {
     const allHeaders = VERSION_CONFIG_HEADERS.flatMap((e) =>
       Object.entries(e.headers as Record<string, string>),
     );
@@ -72,6 +76,69 @@ describe("VERSION_CONFIG_HEADERS — Firebase Hosting REST API shape", () => {
     for (const e of parsed.headers) {
       expect(Array.isArray(e.headers)).toBe(false);
       expect(typeof e.headers).toBe("object");
+    }
+  });
+});
+
+/**
+ * Evaluate the version config the way Firebase does: every entry whose
+ * matcher hits the REQUEST URL path contributes its headers. Entries
+ * here are all `regex` (RE2); the patterns stay inside the
+ * RE2 ∩ ECMAScript subset, so `RegExp` gives the same answer.
+ */
+function cacheControlsFor(path: string): string[] {
+  const out: string[] = [];
+  for (const entry of VERSION_CONFIG_HEADERS) {
+    const { regex } = entry as { regex?: string };
+    if (regex === undefined) throw new Error("glob entries are not evaluated by this helper");
+    if (new RegExp(regex).test(path)) {
+      out.push((entry.headers as Record<string, string>)["Cache-Control"] ?? "");
+    }
+  }
+  return out;
+}
+
+describe("VERSION_CONFIG_HEADERS — Cache-Control per path class", () => {
+  it("content-hashed fonts + plugin bundles are immutable for a year (Lighthouse uses-long-cache-ttl)", () => {
+    for (const p of [
+      "/_assets/fonts/inter/29ede7bd4be32ab0.woff2",
+      "/_assets/fonts/manrope/f3a06e9b32049b82.woff2",
+      `/_assets/fonts/pinned/${"c".repeat(64)}.woff2`,
+      "/_caelo/plugin/consent-manager/runtime.0123456789ab.js",
+      "/_app/immutable/chunks/abc.js",
+    ]) {
+      expect(cacheControlsFor(p)).toEqual([IMMUTABLE_CACHE_CONTROL]);
+    }
+  });
+
+  it("pages + robots/sitemap get the short revalidating policy, whatever the URL style", () => {
+    for (const p of [
+      "/",
+      "/about/",
+      "/about",
+      "/about.html",
+      "/en/about/index.html",
+      "/apiary/",
+      "/a",
+      "/ap",
+      "/robots.txt",
+      "/sitemap.xml",
+      "/routing-manifest.json",
+    ]) {
+      expect(cacheControlsFor(p)).toEqual([HTML_CACHE_CONTROL]);
+    }
+  });
+
+  it("slug-addressed media and the /api gateway rewrite match no rule (never immutable)", () => {
+    for (const p of [
+      "/_assets/searchviu-logo.png",
+      "/_assets/hero/w800.webp",
+      "/_assets/fonts/pinned/0b1f6c2e-9d7a-4c1e-8f3a-2b6d9e0c1a4f.license.txt",
+      "/_caelo/plugin/consent-manager/runtime.js",
+      "/api",
+      "/api/forms/submit",
+    ]) {
+      expect(cacheControlsFor(p)).toEqual([]);
     }
   });
 });

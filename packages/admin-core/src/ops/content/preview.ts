@@ -27,6 +27,7 @@ import {
 import type { DeferralCandidate } from "@caelo-cms/plugin-sdk";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
+  applyDocumentLanguage,
   buildMediaUrl,
   ComposeError,
   type ComposeFonts,
@@ -43,6 +44,7 @@ import {
   ok,
   renderSeoHead,
   resolveCanonicalUrl,
+  resolveDocumentLanguage,
   type SiteSeoSettings,
   scanCssVars,
   type ThemeDocument,
@@ -1110,12 +1112,14 @@ export const renderPagePreviewOp = defineOperation({
     }[];
     const seoRow = seoRows[0];
     const settingsRows = (await tx.execute(sql`
-      SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json
+      SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json,
+             site_language
       FROM site_defaults WHERE id = 1 LIMIT 1
     `)) as unknown as {
       site_base_url: string | null;
       sitemap_enabled: boolean;
       organization_json: string | null;
+      site_language: string;
     }[];
     const settingsRow = settingsRows[0];
     if (!settingsRow) {
@@ -1182,12 +1186,25 @@ export const renderPagePreviewOp = defineOperation({
     });
     // #391 — plugin head contributions ride the SAME compose call the
     // static generator uses (byte parity by construction).
-    const pluginHead = siteBaseUrl
-      ? (await collectContributions([input.pageId], { siteBaseUrl, ...renderScope })).head.get(
-          input.pageId,
-        )
-      : undefined;
-    html = injectSeoIntoHead(html, composeHeadBlock(headBlock, pluginHead));
+    // Plugin contributions need absolute URLs, so with no base URL none are
+    // collected and `<html lang>` carries the stored site language. That
+    // state is flagged `site-base-url-unset` and the static generator
+    // refuses to build in it, so no published page diverges from this.
+    const contributions = siteBaseUrl
+      ? await collectContributions([input.pageId], { siteBaseUrl, ...renderScope })
+      : null;
+    html = injectSeoIntoHead(
+      html,
+      composeHeadBlock(headBlock, contributions?.head.get(input.pageId)),
+    );
+    // `<html lang>` — same resolution as the static generator's SEO pass.
+    html = applyDocumentLanguage(
+      html,
+      resolveDocumentLanguage({
+        contributed: contributions?.lang.get(input.pageId),
+        siteLanguage: settingsRow.site_language,
+      }),
+    );
 
     // #449 — plugin client assets. The deploy LINKS these files; the
     // preview iframe has no build directory to serve from, so it
