@@ -100,6 +100,8 @@ export * from "./ops/users.js";
 export * from "./password.js";
 export * from "./permissions.js";
 export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
+// #553 — quality-audit worker (Lighthouse after a substantial Stage).
+export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit-worker.js";
 export * from "./rate-limit.js";
 export * from "./register.js";
 // P21 ship 5 — release-check sidecar worker (replaces the in-handler
