@@ -630,6 +630,9 @@ const adminSvc = cloudRunService({
   // sit where the walk expects.
   extraEnv: [
     { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl },
+    // #551 — the public site URL; the admin seeds site_defaults.site_base_url
+    // from it (canonical, og:url, sitemap) when it is not configured yet.
+    { name: "CAELO_SITE_URL", value: `https://${domain}` },
     { name: "CAELO_STATIC_BUCKET", value: staticBucket.name },
     { name: "CAELO_STAGING_BUCKET", value: stagingBucket.name },
     { name: "CAELO_GENERATOR_CLI", value: "/app/apps/static-generator/src/cli.ts" },

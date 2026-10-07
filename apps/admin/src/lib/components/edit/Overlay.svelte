@@ -22,19 +22,19 @@
     Minimize2,
   } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
-  import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
-  import ChatPanel from "$lib/components/chat/ChatPanel.svelte";
-  import MediaPicker from "$lib/components/MediaPicker.svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { Card } from "$lib/components/ui/card/index.js";
+  import type { ChatMessage, ChatModule, ChatSession } from "#lib/components/chat/types.js";
+  import ChatPanel from "#lib/components/chat/ChatPanel.svelte";
+  import MediaPicker from "#lib/components/MediaPicker.svelte";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { Card } from "#lib/components/ui/card/index.js";
   import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
     DropdownMenuSeparator,
     DropdownMenuTrigger,
-  } from "$lib/components/ui/dropdown-menu/index.js";
-  import { cn } from "$lib/utils.js";
+  } from "#lib/components/ui/dropdown-menu/index.js";
+  import { cn } from "#lib/utils.js";
   import {
     DEFAULT_LAYOUT,
     debounced,

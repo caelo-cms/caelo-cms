@@ -16,8 +16,8 @@
    * pattern as `/security/+page.svelte`'s tile rendering.
    */
 
-  import { Card, CardContent } from "$lib/components/ui/card/index.js";
-  import { cn } from "$lib/utils.js";
+  import { Card, CardContent } from "#lib/components/ui/card/index.js";
+  import { cn } from "#lib/utils.js";
 
   interface Props {
     // biome-ignore lint/suspicious/noExplicitAny: lucide-svelte icon type

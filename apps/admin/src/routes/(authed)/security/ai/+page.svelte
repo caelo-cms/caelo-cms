@@ -1,19 +1,19 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
-  import { Select } from "$lib/components/ui/select/index.js";
-  import { GOOGLE_IMAGE_MODELS, MODEL_HELPER_TEXT, modelsForProvider } from "$lib/ai-models.js";
+  } from "#lib/components/ui/card/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
+  import { Select } from "#lib/components/ui/select/index.js";
+  import { GOOGLE_IMAGE_MODELS, MODEL_HELPER_TEXT, modelsForProvider } from "#lib/ai-models.js";
 
   let { data, form } = $props();
 </script>

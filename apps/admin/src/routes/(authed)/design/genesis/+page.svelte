@@ -8,13 +8,13 @@
    * see +page.server.ts for the full stance).
    */
   import { enhance } from "$app/forms";
-  import { page } from "$app/stores";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { page } from "$app/state";
+  import { Button } from "#lib/components/ui/button/index.js";
   import type { PageData } from "./$types";
 
   let { data }: { data: PageData } = $props();
 
-  const csrf = $derived($page.data.csrfToken ?? "");
+  const csrf = $derived(page.data.csrfToken ?? "");
 </script>
 
 {#snippet draftMeta(draft: { direction: string; rationale: string; status: string; id: string })}

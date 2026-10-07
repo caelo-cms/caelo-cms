@@ -7,8 +7,8 @@
   // ColorEditor passes only the obvious paired tokens (foreground vs
   // background, primary-foreground vs primary, etc.); the badge shows
   // AAA / AA / AA Large / Fail per WCAG 2.1 thresholds.
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { wcagBadge, wcagContrast } from "$lib/color/contrast.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
+  import { wcagBadge, wcagContrast } from "#lib/color/contrast.js";
 
   interface Props {
     fg: string;

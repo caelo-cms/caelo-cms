@@ -87,6 +87,14 @@ describe("renderSeoHead", () => {
     organization: {},
   };
 
+  it("#551: omits canonical, og:url and the JSON-LD url when the base URL is unset", () => {
+    const head = renderSeoHead({ ...base, canonical: null });
+    expect(head).not.toContain('rel="canonical"');
+    expect(head).not.toContain("og:url");
+    expect(head).not.toContain('"url"');
+    expect(head).toContain("<title>Welcome</title>");
+  });
+
   it("emits canonical + og:type + og:url for the simplest valid input", () => {
     const head = renderSeoHead(base);
     expect(head).toContain("<title>Welcome</title>");

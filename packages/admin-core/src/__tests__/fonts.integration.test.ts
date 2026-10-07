@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { applyDtcgWrites, type ExecutionContext, type ThemeDocument } from "@cae
 import { generateSite, resolveThemeFonts } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { registerAdminOps } from "../register.js";
+import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 
 const adapter = new DatabaseAdapter({
   adminDatabaseUrl: process.env.ADMIN_DATABASE_URL!,
@@ -41,7 +42,13 @@ async function run(name: string, input: unknown, identity = ctx) {
   if (!result.ok) throw new Error(JSON.stringify(result.error));
   return result.value;
 }
+let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
+beforeAll(async () => {
+  // #551 — the build half of the parity check needs a configured base URL.
+  restoreSiteBaseUrl = await pinSiteBaseUrl(process.env.ADMIN_DATABASE_URL!, "https://example.com");
+});
 afterAll(async () => {
+  await restoreSiteBaseUrl?.();
   await adapter.withAdminTransaction(ctx, async (tx) => {
     await tx.execute(
       sql`DELETE FROM theme_snapshots WHERE theme_id IN (SELECT id FROM themes WHERE slug=${THEME_SLUG})`,

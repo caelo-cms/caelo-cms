@@ -20,7 +20,7 @@
 
 import { deliverScreenshot, failScreenshot } from "@caelo-cms/admin-core";
 import { error, json } from "@sveltejs/kit";
-import { requirePermission } from "$lib/server/guards.js";
+import { requirePermission } from "#lib/server/guards.js";
 import type { RequestHandler } from "./$types";
 
 interface UploadBody {

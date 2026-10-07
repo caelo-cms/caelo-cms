@@ -20,8 +20,8 @@
 import { getMediaStorage } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
-import { requireUserOrPreviewScreenshotToken } from "$lib/server/preview-screenshot-auth.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { requireUserOrPreviewScreenshotToken } from "#lib/server/preview-screenshot-auth.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ params, locals, request }) => {

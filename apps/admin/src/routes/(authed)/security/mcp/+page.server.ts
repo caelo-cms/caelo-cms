@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { execute } from "@caelo-cms/query-api";
+import { CAELO_VERSION } from "@caelo-cms/shared";
 import { fail } from "@sveltejs/kit";
-import { assertCsrfToken } from "$lib/server/csrf.js";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import { assertCsrfToken } from "#lib/server/csrf.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 type TokenRow = {
@@ -30,7 +31,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // Issue #37 — set by the provisioner on IAP-protected installs; the MCP
   // shim needs it to get through IAP.
   const iapServiceAccount = process.env.CAELO_MCP_IAP_SERVICE_ACCOUNT?.trim() || null;
-  return { tokens, adminUrl, iapServiceAccount };
+  // #552 — the generated command pins @caelo-cms/mcp-server to this
+  // admin's release; bunx would otherwise run whatever version it cached.
+  return { tokens, adminUrl, iapServiceAccount, mcpServerVersion: CAELO_VERSION };
 };
 
 export const actions: Actions = {

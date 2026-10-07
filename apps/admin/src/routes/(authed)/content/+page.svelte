@@ -6,7 +6,7 @@
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
 
   const tiles = [
     { href: "/content/pages", label: "Pages", desc: "Composed from modules; preview in an iframe", icon: FileText },

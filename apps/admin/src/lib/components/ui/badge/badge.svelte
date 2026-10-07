@@ -1,7 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import type { HTMLAttributes } from "svelte/elements";
-  import { cn } from "$lib/utils.js";
+  import { cn } from "#lib/utils.js";
   import { badgeVariants, type BadgeVariant } from "./badge-variants.js";
 
   type Props = HTMLAttributes<HTMLSpanElement> & { variant?: BadgeVariant; class?: string };

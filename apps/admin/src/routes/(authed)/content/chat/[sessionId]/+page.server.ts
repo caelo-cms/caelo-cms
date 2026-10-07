@@ -2,10 +2,10 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { error, fail } from "@sveltejs/kit";
-import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
-import { assertCsrfToken } from "$lib/server/csrf.js";
-import { requirePermission } from "$lib/server/guards.js";
-import { getQueryContext } from "$lib/server/query.js";
+import type { ChatMessage, ChatModule, ChatSession } from "#lib/components/chat/types.js";
+import { assertCsrfToken } from "#lib/server/csrf.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 interface ChatPageData {

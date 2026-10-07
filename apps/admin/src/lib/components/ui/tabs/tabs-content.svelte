@@ -1,7 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { Tabs as TabsPrimitive } from "bits-ui";
-  import { cn } from "$lib/utils.js";
+  import { cn } from "#lib/utils.js";
 
   type Props = TabsPrimitive.ContentProps & { class?: string };
   let { class: className, children, ref = $bindable(null), ...rest }: Props = $props();

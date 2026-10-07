@@ -7,7 +7,7 @@
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
 
   let { data } = $props();
   const has = (p: string) => data.user.permissions.includes(p);

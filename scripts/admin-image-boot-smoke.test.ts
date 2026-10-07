@@ -53,6 +53,10 @@
  *     requires exit code 0. A process that ignores SIGTERM is SIGKILLed
  *     after the timeout (137), so this catches the admin no longer
  *     exiting on adapter-node's `sveltekit:shutdown`.
+ * C11: The boot-smoke step launches the bundled Chromium inside the
+ *     container (`docker exec smoke`, channel "chromium") and captures a
+ *     screenshot. Without it a Dockerfile change that drops the browser
+ *     (#428) would ship an image whose screenshot tools all fail.
  * R1: The ruleset's required-status-checks list contains
  *     `Admin production image — boot smoke`. Removing it means a
  *     broken boot no longer blocks merge — AC #5 fails.
@@ -219,6 +223,17 @@ describe("ci.yml — issue #55 admin-prod-image boot-smoke contract", () => {
       .map((l) => l.trim())
       .find((l) => l.length > 0);
     expect(firstNonBlank).toBe("set -euo pipefail");
+  });
+
+  it("C11: boot-smoke step launches the bundled Chromium and captures inside the container", () => {
+    const bootStep = runSteps(job).find(
+      (s) => s.run.includes("docker run") && s.run.includes("--name smoke"),
+    );
+    expect(bootStep).toBeDefined();
+    if (!bootStep || typeof bootStep.run !== "string") return;
+    expect(bootStep.run).toContain("docker exec smoke");
+    expect(bootStep.run).toContain('channel: "chromium"');
+    expect(bootStep.run).toContain("screenshot()");
   });
 
   it("C10: boot-smoke step stops the container and requires a clean exit (code 0)", () => {

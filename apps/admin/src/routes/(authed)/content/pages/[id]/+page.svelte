@@ -2,9 +2,9 @@
   // SPDX-License-Identifier: MPL-2.0
   import { GripVertical } from "lucide-svelte";
   import { dndzone, type DndEvent } from "svelte-dnd-action";
-  import PlacementSyncToggle from "$lib/components/edit/PlacementSyncToggle.svelte";
-  import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import PlacementSyncToggle from "#lib/components/edit/PlacementSyncToggle.svelte";
+  import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     Dialog,
     DialogContent,
@@ -12,17 +12,17 @@
     DialogFooter,
     DialogHeader,
     DialogTitle,
-  } from "$lib/components/ui/dialog/index.js";
+  } from "#lib/components/ui/dialog/index.js";
   import {
     Card,
     CardContent,
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
-  import { Select } from "$lib/components/ui/select/index.js";
+  } from "#lib/components/ui/card/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
+  import { Select } from "#lib/components/ui/select/index.js";
 
   let { data, form } = $props();
 

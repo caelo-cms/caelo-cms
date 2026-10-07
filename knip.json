@@ -8,7 +8,7 @@
     "packages/provisioning/stacks/aws/edge-handler-bundle.js"
   ],
   "ignoreBinaries": ["cms-provision", "gcloud"],
-  "ignoreDependencies": ["@playwright/mcp", "@caelo-cms/shared"],
+  "ignoreDependencies": ["@playwright/mcp", "@caelo-cms/shared", "playwright"],
   "ignoreExportsUsedInFile": true,
   "ignoreIssues": {
     "apps/admin/e2e-livedit/helpers.ts": ["exports"],

@@ -6,14 +6,14 @@
    */
   import { Activity, AlertCircle, Bug, Shield } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
-  import { Badge } from "$lib/components/ui/badge/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
   import {
     Card,
     CardContent,
     CardDescription,
     CardHeader,
     CardTitle,
-  } from "$lib/components/ui/card/index.js";
+  } from "#lib/components/ui/card/index.js";
   import {
     Table,
     TableBody,
@@ -21,7 +21,7 @@
     TableHead,
     TableHeader,
     TableRow,
-  } from "$lib/components/ui/table/index.js";
+  } from "#lib/components/ui/table/index.js";
 
   interface Frame {
     windowSec: number;

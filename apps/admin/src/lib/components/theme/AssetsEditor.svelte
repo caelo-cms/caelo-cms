@@ -3,9 +3,9 @@
   // v0.11.1 (issue #76) — Assets tab. Four slots (logo / logoDark /
   // favicon / socialShare) each backed by themes.set_asset. Replace
   // opens MediaPicker; Clear submits a null mediaId.
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
-  import MediaPicker from "$lib/components/MediaPicker.svelte";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
+  import MediaPicker from "#lib/components/MediaPicker.svelte";
 
   interface AssetRef {
     mediaId: string;

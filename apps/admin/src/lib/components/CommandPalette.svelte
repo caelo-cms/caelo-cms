@@ -34,8 +34,8 @@
     Dialog,
     DialogContent,
     DialogTitle,
-  } from "$lib/components/ui/dialog/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
+  } from "#lib/components/ui/dialog/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
 
   interface Item {
     label: string;

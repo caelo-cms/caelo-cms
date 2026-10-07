@@ -8,7 +8,7 @@
    */
 
   import { Search } from "lucide-svelte";
-  import { Badge } from "$lib/components/ui/badge/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
   import StreamingMarkdown from "../StreamingMarkdown.svelte";
 
   interface Props {

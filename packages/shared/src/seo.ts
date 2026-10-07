@@ -138,7 +138,13 @@ export function resolveCanonicalUrl(args: {
 export interface SeoMetaInput {
   title: string;
   metaDescription: string;
-  canonical: string;
+  /**
+   * Absolute canonical URL, or null when the site base URL is not
+   * configured yet (#551). Only the admin preview renders with null — it
+   * omits canonical, og:url and the JSON-LD url and flags
+   * `site-base-url-unset`; the static generator refuses to build instead.
+   */
+  canonical: string | null;
   noindex: boolean;
   ogImageUrl: string | null;
   organization: SiteSeoSettings["organization"];
@@ -162,7 +168,9 @@ export function renderSeoHead(input: SeoMetaInput): string {
   if (input.metaDescription) {
     lines.push(`<meta name="description" content="${enc(input.metaDescription)}" />`);
   }
-  lines.push(`<link rel="canonical" href="${enc(input.canonical)}" />`);
+  if (input.canonical) {
+    lines.push(`<link rel="canonical" href="${enc(input.canonical)}" />`);
+  }
   if (input.noindex) {
     lines.push(`<meta name="robots" content="noindex" />`);
   }
@@ -172,7 +180,9 @@ export function renderSeoHead(input: SeoMetaInput): string {
     lines.push(`<meta property="og:description" content="${enc(input.metaDescription)}" />`);
   }
   lines.push(`<meta property="og:type" content="website" />`);
-  lines.push(`<meta property="og:url" content="${enc(input.canonical)}" />`);
+  if (input.canonical) {
+    lines.push(`<meta property="og:url" content="${enc(input.canonical)}" />`);
+  }
   if (input.ogImageUrl) {
     lines.push(`<meta property="og:image" content="${enc(input.ogImageUrl)}" />`);
   }
@@ -185,7 +195,7 @@ export function renderSeoHead(input: SeoMetaInput): string {
     "@context": "https://schema.org",
     "@type": "WebPage",
     name: input.title,
-    url: input.canonical,
+    ...(input.canonical ? { url: input.canonical } : {}),
   };
   if (input.metaDescription) ld.description = input.metaDescription;
   if (input.ogImageUrl) ld.image = input.ogImageUrl;
