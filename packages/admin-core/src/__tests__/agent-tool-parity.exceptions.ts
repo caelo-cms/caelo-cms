@@ -41,7 +41,7 @@ const PENDING_QUEUE: AiOpException = {
 
 /** Follow-up owned by the parallel "propose_* for AI budgets/pricing, gateway settings, plugin capabilities" PR. */
 const PARALLEL_PROPOSE_PR =
-  "parallel PR: propose_* tools for AI budgets/pricing, gateway settings and plugin capabilities";
+  "follow-up to #578 (which shipped budgets/pricing/gateway-settings proposals): the remaining cost reads, gateway rate-limit/secret ops and plugin-capability proposals";
 /** Follow-up for read tools this PR deliberately did not add (each is a small makeReadTool). */
 const READ_TOOLS_FOLLOW_UP =
   "follow-up: read tools for operator dashboards (agent-tool parity, part 2)";
@@ -128,6 +128,7 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   "plugins.list_pending": PENDING_QUEUE,
   "imports.list_pending_proposals": PENDING_QUEUE,
   "gateway.list_pending_rate_limit_proposals": PENDING_QUEUE,
+  "owner_settings.list_pending": PENDING_QUEUE,
   "ai_memory.list_proposals": PENDING_QUEUE,
   "skills.list_proposals": PENDING_QUEUE,
 
@@ -340,16 +341,6 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     reason: "AI budget read (budgets page)",
     followUp: PARALLEL_PROPOSE_PR,
   },
-  "ai_budgets.status": {
-    kind: "gap",
-    reason: "AI budget status read (budgets page)",
-    followUp: PARALLEL_PROPOSE_PR,
-  },
-  "gateway.get_settings": {
-    kind: "gap",
-    reason: "gateway settings read (Security → Gateway)",
-    followUp: PARALLEL_PROPOSE_PR,
-  },
   "gateway.list_rate_limit_profiles": {
     kind: "gap",
     reason: "rate-limit profile read (tune_rate_limit proposes overrides without seeing profiles)",
@@ -445,10 +436,7 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
  * stale entry once the op is annotated.
  */
 export const HUMAN_ONLY_PENDING: Readonly<Record<string, string>> = {
-  "ai_budgets.set": `TODO(${PARALLEL_PROPOSE_PR}): propose_set_ai_budget`,
-  "ai_pricing.set": `TODO(${PARALLEL_PROPOSE_PR}): propose_set_ai_pricing`,
   "plugins.set_ai_cost_cap": `TODO(${PARALLEL_PROPOSE_PR}): per-plugin AI cost cap proposal`,
-  "gateway.set_settings": `TODO(${PARALLEL_PROPOSE_PR}): propose gateway settings`,
   "gateway.rotate_cookie_secret": `TODO(${PARALLEL_PROPOSE_PR}): gateway secret rotation`,
   "gateway.set_rate_limit_override": `TODO(${PARALLEL_PROPOSE_PR}): direct override vs tune_rate_limit proposal`,
   "gateway.set_rate_limit_profile": `TODO(${PARALLEL_PROPOSE_PR}): rate-limit profiles`,
