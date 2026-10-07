@@ -13,6 +13,7 @@ import {
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission, requireUser } from "#lib/server/guards.js";
 import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
+import { classifyChatStage, enqueueStagingAudit } from "#lib/server/quality-audit.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { stagingPreviewPath } from "#lib/server/staging-preview-path.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -680,6 +681,19 @@ export const actions: Actions = {
     if (!chatSessionId) return fail(400, { error: "missing chatSessionId" });
     const pageId = String(form.get("pageId") ?? "");
 
+    // #553 — classify BEFORE the merge: afterwards the live rows hold the
+    // branch state and a module's code change can no longer be detected.
+    const qualityClassification = await classifyChatStage(locals.ctx, chatSessionId);
+    if (!qualityClassification.ok) {
+      console.error("[stageAndDeployStaging] quality_audits.classify_stage failed", {
+        chatSessionId,
+        error: qualityClassification.error,
+      });
+      return fail(500, {
+        error: `Could not check which quality audits this Stage needs — nothing was staged, try again: ${describeError(qualityClassification.error)}`,
+      });
+    }
+
     const merged = await execute(registry, adapter, locals.ctx, "chat.merge_to_main", {
       chatSessionId,
       deferConsume: true,
@@ -737,8 +751,15 @@ export const actions: Actions = {
       fileCount: number;
       buildId: string;
       runId: string;
+      targetName: string;
       previewUrl?: string;
     };
+    await enqueueStagingAudit(locals.ctx, {
+      deployRunId: summary.runId,
+      targetName: summary.targetName,
+      chatSessionId,
+      branch: qualityClassification.value,
+    });
     let previewUrl: string;
     if (summary.previewUrl) {
       previewUrl = summary.previewUrl;
