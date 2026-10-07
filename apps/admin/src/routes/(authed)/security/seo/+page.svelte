@@ -21,7 +21,7 @@
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">SEO settings</h1>
     <p class="text-sm text-muted-foreground">
-      Site-level base URL, sitemap toggle, Organization JSON-LD, and the stale-SEO queue.
+      Site-level base URL, sitemap toggle, Organization JSON-LD, site language, and the stale-SEO queue.
     </p>
   </div>
 
@@ -86,6 +86,40 @@
         </div>
         <Button type="submit">Save settings</Button>
       </form>
+    </CardContent>
+  </Card>
+
+  <Card>
+    <CardHeader>
+      <CardTitle class="text-base">Site language</CardTitle>
+      <CardDescription>
+        The language your content is written in, as a BCP 47 tag (<code class="font-mono">en</code>,
+        <code class="font-mono">de</code>, <code class="font-mono">pt-BR</code>). Every page carries it
+        as <code class="font-mono">&lt;html lang&gt;</code> so screen readers and search engines read
+        it correctly. With the international-site plugin active, translated pages carry their own
+        locale instead.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      {#if data.siteLanguageError}
+        <Alert variant="destructive"><AlertDescription>{data.siteLanguageError}</AlertDescription></Alert>
+      {:else}
+        <form method="post" action="?/saveLanguage" class="flex items-end gap-2">
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
+          <div class="space-y-2">
+            <Label for="siteLanguage">Language tag</Label>
+            <Input
+              id="siteLanguage"
+              name="siteLanguage"
+              required
+              maxlength={35}
+              pattern={"[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*"}
+              value={data.siteLanguage}
+            />
+          </div>
+          <Button type="submit">Save language</Button>
+        </form>
+      {/if}
     </CardContent>
   </Card>
 

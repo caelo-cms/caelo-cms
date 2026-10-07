@@ -27,6 +27,11 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
+import {
+  HTML_CACHE_CONTROL,
+  IMMUTABLE_CACHE_CONTROL,
+  isContentHashedPath,
+} from "@caelo-cms/shared";
 import type { Bucket, Storage as StorageType } from "@google-cloud/storage";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
@@ -34,9 +39,25 @@ const PARALLEL_UPLOADS = 100;
 const PARALLEL_COPIES = 100;
 const MANIFEST_KEY = "_state/last-build-manifest.json";
 
+/**
+ * Bump whenever `cacheControlForContentType` / `cacheControlFor`
+ * change what an EXISTING object should carry. The hash-skip below
+ * never re-uploads a byte-identical file, so content-hashed files
+ * (fonts!) would keep the Cache-Control they were first uploaded with
+ * forever. A live manifest stamped with an older policy version is
+ * ignored, which makes the next Stage + Confirm-publish re-upload and
+ * re-copy every file once with the current metadata.
+ *
+ *   1 — content-hashed fonts / plugin bundles immutable (Lighthouse
+ *       uses-long-cache-ttl); promote keeps the staged Content-Type.
+ */
+export const CACHE_POLICY_VERSION = 1;
+
 interface BuildManifest {
   buildId: string;
   files: Record<string, string>;
+  /** Absent on manifests written before CACHE_POLICY_VERSION existed. */
+  cachePolicyVersion?: number;
 }
 
 interface BucketHandles {
@@ -100,7 +121,12 @@ export const gcsStaticPublisher: StaticPublisher = {
       }
       const contentType =
         contentTypeOverrides[file.relativePath] ?? contentTypeFor(file.relativePath);
-      await uploadFile(h.stagingBucket, prefix + file.relativePath, file.absolutePath, contentType);
+      await uploadFile(h.stagingBucket, {
+        key: prefix + file.relativePath,
+        sitePath: file.relativePath,
+        absolutePath: file.absolutePath,
+        contentType,
+      });
       uploaded += 1;
     });
     return {
@@ -132,9 +158,18 @@ export const gcsStaticPublisher: StaticPublisher = {
       if (relPath === "robots.txt" || relPath === "routing-manifest.json") {
         return;
       }
+      // Keep the Content-Type publishStaging stored on the staged
+      // object: bare-slug pages ('no-extension' URL style) were
+      // uploaded as text/html via the _content-types.json sidecar, and
+      // re-deriving from the (missing) extension here would demote
+      // them to application/octet-stream with the 1h asset policy.
+      const stagedContentType = (stagedFile.metadata as { contentType?: unknown } | undefined)
+        ?.contentType;
+      const contentType =
+        typeof stagedContentType === "string" ? stagedContentType : contentTypeFor(relPath);
       await stagedFile.copy(h.staticBucket.file(relPath), {
-        contentType: contentTypeFor(relPath),
-        metadata: { cacheControl: cacheControlFor(relPath) },
+        contentType,
+        metadata: { cacheControl: cacheControlForContentType(contentType, relPath) },
       });
       copied += 1;
     });
@@ -206,7 +241,12 @@ export const gcsStaticPublisher: StaticPublisher = {
     await runBatched(files, PARALLEL_UPLOADS, async (file) => {
       const contentType =
         contentTypeOverrides[file.relativePath] ?? contentTypeFor(file.relativePath);
-      await uploadFile(h.staticBucket, file.relativePath, file.absolutePath, contentType);
+      await uploadFile(h.staticBucket, {
+        key: file.relativePath,
+        sitePath: file.relativePath,
+        absolutePath: file.absolutePath,
+        contentType,
+      });
       uploaded += 1;
     });
     return {
@@ -223,7 +263,11 @@ async function readLiveManifest(staticBucket: Bucket): Promise<BuildManifest | n
   const [exists] = await file.exists();
   if (!exists) return null;
   const [body] = await file.download();
-  return JSON.parse(body.toString("utf8")) as BuildManifest;
+  const manifest = JSON.parse(body.toString("utf8")) as BuildManifest;
+  // Stale policy → treat as "nothing live" so every file is re-uploaded
+  // with current Cache-Control metadata (see CACHE_POLICY_VERSION).
+  if (manifest.cachePolicyVersion !== CACHE_POLICY_VERSION) return null;
+  return manifest;
 }
 
 async function buildLiveManifest(staticBucket: Bucket, buildId: string): Promise<BuildManifest> {
@@ -235,7 +279,7 @@ async function buildLiveManifest(staticBucket: Bucket, buildId: string): Promise
     const crc = (f.metadata as { crc32c?: string } | undefined)?.crc32c;
     if (crc) entries[f.name] = crc;
   }
-  return { buildId, files: entries };
+  return { buildId, files: entries, cachePolicyVersion: CACHE_POLICY_VERSION };
 }
 
 interface WalkedFile {
@@ -304,18 +348,24 @@ function crc32c(buf: Buffer): number {
 
 async function uploadFile(
   bucket: Bucket,
-  key: string,
-  absolutePath: string,
-  contentType?: string,
+  args: {
+    /** Object key in `bucket` (staging keys carry the `<runId>/` prefix). */
+    key: string;
+    /** Build-dir-relative path as the site serves it — drives the policy. */
+    sitePath: string;
+    absolutePath: string;
+    contentType: string;
+  },
 ): Promise<void> {
-  const ct = contentType ?? contentTypeFor(key);
-  await bucket.upload(absolutePath, {
-    destination: key,
-    contentType: ct,
+  await bucket.upload(args.absolutePath, {
+    destination: args.key,
+    contentType: args.contentType,
     // v0.2.85 — Cache-Control follows the content-type, not the key
     // extension, so bare-slug HTML pages get the same short
-    // max-age + SWR as keyed `.html` files.
-    metadata: { cacheControl: cacheControlForContentType(ct, key) },
+    // max-age + SWR as keyed `.html` files. The policy is keyed on the
+    // site path, not the object key, so the staging `<runId>/` prefix
+    // can't hide a content-hashed path.
+    metadata: { cacheControl: cacheControlForContentType(args.contentType, args.sitePath) },
   });
 }
 
@@ -331,13 +381,14 @@ async function readContentTypeOverrides(buildDir: string): Promise<Record<string
 }
 
 function cacheControlForContentType(contentType: string, key: string): string {
-  // Hashed Vite assets keep their immutable Cache-Control regardless
-  // of content-type (the path prefix is the signal, not the body).
-  if (key.includes("/_app/immutable/") || key.includes("_app/immutable/")) {
-    return "public, max-age=31536000, immutable";
+  // Content-hashed outputs (fonts, plugin bundles, Vite chunks) are
+  // immutable regardless of content-type — the hash in the path is the
+  // signal. Slug-addressed media stays on the 1h default below.
+  if (isContentHashedPath(key)) {
+    return IMMUTABLE_CACHE_CONTROL;
   }
   if (contentType.startsWith("text/html")) {
-    return "public, max-age=60, stale-while-revalidate=86400";
+    return HTML_CACHE_CONTROL;
   }
   if (key === "routing-manifest.json" || key === "_content-types.json") {
     return "public, max-age=10";
@@ -398,12 +449,11 @@ function contentTypeFor(key: string): string {
 }
 
 function cacheControlFor(key: string): string {
-  // Vite-hashed assets land under _app/immutable/ — cache forever.
-  if (key.includes("/_app/immutable/") || key.includes("_app/immutable/")) {
-    return "public, max-age=31536000, immutable";
+  if (isContentHashedPath(key)) {
+    return IMMUTABLE_CACHE_CONTROL;
   }
   if (key.endsWith(".html") || key === "index.html") {
-    return "public, max-age=60, stale-while-revalidate=86400";
+    return HTML_CACHE_CONTROL;
   }
   if (key === "routing-manifest.json") {
     return "public, max-age=10";

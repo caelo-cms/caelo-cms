@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { CONTENT_HASHED_PATH_PATTERN, IMMUTABLE_CACHE_CONTROL } from "@caelo-cms/shared";
 import { generateBootstrapToken } from "./bootstrap-token.js";
 import { generateCaddyfile } from "./caddy.js";
 import { loadCdnCopyAdapter, selfHostedCdnCopy } from "./cdn-copy.js";
@@ -50,6 +53,48 @@ describe("Caddyfile generator", () => {
     });
     expect(out).toContain(":8081 {");
     expect(out).toContain("reverse_proxy localhost:5173");
+  });
+});
+
+describe("Caddy cache policy for content-hashed assets", () => {
+  const spec = {
+    ownerEmail: "owner@example.com",
+    publicSiteRoot: "/srv/caelo/output/production/current",
+    stagingSiteRoot: "/srv/caelo/output/staging/current",
+    adminPort: 5173,
+    gatewayPort: 8090,
+    domains: [
+      { hostname: "example.com", kind: "public", env: "production" },
+      { hostname: "admin.example.com", kind: "admin", env: "production" },
+    ],
+  } as const;
+
+  it("public vhosts mark only CONTENT_HASHED_PATH_PATTERN paths immutable", () => {
+    const out = generateCaddyfile(spec);
+    const publicBlock = out.match(/\nexample\.com \{[\s\S]*?\n\}/)?.[0] ?? "";
+    // `file` ANDs an existence check onto the path match, so a 404 for
+    // a hashed URL is never served with a year-long Cache-Control.
+    expect(publicBlock).toContain(
+      `@content_hashed {\n    path_regexp content_hashed ${CONTENT_HASHED_PATH_PATTERN}\n    file\n  }\n`,
+    );
+    expect(publicBlock).toContain(
+      `header @content_hashed Cache-Control "${IMMUTABLE_CACHE_CONTROL}"`,
+    );
+    // No blanket Cache-Control: pages + slug media keep file_server's
+    // ETag/Last-Modified revalidation.
+    expect(publicBlock.match(/Cache-Control/g)?.length).toBe(1);
+    const adminBlock = out.match(/admin\.example\.com \{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(adminBlock).not.toContain("Cache-Control");
+  });
+
+  it("the checked-in compose Caddyfiles carry the same pattern as @caelo-cms/shared", () => {
+    for (const name of ["Caddyfile.production", "Caddyfile.staging"]) {
+      const body = readFileSync(join(import.meta.dir, "..", "caddy", name), "utf8");
+      expect(body).toContain(
+        `@content_hashed {\n\t\tpath_regexp content_hashed ${CONTENT_HASHED_PATH_PATTERN}\n\t\tfile\n\t}\n`,
+      );
+      expect(body).toContain(`header @content_hashed Cache-Control "${IMMUTABLE_CACHE_CONTROL}"`);
+    }
   });
 });
 

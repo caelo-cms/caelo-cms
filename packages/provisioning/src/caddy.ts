@@ -16,7 +16,18 @@
  *   }
  *
  * Staging vhosts force `X-Robots-Tag: noindex`.
+ *
+ * Public vhosts mark content-hashed build outputs (fonts, plugin
+ * bundles — `CONTENT_HASHED_PATH_PATTERN` in @caelo-cms/shared)
+ * `immutable` for a year. Everything else keeps Caddy's file_server
+ * default (no Cache-Control; ETag + Last-Modified for revalidation),
+ * so pages and slug-addressed media are never pinned in caches. The
+ * matcher also requires the file to exist (`file`), so a 404 for a
+ * hashed URL (an old page requesting an asset the new build dropped)
+ * is never cached for a year.
  */
+
+import { CONTENT_HASHED_PATH_PATTERN, IMMUTABLE_CACHE_CONTROL } from "@caelo-cms/shared";
 
 export interface CaddyDomainSpec {
   readonly hostname: string;
@@ -73,6 +84,11 @@ function vhost(d: CaddyDomainSpec, spec: CaddyfileSpec): string {
   const root = d.env === "staging" ? spec.stagingSiteRoot : spec.publicSiteRoot;
   return `${d.hostname} {${noindex}
   root * ${root}
+  @content_hashed {
+    path_regexp content_hashed ${CONTENT_HASHED_PATH_PATTERN}
+    file
+  }
+  header @content_hashed Cache-Control "${IMMUTABLE_CACHE_CONTROL}"
   handle /api/* {
     reverse_proxy localhost:${spec.gatewayPort}
   }
