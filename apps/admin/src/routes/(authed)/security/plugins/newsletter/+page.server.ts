@@ -16,15 +16,19 @@ interface CampaignRow {
 
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
-  // No `list_subscribers` op shipped — query directly via plugin host's
-  // generic `list_aggregates`-style approach is not available either; use
-  // a lightweight `_count_subscribers` op if needed. For now, surface the
-  // campaign list via raw plugin query (lightweight admin-side enumeration
-  // through ctx.cms isn't exposed). We use a special op call.
-  // Newsletter doesn't ship a list_subscribers op yet; show campaign list only.
+  const r = await runPluginOperation({
+    invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
+    pluginSlug: "newsletter",
+    operationName: "list_campaigns",
+    args: {},
+  });
+  const v = r.ok
+    ? (r.value as { campaigns: CampaignRow[]; subscriberCount: number })
+    : { campaigns: [] as CampaignRow[], subscriberCount: null };
   return {
-    campaigns: [] as CampaignRow[],
-    subscriberCount: null as number | null,
+    campaigns: v.campaigns,
+    subscriberCount: v.subscriberCount as number | null,
+    error: r.ok ? null : r.error.message,
   };
 };
 
