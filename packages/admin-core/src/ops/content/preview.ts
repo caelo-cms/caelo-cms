@@ -1113,20 +1113,32 @@ export const renderPagePreviewOp = defineOperation({
       SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json
       FROM site_defaults WHERE id = 1 LIMIT 1
     `)) as unknown as {
-      site_base_url: string;
+      site_base_url: string | null;
       sitemap_enabled: boolean;
       organization_json: string | null;
     }[];
     const settingsRow = settingsRows[0];
+    if (!settingsRow) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.render_preview",
+        message: "site_defaults row (id=1) is missing — the cms_admin migrations did not seed it",
+      });
+    }
     let organization: SiteSeoSettings["organization"] = {};
-    if (settingsRow?.organization_json) {
+    if (settingsRow.organization_json) {
       try {
         organization = JSON.parse(settingsRow.organization_json) as SiteSeoSettings["organization"];
       } catch {
         organization = {};
       }
     }
-    const siteBaseUrl = settingsRow?.site_base_url ?? "http://localhost:8082";
+    // #551 — no substituted base URL. Unset, the preview renders without
+    // canonical / og:url / plugin head contributions (which need absolute
+    // URLs) and flags `site-base-url-unset` on the missing-content
+    // surface; the static generator refuses to build in that state.
+    const siteBaseUrl = settingsRow.site_base_url;
+    const seoMarkers: string[] = siteBaseUrl ? [] : ["site-base-url-unset"];
 
     let ogImageUrl: string | null = null;
     if (seoRow?.og_image_asset_id) {
@@ -1152,11 +1164,14 @@ export const renderPagePreviewOp = defineOperation({
     }
     // #390 — canonical follows the MATERIALIZED composed path (home
     // designation + plugin URL shape are baked into current_path).
-    const canonical = resolveCanonicalUrl({
-      siteBaseUrl,
-      pagePath: pageRow.current_path,
-      override: seoRow?.canonical_url ?? null,
-    });
+    const canonicalOverride = seoRow?.canonical_url || null;
+    const canonical = siteBaseUrl
+      ? resolveCanonicalUrl({
+          siteBaseUrl,
+          pagePath: pageRow.current_path,
+          override: canonicalOverride,
+        })
+      : canonicalOverride;
     const headBlock = renderSeoHead({
       title: pageRow.title,
       metaDescription: seoRow?.meta_description ?? "",
@@ -1167,14 +1182,12 @@ export const renderPagePreviewOp = defineOperation({
     });
     // #391 — plugin head contributions ride the SAME compose call the
     // static generator uses (byte parity by construction).
-    const contributions = await collectContributions([input.pageId], {
-      siteBaseUrl,
-      ...renderScope,
-    });
-    html = injectSeoIntoHead(
-      html,
-      composeHeadBlock(headBlock, contributions.head.get(input.pageId)),
-    );
+    const pluginHead = siteBaseUrl
+      ? (await collectContributions([input.pageId], { siteBaseUrl, ...renderScope })).head.get(
+          input.pageId,
+        )
+      : undefined;
+    html = injectSeoIntoHead(html, composeHeadBlock(headBlock, pluginHead));
 
     // #449 — plugin client assets. The deploy LINKS these files; the
     // preview iframe has no build directory to serve from, so it
@@ -1217,7 +1230,7 @@ export const renderPagePreviewOp = defineOperation({
       // issue #150 + #156 — unresolvable web fonts and unknown CSS vars
       // ride the missing-content surface (`theme-font-unresolvable:` /
       // `unknown-css-var:`), same convention as theme-asset-unbound.
-      missingSlots: [...composed.missingSlots, ...fontMarkers, ...cssVarMarkers],
+      missingSlots: [...composed.missingSlots, ...fontMarkers, ...cssVarMarkers, ...seoMarkers],
       pageSlug: pageRow.slug,
     });
   },

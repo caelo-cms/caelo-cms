@@ -20,6 +20,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { runSeoPass } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -70,6 +71,8 @@ async function cleanup(): Promise<void> {
   });
 }
 
+let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
+
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
@@ -79,9 +82,7 @@ beforeAll(async () => {
 
   // Site base URL + page through the real ops (default layout resolves
   // from the seeded site_defaults).
-  await sqlSystem(async (tx) => {
-    await tx.unsafe(`UPDATE site_defaults SET site_base_url = 'https://example.com' WHERE id = 1`);
-  });
+  restoreSiteBaseUrl = await pinSiteBaseUrl(ADMIN_URL, "https://example.com");
   const tpl = await execute(registry, adapter, SYS_CTX, "templates.create", {
     slug: "t391p-tpl",
     displayName: "T391P",
@@ -144,6 +145,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await cleanup();
+  await restoreSiteBaseUrl?.();
   rmSync(buildDir, { recursive: true, force: true });
   await adapter.close();
 });

@@ -25,6 +25,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { postAdmin, resolveTimeoutMs } from "./http.js";
@@ -33,7 +34,24 @@ import { UPLOAD_IMAGES_TOOL, uploadImages } from "./image-upload.js";
 export interface StartAdminOpts {
   readonly adminUrl: string;
   readonly token: string;
+  /** Defaults to stdio; tests pass an in-memory transport. */
+  readonly transport?: Transport;
 }
+
+/**
+ * MCP `instructions` for the admin server (#552). Clients such as Claude
+ * Code put this into the agent's context on connect, so a freshly
+ * connected agent knows the session protocol without the operator
+ * pasting anything: without a session every write fails, without the
+ * context it works without the site's rules and brand voice.
+ */
+export const ADMIN_MCP_INSTRUCTIONS = [
+  "This server edits a Caelo CMS site. Before any other caelo tool:",
+  "1. Call caelo_open_session once (pass chatSessionId to resume an earlier session). Every write lands on that session's preview branch; nothing reaches the live site until the operator reviews and publishes in the Caelo admin.",
+  "2. Call caelo_get_context once and follow it: it carries the site model, tool playbook, staging rules, site memory (brand voice, glossary) and the skills index.",
+  "3. Load every skill the context marks ALWAYS APPLIES with load_skill before the work it covers (e.g. before writing any visitor-facing copy).",
+  "Tool errors name the next step to take; follow them instead of retrying unchanged.",
+].join("\n");
 
 interface RemoteTool {
   readonly name: string;
@@ -122,7 +140,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
 
   const server = new Server(
     { name: "caelo-admin-mcp", version: "0.1.0" },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} }, instructions: ADMIN_MCP_INSTRUCTIONS },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -240,8 +258,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
     }
   });
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await server.connect(opts.transport ?? new StdioServerTransport());
 }
 
 function errorResult(text: string): {

@@ -362,7 +362,8 @@ export const siteDefaultsGetSeoOp = defineOperation({
   database: "cms_admin",
   input: z.object({}).strict(),
   output: z.object({
-    siteBaseUrl: z.string(),
+    /** null = not configured yet (#551); never a substituted default. */
+    siteBaseUrl: z.string().nullable(),
     sitemapEnabled: z.boolean(),
     organizationJson: z.record(z.string(), z.unknown()),
   }),
@@ -372,16 +373,67 @@ export const siteDefaultsGetSeoOp = defineOperation({
       FROM site_defaults WHERE id = 1
       LIMIT 1
     `)) as unknown as {
-      site_base_url: string;
+      site_base_url: string | null;
       sitemap_enabled: boolean;
       organization_json: Record<string, unknown>;
     }[];
     const r = rows[0];
+    if (!r) {
+      return err({
+        kind: "HandlerError",
+        operation: "site_defaults.get_seo",
+        message: "site_defaults row (id=1) is missing — the cms_admin migrations did not seed it",
+      });
+    }
     return ok({
-      siteBaseUrl: r?.site_base_url ?? "http://localhost:8082",
-      sitemapEnabled: r?.sitemap_enabled ?? true,
-      organizationJson: r?.organization_json ?? {},
+      siteBaseUrl: r.site_base_url,
+      sitemapEnabled: r.sitemap_enabled,
+      organizationJson: r.organization_json,
     });
+  },
+});
+
+// ---------------------------------------------------------------------
+// site_defaults.seed_site_base_url — first-write of the base URL from the
+// install's provisioned domain (CAELO_SITE_URL), never an overwrite.
+// ---------------------------------------------------------------------
+
+export const siteDefaultsSeedSiteBaseUrlOp = defineOperation({
+  name: "site_defaults.seed_site_base_url",
+  // Why human-only: system-only. The admin calls it at boot with the URL
+  // provisioning derived from the install domain; it fills an unset value
+  // and never overwrites one, so it cannot replace an Owner's choice.
+  // Changing an existing base URL stays site_defaults.set_seo (Owner).
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      siteBaseUrl: siteDefaultsSetSeoInputSchema.shape.siteBaseUrl,
+      /** Where the value came from, recorded in the audit summary. */
+      source: z.string().min(1).max(64),
+    })
+    .strict(),
+  output: z.object({ seeded: z.boolean() }),
+  handler: async (ctx, input, tx) => {
+    const updated = (await tx.execute(sql`
+      UPDATE site_defaults SET
+        site_base_url = ${input.siteBaseUrl},
+        updated_at = now()
+      WHERE id = 1 AND site_base_url IS NULL
+      RETURNING id
+    `)) as unknown as { id: number }[];
+    const seeded = updated.length > 0;
+    if (seeded) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "site_defaults.seed_site_base_url",
+        input,
+        succeeded: true,
+        resultSummary: `base=${input.siteBaseUrl},source=${input.source}`,
+      });
+    }
+    return ok({ seeded });
   },
 });
 

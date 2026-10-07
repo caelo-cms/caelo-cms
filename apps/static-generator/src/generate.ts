@@ -318,6 +318,10 @@ export async function generateSite(args: {
   const buildDir = join(buildsDir, runId);
   const currentLink = join(outDir, "current");
 
+  // #551 — read first: a missing site base URL fails the run before any
+  // file is written, not halfway through the page passes.
+  const seoSettings = await readSeoSettings(tx);
+
   await mkdir(buildDir, { recursive: true });
 
   // P13 ideas-pass — incremental whitelist filter when caller supplied
@@ -790,7 +794,6 @@ export async function generateSite(args: {
   // env isn't noindex (staging stays out of the sitemap regardless).
   // Mutates each composedPages[i].html in place, same pattern as
   // runMediaPass.
-  const seoSettings = await readSeoSettings(tx);
   const seoResult = await runSeoPass({
     tx,
     buildDir,
