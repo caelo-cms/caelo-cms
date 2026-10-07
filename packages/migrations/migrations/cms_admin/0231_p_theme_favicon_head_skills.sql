@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0230 — the theme favicon is emitted into <head> by the platform.
+-- 0231 — the theme favicon is emitted into <head> by the platform.
 --
 -- A favicon bound with `set_theme_asset({slot:'favicon'})` now becomes a
 -- `<link rel="icon">` in every page's <head> (composer, preview + static
