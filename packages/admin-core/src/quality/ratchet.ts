@@ -49,6 +49,21 @@ export interface FailingAudit {
   readonly categories: readonly QualityCategory[];
   /** Lighthouse's short summary (e.g. "2 elements", "Potential savings of 120 KiB"). */
   readonly displayValue?: string;
+  /** The page elements the audit flagged (first few), so the fix can go
+   *  to the right module instead of being guessed from the audit title. */
+  readonly elements?: readonly FlaggedElement[];
+}
+
+/** One element a Lighthouse audit flagged, as Lighthouse describes it. */
+export interface FlaggedElement {
+  /** CSS selector Lighthouse resolved for the node. */
+  readonly selector?: string;
+  /** The element's opening HTML (truncated by Lighthouse). */
+  readonly snippet?: string;
+  /** Lighthouse's short label (often the element's text). */
+  readonly label?: string;
+  /** Why it failed, e.g. the measured contrast ratio and the colours. */
+  readonly explanation?: string;
 }
 
 /** The measured state of one page in one audit. Scores are 0..100. */
@@ -73,6 +88,7 @@ export type QualityProblem =
       readonly score: number;
       readonly categories: readonly QualityCategory[];
       readonly displayValue?: string;
+      readonly elements?: readonly FlaggedElement[];
     }
   | {
       readonly kind: "score_below_baseline";
@@ -158,6 +174,7 @@ export function evaluatePage(args: {
       score: audit.score,
       categories: audit.categories,
       ...(audit.displayValue !== undefined ? { displayValue: audit.displayValue } : {}),
+      ...(audit.elements !== undefined ? { elements: audit.elements } : {}),
     });
   }
 

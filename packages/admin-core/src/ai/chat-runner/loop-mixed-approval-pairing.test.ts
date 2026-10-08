@@ -234,4 +234,22 @@ describe("runToolLoop — mixed gated + non-gated turn pairing", () => {
       if (prev !== undefined) process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS = prev;
     }
   });
+
+  it("an e2e auto-approval is persisted like the Owner's in-chat click", async () => {
+    // Pre-fix the e2e path only appended the approval in memory, so a
+    // resume interrupted before its step was saved left a transcript that
+    // replayed differently from production (and wedged the next turn).
+    const prev = process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS;
+    process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS = "1";
+    try {
+      const fixture = buildFixtureQueryApi();
+      await runLoop(mixedGatedTurnProvider(), fixture);
+      expect(
+        fixture.appended.some((m) => m.role === "tool" && m.content === "[approval granted]"),
+      ).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS;
+      else process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS = prev;
+    }
+  });
 });

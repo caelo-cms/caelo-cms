@@ -82,6 +82,77 @@ function harvestSdkPairIds(
   }
 }
 
+/** A client tool call inside a passthrough assembly, with its approval state. */
+interface PassthroughClientCall {
+  readonly toolCallId: string;
+  readonly toolName: string;
+}
+
+/**
+ * Client (non-providerExecuted) tool calls of one passthrough assembly, and
+ * the SDK approval parts anywhere in it: `tool-approval-request`
+ * (approvalId → toolCallId) and `tool-approval-response` (approvalId →
+ * approved). Same defensive reading as `harvestSdkPairIds`.
+ */
+function harvestClientCallsAndApprovals(
+  sdkMessages: readonly unknown[],
+  clientCalls: PassthroughClientCall[],
+  approvalCallIds: Map<string, string>,
+  approvalDecisions: Map<string, boolean>,
+): void {
+  for (const msg of sdkMessages) {
+    if (msg === null || typeof msg !== "object") continue;
+    const content = (msg as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (part === null || typeof part !== "object") continue;
+      const p = part as {
+        type?: unknown;
+        toolCallId?: unknown;
+        toolName?: unknown;
+        providerExecuted?: unknown;
+        approvalId?: unknown;
+        approved?: unknown;
+      };
+      if (
+        p.type === "tool-call" &&
+        p.providerExecuted !== true &&
+        typeof p.toolCallId === "string" &&
+        typeof p.toolName === "string"
+      ) {
+        clientCalls.push({ toolCallId: p.toolCallId, toolName: p.toolName });
+      } else if (
+        p.type === "tool-approval-request" &&
+        typeof p.approvalId === "string" &&
+        typeof p.toolCallId === "string"
+      ) {
+        approvalCallIds.set(p.approvalId, p.toolCallId);
+      } else if (
+        p.type === "tool-approval-response" &&
+        typeof p.approvalId === "string" &&
+        typeof p.approved === "boolean"
+      ) {
+        approvalDecisions.set(p.approvalId, p.approved);
+      }
+    }
+  }
+}
+
+/** The synthetic answer for a client call the conversation moved past. */
+function interruptedCallResult(call: PassthroughClientCall, approved: boolean): unknown {
+  return {
+    type: "tool-result",
+    toolCallId: call.toolCallId,
+    toolName: call.toolName,
+    output: {
+      type: "error-text",
+      value: approved
+        ? `No result was recorded for this ${call.toolName} call: it was approved, but the turn stopped while it ran. It may have been applied — check the current state before calling it again.`
+        : `This ${call.toolName} call was not applied: the conversation continued before it was approved. Call it again if it is still needed.`,
+    },
+  };
+}
+
 /** What the repair changed — callers log a breadcrumb when any list is non-empty. */
 export interface HistoryRepairResult {
   messages: ChatMessageInput[];
@@ -101,6 +172,17 @@ export interface HistoryRepairResult {
    * surface that loudly (bug-report row), never silently.
    */
   strippedServerToolCallIds: string[];
+  /**
+   * Client tool calls inside passthrough assemblies that never got a result
+   * although the conversation moved on (a later user or assistant message
+   * exists) — typically a gated call whose resume turn was interrupted after
+   * the approval, or whose approval card was never answered. Each is answered
+   * with a synthetic error result right after its row; without it the SDK
+   * refuses every later turn ("Tool result is missing for tool call …") and
+   * the chat is wedged. `approved` ones may have been applied — callers must
+   * surface those loudly.
+   */
+  answeredInterruptedCalls: { toolCallId: string; toolName: string; approved: boolean }[];
 }
 
 /**
@@ -199,6 +281,31 @@ export function repairToolCallPairing(messages: readonly ChatMessageInput[]): Hi
     [...providerExecutedCallIds].filter((id) => !toolResultIds.has(id)),
   );
 
+  // Gated-call interruption: client calls in passthrough rows with no
+  // result anywhere, and the approval state of each (global — the request
+  // sits in the assistant row, the response in a later tool row).
+  const approvalCallIds = new Map<string, string>();
+  const approvalDecisions = new Map<string, boolean>();
+  const rowClientCalls = new Map<number, PassthroughClientCall[]>();
+  messages.forEach((m, i) => {
+    if (!isPassthroughRow(m)) return;
+    const calls: PassthroughClientCall[] = [];
+    harvestClientCallsAndApprovals(m.sdkMessages ?? [], calls, approvalCallIds, approvalDecisions);
+    if (calls.length > 0) rowClientCalls.set(i, calls);
+  });
+  const approvedCallIds = new Set<string>();
+  for (const [approvalId, toolCallId] of approvalCallIds) {
+    if (approvalDecisions.get(approvalId) === true) approvedCallIds.add(toolCallId);
+  }
+  // The index of the last user/assistant message: a dangling call BEFORE it
+  // was moved past. One AFTER it is the legitimate resume point (an approved
+  // call the SDK is about to execute, or a card still awaiting its click).
+  let lastTurnIndex = -1;
+  messages.forEach((m, i) => {
+    if (m.role === "user" || m.role === "assistant") lastTurnIndex = i;
+  });
+  const answeredInterruptedCalls: HistoryRepairResult["answeredInterruptedCalls"] = [];
+
   const out: ChatMessageInput[] = [];
   const droppedToolResultIds: string[] = [];
   const strippedToolCallIds: string[] = [];
@@ -206,7 +313,22 @@ export function repairToolCallPairing(messages: readonly ChatMessageInput[]): Hi
   let droppedEmptyAssistantMessages = 0;
   const emittedResultIds = new Set<string>();
 
-  for (const m of messages) {
+  const pushWithInterruptedAnswers = (m: ChatMessageInput, index: number): void => {
+    out.push(m);
+    const dangling = (rowClientCalls.get(index) ?? []).filter(
+      (c) => !toolResultIds.has(c.toolCallId) && index < lastTurnIndex,
+    );
+    if (dangling.length === 0) return;
+    const parts = dangling.map((c) => {
+      const approved = approvedCallIds.has(c.toolCallId);
+      answeredInterruptedCalls.push({ toolCallId: c.toolCallId, toolName: c.toolName, approved });
+      toolResultIds.add(c.toolCallId);
+      return interruptedCallResult(c, approved);
+    });
+    out.push({ role: "tool", content: "", sdkMessages: [{ role: "tool", content: parts }] });
+  };
+
+  for (const [index, m] of messages.entries()) {
     // Passthrough rows replay verbatim — opaque + already correctly paired —
     // except that a dangling providerExecuted call nested inside is stripped
     // (the issue-#442 heal; deterministic + byte-stable, see the helper).
@@ -216,13 +338,13 @@ export function repairToolCallPairing(messages: readonly ChatMessageInput[]): Hi
       harvestSdkPairIds(sdkMessages, new Set(), new Set(), rowDangling);
       const toStrip = [...rowDangling].filter((id) => danglingServerCallIds.has(id));
       if (toStrip.length === 0) {
-        out.push(m);
+        pushWithInterruptedAnswers(m, index);
         continue;
       }
       strippedServerToolCallIds.push(...toStrip);
       const healed = stripDanglingServerCalls(sdkMessages, danglingServerCallIds);
       if (healed.length > 0) {
-        out.push({ ...m, sdkMessages: healed });
+        pushWithInterruptedAnswers({ ...m, sdkMessages: healed }, index);
       } else {
         droppedEmptyAssistantMessages += 1;
       }
@@ -277,5 +399,6 @@ export function repairToolCallPairing(messages: readonly ChatMessageInput[]): Hi
     strippedToolCallIds,
     droppedEmptyAssistantMessages,
     strippedServerToolCallIds,
+    answeredInterruptedCalls,
   };
 }

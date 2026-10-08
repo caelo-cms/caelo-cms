@@ -111,6 +111,43 @@ describe("failingAudits", () => {
   });
 });
 
+describe("flagged elements", () => {
+  it("carry Lighthouse's node selector, snippet, label and explanation (first 5)", () => {
+    const contrast: Audit = {
+      ...audit("color-contrast", 0),
+      details: {
+        items: [
+          ...Array.from({ length: 6 }, (_v, i) => ({
+            node: {
+              type: "node",
+              selector: `header > a.cta-${i}`,
+              snippet: `<a class="cta-${i}">`,
+              nodeLabel: "Get started",
+              explanation:
+                "Fix any of the following: Element has insufficient color contrast of 2.9 (foreground color: #ffffff, background color: #8b8bf5)",
+            },
+          })),
+          { url: "https://s/no-node.css" },
+        ],
+      },
+    };
+    const [finding] = failingAudits(lhr({ performance: 100, audits: [contrast] }));
+    expect(finding?.elements).toHaveLength(5);
+    expect(finding?.elements?.[0]).toEqual({
+      selector: "header > a.cta-0",
+      snippet: '<a class="cta-0">',
+      label: "Get started",
+      explanation:
+        "Fix any of the following: Element has insufficient color contrast of 2.9 (foreground color: #ffffff, background color: #8b8bf5)",
+    });
+  });
+
+  it("are omitted when the audit names no element", () => {
+    const [finding] = failingAudits(lhr({ performance: 100, audits: [audit("image-alt", 0)] }));
+    expect(finding && "elements" in finding).toBe(false);
+  });
+});
+
 describe("staging-exempt audits", () => {
   // Staging is noindex by design, so `is-crawlable` fails on every staged
   // page (seen in the e2e-livedit run: SEO 58 from that audit alone).

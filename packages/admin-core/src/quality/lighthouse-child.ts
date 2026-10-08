@@ -107,9 +107,10 @@ async function main(): Promise<void> {
           ...(full.finalDisplayedUrl ? { finalUrl: full.finalDisplayedUrl } : {}),
           measurement: {
             scores: measurement.scores,
-            failingAudits: measurement.failingAudits.map((f) => ({
+            failingAudits: measurement.failingAudits.map(({ categories, elements, ...f }) => ({
               ...f,
-              categories: [...f.categories],
+              categories: [...categories],
+              ...(elements ? { elements: [...elements] } : {}),
             })),
           },
           performanceRuns,

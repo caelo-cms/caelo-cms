@@ -204,6 +204,27 @@ export async function* runChatTurn(
     // recovery (CLAUDE.md §2). Best-effort — a failed report write must not
     // block the now-healed turn.
     async (repair) => {
+      // An APPROVED gated call whose resume turn stopped before its result
+      // was recorded may have been applied: the replay now answers it with
+      // an "interrupted — check the state" result instead of wedging the
+      // chat, and the operator's record of it is this bug report.
+      const interruptedApproved = repair.answeredInterruptedCalls.filter((c) => c.approved);
+      if (interruptedApproved.length > 0) {
+        await execute(registry, adapter, aiCtx, "ai_bug_reports.create", {
+          chatSessionId: input.chatSessionId,
+          title: "Chat history healed: an approved action's result was never recorded",
+          whatHappened:
+            `The turn that ran ${interruptedApproved.map((c) => c.toolName).join(", ")} ` +
+            `after its approval stopped before the result was saved ` +
+            `(${interruptedApproved.map((c) => c.toolCallId).join(", ")}). The replay ` +
+            "answers it with an 'interrupted — check the current state' result so the chat " +
+            "continues; the action may or may not have been applied.",
+          expected: "An approved action's result is saved with the turn that ran it.",
+          suspectedTool: interruptedApproved[0]?.toolName ?? null,
+          severity: "degraded",
+          source: "auto",
+        }).catch(() => undefined);
+      }
       if (repair.strippedServerToolCallIds.length === 0) return;
       await execute(registry, adapter, aiCtx, "ai_bug_reports.create", {
         chatSessionId: input.chatSessionId,

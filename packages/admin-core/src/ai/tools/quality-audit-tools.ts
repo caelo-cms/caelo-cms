@@ -84,6 +84,14 @@ function formatPage(p: AuditPage): string[] {
       lines.push(
         `- PROBLEM failing audit \`${problem.auditId}\` — ${problem.title}${problem.displayValue ? ` (${problem.displayValue})` : ""} [${problem.categories.join(", ")}]`,
       );
+      // The flagged elements locate the fix (which module, which rule):
+      // without them a color-contrast finding is guesswork.
+      for (const el of problem.elements ?? []) {
+        const where = [el.selector ? `\`${el.selector}\`` : null, el.snippet ?? null]
+          .filter((x) => x !== null)
+          .join(" ");
+        lines.push(`  - element ${where}${el.explanation ? ` — ${el.explanation}` : ""}`);
+      }
     } else {
       lines.push(
         `- PROBLEM ${CATEGORY_LABEL[problem.category] ?? problem.category} score ${problem.score} is below its baseline ${problem.baseline}`,
@@ -104,7 +112,7 @@ export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   name: "get_quality_audit",
   description:
     "Read a Lighthouse quality audit of the staged site (Performance, Accessibility, Best Practices, SEO; mobile). " +
-    "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores against the page's baseline, every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`), Performance signals the noise guard is holding back, and infrastructure errors. " +
+    "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores against the page's baseline, every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), Performance signals the noise guard is holding back, and infrastructure errors. " +
     "A problem is a failing audit the editors have not accepted on that page, or a score below the page's baseline. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. " +
     "Typical input: {} or { auditRunId }.",
   opName: "quality_audits.get",

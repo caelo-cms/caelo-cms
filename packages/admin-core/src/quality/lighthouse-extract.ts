@@ -12,6 +12,7 @@
 
 import {
   type FailingAudit,
+  type FlaggedElement,
   medianScore,
   type PageMeasurement,
   QUALITY_CATEGORIES,
@@ -46,9 +47,40 @@ export interface LhrLike {
         readonly score: number | null;
         readonly scoreDisplayMode: string;
         readonly displayValue?: string;
+        /** Table/list details; `items[].node` describes a flagged element. */
+        readonly details?: { readonly items?: readonly unknown[] };
       }
     >
   >;
+}
+
+/** Flagged elements reported per finding (enough to locate the module). */
+const MAX_FLAGGED_ELEMENTS = 5;
+const MAX_ELEMENT_TEXT = 300;
+
+/** The elements an audit flagged, read from Lighthouse's `node` details. */
+function flaggedElements(
+  details: { readonly items?: readonly unknown[] } | undefined,
+): FlaggedElement[] {
+  const out: FlaggedElement[] = [];
+  for (const item of details?.items ?? []) {
+    if (out.length >= MAX_FLAGGED_ELEMENTS) break;
+    const node = (item as { node?: unknown } | null)?.node;
+    if (node === null || typeof node !== "object") continue;
+    const n = node as Record<string, unknown>;
+    const text = (k: string) =>
+      typeof n[k] === "string" && (n[k] as string).length > 0
+        ? (n[k] as string).slice(0, MAX_ELEMENT_TEXT)
+        : undefined;
+    const element: FlaggedElement = {
+      ...(text("selector") ? { selector: text("selector") } : {}),
+      ...(text("snippet") ? { snippet: text("snippet") } : {}),
+      ...(text("nodeLabel") ? { label: text("nodeLabel") } : {}),
+      ...(text("explanation") ? { explanation: text("explanation") } : {}),
+    };
+    if (Object.keys(element).length > 0) out.push(element);
+  }
+  return out;
 }
 
 /** Thrown when a run produced no usable result (page unreachable, 404,
@@ -150,12 +182,14 @@ export function failingAudits(lhr: LhrLike): FailingAudit[] {
     const audit = lhr.audits[id];
     if (!audit || audit.score === null || !SCORED_MODES.has(audit.scoreDisplayMode)) continue;
     if (audit.score >= PASS_MIN_SCORE) continue;
+    const elements = flaggedElements(audit.details);
     out.push({
       id,
       title: audit.title,
       score: audit.score,
       categories,
       ...(audit.displayValue ? { displayValue: audit.displayValue } : {}),
+      ...(elements.length > 0 ? { elements } : {}),
     });
   }
   return out.sort((a, b) => a.id.localeCompare(b.id));
