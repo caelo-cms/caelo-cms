@@ -94,6 +94,13 @@
       "title": "The live-edit overlay"
     },
     {
+      "source": "pages/quality-gate.md",
+      "slug": "quality-gate",
+      "template": "doc-page",
+      "name": "Quality gate",
+      "title": "The quality gate"
+    },
+    {
       "source": "pages/plugins-build.md",
       "slug": "plugins-build",
       "template": "doc-page",

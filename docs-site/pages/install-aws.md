@@ -46,7 +46,7 @@ Required: AWS credentials with the IAM permissions the adapter declares (visible
 A small install on AWS lands around $55/mo:
 
 - RDS `db.t4g.micro` Multi-AZ: ~$30
-- Lambda (low traffic): ~$3
+- Lambda (low traffic): ~$3 (`caelo-aws:adminMemory`, default 2 GiB, sizes the admin for the [quality checks](/quality-gate))
 - S3 + CloudFront with cache hits: ~$5
 - Route 53 + ACM cert: ~$1
 - VPC NAT Gateway: ~$15 (the unavoidable AWS tax)

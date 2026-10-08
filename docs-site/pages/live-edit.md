@@ -15,6 +15,8 @@ This is the surface the rest of the architecture exists for.
 
 When you open `/edit`, the admin renders **your actual site** in a chrome-less iframe — no admin chrome, no sidebar, just the page exactly as a visitor would see it (modulo `data-caelo-module-id` attributes injected for click-targeting). On top floats a chat overlay you can drag, pin to the bottom or right edge, or collapse.
 
+Every substantial Stage is checked with Lighthouse before it can go live — see [the quality gate](/quality-gate).
+
 The overlay's title bar carries a chat-history dropdown (filtered to chats bound to the current page), a "+ New chat" button, and the position toggles. The toolbar above the iframe carries the URL display, a Back-to-admin link, the page picker, the Stage button, and the Confirm-publish button.
 
 ## How you edit
