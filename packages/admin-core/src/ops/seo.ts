@@ -378,7 +378,13 @@ export const pagesSeoListStaleOp = defineOperation({
       }),
     ),
   }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    // Main plus the caller's own chat branch, as pages.list: the result feeds
+    // SEO writes, and another chat's unpublished page is not the caller's to
+    // touch. Outside a chat (the dashboard tile) that is main only.
+    const branchFilter = ctx.chatBranchId
+      ? sql`AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+      : sql`AND p.chat_branch_id IS NULL`;
     const rows = (await tx.execute(sql`
       SELECT
         p.id::text AS page_id, p.slug, p.title,
@@ -386,6 +392,7 @@ export const pagesSeoListStaleOp = defineOperation({
       FROM pages p
       LEFT JOIN pages_seo s ON s.page_id = p.id
       WHERE p.deleted_at IS NULL
+        ${branchFilter}
         AND (s.optimized_at IS NULL OR s.meta_description = '')
       ORDER BY p.created_at DESC
       LIMIT ${input.limit}

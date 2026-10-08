@@ -372,7 +372,7 @@ describe("#397 — context-aware translation", () => {
     expect(paused.paused).toBe(true);
     expect(paused.translated).toBe(0);
     expect(paused.remaining).toBe(1);
-    expect(paused.nextStep).toContain("/security/plugins/international-site");
+    expect(paused.nextStep).toContain("propose_set_plugin_ai_cost_cap");
   }, 60_000);
 
   it("#591 — fills a new variant's meta description; a live variant's SEO is never overwritten, only flagged stale", async () => {

@@ -34,6 +34,7 @@
     gateway: "/security/gateway",
     site_memory: "/security/ai/memory-proposals",
     skills: "/security/skills",
+    tool_approvals: "/security/tool-approvals/pending",
   };
 </script>
 

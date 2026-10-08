@@ -39,12 +39,9 @@ const PENDING_QUEUE: AiOpException = {
   note: "per-domain Owner-queue read; `pending_proposals.list` unions every *_pending_actions table (plus site-memory, skill, rate-limit and import-run proposals)",
 };
 
-/** Follow-up owned by the parallel "propose_* for AI budgets/pricing, gateway settings, plugin capabilities" PR. */
-const PARALLEL_PROPOSE_PR =
-  "follow-up to #578 (which shipped budgets/pricing/gateway-settings proposals): the remaining cost reads, gateway rate-limit/secret ops and plugin-capability proposals";
-/** Follow-up for read tools this PR deliberately did not add (each is a small makeReadTool). */
-const READ_TOOLS_FOLLOW_UP =
-  "follow-up: read tools for operator dashboards (agent-tool parity, part 2)";
+/** Focal point + named crops: wire the pipeline first, then the tools. */
+const MEDIA_CURATION_FOLLOW_UP =
+  "#614: pass focal point + media_crops to runMediaPipeline, then add the curation tools";
 
 export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   // ── covered by a bulk / composite / aggregate tool ────────────────────
@@ -279,175 +276,51 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
       "backing read of the chat panel's / toolbar's quality poller (newest audit of a chat + the message the chat should get); the agent reads the same state through get_quality_audit and get_publish_gate",
   },
 
-  // ── gaps: the agent should be able to do this (follow-ups) ────────────
-  "tool_approvals.list_pending": {
-    kind: "gap",
-    reason:
-      "needsApproval cards (delete_pages_many, set_migration_budget, cleanup_import_run) are not in pending_proposals.list's UNION, so list_pending_proposals misses them",
-    followUp: "follow-up: add tool_approval_actions to the pending_proposals.list aggregator",
-  },
-  "chat.list_pending_changes": {
-    kind: "gap",
-    reason:
-      "a Power-MCP agent cannot list its own session's unpublished changes before asking the operator to publish",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
-  "snapshots.get_with_entities": {
-    kind: "gap",
-    reason:
-      "history detail (what a snapshot contained) — the AI can revert but not inspect a snapshot",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
-  "snapshots.module_impact": {
-    kind: "gap",
-    reason:
-      "module blast-radius read meant for the AI's edit planning has no tool (list_modules shows placement counts only)",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
-  "pages.refresh_current_path": {
-    kind: "gap",
-    reason: "URL drift repair for one page (plugins call it; the op comment intends AI repair too)",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
-  "imports.list": {
-    kind: "gap",
-    reason: "no way for the AI to list import runs (it only knows run ids it proposed itself)",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
+  // ── agent-tool parity, part 2 ─────────────────────────────────────────
+  "tool_approvals.list_pending": PENDING_QUEUE,
   "imports.log_event": {
-    kind: "gap",
-    reason:
-      "import ledger append is documented as AI-routine but has no tool (add_import_page_notes covers per-page notes only)",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
-  "imports.log_events": {
-    kind: "gap",
-    reason: "bulk ledger append, same as imports.log_event",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
-  "ai_calls.aggregate": {
-    kind: "gap",
-    reason: "the AI cannot answer 'what did we spend on AI this month?' (cost dashboard read)",
-    followUp: PARALLEL_PROPOSE_PR,
-  },
-  "ai_calls.aggregate_per_plugin": {
-    kind: "gap",
-    reason: "per-plugin AI spend read (cost dashboard)",
-    followUp: PARALLEL_PROPOSE_PR,
-  },
-  "audit_events.aggregate_by_op_prefix": {
-    kind: "gap",
-    reason: "per-operation spend breakdown (cost dashboard)",
-    followUp: PARALLEL_PROPOSE_PR,
+    kind: "covered",
+    by: ["log_import_events"],
+    note: "bulk-first sibling (imports.log_events): one finding is a one-item events array",
   },
   "ai_budgets.list": {
-    kind: "gap",
-    reason: "AI budget read (budgets page)",
-    followUp: PARALLEL_PROPOSE_PR,
+    kind: "covered",
+    by: ["get_ai_budgets"],
+    note: "get_ai_budgets reads ai_budgets.status, which returns every cap + warnAtPct (the list's columns) plus today's spend against it",
   },
-  "gateway.list_rate_limit_profiles": {
-    kind: "gap",
-    reason: "rate-limit profile read (tune_rate_limit proposes overrides without seeing profiles)",
-    followUp: PARALLEL_PROPOSE_PR,
-  },
-  "gateway.list_recent_requests": {
-    kind: "gap",
-    reason: "gateway request log read (live dashboard)",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
-  "gateway.list_analytics": {
-    kind: "gap",
-    reason: "gateway traffic analytics read (live dashboard)",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
-  "plugins.get": {
-    kind: "gap",
-    reason: "single-plugin detail read (validator report, manifest) beyond list_plugins' summary",
-    followUp: PARALLEL_PROPOSE_PR,
-  },
-  "email_config.get": {
-    kind: "gap",
-    reason:
-      "no read tool yet; the op already redacts transport secrets for AI actors (#588), so a tool can expose it safely — send_test_email reports transport health meanwhile",
-    followUp: "follow-up: add a get_email_config read tool",
-  },
-  "ai_bug_reports.list": {
-    kind: "gap",
-    reason: "the AI cannot check whether a defect was already reported before calling bug_report",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
-  "media.list_usages": {
-    kind: "gap",
-    reason: "which modules embed an asset (delete_media_many reports it only on a blocked delete)",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
-  "media.get_settings": {
-    kind: "gap",
-    reason: "media CDN settings read (Owner panel)",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
+
+  // ── gaps: the agent should be able to do this (follow-ups) ────────────
   "media.set_focal_point": {
     kind: "gap",
     reason:
-      "focal point is documented as AI territory ('center on the model's face') but has no tool",
-    followUp: "follow-up: media curation tools (focal point + named crops)",
+      "focal point is stored but never rendered: runMediaPipeline is called without crop specs, so a tool would report a change the site never shows",
+    followUp: MEDIA_CURATION_FOLLOW_UP,
   },
   "media.add_crop": {
     kind: "gap",
-    reason: "named crops — operator-only today",
-    followUp: "follow-up: media curation tools (focal point + named crops)",
+    reason:
+      "named crops are stored but no pipeline call emits their variants (no operator UI either)",
+    followUp: MEDIA_CURATION_FOLLOW_UP,
   },
   "media.delete_crop": {
     kind: "gap",
-    reason: "named crops — operator-only today",
-    followUp: "follow-up: media curation tools (focal point + named crops)",
+    reason:
+      "named crops are stored but no pipeline call emits their variants (no operator UI either)",
+    followUp: MEDIA_CURATION_FOLLOW_UP,
   },
   "media.list_crops": {
     kind: "gap",
-    reason: "named crops — operator-only today",
-    followUp: "follow-up: media curation tools (focal point + named crops)",
-  },
-  "pages_seo.get": {
-    kind: "gap",
-    reason: "per-page SEO read (the AI writes SEO but reads it only via the page editor context)",
-    followUp: "parallel PR: SEO-settings tools",
-  },
-  "pages_seo.list_stale": {
-    kind: "gap",
-    reason: "stale-SEO dashboard tile read (which pages need re-optimizing)",
-    followUp: "parallel PR: SEO-settings tools",
-  },
-  "skills.list_pin_defaults": {
-    kind: "gap",
     reason:
-      "per-user skill pin defaults are documented as AI-callable ('always pin scoped-edit') but have no tool",
-    followUp: READ_TOOLS_FOLLOW_UP,
-  },
-  "skills.set_pin_defaults": {
-    kind: "gap",
-    reason:
-      "per-user skill pin defaults are documented as AI-callable ('always pin scoped-edit') but have no tool",
-    followUp: READ_TOOLS_FOLLOW_UP,
+      "named crops are stored but no pipeline call emits their variants (no operator UI either)",
+    followUp: MEDIA_CURATION_FOLLOW_UP,
   },
 };
 
 /**
- * Human-only ops whose `// Why human-only:` justification is deliberately NOT
- * written in this PR because a parallel PR owns that op's future (most will
- * gain an Owner-approved `propose_*` path, which changes the honest answer).
- * Each entry is a TODO: the owning PR annotates the op (or opens it to the
- * AI through a gated path) and deletes the entry here — the guard fails on a
- * stale entry once the op is annotated.
+ * Human-only ops whose `// Why human-only:` justification is deliberately
+ * parked while a named follow-up decides their future (e.g. a pending
+ * `propose_*` path that would change the honest answer). Each entry is a
+ * TODO the owning PR removes; the guard fails on a stale entry once the op
+ * is annotated. Empty: every human-only op says why at its definition.
  */
-export const HUMAN_ONLY_PENDING: Readonly<Record<string, string>> = {
-  "plugins.set_ai_cost_cap": `TODO(${PARALLEL_PROPOSE_PR}): per-plugin AI cost cap proposal`,
-  "gateway.rotate_cookie_secret": `TODO(${PARALLEL_PROPOSE_PR}): gateway secret rotation`,
-  "gateway.set_rate_limit_override": `TODO(${PARALLEL_PROPOSE_PR}): direct override vs tune_rate_limit proposal`,
-  "gateway.set_rate_limit_profile": `TODO(${PARALLEL_PROPOSE_PR}): rate-limit profiles`,
-  "gateway.execute_rate_limit_proposal": `TODO(${PARALLEL_PROPOSE_PR}): Owner Approve click (gateway.ts is that PR's file)`,
-  "gateway.reject_rate_limit_proposal": `TODO(${PARALLEL_PROPOSE_PR}): Owner Reject click (gateway.ts is that PR's file)`,
-  "plugins.approve_installation": `TODO(${PARALLEL_PROPOSE_PR}): plugin installation lifecycle`,
-  "plugins.get_approved_installation": `TODO(${PARALLEL_PROPOSE_PR}): plugin installation lifecycle`,
-  "plugins.finalize_installation": `TODO(${PARALLEL_PROPOSE_PR}): plugin installation lifecycle`,
-  "plugins.list_installations": `TODO(${PARALLEL_PROPOSE_PR}): plugin installation lifecycle`,
-};
+export const HUMAN_ONLY_PENDING: Readonly<Record<string, string>> = {};

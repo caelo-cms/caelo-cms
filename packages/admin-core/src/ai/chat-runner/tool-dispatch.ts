@@ -53,11 +53,15 @@ export async function autoApproveChatProposals(
 ): Promise<string | null> {
   const listed = await execute(registry, adapter, humanCtx, "pending_proposals.list", {});
   if (!listed.ok) return null;
+  // A needsApproval card (domain `tool_approvals`) has no
+  // `<domain>.execute_proposal`: its Approve re-dispatches the tool through
+  // the tool registry (the /security/tool-approvals route), which this
+  // op-level helper cannot do.
   const rows = (
     listed.value as {
       items: { domain: string; proposalId: string; chatSessionId: string | null }[];
     }
-  ).items.filter((p) => p.chatSessionId === chatSessionId);
+  ).items.filter((p) => p.chatSessionId === chatSessionId && p.domain !== "tool_approvals");
   if (rows.length === 0) return null;
   const applied: string[] = [];
   for (const row of rows) {

@@ -230,6 +230,9 @@ function toRunApi(r: RunDb): z.infer<typeof runRow> {
   }));
 }
 
+/** Upper bound of one `imports.list` page. */
+export const IMPORT_RUNS_LIST_MAX = 500;
+
 export const listImportRunsOp = defineOperation({
   name: "imports.list",
   actorScope: ["human", "ai", "system"],
@@ -237,6 +240,14 @@ export const listImportRunsOp = defineOperation({
   input: z
     .object({
       status: runStatus.optional(),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(IMPORT_RUNS_LIST_MAX)
+        .default(200)
+        .describe("Newest runs to return."),
+      offset: z.number().int().min(0).default(0).describe("Newest runs to skip (pagination)."),
     })
     .strict(),
   output: z.object({ runs: z.array(runRow) }),
@@ -249,8 +260,8 @@ export const listImportRunsOp = defineOperation({
              error_message, created_at
       FROM import_runs
       ${filter}
-      ORDER BY created_at DESC
-      LIMIT 200
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${input.limit} OFFSET ${input.offset}
     `)) as unknown as RunDb[];
     return ok({ runs: rows.map(toRunApi) });
   },

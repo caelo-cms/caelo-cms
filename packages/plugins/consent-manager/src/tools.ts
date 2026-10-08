@@ -30,6 +30,8 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
       "The category KEYS are fixed (necessary, functional, analytics, marketing) because tags and withheld modules refer to them — only the operator-facing copy changes. " +
       "Use when the operator asks for different wording, another language, or a specific tone in the banner.",
     operationName: "describe_categories",
+    // Consent copy is site configuration the visitor-facing banner shows.
+    requiredPermission: "settings.write",
     inputJsonSchema: {
       type: "object",
       additionalProperties: false,
@@ -67,6 +69,8 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
       "Decide what a module's third-party embed needs: pin it to a consent category (it then shows the placeholder until the visitor agrees) or mark it allowed (it renders for everyone). " +
       "Mark allowed ONLY when the request carries nothing identifying — a self-hosted asset, a CDN with no cookies and no logging of visitors. When unsure, pin it to a category; the cost is a placeholder, and the cost of the other mistake is an unasked request to a third party.",
     operationName: "classify_embed",
+    // Decides which third-party requests visitors' browsers make — a consent setting.
+    requiredPermission: "settings.write",
     inputJsonSchema: {
       type: "object",
       additionalProperties: false,
@@ -138,6 +142,8 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
       "Remove a tracking tag by name. It stops being injected at the next deploy. " +
       "Not gated: removing a tag only ever reduces what the site loads.",
     operationName: "remove_tag",
+    // Changes the site-wide scripts, like add_tag.
+    requiredPermission: "settings.write",
     inputJsonSchema: {
       type: "object",
       additionalProperties: false,
@@ -152,6 +158,8 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
       "Use when the operator asks to prove consent, hand records to a DPO, or before uninstalling the plugin — uninstall DROPS these records and there is no recovery. " +
       "Returns at most 1000 rows by default; when `truncated` comes back true, export again with `since` set to the oldest row you received.",
     operationName: "export_log",
+    // The consent log is personal data (who consented when).
+    requiredPermission: "settings.write",
     inputJsonSchema: {
       type: "object",
       additionalProperties: false,
@@ -168,6 +176,8 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
       "Use ONLY when what the site does with data has actually changed — a new tracking vendor, a new purpose. " +
       "NOT for wording changes (that is describe_categories): re-asking everyone for a reworded sentence trains people to click Accept without reading.",
     operationName: "bump_policy_version",
+    // Re-asks every visitor for consent — a site-wide setting.
+    requiredPermission: "settings.write",
     inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
   },
 ];

@@ -4,7 +4,9 @@
  * owner_settings.{propose_set_ai_budget, propose_set_ai_pricing,
  * propose_set_gateway_settings, propose_set_translation_model,
  * execute_proposal, reject_proposal, list_pending} — the §11.A gate for
- * Owner settings the agent had no path to at all.
+ * Owner settings the agent had no path to at all. The plugin AI cost cap
+ * and gateway cookie-secret proposals live in `owner_settings_security.ts`
+ * and apply through the same `execute_proposal`.
  *
  * `ai_budgets.set`, `ai_pricing.set`, `gateway.set_settings` and
  * `ai_providers.set_translation_model` stay human+system (see the `Why
@@ -27,27 +29,24 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import {
-  type ExecutionContext,
-  err,
-  ok,
-  type ProposalStatus,
-  proposalStatus,
-} from "@caelo-cms/shared";
+import { type ExecutionContext, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { lookupPricing } from "../ai/pricing-cache.js";
 import { recordAudit } from "../audit.js";
-import { jsonbParam } from "../sql-helpers.js";
 import { requiresApproverPermission } from "./_approver-permission.js";
-import {
-  DUPLICATE_PROPOSAL_MESSAGE,
-  hashProposalPayload,
-  isDuplicatePendingError,
-  parsePayload,
-  resolveChatSessionId,
-} from "./_propose-helpers.js";
+import { parsePayload } from "./_propose-helpers.js";
 import { gatewaySettingsInput, getGatewaySettingsOp, setGatewaySettingsOp } from "./gateway.js";
+import {
+  errorMessage,
+  handlerError,
+  type OwnerSettingsKind,
+  ownerSettingsKind,
+  proposeOutput,
+  queueProposal,
+  type Tx,
+} from "./owner_settings_queue.js";
+import { applyOwnerSecurityProposal, OWNER_SECURITY_KINDS } from "./owner_settings_security.js";
 import { aiBudgetCellInput, listAiBudgetsOp, setAiBudgetOp } from "./security/ai_budgets.js";
 import { aiPricingRowInput, listAiPricingOp, setAiPricingOp } from "./security/ai_pricing.js";
 import {
@@ -56,16 +55,7 @@ import {
   translationModelProblem,
 } from "./security/ai_providers.js";
 
-type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 type Ctx = ExecutionContext;
-
-const ownerSettingsKind = z.enum([
-  "set_ai_budget",
-  "set_ai_pricing",
-  "set_gateway_settings",
-  "set_translation_model",
-]);
-type OwnerSettingsKind = z.infer<typeof ownerSettingsKind>;
 
 /** Microcents (1e-8 USD) → "$1.23" for previews the operator reads. */
 function usd(microcents: number | null): string | null {
@@ -153,75 +143,6 @@ const queuedTranslationModel = z
     model: z.string().min(1).max(128).nullable(),
   })
   .strict();
-
-// ─── shared queue insert ─────────────────────────────────────────────
-
-async function queueProposal(
-  tx: Tx,
-  ctx: Ctx,
-  kind: OwnerSettingsKind,
-  payload: unknown,
-  preview: Record<string, unknown>,
-  opName: string,
-  summary: string,
-): Promise<
-  | { ok: true; value: { proposalId: string; preview: Record<string, unknown> } }
-  | { ok: false; error: { kind: "HandlerError"; operation: string; message: string } }
-> {
-  const payloadHash = await hashProposalPayload({ kind, payload });
-  const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
-  let rows: { id: string }[];
-  try {
-    rows = (await tx.execute(sql`
-      INSERT INTO owner_settings_pending_actions
-        (kind, proposed_by, payload, preview, status, chat_session_id, payload_hash)
-      VALUES (
-        ${kind},
-        ${ctx.actorId}::uuid,
-        ${jsonbParam(payload)},
-        ${jsonbParam(preview)},
-        'pending',
-        ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`},
-        ${payloadHash}
-      )
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
-  } catch (e) {
-    if (isDuplicatePendingError(e)) {
-      return handlerError(opName, DUPLICATE_PROPOSAL_MESSAGE);
-    }
-    throw e;
-  }
-  const proposalId = rows[0]?.id;
-  if (!proposalId) {
-    return handlerError(opName, "insert returned no id");
-  }
-  await recordAudit(tx, {
-    actorId: ctx.actorId,
-    requestId: ctx.requestId,
-    operation: opName,
-    input: payload,
-    succeeded: true,
-    entityId: proposalId,
-    resultSummary: summary,
-  });
-  return ok({ proposalId, preview });
-}
-
-const proposeOutput = z.object({
-  proposalId: z.string(),
-  preview: z.record(z.string(), z.unknown()),
-});
-
-function handlerError(operation: string, message: string) {
-  return err({ kind: "HandlerError" as const, operation, message });
-}
-
-function errorMessage(e: unknown): string {
-  return typeof e === "object" && e && "message" in e
-    ? String((e as { message: unknown }).message)
-    : "unknown";
-}
 
 // ─── propose_set_ai_budget ───────────────────────────────────────────
 
@@ -488,7 +409,15 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
     if (!row) return handlerError(op, "proposal not found");
     if (row.status !== "pending") return handlerError(op, `proposal is already ${row.status}`);
 
-    if (row.kind === "set_ai_budget") {
+    if (OWNER_SECURITY_KINDS.has(row.kind)) {
+      const problem = await applyOwnerSecurityProposal(
+        ctx,
+        tx,
+        row.kind,
+        parsePayload(row.payload),
+      );
+      if (problem) return handlerError(op, problem);
+    } else if (row.kind === "set_ai_budget") {
       const payload = proposeAiBudgetInput.parse(parsePayload(row.payload));
       for (const cell of payload.budgets) {
         const r = await setAiBudgetOp.handler(
@@ -513,12 +442,14 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
           `ai_providers.set_translation_model failed: ${errorMessage(r.error)}`,
         );
       }
-    } else {
+    } else if (row.kind === "set_gateway_settings") {
       const patch = proposeGatewaySettingsInput.parse(parsePayload(row.payload));
       const m = await mergedGatewaySettings(ctx, tx, patch);
       if (!m.ok) return handlerError(op, m.message);
       const r = await setGatewaySettingsOp.handler(ctx, m.merged, tx);
       if (!r.ok) return handlerError(op, `gateway.set_settings failed: ${errorMessage(r.error)}`);
+    } else {
+      return handlerError(op, `unknown proposal kind ${String(row.kind)}`);
     }
 
     await tx.execute(sql`

@@ -20,6 +20,10 @@
  * partial-index scans, then sort + limit. Cheap enough to call on
  * every chat turn.
  *
+ * `tool_approval_actions` (the generic needsApproval queue) joined so the
+ * agent's `list_pending_proposals` sees every card it is waiting on — the
+ * domain is `tool_approvals`, the kind the gated tool's name.
+ *
  * Schema reality: `media_alt_proposals` (no `status` column) stays
  * out — different shape, surfaced via the dedicated alt-proposals UI.
  * `import_runs` joined in 0124 (status='proposed' aliased into the
@@ -169,6 +173,14 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                COALESCE(preview->>'reason', kind),
                chat_session_id::text
           FROM quality_pending_actions WHERE status = 'pending'
+        UNION ALL
+        -- needsApproval cards (delete_pages_many at 5+, set_migration_budget,
+        -- cleanup_import_run): the dispatcher queues the tool call itself;
+        -- the kind is the gated tool's name.
+        SELECT 'tool_approvals', tool_name, id::text, proposed_by::text, created_at,
+               tool_name,
+               chat_session_id::text
+          FROM tool_approval_actions WHERE status = 'pending'
         -- Older proposal tables (varying shape; aliased into common columns).
         UNION ALL
         -- 0124 — import runs awaiting the crawl approval (status
@@ -237,6 +249,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         UNION ALL SELECT 'site_defaults' FROM site_defaults_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'owner_settings' FROM owner_settings_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'quality' FROM quality_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'tool_approvals' FROM tool_approval_actions WHERE status = 'pending'
         UNION ALL SELECT 'gateway' FROM plugin_rate_limit_proposals WHERE status = 'pending'
         UNION ALL SELECT 'site_memory' FROM site_memory_proposals WHERE status = 'pending'
         UNION ALL SELECT 'skills' FROM skill_proposals WHERE status = 'pending'

@@ -18,6 +18,8 @@ const QUEUE_ROUTE_OVERRIDES: Readonly<Record<string, string>> = {
   // Site SEO proposals are approved on the SEO settings page, which exposes
   // the same `?/approve` + `?/reject` actions.
   site_defaults: "/security/seo",
+  // needsApproval tool calls (pending_proposals.list domain `tool_approvals`).
+  tool_approvals: "/security/tool-approvals/pending",
 };
 
 /** The pending-queue page for a `pending_proposals.list` domain. */

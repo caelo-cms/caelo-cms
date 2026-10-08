@@ -17,6 +17,8 @@
     set_ai_pricing: "AI pricing",
     set_gateway_settings: "Gateway settings",
     set_translation_model: "Translation model",
+    set_plugin_ai_cost_cap: "Plugin AI cost cap",
+    rotate_gateway_cookie_secret: "Rotate gateway cookie secret",
   };
 </script>
 
@@ -58,10 +60,18 @@
           </CardHeader>
           <CardContent class="space-y-3 text-sm">
             <p>{String(p.preview.summary ?? "")}</p>
-            <details class="rounded border bg-muted/30 p-2">
-              <summary class="cursor-pointer text-xs font-medium">Current → proposed</summary>
-              <pre class="mt-2 overflow-x-auto text-xs">{JSON.stringify(p.preview.changes, null, 2)}</pre>
-            </details>
+            {#if p.preview.reason}
+              <p><span class="font-medium">Reason:</span> {String(p.preview.reason)}</p>
+            {/if}
+            {#if p.preview.effect}
+              <p class="text-muted-foreground">{String(p.preview.effect)}</p>
+            {/if}
+            {#if p.preview.changes}
+              <details class="rounded border bg-muted/30 p-2">
+                <summary class="cursor-pointer text-xs font-medium">Current → proposed</summary>
+                <pre class="mt-2 overflow-x-auto text-xs">{JSON.stringify(p.preview.changes, null, 2)}</pre>
+              </details>
+            {/if}
             <div class="flex flex-wrap items-center gap-2">
               <form method="post" action="?/approve">
                 <input type="hidden" name="_csrf" value={data.csrfToken} />

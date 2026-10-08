@@ -107,7 +107,11 @@ The rule is that an operator never has to do by hand what the agent cannot do. R
 - **DNS checks:** `verify_domains` and `verify_dns_records` check the records the installer asked for.
 - **Clean-up:** `delete_media_many` and `delete_modules_many` delete only assets and modules that nothing uses any more. Anything still in use is reported back instead of deleted.
 - **Imports:** `accept_import_pages` takes crawled pages over as drafts. `cleanup_import_run` queues an approval card, and the crawl data is only deleted once the Owner approves.
-- **Email:** `send_test_email` sends the fixed transport test email. The agent may only address it to the sender's own domain.
+- **Email:** `send_test_email` sends the fixed transport test email. The agent may only address it to the sender's own domain. `get_email_config` shows the transport, with credentials redacted.
+- **Dashboards:** `get_ai_spend` (AI cost by model, source and day), `get_plugin` (one plugin's detail and its AI spend against its cap), `get_gateway_analytics`, `list_gateway_requests` and `list_rate_limit_profiles` (public endpoint traffic), `list_bug_reports`, `get_media_settings`.
+- **History:** `list_snapshots` and `get_snapshot` read the edit history that the revert proposals work on. `get_module_impact` lists the pages a module edit reaches. `list_unpublished_changes` shows what the session would publish.
+- **Owner settings:** a plugin's AI cost cap (`propose_set_plugin_ai_cost_cap`) and rotating the gateway cookie secret (`propose_rotate_gateway_cookie_secret`) are proposals the Owner approves, like AI budgets and pricing. `list_plugin_installations` shows which submitted plugin packages still wait for the Owner's review. Approving a package and its grants stays the Owner's decision.
+- **Maintenance:** `list_media_usages`, `get_page_seo`, `list_stale_seo_pages`, `refresh_page_path` (re-derives one page's URL and redirects the old one), `list_import_runs`, `log_import_events`, and `list_skill_pin_defaults` / `set_skill_pin_defaults` (the skills pinned for your new chats).
 
 Approval cards from these tools wait in `/security/tool-approvals/pending` when no chat is open to show them.
 

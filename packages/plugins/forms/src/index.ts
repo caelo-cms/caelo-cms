@@ -260,6 +260,8 @@ export default definePlugin<PluginContextTier1>({
       description:
         "Browse visitor form submissions. Read-only. Optional filter by formSlug + status (new/read/archived/spam). Returns up to 200 rows ordered by submitted_at desc.",
       operationName: "list_submissions",
+      // Submissions are visitor personal data; the forms panel needs settings.write too.
+      requiredPermission: "settings.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -297,6 +299,8 @@ export default definePlugin<PluginContextTier1>({
       description:
         "Produce a short summary of recent form submissions (count + common themes + flagged ones). Pass `formSlug` to scope to one form, or `since` (ISO timestamp) to scope to a time window.",
       operationName: "summarize",
+      // Reads the same visitor submissions as list_submissions.
+      requiredPermission: "settings.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,

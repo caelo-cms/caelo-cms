@@ -133,12 +133,16 @@ export function renderToonList<R>(
   allRows: readonly R[],
   columns: readonly ToonColumn<R>[],
   params: ListParams,
+  serverPage?: ServerPage,
 ): string {
   const filter = params.filter?.toLowerCase();
   const rendered = allRows.map((r) => columns.map((c) => toonCell(c.value(r))).join(","));
   const filtered = filter
     ? rendered.filter((line) => line.toLowerCase().includes(filter))
     : rendered;
+  if (serverPage) {
+    return renderServerPage(label, allRows.length, filtered, columns, params, serverPage);
+  }
   const offset = params.offset ?? 0;
   const limit = params.limit ?? LIST_DEFAULT_LIMIT;
   const page = params.full ? filtered.slice(offset) : filtered.slice(offset, offset + limit);
@@ -161,6 +165,57 @@ export function renderToonList<R>(
       : filter
         ? `\n# ${kept.length} match${kept.length === 1 ? "" : "es"} of ${allRows.length} rows (filter="${params.filter}").`
         : "";
+  return `${header}\n${body}${footer}`;
+}
+
+/**
+ * A page the op already cut server-side (`offset` applied there): the rows
+ * are that page, `more` says whether the op had rows past it.
+ */
+export interface ServerPage {
+  readonly offset: number;
+  readonly more: boolean;
+}
+
+/** Whole rows up to the char cap (all of them when `full`). */
+function capChars(lines: readonly string[], full: boolean | undefined): string[] {
+  const kept: string[] = [];
+  let chars = 0;
+  for (const line of lines) {
+    if (!full && chars + line.length > LIST_CHAR_CAP) break;
+    kept.push(line);
+    chars += line.length + 1;
+  }
+  return kept;
+}
+
+/**
+ * Render a server-cut page. `filter` narrows within this page only. The
+ * next offset counts the op's rows consumed, so it is exact unless the char
+ * cap cut a filtered page — then the model is told to narrow instead.
+ */
+function renderServerPage<R>(
+  label: string,
+  rowsRead: number,
+  filtered: readonly string[],
+  columns: readonly ToonColumn<R>[],
+  params: ListParams,
+  page: ServerPage,
+): string {
+  const kept = capChars(filtered, params.full);
+  const header = `${label}[${kept.length}]{${columns.map((c) => c.key).join(",")}}:`;
+  const body = kept.map((l) => `  ${l}`).join("\n");
+  const capped = kept.length < filtered.length;
+  const note = params.filter ? ` (filter="${params.filter}" applied to this page)` : "";
+  let footer = "";
+  if (capped && params.filter) {
+    footer = `\n# ${kept.length} shown${note}, cut at the size cap — pass full=true or a narrower filter.`;
+  } else if (capped || page.more) {
+    const next = page.offset + (capped ? kept.length : rowsRead);
+    footer = `\n# ${kept.length} shown${note} — more exist; next: offset=${next}.`;
+  } else if (params.filter) {
+    footer = `\n# ${kept.length} match${kept.length === 1 ? "" : "es"} of ${rowsRead} rows${note}.`;
+  }
   return `${header}\n${body}${footer}`;
 }
 
@@ -189,6 +244,13 @@ export interface MakeListReadToolArgs<I extends Record<string, unknown>, R> {
   readonly emptyMessage: string;
   /** See MakeReadToolArgs.includeValue. */
   readonly includeValue?: boolean;
+  /**
+   * The op pages server-side (`offset` + `limit` inputs, newest first) and
+   * `maxLimit` is its largest page. The factory then sends `offset` and one
+   * row more than `limit` (to know whether more exist) on top of
+   * `buildOpInput`'s fields, so `offset` reaches past any one page.
+   */
+  readonly serverPaging?: { readonly maxLimit: number };
 }
 
 /**
@@ -206,12 +268,28 @@ export function makeListReadTool<I extends Record<string, unknown>, R>(
     inputSchema: zod.toJSONSchema(inputSchema) as Record<string, unknown>,
     handler: async (ctx, input, toolCtx) => {
       const { filter: _f, limit: _l, offset: _o, full: _fu, ...domain } = input;
-      const opInput = args.buildOpInput ? args.buildOpInput(input, ctx, toolCtx) : domain;
+      const built = args.buildOpInput ? args.buildOpInput(input, ctx, toolCtx) : domain;
+      const paging = args.serverPaging;
+      const limit = input.limit ?? LIST_DEFAULT_LIMIT;
+      const offset = input.offset ?? 0;
+      const opInput = paging
+        ? {
+            ...(built as Record<string, unknown>),
+            offset,
+            limit: input.full ? paging.maxLimit : Math.min(paging.maxLimit, limit + 1),
+          }
+        : built;
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, args.opName, opInput);
       if (!r.ok) {
         return { ok: false, content: `${args.opName} failed: ${describeError(r.error)}` };
       }
-      const rows = args.rows(r.value);
+      const all = args.rows(r.value);
+      const more = paging
+        ? input.full
+          ? all.length >= paging.maxLimit
+          : all.length > limit
+        : false;
+      const rows = paging && !input.full ? all.slice(0, limit) : all;
       if (rows.length === 0) {
         return {
           ok: true,
@@ -221,7 +299,13 @@ export function makeListReadTool<I extends Record<string, unknown>, R>(
       }
       return {
         ok: true,
-        content: renderToonList(args.label, rows, args.columns, input),
+        content: renderToonList(
+          args.label,
+          rows,
+          args.columns,
+          input,
+          paging ? { offset, more } : undefined,
+        ),
         ...(args.includeValue === false ? {} : { value: r.value }),
       };
     },

@@ -12,12 +12,15 @@ import { describe, expect, it } from "bun:test";
 import { OperationRegistry } from "@caelo-cms/query-api";
 import { powerToolCatalogue } from "../../../ops/security/mcp_power.js";
 import { registerAdminOps } from "../../../register.js";
+import { buildApprovalPreview } from "../../chat-runner/approval.js";
 import { preflightGatedCall } from "../../chat-runner/approval-preflight.js";
 import { createDefaultToolRegistry } from "../index.js";
 import {
+  proposeRotateGatewayCookieSecretTool,
   proposeSetAiBudgetTool,
   proposeSetAiPricingTool,
   proposeSetGatewaySettingsTool,
+  proposeSetPluginAiCostCapTool,
   proposeSetTranslationModelTool,
 } from "../propose-owner-settings.js";
 
@@ -26,6 +29,8 @@ const GATED = {
   propose_set_ai_pricing: "owner_settings.propose_set_ai_pricing",
   propose_set_gateway_settings: "owner_settings.propose_set_gateway_settings",
   propose_set_translation_model: "owner_settings.propose_set_translation_model",
+  propose_set_plugin_ai_cost_cap: "owner_settings.propose_set_plugin_ai_cost_cap",
+  propose_rotate_gateway_cookie_secret: "owner_settings.propose_rotate_gateway_cookie_secret",
 } as const;
 const READS = ["get_ai_budgets", "list_ai_pricing", "get_gateway_settings"];
 
@@ -62,6 +67,29 @@ describe("owner-settings tools — registration + gate", () => {
 
   it("telemetry consent deliberately has no AI tool", () => {
     expect(tools.catalogue().some((t) => t.name.includes("telemetry"))).toBe(false);
+  });
+});
+
+describe("owner-settings tools — plugin AI cap + cookie secret schemas", () => {
+  it("plugin AI cap: a slug and a non-negative integer or null; nothing else", () => {
+    const schema = proposeSetPluginAiCostCapTool.schema;
+    expect(schema.safeParse({ pluginSlug: "forms", capMicrocents: 500_000_000 }).success).toBe(
+      true,
+    );
+    expect(schema.safeParse({ pluginSlug: "forms", capMicrocents: null }).success).toBe(true);
+    expect(schema.safeParse({ pluginSlug: "forms", capMicrocents: -1 }).success).toBe(false);
+    expect(schema.safeParse({ pluginSlug: "forms", capMicrocents: 1.5 }).success).toBe(false);
+    expect(
+      schema.safeParse({ pluginId: "11111111-1111-4111-8111-111111111111", capMicrocents: 1 })
+        .success,
+    ).toBe(false);
+  });
+
+  it("cookie-secret rotation needs a real reason and takes no secret", () => {
+    const schema = proposeRotateGatewayCookieSecretTool.schema;
+    expect(schema.safeParse({ reason: "leaked in a public backup" }).success).toBe(true);
+    expect(schema.safeParse({ reason: "x" }).success).toBe(false);
+    expect(schema.safeParse({ reason: "leaked in a backup", secret: "abc" }).success).toBe(false);
   });
 });
 
@@ -127,6 +155,15 @@ describe("owner-settings tools — schemas", () => {
     expect(proposeSetAiBudgetTool.description).toContain("1000000000");
     expect(proposeSetAiPricingTool.description).toContain("PER 1K TOKENS");
     expect(proposeSetGatewaySettingsTool.description).toContain("ONLY the settings that change");
+  });
+
+  it("the cookie-rotation approval card says every visitor is logged out, irreversibly", () => {
+    const card = buildApprovalPreview("propose_rotate_gateway_cookie_secret", {
+      reason: "the secret was printed in a CI log",
+    });
+    expect(card).toContain("logged out");
+    expect(card).toContain("cannot be undone");
+    expect(card).toContain("reason: the secret was printed in a CI log");
   });
 });
 

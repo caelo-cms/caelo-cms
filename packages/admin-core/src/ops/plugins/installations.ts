@@ -103,7 +103,11 @@ export const stagePluginInstallationOp = defineOperation({
 
 export const listPluginInstallationsOp = defineOperation({
   name: "plugins.list_installations",
-  actorScope: ["human", "system"],
+  // Open to the AI so it can tell whether a package it submitted (or an
+  // update to a running plugin) still waits for the Owner's review — the
+  // plugins row alone does not show a staged update. Approval itself stays
+  // the Owner's (plugins.approve_installation).
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
   output: z.object({
@@ -214,6 +218,10 @@ const installationDecision = z
 /** Records the authenticated Owner decision. The host provisions and activates only afterwards. */
 export const approvePluginInstallationOp = defineOperation({
   name: "plugins.approve_installation",
+  // Why human-only: this IS the Owner's grant decision on an exact artifact
+  // (CLAUDE.md §2 — every capability is an explicit Owner grant bound to the
+  // digest; the op re-checks plugins.install). The AI's half is
+  // submit_plugin, which stages the artifact for this review.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: installationDecision,
@@ -320,6 +328,8 @@ export const approvePluginInstallationOp = defineOperation({
 
 export const getApprovedPluginInstallationOp = defineOperation({
   name: "plugins.get_approved_installation",
+  // Why system-only: the plugin host's read of an approved artifact + its
+  // grant receipts while it provisions and loads the plugin.
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({ installationId: z.string().uuid() }).strict(),
@@ -373,6 +383,8 @@ export const getApprovedPluginInstallationOp = defineOperation({
 /** Internal completion after the host's schema and registration preflight; never callable by plugin or AI. */
 export const finalizePluginInstallationOp = defineOperation({
   name: "plugins.finalize_installation",
+  // Why system-only: the host's commit after its schema and registration
+  // preflight of an Owner-approved artifact; no actor decides anything here.
   actorScope: ["system"],
   database: "cms_admin",
   input: z

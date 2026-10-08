@@ -3,7 +3,7 @@
 /**
  * §11.A gated tools for the Owner settings the agent previously could not
  * touch at all: AI budgets, AI pricing, gateway settings, the translation
- * model (#593). Each wraps an `owner_settings.propose_*` op
+ * model (#593), a plugin's AI cost cap and the gateway cookie secret. Each wraps an `owner_settings.propose_*` op
  * (owner_settings_pending.ts); after the operator's in-chat Approve the
  * chat-runner chains `owner_settings.execute_proposal`, which applies the
  * existing `ai_budgets.set` / `ai_pricing.set` / `gateway.set_settings` /
@@ -27,6 +27,10 @@ import {
   proposeGatewaySettingsInput,
   proposeTranslationModelInput,
 } from "../../ops/owner_settings_pending.js";
+import {
+  proposePluginAiCostCapInput,
+  proposeRotateCookieSecretInput,
+} from "../../ops/owner_settings_security.js";
 import type { aiBudgetsStatusOp } from "../../ops/security/ai_budgets.js";
 import type { listAiPricingOp } from "../../ops/security/ai_pricing.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
@@ -84,6 +88,31 @@ export const proposeSetTranslationModelTool = makeProposeTool({
     "The preview shows both models' per-MTok rates.",
   schema: proposeTranslationModelInput,
   summarize: (_input, preview) => String(preview.summary ?? "translation model change"),
+});
+
+export const proposeSetPluginAiCostCapTool = makeProposeTool({
+  toolName: "propose_set_plugin_ai_cost_cap",
+  opName: "owner_settings.propose_set_plugin_ai_cost_cap",
+  pendingQueuePath: PENDING_QUEUE,
+  when:
+    "Propose the AI spend cap of ONE plugin (max AI cost per rolling 24h; past it the plugin's AI calls are refused). " +
+    "Use when the operator names a cap for a plugin, or get_plugin shows a plugin at or near its cap and the operator wants it changed. " +
+    "capMicrocents is microcents (1e-8 USD): $5 = 500000000; null removes the cap. Never propose an amount the operator did not name. " +
+    "Read the plugin's current cap and 24h spend first with get_plugin. Site-wide AI caps are propose_set_ai_budget.",
+  schema: proposePluginAiCostCapInput,
+  summarize: (_input, preview) => String(preview.summary ?? "plugin AI cost cap change"),
+});
+
+export const proposeRotateGatewayCookieSecretTool = makeProposeTool({
+  toolName: "propose_rotate_gateway_cookie_secret",
+  opName: "owner_settings.propose_rotate_gateway_cookie_secret",
+  pendingQueuePath: PENDING_QUEUE,
+  when:
+    "Propose rotating the secret the public API gateway signs visitor cookies with. " +
+    "ONLY when the operator asks for it or the secret may have leaked (logs, a backup, a former contractor): every visitor is re-identified, rate-limit and captcha state restart, and signed-in site visitors sign in again — it cannot be undone. " +
+    "Give the reason in `reason`; it is shown on the approval. You never see the secret.",
+  schema: proposeRotateCookieSecretInput,
+  summarize: () => "rotate the gateway cookie secret",
 });
 
 // ─── read companions ─────────────────────────────────────────────────

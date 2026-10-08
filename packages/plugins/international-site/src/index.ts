@@ -1215,7 +1215,7 @@ export default definePlugin<PluginContextTier1>({
         ...(paused
           ? {
               nextStep:
-                "The plugin's 24h AI budget is exhausted. Tell the operator; the Owner can raise the cap at /security/plugins/international-site, then re-run translate_all_stale.",
+                "The plugin's 24h AI budget is exhausted. Tell the operator; if they want the cap raised, propose_set_plugin_ai_cost_cap with the amount they name (the Owner approves), then re-run translate_all_stale.",
             }
           : seoStale.length > 0
             ? { nextStep: SEO_STALE_NEXT_STEP }
@@ -1409,6 +1409,9 @@ export default definePlugin<PluginContextTier1>({
         "Use when a page has no variant in the target locale yet (check intl_status). The draft still carries the SOURCE language — run the translation flow next, then publish. " +
         "NOT for linking two ALREADY-EXISTING pages — that is link_page_variants.",
       operationName: "create_variant",
+      // Writes content on the chat's branch: the operator needs content.write,
+      // as for editing the page in the editor.
+      requiredPermission: "content.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -1433,6 +1436,8 @@ export default definePlugin<PluginContextTier1>({
         "Declare an EXISTING page to be the language counterpart of another existing page (joins it into the anchor's variant group and recomposes its URL, with a 301 from the old path when it moves). " +
         "Use when both pages already exist (e.g. after a site import). For a page that does not exist yet, use create_variant instead.",
       operationName: "link_page_variants",
+      // Content write on the chat's branch.
+      requiredPermission: "content.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -1450,6 +1455,8 @@ export default definePlugin<PluginContextTier1>({
         "Remove a page from its variant group — it returns to the default locale (URL recomposed, 301 from the old path when it moves). The page itself is NOT deleted. " +
         "Undoes link_page_variants / the linkage half of create_variant.",
       operationName: "unlink_page_variants",
+      // Content write on the chat's branch.
+      requiredPermission: "content.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -1508,6 +1515,8 @@ export default definePlugin<PluginContextTier1>({
         'The meta description is translated in the same pass: a draft or a variant without one gets it filled; a LIVE variant that already has one keeps it (SEO fill-once) and comes back seo: "marked_stale" with a nextStep — then re-optimize with optimize_page_seo only if the operator wants it. ' +
         "NOT for many pages at once — prefer translate_all_stale. NOT for the group's source page itself.",
       operationName: "translate_variant",
+      // Content write on the chat's branch.
+      requiredPermission: "content.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -1527,8 +1536,10 @@ export default definePlugin<PluginContextTier1>({
       name: "translate_all_stale",
       description:
         "Re-translate EVERY variant marked needs_update (source pages changed after translation) in one call. Prefer this over repeated translate_variant calls when intl_status shows stale counts > 1. " +
-        "If the plugin's 24h AI budget runs out mid-pass, the result carries paused=true + remaining — tell the operator instead of retrying; the Owner can raise the cap at /security/plugins/international-site.",
+        "If the plugin's 24h AI budget runs out mid-pass, the result carries paused=true + remaining — tell the operator instead of retrying; if they want the cap raised, propose_set_plugin_ai_cost_cap with the amount they name.",
       operationName: "translate_all_stale",
+      // Content write on the chat's branch.
+      requiredPermission: "content.write",
       inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
     },
     {
@@ -1538,6 +1549,8 @@ export default definePlugin<PluginContextTier1>({
         "Use when a language is added, when intl_status lists chrome entries as 'missing' or 'translated/needs_update' for a locale, or when the preview flags 'there is no <language> version of …'. Links inside menus need no work: they point at each page's same-language version automatically. " +
         "Chrome a language runs independently (its own items) is never overwritten. translate_all_stale already includes this for every language — prefer it when pages are stale too.",
       operationName: "translate_chrome",
+      // Content write on the chat's branch.
+      requiredPermission: "content.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -1552,6 +1565,8 @@ export default definePlugin<PluginContextTier1>({
         "Use when the operator wants e.g. the English menu to differ ('the US site has no Careers link', 'use the other footer on the German site'). Omit values to just detach the current translation. targetKey comes from intl_status.chrome. Prefer one call with several entries over repeated calls. " +
         "NOT for plain translation (translate_chrome) and NOT for the default language (edit the layout/content directly).",
       operationName: "set_chrome_variants",
+      // Content write on the chat's branch.
+      requiredPermission: "content.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -1600,6 +1615,8 @@ export default definePlugin<PluginContextTier1>({
         "Pin the exact translation of a term for a target locale (e.g. 'checkout' → 'Kasse' for de). Every future translation into that locale uses it verbatim. " +
         "Use when the operator corrects a translated word or names brand/product terminology ('never translate our product name'). One call per term+locale; re-calling updates the entry.",
       operationName: "set_glossary_term",
+      // Content write on the chat's branch.
+      requiredPermission: "content.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -1623,6 +1640,8 @@ export default definePlugin<PluginContextTier1>({
         "Set the tone/style instructions applied to every translation into a locale (formality like du/Sie, register, phrasing conventions). Replaces the previous guide for that locale. " +
         "Use when the operator states a preference ('use informal du on the German site'). For single-word fixes use set_glossary_term instead.",
       operationName: "set_style_guide",
+      // Content write on the chat's branch.
+      requiredPermission: "content.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,

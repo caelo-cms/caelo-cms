@@ -5,6 +5,8 @@
  *
  * - `list_plugin_grants` (read) — which capabilities each plugin version
  *   holds; the AI needs it before it can propose revoking one.
+ * - `list_plugin_installations` (read) — which staged packages still wait
+ *   for the Owner's review (approving one stays the Owner's click).
  * - `propose_revoke_plugin_capability` (§11.A gated) — revoking a grant of
  *   the running version disables the plugin, and getting it back is a new
  *   Owner approval, so the operator approves the card.
@@ -67,6 +69,39 @@ export const proposeRevokePluginCapabilityTool = makeProposeTool({
   summarize: (input, preview) =>
     `revoke ${input.capability} from plugin ${input.slug}${preview.disablesPlugin ? " (disables it)" : ""}`,
 });
+
+interface InstallationRow {
+  id: string;
+  slug: string;
+  artifactDigest: string;
+  status: string;
+  origin: string;
+  currentStatus: string;
+}
+
+export const listPluginInstallationsTool = makeListReadTool<Record<string, never>, InstallationRow>(
+  {
+    name: "list_plugin_installations",
+    description:
+      "List runtime-installed plugin packages by version: each staged artifact's status (pending = waiting for the Owner's review at /security/plugins/installations, approved, active, retired), its origin (AI-authored or an uploaded package) and the plugin's current status. " +
+      "Use after submit_plugin to tell the operator whether a package or an update to a running plugin still waits for review. Approving it (and choosing its grants) is the Owner's decision; never the agent's.",
+    opName: "plugins.list_installations",
+    input: z.object({}).strict(),
+    // The op rows carry every version's full source; keep them out of the transcript.
+    includeValue: false,
+    label: "installations",
+    rows: (value) => (value as { installations: InstallationRow[] }).installations,
+    columns: [
+      { key: "slug", value: (r) => r.slug },
+      { key: "status", value: (r) => r.status },
+      { key: "origin", value: (r) => r.origin },
+      { key: "pluginStatus", value: (r) => r.currentStatus },
+      { key: "digest", value: (r) => r.artifactDigest.slice(0, 12) },
+      { key: "installationId", value: (r) => r.id },
+    ],
+    emptyMessage: "No runtime-installed plugin packages.",
+  },
+);
 
 const rejectInput = z
   .object({
