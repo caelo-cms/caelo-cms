@@ -15,7 +15,12 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bootstrap, renderHeadEntries, resetPluginHost } from "@caelo-cms/plugin-host";
+import {
+  bootstrap,
+  localBuildPluginServices,
+  renderHeadEntries,
+  resetPluginHost,
+} from "@caelo-cms/plugin-host";
 import { definePlugin, type HeadEntry } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -217,6 +222,7 @@ describe("#391 — generator/preview parity + sitemap contributions", () => {
     await adapter.withAdminTransaction(SYS_CTX, async (tx) => {
       await runSeoPass({
         tx,
+        plugins: localBuildPluginServices,
         buildDir,
         pages: [page, plainPage],
         settings: {

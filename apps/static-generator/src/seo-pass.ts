@@ -30,12 +30,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  collectContributions,
-  composeHeadBlock,
-  MAIN_RENDER,
-  resolvePublicPageUrls,
-} from "@caelo-cms/plugin-host";
+import { type BuildPluginServices, composeHeadBlock } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   applyDocumentLanguage,
@@ -70,6 +65,8 @@ export interface SeoPagesContext {
 
 export async function runSeoPass(args: {
   tx: TransactionRunner;
+  /** #605 — the plugin host answering head contributions and URLs. */
+  plugins: BuildPluginServices;
   buildDir: string;
   pages: SeoPagesContext[];
   settings: SiteSeoSettings;
@@ -188,15 +185,15 @@ export async function runSeoPass(args: {
   // batch call before the loops. Zod-validated + contradiction-checked
   // by the host; serialization shares the exact code path the preview
   // uses (composeHeadBlock), so both surfaces stay byte-identical.
-  const contributions = await collectContributions(
+  const contributions = await args.plugins.collectContributions(
     seoBundles.map((b) => b.pageId),
-    { siteBaseUrl: args.settings.siteBaseUrl, pageUrlStyle: args.pageUrlStyle, ...MAIN_RENDER },
+    { siteBaseUrl: args.settings.siteBaseUrl, pageUrlStyle: args.pageUrlStyle },
   );
 
   // #590 — canonical and sitemap `<loc>` come from the ONE public URL
   // builder plugins also use for hreflang, so they agree byte for byte
   // (host-strategy locales included).
-  const publicUrls = await resolvePublicPageUrls(
+  const publicUrls = await args.plugins.resolvePublicPageUrls(
     seoBundles.map((b) => ({
       id: b.pageId,
       slug: b.slug,
@@ -204,7 +201,6 @@ export async function runSeoPass(args: {
       canonicalOverride: b.canonicalOverride,
     })),
     { siteBaseUrl: args.settings.siteBaseUrl, pageUrlStyle: args.pageUrlStyle },
-    MAIN_RENDER,
   );
   const publicUrlOf = (b: PageSeoBundle): string => {
     const url = publicUrls.get(b.pageId);

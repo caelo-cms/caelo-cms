@@ -16,7 +16,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { bootstrap, resetPluginHost, runPluginOperation } from "@caelo-cms/plugin-host";
+import {
+  bootstrap,
+  localBuildPluginServices,
+  resetPluginHost,
+  runPluginOperation,
+} from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -262,6 +267,7 @@ describe("#592 — menus and footer per language", () => {
       adapter.withAdminTransaction(SYS_CTX, (tx) =>
         resolveBuildContentVariants(
           tx,
+          localBuildPluginServices,
           [
             {
               pageId: ids.dePreise,

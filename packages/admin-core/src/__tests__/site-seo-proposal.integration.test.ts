@@ -14,11 +14,13 @@
  *   - the AI cannot approve itself, and URL validation runs at propose time;
  *   - omitted fields keep the values stored at approve time.
  */
+
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { localBuildPluginServices } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { generateSite, pageOutputPath } from "@caelo-cms/static-generator";
@@ -147,6 +149,8 @@ function build(runId: string) {
   return adapter.withAdminTransaction(SYSTEM, (tx) =>
     generateSite({
       tx,
+      adapter,
+      plugins: localBuildPluginServices,
       runId,
       repoRoot,
       // Incremental: the fixture site has no homepage, which a full build

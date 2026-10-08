@@ -25,14 +25,7 @@ import { fontReader } from "@caelo-cms/font-service";
 
 import { copyFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import {
-  collectBuildAssets,
-  injectPluginAssets,
-  MAIN_RENDER,
-  pluginDataListsRegistry,
-  resolveDataLists,
-  resolveModuleDeferrals,
-} from "@caelo-cms/plugin-host";
+import { type BuildPluginServices, injectPluginAssets } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -332,6 +325,34 @@ export function envNoindexBuildError(sourceBuildId: string): Error {
   );
 }
 
+/**
+ * #605 — throw when any page still carries a section marker of a plugin
+ * data list (`{{#name}}`, `{{^name}}`, `{{/name}}`). Exported for tests.
+ *
+ * @param listNames every data-list name a plugin declared, running or not.
+ */
+export function assertNoPluginMarkers(
+  pages: ReadonlyArray<{ readonly pageSlug: string; readonly html: string }>,
+  listNames: ReadonlyArray<string>,
+): void {
+  if (listNames.length === 0) return;
+  const names = new Set(listNames);
+  const found: string[] = [];
+  for (const page of pages) {
+    const hits = new Set<string>();
+    for (const m of page.html.matchAll(/\{\{\s*[#^/]\s*([A-Za-z0-9_.-]+)\s*\}\}/g)) {
+      if (m[1] && names.has(m[1])) hits.add(m[1]);
+    }
+    if (hits.size > 0) found.push(`page "${page.pageSlug}": ${[...hits].sort().join(", ")}`);
+  }
+  if (found.length > 0) {
+    throw new Error(
+      `static-generator: ${found.length} page(s) would ship raw plugin data-list markers — ${found.join("; ")}. ` +
+        "The plugin that offers the list is not running for this build. Activate it again at /security/plugins, or remove the module that iterates the list, then publish again.",
+    );
+  }
+}
+
 export async function generateSite(args: {
   tx: TransactionRunner;
   target: DeployTarget;
@@ -342,9 +363,15 @@ export async function generateSite(args: {
   /** Optional progress callback fired after each page is written. */
   onProgress?: ProgressCallback;
   /** P13 — adapter handle so the plugin render pass can read +
-   *  upsert `static_bakes` outside the page-build transaction. When
-   *  omitted the pass no-ops (e.g. dev preview). */
-  adapter?: import("@caelo-cms/query-api").DatabaseAdapter;
+   *  upsert `static_bakes` outside the page-build transaction. */
+  adapter: import("@caelo-cms/query-api").DatabaseAdapter;
+  /**
+   * #605 — every plugin answer the build needs. In the admin process the
+   * local plugin host (`localBuildPluginServices`); in the generator
+   * subprocess the admin's, reached over stdio (cli.ts). Required: a
+   * build without the plugin host ships pages missing plugin output.
+   */
+  plugins: BuildPluginServices;
   /** P13 ideas-pass — incremental rebuild whitelist. When non-empty,
    *  only re-bake the listed page ids; the rest are left alone in
    *  the build dir. Auto-redeploy passes the audit_events tail's
@@ -662,12 +689,11 @@ export async function generateSite(args: {
   // installed-but-inactive plugins come along so a module still
   // iterating a switched-off plugin's list emits the loud marker here
   // exactly as it does in the editor preview.
-  const allLists = await resolveDataLists(
+  const allLists = await args.plugins.resolveDataLists(
     pageRows.map((p) => p.page_id),
-    MAIN_RENDER,
     pageUrlStyle,
   );
-  const dormantLists = Object.fromEntries(pluginDataListsRegistry.dormantNames());
+  const dormantLists = await args.plugins.dormantDataListNames();
   // #450 — withheld modules, resolved ONCE for the build. Asking per
   // page would be one plugin round-trip per page for a verdict that is
   // per MODULE; the module set is the same question every time.
@@ -694,7 +720,7 @@ export async function generateSite(args: {
     content_values: string;
   }[];
   const deferredModules = Object.fromEntries(
-    await resolveModuleDeferrals(
+    await args.plugins.resolveModuleDeferrals(
       candidateRows.map((r) => ({
         moduleId: r.id,
         html: r.html,
@@ -703,7 +729,6 @@ export async function generateSite(args: {
         fields: r.fields ? JSON.parse(r.fields) : [],
         contentValues: JSON.parse(r.content_values) as unknown[],
       })),
-      MAIN_RENDER,
     ),
   );
   // Page placements for every page up front: the content-variants
@@ -739,6 +764,7 @@ export async function generateSite(args: {
   const noLayoutModules = new Map<string, VariantComposeModule[]>();
   const variants = await resolveBuildContentVariants(
     tx,
+    args.plugins,
     pageRows.map((page) => ({
       pageId: page.page_id,
       slug: page.slug,
@@ -884,6 +910,7 @@ export async function generateSite(args: {
   // runMediaPass.
   const seoResult = await runSeoPass({
     tx,
+    plugins: args.plugins,
     buildDir,
     pages: composedPages,
     settings: seoSettings,
@@ -895,25 +922,20 @@ export async function generateSite(args: {
   // Tier-1 plugin's `staticRender(...)`, splice into the page body at
   // the matching `<div data-caelo-plugin="<slug>" ...>` placeholder.
   // Cache hits via static_bakes.cache_key skip the render entirely.
-  // Skipped when no adapter is supplied (dev preview path).
-  if (args.adapter) {
-    await runPluginRenderPass({
-      adapter: args.adapter,
-      pages: composedPages,
-      bakeTargets,
-      pageUrlStyle,
-    });
-  }
+  await runPluginRenderPass({
+    adapter: args.adapter,
+    plugins: args.plugins,
+    pages: composedPages,
+    bakeTargets,
+    pageUrlStyle,
+  });
 
   // #449 — plugin client assets: one call per contributing plugin for
   // the whole build, written under `_caelo/plugin/<slug>/` with the
   // content hash in the name, then referenced from every page. Runs
   // AFTER the plugin render pass so a runtime that hydrates baked
   // markup is guaranteed to find it already in the document.
-  const clientAssets = await collectBuildAssets(
-    pageRows.map((p) => p.page_id),
-    MAIN_RENDER,
-  );
+  const clientAssets = await args.plugins.collectBuildAssets(pageRows.map((p) => p.page_id));
   for (const asset of clientAssets) {
     const assetPath = join(buildDir, asset.relPath);
     await mkdir(dirname(assetPath), { recursive: true });
@@ -923,6 +945,11 @@ export async function generateSite(args: {
   for (const p of composedPages) {
     p.html = injectPluginAssets(p.html, clientAssets, "linked");
   }
+
+  // #605 — a plugin data-list section that survived composition means the
+  // page would ship raw `{{#list}}` markers to visitors (the plugin is off,
+  // or its answer never reached the build). Refuse the build and name them.
+  assertNoPluginMarkers(composedPages, await args.plugins.declaredDataListNames());
 
   // v0.2.85 — per-key Content-Type sidecar. When pageUrlStyle is
   // 'no-extension' the page files are bare slugs (no `.html`), so

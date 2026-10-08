@@ -12,21 +12,35 @@
  *    moving the entry point out of the in-process import graph makes
  *    that constraint structural, not just a registry omission.
  *
- * Inputs: a JSON config blob on stdin
- *   {
- *     adminDatabaseUrl, publicDatabaseUrl,
- *     target: { id, name, env, outDir, baseUrl, robotsDefault },
- *     runId, repoRoot
- *   }
+ * Protocol (JSON lines, Maps encoded by `encodeBuildPayload`):
  *
- * Outputs (stdout, one JSON object per line):
- *   {kind:"progress", pagesDone, pagesTotal}
- *   final {kind:"done", pageCount, fileCount, durationMs, buildDir}
- *   on failure {kind:"error", message}
+ *   stdin, first line — the config:
+ *     { adminDatabaseUrl, publicDatabaseUrl, target, runId, repoRoot,
+ *       changedPageIds? }
+ *   stdout — progress and the outcome:
+ *     {kind:"progress", pagesDone, pagesTotal}
+ *     {kind:"done", pageCount, fileCount, durationMs, buildDir}
+ *     {kind:"error", message}
+ *   stdout → stdin — #605 plugin calls answered by the admin:
+ *     {kind:"plugin-call", id, method, args}
+ *     ← {kind:"plugin-result", id, ok:true, value} | {…, ok:false, message}
+ *
+ * The plugin host runs in the admin, not here: every plugin answer the
+ * build needs (data lists, head contributions, public URLs, content
+ * variants, withheld modules, staticRender, client assets) is a call back
+ * to the admin's plugin host, so the published site gets exactly what
+ * the editor preview shows (see plugin-host/build-services.ts).
  *
  * Exit: 0 on done, 1 on error.
  */
 
+import { createInterface } from "node:readline";
+import {
+  type BuildPluginMethod,
+  decodeBuildPayload,
+  encodeBuildPayload,
+  remoteBuildPluginServices,
+} from "@caelo-cms/plugin-host";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { type DeployTarget, generateSite } from "./generate.js";
 
@@ -41,15 +55,59 @@ interface CliInput {
   changedPageIds?: string[];
 }
 
+interface PluginResult {
+  kind: "plugin-result";
+  id: number;
+  ok: boolean;
+  value?: unknown;
+  message?: string;
+}
+
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 
 function emit(line: Record<string, unknown>): void {
-  process.stdout.write(`${JSON.stringify(line)}\n`);
+  process.stdout.write(`${encodeBuildPayload(line)}\n`);
 }
 
 async function main(): Promise<void> {
-  const stdin = await Bun.stdin.text();
-  const input = JSON.parse(stdin) as CliInput;
+  const lines = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
+  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  let config: CliInput | null = null;
+  let resolveConfig: (c: CliInput) => void = () => undefined;
+  const configReady = new Promise<CliInput>((r) => {
+    resolveConfig = r;
+  });
+  lines.on("line", (line) => {
+    if (line.trim().length === 0) return;
+    if (config === null) {
+      config = JSON.parse(line) as CliInput;
+      resolveConfig(config);
+      return;
+    }
+    const msg = decodeBuildPayload(line) as PluginResult;
+    const waiter = pending.get(msg.id);
+    if (!waiter) return;
+    pending.delete(msg.id);
+    if (msg.ok) waiter.resolve(msg.value);
+    else waiter.reject(new Error(msg.message ?? "plugin call failed"));
+  });
+  lines.on("close", () => {
+    for (const w of pending.values()) {
+      w.reject(new Error("the admin closed the plugin channel before answering"));
+    }
+    pending.clear();
+  });
+
+  const input = await configReady;
+  let nextId = 0;
+  const plugins = remoteBuildPluginServices(
+    (method: BuildPluginMethod, args: unknown[]) =>
+      new Promise((resolve, reject) => {
+        const id = ++nextId;
+        pending.set(id, { resolve, reject });
+        emit({ kind: "plugin-call", id, method, args });
+      }),
+  );
 
   const adapter = new DatabaseAdapter({
     adminDatabaseUrl: input.adminDatabaseUrl,
@@ -61,6 +119,8 @@ async function main(): Promise<void> {
       (tx) =>
         generateSite({
           tx,
+          adapter,
+          plugins,
           target: input.target,
           runId: input.runId,
           repoRoot: input.repoRoot,
@@ -70,12 +130,16 @@ async function main(): Promise<void> {
     );
     emit({ kind: "done", ...result });
   } finally {
+    lines.close();
     await adapter.close();
   }
 }
 
-main().catch((e: unknown) => {
-  const message = e instanceof Error ? e.message : String(e);
-  emit({ kind: "error", message });
-  process.exit(1);
-});
+main()
+  // The admin keeps stdin open for plugin answers; leave explicitly.
+  .then(() => process.exit(0))
+  .catch((e: unknown) => {
+    const message = e instanceof Error ? e.message : String(e);
+    emit({ kind: "error", message });
+    process.exit(1);
+  });

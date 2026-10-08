@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { localBuildPluginServices } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { generateSite, pageOutputPath } from "@caelo-cms/static-generator";
@@ -214,6 +215,8 @@ describe("theme favicon is emitted into <head>", () => {
     const result = await adapter.withAdminTransaction(SYS_CTX, (tx) =>
       generateSite({
         tx,
+        adapter,
+        plugins: localBuildPluginServices,
         runId: crypto.randomUUID(),
         repoRoot,
         changedPageIds: [pageId],
@@ -309,6 +312,8 @@ describe("theme favicon is emitted into <head>", () => {
     const result = await adapter.withAdminTransaction(SYS_CTX, (tx) =>
       generateSite({
         tx,
+        adapter,
+        plugins: localBuildPluginServices,
         runId: crypto.randomUUID(),
         repoRoot,
         changedPageIds: [pageId],

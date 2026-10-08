@@ -8,10 +8,12 @@
  * default, so an unset language stops the build instead of mislabelling
  * every page.
  */
+
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { localBuildPluginServices } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
@@ -62,6 +64,8 @@ function generateInto(runId: string): { run: Promise<unknown>; buildDir: string 
   const run = adapter.withAdminTransaction(systemCtx, (tx) =>
     generateSite({
       tx,
+      adapter,
+      plugins: localBuildPluginServices,
       target: {
         id: "00000000-0000-0000-0000-000000000551",
         name: "production",
