@@ -31,6 +31,10 @@ config:
     type: string
     default: westeurope
     description: Azure region. Container Apps regional availability is checked at preview.
+  caelo-azure:adminMemory:
+    type: string
+    default: "2Gi"
+    description: Admin container memory (CPU follows at 2 GiB per vCPU). 2Gi leaves room for the Lighthouse quality audit.
   caelo-azure:flexibleServerSku:
     type: string
     default: Standard_B2s

@@ -25,3 +25,7 @@ config:
     type: string
     default: ./.caelo
     description: Where the generated docker-compose.yml + Caddyfile + secrets live.
+  caelo-self-hosted:adminMemory:
+    type: string
+    default: "2Gi"
+    description: Memory reserved for the admin container (it runs the Lighthouse quality audit).

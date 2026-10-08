@@ -40,6 +40,7 @@ import * as azure from "@pulumi/azure-native";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
+import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "../../dist/stack-contract.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -48,6 +49,18 @@ const subscription = cfg.require("subscription");
 const rgName = cfg.get("resourceGroup") ?? "caelo-rg";
 const location = cfg.get("location") ?? "westeurope";
 const flexibleServerSku = cfg.get("flexibleServerSku") ?? "Standard_B2s";
+// #553 — the admin runs the Lighthouse quality audit; same knob + default
+// as every adapter (stack-contract.ts). Container Apps pairs memory with
+// CPU at 2 GiB per vCPU, so the admin's CPU follows its memory.
+const adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
+const adminMemoryMiB = memoryQuantityMiB(adminMemory);
+if (adminMemoryMiB === null) {
+  throw new Error(`caelo-azure:adminMemory "${adminMemory}" is not a memory quantity (e.g. 2Gi)`);
+}
+const adminResources = {
+  cpu: adminMemoryMiB / 1024 / 2,
+  memory: `${(adminMemoryMiB / 1024).toFixed(1)}Gi`,
+};
 
 const env = pulumi.getStack() as "dev" | "staging" | "production";
 const namePrefix = `caelo${env}`; // Azure resource names disallow hyphens in some types.
@@ -200,6 +213,8 @@ const cappEnv = new azure.app.ManagedEnvironment(`${namePrefix}-capp-env`, {
 interface ContainerAppArgs {
   readonly serviceName: string;
   readonly extraEnv?: ReadonlyArray<{ name: string; value: pulumi.Input<string> }>;
+  /** Defaults to 0.5 vCPU / 1 GiB. */
+  readonly resources?: { readonly cpu: number; readonly memory: string };
 }
 
 function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
@@ -236,7 +251,7 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
             },
             ...(args.extraEnv ?? []),
           ],
-          resources: { cpu: 0.5, memory: "1.0Gi" },
+          resources: args.resources ?? { cpu: 0.5, memory: "1.0Gi" },
         },
       ],
     },
@@ -245,6 +260,7 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
 
 const adminApp = containerApp({
   serviceName: "admin",
+  resources: adminResources,
   // #551 — the public site URL; the admin seeds site_defaults.site_base_url
   // from it (canonical, og:url, sitemap) when it is not configured yet.
   extraEnv: [{ name: "CAELO_SITE_URL", value: `https://${domain}` }],

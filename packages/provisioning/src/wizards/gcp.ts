@@ -62,6 +62,7 @@ import {
   writeMetadata,
   writeSecret,
 } from "../install-state.js";
+import { ADMIN_MEMORY_DEFAULT } from "../stack-contract.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { pulumiUpGcp } from "./gcp-pulumi.js";
 
@@ -145,6 +146,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     cloudSqlTier: "db-f1-micro",
     cloudSqlHa: false,
     adminMinInstances: 0,
+    adminMemory: ADMIN_MEMORY_DEFAULT,
     gatewayMinInstances: 0,
     wafAdaptiveProtection: false,
     provider: opts.provider ?? ("gcp" as const),
@@ -237,6 +239,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     cloudSqlTier: costInputs.cloudSqlTier,
     cloudSqlHa: costInputs.cloudSqlHa,
     adminMinInstances: costInputs.adminMinInstances,
+    adminMemory: costInputs.adminMemory,
     gatewayMinInstances: costInputs.gatewayMinInstances,
     wafAdaptiveProtection: costInputs.wafAdaptiveProtection,
     iapAllowlist: [`user:${ownerEmail}`],
@@ -631,6 +634,7 @@ interface PulumiUpOpts {
   cloudSqlTier: string;
   cloudSqlHa: boolean;
   adminMinInstances: number;
+  adminMemory: string;
   gatewayMinInstances: number;
   wafAdaptiveProtection: boolean;
   iapAllowlist: string[];

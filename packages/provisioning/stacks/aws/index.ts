@@ -32,6 +32,7 @@ import * as awsx from "@pulumi/awsx";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
+import { ADMIN_MEMORY_DEFAULT } from "../../dist/stack-contract.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -40,6 +41,11 @@ const _region = cfg.get("region") ?? "us-east-1";
 const rdsInstanceClass = cfg.get("rdsInstanceClass") ?? "db.t4g.small";
 const _fargateCpu = cfg.get("fargateCpu") ?? "512";
 const _fargateMemoryMb = cfg.get("fargateMemoryMb") ?? "1024";
+// #553 — the admin's memory, same knob + default as every adapter
+// (stack-contract.ts). Read with the other task sizes; the admin's
+// Fargate task definition (still to be wired, like _fargateMemoryMb) sizes
+// itself from it.
+const _adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
 
 // Pulumi stack name doubles as the environment label so a single
 // project supports `pulumi stack init dev|staging|production`.

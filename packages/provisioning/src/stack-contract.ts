@@ -572,3 +572,33 @@ export function iamMember(
 export function staticBackendBucketPrefix(env: string): string {
   return `${gcpNamePrefix(env)}-static-backend`;
 }
+
+/**
+ * #553 — the admin's memory, in Cloud Run / Kubernetes quantity notation.
+ * The admin runs the quality audit (Lighthouse driving the bundled
+ * Chromium in a child process) next to the editor's requests; 1 GiB left
+ * no headroom for both, 2 GiB does. Every adapter exposes the same
+ * `adminMemory` knob with this default (CLAUDE.md §11.B), and `upgrade`
+ * raises an existing install's admin to it (never lowers a larger value).
+ */
+export const ADMIN_MEMORY_DEFAULT = "2Gi";
+
+/**
+ * Parse a memory quantity (`512Mi`, `2Gi`, `2G`, `1.5Gi`) to MiB; null when
+ * it is not a quantity this contract understands.
+ */
+export function memoryQuantityMiB(quantity: string): number | null {
+  const m = /^(\d+(?:\.\d+)?)\s*(Mi|Gi|M|G)$/.exec(quantity.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  switch (m[2]) {
+    case "Mi":
+      return Math.round(n);
+    case "Gi":
+      return Math.round(n * 1024);
+    case "M":
+      return Math.round((n * 1000 * 1000) / (1024 * 1024));
+    default:
+      return Math.round((n * 1000 * 1000 * 1000) / (1024 * 1024));
+  }
+}

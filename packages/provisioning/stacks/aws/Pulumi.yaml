@@ -33,6 +33,10 @@ config:
     type: string
     default: "512"
     description: vCPU units per Fargate task (512 = 0.5 vCPU). Bump for production.
+  caelo-aws:adminMemory:
+    type: string
+    default: "2Gi"
+    description: Admin task memory. 2Gi leaves room for the Lighthouse quality audit next to editor requests.
   caelo-aws:fargateMemoryMb:
     type: string
     default: "1024"

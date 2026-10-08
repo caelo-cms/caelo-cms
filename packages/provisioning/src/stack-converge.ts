@@ -18,6 +18,7 @@ import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import { gcpBucketName, gcpSecretId } from "./gcp-names.js";
 import {
+  ADMIN_MEMORY_DEFAULT,
   type AdminEnvInputs,
   adminEnvContract,
   type CloudRunEnvVar,
@@ -28,6 +29,7 @@ import {
   type IamInvariant,
   type IamTarget,
   iamMember,
+  memoryQuantityMiB,
   RETIRED_SERVICE_ENV,
   type RuntimeEnvInputs,
   type ServiceEnvInputs,
@@ -593,6 +595,47 @@ export async function ensureStackInvariants(
   };
 }
 
+/** The memory limit of the service's container (`512Mi`, `2Gi`), or null
+ *  when the service declares none (Cloud Run then runs it with 512Mi). */
+export function liveContainerMemory(serviceJson: string): string | null {
+  const svc = JSON.parse(serviceJson) as {
+    spec?: {
+      template?: {
+        spec?: { containers?: { resources?: { limits?: { memory?: string } } }[] };
+      };
+    };
+  };
+  return svc.spec?.template?.spec?.containers?.[0]?.resources?.limits?.memory ?? null;
+}
+
+/** Cloud Run's memory when a service declares no limit. */
+const CLOUD_RUN_DEFAULT_MEMORY = "512Mi";
+
+/**
+ * #553 — raise the admin's memory to the stack's default (it runs the
+ * Lighthouse quality audit). Upgrade only ever RAISES: an operator who set
+ * more keeps it, and a value this contract cannot parse is left alone and
+ * reported, never overwritten blindly.
+ */
+export function planAdminMemory(
+  live: string | null,
+  desired: string = ADMIN_MEMORY_DEFAULT,
+):
+  | { readonly ok: true; readonly flags: readonly string[]; readonly from: string | null }
+  | { readonly ok: false; readonly error: string } {
+  const desiredMiB = memoryQuantityMiB(desired);
+  if (desiredMiB === null) return { ok: false, error: `invalid desired memory "${desired}"` };
+  const liveMiB = memoryQuantityMiB(live ?? CLOUD_RUN_DEFAULT_MEMORY);
+  if (liveMiB === null) {
+    return {
+      ok: false,
+      error: `the admin's memory "${live}" is not a quantity upgrade understands`,
+    };
+  }
+  if (liveMiB >= desiredMiB) return { ok: true, flags: [], from: live };
+  return { ok: true, flags: [`--memory=${desired}`], from: live };
+}
+
 /**
  * The single `gcloud run services update` that rolls a service to a new
  * image, its run SA and its env changes, so all land in one new revision.
@@ -605,6 +648,8 @@ export function serviceRollArgs(roll: {
   /** The SA the new revision runs as (stack-contract.ts per-service SAs). */
   readonly serviceAccount: string;
   readonly envFlags: readonly string[];
+  /** Resource changes (`--memory=…`) that ride the same revision. */
+  readonly resourceFlags?: readonly string[];
 }): string[] {
   return [
     "run",
@@ -619,6 +664,7 @@ export function serviceRollArgs(roll: {
     roll.imageRef,
     `--service-account=${roll.serviceAccount}`,
     ...roll.envFlags,
+    ...(roll.resourceFlags ?? []),
     "--quiet",
   ];
 }

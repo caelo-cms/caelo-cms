@@ -11,6 +11,8 @@
  * + AI calls + storage growth on top.
  */
 
+import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "../stack-contract.js";
+
 export interface CostLine {
   name: string;
   monthlyUsd: number;
@@ -21,6 +23,12 @@ export interface CostEstimateInputs {
   cloudSqlTier: string; // e.g. "db-f1-micro"
   cloudSqlHa: boolean;
   adminMinInstances: number;
+  /**
+   * #553 — admin memory (`2Gi`). Cloud Run bills memory only while an
+   * instance runs, so it costs nothing extra at scale-to-zero and
+   * ~$6.50/mo per GiB above 1 GiB for each always-on min instance.
+   */
+  adminMemory?: string;
   gatewayMinInstances: number;
   wafAdaptiveProtection: boolean;
   /**
@@ -56,6 +64,11 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
   const sqlMonthly = Math.round(sqlBase * sqlMultiplier);
 
   const provider = inputs.provider ?? "gcp";
+  const adminMemory = inputs.adminMemory ?? ADMIN_MEMORY_DEFAULT;
+  const adminGiB = (memoryQuantityMiB(adminMemory) ?? 2048) / 1024;
+  // An always-on instance is priced at 1 GiB (the $15 line); extra memory
+  // is billed per GiB-second (~$6.50 per GiB-month).
+  const perMinInstanceUsd = 15 + Math.max(0, adminGiB - 1) * 6.5;
 
   const lines: CostLine[] = [
     {
@@ -66,12 +79,21 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
         : "ZONAL — single zone, automated backups",
     },
     {
-      name: "Cloud Run admin",
-      monthlyUsd: inputs.adminMinInstances === 0 ? 1 : 1 + inputs.adminMinInstances * 15,
+      name: `Cloud Run admin (${adminMemory})`,
+      monthlyUsd:
+        inputs.adminMinInstances === 0
+          ? 1
+          : Math.round(1 + inputs.adminMinInstances * perMinInstanceUsd),
       notes:
         inputs.adminMinInstances === 0
           ? "scale-to-zero; ~$1/mo light editorial use"
           : `${inputs.adminMinInstances} min-instance${inputs.adminMinInstances > 1 ? "s" : ""} (no cold start)`,
+    },
+    {
+      name: "Quality checks (Lighthouse on the admin)",
+      monthlyUsd: 1,
+      notes:
+        "~1-2 min of admin CPU per audited Stage (up to 5 pages x 3 runs); ~$1/mo at a few Stages a day",
     },
     {
       name: "Cloud Run gateway",

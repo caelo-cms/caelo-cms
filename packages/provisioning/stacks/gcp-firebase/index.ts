@@ -38,6 +38,7 @@ import {
   runServiceAccountId,
 } from "../../dist/gcp-names.js";
 import {
+  ADMIN_MEMORY_DEFAULT,
   adminEnvContract,
   type CloudRunEnvVar,
   type CloudRunSlug,
@@ -73,6 +74,9 @@ const cloudSqlHa = cfg.getBoolean("cloudSqlHa") ?? false;
 const cloudSqlEdition = cfg.get("cloudSqlEdition") ?? "ENTERPRISE";
 const deletionProtection = cfg.getBoolean("deletionProtection") ?? false;
 const adminMinInstances = Number.parseInt(cfg.get("adminMinInstances") ?? "0", 10);
+// #553 — the admin also runs the Lighthouse quality audit; same knob and
+// default on every adapter (stack-contract.ts ADMIN_MEMORY_DEFAULT).
+const adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
 const adminMaxInstances = Number.parseInt(cfg.get("adminMaxInstances") ?? "5", 10);
 const gatewayMinInstances = Number.parseInt(cfg.get("gatewayMinInstances") ?? "0", 10);
 const maxConnections = Number.parseInt(cfg.get("maxConnections") ?? "100", 10);
@@ -570,7 +574,7 @@ const adminSvc = cloudRunService({
   serviceName: "admin",
   minInstances: adminMinInstances,
   maxInstances: adminMaxInstances,
-  memory: "1Gi",
+  memory: adminMemory,
   timeout: "3600s",
   // v0.3.1 — admin is internet-reachable but gated by Cloud Run
   // native IAP. iapEnabled flips the IAP integration on the service.

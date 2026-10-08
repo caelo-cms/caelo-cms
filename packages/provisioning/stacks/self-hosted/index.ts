@@ -31,6 +31,8 @@ const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
 const ownerEmail = cfg.require("ownerEmail");
 const caeloDir = cfg.get("caeloDir") ?? "./.caelo";
+// #553 — same knob as every adapter; undefined = stack-contract default.
+const adminMemory = cfg.get("adminMemory");
 
 const composePath = resolve(caeloDir, "docker-compose.yml");
 const caddyPath = resolve(caeloDir, "Caddyfile");
@@ -52,6 +54,7 @@ const composeYaml = pulumi.all([postgresPassword, minioRootPassword]).apply(([pg
     anthropicApiKey: process.env.ANTHROPIC_API_KEY,
     resendApiKey: process.env.RESEND_API_KEY,
     diskSize: "20Gi",
+    ...(adminMemory ? { adminMemory } : {}),
   }),
 );
 
