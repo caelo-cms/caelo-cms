@@ -23,6 +23,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import type { QualityProblem } from "../../quality/ratchet.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { requiresApproverPermission } from "../_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -342,7 +343,7 @@ async function applyAcceptances(
   return { ok: true, accepted };
 }
 
-export const executeQualityProposalOp = defineOperation({
+const executeQualityProposalOpDefinition = defineOperation({
   name: "quality_audits.execute_proposal",
   // Why human-only: the click the §11.A gate exists to obtain.
   actorScope: ["human", "system"],
@@ -373,7 +374,7 @@ export const executeQualityProposalOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "quality_audits.execute_proposal",
-        message: `this decision needs the ${needed} permission — ask an editor who has it`,
+        message: `permission_denied: this decision needs the ${needed} permission — ask an editor who has it. The proposal stays pending.`,
       });
     }
     let result: { kind: "accept" | "publish_anyway"; accepted?: number; toRunId?: string };
@@ -437,6 +438,16 @@ export const executeQualityProposalOp = defineOperation({
     return ok(result);
   },
 });
+
+/**
+ * #589 — every quality decision needs content.write (the panel's Approve
+ * guard); publishing despite a failed audit additionally needs
+ * deploy.trigger, which the handler checks per the row's kind.
+ */
+export const executeQualityProposalOp = requiresApproverPermission(
+  ["content.write"],
+  executeQualityProposalOpDefinition,
+);
 
 export const rejectQualityProposalOp = defineOperation({
   name: "quality_audits.reject_proposal",

@@ -6,7 +6,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
-import { requirePermission } from "#lib/server/guards.js";
+import { requireApproverPermission, requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -36,7 +36,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 export const actions: Actions = {
   approve: async ({ request, locals }) => {
-    requirePermission(locals, "settings.write");
+    requireApproverPermission(
+      locals,
+      getQueryContext().registry,
+      "gateway.execute_rate_limit_proposal",
+    );
     const form = await request.formData();
     const id = form.get("proposalId");
     if (typeof id !== "string") return fail(400, { error: "proposalId required" });

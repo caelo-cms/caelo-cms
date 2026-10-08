@@ -247,6 +247,7 @@ describe("propose_revoke_plugin_capability", () => {
     expect(tool?.gated).toEqual({
       proposeOp: "plugins.propose_revoke_capability",
       executeOp: "plugins.execute_proposal",
+      pendingQueuePath: "/security/pending",
     });
     if (!tool) throw new Error("tool not registered");
     const gated = attachGatedExecute(tool, registry, adapter, ai, inst.owner);

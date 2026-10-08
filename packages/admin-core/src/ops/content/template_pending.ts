@@ -27,6 +27,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { requiresApproverPermission } from "../_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -130,7 +131,7 @@ export const proposeTemplateDeleteOp = defineOperation({
 
 // ─── execute / reject / list_pending ─────────────────────────────────
 
-export const executeTemplateProposalOp = defineOperation({
+const executeTemplateProposalOpDefinition = defineOperation({
   name: "templates.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -202,6 +203,12 @@ export const executeTemplateProposalOp = defineOperation({
     return ok({ templateId: row.template_id });
   },
 });
+
+/** #589 — the approver must hold content.write (see _approver-permission.ts). */
+export const executeTemplateProposalOp = requiresApproverPermission(
+  ["content.write"],
+  executeTemplateProposalOpDefinition,
+);
 
 export const rejectTemplateProposalOp = defineOperation({
   name: "templates.reject_proposal",

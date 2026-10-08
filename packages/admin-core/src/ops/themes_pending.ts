@@ -46,6 +46,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { boundedThemeDocument } from "../theme-document-input.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -306,7 +307,7 @@ export const proposeDeleteThemeOp = defineOperation({
 // execute / reject / list_pending
 // ────────────────────────────────────────────────────────────────────
 
-export const executeThemeProposalOp = defineOperation({
+const executeThemeProposalOpDefinition = defineOperation({
   name: "themes.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -536,6 +537,12 @@ export const executeThemeProposalOp = defineOperation({
     return ok({ themeId: resultThemeId });
   },
 });
+
+/** #589 — the approver must hold roles.manage (see _approver-permission.ts). */
+export const executeThemeProposalOp = requiresApproverPermission(
+  ["roles.manage"],
+  executeThemeProposalOpDefinition,
+);
 
 export const rejectThemeProposalOp = defineOperation({
   name: "themes.reject_proposal",

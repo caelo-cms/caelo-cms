@@ -7,7 +7,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
-import { requirePermission } from "#lib/server/guards.js";
+import { requireApproverPermission, requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -37,7 +37,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 export const actions: Actions = {
   approve: async ({ request, locals }) => {
-    requirePermission(locals, "content.write");
+    requireApproverPermission(locals, getQueryContext().registry, "templates.execute_proposal");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const proposalId = String(form.get("proposalId") ?? "");

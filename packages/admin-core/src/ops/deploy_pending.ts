@@ -24,6 +24,7 @@ import { err, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared"
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { jsonbParam } from "../sql-helpers.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 import { withAudit } from "./_audit.js";
 import { mapRowToOutput, opError, toIso, toIsoRequired } from "./_helpers.js";
 import {
@@ -278,7 +279,7 @@ export const proposeDeployRollbackOp = defineOperation({
   ),
 });
 
-export const executeDeployProposalOp = defineOperation({
+const executeDeployProposalOpDefinition = defineOperation({
   name: "deploy.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -378,6 +379,12 @@ export const executeDeployProposalOp = defineOperation({
     },
   ),
 });
+
+/** #589 — the approver must hold deploy.trigger (see _approver-permission.ts). */
+export const executeDeployProposalOp = requiresApproverPermission(
+  ["deploy.trigger"],
+  executeDeployProposalOpDefinition,
+);
 
 export const rejectDeployProposalOp = defineOperation({
   name: "deploy.reject_proposal",

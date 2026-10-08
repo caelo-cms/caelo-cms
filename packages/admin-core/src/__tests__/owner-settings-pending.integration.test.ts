@@ -528,6 +528,7 @@ describe("owner_settings — chat gated execute (the in-chat Approve path)", () 
     expect(tool?.gated).toEqual({
       proposeOp: "owner_settings.propose_set_ai_budget",
       executeOp: "owner_settings.execute_proposal",
+      pendingQueuePath: "/security/owner-settings/pending",
     });
     if (!tool) throw new Error("propose_set_ai_budget not registered");
     const gated = attachGatedExecute(tool, registry, adapter, AI, OWNER);
