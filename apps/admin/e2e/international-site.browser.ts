@@ -379,7 +379,7 @@ function seed(): Seed {
       const mod = await tx\`INSERT INTO modules (slug, display_name, type, kind, html, fields)
         VALUES (\${P + "-footer"}, 'Site footer', 'footer', 'chrome',
                 '<footer><p class="tag">{{tagline}}</p>{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}</footer>',
-                \${fields}::jsonb) RETURNING id\`;
+                (\${fields}::text)::jsonb) RETURNING id\`;
       await tx\`INSERT INTO layout_modules (layout_id, block_name, position, module_id)
         VALUES (\${lay[0].id}, 'footer', 0, \${mod[0].id})\`;
       const mk = async (slug, path) => (await tx\`INSERT INTO pages (slug, name, title, template_id, status, current_path)
@@ -403,7 +403,7 @@ function seed(): Seed {
       const values = JSON.stringify({ tagline: "Mit Sorgfalt gemacht", nav: [{ label: "Über uns", href: "/" + P + "-about" }] });
       await tx\`INSERT INTO plugin_international_site.chrome_variants
         (target_key, locale_code, mode, values, translation_status, source_hash)
-        VALUES (\${"layout:" + lay[0].id + ":footer:0"}, 'de', 'translated', \${values}::jsonb, 'up_to_date', 'seeded')\`;
+        VALUES (\${"layout:" + lay[0].id + ":footer:0"}, 'de', 'translated', (\${values}::text)::jsonb, 'up_to_date', 'seeded')\`;
       return { enPageId: enPricing, dePageId: dePreise };
     `),
     { PFX },
