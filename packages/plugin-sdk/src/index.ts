@@ -101,6 +101,7 @@ export const pluginCapability = z.enum([
   "private_files",
   "image_generation",
   "site_media_read",
+  "content_variants",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -361,6 +362,57 @@ export interface DeferralCandidate {
   readonly contentValues: ReadonlyArray<unknown>;
 }
 
+/**
+ * #592 — one placement of a page being rendered, as the content-variants
+ * operation receives it: LAYOUT placements (site chrome — header, footer,
+ * menus; content in the module's field defaults) and PAGE placements
+ * (content in a content instance, `shared` when synced across pages).
+ * `values` is exactly what core would render without a plugin.
+ */
+export interface ContentVariantPlacement {
+  /** Stable within one page: `layout:<block>:<position>` / `page:<block>:<position>`. */
+  readonly key: string;
+  readonly scope: "layout" | "page";
+  /** The page's layout (layout scope only). */
+  readonly layoutId: string | null;
+  readonly blockName: string;
+  readonly position: number;
+  readonly moduleId: string;
+  /** Display name of the module, for messages an operator reads. */
+  readonly moduleName: string;
+  /** The bound content instance (page scope only). */
+  readonly contentInstanceId: string | null;
+  /** Layout placements are always shared; page placements when synced. */
+  readonly shared: boolean;
+  readonly fields: ReadonlyArray<{ readonly name: string; readonly kind: string }>;
+  readonly values: Readonly<Record<string, unknown>>;
+}
+
+/** The pages of one render pass, as the content-variants operation gets them. */
+export interface ContentVariantPage {
+  readonly pageId: string;
+  readonly placements: ReadonlyArray<ContentVariantPlacement>;
+}
+
+/**
+ * #592 — what a plugin answers for one placement. Absent = render as core
+ * would. `values` replaces the placement's content; `moduleId` swaps the
+ * module itself (LAYOUT placements only — a different footer or menu
+ * module in a locale's chrome). `problems` are loud: the preview lists
+ * them on the missing-content surface and the build refuses to ship —
+ * e.g. a missing locale variant, never a silent fallback to another
+ * language (CLAUDE.md §2).
+ */
+export const contentVariantResolution = z
+  .object({
+    moduleId: z.string().uuid().optional(),
+    values: z.record(z.string(), z.unknown()).optional(),
+    problems: z.array(z.string().min(1).max(2000)).max(50).optional(),
+  })
+  .strict();
+
+export type ContentVariantResolution = z.infer<typeof contentVariantResolution>;
+
 export const pluginManifest = z
   .object({
     // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
@@ -397,6 +449,10 @@ export const pluginManifest = z
     /** See `PluginDefinition.deferralsOperation`. Release-signed only:
      *  withholding a module changes what visitors see. */
     hasDeferrals: z.boolean().default(false),
+    /** See `PluginDefinition.contentVariantsOperation` (#592). Requires
+     *  the `content_variants` capability: it changes what every page
+     *  renders. */
+    hasContentVariants: z.boolean().default(false),
     /** Grants this plugin asks for. A request grants nothing: the Owner
      *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
@@ -1138,6 +1194,17 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly deferralsOperation?: string;
   /**
+   * #592 — the content-variants composition point: which content a
+   * placement shows on THIS page. An operation in `operations` taking
+   * `{pages: ContentVariantPage[]}` (every page of the render pass with
+   * its layout and page placements) and returning `{resolutions:
+   * Record<pageId, Record<placementKey, ContentVariantResolution>>}`.
+   * Without a plugin every placement renders as stored. The preview and
+   * the static build both call it, so they cannot disagree. Requires the
+   * `content_variants` capability.
+   */
+  readonly contentVariantsOperation?: string;
+  /**
    * The I/O half of `dataLists`: an operation in `operations` taking
    * `{pageIds: string[], pageUrlStyle: PageUrlStyle}` (page links come
    * from `pages.resolve_public_urls`, as for head contributions) and returning
@@ -1183,6 +1250,7 @@ export function manifestFromDefinition(def: {
   readonly staticRender?: unknown;
   readonly buildAssets?: unknown;
   readonly deferralsOperation?: string;
+  readonly contentVariantsOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
   readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
@@ -1206,6 +1274,7 @@ export function manifestFromDefinition(def: {
       : {}),
     hasBuildAssets: Boolean(def.buildAssets),
     hasDeferrals: Boolean(def.deferralsOperation),
+    hasContentVariants: Boolean(def.contentVariantsOperation),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
     ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),

@@ -60,6 +60,7 @@ import {
   type RenderResolver,
   renderModuleWithContent,
 } from "./preview-render.js";
+import { resolvePreviewContentVariants } from "./preview-variants.js";
 import { loadPublishPageUrlStyle } from "./public-urls.js";
 
 interface ModuleSourceRow {
@@ -422,16 +423,22 @@ export const renderPagePreviewOp = defineOperation({
     // and forking diverging copies both compose correctly.
     const placementBindings = new Map<
       string, // `${block_name}#${position}`
-      { contentInstanceId: string }
+      { contentInstanceId: string; synced: boolean }
     >();
     const liveBindings = (await tx.execute(sql`
-      SELECT block_name, position, content_instance_id::text AS content_instance_id
+      SELECT block_name, position, content_instance_id::text AS content_instance_id, sync_mode
       FROM page_modules
       WHERE page_id = ${input.pageId}::uuid
-    `)) as unknown as { block_name: string; position: number; content_instance_id: string }[];
+    `)) as unknown as {
+      block_name: string;
+      position: number;
+      content_instance_id: string;
+      sync_mode: string;
+    }[];
     for (const r of liveBindings) {
       placementBindings.set(`${r.block_name}#${r.position}`, {
         contentInstanceId: r.content_instance_id,
+        synced: r.sync_mode === "synced",
       });
     }
     if (chatBranchId) {
@@ -462,6 +469,7 @@ export const renderPagePreviewOp = defineOperation({
               if (p) {
                 placementBindings.set(`${b.blockName}#${i}`, {
                   contentInstanceId: p.contentInstanceId,
+                  synced: p.syncMode === "synced",
                 });
               }
             }
@@ -732,6 +740,92 @@ export const renderPagePreviewOp = defineOperation({
       dormantDataLists: Object.fromEntries(pluginDataListsRegistry.dormantNames()),
     };
 
+    // P6.7.6 — load layout modules (chrome) for every layout block
+    // except `content` (which is filled by the rendered template).
+    // issue #106 — load `m.fields` for layout/chrome modules too. A
+    // layout module (footer/header/nav) has NO content_instance binding
+    // (the `layout_modules` table carries no content_instance_id), so its
+    // content lives in the authored field `default`s. The composer's
+    // applyFieldSubstitution renders those defaults — but only if it
+    // receives the fields. Omitting them shipped raw `{{nav_links}}` /
+    // `{{copyright}}` placeholders to the live-edit preview iframe while
+    // page-content modules (bound to content_instances) interpolated
+    // fine. The static generator already loads fields here; the preview
+    // op was the lone divergence. See CLAUDE.md §1A (repeating content is
+    // a list field) — the footer nav is a `link-list` default.
+    const layoutModRows = (await tx.execute(sql`
+      SELECT lm.block_name AS block_name,
+             lm.position   AS position,
+             m.id::text    AS module_id,
+             m.slug        AS slug,
+             m.display_name AS display_name,
+             m.html        AS html,
+             m.css         AS css,
+             m.js          AS js,
+             m.fields      AS fields
+      FROM layout_modules lm JOIN modules m ON m.id = lm.module_id
+      WHERE lm.layout_id = ${pageRow.layout_id}::uuid AND m.deleted_at IS NULL
+      ORDER BY lm.block_name ASC, lm.position ASC
+    `)) as unknown as ModuleSourceRow[];
+    // Caller-branch module-code overlay for LAYOUT (chrome) modules —
+    // same class as the run-#8-R3 page-module overlay above. A branched
+    // `edit_module` on a footer/header writes module_snapshots only; the
+    // live `modules` row stays published. Without this overlay the
+    // preview (and inspect_page_render / screenshot_page riding on it)
+    // kept rendering the STALE chrome, sending the AI into an
+    // "my edits don't land" re-edit loop (live-edit footer turn burned
+    // ~8 recovery rounds). Fields ride along because chrome renders from
+    // field DEFAULTS — a default edit must show up too.
+    if (chatBranchId && layoutModRows.length > 0) {
+      const layoutModuleIds = layoutModRows.map((r) => sql`${r.module_id}::uuid`);
+      const chromeBranchRows = (await tx.execute(sql`
+        SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
+        FROM module_snapshots ms
+        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+        WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+          AND ms.module_id IN (${sql.join(layoutModuleIds, sql`, `)})
+        ORDER BY ms.module_id, ss.created_at DESC
+      `)) as unknown as { module_id: string; state: unknown }[];
+      const chromeOverlay = new Map<string, Record<string, unknown>>();
+      for (const r of chromeBranchRows) {
+        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+        chromeOverlay.set(r.module_id, raw as Record<string, unknown>);
+      }
+      for (const m of layoutModRows) {
+        const s = chromeOverlay.get(m.module_id);
+        if (!s || s.deletedAt) continue;
+        m.html = (s.html as string) ?? m.html;
+        m.css = (s.css as string) ?? m.css;
+        m.js = (s.js as string) ?? m.js;
+        m.display_name = (s.displayName as string) ?? m.display_name;
+        if (Array.isArray(s.fields)) m.fields = s.fields as ModuleSourceRow["fields"];
+      }
+    }
+    // #592 — content variants: which chrome and which shared content this
+    // page shows (e.g. the footer in the page's language). Same keys and
+    // payload as the static generator's pass, so both surfaces agree;
+    // problems land on the missing-content surface here and stop the
+    // build there.
+    const variants = await resolvePreviewContentVariants(tx, {
+      pageId: input.pageId,
+      layoutId: pageRow.layout_id,
+      layoutModRows,
+      modRows,
+      placementBindings,
+      valuesByInstance,
+      chatBranchId: chatBranchId ?? null,
+      renderScope,
+      pageUrlStyle,
+    });
+    for (const [key, values] of variants.pageValues) {
+      const binding = placementBindings.get(key);
+      const m = modRows.find((r) => `${r.block_name}#${r.position}` === key);
+      if (!binding || !m) continue;
+      const id = `variant:${key}`;
+      instanceByIdResource.set(id, { id, moduleId: m.module_id, values, deletedAt: null });
+      placementBindings.set(key, { ...binding, contentInstanceId: id });
+    }
+
     const nestedCssJsByModuleId = new Map<string, ModuleResource>();
     for (const m of modRows) {
       const binding = placementBindings.get(`${m.block_name}#${m.position}`);
@@ -876,67 +970,6 @@ export const renderPagePreviewOp = defineOperation({
       }
     }
 
-    // P6.7.6 — load layout modules (chrome) for every layout block
-    // except `content` (which is filled by the rendered template).
-    // issue #106 — load `m.fields` for layout/chrome modules too. A
-    // layout module (footer/header/nav) has NO content_instance binding
-    // (the `layout_modules` table carries no content_instance_id), so its
-    // content lives in the authored field `default`s. The composer's
-    // applyFieldSubstitution renders those defaults — but only if it
-    // receives the fields. Omitting them shipped raw `{{nav_links}}` /
-    // `{{copyright}}` placeholders to the live-edit preview iframe while
-    // page-content modules (bound to content_instances) interpolated
-    // fine. The static generator already loads fields here; the preview
-    // op was the lone divergence. See CLAUDE.md §1A (repeating content is
-    // a list field) — the footer nav is a `link-list` default.
-    const layoutModRows = (await tx.execute(sql`
-      SELECT lm.block_name AS block_name,
-             lm.position   AS position,
-             m.id::text    AS module_id,
-             m.slug        AS slug,
-             m.display_name AS display_name,
-             m.html        AS html,
-             m.css         AS css,
-             m.js          AS js,
-             m.fields      AS fields
-      FROM layout_modules lm JOIN modules m ON m.id = lm.module_id
-      WHERE lm.layout_id = ${pageRow.layout_id}::uuid AND m.deleted_at IS NULL
-      ORDER BY lm.block_name ASC, lm.position ASC
-    `)) as unknown as ModuleSourceRow[];
-    // Caller-branch module-code overlay for LAYOUT (chrome) modules —
-    // same class as the run-#8-R3 page-module overlay above. A branched
-    // `edit_module` on a footer/header writes module_snapshots only; the
-    // live `modules` row stays published. Without this overlay the
-    // preview (and inspect_page_render / screenshot_page riding on it)
-    // kept rendering the STALE chrome, sending the AI into an
-    // "my edits don't land" re-edit loop (live-edit footer turn burned
-    // ~8 recovery rounds). Fields ride along because chrome renders from
-    // field DEFAULTS — a default edit must show up too.
-    if (chatBranchId && layoutModRows.length > 0) {
-      const layoutModuleIds = layoutModRows.map((r) => sql`${r.module_id}::uuid`);
-      const chromeBranchRows = (await tx.execute(sql`
-        SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
-        FROM module_snapshots ms
-        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-        WHERE ss.chat_branch_id = ${chatBranchId}::uuid
-          AND ms.module_id IN (${sql.join(layoutModuleIds, sql`, `)})
-        ORDER BY ms.module_id, ss.created_at DESC
-      `)) as unknown as { module_id: string; state: unknown }[];
-      const chromeOverlay = new Map<string, Record<string, unknown>>();
-      for (const r of chromeBranchRows) {
-        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-        chromeOverlay.set(r.module_id, raw as Record<string, unknown>);
-      }
-      for (const m of layoutModRows) {
-        const s = chromeOverlay.get(m.module_id);
-        if (!s || s.deletedAt) continue;
-        m.html = (s.html as string) ?? m.html;
-        m.css = (s.css as string) ?? m.css;
-        m.js = (s.js as string) ?? m.js;
-        m.display_name = (s.displayName as string) ?? m.display_name;
-        if (Array.isArray(s.fields)) m.fields = s.fields as ModuleSourceRow["fields"];
-      }
-    }
     const layoutGrouped = new Map<
       string,
       {
@@ -947,18 +980,23 @@ export const renderPagePreviewOp = defineOperation({
         css: string;
         js: string;
         fields: { name: string; kind: ModuleFieldKind; default?: unknown }[];
+        contentValues?: Record<string, unknown>;
       }[]
     >();
     for (const r of layoutModRows) {
       const arr = layoutGrouped.get(r.block_name) ?? [];
+      // #592 — a locale's chrome may render other values or another module.
+      const override = variants.layout.get(`layout:${r.block_name}:${arr.length}`);
+      const src = override?.module ?? r;
       arr.push({
-        moduleId: r.module_id,
-        slug: r.slug,
-        displayName: r.display_name,
-        html: r.html,
-        css: r.css,
-        js: r.js,
-        fields: parseFields(r.fields),
+        moduleId: src.module_id,
+        slug: src.slug,
+        displayName: src.display_name,
+        html: src.html,
+        css: src.css,
+        js: src.js,
+        fields: parseFields(src.fields),
+        ...(override?.values !== undefined ? { contentValues: override.values } : {}),
       });
       layoutGrouped.set(r.block_name, arr);
     }
@@ -1278,7 +1316,13 @@ export const renderPagePreviewOp = defineOperation({
       // issue #150 + #156 — unresolvable web fonts and unknown CSS vars
       // ride the missing-content surface (`theme-font-unresolvable:` /
       // `unknown-css-var:`), same convention as theme-asset-unbound.
-      missingSlots: [...composed.missingSlots, ...fontMarkers, ...cssVarMarkers, ...seoMarkers],
+      missingSlots: [
+        ...composed.missingSlots,
+        ...variants.markers,
+        ...fontMarkers,
+        ...cssVarMarkers,
+        ...seoMarkers,
+      ],
       pageSlug: pageRow.slug,
     });
   },

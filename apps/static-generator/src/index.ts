@@ -2,6 +2,8 @@
 
 // issue #150 — theme web-font resolver (see fonts-resolver.ts header
 // for why it lives here). admin-core re-exports this surface.
+// #592 — the build's content-variants pass (resolution + loud refusal).
+export { resolveBuildContentVariants } from "./content-variants-pass.js";
 export {
   clearFontResolverMemo,
   defaultFontsCacheDir,

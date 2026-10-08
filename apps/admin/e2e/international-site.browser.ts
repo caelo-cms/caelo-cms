@@ -29,6 +29,8 @@ import {
 } from "./helpers.js";
 
 test.beforeAll(clearLoginRateBucket);
+// Both tests here own the plugin's (site-wide) locale registry.
+test.describe.configure({ mode: "serial" });
 
 const ts = Date.now();
 const SRC_SLUG = `t400-pricing-${ts}`;
@@ -322,4 +324,157 @@ test("gated set_locales pauses for the in-chat click; create_variant lands /de/;
   expect(html).toContain(`hreflang="de"`);
   expect(html).toContain(`/de/${DE_SLUG}`);
   expect(html).toContain(`hreflang="x-default"`);
+});
+
+// ---------------------------------------------------------------------------
+// #592 — menus and footer per language, through the real admin preview
+// route (the iframe the editor sees): an English page renders the site
+// footer as authored; its German counterpart renders the German footer
+// variant, its menu link pointing at the German page. The chrome variant
+// is seeded as stored data (what translate_chrome writes); the
+// translation call itself is covered by the scripted-AI integration test
+// (international-site-chrome.integration.test.ts). Same file, serial:
+// both tests own the plugin's locale registry.
+// ---------------------------------------------------------------------------
+
+const PFX = `t592e-${ts}`;
+
+interface Seed {
+  enPageId: string;
+  dePageId: string;
+}
+
+function pluginScopedSql(body: string): string {
+  return `
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    const out = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      ${body}
+    });
+    await sql.end();
+    process.stdout.write(JSON.stringify(out ?? null));
+  `;
+}
+
+function seed(): Seed {
+  const raw = runBunInline(
+    pluginScopedSql(`
+      const P = process.env.PFX;
+      const lay = await tx\`INSERT INTO layouts (slug, display_name, html, css)
+        VALUES (\${P + "-lay"}, 'L',
+                '<!doctype html><html><head><title>t</title></head><body><caelo-slot name="content">_</caelo-slot><caelo-slot name="footer"></caelo-slot></body></html>',
+                '') RETURNING id\`;
+      await tx\`INSERT INTO layout_blocks (layout_id, name, display_name, position)
+        VALUES (\${lay[0].id}, 'content', 'Content', 0), (\${lay[0].id}, 'footer', 'Footer', 1)\`;
+      const tpl = await tx\`INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
+        VALUES (\${P + "-tpl"}, 'T', 'content', '<main><caelo-slot name="content">_</caelo-slot></main>', '', \${lay[0].id})
+        RETURNING id\`;
+      await tx\`INSERT INTO template_blocks (template_id, name, display_name, position)
+        VALUES (\${tpl[0].id}, 'content', 'Content', 0)\`;
+      const fields = JSON.stringify([
+        { name: "tagline", kind: "text", label: "Tagline", default: "Made with care" },
+        { name: "nav", kind: "link-list", label: "Menu", default: [{ label: "About", href: "/" + P + "-about" }] },
+      ]);
+      const mod = await tx\`INSERT INTO modules (slug, display_name, type, kind, html, fields)
+        VALUES (\${P + "-footer"}, 'Site footer', 'footer', 'chrome',
+                '<footer><p class="tag">{{tagline}}</p>{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}</footer>',
+                \${fields}::jsonb) RETURNING id\`;
+      await tx\`INSERT INTO layout_modules (layout_id, block_name, position, module_id)
+        VALUES (\${lay[0].id}, 'footer', 0, \${mod[0].id})\`;
+      const mk = async (slug, path) => (await tx\`INSERT INTO pages (slug, name, title, template_id, status, current_path)
+        VALUES (\${slug}, \${slug}, \${slug}, \${tpl[0].id}, 'published', \${path}) RETURNING id\`)[0].id;
+      const enPricing = await mk(P + "-pricing", "/" + P + "-pricing");
+      const enAbout = await mk(P + "-about", "/" + P + "-about");
+      const dePreise = await mk(P + "-preise", "/de/" + P + "-preise");
+      const deUeber = await mk(P + "-ueber", "/de/" + P + "-ueber");
+
+      const plug = await tx\`SELECT id FROM plugins WHERE slug = 'international-site'\`;
+      if (!plug[0]) throw new Error("international-site plugin not loaded in the e2e admin");
+      await tx.unsafe(\`SET LOCAL caelo.plugin_id = '\${plug[0].id}'\`);
+      await tx.unsafe("DELETE FROM plugin_international_site.locales");
+      await tx.unsafe(\`INSERT INTO plugin_international_site.locales (code, display_name, url_strategy, is_default)
+        VALUES ('en', 'English', 'none', true), ('de', 'Deutsch', 'subdirectory', false)\`);
+      for (const [en, de] of [[enPricing, dePreise], [enAbout, deUeber]]) {
+        const g = crypto.randomUUID();
+        await tx.unsafe(\`INSERT INTO plugin_international_site.page_variants (group_id, page_id, locale_code, translation_status)
+          VALUES ('\${g}', '\${en}', 'en', 'source'), ('\${g}', '\${de}', 'de', 'up_to_date')\`);
+      }
+      const values = JSON.stringify({ tagline: "Mit Sorgfalt gemacht", nav: [{ label: "Über uns", href: "/" + P + "-about" }] });
+      await tx\`INSERT INTO plugin_international_site.chrome_variants
+        (target_key, locale_code, mode, values, translation_status, source_hash)
+        VALUES (\${"layout:" + lay[0].id + ":footer:0"}, 'de', 'translated', \${values}::jsonb, 'up_to_date', 'seeded')\`;
+      return { enPageId: enPricing, dePageId: dePreise };
+    `),
+    { PFX },
+  );
+  return JSON.parse(raw) as Seed;
+}
+
+function cleanupChrome(): void {
+  runBunInline(
+    pluginScopedSql(`
+      const P = process.env.PFX;
+      const plug = await tx\`SELECT id FROM plugins WHERE slug = 'international-site'\`;
+      const provisioned = await tx.unsafe(
+        "SELECT to_regclass('plugin_international_site.chrome_variants') IS NOT NULL AS ok",
+      );
+      if (plug[0] && provisioned[0]?.ok) {
+        await tx.unsafe(\`SET LOCAL caelo.plugin_id = '\${plug[0].id}'\`);
+        await tx.unsafe("DELETE FROM plugin_international_site.chrome_variants");
+        await tx.unsafe("DELETE FROM plugin_international_site.page_variants");
+        await tx.unsafe("DELETE FROM plugin_international_site.locales");
+      }
+      await tx\`DELETE FROM layout_modules WHERE layout_id IN (SELECT id FROM layouts WHERE slug LIKE \${P + "%"})\`;
+      await tx\`DELETE FROM pages WHERE slug LIKE \${P + "%"}\`;
+      await tx\`DELETE FROM modules WHERE slug LIKE \${P + "%"}\`;
+      await tx\`DELETE FROM templates WHERE slug LIKE \${P + "%"}\`;
+      await tx\`DELETE FROM layouts WHERE slug LIKE \${P + "%"}\`;
+      return null;
+    `),
+    { PFX },
+  );
+}
+
+test("an English page shows the English footer, its German counterpart the German one with German links", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("dev-owner@example.com");
+  await page.getByLabel("Password").fill("dev owner password");
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
+
+  // The plugin only resolves chrome while it runs — same Owner click a
+  // real install makes.
+  await page.goto("/security/plugins");
+  const activate = page.getByTestId("activate-international-site");
+  if ((await activate.count()) > 0) {
+    await activate.click();
+    await expect(page.getByTestId("activate-international-site")).toHaveCount(0, {
+      timeout: 30_000,
+    });
+  }
+
+  const s = seed();
+  try {
+    const cookies = await page.context().cookies();
+    const headers = { cookie: cookies.map((c) => `${c.name}=${c.value}`).join("; ") };
+
+    const en = await request.get(`${BASE}/edit/preview/${s.enPageId}`, { headers });
+    expect(en.status()).toBe(200);
+    const enHtml = await en.text();
+    expect(enHtml).toContain('<p class="tag">Made with care</p>');
+    expect(enHtml).toContain(`<a href="/${PFX}-about">About</a>`);
+
+    const de = await request.get(`${BASE}/edit/preview/${s.dePageId}`, { headers });
+    expect(de.status()).toBe(200);
+    const deHtml = await de.text();
+    expect(deHtml).toContain('<p class="tag">Mit Sorgfalt gemacht</p>');
+    expect(deHtml).toMatch(new RegExp(`<a href="/de/${PFX}-ueber/?">Über uns</a>`));
+    expect(deHtml).not.toContain("Made with care");
+  } finally {
+    cleanupChrome();
+  }
 });

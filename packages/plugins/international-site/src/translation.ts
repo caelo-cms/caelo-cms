@@ -128,7 +128,7 @@ export const translationResultPayload = z
 
 export type TranslationResultPayload = z.infer<typeof translationResultPayload>;
 
-function renderGlossaryBlock(glossary: readonly GlossaryEntry[]): string {
+export function renderGlossaryBlock(glossary: readonly GlossaryEntry[]): string {
   if (glossary.length === 0) return "";
   const lines = glossary.map((g) =>
     g.context
@@ -138,7 +138,7 @@ function renderGlossaryBlock(glossary: readonly GlossaryEntry[]): string {
   return ["", "## Glossary (use these exact translations)", ...lines].join("\n");
 }
 
-function renderStyleGuideBlock(styleGuide: string | null): string {
+export function renderStyleGuideBlock(styleGuide: string | null): string {
   if (!styleGuide || styleGuide.trim().length === 0) return "";
   return ["", "## Style guide", styleGuide.trim()].join("\n");
 }

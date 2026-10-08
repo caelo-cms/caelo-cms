@@ -30,6 +30,7 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
   requireCapability(Boolean(manifest.urlContributions?.length), "url_slots");
   requireCapability(manifest.hasBuildAssets || manifest.hasDeferrals, "client_assets");
   requireCapability(Boolean(manifest.dataLists?.length), "data_lists");
+  requireCapability(manifest.hasContentVariants, "content_variants");
   requireCapability(Boolean(manifest.skills?.length), "companion_skills");
   for (const capability of requested) {
     if (!manifest.capabilityReasons?.[capability])

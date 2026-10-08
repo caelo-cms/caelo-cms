@@ -46,6 +46,14 @@ Corrections stick. Tell the chat *"we say Kasse, not Checkout"* and the term lan
 
 When you edit a source page after its translations exist, the affected translations are marked stale within seconds. Ask *"update the German translations"* and only the changed parts are re-translated — hand-polished wording elsewhere is preserved.
 
+## Menus, header and footer per language
+
+Your navigation, header, footer and any content shared across pages exist once per language. Say *"translate the site chrome into German"* (or *"update the German translations"*, which includes it), and the AI translates all of it in one pass, so the menu and the footer use the same terms. German pages then show the German menus and footer, and English pages show the English ones.
+
+- **Links follow the language.** A menu link to *About* on a German page goes to the German *About* page automatically. If that page has no German version yet, or it is not published, the preview flags the link and publishing stops until you fix it.
+- **Nothing falls back silently.** If a German page would show chrome that has no German version yet, the preview flags it and publishing stops with a message naming what is missing. Pages never quietly show the English footer.
+- **A language can have its own chrome.** By default a language's menus are translations of the default language's: when you edit the English menu, the German one is marked for re-translation. Say *"the German menu should not have the Careers link"* or *"use the other footer on the German site"*, and the AI detaches that language's version. It then keeps its own items, links and even a different footer or menu module, and English edits no longer touch it. Switching it back to the translated version replaces its own content, so the AI asks you to approve that in the chat first.
+
 ## What visitors and search engines see
 
 - **Published translations only.** A page whose German version is still in draft returns a clean 404 on the German URL — never an automatic fallback to English. That is deliberate, correct SEO behaviour.
