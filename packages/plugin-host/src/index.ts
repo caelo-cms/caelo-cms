@@ -91,6 +91,11 @@ export {
   pluginPromptContextRegistry,
 } from "./prompt-context-registry.js";
 export {
+  type PublicUrlContext,
+  type PublicUrlPage,
+  resolvePublicPageUrls,
+} from "./public-urls.js";
+export {
   applyPluginRowState,
   discardBranchPluginRows,
   insertPluginRowSnapshot,
@@ -107,7 +112,7 @@ export {
   pluginToolsRegistry,
   type RegisteredPluginTool,
 } from "./tools-registry.js";
-export type { AIMessage, AIProvider } from "./types.js";
+export type { AICompletion, AIMessage, AIProvider } from "./types.js";
 export {
   collectUrlAnnotations,
   type DecodedPagePath,

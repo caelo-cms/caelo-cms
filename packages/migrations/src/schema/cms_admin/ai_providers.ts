@@ -17,5 +17,7 @@ export const aiProviders = pgTable("ai_providers", {
   displayName: text("display_name").notNull(),
   config: jsonb("config").notNull().default({}),
   isActive: boolean("is_active").notNull().default(false),
+  /** #593 — model for translation calls; NULL = same as the chat model. */
+  translationModel: text("translation_model"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

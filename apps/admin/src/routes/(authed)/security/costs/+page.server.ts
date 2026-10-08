@@ -36,6 +36,8 @@ type AggregateValue = {
   perPlugin: Array<{
     pluginId: string | null;
     pluginSlug: string | null;
+    provider: string;
+    model: string;
     calls: number;
     costUsd: number;
   }>;

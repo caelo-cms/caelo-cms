@@ -104,6 +104,7 @@ import {
   proposeSetAiBudgetTool,
   proposeSetAiPricingTool,
   proposeSetGatewaySettingsTool,
+  proposeSetTranslationModelTool,
 } from "./propose-owner-settings.js";
 import { getSiteSeoTool, proposeSetSiteSeoTool } from "./propose-set-site-seo.js";
 import { proposeSiteImportTool } from "./propose-site-import.js";
@@ -486,6 +487,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeSetAiBudgetTool);
   registry.register(proposeSetAiPricingTool);
   registry.register(proposeSetGatewaySettingsTool);
+  registry.register(proposeSetTranslationModelTool);
   // v0.2.37 — AI can withdraw its own pending proposals.
   registry.register(cancelProposalTool);
   // v0.11.0 — themes primitive (#45). Routine + the §11.A propose

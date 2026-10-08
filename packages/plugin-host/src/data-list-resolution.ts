@@ -15,6 +15,7 @@
  * other is the correct empty state.
  */
 
+import type { PageUrlStyle } from "@caelo-cms/shared";
 import { type DataListItem, pluginDataListsRegistry } from "./data-lists.js";
 import { type RenderScope, renderInvocation, runPluginOperation } from "./dispatch.js";
 
@@ -45,6 +46,8 @@ function coerceItems(raw: unknown, where: string): DataListItem[] {
 
 /**
  * @param pageIds pages being rendered in this pass.
+ * @param pageUrlStyle the serving target's page URL style, handed to the
+ *   plugin so the page links it lists equal the canonical URLs (#590).
  * @returns the lists each page may iterate. Empty when no active
  *   plugin offers any — the common single-language case, which costs
  *   zero plugin calls.
@@ -52,6 +55,7 @@ function coerceItems(raw: unknown, where: string): DataListItem[] {
 export async function resolveDataLists(
   pageIds: ReadonlyArray<string>,
   scope: RenderScope,
+  pageUrlStyle: PageUrlStyle,
 ): Promise<ResolvedDataLists> {
   const out = new Map<string, Record<string, DataListItem[]>>();
   if (pageIds.length === 0) return out;
@@ -63,7 +67,7 @@ export async function resolveDataLists(
       invocation: renderInvocation(scope),
       pluginSlug: source.pluginSlug,
       operationName: source.operationName,
-      args: { pageIds: [...pageIds] },
+      args: { pageIds: [...pageIds], pageUrlStyle },
     });
     if (!r.ok) {
       throw new Error(

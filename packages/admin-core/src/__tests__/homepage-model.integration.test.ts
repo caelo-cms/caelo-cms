@@ -170,6 +170,7 @@ describe("0184 (a) set_home_page + resolver", () => {
         siteBaseUrl: "https://example.com",
         pagePath: "/welcome",
         override: null,
+        pageUrlStyle: "directory",
       }),
     ).toBe("https://example.com/welcome/");
     // ...with the explicit designation it collapses to the site root.
@@ -178,6 +179,7 @@ describe("0184 (a) set_home_page + resolver", () => {
         siteBaseUrl: "https://example.com",
         pagePath: "/",
         override: null,
+        pageUrlStyle: "directory",
       }),
     ).toBe("https://example.com/");
   });

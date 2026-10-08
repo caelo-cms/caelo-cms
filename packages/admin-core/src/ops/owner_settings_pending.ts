@@ -2,14 +2,16 @@
 
 /**
  * owner_settings.{propose_set_ai_budget, propose_set_ai_pricing,
- * propose_set_gateway_settings, execute_proposal, reject_proposal,
- * list_pending} — the §11.A gate for Owner settings the agent had no path
- * to at all.
+ * propose_set_gateway_settings, propose_set_translation_model,
+ * execute_proposal, reject_proposal, list_pending} — the §11.A gate for
+ * Owner settings the agent had no path to at all.
  *
- * `ai_budgets.set`, `ai_pricing.set` and `gateway.set_settings` stay
- * human+system (see the `Why human-only` notes at each op): a spend cap, a
- * billing rate and the public write surface's abuse defences are decisions
- * whose mistakes cost money or let abuse through before anyone notices. So
+ * `ai_budgets.set`, `ai_pricing.set`, `gateway.set_settings` and
+ * `ai_providers.set_translation_model` stay human+system (see the `Why
+ * human-only` notes at each op): a spend cap, a billing rate, the model
+ * every translation is billed at and the public write surface's abuse
+ * defences are decisions whose mistakes cost money or let abuse through
+ * before anyone notices. So
  * the AI proposes and the operator approves in the chat (CLAUDE.md §11.A,
  * Plan B); `execute_proposal` then runs the existing op's handler on the
  * queued payload inside the same transaction, so the apply logic (pricing
@@ -34,6 +36,7 @@ import {
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { lookupPricing } from "../ai/pricing-cache.js";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
 import {
@@ -46,11 +49,21 @@ import {
 import { gatewaySettingsInput, getGatewaySettingsOp, setGatewaySettingsOp } from "./gateway.js";
 import { aiBudgetCellInput, listAiBudgetsOp, setAiBudgetOp } from "./security/ai_budgets.js";
 import { aiPricingRowInput, listAiPricingOp, setAiPricingOp } from "./security/ai_pricing.js";
+import {
+  listAiProvidersOp,
+  setTranslationModelOp,
+  translationModelProblem,
+} from "./security/ai_providers.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 type Ctx = ExecutionContext;
 
-const ownerSettingsKind = z.enum(["set_ai_budget", "set_ai_pricing", "set_gateway_settings"]);
+const ownerSettingsKind = z.enum([
+  "set_ai_budget",
+  "set_ai_pricing",
+  "set_gateway_settings",
+  "set_translation_model",
+]);
 type OwnerSettingsKind = z.infer<typeof ownerSettingsKind>;
 
 /** Microcents (1e-8 USD) → "$1.23" for previews the operator reads. */
@@ -113,6 +126,32 @@ export const proposeGatewaySettingsInput = gatewaySettingsInput
   .partial()
   .strict()
   .refine((v) => Object.keys(v).length > 0, { message: "name at least one setting to change" });
+
+/**
+ * The AI names only the model (or null = same as chat model); the provider
+ * is the active one at propose time, stored in the queued payload so the
+ * approve applies to the provider the preview described even if the
+ * active provider changes in between.
+ */
+export const proposeTranslationModelInput = z
+  .object({
+    model: z
+      .string()
+      .min(1)
+      .max(128)
+      .nullable()
+      .describe(
+        "Model id from the active provider's catalogue (list_ai_providers shows the choices), or null for 'same as the chat model'.",
+      ),
+  })
+  .strict();
+
+const queuedTranslationModel = z
+  .object({
+    name: z.enum(["anthropic", "openai", "google", "local-openai-compat"]),
+    model: z.string().min(1).max(128).nullable(),
+  })
+  .strict();
 
 // ─── shared queue insert ─────────────────────────────────────────────
 
@@ -353,6 +392,74 @@ export const proposeSetGatewaySettingsOp = defineOperation({
   },
 });
 
+// ─── propose_set_translation_model ───────────────────────────────────
+
+/**
+ * "$1/MTok in · $5/MTok out" for a text model, or "unpriced". Reads through
+ * `lookupPricing` — the exact lookup `chat.record_ai_call` bills with
+ * (model wildcard, validity window) — so the preview shows the rate the
+ * calls will actually be charged at.
+ */
+async function textRate(tx: Tx, provider: string, model: string): Promise<string> {
+  const row = await lookupPricing(tx, provider, model, "text");
+  if (!row) return "unpriced (no ai_pricing row — propose one with propose_set_ai_pricing)";
+  return `${perMTok(row.inputMicrocents)} in · ${perMTok(row.outputMicrocents) ?? "n/a"} out`;
+}
+
+export const proposeSetTranslationModelOp = defineOperation({
+  name: "owner_settings.propose_set_translation_model",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: proposeTranslationModelInput,
+  output: proposeOutput,
+  handler: async (ctx, input, tx) => {
+    const op = "owner_settings.propose_set_translation_model";
+    const providers = await listAiProvidersOp.handler(ctx, {}, tx);
+    if (!providers.ok) return handlerError(op, "could not read AI providers");
+    const active = providers.value.providers.find((p) => p.isActive);
+    if (!active) {
+      return handlerError(
+        op,
+        "no active AI provider — the Owner configures one at /security/ai before a translation model can be chosen.",
+      );
+    }
+    if (input.model !== null) {
+      const problem = translationModelProblem(active.name, input.model);
+      if (problem) return handlerError(op, problem);
+    }
+    if (input.model === active.translationModel) {
+      return handlerError(
+        op,
+        `the translation model is already ${input.model ?? "the chat model"} — nothing to change.`,
+      );
+    }
+    const chatModel = typeof active.config.model === "string" ? active.config.model : null;
+    if (chatModel === null) {
+      return handlerError(
+        op,
+        `the active provider ${active.name} has no chat model stored — the Owner saves it at /security/ai first.`,
+      );
+    }
+    const describe = async (model: string | null) => ({
+      model,
+      label: model === null ? `same as chat model (${chatModel})` : model,
+      rate: await textRate(tx, active.name, model ?? chatModel),
+    });
+    const from = await describe(active.translationModel);
+    const to = await describe(input.model);
+    const summary = `translation model (${active.name}): ${from.label} → ${to.label}`;
+    return queueProposal(
+      tx,
+      ctx,
+      "set_translation_model",
+      { name: active.name, model: input.model },
+      { provider: active.name, changes: { translationModel: { from, to } }, summary },
+      op,
+      summary,
+    );
+  },
+});
+
 // ─── execute / reject / list_pending ─────────────────────────────────
 
 /** System always; a human only with settings.write on an active user. */
@@ -382,7 +489,7 @@ export const executeOwnerSettingsProposalOp = defineOperation({
     const op = "owner_settings.execute_proposal";
     // The in-chat Approve runs this with the operator's own context, and
     // anyone who can chat (content.read) sees the approval card. Budgets,
-    // pricing and the gateway are settings.write decisions — the same
+    // pricing, the translation model and the gateway are settings.write decisions — the same
     // permission the Owner pages require — so the approver must hold it.
     if (!(await approverMayChangeSettings(tx, ctx))) {
       return handlerError(
@@ -420,6 +527,15 @@ export const executeOwnerSettingsProposalOp = defineOperation({
       for (const pricing of payload.rows) {
         const r = await setAiPricingOp.handler(ctx, pricing, tx);
         if (!r.ok) return handlerError(op, `ai_pricing.set failed: ${errorMessage(r.error)}`);
+      }
+    } else if (row.kind === "set_translation_model") {
+      const payload = queuedTranslationModel.parse(parsePayload(row.payload));
+      const r = await setTranslationModelOp.handler(ctx, payload, tx);
+      if (!r.ok) {
+        return handlerError(
+          op,
+          `ai_providers.set_translation_model failed: ${errorMessage(r.error)}`,
+        );
       }
     } else {
       const patch = proposeGatewaySettingsInput.parse(parsePayload(row.payload));

@@ -266,9 +266,9 @@ describe("branch-aware plugin storage", () => {
     // A preview render of the chat shows its branch; a main render does not.
     const PAGE = "00000000-0000-4000-8000-0000000000aa";
     const listed = async (chatBranchId: string | null) =>
-      ((await resolveDataLists([PAGE], { chatBranchId })).get(PAGE)?.pbs_notes ?? []).map(
-        (i) => i.label,
-      );
+      (
+        (await resolveDataLists([PAGE], { chatBranchId }, "directory")).get(PAGE)?.pbs_notes ?? []
+      ).map((i) => i.label);
     expect(await listed(a.chatBranchId)).toEqual(["a-new", "seed-a"]);
     expect(await listed(MAIN_RENDER.chatBranchId)).toEqual(["seed"]);
 

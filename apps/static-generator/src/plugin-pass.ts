@@ -27,6 +27,7 @@ import {
   runPluginStaticRender,
 } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
+import type { PageUrlStyle } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
 const SYSTEM_CTX = {
@@ -73,8 +74,10 @@ export async function runPluginRenderPass(args: {
   adapter: DatabaseAdapter;
   pages: BakedPage[];
   bakeTargets: ReadonlyMap<string, BakeTarget>;
+  /** The target's page URL style, handed to every `staticRender`. */
+  pageUrlStyle: PageUrlStyle;
 }): Promise<PluginPassResult> {
-  const { adapter, pages, bakeTargets } = args;
+  const { adapter, pages, bakeTargets, pageUrlStyle } = args;
 
   const activePlugins = loadedPlugins
     .all()
@@ -120,7 +123,9 @@ export async function runPluginRenderPass(args: {
           pluginSlug: plugin.slug,
           pageId: target.pageId,
         }).catch(() => ""));
-      const cacheKey = `${plugin.version}:${metaSig}`;
+      // The URL style is part of the key: a plugin linking to pages renders
+      // different hrefs per style (#590).
+      const cacheKey = `${plugin.version}:${pageUrlStyle}:${metaSig}`;
 
       const cached = await adapter.withAdminTransaction(
         SYSTEM_CTX,
@@ -149,6 +154,7 @@ export async function runPluginRenderPass(args: {
             invocation: renderInvocation(MAIN_RENDER),
             pluginSlug: plugin.slug,
             pageId: target.pageId,
+            pageUrlStyle,
           });
           html = rendered ?? "";
         } catch {

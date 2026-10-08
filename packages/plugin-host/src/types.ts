@@ -13,11 +13,33 @@ export interface AIMessage {
 }
 
 export interface AIProvider {
-  /** Single-shot completion. The host wraps this for `ctx.ai.complete(...)`. */
+  /**
+   * Single-shot completion. The host wraps this for `ctx.ai.complete(...)`.
+   * `purpose` is the plugin's declared use; the implementation picks the
+   * model for it (the Owner's per-purpose choice, else the chat model) and
+   * reports the provider + model it actually ran on, which the host records
+   * in `ai_calls` against the plugin.
+   */
   complete(opts: {
     system: string;
     messages: ReadonlyArray<AIMessage>;
     maxTokens?: number;
     temperature?: number;
-  }): Promise<{ text: string; inputTokens: number; outputTokens: number }>;
+    purpose?: string;
+  }): Promise<AICompletion>;
+}
+
+/** What one completion produced, and on which provider/model. */
+export interface AICompletion {
+  readonly text: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  /** Prompt-cache read tokens (billed at the reduced rate). */
+  readonly cachedTokens: number;
+  /** Prompt-cache write tokens (billed at the premium rate). */
+  readonly cacheCreationTokens: number;
+  /** Provider name as stored in `ai_providers.name`. */
+  readonly provider: string;
+  /** Model id the call actually ran on. */
+  readonly model: string;
 }

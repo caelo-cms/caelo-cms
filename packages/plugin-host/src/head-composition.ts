@@ -32,6 +32,7 @@ import {
   renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
+import type { PublicUrlContext } from "./public-urls.js";
 
 interface ContributionSource {
   readonly pluginSlug: string;
@@ -84,7 +85,7 @@ export interface CollectedContributions {
  */
 export async function collectContributions(
   pageIds: ReadonlyArray<string>,
-  opts: { siteBaseUrl: string } & RenderScope,
+  opts: PublicUrlContext & RenderScope,
 ): Promise<CollectedContributions> {
   const head = new Map<string, HeadEntry[]>();
   const headKeys = new Map<string, Map<string, { value: string; source: string }>>();
@@ -98,7 +99,11 @@ export async function collectContributions(
       invocation: renderInvocation(opts),
       pluginSlug: source.pluginSlug,
       operationName: source.operationName,
-      args: { pageIds: [...pageIds], siteBaseUrl: opts.siteBaseUrl },
+      args: {
+        pageIds: [...pageIds],
+        siteBaseUrl: opts.siteBaseUrl,
+        pageUrlStyle: opts.pageUrlStyle,
+      },
     });
     if (!r.ok) {
       throw new Error(
