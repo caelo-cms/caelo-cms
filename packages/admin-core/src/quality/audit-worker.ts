@@ -18,11 +18,19 @@
  * and starve the editor's requests.
  */
 
+import { existsSync } from "node:fs";
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
+import { localBuildArchiveDir } from "../ops/deploy.js";
 import type { AuditJob } from "./lighthouse-protocol.js";
 import { type AuditJobResult, runAuditJob } from "./lighthouse-runner.js";
+import {
+  gcsStagingSource,
+  localBuildSource,
+  type StagedFileSource,
+  serveStagedBuild,
+} from "./staged-origin.js";
 
 const WORKER_CTX: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -39,12 +47,62 @@ export interface ClaimedAuditRun {
   readonly performanceRuns: number;
   readonly pageUrlStyle: "directory" | "no-extension";
   readonly previewUrl: string | null;
+  readonly env: string;
+  readonly outDir: string;
   readonly pages: readonly { readonly pageId: string; readonly currentPath: string }[];
 }
 
 export type StagingOrigin =
-  | { readonly ok: true; readonly baseUrl: string }
+  | {
+      readonly ok: true;
+      readonly baseUrl: string;
+      /** Set for a loopback origin this audit owns: close it afterwards. */
+      readonly close?: () => Promise<void>;
+    }
   | { readonly ok: false; readonly code: string; readonly message: string };
+
+/** Provider environment the origin resolution reads. */
+export interface OriginEnv {
+  readonly provider?: string;
+  readonly stagingBaseUrl?: string;
+  /** Override the file source of a loopback origin (tests). */
+  readonly loopbackSource?: (run: ClaimedAuditRun) => StagedFileSource;
+}
+
+/**
+ * The file source for providers whose staging the browser cannot open.
+ * gcp: the staging bucket (the build archive on disk is ephemeral and may
+ * live on another instance). aws / azure: the build archive this process
+ * wrote, when it is still here. Null: nothing to serve from.
+ */
+function loopbackSourceFor(
+  provider: string,
+  run: ClaimedAuditRun,
+): { source: StagedFileSource } | { code: string; message: string } {
+  if (provider === "gcp") {
+    try {
+      return { source: gcsStagingSource(run.deployRunId) };
+    } catch (e) {
+      return {
+        code: "staging-unresolvable",
+        message: e instanceof Error ? e.message : String(e),
+      };
+    }
+  }
+  const dir = localBuildArchiveDir({
+    provider,
+    env: run.env,
+    outDir: run.outDir,
+    runId: run.deployRunId,
+  });
+  if (!existsSync(dir)) {
+    return {
+      code: "build-unavailable",
+      message: `the files of staged build ${run.deployRunId} are not on this admin instance (${dir}) and provider "${provider}" has no staging URL to audit — Stage again and the check runs on the instance that built it`,
+    };
+  }
+  return { source: localBuildSource(dir) };
+}
 
 /**
  * Where the audit browser can load THIS deploy run's staged build, per
@@ -52,7 +110,7 @@ export type StagingOrigin =
  */
 export async function resolveStagingOrigin(
   run: ClaimedAuditRun,
-  env: { readonly provider?: string; readonly stagingBaseUrl?: string },
+  env: OriginEnv,
 ): Promise<StagingOrigin> {
   const provider = env.provider ?? "";
   if (provider === "gcp-firebase") {
@@ -81,10 +139,24 @@ export async function resolveStagingOrigin(
     }
     return { ok: true, baseUrl };
   }
+  if (provider === "gcp" || provider === "aws" || provider === "azure") {
+    // No staging URL the browser can open (gcp: private bucket behind the
+    // IAP-gated admin proxy): serve the run's files on a loopback port.
+    let source: StagedFileSource;
+    if (env.loopbackSource) {
+      source = env.loopbackSource(run);
+    } else {
+      const found = loopbackSourceFor(provider, run);
+      if ("code" in found) return { ok: false, code: found.code, message: found.message };
+      source = found.source;
+    }
+    const origin = await serveStagedBuild(source);
+    return { ok: true, baseUrl: origin.baseUrl, close: origin.close };
+  }
   return {
     ok: false,
     code: "provider-unsupported",
-    message: `quality audits cannot reach the staged build on provider "${provider}" yet: its staging is only served through the sign-in-protected admin preview, which the audit browser cannot open. The audit is recorded as failed so the gap stays visible.`,
+    message: `quality audits do not know how to reach staging on provider "${provider}" — the audit is recorded as failed so the gap stays visible`,
   };
 }
 
@@ -108,7 +180,7 @@ interface WorkerDeps {
   /** Override the Lighthouse runner (tests). */
   readonly runJob?: (job: AuditJob) => Promise<AuditJobResult>;
   /** Override provider env (tests). */
-  readonly env?: { readonly provider?: string; readonly stagingBaseUrl?: string };
+  readonly env?: OriginEnv;
 }
 
 async function record(
@@ -166,7 +238,12 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
     })),
     performanceRuns: run.performanceRuns,
   };
-  const result = await (deps.runJob ?? runAuditJob)(job);
+  let result: AuditJobResult;
+  try {
+    result = await (deps.runJob ?? runAuditJob)(job);
+  } finally {
+    await origin.close?.();
+  }
   if (!result.ok) {
     await record(deps, run.auditRunId, origin.baseUrl, {
       kind: "failed",

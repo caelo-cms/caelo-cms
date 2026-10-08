@@ -31,6 +31,10 @@
   import DebugPanel from "./DebugPanel.svelte";
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
   import InlineDiff from "./InlineDiff.svelte";
+  import {
+    postQualityAction,
+    qualityStatusFor,
+  } from "#lib/components/edit/quality-status.svelte.js";
   import { parseProposalContent } from "./proposal-parser.js";
   import {
     collapseStatusNotes,
@@ -488,6 +492,76 @@
   $effect(() => {
     return () => stopImportPolling();
   });
+
+  /**
+   * #553 — quality-gate feedback for THIS chat's Stages. When the audit of
+   * a Stage settles, the panel claims its message exactly once (the server
+   * decides the text and enforces once-only across tabs): a status note is
+   * shown as-is; a fix request is sent as a system-origin turn, which starts
+   * the AI's fix round (capped at 2 by the server-side text). The poller is
+   * shared with the /edit toolbar's Publish gate.
+   */
+  const qualityStatus = $derived(qualityStatusFor(session.id));
+  $effect(() => {
+    const poller = qualityStatus;
+    poller.acquire();
+    return () => poller.release();
+  });
+  let pendingQualityNudge = $state<{ auditRunId: string; text: string } | null>(null);
+  let qualityRetryError = $state<string | null>(null);
+  const claimedQualityAudits = new Set<string>();
+  $effect(() => {
+    const st = qualityStatus.status;
+    if (!st?.audit || st.notified || !st.feedback) return;
+    const auditRunId = st.audit.id;
+    if (claimedQualityAudits.has(auditRunId)) return;
+    claimedQualityAudits.add(auditRunId);
+    void (async () => {
+      try {
+        const r = await postQualityAction(session.id, csrfToken, { action: "claim", auditRunId });
+        if (r.send) {
+          pendingQualityNudge = { auditRunId, text: r.send };
+        } else if (r.note) {
+          messages = [
+            ...messages,
+            { id: `quality-${auditRunId}`, role: "user", origin: "system", content: r.note },
+          ];
+        }
+      } catch {
+        // Not claimed — the next poll offers it again.
+        claimedQualityAudits.delete(auditRunId);
+      } finally {
+        void qualityStatus.refresh();
+      }
+    })();
+  });
+  $effect(() => {
+    // Same flush contract as the import nudge: only while idle and the
+    // operator is not typing.
+    if (streaming) return;
+    if (pendingQualityNudge === null) return;
+    if (composer.trim().length > 0) return;
+    const nudge = pendingQualityNudge;
+    pendingQualityNudge = null;
+    void (async () => {
+      await sendAutoMessage(nudge.text);
+      // Delivered (the stream persisted the turn): mark it so no other tab
+      // sends it again. Without this ack the server lease runs out and the
+      // nudge is offered again — a failed send never silently ends the loop.
+      await postQualityAction(session.id, csrfToken, {
+        action: "ack",
+        auditRunId: nudge.auditRunId,
+      }).catch(() => undefined);
+      claimedQualityAudits.delete(nudge.auditRunId);
+    })();
+  });
+
+  async function retryQualityCheck(): Promise<void> {
+    qualityRetryError = null;
+    const r = await postQualityAction(session.id, csrfToken, { action: "retry" });
+    if (!r.ok) qualityRetryError = r.error ?? "Could not start the quality check.";
+    await qualityStatus.refresh();
+  }
 
   // offer_choices click that landed while the AI was mid-stream —
   // flushed by the effect below, same contract as approval nudges.
@@ -2140,6 +2214,32 @@
              reading the newest message — "missed it nearly"). Click
              Approve here instead of hunting the original tool-card.
              Drops out as soon as the row flips to applied/rejected. -->
+        <!-- #553 — a FAILED quality check keeps Publish live closed; say so
+             in the chat, with the retry right here (publishing anyway is a
+             toolbar decision or the AI's approval card). -->
+        {#if qualityStatus.status?.gate?.state === "errored"}
+          <div
+            class="flex flex-wrap items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs"
+            data-testid="chat-quality-failed"
+          >
+            <span class="font-medium text-destructive">Audit failed:</span>
+            <span class="min-w-0 flex-1 truncate" title={qualityStatus.status.gate.message}>
+              {qualityStatus.status.gate.message}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              data-testid="chat-quality-retry"
+              onclick={() => void retryQualityCheck()}
+            >
+              Retry check
+            </Button>
+            {#if qualityRetryError}
+              <span role="alert" class="text-destructive">{qualityRetryError}</span>
+            {/if}
+          </div>
+        {/if}
         <!-- Plan B (SDK approval gate) — inline Approve/Reject for a gated tool
              the current turn paused on. The turn resumes (or the model reacts
              to a denial) as soon as the operator decides. -->

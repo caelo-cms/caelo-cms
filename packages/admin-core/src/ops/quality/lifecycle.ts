@@ -25,6 +25,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { withInstallRules } from "../../quality/classify.js";
+import { decideGate } from "../../quality/gate.js";
 import { pageMeasurementSchema } from "../../quality/lighthouse-protocol.js";
 import {
   type BaselineState,
@@ -35,6 +36,7 @@ import {
 } from "../../quality/ratchet.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { iso, json, stageClassificationSchema, uuidList } from "./_shared.js";
+import { loadAcceptances, loadGateAuditById } from "./gate-loader.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -78,6 +80,32 @@ async function previousStagingAudit(
   `)) as unknown as { id: string; status: string; target_page_ids: string[] | null }[];
   const row = rows[0];
   return row ? { ...row, target_page_ids: row.target_page_ids ?? [] } : null;
+}
+
+/**
+ * The fix round of a chat's next audit (#553 2-round cap): one more than
+ * the chat's previous audit when that one left problems open (the Stage
+ * being audited is the AI's fix attempt), carried over unchanged across
+ * failed or superseded audits (nothing was measured), and 0 after a clean
+ * one — including problems an editor has since accepted in full. Stages
+ * outside a chat have no fix loop: always 0.
+ */
+async function nextFixRound(tx: Tx, chatSessionId: string | null): Promise<number> {
+  if (chatSessionId === null) return 0;
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id, status, fix_round FROM quality_audit_runs
+    WHERE chat_session_id = ${chatSessionId}::uuid
+    ORDER BY created_at DESC LIMIT 1
+  `)) as unknown as { id: string; status: string; fix_round: number }[];
+  const prev = rows[0];
+  if (!prev) return 0;
+  if (prev.status === "problems") {
+    const audit = await loadGateAuditById(tx, prev.id);
+    const acceptances = await loadAcceptances(tx, audit?.pages.map((p) => p.pageId) ?? []);
+    return decideGate(audit, acceptances).open ? 0 : prev.fix_round + 1;
+  }
+  if (prev.status === "passed" || prev.status === "skipped") return 0;
+  return prev.fix_round;
 }
 
 export const enqueueAuditOp = defineOperation({
@@ -199,10 +227,11 @@ export const enqueueAuditOp = defineOperation({
         }
       : classification;
 
+    const fixRound = await nextFixRound(tx, input.chatSessionId);
     const inserted = (await tx.execute(sql`
       INSERT INTO quality_audit_runs
         (deploy_run_id, chat_session_id, requested_by, status, classification,
-         target_page_ids, performance_runs, finished_at)
+         target_page_ids, performance_runs, finished_at, fix_round)
       VALUES (
         ${input.deployRunId}::uuid,
         ${input.chatSessionId}::uuid,
@@ -211,7 +240,8 @@ export const enqueueAuditOp = defineOperation({
         ${jsonbParam(finalClassification)},
         ${status === "queued" ? uuidList(targetPageIds) : sql`'{}'::uuid[]`},
         ${PERFORMANCE_RUNS},
-        ${status === "skipped" ? sql`now()` : sql`NULL`}
+        ${status === "skipped" ? sql`now()` : sql`NULL`},
+        ${fixRound}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -248,6 +278,11 @@ const claimedRunSchema = z.object({
   pageUrlStyle: z.enum(["directory", "no-extension"]),
   /** Provider preview URL of the staged build (Firebase channels). */
   previewUrl: z.string().nullable(),
+  /** The deploy target's env + out_dir: where this process wrote the
+   *  build archive (served by the loopback origin on providers without a
+   *  reachable staging URL). */
+  env: z.string(),
+  outDir: z.string(),
   pages: z.array(z.object({ pageId: z.string(), currentPath: z.string() })),
 });
 
@@ -300,13 +335,25 @@ export const claimNextAuditOp = defineOperation({
     const row = claimed[0];
     if (!row) return ok({ run: null, superseded: superseded.length });
     const runInfo = (await tx.execute(sql`
-      SELECT t.page_url_style, r.publish_summary->>'previewUrl' AS preview_url
+      SELECT t.page_url_style, r.publish_summary->>'previewUrl' AS preview_url, t.env, t.out_dir
       FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
       WHERE r.id = ${row.deploy_run_id}::uuid
     `)) as unknown as {
       page_url_style: "directory" | "no-extension";
       preview_url: string | null;
+      env: string;
+      out_dir: string;
     }[];
+    const info = runInfo[0];
+    if (!info) {
+      // Same transaction as the claim, and runs cascade with their deploy
+      // run — unreachable unless the schema changed under us.
+      return err({
+        kind: "HandlerError",
+        operation: "quality_audits.claim_next",
+        message: `deploy run ${row.deploy_run_id} of audit ${row.id} has no target`,
+      });
+    }
     const pages = (await tx.execute(sql`
       SELECT t.id::text AS page_id, p.current_path
       FROM unnest(${uuidList(row.target_page_ids)}) WITH ORDINALITY AS t(id, ord)
@@ -319,8 +366,10 @@ export const claimNextAuditOp = defineOperation({
         auditRunId: row.id,
         deployRunId: row.deploy_run_id,
         performanceRuns: row.performance_runs,
-        pageUrlStyle: runInfo[0]?.page_url_style ?? "directory",
-        previewUrl: runInfo[0]?.preview_url ?? null,
+        pageUrlStyle: info.page_url_style,
+        previewUrl: info.preview_url,
+        env: info.env,
+        outDir: info.out_dir,
         pages: pages.map((p) => ({ pageId: p.page_id, currentPath: p.current_path })),
       },
       superseded: superseded.length,
@@ -484,6 +533,15 @@ export const recordAuditResultOp = defineOperation({
             ON CONFLICT (page_id, category) DO UPDATE
               SET baseline = EXCLUDED.baseline, below_streak = EXCLUDED.below_streak,
                   updated_at = now(), updated_by_run = EXCLUDED.updated_by_run
+          `);
+          // Ratchet: once the page scores above an accepted drop, that
+          // acceptance is spent — a later drop below the new baseline must
+          // block again, not hide behind the old acceptance.
+          await tx.execute(sql`
+            UPDATE quality_acceptances
+               SET revoked_at = now(), revoked_by = ${ctx.actorId}::uuid
+             WHERE page_id = ${page.pageId}::uuid AND kind = 'score' AND category = ${category}
+               AND revoked_at IS NULL AND accepted_score < ${next.baseline}
           `);
         }
       }
