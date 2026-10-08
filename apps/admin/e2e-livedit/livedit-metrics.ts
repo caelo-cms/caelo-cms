@@ -52,10 +52,36 @@ export function metricsBySession(logText: string): { session: string; metrics: S
   return metricsBySessionText(logText);
 }
 
-/** Aggregate metrics for the admin.log written since {@link logOffset}. */
-export function metricsSince(adminLogPath: string, offset: number): ScenarioMetrics {
-  const tail = tailFromByteOffset(readFileSync(adminLogPath), offset);
-  const { loops, tools, splits } = parseChatLog(tail);
+/**
+ * Metrics of the log window `[offset, end)` minus the windows in
+ * `exclude` (each `[start, end)` byte offsets). Lets a scenario keep its
+ * thresholds about its own work while a sub-flow with its own budget (the
+ * #553 quality fix loop) is measured separately.
+ */
+export function metricsExcluding(
+  adminLogPath: string,
+  offset: number,
+  exclude: readonly (readonly [number, number])[],
+): ScenarioMetrics {
+  const bytes = readFileSync(adminLogPath);
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  let cursor = Math.max(offset, 0);
+  for (const [start, end] of [...exclude].sort((a, b) => a[0] - b[0])) {
+    if (start > cursor) parts.push(decoder.decode(bytes.subarray(cursor, start)));
+    cursor = Math.max(cursor, end);
+  }
+  parts.push(tailFromByteOffset(bytes, cursor));
+  const { loops, tools, splits } = parseChatLog(parts.join("\n"));
+  return aggregate(loops, tools, splits);
+}
+
+/** Metrics of exactly the log window `[start, end)`. */
+export function metricsBetween(adminLogPath: string, start: number, end: number): ScenarioMetrics {
+  const bytes = readFileSync(adminLogPath);
+  const { loops, tools, splits } = parseChatLog(
+    new TextDecoder().decode(bytes.subarray(Math.max(start, 0), Math.max(end, start))),
+  );
   return aggregate(loops, tools, splits);
 }
 

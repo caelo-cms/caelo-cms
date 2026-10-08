@@ -34,6 +34,7 @@
     DialogHeader,
     DialogTitle,
   } from "#lib/components/ui/dialog/index.js";
+  import { postQualityAction, qualityStatusFor } from "./quality-status.svelte.js";
   import { formResultError, publishButtonState } from "./stage-deploy-state.js";
 
   interface PendingEntity {
@@ -150,12 +151,42 @@
   let pillRef = $state<HTMLButtonElement | null>(null);
   let publishing = $state(false);
   let staging = $state(false);
+  /**
+   * #553 — the quality gate of the staged build, polled with the chat panel
+   * (one shared request stream per chat). Publish live is disabled with a
+   * visible reason while the gate is closed; the server enforces it anyway.
+   */
+  const quality = $derived(qualityStatusFor(chatSessionId));
+  $effect(() => {
+    const poller = quality;
+    poller.acquire();
+    return () => poller.release();
+  });
+  const gate = $derived(quality.status?.gate ?? null);
+  let qualityActionError = $state<string | null>(null);
+  let qualityBusy = $state(false);
+  let publishAnywayOpen = $state(false);
+  let publishAnywayError = $state<string | null>(null);
+
+  async function retryQualityCheck(): Promise<void> {
+    qualityBusy = true;
+    qualityActionError = null;
+    try {
+      const r = await postQualityAction(chatSessionId, csrfToken, { action: "retry" });
+      if (!r.ok) qualityActionError = r.error ?? "Could not start the quality check.";
+    } finally {
+      qualityBusy = false;
+      await quality.refresh();
+    }
+  }
+
   /** run #10 D6 — shared disabled/visible-reason logic (unit-tested). */
   const publishState = $derived(
     publishButtonState({
       busy: staging || publishing,
       hasStagedBuild: lastStaged !== null,
       productionMatchesStaging: productionMatchesStaging ?? null,
+      qualityGate: gate,
     }),
   );
 
@@ -230,6 +261,7 @@
           publishing = false;
         }
         publishError = formResultError(result);
+        void quality.refresh();
       };
     }}
     class="contents"
@@ -259,6 +291,75 @@
       class="inline-block max-w-96 truncate align-middle text-xs font-medium text-red-700 dark:text-red-300"
     >
       Publish failed: {publishError}
+    </span>
+  {/if}
+{/snippet}
+
+<!-- #553 — what to do when the quality gate keeps Publish live closed:
+     retry a failed / missing check, publish anyway over a FAILED check
+     (an explicit, recorded human decision), or re-Stage after fixes that
+     do not show as pending changes (SEO texts are written live). -->
+{#snippet qualityGateControls()}
+  {#if gate && !gate.open}
+    <span class="inline-flex items-center gap-2" data-testid="quality-gate-status" data-state={gate.state}>
+      {#if gate.state === "errored" || gate.state === "missing"}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={qualityBusy}
+          data-testid="quality-retry-btn"
+          onclick={() => void retryQualityCheck()}
+        >
+          {gate.state === "errored" ? "Retry check" : "Run quality check"}
+        </Button>
+      {/if}
+      {#if gate.canPublishAnyway}
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          data-testid="quality-publish-anyway-btn"
+          onclick={() => {
+            publishAnywayError = null;
+            publishAnywayOpen = true;
+          }}
+        >
+          Publish anyway…
+        </Button>
+      {/if}
+      {#if gate.state === "problems" && branchChangeCount === 0}
+        <form
+          method="post"
+          action="?/stageAndDeployStaging"
+          use:enhance={() => {
+            staging = true;
+            qualityActionError = null;
+            return async ({ result, update }) => {
+              try {
+                await update({ reset: false });
+              } finally {
+                staging = false;
+              }
+              qualityActionError = formResultError(result);
+              void quality.refresh();
+            };
+          }}
+          class="contents"
+        >
+          <input type="hidden" name="chatSessionId" value={chatSessionId} />
+          {#if activePageId}<input type="hidden" name="pageId" value={activePageId} />{/if}
+          <input type="hidden" name="_csrf" value={csrfToken} />
+          <Button type="submit" size="sm" variant="outline" disabled={staging} data-testid="quality-restage-btn">
+            {staging ? "Staging…" : "Stage again"}
+          </Button>
+        </form>
+      {/if}
+      {#if qualityActionError}
+        <span role="alert" class="text-xs font-medium text-red-700 dark:text-red-300" data-testid="quality-action-error">
+          {qualityActionError}
+        </span>
+      {/if}
     </span>
   {/if}
 {/snippet}
@@ -310,6 +411,7 @@
   <div class="inline-flex items-center gap-3" data-testid="stage-deploy">
     {@render stagingStatus()}
     {@render publishLiveForm("promote-only-btn", "default")}
+    {@render qualityGateControls()}
   </div>
 {:else}
   <div class="relative inline-flex items-center gap-1" data-testid="stage-deploy">
@@ -388,6 +490,7 @@
     </Button>
     {@render stagingStatus()}
     {@render publishLiveForm("promote-btn", "outline")}
+    {@render qualityGateControls()}
   </div>
 {/if}
 
@@ -440,6 +543,8 @@
           // Publish-live inline alert (stage-deploy-state.ts).
           stageError = formResultError(result);
           if (stageError === null) dialogOpen = false;
+          // #553 — the Stage just queued (or skipped) a quality check.
+          void quality.refresh();
         };
       }}
       data-testid="stage-form"
@@ -571,6 +676,69 @@
           data-testid="stage-submit-btn"
         >
           {publishing ? "Staging…" : "Stage to staging"}
+        </Button>
+      </DialogFooter>
+    </form>
+  </DialogContent>
+</Dialog>
+
+<Dialog bind:open={publishAnywayOpen}>
+  <DialogContent class="sm:max-w-md">
+    <DialogHeader>
+      <DialogTitle>Publish without a quality result?</DialogTitle>
+      <DialogDescription>
+        The quality check of the staged build failed, so nobody knows whether it has new
+        accessibility, SEO or performance problems. Publishing anyway is recorded with your name
+        and reason.
+      </DialogDescription>
+    </DialogHeader>
+    {#if gate}
+      <p class="text-xs text-muted-foreground" data-testid="publish-anyway-failure">{gate.message}</p>
+    {/if}
+    <form
+      method="post"
+      action="?/publishAnyway"
+      use:enhance={() => {
+        publishing = true;
+        publishAnywayError = null;
+        return async ({ result, update }) => {
+          try {
+            await update({ reset: false });
+          } finally {
+            publishing = false;
+          }
+          publishAnywayError = formResultError(result);
+          if (publishAnywayError === null) publishAnywayOpen = false;
+          void quality.refresh();
+        };
+      }}
+      class="space-y-3"
+    >
+      <input type="hidden" name="_csrf" value={csrfToken} />
+      <input type="hidden" name="auditRunId" value={gate?.auditRunId ?? ""} />
+      <label class="block space-y-1 text-sm">
+        <span class="font-medium">Why publish without the check?</span>
+        <textarea
+          name="reason"
+          required
+          minlength="3"
+          maxlength="500"
+          rows="3"
+          class="w-full rounded-md border bg-background p-2 text-sm"
+          data-testid="publish-anyway-reason"
+        ></textarea>
+      </label>
+      {#if publishAnywayError}
+        <div role="alert" class="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-800 dark:text-red-200">
+          {publishAnywayError}
+        </div>
+      {/if}
+      <DialogFooter>
+        <Button type="button" variant="outline" size="sm" onclick={() => (publishAnywayOpen = false)}>
+          Cancel
+        </Button>
+        <Button type="submit" size="sm" variant="destructive" disabled={publishing} data-testid="publish-anyway-submit">
+          {publishing ? "Publishing…" : "Publish anyway"}
         </Button>
       </DialogFooter>
     </form>

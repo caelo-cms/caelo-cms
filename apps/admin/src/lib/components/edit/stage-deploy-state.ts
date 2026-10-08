@@ -43,6 +43,9 @@ export function publishButtonState(args: {
   busy: boolean;
   hasStagedBuild: boolean;
   productionMatchesStaging: boolean | null;
+  /** #553 — the quality gate of the staged build; null while unknown (the
+   *  server enforces the gate regardless, so unknown never blocks here). */
+  qualityGate?: QualityGateView | null;
 }): PublishButtonState {
   if (!args.hasStagedBuild) {
     const reason = "Nothing staged yet — run Stage first; Publish live copies the staged build.";
@@ -55,11 +58,43 @@ export function publishButtonState(args: {
       tooltip: "Live already matches the current staging build — nothing to publish",
     };
   }
+  const gate = args.qualityGate;
+  if (gate && !gate.open) {
+    const reason = qualityBlockReason(gate);
+    return { disabled: true, visibleReason: reason, tooltip: gate.message || reason };
+  }
   return {
     disabled: args.busy,
     visibleReason: null,
     tooltip: "Publish the latest staging build live (atomic, no rebuild)",
   };
+}
+
+/** The slice of the quality gate the toolbar needs. */
+export interface QualityGateView {
+  readonly open: boolean;
+  readonly state: string;
+  readonly message: string;
+  readonly openProblemCount: number;
+}
+
+/**
+ * #553 — the short visible reason a blocked Publish shows; the full
+ * message (with the next step) is the tooltip.
+ */
+export function qualityBlockReason(gate: QualityGateView): string {
+  switch (gate.state) {
+    case "running":
+      return "Quality check running — Publish live unlocks when it passes.";
+    case "problems":
+      return `Blocked by ${gate.openProblemCount} quality problem(s) — fix them and Stage again, or accept them in the chat.`;
+    case "errored":
+      return "Quality check failed — retry it, or publish anyway with a reason.";
+    case "missing":
+      return "The staged build has not been quality-checked yet — run the check.";
+    default:
+      return gate.message || "Publish live is blocked by the quality check.";
+  }
 }
 
 /**
