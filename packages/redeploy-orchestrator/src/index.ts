@@ -8,8 +8,13 @@
  * `site_settings.auto_redeploy_op_kinds`). When an event arrives, a
  * timer is armed for `auto_redeploy_debounce_ms` (default 12000ms).
  * Subsequent events within the window reset the timer. When the timer
- * fires, dispatches `deploy.trigger({env:'production', initiator:'auto'})`
- * and drains the inflight set.
+ * fires, it rebuilds production — through the #553 quality gate:
+ *   - content-only changes (the plan op's classification) rebuild
+ *     production directly, as before; deploy.trigger still refuses (and
+ *     records a failed run) while the staged build's gate is closed;
+ *   - changes that can affect rendering are Staged instead, queued for a
+ *     quality audit with `autoPublish`, and the audit worker publishes
+ *     them only when the gate is open (otherwise it stops and records why).
  *
  * Polling (vs LISTEN/NOTIFY) keeps the implementation portable across
  * pgbouncer modes + cloud-managed Postgres without needing to wire a
@@ -205,6 +210,8 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
   // Drained on `fireDeploy()`; passed into deploy.trigger so the static
   // generator only re-bakes the changed subset.
   const pendingPageIds = new Set<string>();
+  // #553 — the operations that armed the redeploy decide its path.
+  const pendingOperations = new Set<string>();
 
   async function loadSettings(): Promise<Settings & { lastSeenAt: Date }> {
     const rows = await cfg.adapter.withAdminTransaction(
@@ -262,19 +269,15 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
   async function fireDeploy(): Promise<void> {
     pendingTimer = null;
     const changed = [...pendingPageIds];
+    const operations = [...pendingOperations];
     pendingPageIds.clear();
+    pendingOperations.clear();
     try {
-      await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "deploy.trigger", {
-        env: "production",
-        initiator: "auto",
-        // Empty/undefined = full-site rebuild. When non-empty the
-        // generator filters its pages query to these ids only.
-        ...(changed.length > 0 ? { changedPageIds: changed } : {}),
-      });
-    } catch {
-      // Best-effort. If deploy.trigger op signature differs, the op
-      // layer surfaces a structured error in audit; we just don't
-      // crash the orchestrator.
+      await redeployThroughQualityGate(cfg, operations, changed);
+    } catch (e) {
+      // Never crash the orchestrator loop; the ops record their own
+      // failures (failed deploy runs), this is the last-resort log.
+      console.error("[redeploy-orchestrator] automatic redeploy threw", e);
     }
   }
 
@@ -319,6 +322,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
     // page it attaches to. Op-allowlist is intentionally narrow —
     // adding a new plugin op = one row in the resolver below.
     for (const r of rows) {
+      pendingOperations.add(r.operation);
       if (r.entity_id && r.operation.startsWith("pages.")) {
         pendingPageIds.add(r.entity_id);
         continue;
@@ -603,6 +607,74 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         await fireDeploy();
       }
     },
+  };
+}
+
+/**
+ * #553 — one automatic redeploy through the quality gate. Exported for the
+ * integration test. Every refusal is recorded by the op that refuses (a
+ * failed deploy run Ops and the notification bell show); this only logs.
+ */
+export async function redeployThroughQualityGate(
+  cfg: Pick<OrchestratorConfig, "adapter" | "registry">,
+  operations: readonly string[],
+  changedPageIds: readonly string[],
+): Promise<
+  | { path: "production"; ok: boolean }
+  | { path: "staged-for-audit"; ok: boolean; auditRunId?: string }
+  | { path: "unplanned" }
+> {
+  const plan = await execute(
+    cfg.registry,
+    cfg.adapter,
+    SYSTEM_CTX,
+    "quality_audits.plan_auto_redeploy",
+    {
+      operations,
+      changedPageIds: changedPageIds.slice(0, 500),
+    },
+  );
+  if (!plan.ok) {
+    console.error("[redeploy-orchestrator] could not plan the automatic redeploy", plan.error);
+    return { path: "unplanned" };
+  }
+  const { auditNeeded, reasons } = plan.value as { auditNeeded: boolean; reasons: string[] };
+  if (!auditNeeded) {
+    // Content only: rebuild production as before (empty = full rebuild).
+    const r = await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "deploy.trigger", {
+      targetName: "production",
+      ...(changedPageIds.length > 0 ? { changedPageIds: [...changedPageIds] } : {}),
+    });
+    if (!r.ok)
+      console.error("[redeploy-orchestrator] production rebuild refused or failed", r.error);
+    return { path: "production", ok: r.ok };
+  }
+  // Rendering may change: Stage, audit, publish only when the gate opens.
+  const staged = await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "deploy.trigger", {
+    targetName: "staging",
+  });
+  if (!staged.ok) {
+    console.error("[redeploy-orchestrator] automatic Stage failed", staged.error);
+    return { path: "staged-for-audit", ok: false };
+  }
+  const queued = await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "quality_audits.enqueue", {
+    deployRunId: (staged.value as { runId: string }).runId,
+    chatSessionId: null,
+    branch: null,
+    pageIds: changedPageIds.slice(0, 50),
+    autoPublish: true,
+  });
+  if (!queued.ok) {
+    console.error("[redeploy-orchestrator] could not queue the quality check", queued.error);
+    return { path: "staged-for-audit", ok: false };
+  }
+  console.log(
+    `[redeploy-orchestrator] staged for a quality check before publishing (${reasons.join(", ")})`,
+  );
+  return {
+    path: "staged-for-audit",
+    ok: true,
+    auditRunId: (queued.value as { auditRunId: string }).auditRunId,
   };
 }
 

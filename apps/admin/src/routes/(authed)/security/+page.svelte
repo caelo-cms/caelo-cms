@@ -1,6 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { Activity, ArrowRightLeft, Bot, Coins, Database, Download, FlaskConical, Globe, Image as ImageIcon, Inbox, Key, Layout, Lock, Mail, MessageSquare, Puzzle, Rocket, Search, Settings, Shield, Sparkles, Star, Users, UsersRound } from "lucide-svelte";
+  import { Activity, ArrowRightLeft, Bot, Coins, Database, Download, FlaskConical, Gauge, Globe, Image as ImageIcon, Inbox, Key, Layout, Lock, Mail, MessageSquare, Puzzle, Rocket, Search, Settings, Shield, Sparkles, Star, Users, UsersRound } from "lucide-svelte";
   import {
     Card,
     CardDescription,
@@ -37,6 +37,7 @@
     { href: "/security/ai", label: "AI provider", desc: "Anthropic configuration + active provider", icon: Bot },
     { href: "/security/mcp", label: "MCP tokens", desc: "Bearer tokens for `bunx @caelo-cms/mcp-server` — drive your install from Claude Code / IDE", icon: Key },
     { href: "/security/deployments", label: "Deployments", desc: "Ops view — dev / staging / production + promote", icon: Rocket },
+    { href: "/security/quality", label: "Quality", desc: "Lighthouse checks of staged builds, baselines, accepted findings, publish-anyway decisions", icon: Gauge },
     { href: "/security/dns", label: "DNS records", desc: "Per-(provider, env) DNS records the active stack expects + live resolver checks", icon: Globe },
     { href: "/security/costs", label: "AI cost controls", desc: "Token + spend dashboard", icon: Coins },
   ];

@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { classifyStageChanges, type StageChange, withInstallRules } from "../classify.js";
+import {
+  classifyRedeployOperations,
+  classifyStageChanges,
+  type StageChange,
+  withInstallRules,
+} from "../classify.js";
 
 const NO_INSTALL_RULES = { firstStage: false, activatedPlugins: [], previousNotClean: null };
 
@@ -109,5 +114,29 @@ describe("withInstallRules", () => {
       "previous_not_clean",
     ]);
     expect(c.skipped).toEqual(["field values: copy"]);
+  });
+});
+
+describe("classifyRedeployOperations (#553 automatic redeploy)", () => {
+  it("passes content-only operations straight through", () => {
+    expect(
+      classifyRedeployOperations(
+        ["pages.update", "pages_seo.set_many", "content_instances.update"],
+        0,
+      ),
+    ).toEqual({ auditNeeded: false, reasons: [] });
+  });
+
+  it("audits rendering operations and new pages going live", () => {
+    expect(
+      classifyRedeployOperations(
+        ["themes.set_tokens", "modules.update", "modules.update", "pages.create", "pages.update"],
+        2,
+      ),
+    ).toEqual({
+      auditNeeded: true,
+      reasons: ["modules.update", "pages.create", "themes.set_tokens", "2 new page(s) going live"],
+    });
+    expect(classifyRedeployOperations(["pages.update"], 1).auditNeeded).toBe(true);
   });
 });

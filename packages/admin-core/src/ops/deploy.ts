@@ -49,6 +49,7 @@ import { loadStaticPublisher } from "../deploy/static-publisher.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
+import { checkProductionBuildGate } from "./quality/production-gate.js";
 
 /**
  * Resolve the root directory that relative `deploy_targets.out_dir`
@@ -417,6 +418,15 @@ export const triggerDeployOp = defineOperation({
      *  Auto-redeploy passes this from the audit_events tail; manual
      *  triggers omit it for full-site rebuild. */
     changedPageIds: z.array(z.string().uuid()).optional(),
+    /**
+     * #553 — a human's explicit decision to build PRODUCTION although the
+     * staged build's quality check failed (no result). Recorded on the
+     * audit run; ignored for anything but a failed check.
+     */
+    publishAnyway: z
+      .object({ reason: z.string().trim().min(3).max(500) })
+      .strict()
+      .optional(),
   }),
   output: z.object({
     runId: z.string(),
@@ -465,6 +475,21 @@ export const triggerDeployOp = defineOperation({
           `target "${target.name}" is a production target — the AI cannot deploy it directly. ` +
           "Rebuild staging with deploy_staging, then call propose_deploy_promote (fromTarget = the staging target) so the Owner approves the go-live.",
       });
+    }
+    // #553 — a production build publishes what is staged, so it passes the
+    // same quality gate as Publish live (production-gate.ts). A refusal is
+    // recorded as a failed run, so Ops and the notification bell show it
+    // even when nobody watched the request (the automatic redeploy).
+    if (target.env === "production") {
+      const gate = await checkProductionBuildGate(tx, ctx, input.publishAnyway);
+      if (!gate.ok) {
+        await tx.execute(sql`
+          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', now(),
+                  ${`Blocked by the quality gate: ${gate.message}`})
+        `);
+        return err({ kind: "HandlerError", operation: "deploy.trigger", message: gate.message });
+      }
     }
 
     const runIdRows = (await tx.execute(sql`

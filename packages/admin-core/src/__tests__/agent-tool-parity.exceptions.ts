@@ -268,6 +268,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
 
   // ── #553 quality gate ─────────────────────────────────────────────────
   "quality_audits.list_pending": PENDING_QUEUE,
+  "quality_baselines.list": {
+    kind: "covered",
+    by: ["get_quality_audit"],
+    note: "the admin quality view's table; get_quality_audit shows every audited page's scores against its baselines",
+  },
   "quality_audits.chat_status": {
     kind: "internal",
     reason:

@@ -23,6 +23,7 @@ import { SQL } from "bun";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
+import { openQualityGate } from "./fixtures/quality-gate.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -169,6 +170,7 @@ async function seedPage(): Promise<string> {
 describe("P6 deploy.trigger", () => {
   it("emits one HTML file per published page plus robots + manifest", async () => {
     await seedPage();
+    await openQualityGate(ADMIN_URL as string);
     const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
       targetName: "production",
       repoRoot: testRoot,
@@ -329,6 +331,7 @@ describe("P6 deploy.trigger", () => {
     expect(seeded).toBeDefined();
     if (!seeded) return;
 
+    await openQualityGate(ADMIN_URL as string);
     const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
       targetName: "production",
       repoRoot: testRoot,

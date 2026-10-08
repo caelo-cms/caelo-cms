@@ -17,6 +17,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
+import { openQualityGate } from "./fixtures/quality-gate.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -138,6 +139,7 @@ describe("deploy.rollback", () => {
     });
 
     // Build 1 — VERSION_ONE.
+    await openQualityGate(ADMIN_URL as string);
     const b1 = await execute(registry, adapter, HUMAN, "deploy.trigger", {
       targetName: "production",
       repoRoot: testRoot,

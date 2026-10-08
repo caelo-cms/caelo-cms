@@ -133,10 +133,16 @@ export const enqueueAuditOp = defineOperation({
       /** Pages the caller staged on purpose outside a chat (the pages
        *  list's Stage of one page); audited after the homepage. */
       pageIds: z.array(z.string().uuid()).max(50).default([]),
+      /** Queued by the automatic redeploy: publish when the audit's gate
+       *  is open (quality_audits.complete_auto_publish). Chat-less only. */
+      autoPublish: z.boolean().default(false),
     })
     .strict()
     .refine((v) => (v.chatSessionId === null) === (v.branch === null), {
       message: "pass the pre-merge classification exactly when a chatSessionId is given",
+    })
+    .refine((v) => !v.autoPublish || v.chatSessionId === null, {
+      message: "autoPublish is for the automatic redeploy, which has no chat",
     }),
   output: z.object({
     auditRunId: z.string(),
@@ -231,7 +237,7 @@ export const enqueueAuditOp = defineOperation({
     const inserted = (await tx.execute(sql`
       INSERT INTO quality_audit_runs
         (deploy_run_id, chat_session_id, requested_by, status, classification,
-         target_page_ids, performance_runs, finished_at, fix_round)
+         target_page_ids, performance_runs, finished_at, fix_round, auto_publish)
       VALUES (
         ${input.deployRunId}::uuid,
         ${input.chatSessionId}::uuid,
@@ -241,7 +247,8 @@ export const enqueueAuditOp = defineOperation({
         ${status === "queued" ? uuidList(targetPageIds) : sql`'{}'::uuid[]`},
         ${PERFORMANCE_RUNS},
         ${status === "skipped" ? sql`now()` : sql`NULL`},
-        ${fixRound}
+        ${fixRound},
+        ${input.autoPublish}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];

@@ -29,6 +29,7 @@ const BASELINE_ROUTES = [
   "/security/site-defaults",
   "/security/structured",
   "/security/deployments",
+  "/security/quality",
   "/security/domains",
   "/security/costs",
   "/security/ai",

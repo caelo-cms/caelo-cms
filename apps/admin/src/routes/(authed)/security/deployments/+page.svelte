@@ -24,7 +24,7 @@
     TableRow,
   } from "#lib/components/ui/table/index.js";
 
-  let { data } = $props();
+  let { data, form } = $props();
 
   const statusVariant = (status: string): BadgeVariant => {
     if (status === "succeeded") return "success";
@@ -83,9 +83,25 @@
     </p>
   </div>
 
+  {#if form?.error}
+    <div
+      role="alert"
+      class="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive"
+      data-testid="deploy-error"
+    >
+      {form.error}
+    </div>
+  {/if}
+
   <Card>
     <CardHeader>
       <CardTitle class="text-base">Targets</CardTitle>
+      {#if data.qualityGate && !data.qualityGate.open}
+        <CardDescription data-testid="deploy-quality-gate">
+          Production builds publish what is staged and wait for its quality check:
+          {data.qualityGate.message}
+        </CardDescription>
+      {/if}
     </CardHeader>
     <CardContent>
       <ul class="space-y-2">
@@ -100,9 +116,23 @@
                  build, which is wasteful but not destructive. Keeping
                  it native so the page-level data.targets list (which
                  reads the "succeeded" status) refreshes correctly. -->
-            <form method="post" action="?/trigger" class="ml-auto">
+            <form method="post" action="?/trigger" class="ml-auto flex items-center gap-2">
               <input type="hidden" name="_csrf" value={data.csrfToken} />
               <input type="hidden" name="targetName" value={t.name} />
+              {#if t.env === "production" && data.qualityGate?.canPublishAnyway}
+                <!-- #553 — publishing over a FAILED quality check is an
+                     explicit, recorded human decision. -->
+                <input
+                  type="text"
+                  name="publishAnywayReason"
+                  required
+                  minlength="3"
+                  maxlength="500"
+                  placeholder="Why publish without a quality result?"
+                  class="w-64 rounded-md border bg-background p-1.5 text-xs"
+                  data-testid="publish-anyway-reason-ops"
+                />
+              {/if}
               <Button type="submit" size="sm" variant="outline">Build {t.name}</Button>
             </form>
           </li>

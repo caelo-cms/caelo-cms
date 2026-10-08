@@ -294,6 +294,25 @@ export async function drainAuditQueue(deps: WorkerDeps): Promise<number> {
         message: e instanceof Error ? e.message : String(e),
       });
     }
+    // An audit queued by the automatic redeploy publishes (or stops) now
+    // that its result is in; a no-op for every other audit.
+    const settled = await execute(
+      deps.registry,
+      deps.adapter,
+      WORKER_CTX,
+      "quality_audits.complete_auto_publish",
+      { auditRunId: run.auditRunId },
+    );
+    if (!settled.ok) {
+      console.error("[quality-audit-worker] complete_auto_publish failed", {
+        auditRunId: run.auditRunId,
+        error: settled.error,
+      });
+    } else if ((settled.value as { outcome: string }).outcome === "blocked") {
+      console.warn(
+        `[quality-audit-worker] automatic publish of audit ${run.auditRunId} stopped: ${(settled.value as { message: string | null }).message}`,
+      );
+    }
     processed += 1;
   }
 }
