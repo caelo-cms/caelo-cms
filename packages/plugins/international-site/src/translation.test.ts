@@ -16,6 +16,7 @@ import {
   type ContentSlot,
   stripJsonFence,
   translationResultPayload,
+  validateMetaDescription,
   validateStructuralLock,
 } from "./translation.js";
 
@@ -42,6 +43,7 @@ describe("prompt construction", () => {
     targetLocale: "de",
     targetLocaleDisplayName: "Deutsch",
     sourceTitle: "Pricing",
+    sourceMetaDescription: "",
     sourceSlots: [slot("main", 0, { headline: "Welcome", count: 3 })],
     glossary: [{ term: "checkout", translation: "Kasse", context: "e-commerce" }],
     styleGuide: "Use informal du.",
@@ -75,6 +77,7 @@ describe("prompt construction", () => {
     const { system, user } = buildUpdateTranslationPrompt({
       ...base,
       variantTitle: "Preise",
+      variantMetaDescription: "",
       variantSlots,
       alignment: alignSlots(base.sourceSlots, variantSlots),
     });
@@ -93,6 +96,7 @@ describe("prompt construction", () => {
       ...base,
       sourceSlots,
       variantTitle: "T",
+      variantMetaDescription: "",
       variantSlots,
       alignment: alignSlots(sourceSlots, variantSlots),
     });
@@ -191,5 +195,58 @@ describe("validateStructuralLock", () => {
         index,
       ),
     ).toThrow(/duplicate slot/);
+  });
+});
+
+describe("#591 — meta description", () => {
+  const base = {
+    sourceLocale: "en",
+    targetLocale: "de",
+    sourceTitle: "Pricing",
+    sourceMetaDescription: "Fair prices for every team.",
+    sourceSlots: [slot("main", 0, { headline: "Welcome" })],
+    glossary: [],
+    styleGuide: null,
+  };
+
+  it("full mode lists the source description; no line at all when there is none", () => {
+    expect(buildFullTranslationPrompt(base).user).toContain(
+      "Meta description:\n```\nFair prices for every team.\n```",
+    );
+    expect(buildFullTranslationPrompt(base).system).toContain('"metaDescription": str');
+    expect(buildFullTranslationPrompt({ ...base, sourceMetaDescription: "" }).user).not.toContain(
+      "Meta description",
+    );
+  });
+
+  it("update mode asks for a description the variant does not have yet", () => {
+    const variantSlots = [slot("main", 0, { headline: "Willkommen" })];
+    const update = (variantMetaDescription: string) =>
+      buildUpdateTranslationPrompt({
+        ...base,
+        variantTitle: "Preise",
+        variantMetaDescription,
+        variantSlots,
+        alignment: alignSlots(base.sourceSlots, variantSlots),
+      }).user;
+    expect(update("")).toContain("Meta description: (none yet — include metaDescription");
+    expect(update("Faire Preise.")).toContain("Meta description:\n```\nFaire Preise.\n```");
+  });
+
+  it("the contract caps the description at the pages_seo limit", () => {
+    expect(() =>
+      translationResultPayload.parse({ metaDescription: "x".repeat(321), slots: [] }),
+    ).toThrow();
+  });
+
+  it("validateMetaDescription: required in full mode and for a variant without one; refused when the source has none", () => {
+    const withMeta = { metaDescription: "Faire Preise.", slots: [] };
+    const without = { slots: [] };
+    expect(() => validateMetaDescription(without, "full", "Fair.", "")).toThrow(/missing/);
+    expect(() => validateMetaDescription(without, "update", "Fair.", "")).toThrow(/none yet/);
+    expect(() => validateMetaDescription(without, "update", "Fair.", "Fair-de.")).not.toThrow();
+    expect(() => validateMetaDescription(withMeta, "full", "Fair.", "")).not.toThrow();
+    expect(() => validateMetaDescription(withMeta, "full", "", "")).toThrow(/invented/);
+    expect(() => validateMetaDescription(without, "full", "", "")).not.toThrow();
   });
 });

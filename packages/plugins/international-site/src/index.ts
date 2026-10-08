@@ -52,6 +52,7 @@ import {
   type GlossaryEntry,
   stripJsonFence,
   translationResultPayload,
+  validateMetaDescription,
   validateStructuralLock,
 } from "./translation.js";
 import {
@@ -165,15 +166,41 @@ async function loadPlacements(cms: CmsHandle, pageId: string): Promise<ContentSl
   return r.placements;
 }
 
+/** A page's stored meta description; "" when it has none. */
+async function loadMetaDescription(cms: CmsHandle, pageId: string): Promise<string> {
+  const r = await cms.call<{ seo: { metaDescription: string } | null }>("pages_seo.get", {
+    pageId,
+  });
+  return r.seo?.metaDescription ?? "";
+}
+
+/**
+ * What happened to the variant's meta description (#591): core's
+ * fill-once verdict (`pages_seo.apply_translation`), or `untranslated`
+ * when the source has none or an update pass left it unchanged.
+ */
+type TranslatedSeoOutcome = "filled" | "unchanged" | "marked_stale" | "untranslated";
+
+/** Told to the AI when a live variant's SEO was kept, not overwritten. */
+const SEO_STALE_NEXT_STEP =
+  "The variant is live and already had a meta description, so the new translation did not overwrite it (SEO fill-once rule). It is now flagged as stale SEO. If the operator wants the translated description, re-optimize it explicitly with optimize_page_seo (seo-optimize skill).";
+
 /**
  * #397 — one context-aware translation pass for a variant page. Whole
  * page in ONE ctx.ai call (never sentence-by-sentence); structural
  * lock validated post-hoc; the result lands on the DRAFT variant.
+ * #591 — the meta description (og:description) is translated in the
+ * same call; writing it back follows core's fill-once rule.
  */
 async function translateVariantPage(
   ctx: unknown,
   args: { variantPageId: string; mode?: "auto" | "full" | "update" },
-): Promise<{ mode: "full" | "update"; slotsApplied: number; titleApplied: boolean }> {
+): Promise<{
+  mode: "full" | "update";
+  slotsApplied: number;
+  titleApplied: boolean;
+  seo: TranslatedSeoOutcome;
+}> {
   const q = adminQueryOf(ctx);
   const cms = cmsOf(ctx);
   const ai = aiOf(ctx);
@@ -213,6 +240,8 @@ async function translateVariantPage(
   const sourceTitle = pages.pages.find((p) => p.id === sourceRow.page_id)?.title ?? "";
   const variantTitle = pages.pages.find((p) => p.id === args.variantPageId)?.title ?? "";
 
+  const sourceMetaDescription = await loadMetaDescription(cms, sourceRow.page_id);
+  const variantMetaDescription = await loadMetaDescription(cms, args.variantPageId);
   const sourceSlots = await loadPlacements(cms, sourceRow.page_id);
   const variantSlots = await loadPlacements(cms, args.variantPageId);
   const alignment = alignSlots(sourceSlots, variantSlots);
@@ -257,6 +286,7 @@ async function translateVariantPage(
           targetLocale: targetLocale.code,
           targetLocaleDisplayName: targetLocale.display_name,
           sourceTitle,
+          sourceMetaDescription,
           sourceSlots,
           glossary,
           styleGuide,
@@ -266,8 +296,10 @@ async function translateVariantPage(
           targetLocale: targetLocale.code,
           targetLocaleDisplayName: targetLocale.display_name,
           sourceTitle,
+          sourceMetaDescription,
           sourceSlots,
           variantTitle,
+          variantMetaDescription,
           variantSlots,
           alignment,
           glossary,
@@ -292,6 +324,7 @@ async function translateVariantPage(
   // built from.
   const slotIndex = buildSlotIndex(sourceSlots);
   validateStructuralLock(payload, alignment, mode, slotIndex);
+  validateMetaDescription(payload, mode, sourceMetaDescription, variantMetaDescription);
 
   // Apply — merge translated strings over the variant's current values.
   const variantByKey = new Map(variantSlots.map((s) => [`${s.blockName}|${s.position}`, s]));
@@ -334,8 +367,16 @@ async function translateVariantPage(
     await cms.call("pages.update", { pageId: args.variantPageId, title: payload.title });
     titleApplied = true;
   }
+  let seo: TranslatedSeoOutcome = "untranslated";
+  if (payload.metaDescription !== undefined) {
+    const applied = await cms.call<{ outcome: "filled" | "unchanged" | "marked_stale" }>(
+      "pages_seo.apply_translation",
+      { pageId: args.variantPageId, metaDescription: payload.metaDescription },
+    );
+    seo = applied.outcome;
+  }
   await q.update("page_variants", variantRow.id, { translation_status: "up_to_date" });
-  return { mode, slotsApplied, titleApplied };
+  return { mode, slotsApplied, titleApplied, seo };
 }
 
 function adminQueryOf(ctx: unknown): PluginAdminQuery {
@@ -1033,11 +1074,13 @@ export default definePlugin<PluginContextTier1>({
      * sentence-by-sentence. Modes: full (fresh clone) / update
      * (source changed after a translation existed) — auto-detected.
      */
-    translate_variant: async (ctx, args) =>
-      translateVariantPage(
+    translate_variant: async (ctx, args) => {
+      const result = await translateVariantPage(
         ctx,
         args as { variantPageId: string; mode?: "auto" | "full" | "update" },
-      ),
+      );
+      return result.seo === "marked_stale" ? { ...result, nextStep: SEO_STALE_NEXT_STEP } : result;
+    },
 
     /**
      * #397 — bulk pass over every needs_update variant. Pauses (not
@@ -1052,12 +1095,14 @@ export default definePlugin<PluginContextTier1>({
         limit: 500,
       })) as unknown as PageVariantRow[];
       const translated: string[] = [];
+      const seoStale: string[] = [];
       const failed: Array<{ pageId: string; error: string }> = [];
       let paused = false;
       for (const row of stale) {
         try {
-          await translateVariantPage(ctx, { variantPageId: row.page_id });
+          const r = await translateVariantPage(ctx, { variantPageId: row.page_id });
           translated.push(row.page_id);
+          if (r.seo === "marked_stale") seoStale.push(row.page_id);
         } catch (e) {
           const msg = (e as Error).message;
           if (msg.startsWith("PluginAiCapExceeded:")) {
@@ -1074,12 +1119,16 @@ export default definePlugin<PluginContextTier1>({
         failed,
         paused,
         remaining: stale.length - translated.length - failed.length,
+        /** Live variants whose SEO was kept and flagged stale (#591). */
+        seoStale,
         ...(paused
           ? {
               nextStep:
                 "The plugin's 24h AI budget is exhausted. Tell the operator; the Owner can raise the cap at /security/plugins/international-site, then re-run translate_all_stale.",
             }
-          : {}),
+          : seoStale.length > 0
+            ? { nextStep: SEO_STALE_NEXT_STEP }
+            : {}),
       };
     },
 
@@ -1353,6 +1402,7 @@ export default definePlugin<PluginContextTier1>({
       description:
         "Translate ONE variant page from its group's source language — the whole page in a single context-aware pass (module layout locked; glossary + style guide applied; existing human-polished translations preserved where the source did not change). " +
         "Use after create_variant (the draft still carries the source language) and for any variant intl_status marks needs_update. The result stays a DRAFT — review, then publish. " +
+        'The meta description is translated in the same pass: a draft or a variant without one gets it filled; a LIVE variant that already has one keeps it (SEO fill-once) and comes back seo: "marked_stale" with a nextStep — then re-optimize with optimize_page_seo only if the operator wants it. ' +
         "NOT for many pages at once — prefer translate_all_stale. NOT for the group's source page itself.",
       operationName: "translate_variant",
       inputJsonSchema: {

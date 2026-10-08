@@ -129,20 +129,20 @@ async function op<T>(operationName: string, args: unknown): Promise<T> {
 }
 
 /** Seed a page whose single placement carries translatable values. */
-async function seedSourcePage(): Promise<string> {
+async function seedSourcePage(tag = ""): Promise<string> {
   const templateId = await sqlSystem(async (tx) => {
     const lay = (await tx.unsafe(
-      `INSERT INTO layouts (slug, display_name, html, css) VALUES ('t397-lay', 'L', '<html></html>', '') RETURNING id::text AS id`,
+      `INSERT INTO layouts (slug, display_name, html, css) VALUES ('t397${tag}-lay', 'L', '<html></html>', '') RETURNING id::text AS id`,
     )) as { id: string }[];
     const tpl = (await tx.unsafe(
-      `INSERT INTO templates (slug, display_name, kind, html, css, layout_id) VALUES ('t397-tpl', 'T', 'content', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
+      `INSERT INTO templates (slug, display_name, kind, html, css, layout_id) VALUES ('t397${tag}-tpl', 'T', 'content', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
     )) as { id: string }[];
     const id = tpl[0]?.id;
     if (!id) throw new Error("seed failed");
     return id;
   });
   const created = await execute(registry, adapter, SYS_CTX, "pages.create", {
-    slug: "t397-pricing",
+    slug: `t397${tag}-pricing`,
     title: "Pricing",
     templateId,
   });
@@ -151,12 +151,12 @@ async function seedSourcePage(): Promise<string> {
   await sqlSystem(async (tx) => {
     const mod = (await tx.unsafe(
       `INSERT INTO modules (slug, display_name, type, kind, html)
-       VALUES ('t397-hero', 'Hero', 't397-hero', 'hero', '<h1>{{headline}}</h1><div>{{body_html}}</div>')
+       VALUES ('t397${tag}-hero', 'Hero', 't397${tag}-hero', 'hero', '<h1>{{headline}}</h1><div>{{body_html}}</div>')
        RETURNING id::text AS id`,
     )) as { id: string }[];
     const ci = (await tx.unsafe(
       `INSERT INTO content_instances (module_id, slug, display_name, "values")
-       VALUES ('${mod[0]?.id}', 't397-hero-src', 'Hero src', '{"headline": "Welcome", "body_html": "<p>Hello <b>world</b></p>"}')
+       VALUES ('${mod[0]?.id}', 't397${tag}-hero-src', 'Hero src', '{"headline": "Welcome", "body_html": "<p>Hello <b>world</b></p>"}')
        RETURNING id::text AS id`,
     )) as { id: string }[];
     await tx.unsafe(
@@ -348,5 +348,102 @@ describe("#397 — context-aware translation", () => {
     expect(paused.translated).toBe(0);
     expect(paused.remaining).toBe(1);
     expect(paused.nextStep).toContain("/security/plugins/international-site");
+  }, 60_000);
+
+  it("#591 — fills a new variant's meta description; a live variant's SEO is never overwritten, only flagged stale", async () => {
+    const sourceId = await seedSourcePage("-seo");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const sourceSeo = await execute(registry, adapter, SYS_CTX, "pages_seo.set", {
+      pageId: sourceId,
+      metaDescription: "Fair prices for every team.",
+    });
+    if (!sourceSeo.ok) throw new Error(JSON.stringify(sourceSeo.error));
+    const variant = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-seo-preise",
+    });
+    const seoOf = async (pageId: string) => {
+      const r = await execute(registry, adapter, SYS_CTX, "pages_seo.get", { pageId });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      return (
+        r.value as {
+          seo: { metaDescription: string; autofilledAt: string | null; optimizedAt: string | null };
+        }
+      ).seo;
+    };
+    const translation = (meta: string) => () =>
+      JSON.stringify({
+        title: "Preise",
+        metaDescription: meta,
+        slots: [{ slot: "s0", values: { headline: "Willkommen", body_html: "<p>Hallo</p>" } }],
+      });
+
+    // --- First translation of a new variant: the German description lands.
+    aiScript.push(translation("Faire Preise für jedes Team."));
+    const first = await op<{ seo: string }>("translate_variant", {
+      variantPageId: variant.pageId,
+    });
+    expect(first.seo).toBe("filled");
+    expect(aiCalls.at(-1)?.user).toContain(
+      "Meta description:\n```\nFair prices for every team.\n```",
+    );
+    const filled = await seoOf(variant.pageId);
+    expect(filled?.metaDescription).toBe("Faire Preise für jedes Team.");
+    expect(filled?.autofilledAt).not.toBeNull();
+    // The source's own description is untouched.
+    expect((await seoOf(sourceId))?.metaDescription).toBe("Fair prices for every team.");
+
+    // --- The variant goes live and its SEO is explicitly optimized.
+    const pub = await execute(registry, adapter, SYS_CTX, "pages.set_status", {
+      pageId: variant.pageId,
+      status: "published",
+    });
+    if (!pub.ok) throw new Error(JSON.stringify(pub.error));
+    const optimized = await execute(registry, adapter, SYS_CTX, "pages_seo.optimize", {
+      pageId: variant.pageId,
+      metaDescription: "Faire Preise – für Teams jeder Größe.",
+    });
+    if (!optimized.ok) throw new Error(JSON.stringify(optimized.error));
+
+    // --- Re-translation of the live variant: kept, flagged stale, next step told.
+    aiScript.push(translation("Ganz neue Beschreibung."));
+    const again = await op<{ seo: string; nextStep?: string }>("translate_variant", {
+      variantPageId: variant.pageId,
+      mode: "full",
+    });
+    expect(again.seo).toBe("marked_stale");
+    expect(again.nextStep).toContain("optimize_page_seo");
+    const kept = await seoOf(variant.pageId);
+    expect(kept?.metaDescription).toBe("Faire Preise – für Teams jeder Größe.");
+    expect(kept?.optimizedAt).toBeNull();
+    const staleList = await execute(registry, adapter, SYS_CTX, "pages_seo.list_stale", {
+      limit: 200,
+    });
+    if (!staleList.ok) throw new Error(JSON.stringify(staleList.error));
+    expect(
+      (staleList.value as { pages: { pageId: string }[] }).pages.some(
+        (p) => p.pageId === variant.pageId,
+      ),
+    ).toBe(true);
+
+    // --- Back in draft (never live with this text): a re-translation fills again.
+    const draft = await execute(registry, adapter, SYS_CTX, "pages.set_status", {
+      pageId: variant.pageId,
+      status: "draft",
+    });
+    if (!draft.ok) throw new Error(JSON.stringify(draft.error));
+    aiScript.push(translation("Entwurfsbeschreibung."));
+    const redraft = await op<{ seo: string }>("translate_variant", {
+      variantPageId: variant.pageId,
+      mode: "full",
+    });
+    expect(redraft.seo).toBe("filled");
+    expect((await seoOf(variant.pageId))?.metaDescription).toBe("Entwurfsbeschreibung.");
   }, 60_000);
 });

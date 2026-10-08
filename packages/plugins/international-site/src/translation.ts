@@ -20,6 +20,9 @@
 
 import { z } from "@caelo-cms/plugin-sdk";
 
+/** `pages_seo.meta_description` hard cap (shared/seo.ts). */
+const SEO_DESCRIPTION_HARD_MAX = 320;
+
 export interface ContentSlot {
   blockName: string;
   position: number;
@@ -112,6 +115,9 @@ export function buildSlotIndex(
 export const translationResultPayload = z
   .object({
     title: z.string().min(1).optional(),
+    /** #591 — the translated meta description (also the og:description).
+     *  Same cap as `pages_seo.meta_description`. */
+    metaDescription: z.string().min(1).max(SEO_DESCRIPTION_HARD_MAX).optional(),
     slots: z.array(
       z
         .object({
@@ -180,7 +186,7 @@ function renderSlots(
 const bySourceOrder = (_s: ContentSlot, i: number): string => slotIdOf(i);
 
 const RESPONSE_CONTRACT =
-  'Respond with a JSON object matching: {"title": str (translated page title), "slots": [{"slot": "<the slot id from the heading, copied EXACTLY — e.g. s0>", "values": {"<field>": "<translated string>", ...}}, ...]}. ' +
+  'Respond with a JSON object matching: {"title": str (translated page title), "metaDescription": str (translated meta description — only when the page lists one; at most 320 characters, aim for 160), "slots": [{"slot": "<the slot id from the heading, copied EXACTLY — e.g. s0>", "values": {"<field>": "<translated string>", ...}}, ...]}. ' +
   'Never invent a slot id and never substitute the module slug or block name for it — copy the "### Slot <id>" token verbatim. ' +
   "Include ONLY string fields you translated; preserve every HTML tag, attribute, class, id, href, and inline style inside field values verbatim — only human-readable text is translated. Numbers, code samples, and untranslatable proper nouns stay as-is.";
 
@@ -189,6 +195,8 @@ export interface FullPromptInput {
   targetLocale: string;
   targetLocaleDisplayName?: string;
   sourceTitle: string;
+  /** The source page's meta description; "" when it has none (#591). */
+  sourceMetaDescription: string;
   sourceSlots: readonly ContentSlot[];
   glossary: readonly GlossaryEntry[];
   styleGuide: string | null;
@@ -205,7 +213,7 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
     `Source locale: ${input.sourceLocale}.`,
     `Target locale: ${input.targetLocale} (${targetLabel}).`,
     "",
-    "STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Translate ONLY the content fields of each existing module, plus the page title.",
+    "STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Translate ONLY the content fields of each existing module, plus the page title and, when one is listed, the meta description (write it as a search-result snippet in the target language, not a word-for-word rendering).",
     "",
     `${RESPONSE_CONTRACT} Return ONE entry per slot listed below.`,
     renderGlossaryBlock(input.glossary),
@@ -217,6 +225,7 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
     `# Source page (${input.sourceLocale} → ${input.targetLocale})`,
     "",
     `Title: ${input.sourceTitle}`,
+    ...metaDescriptionLines(input.sourceMetaDescription),
     "",
     renderSlots(input.sourceSlots, bySourceOrder),
   ].join("\n");
@@ -225,6 +234,8 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
 
 export interface UpdatePromptInput extends FullPromptInput {
   variantTitle: string;
+  /** The variant's current meta description; "" when it has none. */
+  variantMetaDescription: string;
   variantSlots: readonly ContentSlot[];
   alignment: readonly SlotAlignment[];
 }
@@ -241,7 +252,7 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     `Source locale: ${input.sourceLocale}.`,
     `Target locale: ${input.targetLocale} (${targetLabel}).`,
     "",
-    "STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Re-translate ONLY slots whose source content is no longer reflected by the existing translation; preserve the existing translation verbatim everywhere else by OMITTING those slots from your response.",
+    "STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Re-translate ONLY slots whose source content is no longer reflected by the existing translation; preserve the existing translation verbatim everywhere else by OMITTING those slots from your response. The same goes for the meta description: include metaDescription only when the existing one no longer reflects the source.",
     "",
     `${RESPONSE_CONTRACT} Return entries ONLY for slots you re-translated — do NOT include unchanged slots.`,
     renderGlossaryBlock(input.glossary),
@@ -256,12 +267,16 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     "## Current source (full, for context)",
     "",
     `Title: ${input.sourceTitle}`,
+    ...metaDescriptionLines(input.sourceMetaDescription),
     "",
     renderSlots(input.sourceSlots, bySourceOrder),
     "",
     "## Existing translation (preserve unchanged slots verbatim)",
     "",
     `Title: ${input.variantTitle}`,
+    ...(input.variantMetaDescription.length === 0 && input.sourceMetaDescription.length > 0
+      ? ["Meta description: (none yet — include metaDescription, translated from the source)"]
+      : metaDescriptionLines(input.variantMetaDescription)),
     "",
     renderSlots(input.variantSlots, (slot) => {
       const i = input.sourceSlots.findIndex(
@@ -288,6 +303,43 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     );
   }
   return { system, user: userLines.join("\n") };
+}
+
+/** The meta description under the title, fenced like a slot field; no
+ *  line at all when the page has none, so the model is not invited to
+ *  invent one. */
+function metaDescriptionLines(metaDescription: string): string[] {
+  if (metaDescription.length === 0) return [];
+  return ["Meta description:", "```", metaDescription, "```"];
+}
+
+/**
+ * #591 — the meta description half of the contract. Full mode must
+ * translate a description the source has (a variant without one ships
+ * the source language's, or none); a description the source does not
+ * have is refused rather than written — it would be invented text.
+ * Update mode may omit it (unchanged) — unless the variant has none yet.
+ */
+export function validateMetaDescription(
+  payload: TranslationResultPayload,
+  mode: "full" | "update",
+  sourceMetaDescription: string,
+  variantMetaDescription: string,
+): void {
+  if (sourceMetaDescription.length === 0) {
+    if (payload.metaDescription !== undefined) {
+      throw new Error(
+        "translation response carries a metaDescription, but the source page has none — refusing to apply invented SEO text",
+      );
+    }
+    return;
+  }
+  const required = mode === "full" || variantMetaDescription.length === 0;
+  if (required && payload.metaDescription === undefined) {
+    throw new Error(
+      `translation response is missing metaDescription (${mode === "full" ? "full mode translates" : "the variant has none yet, so the update must translate"} the source page's meta description)`,
+    );
+  }
 }
 
 /** Tolerate a ```json fence around the model's payload (port of the
