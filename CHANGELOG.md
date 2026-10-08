@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.10.30
+
+### Features
+- 546e92ba fix-quality-findings skill, Owner quality view, gated production builds, admin memory (#553, PR 3/3) (#599)
+- 2b3aec24 menus and footer per language (#592) (#600)
+- 5f926d72 configurable translation model, default = the chat model (#593) (#595)
+- f13e7f83 keep Google IAP operator access in sync + admin-domain enable (#577)
+- 363ab3a2 gate Publish live on the staged build's audit (#553, PR 2/3) (#584)
+- cf61951d let the agent set the site SEO settings via propose_set_site_seo (#580)
+- f941b437 agent-tool parity — tools for operator buttons the AI could not press + CI guard (#581)
+- e3e2775e optionally prefix the default locale, home stays at "/" (#575)
+- 9f397a04 agent paths for plugin grants, reject/revalidate and plugin owner panels (§11.A) (#582)
+- cdea1463 AI-proposable AI budgets, AI pricing and gateway settings (§11.A) (#578)
+- a0763a34 Lighthouse audit engine after substantial Stages (#553, PR 1/3) (#583)
+
+### Fixes
+- b1318cf5 published builds carry every plugin's output (#605) (#606)
+- c8917fae an interrupted approval resume no longer wedges the chat; quality findings name their elements (#604)
+- d705257c approver permission on every §11.A gate; fail-closed needsApproval; redact email secrets for AI (#589, #588) (#598)
+- 3874c21c translate the meta description with the SEO fill-once rule (#591) (#596)
+- 10dab598 one public URL builder for canonical, sitemap, hreflang and switcher (#590) (#594)
+- 35451f66 upgrade converges existing installs to what the stack declares (#576)
+
+### Docs
+- 3311c4c0 gated executors declare an approver permission (#589) (#602)
+
+### Other
+- 4d3e55f5 retry npm view in the publish verification (#574)
+
 ## v0.10.29
 
 ### Features
