@@ -20,6 +20,8 @@ describe("resolveCanonicalUrl", () => {
         siteBaseUrl: "https://example.com",
         pagePath: "/anything",
         override: "https://canonical.example.com/x",
+        pageUrlStyle: "directory",
+        host: "de.example.com",
       }),
     ).toBe("https://canonical.example.com/x");
   });
@@ -30,6 +32,7 @@ describe("resolveCanonicalUrl", () => {
         siteBaseUrl: "https://example.com",
         pagePath: "/",
         override: null,
+        pageUrlStyle: "directory",
       }),
     ).toBe("https://example.com/");
   });
@@ -40,8 +43,40 @@ describe("resolveCanonicalUrl", () => {
         siteBaseUrl: "https://example.com/",
         pagePath: "/about",
         override: null,
+        pageUrlStyle: "directory",
       }),
     ).toBe("https://example.com/about/");
+  });
+
+  describe("#590 — composed host (host-strategy locales)", () => {
+    for (const [style, expected] of [
+      ["directory", "https://de.example.com/preise/"],
+      ["no-extension", "https://de.example.com/preise"],
+    ] as const) {
+      it(`swaps the host, keeps the base scheme and the ${style} slash rule`, () => {
+        expect(
+          resolveCanonicalUrl({
+            siteBaseUrl: "https://example.com/",
+            pagePath: "/preise",
+            override: null,
+            pageUrlStyle: style,
+            host: "de.example.com",
+          }),
+        ).toBe(expected);
+      });
+    }
+
+    it("a null host keeps the site base host", () => {
+      expect(
+        resolveCanonicalUrl({
+          siteBaseUrl: "https://example.com",
+          pagePath: "/",
+          override: null,
+          pageUrlStyle: "no-extension",
+          host: null,
+        }),
+      ).toBe("https://example.com/");
+    });
   });
 
   describe("v0.2.85 — pageUrlStyle='no-extension'", () => {
@@ -67,12 +102,13 @@ describe("resolveCanonicalUrl", () => {
       ).toBe("https://example.com/");
     });
 
-    it("default style preserves pre-v0.2.85 trailing-slash behavior", () => {
+    it("'directory' keeps the trailing slash for non-home pages", () => {
       expect(
         resolveCanonicalUrl({
           siteBaseUrl: "https://example.com",
           pagePath: "/about",
           override: null,
+          pageUrlStyle: "directory",
         }),
       ).toBe("https://example.com/about/");
     });

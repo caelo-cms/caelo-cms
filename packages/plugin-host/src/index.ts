@@ -91,6 +91,11 @@ export {
   pluginPromptContextRegistry,
 } from "./prompt-context-registry.js";
 export {
+  type PublicUrlContext,
+  type PublicUrlPage,
+  resolvePublicPageUrls,
+} from "./public-urls.js";
+export {
   applyPluginRowState,
   discardBranchPluginRows,
   insertPluginRowSnapshot,

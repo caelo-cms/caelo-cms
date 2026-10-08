@@ -28,6 +28,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -633,14 +634,18 @@ describe("prefixDefaultLocale — every locale prefixed, default home at '/'", (
       });
       if (!pub.ok) throw new Error(JSON.stringify(pub.error));
     }
+    // #590 — URLs come from core's builder, which reads the stored base
+    // URL; no-extension style keeps the bare-path shape asserted here.
     const base = "https://t395.example";
+    const restoreBase = await pinSiteBaseUrl(ADMIN_URL, base);
     const contributions = await pluginOp<{
       head: Record<string, { hreflang: string; href: string }[]>;
       sitemap: Record<string, { alternates: { hreflang: string; href: string }[] }>;
     }>("head_contributions", {
       pageIds: [homeId, preiseId],
       siteBaseUrl: base,
-    });
+      pageUrlStyle: "no-extension",
+    }).finally(restoreBase);
     const alternates = (pageId: string) =>
       Object.fromEntries(
         (contributions.head[pageId] ?? []).map((e) => [e.hreflang, e.href] as const),

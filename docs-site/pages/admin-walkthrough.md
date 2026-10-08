@@ -49,7 +49,7 @@ Tiles:
 - **Email** — `/security/email` — Resend / SMTP / SES selection
 - **Gateway** — `/security/gateway` — rate limits, captcha, body cap, request log. The AI can propose captcha / body-cap / auto-redeploy changes (`propose_set_gateway_settings`) for your approval.
 - **Pending settings changes** — `/security/owner-settings/pending` — budget, pricing and gateway proposals queued by an external agent over MCP (in the chat you approve on the card instead)
-- **Users + roles** — `/security/users` + `/security/roles`
+- **Users + roles** — `/security/users` + `/security/roles`. On Google Cloud installs, adding a user with a role also lets them through Google IAP (browser and MCP); deleting them or removing their last role takes that away again. You can also just ask the AI to invite or remove someone — it prepares the change and you click Approve.
 - **Skills** — `/security/skills` — AI behaviour bodies, AI-proposed queue
 - **Subagents** — `/security/subagents` — observability for spawn_subagent runs
 - **Deployments** — `/security/deployments` — Ops view with promote / rollback

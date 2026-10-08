@@ -38,11 +38,25 @@
 import { escapeHtml } from "@caelo-cms/plugin-component-kit";
 import {
   definePlugin,
+  type PageUrlStyle,
   type PluginAdminQuery,
   type PluginAi,
   type PluginContextTier1,
   type PluginEvents,
+  z,
 } from "@caelo-cms/plugin-sdk";
+
+/**
+ * The serving target's page URL style core hands every render-time
+ * operation (#590). Parsed, not cast: a core that stopped passing it
+ * must fail here, not build URLs in a guessed style.
+ */
+const renderUrlArgs = z.object({ pageUrlStyle: z.enum(["directory", "no-extension"]) });
+
+function pageUrlStyleOf(args: unknown): PageUrlStyle {
+  return renderUrlArgs.parse(args).pageUrlStyle;
+}
+
 import {
   alignSlots,
   buildFullTranslationPrompt,
@@ -497,41 +511,23 @@ interface PublishedVariant {
 }
 
 /**
- * The site's public base URL, which every variant link and hreflang target
- * is built from. Throws when it is not configured (#551) instead of
- * emitting links to a substituted host.
- */
-async function requireSiteBaseUrl(cms: CmsHandle): Promise<string> {
-  const seo = await cms.call<{ siteBaseUrl: string | null }>("site_defaults.get_seo", {});
-  if (!seo.siteBaseUrl) {
-    throw new Error(
-      "international-site needs the site base URL for language links and hreflang, but it is " +
-        "not configured. Next step: the AI sets it with propose_set_site_seo({siteBaseUrl: " +
-        '"https://<public domain>"}) (Owner-approved), or a human sets it under Security → SEO ' +
-        "in the admin.",
-    );
-  }
-  return seo.siteBaseUrl;
-}
-/** Absolute URL for a variant. Path-strategy locales ride on the site
- *  base URL; host-strategy locales swap in their own host (scheme
- *  inherited from the base URL). */
-function absoluteVariantUrl(siteBaseUrl: string, locale: LocaleRow, path: string): string {
-  const base = new URL(siteBaseUrl);
-  if (locale.url_host) return `${base.protocol}//${locale.url_host}${path}`;
-  return `${base.origin}${path}`;
-}
-
-/**
  * #398 — per requested page: every PUBLISHED variant of its group with
  * its absolute URL. Pages outside any group, groups with fewer than
  * two published variants, and unpublished sole survivors contribute
  * nothing — hreflang only makes sense between real alternates.
+ *
+ * #590 — the URLs come from core (`pages.resolve_public_urls`), never
+ * from this plugin: core's builder is the one that produces each page's
+ * canonical, so every hreflang, sitemap alternate and switcher link is
+ * byte-identical to the canonical of the page it points at — trailing
+ * slash per the serving target's `pageUrlStyle`, host per the locale's
+ * host strategy, canonical override honoured. (It also fails loudly
+ * when the site base URL is unset, #551.)
  */
 async function publishedVariantMatrix(
   ctx: unknown,
   pageIds: readonly string[],
-  siteBaseUrl: string,
+  pageUrlStyle: PageUrlStyle,
 ): Promise<Map<string, PublishedVariant[]>> {
   const q = adminQueryOf(ctx);
   const cms = cmsOf(ctx);
@@ -550,13 +546,14 @@ async function publishedVariantMatrix(
     byGroup.set(v.group_id, list);
   }
   const pagesResult = await cms.call<{
-    pages: { id: string; status: string; currentPath: string }[];
+    pages: { id: string; status: string }[];
   }>("pages.list", {});
   const pageById = new Map(pagesResult.pages.map((p) => [p.id, p]));
 
+  const groups: { members: PageVariantRow[]; published: Omit<PublishedVariant, "href">[] }[] = [];
   for (const group of byGroup.values()) {
     if (!group.some((v) => requested.has(v.page_id))) continue;
-    const published: PublishedVariant[] = [];
+    const published: Omit<PublishedVariant, "href">[] = [];
     for (const v of group) {
       const page = pageById.get(v.page_id);
       if (page?.status !== "published") continue;
@@ -570,12 +567,26 @@ async function publishedVariantMatrix(
         pageId: v.page_id,
         localeCode: locale.code,
         isDefault: locale.is_default,
-        href: absoluteVariantUrl(siteBaseUrl, locale, page.currentPath),
         displayName: locale.display_name,
       });
     }
-    if (published.length < 2) continue;
-    for (const v of group) {
+    if (published.length >= 2) groups.push({ members: group, published });
+  }
+  if (groups.length === 0) return out;
+
+  const { urls } = await cms.call<{ urls: Record<string, string> }>("pages.resolve_public_urls", {
+    pageIds: [...new Set(groups.flatMap((g) => g.published.map((v) => v.pageId)))],
+    pageUrlStyle,
+  });
+  for (const group of groups) {
+    const published = group.published.map((v) => {
+      const href = urls[v.pageId];
+      if (href === undefined) {
+        throw new Error(`international-site: core resolved no public URL for page ${v.pageId}`);
+      }
+      return { ...v, href };
+    });
+    for (const v of group.members) {
       if (requested.has(v.page_id)) out.set(v.page_id, published);
     }
   }
@@ -731,8 +742,7 @@ export default definePlugin<PluginContextTier1>({
      */
     language_links: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
-      const cms = cmsOf(ctx);
-      const matrix = await publishedVariantMatrix(ctx, pageIds, await requireSiteBaseUrl(cms));
+      const matrix = await publishedVariantMatrix(ctx, pageIds, pageUrlStyleOf(args));
       const lists: Record<string, Record<string, Array<Record<string, string>>>> = {};
       for (const pageId of pageIds) {
         const variants = matrix.get(pageId);
@@ -1151,9 +1161,9 @@ export default definePlugin<PluginContextTier1>({
      * the site's stored language is the default locale's.
      */
     head_contributions: async (ctx, args) => {
-      const { pageIds, siteBaseUrl } = args as { pageIds: string[]; siteBaseUrl: string };
+      const { pageIds } = args as { pageIds: string[] };
       // Refreshes the locale cache that localesByPage reads.
-      const matrix = await publishedVariantMatrix(ctx, pageIds, siteBaseUrl);
+      const matrix = await publishedVariantMatrix(ctx, pageIds, pageUrlStyleOf(args));
       const lang: Record<string, string> = {};
       for (const [pageId, locale] of await localesByPage(adminQueryOf(ctx), pageIds)) {
         lang[pageId] = locale.code;
@@ -1425,9 +1435,8 @@ export default definePlugin<PluginContextTier1>({
    * Placed by dropping the plugin placeholder into a module; pages
    * with fewer than two published variants render nothing.
    */
-  staticRender: async (ctx, { pageId }) => {
-    const cms = cmsOf(ctx);
-    const matrix = await publishedVariantMatrix(ctx, [pageId], await requireSiteBaseUrl(cms));
+  staticRender: async (ctx, { pageId, pageUrlStyle }) => {
+    const matrix = await publishedVariantMatrix(ctx, [pageId], pageUrlStyle);
     const variants = matrix.get(pageId);
     if (!variants) return "";
     const items = variants

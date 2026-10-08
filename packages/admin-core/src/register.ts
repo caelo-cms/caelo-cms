@@ -125,6 +125,7 @@ import {
   updatePagesManyOp,
 } from "./ops/content/pages.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
+import { resolvePublicUrlsOp } from "./ops/content/public-urls.js";
 import { setTemplateBlocksOp } from "./ops/content/template_blocks.js";
 import {
   executeTemplateProposalOp,
@@ -505,6 +506,7 @@ import {
   readToolApprovalForExecuteOp,
   rejectToolApprovalOp,
 } from "./ops/tool_approvals.js";
+import { operatorAccessMembersOp, recordOperatorAccessSyncOp } from "./ops/user_access.js";
 import {
   executeUserProposalOp,
   listPendingUserProposalsOp,
@@ -561,6 +563,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeUserSetRolesOp);
   registry.register(proposeUserDeleteOp);
   registry.register(executeUserProposalOp);
+  registry.register(recordOperatorAccessSyncOp);
+  registry.register(operatorAccessMembersOp);
   registry.register(rejectUserProposalOp);
   registry.register(listPendingUserProposalsOp);
   registry.register(loginOp);
@@ -622,6 +626,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setHomePageOp);
   registry.register(listPageModuleContentOp);
   registry.register(refreshCurrentPathOp);
+  registry.register(resolvePublicUrlsOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
   registry.register(proposeUninstallPluginOp);

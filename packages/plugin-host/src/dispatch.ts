@@ -15,6 +15,7 @@
 
 import { createHash } from "node:crypto";
 import type {
+  PageUrlStyle,
   PluginContext,
   PluginContextTier1,
   PluginDefinition,
@@ -636,6 +637,7 @@ function extractEntityId(result: unknown): string | null {
 export async function runPluginStaticRender(opts: {
   pluginSlug: string;
   pageId: string;
+  pageUrlStyle: PageUrlStyle;
   invocation: PluginInvocation;
 }): Promise<string | null> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
@@ -647,7 +649,10 @@ export async function runPluginStaticRender(opts: {
   }
   assertInvocationConsistent(opts.invocation, undefined);
   const ctx = await makeContext({ plugin, infra: cachedInfra, invocation: opts.invocation });
-  const out = await render(ctx as PluginContext, { pageId: opts.pageId });
+  const out = await render(ctx as PluginContext, {
+    pageId: opts.pageId,
+    pageUrlStyle: opts.pageUrlStyle,
+  });
   return typeof out === "string" ? out : "";
 }
 
