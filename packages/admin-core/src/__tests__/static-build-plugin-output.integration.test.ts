@@ -362,16 +362,30 @@ describe("#605 — the published site carries every plugin's output", () => {
     }
   });
 
-  it("a build that would ship a switched-off plugin's markers fails loudly", async () => {
-    // The Owner switches consent-manager off: its list stays declared
-    // (the banner module still iterates it) but nothing answers it.
+  it("an Owner's hot disable: the plugin's list is dormant, the build names it", async () => {
+    // The real UI path (/security/plugins → plugins.disable): the plugin
+    // stays loaded until a restart, but nothing may call it any more —
+    // the build must not die on "PluginDisabled", it must say which
+    // pages still iterate the switched-off plugin's list.
+    await op(OWNER, "plugins.disable", { slug: "consent-manager" });
+    const r = await execute(registry, adapter, OWNER, "deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    expect(r.ok).toBe(false);
+    const message = JSON.stringify(r);
+    expect(message).toContain("raw plugin data-list markers");
+    expect(message).toContain("consent_categories");
+    expect(message).not.toContain("PluginDisabled");
+  });
+
+  it("after a restart without the plugin: the declared list is dormant too", async () => {
     deregisterPlugin("consent-manager");
     const r = await execute(registry, adapter, OWNER, "deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
     });
     expect(r.ok).toBe(false);
-    expect(JSON.stringify(r)).toContain("raw plugin data-list markers");
     expect(JSON.stringify(r)).toContain("consent_categories");
   });
 });

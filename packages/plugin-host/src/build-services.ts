@@ -33,10 +33,15 @@ import {
   type ResolvedContentVariants,
   resolveContentVariants,
 } from "./content-variants.js";
-import { type ResolvedDataLists, resolveDataLists } from "./data-list-resolution.js";
+import {
+  dormantDataListNames,
+  type ResolvedDataLists,
+  resolveDataLists,
+} from "./data-list-resolution.js";
 import { pluginDataListsRegistry } from "./data-lists.js";
 import { type ResolvedDeferrals, resolveModuleDeferrals } from "./deferrals.js";
 import {
+  isPluginDisabled,
   loadedPlugins,
   MAIN_RENDER,
   renderInvocation,
@@ -88,7 +93,7 @@ export interface BuildPluginServices {
 /** The plugin host of THIS process — the admin's, where plugins run. */
 export const localBuildPluginServices: BuildPluginServices = {
   resolveDataLists: (pageIds, pageUrlStyle) => resolveDataLists(pageIds, MAIN_RENDER, pageUrlStyle),
-  dormantDataListNames: async () => Object.fromEntries(pluginDataListsRegistry.dormantNames()),
+  dormantDataListNames: async () => dormantDataListNames(),
   declaredDataListNames: async () => pluginDataListsRegistry.catalogue().map((c) => c.name),
   resolveModuleDeferrals: (modules) => resolveModuleDeferrals(modules, MAIN_RENDER),
   hasContentVariantContributors: async () => hasContentVariantContributors(),
@@ -102,6 +107,9 @@ export const localBuildPluginServices: BuildPluginServices = {
   staticRenderPlugins: async () =>
     loadedPlugins
       .all()
+      // A hot-disabled plugin stays loaded until restart; it must not
+      // keep rendering into published pages.
+      .filter((lp) => !isPluginDisabled(lp.slug))
       .filter((lp) => lp.tier === 1 && typeof lp.definition.staticRender === "function")
       .map((lp) => ({ id: lp.pluginId, slug: lp.slug, version: lp.version })),
   metaSignatureBatch: (pluginSlug, pageIds) =>
@@ -142,21 +150,36 @@ export function isBuildPluginMethod(name: unknown): name is BuildPluginMethod {
 
 // JSON cannot carry a Map; several answers are Maps (keyed by page id).
 // Encode them as tagged entry lists so the subprocess gets the same shape.
+// Payloads carry arbitrary module/plugin content, so an ordinary object
+// that happens to use a tag key is escaped too: every object whose keys
+// include a tag travels as ESC_TAG entries and comes back unchanged.
 const MAP_TAG = "__caeloMap";
+const ESC_TAG = "__caeloObject";
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Map);
+}
 
 /** JSON text for an RPC payload, Maps included. */
 export function encodeBuildPayload(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) =>
-    v instanceof Map ? { [MAP_TAG]: [...v.entries()] } : v,
-  );
+  return JSON.stringify(value, (_key, v: unknown) => {
+    if (v instanceof Map) return { [MAP_TAG]: [...v.entries()] };
+    if (isPlainObject(v) && (MAP_TAG in v || ESC_TAG in v)) {
+      return { [ESC_TAG]: Object.entries(v) };
+    }
+    return v;
+  });
 }
 
 /** Inverse of `encodeBuildPayload`. */
 export function decodeBuildPayload(text: string): unknown {
   return JSON.parse(text, (_key, v: unknown) => {
-    if (v !== null && typeof v === "object" && MAP_TAG in v) {
-      return new Map((v as Record<string, [unknown, unknown][]>)[MAP_TAG]);
-    }
+    // Only the exact envelopes the encoder writes: one key, an entry list.
+    if (!isPlainObject(v)) return v;
+    const keys = Object.keys(v);
+    if (keys.length !== 1 || !Array.isArray(v[keys[0] as string])) return v;
+    if (keys[0] === MAP_TAG) return new Map(v[MAP_TAG] as [unknown, unknown][]);
+    if (keys[0] === ESC_TAG) return Object.fromEntries(v[ESC_TAG] as [string, unknown][]);
     return v;
   });
 }

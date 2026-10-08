@@ -56,6 +56,11 @@ function escapeForRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Does this page carry the plugin's placeholder for itself? */
+function hasPlaceholder(html: string, slug: string, pageId: string): boolean {
+  return placeholderRegex(slug, pageId).test(html);
+}
+
 function placeholderRegex(slug: string, pageId: string): RegExp {
   return new RegExp(
     `<div\\s+data-caelo-plugin="${escapeForRegex(slug)}"[^>]*data-page-id="${escapeForRegex(pageId)}"[^>]*>(?:[\\s\\S]*?)<\\/div>`,
@@ -80,9 +85,23 @@ export async function runPluginRenderPass(args: {
   // P13 perf-pass — pre-resolve metaSignatures in one batch when the
   // plugin exposes metaSignatureBatch. Saves N DB roundtrips on large
   // sites. Cache shape: Map<pluginSlug, Map<pageId, sig>>.
-  const batchedSigs = new Map<string, ReadonlyMap<string, string>>();
-  const allPageIds = [...bakeTargets.values()].map((t) => t.pageId);
+  //
+  // Only pages that carry the plugin's placeholder are asked about: a
+  // page without the widget renders nothing for it, so a failure there
+  // must not be able to stop the build.
+  const placedPages = new Map<string, string[]>();
   for (const plugin of activePlugins) {
+    const ids: string[] = [];
+    for (const page of pages) {
+      const target = bakeTargets.get(page.pageSlug);
+      if (target && hasPlaceholder(page.html, plugin.slug, target.pageId)) ids.push(target.pageId);
+    }
+    placedPages.set(plugin.slug, ids);
+  }
+  const batchedSigs = new Map<string, ReadonlyMap<string, string>>();
+  for (const plugin of activePlugins) {
+    const allPageIds = placedPages.get(plugin.slug) ?? [];
+    if (allPageIds.length === 0) continue;
     // Empty for a plugin without the batch variant (per-page below).
     // A plugin that declares it and throws stops the build: a wrong
     // cache key would ship a stale bake as if it were current.
@@ -97,6 +116,7 @@ export async function runPluginRenderPass(args: {
     const target = bakeTargets.get(page.pageSlug);
     if (!target) continue;
     for (const plugin of activePlugins) {
+      if (!(placedPages.get(plugin.slug) ?? []).includes(target.pageId)) continue;
       // P13 audit fix #4 — the plugin's own data signature IS the
       // cache key (plus plugin version): plugin render output depends
       // on plugin data + pageId, not on the page's own content.

@@ -40,6 +40,7 @@ export {
   resolveContentVariants,
 } from "./content-variants.js";
 export {
+  dormantDataListNames,
   type ResolvedDataLists,
   resolveDataLists,
 } from "./data-list-resolution.js";

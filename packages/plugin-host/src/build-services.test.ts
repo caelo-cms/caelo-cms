@@ -28,6 +28,15 @@ describe("build plugin payload codec (#605)", () => {
     });
     expect(back.plain).toEqual([1, "two", null]);
   });
+
+  it("leaves ordinary content that uses a tag key alone", () => {
+    const value = {
+      text: { __caeloMap: "just text" },
+      pairs: { __caeloMap: [["a", 1]] },
+      nested: { __caeloObject: [["x", { __caeloMap: [] }]] },
+    };
+    expect(decodeBuildPayload(encodeBuildPayload(value))).toEqual(value);
+  });
 });
 
 describe("remote ↔ served build plugin calls", () => {

@@ -91,7 +91,11 @@ async function main(): Promise<void> {
     if (msg.ok) waiter.resolve(msg.value);
     else waiter.reject(new Error(msg.message ?? "plugin call failed"));
   });
+  // Once the admin's side closes, no answer can come: fail the calls in
+  // flight AND every later one instead of waiting forever.
+  let channelClosed = false;
   lines.on("close", () => {
+    channelClosed = true;
     for (const w of pending.values()) {
       w.reject(new Error("the admin closed the plugin channel before answering"));
     }
@@ -103,6 +107,10 @@ async function main(): Promise<void> {
   const plugins = remoteBuildPluginServices(
     (method: BuildPluginMethod, args: unknown[]) =>
       new Promise((resolve, reject) => {
+        if (channelClosed) {
+          reject(new Error(`plugin call ${method}: the admin closed the plugin channel`));
+          return;
+        }
         const id = ++nextId;
         pending.set(id, { resolve, reject });
         emit({ kind: "plugin-call", id, method, args });

@@ -19,8 +19,8 @@ import {
   collectBuildAssets,
   collectContributions,
   composeHeadBlock,
+  dormantDataListNames,
   injectPluginAssets,
-  pluginDataListsRegistry,
   resolveDataLists,
   resolveModuleDeferrals,
   resolvePublicPageUrls,
@@ -737,7 +737,7 @@ export const renderPagePreviewOp = defineOperation({
     const resolvedLists = await resolveDataLists([input.pageId], renderScope, pageUrlStyle);
     const pluginLists = {
       dataLists: resolvedLists.get(input.pageId) ?? {},
-      dormantDataLists: Object.fromEntries(pluginDataListsRegistry.dormantNames()),
+      dormantDataLists: dormantDataListNames(),
     };
 
     // P6.7.6 — load layout modules (chrome) for every layout block

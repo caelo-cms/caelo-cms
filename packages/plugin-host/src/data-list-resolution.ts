@@ -17,7 +17,12 @@
 
 import type { PageUrlStyle } from "@caelo-cms/shared";
 import { type DataListItem, pluginDataListsRegistry } from "./data-lists.js";
-import { type RenderScope, renderInvocation, runPluginOperation } from "./dispatch.js";
+import {
+  isPluginDisabled,
+  type RenderScope,
+  renderInvocation,
+  runPluginOperation,
+} from "./dispatch.js";
 
 /** pageId → listName → items. Missing page/list means "not offered". */
 export type ResolvedDataLists = ReadonlyMap<string, Readonly<Record<string, DataListItem[]>>>;
@@ -63,6 +68,9 @@ export async function resolveDataLists(
   if (sources.size === 0) return out;
 
   for (const source of sources.values()) {
+    // An Owner's hot disable leaves the source registered until restart;
+    // its lists are dormant now (dormantDataListNames), never called.
+    if (isPluginDisabled(source.pluginSlug)) continue;
     const r = await runPluginOperation({
       invocation: renderInvocation(scope),
       pluginSlug: source.pluginSlug,
@@ -90,6 +98,21 @@ export async function resolveDataLists(
       }
       out.set(pageId, bucket);
     }
+  }
+  return out;
+}
+
+/**
+ * Declared list names nobody answers right now (name → plugin slug): the
+ * plugin is not running, or the Owner disabled it without a restart. The
+ * renderer turns these into "the plugin is switched off" markers; a build
+ * that still contains one refuses to publish (#605).
+ */
+export function dormantDataListNames(): Record<string, string> {
+  const out: Record<string, string> = Object.fromEntries(pluginDataListsRegistry.dormantNames());
+  for (const source of pluginDataListsRegistry.activeByOperation().values()) {
+    if (!isPluginDisabled(source.pluginSlug)) continue;
+    for (const name of source.names) out[name] = source.pluginSlug;
   }
   return out;
 }
