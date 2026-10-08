@@ -10,7 +10,9 @@
 --      auto_publish_outcome  'published' | 'blocked' once settled;
 --      auto_publish_message  the gate message when it was blocked.
 --
--- 2. The `fix-quality-findings` skill: the playbook the AI follows when a
+-- 2. Staging deploy runs record main's render fingerprint (below).
+--
+-- 3. The `fix-quality-findings` skill: the playbook the AI follows when a
 --    quality check of the staged build found problems (CLAUDE.md §2: new AI
 --    behaviour ships as a skill). Seeded ACTIVE like the other core
 --    authoring skills (0168, 0185). Idempotent.
@@ -29,7 +31,14 @@ ALTER TABLE quality_audit_runs
     AND ((auto_publish_outcome = 'blocked') = (auto_publish_message IS NOT NULL))
   );
 
-INSERT INTO skills (slug, display_name, description, body, allowlisted_tools, auto_engagement_hints, status)
+-- The render fingerprint of main when a staging build started
+-- (ops/quality/render-fingerprint.ts): one hash per rendering-relevant
+-- entity. A direct production build compares main against it, so it can
+-- not ship rendering changes the Stage's quality check never saw. NULL on
+-- runs from before this migration — they count as "Stage again".
+ALTER TABLE deploy_runs ADD COLUMN render_fingerprint jsonb NULL;
+
+INSERT INTO skills (slug, display_name, description, body, allowlisted_tools, auto_engagement_hints, status, activated_at)
 VALUES (
   'fix-quality-findings',
   'Fix quality findings',
@@ -56,9 +65,13 @@ VALUES (
 6. A FAILED CHECK IS NOT A FINDING. When the check itself failed (no result: timeout, browser, staging unreachable), retry it with `retry_quality_audit`. Only if the editor explicitly wants to publish without a result, use `publish_despite_failed_audit` — never for real problems, never on your own initiative.
 
 7. TELL THE OPERATOR IN PLAIN WORDS. "The images on /about had no descriptions — added them" rather than audit ids. `get_publish_gate` says whether Publish live is open.$body$,
-  '["get_quality_audit","check_stage_audit","get_publish_gate","list_quality_audits","list_quality_acceptances","accept_quality_findings","retry_quality_audit","edit_module","update_modules_many","list_modules","set_theme_tokens","get_theme","set_media_alt","set_media_alt_many","find_media","set_page_seo","set_page_seo_many","autofill_page_seo","get_site_seo","inspect_built_page","query_page_html"]'::jsonb,
+  '["get_quality_audit","check_stage_audit","get_publish_gate","list_quality_audits","list_quality_acceptances","accept_quality_findings","retry_quality_audit","publish_despite_failed_audit","edit_module","update_modules_many","list_modules","set_theme_tokens","get_theme","set_media_alt","set_media_alt_many","find_media","set_page_seo","set_page_seo_many","autofill_page_seo","get_site_seo","inspect_built_page","query_page_html"]'::jsonb,
   '{"keywords":["quality check","quality audit","lighthouse","accessibility","barrierefreiheit","contrast","alt text","meta description","core web vitals","pagespeed","publish blocked","publish live is blocked","image-alt","color-contrast","fix round"],"chipTrigger":false,"alwaysOn":false}'::jsonb,
-  'active'
+  'active',
+  -- 0213: an active skill records when it became available, so chats
+  -- already running get the "newly activated" notice instead of a
+  -- silently changed Skills prefix.
+  now()
 )
 ON CONFLICT (slug) DO NOTHING;
 

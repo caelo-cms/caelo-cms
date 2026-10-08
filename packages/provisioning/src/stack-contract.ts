@@ -600,6 +600,26 @@ export const ADMIN_MEMORY_DEFAULT = "2Gi";
  * Parse a memory quantity (`512Mi`, `2Gi`, `2G`, `1.5Gi`) to MiB; null when
  * it is not a quantity this contract understands.
  */
+/**
+ * #553 — Azure Container Apps (Consumption) only accepts fixed CPU/memory
+ * pairs: 0.25 vCPU / 0.5Gi up to 4 vCPU / 8Gi in 0.25 vCPU steps, memory
+ * always 2 GiB per vCPU. Map `adminMemory` onto that pair, or throw with
+ * the accepted values — an unsupported size must fail before `pulumi up`
+ * does, not deploy something else.
+ */
+export function azureContainerAppResources(quantity: string): {
+  readonly cpu: number;
+  readonly memory: string;
+} {
+  const mib = memoryQuantityMiB(quantity);
+  if (mib === null || mib % 512 !== 0 || mib < 512 || mib > 8192) {
+    throw new Error(
+      `caelo-azure:adminMemory "${quantity}" is not a Container Apps size; use 0.5Gi to 8Gi in 0.5Gi steps (e.g. 2Gi = 1 vCPU)`,
+    );
+  }
+  return { cpu: mib / 2048, memory: `${(mib / 1024).toFixed(1)}Gi` };
+}
+
 export function memoryQuantityMiB(quantity: string): number | null {
   const m = /^(\d+(?:\.\d+)?)\s*(Mi|Gi|M|G)$/.exec(quantity.trim());
   if (!m) return null;

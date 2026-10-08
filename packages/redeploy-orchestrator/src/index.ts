@@ -9,11 +9,13 @@
  * timer is armed for `auto_redeploy_debounce_ms` (default 12000ms).
  * Subsequent events within the window reset the timer. When the timer
  * fires, it rebuilds production — through the #553 quality gate:
- *   - content-only changes (the plan op's classification) rebuild
- *     production directly, as before; deploy.trigger still refuses (and
- *     records a failed run) while the staged build's gate is closed;
- *   - changes that can affect rendering are Staged instead, queued for a
- *     quality audit with `autoPublish`, and the audit worker publishes
+ *   - when main still renders what the last Stage's quality check saw
+ *     (the plan op compares render fingerprints), only content changed:
+ *     production is rebuilt directly, as before; deploy.trigger still
+ *     refuses (and records a failed run) while the staged build's gate is
+ *     closed;
+ *   - otherwise the changes are Staged, queued for a quality audit of the
+ *     pages they render on (`autoPublish`), and the audit worker publishes
  *     them only when the gate is open (otherwise it stops and records why).
  *
  * Polling (vs LISTEN/NOTIFY) keeps the implementation portable across
@@ -210,8 +212,6 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
   // Drained on `fireDeploy()`; passed into deploy.trigger so the static
   // generator only re-bakes the changed subset.
   const pendingPageIds = new Set<string>();
-  // #553 — the operations that armed the redeploy decide its path.
-  const pendingOperations = new Set<string>();
 
   async function loadSettings(): Promise<Settings & { lastSeenAt: Date }> {
     const rows = await cfg.adapter.withAdminTransaction(
@@ -269,11 +269,9 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
   async function fireDeploy(): Promise<void> {
     pendingTimer = null;
     const changed = [...pendingPageIds];
-    const operations = [...pendingOperations];
     pendingPageIds.clear();
-    pendingOperations.clear();
     try {
-      await redeployThroughQualityGate(cfg, operations, changed);
+      await redeployThroughQualityGate(cfg, changed);
     } catch (e) {
       // Never crash the orchestrator loop; the ops record their own
       // failures (failed deploy runs), this is the last-resort log.
@@ -322,7 +320,6 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
     // page it attaches to. Op-allowlist is intentionally narrow —
     // adding a new plugin op = one row in the resolver below.
     for (const r of rows) {
-      pendingOperations.add(r.operation);
       if (r.entity_id && r.operation.startsWith("pages.")) {
         pendingPageIds.add(r.entity_id);
         continue;
@@ -617,7 +614,6 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
  */
 export async function redeployThroughQualityGate(
   cfg: Pick<OrchestratorConfig, "adapter" | "registry">,
-  operations: readonly string[],
   changedPageIds: readonly string[],
 ): Promise<
   | { path: "production"; ok: boolean }
@@ -630,7 +626,6 @@ export async function redeployThroughQualityGate(
     SYSTEM_CTX,
     "quality_audits.plan_auto_redeploy",
     {
-      operations,
       changedPageIds: changedPageIds.slice(0, 500),
     },
   );
@@ -638,7 +633,11 @@ export async function redeployThroughQualityGate(
     console.error("[redeploy-orchestrator] could not plan the automatic redeploy", plan.error);
     return { path: "unplanned" };
   }
-  const { auditNeeded, reasons } = plan.value as { auditNeeded: boolean; reasons: string[] };
+  const { auditNeeded, reasons, pageIds } = plan.value as {
+    auditNeeded: boolean;
+    reasons: string[];
+    pageIds: string[];
+  };
   if (!auditNeeded) {
     // Content only: rebuild production as before (empty = full rebuild).
     const r = await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "deploy.trigger", {
@@ -661,7 +660,7 @@ export async function redeployThroughQualityGate(
     deployRunId: (staged.value as { runId: string }).runId,
     chatSessionId: null,
     branch: null,
-    pageIds: changedPageIds.slice(0, 50),
+    pageIds,
     autoPublish: true,
   });
   if (!queued.ok) {

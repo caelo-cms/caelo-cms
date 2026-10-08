@@ -40,7 +40,7 @@ import * as azure from "@pulumi/azure-native";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
-import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "../../dist/stack-contract.js";
+import { ADMIN_MEMORY_DEFAULT, azureContainerAppResources } from "../../dist/stack-contract.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -50,17 +50,10 @@ const rgName = cfg.get("resourceGroup") ?? "caelo-rg";
 const location = cfg.get("location") ?? "westeurope";
 const flexibleServerSku = cfg.get("flexibleServerSku") ?? "Standard_B2s";
 // #553 — the admin runs the Lighthouse quality audit; same knob + default
-// as every adapter (stack-contract.ts). Container Apps pairs memory with
-// CPU at 2 GiB per vCPU, so the admin's CPU follows its memory.
-const adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
-const adminMemoryMiB = memoryQuantityMiB(adminMemory);
-if (adminMemoryMiB === null) {
-  throw new Error(`caelo-azure:adminMemory "${adminMemory}" is not a memory quantity (e.g. 2Gi)`);
-}
-const adminResources = {
-  cpu: adminMemoryMiB / 1024 / 2,
-  memory: `${(adminMemoryMiB / 1024).toFixed(1)}Gi`,
-};
+// as every adapter (stack-contract.ts). Container Apps only accepts fixed
+// CPU/memory pairs (2 GiB per vCPU), so the admin's CPU follows its memory
+// and an unsupported size is refused here.
+const adminResources = azureContainerAppResources(cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT);
 
 const env = pulumi.getStack() as "dev" | "staging" | "production";
 const namePrefix = `caelo${env}`; // Azure resource names disallow hyphens in some types.

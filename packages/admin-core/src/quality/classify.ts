@@ -40,8 +40,9 @@ export type StageChange =
       readonly entity: "page";
       readonly entityId: string;
       readonly label: string;
-      /** `published` = was not live on main and is published now. */
-      readonly change: "created" | "published" | "updated" | "deleted";
+      /** `published` = was not live on main and is published now;
+       *  `template_changed` = a live page moved to another template. */
+      readonly change: "created" | "published" | "template_changed" | "updated" | "deleted";
     }
   | { readonly entity: "placement"; readonly entityId: string; readonly label: string }
   | { readonly entity: "content"; readonly entityId: string; readonly label: string }
@@ -86,6 +87,7 @@ function ruleFor(change: StageChange): ClassificationReason["rule"] | null {
     case "theme":
       return "theme";
     case "page":
+      if (change.change === "template_changed") return "template";
       return change.change === "created" || change.change === "published" ? "new_page" : null;
     case "pluginConfig":
       return "plugin_config";
@@ -188,48 +190,4 @@ export function withInstallRules(
     });
   }
   return { auditNeeded: reasons.length > 0, reasons, skipped: branch?.skipped ?? [] };
-}
-
-/**
- * Operations whose effect can change how pages render (#553 rules), as
- * they appear in `audit_events.operation`. Everything else the automatic
- * redeploy reacts to — page metadata, SEO texts, field values, comments,
- * media publishing, redirects — is content only.
- */
-const RENDERING_OPERATION_PREFIXES = [
-  "modules.",
-  "templates.",
-  "template_blocks.",
-  "layouts.",
-  "layout_modules.",
-  "layout_blocks.",
-  "themes.",
-  "plugins.",
-] as const;
-const RENDERING_OPERATIONS = new Set(["pages.create", "pages.duplicate"]);
-
-/**
- * Decide whether an automatic redeploy needs the Stage → audit → publish
- * path or may rebuild production directly (#553 PR 3).
- *
- * @param operations - the audit-event operations that armed the redeploy.
- * @param newlyLivePageCount - changed pages that are published now but did
- *   not exist at the last production build (a page going live is a "new
- *   page" even when it arrived through `pages.update`).
- */
-export function classifyRedeployOperations(
-  operations: readonly string[],
-  newlyLivePageCount: number,
-): { readonly auditNeeded: boolean; readonly reasons: readonly string[] } {
-  const reasons = [
-    ...new Set(
-      operations.filter(
-        (op) =>
-          RENDERING_OPERATIONS.has(op) ||
-          RENDERING_OPERATION_PREFIXES.some((p) => op.startsWith(p)),
-      ),
-    ),
-  ].sort();
-  if (newlyLivePageCount > 0) reasons.push(`${newlyLivePageCount} new page(s) going live`);
-  return { auditNeeded: reasons.length > 0, reasons };
 }

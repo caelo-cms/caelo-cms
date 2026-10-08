@@ -8,7 +8,11 @@
 
 import { describe, expect, it } from "bun:test";
 import { generateDockerCompose } from "./compose.js";
-import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "./stack-contract.js";
+import {
+  ADMIN_MEMORY_DEFAULT,
+  azureContainerAppResources,
+  memoryQuantityMiB,
+} from "./stack-contract.js";
 import { liveContainerMemory, planAdminMemory, serviceRollArgs } from "./stack-converge.js";
 import { estimateGcpCost } from "./wizards/gcp-cost.js";
 
@@ -112,5 +116,22 @@ describe("GCP cost table", () => {
       )?.monthlyUsd;
     expect(admin("1Gi")).toBe(16);
     expect(admin("2Gi")).toBe(23);
+  });
+
+  it("refuses a memory value provisioning would refuse", () => {
+    expect(() => estimateGcpCost({ ...inputs, adminMemory: "lots" })).toThrow("adminMemory");
+  });
+});
+
+describe("Azure Container Apps sizes", () => {
+  it("pairs the memory with its vCPU", () => {
+    expect(azureContainerAppResources("2Gi")).toEqual({ cpu: 1, memory: "2.0Gi" });
+    expect(azureContainerAppResources("1536Mi")).toEqual({ cpu: 0.75, memory: "1.5Gi" });
+  });
+
+  it("refuses sizes Container Apps does not offer", () => {
+    for (const q of ["2G", "3.2Gi", "16Gi", "256Mi", "lots"]) {
+      expect(() => azureContainerAppResources(q)).toThrow("0.5Gi to 8Gi");
+    }
   });
 });

@@ -2,9 +2,11 @@
 
 /**
  * Issue #553 — the automatic redeploy picks its path through the quality
- * gate: content-only changes rebuild production directly (still subject to
- * deploy.trigger's production gate), rendering changes Stage and queue an
- * automatic-publish quality check instead of shipping unchecked. The
+ * gate: when main still renders what the last checked Stage saw, only
+ * content changed and production is rebuilt directly (still subject to
+ * deploy.trigger's production gate); otherwise it Stages and queues an
+ * automatic-publish quality check of the touched pages instead of
+ * shipping unchecked. The
  * audit → publish half lives in admin-core's
  * quality-production-gate.integration.test.ts. Real Postgres + real
  * self-hosted builds into a tmpdir.
@@ -38,6 +40,8 @@ let prevOutputRoot: string | undefined;
 let prevServeCheck: string | undefined;
 let prevBase: string | null = null;
 let prevLang: string | null = null;
+let homeId: string;
+let cardModuleId: string;
 
 async function withSql<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL as string);
@@ -122,12 +126,14 @@ beforeAll(async () => {
     displayName: "Card",
     html: "<p>v0</p>",
   });
+  cardModuleId = moduleId;
   const { pageId } = await op<{ pageId: string }>("pages.create", {
     slug: "home",
     title: "Home",
     templateId,
     status: "published",
   });
+  homeId = pageId;
   await op("pages.set_modules", {
     pageId,
     blocks: [{ blockName: "content", moduleIds: [moduleId] }],
@@ -147,34 +153,56 @@ afterAll(async () => {
   await adapter.close();
 });
 
+async function auditRun(id: string): Promise<{ status: string; auto_publish: boolean }> {
+  const rows = await withSql(
+    async (tx) =>
+      (await tx`SELECT status, auto_publish FROM quality_audit_runs WHERE id = ${id}::uuid`) as unknown as {
+        status: string;
+        auto_publish: boolean;
+      }[],
+  );
+  const row = rows[0];
+  if (!row) throw new Error(`audit run ${id} missing`);
+  return row;
+}
+
 describe("redeployThroughQualityGate", () => {
-  it("content-only: rebuilds production directly — refused while nothing staged is checked", async () => {
-    const r = await redeployThroughQualityGate({ adapter, registry }, ["pages_seo.set_many"], []);
-    expect(r).toEqual({ path: "production", ok: false });
+  it("nothing staged yet: Stages and queues an automatic-publish check, never builds production", async () => {
+    const r = await redeployThroughQualityGate({ adapter, registry }, [homeId]);
+    if (r.path !== "staged-for-audit" || !r.auditRunId) throw new Error(JSON.stringify(r));
+    expect(await auditRun(r.auditRunId)).toEqual({ status: "queued", auto_publish: true });
     const runs = await runsByTarget();
-    expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({ target: "production", status: "failed" });
-    expect(runs[0]?.error).toContain("Blocked by the quality gate");
+    expect(runs.map((x) => `${x.target}:${x.status}`)).toEqual(["staging:succeeded"]);
+    // The audit worker's verdict (faked here): the Stage is clean.
+    await withSql(async (tx) => {
+      await tx`UPDATE quality_audit_runs SET status = 'passed', started_at = now(), finished_at = now()
+               WHERE id = ${r.auditRunId}::uuid`;
+    });
   });
 
-  it("rendering change: Stages and queues an automatic-publish check, never builds production", async () => {
-    const r = await redeployThroughQualityGate(
-      { adapter, registry },
-      ["modules.update", "pages.update"],
-      [],
-    );
-    expect(r.path).toBe("staged-for-audit");
-    if (r.path !== "staged-for-audit" || !r.auditRunId) throw new Error("no audit queued");
-    const runs = await runsByTarget();
-    expect(runs.at(-1)).toMatchObject({ target: "staging", status: "succeeded" });
-    expect(runs.filter((x) => x.target === "production")).toHaveLength(1);
-    const queued = await withSql(
+  it("content-only changes since the checked Stage rebuild production directly", async () => {
+    await op("pages.update", { pageId: homeId, title: "Home, renamed" });
+    expect(await redeployThroughQualityGate({ adapter, registry }, [homeId])).toEqual({
+      path: "production",
+      ok: true,
+    });
+    expect((await runsByTarget()).at(-1)).toMatchObject({
+      target: "production",
+      status: "succeeded",
+    });
+  });
+
+  it("module code changes Stage again and audit the pages placing the module", async () => {
+    await op("modules.update", { moduleId: cardModuleId, html: "<p>v1</p>" });
+    const r = await redeployThroughQualityGate({ adapter, registry }, []);
+    if (r.path !== "staged-for-audit" || !r.auditRunId) throw new Error(JSON.stringify(r));
+    const target = await withSql(
       async (tx) =>
-        (await tx`SELECT status, auto_publish FROM quality_audit_runs WHERE id = ${r.auditRunId}::uuid`) as unknown as {
-          status: string;
-          auto_publish: boolean;
+        (await tx`SELECT target_page_ids::text[] AS ids FROM quality_audit_runs WHERE id = ${r.auditRunId}::uuid`) as unknown as {
+          ids: string[];
         }[],
     );
-    expect(queued[0]).toEqual({ status: "queued", auto_publish: true });
+    expect(target[0]?.ids).toEqual([homeId]);
+    expect((await runsByTarget()).filter((x) => x.target === "production")).toHaveLength(1);
   });
 });

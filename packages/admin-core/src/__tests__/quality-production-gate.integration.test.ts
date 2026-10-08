@@ -46,6 +46,9 @@ let prev: Record<string, string | undefined> = {};
 let restoreBase: (() => Promise<void>) | null = null;
 let restoreLang: (() => Promise<void>) | null = null;
 let homeId: string;
+let draftPageId: string;
+let cardModuleId: string;
+let mainTemplateId: string;
 
 async function withSql<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL as string);
@@ -214,6 +217,8 @@ beforeAll(async () => {
     displayName: "Card",
     html: "<p>v0</p>",
   });
+  cardModuleId = moduleId;
+  mainTemplateId = templateId;
   homeId = (
     await op<{ pageId: string }>(SYS, "pages.create", {
       slug: "home",
@@ -226,6 +231,16 @@ beforeAll(async () => {
     pageId: homeId,
     blocks: [{ blockName: "content", moduleIds: [moduleId] }],
   });
+  // A draft that exists before any Stage; publishing it later is a new
+  // page going live although it arrives through pages.update.
+  draftPageId = (
+    await op<{ pageId: string }>(SYS, "pages.create", {
+      slug: `${PFX}draft`,
+      title: "Draft",
+      templateId,
+      status: "draft",
+    })
+  ).pageId;
 });
 
 afterAll(async () => {
@@ -265,11 +280,24 @@ describe("direct production builds obey the quality gate", () => {
     await stage();
     await audit(failingLighthouse);
     expect((await buildProduction(OWNER)).message).toContain("publish anyway");
-    // An editor has deploy.trigger? The built-in editor role cannot deploy.
+    // The built-in editor role cannot deploy.
     expect((await buildProduction(EDITOR, { reason: "please" })).message).toContain(
       "deploy.trigger",
     );
     expect((await buildProduction(SYS, { reason: "worker" })).message).toContain("human decision");
+
+    // A build that fails after the override was allowed records nothing:
+    // the gate stays closed for the next attempt.
+    const broken = await execute(registry, adapter, OWNER, "deploy.trigger", {
+      targetName: "production",
+      repoRoot: "/dev/null/caelo-cannot-write-here",
+      publishAnyway: { reason: "first try" },
+    });
+    expect(broken.ok).toBe(false);
+    expect(
+      (await op<{ gate: { state: string } }>(SYS, "quality_audits.gate_status", {})).gate.state,
+    ).toBe("errored");
+
     const ok = await buildProduction(OWNER, { reason: "checker down, launch today" });
     expect(ok).toEqual({ ok: true, message: "" });
     expect(existsSync(join(testRoot, "output", "production", "current", "index.html"))).toBe(true);
@@ -295,32 +323,72 @@ describe("direct production builds obey the quality gate", () => {
     await audit(fakeLighthouse([]));
     expect(await buildProduction(OWNER)).toEqual({ ok: true, message: "" });
   });
+
+  it("rendering changed on main since the checked Stage: refused until it is staged again", async () => {
+    await op(SYS, "modules.update", { moduleId: cardModuleId, html: "<p>v1</p>" });
+    const r = await buildProduction(OWNER);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("module code: Card");
+    expect(r.message).toContain("Stage again");
+    await stage();
+    await audit(fakeLighthouse([]));
+    expect(await buildProduction(OWNER)).toEqual({ ok: true, message: "" });
+  });
 });
 
 describe("the automatic redeploy publishes only through the gate", () => {
-  it("plans content-only changes as a direct rebuild, rendering changes through a Stage", async () => {
-    const plan = (operations: string[], changedPageIds: string[] = []) =>
-      op<{ auditNeeded: boolean; reasons: string[] }>(SYS, "quality_audits.plan_auto_redeploy", {
-        operations,
-        changedPageIds,
-      });
-    expect(
-      await plan(["pages.update", "pages_seo.set_many", "comments.moderate"], [homeId]),
-    ).toEqual({ auditNeeded: false, reasons: [] });
-    expect((await plan(["modules.update", "pages.update"])).reasons).toEqual(["modules.update"]);
-    // A page created after the last production build that is published now
-    // is a new page going live, even though it arrived through pages.update.
-    const { pageId } = await op<{ pageId: string }>(SYS, "pages.create", {
-      slug: `${PFX}new`,
-      title: "New",
-      status: "published",
-    });
-    expect((await plan(["pages.update"], [pageId])).reasons).toEqual(["1 new page(s) going live"]);
-    await op(SYS, "pages.update", { pageId, status: "draft" });
+  const plan = (changedPageIds: string[] = []) =>
+    op<{ auditNeeded: boolean; reasons: string[]; pageIds: string[] }>(
+      SYS,
+      "quality_audits.plan_auto_redeploy",
+      { changedPageIds },
+    );
+
+  it("content-only changes since the checked Stage rebuild production directly", async () => {
+    await op(SYS, "pages.update", { pageId: homeId, title: "Home, renamed" });
+    expect(await plan([homeId])).toEqual({ auditNeeded: false, reasons: [], pageIds: [homeId] });
   });
 
-  it("a clean audit of an automatic Stage publishes it", async () => {
-    await stage(true);
+  it("module code changes go through a Stage that audits the pages placing the module", async () => {
+    await op(SYS, "modules.update", { moduleId: cardModuleId, html: "<p>v2</p>" });
+    const p = await plan();
+    expect(p.auditNeeded).toBe(true);
+    expect(p.reasons).toEqual(["module code: Card"]);
+    expect(p.pageIds).toEqual([homeId]);
+    await stage();
+    await audit(fakeLighthouse([]));
+  });
+
+  it("a draft published through pages.update is a new page going live", async () => {
+    await op(SYS, "pages.update", { pageId: draftPageId, status: "published" });
+    const p = await plan();
+    expect(p.auditNeeded).toBe(true);
+    expect(p.reasons).toHaveLength(1);
+    expect(p.reasons[0]).toStartWith("new page:");
+    expect(p.pageIds).toEqual([draftPageId]);
+    await op(SYS, "pages.update", { pageId: draftPageId, status: "draft" });
+    expect((await plan()).auditNeeded).toBe(false);
+  });
+
+  it("a live page moved to another template is audited", async () => {
+    const { templateId } = await op<{ templateId: string }>(SYS, "templates.create", {
+      slug: `${PFX}tpl2`,
+      displayName: "T2",
+      html: `<!doctype html><html lang="en"><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
+      css: "",
+    });
+    await op(SYS, "pages.update", { pageId: homeId, templateId });
+    const p = await plan();
+    expect(p.auditNeeded).toBe(true);
+    expect(p.reasons.some((r) => r.startsWith("template:"))).toBe(true);
+    expect(p.pageIds).toContain(homeId);
+    await op(SYS, "pages.update", { pageId: homeId, templateId: mainTemplateId });
+    await stage();
+    await audit(fakeLighthouse([]));
+  });
+
+  it("a clean audit of an automatic Stage publishes exactly that build", async () => {
+    const staged = await stage(true);
     await audit(fakeLighthouse([]));
     const runs = await op<{ runs: { autoPublish: { outcome: string } | null }[] }>(
       SYS,
@@ -329,6 +397,17 @@ describe("the automatic redeploy publishes only through the gate", () => {
     );
     expect(runs.runs[0]?.autoPublish).toEqual({ outcome: "published", message: null });
     expect((await lastProductionRun()).status).toBe("succeeded");
+    // Promote refuses a build that is no longer the newest Stage.
+    await stage();
+    expect(
+      await opErr(OWNER, "deploy.promote", {
+        fromTarget: "staging",
+        toTarget: "production",
+        repoRoot: testRoot,
+        expectedSourceRunId: staged,
+      }),
+    ).toContain("a newer build was staged");
+    await audit(fakeLighthouse([]));
   });
 
   it("problems stop it — recorded on the audit and as a failed production run", async () => {
@@ -344,6 +423,24 @@ describe("the automatic redeploy publishes only through the gate", () => {
     const run = await lastProductionRun();
     expect(run).toMatchObject({ status: "failed" });
     expect(run.error_message).toContain("Automatic publish stopped by the quality gate");
+  });
+
+  it("an automatic audit interrupted by a restart is settled too", async () => {
+    await stage(true);
+    // The process that claimed it died: still `running` long after.
+    await withSql(async (tx) => {
+      await tx`UPDATE quality_audit_runs SET status = 'running', started_at = now() - interval '2 hours'
+               WHERE status = 'queued'`;
+    });
+    await audit(fakeLighthouse([]));
+    const runs = await op<{
+      runs: { status: string; autoPublish: { outcome: string; message: string } | null }[];
+    }>(SYS, "quality_audits.list", { limit: 1 });
+    expect(runs.runs[0]?.status).toBe("errored");
+    expect(runs.runs[0]?.autoPublish?.outcome).toBe("blocked");
+    expect((await lastProductionRun()).error_message).toContain(
+      "Automatic publish stopped by the quality gate",
+    );
   });
 
   it("an automatic Stage cannot carry a chat", async () => {
@@ -434,13 +531,16 @@ describe("the fix-quality-findings skill", () => {
   it("is seeded active and only names tools that exist", async () => {
     const rows = await withSql(
       async (tx) =>
-        (await tx`SELECT status, allowlisted_tools FROM skills WHERE slug = 'fix-quality-findings'`) as unknown as {
+        (await tx`SELECT status, allowlisted_tools, activated_at FROM skills WHERE slug = 'fix-quality-findings'`) as unknown as {
           status: string;
+          activated_at: Date | string | null;
           allowlisted_tools: string[] | string;
         }[],
     );
     const skill = rows[0];
     expect(skill?.status).toBe("active");
+    // 0213: an active skill records when it became available.
+    expect(skill?.activated_at).not.toBeNull();
     const tools =
       typeof skill?.allowlisted_tools === "string"
         ? (JSON.parse(skill.allowlisted_tools) as string[])

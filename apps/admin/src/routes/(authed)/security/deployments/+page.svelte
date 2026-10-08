@@ -129,6 +129,7 @@
                   minlength="3"
                   maxlength="500"
                   placeholder="Why publish without a quality result?"
+                  aria-label="Reason to publish {t.name} without a quality check result"
                   class="w-64 rounded-md border bg-background p-1.5 text-xs"
                   data-testid="publish-anyway-reason-ops"
                 />

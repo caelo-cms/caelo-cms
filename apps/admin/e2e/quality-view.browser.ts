@@ -64,7 +64,7 @@ test("Owner sees the quality gate and revokes an accepted finding", async ({ pag
   await expect(row).toBeVisible();
   await expect(row).toContainText("image-alt");
 
-  await row.getByPlaceholder("reason (optional)").fill("fix it properly");
+  await row.getByLabel("Reason for revoking this acceptance (optional)").fill("fix it properly");
   await row.getByTestId("quality-revoke-btn").click();
   await expect(row.getByText("revoked")).toBeVisible({ timeout: 15_000 });
   await expect(row.getByTestId("quality-revoke-btn")).toHaveCount(0);

@@ -134,7 +134,7 @@ export const enqueueAuditOp = defineOperation({
        *  list's Stage of one page); audited after the homepage. */
       pageIds: z.array(z.string().uuid()).max(50).default([]),
       /** Queued by the automatic redeploy: publish when the audit's gate
-       *  is open (quality_audits.complete_auto_publish). Chat-less only. */
+       *  is open (quality_audits.settle_auto_publish). Chat-less only. */
       autoPublish: z.boolean().default(false),
     })
     .strict()

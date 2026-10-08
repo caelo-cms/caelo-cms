@@ -233,6 +233,7 @@
                         type="text"
                         name="reason"
                         placeholder="reason (optional)"
+                        aria-label="Reason for revoking this acceptance (optional)"
                         class="w-40 rounded-md border bg-background p-1 text-xs"
                       />
                       <Button type="submit" size="sm" variant="outline" data-testid="quality-revoke-btn">

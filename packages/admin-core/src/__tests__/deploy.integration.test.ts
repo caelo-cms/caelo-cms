@@ -170,7 +170,7 @@ async function seedPage(): Promise<string> {
 describe("P6 deploy.trigger", () => {
   it("emits one HTML file per published page plus robots + manifest", async () => {
     await seedPage();
-    await openQualityGate(ADMIN_URL as string);
+    await openQualityGate(adapter);
     const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
       targetName: "production",
       repoRoot: testRoot,
@@ -331,7 +331,7 @@ describe("P6 deploy.trigger", () => {
     expect(seeded).toBeDefined();
     if (!seeded) return;
 
-    await openQualityGate(ADMIN_URL as string);
+    await openQualityGate(adapter);
     const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
       targetName: "production",
       repoRoot: testRoot,

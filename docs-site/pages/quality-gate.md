@@ -49,9 +49,9 @@ If the check cannot produce a result — the browser crashed, a timeout, staging
 
 ## Production builds and the automatic redeploy
 
-A direct production build (*Build production* on the Deployments page) publishes what is staged, so it obeys the same gate: it runs when the gate is open, needs a recorded *publish anyway* when the check failed, and is refused otherwise.
+A direct production build (*Build production* on the Deployments page) builds the site as it is now, so it obeys the same gate. It runs when the gate of the last Stage is open and the site still looks the way that check saw it. If module code, a template, a layout, the theme or a plugin changed since, or a page went live since, it is refused with *Stage again* so the change is checked first. Text, SEO and other content edits don't count. When the check itself failed, the build needs a recorded *publish anyway*. The reason is saved only once the build succeeded.
 
-The automatic redeploy (Security → Gateway) works the same way. Content-only changes rebuild production directly. Changes that can affect rendering are Staged, checked, and published automatically only when the check is clean (or every problem was accepted). Otherwise the redeploy stops, and the Deployments page and the notification bell show why — like a failed manual Publish.
+The automatic redeploy (Security → Gateway) works the same way. When only content changed since the last checked Stage, it rebuilds production directly. Otherwise it Stages, checks the pages the changes appear on, and publishes that exact build automatically only when the check is clean (or every problem was accepted). If the check finds problems, fails, is interrupted, or a newer Stage replaces it, the redeploy stops, and the Deployments page and the notification bell show why — like a failed manual Publish.
 
 ## The quality view
 

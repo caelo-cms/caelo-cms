@@ -139,7 +139,7 @@ describe("deploy.rollback", () => {
     });
 
     // Build 1 — VERSION_ONE.
-    await openQualityGate(ADMIN_URL as string);
+    await openQualityGate(adapter);
     const b1 = await execute(registry, adapter, HUMAN, "deploy.trigger", {
       targetName: "production",
       repoRoot: testRoot,
@@ -152,6 +152,8 @@ describe("deploy.rollback", () => {
       moduleId: modId,
       html: "<p>VERSION_TWO</p>",
     });
+    // The module change is new rendering: it needs a checked Stage first.
+    await openQualityGate(adapter);
     const b2 = await execute(registry, adapter, HUMAN, "deploy.trigger", {
       targetName: "production",
       repoRoot: testRoot,

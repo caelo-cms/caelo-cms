@@ -65,7 +65,11 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
 
   const provider = inputs.provider ?? "gcp";
   const adminMemory = inputs.adminMemory ?? ADMIN_MEMORY_DEFAULT;
-  const adminGiB = (memoryQuantityMiB(adminMemory) ?? 2048) / 1024;
+  const adminMiB = memoryQuantityMiB(adminMemory);
+  if (adminMiB === null) {
+    throw new Error(`adminMemory "${adminMemory}" is not a memory quantity (e.g. 2Gi)`);
+  }
+  const adminGiB = adminMiB / 1024;
   // An always-on instance is priced at 1 GiB (the $15 line); extra memory
   // is billed per GiB-second (~$6.50 per GiB-month).
   const perMinInstanceUsd = 15 + Math.max(0, adminGiB - 1) * 6.5;
