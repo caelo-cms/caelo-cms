@@ -560,12 +560,21 @@ export async function getActiveProviderForModel(modelId: string): Promise<Resolv
   // nothing to route to — the env-only legacy fallback deliberately does
   // not apply here (it has no config to carry a tier map).
   if (!meta) return null;
+  return resolveActiveRowForModel(deps, meta, modelId);
+}
+
+/** The provider of an already-loaded active row, running `modelId`. */
+async function resolveActiveRowForModel(
+  d: ResolverDeps,
+  meta: { name: ProviderName; baseUrl?: string; maxOutputTokens?: number },
+  modelId: string,
+): Promise<ResolvedProvider | null> {
   const cacheKey = `${meta.name}::${modelId}`;
   const now = Date.now();
   const cached = tierCache.get(cacheKey);
   if (cached && cached.expiresAt > now) return cached.resolved;
 
-  const key = await loadApiKey(deps, meta.name);
+  const key = await loadApiKey(d, meta.name);
   if (!key) return null;
   const provider = makeProvider({
     name: meta.name,
@@ -602,7 +611,11 @@ export async function getActiveProviderForPurpose(
   // No active row: the env-only legacy path has no stored per-purpose
   // models, so every purpose runs on its chat model.
   const purposeModel = meta ? modelForPurpose(purpose, meta) : null;
-  return purposeModel === null ? getActiveProvider() : getActiveProviderForModel(purposeModel);
+  if (meta === null || purposeModel === null) return getActiveProvider();
+  // Build from the SAME row the model was read from: re-reading the active
+  // row could pair this provider's model id with another provider if the
+  // Owner switched providers in between.
+  return resolveActiveRowForModel(deps, meta, purposeModel);
 }
 
 /** Host-only image dispatch shares the chat resolver's encrypted-key path.

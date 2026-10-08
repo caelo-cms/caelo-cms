@@ -36,6 +36,7 @@ import {
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { lookupPricing } from "../ai/pricing-cache.js";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
 import {
@@ -393,21 +394,14 @@ export const proposeSetGatewaySettingsOp = defineOperation({
 
 // ─── propose_set_translation_model ───────────────────────────────────
 
-/** "$1/MTok in · $5/MTok out" for a text model, or "unpriced". */
-function textRate(
-  rows: ReadonlyArray<{
-    provider: string;
-    model: string;
-    operationType: "text" | "image";
-    inputMicrocents: number;
-    outputMicrocents: number | null;
-  }>,
-  provider: string,
-  model: string,
-): string {
-  const row =
-    rows.find((r) => r.provider === provider && r.model === model && r.operationType === "text") ??
-    rows.find((r) => r.provider === "*" && r.model === model && r.operationType === "text");
+/**
+ * "$1/MTok in · $5/MTok out" for a text model, or "unpriced". Reads through
+ * `lookupPricing` — the exact lookup `chat.record_ai_call` bills with
+ * (model wildcard, validity window) — so the preview shows the rate the
+ * calls will actually be charged at.
+ */
+async function textRate(tx: Tx, provider: string, model: string): Promise<string> {
+  const row = await lookupPricing(tx, provider, model, "text");
   if (!row) return "unpriced (no ai_pricing row — propose one with propose_set_ai_pricing)";
   return `${perMTok(row.inputMicrocents)} in · ${perMTok(row.outputMicrocents) ?? "n/a"} out`;
 }
@@ -446,18 +440,13 @@ export const proposeSetTranslationModelOp = defineOperation({
         `the active provider ${active.name} has no chat model stored — the Owner saves it at /security/ai first.`,
       );
     }
-    const pricing = await listAiPricingOp.handler(ctx, {}, tx);
-    if (!pricing.ok) return handlerError(op, "could not read AI pricing");
-    const describe = (model: string | null) => {
-      const effective = model ?? chatModel;
-      return {
-        model,
-        label: model === null ? `same as chat model (${chatModel})` : model,
-        rate: textRate(pricing.value.rows, active.name, effective),
-      };
-    };
-    const from = describe(active.translationModel);
-    const to = describe(input.model);
+    const describe = async (model: string | null) => ({
+      model,
+      label: model === null ? `same as chat model (${chatModel})` : model,
+      rate: await textRate(tx, active.name, model ?? chatModel),
+    });
+    const from = await describe(active.translationModel);
+    const to = await describe(input.model);
     const summary = `translation model (${active.name}): ${from.label} → ${to.label}`;
     return queueProposal(
       tx,

@@ -14,6 +14,10 @@ describe("ctx.ai.complete options (#593)", () => {
     expect(pluginAiCompleteInput.safeParse({ ...base, purpose: "summarize" }).success).toBe(true);
   });
 
+  it("accepts an empty message list (the SDK contract allows a system-only call)", () => {
+    expect(pluginAiCompleteInput.safeParse({ system: "s", messages: [] }).success).toBe(true);
+  });
+
   it("rejects a purpose that is not an identifier", () => {
     expect(pluginAiCompleteInput.safeParse({ ...base, purpose: "Translation!" }).success).toBe(
       false,

@@ -33,9 +33,9 @@ const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 export const pluginAiCompleteInput = z
   .object({
     system: z.string(),
-    messages: z
-      .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string() }).strict())
-      .min(1),
+    messages: z.array(
+      z.object({ role: z.enum(["user", "assistant"]), content: z.string() }).strict(),
+    ),
     maxTokens: z.number().int().positive().max(200_000).optional(),
     temperature: z.number().min(0).max(2).optional(),
     purpose: z
