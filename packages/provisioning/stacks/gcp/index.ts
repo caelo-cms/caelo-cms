@@ -259,7 +259,12 @@ const sqlInstance = new gcp.sql.DatabaseInstance(
       // pool-max=10, two pools per admin process). Override at
       // instance level so the cap matches the Cloud Run scale-out
       // headroom defined by adminMaxInstances + gatewayMaxInstances.
-      databaseFlags: [{ name: "max_connections", value: maxConnections.toString() }],
+      databaseFlags: [
+        { name: "max_connections", value: maxConnections.toString() },
+        // The operator-access sync job logs in as its service account (Cloud
+        // SQL IAM database authentication, no password). No restart needed.
+        { name: "cloudsql.iam_authentication", value: "on" },
+      ],
       backupConfiguration: {
         enabled: true,
         pointInTimeRecoveryEnabled: cloudSqlHa,
@@ -927,6 +932,20 @@ new gcp.iap.WebBackendServiceIamMember(
   },
   opts,
 );
+
+// =========================================================================
+// Operator access — deliberately NOT here
+// =========================================================================
+//
+// Who passes IAP beyond the allowlist above follows the Caelo user list. A
+// Cloud Run job with its own service account keeps the IAP binding and the
+// caelo-mcp token-creator binding in step (admin-core
+// security/operator-access/sync-job.ts); the admin's run SA holds no IAM
+// policy rights and may only start that job. The CLI owns the job, its
+// account, its grants and its schedule (packages/provisioning/src/
+// operator-access.ts, run by the wizard after migrations and by `upgrade`),
+// because the job's database user can only be assigned its role after the
+// migrations have created that role.
 
 // URL map: routes by host header.
 //   admin.<domain>  → admin backend (IAP-gated)

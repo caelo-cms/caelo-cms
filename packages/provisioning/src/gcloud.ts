@@ -119,6 +119,8 @@ const REQUIRED_APIS: readonly string[] = [
   // Used by gcp.projects.ServiceIdentity to provision the IAP-managed
   // service account that forwards authenticated requests to Cloud Run.
   "serviceusage.googleapis.com",
+  // Hourly run of the operator-access sync job (operator-access.ts).
+  "cloudscheduler.googleapis.com",
 ];
 
 // v0.3.1 — gcp-firebase provider needs the Firebase Management +

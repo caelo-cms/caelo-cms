@@ -1,20 +1,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { latestOperatorAccessRun } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { opErrorMessage } from "#lib/server/op-error.js";
+import { syncOperatorAccessFromPanel } from "#lib/server/operator-access.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
+
+/** System kind for cross-user writes on self-or-system RLS tables (see create). */
+const asSystem = (locals: App.Locals) => ({ ...locals.ctx, actorKind: "system" as const });
 
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "users.manage");
   const { adapter, registry } = getQueryContext();
 
-  const [usersResult, rolesResult] = await Promise.all([
+  const [usersResult, rolesResult, operatorAccess] = await Promise.all([
     execute(registry, adapter, locals.ctx, "users.list", {}),
     execute(registry, adapter, locals.ctx, "roles.list", {}),
+    // Latest run of the Google IAP sync job (null without IAP), so a failed
+    // scheduled run shows here instead of only in Cloud Logging.
+    latestOperatorAccessRun(),
   ]);
 
   const users = usersResult.ok
@@ -35,7 +43,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     ? (rolesResult.value as { roles: { name: string }[] }).roles.map((r) => r.name)
     : [];
 
-  return { users, roles };
+  return { users, roles, operatorAccess };
 };
 
 export const actions: Actions = {
@@ -50,14 +58,17 @@ export const actions: Actions = {
     const displayName = String(form.get("displayName") ?? "").trim();
     const roleNames = form.getAll("roleNames").map(String).filter(Boolean);
 
-    const result = await execute(registry, adapter, locals.ctx, "users.create", {
+    // Elevated like resetPassword below: creating ANOTHER user's actor/users
+    // rows clears self-or-system RLS only as system (a bare human owner is
+    // blocked). `users.manage` was checked above; the owner id stays on audit.
+    const result = await execute(registry, adapter, asSystem(locals), "users.create", {
       email,
       password,
       displayName,
       roleNames,
     });
     if (!result.ok) return fail(400, { error: "Could not create user." });
-    return { ok: true };
+    return syncOperatorAccessFromPanel(locals);
   },
 
   setRoles: async ({ request, locals }) => {
@@ -74,7 +85,7 @@ export const actions: Actions = {
       roleNames,
     });
     if (!result.ok) return fail(400, { error: "Could not update roles." });
-    return { ok: true };
+    return syncOperatorAccessFromPanel(locals);
   },
 
   delete: async ({ request, locals }) => {
@@ -84,9 +95,21 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
 
     const userId = String(form.get("userId") ?? "");
-    const result = await execute(registry, adapter, locals.ctx, "users.delete", { userId });
+    const result = await execute(registry, adapter, asSystem(locals), "users.delete", { userId });
     if (!result.ok) return fail(400, { error: "Could not delete user." });
-    return { ok: true };
+    return syncOperatorAccessFromPanel(locals);
+  },
+
+  /**
+   * Recompute Google IAP access for every user, deleted ones included — the
+   * retry path when an automatic sync after a user change failed (the change
+   * itself was saved, so it cannot be approved again).
+   */
+  resyncOperatorAccess: async ({ request, locals }) => {
+    requirePermission(locals, "users.manage");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    return syncOperatorAccessFromPanel(locals);
   },
 
   resetPassword: async ({ request, locals }) => {

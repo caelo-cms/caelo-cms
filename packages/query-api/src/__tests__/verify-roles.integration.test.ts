@@ -60,6 +60,33 @@ describe("DatabaseAdapter.verifyRoles()", () => {
     });
   });
 
+  it("with expectedRoles, refuses the authoring roles — a narrow-role process must really run as its role", async () => {
+    // The operator-access sync job sets this to its read-only IAM user; a
+    // misrouted admin_role URL must fail instead of silently widening it.
+    await withAdapter(
+      {
+        adminDatabaseUrl: ADMIN_URL,
+        publicDatabaseUrl: PUBLIC_ROLE_URL,
+        expectedRoles: { admin: "job@p.iam", public: ["job@p.iam"] },
+      },
+      async (a) => {
+        await expect(a.verifyRoles()).rejects.toThrow(
+          /admin pool expected \(job@p\.iam, cms_admin\) but connected as \(admin_role, cms_admin\)/,
+        );
+      },
+    );
+    await withAdapter(
+      {
+        adminDatabaseUrl: ADMIN_URL,
+        publicDatabaseUrl: PUBLIC_ROLE_URL,
+        expectedRoles: { admin: "admin_role", public: ["job@p.iam"] },
+      },
+      async (a) => {
+        await expect(a.verifyRoles()).rejects.toThrow(/public pool expected user job@p\.iam/);
+      },
+    );
+  });
+
   it("memoises — subsequent calls return the same promise", async () => {
     await withAdapter(
       { adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_ROLE_URL },

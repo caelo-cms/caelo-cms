@@ -26,7 +26,7 @@
  * module and ONLY this module — the validator enforces it.
  */
 
-import type { FontMetadata, FontRef } from "@caelo-cms/shared";
+import type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
 import { z } from "zod";
 
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
@@ -925,7 +925,7 @@ export interface PluginFonts {
     input: FontRef & { offset: number; length: number },
   ): Promise<{ dataBase64: string; sizeBytes: number; eof: boolean }>;
 }
-export type { FontMetadata, FontRef } from "@caelo-cms/shared";
+export type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
 
 export interface PluginContextTier1 extends PluginContext {
   readonly fonts?: PluginFonts;
@@ -979,7 +979,16 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly component?: PluginComponent & {
     readonly mounted?: (host: HTMLElement, ctx: PluginFrontendContext) => Promise<void> | void;
   };
-  readonly staticRender?: (ctx: C, args: { pageId: string }) => Promise<string> | string;
+  /**
+   * Build-time HTML for a `<div data-caelo-plugin>` placeholder.
+   * `pageUrlStyle` is the serving target's page URL style; a plugin that
+   * links to pages gets their URLs from core (`pages.resolve_public_urls`
+   * with this style) instead of building them (#590).
+   */
+  readonly staticRender?: (
+    ctx: C,
+    args: { pageId: string; pageUrlStyle: PageUrlStyle },
+  ) => Promise<string> | string;
   /**
    * The plugin's channel to the browser: files emitted ONCE per build
    * and referenced from every page of the site.
@@ -1070,9 +1079,13 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly skills?: ReadonlyArray<PluginSkillSpec>;
   /**
    * #391 — the I/O half of head/sitemap contributions: an operation in
-   * `operations` taking `{pageIds: string[], siteBaseUrl: string}` and
-   * returning `{head?: Record<pageId, HeadEntry[]>, sitemap?:
-   * Record<pageId, SitemapContribution>, lang?: Record<pageId, string>}`.
+   * `operations` taking `{pageIds: string[], siteBaseUrl: string,
+   * pageUrlStyle: PageUrlStyle}` and returning `{head?: Record<pageId,
+   * HeadEntry[]>, sitemap?: Record<pageId, SitemapContribution>, lang?:
+   * Record<pageId, string>}`. A href that points at a page must be the
+   * page's public URL as core resolves it — ask
+   * `ctx.cms.call("pages.resolve_public_urls", {pageIds, pageUrlStyle})`
+   * rather than composing one, so it equals the page's canonical (#590).
    * `lang` is the page's document language (BCP 47, set as `<html
    * lang>`; e.g. the page's locale) and overrides the site's stored
    * language for that page — it rides the `head` contribution kind. The
@@ -1116,7 +1129,8 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly deferralsOperation?: string;
   /**
    * The I/O half of `dataLists`: an operation in `operations` taking
-   * `{pageIds: string[]}` and returning
+   * `{pageIds: string[], pageUrlStyle: PageUrlStyle}` (page links come
+   * from `pages.resolve_public_urls`, as for head contributions) and returning
    * `{lists: Record<pageId, Record<listName, Array<Record<string, string>>>>}`.
    * Called once per render pass, batched over the pages being rendered.
    */

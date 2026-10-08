@@ -30,13 +30,18 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { collectContributions, composeHeadBlock, MAIN_RENDER } from "@caelo-cms/plugin-host";
+import {
+  collectContributions,
+  composeHeadBlock,
+  MAIN_RENDER,
+  resolvePublicPageUrls,
+} from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   applyDocumentLanguage,
   injectSeoIntoHead,
+  type PageUrlStyle,
   renderSeoHead,
-  resolveCanonicalUrl,
   resolveDocumentLanguage,
   type SiteSeoSettings,
 } from "@caelo-cms/shared";
@@ -68,9 +73,9 @@ export async function runSeoPass(args: {
   buildDir: string;
   pages: SeoPagesContext[];
   settings: SiteSeoSettings;
-  /** v0.2.85 — per-target page emission style. Drives canonical
-   *  trailing-slash decisions to match what the bucket serves. */
-  pageUrlStyle?: "directory" | "no-extension";
+  /** The target's page emission style (v0.2.85). Every URL of the pass
+   *  — canonical, sitemap `<loc>`, plugin hreflang — follows it (#590). */
+  pageUrlStyle: PageUrlStyle;
 }): Promise<{ sitemapEmitted: boolean }> {
   if (args.pages.length === 0) {
     return { sitemapEmitted: false };
@@ -185,8 +190,27 @@ export async function runSeoPass(args: {
   // uses (composeHeadBlock), so both surfaces stay byte-identical.
   const contributions = await collectContributions(
     seoBundles.map((b) => b.pageId),
-    { siteBaseUrl: args.settings.siteBaseUrl, ...MAIN_RENDER },
+    { siteBaseUrl: args.settings.siteBaseUrl, pageUrlStyle: args.pageUrlStyle, ...MAIN_RENDER },
   );
+
+  // #590 — canonical and sitemap `<loc>` come from the ONE public URL
+  // builder plugins also use for hreflang, so they agree byte for byte
+  // (host-strategy locales included).
+  const publicUrls = await resolvePublicPageUrls(
+    seoBundles.map((b) => ({
+      id: b.pageId,
+      slug: b.slug,
+      currentPath: b.currentPath,
+      canonicalOverride: b.canonicalOverride,
+    })),
+    { siteBaseUrl: args.settings.siteBaseUrl, pageUrlStyle: args.pageUrlStyle },
+    MAIN_RENDER,
+  );
+  const publicUrlOf = (b: PageSeoBundle): string => {
+    const url = publicUrls.get(b.pageId);
+    if (url === undefined) throw new Error(`seo-pass: no public URL resolved for page ${b.pageId}`);
+    return url;
+  };
 
   // #390 — canonical follows the MATERIALIZED composed path; home
   // designation, prefixes, and slug formats are already baked into
@@ -195,12 +219,7 @@ export async function runSeoPass(args: {
   for (const p of args.pages) {
     const bundle = bundleBySlug.get(p.pageSlug);
     if (!bundle) continue;
-    const canonical = resolveCanonicalUrl({
-      siteBaseUrl: args.settings.siteBaseUrl,
-      pagePath: bundle.currentPath,
-      override: bundle.canonicalOverride,
-      pageUrlStyle: args.pageUrlStyle,
-    });
+    const canonical = publicUrlOf(bundle);
     const ogImageUrl = bundle.ogImageAssetId
       ? (ogImageUrlByAsset.get(bundle.ogImageAssetId) ?? null)
       : null;
@@ -237,12 +256,7 @@ export async function runSeoPass(args: {
       // variant URL must not appear; clean-404 semantics).
       .filter((b) => contributions.sitemap.get(b.pageId)?.exclude !== true)
       .map((b) => {
-        const canonical = resolveCanonicalUrl({
-          siteBaseUrl: args.settings.siteBaseUrl,
-          pagePath: b.currentPath,
-          override: b.canonicalOverride,
-          pageUrlStyle: args.pageUrlStyle,
-        });
+        const canonical = publicUrlOf(b);
         // #391 — contributed xhtml alternates (hreflang) inside the
         // page's <url> entry, sorted for deterministic output.
         const alternates = [...(contributions.sitemap.get(b.pageId)?.alternates ?? [])]

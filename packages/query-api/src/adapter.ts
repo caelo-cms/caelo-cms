@@ -51,7 +51,21 @@ export interface AdapterConfig {
    * the test preload to bound the suite's footprint under `max_connections`.
    */
   readonly poolMax?: number;
+  /**
+   * The identities {@link DatabaseAdapter.verifyRoles} accepts. Defaults to
+   * the authoring roles (`admin_role` on cms_admin; `admin_role` or
+   * `public_role` on cms_public). Only a process that deliberately runs with
+   * a narrower role sets it — the operator-access sync job, which connects
+   * as its own read-only Cloud SQL IAM user — so a misrouted URL still fails
+   * loudly instead of silently running as someone else.
+   */
+  readonly expectedRoles?: {
+    readonly admin: string;
+    readonly public: readonly string[];
+  };
 }
+
+const DEFAULT_ROLES = { admin: "admin_role", public: ["admin_role", "public_role"] } as const;
 
 /**
  * Resolve the per-pool `max` connection cap. Returns `undefined` when neither
@@ -93,6 +107,7 @@ export class DatabaseAdapter {
   readonly #adminRaw: SQL;
   readonly #publicRaw: SQL;
   readonly #skipVerify: boolean;
+  readonly #roles: { readonly admin: string; readonly public: readonly string[] };
   #verifyPromise: Promise<void> | null = null;
 
   constructor(config: AdapterConfig) {
@@ -109,6 +124,7 @@ export class DatabaseAdapter {
     this.#admin = drizzle(this.#adminRaw);
     this.#public = drizzle(this.#publicRaw);
     this.#skipVerify = config.skipRoleVerification === true;
+    this.#roles = config.expectedRoles ?? DEFAULT_ROLES;
   }
 
   /**
@@ -131,9 +147,9 @@ export class DatabaseAdapter {
 
   async #verifyRolesOnce(): Promise<void> {
     const admin = await this.#identity(this.#adminRaw);
-    if (admin.user !== "admin_role" || admin.database !== "cms_admin") {
+    if (admin.user !== this.#roles.admin || admin.database !== "cms_admin") {
       throw new Error(
-        `DatabaseAdapter admin pool expected (admin_role, cms_admin) but connected as (${admin.user}, ${admin.database}). Check ADMIN_DATABASE_URL.`,
+        `DatabaseAdapter admin pool expected (${this.#roles.admin}, cms_admin) but connected as (${admin.user}, ${admin.database}). Check ADMIN_DATABASE_URL.`,
       );
     }
     const pub = await this.#identity(this.#publicRaw);
@@ -142,9 +158,9 @@ export class DatabaseAdapter {
         `DatabaseAdapter public pool expected database cms_public but connected to ${pub.database}. Check PUBLIC_DATABASE_URL / PUBLIC_ADMIN_DATABASE_URL.`,
       );
     }
-    if (pub.user !== "admin_role" && pub.user !== "public_role") {
+    if (!this.#roles.public.includes(pub.user)) {
       throw new Error(
-        `DatabaseAdapter public pool expected user admin_role or public_role, got ${pub.user}.`,
+        `DatabaseAdapter public pool expected user ${this.#roles.public.join(" or ")}, got ${pub.user}.`,
       );
     }
   }

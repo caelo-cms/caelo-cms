@@ -20,6 +20,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { withSystemRls } from "./_helpers.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -49,9 +50,11 @@ export const proposeUserCreateOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     // Pre-flight: email must be unique among non-deleted users.
-    const dup = (await tx.execute(sql`
-      SELECT 1 AS exists FROM users WHERE email = ${input.email} AND deleted_at IS NULL LIMIT 1
-    `)) as unknown as { exists: number }[];
+    const dup = (await withSystemRls(tx, ctx, () =>
+      tx.execute(sql`
+        SELECT 1 AS exists FROM users WHERE email = ${input.email} AND deleted_at IS NULL LIMIT 1
+      `),
+    )) as unknown as { exists: number }[];
     if (dup.length > 0) {
       return err({
         kind: "HandlerError",
@@ -88,18 +91,20 @@ export const proposeUserSetRolesOp = defineOperation({
     preview: z.record(z.string(), z.unknown()),
   }),
   handler: async (ctx, input, tx) => {
-    const userRows = (await tx.execute(sql`
-      SELECT u.id::text AS id, u.email,
-        COALESCE(
-          (SELECT array_agg(r.name) FROM user_roles ur
-            JOIN roles r ON r.id = ur.role_id
-            WHERE ur.user_id = u.id),
-          ARRAY[]::text[]
-        ) AS current_roles
-      FROM users u
-      WHERE u.id = ${input.userId}::uuid AND u.deleted_at IS NULL
-      LIMIT 1
-    `)) as unknown as Array<{ id: string; email: string; current_roles: string[] }>;
+    const userRows = (await withSystemRls(tx, ctx, () =>
+      tx.execute(sql`
+        SELECT u.id::text AS id, u.email,
+          COALESCE(
+            (SELECT array_agg(r.name) FROM user_roles ur
+              JOIN roles r ON r.id = ur.role_id
+              WHERE ur.user_id = u.id),
+            ARRAY[]::text[]
+          ) AS current_roles
+        FROM users u
+        WHERE u.id = ${input.userId}::uuid AND u.deleted_at IS NULL
+        LIMIT 1
+      `),
+    )) as unknown as Array<{ id: string; email: string; current_roles: string[] }>;
     const u = userRows[0];
     if (!u) {
       return err({
@@ -140,18 +145,20 @@ export const proposeUserDeleteOp = defineOperation({
     preview: z.record(z.string(), z.unknown()),
   }),
   handler: async (ctx, input, tx) => {
-    const userRows = (await tx.execute(sql`
-      SELECT u.id::text AS id, u.email, u.is_first_owner,
-        COALESCE(
-          (SELECT array_agg(r.name) FROM user_roles ur
-            JOIN roles r ON r.id = ur.role_id
-            WHERE ur.user_id = u.id),
-          ARRAY[]::text[]
-        ) AS current_roles
-      FROM users u
-      WHERE u.id = ${input.userId}::uuid AND u.deleted_at IS NULL
-      LIMIT 1
-    `)) as unknown as Array<{
+    const userRows = (await withSystemRls(tx, ctx, () =>
+      tx.execute(sql`
+        SELECT u.id::text AS id, u.email, u.is_first_owner,
+          COALESCE(
+            (SELECT array_agg(r.name) FROM user_roles ur
+              JOIN roles r ON r.id = ur.role_id
+              WHERE ur.user_id = u.id),
+            ARRAY[]::text[]
+          ) AS current_roles
+        FROM users u
+        WHERE u.id = ${input.userId}::uuid AND u.deleted_at IS NULL
+        LIMIT 1
+      `),
+    )) as unknown as Array<{
       id: string;
       email: string;
       is_first_owner: boolean;
@@ -227,6 +234,11 @@ export const executeUserProposalOp = defineOperation({
     const payload = (
       typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload
     ) as Record<string, unknown>;
+    // The apply writes OTHER users' rows (`actors`, `users`), whose RLS is
+    // self-or-system — with the approving Owner's human session it failed
+    // with "RLS denied" (in-chat Approve and /security/users/pending alike).
+    // See withSystemRls; the Owner's approval is the authorization.
+    await tx.execute(sql`SELECT set_config('caelo.actor_kind', 'system', true)`);
     let resultUserId: string | null = row.user_id;
     let temporaryPassword: string | null = null;
     if (row.kind === "create") {

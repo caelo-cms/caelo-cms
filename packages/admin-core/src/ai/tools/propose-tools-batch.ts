@@ -192,11 +192,13 @@ export const proposeUrlMigrationTool = makeProposeTool({
 
 export const proposeUserCreateTool = makeProposeTool({
   toolName: "propose_create_user",
+  afterApply: "sync-operator-access",
   opName: "users.propose_create",
   pendingQueuePath: "/security/users/pending",
   when:
     "Propose inviting a new user to the CMS. Provide email + displayName + roleNames. " +
-    "DO NOT include a password — the Owner approves and a one-time temporary password is generated server-side.",
+    "DO NOT include a password — the Owner approves and a one-time temporary password is generated server-side. " +
+    "On Google Cloud installs the approval also lets this email through Google IAP (browser and MCP), so use the person's Google account address (Gmail or Workspace); the result's `operatorAccess` says whether that worked — relay any `warning` to the operator.",
   schema: z
     .object({
       email: z.string().email().max(254),
@@ -219,9 +221,12 @@ export const proposeUserCreateTool = makeProposeTool({
 
 export const proposeUserSetRolesTool = makeProposeTool({
   toolName: "propose_set_user_roles",
+  afterApply: "sync-operator-access",
   opName: "users.propose_set_roles",
   pendingQueuePath: "/security/users/pending",
-  when: "Propose changing an existing user's role assignments (e.g. promote to Owner, demote to Editor).",
+  when:
+    "Propose changing an existing user's role assignments (e.g. promote to Owner, demote to Editor). " +
+    "An empty role list also removes their Google IAP access on Google Cloud installs; relay any `warning` in the result.",
   schema: z.object({ userId: uuid, roleNames: z.array(z.string()) }).strict(),
   inputSchema: {
     type: "object",
@@ -238,9 +243,12 @@ export const proposeUserSetRolesTool = makeProposeTool({
 
 export const proposeUserDeleteTool = makeProposeTool({
   toolName: "propose_delete_user",
+  afterApply: "sync-operator-access",
   opName: "users.propose_delete",
   pendingQueuePath: "/security/users/pending",
-  when: "Propose soft-deleting a user. The first Owner cannot be deleted; promote another Owner first.",
+  when:
+    "Propose soft-deleting a user. The first Owner cannot be deleted; promote another Owner first. " +
+    "On Google Cloud installs this also removes their Google IAP and MCP access; relay any `warning` in the result.",
   schema: z.object({ userId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -303,9 +311,12 @@ export const proposeRoleUpdatePermissionsTool = makeProposeTool({
 
 export const proposeRoleDeleteTool = makeProposeTool({
   toolName: "propose_delete_role",
+  afterApply: "sync-operator-access",
   opName: "roles.propose_delete",
   pendingQueuePath: "/security/roles/pending",
-  when: "Propose deleting a custom role. Built-in roles cannot be deleted; users in the deleted role lose those permissions.",
+  when:
+    "Propose deleting a custom role. Built-in roles cannot be deleted; users in the deleted role lose those permissions. " +
+    "On Google Cloud installs, anyone left with no role also loses Google IAP access; relay any `warning` in the result.",
   schema: z.object({ roleId: uuid }).strict(),
   inputSchema: {
     type: "object",
