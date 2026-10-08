@@ -35,8 +35,7 @@ import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { describeOperatorAccessSync, type OperatorAccessSync } from "../../ops/user_access.js";
-import { RESYNC_HINT } from "../../security/operator-access/gcp-iap.js";
+import { describeOperatorAccessSync, syncOperatorAccess } from "../../ops/user_access.js";
 import { describePersistError } from "../chat-runner/persistence.js";
 import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
 import { approvedPluginInvocation } from "../plugin-invocation.js";
@@ -137,13 +136,13 @@ export function attachGatedExecute(
 }
 
 /**
- * After an approved users.* change (or role deletion, which can strip a
- * user's last role): bring the cloud identity gate (Google IAP) in line and
- * fold the outcome into the tool result. A result naming a `userId` syncs that
- * user; one without (a role proposal) re-syncs every user. A failed sync stays
- * `ok: true` — the user change IS applied, and reporting a failure would send
- * the AI re-proposing it — but carries a `warning` the AI must relay, with
- * the next step, so the operator never finds out from a 403.
+ * After an approved users.* change (or a role deletion, which can strip a
+ * user's last role): start the operator-access sync job, which recomputes
+ * Google IAP access for everyone, and fold the outcome into the tool result.
+ * A failed sync stays `ok: true` — the user change IS applied, and reporting
+ * a failure would send the AI re-proposing it — but carries a `warning` the
+ * AI must relay, with the next step, so the operator never finds out from a
+ * 403. The audit row is attributed to the approving Owner.
  */
 async function withOperatorAccessSync(
   registry: OperationRegistry,
@@ -151,25 +150,7 @@ async function withOperatorAccessSync(
   ownerCtxLive: ExecutionContext,
   applied: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const userId = applied.userId;
-  // System kind clears the self-or-system RLS on `users` (the Owner ctx would
-  // only see its own row); actorId stays the approving Owner for the audit.
-  const synced = await execute(
-    registry,
-    adapter,
-    { ...ownerCtxLive, actorKind: "system" },
-    "users.sync_operator_access",
-    typeof userId === "string" ? { userIds: [userId] } : { allUsers: true },
-  );
-  const sync: OperatorAccessSync = synced.ok
-    ? (synced.value as OperatorAccessSync)
-    : {
-        status: "failed",
-        target: "the admin's identity gate",
-        changes: [],
-        error: describePersistError(synced.error),
-        nextStep: `If it keeps failing, report it with \`bug_report\`. ${RESYNC_HINT}`,
-      };
+  const sync = await syncOperatorAccess(registry, adapter, ownerCtxLive);
   const message = describeOperatorAccessSync(sync);
   if (sync.status === "failed") {
     return { ...applied, operatorAccess: sync, warning: `${message} Tell the operator this.` };

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { latestOperatorAccessRun } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { opErrorMessage } from "#lib/server/op-error.js";
-import { syncOperatorAccess } from "#lib/server/operator-access.js";
+import { syncOperatorAccessFromPanel } from "#lib/server/operator-access.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -16,9 +17,12 @@ export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "users.manage");
   const { adapter, registry } = getQueryContext();
 
-  const [usersResult, rolesResult] = await Promise.all([
+  const [usersResult, rolesResult, operatorAccess] = await Promise.all([
     execute(registry, adapter, locals.ctx, "users.list", {}),
     execute(registry, adapter, locals.ctx, "roles.list", {}),
+    // Latest run of the Google IAP sync job (null without IAP), so a failed
+    // scheduled run shows here instead of only in Cloud Logging.
+    latestOperatorAccessRun(),
   ]);
 
   const users = usersResult.ok
@@ -39,7 +43,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     ? (rolesResult.value as { roles: { name: string }[] }).roles.map((r) => r.name)
     : [];
 
-  return { users, roles };
+  return { users, roles, operatorAccess };
 };
 
 export const actions: Actions = {
@@ -64,9 +68,7 @@ export const actions: Actions = {
       roleNames,
     });
     if (!result.ok) return fail(400, { error: "Could not create user." });
-    return syncOperatorAccess(locals, {
-      userIds: [(result.value as { userId: string }).userId],
-    });
+    return syncOperatorAccessFromPanel(locals);
   },
 
   setRoles: async ({ request, locals }) => {
@@ -83,7 +85,7 @@ export const actions: Actions = {
       roleNames,
     });
     if (!result.ok) return fail(400, { error: "Could not update roles." });
-    return syncOperatorAccess(locals, { userIds: [userId] });
+    return syncOperatorAccessFromPanel(locals);
   },
 
   delete: async ({ request, locals }) => {
@@ -95,7 +97,7 @@ export const actions: Actions = {
     const userId = String(form.get("userId") ?? "");
     const result = await execute(registry, adapter, asSystem(locals), "users.delete", { userId });
     if (!result.ok) return fail(400, { error: "Could not delete user." });
-    return syncOperatorAccess(locals, { userIds: [userId] });
+    return syncOperatorAccessFromPanel(locals);
   },
 
   /**
@@ -107,7 +109,7 @@ export const actions: Actions = {
     requirePermission(locals, "users.manage");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    return syncOperatorAccess(locals, { allUsers: true });
+    return syncOperatorAccessFromPanel(locals);
   },
 
   resetPassword: async ({ request, locals }) => {

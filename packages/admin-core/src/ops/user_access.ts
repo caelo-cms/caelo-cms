@@ -1,164 +1,193 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * `users.sync_operator_access` — keep the cloud identity gate in front of the
- * admin (Google IAP on `gcp` / `gcp-firebase`, CLAUDE.md §11.B Tier 2) in step
- * with Caelo's own user list.
- *
- * Without it, an Owner-approved `propose_create_user` produces an account its
- * owner can never use: IAP answers 403 before the login page loads, and only
- * the provisioning Owner was ever allowlisted. Likewise a deleted user would
- * keep passing IAP (and signing MCP credentials) until someone edited IAM.
+ * Operator access on Google IAP installs: keep who may pass the admin's
+ * identity gate (CLAUDE.md §11.B Tier 2) and sign as `caelo-mcp` in step with
+ * Caelo's user list.
  *
  * The rule, per email address: a principal may pass IAP iff some non-deleted
- * user with that email holds at least one role. Callers run this AFTER the
- * user change committed (gated-tool `afterApply`, the /security/users form
- * actions) — a cloud call must not hold the write's transaction open, and a
- * failed sync must not undo an approved change. A failure is never silent:
- * it comes back as `status: "failed"` with the next step, and is audited as
- * a failed op.
+ * user with that email holds at least one role.
  *
- * Two input shapes: `{ userIds }` after a change to specific users, and
- * `{ allUsers: true }` to recompute every email ever on the user list
- * (deleted users included — revoking them is the case that matters). The
- * latter is the retry path for a failed sync (the /security/users "Re-sync"
- * button) and runs after a role deletion, which can strip a user's last
- * role without touching their row.
+ * The admin does not write that to Google itself. A dedicated Cloud Run job
+ * (security/operator-access/sync-job.ts) running as its own service account
+ * reads the user list through {@link operatorAccessMembersOp} with a
+ * read-only database role and makes the two IAM bindings hold exactly that
+ * (gcp-job-trigger.ts explains the trust boundary). The admin only starts
+ * the job — {@link syncOperatorAccess}, called after an approved user or role
+ * change (gated-tool `afterApply`, the /security/users and /security/roles
+ * form actions) and by the "Re-sync" button — and records the outcome in the
+ * audit log. A cloud schedule also runs it hourly, so a missed or failed run
+ * heals on its own.
+ *
+ * A failure is never silent: it comes back as `status: "failed"` with the
+ * next step and is audited as failed.
  *
  * Non-IAP installs (self-hosted, AWS, Azure) return `not-applicable`: their
- * identity proxies (ALB + Cognito, Easy Auth + Entra ID, Caddy forward_auth)
+ * identity proxies (Caddy forward_auth, ALB + Cognito, Easy Auth + Entra ID)
  * are allowlisted by group in the provider's IdP, which Caelo does not manage
  * yet — the Owner keeps that group in step by hand there.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import {
+  type DatabaseAdapter,
+  defineOperation,
+  execute,
+  type OperationRegistry,
+} from "@caelo-cms/query-api";
+import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import {
-  gcpIapBackendFromEnv,
-  type OperatorAccessBackend,
+  gcpJobTriggerFromEnv,
   OperatorAccessError,
+  type OperatorAccessTrigger,
   RESYNC_HINT,
-} from "../security/operator-access/gcp-iap.js";
+} from "../security/operator-access/gcp-job-trigger.js";
 
-let backendOverride: { backend: OperatorAccessBackend | null } | null = null;
-
-/** Swap the cloud backend in tests (`null` argument restores env detection). */
-export function setOperatorAccessBackendForTests(
-  next: { backend: OperatorAccessBackend | null } | null,
-): void {
-  backendOverride = next;
-}
-
-function currentBackend(): OperatorAccessBackend | null {
-  return backendOverride
-    ? backendOverride.backend
-    : gcpIapBackendFromEnv({
-        CAELO_PROVIDER: process.env.CAELO_PROVIDER,
-        CAELO_ENV: process.env.CAELO_ENV,
-        K_SERVICE: process.env.K_SERVICE,
-        CAELO_MCP_IAP_SERVICE_ACCOUNT: process.env.CAELO_MCP_IAP_SERVICE_ACCOUNT,
-      });
-}
-
-const changeSchema = z.object({
-  principal: z.string(),
-  access: z.enum(["granted", "revoked"]),
+/**
+ * `users.operator_access_members` — the emails that should pass IAP: every
+ * non-deleted user holding at least one role. Read by the sync job with the
+ * `operator_access_reader` database role, which may select exactly the
+ * columns this query touches (migration 0239).
+ */
+export const operatorAccessMembersOp = defineOperation({
+  name: "users.operator_access_members",
+  // Why system-only: the input of the operator-access sync job, which runs
+  // as a system actor with a read-only database role. Humans and the AI see
+  // users through users.list.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({ emails: z.array(z.string()) }),
+  handler: async (_ctx, _input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT DISTINCT lower(u.email) AS email
+      FROM users u
+      WHERE u.deleted_at IS NULL
+        AND EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id)
+      ORDER BY 1
+    `)) as unknown as { email: string }[];
+    return ok({ emails: rows.map((r) => r.email) });
+  },
 });
 
 export const operatorAccessSyncSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("not-applicable"), reason: z.string() }),
-  z.object({ status: z.literal("synced"), target: z.string(), changes: z.array(changeSchema) }),
+  z.object({
+    status: z.literal("synced"),
+    target: z.string(),
+    execution: z.string(),
+    logsUrl: z.string(),
+  }),
+  z.object({
+    /** Started but not finished within the wait; it finishes on its own. */
+    status: z.literal("running"),
+    target: z.string(),
+    execution: z.string(),
+    logsUrl: z.string(),
+  }),
   z.object({
     status: z.literal("failed"),
     target: z.string(),
-    /** Changes that went through before the failure. */
-    changes: z.array(changeSchema),
+    execution: z.string().optional(),
+    logsUrl: z.string().optional(),
     error: z.string(),
     nextStep: z.string(),
   }),
 ]);
 export type OperatorAccessSync = z.infer<typeof operatorAccessSyncSchema>;
 
-export const syncOperatorAccessOp = defineOperation({
-  name: "users.sync_operator_access",
-  // Why human-only: writes cloud IAM (who may reach the admin at all). The AI
-  // reaches it only through the Owner-approved user tools, whose afterApply
-  // runs it (elevated to system for the users RLS, attributed to the
-  // approving Owner) after the approved change committed.
+/** `users.record_operator_access_sync` — audit row for one triggered sync. */
+export const recordOperatorAccessSyncOp = defineOperation({
+  name: "users.record_operator_access_sync",
+  // Why human-only: records the outcome of starting the operator-access
+  // sync job, which happens only after an Owner-approved user/role change or
+  // the Owner's Re-sync click (both run the recording themselves).
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: z.union([
-    z.object({ userIds: z.array(z.string().uuid()).min(1).max(50) }).strict(),
-    z.object({ allUsers: z.literal(true) }).strict(),
-  ]),
-  output: operatorAccessSyncSchema,
+  input: operatorAccessSyncSchema,
+  output: z.object({}),
   handler: async (ctx, input, tx) => {
-    const backend = currentBackend();
-    if (!backend) {
-      return ok({
-        status: "not-applicable" as const,
-        reason: "The admin is not behind Google IAP on this install; Caelo's login is the gate.",
-      });
-    }
-    // `users` RLS is self-or-system, so a human ctx would see only its own
-    // row and this would "sync" nothing while reporting success. Callers
-    // run it as system; a missing row is a loud failure either way.
-    let targetUsers = sql`SELECT email FROM users`;
-    if ("userIds" in input) {
-      const ids = sql.join(
-        input.userIds.map((id) => sql`${id}::uuid`),
-        sql`, `,
-      );
-      const found = (await tx.execute(sql`
-        SELECT id::text AS id FROM users WHERE id IN (${ids})
-      `)) as unknown as { id: string }[];
-      const missing = input.userIds.filter((id) => !found.some((f) => f.id === id));
-      if (missing.length > 0) {
-        return err({
-          kind: "HandlerError",
-          operation: "users.sync_operator_access",
-          message: `user(s) not found: ${missing.join(", ")} — run this op with a system ctx (users RLS hides other users from a human actor).`,
-        });
-      }
-      targetUsers = sql`SELECT email FROM users WHERE id IN (${ids})`;
-    } else if (ctx.actorKind !== "system") {
-      // Under a human ctx RLS shows only the caller's own row, and an "all
-      // users" sync over that would report success while revoking no one.
-      return err({
-        kind: "HandlerError",
-        operation: "users.sync_operator_access",
-        message:
-          "allUsers needs a system ctx (users RLS hides other users from a human actor); the route elevates after its users.manage check.",
-      });
-    }
-    const rows = (await tx.execute(sql`
-      WITH target AS (SELECT DISTINCT lower(email) AS email FROM (${targetUsers}) t)
-      SELECT t.email,
-        EXISTS (
-          SELECT 1 FROM users u JOIN user_roles ur ON ur.user_id = u.id
-          WHERE lower(u.email) = t.email AND u.deleted_at IS NULL
-        ) AS allowed
-      FROM target t
-      ORDER BY t.email
-    `)) as unknown as { email: string; allowed: boolean }[];
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "users.record_operator_access_sync",
+      input,
+      succeeded: input.status !== "failed",
+      resultSummary:
+        input.status === "failed"
+          ? `failed: ${input.error}`.slice(0, 500)
+          : input.status === "not-applicable"
+            ? "not-applicable"
+            : `${input.status}: ${input.execution}`,
+    });
+    return ok({});
+  },
+});
 
-    const changes: z.infer<typeof changeSchema>[] = [];
-    let result: OperatorAccessSync;
+let triggerOverride: { trigger: OperatorAccessTrigger | null } | null = null;
+
+/** Swap the cloud trigger in tests (`null` argument restores env detection). */
+export function setOperatorAccessTriggerForTests(
+  next: { trigger: OperatorAccessTrigger | null } | null,
+): void {
+  triggerOverride = next;
+}
+
+function currentTrigger(): OperatorAccessTrigger | null {
+  return triggerOverride
+    ? triggerOverride.trigger
+    : gcpJobTriggerFromEnv({
+        CAELO_PROVIDER: process.env.CAELO_PROVIDER,
+        CAELO_OPERATOR_ACCESS_JOB: process.env.CAELO_OPERATOR_ACCESS_JOB,
+      });
+}
+
+/** How long a caller waits for the job before reporting it as still running. */
+const WAIT_MS = 90_000;
+
+/**
+ * Start the sync job, wait for it (up to {@link WAIT_MS}) and record the
+ * outcome. Runs OUTSIDE any transaction: a cloud call must not hold a
+ * write's transaction open, and a failed sync must not undo an approved
+ * change. `ctx` is the actor the audit row is attributed to.
+ */
+export async function syncOperatorAccess(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ctx: ExecutionContext,
+): Promise<OperatorAccessSync> {
+  const trigger = currentTrigger();
+  let result: OperatorAccessSync;
+  if (!trigger) {
+    result = {
+      status: "not-applicable",
+      reason: "The admin is not behind Google IAP on this install; Caelo's login is the gate.",
+    };
+  } else {
+    let execution: string | undefined;
     try {
-      for (const row of rows) {
-        const principal = `user:${row.email}`;
-        await backend.setAccess(principal, row.allowed);
-        changes.push({ principal, access: row.allowed ? "granted" : "revoked" });
-      }
-      result = { status: "synced", target: backend.label, changes };
+      execution = await trigger.start();
+      const run = await trigger.wait(execution, WAIT_MS);
+      result =
+        run.state === "succeeded"
+          ? { status: "synced", target: trigger.label, execution, logsUrl: run.logsUrl }
+          : run.state === "running"
+            ? { status: "running", target: trigger.label, execution, logsUrl: run.logsUrl }
+            : {
+                status: "failed",
+                target: trigger.label,
+                execution,
+                logsUrl: run.logsUrl,
+                error: `the sync job ${run.state === "cancelled" ? "was cancelled" : "failed"} (execution ${execution}; its log says why: ${run.logsUrl}).`,
+                nextStep: `Fix what the log names. ${RESYNC_HINT}`,
+              };
     } catch (e) {
       result = {
         status: "failed",
-        target: backend.label,
-        changes,
+        target: trigger.label,
+        ...(execution ? { execution } : {}),
         error: e instanceof Error ? e.message : String(e),
         nextStep:
           e instanceof OperatorAccessError
@@ -166,20 +195,48 @@ export const syncOperatorAccessOp = defineOperation({
             : `If it keeps failing, report it with \`bug_report\`. ${RESYNC_HINT}`,
       };
     }
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "users.sync_operator_access",
-      input,
-      succeeded: result.status === "synced",
-      resultSummary:
-        result.status === "synced"
-          ? changes.map((c) => `${c.access} ${c.principal}`).join("; ") || "(no users)"
-          : `failed: ${result.status === "failed" ? result.error : ""}`.slice(0, 500),
-    });
-    return ok(result);
-  },
-});
+  }
+  const recorded = await execute(
+    registry,
+    adapter,
+    ctx,
+    "users.record_operator_access_sync",
+    result,
+  );
+  if (!recorded.ok && result.status !== "failed") {
+    // The sync itself went through; say so, but don't hide that the audit
+    // row is missing.
+    return {
+      status: "failed",
+      target: result.status === "not-applicable" ? "audit log" : result.target,
+      error: `the sync ran (${result.status}) but its audit row could not be written: ${JSON.stringify(recorded.error)}`,
+      nextStep: "Report this with `bug_report`.",
+    };
+  }
+  return result;
+}
+
+/**
+ * The latest run of the sync job (the hourly schedule's or the admin's), for
+ * the /security/users status line; `null` on installs without IAP.
+ */
+export async function latestOperatorAccessRun(): Promise<
+  | { status: "ok"; target: string; run: Awaited<ReturnType<OperatorAccessTrigger["latest"]>> }
+  | { status: "error"; error: string; nextStep: string }
+  | null
+> {
+  const trigger = currentTrigger();
+  if (!trigger) return null;
+  try {
+    return { status: "ok", target: trigger.label, run: await trigger.latest() };
+  } catch (e) {
+    return {
+      status: "error",
+      error: e instanceof Error ? e.message : String(e),
+      nextStep: e instanceof OperatorAccessError ? e.nextStep : RESYNC_HINT,
+    };
+  }
+}
 
 /**
  * One operator-facing sentence for a sync result, or `null` when there is
@@ -187,12 +244,14 @@ export const syncOperatorAccessOp = defineOperation({
  * /security/users form actions so both read the same.
  */
 export function describeOperatorAccessSync(sync: OperatorAccessSync): string | null {
-  if (sync.status === "not-applicable") return null;
-  const done = sync.changes
-    .map((c) => `${c.access === "granted" ? "allowed" : "removed"} ${c.principal.slice(5)}`)
-    .join(", ");
-  if (sync.status === "synced") {
-    return done ? `${sync.target}: ${done}.` : `${sync.target}: already up to date.`;
+  switch (sync.status) {
+    case "not-applicable":
+      return null;
+    case "synced":
+      return `${sync.target}: up to date with the user list.`;
+    case "running":
+      return `${sync.target}: the sync is still running (execution ${sync.execution}); it finishes on its own — /security/users shows the result.`;
+    case "failed":
+      return `The user change was saved, but ${sync.target} could NOT be updated: ${sync.error} Next step: ${sync.nextStep}`;
   }
-  return `The user change was saved, but ${sync.target} could NOT be updated: ${sync.error} Next step: ${sync.nextStep}`;
 }

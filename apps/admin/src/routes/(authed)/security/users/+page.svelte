@@ -21,13 +21,41 @@
       <h1 class="text-2xl font-semibold tracking-tight">Users</h1>
       <p class="text-sm text-muted-foreground">Create, update, delete admin users; assign roles.</p>
     </div>
-    <!-- Retry path when an automatic Google IAP sync after a user change
-         failed: recomputes every user's access, deleted users included. -->
-    <form method="post" action="?/resyncOperatorAccess">
-      <input type="hidden" name="_csrf" value={data.csrfToken} />
-      <Button type="submit" size="sm" variant="outline">Re-sync Google IAP access</Button>
-    </form>
+    {#if data.operatorAccess}
+      <!-- Google IAP installs: the sync job recomputes who may pass IAP from
+           this list (hourly, and after every user/role change). The button
+           is the retry path when a run failed. -->
+      <form method="post" action="?/resyncOperatorAccess">
+        <input type="hidden" name="_csrf" value={data.csrfToken} />
+        <Button type="submit" size="sm" variant="outline">Re-sync Google IAP access</Button>
+      </form>
+    {/if}
   </div>
+
+  {#if data.operatorAccess?.status === "error"}
+    <Alert variant="destructive">
+      <AlertDescription>
+        Google IAP sync status unavailable: {data.operatorAccess.error} Next step: {data.operatorAccess.nextStep}
+      </AlertDescription>
+    </Alert>
+  {:else if data.operatorAccess?.status === "ok" && data.operatorAccess.run}
+    {@const run = data.operatorAccess.run}
+    {#if run.state === "failed" || run.state === "cancelled"}
+      <Alert variant="destructive">
+        <AlertDescription>
+          The last Google IAP sync {run.state === "failed" ? "failed" : "was cancelled"}
+          ({run.execution}{run.completedAt ? `, ${run.completedAt}` : ""}). IAP may not match this
+          list. <a class="underline" href={run.logsUrl} target="_blank" rel="noreferrer">Read its log</a>,
+          fix the cause, then re-sync.
+        </AlertDescription>
+      </Alert>
+    {:else}
+      <p class="text-xs text-muted-foreground">
+        Google IAP sync: {run.state === "running" ? "running now" : `in sync as of ${run.completedAt ?? "the last run"}`}
+        (<a class="underline" href={run.logsUrl} target="_blank" rel="noreferrer">log</a>).
+      </p>
+    {/if}
+  {/if}
 
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>

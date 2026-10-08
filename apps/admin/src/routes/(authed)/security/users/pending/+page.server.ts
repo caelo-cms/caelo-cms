@@ -13,7 +13,7 @@ import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
-import { syncOperatorAccess } from "#lib/server/operator-access.js";
+import { syncOperatorAccessFromPanel } from "#lib/server/operator-access.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -58,9 +58,7 @@ export const actions: Actions = {
       return fail(400, { error: message });
     }
     const v = r.value as { userId: string | null; temporaryPassword: string | null };
-    const access = v.userId
-      ? await syncOperatorAccess(locals, { userIds: [v.userId] })
-      : { ok: true as const };
+    const access = v.userId ? await syncOperatorAccessFromPanel(locals) : { ok: true as const };
     return {
       ok: true,
       // Google IAP sync outcome; `error` makes the layout toast it loudly.

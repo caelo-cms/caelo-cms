@@ -3,38 +3,22 @@
 /**
  * Panel-side counterpart of the gated user tools' `afterApply`: once a user
  * change from /security/users (or a role deletion from /security/roles)
- * committed, bring Google IAP in line (a no-op on
- * installs without IAP) and turn the outcome into a form-action result the
- * layout toasts — `error` when the gate could not be updated, so a silent 403
- * for the new user is never how the Owner finds out.
+ * committed, start the operator-access sync job that brings Google IAP in
+ * line (a no-op on installs without IAP), and turn the outcome into a
+ * form-action result the layout toasts — `error` when the gate could not be
+ * updated, so a silent 403 for the new user is never how the Owner finds out.
  */
 
-import { describeOperatorAccessSync, type OperatorAccessSync } from "@caelo-cms/admin-core";
-import { execute } from "@caelo-cms/query-api";
-import { opErrorMessage } from "./op-error.js";
+import { describeOperatorAccessSync, syncOperatorAccess } from "@caelo-cms/admin-core";
 import { getQueryContext } from "./query.js";
 
-export async function syncOperatorAccess(
+export async function syncOperatorAccessFromPanel(
   locals: App.Locals,
-  target: { userIds: string[] } | { allUsers: true },
 ): Promise<{ ok: true | string } | { error: string }> {
   const { adapter, registry } = getQueryContext();
-  // Elevated like resetPassword: `users` RLS is self-or-system, and the
-  // sync must see the changed user's row. The callers checked users.manage;
-  // the Owner's actorId stays on the audit row.
-  const r = await execute(
-    registry,
-    adapter,
-    { ...locals.ctx, actorKind: "system" },
-    "users.sync_operator_access",
-    target,
-  );
-  if (!r.ok) {
-    return {
-      error: `The user change was saved, but Google IAP access could not be updated: ${opErrorMessage(r.error, "sync failed")}.`,
-    };
-  }
-  const sync = r.value as OperatorAccessSync;
+  // The callers checked users.manage / roles.manage; the audit row is the
+  // Owner's own.
+  const sync = await syncOperatorAccess(registry, adapter, locals.ctx);
   const message = describeOperatorAccessSync(sync);
   if (sync.status === "failed") return { error: message ?? "Google IAP access sync failed." };
   return { ok: message ?? true };

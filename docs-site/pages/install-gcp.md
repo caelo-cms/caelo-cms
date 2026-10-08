@@ -87,13 +87,25 @@ Heavier installs scale Cloud Run + Cloud SQL tier; the admin's `/security/costs`
 
 The admin sits behind Google Identity-Aware Proxy: Google checks who you are before Caelo's own login page even loads. The provisioner lets the Owner through. Everyone else gets through the moment you add them as a Caelo user:
 
-- **Add a user** at `/security/users`, or ask the AI ("invite anna@example.com as an editor") and click **Approve** on the card. The admin then allows that email on IAP and lets them sign the MCP credential, so they can use the browser and MCP right away.
-- **Delete a user**, or take away their last role, and both are removed again.
-- Use the person's **Google account** address (Gmail or Google Workspace). IAP only admits Google identities; any other address is refused, and the approval says so.
+- **Add a user** at `/security/users`, or ask the AI ("invite anna@example.com as an editor") and click **Approve** on the card. Within a minute that email may pass IAP and sign the MCP credential, so they can use the browser and MCP.
+- **Delete a user**, or take away their last role (also by deleting a role), and both are removed again.
+- Use the person's **Google account** address (Gmail or Google Workspace). IAP only admits Google identities.
 
-The admin makes these changes itself, as its own service account. That account can change who may pass IAP on the admin and on the `caelo-mcp` service account, and nothing else: a custom role with only `getIamPolicy`/`setIamPolicy`, bound on exactly those two resources (on `--provider gcp` also a role that may list load-balancer backends, so the admin can find its own). If a change cannot be made, the approval result says so, together with the next step — you never find out from a 403. Once the cause is fixed, click **Re-sync Google IAP access** at `/security/users`: it recomputes access for every user, including users you already deleted. Deleting a role re-syncs everyone automatically, since it can leave someone with no role.
+### How it works, and the trust boundary
 
-Installs created before this feature get the role on their next `bunx @caelo-cms/provisioning upgrade`. Until then an approved user change reports that Google IAP could not be updated; after the upgrade, click **Re-sync Google IAP access** once.
+The admin does **not** change IAP itself. Its service account holds no rights over IAM policies. A separate Cloud Run job, `caelo-production-operator-access-sync`, runs as its own service account and is the only principal that may change who passes IAP on the admin and who may sign as `caelo-mcp`. Each run:
+
+1. reads the user list from the database through a read-only database role (`operator_access_reader`, which can see user emails and role assignments and nothing else) using Cloud SQL IAM authentication, with no password;
+2. makes `roles/iap.httpsResourceAccessor` on the admin and `roles/iam.serviceAccountTokenCreator` on `caelo-mcp` hold **exactly** one `user:` entry per active user with a role, plus the install's allowlist (the Owner) and `caelo-mcp` itself on IAP;
+3. **removes everything else** on those two roles: `allUsers`, `allAuthenticatedUsers`, whole domains, groups, stray users and hand-written conditional bindings. Each removal is logged as a warning in the job's log.
+
+The admin may only **start** the job (`roles/run.jobsExecutor` on that one job, which does not allow overriding its command, arguments or environment) and read how its runs went. It starts the job after every approved user or role change, and when you click **Re-sync Google IAP access** at `/security/users`. Cloud Scheduler also runs it every hour, so a missed run or a hand-edited IAP policy is repaired on its own.
+
+So an admin compromise can add users to the database, and through them single email addresses to IAP, but it cannot change the IAP policy directly, make the admin public or grant any other role. The job only ever grants individual user emails.
+
+If a run fails, the approval result and `/security/users` say so, with a link to the run's log. You never find out from a 403. Fix the cause the log names, then click **Re-sync Google IAP access**.
+
+Installs created before this feature get the job on their next `bunx @caelo-cms/provisioning upgrade`. The upgrade also removes the operator-access rights an earlier pre-release build gave the admin's own service account. Until you upgrade, an approved user change reports that Google IAP could not be updated.
 
 ## Admin on your own domain (`gcp-firebase`)
 

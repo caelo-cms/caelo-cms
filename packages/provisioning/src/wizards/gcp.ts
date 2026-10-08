@@ -48,6 +48,7 @@ import {
   REQUIRED_API_LIST,
   serviceAccountExists,
 } from "../gcloud.js";
+import { GCP_STACK_ENV } from "../gcp-names.js";
 import {
   ensureInstallDir,
   type ImageDigests,
@@ -62,7 +63,11 @@ import {
   writeMetadata,
   writeSecret,
 } from "../install-state.js";
-import { ensureOperatorAccessRoles } from "../operator-access.js";
+import {
+  ensureOperatorAccessSync,
+  installIapAllowlist,
+  resolveOperatorAccessTarget,
+} from "../operator-access.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { pulumiUpGcp } from "./gcp-pulumi.js";
 
@@ -123,7 +128,6 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   const saEmail = `${SA_ACCOUNT_ID}@${projectId}.iam.gserviceaccount.com`;
   await stepServiceAccount(installId, projectId, saEmail);
   await stepGrantRoles(installId, projectId, saEmail);
-  await stepOperatorAccessRoles(projectId, opts.provider ?? "gcp");
   const keyPath = await stepMintKey(installId, projectId, saEmail, secretsDir);
 
   // === 7. Pulumi passphrase ===
@@ -241,7 +245,8 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     adminMinInstances: costInputs.adminMinInstances,
     gatewayMinInstances: costInputs.gatewayMinInstances,
     wafAdaptiveProtection: costInputs.wafAdaptiveProtection,
-    iapAllowlist: [`user:${ownerEmail}`],
+    // Same list the operator-access sync job keeps (installIapAllowlist).
+    iapAllowlist: installIapAllowlist(ownerEmail),
     imageDigests,
     // v0.3.1 — route pulumi up at the right stack folder + use the
     // matching config namespace.
@@ -281,6 +286,9 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
       process.exit(1);
     }
   }
+
+  // === 11.5. Operator access: IAP follows the Caelo user list ===
+  await stepOperatorAccessSync(projectId, region, opts.provider ?? "gcp", ownerEmail);
 
   // === 12. Upload the fresh-install placeholder to the static bucket ===
   // Without this, https://<domain>/ returns the raw GCS NoSuchKey XML
@@ -585,26 +593,36 @@ async function stepGrantRoles(
 }
 
 /**
- * Create the custom roles the stack binds to the admin's runtime SA so it can
- * manage IAP operators itself (operator-access.ts). Runs as the operator's
- * gcloud identity, before `pulumi up`: the roles are CLI-owned, not Pulumi
- * resources (a project-global role id would collide with `upgrade`'s copy).
- * Idempotent, so it runs on every wizard pass instead of being checkpointed.
+ * Set up the operator-access sync job (operator-access.ts): the only
+ * principal that may change who passes IAP, run as the operator's gcloud
+ * identity. After migrations, because the job's database user gets the role
+ * migration 0239 creates. Idempotent, so it runs on every wizard pass.
  */
-async function stepOperatorAccessRoles(
+async function stepOperatorAccessSync(
   projectId: string,
+  region: string,
   provider: "gcp" | "gcp-firebase",
+  ownerEmail: string,
 ): Promise<void> {
   const s = spinner();
-  s.start("Creating the admin's operator-access IAM roles...");
-  const r = await ensureOperatorAccessRoles({ projectId, provider });
+  s.start("Setting up the operator-access sync job (Google IAP follows the user list)...");
+  const resolved = await resolveOperatorAccessTarget({
+    provider,
+    projectId,
+    region,
+    env: GCP_STACK_ENV,
+    ownerEmail,
+  });
+  const r = resolved.ok
+    ? await ensureOperatorAccessSync(resolved.target)
+    : { ok: false as const, done: [], error: resolved.error };
   if (!r.ok) {
     s.stop(red(`Failed: ${r.error}`));
     log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
     cancel("Aborted.");
     process.exit(1);
   }
-  s.stop(green("Operator-access IAM roles ready"));
+  s.stop(green(`Operator-access sync job ready (${r.done.length} steps)`));
 }
 
 async function stepMintKey(

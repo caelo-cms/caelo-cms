@@ -31,10 +31,6 @@ import {
   staticPublisherServiceAccountId,
 } from "../../dist/gcp-names.js";
 import {
-  ADMIN_RUNTIME_OPERATOR_ACCESS_GRANTS,
-  customRoleName,
-} from "../../dist/operator-access-grants.js";
-import {
   adminEnvContract,
   type CloudRunEnvVar,
   type CloudRunSlug,
@@ -263,7 +259,12 @@ const sqlInstance = new gcp.sql.DatabaseInstance(
       // pool-max=10, two pools per admin process). Override at
       // instance level so the cap matches the Cloud Run scale-out
       // headroom defined by adminMaxInstances + gatewayMaxInstances.
-      databaseFlags: [{ name: "max_connections", value: maxConnections.toString() }],
+      databaseFlags: [
+        { name: "max_connections", value: maxConnections.toString() },
+        // The operator-access sync job logs in as its service account (Cloud
+        // SQL IAM database authentication, no password). No restart needed.
+        { name: "cloudsql.iam_authentication", value: "on" },
+      ],
       backupConfiguration: {
         enabled: true,
         pointInTimeRecoveryEnabled: cloudSqlHa,
@@ -933,63 +934,18 @@ new gcp.iap.WebBackendServiceIamMember(
 );
 
 // =========================================================================
-// Operator access — the admin manages its own IAP allowlist
+// Operator access — deliberately NOT here
 // =========================================================================
 //
-// When an Owner approves creating / deleting a user, the admin (as runSa)
-// allows or removes that person on IAP and on the MCP service account
-// (packages/admin-core/src/security/operator-access/gcp-iap.ts). Least
-// privilege: custom roles with only get/setIamPolicy, bound on exactly those
-// resources — see packages/provisioning/src/operator-access-grants.ts, the
-// list `cms-provision upgrade` also converges older installs onto.
-const adminRuntimeMember = pulumi.interpolate`serviceAccount:${runSa.email}`;
-const operatorAccessGrants = ADMIN_RUNTIME_OPERATOR_ACCESS_GRANTS.filter((g) =>
-  g.providers.includes("gcp"),
-);
-// The custom roles themselves are NOT Pulumi resources: a project custom
-// role id is project-global (a second stack in the project, or the copy
-// `cms-provision upgrade` creates on older installs, would collide with
-// "already exists"), and a deleted id stays reserved for weeks. The CLI owns
-// them — the wizard creates them before `pulumi up` (ensureOperatorAccessRoles)
-// and `upgrade` converges them — so the stack only binds them by name.
-for (const grant of operatorAccessGrants) {
-  switch (grant.scope) {
-    case "admin-iap-resource":
-      new gcp.iap.WebBackendServiceIamMember(
-        `${namePrefix}-admin-iap-operator-access`,
-        {
-          project,
-          webBackendService: adminBackendService.name,
-          role: customRoleName(project, grant.role),
-          member: adminRuntimeMember,
-        },
-        opts,
-      );
-      break;
-    case "mcp-service-account":
-      new gcp.serviceaccount.IAMMember(
-        `${namePrefix}-mcp-operator-access`,
-        {
-          serviceAccountId: mcpServiceAccount.name,
-          role: customRoleName(project, grant.role),
-          member: adminRuntimeMember,
-        },
-        opts,
-      );
-      break;
-    case "project":
-      new gcp.projects.IAMMember(
-        `${namePrefix}-admin-${grant.role.roleId.toLowerCase()}`,
-        {
-          project,
-          role: customRoleName(project, grant.role),
-          member: adminRuntimeMember,
-        },
-        opts,
-      );
-      break;
-  }
-}
+// Who passes IAP beyond the allowlist above follows the Caelo user list. A
+// Cloud Run job with its own service account keeps the IAP binding and the
+// caelo-mcp token-creator binding in step (admin-core
+// security/operator-access/sync-job.ts); the admin's run SA holds no IAM
+// policy rights and may only start that job. The CLI owns the job, its
+// account, its grants and its schedule (packages/provisioning/src/
+// operator-access.ts, run by the wizard after migrations and by `upgrade`),
+// because the job's database user can only be assigned its role after the
+// migrations have created that role.
 
 // URL map: routes by host header.
 //   admin.<domain>  → admin backend (IAP-gated)

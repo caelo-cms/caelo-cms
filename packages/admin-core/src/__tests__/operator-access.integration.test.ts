@@ -1,16 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * `users.sync_operator_access` + the gated user tools' `afterApply`: an
- * Owner-approved user change brings the cloud identity gate (Google IAP) in
- * line, and a failed sync is loud on the approval result. Real Postgres
- * (§6); the Google side is a recording fake backend.
+ * Operator access on Google IAP installs, against real Postgres (§6):
+ *
+ *   - the sync job's database read path: `users.operator_access_members`
+ *     returns exactly the emails that should pass IAP, and the
+ *     `operator_access_reader` role it runs as can read those columns and
+ *     nothing else — no password hashes, no writes (migration 0239);
+ *   - the admin side: an Owner-approved user or role change starts the job
+ *     (a recording fake trigger here), the outcome lands on the tool result
+ *     and in the audit log, and a failure is loud.
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { sql } from "drizzle-orm";
 import type { FilteredTool } from "../ai/chat-runner/tool-catalogue.js";
 import { attachGatedExecute } from "../ai/tools/gated-tools.js";
 import {
@@ -19,12 +25,17 @@ import {
   proposeUserDeleteTool,
   proposeUserSetRolesTool,
 } from "../ai/tools/propose-tools-batch.js";
-import { type OperatorAccessSync, setOperatorAccessBackendForTests } from "../ops/user_access.js";
+import {
+  type OperatorAccessSync,
+  operatorAccessMembersOp,
+  setOperatorAccessTriggerForTests,
+  syncOperatorAccess,
+} from "../ops/user_access.js";
 import { registerAdminOps } from "../register.js";
 import {
-  type OperatorAccessBackend,
   OperatorAccessError,
-} from "../security/operator-access/gcp-iap.js";
+  type OperatorAccessTrigger,
+} from "../security/operator-access/gcp-job-trigger.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -48,7 +59,7 @@ let OWNER: ExecutionContext;
 const OWNER_EMAIL = "opaccess-owner@example.com";
 const EMAILS = [
   OWNER_EMAIL,
-  "opaccess-new@example.com",
+  "opaccess-editor@example.com",
   "opaccess-noroles@example.com",
   "opaccess-chat@example.com",
   "opaccess-gone@example.com",
@@ -56,30 +67,37 @@ const EMAILS = [
 ] as const;
 const CUSTOM_ROLE = "opaccess-temp-role";
 
-/** Records every grant/revoke; optionally fails like Google would. */
-function recordingBackend(failWith?: OperatorAccessError) {
-  const calls: { principal: string; allow: boolean }[] = [];
-  const backend: OperatorAccessBackend = {
-    label: "Google IAP (fake)",
-    async setAccess(principal, allow) {
-      if (failWith) throw failWith;
-      calls.push({ principal, allow });
+/** Records every start; optionally fails or ends the run like Google would. */
+function fakeTrigger(opts: { fail?: OperatorAccessError; state?: "succeeded" | "failed" } = {}) {
+  let starts = 0;
+  const trigger: OperatorAccessTrigger = {
+    label: "Google IAP (fake job)",
+    async start() {
+      if (opts.fail) throw opts.fail;
+      starts += 1;
+      return `exec-${starts}`;
+    },
+    async wait(execution) {
+      return { execution, state: opts.state ?? "succeeded", logsUrl: `https://logs/${execution}` };
+    },
+    async latest() {
+      return null;
     },
   };
-  return { backend, calls };
+  return { trigger, starts: () => starts };
 }
 
 async function admin<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
-  const sql = new SQL(ADMIN_URL as string);
+  const db = new SQL(ADMIN_URL as string);
   try {
     let result!: T;
-    await sql.begin(async (tx) => {
+    await db.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       result = await fn(tx as unknown as SQL);
     });
     return result;
   } finally {
-    await sql.end();
+    await db.end();
   }
 }
 
@@ -107,8 +125,16 @@ async function createUser(email: string, roleNames: string[]): Promise<string> {
   return (r.value as { userId: string }).userId;
 }
 
-async function sync(userId: string, ctx: ExecutionContext = SYSTEM) {
-  return execute(registry, adapter, ctx, "users.sync_operator_access", { userIds: [userId] });
+async function lastAudit(actorId: string): Promise<{ succeeded: boolean; summary: string }> {
+  const rows = await admin(
+    (tx) =>
+      tx`SELECT succeeded, result_summary AS summary FROM audit_events
+         WHERE operation = 'users.record_operator_access_sync' AND actor_id = ${actorId}::uuid
+         ORDER BY created_at DESC LIMIT 1` as Promise<{ succeeded: boolean; summary: string }[]>,
+  );
+  const row = rows[0];
+  if (!row) throw new Error("no audit row");
+  return row;
 }
 
 beforeAll(async () => {
@@ -122,135 +148,123 @@ beforeAll(async () => {
   registerAdminOps(registry);
   const ownerId = await createUser(OWNER_EMAIL, ["owner"]);
   OWNER = { actorId: ownerId, actorKind: "human", requestId: "operator-access-owner" };
+  await createUser(EMAILS[1], ["editor"]);
+  await createUser(EMAILS[2], []);
+  const gone = await createUser(EMAILS[4], ["editor"]);
+  const del = await execute(registry, adapter, SYSTEM, "users.delete", { userId: gone });
+  if (!del.ok) throw new Error(JSON.stringify(del.error));
 });
 
-afterEach(() => setOperatorAccessBackendForTests(null));
+afterEach(() => setOperatorAccessTriggerForTests(null));
 
 afterAll(async () => {
   await wipe();
   await adapter.close();
 });
 
-describe("users.sync_operator_access", () => {
-  it("is not-applicable without IAP (self-hosted) and changes nothing", async () => {
-    setOperatorAccessBackendForTests({ backend: null });
-    const userId = await createUser(EMAILS[1], ["editor"]);
-    const r = await sync(userId);
-    expect(r.ok && (r.value as OperatorAccessSync).status).toBe("not-applicable");
+describe("sync job read path — users.operator_access_members", () => {
+  const ours = (emails: string[]) => emails.filter((e) => EMAILS.some((x) => x === e));
+
+  it("lists exactly the non-deleted users that hold a role", async () => {
+    const r = await execute(registry, adapter, SYSTEM, "users.operator_access_members", {});
+    expect(r.ok).toBe(true);
+    const emails = r.ok ? (r.value as { emails: string[] }).emails : [];
+    expect(ours(emails)).toEqual([EMAILS[1], OWNER_EMAIL].sort());
   });
 
-  it("grants a user with a role, revokes one without, and audits it", async () => {
-    const { backend, calls } = recordingBackend();
-    setOperatorAccessBackendForTests({ backend });
-    const withRole = await admin(
-      (tx) =>
-        tx`SELECT id::text AS id FROM users WHERE email = ${EMAILS[1]}` as Promise<
-          { id: string }[]
-        >,
-    );
-    const noRoles = await createUser(EMAILS[2], []);
-
-    const granted = await sync(withRole[0]?.id as string);
-    expect(granted.ok && granted.value).toEqual({
-      status: "synced",
-      target: "Google IAP (fake)",
-      changes: [{ principal: `user:${EMAILS[1]}`, access: "granted" }],
+  it("works as the read-only operator_access_reader role, which can read nothing else and write nothing", async () => {
+    const result = await adapter.withAdminTransaction(SYSTEM, async (tx) => {
+      await tx.execute(sql`SET LOCAL ROLE operator_access_reader`);
+      // RLS must not depend on the session's actor kind for this role.
+      await tx.execute(sql`SELECT set_config('caelo.actor_kind', '', true)`);
+      return operatorAccessMembersOp.handler(SYSTEM, {}, tx);
     });
-    const revoked = await sync(noRoles);
-    expect(revoked.ok && (revoked.value as OperatorAccessSync).status).toBe("synced");
-    expect(calls).toEqual([
-      { principal: `user:${EMAILS[1]}`, allow: true },
-      { principal: `user:${EMAILS[2]}`, allow: false },
-    ]);
-    const audit = await admin(
-      (tx) =>
-        tx`SELECT succeeded FROM audit_events WHERE operation = 'users.sync_operator_access' AND entity_id IS NULL ORDER BY created_at DESC LIMIT 1` as Promise<
-          { succeeded: boolean }[]
-        >,
-    );
-    expect(audit[0]?.succeeded).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(ours(result.ok ? result.value.emails : [])).toEqual([EMAILS[1], OWNER_EMAIL].sort());
+
+    for (const forbidden of [
+      "SELECT password_hash FROM users LIMIT 1",
+      "SELECT user_id FROM sessions LIMIT 1",
+      "UPDATE users SET deleted_at = now() WHERE false",
+      "INSERT INTO user_roles (user_id, role_id) SELECT id, id FROM users WHERE false",
+      "SELECT id FROM roles LIMIT 1",
+    ]) {
+      const denied = await adapter
+        .withAdminTransaction(SYSTEM, async (tx) => {
+          await tx.execute(sql`SET LOCAL ROLE operator_access_reader`);
+          await tx.execute(sql.raw(forbidden));
+          return "allowed";
+        })
+        .catch((e: unknown) => String((e as { cause?: unknown }).cause ?? e));
+      expect(denied).toContain("permission denied");
+    }
   });
 
-  it("reports a Google failure as status failed with the next step, audited as failed", async () => {
-    const { backend } = recordingBackend(
-      new OperatorAccessError(
-        "update the admin's IAP allowlist: HTTP 403",
-        "Run `cms-provision upgrade`.",
-      ),
-    );
-    setOperatorAccessBackendForTests({ backend });
-    const ids = await admin(
-      (tx) =>
-        tx`SELECT id::text AS id FROM users WHERE email = ${EMAILS[1]}` as Promise<
-          { id: string }[]
-        >,
-    );
-    const r = await sync(ids[0]?.id as string);
-    expect(r.ok && r.value).toEqual({
-      status: "failed",
-      target: "Google IAP (fake)",
-      changes: [],
-      error: "update the admin's IAP allowlist: HTTP 403",
-      nextStep: "Run `cms-provision upgrade`.",
-    });
-    const audit = await admin(
-      (tx) =>
-        tx`SELECT succeeded FROM audit_events WHERE operation = 'users.sync_operator_access' ORDER BY created_at DESC LIMIT 1` as Promise<
-          { succeeded: boolean }[]
-        >,
-    );
-    expect(audit[0]?.succeeded).toBe(false);
-  });
-
-  it("refuses loudly when the user is invisible (human ctx under users RLS) instead of syncing nothing", async () => {
-    setOperatorAccessBackendForTests(recordingBackend());
-    const ids = await admin(
-      (tx) =>
-        tx`SELECT id::text AS id FROM users WHERE email = ${EMAILS[1]}` as Promise<
-          { id: string }[]
-        >,
-    );
-    const r = await sync(ids[0]?.id as string, OWNER);
-    expect(r.ok).toBe(false);
-  });
-
-  it("allUsers recomputes every user on the list, deleted ones included (the retry path)", async () => {
-    const goneId = await createUser(EMAILS[4], ["editor"]);
-    const del = await execute(registry, adapter, SYSTEM, "users.delete", { userId: goneId });
-    expect(del.ok).toBe(true);
-    const { backend, calls } = recordingBackend();
-    setOperatorAccessBackendForTests({ backend });
-    const r = await execute(registry, adapter, SYSTEM, "users.sync_operator_access", {
-      allUsers: true,
-    });
-    expect(r.ok && (r.value as OperatorAccessSync).status).toBe("synced");
-    const ours = calls.filter((c) => EMAILS.some((e) => c.principal === `user:${e}`));
-    expect(ours).toContainEqual({ principal: `user:${OWNER_EMAIL}`, allow: true });
-    expect(ours).toContainEqual({ principal: `user:${EMAILS[1]}`, allow: true });
-    expect(ours).toContainEqual({ principal: `user:${EMAILS[4]}`, allow: false });
-    // Only emails on the user list are touched — never anything else on IAP.
-    expect(calls.every((c) => c.principal.startsWith("user:"))).toBe(true);
-  });
-
-  it("allUsers refuses a human ctx (RLS would show only the caller) instead of syncing one row", async () => {
-    setOperatorAccessBackendForTests(recordingBackend());
-    const r = await execute(registry, adapter, OWNER, "users.sync_operator_access", {
-      allUsers: true,
-    });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(JSON.stringify(r.error)).toContain("system ctx");
-  });
-
-  it("is not reachable by the AI directly", async () => {
-    const r = await execute(registry, adapter, AI, "users.sync_operator_access", {
-      userIds: [OWNER.actorId],
-    });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.kind).toBe("ActorScopeRejected");
+  it("is not reachable by humans or the AI", async () => {
+    for (const ctx of [OWNER, AI]) {
+      const r = await execute(registry, adapter, ctx, "users.operator_access_members", {});
+      expect(r.ok === false && r.error.kind).toBe("ActorScopeRejected");
+    }
   });
 });
 
-describe("gated user tools — afterApply sync-operator-access", () => {
+describe("syncOperatorAccess — the admin starts the job and records the outcome", () => {
+  it("is not-applicable without IAP (self-hosted), and audited as such", async () => {
+    setOperatorAccessTriggerForTests({ trigger: null });
+    const r = await syncOperatorAccess(registry, adapter, OWNER);
+    expect(r.status).toBe("not-applicable");
+    expect(await lastAudit(OWNER.actorId)).toEqual({ succeeded: true, summary: "not-applicable" });
+  });
+
+  it("a finished run is synced; a failed run is failed with the log link, audited as failed", async () => {
+    setOperatorAccessTriggerForTests({ trigger: fakeTrigger().trigger });
+    expect(await syncOperatorAccess(registry, adapter, OWNER)).toEqual({
+      status: "synced",
+      target: "Google IAP (fake job)",
+      execution: "exec-1",
+      logsUrl: "https://logs/exec-1",
+    });
+
+    setOperatorAccessTriggerForTests({ trigger: fakeTrigger({ state: "failed" }).trigger });
+    const failed = await syncOperatorAccess(registry, adapter, OWNER);
+    expect(failed.status).toBe("failed");
+    expect(failed.status === "failed" && failed.error).toContain("https://logs/exec-1");
+    expect((await lastAudit(OWNER.actorId)).succeeded).toBe(false);
+  });
+
+  it("a job the admin cannot start is a loud failure with the next step", async () => {
+    setOperatorAccessTriggerForTests({
+      trigger: fakeTrigger({
+        fail: new OperatorAccessError("run.jobs.run denied", "Run `cms-provision upgrade`."),
+      }).trigger,
+    });
+    const r = await syncOperatorAccess(registry, adapter, OWNER);
+    expect(r).toEqual({
+      status: "failed",
+      target: "Google IAP (fake job)",
+      error: "run.jobs.run denied",
+      nextStep: "Run `cms-provision upgrade`.",
+    });
+  });
+
+  it("the AI cannot record a sync outcome itself", async () => {
+    const r = await execute(registry, adapter, AI, "users.record_operator_access_sync", {
+      status: "not-applicable",
+      reason: "x",
+    });
+    expect(r.ok === false && r.error.kind).toBe("ActorScopeRejected");
+  });
+
+  it("the AI can list other users (users RLS no longer hides them), so it can target one", async () => {
+    const r = await execute(registry, adapter, AI, "users.list", {});
+    const emails = r.ok
+      ? (r.value as { users: { email: string }[] }).users.map((u) => u.email)
+      : [];
+    expect(emails).toContain(OWNER_EMAIL);
+  });
+});
+
+describe("gated tools — afterApply sync-operator-access", () => {
   const gatedTool = (
     tool: typeof proposeUserCreateTool | typeof proposeRoleDeleteTool,
   ): FilteredTool =>
@@ -261,24 +275,20 @@ describe("gated user tools — afterApply sync-operator-access", () => {
       gated: tool.gated,
     }) as FilteredTool;
 
-  it("the AI can list other users (users RLS no longer hides them), so it can target one", async () => {
-    const r = await execute(registry, adapter, AI, "users.list", {});
-    expect(r.ok).toBe(true);
-    const emails = r.ok
-      ? (r.value as { users: { email: string }[] }).users.map((u) => u.email)
-      : [];
-    expect(emails).toContain(OWNER_EMAIL);
-  });
-
-  it("declares the post-commit sync on create, set-roles and delete", () => {
-    for (const tool of [proposeUserCreateTool, proposeUserSetRolesTool, proposeUserDeleteTool]) {
+  it("declares the post-commit sync on user create, set-roles, delete and role delete", () => {
+    for (const tool of [
+      proposeUserCreateTool,
+      proposeUserSetRolesTool,
+      proposeUserDeleteTool,
+      proposeRoleDeleteTool,
+    ]) {
       expect(tool.gated?.afterApply).toBe("sync-operator-access");
     }
   });
 
-  it("an approved create allows the new user on IAP; an approved delete removes them", async () => {
-    const { backend, calls } = recordingBackend();
-    setOperatorAccessBackendForTests({ backend });
+  it("an approved create and delete each start the job, attributed to the approving Owner", async () => {
+    const fake = fakeTrigger();
+    setOperatorAccessTriggerForTests({ trigger: fake.trigger });
     const create = attachGatedExecute(
       gatedTool(proposeUserCreateTool),
       registry,
@@ -293,20 +303,18 @@ describe("gated user tools — afterApply sync-operator-access", () => {
     })) as { ok: boolean; value: Record<string, unknown> };
     expect(created).toMatchObject({ ok: true });
     expect((created.value.operatorAccess as OperatorAccessSync).status).toBe("synced");
-    expect(created.value.note).toContain(`allowed ${EMAILS[3]}`);
-    expect(calls).toEqual([{ principal: `user:${EMAILS[3]}`, allow: true }]);
+    expect(created.value.note).toContain("up to date");
 
-    const userId = created.value.userId as string;
     const del = attachGatedExecute(gatedTool(proposeUserDeleteTool), registry, adapter, AI, OWNER);
-    const deleted = (await del.execute?.({ userId })) as {
+    const deleted = (await del.execute?.({ userId: created.value.userId as string })) as {
       ok: boolean;
-      value: Record<string, unknown>;
     };
     expect(deleted).toMatchObject({ ok: true });
-    expect(calls.at(-1)).toEqual({ principal: `user:${EMAILS[3]}`, allow: false });
+    expect(fake.starts()).toBe(2);
+    expect((await lastAudit(OWNER.actorId)).summary).toBe("synced: exec-2");
   });
 
-  it("an approved role deletion revokes IAP for anyone it left without a role", async () => {
+  it("an approved role deletion starts the job (it can strip someone's last role)", async () => {
     const created = await execute(registry, adapter, SYSTEM, "roles.create", {
       name: CUSTOM_ROLE,
       description: "temporary",
@@ -315,23 +323,23 @@ describe("gated user tools — afterApply sync-operator-access", () => {
     expect(created.ok).toBe(true);
     const roleId = created.ok ? (created.value as { roleId: string }).roleId : "";
     await createUser(EMAILS[5], [CUSTOM_ROLE]);
-    const { backend, calls } = recordingBackend();
-    setOperatorAccessBackendForTests({ backend });
-    expect(proposeRoleDeleteTool.gated?.afterApply).toBe("sync-operator-access");
+    const fake = fakeTrigger();
+    setOperatorAccessTriggerForTests({ trigger: fake.trigger });
     const del = attachGatedExecute(gatedTool(proposeRoleDeleteTool), registry, adapter, AI, OWNER);
     const r = (await del.execute?.({ roleId })) as { ok: boolean; value: Record<string, unknown> };
     expect(r).toMatchObject({ ok: true, value: { kind: "delete" } });
-    expect((r.value.operatorAccess as OperatorAccessSync).status).toBe("synced");
-    expect(calls).toContainEqual({ principal: `user:${EMAILS[5]}`, allow: false });
-    expect(calls).toContainEqual({ principal: `user:${OWNER_EMAIL}`, allow: true });
+    expect(fake.starts()).toBe(1);
+    // The user who lost their only role is no longer in the job's input.
+    const members = await execute(registry, adapter, SYSTEM, "users.operator_access_members", {});
+    expect(members.ok && (members.value as { emails: string[] }).emails).not.toContain(EMAILS[5]);
   });
 
   it("a failed sync keeps the applied change but carries a warning the AI must relay", async () => {
-    setOperatorAccessBackendForTests(
-      recordingBackend(
-        new OperatorAccessError("permission denied", "Run `cms-provision upgrade`."),
-      ),
-    );
+    setOperatorAccessTriggerForTests({
+      trigger: fakeTrigger({
+        fail: new OperatorAccessError("run.jobs.run denied", "Run `cms-provision upgrade`."),
+      }).trigger,
+    });
     const ids = await admin(
       (tx) =>
         tx`SELECT id::text AS id FROM users WHERE email = ${EMAILS[2]}` as Promise<

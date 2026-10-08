@@ -31,7 +31,7 @@ import {
   recordImageDigests,
 } from "./install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
-import { ensureOperatorAccessGrants } from "./operator-access.js";
+import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "./operator-access.js";
 import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
@@ -42,7 +42,7 @@ import {
   rotateRuntimeSecret,
   rotationRefusal,
 } from "./runtime-secrets.js";
-import { MCP_ENV_VAR } from "./stack-contract.js";
+import { MCP_ENV_VAR, OPERATOR_ACCESS_JOB_ENV_VAR } from "./stack-contract.js";
 import {
   type DeployedService,
   type EnvChange,
@@ -431,46 +431,6 @@ async function resolveAdminIapResource(
   return name ? { kind: "backend-services", service: name } : null;
 }
 
-/**
- * Let the admin manage IAP operators itself (operator-access.ts). Like MCP
- * access, a failure only costs that feature, so it warns instead of aborting.
- */
-async function upgradeOperatorAccess(
-  meta: InstallMetadata & { projectId: string },
-  region: string,
-  adminServiceName: string,
-  resource: IapResource,
-): Promise<void> {
-  const s = spinner();
-  s.start("Ensuring the admin can manage operator access...");
-  const sa = await gcloud([
-    "run",
-    "services",
-    "describe",
-    adminServiceName,
-    `--region=${region}`,
-    `--project=${meta.projectId}`,
-    "--format=value(spec.template.spec.serviceAccountName)",
-  ]);
-  const adminServiceAccount = sa.ok ? sa.stdout.trim() : "";
-  const r = adminServiceAccount
-    ? await ensureOperatorAccessGrants({
-        projectId: meta.projectId,
-        provider: meta.provider === "gcp-firebase" ? "gcp-firebase" : "gcp",
-        resource,
-        adminServiceAccount,
-      })
-    : { ok: false as const, error: `admin runtime service account not found: ${sa.stderr.trim()}` };
-  if (r.ok) {
-    s.stop(green(`Operator access ready (${r.granted.length} grant(s))`));
-  } else {
-    s.stop(yellow(`Operator access not configured: ${r.error}`));
-    log.warn(
-      "The upgrade continues; approving a user change will report that Google IAP could not be updated until this succeeds.",
-    );
-  }
-}
-
 export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   const { installId, meta } = requireInstall();
   // v0.5.15 — extended to cover gcp-firebase too. Both providers share
@@ -723,6 +683,9 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   // provisioned before this existed get it here, with no operator config.
   // A failure only costs MCP access, so it warns instead of aborting.
   // ────────────────────────────────────────────────────────────────
+  // Env vars the rolls must leave as the service has them, because the
+  // thing they point at could not be set up.
+  const leaveUntouched: string[] = [];
   if (adminPlan) {
     const sMcp = spinner();
     sMcp.start("Ensuring MCP access through IAP...");
@@ -734,14 +697,6 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       sMcp.stop(
         green(`MCP access ready (${mcp.serviceAccount}; ${mcp.operators.length} operator(s))`),
       );
-      if (resource) {
-        await upgradeOperatorAccess(
-          { ...meta, projectId: meta.projectId },
-          region,
-          adminPlan.serviceName,
-          resource,
-        );
-      }
     } else {
       sMcp.stop(yellow(`MCP access not configured: ${mcp.error}`));
       log.warn(
@@ -750,14 +705,50 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       // Don't hand the admin an MCP service account that may not exist or
       // lacks its bindings: /security/mcp would print a `claude mcp add`
       // command that can't work. Leave the var as the service has it.
-      const replan = planContractEnv(install, deployed, { leaveUntouched: [MCP_ENV_VAR] });
-      if (replan.ok) {
-        rolls = rolls.map((r) => ({
-          ...r,
-          envFlags: replan.services[r.slug].flags,
-          envChanges: replan.services[r.slug].changes,
-        }));
-      }
+      leaveUntouched.push(MCP_ENV_VAR);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Operator access: the sync job that keeps Google IAP in step with the
+    // user list (operator-access.ts) — its own SA, the only principal that
+    // may change the IAP binding; the admin may only start it. Also removes
+    // the operator-access rights an earlier revision gave the admin's SA.
+    // After migrations: the job's database user gets the role migration
+    // 0239 creates. A failure only costs IAP following the user list, so it
+    // warns; the admin then reports the sync as not set up, loudly.
+    // ──────────────────────────────────────────────────────────────
+    const sOa = spinner();
+    sOa.start("Ensuring the operator-access sync job...");
+    const resolved = await resolveOperatorAccessTarget({
+      provider: meta.provider,
+      projectId: meta.projectId,
+      region,
+      env: GCP_STACK_ENV,
+      ownerEmail: meta.ownerEmail,
+      imageRef: adminPlan.imageRef,
+    });
+    const oa = resolved.ok
+      ? await ensureOperatorAccessSync(resolved.target)
+      : { ok: false as const, done: [], error: resolved.error };
+    for (const step of oa.done) log.info(`  ${dim(step)}`);
+    if (oa.ok) {
+      sOa.stop(green("Operator-access sync job ready (IAP follows the user list)"));
+    } else {
+      sOa.stop(yellow(`Operator-access sync job not set up: ${oa.error}`));
+      log.warn(
+        "The upgrade continues; user changes will report that Google IAP could not be updated until this succeeds. Re-run upgrade once the cause is fixed.",
+      );
+      leaveUntouched.push(OPERATOR_ACCESS_JOB_ENV_VAR);
+    }
+  }
+  if (leaveUntouched.length > 0) {
+    const replan = planContractEnv(install, deployed, { leaveUntouched });
+    if (replan.ok) {
+      rolls = rolls.map((r) => ({
+        ...r,
+        envFlags: replan.services[r.slug].flags,
+        envChanges: replan.services[r.slug].changes,
+      }));
     }
   }
 
