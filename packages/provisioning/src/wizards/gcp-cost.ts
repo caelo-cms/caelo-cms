@@ -39,7 +39,12 @@ export interface CostEstimateInputs {
    * compatibility.
    */
   provider?: "gcp" | "gcp-firebase";
+  /** #607 — the install region; shown in the table (prices are {@link PRICED_REGION} rates). */
+  region: string;
 }
+
+/** The region the price table's list rates are for. */
+const PRICED_REGION = "europe-west1";
 
 const SQL_TIER_USD: Record<string, number> = {
   // Shared-core legacy tiers, ENTERPRISE edition
@@ -58,6 +63,8 @@ const SQL_TIER_USD: Record<string, number> = {
 export function estimateGcpCost(inputs: CostEstimateInputs): {
   lines: CostLine[];
   totalUsd: number;
+  /** The region line the pre-flight table shows above the costs. */
+  regionNote: string;
 } {
   const sqlBase = SQL_TIER_USD[inputs.cloudSqlTier] ?? 30;
   const sqlMultiplier = inputs.cloudSqlHa ? 2.0 : 1.0;
@@ -166,5 +173,9 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
   ];
 
   const totalUsd = lines.reduce((sum, l) => sum + l.monthlyUsd, 0);
-  return { lines, totalUsd };
+  const regionNote =
+    inputs.region === PRICED_REGION
+      ? `Region: ${inputs.region} (fixed after install)`
+      : `Region: ${inputs.region} (fixed after install) — prices below are ${PRICED_REGION} list rates; ${inputs.region} rates may differ`;
+  return { lines, totalUsd, regionNote };
 }

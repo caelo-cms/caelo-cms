@@ -26,7 +26,7 @@
  *
  * Constraints worth knowing:
  *   - Container Apps not in every region; the stack errors loudly at
- *     preview if `location` is unsupported.
+ *     preview if the `region` is unsupported.
  *   - Front Door cert auto-management requires the apex domain to point
  *     at Front Door; if the operator manages DNS elsewhere they must
  *     publish the CNAME validation TXT record themselves.
@@ -47,7 +47,9 @@ const domain = cfg.require("domain");
 const _ownerEmail = cfg.require("ownerEmail");
 const subscription = cfg.require("subscription");
 const rgName = cfg.get("resourceGroup") ?? "caelo-rg";
-const location = cfg.get("location") ?? "westeurope";
+// #607 — the region the operator chose (same key as every adapter, §11.B);
+// no default, so a stack run without it fails instead of picking one.
+const location = cfg.require("region");
 const flexibleServerSku = cfg.get("flexibleServerSku") ?? "Standard_B2s";
 // #553 — the admin runs the Lighthouse quality audit; same knob + default
 // as every adapter (stack-contract.ts). Container Apps only accepts fixed

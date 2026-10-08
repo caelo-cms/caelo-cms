@@ -145,6 +145,46 @@ export function resolveSecretReplication(
   return hasAutoSecret ? "auto" : "regional";
 }
 
+/** A resource as `pulumi stack export` lists it. */
+interface StateResource {
+  type?: string;
+  inputs?: Record<string, unknown>;
+  outputs?: Record<string, unknown>;
+}
+
+/**
+ * The region an existing stack was deployed in, read from its state (the
+ * stacks' explicit `gcp.Provider` carries it), or null for a stack with
+ * nothing deployed. State, not stack config: the config file lives in the
+ * package's stack dir, which a newer `bunx` version doesn't share.
+ */
+export function deployedStackRegion(resources: ReadonlyArray<StateResource>): string | null {
+  const regions = new Set(
+    resources
+      .filter((r) => r.type === "pulumi:providers:gcp")
+      .map((r) => r.inputs?.region)
+      .filter((v): v is string => typeof v === "string" && v.length > 0),
+  );
+  if (regions.size > 1) {
+    throw new Error(
+      `the Pulumi state holds GCP providers for several regions (${[...regions].join(", ")}); fix the stack before re-running.`,
+    );
+  }
+  return [...regions][0] ?? null;
+}
+
+/**
+ * Refuse to `up` a stack into another region than it was deployed in
+ * (#607): Pulumi would replace Cloud SQL, the buckets and the services.
+ */
+export function assertStackRegion(deployed: string | null, requested: string): void {
+  if (deployed && deployed !== requested) {
+    throw new Error(
+      `this install's stack is deployed in ${deployed}, but the run asks for ${requested}. The region is fixed after install — moving it would replace the database, buckets and services. Set "region": "${deployed}" in install.json and re-run.`,
+    );
+  }
+}
+
 /**
  * Run `pulumi up` against the GCP stack via the Automation SDK.
  * Streams resource-create events to the supplied onEvent callback so
@@ -182,6 +222,10 @@ export async function pulumiUpGcp(
     },
   );
 
+  const stateResources = ((await stack.exportStack()).deployment?.resources ??
+    []) as StateResource[];
+  assertStackRegion(deployedStackRegion(stateResources), inputs.region);
+
   // Set every config value the stack reads. Secrets via setConfig with
   // {value, secret: true}; Pulumi encrypts them in state.
   // wafAdaptiveProtection is gcp-only; the gcp-firebase stack has no
@@ -216,13 +260,7 @@ export async function pulumiUpGcp(
       throw e;
     },
   );
-  const secretReplication = resolveSecretReplication(
-    configuredReplication,
-    ((await stack.exportStack()).deployment?.resources ?? []) as Array<{
-      type?: string;
-      outputs?: Record<string, unknown>;
-    }>,
-  );
+  const secretReplication = resolveSecretReplication(configuredReplication, stateResources);
   await stack.setConfig(`${ns}:secretReplication`, { value: secretReplication });
 
   // The stack references the CLI-generated runtime secrets (stack-contract.ts

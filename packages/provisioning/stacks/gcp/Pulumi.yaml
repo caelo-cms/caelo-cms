@@ -32,8 +32,7 @@ config:
   # The 8 cross-provider knobs (CLAUDE.md §11.B)
   caelo-gcp:region:
     type: string
-    default: us-central1
-    description: Primary GCP region (Cloud SQL, Cloud Run, GCS).
+    description: Primary GCP region (Cloud SQL, Cloud Run, GCS). Required, no default; chosen in the wizard and fixed after install (#607).
   caelo-gcp:cloudSqlTier:
     type: string
     default: db-f1-micro

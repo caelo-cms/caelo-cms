@@ -101,6 +101,7 @@ describe("GCP cost table", () => {
     adminMinInstances: 0,
     gatewayMinInstances: 0,
     wafAdaptiveProtection: false,
+    region: "europe-west1",
   };
 
   it("shows the admin memory and a line for the quality checks", () => {
@@ -120,6 +121,13 @@ describe("GCP cost table", () => {
 
   it("refuses a memory value provisioning would refuse", () => {
     expect(() => estimateGcpCost({ ...inputs, adminMemory: "lots" })).toThrow("adminMemory");
+  });
+
+  it("shows the install region, and flags rates priced for another region (#607)", () => {
+    expect(estimateGcpCost(inputs).regionNote).toBe("Region: europe-west1 (fixed after install)");
+    const other = estimateGcpCost({ ...inputs, region: "us-east4" }).regionNote;
+    expect(other).toContain("Region: us-east4");
+    expect(other).toContain("europe-west1 list rates");
   });
 });
 

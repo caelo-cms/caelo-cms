@@ -46,7 +46,10 @@ const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
 const ownerEmail = cfg.require("ownerEmail");
 const project = cfg.require("project");
-const region = cfg.get("region") ?? "us-central1";
+// #607 — chosen by the operator in the wizard and fixed after install; no
+// default, so a stack run without it fails instead of landing in a region
+// nobody picked.
+const region = cfg.require("region");
 
 // Where Secret Manager keeps the secret payloads. Fixed at create time —
 // changing it replaces every secret — so the wizard pins it per stack:

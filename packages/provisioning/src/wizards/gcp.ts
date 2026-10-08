@@ -30,6 +30,7 @@ import {
   checkDeployedRuntimeEnv,
   chooseImageDigests,
   readDeployedImageDigests,
+  readDeployedRegion,
 } from "../deployed-release.js";
 import { pickDnsAdapter } from "../dns/index.js";
 import {
@@ -68,6 +69,7 @@ import {
   installIapAllowlist,
   resolveOperatorAccessTarget,
 } from "../operator-access.js";
+import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
 import { ADMIN_MEMORY_DEFAULT } from "../stack-contract.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { pulumiUpGcp } from "./gcp-pulumi.js";
@@ -80,6 +82,8 @@ export interface GcpWizardOpts {
   ownerEmail: string;
   projectId: string | null;
   nonInteractive: boolean;
+  /** #607 — `--region`; required for a new install when non-interactive. */
+  region?: string;
   /**
    * v0.3.1 — provider variant. 'gcp' is the LB-based topology;
    * 'gcp-firebase' adds Firebase Hosting + Cloud Run direct. The
@@ -105,6 +109,12 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     const updated: InstallMetadata = { ...meta, projectId };
     writeMetadata(installId, updated);
   }
+
+  // === 2.5. Region (#607) — chosen before anything billable exists, then
+  // fixed: every later step and every lifecycle command reads it from
+  // install.json.
+  const region = await stepRegion(opts, projectId, meta);
+  if (meta) writeMetadata(installId, { ...meta, projectId, region });
 
   // === 3. Project create ===
   await stepProjectCreate(installId, projectId);
@@ -140,9 +150,6 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // so the prompt was dead UX cost.
   const pulumiPassphrase = stepPulumiPassphrase(installId);
 
-  const region = "europe-west1";
-  if (meta) writeMetadata(installId, { ...meta, projectId, region });
-
   // === 8. Cost-estimate pre-flight ===
   // v0.3.3 — provider variant threads through so gcp-firebase
   // drops the LB / Cloud CDN / Cloud Armor lines (saves ~$19/mo
@@ -156,6 +163,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     gatewayMinInstances: 0,
     wafAdaptiveProtection: false,
     provider: opts.provider ?? ("gcp" as const),
+    region,
   };
   const estimate = estimateGcpCost(costInputs);
   note(
@@ -163,6 +171,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
       bold(
         "Estimated monthly cost (resource floor — actual usage adds AI calls + egress + storage growth)",
       ),
+      `  ${estimate.regionNote}`,
       "",
       ...estimate.lines.map(
         (l) =>
@@ -175,7 +184,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   );
   if (!opts.nonInteractive) {
     const proceed = await confirm({
-      message: `Provision ~${estimate.totalUsd} USD/mo on GCP project ${bold(projectId)}?`,
+      message: `Provision ~${estimate.totalUsd} USD/mo on GCP project ${bold(projectId)} in ${bold(region)}?`,
       initialValue: true,
     });
     if (isCancel(proceed) || !proceed) {
@@ -313,7 +322,6 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   await stepFinalize(installId);
 
   // Reference unused params to silence the linter.
-  void region;
   void domain;
   void ownerEmail;
 }
@@ -331,8 +339,9 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
  * after 7 days (docs/maintainer-public-registry-setup.md, "Retention").
  */
 async function resolveImageDigests(): Promise<ImageDigests> {
+  // The Caelo public image registry — not the install region.
   const project = "caelo-website";
-  const region = "europe-west1";
+  const registryRegion = "europe-west1";
   const repo = "caelo-cms-images";
   const out = { admin: "", gateway: "" };
   for (const service of ["admin", "gateway"] as const) {
@@ -346,7 +355,7 @@ async function resolveImageDigests(): Promise<ImageDigests> {
       "docker",
       "tags",
       "list",
-      `${region}-docker.pkg.dev/${project}/${repo}/${service}`,
+      `${registryRegion}-docker.pkg.dev/${project}/${repo}/${service}`,
       "--format=value(tag,version)",
     ]);
     if (!r.ok) {
@@ -416,6 +425,81 @@ async function stepProjectId(opts: GcpWizardOpts): Promise<string> {
     process.exit(0);
   }
   return value as string;
+}
+
+/**
+ * Settle the install region (#607). A recorded region — or, for an install
+ * deployed before install.json recorded one, the region its services run
+ * in — is kept and a different `--region` is refused. A new install takes
+ * a validated `--region`, or asks: the picker lists only regions with every
+ * service the stack needs and preselects the gcloud default region (else
+ * the EU default). Non-interactive without `--region` aborts with the list.
+ */
+async function stepRegion(
+  opts: GcpWizardOpts,
+  projectId: string,
+  meta: InstallMetadata | null,
+): Promise<string> {
+  const provider = opts.provider ?? "gcp";
+  const abort = (error: string): never => {
+    log.error(red(error));
+    cancel("Aborted.");
+    process.exit(1);
+  };
+  let deployed: string | null = null;
+  if (!meta?.region && isStepDone(opts.installId, `pulumi-up-${projectId}`)) {
+    const live = await readDeployedRegion({ projectId });
+    if (!live.ok) abort(live.error);
+    else deployed = live.region;
+  }
+  const available = await installableRegions(provider);
+  if (!available.ok) return abort(available.error);
+  const regions = available.regions;
+  const decision = decideRegion({
+    provider,
+    installId: opts.installId,
+    recorded: meta?.region ?? null,
+    deployed,
+    requested: opts.region,
+    nonInteractive: opts.nonInteractive,
+    regions,
+  });
+  switch (decision.kind) {
+    case "refuse":
+      return abort(decision.error);
+    case "keep":
+      log.info(
+        `Region: ${bold(decision.region)} ${dim(`(${decision.from === "install.json" ? "recorded at install" : "where the install runs"} — fixed)`)}`,
+      );
+      return decision.region;
+    case "use":
+      log.info(
+        `Region: ${bold(decision.region)} ${dim("(supplied via --region; fixed after install)")}`,
+      );
+      return decision.region;
+    case "prompt":
+      break;
+  }
+  const suggestion = suggestRegion(provider, await detectCliRegion(provider), regions);
+  if (suggestion.note) log.warn(suggestion.note);
+  const choice = await select<string>({
+    message: `Region for Cloud SQL, storage and the services ${dim("(fixed after install)")}`,
+    initialValue: suggestion.region,
+    maxItems: 12,
+    options: regions.map((r) => ({
+      value: r.id,
+      label: r.id,
+      hint:
+        r.id === suggestion.region
+          ? `${r.name} — ${suggestion.source === "cli" ? "your gcloud default" : "EU default"}`
+          : r.name,
+    })),
+  });
+  if (isCancel(choice)) {
+    cancel("Cancelled.");
+    process.exit(0);
+  }
+  return choice as string;
 }
 
 async function stepProjectCreate(installId: string, projectId: string): Promise<void> {

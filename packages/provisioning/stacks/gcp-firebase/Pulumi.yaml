@@ -35,8 +35,7 @@ config:
   # The 7 cross-provider knobs (subset of gcp's 8 — no Cloud Armor adaptive protection here)
   caelo-gcp-firebase:region:
     type: string
-    default: us-central1
-    description: Primary GCP region (Cloud SQL, Cloud Run).
+    description: Primary GCP region (Cloud SQL, Cloud Run). Required, no default; chosen in the wizard and fixed after install (#607).
   caelo-gcp-firebase:cloudSqlTier:
     type: string
     default: db-f1-micro

@@ -23,8 +23,7 @@ config:
     description: Operator email used for ACM cert validation + Pulumi notifications.
   caelo-aws:region:
     type: string
-    default: us-east-1
-    description: Primary AWS region (RDS, S3, ECS). Lambda@Edge always pinned to us-east-1 regardless.
+    description: Primary AWS region (RDS, S3, ECS). Required, no default; must equal aws:region. Fixed after install (#607). Lambda@Edge always pinned to us-east-1 regardless.
   caelo-aws:rdsInstanceClass:
     type: string
     default: db.t4g.small

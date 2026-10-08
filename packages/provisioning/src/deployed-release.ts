@@ -172,3 +172,47 @@ export async function chooseImageDigests(opts: {
   }
   return { ok: true, source: "live", digests: live.digests };
 }
+
+/**
+ * The region a deployed install's admin service runs in, read across all
+ * regions, or null when no admin service exists (nothing deployed yet).
+ * Used when install.json has no region recorded, so a re-run keeps the
+ * install where it is instead of asking (#607). Fails when the services
+ * can't be listed or the admin service exists in more than one region.
+ */
+export async function readDeployedRegion(opts: {
+  projectId: string;
+  run?: GcloudRunner;
+}): Promise<{ ok: true; region: string | null } | { ok: false; error: string }> {
+  const run = opts.run ?? defaultGcloud;
+  const prefix = `${gcpNamePrefix(GCP_STACK_ENV)}-admin`;
+  const list = await run([
+    "run",
+    "services",
+    "list",
+    `--project=${opts.projectId}`,
+    `--filter=metadata.name~^${prefix}`,
+    '--format=value(metadata.labels."cloud.googleapis.com/location")',
+  ]);
+  if (!list.ok) {
+    return {
+      ok: false,
+      error: `list Cloud Run services to find the install's region: ${list.stderr.trim() || "no output"}`,
+    };
+  }
+  const regions = [
+    ...new Set(
+      list.stdout
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ];
+  if (regions.length > 1) {
+    return {
+      ok: false,
+      error: `${prefix}* Cloud Run services exist in several regions (${regions.join(", ")}); record the install's region in install.json ("region"), then re-run.`,
+    };
+  }
+  return { ok: true, region: regions[0] ?? null };
+}

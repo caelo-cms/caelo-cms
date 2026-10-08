@@ -10,6 +10,7 @@
  *   1. Pick provider (gcp / aws / azure / self-hosted)
  *   2. Detect existing install at `~/.caelo-<id>/` and offer to resume
  *   3. Prompt for the few inputs the provider needs (domain, owner email,
+ *      region — detect-then-confirm, fixed after install (#607),
  *      project id, Anthropic key — input-hidden)
  *   4. Show cost estimate + final confirm
  *   5. Delegate to the provider-specific wizard which handles project
@@ -45,6 +46,12 @@ export interface WizardOptions {
   ownerEmail?: string;
   /** Pre-supplied GCP project id — skips the prompt for gcp. */
   projectId?: string;
+  /**
+   * #607 — cloud region for a new install; skips the prompt. Required with
+   * `nonInteractive` for a new install. Fixed after install: on an existing
+   * install a different value is refused.
+   */
+  region?: string;
 }
 
 export async function runWizard(opts: WizardOptions = {}): Promise<void> {
@@ -133,6 +140,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         ownerEmail,
         projectId: projectIdHint,
         nonInteractive: opts.nonInteractive ?? false,
+        ...(opts.region ? { region: opts.region } : {}),
       });
       break;
     case "gcp-firebase":
@@ -142,6 +150,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         ownerEmail,
         projectId: projectIdHint,
         nonInteractive: opts.nonInteractive ?? false,
+        ...(opts.region ? { region: opts.region } : {}),
       });
       break;
     case "self-hosted":

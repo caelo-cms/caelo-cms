@@ -46,6 +46,17 @@ bunx @caelo-cms/provisioning --provider gcp \
 
 Wall-clock: about 10 minutes (mostly Cloud SQL HA setup).
 
+## Choosing the region
+
+The region decides where your database, uploads, secrets and services live: that matters for data residency (GDPR) and for latency to your editors. The provisioner asks for it before it creates anything that costs money:
+
+- It preselects the default region of your `gcloud` CLI (`gcloud config get run/region`, then `compute/region`). Without one it suggests `europe-west1` (Belgium).
+- It only offers regions where every service the install needs is available: Cloud Run, Cloud SQL, Secret Manager, Artifact Registry and Cloud Scheduler (the hourly [IAP sync](#who-can-open-the-admin-google-iap)). `--provider gcp-firebase` also needs Cloud Run domain mappings for `admin.<your domain>`, which Google offers in fewer regions: `asia-east1`, `asia-northeast1`, `asia-southeast1`, `europe-west1`, `europe-west4`, `us-central1`, `us-east1`, `us-east4` and `us-west1`.
+- The cost table shows the region you picked. Its prices are `europe-west1` list rates; other regions can cost a little more.
+- With `--non-interactive`, pass `--region`. Without it the provisioner stops and lists the regions you can use.
+
+**The region is fixed after install.** Moving an install means migrating its Cloud SQL database, buckets, secrets and images, which Caelo does not do. The region is recorded in `~/.caelo-<install-id>/install.json`; re-running the provisioner or `upgrade` with a different `--region` stops with an explanation instead of touching anything. To run somewhere else, provision a new install in that region.
+
 What you'll see:
 
 1. Pulumi previews the stack; you confirm

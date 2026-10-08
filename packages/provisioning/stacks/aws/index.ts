@@ -37,7 +37,16 @@ import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "../../dist/stack-contra
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
 const _ownerEmail = cfg.require("ownerEmail");
-const _region = cfg.get("region") ?? "us-east-1";
+// #607 — chosen by the operator and fixed after install; no default. The
+// stack's resources use the default AWS provider, which reads `aws:region`,
+// so the two must agree — otherwise resources would land somewhere other
+// than the region the install records.
+const region = cfg.require("region");
+if (aws.config.region !== region) {
+  throw new Error(
+    `caelo-aws:region is ${region} but the AWS provider region (aws:region / AWS_REGION) is ${aws.config.region ?? "unset"}; run \`pulumi config set aws:region ${region}\`.`,
+  );
+}
 const rdsInstanceClass = cfg.get("rdsInstanceClass") ?? "db.t4g.small";
 const _fargateCpu = cfg.get("fargateCpu") ?? "512";
 const _fargateMemoryMb = cfg.get("fargateMemoryMb") ?? "1024";

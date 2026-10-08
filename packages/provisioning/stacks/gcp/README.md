@@ -24,7 +24,8 @@ pulumi stack init prod
 pulumi config set caelo-gcp:domain example.com
 pulumi config set caelo-gcp:ownerEmail me@example.com
 pulumi config set caelo-gcp:project my-gcp-project
-pulumi config set caelo-gcp:region us-central1
+# Required (#607): no default, fixed after install.
+pulumi config set caelo-gcp:region europe-west1
 
 # Optional: scale up beyond the safe-by-default ceiling. The defaults
 # size for a small editorial install (admin maxScale 5 × Bun SQL pool

@@ -31,6 +31,8 @@ export interface GcpFirebaseWizardOpts {
   ownerEmail: string;
   projectId: string | null;
   nonInteractive: boolean;
+  /** #607 — `--region`; see {@link GcpWizardOpts.region}. */
+  region?: string;
 }
 
 export async function runGcpFirebaseWizard(opts: GcpFirebaseWizardOpts): Promise<void> {
@@ -60,6 +62,7 @@ export async function runGcpFirebaseWizard(opts: GcpFirebaseWizardOpts): Promise
     ownerEmail: opts.ownerEmail,
     projectId: opts.projectId,
     nonInteractive: opts.nonInteractive,
+    ...(opts.region ? { region: opts.region } : {}),
     provider: "gcp-firebase",
   });
 }

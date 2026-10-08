@@ -27,13 +27,17 @@ The `--provider azure` adapter mirrors the GCP / AWS shape on Azure-equivalent s
 bunx @caelo-cms/provisioning --provider azure \
   --subscription <id> \
   --resource-group caelo-prod \
-  --location westeurope \
+  --region westeurope \
   --domain caelo.example.com \
   --owner-email you@example.com \
   --anthropic-key sk-ant-...
 ```
 
 Requires `az login` as a service principal with Owner on the resource group, OR Contributor + User Access Administrator if your org enforces least-privilege.
+
+## Region
+
+`--region` (or your Azure CLI default, `az config get defaults.location`; otherwise `westeurope`) decides where the database, storage, Key Vault and Container Apps live. Microsoft publishes no fixed list of Container Apps regions, so the provisioner asks Azure (`az provider show --namespace Microsoft.App`) and accepts only regions that also offer Database for PostgreSQL flexible server; when that query fails (offline, not logged in) it stops instead of guessing. The stack requires `caelo-azure:region` (no default; it replaces the earlier `caelo-azure:location` key). The region is fixed after install, and `upgrade` refuses a different `--region`.
 
 ## Notes specific to Azure
 

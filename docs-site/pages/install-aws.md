@@ -34,6 +34,10 @@ bunx @caelo-cms/provisioning --provider aws \
 
 Required: AWS credentials with the IAM permissions the adapter declares (visible in the dry-run preview the provisioner prints before applying).
 
+## Region
+
+`--region` (or the default region of your AWS CLI: `AWS_REGION`, `AWS_DEFAULT_REGION`, then `aws configure get region`; otherwise `eu-central-1`) decides where the database, buckets, secrets and services live. Only regions with ECS Fargate, RDS for PostgreSQL, S3 and Secrets Manager are accepted; a non-interactive run without `--region` stops and lists them. The region is fixed after install: the stack requires `caelo-aws:region` (no default) and refuses to run when `aws:region` differs, and `upgrade` refuses a different `--region`. Lambda@Edge always lives in `us-east-1`, as CloudFront requires.
+
 ## Notes specific to AWS
 
 - **Cold-start sensitivity** — Lambda is cheaper than Fargate but cold-starts are 1–2s for the admin's first request after idle. For low-traffic installs this is fine; busy installs should switch to Fargate via `--compute fargate`.
