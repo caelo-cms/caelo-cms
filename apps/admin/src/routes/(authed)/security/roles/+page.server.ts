@@ -5,6 +5,7 @@ import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { syncOperatorAccessFromPanel } from "#lib/server/operator-access.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -61,6 +62,7 @@ export const actions: Actions = {
     const roleId = String(form.get("roleId") ?? "");
     const result = await execute(registry, adapter, locals.ctx, "roles.delete", { roleId });
     if (!result.ok) return fail(400, { error: "Could not delete role." });
-    return { ok: true };
+    // Anyone left with no role loses Google IAP access (no-op without IAP).
+    return syncOperatorAccessFromPanel(locals);
   },
 };

@@ -686,6 +686,7 @@ const handlers: Record<string, () => Promise<void>> = {
   "rotate-secret": lifecycleRotateSecret,
   destroy: lifecycleDestroy,
   truncate: lifecycleTruncate,
+  "admin-domain": adminDomain,
   // Misc
   "pulumi-output-sync": pulumiOutputSync,
   version,
@@ -739,6 +740,74 @@ async function lifecycleTruncate(): Promise<void> {
 }
 
 /**
+ * `admin-domain enable` — bind admin.<domain> to a gcp-firebase admin
+ * (see admin-domain.ts for why this runs as the operator, not Pulumi).
+ */
+async function adminDomain(): Promise<void> {
+  const sub = process.argv[3];
+  if (sub !== "enable") {
+    console.log("Usage: cms-provision admin-domain enable [--install <install-id>]");
+    process.exit(2);
+  }
+  const { listInstalls } = await import("./install-state.js");
+  const { enableAdminDomain } = await import("./admin-domain.js");
+  const flag = process.argv.indexOf("--install");
+  const wanted = flag >= 0 ? process.argv[flag + 1] : undefined;
+  const cloud = listInstalls().filter((m) => m.projectId);
+  const candidates = wanted ? cloud.filter((m) => m.installId === wanted) : cloud;
+  if (candidates.length !== 1) {
+    // Guessing among several installs could map the domain in the wrong project.
+    console.error(
+      candidates.length === 0
+        ? `No cloud install${wanted ? ` "${wanted}"` : ""} found on this machine (~/.caelo-<install-id>/install.json).`
+        : `Several installs on this machine: ${candidates.map((m) => `${m.installId} (${m.domain})`).join(", ")}.\nPick one with --install <install-id>.`,
+    );
+    process.exit(1);
+  }
+  const meta = candidates[0];
+  if (!meta?.projectId) process.exit(1);
+  if (!meta.region) {
+    console.error(
+      `install ${meta.installId} has no region recorded in install.json; re-run the wizard to record it.`,
+    );
+    process.exit(1);
+  }
+  if (meta.provider !== "gcp-firebase") {
+    console.log(
+      meta.provider === "gcp"
+        ? `Nothing to do: on gcp the load balancer already serves admin.${meta.domain}.`
+        : `admin-domain is for gcp-firebase installs; this one is ${meta.provider}.`,
+    );
+    return;
+  }
+  const r = await enableAdminDomain({
+    projectId: meta.projectId,
+    region: meta.region,
+    domain: meta.domain,
+  });
+  if (r.status === "failed") {
+    console.error(`admin-domain: ${r.error}`);
+    process.exit(1);
+  }
+  if (r.status === "needs-verification") {
+    console.log(
+      `Google only maps ${r.hostname} for a verified owner of ${r.verifyDomain}.\n` +
+        "Search Console was opened for you: add the TXT record it shows at your registrar,\n" +
+        "click Verify, then run `cms-provision admin-domain enable` again.",
+    );
+    process.exit(3);
+  }
+  console.log(
+    `${r.hostname} ${r.created ? "is now mapped" : "was already mapped"} to the admin.` +
+      (r.records.length > 0
+        ? `\nAdd at your registrar (TLS is issued once DNS resolves, typically 15-60 min):\n${r.records
+            .map((d) => `  ${d.type.padEnd(6)} ${d.name} -> ${d.value}`)
+            .join("\n")}`
+        : "\nGoogle has not published the DNS records yet; run the command again in a minute."),
+  );
+}
+
+/**
  * §11.C — interactive wizard. Loaded lazily so the bare-CLI startup
  * cost stays small (clack + kleur are pulled in only when needed).
  * Reads `--provider`, `--domain`, `--owner-email`, `--project-id`, and
@@ -765,7 +834,7 @@ if (route.kind === "handler") {
   await wizardCommand();
 } else {
   console.log(
-    "Usage: cms-provision [wizard] [--provider <name> --domain <d> --owner-email <e>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|pulumi-output-sync|version> [options]\n" +
+    "Usage: cms-provision [wizard] [--provider <name> --domain <d> --owner-email <e>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|pulumi-output-sync|version> [options]\n" +
       "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
   );
   process.exit(cmd && !cmd.startsWith("-") ? 2 : 0);

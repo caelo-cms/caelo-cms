@@ -498,10 +498,95 @@ export async function awaitPublishComplete(page: Page): Promise<void> {
   const promote = page.getByTestId("promote-btn").or(page.getByTestId("promote-only-btn")).first();
   await promote.click();
   const res = await responsePromise;
+  const body = await res.text();
   if (res.status() < 200 || res.status() >= 300) {
     throw new Error(
-      `awaitPublishComplete: promoteToProduction returned HTTP ${res.status()}. Response: ${(await res.text()).slice(0, 500)}`,
+      `awaitPublishComplete: promoteToProduction returned HTTP ${res.status()}. Response: ${body.slice(0, 500)}`,
     );
+  }
+  // A form action's fail() answers HTTP 200 with {"type":"failure"} — a
+  // blocked or failed Publish must not read as success (same as Stage).
+  if (body.includes('"type":"failure"') || body.includes('"type":"error"')) {
+    throw new Error(`awaitPublishComplete: Publish failed. Response: ${body.slice(0, 800)}`);
+  }
+}
+
+interface QualityChatStatus {
+  audit: { id: string; status: string; fixRound: number } | null;
+  notified: boolean;
+  gate: { open: boolean; state: string; message: string } | null;
+}
+
+/**
+ * #553 — drive the quality gate after a Stage until Publish live is open:
+ * the block → fix → publish loop as the operator lives it.
+ *
+ * The admin's worker audits the staged build (real Lighthouse, real
+ * bundled Chromium). When it finds problems the chat panel posts the fix
+ * request to the AI by itself; this helper only waits for that turn, then
+ * Stages again (the operator's click), up to the 2 automatic fix rounds.
+ * Acceptances the AI proposes are auto-approved in this suite
+ * (CAELO_E2E_AUTO_APPROVE_PROPOSALS), so an "unfixable" finding resolves
+ * through the same card a real editor would click.
+ *
+ * A FAILED check (no result) fails the test loudly: in CI that is an
+ * infrastructure regression, not something to publish over.
+ */
+export async function awaitQualityGateOpen(
+  page: Page,
+  chatSessionId: string,
+  timeoutMs = 20 * 60_000,
+): Promise<{ restages: number; state: string }> {
+  const deadline = Date.now() + timeoutMs;
+  let restages = 0;
+  const read = async (): Promise<QualityChatStatus> => {
+    const res = await page.request.get(`/content/chat/${chatSessionId}/quality-audit`);
+    if (!res.ok()) throw new Error(`quality status HTTP ${res.status()}: ${await res.text()}`);
+    return (await res.json()) as QualityChatStatus;
+  };
+  for (;;) {
+    if (Date.now() > deadline) {
+      throw new Error(`awaitQualityGateOpen: gate still closed after ${timeoutMs / 1000}s`);
+    }
+    const st = await read();
+    if (st.gate?.open) return { restages, state: st.gate.state };
+    const running = !st.audit || st.audit.status === "queued" || st.audit.status === "running";
+    if (running || !st.notified) {
+      await page.waitForTimeout(5_000);
+      continue;
+    }
+    if (st.gate?.state === "errored" || st.gate?.state === "missing") {
+      throw new Error(`awaitQualityGateOpen: the quality check failed — ${st.gate.message}`);
+    }
+    // Problems, and the chat has been told: the panel sends the AI its fix
+    // request as soon as it is idle. Let that turn run to the end.
+    await page.waitForTimeout(3_000);
+    await waitForChatTurnIdle(page);
+    const after = await read();
+    if (after.gate?.open) return { restages, state: after.gate.state };
+    if (restages >= 2) {
+      throw new Error(
+        `awaitQualityGateOpen: still blocked after ${restages} fix rounds — ${after.gate?.message ?? "no gate"}`,
+      );
+    }
+    restages += 1;
+    if (await page.getByTestId("stage-btn").isVisible()) {
+      await awaitStageComplete(page);
+    } else {
+      // The fix wrote nothing pending on the branch (e.g. SEO texts are
+      // written live): re-stage from the gate controls.
+      const restage = page.waitForResponse(
+        (r: Response) =>
+          r.url().includes("?/stageAndDeployStaging") && r.request().method() === "POST",
+        { timeout: 360_000 },
+      );
+      await page.getByTestId("quality-restage-btn").click();
+      const res = await restage;
+      const body = await res.text();
+      if (body.includes('"type":"failure"') || body.includes('"type":"error"')) {
+        throw new Error(`awaitQualityGateOpen: re-Stage failed. Response: ${body.slice(0, 800)}`);
+      }
+    }
   }
 }
 

@@ -342,7 +342,22 @@ import {
   verifyDnsRecordOp,
 } from "./ops/provisioning_outputs.js";
 import { classifyStageOp } from "./ops/quality/classify_stage.js";
+import {
+  ackChatNotificationOp,
+  chatStatusOp,
+  claimChatNotificationOp,
+  gateStatusOp,
+  publishAnywayOp,
+  retryAuditOp,
+} from "./ops/quality/gate.js";
 import { claimNextAuditOp, enqueueAuditOp, recordAuditResultOp } from "./ops/quality/lifecycle.js";
+import {
+  executeQualityProposalOp,
+  listPendingQualityProposalsOp,
+  proposeAcceptOp,
+  proposePublishAnywayOp,
+  rejectQualityProposalOp,
+} from "./ops/quality/pending.js";
 import { getAuditOp, listAcceptancesOp, listAuditsOp } from "./ops/quality/read.js";
 import {
   createRedirectOp,
@@ -489,6 +504,7 @@ import {
   readToolApprovalForExecuteOp,
   rejectToolApprovalOp,
 } from "./ops/tool_approvals.js";
+import { operatorAccessMembersOp, recordOperatorAccessSyncOp } from "./ops/user_access.js";
 import {
   executeUserProposalOp,
   listPendingUserProposalsOp,
@@ -545,6 +561,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeUserSetRolesOp);
   registry.register(proposeUserDeleteOp);
   registry.register(executeUserProposalOp);
+  registry.register(recordOperatorAccessSyncOp);
+  registry.register(operatorAccessMembersOp);
   registry.register(rejectUserProposalOp);
   registry.register(listPendingUserProposalsOp);
   registry.register(loginOp);
@@ -649,6 +667,17 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listAuditsOp);
   registry.register(getAuditOp);
   registry.register(listAcceptancesOp);
+  registry.register(gateStatusOp);
+  registry.register(retryAuditOp);
+  registry.register(chatStatusOp);
+  registry.register(claimChatNotificationOp);
+  registry.register(ackChatNotificationOp);
+  registry.register(publishAnywayOp);
+  registry.register(proposeAcceptOp);
+  registry.register(proposePublishAnywayOp);
+  registry.register(executeQualityProposalOp);
+  registry.register(rejectQualityProposalOp);
+  registry.register(listPendingQualityProposalsOp);
   // P4 snapshots
   registry.register(listSnapshotsOp);
   registry.register(getSnapshotWithEntitiesOp);

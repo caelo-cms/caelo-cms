@@ -130,6 +130,39 @@ export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   },
 });
 
+const checkStageInput = z.object({}).strict();
+
+export const checkStageAuditTool = makeReadTool<z.infer<typeof checkStageInput>>({
+  name: "check_stage_audit",
+  description:
+    "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse quality check, and why? " +
+    "Audited: new or changed module html/css/js, layout / template / theme changes, new pages, plugin configuration. Not audited: only text and field values, placing or moving existing modules, SEO texts, redirects. " +
+    "Lists the deciding changes and the pages the check would cover. Takes no input (uses the current chat).",
+  opName: "quality_audits.classify_stage",
+  input: checkStageInput,
+  // Outside a chat (Power-MCP without a session) the op's own validation
+  // rejects the missing id — there are no pending chat changes to classify.
+  buildOpInput: (_input, _ctx, toolCtx) => ({ chatSessionId: toolCtx.chatSessionId ?? "" }),
+  format: (value) => {
+    const v = value as {
+      classification: {
+        auditNeeded: boolean;
+        reasons: { rule: string; label: string }[];
+        skipped: string[];
+      };
+      touchedPageIds: string[];
+    };
+    const c = v.classification;
+    if (!c.auditNeeded) {
+      return `The next Stage needs no quality check by its own changes (${c.skipped.join("; ") || "nothing pending"}). It can still be audited when this is the site's first Stage, a plugin was activated, or the previous check did not end clean.`;
+    }
+    return [
+      `The next Stage will be quality-checked (Lighthouse) because: ${c.reasons.map((r) => `${r.rule} — ${r.label}`).join("; ")}.`,
+      `Pages it touches: ${v.touchedPageIds.length} (the homepage is always included; up to 5 are audited). Publish live waits for the result.`,
+    ].join("\n");
+  },
+});
+
 const listAuditsInput = z
   .object({
     status: z

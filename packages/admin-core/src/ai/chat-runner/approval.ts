@@ -17,6 +17,8 @@
 const TOOL_LABELS: Record<string, string> = {
   propose_update_layout: "Update the site layout",
   propose_delete_layout: "Delete a layout",
+  accept_quality_findings: "Accept these quality findings (only on the pages named)",
+  publish_despite_failed_audit: "Publish live although the quality check failed",
 };
 
 /** Compact, readable rendering of a tool call for the Approve/Reject card. */

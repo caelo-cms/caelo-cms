@@ -51,6 +51,41 @@ export function auditTimeoutMs(job: AuditJob): number {
 }
 
 /**
+ * Environment variables the audit child may see. Least privilege: the
+ * child loads untrusted staged pages in a browser, so it gets nothing that
+ * opens the databases, decrypts secrets or calls a provider
+ * (ADMIN_DATABASE_URL, CAELO_SECRET_KEK, API keys, …) — only what Bun,
+ * Playwright and Chromium need to start:
+ * - PATH: resolve `bun` and system libraries;
+ * - HOME, XDG_CACHE_HOME: Playwright's default browser cache (dev);
+ * - PLAYWRIGHT_BROWSERS_PATH: the image's bundled browser (/ms-playwright);
+ * - TMPDIR/TMP/TEMP: Chromium's profile + Lighthouse's trace files;
+ * - NODE_ENV, LANG, LC_ALL: runtime mode and locale.
+ */
+export const LIGHTHOUSE_CHILD_ENV_ALLOWLIST: readonly string[] = [
+  "PATH",
+  "HOME",
+  "XDG_CACHE_HOME",
+  "PLAYWRIGHT_BROWSERS_PATH",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "NODE_ENV",
+  "LANG",
+  "LC_ALL",
+];
+
+/** The child's environment: the allowlisted variables of `parent`, nothing else. */
+export function lighthouseChildEnv(parent: NodeJS.ProcessEnv): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of LIGHTHOUSE_CHILD_ENV_ALLOWLIST) {
+    const value = parent[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
+/**
  * Locate the child script. `CAELO_LIGHTHOUSE_CHILD` wins; otherwise walk up
  * from the cwd (the admin runs from apps/admin in dev and in the image,
  * where packages/ is copied next to apps/). Throws when it cannot be found
@@ -97,7 +132,10 @@ export async function runAuditJob(
   return await new Promise<AuditJobResult>((respond) => {
     // Same runtime the static-generator subprocess uses (`bun` on PATH):
     // the admin image ships Bun and no Node.
-    const child = spawn("bun", [childPath], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+    const child = spawn("bun", [childPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: lighthouseChildEnv(process.env),
+    });
     const pages: AuditedPage[] = [];
     const pageErrors: PageAuditError[] = [];
     const stderr: Buffer[] = [];

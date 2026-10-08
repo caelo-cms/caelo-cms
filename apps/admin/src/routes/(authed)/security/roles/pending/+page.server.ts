@@ -9,6 +9,7 @@ import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { syncOperatorAccessFromPanel } from "#lib/server/operator-access.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -51,9 +52,13 @@ export const actions: Actions = {
           : "approve failed";
       return fail(400, { error: message });
     }
-    const v = r.value as { roleId: string | null };
+    const v = r.value as { roleId: string | null; kind: string };
+    // Deleting a role can leave someone with no role, which ends their
+    // Google IAP access; `error` makes the layout toast a failed sync.
+    const access = v.kind === "delete" ? await syncOperatorAccessFromPanel(locals) : null;
     return {
       ok: true,
+      ...(access && "error" in access ? { error: access.error } : {}),
       message: v.roleId
         ? `Proposal applied (roleId=${v.roleId.slice(0, 8)}…).`
         : "Proposal applied.",

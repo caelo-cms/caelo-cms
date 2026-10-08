@@ -12,7 +12,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuditJob } from "../lighthouse-protocol.js";
-import { auditTimeoutMs, resolveLighthouseChild, runAuditJob } from "../lighthouse-runner.js";
+import {
+  auditTimeoutMs,
+  lighthouseChildEnv,
+  resolveLighthouseChild,
+  runAuditJob,
+} from "../lighthouse-runner.js";
 
 const dir = mkdtempSync(join(tmpdir(), "caelo-lh-runner-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -107,6 +112,62 @@ out({ kind: "done" });`,
 
   it("budgets time per page and run", () => {
     expect(auditTimeoutMs(job)).toBe(30_000 + 3 * 60_000);
+  });
+});
+
+describe("lighthouseChildEnv — least privilege", () => {
+  const SECRETS = {
+    ADMIN_DATABASE_URL: "postgres://admin_role:pw@db/cms_admin",
+    PUBLIC_DATABASE_URL: "postgres://public_role:pw@db/cms_public",
+    PUBLIC_ADMIN_DATABASE_URL: "postgres://admin_role:pw@db/cms_public",
+    CAELO_SECRET_KEK: "00".repeat(32),
+    ANTHROPIC_API_KEY: "sk-ant-secret",
+    OPENAI_API_KEY: "sk-secret",
+    GOOGLE_APPLICATION_CREDENTIALS: "/secrets/sa.json",
+  };
+
+  it("forwards only the allowlisted runtime variables", () => {
+    const env = lighthouseChildEnv({
+      ...SECRETS,
+      PATH: "/usr/bin",
+      HOME: "/home/app",
+      PLAYWRIGHT_BROWSERS_PATH: "/ms-playwright",
+      TMPDIR: "/tmp",
+      NODE_ENV: "production",
+    });
+    expect(env).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/home/app",
+      PLAYWRIGHT_BROWSERS_PATH: "/ms-playwright",
+      TMPDIR: "/tmp",
+      NODE_ENV: "production",
+    });
+  });
+
+  it("the spawned child does not see secret-bearing variables", async () => {
+    const saved: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(SECRETS)) {
+      saved[k] = process.env[k];
+      process.env[k] = v;
+    }
+    try {
+      const path = stub(
+        "envdump",
+        `${READ_STDIN}
+const leaked = Object.keys(process.env).filter((k) => /DATABASE|KEK|API_KEY|CREDENTIALS/.test(k));
+out({ kind: "page-error", pageId: job.pages[0].pageId, url: "env", code: "ENV", message: JSON.stringify(leaked) });
+out({ kind: "done" });`,
+      );
+      const r = await runAuditJob(job, { childPath: path });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(JSON.parse(r.pageErrors[0]?.message ?? "null")).toEqual([]);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   });
 });
 

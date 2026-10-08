@@ -48,6 +48,7 @@ import { z } from "zod";
 import { loadStaticPublisher } from "../deploy/static-publisher.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { publishGateForRun } from "./quality/gate-loader.js";
 
 /**
  * Resolve the root directory that relative `deploy_targets.out_dir`
@@ -65,6 +66,36 @@ import { jsonbParam } from "../sql-helpers.js";
  */
 function resolveOutputRoot(explicit?: string): string {
   return explicit ?? process.env.CAELO_OUTPUT_ROOT ?? process.cwd();
+}
+
+/**
+ * The directory a target's builds are written to. v0.2.78 — on Cloud Run
+ * (gcp / aws / azure) the row's out_dir resolves to a read-only path, so
+ * builds go to `/tmp/caelo-builds/<env>` (ephemeral: publishStaging uploads
+ * them right away); self-hosted keeps the row's out_dir.
+ */
+export function effectiveOutDir(provider: string | undefined, env: string, outDir: string): string {
+  const isCloud = provider === "gcp" || provider === "aws" || provider === "azure";
+  return isCloud ? `/tmp/caelo-builds/${env}` : outDir;
+}
+
+/**
+ * Absolute path of a run's build archive (`<outDir>/builds/<runId>`) as
+ * deploy.trigger wrote it on THIS process — the #553 audit serves it when
+ * the provider has no reachable staging origin.
+ */
+export function localBuildArchiveDir(args: {
+  provider: string | undefined;
+  env: string;
+  outDir: string;
+  runId: string;
+}): string {
+  return resolve(
+    resolveOutputRoot(),
+    effectiveOutDir(args.provider, args.env, args.outDir),
+    "builds",
+    args.runId,
+  );
 }
 
 const targetRow = z.object({
@@ -478,10 +509,10 @@ export const triggerDeployOp = defineOperation({
     // by the time the next request comes in. Self-hosted keeps the
     // row's configured out_dir.
     const provider = process.env.CAELO_PROVIDER;
-    const isCloud = provider === "gcp" || provider === "aws" || provider === "azure";
-    const effectiveTarget: DeployTarget = isCloud
-      ? { ...rowToTarget(target), outDir: `/tmp/caelo-builds/${target.env}` }
-      : rowToTarget(target);
+    const effectiveTarget: DeployTarget = {
+      ...rowToTarget(target),
+      outDir: effectiveOutDir(provider, target.env, target.out_dir),
+    };
     const subprocess = await runGenerator(bridge.registry, bridge.adapter, ctx, {
       cliPath,
       runId,
@@ -670,6 +701,21 @@ export const promoteDeployOp = defineOperation({
         operation: "deploy.promote",
         message: `no succeeded build to promote from '${from.name}' — run Stage first (deploy.trigger targetName=${from.name}); Publish live only copies an already-staged build`,
       });
+    }
+
+    // #553 — the quality gate. Every Publish-live path runs this handler
+    // (the toolbar, the pages list, Ops, and the approved propose_deploy_promote,
+    // which calls the handler directly), so the gate lives here and nowhere
+    // else. Only staging builds are audited, so only they are gated.
+    if (from.env === "staging") {
+      const gate = await publishGateForRun(tx, fromRunId);
+      if (!gate.open) {
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.promote",
+          message: gate.message,
+        });
+      }
     }
 
     const root = resolveOutputRoot(input.repoRoot);

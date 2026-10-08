@@ -40,6 +40,7 @@ import {
   gcpNamePrefix,
   gcpSecretId,
   mcpIapServiceAccountEmail,
+  operatorAccessJobResource,
   runServiceAccountEmail,
   staticPublisherServiceAccountId,
 } from "./gcp-names.js";
@@ -130,6 +131,12 @@ export function publicSiteUrl(domain: string): string {
  * leaves it untouched when it could not set that account up.
  */
 export const MCP_ENV_VAR = "CAELO_MCP_IAP_SERVICE_ACCOUNT";
+
+/**
+ * The admin env var naming the operator-access sync job. `upgrade` leaves it
+ * untouched when it could not set the job up.
+ */
+export const OPERATOR_ACCESS_JOB_ENV_VAR = "CAELO_OPERATOR_ACCESS_JOB";
 
 /** Where the admin image ships the static-generator CLI. */
 const GENERATOR_CLI = "/app/apps/static-generator/src/cli.ts";
@@ -269,6 +276,12 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     { name: "CAELO_GENERATOR_CLI", value: GENERATOR_CLI },
     // Issue #37 — shown in the /security/mcp `claude mcp add` command.
     { name: MCP_ENV_VAR, value: mcpIapServiceAccountEmail(projectId) },
+    // The operator-access sync job the admin starts after user/role changes
+    // (admin-core security/operator-access/gcp-job-trigger.ts).
+    {
+      name: OPERATOR_ACCESS_JOB_ENV_VAR,
+      value: operatorAccessJobResource(projectId, inputs.region, env),
+    },
   ];
   if (inputs.provider === "gcp") {
     // v0.2.78 — the GCS StaticPublisher: Stage uploads to staging,

@@ -78,3 +78,31 @@ export function gcpBucketName(
 export function gcpSecretId(env: string, name: string): string {
   return `${gcpNamePrefix(env)}-${name}`;
 }
+
+/** Cloud Run job that keeps Google IAP operator access in sync (operator-access.ts). */
+export function operatorAccessJobName(env: string): string {
+  return `${gcpNamePrefix(env)}-operator-access-sync`;
+}
+
+/** Full resource name of the operator-access sync job, as the admin's env carries it. */
+export function operatorAccessJobResource(projectId: string, region: string, env: string): string {
+  return `projects/${projectId}/locations/${region}/jobs/${operatorAccessJobName(env)}`;
+}
+
+/**
+ * Account id of the sync job's own service account — the only principal that
+ * may change the admin's IAP binding and the caelo-mcp token-creator binding.
+ */
+export function operatorAccessServiceAccountId(env: string): string {
+  return `${gcpNamePrefix(env)}-opaccess`;
+}
+
+/** Email of the sync job's service account. */
+export function operatorAccessServiceAccountEmail(projectId: string, env: string): string {
+  return `${operatorAccessServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+}
+
+/** Cloud Scheduler job that runs the sync job hourly (self-healing). */
+export function operatorAccessScheduleName(env: string): string {
+  return `${gcpNamePrefix(env)}-operator-access-hourly`;
+}
