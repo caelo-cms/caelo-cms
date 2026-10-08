@@ -98,12 +98,12 @@ export function buildStatusLine(args: {
     missing.push(
       "Site language: not set — publishing fails until it is (set_site_identity({siteLanguage}) with the BCP 47 tag of the language the operator writes in or wants the copy in, e.g. 'de'; for a migration, the source site's Lang:)",
     );
-  // #551 — Owner-only setting (site_defaults.set_seo), so the entry names
-  // where the operator sets it rather than a tool.
+  // #551 — the AI sets it through the §11.A gate (the Owner approves the
+  // card), so the entry names the tool, not a settings page.
   const seo = args.seoValue as { siteBaseUrl?: string | null } | null | undefined;
   if (seo && seo.siteBaseUrl === null) {
     missing.push(
-      "Site URL: not configured — publishing fails until the Owner sets the public site address at /security/seo (you cannot set it; tell the operator before they publish)",
+      "Site URL: not configured — publishing fails until it is (propose_set_site_seo({siteBaseUrl: 'https://<public domain>'}), Owner-approved; take the domain from the operator's words or the domain they publish under, ask only if you cannot tell)",
     );
   }
   if (!args.activeTheme || (args.activeTheme.origin ?? "seed") === "seed") {

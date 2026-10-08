@@ -46,10 +46,12 @@ describe("buildStatusLine", () => {
     expect(line).not.toContain("Site defaults: needs setup");
   });
 
-  it("#551: flags an unset site URL and points at /security/seo, not a tool", () => {
+  it("#551: flags an unset site URL and names the tool that sets it", () => {
     const line = buildStatusLine({ ...COMPLETE, seoValue: { siteBaseUrl: null } });
     expect(line).toContain("Site URL: not configured");
-    expect(line).toContain("/security/seo");
+    expect(line).toContain("propose_set_site_seo({siteBaseUrl");
+    // The old "you cannot set it" dead end is gone.
+    expect(line).not.toContain("you cannot set it");
     expect(buildStatusLine({ ...COMPLETE, seoValue: { siteBaseUrl: "https://x.example" } })).toBe(
       undefined,
     );

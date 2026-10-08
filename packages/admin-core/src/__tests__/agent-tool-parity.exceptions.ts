@@ -130,6 +130,7 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   "imports.list_pending_proposals": PENDING_QUEUE,
   "gateway.list_pending_rate_limit_proposals": PENDING_QUEUE,
   "owner_settings.list_pending": PENDING_QUEUE,
+  "site_defaults.list_pending": PENDING_QUEUE,
   "ai_memory.list_proposals": PENDING_QUEUE,
   "skills.list_proposals": PENDING_QUEUE,
 
@@ -224,11 +225,6 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     kind: "internal",
     reason:
       "asset lookup inside generate_image/edit_image and chat attachments; the AI finds assets with find_media",
-  },
-  "site_defaults.get_seo": {
-    kind: "internal",
-    reason:
-      "read by the chat-runner context blocks; site-SEO tools are being added by the parallel SEO-settings PR",
   },
   "genesis.render_draft": {
     kind: "internal",

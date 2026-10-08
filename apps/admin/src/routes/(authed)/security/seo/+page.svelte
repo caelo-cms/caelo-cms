@@ -32,6 +32,52 @@
     <Alert><AlertDescription>{form.message ?? "Saved."}</AlertDescription></Alert>
   {/if}
 
+  {#if data.pendingError}
+    <Alert variant="destructive"><AlertDescription>{data.pendingError}</AlertDescription></Alert>
+  {/if}
+  {#if data.pendingProposals.length > 0}
+    <Card data-testid="seo-pending-proposals">
+      <CardHeader>
+        <CardTitle class="text-base">Proposed by the AI ({data.pendingProposals.length})</CardTitle>
+        <CardDescription>
+          Changes the AI prepared for these settings. Nothing changes until you approve.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-4">
+        {#each data.pendingProposals as p (p.id)}
+          <div class="space-y-2 rounded border p-3 text-sm">
+            <ul class="space-y-1">
+              {#each Object.entries(p.preview.changes ?? {}) as [field, change] (field)}
+                <li>
+                  <span class="font-medium">{field}</span>:
+                  <code class="font-mono text-xs">{JSON.stringify(change.from)}</code>
+                  →
+                  <code class="font-mono text-xs">{JSON.stringify(change.to)}</code>
+                </li>
+              {/each}
+            </ul>
+            <p class="text-xs text-muted-foreground">
+              proposed {new Date(p.createdAt).toISOString().slice(0, 19)}Z
+            </p>
+            <div class="flex items-center gap-2">
+              <form method="post" action="?/approve">
+                <input type="hidden" name="_csrf" value={data.csrfToken} />
+                <input type="hidden" name="proposalId" value={p.id} />
+                <Button type="submit">Approve</Button>
+              </form>
+              <form method="post" action="?/reject" class="flex items-center gap-2">
+                <input type="hidden" name="_csrf" value={data.csrfToken} />
+                <input type="hidden" name="proposalId" value={p.id} />
+                <Input name="reason" placeholder="reject reason (optional)" class="h-8 text-xs" />
+                <Button type="submit" variant="ghost">Reject</Button>
+              </form>
+            </div>
+          </div>
+        {/each}
+      </CardContent>
+    </Card>
+  {/if}
+
   <Card>
     <CardHeader>
       <CardTitle class="text-base">Site defaults</CardTitle>
@@ -57,7 +103,8 @@
             <Alert variant="destructive" data-testid="site-base-url-unset">
               <AlertDescription>
                 Not set yet. Publishing fails until it is: canonical links, the sitemap and
-                social previews all need your site's public address.
+                social previews all need your site's public address. Enter it here, or tell the AI
+                in the editor chat your domain and approve its proposal.
               </AlertDescription>
             </Alert>
           {/if}

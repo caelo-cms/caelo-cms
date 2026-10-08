@@ -151,6 +151,13 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                chat_session_id::text
           FROM theme_pending_actions WHERE status = 'pending'
         UNION ALL
+        SELECT 'site_defaults', kind, id::text, proposed_by::text, created_at,
+               'site SEO: ' || COALESCE(
+                 (SELECT string_agg(k, ', ' ORDER BY k) FROM jsonb_object_keys(preview->'changes') k),
+                 'settings'),
+               chat_session_id::text
+          FROM site_defaults_pending_actions WHERE status = 'pending'
+        UNION ALL
         -- 0235 — AI budgets / AI pricing / gateway settings.
         SELECT 'owner_settings', kind, id::text, proposed_by::text, created_at,
                COALESCE(LEFT(preview->>'summary', 120), kind),
@@ -227,6 +234,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         UNION ALL SELECT 'templates' FROM template_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'domains' FROM domain_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'themes' FROM theme_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'site_defaults' FROM site_defaults_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'owner_settings' FROM owner_settings_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'quality' FROM quality_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'gateway' FROM plugin_rate_limit_proposals WHERE status = 'pending'

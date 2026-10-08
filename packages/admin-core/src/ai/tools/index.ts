@@ -105,6 +105,7 @@ import {
   proposeSetAiPricingTool,
   proposeSetGatewaySettingsTool,
 } from "./propose-owner-settings.js";
+import { getSiteSeoTool, proposeSetSiteSeoTool } from "./propose-set-site-seo.js";
 import { proposeSiteImportTool } from "./propose-site-import.js";
 import { proposeSkillTool } from "./propose-skill.js";
 import {
@@ -473,6 +474,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeTemplateDeleteTool);
   registry.register(proposeDomainAddTool);
   registry.register(proposeDomainRemoveTool);
+  // Site SEO settings (base URL, sitemap, Organization JSON-LD): §11.A gated
+  // write + the read the AI checks first.
+  registry.register(proposeSetSiteSeoTool);
+  registry.register(getSiteSeoTool);
   // §11.A — Owner settings the AI had no path to: AI budgets, AI pricing,
   // gateway settings. Read companions + gated proposals.
   registry.register(getAiBudgetsTool);
