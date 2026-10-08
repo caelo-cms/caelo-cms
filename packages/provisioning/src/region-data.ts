@@ -307,6 +307,14 @@ export const GCP_SERVICE_REGIONS: Readonly<Record<string, readonly string[]>> = 
   ],
 };
 
+/**
+ * Regions Google offers only under special terms, so they are never offered
+ * as a general install target even though the services exist there:
+ * me-central2 (Dammam) is for KSA customers through Google's designated
+ * reseller (https://docs.cloud.google.com/docs/dammam-region-access).
+ */
+export const GCP_RESTRICTED_REGIONS: readonly string[] = ["me-central2"];
+
 export const GCP_SERVICES = [
   "Cloud Run",
   "Cloud SQL",

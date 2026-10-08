@@ -446,8 +446,12 @@ async function stepRegion(
     cancel("Aborted.");
     process.exit(1);
   };
+  // A region becomes fixed with the first `pulumi up`. One recorded by an
+  // earlier run that stopped before it (cancelled at the cost table, a
+  // failed setup step) is only preselected and may still change.
+  const installed = isStepDone(opts.installId, `pulumi-up-${projectId}`);
   let deployed: string | null = null;
-  if (!meta?.region && isStepDone(opts.installId, `pulumi-up-${projectId}`)) {
+  if (!meta?.region && installed) {
     const live = await readDeployedRegion({ projectId });
     if (!live.ok) abort(live.error);
     else deployed = live.region;
@@ -458,8 +462,9 @@ async function stepRegion(
   const decision = decideRegion({
     provider,
     installId: opts.installId,
-    recorded: meta?.region ?? null,
+    recorded: installed ? (meta?.region ?? null) : null,
     deployed,
+    preselected: installed ? null : (meta?.region ?? null),
     requested: opts.region,
     nonInteractive: opts.nonInteractive,
     regions,
@@ -473,15 +478,24 @@ async function stepRegion(
       );
       return decision.region;
     case "use":
-      log.info(
-        `Region: ${bold(decision.region)} ${dim("(supplied via --region; fixed after install)")}`,
-      );
+      log.info(`Region: ${bold(decision.region)} ${dim("(fixed once installed)")}`);
       return decision.region;
     case "prompt":
       break;
   }
-  const suggestion = suggestRegion(provider, await detectCliRegion(provider), regions);
+  const suggestion: {
+    region: string;
+    source: "earlier-run" | "cli" | "eu-default";
+    note?: string;
+  } = decision.preselected
+    ? { region: decision.preselected, source: "earlier-run" }
+    : suggestRegion(provider, await detectCliRegion(provider), regions);
   if (suggestion.note) log.warn(suggestion.note);
+  const sourceHint = {
+    "earlier-run": "picked in your earlier run",
+    cli: "your gcloud default",
+    "eu-default": "EU default",
+  }[suggestion.source];
   const choice = await select<string>({
     message: `Region for Cloud SQL, storage and the services ${dim("(fixed after install)")}`,
     initialValue: suggestion.region,
@@ -489,10 +503,7 @@ async function stepRegion(
     options: regions.map((r) => ({
       value: r.id,
       label: r.id,
-      hint:
-        r.id === suggestion.region
-          ? `${r.name} — ${suggestion.source === "cli" ? "your gcloud default" : "EU default"}`
-          : r.name,
+      hint: r.id === suggestion.region ? `${r.name} — ${sourceHint}` : r.name,
     })),
   });
   if (isCancel(choice)) {

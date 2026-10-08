@@ -36,7 +36,7 @@ Required: AWS credentials with the IAM permissions the adapter declares (visible
 
 ## Region
 
-`--region` (or the default region of your AWS CLI: `AWS_REGION`, `AWS_DEFAULT_REGION`, then `aws configure get region`; otherwise `eu-central-1`) decides where the database, buckets, secrets and services live. Only regions with ECS Fargate, RDS for PostgreSQL, S3 and Secrets Manager are accepted; a non-interactive run without `--region` stops and lists them. The region is fixed after install: the stack requires `caelo-aws:region` (no default) and refuses to run when `aws:region` differs, and `upgrade` refuses a different `--region`. Lambda@Edge always lives in `us-east-1`, as CloudFront requires.
+The AWS stack requires `caelo-aws:region`; there is no default, so it never lands in a region nobody chose. It also refuses to run when `aws:region` (the region the AWS provider actually deploys to) differs. Pick the region with care: like on GCP, it is fixed after install, because moving means migrating the database, buckets and secrets. The guided region picker and the immutability checks that the [GCP install](/install-gcp#choosing-the-region) has will come with the AWS provisioner flow. Lambda@Edge always lives in `us-east-1`, as CloudFront requires.
 
 ## Notes specific to AWS
 

@@ -27,6 +27,7 @@ import {
   AWS_REGIONS,
   AZURE_REGIONS,
   GCP_REGION_NAMES,
+  GCP_RESTRICTED_REGIONS,
   GCP_SERVICE_REGIONS,
   GCP_SERVICES,
   type RegionOption,
@@ -127,7 +128,7 @@ function gcpCatalog(provider: "gcp" | "gcp-firebase"): RegionCatalog {
   if (provider === "gcp-firebase") services.push("Cloud Run domain mapping");
   const lists = services.map((s) => new Set(GCP_SERVICE_REGIONS[s] ?? []));
   const regions = Object.keys(GCP_REGION_NAMES)
-    .filter((id) => lists.every((l) => l.has(id)))
+    .filter((id) => !GCP_RESTRICTED_REGIONS.includes(id) && lists.every((l) => l.has(id)))
     .map((id) => ({ id, name: GCP_REGION_NAMES[id] as string }));
   return { provider, euDefault: "europe-west1", regions, services };
 }
@@ -268,15 +269,17 @@ export function regionChangeRefusal(
  * What the wizard does about the region, given what is already known.
  * Pure: the caller detects the deployed region and prompts.
  *
- *   - recorded (install.json) or deployed region → keep it; a different
- *     `--region` is refused.
+ *   - recorded region of a deployed install, or the deployed region → keep
+ *     it; a different `--region` is refused.
  *   - otherwise `--region` → validated, used.
+ *   - otherwise a preselected region (earlier run, never deployed) →
+ *     preselected in the prompt, used as-is when non-interactive.
  *   - otherwise interactive → prompt; non-interactive → refuse with the list.
  */
 export type RegionDecision =
   | { readonly kind: "keep"; readonly region: string; readonly from: "install.json" | "deployed" }
   | { readonly kind: "use"; readonly region: string }
-  | { readonly kind: "prompt" }
+  | { readonly kind: "prompt"; readonly preselected?: string }
   | { readonly kind: "refuse"; readonly error: string };
 
 /** Decide the install region; see {@link RegionDecision}. */
@@ -285,6 +288,12 @@ export function decideRegion(input: {
   readonly installId: string;
   readonly recorded: string | null;
   readonly deployed: string | null;
+  /**
+   * A region picked in an earlier run that never got as far as deploying
+   * (cancelled at the cost table, a failed setup step). Not fixed yet: it
+   * is preselected, and `--region` may still change it.
+   */
+  readonly preselected?: string | null;
   readonly requested: string | undefined;
   readonly nonInteractive: boolean;
   readonly regions: readonly RegionOption[];
@@ -311,13 +320,18 @@ export function decideRegion(input: {
       ? { kind: "use", region: input.requested }
       : { kind: "refuse", error: check.error };
   }
+  const preselected =
+    input.preselected && checkRegion(input.provider, input.preselected, input.regions).ok
+      ? input.preselected
+      : null;
   if (input.nonInteractive) {
+    if (preselected) return { kind: "use", region: preselected };
     return {
       kind: "refuse",
       error: `--region is required with --non-interactive: the region is fixed after install, so Caelo won't pick one for you. Valid regions: ${formatRegionList(input.regions)}.`,
     };
   }
-  return { kind: "prompt" };
+  return preselected ? { kind: "prompt", preselected } : { kind: "prompt" };
 }
 
 /**

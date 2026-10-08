@@ -59,6 +59,11 @@ describe("region catalogs", () => {
     expect(regionCatalog("gcp-firebase").services).toContain("Cloud Run domain mapping");
   });
 
+  it("gcp never offers access-restricted regions (Dammam)", () => {
+    expect(ids("gcp")).not.toContain("me-central2");
+    expect(ids("gcp")).toContain("me-central1");
+  });
+
   it("aws and azure exclude GovCloud / China partitions", () => {
     expect(ids("aws").some((id) => id.startsWith("us-gov") || id.startsWith("cn-"))).toBe(false);
     expect(ids("azure").some((id) => id.includes("gov") || id.startsWith("china"))).toBe(false);
@@ -223,6 +228,26 @@ describe("decideRegion", () => {
     });
     const d = decideRegion({ ...base, requested: "europe-west3" });
     expect(d.kind).toBe("refuse");
+  });
+
+  it("a region picked in a run that never deployed is preselected, not fixed", () => {
+    // Interactive: offered again, preselected.
+    expect(decideRegion({ ...base, preselected: "europe-west4" })).toEqual({
+      kind: "prompt",
+      preselected: "europe-west4",
+    });
+    // --region may still change it.
+    expect(decideRegion({ ...base, preselected: "europe-west4", requested: "us-east1" })).toEqual({
+      kind: "use",
+      region: "us-east1",
+    });
+    // Non-interactive re-run without --region keeps the earlier pick.
+    expect(decideRegion({ ...base, preselected: "europe-west4", nonInteractive: true })).toEqual({
+      kind: "use",
+      region: "europe-west4",
+    });
+    // An earlier pick that is no longer installable is not reused.
+    expect(decideRegion({ ...base, preselected: "europe-west3" })).toEqual({ kind: "prompt" });
   });
 
   it("new install: prompts when interactive, requires --region when not", () => {

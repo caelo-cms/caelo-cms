@@ -67,8 +67,15 @@ describe("stacks require the region (#607, no silent default)", () => {
     it(`${provider} stack: cfg.require("region"), no fallback`, () => {
       const src = readFileSync(resolve(dir, "index.ts"), "utf8");
       expect(src).toContain('cfg.require("region")');
-      expect(src).not.toMatch(/cfg\.get\("(region|location)"\)/);
+      expect(src).not.toMatch(/cfg\.get\("region"\)|\?\? "(us-central1|us-east-1|westeurope)"/);
     });
+    if (provider === "azure") {
+      it("azure stack: the pre-#607 `location` key is refused with the move, not mapped", () => {
+        const src = readFileSync(resolve(dir, "index.ts"), "utf8");
+        expect(src).toContain("caelo-azure:location was renamed to caelo-azure:region");
+        expect(src).not.toMatch(/cfg\.get\("location"\) \?\?/);
+      });
+    }
     it(`${provider} Pulumi.yaml: region has no default`, () => {
       const yaml = readFileSync(resolve(dir, "Pulumi.yaml"), "utf8");
       const entry = yaml.match(new RegExp(`caelo-${provider}:region:\\n((?: {4}.*\\n)+)`))?.[1];

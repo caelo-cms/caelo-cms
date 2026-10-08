@@ -49,6 +49,14 @@ const subscription = cfg.require("subscription");
 const rgName = cfg.get("resourceGroup") ?? "caelo-rg";
 // #607 — the region the operator chose (same key as every adapter, §11.B);
 // no default, so a stack run without it fails instead of picking one.
+// A stack configured with the pre-#607 key is told how to move, not
+// silently mapped (no fallbacks pre-1.0).
+const legacyLocation = cfg.get("location");
+if (legacyLocation !== undefined) {
+  throw new Error(
+    `caelo-azure:location was renamed to caelo-azure:region. Run \`pulumi config set caelo-azure:region ${legacyLocation}\` and \`pulumi config rm caelo-azure:location\`, then re-run (keep the same value: the region is fixed after install).`,
+  );
+}
 const location = cfg.require("region");
 const flexibleServerSku = cfg.get("flexibleServerSku") ?? "Standard_B2s";
 // #553 — the admin runs the Lighthouse quality audit; same knob + default

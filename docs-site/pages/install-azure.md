@@ -37,7 +37,7 @@ Requires `az login` as a service principal with Owner on the resource group, OR 
 
 ## Region
 
-`--region` (or your Azure CLI default, `az config get defaults.location`; otherwise `westeurope`) decides where the database, storage, Key Vault and Container Apps live. Microsoft publishes no fixed list of Container Apps regions, so the provisioner asks Azure (`az provider show --namespace Microsoft.App`) and accepts only regions that also offer Database for PostgreSQL flexible server; when that query fails (offline, not logged in) it stops instead of guessing. The stack requires `caelo-azure:region` (no default; it replaces the earlier `caelo-azure:location` key). The region is fixed after install, and `upgrade` refuses a different `--region`.
+The Azure stack requires `caelo-azure:region` (it replaces the earlier `caelo-azure:location` key; a stack that still has the old key stops and prints the two commands that move it). There is no default, so it never lands in a region nobody chose. Pick the region with care: it is fixed after install, because moving means migrating the database, storage and Key Vault. Microsoft publishes no fixed list of Container Apps regions; check yours with `az provider show --namespace Microsoft.App --query "resourceTypes[?resourceType=='managedEnvironments'].locations"`. The guided region picker that the [GCP install](/install-gcp#choosing-the-region) has, which runs this check for you, will come with the Azure provisioner flow.
 
 ## Notes specific to Azure
 
