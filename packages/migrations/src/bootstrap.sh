@@ -37,6 +37,14 @@ exists_role admin_role \
 exists_role public_role \
   || $PSQL -c "CREATE ROLE public_role NOINHERIT LOGIN PASSWORD '${PUBLIC_ROLE_PASSWORD}';"
 
+# Read-only role of the operator-access sync job (migration 0239 grants it
+# its columns). Created here because the local admin_role has no CREATEROLE;
+# on Cloud SQL the migration creates it. admin_role may SET ROLE to it so the
+# integration tests can prove what the role can and cannot do.
+exists_role operator_access_reader \
+  || $PSQL -c "CREATE ROLE operator_access_reader NOLOGIN;"
+$PSQL -c "GRANT operator_access_reader TO admin_role;"
+
 exists_db cms_admin  || $PSQL -c "CREATE DATABASE cms_admin OWNER admin_role;"
 exists_db cms_public || $PSQL -c "CREATE DATABASE cms_public OWNER admin_role;"
 

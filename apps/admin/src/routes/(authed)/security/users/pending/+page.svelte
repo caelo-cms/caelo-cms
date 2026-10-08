@@ -25,7 +25,10 @@
 
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
-  {:else if form?.temporaryPassword}
+  {/if}
+  <!-- An applied create can still carry an IAP-sync error above: the
+       one-time password must show regardless, or it is lost. -->
+  {#if form?.temporaryPassword}
     <Alert>
       <AlertDescription>
         <div class="space-y-1">
@@ -39,7 +42,7 @@
         </div>
       </AlertDescription>
     </Alert>
-  {:else if form?.message}
+  {:else if form?.message && !form?.error}
     <Alert><AlertDescription>{form.message}</AlertDescription></Alert>
   {/if}
 

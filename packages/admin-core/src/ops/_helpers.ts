@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { QueryError } from "@caelo-cms/query-api";
+import type { QueryError, TransactionRunner } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
+import { sql } from "drizzle-orm";
 import type { z } from "zod";
 
 type HandlerError = Extract<QueryError, { kind: "HandlerError" }>;
@@ -50,4 +52,28 @@ export function mapRowToOutput<TRow, TOutput>(
   mapper: (row: TRow) => unknown,
 ): TOutput {
   return outputSchema.parse(mapper(row));
+}
+
+/**
+ * Run `fn` with this transaction's RLS session switched to `system`, then
+ * switch back to the caller's kind.
+ *
+ * `users` and `actors` carry self-or-system RLS: a human or AI session sees
+ * and writes only its OWN row. The user-management ops act on OTHER users by
+ * definition, so their lookups and the approved apply must run as system —
+ * the op's actorScope, the route's permission guard and (for proposals) the
+ * Owner's approval click are the authorization; RLS here only ever hid the
+ * rows those checks already allowed. `ctx.actorId` is untouched, so audit
+ * rows stay attributed to the real actor. Not restored when `fn` throws: the
+ * transaction is rolled back then anyway.
+ */
+export async function withSystemRls<T>(
+  tx: TransactionRunner,
+  ctx: Pick<ExecutionContext, "actorKind">,
+  fn: () => Promise<T>,
+): Promise<T> {
+  await tx.execute(sql`SELECT set_config('caelo.actor_kind', 'system', true)`);
+  const result = await fn();
+  await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
+  return result;
 }
