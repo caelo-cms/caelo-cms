@@ -231,13 +231,15 @@ export async function buildProviderHistory(
     repaired.droppedToolResultIds.length > 0 ||
     repaired.strippedToolCallIds.length > 0 ||
     repaired.droppedEmptyAssistantMessages > 0 ||
-    repaired.strippedServerToolCallIds.length > 0
+    repaired.strippedServerToolCallIds.length > 0 ||
+    repaired.answeredInterruptedCalls.length > 0
   ) {
     console.error("[chat-runner] history-repaired", {
       droppedToolResultIds: repaired.droppedToolResultIds,
       strippedToolCallIds: repaired.strippedToolCallIds,
       droppedEmptyAssistantMessages: repaired.droppedEmptyAssistantMessages,
       strippedServerToolCallIds: repaired.strippedServerToolCallIds,
+      answeredInterruptedCalls: repaired.answeredInterruptedCalls,
     });
     await onRepair?.(repaired);
   }

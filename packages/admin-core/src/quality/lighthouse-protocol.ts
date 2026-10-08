@@ -22,6 +22,15 @@ export const auditJobSchema = z
 
 export type AuditJob = z.infer<typeof auditJobSchema>;
 
+const flaggedElementSchema = z
+  .object({
+    selector: z.string().optional(),
+    snippet: z.string().optional(),
+    label: z.string().optional(),
+    explanation: z.string().optional(),
+  })
+  .strict();
+
 const failingAuditSchema = z
   .object({
     id: z.string(),
@@ -29,6 +38,7 @@ const failingAuditSchema = z
     score: z.number().min(0).max(1),
     categories: z.array(categorySchema),
     displayValue: z.string().optional(),
+    elements: z.array(flaggedElementSchema).max(5).optional(),
   })
   .strict();
 

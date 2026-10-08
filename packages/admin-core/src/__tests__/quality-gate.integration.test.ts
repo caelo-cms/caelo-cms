@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
@@ -200,6 +201,14 @@ const contrast: FailingAudit = {
   title: "Background and foreground colors do not have a sufficient contrast ratio",
   score: 0,
   categories: ["accessibility"],
+  elements: [
+    {
+      selector: "header > a.cta",
+      snippet: '<a class="cta" href="/signup">',
+      explanation:
+        "Element has insufficient color contrast of 2.9 (foreground color: #ffffff, background color: #8b8bf5)",
+    },
+  ],
 };
 
 async function promote(): Promise<{ ok: boolean; message: string }> {
@@ -529,6 +538,18 @@ describe("acceptances in the chat", () => {
     expect(p.ok).toBe(false);
     expect(p.message).toContain("/: color-contrast");
     expect(p.message).not.toContain(`/${PFX}about: color-contrast`);
+    // The AI reads WHICH element fails and why, so it can fix the right
+    // module instead of guessing (live run: "the audit tool doesn't name the
+    // exact failing element/selector").
+    const read = await createDefaultToolRegistry().dispatch(
+      "get_quality_audit",
+      {},
+      { ...AI, chatBranchId: s.chatBranchId },
+      { adapter, registry, chatSessionId: s.chatSessionId },
+    );
+    expect(read.ok).toBe(true);
+    expect(read.content).toContain("element `header > a.cta`");
+    expect(read.content).toContain("insufficient color contrast of 2.9");
   });
 });
 

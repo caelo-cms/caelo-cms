@@ -38,6 +38,16 @@ export const stageClassificationSchema = z
   })
   .strict();
 
+/** An element a Lighthouse audit flagged (selector, HTML, why). */
+const flaggedElementSchema = z
+  .object({
+    selector: z.string().optional(),
+    snippet: z.string().optional(),
+    label: z.string().optional(),
+    explanation: z.string().optional(),
+  })
+  .strict();
+
 export const failingAuditSchema = z
   .object({
     id: z.string(),
@@ -45,6 +55,7 @@ export const failingAuditSchema = z
     score: z.number(),
     categories: z.array(categorySchema),
     displayValue: z.string().optional(),
+    elements: z.array(flaggedElementSchema).optional(),
   })
   .strict();
 
@@ -57,6 +68,7 @@ export const problemSchema = z.discriminatedUnion("kind", [
       score: z.number(),
       categories: z.array(categorySchema),
       displayValue: z.string().optional(),
+      elements: z.array(flaggedElementSchema).optional(),
     })
     .strict(),
   z

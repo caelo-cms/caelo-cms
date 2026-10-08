@@ -517,6 +517,11 @@ interface QualityChatStatus {
   gate: { open: boolean; state: string; message: string } | null;
 }
 
+/** The operator's answer when the AI asks, after the automatic fix rounds,
+ *  whether to accept the remaining quality findings. */
+const QUALITY_ACCEPT_REMAINING_PROMPT =
+  "Yes, accept every remaining quality finding on this page as it is, so I can publish.";
+
 /**
  * #553 — drive the quality gate after a Stage until Publish live is open:
  * the block → fix → publish loop as the operator lives it.
@@ -525,7 +530,9 @@ interface QualityChatStatus {
  * bundled Chromium). When it finds problems the chat panel posts the fix
  * request to the AI by itself; this helper only waits for that turn, then
  * Stages again (the operator's click), up to the 2 automatic fix rounds.
- * Acceptances the AI proposes are auto-approved in this suite
+ * When findings remain after those rounds the AI asks the operator whether
+ * to accept them; the helper answers "accept" once, like an operator who
+ * wants to publish. Acceptances the AI proposes are auto-approved in this suite
  * (CAELO_E2E_AUTO_APPROVE_PROPOSALS), so an "unfixable" finding resolves
  * through the same card a real editor would click.
  *
@@ -544,12 +551,31 @@ export async function awaitQualityGateOpen(
     if (!res.ok()) throw new Error(`quality status HTTP ${res.status()}: ${await res.text()}`);
     return (await res.json()) as QualityChatStatus;
   };
+  // The gate can open in the MIDDLE of an AI turn (an approved
+  // accept_quality_findings applies before the AI writes its reply). Return
+  // only once that turn ended: the caller navigates next, and navigating
+  // interrupts a running turn — the operator would wait for the answer too.
+  const opened = async (state: string) => {
+    await waitForChatTurnIdle(page);
+    return { restages, state };
+  };
+  // The panel posts the AI's fix request on its own once the chat is idle;
+  // wait for that turn to start (bounded) and then to end, instead of
+  // guessing with a fixed sleep — a turn that had not started yet read as
+  // "idle" and the helper moved on mid-fix.
+  const letTheAiTurnRun = async () => {
+    await expect(page.getByTestId("chat-turn-status"))
+      .toHaveAttribute("data-turn-state", "streaming", { timeout: 60_000 })
+      .catch(() => undefined);
+    await waitForChatTurnIdle(page);
+  };
+  let askedToAccept = false;
   for (;;) {
     if (Date.now() > deadline) {
       throw new Error(`awaitQualityGateOpen: gate still closed after ${timeoutMs / 1000}s`);
     }
     const st = await read();
-    if (st.gate?.open) return { restages, state: st.gate.state };
+    if (st.gate?.open) return await opened(st.gate.state);
     const running = !st.audit || st.audit.status === "queued" || st.audit.status === "running";
     if (running || !st.notified) {
       await page.waitForTimeout(5_000);
@@ -560,13 +586,22 @@ export async function awaitQualityGateOpen(
     }
     // Problems, and the chat has been told: the panel sends the AI its fix
     // request as soon as it is idle. Let that turn run to the end.
-    await page.waitForTimeout(3_000);
-    await waitForChatTurnIdle(page);
+    await letTheAiTurnRun();
     const after = await read();
-    if (after.gate?.open) return { restages, state: after.gate.state };
+    if (after.gate?.open) return await opened(after.gate.state);
     if (restages >= 2) {
+      // After the automatic fix rounds the product tells the AI to stop
+      // changing the site and to ASK the operator whether to accept what is
+      // left (e.g. a Performance score the CI runner cannot reach). Answer
+      // the way an operator who wants to publish does — once.
+      if (!askedToAccept) {
+        askedToAccept = true;
+        await sendChatPromptAndWait(page, QUALITY_ACCEPT_REMAINING_PROMPT);
+        const decided = await read();
+        if (decided.gate?.open) return await opened(decided.gate.state);
+      }
       throw new Error(
-        `awaitQualityGateOpen: still blocked after ${restages} fix rounds — ${after.gate?.message ?? "no gate"}`,
+        `awaitQualityGateOpen: still blocked after ${restages} fix rounds and the operator's accept — ${after.gate?.message ?? "no gate"}`,
       );
     }
     restages += 1;

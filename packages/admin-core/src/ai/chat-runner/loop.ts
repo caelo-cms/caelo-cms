@@ -55,7 +55,7 @@ import {
 } from "./compaction.js";
 import { costCapUsd, microcents } from "./limits.js";
 import { evaluateLoopZeroDiagnostics } from "./passive-turn.js";
-import { persistAssistantTurn } from "./persistence.js";
+import { persistApprovalResponse, persistAssistantTurn } from "./persistence.js";
 import { compactOldToolResults, type ToolResultOrigin } from "./proactive-compaction.js";
 import { fileTurnFatalProviderReport } from "./provider-error-report.js";
 import { RepeatedFailureTracker } from "./repeat-failure-guard.js";
@@ -857,8 +857,16 @@ export async function* runToolLoop(
       // Autonomous / e2e runs: no human is on the stream to click Approve —
       // append the SDK tool-approval-response and CONTINUE; the next run
       // resumes the paused turn (the SDK executes the gated tool pre-loop).
+      // The decision is persisted exactly like the Owner's in-chat click
+      // (persistApprovalResponse), so the stored transcript is the one a
+      // production resume leaves behind — an e2e-only in-memory approval
+      // made an interrupted resume replay differently from production.
       if (process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1") {
         for (const req of askable) {
+          await persistApprovalResponse(registry, adapter, humanCtx, chatSessionId, {
+            approvalId: req.approvalId,
+            approved: true,
+          });
           history.messages.push({
             role: "tool",
             content: "",
