@@ -9,6 +9,7 @@ import {
   setMediaStorage,
 } from "@caelo-cms/admin-core";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { databaseUrlFromEnv } from "@caelo-cms/shared";
 
 /**
  * Explicit, lazy query context. Server modules call `getQueryContext()` and
@@ -57,8 +58,8 @@ const slot: QueryContextSlot = existing;
 export function getQueryContext(): QueryContext {
   if (slot.ctx) return slot.ctx;
 
-  const adminUrl = process.env.ADMIN_DATABASE_URL;
-  const publicUrl = process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_DATABASE_URL;
+  const adminUrl = databaseUrlFromEnv(["ADMIN_DATABASE_URL"]);
+  const publicUrl = databaseUrlFromEnv(["PUBLIC_ADMIN_DATABASE_URL", "PUBLIC_DATABASE_URL"]);
   if (!adminUrl) throw new Error("ADMIN_DATABASE_URL is required");
   if (!publicUrl) {
     throw new Error("PUBLIC_ADMIN_DATABASE_URL or PUBLIC_DATABASE_URL is required");

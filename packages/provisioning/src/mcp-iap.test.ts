@@ -2,7 +2,8 @@
 
 import { describe, expect, it } from "bun:test";
 import type { GcloudResult } from "./gcloud.js";
-import { ensureMcpIapAccess, iapOperators, mcpIapServiceAccountEmail } from "./mcp-iap.js";
+import { mcpIapServiceAccountEmail } from "./gcp-names.js";
+import { ensureMcpIapAccess, iapOperators } from "./mcp-iap.js";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });

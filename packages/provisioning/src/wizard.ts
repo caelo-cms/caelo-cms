@@ -28,6 +28,7 @@ import {
   listInstalls,
   type Provider,
   readMetadata,
+  resumedMetadata,
   writeMetadata,
 } from "./install-state.js";
 import { runGcpWizard } from "./wizards/gcp.js";
@@ -101,6 +102,15 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         cancel(`Aborted. Run with a different domain or remove ~/.caelo-${installId}/ first.`);
         process.exit(0);
       }
+    } else if (existingForId) {
+      // Non-interactive re-run of an existing install: resume it. Keep its
+      // metadata (createdAt, region, the recorded release in imageDigests)
+      // so the re-run converges infrastructure instead of looking like a
+      // new install that deploys `:latest`.
+      writeMetadata(
+        installId,
+        resumedMetadata(existingForId, { domain, ownerEmail, projectId: projectIdHint }),
+      );
     } else {
       writeMetadata(installId, {
         installId,

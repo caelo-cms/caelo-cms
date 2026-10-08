@@ -11,7 +11,7 @@ Pulumi stack provisioning Caelo on GCP managed services. Implements the shared `
 | CDN | Cloud CDN backend bucket (operator wires the URL map + load balancer for v1; full LB in P15 review-pass) |
 | Edge compute (A/B + redirects) | Cloud Run service `<env>-edge-router` running `edge-handler.ts` with `@caelo-cms/edge-router` |
 | Container runtime | Four Cloud Run services (admin / gateway / orchestrator / runner) |
-| Secret store | Secret Manager (postgres-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key) |
+| Secret store | Secret Manager: postgres-password + secret-kek (Pulumi), internal-secret + tool-approval-secret (created by the CLI before `pulumi up`, see `src/runtime-secrets.ts`). Cloud Run reads each as a `secretKeyRef`; database URLs carry no password. |
 | Edge-log sink | Cloud Logging project sink → BigQuery dataset `<env>_edge_logs` (queryable by P12A analytics plugin) |
 
 The Caelo runtime never knows it's on GCP — every Cloud Run service consumes plain `DATABASE_URL` / `MEDIA_STORAGE_URL` / `SECRETS_PROVIDER` env vars.
@@ -37,12 +37,23 @@ gcloud auth configure-docker us-central1-docker.pkg.dev
 gcloud builds submit ... --tag us-central1-docker.pkg.dev/$PROJECT/caelo/admin:latest
 # Repeat for gateway, orchestrator, runner, edge-router.
 
+# The stack references two secrets it does not create (the CLI wizard and
+# `upgrade` create them; a direct `pulumi up` needs them first). Values go
+# on stdin, never argv. Match --replication-policy to the stack's
+# secretReplication config (`automatic` or `user-managed --locations=<region>`).
+for s in internal-secret tool-approval-secret; do
+  openssl rand -hex 32 | tr -d '\n' | gcloud secrets create "caelo-production-$s" \
+    --project=$PROJECT --replication-policy=automatic --data-file=-
+done
+
 # Bring the stack up.
 pulumi up
 
 # Sync outputs into cms_admin.provisioning_outputs so the admin's
 # /security/dns page surfaces the required DNS records.
-ADMIN_DATABASE_URL=$(pulumi stack output adminDatabaseUrlOut --show-secrets) \
+CAELO_INTERNAL_SECRET=$(gcloud secrets versions access latest \
+    --secret=caelo-production-internal-secret --project=$PROJECT) \
+  CAELO_ADMIN_URL=https://admin.example.com \
   bunx cms-provision pulumi-output-sync --environment production
 ```
 

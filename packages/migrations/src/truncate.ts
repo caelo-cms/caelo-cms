@@ -20,6 +20,7 @@
  * over the private VPC connector.
  */
 
+import { databaseUrlFromEnv } from "@caelo-cms/shared";
 import type { SQL as SQLType } from "bun";
 
 type SQL = SQLType;
@@ -36,8 +37,9 @@ if (target !== "admin" && target !== "public") {
   process.exit(1);
 }
 
-const url =
-  target === "admin" ? process.env.ADMIN_DATABASE_URL : process.env.PUBLIC_ADMIN_DATABASE_URL;
+const url = databaseUrlFromEnv([
+  target === "admin" ? "ADMIN_DATABASE_URL" : "PUBLIC_ADMIN_DATABASE_URL",
+]);
 if (!url) {
   console.error(
     `missing env var: ${target === "admin" ? "ADMIN_DATABASE_URL" : "PUBLIC_ADMIN_DATABASE_URL"}`,
