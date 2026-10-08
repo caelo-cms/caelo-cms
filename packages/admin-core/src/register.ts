@@ -418,6 +418,7 @@ import {
 import { getTelemetryOp, setTelemetryOp, testSendTelemetryOp } from "./ops/security/telemetry.js";
 import {
   lookupLinksInModulesOp,
+  pagesSeoApplyTranslationOp,
   pagesSeoAutofillOp,
   pagesSeoGetOp,
   pagesSeoListStaleOp,
@@ -1068,6 +1069,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // Bulk `_many` variant via the DRY defineBulkOp factory (CLAUDE.md §11).
   registry.register(pagesSeoSetManyOp);
   registry.register(pagesSeoAutofillOp);
+  registry.register(pagesSeoApplyTranslationOp);
   registry.register(pagesSeoOptimizeOp);
   registry.register(pagesSeoOptimizeManyOp);
   registry.register(pagesSeoListStaleOp);

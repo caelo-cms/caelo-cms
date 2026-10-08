@@ -39,6 +39,7 @@ import { z } from "zod";
 import { lookupPricing } from "../ai/pricing-cache.js";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -462,22 +463,7 @@ export const proposeSetTranslationModelOp = defineOperation({
 
 // ─── execute / reject / list_pending ─────────────────────────────────
 
-/** System always; a human only with settings.write on an active user. */
-async function approverMayChangeSettings(tx: Tx, ctx: Ctx): Promise<boolean> {
-  if (ctx.actorKind === "system") return true;
-  if (ctx.actorKind !== "human") return false;
-  const rows = (await tx.execute(sql`
-    SELECT 1 AS ok FROM users u
-    JOIN user_roles ur ON ur.user_id = u.id
-    JOIN role_permissions rp ON rp.role_id = ur.role_id
-    JOIN permissions p ON p.id = rp.permission_id
-    WHERE u.id = ${ctx.actorId}::uuid AND u.deleted_at IS NULL AND p.name = 'settings.write'
-    LIMIT 1
-  `)) as unknown as unknown[];
-  return rows.length > 0;
-}
-
-export const executeOwnerSettingsProposalOp = defineOperation({
+const executeOwnerSettingsProposalOpDefinition = defineOperation({
   name: "owner_settings.execute_proposal",
   // Why human-only (+system): §11.A — this is the operator's Approve. The
   // AI reaches it only through the gated tool, after the click.
@@ -487,16 +473,6 @@ export const executeOwnerSettingsProposalOp = defineOperation({
   output: z.object({ kind: ownerSettingsKind, summary: z.string() }),
   handler: async (ctx, input, tx) => {
     const op = "owner_settings.execute_proposal";
-    // The in-chat Approve runs this with the operator's own context, and
-    // anyone who can chat (content.read) sees the approval card. Budgets,
-    // pricing, the translation model and the gateway are settings.write decisions — the same
-    // permission the Owner pages require — so the approver must hold it.
-    if (!(await approverMayChangeSettings(tx, ctx))) {
-      return handlerError(
-        op,
-        "permission_denied: approving a settings change needs the settings.write permission (an Owner). Ask an Owner to approve it.",
-      );
-    }
     const rows = (await tx.execute(sql`
       SELECT kind, payload, preview, status
       FROM owner_settings_pending_actions
@@ -563,6 +539,12 @@ export const executeOwnerSettingsProposalOp = defineOperation({
     return ok({ kind: row.kind, summary });
   },
 });
+
+/** #589 — the approver must hold settings.write (see _approver-permission.ts). */
+export const executeOwnerSettingsProposalOp = requiresApproverPermission(
+  ["settings.write"],
+  executeOwnerSettingsProposalOpDefinition,
+);
 
 export const rejectOwnerSettingsProposalOp = defineOperation({
   name: "owner_settings.reject_proposal",

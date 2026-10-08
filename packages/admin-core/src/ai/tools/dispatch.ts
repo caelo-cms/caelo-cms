@@ -20,6 +20,7 @@ import type {
 } from "@caelo-cms/shared";
 import type { z } from "zod";
 
+import type { Permission } from "../../permissions.js";
 import type { AIProvider } from "../provider.js";
 import { generateInputSchema } from "./generate-input-schema.js";
 import { normalizeToolArgs } from "./normalize-args.js";
@@ -234,6 +235,31 @@ export interface ToolResult {
  */
 export type ToolInputSchema = Record<string, unknown>;
 
+/**
+ * Plan B (CLAUDE.md §11.A) — how a gated tool applies once approved: the
+ * chat-runner's SDK `execute` runs `proposeOp` as the AI, then `executeOp` as
+ * the approving human. `executeOp` declares the permission its approver must
+ * hold (#589, `requiresApproverPermission`); a refused approval leaves the
+ * proposal pending at `pendingQueuePath` for someone who holds it.
+ */
+export interface GatedToolSpec {
+  readonly proposeOp: string;
+  readonly executeOp: string;
+  /** The `/security/...` queue where a pending proposal can be approved. */
+  readonly pendingQueuePath: string;
+  /**
+   * A step that must run AFTER the apply transaction commits.
+   * `load-activated-plugin` puts a just-approved plugin into the
+   * running host; it cannot run inside the op because the loader
+   * opens its own transaction and takes the same plugins row.
+   * `sync-operator-access` updates the cloud identity gate (Google IAP)
+   * for the user an approved users.* proposal touched (every user after
+   * a role deletion) — a cloud call that must neither hold nor undo the
+   * apply transaction.
+   */
+  readonly afterApply?: "load-activated-plugin" | "sync-operator-access";
+}
+
 export interface ToolDefinitionWithHandler<I> {
   readonly name: string;
   /** The tool's description — static; see the 2026-07 note above. */
@@ -256,11 +282,20 @@ export interface ToolDefinitionWithHandler<I> {
    * tables carry preview metadata + cross-chat audit history that a
    * pure predicate-gate can't replicate.
    *
-   * The predicate is sync OR async; throwing from it is treated as
-   * `false` (let the action through) + logs an error — never block
-   * silently on a faulty predicate.
+   * The predicate is sync OR async. It FAILS CLOSED (#588): a predicate
+   * that throws, rejects or returns anything but `false` queues the call
+   * for approval and logs loudly — a broken gate must cost a click, never
+   * let a hard-to-revert action through unapproved.
    */
   readonly needsApproval?: (input: I, ctx: ExecutionContext) => boolean | Promise<boolean>;
+  /**
+   * #589 — the permission(s) the human approving a `needsApproval` call
+   * must hold (all of them). Required whenever `needsApproval` is set (the
+   * CI guard enforces it); the /security/tool-approvals Approve action
+   * refuses an approver without them. Use the permission the equivalent
+   * panel action requires.
+   */
+  readonly approverPermissions?: readonly [Permission, ...Permission[]];
   /**
    * v0.6.0 W5 — when needsApproval returns true, this builder produces
    * the "blast-radius" preview shown to the operator alongside the
@@ -289,7 +324,7 @@ export interface ToolDefinitionWithHandler<I> {
    * (incl. multi-op fan-outs like layout html+blocks) correct — the SDK gate
    * just sits in front of it. Set by `makeProposeTool`.
    */
-  readonly gated?: { readonly proposeOp: string; readonly executeOp: string };
+  readonly gated?: GatedToolSpec;
   readonly schema: z.ZodType<I>;
   /**
    * JSON Schema for the provider. OPTIONAL as of issue #251 (WS5) — when
@@ -597,7 +632,7 @@ export class ToolRegistry {
     description: string;
     inputSchema: ToolInputSchema;
     approvalMode?: "user-approval";
-    gated?: { proposeOp: string; executeOp: string };
+    gated?: GatedToolSpec;
   }[] {
     return [...this.#tools.values()].map((t) => ({
       name: t.name,
@@ -657,12 +692,21 @@ export class ToolRegistry {
     // proposal for the click that was already given (an unconditional
     // predicate like set_migration_budget's would loop forever).
     if (tool.needsApproval && ctx.actorKind === "ai") {
-      let gated = false;
+      // #588 — fail closed. Only an explicit `false` lets the call run
+      // unapproved; a throw, a rejection or a non-boolean verdict means
+      // the gate cannot vouch for the call, so it asks for the click.
+      let gated = true;
       try {
-        gated = await tool.needsApproval(parsed.data, ctx);
+        const verdict: unknown = await tool.needsApproval(parsed.data, ctx);
+        if (typeof verdict !== "boolean") {
+          console.error(
+            `[tool.needsApproval] ${name} returned a non-boolean (${typeof verdict}) — requiring approval`,
+          );
+        }
+        gated = verdict !== false;
       } catch (err) {
-        console.error(`[tool.needsApproval] ${name} threw — letting action through`, err);
-        gated = false;
+        console.error(`[tool.needsApproval] ${name} threw — requiring approval (fail closed)`, err);
+        gated = true;
       }
       if (gated) {
         let preview: Record<string, unknown> = {

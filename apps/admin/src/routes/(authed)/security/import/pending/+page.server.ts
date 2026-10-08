@@ -17,7 +17,7 @@ import {
 } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
-import { requirePermission } from "#lib/server/guards.js";
+import { requireApproverPermission, requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -83,7 +83,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 export const actions: Actions = {
   approve: async ({ request, locals }) => {
-    requirePermission(locals, "settings.write");
+    requireApproverPermission(locals, getQueryContext().registry, "imports.execute_proposal");
     const form = await request.formData();
     // The chat's ProposeCard posts `proposalId` (the generic §11.A
     // field name); this queue's native field is `runId`. Accept both —

@@ -4,7 +4,7 @@ import { describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
-import { requirePermission } from "#lib/server/guards.js";
+import { requireApproverPermission, requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -116,7 +116,7 @@ export const actions: Actions = {
   // `approve` / `reject` are the standard pending-queue action names: the
   // chat's pending strip posts here for site_defaults proposals.
   approve: async ({ request, locals }) => {
-    requirePermission(locals, "roles.manage");
+    requireApproverPermission(locals, getQueryContext().registry, "site_defaults.execute_proposal");
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);

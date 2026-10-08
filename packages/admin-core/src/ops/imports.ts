@@ -46,6 +46,7 @@ import {
   loadPageLayoutStateWithBranchOverlay,
 } from "../snapshots/index.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
 import {
@@ -679,7 +680,7 @@ export const listPendingImportProposalsOp = defineOperation({
  *  4. no estimate stored at all (legacy Owner-direct rows) → approve
  *     without a ceiling, exactly the pre-#297 behaviour.
  */
-export const executeImportProposalOp = defineOperation({
+const executeImportProposalOpDefinition = defineOperation({
   name: "imports.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -786,6 +787,12 @@ export const executeImportProposalOp = defineOperation({
     return ok({ ceilingMicrocents, ceilingCurrency, ceilingSource });
   },
 });
+
+/** #589 — the approver must hold settings.write (see _approver-permission.ts). */
+export const executeImportProposalOp = requiresApproverPermission(
+  ["settings.write"],
+  executeImportProposalOpDefinition,
+);
 
 export const rejectImportProposalOp = defineOperation({
   name: "imports.reject_proposal",

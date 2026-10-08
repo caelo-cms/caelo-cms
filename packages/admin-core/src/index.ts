@@ -80,6 +80,8 @@ export { lockPluginRow } from "./locks.js";
 export * from "./media/pipeline.js";
 export { resolvePrivatePreviewImages } from "./media/private-preview-images.js";
 export * from "./media/storage.js";
+// #589 — approver permissions declared on the §11.A executor ops.
+export { approverPermissionsOf } from "./ops/_approver-permission.js";
 export * from "./ops/auth.js";
 export * from "./ops/deploy.js";
 // issue #297 — pure cost-gate math for the approve UI (shows the ceiling a

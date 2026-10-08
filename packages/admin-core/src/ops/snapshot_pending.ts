@@ -20,6 +20,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -228,7 +229,7 @@ export const proposeRevertModuleOp = defineOperation({
 
 // ─── execute / reject / list_pending ─────────────────────────────────
 
-export const executeSnapshotRevertProposalOp = defineOperation({
+const executeSnapshotRevertProposalOpDefinition = defineOperation({
   name: "snapshots.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -322,6 +323,12 @@ export const executeSnapshotRevertProposalOp = defineOperation({
     return ok({ siteSnapshotId });
   },
 });
+
+/** #589 — the approver must hold roles.manage (see _approver-permission.ts). */
+export const executeSnapshotRevertProposalOp = requiresApproverPermission(
+  ["roles.manage"],
+  executeSnapshotRevertProposalOpDefinition,
+);
 
 export const rejectSnapshotRevertProposalOp = defineOperation({
   name: "snapshots.reject_proposal",

@@ -40,6 +40,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -192,7 +193,7 @@ export const proposeSiteSeoSetOp = defineOperation({
 
 // ─── execute / reject / list_pending ─────────────────────────────────
 
-export const executeSiteDefaultsProposalOp = defineOperation({
+const executeSiteDefaultsProposalOpDefinition = defineOperation({
   name: "site_defaults.execute_proposal",
   // Why human-only: this IS the Owner's approval (CLAUDE.md §11.A) — the AI
   // proposes via site_defaults.propose_set_seo and cannot approve itself.
@@ -275,6 +276,12 @@ export const executeSiteDefaultsProposalOp = defineOperation({
     return ok(merged);
   },
 });
+
+/** #589 — the approver must hold roles.manage (see _approver-permission.ts). */
+export const executeSiteDefaultsProposalOp = requiresApproverPermission(
+  ["roles.manage"],
+  executeSiteDefaultsProposalOpDefinition,
+);
 
 export const rejectSiteDefaultsProposalOp = defineOperation({
   name: "site_defaults.reject_proposal",

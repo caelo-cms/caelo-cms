@@ -10,8 +10,9 @@
  *  2. When `needsApproval` returns false, the handler runs normally.
  *  3. `buildApprovalPreview` shapes the preview shown to the operator.
  *  4. Async predicates work.
- *  5. Throwing from `needsApproval` lets the action through + logs (no
- *     silent block).
+ *  5. #588 — the gate FAILS CLOSED: a predicate that throws, rejects or
+ *     returns a non-boolean queues the call for approval (+ logs) instead
+ *     of letting a hard-to-revert action through unapproved.
  *
  * This is the foundation: future PRs migrate individual high-blast
  * ops to use this gate instead of building bespoke `*_pending_actions`
@@ -150,24 +151,35 @@ describe("ToolRegistry needsApproval gate (W5)", () => {
     expect(result.content).toContain("[needs-approval, non-persisted]");
   });
 
-  it("lets the action through (no silent block) when the predicate throws", async () => {
-    let handlerRan = false;
-    const reg = new ToolRegistry();
-    reg.register(
-      makeGatedTool({
-        name: "buggy_tool",
-        needsApproval: () => {
-          throw new Error("predicate threw");
-        },
-        onHandler: () => {
-          handlerRan = true;
-        },
-      }),
-    );
-    const result = await reg.dispatch("buggy_tool", { go: true }, ctx, toolCtx);
-    expect(handlerRan).toBe(true);
-    expect(result.content).toBe("handler ran");
-  });
+  // #588 regression: these three used to run the handler ("fail open").
+  const brokenPredicates: [string, () => boolean | Promise<boolean>][] = [
+    [
+      "throws",
+      () => {
+        throw new Error("predicate threw");
+      },
+    ],
+    ["rejects", () => Promise.reject(new Error("predicate rejected"))],
+    ["returns a non-boolean", () => undefined as unknown as boolean],
+  ];
+  for (const [label, needsApproval] of brokenPredicates) {
+    it(`requires approval (fail closed) when the predicate ${label}`, async () => {
+      let handlerRan = false;
+      const reg = new ToolRegistry();
+      reg.register(
+        makeGatedTool({
+          name: "buggy_tool",
+          needsApproval,
+          onHandler: () => {
+            handlerRan = true;
+          },
+        }),
+      );
+      const result = await reg.dispatch("buggy_tool", { go: true }, ctx, toolCtx);
+      expect(handlerRan).toBe(false);
+      expect(result.content).toContain("[needs-approval, non-persisted]");
+    });
+  }
 
   it("does not re-gate the Owner's approved dispatch (human ctx runs the handler)", async () => {
     // The tool-approvals Approve action re-dispatches the SAME tool with the

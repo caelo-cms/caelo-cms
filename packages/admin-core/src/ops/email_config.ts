@@ -26,13 +26,48 @@ const emailConfigShape = z.object({
   updatedAt: z.string(),
 });
 
+/** The value a redacted transport secret reads as: it says "set", never what. */
+const REDACTED_SECRET = "[redacted]";
+
+/**
+ * Key names that hold transport credentials (SMTP `auth.pass`, Resend
+ * `apiKey`, SES `accessKeyId` / `secretAccessKey`) — matched by name at any
+ * depth so a future transport's `token` or `clientSecret` is covered
+ * without a list to keep in sync.
+ */
+const SECRET_KEY = /pass(word)?|secret|api[-_]?key|access[-_]?key|token|credential/i;
+
+/**
+ * #588 — `config_json` with every credential value replaced by
+ * {@link REDACTED_SECRET}. Presence survives (a set key still reads as set),
+ * the value does not, so an AI or plugin caller can tell "the API key is
+ * configured" without ever holding it (CLAUDE.md §7).
+ */
+function redactTransportSecrets(config: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (SECRET_KEY.test(key) && value !== undefined && value !== null && value !== "") {
+      out[key] = REDACTED_SECRET;
+    } else if (value && typeof value === "object" && !Array.isArray(value)) {
+      out[key] = redactTransportSecrets(value as Record<string, unknown>);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 export const getEmailConfigOp = defineOperation({
   name: "email_config.get",
+  // Open to the AI so it can see whether email is set up; transport
+  // secrets are redacted for every actor that is not a human or the
+  // system (#588) — only the Owner's panel and the transport builder
+  // ever see them.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
   output: z.object({ config: emailConfigShape }),
-  handler: async (_ctx, _input, tx) => {
+  handler: async (ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT transport, from_address, config_json, updated_at
       FROM email_config WHERE id = 1 LIMIT 1
@@ -59,7 +94,10 @@ export const getEmailConfigOp = defineOperation({
       config: {
         transport: r.transport,
         fromAddress: r.from_address,
-        config: r.config_json,
+        config:
+          ctx.actorKind === "human" || ctx.actorKind === "system"
+            ? r.config_json
+            : redactTransportSecrets(r.config_json),
         updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
       },
     });

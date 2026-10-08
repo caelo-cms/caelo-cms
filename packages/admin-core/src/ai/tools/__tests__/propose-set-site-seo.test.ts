@@ -17,6 +17,7 @@ describe("propose_set_site_seo", () => {
     expect(proposeSetSiteSeoTool.gated).toEqual({
       proposeOp: "site_defaults.propose_set_seo",
       executeOp: "site_defaults.execute_proposal",
+      pendingQueuePath: "/security/seo",
     });
   });
 

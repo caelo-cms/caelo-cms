@@ -30,6 +30,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { requiresApproverPermission } from "../_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -167,7 +168,7 @@ export const proposeUninstallPluginOp = defineOperation({
   },
 });
 
-export const executeUninstallPluginOp = defineOperation({
+const executeUninstallPluginOpDefinition = defineOperation({
   name: "plugins.execute_proposal",
   // Why human-only (+system): §11.A — dropping schemas is data loss and a
   // revoked grant disables the plugin; the Owner's click is the whole
@@ -289,3 +290,9 @@ export const executeUninstallPluginOp = defineOperation({
     });
   },
 });
+
+/** #589 — the approver must hold settings.write, plugins.install (see _approver-permission.ts). */
+export const executeUninstallPluginOp = requiresApproverPermission(
+  ["settings.write", "plugins.install"],
+  executeUninstallPluginOpDefinition,
+);

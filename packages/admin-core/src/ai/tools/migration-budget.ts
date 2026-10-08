@@ -69,6 +69,8 @@ export const setMigrationBudgetTool: ToolDefinitionWithHandler<SetBudgetInput> =
   // Given the choice between an unconditional click and a guess, a money
   // figure gets the click.
   needsApproval: () => true,
+  // #589 — the same permission the /security/import panels require.
+  approverPermissions: ["settings.write"],
   buildApprovalPreview: (input) => ({
     op: "set_migration_budget",
     runId: input.runId,

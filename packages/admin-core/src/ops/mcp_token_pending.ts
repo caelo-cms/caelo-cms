@@ -17,6 +17,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -123,7 +124,7 @@ export const proposeMcpTokenRevokeOp = defineOperation({
 
 // ─── execute / reject / list_pending ─────────────────────────────────
 
-export const executeMcpTokenProposalOp = defineOperation({
+const executeMcpTokenProposalOpDefinition = defineOperation({
   name: "mcp_tokens.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -203,6 +204,12 @@ export const executeMcpTokenProposalOp = defineOperation({
     return ok({ tokenId: resultTokenId, plaintextToken });
   },
 });
+
+/** #589 — the approver must hold settings.write (see _approver-permission.ts). */
+export const executeMcpTokenProposalOp = requiresApproverPermission(
+  ["settings.write"],
+  executeMcpTokenProposalOpDefinition,
+);
 
 export const rejectMcpTokenProposalOp = defineOperation({
   name: "mcp_tokens.reject_proposal",

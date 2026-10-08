@@ -20,6 +20,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import {
   err,
   ok,
+  SEO_DESCRIPTION_HARD_MAX,
   seoAutofillInputSchema,
   seoOptimizeInputSchema,
   seoSetInputSchema,
@@ -81,7 +82,9 @@ function rowToSeo(r: SeoDbRow): z.infer<typeof seoRowOutput> {
 
 export const pagesSeoGetOp = defineOperation({
   name: "pages_seo.get",
-  actorScope: ["human", "ai", "system"],
+  // #591 — plugin actors read too: a translation flow carries the source
+  // page's description into the variant (§11: reads are open).
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({ pageId: z.string().uuid() }).strict(),
   output: z.object({ seo: seoRowOutput.nullable() }),
@@ -261,6 +264,96 @@ export const pagesSeoOptimizeOp = defineOperation({
       resultSummary: input.context ? `context-len=${input.context.length}` : "no-context",
     });
     return ok({});
+  },
+});
+
+// ---------------------------------------------------------------------
+// pages_seo.apply_translation — the SEO fill-once rule for a translated
+// page (#591).
+// ---------------------------------------------------------------------
+
+/**
+ * A translation flow hands over the translated meta description of a
+ * page (international-site's translate_variant). The fill-once rule
+ * (CLAUDE.md §2) is decided HERE, where SEO is owned, not in the plugin:
+ *
+ *  - empty description, or a page that is not live: fill it (the first
+ *    translation of a variant; a draft re-translated before publish);
+ *  - a LIVE page whose description is already set: never overwrite.
+ *    Clear `optimized_at` instead, which puts the page on the existing
+ *    stale-SEO surface (`pages_seo.list_stale`), so the AI/editor
+ *    re-optimizes explicitly through `pages_seo.optimize` (seo-optimize).
+ *
+ * OG texts need no separate handling: og:title is the page title and
+ * og:description the meta description (see `renderSeoHead`).
+ */
+export const pagesSeoApplyTranslationOp = defineOperation({
+  name: "pages_seo.apply_translation",
+  // Why system-only: the write half of a translation flow (plugins run
+  // it from translate_variant). The AI fills SEO through
+  // pages_seo.autofill and re-optimizes through pages_seo.optimize, which
+  // carry the same rule as explicit, separate steps.
+  actorScope: ["plugin", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      pageId: z.string().uuid(),
+      metaDescription: z.string().min(1).max(SEO_DESCRIPTION_HARD_MAX),
+    })
+    .strict(),
+  output: z.object({ outcome: z.enum(["filled", "unchanged", "marked_stale"]) }),
+  handler: async (ctx, input, tx) => {
+    const pages = (await tx.execute(sql`
+      SELECT status FROM pages WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL
+    `)) as unknown as { status: string }[];
+    const page = pages[0];
+    if (!page) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages_seo.apply_translation",
+        message: `page ${input.pageId} not found or deleted — re-read the variant group and retry`,
+      });
+    }
+    await tx.execute(sql`
+      INSERT INTO pages_seo (page_id) VALUES (${input.pageId}::uuid)
+      ON CONFLICT (page_id) DO NOTHING
+    `);
+    const rows = (await tx.execute(sql`
+      SELECT meta_description FROM pages_seo WHERE page_id = ${input.pageId}::uuid
+    `)) as unknown as { meta_description: string }[];
+    const current = rows[0]?.meta_description ?? "";
+
+    let outcome: "filled" | "unchanged" | "marked_stale";
+    if (current === input.metaDescription) {
+      outcome = "unchanged";
+    } else if (current !== "" && page.status === "published") {
+      await tx.execute(sql`
+        UPDATE pages_seo SET optimized_at = NULL, updated_at = now(),
+          updated_by = ${ctx.actorId}::uuid
+        WHERE page_id = ${input.pageId}::uuid
+      `);
+      outcome = "marked_stale";
+    } else {
+      await tx.execute(sql`
+        UPDATE pages_seo SET
+          meta_description = ${input.metaDescription},
+          autofilled_at = coalesce(autofilled_at, now()),
+          updated_at = now(),
+          updated_by = ${ctx.actorId}::uuid
+        WHERE page_id = ${input.pageId}::uuid
+      `);
+      outcome = "filled";
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "pages_seo.apply_translation",
+      input: { pageId: input.pageId, descLen: input.metaDescription.length },
+      succeeded: true,
+      entityId: input.pageId,
+      resultSummary: outcome,
+    });
+    return ok({ outcome });
   },
 });
 
