@@ -44,7 +44,11 @@ function fixture(): { tools: ToolRegistry; registry: OperationRegistry } {
     description: "gated",
     schema: z.looseObject({}),
     inputSchema: { type: "object" },
-    gated: { proposeOp: "themes.propose_create", executeOp: "themes.execute_proposal" },
+    gated: {
+      proposeOp: "themes.propose_create",
+      executeOp: "themes.execute_proposal",
+      pendingQueuePath: "/security/themes/pending",
+    },
     handler: async () => ({ ok: true, content: "-" }),
   } as never);
   tools.register({

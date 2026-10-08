@@ -31,6 +31,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { requiresApproverPermission } from "../_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -173,7 +174,7 @@ export const proposePluginActivationOp = defineOperation({
   },
 });
 
-export const executePluginActivationOp = defineOperation({
+const executePluginActivationOpDefinition = defineOperation({
   name: "plugins.execute_activation",
   // Why human-only (+system): §11.A — this is the click. The AI reaches
   // it only through the approved gated tool, never directly.
@@ -295,3 +296,9 @@ export const executePluginActivationOp = defineOperation({
     return ok({ slug: payload.slug, previousStatus });
   },
 });
+
+/** #589 — the approver must hold settings.write, plugins.install (see _approver-permission.ts). */
+export const executePluginActivationOp = requiresApproverPermission(
+  ["settings.write", "plugins.install"],
+  executePluginActivationOpDefinition,
+);

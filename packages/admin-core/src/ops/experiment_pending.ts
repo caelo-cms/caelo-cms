@@ -23,6 +23,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -152,7 +153,7 @@ export const proposeExperimentCompleteOp = defineOperation({
 
 // ─── execute / reject / list_pending ─────────────────────────────────
 
-export const executeExperimentProposalOp = defineOperation({
+const executeExperimentProposalOpDefinition = defineOperation({
   name: "experiments.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -224,6 +225,12 @@ export const executeExperimentProposalOp = defineOperation({
     return ok({ experimentId: row.experiment_id });
   },
 });
+
+/** #589 — the approver must hold settings.write (see _approver-permission.ts). */
+export const executeExperimentProposalOp = requiresApproverPermission(
+  ["settings.write"],
+  executeExperimentProposalOpDefinition,
+);
 
 export const rejectExperimentProposalOp = defineOperation({
   name: "experiments.reject_proposal",

@@ -20,6 +20,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -183,7 +184,7 @@ export const proposeUserDeleteOp = defineOperation({
 
 // ─── execute / reject / list_pending ─────────────────────────────────
 
-export const executeUserProposalOp = defineOperation({
+const executeUserProposalOpDefinition = defineOperation({
   name: "users.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -282,6 +283,12 @@ export const executeUserProposalOp = defineOperation({
     return ok({ userId: resultUserId, temporaryPassword });
   },
 });
+
+/** #589 — the approver must hold users.manage (see _approver-permission.ts). */
+export const executeUserProposalOp = requiresApproverPermission(
+  ["users.manage"],
+  executeUserProposalOpDefinition,
+);
 
 export const rejectUserProposalOp = defineOperation({
   name: "users.reject_proposal",

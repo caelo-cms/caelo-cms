@@ -14,6 +14,7 @@
   import { CHAT_IMAGE_MIMES, CHAT_MAX_ATTACHMENTS, CHAT_MAX_ATTACHMENT_BYTES } from "@caelo-cms/shared";
   import { ArrowDown, ImagePlus, Lock, Square, Unlock } from "lucide-svelte";
   import { onMount, tick } from "svelte";
+  import { page } from "$app/state";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { buttonVariants } from "#lib/components/ui/button/button-variants.js";
@@ -270,8 +271,20 @@
     approvalId: string;
     name: string;
     preview: string;
+    /** #589 — permissions the approver needs; the server enforces them. */
+    requiredPermissions: string[];
   }
   let sdkApprovals = $state<SdkApproval[]>([]);
+
+  /**
+   * #589 — the permissions this operator lacks to approve `a`. Approve is
+   * disabled when any are missing: the server would refuse the click anyway,
+   * and the proposal waits in the Owner queue instead.
+   */
+  function missingApproverPermissions(a: SdkApproval): string[] {
+    const held = new Set((page.data as { permissions?: string[] }).permissions ?? []);
+    return a.requiredPermissions.filter((p) => !held.has(p));
+  }
 
   /** Approve/Reject a paused gated tool → resume (or deny) the turn. */
   async function resolveSdkApproval(approvalId: string, approved: boolean): Promise<void> {
@@ -1429,6 +1442,9 @@
                     approvalId,
                     name: String(ev["name"] ?? "action"),
                     preview: String(ev["preview"] ?? ""),
+                    requiredPermissions: Array.isArray(ev["requiredPermissions"])
+                      ? (ev["requiredPermissions"] as unknown[]).map(String)
+                      : [],
                   },
                 ];
               }
@@ -2137,14 +2153,24 @@
             </div>
             <ul class="space-y-1.5">
               {#each sdkApprovals as a (a.approvalId)}
+                {@const missing = missingApproverPermissions(a)}
                 <li class="rounded border bg-card p-2">
                   <pre class="mb-2 whitespace-pre-wrap font-sans text-[11px]">{a.preview ||
                       a.name}</pre>
+                  {#if missing.length > 0}
+                    <p
+                      class="mb-2 text-[11px] text-muted-foreground"
+                      data-testid="chat-approval-missing-permission"
+                    >
+                      Approving this needs {missing.join(" + ")}, which your role does not have. Ask
+                      an Owner to approve it, or reject it.
+                    </p>
+                  {/if}
                   <div class="flex items-center gap-1.5">
                     <button
                       type="button"
                       class={buttonVariants({ variant: "default", size: "sm" })}
-                      disabled={streaming}
+                      disabled={streaming || missing.length > 0}
                       data-testid="chat-approval-approve"
                       onclick={() => resolveSdkApproval(a.approvalId, true)}>Approve</button
                     >

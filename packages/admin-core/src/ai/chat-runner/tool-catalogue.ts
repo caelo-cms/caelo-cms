@@ -14,6 +14,7 @@ import type { ChatEngagement } from "@caelo-cms/shared";
 
 import type { ToolDefinition } from "../provider.js";
 import { CORE_TOOL_NAMES } from "../tools/core-tools.js";
+import type { GatedToolSpec } from "../tools/dispatch.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { resolveAllowlistEntries } from "./allowlist-mapping.js";
 
@@ -56,17 +57,7 @@ export const BULK_TOOL_SIBLINGS: ReadonlyMap<string, string> = new Map(
  * ignored by the provider's SDK-tool builder.
  */
 export type FilteredTool = ToolDefinition & {
-  gated?: {
-    proposeOp: string;
-    executeOp: string;
-    /**
-     * A step that must run AFTER the apply transaction commits.
-     * `load-activated-plugin` puts a just-approved plugin into the
-     * running host; it cannot run inside the op because the loader
-     * opens its own transaction and takes the same plugins row.
-     */
-    afterApply?: "load-activated-plugin";
-  };
+  gated?: GatedToolSpec;
   /** #388 — a plugin tool that declared `approvalMode` in its spec. The
    *  chat-runner attaches an SDK `execute` that dispatches the plugin
    *  operation only after the Owner's in-chat Approve — plugin tools no

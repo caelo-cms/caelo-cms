@@ -13,7 +13,7 @@ import { loadActivatedPlugin } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { error, fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
-import { requirePermission } from "#lib/server/guards.js";
+import { requireApproverPermission, requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -42,11 +42,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 export const actions: Actions = {
   approve: async ({ request, locals }) => {
-    // Activating runs code, uninstalling drops data, revoking disables:
-    // the same installation permission /security/plugins/installations
-    // requires, not just settings.write.
+    // Reading the queue needs settings.write; approving needs what the
+    // executor declares (#589) — activating runs code, uninstalling drops
+    // data, revoking disables, so it includes plugins.install.
     requirePermission(locals, "settings.write");
-    requirePermission(locals, "plugins.install");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const proposalId = String(form.get("proposalId") ?? "");
@@ -63,6 +62,7 @@ export const actions: Actions = {
     if (!kind) return fail(404, { error: "That proposal is no longer pending." });
     const executor =
       kind === "activate" ? "plugins.execute_activation" : "plugins.execute_proposal";
+    requireApproverPermission(locals, registry, executor);
     const r = await execute(registry, adapter, locals.ctx, executor, { proposalId });
     if (!r.ok) return fail(400, { error: messageOf(r.error, "approve failed") });
     const v = r.value as { slug: string };

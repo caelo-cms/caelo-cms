@@ -124,7 +124,12 @@ CREATE POLICY <table>_authenticated_scope ON <table>
 Each domain has 5 ops + 1 AI tool wrapper per propose kind:
 
 - `propose_<action>(input)` — `actorScope: ["human", "ai", "system"]`
-- `execute_proposal({proposalId})` — `actorScope: ["human", "system"]`
+- `execute_proposal({proposalId})` — `actorScope: ["human", "system"]`,
+  wrapped in `requiresApproverPermission([...], defineOperation({...}))`
+  (#589): the approving human must hold the permission the equivalent
+  panel action requires. Anyone who can chat sees the in-chat Approve card,
+  so the click alone authorises nothing; a refused approval leaves the
+  proposal pending.
 - `reject_proposal({proposalId, reason?})` — `actorScope: ["human", "system"]`
 - `list_pending({limit?})` — `actorScope: ["human", "ai", "system"]`
 
@@ -167,6 +172,12 @@ one `propose_<action>` tool per action that wraps the op.
    - `parsePayload<T>(row.payload)` — bun-postgres jsonb parse.
    - `DUPLICATE_PROPOSAL_MESSAGE` — standard error string.
 
+   Wrap the executor with `requiresApproverPermission([<permission>], …)`
+   from `ops/_approver-permission.ts`, naming the permission the matching
+   panel action already requires. The CI guard
+   (`__tests__/gated-approver-permission.test.ts`) fails while a gated
+   tool's executor declares none.
+
    For the row schema's `status` field, import the canonical enum from
    `@caelo-cms/shared` — do NOT re-type the literal (issue #20):
    - `proposalStatus` — the four-state Zod enum; use it directly.
@@ -184,7 +195,9 @@ one `propose_<action>` tool per action that wraps the op.
 3. **Register** in `register.ts` alongside the existing entries.
 
 4. **Owner UI route**: `apps/admin/src/routes/(authed)/security/<domain>/pending/`
-   with `+page.server.ts` (load + approve/reject actions) and
+   with `+page.server.ts` (load + approve/reject actions; guard Approve with
+   `requireApproverPermission(locals, registry, "<domain>.execute_proposal")`
+   so the page checks exactly what the executor declares) and
    `+page.svelte` (per-row card with the preview + action buttons).
    Map the route in `apps/admin/.../security/pending/+page.svelte`'s
    `queueRouteFor` so the unified inbox links correctly.
@@ -249,6 +262,8 @@ export const myGatedTool: ToolDefinitionWithHandler<MyInput> = {
   schema: myInputSchema,
   inputSchema: { /* JSON Schema */ },
   needsApproval: (input) => input.affectedCount >= 5,
+  // #589 — required: what the approving human must hold.
+  approverPermissions: ["content.write"],
   buildApprovalPreview: (input) => ({
     op: "my_gated_tool",
     affectedCount: input.affectedCount,

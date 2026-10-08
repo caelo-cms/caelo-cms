@@ -92,7 +92,11 @@ function gatedToolRegistry(): ToolRegistry {
     description: "update the site layout",
     schema: z.object({ layoutId: z.string() }),
     inputSchema: { type: "object", properties: { layoutId: { type: "string" } } },
-    gated: { proposeOp: "layouts_test.propose_update", executeOp: "layouts_test.execute_proposal" },
+    gated: {
+      proposeOp: "layouts_test.propose_update",
+      executeOp: "layouts_test.execute_proposal",
+      pendingQueuePath: "/security/layouts/pending",
+    },
     handler: async () => ({ ok: true, content: "unused (SDK-gated)" }),
   });
   return tools;

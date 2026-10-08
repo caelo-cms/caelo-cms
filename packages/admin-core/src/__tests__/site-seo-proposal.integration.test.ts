@@ -27,6 +27,7 @@ import type { FilteredTool } from "../ai/chat-runner/tool-catalogue.js";
 import { attachGatedExecute } from "../ai/tools/gated-tools.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { registerAdminOps } from "../register.js";
+import { ensureRoleUser } from "./fixtures/role-user.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -175,6 +176,8 @@ beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
+  // #589 — the approver must be a real user holding roles.manage.
+  await ensureRoleUser(ADMIN_URL, OWNER.actorId, "owner");
   await asSystem(async (tx) => {
     await tx`INSERT INTO actors (id, kind, display_name)
              VALUES (${OWNER.actorId}::uuid, 'human', 'site-seo-proposal-owner')

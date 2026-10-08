@@ -28,6 +28,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { ensureRoleUser } from "./fixtures/role-user.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -39,7 +40,13 @@ const SYS_CTX: ExecutionContext = {
   actorKind: "system",
   requestId: "t395",
 };
-const HUMAN_CTX: ExecutionContext = { ...SYS_CTX, actorKind: "human" };
+// #589 — approvals run as a real Owner: the executors check the approver's
+// role permissions, so the context needs a user row (see beforeAll).
+const HUMAN_CTX: ExecutionContext = {
+  ...SYS_CTX,
+  actorId: "00000000-0000-0000-0000-0000003950e1",
+  actorKind: "human",
+};
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
@@ -129,6 +136,7 @@ beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
+  await ensureRoleUser(ADMIN_URL, HUMAN_CTX.actorId, "owner");
   await cleanup();
 });
 

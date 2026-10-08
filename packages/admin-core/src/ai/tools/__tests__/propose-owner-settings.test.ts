@@ -34,7 +34,11 @@ describe("owner-settings tools — registration + gate", () => {
     it(`${name} is gated on ${proposeOp} → owner_settings.execute_proposal`, () => {
       const t = tools.catalogue().find((x) => x.name === name);
       expect(t?.approvalMode).toBe("user-approval");
-      expect(t?.gated).toEqual({ proposeOp, executeOp: "owner_settings.execute_proposal" });
+      expect(t?.gated).toEqual({
+        proposeOp,
+        executeOp: "owner_settings.execute_proposal",
+        pendingQueuePath: "/security/owner-settings/pending",
+      });
     });
   }
 

@@ -19,6 +19,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 
 const captchaProvider = z.enum(["off", "pow", "turnstile", "hcaptcha"]);
 
@@ -551,7 +552,7 @@ export const listPendingRateLimitProposalsOp = defineOperation({
   },
 });
 
-export const executeRateLimitProposalOp = defineOperation({
+const executeRateLimitProposalOpDefinition = defineOperation({
   name: "gateway.execute_rate_limit_proposal",
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -612,6 +613,12 @@ export const executeRateLimitProposalOp = defineOperation({
     return ok({});
   },
 });
+
+/** #589 — the approver must hold settings.write (see _approver-permission.ts). */
+export const executeRateLimitProposalOp = requiresApproverPermission(
+  ["settings.write"],
+  executeRateLimitProposalOpDefinition,
+);
 
 /**
  * P13 ideas-pass — Owner-defined named rate-limit profiles.

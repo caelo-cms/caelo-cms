@@ -98,6 +98,27 @@ export const actions: Actions = {
     const proposalId = String(form.get("proposalId") ?? "");
     const { adapter, registry } = getQueryContext();
 
+    // #589 — the approver must hold the permission the queued tool
+    // declares, checked BEFORE the claim so a refused click leaves the row
+    // pending for someone who holds it. A built-in tool that declares none
+    // cannot be approved at all (fail closed); plugin tools are checked by
+    // the plugin host against their own `requiredPermission` at dispatch.
+    const queued = await execute(registry, adapter, locals.ctx, "tool_approvals.list_pending", {
+      limit: 200,
+    });
+    if (!queued.ok) return fail(500, { error: "could not read the approval queue" });
+    const queuedTool = (queued.value as { proposals: Proposal[] }).proposals.find(
+      (p) => p.id === proposalId,
+    )?.toolName;
+    if (!queuedTool) return fail(404, { error: "That proposal is no longer pending." });
+    if (!pluginToolsRegistry.resolve(queuedTool)) {
+      const declared = createDefaultToolRegistry().get(queuedTool)?.approverPermissions;
+      if (!declared) {
+        return fail(500, { error: `${queuedTool} declares no approver permission; refusing.` });
+      }
+      for (const permission of declared) requirePermission(locals, permission);
+    }
+
     // Step 1: atomic claim — transitions pending → applied + returns
     // the persisted toolName + args. Re-clicking the Approve button
     // (race condition) returns "proposal already applied".

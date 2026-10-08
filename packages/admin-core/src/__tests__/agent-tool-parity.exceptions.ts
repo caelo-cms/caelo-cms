@@ -361,8 +361,8 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   "email_config.get": {
     kind: "gap",
     reason:
-      "SECURITY: returns the transport secrets (Resend API key / SMTP password) unredacted to any AI-scoped caller — needs a redacted read before it gets a tool (or the op should be narrowed); send_test_email reports transport health meanwhile",
-    followUp: "follow-up: redact email_config.get for AI actors, then add a read tool",
+      "no read tool yet; the op already redacts transport secrets for AI actors (#588), so a tool can expose it safely — send_test_email reports transport health meanwhile",
+    followUp: "follow-up: add a get_email_config read tool",
   },
   "ai_bug_reports.list": {
     kind: "gap",

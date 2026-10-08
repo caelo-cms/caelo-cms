@@ -22,6 +22,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { requiresApproverPermission } from "../_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -212,7 +213,7 @@ export const proposeLayoutSetBlocksOp = defineOperation({
 
 // ─── execute / reject / list_pending ─────────────────────────────────
 
-export const executeLayoutProposalOp = defineOperation({
+const executeLayoutProposalOpDefinition = defineOperation({
   name: "layouts.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -315,6 +316,12 @@ export const executeLayoutProposalOp = defineOperation({
     return ok({ layoutId: resultLayoutId });
   },
 });
+
+/** #589 — the approver must hold roles.manage (see _approver-permission.ts). */
+export const executeLayoutProposalOp = requiresApproverPermission(
+  ["roles.manage"],
+  executeLayoutProposalOpDefinition,
+);
 
 export const rejectLayoutProposalOp = defineOperation({
   name: "layouts.reject_proposal",

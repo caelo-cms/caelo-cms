@@ -27,6 +27,7 @@
 
 import type { OperationRegistry } from "@caelo-cms/query-api";
 
+import { approverPermissionsOf } from "../../ops/_approver-permission.js";
 import type { ToolRegistry } from "../tools/index.js";
 
 /** A payload that cannot apply, phrased for the model that has to fix it. */
@@ -80,4 +81,22 @@ export function preflightGatedCall(
       "Fix the named fields and call the tool again. Do not ask the operator about this — " +
       "no approval was requested and none is pending.",
   };
+}
+
+/**
+ * #589 — the permissions the person clicking Approve on this gated call must
+ * hold, as its executor declares them. Rides on the approval card so the UI
+ * can disable Approve for someone who lacks them; the executor enforces it
+ * regardless. Null when the tool or op cannot be resolved.
+ */
+export function approverPermissionsForGatedCall(
+  tools: ToolRegistry,
+  registry: OperationRegistry,
+  toolName: string,
+): readonly string[] | null {
+  if (typeof tools?.get !== "function" || typeof registry?.lookup !== "function") return null;
+  const executeOp = tools.get(toolName)?.gated?.executeOp;
+  if (!executeOp) return null;
+  const op = registry.lookup(executeOp);
+  return op.ok ? approverPermissionsOf(op.value) : null;
 }
