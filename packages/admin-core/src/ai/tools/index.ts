@@ -118,6 +118,7 @@ import {
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import {
   listPluginGrantsTool,
+  listPluginInstallationsTool,
   proposeRevokePluginCapabilityTool,
   rejectPluginTool,
   revalidatePluginTool,
@@ -127,9 +128,11 @@ import {
   getAiBudgetsTool,
   getGatewaySettingsTool,
   listAiPricingTool,
+  proposeRotateGatewayCookieSecretTool,
   proposeSetAiBudgetTool,
   proposeSetAiPricingTool,
   proposeSetGatewaySettingsTool,
+  proposeSetPluginAiCostCapTool,
   proposeSetTranslationModelTool,
 } from "./propose-owner-settings.js";
 import { getSiteSeoTool, proposeSetSiteSeoTool } from "./propose-set-site-seo.js";
@@ -476,6 +479,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // Plugin lifecycle steps that were Owner-panel-only: grants (read +
   // gated revoke) and the routine reject / revalidate of a submission.
   registry.register(listPluginGrantsTool);
+  registry.register(listPluginInstallationsTool);
   registry.register(proposeRevokePluginCapabilityTool);
   registry.register(rejectPluginTool);
   registry.register(revalidatePluginTool);
@@ -514,6 +518,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeSetAiPricingTool);
   registry.register(proposeSetGatewaySettingsTool);
   registry.register(proposeSetTranslationModelTool);
+  registry.register(proposeSetPluginAiCostCapTool);
+  registry.register(proposeRotateGatewayCookieSecretTool);
   // v0.2.37 — AI can withdraw its own pending proposals.
   registry.register(cancelProposalTool);
   // v0.11.0 — themes primitive (#45). Routine + the §11.A propose

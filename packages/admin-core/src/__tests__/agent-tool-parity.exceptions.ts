@@ -42,9 +42,6 @@ const PENDING_QUEUE: AiOpException = {
 /** Focal point + named crops: wire the pipeline first, then the tools. */
 const MEDIA_CURATION_FOLLOW_UP =
   "#614: pass focal point + media_crops to runMediaPipeline, then add the curation tools";
-/** Follow-up owned by the parallel "propose_* for AI budgets/pricing, gateway settings, plugin capabilities" PR. */
-const PARALLEL_PROPOSE_PR =
-  "follow-up to #578 (which shipped budgets/pricing/gateway-settings proposals): the remaining cost reads, gateway rate-limit/secret ops and plugin-capability proposals";
 
 export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   // ── covered by a bulk / composite / aggregate tool ────────────────────
@@ -320,22 +317,10 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
 };
 
 /**
- * Human-only ops whose `// Why human-only:` justification is deliberately NOT
- * written in this PR because a parallel PR owns that op's future (most will
- * gain an Owner-approved `propose_*` path, which changes the honest answer).
- * Each entry is a TODO: the owning PR annotates the op (or opens it to the
- * AI through a gated path) and deletes the entry here — the guard fails on a
- * stale entry once the op is annotated.
+ * Human-only ops whose `// Why human-only:` justification is deliberately
+ * parked while a named follow-up decides their future (e.g. a pending
+ * `propose_*` path that would change the honest answer). Each entry is a
+ * TODO the owning PR removes; the guard fails on a stale entry once the op
+ * is annotated. Empty: every human-only op says why at its definition.
  */
-export const HUMAN_ONLY_PENDING: Readonly<Record<string, string>> = {
-  "plugins.set_ai_cost_cap": `TODO(${PARALLEL_PROPOSE_PR}): per-plugin AI cost cap proposal`,
-  "gateway.rotate_cookie_secret": `TODO(${PARALLEL_PROPOSE_PR}): gateway secret rotation`,
-  "gateway.set_rate_limit_override": `TODO(${PARALLEL_PROPOSE_PR}): direct override vs tune_rate_limit proposal`,
-  "gateway.set_rate_limit_profile": `TODO(${PARALLEL_PROPOSE_PR}): rate-limit profiles`,
-  "gateway.execute_rate_limit_proposal": `TODO(${PARALLEL_PROPOSE_PR}): Owner Approve click (gateway.ts is that PR's file)`,
-  "gateway.reject_rate_limit_proposal": `TODO(${PARALLEL_PROPOSE_PR}): Owner Reject click (gateway.ts is that PR's file)`,
-  "plugins.approve_installation": `TODO(${PARALLEL_PROPOSE_PR}): plugin installation lifecycle`,
-  "plugins.get_approved_installation": `TODO(${PARALLEL_PROPOSE_PR}): plugin installation lifecycle`,
-  "plugins.finalize_installation": `TODO(${PARALLEL_PROPOSE_PR}): plugin installation lifecycle`,
-  "plugins.list_installations": `TODO(${PARALLEL_PROPOSE_PR}): plugin installation lifecycle`,
-};
+export const HUMAN_ONLY_PENDING: Readonly<Record<string, string>> = {};

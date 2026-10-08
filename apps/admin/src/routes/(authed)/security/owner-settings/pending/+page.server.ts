@@ -2,7 +2,9 @@
 
 /**
  * Owner queue for AI-proposed Owner-settings changes (AI budgets, AI
- * pricing, gateway settings) — `owner_settings.*` ops, migration 0235.
+ * pricing, gateway settings, translation model, a plugin's AI cost cap,
+ * gateway cookie-secret rotation) — `owner_settings.*` ops, migrations
+ * 0235 / 0241 / 0244.
  *
  * In the chat the operator approves on the inline card and the row is
  * written + applied atomically, so it never waits here. Rows land here when
@@ -19,7 +21,13 @@ import type { Actions, PageServerLoad } from "./$types";
 
 interface Proposal {
   id: string;
-  kind: "set_ai_budget" | "set_ai_pricing" | "set_gateway_settings" | "set_translation_model";
+  kind:
+    | "set_ai_budget"
+    | "set_ai_pricing"
+    | "set_gateway_settings"
+    | "set_translation_model"
+    | "set_plugin_ai_cost_cap"
+    | "rotate_gateway_cookie_secret";
   proposedBy: string;
   payload: Record<string, unknown>;
   preview: Record<string, unknown>;

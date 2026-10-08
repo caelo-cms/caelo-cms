@@ -6,9 +6,10 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { ok } from "@caelo-cms/shared";
+import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { recordAudit } from "../../audit.js";
 
 export const aggregateAiCallsOp = defineOperation({
   name: "ai_calls.aggregate",
@@ -425,6 +426,10 @@ export const aggregatePluginAiSpendOp = defineOperation({
  */
 export const setPluginAiCostCapOp = defineOperation({
   name: "plugins.set_ai_cost_cap",
+  // Why human-only: a plugin's AI spend cap is money — a raised cap is spent
+  // before anyone notices, a lowered one silently stops the plugin's AI
+  // features. The AI reaches it through propose_set_plugin_ai_cost_cap
+  // (owner_settings.execute_proposal applies this handler after the click).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -434,12 +439,30 @@ export const setPluginAiCostCapOp = defineOperation({
     })
     .strict(),
   output: z.object({}),
-  handler: async (_ctx, input, tx) => {
-    await tx.execute(sql`
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
       UPDATE plugins
          SET ai_cost_cap_microcents = ${input.capMicrocents}
        WHERE id = ${input.pluginId}::uuid
-    `);
+      RETURNING slug
+    `)) as unknown as { slug: string }[];
+    const slug = rows[0]?.slug;
+    if (slug === undefined) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.set_ai_cost_cap",
+        message: "plugin not found",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "plugins.set_ai_cost_cap",
+      input,
+      succeeded: true,
+      entityId: input.pluginId,
+      resultSummary: `${slug} cap=${input.capMicrocents ?? "none"}`,
+    });
     return ok({});
   },
 });

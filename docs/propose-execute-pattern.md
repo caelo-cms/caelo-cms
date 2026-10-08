@@ -60,7 +60,7 @@ bypass — `execute_proposal`'s `actorScope` is `["human", "system"]`.
 | `domains` | `propose_add`, `propose_remove` | `settings.write` |
 | `site_defaults` (SEO settings; approve on `/security/seo`) | `propose_set_seo` | `roles.manage` |
 | `gateway` | `propose_rate_limit` | `settings.write` |
-| `owner_settings` (0235, 0241) | `propose_set_ai_budget`, `propose_set_ai_pricing`, `propose_set_gateway_settings`, `propose_set_translation_model` — one table, `kind` discriminator | `settings.write` |
+| `owner_settings` (0235, 0241, 0244) | `propose_set_ai_budget`, `propose_set_ai_pricing`, `propose_set_gateway_settings`, `propose_set_translation_model`, `propose_set_plugin_ai_cost_cap`, `propose_rotate_gateway_cookie_secret` — one table, `kind` discriminator | `settings.write` |
 | `themes` (v0.11.0, #45; create reshaped by #112 — see [themes.md](./themes.md)) | `propose_create`, `propose_activate`, `propose_delete` | `roles.manage` |
 | `quality_audits` (#553 — accept findings, publish over a failed check) | `propose_accept`, `propose_publish_anyway` | `content.write` (accept) / `deploy.trigger` (publish anyway), checked inside `execute_proposal` |
 

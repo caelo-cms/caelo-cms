@@ -302,6 +302,10 @@ import {
   rejectOwnerSettingsProposalOp,
 } from "./ops/owner_settings_pending.js";
 import {
+  proposeRotateGatewayCookieSecretOp,
+  proposeSetPluginAiCostCapOp,
+} from "./ops/owner_settings_security.js";
+import {
   anyBootstrapTokenIssuedOp,
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
@@ -914,6 +918,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeSetAiPricingOp);
   registry.register(proposeSetGatewaySettingsOp);
   registry.register(proposeSetTranslationModelOp);
+  registry.register(proposeSetPluginAiCostCapOp);
+  registry.register(proposeRotateGatewayCookieSecretOp);
   registry.register(executeOwnerSettingsProposalOp);
   registry.register(rejectOwnerSettingsProposalOp);
   registry.register(listPendingOwnerSettingsProposalsOp);
