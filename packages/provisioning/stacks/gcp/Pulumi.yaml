@@ -50,6 +50,10 @@ config:
     type: string
     default: "0"
     description: Admin Cloud Run min instances. 0 = scale to zero. 1 = no cold start (+~$15/mo).
+  caelo-gcp:adminMemory:
+    type: string
+    default: "2Gi"
+    description: Admin Cloud Run memory. 2Gi leaves room for the Lighthouse quality audit next to editor requests; billed only while an instance runs.
   caelo-gcp:adminMaxInstances:
     type: string
     default: "5"

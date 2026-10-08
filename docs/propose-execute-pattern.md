@@ -62,6 +62,7 @@ bypass — `execute_proposal`'s `actorScope` is `["human", "system"]`.
 | `gateway` | `propose_rate_limit` | `settings.write` |
 | `owner_settings` (0235, 0241) | `propose_set_ai_budget`, `propose_set_ai_pricing`, `propose_set_gateway_settings`, `propose_set_translation_model` — one table, `kind` discriminator | `settings.write` |
 | `themes` (v0.11.0, #45; create reshaped by #112 — see [themes.md](./themes.md)) | `propose_create`, `propose_activate`, `propose_delete` | `roles.manage` |
+| `quality_audits` (#553 — accept findings, publish over a failed check) | `propose_accept`, `propose_publish_anyway` | `content.write` (accept) / `deploy.trigger` (publish anyway), checked inside `execute_proposal` |
 
 Plus three older proposal flows that share the spirit but predate
 the unified shape: `site_memory_proposals`, `skill_proposals`,

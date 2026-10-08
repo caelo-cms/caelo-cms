@@ -29,6 +29,8 @@ export interface PulumiUpInputs {
   cloudSqlTier: string;
   cloudSqlHa: boolean;
   adminMinInstances: number;
+  /** #553 — admin memory (`2Gi`): it runs the Lighthouse quality audit. */
+  adminMemory: string;
   gatewayMinInstances: number;
   wafAdaptiveProtection: boolean;
   iapAllowlist: string[];
@@ -192,6 +194,7 @@ export async function pulumiUpGcp(
     [`${ns}:cloudSqlTier`]: { value: inputs.cloudSqlTier },
     [`${ns}:cloudSqlHa`]: { value: String(inputs.cloudSqlHa) },
     [`${ns}:adminMinInstances`]: { value: String(inputs.adminMinInstances) },
+    [`${ns}:adminMemory`]: { value: inputs.adminMemory },
     [`${ns}:gatewayMinInstances`]: { value: String(inputs.gatewayMinInstances) },
     ...(provider === "gcp"
       ? { [`${ns}:wafAdaptiveProtection`]: { value: String(inputs.wafAdaptiveProtection) } }

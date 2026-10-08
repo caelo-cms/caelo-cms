@@ -47,7 +47,7 @@ Requires `az login` as a service principal with Owner on the resource group, OR 
 A small install lands around $65/mo on Azure:
 
 - Azure DB flexible-server (zone-redundant, GP_Standard_D2s_v3): ~$45
-- Container Apps low-traffic: ~$5
+- Container Apps low-traffic: ~$5 (the admin runs with `adminMemory`, default 2 GiB / 1 vCPU, for the [quality checks](/quality-gate))
 - Blob Storage + Front Door cache hits: ~$5
 - Front Door + Key Vault: ~$10
 

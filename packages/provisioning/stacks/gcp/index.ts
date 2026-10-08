@@ -31,6 +31,7 @@ import {
   staticPublisherServiceAccountId,
 } from "../../dist/gcp-names.js";
 import {
+  ADMIN_MEMORY_DEFAULT,
   adminEnvContract,
   type CloudRunEnvVar,
   type CloudRunSlug,
@@ -75,6 +76,9 @@ const cloudSqlEdition = cfg.get("cloudSqlEdition") ?? "ENTERPRISE";
 // wants to `caelo-cms destroy` shouldn't hit a wall).
 const deletionProtection = cfg.getBoolean("deletionProtection") ?? false;
 const adminMinInstances = Number.parseInt(cfg.get("adminMinInstances") ?? "0", 10);
+// #553 — the admin also runs the Lighthouse quality audit; same knob and
+// default on every adapter (stack-contract.ts ADMIN_MEMORY_DEFAULT).
+const adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
 // adminMaxInstances default is intentionally low. Each admin process holds
 // TWO Bun SQL pools (admin_role on cms_admin + admin_role on cms_public),
 // each with default pool-max=10 → up to ~20 connections per instance under
@@ -682,7 +686,7 @@ const adminSvc = cloudRunService({
   serviceName: "admin",
   minInstances: adminMinInstances,
   maxInstances: adminMaxInstances,
-  memory: "1Gi",
+  memory: adminMemory,
   // 1 hour — covers the longest realistic SSE chat session (multi-tool
   // compose-page runs that orchestrate 10+ tool calls). Cloud Run's
   // 300s default truncated mid-stream and surfaced to operators as

@@ -49,6 +49,12 @@ import { loadStaticPublisher } from "../deploy/static-publisher.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
+import {
+  checkProductionBuildGate,
+  type ProductionOverride,
+  recordProductionOverride,
+} from "./quality/production-gate.js";
+import { computeRenderFingerprint } from "./quality/render-fingerprint.js";
 
 /**
  * Resolve the root directory that relative `deploy_targets.out_dir`
@@ -417,6 +423,15 @@ export const triggerDeployOp = defineOperation({
      *  Auto-redeploy passes this from the audit_events tail; manual
      *  triggers omit it for full-site rebuild. */
     changedPageIds: z.array(z.string().uuid()).optional(),
+    /**
+     * #553 — a human's explicit decision to build PRODUCTION although the
+     * staged build's quality check failed (no result). Recorded on the
+     * audit run; ignored for anything but a failed check.
+     */
+    publishAnyway: z
+      .object({ reason: z.string().trim().min(3).max(500) })
+      .strict()
+      .optional(),
   }),
   output: z.object({
     runId: z.string(),
@@ -466,10 +481,33 @@ export const triggerDeployOp = defineOperation({
           "Rebuild staging with deploy_staging, then call propose_deploy_promote (fromTarget = the staging target) so the Owner approves the go-live.",
       });
     }
+    // #553 — a production build publishes what is staged, so it passes the
+    // same quality gate as Publish live (production-gate.ts). A refusal is
+    // recorded as a failed run, so Ops and the notification bell show it
+    // even when nobody watched the request (the automatic redeploy).
+    let override: ProductionOverride | null = null;
+    if (target.env === "production") {
+      const gate = await checkProductionBuildGate(tx, ctx, input.publishAnyway);
+      if (gate.ok) override = gate.override;
+      if (!gate.ok) {
+        await tx.execute(sql`
+          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', now(),
+                  ${`Blocked by the quality gate: ${gate.message}`})
+        `);
+        return err({ kind: "HandlerError", operation: "deploy.trigger", message: gate.message });
+      }
+    }
 
+    // #553 — a staging build records main's render fingerprint as it
+    // starts, so a later direct production build can tell whether main
+    // still renders what this Stage's quality check saw (taken before the
+    // generator runs: a change landing mid-build counts as unchecked).
+    const fingerprint =
+      target.env === "staging" ? jsonbParam(await computeRenderFingerprint(tx)) : sql`NULL`;
     const runIdRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status)
-      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running')
+      INSERT INTO deploy_runs (target_id, actor_id, status, render_fingerprint)
+      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running', ${fingerprint})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const runId = runIdRows[0]?.id;
@@ -610,6 +648,10 @@ export const triggerDeployOp = defineOperation({
       }
     }
 
+    // The publish-anyway decision is recorded only now that the build it
+    // allowed is live; a failed build leaves the quality gate closed.
+    if (override) await recordProductionOverride(tx, ctx, override);
+
     await tx.execute(sql`
       UPDATE deploy_runs
       SET status = 'succeeded', finished_at = now(),
@@ -657,6 +699,9 @@ export const promoteDeployOp = defineOperation({
     fromTarget: z.string(),
     toTarget: z.string(),
     repoRoot: z.string().optional(),
+    /** #553 — promote only if this is still the source's newest build
+     *  (the automatic publish ships exactly the build its audit checked). */
+    expectedSourceRunId: z.string().uuid().optional(),
   }),
   output: z.object({
     fromRunId: z.string(),
@@ -700,6 +745,13 @@ export const promoteDeployOp = defineOperation({
         kind: "HandlerError",
         operation: "deploy.promote",
         message: `no succeeded build to promote from '${from.name}' — run Stage first (deploy.trigger targetName=${from.name}); Publish live only copies an already-staged build`,
+      });
+    }
+    if (input.expectedSourceRunId && input.expectedSourceRunId !== fromRunId) {
+      return err({
+        kind: "HandlerError",
+        operation: "deploy.promote",
+        message: `a newer build was staged on '${from.name}' since build ${input.expectedSourceRunId}; that newer build goes through its own quality check before it can be published`,
       });
     }
 

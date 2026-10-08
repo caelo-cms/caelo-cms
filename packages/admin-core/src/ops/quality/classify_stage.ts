@@ -199,7 +199,7 @@ async function kindOnlyChanges(tx: Tx, w: Window): Promise<StageChange[]> {
  * Pages whose rendering the changes touch: changed pages and placements,
  * pages placing a module whose code changed, pages on a changed template.
  */
-async function touchedPageIds(tx: Tx, changes: readonly StageChange[]): Promise<string[]> {
+export async function touchedPageIds(tx: Tx, changes: readonly StageChange[]): Promise<string[]> {
   const direct = new Set<string>();
   const moduleIds: string[] = [];
   const templateIds: string[] = [];

@@ -284,7 +284,12 @@ export async function drainAuditQueue(deps: WorkerDeps): Promise<number> {
       return processed;
     }
     const run = (claimed.value as { run: ClaimedAuditRun | null }).run;
-    if (!run) return processed;
+    if (!run) {
+      // claim_next's sweep may just have ended interrupted or superseded
+      // automatic runs; they are settled like finished ones.
+      await settleAutomaticStages(deps);
+      return processed;
+    }
     try {
       await processClaimedRun(deps, run);
     } catch (e) {
@@ -294,7 +299,35 @@ export async function drainAuditQueue(deps: WorkerDeps): Promise<number> {
         message: e instanceof Error ? e.message : String(e),
       });
     }
+    // An audit queued by the automatic redeploy publishes (or stops) now
+    // that its result is in; a no-op when no automatic Stage ended.
+    await settleAutomaticStages(deps);
     processed += 1;
+  }
+}
+
+/** Publish or stop every automatic Stage whose audit ended (#553). */
+async function settleAutomaticStages(deps: WorkerDeps): Promise<void> {
+  const settled = await execute(
+    deps.registry,
+    deps.adapter,
+    WORKER_CTX,
+    "quality_audits.settle_auto_publish",
+    {},
+  );
+  if (!settled.ok) {
+    console.error("[quality-audit-worker] settle_auto_publish failed", settled.error);
+    return;
+  }
+  const { settled: runs } = settled.value as {
+    settled: { auditRunId: string; outcome: string; message: string | null }[];
+  };
+  for (const r of runs) {
+    if (r.outcome === "blocked") {
+      console.warn(
+        `[quality-audit-worker] automatic publish of audit ${r.auditRunId} stopped: ${r.message}`,
+      );
+    }
   }
 }
 

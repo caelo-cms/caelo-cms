@@ -10,7 +10,7 @@
  * runs `docker compose up -d`.
  */
 
-import { publicSiteUrl } from "./stack-contract.js";
+import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB, publicSiteUrl } from "./stack-contract.js";
 
 export interface ComposeSpec {
   readonly domain: string;
@@ -27,9 +27,21 @@ export interface ComposeSpec {
   readonly anthropicApiKey?: string;
   readonly resendApiKey?: string;
   readonly diskSize: string;
+  /**
+   * #553 — memory reserved for the admin (it runs the Lighthouse quality
+   * audit). Same `adminMemory` knob + default as every adapter
+   * (stack-contract.ts); compose reserves it rather than capping it, so a
+   * busy host never OOM-kills the admin at the limit.
+   */
+  readonly adminMemory?: string;
 }
 
 export function generateDockerCompose(spec: ComposeSpec): string {
+  const adminMemory = spec.adminMemory ?? ADMIN_MEMORY_DEFAULT;
+  const adminMemoryMiB = memoryQuantityMiB(adminMemory);
+  if (adminMemoryMiB === null) {
+    throw new Error(`adminMemory "${adminMemory}" is not a memory quantity (e.g. 2Gi)`);
+  }
   const env = (k: string, v: string | undefined): string =>
     v ? `      ${k}: "${escapeYaml(v)}"` : "";
   return `# SPDX-License-Identifier: MPL-2.0
@@ -95,6 +107,7 @@ services:
     volumes:
       - ../..:/app
     command: bun run --filter @caelo-cms/admin start
+    mem_reservation: ${adminMemoryMiB}m
     environment:
       ADMIN_DATABASE_URL: "postgres://caelo:${escapeYaml(spec.postgresPassword)}@postgres:5432/cms_admin"
       PUBLIC_ADMIN_DATABASE_URL: "postgres://caelo:${escapeYaml(spec.postgresPassword)}@postgres:5432/cms_public"

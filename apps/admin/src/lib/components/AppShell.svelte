@@ -3,6 +3,7 @@
   import { page } from "$app/state";
   import {
     Bug,
+    Gauge,
     FileText,
     Image as ImageIcon,
     Layers,
@@ -85,6 +86,12 @@
         href: "/security/deployments",
         label: "Deployments",
         icon: Rocket,
+        show: has("ops.view"),
+      },
+      {
+        href: "/security/quality",
+        label: "Quality",
+        icon: Gauge,
         show: has("ops.view"),
       },
       {

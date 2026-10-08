@@ -50,6 +50,13 @@ export const runSummarySchema = z.object({
   retryOf: z.string().nullable(),
   /** An editor's recorded "publish anyway" over this failed audit. */
   publishOverride: z.object({ by: z.string(), reason: z.string(), at: z.string() }).nullable(),
+  /** Queued by the automatic redeploy: whether it published or stopped. */
+  autoPublish: z
+    .object({
+      outcome: z.enum(["published", "blocked"]).nullable(),
+      message: z.string().nullable(),
+    })
+    .nullable(),
 });
 
 export type RunSummary = z.infer<typeof runSummarySchema>;
@@ -73,6 +80,9 @@ export interface RunDbRow {
   publish_override_by: string | null;
   publish_override_reason: string | null;
   publish_override_at: string | Date | null;
+  auto_publish: boolean;
+  auto_publish_outcome: "published" | "blocked" | null;
+  auto_publish_message: string | null;
 }
 
 export const RUN_COLUMNS = sql`
@@ -81,7 +91,8 @@ export const RUN_COLUMNS = sql`
   cardinality(q.target_page_ids) AS page_count, q.problem_count, q.base_url,
   q.error_code, q.error_message, q.created_at, q.started_at, q.finished_at,
   q.fix_round, q.retry_of::text AS retry_of, q.publish_override_by::text AS publish_override_by,
-  q.publish_override_reason, q.publish_override_at`;
+  q.publish_override_reason, q.publish_override_at,
+  q.auto_publish, q.auto_publish_outcome, q.auto_publish_message`;
 
 export function toRunSummary(r: RunDbRow): RunSummary {
   return {
@@ -108,6 +119,9 @@ export function toRunSummary(r: RunDbRow): RunSummary {
             at: iso(r.publish_override_at),
           }
         : null,
+    autoPublish: r.auto_publish
+      ? { outcome: r.auto_publish_outcome, message: r.auto_publish_message }
+      : null,
   };
 }
 
@@ -122,6 +136,8 @@ export const listAuditsOp = defineOperation({
       chatSessionId: z.string().uuid().optional(),
       deployRunId: z.string().uuid().optional(),
       status: auditRunStatusSchema.optional(),
+      /** Only runs an editor published over ("publish anyway"). */
+      publishOverrideOnly: z.boolean().default(false),
       limit: z.number().int().min(1).max(200).default(20),
     })
     .strict(),
@@ -132,6 +148,7 @@ export const listAuditsOp = defineOperation({
       filters.push(sql` AND q.chat_session_id = ${input.chatSessionId}::uuid`);
     if (input.deployRunId) filters.push(sql` AND q.deploy_run_id = ${input.deployRunId}::uuid`);
     if (input.status) filters.push(sql` AND q.status = ${input.status}`);
+    if (input.publishOverrideOnly) filters.push(sql` AND q.publish_override_by IS NOT NULL`);
     const rows = (await tx.execute(sql`
       SELECT ${RUN_COLUMNS}
       FROM quality_audit_runs q

@@ -77,7 +77,8 @@ Production promotion goes through the **Ops** view in the admin (`/security/depl
 A small docs-site-shaped install runs ~$45/mo on GCP:
 
 - Cloud SQL `db-g1-small` HA: ~$30
-- Cloud Run (low traffic, scales to zero idle): ~$3
+- Cloud Run (low traffic, scales to zero idle): ~$3 — the admin runs with 2 GiB (`adminMemory`) for the [quality checks](/quality-gate); memory is billed only while an instance runs
+- Quality checks (Lighthouse on the admin, a few Stages a day): ~$1
 - Cloud Storage + Cloud CDN: ~$2 with cache hits
 - Load balancer + IP: ~$10
 
@@ -137,7 +138,7 @@ Google only maps a domain for a verified owner of it. If you have not verified y
 1. Resolves the release images and verifies their signatures.
 2. Ensures the gateway's own service account and the generated runtime secrets (the internal-API and tool-approval keys) exist, creating them once in Secret Manager. Then ensures the IAM bindings and Cloud CDN settings the release's infrastructure declares — each service account can read exactly the secrets its service uses. It only adds what is missing and never removes anything. If a binding the install needs can't be added (usually a missing IAM permission on your gcloud account), it stops here: bindings it already added stay (they are additive and harmless), but no migration has run and no traffic has shifted. Fix the reported binding and re-run; `upgrade` skips what is already in place.
 3. Applies the database migrations.
-4. Rolls the admin and gateway to the new images. Configuration the release expects (for example the public site URL your canonical tags and sitemap use) is applied in the same step, so it lands in the same new revision and rolls back with it. Secrets are Secret Manager references, never plain values: the database URLs carry no password, and the password reaches the services from Secret Manager.
+4. Rolls the admin and gateway to the new images. The admin's memory is raised to the release's default (2 GiB for the [quality checks](/quality-gate)) if it runs with less; a larger value you set is kept. Configuration the release expects (for example the public site URL your canonical tags and sitemap use) is applied in the same step, so it lands in the same new revision and rolls back with it. Secrets are Secret Manager references, never plain values: the database URLs carry no password, and the password reaches the services from Secret Manager.
 5. Records the images it rolled to. Re-running the installer later keeps that release instead of switching to the newest one — version changes always go through `upgrade`.
 
 ## Common issues

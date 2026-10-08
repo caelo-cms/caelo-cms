@@ -40,8 +40,9 @@ export type StageChange =
       readonly entity: "page";
       readonly entityId: string;
       readonly label: string;
-      /** `published` = was not live on main and is published now. */
-      readonly change: "created" | "published" | "updated" | "deleted";
+      /** `published` = was not live on main and is published now;
+       *  `template_changed` = a live page moved to another template. */
+      readonly change: "created" | "published" | "template_changed" | "updated" | "deleted";
     }
   | { readonly entity: "placement"; readonly entityId: string; readonly label: string }
   | { readonly entity: "content"; readonly entityId: string; readonly label: string }
@@ -86,6 +87,7 @@ function ruleFor(change: StageChange): ClassificationReason["rule"] | null {
     case "theme":
       return "theme";
     case "page":
+      if (change.change === "template_changed") return "template";
       return change.change === "created" || change.change === "published" ? "new_page" : null;
     case "pluginConfig":
       return "plugin_config";

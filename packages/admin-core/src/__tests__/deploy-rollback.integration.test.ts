@@ -17,6 +17,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
+import { openQualityGate } from "./fixtures/quality-gate.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -138,6 +139,7 @@ describe("deploy.rollback", () => {
     });
 
     // Build 1 — VERSION_ONE.
+    await openQualityGate(adapter);
     const b1 = await execute(registry, adapter, HUMAN, "deploy.trigger", {
       targetName: "production",
       repoRoot: testRoot,
@@ -150,6 +152,8 @@ describe("deploy.rollback", () => {
       moduleId: modId,
       html: "<p>VERSION_TWO</p>",
     });
+    // The module change is new rendering: it needs a checked Stage first.
+    await openQualityGate(adapter);
     const b2 = await execute(registry, adapter, HUMAN, "deploy.trigger", {
       targetName: "production",
       repoRoot: testRoot,

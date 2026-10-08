@@ -49,7 +49,9 @@ import {
   ensureStackInvariants,
   type LiveEnvValue,
   liveContainerEnv,
+  liveContainerMemory,
   liveEnvHasInlinePassword,
+  planAdminMemory,
   planContractEnv,
   rollService,
   serviceRollArgs,
@@ -273,12 +275,16 @@ interface ServicePlan {
   readonly priorRevision: string;
   /** Env vars the service runs with now (for the env-contract diff). */
   readonly liveEnv: ReadonlyMap<string, LiveEnvValue>;
+  /** Container memory limit now (null = Cloud Run's default). */
+  readonly liveMemory: string | null;
 }
 
 /** A service plan plus the env changes its roll applies. */
 interface RollPlan extends ServicePlan {
   readonly envFlags: readonly string[];
   readonly envChanges: readonly EnvChange[];
+  /** #553 — e.g. `--memory=2Gi` when the admin runs below the stack default. */
+  readonly resourceFlags: readonly string[];
 }
 
 /**
@@ -521,6 +527,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       imageRef: `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}@${digest}`,
       priorRevision,
       liveEnv: liveContainerEnv(serviceJson),
+      liveMemory: liveContainerMemory(serviceJson),
     });
   }
   const install = {
@@ -539,13 +546,23 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     log.error(envPlan.error);
     return;
   }
-  let rolls: RollPlan[] = plans.map((p) => ({
-    ...p,
-    envFlags: envPlan.services[p.slug].flags,
-    envChanges: envPlan.services[p.slug].changes,
-  }));
+  let rolls: RollPlan[] = plans.map((p) => {
+    // #553 — the admin runs the Lighthouse quality audit; raise it to the
+    // stack's memory default (never lowered; an unparsable value is kept).
+    const memory = p.slug === "admin" ? planAdminMemory(p.liveMemory) : null;
+    if (memory && !memory.ok) log.warn(yellow(`admin memory left as is: ${memory.error}`));
+    return {
+      ...p,
+      envFlags: envPlan.services[p.slug].flags,
+      envChanges: envPlan.services[p.slug].changes,
+      resourceFlags: memory?.ok ? memory.flags : [],
+    };
+  });
   sPre.stop(green(`Pre-flight ok — ${rolls.length} services planned`));
   for (const roll of rolls) {
+    for (const f of roll.resourceFlags) {
+      log.info(`${roll.slug} ${bold("resources")}: ${roll.liveMemory ?? dim("(default)")} → ${f}`);
+    }
     for (const c of roll.envChanges) {
       log.info(
         `${roll.slug} env ${bold(c.name)}: ${c.from === undefined ? dim("(unset)") : c.from} → ${c.to === undefined ? dim("(removed)") : c.to}`,
@@ -775,6 +792,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
             ? runServiceAccountEmail(meta.projectId, GCP_STACK_ENV)
             : gatewayServiceAccountEmail(meta.projectId, GCP_STACK_ENV),
         envFlags: plan.envFlags,
+        resourceFlags: plan.resourceFlags,
       }),
     );
     if (!upd.ok) {

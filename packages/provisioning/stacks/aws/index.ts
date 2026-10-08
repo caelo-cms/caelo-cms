@@ -32,6 +32,7 @@ import * as awsx from "@pulumi/awsx";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
+import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "../../dist/stack-contract.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -40,6 +41,16 @@ const _region = cfg.get("region") ?? "us-east-1";
 const rdsInstanceClass = cfg.get("rdsInstanceClass") ?? "db.t4g.small";
 const _fargateCpu = cfg.get("fargateCpu") ?? "512";
 const _fargateMemoryMb = cfg.get("fargateMemoryMb") ?? "1024";
+// #553 — the admin's memory, same knob + default as every adapter
+// (stack-contract.ts). This stack does not define ECS task definitions for
+// any Caelo service yet (see `fargateCpu` / `fargateMemoryMb`); the value
+// is validated now so a config set today fails loudly instead of being
+// ignored, and the admin task definition sizes itself from it.
+const adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
+const _adminMemoryMiB = memoryQuantityMiB(adminMemory);
+if (_adminMemoryMiB === null) {
+  throw new Error(`caelo-aws:adminMemory "${adminMemory}" is not a memory quantity (e.g. 2Gi)`);
+}
 
 // Pulumi stack name doubles as the environment label so a single
 // project supports `pulumi stack init dev|staging|production`.

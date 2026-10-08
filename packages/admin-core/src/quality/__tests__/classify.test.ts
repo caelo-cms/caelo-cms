@@ -38,6 +38,12 @@ describe("classifyStageChanges — audit", () => {
     ).toEqual(["new_page", "new_page"]);
   });
 
+  it("audits a live page moved to another template", () => {
+    expect(
+      rules([{ entity: "page", entityId: "p1", label: "/about", change: "template_changed" }]),
+    ).toEqual(["template"]);
+  });
+
   it("plugin configuration that renders on pages", () => {
     expect(rules([{ entity: "pluginConfig", entityId: "pl", label: "forms · fields" }])).toEqual([
       "plugin_config",

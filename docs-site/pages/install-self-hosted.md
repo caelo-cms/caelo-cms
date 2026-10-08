@@ -56,6 +56,7 @@ What happens:
 | Take a manual base backup | `docker compose exec postgres pgbackrest --stanza=main backup` |
 | Restore from backup | See [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
 | Rotate any secret | `/security/<area>` in the admin OR see incident-response §G |
+| Admin memory for the [quality checks](/quality-gate) | `caelo-self-hosted:adminMemory` (default `2Gi`, reserved for the admin container) |
 
 ## Upgrading
 

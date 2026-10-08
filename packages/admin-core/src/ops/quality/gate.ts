@@ -124,6 +124,7 @@ export const retryAuditOp = defineOperation({
           chatSessionId: null,
           branch: null,
           pageIds: recent.map((p) => p.id),
+          autoPublish: false,
         },
         tx,
       );
