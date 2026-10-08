@@ -125,6 +125,7 @@ import {
   updatePagesManyOp,
 } from "./ops/content/pages.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
+import { resolvePublicUrlsOp } from "./ops/content/public-urls.js";
 import { setTemplateBlocksOp } from "./ops/content/template_blocks.js";
 import {
   executeTemplateProposalOp,
@@ -605,6 +606,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setHomePageOp);
   registry.register(listPageModuleContentOp);
   registry.register(refreshCurrentPathOp);
+  registry.register(resolvePublicUrlsOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
   registry.register(proposeUninstallPluginOp);

@@ -190,6 +190,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     const below = await collectContributions([sourceId, soloId], {
       ...MAIN_RENDER,
       siteBaseUrl: BASE,
+      pageUrlStyle: "directory",
     });
     expect(below.head.size).toBe(0);
     expect(below.sitemap.size).toBe(0);
@@ -204,6 +205,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     const collected = await collectContributions([sourceId, de.pageId, fr.pageId, soloId], {
       ...MAIN_RENDER,
       siteBaseUrl: BASE,
+      pageUrlStyle: "directory",
     });
     const sourceHead = collected.head.get(sourceId);
     expect(sourceHead).toBeDefined();
@@ -211,9 +213,9 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
       e.kind === "link" ? { hreflang: e.hreflang, href: e.href } : e,
     );
     expect(links).toEqual([
-      { hreflang: "en", href: `${BASE}/t398-pricing` },
-      { hreflang: "de", href: `${BASE}/de/t398-preise` },
-      { hreflang: "x-default", href: `${BASE}/t398-pricing` },
+      { hreflang: "en", href: `${BASE}/t398-pricing/` },
+      { hreflang: "de", href: `${BASE}/de/t398-preise/` },
+      { hreflang: "x-default", href: `${BASE}/t398-pricing/` },
     ]);
     // Both published variants carry the SAME alternate set (self-referential).
     expect(collected.head.get(de.pageId)).toEqual(sourceHead);
@@ -233,9 +235,9 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     const sitemap = collected.sitemap.get(sourceId);
     expect(sitemap?.exclude).toBeUndefined();
     expect(sitemap?.alternates).toEqual([
-      { hreflang: "en", href: `${BASE}/t398-pricing` },
-      { hreflang: "de", href: `${BASE}/de/t398-preise` },
-      { hreflang: "x-default", href: `${BASE}/t398-pricing` },
+      { hreflang: "en", href: `${BASE}/t398-pricing/` },
+      { hreflang: "de", href: `${BASE}/de/t398-preise/` },
+      { hreflang: "x-default", href: `${BASE}/t398-pricing/` },
     ]);
 
     // Language selector: build-time HTML, links to both published
@@ -244,11 +246,12 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       pageId: de.pageId,
+      pageUrlStyle: "directory",
     });
     expect(html).toContain('aria-label="Language"');
-    expect(html).toContain(`<a href="${BASE}/t398-pricing" hreflang="en">English</a>`);
+    expect(html).toContain(`<a href="${BASE}/t398-pricing/" hreflang="en">English</a>`);
     expect(html).toContain(
-      `<a href="${BASE}/de/t398-preise" hreflang="de" aria-current="page">Deutsch</a>`,
+      `<a href="${BASE}/de/t398-preise/" hreflang="de" aria-current="page">Deutsch</a>`,
     );
     expect(html).not.toContain("fr");
     expect(html).not.toContain("<script");
@@ -257,6 +260,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       pageId: soloId,
+      pageUrlStyle: "directory",
     });
     expect(solo).toBe("");
 
@@ -277,6 +281,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     const hostCollected = await collectContributions([sourceId], {
       ...MAIN_RENDER,
       siteBaseUrl: BASE,
+      pageUrlStyle: "directory",
     });
     const hostLinks = (hostCollected.head.get(sourceId) ?? []).map((e) =>
       e.kind === "link" ? e.href : "",
@@ -300,7 +305,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     await sysOp("pages.set_status", { pageId: sourceId, status: "published" });
     await sysOp("pages.set_status", { pageId: de.pageId, status: "published" });
 
-    const lists = await resolveDataLists([sourceId], MAIN_RENDER);
+    const lists = await resolveDataLists([sourceId], MAIN_RENDER, "directory");
     const items = lists.get(sourceId)?.language_links ?? [];
     expect(items.map((i) => i.locale).sort()).toEqual(["de", "en"]);
     // Flat strings only — anything else would substitute as

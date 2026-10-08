@@ -50,7 +50,7 @@ When you edit a source page after its translations exist, the affected translati
 
 - **Published translations only.** A page whose German version is still in draft returns a clean 404 on the German URL — never an automatic fallback to English. That is deliberate, correct SEO behaviour.
 - **Document language.** Every page carries its language as `<html lang>` — screen readers pronounce the text correctly and search engines classify the page. A German page is announced as `de`, every other page as the site language. The site language has no default: the AI sets it from the language you write in (or from your old site when you migrate), you can say *"our site is in German"* to change it, or set it at **Security → SEO**. Until it is set, the preview flags it and publishing stops with a message saying so. The same applies to single-language sites without the plugin.
-- **hreflang + sitemap.** Published language counterparts link each other with `hreflang` alternates (including `x-default` on the default language), and the sitemap carries the same alternates. No configuration.
+- **hreflang + sitemap.** Published language counterparts link each other with `hreflang` alternates (including `x-default` on the default language), and the sitemap carries the same alternates. Every alternate and every language-switcher link is exactly the target page's canonical URL — same host, same trailing slash as your hosting serves — so search engines never see a redirect between alternates. No configuration.
 - **Language selector.** Ask the AI to add a language switcher to your header — it renders as plain HTML links at deploy time, no JavaScript.
 
 ## Removing it

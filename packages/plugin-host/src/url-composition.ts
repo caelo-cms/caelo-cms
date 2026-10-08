@@ -134,16 +134,31 @@ export interface ResolvedPageUrl {
 }
 
 /**
+ * The `host` slot alone: the page's host override, or null for the site
+ * default. Pure — annotations must already be attached to `page`. The
+ * path is materialized in `pages.current_path`; the host is not, so the
+ * public URL builder asks for it at render time ({@link resolvePageUrl}
+ * uses the same function, so both always agree).
+ */
+export function resolvePageHost(page: UrlComposePage): string | null {
+  const host = urlContributionsRegistry.bySlot("host");
+  if (host && host.contribution.slot === "host") return host.contribution.encode(page);
+  return null;
+}
+
+/** True when an active plugin claims the `host` slot — callers skip the
+ *  annotation round-trip entirely on the common single-host site. */
+export function hasHostContribution(): boolean {
+  return urlContributionsRegistry.bySlot("host") !== null;
+}
+
+/**
  * Compose a page's public URL from the active contributions. Pure —
  * annotations must already be attached to `page`.
  */
 export function resolvePageUrl(page: UrlComposePage): ResolvedPageUrl {
   const full = urlContributionsRegistry.bySlot("full-path");
-  const host = urlContributionsRegistry.bySlot("host");
-  let hostValue: string | null = null;
-  if (host && host.contribution.slot === "host") {
-    hostValue = host.contribution.encode(page);
-  }
+  const hostValue = resolvePageHost(page);
 
   if (full && full.contribution.slot === "full-path") {
     const path = full.contribution.encode(page);
