@@ -216,7 +216,7 @@ describe("#451 — consent-manager", () => {
   });
 
   it("offers the categories to a module as a data list, not as markup", async () => {
-    const lists = await resolveDataLists([pageId], MAIN_RENDER);
+    const lists = await resolveDataLists([pageId], MAIN_RENDER, "directory");
     const items = lists.get(pageId)?.consent_categories;
     expect(items).toBeDefined();
     expect(items?.map((i) => i.key)).toEqual(["necessary", "functional", "analytics", "marketing"]);

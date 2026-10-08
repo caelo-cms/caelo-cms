@@ -427,6 +427,10 @@ export async function generateSite(args: {
   // prefixes and slug formats are materialized there by the write ops),
   // so generator + canonical + sitemap agree by construction.
 
+  // #590 — the one style every URL of this build follows: emitted file
+  // paths, canonical, sitemap, and the page links plugins list.
+  const pageUrlStyle = target.pageUrlStyle ?? "directory";
+
   // issue #302 — fail loudly when no page will land at the bucket root.
   const plannedPaths = pageRows.map((p) => pageOutputPath(p.current_path, target.pageUrlStyle));
   const rootEligibleSlugs = pageRows.map((p) => p.slug);
@@ -654,6 +658,7 @@ export async function generateSite(args: {
   const allLists = await resolveDataLists(
     pageRows.map((p) => p.page_id),
     MAIN_RENDER,
+    pageUrlStyle,
   );
   const dormantLists = Object.fromEntries(pluginDataListsRegistry.dormantNames());
   // #450 — withheld modules, resolved ONCE for the build. Asking per
@@ -834,7 +839,7 @@ export async function generateSite(args: {
     buildDir,
     pages: composedPages,
     settings: seoSettings,
-    pageUrlStyle: target.pageUrlStyle,
+    pageUrlStyle,
   });
   if (seoResult.sitemapEmitted) fileCount += 1;
 
@@ -848,6 +853,7 @@ export async function generateSite(args: {
       adapter: args.adapter,
       pages: composedPages,
       bakeTargets,
+      pageUrlStyle,
     });
   }
 

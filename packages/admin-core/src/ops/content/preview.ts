@@ -23,6 +23,7 @@ import {
   pluginDataListsRegistry,
   resolveDataLists,
   resolveModuleDeferrals,
+  resolvePublicPageUrls,
 } from "@caelo-cms/plugin-host";
 import type { DeferralCandidate } from "@caelo-cms/plugin-sdk";
 import { defineOperation } from "@caelo-cms/query-api";
@@ -43,7 +44,6 @@ import {
   type ModuleFieldKind,
   ok,
   renderSeoHead,
-  resolveCanonicalUrl,
   resolveDocumentLanguage,
   type SiteSeoSettings,
   scanCssVars,
@@ -60,6 +60,7 @@ import {
   type RenderResolver,
   renderModuleWithContent,
 } from "./preview-render.js";
+import { loadPublishPageUrlStyle } from "./public-urls.js";
 
 interface ModuleSourceRow {
   block_name: string;
@@ -711,7 +712,21 @@ export const renderPagePreviewOp = defineOperation({
     // Plugin data lists for THIS page: the editor preview must show the
     // same thing the deploy will, including the loud marker when a
     // plugin whose list a module iterates has been switched off.
-    const resolvedLists = await resolveDataLists([input.pageId], renderScope);
+    // #590 — every URL the preview shows (canonical, plugin hreflang,
+    // switcher links) follows the style of the target Publish serves, so
+    // the editor shows the URLs the live site will carry.
+    const pageUrlStyle = await loadPublishPageUrlStyle(tx);
+    if (pageUrlStyle === null) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.render_preview",
+        message:
+          "no default deploy target — the preview needs its page URL style to render canonical " +
+          "and language links. Next step: run the cms_admin migrations (they seed the " +
+          "production target) or mark a deploy target as default under Ops → Deploy.",
+      });
+    }
+    const resolvedLists = await resolveDataLists([input.pageId], renderScope, pageUrlStyle);
     const pluginLists = {
       dataLists: resolvedLists.get(input.pageId) ?? {},
       dormantDataLists: Object.fromEntries(pluginDataListsRegistry.dormantNames()),
@@ -1172,14 +1187,24 @@ export const renderPagePreviewOp = defineOperation({
       }
     }
     // #390 — canonical follows the MATERIALIZED composed path (home
-    // designation + plugin URL shape are baked into current_path).
+    // designation + plugin URL shape are baked into current_path); #590 —
+    // through the same builder as the generator and plugin hreflang.
     const canonicalOverride = seoRow?.canonical_url || null;
     const canonical = siteBaseUrl
-      ? resolveCanonicalUrl({
-          siteBaseUrl,
-          pagePath: pageRow.current_path,
-          override: canonicalOverride,
-        })
+      ? ((
+          await resolvePublicPageUrls(
+            [
+              {
+                id: input.pageId,
+                slug: pageRow.slug,
+                currentPath: pageRow.current_path,
+                canonicalOverride,
+              },
+            ],
+            { siteBaseUrl, pageUrlStyle },
+            renderScope,
+          )
+        ).get(input.pageId) ?? null)
       : canonicalOverride;
     const headBlock = renderSeoHead({
       title: pageRow.title,
@@ -1197,7 +1222,7 @@ export const renderPagePreviewOp = defineOperation({
     // surface and the static generator refuses to build in either, so no
     // published page diverges from this.
     const contributions = siteBaseUrl
-      ? await collectContributions([input.pageId], { siteBaseUrl, ...renderScope })
+      ? await collectContributions([input.pageId], { siteBaseUrl, pageUrlStyle, ...renderScope })
       : null;
     html = injectSeoIntoHead(
       html,

@@ -127,6 +127,7 @@ describe("#391 — head/sitemap contribution collection", () => {
     const collected = await collectContributions([PAGE_A], {
       ...MAIN_RENDER,
       siteBaseUrl: "https://example.com",
+      pageUrlStyle: "directory",
     });
     const entries = collected.head.get(PAGE_A) ?? [];
     expect(entries).toHaveLength(3);
@@ -170,7 +171,11 @@ describe("#391 — head/sitemap contribution collection", () => {
       ],
     });
     await expect(
-      collectContributions([PAGE_A], { ...MAIN_RENDER, siteBaseUrl: "https://example.com" }),
+      collectContributions([PAGE_A], {
+        ...MAIN_RENDER,
+        siteBaseUrl: "https://example.com",
+        pageUrlStyle: "directory",
+      }),
     ).rejects.toThrow(/contradictory head entries/);
   });
 
@@ -195,6 +200,7 @@ describe("#391 — head/sitemap contribution collection", () => {
     const collected = await collectContributions([PAGE_A], {
       ...MAIN_RENDER,
       siteBaseUrl: "https://example.com",
+      pageUrlStyle: "directory",
     });
     expect(collected.sitemap.get(PAGE_A)).toEqual({
       exclude: true,
@@ -214,7 +220,11 @@ describe("#391 — head/sitemap contribution collection", () => {
         ],
       });
     const collect = () =>
-      collectContributions([PAGE_A], { ...MAIN_RENDER, siteBaseUrl: "https://example.com" });
+      collectContributions([PAGE_A], {
+        ...MAIN_RENDER,
+        siteBaseUrl: "https://example.com",
+        pageUrlStyle: "directory",
+      });
 
     await boot({ [PAGE_A]: "de-AT" }, { [PAGE_A]: "de-AT" });
     expect((await collect()).lang.get(PAGE_A)).toBe("de-AT");
