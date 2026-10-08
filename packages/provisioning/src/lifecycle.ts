@@ -17,11 +17,42 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
+import { join, resolve as resolvePath } from "node:path";
 import { cancel, confirm, isCancel, log, note, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { gcloud } from "./gcloud.js";
-import { type InstallMetadata, installRoot, readMetadata, readSecret } from "./install-state.js";
+import { GCP_STACK_ENV, gatewayServiceAccountEmail, runServiceAccountEmail } from "./gcp-names.js";
+import {
+  type ImageDigests,
+  type InstallMetadata,
+  installRoot,
+  readMetadata,
+  readSecret,
+  recordImageDigests,
+} from "./install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
+import {
+  ensureGatewayServiceAccount,
+  ensureGeneratedSecrets,
+  plainGeneratedSecretSeed,
+  ROTATABLE_SECRETS,
+  type RotatableSecret,
+  readSecretReplication,
+  rotateRuntimeSecret,
+  rotationRefusal,
+} from "./runtime-secrets.js";
+import { MCP_ENV_VAR } from "./stack-contract.js";
+import {
+  type DeployedService,
+  type EnvChange,
+  ensureStackInvariants,
+  type LiveEnvValue,
+  liveContainerEnv,
+  liveEnvHasInlinePassword,
+  planContractEnv,
+  rollService,
+  serviceRollArgs,
+} from "./stack-converge.js";
 
 /** Find the single install on this machine — or warn if 0/multiple. */
 function findActiveInstall(): { installId: string; meta: InstallMetadata } | null {
@@ -239,6 +270,14 @@ interface ServicePlan {
   readonly imageRef: string;
   readonly digest: string;
   readonly priorRevision: string;
+  /** Env vars the service runs with now (for the env-contract diff). */
+  readonly liveEnv: ReadonlyMap<string, LiveEnvValue>;
+}
+
+/** A service plan plus the env changes its roll applies. */
+interface RollPlan extends ServicePlan {
+  readonly envFlags: readonly string[];
+  readonly envChanges: readonly EnvChange[];
 }
 
 /**
@@ -279,6 +318,26 @@ async function resolveTagDigest(
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** The deployed service as `gcloud run services describe --format=json` returns it. */
+async function describeServiceJson(
+  projectId: string,
+  region: string,
+  serviceName: string,
+): Promise<string | null> {
+  const r = await gcloud([
+    "run",
+    "services",
+    "describe",
+    serviceName,
+    "--region",
+    region,
+    "--project",
+    projectId,
+    "--format=json",
+  ]);
+  return r.ok ? r.stdout : null;
 }
 
 /** Look up the currently-serving Cloud Run revision so we can roll back to it. */
@@ -372,7 +431,7 @@ async function resolveAdminIapResource(
 }
 
 export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
-  const { meta } = requireInstall();
+  const { installId, meta } = requireInstall();
   // v0.5.15 — extended to cover gcp-firebase too. Both providers share
   // the identical admin + gateway shape on Cloud Run (Artifact
   // Registry image, `caelo-production-<slug>` service naming, the same
@@ -449,15 +508,49 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       sPre.stop(red(`Could not capture current revision for ${slug} — refusing to roll`));
       return;
     }
+    const serviceJson = await describeServiceJson(meta.projectId, region, serviceName);
+    if (!serviceJson) {
+      sPre.stop(red(`Could not read the ${slug} service's configuration — refusing to roll`));
+      return;
+    }
     plans.push({
       slug,
       serviceName,
       digest,
       imageRef: `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}@${digest}`,
       priorRevision,
+      liveEnv: liveContainerEnv(serviceJson),
     });
   }
-  sPre.stop(green(`Pre-flight ok — ${plans.length} services planned`));
+  const install = {
+    provider: meta.provider,
+    projectId: meta.projectId,
+    env: GCP_STACK_ENV,
+    domain: meta.domain,
+    region,
+  };
+  const deployed = Object.fromEntries(
+    plans.map((p) => [p.slug, { serviceName: p.serviceName, liveEnv: p.liveEnv }]),
+  ) as Record<"admin" | "gateway", DeployedService>;
+  const envPlan = planContractEnv(install, deployed);
+  if (!envPlan.ok) {
+    sPre.stop(red("Pre-flight failed: the install's env contract can't be applied"));
+    log.error(envPlan.error);
+    return;
+  }
+  let rolls: RollPlan[] = plans.map((p) => ({
+    ...p,
+    envFlags: envPlan.services[p.slug].flags,
+    envChanges: envPlan.services[p.slug].changes,
+  }));
+  sPre.stop(green(`Pre-flight ok — ${rolls.length} services planned`));
+  for (const roll of rolls) {
+    for (const c of roll.envChanges) {
+      log.info(
+        `${roll.slug} env ${bold(c.name)}: ${c.from === undefined ? dim("(unset)") : c.from} → ${c.to === undefined ? dim("(removed)") : c.to}`,
+      );
+    }
+  }
 
   // ────────────────────────────────────────────────────────────────
   // P21 ship 4 — cosign verify each resolved digest against the
@@ -478,6 +571,78 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   }
 
   // ────────────────────────────────────────────────────────────────
+  // Runtime identities + secrets the env contract references: the
+  // gateway's own run SA and the CLI-generated secrets
+  // (runtime-secrets.ts). Created once, never overwritten. Must exist
+  // before the IAM invariants bind them and before the rolls reference
+  // them, so any failure aborts here.
+  // ────────────────────────────────────────────────────────────────
+  const sRt = spinner();
+  sRt.start("Ensuring the gateway service account + generated runtime secrets...");
+  const secretsTarget = { projectId: meta.projectId, env: GCP_STACK_ENV };
+  const replication = await readSecretReplication(secretsTarget);
+  const runtime = [
+    await ensureGatewayServiceAccount(secretsTarget),
+    ...(replication.ok
+      ? await ensureGeneratedSecrets({
+          ...secretsTarget,
+          replication: replication.replication,
+          seed: plainGeneratedSecretSeed(deployed.admin.liveEnv),
+        })
+      : [{ id: "secret replication", status: "failed" as const, error: replication.error }]),
+  ];
+  const runtimeFailed = runtime.filter((o) => o.status === "failed");
+  if (runtimeFailed.length > 0) {
+    sRt.stop(red("Runtime identities/secrets could not be ensured. Aborting upgrade."));
+    for (const o of runtimeFailed) log.error(red(`  FAILED: ${o.id}\n    ${o.error ?? ""}`));
+    log.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
+    return;
+  }
+  sRt.stop(green("Gateway service account + runtime secrets ok"));
+  for (const o of runtime.filter((o) => o.status === "applied")) log.info(`  created: ${o.id}`);
+
+  // ────────────────────────────────────────────────────────────────
+  // Converge the infrastructure the stack declares but upgrade can't get
+  // from an image roll: IAM bindings + CDN policy added to the stacks after
+  // this install was provisioned (stack-contract.ts). Additive + idempotent.
+  // A failure the install can't work without aborts here, before
+  // migrations or any traffic shift; the rest warn.
+  // ────────────────────────────────────────────────────────────────
+  const sInv = spinner();
+  sInv.start("Ensuring the IAM bindings + CDN settings the stack declares...");
+  const invariants = await ensureStackInvariants({
+    provider: meta.provider,
+    projectId: meta.projectId,
+    region,
+    env: GCP_STACK_ENV,
+    services: Object.fromEntries(rolls.map((r) => [r.slug, r.serviceName])) as Record<
+      "admin" | "gateway",
+      string
+    >,
+  });
+  const applied = invariants.outcomes.filter((o) => o.status === "applied");
+  const failed = invariants.outcomes.filter((o) => o.status === "failed");
+  if (invariants.mustAbort) {
+    sInv.stop(red("Stack invariants could not be ensured. Aborting upgrade."));
+  } else {
+    sInv.stop(
+      green(
+        `Stack invariants ok (${invariants.outcomes.length - failed.length}/${invariants.outcomes.length}, ${applied.length} applied)`,
+      ),
+    );
+  }
+  for (const o of applied) log.info(`  applied: ${o.id} ${dim(`(${o.why})`)}`);
+  for (const o of failed) {
+    const line = `  ${o.onFailure === "abort" ? "FAILED" : "not applied"}: ${o.id} — ${o.why}\n    ${o.error ?? ""}`;
+    if (o.onFailure === "abort") log.error(red(line));
+    else log.warn(yellow(line));
+  }
+  if (invariants.mustAbort) {
+    log.warn("No traffic was shifted and no migrations ran. Fix the bindings above and re-run.");
+    return;
+  }
+
+  // ────────────────────────────────────────────────────────────────
   // P21 ship 3 — DB migrations BEFORE traffic shifts. Idempotent
   // (drizzle bookkeeping table); a failure here aborts the upgrade
   // before the new image touches traffic, so the admin keeps
@@ -492,7 +657,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   // so new migrations were silently skipped. Production hit this on
   // every upgrade that introduced schema changes — the symptom was
   // post-rollout queries failing with "column does not exist".
-  const adminPlan = plans.find((p) => p.slug === "admin");
+  const adminPlan = rolls.find((p) => p.slug === "admin");
   const mig = await runMigrationsViaCloudRunJob({
     projectId: meta.projectId,
     region,
@@ -512,13 +677,11 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
 
   // ────────────────────────────────────────────────────────────────
   // Issue #37 — MCP through IAP. Idempotently ensure the MCP service
-  // account + its IAP/token-creator bindings, then hand its email to the
-  // new admin revision (CAELO_MCP_IAP_SERVICE_ACCOUNT) so /security/mcp
-  // shows a working `claude mcp add` command. Installs provisioned before
-  // this existed get it here, with no operator config. A failure only
-  // costs MCP access, so it warns instead of aborting the upgrade.
+  // account + its IAP/token-creator bindings; the admin learns the SA's
+  // email from CAELO_MCP_IAP_SERVICE_ACCOUNT in the env contract. Installs
+  // provisioned before this existed get it here, with no operator config.
+  // A failure only costs MCP access, so it warns instead of aborting.
   // ────────────────────────────────────────────────────────────────
-  let mcpServiceAccount: string | null = null;
   if (adminPlan) {
     const sMcp = spinner();
     sMcp.start("Ensuring MCP access through IAP...");
@@ -527,7 +690,6 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       ? await ensureMcpIapAccess({ projectId: meta.projectId, resource })
       : { ok: false as const, error: "admin IAP backend service not found" };
     if (mcp.ok) {
-      mcpServiceAccount = mcp.serviceAccount;
       sMcp.stop(
         green(`MCP access ready (${mcp.serviceAccount}; ${mcp.operators.length} operator(s))`),
       );
@@ -536,34 +698,45 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       log.warn(
         "The upgrade continues; external MCP clients stay blocked by IAP until this succeeds.",
       );
+      // Don't hand the admin an MCP service account that may not exist or
+      // lacks its bindings: /security/mcp would print a `claude mcp add`
+      // command that can't work. Leave the var as the service has it.
+      const replan = planContractEnv(install, deployed, { leaveUntouched: [MCP_ENV_VAR] });
+      if (replan.ok) {
+        rolls = rolls.map((r) => ({
+          ...r,
+          envFlags: replan.services[r.slug].flags,
+          envChanges: replan.services[r.slug].changes,
+        }));
+      }
     }
   }
 
   // ────────────────────────────────────────────────────────────────
   // Phase 2: roll each service, probe health, auto-rollback on fail.
   // If admin succeeds but gateway fails, also roll admin back so the
-  // operator never ends up on a mismatched-version pair.
+  // operator never ends up on a mismatched-version pair. The env
+  // contract's changes ride the same `services update` as the image, so
+  // they land in the new revision (and roll back with it). So does the
+  // service's run SA: the gateway moves to its own SA here.
   // ────────────────────────────────────────────────────────────────
   const rolled: ServicePlan[] = [];
-  for (const plan of plans) {
+  for (const plan of rolls) {
     const s = spinner();
     s.start(`Rolling ${plan.slug} → ${plan.digest.slice(0, 19)}...`);
-    const upd = await gcloud([
-      "run",
-      "services",
-      "update",
-      plan.serviceName,
-      "--region",
-      region,
-      "--project",
-      meta.projectId,
-      "--image",
-      plan.imageRef,
-      ...(plan.slug === "admin" && mcpServiceAccount
-        ? [`--update-env-vars=CAELO_MCP_IAP_SERVICE_ACCOUNT=${mcpServiceAccount}`]
-        : []),
-      "--quiet",
-    ]);
+    const upd = await rollService(
+      serviceRollArgs({
+        serviceName: plan.serviceName,
+        region,
+        projectId: meta.projectId,
+        imageRef: plan.imageRef,
+        serviceAccount:
+          plan.slug === "admin"
+            ? runServiceAccountEmail(meta.projectId, GCP_STACK_ENV)
+            : gatewayServiceAccountEmail(meta.projectId, GCP_STACK_ENV),
+        envFlags: plan.envFlags,
+      }),
+    );
     if (!upd.ok) {
       s.stop(red(`Failed: ${upd.stderr.trim()}`));
       await rollbackPriorlyRolled(meta.projectId, region, rolled);
@@ -618,6 +791,107 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     rolled.push(plan);
   }
   log.success(`Upgrade to ${bold(targetTag)} complete (admin + gateway revisions Ready).`);
+  if (rolls.some((r) => liveEnvHasInlinePassword(r.liveEnv))) {
+    // The services just moved their database password to Secret Manager,
+    // but every earlier revision still shows it in its env.
+    log.warn(
+      yellow(
+        `The database password was stored in plain env vars before this upgrade and stays readable in the services' old revisions. Rotate it now: ${bold("bunx @caelo-cms/provisioning rotate-secret postgres-password")}`,
+      ),
+    );
+  }
+
+  const digestOf = (slug: "admin" | "gateway"): string => {
+    const roll = rolls.find((r) => r.slug === slug);
+    if (!roll) throw new Error(`upgrade rolled no ${slug} service`);
+    return roll.digest;
+  };
+  await recordRolledDigests(installId, meta.provider, {
+    admin: digestOf("admin"),
+    gateway: digestOf("gateway"),
+  });
+}
+
+/**
+ * Record the digests just rolled so nothing re-deploys an older release:
+ * install.json (what a wizard re-run deploys) and the Pulumi stack config
+ * (what a plain `pulumi up` deploys). The roll already succeeded, so each
+ * write that fails warns with the exact manual fix instead of failing the
+ * upgrade, and one failing never skips the other.
+ */
+async function recordRolledDigests(
+  installId: string,
+  provider: "gcp" | "gcp-firebase",
+  digests: ImageDigests,
+): Promise<void> {
+  const reason = (e: unknown) => (e instanceof Error ? e.message.split("\n")[0] : String(e));
+  try {
+    recordImageDigests(installId, digests);
+  } catch (e) {
+    log.warn(
+      yellow(
+        `Could not record the rolled digests in ${installRoot(installId)}/install.json (${reason(e)}). Add this before re-running the installer, or it deploys the newest release instead:\n  "imageDigests": ${JSON.stringify(digests)}`,
+      ),
+    );
+  }
+  const manual = stackConfigRecovery(installId, provider, digests);
+  const passphrase = readSecret(installId, "pulumi-passphrase");
+  if (!passphrase) {
+    log.warn(
+      yellow(
+        `No Pulumi passphrase in ~/.caelo-${installId}/secrets — stack config not updated. Before any manual \`pulumi up\`, run:\n${manual}`,
+      ),
+    );
+    return;
+  }
+  try {
+    const { writeImageDigestsToStack } = await import("./wizards/gcp-pulumi.js");
+    const { removedOverrides } = await writeImageDigestsToStack({
+      installRoot: installRoot(installId),
+      pulumiPassphrase: passphrase,
+      provider,
+      digests,
+    });
+    log.info(dim("Pinned the rolled image digests in the Pulumi stack config."));
+    if (removedOverrides.length > 0) {
+      log.warn(
+        yellow(
+          `Removed ${removedOverrides.join(", ")} from the stack config: those image overrides win over the digest pins, so a later \`pulumi up\` would have rolled back to them.`,
+        ),
+      );
+    }
+  } catch (e) {
+    log.warn(
+      yellow(
+        `Could not pin the rolled digests in the Pulumi stack config (${reason(e)}). Before any manual \`pulumi up\`, run:\n${manual}`,
+      ),
+    );
+  }
+}
+
+/**
+ * Shell commands that pin `digests` in the install's own Pulumi stack, with
+ * the same workspace, backend, stack and passphrase the CLI uses — run from
+ * any directory, they cannot hit an unrelated stack.
+ */
+function stackConfigRecovery(
+  installId: string,
+  provider: "gcp" | "gcp-firebase",
+  digests: ImageDigests,
+): string {
+  const root = installRoot(installId);
+  const env = `PULUMI_BACKEND_URL=file://${join(root, "state")} PULUMI_CONFIG_PASSPHRASE="$(cat ${join(root, "secrets", "pulumi-passphrase")})"`;
+  const cwd = `--cwd ${resolvePath(import.meta.dir, "../stacks", provider)} --stack ${GCP_STACK_ENV}`;
+  const lines = Object.entries(digests).map(
+    ([svc, d]) => `  ${env} pulumi config set ${cwd} caelo-${provider}:image-digest-${svc} ${d}`,
+  );
+  if (provider === "gcp") {
+    lines.push(
+      `  ${env} pulumi config rm ${cwd} caelo-gcp:image-admin  # only if set`,
+      `  ${env} pulumi config rm ${cwd} caelo-gcp:image-gateway  # only if set`,
+    );
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -813,39 +1087,60 @@ export async function backupCommand(): Promise<void> {
 export async function rotateSecretCommand(name: string | undefined): Promise<void> {
   if (!name) {
     log.error(red("Usage: caelo-cms rotate-secret <name>"));
-    log.warn(
-      `Names: ${[
-        "postgres-password",
-        "csrf-secret",
-        "cookie-secret",
-        "secret-kek",
-        "anthropic-api-key",
-        "resend-api-key",
-      ].join(", ")}`,
-    );
+    log.warn(`Names: ${ROTATABLE_SECRETS.join(", ")}`);
     process.exit(2);
   }
+  const refusal = rotationRefusal(name);
+  if (refusal) {
+    log.error(red(refusal));
+    process.exit(2);
+  }
+  const secret = name as RotatableSecret;
   const { meta } = requireInstall();
-  if (meta.provider !== "gcp") {
+  if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") {
     log.warn(`rotate-secret for provider ${meta.provider} not yet implemented.`);
     return;
   }
-  log.warn(
-    yellow(
-      `Secret rotation v1 prints the gcloud command for you to run. Full automation lands in a follow-up.`,
-    ),
+  if (!meta.projectId) return;
+  const region = meta.region ?? "europe-west1";
+
+  const s = spinner();
+  s.start(`Rotating ${secret}...`);
+  const services: Partial<Record<"admin" | "gateway", string>> = {};
+  for (const slug of ["admin", "gateway"] as const) {
+    const serviceName = await resolveGcpResourceName(
+      "run-service",
+      `caelo-production-${slug}`,
+      meta.projectId,
+      region,
+    );
+    if (!serviceName) {
+      s.stop(red(`Could not find caelo-production-${slug}* Cloud Run service — nothing rotated`));
+      return;
+    }
+    services[slug] = serviceName;
+  }
+  const sqlInstance =
+    secret === "postgres-password"
+      ? await resolveGcpResourceName("sql-instance", "caelo-production-pg", meta.projectId)
+      : null;
+  const report = await rotateRuntimeSecret(
+    {
+      projectId: meta.projectId,
+      region,
+      env: GCP_STACK_ENV,
+      services: services as Record<"admin" | "gateway", string>,
+      ...(sqlInstance ? { sqlInstance } : {}),
+    },
+    secret,
   );
-  note(
-    [
-      bold("Run this from your terminal:"),
-      "",
-      `  ${cyan(`echo -n "<new-value>" | gcloud secrets versions add caelo-production-${name} --data-file=- --project=${meta.projectId}`)}`,
-      "",
-      `Then redeploy admin + gateway to pick up the new value:`,
-      `  ${cyan(`bunx @caelo-cms/provisioning upgrade`)}`,
-    ].join("\n"),
-    "Rotate secret",
-  );
+  if (report.ok) {
+    s.stop(green(`${secret} rotated`));
+  } else {
+    s.stop(red(`Rotating ${secret} failed`));
+  }
+  for (const step of report.steps) log.info(`  ${step}`);
+  if (report.error) log.error(red(report.error));
 }
 
 // =========================================================================

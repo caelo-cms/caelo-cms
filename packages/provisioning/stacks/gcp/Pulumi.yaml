@@ -87,8 +87,5 @@ config:
     default: false
     description: Block `pulumi destroy` on Cloud SQL + Cloud Run. Defaults off for operator-friendly teardown; flip true for production deploys you never want to accidentally destroy.
 # Optional config NOT declared above:
-#   caelo-gcp:resendApiKey  (secret) — Resend API key for newsletter / auth
-#     plugin email transport. Set via `cat key | pulumi config set --secret`.
-#     Omit to ship without email transport (plugins log to stderr until wired).
 #   caelo-gcp:image-admin / image-gateway — image tags for Cloud Run services.
 #     Default `<region>-docker.pkg.dev/<project>/caelo/<service>:latest`.
