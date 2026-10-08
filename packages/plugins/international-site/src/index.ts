@@ -278,6 +278,7 @@ async function translateVariantPage(
     system: prompt.system,
     messages: [{ role: "user", content: prompt.user }],
     maxTokens: 16_000,
+    purpose: "translation",
   });
   let payload: ReturnType<typeof translationResultPayload.parse>;
   try {

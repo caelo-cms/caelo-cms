@@ -38,6 +38,7 @@ import {
   getMediaStorage,
   lockPluginRow,
   makePluginImageProvider,
+  makePluginTextProvider,
   startChatImageGcWorker,
   startDomainEventGcWorker,
   startProposalGcWorker,
@@ -91,49 +92,6 @@ const SYSTEM_CTX: ExecutionContext = {
   requestId: "hooks",
 };
 
-// P11.5 audit fix #3 + P18 — adapter from admin-core's event-streaming
-// AIProvider to plugin-host's single-shot complete() shape. Drains the
-// stream, accumulates text + usage, returns a flat result. Costs of
-// plugin AI calls flow through the standard ai_calls accounting via
-// the plugin's actor row (caelo.actor_id) in upstream call sites.
-//
-// Resolves the provider per-call via getActiveProvider() so plugins
-// pick up a freshly-saved key without a restart. When no provider is
-// configured, complete() throws — plugin host surfaces this in the
-// plugin's error log (the plugin author can choose to surface it
-// further or fail soft).
-function makePluginHostAiProvider(): PluginHostAIProvider {
-  return {
-    complete: async (opts) => {
-      const resolved = await getActiveProvider();
-      if (!resolved) {
-        throw new Error("AI provider not configured — Owner must visit /security/ai");
-      }
-      const provider = resolved.provider;
-      let text = "";
-      let inputTokens = 0;
-      let outputTokens = 0;
-      const stream = provider.generate({
-        systemPrompt: opts.system,
-        messages: opts.messages,
-        tools: [],
-        maxTokens: opts.maxTokens,
-        temperature: opts.temperature,
-      });
-      for await (const event of stream) {
-        if (event.kind === "text-delta") text += event.text;
-        else if (event.kind === "usage") {
-          inputTokens = event.inputTokens;
-          outputTokens = event.outputTokens;
-        } else if (event.kind === "error") {
-          throw new Error(`provider error: ${event.message}`);
-        }
-      }
-      return { text, inputTokens, outputTokens };
-    },
-  };
-}
-
 // P11.5 commit 2 — bootstrap the Tier-1 plugin host.
 //
 // #387 one-trust-path: the admin host ALWAYS loads plugins from disk
@@ -171,10 +129,11 @@ async function bootstrapPlugins(): Promise<void> {
   // declare those capabilities get working handles. Plugin's
   // requestedCapabilities still gates which handles are actually attached
   // per-call; this just supplies the implementations.
-  // P18 — provider is resolved per-call via getActiveProvider(); the
-  // wrapper below throws when nothing is configured so plugin authors
-  // can decide whether to surface or fail soft.
-  const aiProvider: PluginHostAIProvider | undefined = makePluginHostAiProvider();
+  // P18 + #593 — the provider is resolved per call, by the call's declared
+  // purpose (translation → the Owner's translation model, else the chat
+  // model); it throws when nothing is configured so plugin authors can
+  // decide whether to surface or fail soft.
+  const aiProvider: PluginHostAIProvider | undefined = makePluginTextProvider();
   // The plugin-host's SnapshotEmitter type is a structural subset of
   // admin-core's `SnapshotInput`. Both expect the same fields; the cast
   // makes the structural compat explicit (TS doesn't relate the two

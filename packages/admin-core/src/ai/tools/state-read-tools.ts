@@ -15,6 +15,7 @@
  */
 
 import { z } from "zod";
+import { translationModelChoices } from "../../ops/security/ai_providers.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
 
 const noInput = z.object({}).strict();
@@ -167,31 +168,36 @@ export const listRolesTool = makeListReadTool<
  * formats only brand-neutral status fields and drops the raw value
  * (includeValue: false).
  */
-export const listAiProvidersTool = makeListReadTool<
-  Record<string, never>,
-  {
-    displayName: string;
-    isActive: boolean;
-    config: Record<string, unknown>;
-  }
->({
+type ProviderListRow = {
+  name: "anthropic" | "openai" | "google" | "local-openai-compat";
+  displayName: string;
+  isActive: boolean;
+  config: Record<string, unknown>;
+  translationModel: string | null;
+};
+
+export const listAiProvidersTool = makeListReadTool<Record<string, never>, ProviderListRow>({
   name: "list_ai_providers",
   description:
-    "List configured AI providers (display name, active flag, whether a key is configured). Key values are never returned. " +
-    "Provider changes go through propose_set_ai_provider / propose_clear_ai_provider_key (Owner-approved).",
+    "List configured AI providers (display name, active flag, whether a key is configured, chat model, translation model and the catalogue models a translation model may be set to). Key values are never returned. " +
+    "Provider changes go through propose_set_ai_provider / propose_clear_ai_provider_key; the translation model through propose_set_translation_model (all Owner-approved).",
   opName: "ai_providers.list",
   input: noInput,
   includeValue: false,
   label: "ai_providers",
-  rows: (value) =>
-    (
-      value as {
-        providers: { displayName: string; isActive: boolean; config: Record<string, unknown> }[];
-      }
-    ).providers,
+  rows: (value) => (value as { providers: ProviderListRow[] }).providers,
   columns: [
     { key: "displayName", value: (p) => p.displayName },
     { key: "active", value: (p) => (p.isActive ? "yes" : "no") },
+    {
+      key: "chatModel",
+      value: (p) => (typeof p.config.model === "string" ? p.config.model : "(provider default)"),
+    },
+    { key: "translationModel", value: (p) => p.translationModel ?? "same as chat model" },
+    {
+      key: "translationChoices",
+      value: (p) => translationModelChoices(p.name).join(" | ") || "(none — chat model only)",
+    },
     {
       key: "hasKey",
       value: (p) =>

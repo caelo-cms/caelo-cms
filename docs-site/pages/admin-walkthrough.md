@@ -39,11 +39,11 @@ The Owner-only controls. This is where you configure the AI provider, set budget
 
 Tiles:
 
-- **AI provider** — `/security/ai` — pick + configure the active provider (Anthropic / OpenAI / Google / local OpenAI-compat)
+- **AI provider** — `/security/ai` — pick + configure the active provider (Anthropic / OpenAI / Google / local OpenAI-compat). Each catalogued provider also has a **Translation model**: by default page translations run on the chat model; pick a smaller model from the provider's catalogue to make them cheaper. The chat keeps its own model. Ask the AI and it proposes the change (`propose_set_translation_model`) for your approval.
 - **Pricing** — `/security/ai/pricing` — per-model rates that drive cost calculation. The AI can also propose rates (`propose_set_ai_pricing`), e.g. for a model it finds unpriced; you approve the card in the chat.
 - **Budgets** — `/security/ai/budgets` — six caps (3 scopes × 2 op-types) with status badges. Ask the AI to change a cap and it proposes it (`propose_set_ai_budget`) for your approval.
 - **Telemetry** — `/security/ai/telemetry` — opt-in toggles + payload preview. Telemetry consent is yours alone: the AI has no tool for it.
-- **Costs** — `/security/costs` — five-panel dashboard (totals + budget status + per-day + per-attribution + roll-up)
+- **Costs** — `/security/costs` — five-panel dashboard (totals + budget status + per-day + per-attribution + roll-up); plugin spend is split by the model the calls ran on
 - **MCP tokens** — `/security/mcp` — bearer tokens for `bunx @caelo-cms/mcp-server`
 - **Plugins** — `/security/plugins` — activation, grants and the awaiting-activation queue for every plugin
 - **Email** — `/security/email` — Resend / SMTP / SES selection

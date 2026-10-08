@@ -691,6 +691,14 @@ export interface PluginCms {
   call<Input, Output>(opName: string, input: Input): Promise<Output>;
 }
 
+/**
+ * What a `ctx.ai.complete` call is for. The host maps a purpose to the
+ * model the Owner chose for it at /security/ai (e.g. a cheaper translation
+ * model); with no choice stored, or no purpose given, the call runs on the
+ * chat model. Plugins never name a model or hold a key.
+ */
+export type PluginAiPurpose = "translation";
+
 /** Tier 1 only — single-shot generation against the configured provider. */
 export interface PluginAi {
   complete(opts: {
@@ -698,6 +706,8 @@ export interface PluginAi {
     messages: Array<{ role: "user" | "assistant"; content: string }>;
     maxTokens?: number;
     temperature?: number;
+    /** Declared use of the call; selects the Owner's per-purpose model. */
+    purpose?: PluginAiPurpose;
   }): Promise<{ text: string; inputTokens: number; outputTokens: number }>;
 }
 
