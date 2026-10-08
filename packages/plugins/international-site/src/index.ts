@@ -1466,6 +1466,8 @@ export default definePlugin<PluginContextTier1>({
         "prefixDefaultLocale (optional, site-wide): true prefixes the DEFAULT locale too (/de/preise next to /en/pricing) while the default home stays at '/' with no redirect, and '/<default code>' 301s to '/'. Needs the default locale on the subdirectory strategy. Omit it to keep the current value; set it only when the operator asks for every language to carry its prefix.",
       operationName: "set_locales",
       approvalMode: "user-approval",
+      // #589 — the approver changes site-wide language and URL settings.
+      requiredPermission: "settings.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
