@@ -103,6 +103,7 @@ export const aggregateNotificationsOp = defineOperation({
         UNION ALL SELECT 1 FROM plugin_rate_limit_proposals WHERE status = 'pending'
         UNION ALL SELECT 1 FROM site_memory_proposals WHERE status = 'pending'
         UNION ALL SELECT 1 FROM skill_proposals WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM tool_approval_actions WHERE status = 'pending'
       )
       SELECT
         (SELECT count(*)::int FROM pending) AS pending_proposals,

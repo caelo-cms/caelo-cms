@@ -16,6 +16,10 @@ describe("proposalQueueRoute", () => {
     expect(proposalQueueRoute("site_defaults")).toBe("/security/seo");
   });
 
+  it("routes needsApproval tool calls to the tool-approvals queue", () => {
+    expect(proposalQueueRoute("tool_approvals")).toBe("/security/tool-approvals/pending");
+  });
+
   it("falls back to the /security/<domain>/pending convention", () => {
     expect(proposalQueueRoute("themes")).toBe("/security/themes/pending");
   });

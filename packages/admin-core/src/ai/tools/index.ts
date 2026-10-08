@@ -16,6 +16,16 @@ import {
   updatePagesManyTool,
 } from "./bulk-pages-modules.js";
 import { cancelProposalTool } from "./cancel-proposal.js";
+import {
+  getPageSeoTool,
+  listImportRunsTool,
+  listMediaUsagesTool,
+  listSkillPinDefaultsTool,
+  listStaleSeoPagesTool,
+  logImportEventsTool,
+  refreshPagePathTool,
+  setSkillPinDefaultsTool,
+} from "./content-maintenance-tools.js";
 import { createContentInstanceTool } from "./create-content-instance.js";
 import { createContentInstancesTool } from "./create-content-instances.js";
 import { createLayoutTool } from "./create-layout.js";
@@ -64,6 +74,12 @@ import { getPageLogTool } from "./get-page-log.js";
 import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
 import { grepContentTool } from "./grep-content.js";
+import {
+  getModuleImpactTool,
+  getSnapshotTool,
+  listSnapshotsTool,
+  listUnpublishedChangesTool,
+} from "./history-tools.js";
 import { importMediaFromUrlsTool } from "./import-media-from-urls.js";
 import { acceptImportPagesTool, cleanupImportRunTool } from "./import-run-actions.js";
 import { addImportPageNotesTool, getImportRunReportTool } from "./import-run-report.js";
@@ -89,6 +105,16 @@ import { mapExternalPageTypesTool } from "./map-external-page-types.js";
 import { checkRunBudgetTool, setMigrationBudgetTool } from "./migration-budget.js";
 import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
+import {
+  getAiSpendTool,
+  getEmailConfigTool,
+  getGatewayAnalyticsTool,
+  getMediaSettingsTool,
+  getPluginTool,
+  listBugReportsTool,
+  listGatewayRequestsTool,
+  listRateLimitProfilesTool,
+} from "./operator-dashboard-tools.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import {
   listPluginGrantsTool,
@@ -525,6 +551,28 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(acceptImportPagesTool);
   registry.register(cleanupImportRunTool);
   registry.register(sendTestEmailTool);
+  // Agent-tool parity, part 2: the operator dashboards and maintenance
+  // reads/writes the exceptions file listed as gaps.
+  registry.register(getAiSpendTool);
+  registry.register(getPluginTool);
+  registry.register(getGatewayAnalyticsTool);
+  registry.register(listGatewayRequestsTool);
+  registry.register(listRateLimitProfilesTool);
+  registry.register(getEmailConfigTool);
+  registry.register(listBugReportsTool);
+  registry.register(getMediaSettingsTool);
+  registry.register(listSnapshotsTool);
+  registry.register(getSnapshotTool);
+  registry.register(getModuleImpactTool);
+  registry.register(listUnpublishedChangesTool);
+  registry.register(listMediaUsagesTool);
+  registry.register(getPageSeoTool);
+  registry.register(listStaleSeoPagesTool);
+  registry.register(refreshPagePathTool);
+  registry.register(listImportRunsTool);
+  registry.register(logImportEventsTool);
+  registry.register(listSkillPinDefaultsTool);
+  registry.register(setSkillPinDefaultsTool);
   return registry;
 }
 

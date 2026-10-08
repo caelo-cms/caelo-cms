@@ -15,11 +15,44 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
+
+type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
+
+/**
+ * Whose pin defaults a call reads or writes. A human edits their own; the
+ * AI edits those of the operator its chat acts for (the chat session's
+ * creator) — pins are a per-user preference, and the AI actor is not a
+ * user, so writing under its own id would fail the users FK and pin
+ * nothing anyone sees. Outside a chat the AI has no operator to act for.
+ * (No join to users/actors here: their RLS shows a row only to that actor;
+ * the skill_pin_defaults → users foreign key still rejects a non-user.)
+ */
+async function pinOwner(
+  tx: Tx,
+  ctx: ExecutionContext,
+  operation: string,
+): Promise<{ ok: true; userId: string } | { ok: false; message: string }> {
+  if (ctx.actorKind !== "ai") return { ok: true, userId: ctx.actorId };
+  const rows = ctx.chatBranchId
+    ? ((await tx.execute(sql`
+        SELECT created_by::text AS user_id FROM chat_sessions
+        WHERE chat_branch_id = ${ctx.chatBranchId}::uuid LIMIT 1
+      `)) as unknown as { user_id: string }[])
+    : [];
+  const userId = rows[0]?.user_id;
+  if (!userId) {
+    return {
+      ok: false,
+      message: `${operation}: pinned skills belong to the person a chat acts for — call this from a chat session (caelo_open_session on the Power-MCP).`,
+    };
+  }
+  return { ok: true, userId };
+}
 
 const pinDefaultRow = z.object({
   skillId: z.string(),
@@ -42,7 +75,18 @@ export const listPinDefaultsOp = defineOperation({
     .strict(),
   output: z.object({ pinDefaults: z.array(pinDefaultRow) }),
   handler: async (ctx, input, tx) => {
-    const userId = input.userId ?? ctx.actorId;
+    let userId = input.userId;
+    if (userId === undefined) {
+      const owner = await pinOwner(tx, ctx, "skills.list_pin_defaults");
+      if (!owner.ok) {
+        return err({
+          kind: "HandlerError",
+          operation: "skills.list_pin_defaults",
+          message: owner.message,
+        });
+      }
+      userId = owner.userId;
+    }
     const rows = (await tx.execute(sql`
       SELECT s.id::text AS skill_id, s.slug, s.display_name
       FROM skill_pin_defaults p
@@ -76,13 +120,21 @@ export const setPinDefaultsOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    const owner = await pinOwner(tx, ctx, "skills.set_pin_defaults");
+    if (!owner.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "skills.set_pin_defaults",
+        message: owner.message,
+      });
+    }
     await tx.execute(sql`
-      DELETE FROM skill_pin_defaults WHERE user_id = ${ctx.actorId}::uuid
+      DELETE FROM skill_pin_defaults WHERE user_id = ${owner.userId}::uuid
     `);
     for (const skillId of input.skillIds) {
       await tx.execute(sql`
         INSERT INTO skill_pin_defaults (user_id, skill_id)
-        VALUES (${ctx.actorId}::uuid, ${skillId}::uuid)
+        VALUES (${owner.userId}::uuid, ${skillId}::uuid)
         ON CONFLICT DO NOTHING
       `);
     }
@@ -92,6 +144,7 @@ export const setPinDefaultsOp = defineOperation({
       operation: "skills.set_pin_defaults",
       input,
       succeeded: true,
+      entityId: owner.userId,
       resultSummary: `count=${input.skillIds.length}`,
     });
     return ok({});
