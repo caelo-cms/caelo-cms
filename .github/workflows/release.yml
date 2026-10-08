@@ -304,18 +304,19 @@ jobs:
             INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
             echo "Inspecting ${INSTALL}..."
             # Same registry-propagation window as the install step below:
-            # the metadata endpoint can 404 a just-published version for a
-            # minute or two (v0.10.26-v0.10.29 all failed here once and
-            # passed on a manual re-run). Retry instead of failing the release.
+            # npm can take minutes to make a just-published version visible
+            # ("Your package is being processed"): v0.10.26-v0.10.29 needed a
+            # re-run here, and v0.10.31's mcp-server took ~10 minutes. Poll for
+            # up to 15 minutes instead of failing the release.
             ok=""
-            for attempt in 1 2 3 4 5; do
+            for attempt in $(seq 1 30); do
               if npm view "${INSTALL}" version; then ok=1; break; fi
-              if [ "${attempt}" -lt 5 ]; then
+              if [ "${attempt}" -lt 30 ]; then
                 echo "attempt ${attempt} failed — waiting 30s for registry propagation..."
                 sleep 30
               fi
             done
-            [ -n "${ok}" ] || { echo "::error::npm view ${INSTALL} failed after 5 attempts"; exit 1; }
+            [ -n "${ok}" ] || { echo "::error::npm view ${INSTALL} failed after 30 attempts (15 min)"; exit 1; }
           done
 
       - name: Smoke-install + smoke-require published packages
@@ -335,14 +336,14 @@ jobs:
             # knows the version (observed on v0.10.23) — transient
             # for a minute or two, so don't fail the release on it.
             ok=""
-            for attempt in 1 2 3 4 5; do
+            for attempt in $(seq 1 30); do
               if npm install --no-save "${INSTALL}"; then ok=1; break; fi
-              if [ "${attempt}" -lt 5 ]; then
+              if [ "${attempt}" -lt 30 ]; then
                 echo "attempt ${attempt} failed — waiting 30s for registry propagation..."
                 sleep 30
               fi
             done
-            [ -n "$ok" ] || { echo "::error::smoke install of ${INSTALL} failed after 5 attempts"; exit 1; }
+            [ -n "$ok" ] || { echo "::error::smoke install of ${INSTALL} failed after 30 attempts (15 min)"; exit 1; }
             echo "::endgroup::"
           done
           echo "::group::require @caelo-cms/shared"

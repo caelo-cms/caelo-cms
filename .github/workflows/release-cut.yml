@@ -143,6 +143,9 @@ jobs:
               "**Merging this PR ships v${V}**: the merge commit is tagged automatically and release.yml publishes npm + GHCR + AR + the GitHub Release after its own quality gate passes." \
               "" \
               "If the required checks below stay pending (PR was opened with the repo GITHUB_TOKEN), merge with \`gh pr merge --squash --admin\` — release.yml re-runs the full gate on the tagged commit before anything publishes." \
+              "" \
+              "**Before merging:**" \
+              "- [ ] Region catalogues (\`packages/provisioning/src/region-data.ts\`) still match the providers' per-service region docs cited there. Refresh them if a provider added or removed a needed service in a region (#607)." \
             )" \
           || { echo "PR already exists:"; gh pr view "release/v${V}" --json url --jq .url; }
 
