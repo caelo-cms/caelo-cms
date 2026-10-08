@@ -18,7 +18,17 @@ import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
 const FAKE_INFRA = {
   adapter: {} as never,
   registry: {} as never,
-  aiProvider: { complete: async () => ({ text: "", inputTokens: 0, outputTokens: 0 }) },
+  aiProvider: {
+    complete: async () => ({
+      text: "",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      cacheCreationTokens: 0,
+      provider: "anthropic",
+      model: "test-model",
+    }),
+  },
   emitSnapshot: (async () => ({ siteSnapshotId: "s" })) as never,
 } satisfies PluginHostInfra;
 

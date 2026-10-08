@@ -16,7 +16,6 @@
 
 import type {
   PluginAdminQuery,
-  PluginAi,
   PluginCapability,
   PluginCaptcha,
   PluginCms,
@@ -33,12 +32,12 @@ import type {
   PluginVisitor,
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
-import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { hostSystemActorId, type LoadedPlugin, type PluginHostInfra } from "./dispatch.js";
 import { operatorCanAuthor } from "./external-authorization.js";
 import { makePluginFonts } from "./fonts.js";
 import { makePluginImages } from "./images.js";
+import { makePluginAi } from "./plugin-ai.js";
 import { makePluginPrivateFiles } from "./private-files.js";
 import { makePluginSiteMedia } from "./site-media.js";
 import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
@@ -701,74 +700,6 @@ function makePluginCms(
     },
   };
 }
-
-// ---------------------------------------------------------------------------
-// PluginAi — wraps the host's configured AIProvider.
-// ---------------------------------------------------------------------------
-
-function makePluginAi(plugin: LoadedPlugin, infra: PluginHostInfra): PluginAi {
-  return {
-    complete: async (opts) => {
-      if (!infra.aiProvider) {
-        throw new Error("ctx.ai.complete: no AI provider configured on the host");
-      }
-      // P11.6 + P16 — per-plugin AI cost cap pre-flight. Without this a
-      // misbehaving Tier-1 plugin could drain the daily AI budget with no
-      // per-plugin attribution. The `plugins.ai_cost_cap_microcents`
-      // column is NULL by default (uncapped). Lookup failures are
-      // swallowed once or twice (DB hiccup shouldn't break a working
-      // plugin) but trip fail-closed after `LOOKUP_FAIL_THRESHOLD`
-      // consecutive misses — silent bypass under sustained DB pressure
-      // would defeat enforcement entirely.
-      const capKey = `plugin:${plugin.slug}`;
-      try {
-        const r = await execute(
-          infra.registry,
-          infra.adapter,
-          {
-            actorId: SYSTEM_ACTOR_ID,
-            actorKind: "system",
-            requestId: `plugin-${plugin.slug}-ai-cap`,
-          },
-          "ai_calls.aggregate_per_plugin",
-          { pluginId: plugin.pluginId },
-        );
-        if (r.ok) {
-          recordCapLookupSuccess(capKey);
-          const v = r.value as {
-            capExceeded: boolean;
-            capMicrocents: number | null;
-            last24hMicrocents: number;
-          };
-          if (v.capExceeded) {
-            const capUsd = v.capMicrocents !== null ? (v.capMicrocents / 1e8).toFixed(2) : "0";
-            const spentUsd = (v.last24hMicrocents / 1e8).toFixed(2);
-            throw new Error(
-              `PluginAiCapExceeded: plugin '${plugin.slug}' has spent $${spentUsd} of $${capUsd} cap in the last 24h. Owner can raise the cap at /security/plugins/${plugin.slug}.`,
-            );
-          }
-        } else {
-          if (recordCapLookupFailure(capKey)) {
-            throw new Error(
-              `PluginAiCapLookupUnavailable: cap-lookup for plugin '${plugin.slug}' has failed repeatedly; failing closed to protect the daily budget. Investigate /security/costs.`,
-            );
-          }
-        }
-      } catch (e) {
-        if (e instanceof Error && e.message.startsWith("PluginAiCapExceeded:")) throw e;
-        if (e instanceof Error && e.message.startsWith("PluginAiCapLookupUnavailable:")) throw e;
-        if (recordCapLookupFailure(capKey)) {
-          throw new Error(
-            `PluginAiCapLookupUnavailable: cap-lookup for plugin '${plugin.slug}' has failed repeatedly; failing closed to protect the daily budget. Investigate /security/costs.`,
-          );
-        }
-      }
-      return infra.aiProvider.complete(opts);
-    },
-  };
-}
-
-const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 
 // ---------------------------------------------------------------------------
 // PluginSnapshots — wraps emitSnapshot inside an admin tx with the plugin's

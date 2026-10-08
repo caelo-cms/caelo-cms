@@ -24,6 +24,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     isActive: boolean;
     apiKeySource: "db" | "env" | null;
     apiKeySetAt: string | null;
+    translationModel: string | null;
   };
   const rows = r.ok ? ((r.value as { providers: Row[] }).providers ?? []) : [];
 
@@ -65,6 +66,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
         defaultModelForProvider(name) ??
         "",
       imageModel: typeof row?.config.imageModel === "string" ? row.config.imageModel : "",
+      // #593 — null = "same as chat model" (the stored default).
+      translationModel: row?.translationModel ?? null,
       baseUrl: typeof row?.config.baseUrl === "string" ? (row.config.baseUrl as string) : null,
       // v0.2.53 — Per-provider output ceiling stored alongside model.
       // null means "use the chat-runner default of 16384". Range
@@ -164,6 +167,34 @@ export const actions: Actions = {
     if (!result.ok) return fail(400, { error: "Could not save provider config." });
     const apiKeyChanged = (result.value as { apiKeyChanged: boolean }).apiKeyChanged;
     return { ok: true, providerName: name, apiKeyChanged };
+  },
+
+  // #593 — the model translation calls run on. Empty = "same as chat
+  // model" (stored NULL). The op checks the id against the provider's
+  // catalogue and says which ids are allowed when it is not.
+  set_translation_model: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+
+    const name = String(form.get("name") ?? "").trim() as KnownProvider;
+    if (!KNOWN_PROVIDERS.includes(name)) {
+      return fail(400, { error: "unknown provider" });
+    }
+    const raw = String(form.get("translationModel") ?? "").trim();
+    const result = await execute(
+      registry,
+      adapter,
+      locals.ctx,
+      "ai_providers.set_translation_model",
+      { name, model: raw.length > 0 ? raw : null },
+    );
+    if (!result.ok) {
+      const message = "message" in result.error ? String(result.error.message) : "";
+      return fail(400, { error: `Could not save the translation model. ${message}`.trim() });
+    }
+    return { ok: true, providerName: name, translationModelSaved: true };
   },
 
   clear_key: async ({ request, locals }) => {

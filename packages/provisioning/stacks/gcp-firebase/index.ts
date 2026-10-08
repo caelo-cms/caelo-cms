@@ -240,7 +240,12 @@ const sqlInstance = new gcp.sql.DatabaseInstance(
         privateNetwork: network.id,
         enablePrivatePathForGoogleCloudServices: true,
       },
-      databaseFlags: [{ name: "max_connections", value: maxConnections.toString() }],
+      databaseFlags: [
+        { name: "max_connections", value: maxConnections.toString() },
+        // The operator-access sync job logs in as its service account (Cloud
+        // SQL IAM database authentication, no password). No restart needed.
+        { name: "cloudsql.iam_authentication", value: "on" },
+      ],
     },
     deletionProtection,
   },
@@ -674,6 +679,11 @@ new gcp.cloudrunv2.ServiceIamMember(
 // (`https://<admin-svc>-<hash>-<region>.a.run.app`). They can flip
 // the knob + verify the domain at https://search.google.com/search-console
 // later and run `pulumi up` to bind admin.<domain> → Cloud Run.
+//
+// The supported path is `cms-provision admin-domain enable`
+// (src/admin-domain.ts): it creates the same mapping as the operator's own
+// gcloud identity — the verified domain owner — which the provisioner SA
+// running this stack never is. Leave this knob false after using it.
 const provisionAdminDomain = cfg.getBoolean("provisionAdminDomain") ?? false;
 const adminDomainMapping = provisionAdminDomain
   ? new gcp.cloudrun.DomainMapping(
@@ -834,6 +844,20 @@ new gcp.iap.WebCloudRunServiceIamMember(
   },
   opts,
 );
+
+// =========================================================================
+// Operator access — deliberately NOT here
+// =========================================================================
+//
+// Who passes IAP beyond the allowlist above follows the Caelo user list. A
+// Cloud Run job with its own service account keeps the IAP binding and the
+// caelo-mcp token-creator binding in step (admin-core
+// security/operator-access/sync-job.ts); the admin's run SA holds no IAM
+// policy rights and may only start that job. The CLI owns the job, its
+// account, its grants and its schedule (packages/provisioning/src/
+// operator-access.ts, run by the wizard after migrations and by `upgrade`),
+// because the job's database user can only be assigned its role after the
+// migrations have created that role.
 
 // =========================================================================
 // Outputs — DNS records the operator wires manually

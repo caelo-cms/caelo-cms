@@ -18,12 +18,14 @@ import {
   proposeSetAiBudgetTool,
   proposeSetAiPricingTool,
   proposeSetGatewaySettingsTool,
+  proposeSetTranslationModelTool,
 } from "../propose-owner-settings.js";
 
 const GATED = {
   propose_set_ai_budget: "owner_settings.propose_set_ai_budget",
   propose_set_ai_pricing: "owner_settings.propose_set_ai_pricing",
   propose_set_gateway_settings: "owner_settings.propose_set_gateway_settings",
+  propose_set_translation_model: "owner_settings.propose_set_translation_model",
 } as const;
 const READS = ["get_ai_budgets", "list_ai_pricing", "get_gateway_settings"];
 
@@ -50,7 +52,7 @@ describe("owner-settings tools — registration + gate", () => {
     }
   });
 
-  it("all six appear on the Power-MCP catalogue; the proposals flagged gated", () => {
+  it("every gated tool and read companion appears on the Power-MCP catalogue; the proposals flagged gated", () => {
     const power = powerToolCatalogue(tools);
     for (const name of Object.keys(GATED)) {
       expect(power.find((t) => t.name === name)?.gated).toBe(true);
@@ -110,6 +112,14 @@ describe("owner-settings tools — schemas", () => {
     expect(s.safeParse({}).success).toBe(false);
     expect(s.safeParse({ cookieSecret: "x" }).success).toBe(false);
     expect(s.safeParse({ maxBodyBytes: 10 }).success).toBe(false);
+  });
+
+  it("translation model: a model id or null, nothing else (the provider is the active one)", () => {
+    const s = proposeSetTranslationModelTool.schema;
+    expect(s.safeParse({ model: "claude-haiku-4-5" }).success).toBe(true);
+    expect(s.safeParse({ model: null }).success).toBe(true);
+    expect(s.safeParse({}).success).toBe(false);
+    expect(s.safeParse({ model: "x", name: "openai" }).success).toBe(false);
   });
 
   it("every description names the approval gate and the units the model must use", () => {

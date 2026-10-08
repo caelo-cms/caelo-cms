@@ -39,6 +39,7 @@ import {
   approverPermissionsOf,
   isApproverPermissionRefusal,
 } from "../../ops/_approver-permission.js";
+import { describeOperatorAccessSync, syncOperatorAccess } from "../../ops/user_access.js";
 import { describePersistError } from "../chat-runner/persistence.js";
 import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
 import { approvedPluginInvocation } from "../plugin-invocation.js";
@@ -159,9 +160,43 @@ export function attachGatedExecute(
           };
         }
       }
+      if (gated.afterApply === "sync-operator-access") {
+        return {
+          ok: true,
+          value: await withOperatorAccessSync(
+            registry,
+            adapter,
+            ownerCtxLive,
+            applied.value as Record<string, unknown>,
+          ),
+        };
+      }
       return { ok: true, value: applied.value };
     },
   };
+}
+
+/**
+ * After an approved users.* change (or a role deletion, which can strip a
+ * user's last role): start the operator-access sync job, which recomputes
+ * Google IAP access for everyone, and fold the outcome into the tool result.
+ * A failed sync stays `ok: true` — the user change IS applied, and reporting
+ * a failure would send the AI re-proposing it — but carries a `warning` the
+ * AI must relay, with the next step, so the operator never finds out from a
+ * 403. The audit row is attributed to the approving Owner.
+ */
+async function withOperatorAccessSync(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ownerCtxLive: ExecutionContext,
+  applied: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const sync = await syncOperatorAccess(registry, adapter, ownerCtxLive);
+  const message = describeOperatorAccessSync(sync);
+  if (sync.status === "failed") {
+    return { ...applied, operatorAccess: sync, warning: `${message} Tell the operator this.` };
+  }
+  return { ...applied, operatorAccess: sync, ...(message ? { note: message } : {}) };
 }
 
 /**

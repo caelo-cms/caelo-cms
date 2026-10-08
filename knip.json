@@ -44,6 +44,7 @@
     "packages/admin-core": {
       "entry": [
         "src/healthcheck.ts",
+        "src/security/operator-access/sync-job.ts",
         "src/quality/lighthouse-child.ts",
         "scripts/lighthouse-smoke.ts"
       ]

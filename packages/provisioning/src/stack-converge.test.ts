@@ -309,7 +309,7 @@ describe("planContractEnv", () => {
     );
     if (!plan.ok) throw new Error(plan.error);
     expect(plan.services.admin.flags).toEqual([
-      "--update-env-vars=CAELO_SITE_URL=https://acme.com,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com",
+      "--update-env-vars=CAELO_SITE_URL=https://acme.com,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
     ]);
     expect(plan.services.gateway.flags).toEqual([]);
   });
@@ -336,11 +336,15 @@ describe("planContractEnv", () => {
           liveEnv: liveContainerEnv(serviceJson(CONVERGED_GATEWAY_DB)),
         },
       },
-      { leaveUntouched: ["CAELO_MCP_IAP_SERVICE_ACCOUNT"] },
+      { leaveUntouched: ["CAELO_MCP_IAP_SERVICE_ACCOUNT", "CAELO_OPERATOR_ACCESS_JOB"] },
     );
     if (!plan.ok) throw new Error(plan.error);
     expect(plan.services.admin.changes.map((c) => c.name)).not.toContain(
       "CAELO_MCP_IAP_SERVICE_ACCOUNT",
+    );
+    // Nor the sync job's name when upgrade couldn't set the job up.
+    expect(plan.services.admin.changes.map((c) => c.name)).not.toContain(
+      "CAELO_OPERATOR_ACCESS_JOB",
     );
     expect(plan.services.admin.changes.map((c) => c.name)).toContain("CAELO_SITE_URL");
   });

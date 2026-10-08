@@ -51,7 +51,7 @@ export interface MakeProposeToolArgs<I> {
    */
   readonly executeOpOverride?: string;
   /** Post-commit step for the gated tool — see FilteredTool.gated. */
-  readonly afterApply?: "load-activated-plugin";
+  readonly afterApply?: "load-activated-plugin" | "sync-operator-access";
 }
 
 export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinitionWithHandler<I> {

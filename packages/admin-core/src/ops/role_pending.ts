@@ -214,7 +214,11 @@ const executeRoleProposalOpDefinition = defineOperation({
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
-  output: z.object({ roleId: z.string().nullable() }),
+  output: z.object({
+    roleId: z.string().nullable(),
+    /** Callers re-sync operator access (Google IAP) after a `delete`. */
+    kind: z.enum(["create", "update_permissions", "delete"]),
+  }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, kind, role_id::text AS role_id, payload, status
@@ -286,7 +290,7 @@ const executeRoleProposalOpDefinition = defineOperation({
       entityId: input.proposalId,
       resultSummary: `${row.kind} applied (roleId=${resultRoleId ?? "(none)"})`,
     });
-    return ok({ roleId: resultRoleId });
+    return ok({ roleId: resultRoleId, kind: row.kind });
   },
 });
 

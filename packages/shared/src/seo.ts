@@ -203,12 +203,27 @@ export interface SiteSeoSettings {
 }
 
 /**
- * Resolve the canonical URL for a page. If `pages_seo.canonical_url`
- * is set it wins; otherwise `<siteBaseUrl><pagePath>` — where
- * `pagePath` is the COMPOSED public path from `pages.current_path`
- * (#390: the URL composition point materializes prefixes, slug
- * formats, and the home designation into that one column; canonical
- * simply follows it).
+ * How a deploy target serves pages (`deploy_targets.page_url_style`):
+ * 'directory' emits `<path>/index.html` and serves `/<path>/`;
+ * 'no-extension' emits a bare `<path>` file and serves `/<path>`.
+ */
+export const PAGE_URL_STYLES = ["directory", "no-extension"] as const;
+export type PageUrlStyle = (typeof PAGE_URL_STYLES)[number];
+
+/**
+ * THE public page URL builder (#590). Every absolute page URL Caelo
+ * emits — canonical, og:url, JSON-LD url, sitemap `<loc>`,
+ * hreflang/x-default targets, language-switcher links — comes from
+ * here, so they are byte-identical by construction. Two builders
+ * drifting apart is what shipped `/en/about` as hreflang next to an
+ * `/en/about/` canonical.
+ *
+ * `pages_seo.canonical_url` (`override`) wins when set. Otherwise the
+ * URL is `<scheme>//<host><path>`: the path is the COMPOSED public path
+ * from `pages.current_path` (#390), its trailing slash follows the
+ * serving target's {@link PageUrlStyle}, the host is the URL composition
+ * point's `host` slot (a host-strategy locale) or else the site base
+ * URL's, and the scheme always comes from the base URL.
  */
 export function resolveCanonicalUrl(args: {
   siteBaseUrl: string;
@@ -216,19 +231,21 @@ export function resolveCanonicalUrl(args: {
    *  "/" for the site root. */
   pagePath: string;
   override: string | null;
-  /**
-   * v0.2.85 — page emission style. 'directory' (default) → URLs end
-   * in `/…/`; 'no-extension' → no trailing slash, matching what the
-   * bucket serves when pages are emitted as bare files.
-   */
-  pageUrlStyle?: "directory" | "no-extension";
+  /** The serving deploy target's page emission style. Required — a
+   *  defaulted style is how the preview drifted from the build. */
+  pageUrlStyle: PageUrlStyle;
+  /** Host from the URL composition point's `host` slot (e.g.
+   *  `de.example.com`); null/absent → the site base URL's host. */
+  host?: string | null;
 }): string {
   if (args.override && args.override.length > 0) return args.override;
-  const base = args.siteBaseUrl.endsWith("/") ? args.siteBaseUrl.slice(0, -1) : args.siteBaseUrl;
+  const siteBase = args.siteBaseUrl.endsWith("/")
+    ? args.siteBaseUrl.slice(0, -1)
+    : args.siteBaseUrl;
+  const base = args.host ? `${new URL(siteBase).protocol}//${args.host}` : siteBase;
   const trimmed = trimSlashes(args.pagePath);
   if (trimmed.length === 0) return `${base}/`;
-  const style = args.pageUrlStyle ?? "directory";
-  return style === "no-extension" ? `${base}/${trimmed}` : `${base}/${trimmed}/`;
+  return args.pageUrlStyle === "no-extension" ? `${base}/${trimmed}` : `${base}/${trimmed}/`;
 }
 
 export interface SeoMetaInput {

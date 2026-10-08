@@ -37,17 +37,30 @@ let registry: OperationRegistry;
 
 /** Scripted provider: each queued responder handles ONE complete()
  *  call; prompts are recorded for fixture assertions. */
-const aiCalls: Array<{ system: string; user: string }> = [];
+const aiCalls: Array<{ system: string; user: string; purpose?: string }> = [];
 const aiScript: Array<() => string> = [];
 const scriptedProvider = {
   complete: async (opts: {
     system: string;
     messages: ReadonlyArray<{ role: "user" | "assistant"; content: string }>;
+    purpose?: string;
   }) => {
-    aiCalls.push({ system: opts.system, user: opts.messages[0]?.content ?? "" });
+    aiCalls.push({
+      system: opts.system,
+      user: opts.messages[0]?.content ?? "",
+      ...(opts.purpose ? { purpose: opts.purpose } : {}),
+    });
     const next = aiScript.shift();
     if (!next) throw new Error("scripted provider: no responder queued");
-    return { text: next(), inputTokens: 10, outputTokens: 10 };
+    return {
+      text: next(),
+      inputTokens: 10,
+      outputTokens: 10,
+      cachedTokens: 0,
+      cacheCreationTokens: 0,
+      provider: "anthropic",
+      model: "scripted-model",
+    };
   },
 };
 
@@ -241,6 +254,18 @@ describe("#397 — context-aware translation", () => {
     expect(prompt?.system).toContain("Use informal du.");
     expect(prompt?.user).toContain("Title: Pricing");
     expect(prompt?.user).toContain("<p>Hello <b>world</b></p>");
+    // #593 — declared as a translation call, so the host can route it to
+    // the Owner's translation model; the call is billed to the plugin on
+    // the model it actually ran on.
+    expect(prompt?.purpose).toBe("translation");
+    const billed = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT c.model FROM ai_calls c JOIN plugins p ON p.id = c.plugin_id
+           WHERE p.slug = 'international-site' ORDER BY c.created_at DESC LIMIT 1`,
+        )) as { model: string }[],
+    );
+    expect(billed[0]?.model).toBe("scripted-model");
 
     // Applied to the VARIANT's instance only; source untouched; status flipped.
     const applied = await sqlSystem(

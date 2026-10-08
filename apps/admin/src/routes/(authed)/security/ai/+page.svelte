@@ -54,6 +54,11 @@
         path (or "not configured" if no env is set).</AlertDescription
       ></Alert
     >
+  {:else if form?.ok && form?.translationModelSaved}
+    <Alert
+      ><AlertDescription>Saved the translation model for {form.providerName ?? ""}.</AlertDescription
+      ></Alert
+    >
   {:else if form?.ok}
     <Alert
       ><AlertDescription
@@ -191,6 +196,39 @@
             <Button type="submit">Save</Button>
           </div>
         </form>
+        {#if p.configured && modelsForProvider(p.name).length > 0}
+          <form
+            method="post"
+            action="?/set_translation_model"
+            class="mt-6 grid gap-2 border-t pt-4 md:grid-cols-2"
+          >
+            <input type="hidden" name="_csrf" value={data.csrfToken} />
+            <input type="hidden" name="name" value={p.name} />
+            <div class="space-y-2">
+              <Label for="translationModel-{p.name}">Translation model</Label>
+              <Select
+                id="translationModel-{p.name}"
+                name="translationModel"
+                value={p.translationModel ?? ""}
+              >
+                <option value="">Same as chat model</option>
+                {#if p.translationModel && !modelsForProvider(p.name).some((m) => m.id === p.translationModel)}
+                  <option value={p.translationModel}>{p.translationModel} (saved model)</option>
+                {/if}
+                {#each modelsForProvider(p.name) as m (m.id)}
+                  <option value={m.id}>{m.label}</option>
+                {/each}
+              </Select>
+              <p class="text-xs text-muted-foreground">
+                Model used when pages are translated. A smaller model makes translations cheaper;
+                the chat keeps its own model.
+              </p>
+            </div>
+            <div class="flex items-end">
+              <Button type="submit" variant="outline">Save translation model</Button>
+            </div>
+          </form>
+        {/if}
         {#if p.apiKeySource === "db"}
           <form method="post" action="?/clear_key" class="mt-3">
             <input type="hidden" name="_csrf" value={data.csrfToken} />

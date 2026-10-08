@@ -19,7 +19,7 @@ import type { Actions, PageServerLoad } from "./$types";
 
 interface Proposal {
   id: string;
-  kind: "set_ai_budget" | "set_ai_pricing" | "set_gateway_settings";
+  kind: "set_ai_budget" | "set_ai_pricing" | "set_gateway_settings" | "set_translation_model";
   proposedBy: string;
   payload: Record<string, unknown>;
   preview: Record<string, unknown>;
