@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.32
+
+### Other
+- 0c8fd45e region-catalogue checklist; poll npm up to 15 min after publishing (#612)
+
 ## v0.10.31
 
 ### Fixes
