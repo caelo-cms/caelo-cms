@@ -45,6 +45,15 @@ import {
   type PluginEvents,
   z,
 } from "@caelo-cms/plugin-sdk";
+import {
+  type ChromeDeps,
+  chromeStatus,
+  reattachChromeVariant,
+  refreshChromeStaleness,
+  resolveChromeVariants,
+  setChromeVariants,
+  translateChrome,
+} from "./chrome-ops.js";
 
 /**
  * The serving target's page URL style core hands every render-time
@@ -488,6 +497,13 @@ async function localesByPage(
   return out;
 }
 
+/** #592 — what the chrome operations need, with a fresh locale registry. */
+async function chromeDepsOf(ctx: unknown): Promise<ChromeDeps> {
+  const q = adminQueryOf(ctx);
+  await refreshLocaleCache(q);
+  return { q, cms: cmsOf(ctx), locales: localeCache };
+}
+
 /** Shared by link_page_variants and create_variant: join `pageId` into
  *  `groupPageId`'s variant group (minting the group with the anchor as
  *  source when none exists), then refresh the composed path. */
@@ -718,6 +734,18 @@ export default definePlugin<PluginContextTier1>({
       value: "jsonb",
       created_at: "timestamp",
     },
+    // #592 — a language's version of one piece of shared chrome
+    // (`layout:<layoutId>:<block>:<index>` or `instance:<id>`).
+    chrome_variants: {
+      target_key: "string",
+      locale_code: "string",
+      mode: "enum:translated,independent",
+      module_id: "uuid",
+      values: "jsonb",
+      translation_status: "enum:up_to_date,needs_update",
+      source_hash: "text",
+      created_at: "timestamp",
+    },
   },
   requestedCapabilities: [
     "cms_admin",
@@ -727,6 +755,7 @@ export default definePlugin<PluginContextTier1>({
     "background_workers",
     "domain_events",
     "head_contributions",
+    "content_variants",
   ],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
@@ -804,6 +833,31 @@ export default definePlugin<PluginContextTier1>({
       return { lists };
     },
 
+    /**
+     * #592 — the content-variants composition point: core asks, while
+     * rendering, which chrome each page shows. Read-only.
+     */
+    content_variants: async (ctx, args) =>
+      resolveChromeVariants(await chromeDepsOf(ctx), args, (pageIds) =>
+        localesByPage(adminQueryOf(ctx), pageIds),
+      ),
+
+    /** #592 — translate a language's shared chrome in one AI call. */
+    translate_chrome: async (ctx, args) => {
+      const { localeCode } = z
+        .object({ localeCode: z.string().min(2).max(35) })
+        .strict()
+        .parse(args);
+      return translateChrome(await chromeDepsOf(ctx), aiOf(ctx), { localeCode });
+    },
+
+    /** #592 — give languages their own chrome content (independent mode). */
+    set_chrome_variants: async (ctx, args) => setChromeVariants(await chromeDepsOf(ctx), args),
+
+    /** #592 — back to translated mode; runs only after the Owner approved. */
+    reattach_chrome_variant: async (ctx, args) =>
+      reattachChromeVariant(await chromeDepsOf(ctx), aiOf(ctx), args),
+
     /** Worker tick — keeps the decode-side locale cache warm. */
     refresh_locales: async (ctx) => {
       const rows = await refreshLocaleCache(adminQueryOf(ctx));
@@ -870,6 +924,9 @@ export default definePlugin<PluginContextTier1>({
           .filter((p) => !linkedPageIds.has(p.id))
           .map((p) => ({ pageId: p.id, slug: p.slug, title: p.title, path: p.currentPath })),
         staleCounts,
+        // #592 — the shared chrome (layout header/footer/menus, content
+        // synced across pages) and what each language has for it.
+        chrome: await chromeStatus(await chromeDepsOf(ctx)),
       };
     },
 
@@ -1125,9 +1182,32 @@ export default definePlugin<PluginContextTier1>({
           failed.push({ pageId: row.page_id, error: msg });
         }
       }
+      // #592 — translating the site includes its shared chrome (menus,
+      // footer, header): every language's missing or stale chrome, one AI
+      // call per language. Independent chrome is left alone.
+      let chromeTranslated = 0;
+      const chromeFailed: Array<{ localeCode: string; error: string }> = [];
+      if (!paused) {
+        const deps = await chromeDepsOf(ctx);
+        for (const locale of [...deps.locales.values()].filter((l) => !l.is_default)) {
+          try {
+            const r = await translateChrome(deps, aiOf(ctx), { localeCode: locale.code });
+            chromeTranslated += r.translated;
+          } catch (e) {
+            const msg = (e as Error).message;
+            if (msg.startsWith("PluginAiCapExceeded:")) {
+              paused = true;
+              break;
+            }
+            chromeFailed.push({ localeCode: locale.code, error: msg });
+          }
+        }
+      }
       return {
         translated: translated.length,
         failed,
+        chromeTranslated,
+        chromeFailed,
         paused,
         remaining: stale.length - translated.length - failed.length,
         /** Live variants whose SEO was kept and flagged stale (#591). */
@@ -1253,14 +1333,23 @@ export default definePlugin<PluginContextTier1>({
       const q = adminQueryOf(ctx);
       const events = eventsOf(ctx);
       const batch = await events.poll({
-        kinds: ["page.updated", "page.published"],
+        kinds: ["page.updated", "page.published", "module.updated"],
         limit: 200,
       });
       if (batch.events.length === 0) return { marked: 0, scanned: 0 };
       const sourcePageIds = new Set<string>();
+      // #592 — a live edit of a module (layout chrome renders its field
+      // defaults) or of a shared content instance may change chrome a
+      // translated locale variant was derived from.
+      let chromeTouched = false;
       for (const ev of batch.events) {
-        const payload = ev.payload as { chatBranchId?: string | null };
+        const payload = ev.payload as { chatBranchId?: string | null; contentInstanceId?: string };
         if (payload?.chatBranchId) continue;
+        if (ev.kind === "module.updated") {
+          chromeTouched = true;
+          continue;
+        }
+        if (payload?.contentInstanceId) chromeTouched = true;
         sourcePageIds.add(ev.entityId);
       }
       let marked = 0;
@@ -1284,6 +1373,7 @@ export default definePlugin<PluginContextTier1>({
           marked += 1;
         }
       }
+      if (chromeTouched) marked += await refreshChromeStaleness(await chromeDepsOf(ctx));
       await events.commit(batch.nextCursor);
       return { marked, scanned: batch.events.length };
     },
@@ -1376,6 +1466,8 @@ export default definePlugin<PluginContextTier1>({
         "prefixDefaultLocale (optional, site-wide): true prefixes the DEFAULT locale too (/de/preise next to /en/pricing) while the default home stays at '/' with no redirect, and '/<default code>' 301s to '/'. Needs the default locale on the subdirectory strategy. Omit it to keep the current value; set it only when the operator asks for every language to carry its prefix.",
       operationName: "set_locales",
       approvalMode: "user-approval",
+      // #589 — the approver changes site-wide language and URL settings.
+      requiredPermission: "settings.write",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -1438,6 +1530,69 @@ export default definePlugin<PluginContextTier1>({
         "If the plugin's 24h AI budget runs out mid-pass, the result carries paused=true + remaining — tell the operator instead of retrying; the Owner can raise the cap at /security/plugins/international-site.",
       operationName: "translate_all_stale",
       inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
+    },
+    {
+      name: "translate_chrome",
+      description:
+        "Translate the site's shared CHROME into one language — navigation menus, header, footer and any content shared across pages — in ONE context-aware pass, so every page in that language shows its own menus and footer. " +
+        "Use when a language is added, when intl_status lists chrome entries as 'missing' or 'translated/needs_update' for a locale, or when the preview flags 'there is no <language> version of …'. Links inside menus need no work: they point at each page's same-language version automatically. " +
+        "Chrome a language runs independently (its own items) is never overwritten. translate_all_stale already includes this for every language — prefer it when pages are stale too.",
+      operationName: "translate_chrome",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["localeCode"],
+        properties: { localeCode: { type: "string", minLength: 2, maxLength: 35 } },
+      },
+    },
+    {
+      name: "set_chrome_variants",
+      description:
+        "Give a language its OWN chrome instead of a translation of the default language's: different menu items, links or number of entries (values), or — for a layout area like the header or footer — a different module (moduleId). The entry becomes independent: later edits to the default language never touch or flag it. " +
+        "Use when the operator wants e.g. the English menu to differ ('the US site has no Careers link', 'use the other footer on the German site'). Omit values to just detach the current translation. targetKey comes from intl_status.chrome. Prefer one call with several entries over repeated calls. " +
+        "NOT for plain translation (translate_chrome) and NOT for the default language (edit the layout/content directly).",
+      operationName: "set_chrome_variants",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["variants"],
+        properties: {
+          variants: {
+            type: "array",
+            minItems: 1,
+            maxItems: 100,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["targetKey", "localeCode"],
+              properties: {
+                targetKey: { type: "string" },
+                localeCode: { type: "string", minLength: 2, maxLength: 35 },
+                values: { type: "object" },
+                moduleId: { type: "string", format: "uuid" },
+              },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "reattach_chrome_variant",
+      description:
+        "Switch a language's independent chrome entry back to 'translated': its own content (and own module) is REPLACED by a fresh translation of the default language's, and from then on edits to the source mark it stale again. " +
+        "APPROVAL-GATED because it overwrites the language's own content: the turn pauses on an in-chat card and the operator clicks Approve — say 'I prepared switching the <language> menu back to the translated version — please approve' and do NOT claim it is done.",
+      operationName: "reattach_chrome_variant",
+      approvalMode: "user-approval",
+      requiredPermission: "content.write",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["targetKey", "localeCode"],
+        properties: {
+          targetKey: { type: "string" },
+          localeCode: { type: "string", minLength: 2, maxLength: 35 },
+        },
+      },
     },
     {
       name: "set_glossary_term",
@@ -1518,6 +1673,7 @@ export default definePlugin<PluginContextTier1>({
   ],
   dataListsOperation: "language_links",
   contributionsOperation: "head_contributions",
+  contentVariantsOperation: "content_variants",
   /**
    * #399 — companion skills (CLAUDE.md §2: skills are the official way
    * to teach AI behaviour; no prompt scaffolding in tool handlers).
@@ -1559,6 +1715,7 @@ export default definePlugin<PluginContextTier1>({
         "3. If existing pages' URLs are affected by the change, call propose_url_migration next — it previews the URL fan-out and the 301 redirects, and the Owner approves it SEPARATELY.",
         "4. Seed the language: for each core page the operator cares about, create_variant with a localized slug (omit the slug for the home page — its counterpart is the locale root), then translate_variant. Do not mass-create variants for every page unprompted — ask which pages matter, or start with the pages the operator named.",
         "5. hreflang links and sitemap alternates appear automatically once variants are PUBLISHED (drafts are invisible to search engines by design — a missing translation is a clean 404, never a fallback).",
+        "5b. Translate the shared chrome too — menus, header, footer and content shared across pages: call translate_chrome({localeCode}) once per new language (translate_all_stale also covers it). Until then the preview flags 'there is no <language> version of …' and publishing refuses: pages never fall back to another language. Menu links need no work — they point at each page's same-language version, and a link whose target has no version in that language is flagged. If the operator wants a language's menu or footer to DIFFER (other items, another footer module), use set_chrome_variants; switching it back to the translated version is reattach_chrome_variant (approval-gated, it overwrites).",
         '6. To offer visitors a language switcher, add a module whose HTML iterates the plugin\'s list: `<nav>{{#language_links}}<a href="{{href}}" hreflang="{{locale}}">{{label}}</a>{{/language_links}}</nav>`. Each item carries href, label, locale and is_current. Write the markup to match the site\'s design — you own it, the plugin only supplies the data. Because it resolves per page, placing that module in the LAYOUT gives every page a switcher from one placement. The list is empty until a page has at least two PUBLISHED variants.',
       ].join("\n"),
       autoEngagementHints: {

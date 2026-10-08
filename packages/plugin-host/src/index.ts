@@ -11,6 +11,7 @@
  */
 
 export { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
+export type { ContentVariantPage, ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
 export { pluginManifest } from "@caelo-cms/plugin-sdk";
 export { makePluginContext } from "./capabilities.js";
 export {
@@ -19,6 +20,13 @@ export {
   PLUGIN_ASSET_DIR,
   type PluginClientAsset,
 } from "./client-assets.js";
+export {
+  contentVariantProblemMarker,
+  hasContentVariantContributors,
+  type ResolvedContentVariant,
+  type ResolvedContentVariants,
+  resolveContentVariants,
+} from "./content-variants.js";
 export {
   type ResolvedDataLists,
   resolveDataLists,

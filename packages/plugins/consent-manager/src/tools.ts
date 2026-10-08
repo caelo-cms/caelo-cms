@@ -93,6 +93,9 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
       "Known vendors (google-analytics, google-tag-manager, meta-pixel, matomo, hotjar) supply their own category and script URL — pass `vendor` and you can omit both.",
     operationName: "add_tag",
     approvalMode: "user-approval",
+    // #589 — the Owner who approves registers a site-wide script: the
+    // same permission site settings need.
+    requiredPermission: "settings.write",
     inputJsonSchema: {
       type: "object",
       additionalProperties: false,

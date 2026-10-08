@@ -15,6 +15,13 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import authPlugin from "@caelo-cms/plugin-auth";
+import commentsPlugin from "@caelo-cms/plugin-comments";
+import consentPlugin from "@caelo-cms/plugin-consent-manager";
+import formsPlugin from "@caelo-cms/plugin-forms";
+import intlPlugin from "@caelo-cms/plugin-international-site";
+import newsletterPlugin from "@caelo-cms/plugin-newsletter";
+import ratingsPlugin from "@caelo-cms/plugin-ratings";
 import {
   defineOperation,
   type OperationDefinition,
@@ -23,7 +30,6 @@ import {
 } from "@caelo-cms/query-api";
 import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { z } from "zod";
-
 import { createDefaultToolRegistry, type ToolRegistry } from "../ai/tools/index.js";
 import {
   approverPermissionsOf,
@@ -153,6 +159,35 @@ function wrapped(): { op: OperationDefinition<unknown, unknown>; ran: () => numb
   ) as OperationDefinition<unknown, unknown>;
   return { op, ran: () => runs };
 }
+
+describe("#589 guard: every approval-gated SHIPPED plugin tool names its approver permission", () => {
+  // A plugin tool's `requiredPermission` is what the plugin host checks for
+  // the person who clicked Approve (dispatch.ts, origin "approved"); without
+  // it any chat user could approve the call.
+  it("declares requiredPermission next to approvalMode, from the permission catalog", () => {
+    const plugins = [
+      authPlugin,
+      commentsPlugin,
+      consentPlugin,
+      formsPlugin,
+      intlPlugin,
+      newsletterPlugin,
+      ratingsPlugin,
+    ];
+    const offenders = plugins.flatMap((p) =>
+      (p.tools ?? [])
+        .filter((t) => t.approvalMode && !t.requiredPermission)
+        .map((t) => `${p.slug}.${t.name}`),
+    );
+    expect(offenders).toEqual([]);
+    const known = new Set<string>(PERMISSIONS);
+    for (const p of plugins) {
+      for (const t of p.tools ?? []) {
+        if (t.requiredPermission) expect(known.has(t.requiredPermission)).toBe(true);
+      }
+    }
+  });
+});
 
 describe("requiresApproverPermission", () => {
   it("exposes the declared permissions on the op definition", () => {

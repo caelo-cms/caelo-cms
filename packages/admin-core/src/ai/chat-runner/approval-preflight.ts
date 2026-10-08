@@ -25,6 +25,7 @@
  * in the first place.
  */
 
+import { pluginToolsRegistry } from "@caelo-cms/plugin-host";
 import type { OperationRegistry } from "@caelo-cms/query-api";
 
 import { approverPermissionsOf } from "../../ops/_approver-permission.js";
@@ -87,7 +88,9 @@ export function preflightGatedCall(
  * #589 — the permissions the person clicking Approve on this gated call must
  * hold, as its executor declares them. Rides on the approval card so the UI
  * can disable Approve for someone who lacks them; the executor enforces it
- * regardless. Null when the tool or op cannot be resolved.
+ * regardless. A gated PLUGIN tool declares it as `requiredPermission`, which
+ * the plugin host enforces for the approver. Null when the tool or op cannot
+ * be resolved.
  */
 export function approverPermissionsForGatedCall(
   tools: ToolRegistry,
@@ -96,7 +99,12 @@ export function approverPermissionsForGatedCall(
 ): readonly string[] | null {
   if (typeof tools?.get !== "function" || typeof registry?.lookup !== "function") return null;
   const executeOp = tools.get(toolName)?.gated?.executeOp;
-  if (!executeOp) return null;
+  if (!executeOp) {
+    const plugin = pluginToolsRegistry
+      .list()
+      .find(({ spec }) => spec.name === toolName && spec.approvalMode);
+    return plugin?.spec.requiredPermission ? [plugin.spec.requiredPermission] : null;
+  }
   const op = registry.lookup(executeOp);
   return op.ok ? approverPermissionsOf(op.value) : null;
 }

@@ -126,6 +126,7 @@ import {
 } from "./ops/content/pages.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
 import { resolvePublicUrlsOp } from "./ops/content/public-urls.js";
+import { listSharedContentOp } from "./ops/content/shared-content.js";
 import { setTemplateBlocksOp } from "./ops/content/template_blocks.js";
 import {
   executeTemplateProposalOp,
@@ -627,6 +628,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setHomePageOp);
   registry.register(listPageModuleContentOp);
   registry.register(refreshCurrentPathOp);
+  registry.register(listSharedContentOp);
   registry.register(resolvePublicUrlsOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);

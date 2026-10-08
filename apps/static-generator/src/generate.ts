@@ -47,6 +47,11 @@ import {
   trimSlashes,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import {
+  applyContentVariants,
+  resolveBuildContentVariants,
+  type VariantComposeModule,
+} from "./content-variants-pass.js";
 import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
@@ -132,6 +137,8 @@ interface ModuleRow {
   js: string;
   fields: string | null;
   content_values: string | null;
+  content_instance_id: string;
+  sync_mode: "synced" | "unsynced";
   experiment_id: string | null;
   variant_label: string | null;
 }
@@ -699,14 +706,17 @@ export async function generateSite(args: {
       MAIN_RENDER,
     ),
   );
-  for (let i = 0; i < pageRows.length; i++) {
-    const page = pageRows[i];
-    if (!page) continue;
+  // Page placements for every page up front: the content-variants
+  // composition point (#592) resolves the whole build in one call.
+  const modRowsByPage = new Map<string, ModuleRow[]>();
+  for (const page of pageRows) {
     const modRows = (await tx.execute(sql`
       SELECT pm.block_name, pm.position,
              m.id::text AS module_id,
              m.slug, m.display_name, m.html, m.css, m.js, m.fields::text AS fields,
              ci.values::text AS content_values,
+             pm.content_instance_id::text AS content_instance_id,
+             pm.sync_mode,
              NULL::uuid AS experiment_id,
              NULL::text AS variant_label
       FROM page_modules pm
@@ -724,16 +734,54 @@ export async function generateSite(args: {
         AND m.chat_branch_id IS NULL
       ORDER BY pm.block_name ASC, pm.position ASC
     `)) as unknown as ModuleRow[];
+    modRowsByPage.set(page.page_id, modRows);
+  }
+  const noLayoutModules = new Map<string, VariantComposeModule[]>();
+  const variants = await resolveBuildContentVariants(
+    tx,
+    pageRows.map((page) => ({
+      pageId: page.page_id,
+      slug: page.slug,
+      layoutId: page.layout_id,
+      layoutBlocks: layoutModulesByLayout.get(page.layout_id) ?? noLayoutModules,
+      pageBlocks: (modRowsByPage.get(page.page_id) ?? []).map((r) => ({
+        blockName: r.block_name,
+        position: r.position,
+        module: {
+          moduleId: r.module_id,
+          slug: r.slug,
+          displayName: r.display_name,
+          html: r.html,
+          css: r.css,
+          js: r.js,
+          fields: parseModuleFields(r.fields),
+          contentValues: parseContentValues(r.content_values),
+        },
+        contentInstanceId: r.content_instance_id,
+        synced: r.sync_mode === "synced",
+      })),
+    })),
+    pageUrlStyle,
+  );
 
-    const blocks = groupModulesByBlock(modRows);
-    const layoutBlocksMap = layoutModulesByLayout.get(page.layout_id);
-    const layoutBlocks =
-      layoutBlocksMap === undefined
-        ? []
-        : [...layoutBlocksMap.entries()].map(([blockName, modules]) => ({
-            blockName,
-            modules,
-          }));
+  for (let i = 0; i < pageRows.length; i++) {
+    const page = pageRows[i];
+    if (!page) continue;
+    const modRows = modRowsByPage.get(page.page_id) ?? [];
+    const applied = applyContentVariants(
+      page.page_id,
+      layoutModulesByLayout.get(page.layout_id) ?? noLayoutModules,
+      modRows,
+      variants.resolutions,
+      variants.overrideModules,
+    );
+    const blocks = groupModulesByBlock(
+      modRows.map((r) => {
+        const values = applied.pageValues.get(r);
+        return values === undefined ? r : { ...r, content_values: JSON.stringify(values) };
+      }),
+    );
+    const layoutBlocks = applied.layoutBlocks;
     // P6.7.6 — composer throws ComposeError on layout misconfiguration
     // (e.g. layout HTML missing the required `content` slot). Surface
     // it with the page slug so the deploy operator can locate the
