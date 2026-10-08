@@ -16,6 +16,7 @@
     set_ai_budget: "AI budget",
     set_ai_pricing: "AI pricing",
     set_gateway_settings: "Gateway settings",
+    set_translation_model: "Translation model",
   };
 </script>
 
@@ -23,7 +24,7 @@
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">Pending settings changes</h1>
     <p class="text-sm text-muted-foreground">
-      AI-proposed changes to AI budgets, AI pricing and the public gateway wait here when they
+      AI-proposed changes to AI budgets, AI pricing, the translation model and the public gateway wait here when they
       were proposed outside the chat (for example by an external agent over MCP). Each card shows
       the current value next to the proposed one; nothing changes until you approve.
     </p>

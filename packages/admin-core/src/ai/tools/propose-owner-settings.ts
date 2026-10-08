@@ -2,11 +2,12 @@
 
 /**
  * §11.A gated tools for the Owner settings the agent previously could not
- * touch at all: AI budgets, AI pricing, gateway settings. Each wraps an
- * `owner_settings.propose_*` op (owner_settings_pending.ts); after the
- * operator's in-chat Approve the chat-runner chains
- * `owner_settings.execute_proposal`, which applies the existing
- * `ai_budgets.set` / `ai_pricing.set` / `gateway.set_settings` handler.
+ * touch at all: AI budgets, AI pricing, gateway settings, the translation
+ * model (#593). Each wraps an `owner_settings.propose_*` op
+ * (owner_settings_pending.ts); after the operator's in-chat Approve the
+ * chat-runner chains `owner_settings.execute_proposal`, which applies the
+ * existing `ai_budgets.set` / `ai_pricing.set` / `gateway.set_settings` /
+ * `ai_providers.set_translation_model` handler.
  * Over the Power-MCP the same tools queue the proposal and the Owner
  * approves it at /security/owner-settings/pending.
  *
@@ -24,6 +25,7 @@ import {
   proposeAiBudgetInput,
   proposeAiPricingInput,
   proposeGatewaySettingsInput,
+  proposeTranslationModelInput,
 } from "../../ops/owner_settings_pending.js";
 import type { aiBudgetsStatusOp } from "../../ops/security/ai_budgets.js";
 import type { listAiPricingOp } from "../../ops/security/ai_pricing.js";
@@ -68,6 +70,20 @@ export const proposeSetGatewaySettingsTool = makeProposeTool({
     "Not for per-plugin rate limits — that is tune_rate_limit.",
   schema: proposeGatewaySettingsInput,
   summarize: (_input, preview) => `gateway: ${String(preview.summary ?? "settings change")}`,
+});
+
+export const proposeSetTranslationModelTool = makeProposeTool({
+  toolName: "propose_set_translation_model",
+  opName: "owner_settings.propose_set_translation_model",
+  pendingQueuePath: PENDING_QUEUE,
+  when:
+    "Propose which model page translations run on (the international-site plugin's translate step), on the active AI provider. " +
+    "Default is the chat model; a smaller catalogue model (the provider's 'fast' one) makes translations cheaper. The chat itself is never affected. " +
+    "Use when the operator wants translations cheaper, faster or better, or back on the chat model (`model: null`). " +
+    "Read the active provider's chat model, current translation model and catalogue choices first with list_ai_providers, and pass a catalogue id exactly. " +
+    "The preview shows both models' per-MTok rates.",
+  schema: proposeTranslationModelInput,
+  summarize: (_input, preview) => String(preview.summary ?? "translation model change"),
 });
 
 // ─── read companions ─────────────────────────────────────────────────

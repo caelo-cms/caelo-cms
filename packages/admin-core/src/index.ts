@@ -16,6 +16,7 @@ export * from "./ai/import-cost-model.js";
 export * from "./ai/model-catalog.js";
 export { makePluginImageProvider } from "./ai/plugin-image-provider.js";
 export { transformPluginImage } from "./ai/plugin-image-transform.js";
+export { makePluginTextProvider } from "./ai/plugin-text-provider.js";
 // issue #412 — server-side screenshot_page backend: in-process capture
 // service + the signed branch-scoped tokens its browser presents (the
 // admin's preview-screenshot + asset routes verify them).

@@ -297,6 +297,7 @@ import {
   proposeSetAiBudgetOp,
   proposeSetAiPricingOp,
   proposeSetGatewaySettingsOp,
+  proposeSetTranslationModelOp,
   rejectOwnerSettingsProposalOp,
 } from "./ops/owner_settings_pending.js";
 import {
@@ -397,6 +398,7 @@ import {
   clearAiProviderKeyOp,
   listAiProvidersOp,
   setAiProvidersOp,
+  setTranslationModelOp,
 } from "./ops/security/ai_providers.js";
 import { auditByRequestIdOp } from "./ops/security/audit_by_request.js";
 import {
@@ -739,6 +741,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(reviewAiMemoryOp);
   registry.register(listAiProvidersOp);
   registry.register(setAiProvidersOp);
+  registry.register(setTranslationModelOp);
   registry.register(clearAiProviderKeyOp);
   registry.register(anyAiProviderConfiguredOp);
   // v0.2.26 — ai_providers propose/execute pairs (set / clear_key).
@@ -901,6 +904,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeSetAiBudgetOp);
   registry.register(proposeSetAiPricingOp);
   registry.register(proposeSetGatewaySettingsOp);
+  registry.register(proposeSetTranslationModelOp);
   registry.register(executeOwnerSettingsProposalOp);
   registry.register(rejectOwnerSettingsProposalOp);
   registry.register(listPendingOwnerSettingsProposalsOp);

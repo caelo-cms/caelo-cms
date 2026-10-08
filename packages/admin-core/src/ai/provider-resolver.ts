@@ -23,6 +23,7 @@
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { decryptSecret } from "../security/secret-box.js";
 import { catalogModel } from "./model-catalog.js";
+import { modelForPurpose } from "./model-purpose.js";
 import type { AIProvider, ProviderName } from "./provider.js";
 import { makeProvider } from "./providers/index.js";
 
@@ -286,11 +287,13 @@ async function loadActiveProviderMeta(d: ResolverDeps): Promise<{
   /** issue #306 — raw `config.modelTiers` value; validated by
    *  `parseModelTierMap` in model-tiers.ts at the call site. */
   modelTiersRaw?: unknown;
+  /** #593 — `ai_providers.translation_model`; null = same as the chat model. */
+  translationModel: string | null;
 } | null> {
   const rows = (await withSystemTx(
     d,
     (tx) => tx`
-      SELECT name, config
+      SELECT name, config, translation_model
       FROM ai_providers
       WHERE is_active = true
       ORDER BY created_at ASC
@@ -299,6 +302,7 @@ async function loadActiveProviderMeta(d: ResolverDeps): Promise<{
   )) as unknown as {
     name: ProviderName;
     config: Record<string, unknown> | string;
+    translation_model: string | null;
   }[];
   const row = rows[0];
   if (!row) return null;
@@ -309,6 +313,7 @@ async function loadActiveProviderMeta(d: ResolverDeps): Promise<{
   return {
     name: row.name,
     model,
+    translationModel: row.translation_model,
     ...(baseUrl ? { baseUrl } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     ...(config.modelTiers !== undefined ? { modelTiersRaw: config.modelTiers } : {}),
@@ -555,12 +560,21 @@ export async function getActiveProviderForModel(modelId: string): Promise<Resolv
   // nothing to route to — the env-only legacy fallback deliberately does
   // not apply here (it has no config to carry a tier map).
   if (!meta) return null;
+  return resolveActiveRowForModel(deps, meta, modelId);
+}
+
+/** The provider of an already-loaded active row, running `modelId`. */
+async function resolveActiveRowForModel(
+  d: ResolverDeps,
+  meta: { name: ProviderName; baseUrl?: string; maxOutputTokens?: number },
+  modelId: string,
+): Promise<ResolvedProvider | null> {
   const cacheKey = `${meta.name}::${modelId}`;
   const now = Date.now();
   const cached = tierCache.get(cacheKey);
   if (cached && cached.expiresAt > now) return cached.resolved;
 
-  const key = await loadApiKey(deps, meta.name);
+  const key = await loadApiKey(d, meta.name);
   if (!key) return null;
   const provider = makeProvider({
     name: meta.name,
@@ -578,6 +592,30 @@ export async function getActiveProviderForModel(modelId: string): Promise<Resolv
   };
   tierCache.set(cacheKey, { resolved, expiresAt: now + TTL_MS });
   return resolved;
+}
+
+/**
+ * #593 — the provider for a call that declared `purpose` (plugin
+ * `ctx.ai.complete`). Resolution order, see `modelForPurpose`: the active
+ * provider's model for that purpose when the Owner set one, else the chat
+ * model via `getActiveProvider()` (so the chat path's behaviour, including
+ * its test-only overrides, is exactly what an unset purpose gets).
+ */
+export async function getActiveProviderForPurpose(
+  purpose: string | undefined,
+): Promise<ResolvedProvider | null> {
+  if (!deps) {
+    throw new Error("provider-resolver not configured — call configureProviderResolver() at boot");
+  }
+  const meta = await loadActiveProviderMeta(deps);
+  // No active row: the env-only legacy path has no stored per-purpose
+  // models, so every purpose runs on its chat model.
+  const purposeModel = meta ? modelForPurpose(purpose, meta) : null;
+  if (meta === null || purposeModel === null) return getActiveProvider();
+  // Build from the SAME row the model was read from: re-reading the active
+  // row could pair this provider's model id with another provider if the
+  // Owner switched providers in between.
+  return resolveActiveRowForModel(deps, meta, purposeModel);
 }
 
 /** Host-only image dispatch shares the chat resolver's encrypted-key path.
