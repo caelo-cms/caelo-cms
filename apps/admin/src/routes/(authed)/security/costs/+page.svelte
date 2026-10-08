@@ -206,7 +206,10 @@
     <Card>
       <CardHeader>
         <CardTitle class="text-base">Per plugin</CardTitle>
-        <CardDescription>Top 20 by spend. Empty plugin = chat-runner / direct call.</CardDescription>
+        <CardDescription
+          >Top 20 by spend, one row per model the calls ran on. Empty plugin = chat-runner /
+          direct call.</CardDescription
+        >
       </CardHeader>
       <CardContent>
         {#if data.agg.perPlugin.length === 0}
@@ -216,6 +219,7 @@
             <TableHeader>
               <TableRow>
                 <TableHead>Plugin</TableHead>
+                <TableHead>Model</TableHead>
                 <TableHead>Calls</TableHead>
                 <TableHead>Cost</TableHead>
               </TableRow>
@@ -232,6 +236,7 @@
                       <span class="text-muted-foreground">— (chat-runner)</span>
                     {/if}
                   </TableCell>
+                  <TableCell class="font-mono text-xs">{r.provider} · {r.model}</TableCell>
                   <TableCell>{r.calls}</TableCell>
                   <TableCell>{fmtUsd(r.costUsd)}</TableCell>
                 </TableRow>

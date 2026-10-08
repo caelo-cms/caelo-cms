@@ -12,7 +12,7 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { aiProvidersClearKeyInput, aiProvidersSetInput, ok } from "@caelo-cms/shared";
+import { aiProvidersClearKeyInput, aiProvidersSetInput, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
@@ -22,6 +22,7 @@ import { jsonbParam } from "../../sql-helpers.js";
 const PROVIDER_NAMES = ["anthropic", "openai", "google", "local-openai-compat"] as const;
 type ProviderName = (typeof PROVIDER_NAMES)[number];
 
+import { catalogSlots } from "../../ai/model-catalog.js";
 import { providerEnvKey } from "../../ai/provider-env.js";
 
 const providerRow = z.object({
@@ -39,6 +40,8 @@ const providerRow = z.object({
   apiKeySource: z.enum(["db", "env"]).nullable(),
   /** Wall-clock when the encrypted key was last set; NULL when source != 'db'. */
   apiKeySetAt: z.string().nullable(),
+  /** #593 — model for translation calls; null = same as the chat model. */
+  translationModel: z.string().nullable(),
 });
 
 export const listAiProvidersOp = defineOperation({
@@ -60,7 +63,8 @@ export const listAiProvidersOp = defineOperation({
         config,
         is_active,
         (api_key_encrypted IS NOT NULL) AS has_db_key,
-        api_key_set_at
+        api_key_set_at,
+        translation_model
       FROM ai_providers
       ORDER BY created_at ASC
     `)) as unknown as {
@@ -71,6 +75,7 @@ export const listAiProvidersOp = defineOperation({
       is_active: boolean;
       has_db_key: boolean;
       api_key_set_at: Date | string | null;
+      translation_model: string | null;
     }[];
     return ok({
       providers: rows.map((r) => {
@@ -88,6 +93,7 @@ export const listAiProvidersOp = defineOperation({
           apiKeySource,
           apiKeySetAt:
             r.api_key_set_at instanceof Date ? r.api_key_set_at.toISOString() : r.api_key_set_at,
+          translationModel: r.translation_model,
         };
       }),
     });
@@ -209,6 +215,77 @@ export const clearAiProviderKeyOp = defineOperation({
       resultSummary: `name=${input.name} cleared=${cleared}`,
     });
     return ok({ cleared });
+  },
+});
+
+/**
+ * The models a provider's translation model may be set to: its curated
+ * catalogue (`model-catalog.json`, the same source as the chat-model
+ * picker). Providers without a catalogue (local-openai-compat) offer none,
+ * so their translation calls always use the chat model.
+ */
+export function translationModelChoices(name: ProviderName): readonly string[] {
+  return name === "local-openai-compat" ? [] : catalogSlots(name).map((s) => s.id);
+}
+
+/**
+ * Why `model` cannot be a translation model of `name`, phrased so the
+ * caller (Owner form or AI) knows the next step; null when it can.
+ */
+export function translationModelProblem(name: ProviderName, model: string): string | null {
+  const choices = translationModelChoices(name);
+  if (choices.includes(model)) return null;
+  if (choices.length === 0) {
+    return `${name} has no model catalogue, so its translations always use the chat model. Set the model to null (same as chat model).`;
+  }
+  return `"${model}" is not in the ${name} model catalogue. Choose one of: ${choices.join(", ")} — or null for "same as chat model".`;
+}
+
+export const setTranslationModelInput = z
+  .object({
+    name: z.enum(PROVIDER_NAMES),
+    /** null = same as the chat model (the stored default). */
+    model: z.string().min(1).max(128).nullable(),
+  })
+  .strict();
+
+export const setTranslationModelOp = defineOperation({
+  name: "ai_providers.set_translation_model",
+  // Why human-only: the translation model decides what every translation
+  // costs; the AI reaches it only through
+  // owner_settings.propose_set_translation_model (Owner-approved, §11.A).
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: setTranslationModelInput,
+  output: z.object({ translationModel: z.string().nullable() }),
+  handler: async (ctx, input, tx) => {
+    const op = "ai_providers.set_translation_model";
+    if (input.model !== null) {
+      const problem = translationModelProblem(input.name, input.model);
+      if (problem) return err({ kind: "HandlerError", operation: op, message: problem });
+    }
+    const rows = (await tx.execute(sql`
+      UPDATE ai_providers SET translation_model = ${input.model}
+      WHERE name = ${input.name}
+      RETURNING name
+    `)) as unknown as { name: string }[];
+    if (rows.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: op,
+        message: `provider ${input.name} is not configured — save it at /security/ai first.`,
+      });
+    }
+    await tx.execute(sql`SELECT pg_notify('caelo_ai_providers', ${input.name})`);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: op,
+      input,
+      succeeded: true,
+      resultSummary: `name=${input.name} translationModel=${input.model ?? "same as chat model"}`,
+    });
+    return ok({ translationModel: input.model });
   },
 });
 

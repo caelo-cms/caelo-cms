@@ -55,11 +55,17 @@ export const aggregateAiCallsOp = defineOperation({
         costUsd: z.number().nonnegative(),
       }),
     ),
-    /** P16 — top-N plugins by spend (NULL plugin_id = chat-runner / direct). */
+    /**
+     * P16 — top-N (plugin, model) buckets by spend (NULL plugin_id =
+     * chat-runner / direct). #593: one row per model a plugin's calls
+     * actually ran on, so a translation model shows next to the plugin.
+     */
     perPlugin: z.array(
       z.object({
         pluginId: z.string().nullable(),
         pluginSlug: z.string().nullable(),
+        provider: z.string(),
+        model: z.string(),
         calls: z.number().int().nonnegative(),
         costUsd: z.number().nonnegative(),
       }),
@@ -168,17 +174,21 @@ export const aggregateAiCallsOp = defineOperation({
       SELECT
         c.plugin_id::text AS plugin_id,
         p.slug AS plugin_slug,
+        c.provider,
+        c.model,
         COUNT(*)::int AS calls,
         COALESCE(SUM(c.cost_estimate_microcents), 0)::bigint AS cost_microcents
       FROM ai_calls c
       LEFT JOIN plugins p ON p.id = c.plugin_id
       WHERE c.created_at >= ${since}
-      GROUP BY c.plugin_id, p.slug
+      GROUP BY c.plugin_id, p.slug, c.provider, c.model
       ORDER BY cost_microcents DESC
       LIMIT 20
     `)) as unknown as Array<{
       plugin_id: string | null;
       plugin_slug: string | null;
+      provider: string;
+      model: string;
       calls: number;
       cost_microcents: bigint | string | number;
     }>;
@@ -228,6 +238,8 @@ export const aggregateAiCallsOp = defineOperation({
       perPlugin: pluginRows.map((r) => ({
         pluginId: r.plugin_id,
         pluginSlug: r.plugin_slug,
+        provider: r.provider,
+        model: r.model,
         calls: r.calls,
         costUsd: toUsd(r.cost_microcents),
       })),
