@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.31
+
+### Fixes
+- c0603647 the operator chooses the cloud region; fixed after install (#607) (#609)
+
 ## v0.10.30
 
 ### Features
