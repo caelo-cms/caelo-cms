@@ -32,6 +32,7 @@ import {
 } from "./install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "./operator-access.js";
+import { assertRegionUnchanged } from "./regions.js";
 import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
@@ -84,6 +85,25 @@ function requireInstall(): { installId: string; meta: InstallMetadata } {
 }
 
 /**
+ * The install's recorded region (#607); exits with the actionable reason
+ * when install.json has none, or when `requested` names a different one.
+ */
+function installRegion(meta: InstallMetadata, requested?: string): string {
+  try {
+    return assertRegionUnchanged(meta, requested);
+  } catch (e) {
+    log.error(red(e instanceof Error ? e.message : String(e)));
+    process.exit(1);
+  }
+}
+
+/** A Cloud Run lookup is regional; there is no default region to guess. */
+function requiredRegion(region: string | undefined): string {
+  if (!region) throw new Error("a Cloud Run lookup needs the install region (install.json)");
+  return region;
+}
+
+/**
  * Pulumi auto-naming appends a random 7-char suffix to every resource
  * (e.g. `caelo-production-admin-3efcfea`). Lifecycle commands need the
  * actual deployed names; this helper queries gcloud with a prefix
@@ -105,7 +125,7 @@ async function resolveGcpResourceName(
       "services",
       "list",
       "--region",
-      region ?? "europe-west1",
+      requiredRegion(region),
       "--project",
       projectId,
       "--filter",
@@ -187,7 +207,7 @@ async function gcpStatus(meta: InstallMetadata): Promise<void> {
   const s = spinner();
   s.start("Resolving deployed resources + checking health...");
 
-  const region = meta.region ?? "europe-west1";
+  const region = installRegion(meta);
   const adminName = await resolveGcpResourceName(
     "run-service",
     "caelo-production-admin",
@@ -265,6 +285,11 @@ interface UpgradeOpts {
    * mismatch.
    */
   readonly skipVerify?: boolean;
+  /**
+   * #607 — the region the operator expects the install in. Optional; when
+   * given it must match install.json, because upgrade never moves regions.
+   */
+  readonly region?: string;
 }
 
 interface ServicePlan {
@@ -452,7 +477,9 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   }
   if (!meta.projectId) return;
 
-  const region = meta.region ?? "europe-west1";
+  // #607 — upgrade never moves an install: a `--region` other than the
+  // recorded one is refused before anything rolls.
+  const region = installRegion(meta, opts.region);
   const registryProject = "caelo-website";
   const registryRegion = "europe-west1";
   const registryRepo = "caelo-cms-images";
@@ -1160,7 +1187,7 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
     return;
   }
   if (!meta.projectId) return;
-  const region = meta.region ?? "europe-west1";
+  const region = installRegion(meta);
 
   const s = spinner();
   s.start(`Rotating ${secret}...`);
@@ -1255,7 +1282,7 @@ export async function truncateCommand(): Promise<void> {
 
   if ((meta.provider === "gcp" || meta.provider === "gcp-firebase") && meta.projectId) {
     const { truncateViaCloudRunJob } = await import("./migration-runner.js");
-    const region = meta.region ?? "europe-west1";
+    const region = installRegion(meta);
     const r = await truncateViaCloudRunJob({ projectId: meta.projectId, region });
     if (!r.ok) {
       cancel(`Truncate failed: ${r.error}.`);

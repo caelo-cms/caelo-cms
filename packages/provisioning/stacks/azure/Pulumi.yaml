@@ -27,10 +27,9 @@ config:
     type: string
     default: caelo-rg
     description: Resource group name. Created by the stack if it doesn't exist.
-  caelo-azure:location:
+  caelo-azure:region:
     type: string
-    default: westeurope
-    description: Azure region. Container Apps regional availability is checked at preview.
+    description: Azure region (e.g. westeurope). Required, no default; fixed after install (#607). Container Apps regional availability is checked at preview.
   caelo-azure:adminMemory:
     type: string
     default: "2Gi"

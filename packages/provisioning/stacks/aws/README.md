@@ -24,7 +24,9 @@ cd packages/provisioning/stacks/aws
 pulumi stack init prod
 pulumi config set caelo-aws:domain example.com
 pulumi config set caelo-aws:ownerEmail me@example.com
-pulumi config set caelo-aws:region us-east-1
+# Required (#607): fixed after install; aws:region must match.
+pulumi config set caelo-aws:region eu-central-1
+pulumi config set aws:region eu-central-1
 
 # Build the Lambda@Edge bundle BEFORE the first `pulumi up`.
 bun run packages/provisioning/stacks/aws/build-edge.ts

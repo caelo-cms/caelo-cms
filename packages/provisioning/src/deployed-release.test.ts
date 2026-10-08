@@ -6,6 +6,7 @@ import {
   chooseImageDigests,
   digestFromImageRef,
   readDeployedImageDigests,
+  readDeployedRegion,
 } from "./deployed-release.js";
 import type { GcloudResult } from "./gcloud.js";
 
@@ -169,5 +170,41 @@ describe("chooseImageDigests", () => {
       resolveLatest: async () => latest,
     });
     expect(r).toEqual({ ok: true, source: "latest", digests: latest });
+  });
+});
+
+describe("readDeployedRegion (#607)", () => {
+  it("reads the admin service's region across all regions", async () => {
+    const { run, calls } = fakeGcloud({
+      "metadata.name~^caelo-production-admin": [ok("europe-west1\n")],
+    });
+    expect(await readDeployedRegion({ projectId: "p", run })).toEqual({
+      ok: true,
+      region: "europe-west1",
+    });
+    expect(calls[0]?.some((a) => a.startsWith("--region"))).toBe(false);
+  });
+
+  it("is null when nothing is deployed", async () => {
+    const { run } = fakeGcloud({ "metadata.name~^caelo-production-admin": [ok("")] });
+    expect(await readDeployedRegion({ projectId: "p", run })).toEqual({ ok: true, region: null });
+  });
+
+  it("fails loudly when the services can't be listed", async () => {
+    const { run } = fakeGcloud({
+      "metadata.name~^caelo-production-admin": [fail("PERMISSION_DENIED")],
+    });
+    const r = await readDeployedRegion({ projectId: "p", run });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("PERMISSION_DENIED");
+  });
+
+  it("refuses to guess between several regions", async () => {
+    const { run } = fakeGcloud({
+      "metadata.name~^caelo-production-admin": [ok("europe-west1\nus-central1\n")],
+    });
+    const r = await readDeployedRegion({ projectId: "p", run });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("several regions");
   });
 });

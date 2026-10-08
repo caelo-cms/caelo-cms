@@ -24,7 +24,7 @@ pulumi stack init prod
 pulumi config set caelo-azure:domain example.com
 pulumi config set caelo-azure:ownerEmail me@example.com
 pulumi config set caelo-azure:subscription <your-subscription-guid>
-pulumi config set caelo-azure:location westeurope
+pulumi config set caelo-azure:region westeurope
 
 # Build + push images. Operator does this on every release.
 az login

@@ -27,13 +27,17 @@ The `--provider azure` adapter mirrors the GCP / AWS shape on Azure-equivalent s
 bunx @caelo-cms/provisioning --provider azure \
   --subscription <id> \
   --resource-group caelo-prod \
-  --location westeurope \
+  --region westeurope \
   --domain caelo.example.com \
   --owner-email you@example.com \
   --anthropic-key sk-ant-...
 ```
 
 Requires `az login` as a service principal with Owner on the resource group, OR Contributor + User Access Administrator if your org enforces least-privilege.
+
+## Region
+
+The Azure stack requires `caelo-azure:region` (it replaces the earlier `caelo-azure:location` key; a stack that still has the old key stops and prints the two commands that move it). There is no default, so it never lands in a region nobody chose. Pick the region with care: it is fixed after install, because moving means migrating the database, storage and Key Vault. Microsoft publishes no fixed list of Container Apps regions; check yours with `az provider show --namespace Microsoft.App --query "resourceTypes[?resourceType=='managedEnvironments'].locations"`. The guided region picker that the [GCP install](/install-gcp#choosing-the-region) has, which runs this check for you, will come with the Azure provisioner flow.
 
 ## Notes specific to Azure
 

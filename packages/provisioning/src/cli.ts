@@ -716,7 +716,11 @@ async function lifecycleUpgrade(): Promise<void> {
       ? channelArg
       : undefined;
   const skipVerify = process.argv.includes("--skip-verify");
+  // #607 — optional; must match the install's recorded region (upgrade
+  // never moves an install between regions).
+  const region = arg("region");
   await upgradeCommand({
+    ...(region ? { region } : {}),
     ...(version ? { version } : {}),
     ...(channel ? { channel } : {}),
     ...(skipVerify ? { skipVerify: true } : {}),
@@ -810,7 +814,7 @@ async function adminDomain(): Promise<void> {
 /**
  * §11.C — interactive wizard. Loaded lazily so the bare-CLI startup
  * cost stays small (clack + kleur are pulled in only when needed).
- * Reads `--provider`, `--domain`, `--owner-email`, `--project-id`, and
+ * Reads `--provider`, `--domain`, `--owner-email`, `--project-id`, `--region`, and
  * `--non-interactive` from argv when supplied.
  */
 async function wizardCommand(): Promise<void> {
@@ -821,6 +825,7 @@ async function wizardCommand(): Promise<void> {
     domain: arg("domain"),
     ownerEmail: arg("owner-email"),
     projectId: arg("project-id"),
+    region: arg("region"),
   });
 }
 
@@ -834,7 +839,7 @@ if (route.kind === "handler") {
   await wizardCommand();
 } else {
   console.log(
-    "Usage: cms-provision [wizard] [--provider <name> --domain <d> --owner-email <e>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|pulumi-output-sync|version> [options]\n" +
+    "Usage: cms-provision [wizard] [--provider <name> --domain <d> --owner-email <e> --region <r>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|pulumi-output-sync|version> [options]\n" +
       "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
   );
   process.exit(cmd && !cmd.startsWith("-") ? 2 : 0);
