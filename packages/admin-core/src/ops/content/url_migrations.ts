@@ -28,6 +28,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { requiresApproverPermission } from "../_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -194,7 +195,7 @@ export const proposeUrlMigrationOp = defineOperation({
   },
 });
 
-export const executeUrlMigrationOp = defineOperation({
+const executeUrlMigrationOpDefinition = defineOperation({
   name: "url_migrations.execute_proposal",
   // Why human-only (+system): §11.A — applying a site-wide URL move is
   // the click the gate exists to obtain. The AI proposes; the SDK
@@ -244,3 +245,9 @@ export const executeUrlMigrationOp = defineOperation({
     return ok({ pagesMoved: payload.diff.length, redirectsCreated });
   },
 });
+
+/** #589 — the approver must hold roles.manage (see _approver-permission.ts). */
+export const executeUrlMigrationOp = requiresApproverPermission(
+  ["roles.manage"],
+  executeUrlMigrationOpDefinition,
+);

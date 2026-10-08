@@ -81,6 +81,8 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
     "Result: {deleted, alreadyDeleted, notFound}. " +
     `Deleting ${DELETE_PAGES_MANY_APPROVAL_THRESHOLD}+ pages needs one Owner click in chat before the delete runs.`,
   needsApproval: (input) => input.deletions.length >= DELETE_PAGES_MANY_APPROVAL_THRESHOLD,
+  // #589 — deleting pages in the editor needs content.write.
+  approverPermissions: ["content.write"],
   buildApprovalPreview: (input) => ({
     op: "delete_pages_many",
     pageCount: input.deletions.length,

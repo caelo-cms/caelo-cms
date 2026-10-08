@@ -20,6 +20,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -134,7 +135,7 @@ export const proposeDomainRemoveOp = defineOperation({
 
 // ─── execute / reject / list_pending ─────────────────────────────────
 
-export const executeDomainProposalOp = defineOperation({
+const executeDomainProposalOpDefinition = defineOperation({
   name: "domains.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -206,6 +207,12 @@ export const executeDomainProposalOp = defineOperation({
     return ok({ domainId: resultDomainId });
   },
 });
+
+/** #589 — the approver must hold settings.write (see _approver-permission.ts). */
+export const executeDomainProposalOp = requiresApproverPermission(
+  ["settings.write"],
+  executeDomainProposalOpDefinition,
+);
 
 export const rejectDomainProposalOp = defineOperation({
   name: "domains.reject_proposal",

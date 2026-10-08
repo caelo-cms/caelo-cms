@@ -35,6 +35,10 @@ import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import {
+  approverPermissionsOf,
+  isApproverPermissionRefusal,
+} from "../../ops/_approver-permission.js";
 import { describeOperatorAccessSync, syncOperatorAccess } from "../../ops/user_access.js";
 import { describePersistError } from "../chat-runner/persistence.js";
 import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
@@ -43,9 +47,16 @@ import { approvedPluginInvocation } from "../plugin-invocation.js";
 /**
  * Attach the SDK `execute` to a gated catalogue tool. The returned tool ships
  * to the provider with `approvalMode` + `execute`; the SDK pauses before
- * `execute` until the Owner approves, then runs propose (AI) + execute_proposal
- * (Owner live). `ownerCtxLive` MUST be branch-free (a live-commit) so an
- * approved change applies site-wide immediately, matching the old flow.
+ * `execute` until a human approves, then runs propose (AI) + execute_proposal
+ * (as the approving human, live). `ownerCtxLive` is the context of whoever
+ * clicked Approve and MUST be branch-free (a live-commit) so an approved
+ * change applies site-wide immediately, matching the old flow.
+ *
+ * #589 — the click alone does not authorise: anyone who can chat sees the
+ * card. The executor op declares the permission its approver must hold
+ * (`requiresApproverPermission`) and refuses anyone without it; this execute
+ * fails closed when an executor declares none, and turns a refusal into a
+ * clear "still pending at <queue>" result instead of a generic failure.
  */
 export function attachGatedExecute(
   tool: FilteredTool,
@@ -60,6 +71,21 @@ export function attachGatedExecute(
     ...tool,
     approvalMode: "user-approval",
     execute: async (input: unknown): Promise<unknown> => {
+      // 0. Fail closed: an executor that names no approver permission would
+      //    let any chat user's click apply the change. The CI guard keeps
+      //    this unreachable; the runtime check keeps it safe if it is not.
+      const executor = registry.lookup(gated.executeOp);
+      const required = executor.ok ? approverPermissionsOf(executor.value) : null;
+      if (!required) {
+        console.error("[gated-tool] executor declares no approver permission — refusing", {
+          tool: tool.name,
+          executeOp: gated.executeOp,
+        });
+        return {
+          ok: false,
+          error: `${tool.name} cannot be approved: ${gated.executeOp} declares no approver permission. Nothing was proposed or applied — report this as a bug.`,
+        };
+      }
       // 1. Propose as the AI — validates, writes the pending row + preview.
       const proposed = await execute(
         registry,
@@ -78,11 +104,26 @@ export function attachGatedExecute(
       if (!proposalId) {
         return { ok: false, error: `${gated.proposeOp} returned no proposalId` };
       }
-      // 2. Apply as the Owner (live-commit) — the approved mutation.
+      // 2. Apply as the approving human (live-commit) — the approved
+      //    mutation. The executor checks the approver's permission first.
       const applied = await execute(registry, adapter, ownerCtxLive, gated.executeOp, {
         proposalId,
       });
       if (!applied.ok) {
+        if (
+          applied.error.kind === "HandlerError" &&
+          isApproverPermissionRefusal(applied.error.message)
+        ) {
+          // The proposal row is untouched and stays pending, so someone
+          // who holds the permission can approve it from the queue.
+          return {
+            ok: false,
+            error:
+              `Not applied: the person who clicked Approve lacks ${required.join(" + ")}. ` +
+              `Proposal ${proposalId} stays pending at ${gated.pendingQueuePath} — tell the operator ` +
+              `an Owner (or anyone holding ${required.join(" + ")}) must approve it there. Do not propose it again.`,
+          };
+        }
         return {
           ok: false,
           error: `${gated.executeOp} failed: ${describePersistError(applied.error)}`,

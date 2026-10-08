@@ -25,6 +25,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { requiresApproverPermission } from "./_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -167,7 +168,7 @@ export const proposeEmailConfigSetOp = defineOperation({
 
 // ─── execute / reject / list_pending ─────────────────────────────────
 
-export const executeEmailConfigProposalOp = defineOperation({
+const executeEmailConfigProposalOpDefinition = defineOperation({
   name: "email_config.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -248,6 +249,12 @@ export const executeEmailConfigProposalOp = defineOperation({
     return ok({});
   },
 });
+
+/** #589 — the approver must hold settings.write (see _approver-permission.ts). */
+export const executeEmailConfigProposalOp = requiresApproverPermission(
+  ["settings.write"],
+  executeEmailConfigProposalOpDefinition,
+);
 
 export const rejectEmailConfigProposalOp = defineOperation({
   name: "email_config.reject_proposal",

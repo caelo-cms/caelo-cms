@@ -76,6 +76,7 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
     gated: {
       proposeOp: args.opName,
       executeOp,
+      pendingQueuePath: args.pendingQueuePath,
       ...(args.afterApply ? { afterApply: args.afterApply } : {}),
     },
     // Fallback handler — NOT used on the gated (SDK-executed) path, kept so the

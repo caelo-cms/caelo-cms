@@ -34,7 +34,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import type { AIProvider, ChatMessageInput, ProviderStepSummary } from "../provider.js";
 import { capWrapUpNoticeText, shouldWrapUpAtCap } from "../tools/subagent-budget.js";
 import { buildApprovalPreview } from "./approval.js";
-import { preflightGatedCall } from "./approval-preflight.js";
+import { approverPermissionsForGatedCall, preflightGatedCall } from "./approval-preflight.js";
 import {
   type BudgetGateState,
   budgetTripText,
@@ -843,6 +843,7 @@ export async function* runToolLoop(
       // can correct itself on the next run.
       if (askable.length === 0 && rejected.length > 0) continue;
       for (const req of askable) {
+        const requiredPermissions = approverPermissionsForGatedCall(tools, registry, req.name);
         yield {
           kind: "tool-approval-request",
           approvalId: req.approvalId,
@@ -850,6 +851,7 @@ export async function* runToolLoop(
           name: req.name,
           arguments: req.arguments,
           preview: buildApprovalPreview(req.name, req.arguments),
+          ...(requiredPermissions ? { requiredPermissions: [...requiredPermissions] } : {}),
         };
       }
       // Autonomous / e2e runs: no human is on the stream to click Approve —

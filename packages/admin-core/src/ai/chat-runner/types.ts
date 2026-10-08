@@ -47,6 +47,8 @@ export type ClientEvent =
       name: string;
       arguments: unknown;
       preview: string;
+      /** #589 — what the approver must hold; the UI disables Approve without it. */
+      requiredPermissions?: string[];
     }
   | { kind: "assistant-message-saved"; messageId: string }
   | { kind: "interrupted"; messageId: string | null }
