@@ -22,6 +22,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import {
+  checkStageAuditTool,
   getQualityAuditTool,
   listQualityAcceptancesTool,
   listQualityAuditsTool,
@@ -250,6 +251,14 @@ describe("quality_audits.classify_stage", () => {
     expect(c.classification.auditNeeded).toBe(true);
     expect(c.classification.reasons.map((r) => r.rule)).toEqual(["module_code"]);
     expect(c.touchedPageIds).toEqual([aboutId]);
+    // The AI asks the same question through check_stage_audit.
+    const told = await checkStageAuditTool.handler(AI, {}, {
+      adapter,
+      registry,
+      chatSessionId,
+    } as ToolContext);
+    expect(told.content).toContain("will be quality-checked");
+    expect(told.content).toContain("module_code");
     await op(SYS, "chat.discard_branch", { chatSessionId });
   });
 
@@ -630,7 +639,15 @@ describe("read surfaces", () => {
       "quality_acceptances.list",
       {},
     );
-    expect(all.acceptances.map((a) => a.auditId ?? "score").sort()).toEqual(["image-alt", "score"]);
+    // The accepted Accessibility 92 was spent when /about scored 100 again
+    // (ratchet): it is revoked, so only the finding acceptance is live.
+    expect(all.acceptances.map((a) => a.auditId ?? "score")).toEqual(["image-alt"]);
+    const withRevoked = await op<{ acceptances: { revokedAt: string | null }[] }>(
+      SYS,
+      "quality_acceptances.list",
+      { includeRevoked: true },
+    );
+    expect(withRevoked.acceptances.filter((a) => a.revokedAt !== null)).toHaveLength(1);
     const byQuery = await op<{ acceptances: unknown[] }>(SYS, "quality_acceptances.list", {
       query: "decorative",
     });

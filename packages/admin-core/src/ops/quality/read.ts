@@ -30,7 +30,7 @@ import {
   stageClassificationSchema,
 } from "./_shared.js";
 
-const runSummarySchema = z.object({
+export const runSummarySchema = z.object({
   id: z.string(),
   deployRunId: z.string(),
   chatSessionId: z.string().nullable(),
@@ -44,11 +44,17 @@ const runSummarySchema = z.object({
   createdAt: z.string(),
   startedAt: z.string().nullable(),
   finishedAt: z.string().nullable(),
+  /** #553 fix loop: 0 for a chat's first audit of a problem chain, then 1, 2. */
+  fixRound: z.number().int(),
+  /** The failed audit this run retries, if any. */
+  retryOf: z.string().nullable(),
+  /** An editor's recorded "publish anyway" over this failed audit. */
+  publishOverride: z.object({ by: z.string(), reason: z.string(), at: z.string() }).nullable(),
 });
 
-type RunSummary = z.infer<typeof runSummarySchema>;
+export type RunSummary = z.infer<typeof runSummarySchema>;
 
-interface RunDbRow {
+export interface RunDbRow {
   id: string;
   deploy_run_id: string;
   chat_session_id: string | null;
@@ -62,15 +68,22 @@ interface RunDbRow {
   created_at: string | Date;
   started_at: string | Date | null;
   finished_at: string | Date | null;
+  fix_round: number;
+  retry_of: string | null;
+  publish_override_by: string | null;
+  publish_override_reason: string | null;
+  publish_override_at: string | Date | null;
 }
 
-const RUN_COLUMNS = sql`
+export const RUN_COLUMNS = sql`
   q.id::text AS id, q.deploy_run_id::text AS deploy_run_id,
   q.chat_session_id::text AS chat_session_id, q.status, q.classification,
   cardinality(q.target_page_ids) AS page_count, q.problem_count, q.base_url,
-  q.error_code, q.error_message, q.created_at, q.started_at, q.finished_at`;
+  q.error_code, q.error_message, q.created_at, q.started_at, q.finished_at,
+  q.fix_round, q.retry_of::text AS retry_of, q.publish_override_by::text AS publish_override_by,
+  q.publish_override_reason, q.publish_override_at`;
 
-function toRunSummary(r: RunDbRow): RunSummary {
+export function toRunSummary(r: RunDbRow): RunSummary {
   return {
     id: r.id,
     deployRunId: r.deploy_run_id,
@@ -85,6 +98,16 @@ function toRunSummary(r: RunDbRow): RunSummary {
     createdAt: iso(r.created_at),
     startedAt: r.started_at === null ? null : iso(r.started_at),
     finishedAt: r.finished_at === null ? null : iso(r.finished_at),
+    fixRound: Number(r.fix_round),
+    retryOf: r.retry_of,
+    publishOverride:
+      r.publish_override_by !== null && r.publish_override_at !== null
+        ? {
+            by: r.publish_override_by,
+            reason: r.publish_override_reason ?? "",
+            at: iso(r.publish_override_at),
+          }
+        : null,
   };
 }
 

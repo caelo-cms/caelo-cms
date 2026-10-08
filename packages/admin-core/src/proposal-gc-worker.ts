@@ -53,6 +53,8 @@ const PENDING_TABLES = [
   "site_defaults_pending_actions",
   // 0235 — AI budgets / AI pricing / gateway settings.
   "owner_settings_pending_actions",
+  // #553 — quality acceptances / publish-anyway decisions.
+  "quality_pending_actions",
 ] as const;
 
 let workerHandle: ReturnType<typeof setInterval> | null = null;
