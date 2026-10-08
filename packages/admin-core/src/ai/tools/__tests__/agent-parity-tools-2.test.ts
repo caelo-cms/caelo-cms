@@ -455,7 +455,7 @@ describe("content maintenance tools", () => {
       "imports.log_events": (input: { events: unknown[] }) => ({ inserted: input.events.length }),
     });
     await run(listImportRunsTool, { status: "failed" }, h.toolCtx);
-    expect(h.calls[0]?.input).toEqual({ status: "failed" });
+    expect(h.calls[0]?.input).toEqual({ status: "failed", offset: 0, limit: 51 });
     const bad = await run(
       logImportEventsTool,
       { events: [{ runId: U1, severity: "fatal", message: "x" }] },
@@ -473,6 +473,34 @@ describe("content maintenance tools", () => {
       h.toolCtx,
     );
     expect(good.content).toContain("Logged 2 event(s)");
+  });
+
+  it("list_import_runs pages server-side, so offset reaches runs past one page", async () => {
+    const run_ = (i: number) => ({
+      id: `run-${i}`,
+      createdAt: `2026-01-01T00:00:${String(i).padStart(2, "0")}Z`,
+      status: "completed",
+      sourceUrl: `https://old.example/${i}`,
+      pagesExtracted: 1,
+      pagesSeen: 1,
+      errorMessage: null,
+    });
+    // The op honours offset/limit like imports.list does.
+    const all = Array.from({ length: 30 }, (_, i) => run_(i));
+    const h = harness({
+      "imports.list": (input: { offset: number; limit: number }) => ({
+        runs: all.slice(input.offset, input.offset + input.limit),
+      }),
+    });
+    const first = await run(listImportRunsTool, { limit: 10 }, h.toolCtx);
+    expect(h.calls[0]?.input).toEqual({ offset: 0, limit: 11 });
+    expect(first.content).toContain("import_runs[10]");
+    expect(first.content).toContain("more exist; next: offset=10");
+    const later = await run(listImportRunsTool, { limit: 10, offset: 25 }, h.toolCtx);
+    expect(h.calls[1]?.input).toEqual({ offset: 25, limit: 11 });
+    expect(later.content).toContain("import_runs[5]");
+    expect(later.content).toContain("run-29");
+    expect(later.content).not.toContain("more exist");
   });
 
   it("set_skill_pin_defaults resolves slugs to active skill ids and refuses unknown ones", async () => {

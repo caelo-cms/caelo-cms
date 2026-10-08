@@ -1215,7 +1215,7 @@ export default definePlugin<PluginContextTier1>({
         ...(paused
           ? {
               nextStep:
-                "The plugin's 24h AI budget is exhausted. Tell the operator; the Owner can raise the cap at /security/plugins/international-site, then re-run translate_all_stale.",
+                "The plugin's 24h AI budget is exhausted. Tell the operator; if they want the cap raised, propose_set_plugin_ai_cost_cap with the amount they name (the Owner approves), then re-run translate_all_stale.",
             }
           : seoStale.length > 0
             ? { nextStep: SEO_STALE_NEXT_STEP }
@@ -1536,7 +1536,7 @@ export default definePlugin<PluginContextTier1>({
       name: "translate_all_stale",
       description:
         "Re-translate EVERY variant marked needs_update (source pages changed after translation) in one call. Prefer this over repeated translate_variant calls when intl_status shows stale counts > 1. " +
-        "If the plugin's 24h AI budget runs out mid-pass, the result carries paused=true + remaining — tell the operator instead of retrying; the Owner can raise the cap at /security/plugins/international-site.",
+        "If the plugin's 24h AI budget runs out mid-pass, the result carries paused=true + remaining — tell the operator instead of retrying; if they want the cap raised, propose_set_plugin_ai_cost_cap with the amount they name.",
       operationName: "translate_all_stale",
       // Content write on the chat's branch.
       requiredPermission: "content.write",

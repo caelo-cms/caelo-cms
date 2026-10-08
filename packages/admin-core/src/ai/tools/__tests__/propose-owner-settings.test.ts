@@ -12,6 +12,7 @@ import { describe, expect, it } from "bun:test";
 import { OperationRegistry } from "@caelo-cms/query-api";
 import { powerToolCatalogue } from "../../../ops/security/mcp_power.js";
 import { registerAdminOps } from "../../../register.js";
+import { buildApprovalPreview } from "../../chat-runner/approval.js";
 import { preflightGatedCall } from "../../chat-runner/approval-preflight.js";
 import { createDefaultToolRegistry } from "../index.js";
 import {
@@ -154,6 +155,15 @@ describe("owner-settings tools — schemas", () => {
     expect(proposeSetAiBudgetTool.description).toContain("1000000000");
     expect(proposeSetAiPricingTool.description).toContain("PER 1K TOKENS");
     expect(proposeSetGatewaySettingsTool.description).toContain("ONLY the settings that change");
+  });
+
+  it("the cookie-rotation approval card says every visitor is logged out, irreversibly", () => {
+    const card = buildApprovalPreview("propose_rotate_gateway_cookie_secret", {
+      reason: "the secret was printed in a CI log",
+    });
+    expect(card).toContain("logged out");
+    expect(card).toContain("cannot be undone");
+    expect(card).toContain("reason: the secret was printed in a CI log");
   });
 });
 

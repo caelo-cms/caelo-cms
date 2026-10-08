@@ -252,6 +252,34 @@ describe("operator dashboards", () => {
   });
 });
 
+describe("stale SEO pages are scoped to main + the caller's chat branch", () => {
+  it("a chat never sees another chat's unpublished page", async () => {
+    const a = await openOwnerChat("seo-a");
+    const b = await openOwnerChat("seo-b");
+    for (const [label, ctx] of [
+      ["a", a.ai],
+      ["b", b.ai],
+    ] as const) {
+      await ok(
+        "pages.create",
+        { slug: `${P}-seo-${label}`, title: `SEO ${label}`, templateId },
+        ctx,
+      );
+    }
+    const seen = await dispatch("list_stale_seo_pages", { filter: `${P}-seo-`, full: true }, a.ai);
+    expect(seen.ok, seen.content).toBe(true);
+    expect(seen.content).toContain(`${P}-seo-a`);
+    expect(seen.content).not.toContain(`${P}-seo-b`);
+    // Outside a chat (the dashboard tile) neither branch page shows.
+    const main = await ok<{ pages: { slug: string }[] }>(
+      "pages_seo.list_stale",
+      { limit: 200 },
+      OWNER,
+    );
+    expect(main.pages.some((p) => p.slug.startsWith(`${P}-seo-`))).toBe(false);
+  });
+});
+
 describe("history + unpublished changes", () => {
   it("the AI sees its branch edit as unpublished, finds the snapshot and inspects it", async () => {
     const { ai } = await openOwnerChat("history");

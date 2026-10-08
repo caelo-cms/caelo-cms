@@ -19,6 +19,11 @@ const TOOL_LABELS: Record<string, string> = {
   propose_delete_layout: "Delete a layout",
   accept_quality_findings: "Accept these quality findings (only on the pages named)",
   publish_despite_failed_audit: "Publish live although the quality check failed",
+  // The card is all the operator reads before an irreversible click, so it
+  // names the consequence, not just the action.
+  propose_rotate_gateway_cookie_secret:
+    "Rotate the public gateway's cookie secret — every site visitor is logged out and re-identified (rate-limit and captcha state restart); this cannot be undone",
+  propose_set_plugin_ai_cost_cap: "Change a plugin's AI spend cap (max AI cost per 24h)",
 };
 
 /** Compact, readable rendering of a tool call for the Approve/Reject card. */

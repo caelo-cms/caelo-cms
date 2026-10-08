@@ -13,7 +13,11 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { importRunEventInput, type listImportRunsOp } from "../../ops/imports.js";
+import {
+  IMPORT_RUNS_LIST_MAX,
+  importRunEventInput,
+  type listImportRunsOp,
+} from "../../ops/imports.js";
 import type { mediaListUsagesOp } from "../../ops/media.js";
 import type { pagesSeoGetOp, pagesSeoListStaleOp } from "../../ops/seo.js";
 import type { listPinDefaultsOp } from "../../ops/skills/engagement.js";
@@ -150,6 +154,7 @@ export const listImportRunsTool = makeListReadTool<
   opName: "imports.list",
   input: z.object({ status: runStatusFilter.optional() }).strict(),
   buildOpInput: (input) => (input.status ? { status: input.status } : {}),
+  serverPaging: { maxLimit: IMPORT_RUNS_LIST_MAX },
   rows: (value) => (value as OpValue<typeof listImportRunsOp>).runs,
   label: "import_runs",
   columns: [

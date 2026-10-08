@@ -205,6 +205,14 @@ describe("propose_rotate_gateway_cookie_secret", () => {
     );
     expect(second.ok).toBe(false);
     expect(JSON.stringify(second)).toContain("already waiting");
+    // Two proposals racing past the op's read still cannot both wait: the
+    // database refuses a second pending rotation whatever its reason.
+    const raced = asSystem(
+      async (tx) =>
+        tx`INSERT INTO owner_settings_pending_actions (kind, proposed_by, payload, preview, status, payload_hash)
+           VALUES ('rotate_gateway_cookie_secret', ${AI.actorId}::uuid, '{}'::jsonb, '{}'::jsonb, 'pending', ${`${P}-race`})`,
+    );
+    await expect(raced).rejects.toThrow(/one_cookie_rotation_uniq|duplicate key/);
     const { proposalId } = (first as { value: { proposalId: string } }).value;
     expect((await run("owner_settings.reject_proposal", { proposalId }, OWNER)).ok).toBe(true);
   });

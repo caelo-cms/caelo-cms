@@ -129,7 +129,9 @@ export const proposeRotateGatewayCookieSecretOp = defineOperation({
   output: proposeOutput,
   handler: async (ctx, input, tx) => {
     const op = "owner_settings.propose_rotate_gateway_cookie_secret";
-    // One rotation waiting is enough: a second would only rotate again.
+    // One rotation waiting is enough: a second would only rotate again. This
+    // read names the waiting proposal; the partial unique index of migration
+    // 0244 is what holds the invariant when two proposals race past it.
     const pending = (await tx.execute(sql`
       SELECT id::text AS id FROM owner_settings_pending_actions
       WHERE kind = 'rotate_gateway_cookie_secret' AND status = 'pending' LIMIT 1
@@ -137,7 +139,7 @@ export const proposeRotateGatewayCookieSecretOp = defineOperation({
     if (pending[0]) {
       return handlerError(
         op,
-        `a cookie-secret rotation is already waiting for approval (proposal ${pending[0].id}).`,
+        `a cookie-secret rotation is already waiting for approval (proposal ${pending[0].id}) — tell the operator to approve or reject that one instead of proposing another.`,
       );
     }
     const summary = "rotate the public gateway's cookie secret";
