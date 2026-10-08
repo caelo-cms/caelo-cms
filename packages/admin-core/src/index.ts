@@ -77,6 +77,7 @@ export {
 // P12 review pass — email transport factory (consumed by hooks.server.ts).
 export { buildEmailTransport, type EmailConfigRow } from "./email/transport.js";
 export { lockPluginRow } from "./locks.js";
+export { assertDurableMediaRoot, type MediaStorageSetup } from "./media/durable-root.js";
 export * from "./media/pipeline.js";
 export { resolvePrivatePreviewImages } from "./media/private-preview-images.js";
 export * from "./media/storage.js";

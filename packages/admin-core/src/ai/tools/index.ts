@@ -75,6 +75,7 @@ import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
 import { listImportPagesTool } from "./list-import-pages.js";
 import { listLayoutsTool } from "./list-layouts.js";
+import { listMissingMediaTool } from "./list-missing-media.js";
 import { listModulesTool } from "./list-modules.js";
 import { listPageAssetsTool } from "./list-page-assets.js";
 import { listPagesTool } from "./list-pages.js";
@@ -370,6 +371,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(setMediaVisibilityManyTool);
   // run #10 D4 — recovery for "media references unresolved" deploy failures.
   registry.register(regenerateMediaVariantsTool);
+  // Recovery for "stored files … are missing" deploy failures.
+  registry.register(listMissingMediaTool);
   // P16 — AI image generation via the active provider's image endpoint.
   registry.register(generateImageTool);
   registry.register(editImageTool);

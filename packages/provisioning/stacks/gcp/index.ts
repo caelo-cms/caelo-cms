@@ -33,6 +33,8 @@ import {
 import {
   ADMIN_MEMORY_DEFAULT,
   adminEnvContract,
+  adminMediaVolume,
+  adminMediaVolumeTemplate,
   type CloudRunEnvVar,
   type CloudRunSlug,
   databaseUrls,
@@ -611,6 +613,13 @@ interface CloudRunArgs {
    * references: its env contract (src/stack-contract.ts).
    */
   readonly contractEnv: ReadonlyArray<CloudRunEnvVar<pulumi.Input<string>>>;
+  /**
+   * The admin's media: the media bucket mounted as a Cloud Storage volume
+   * (src/stack-contract.ts adminMediaVolume — upgrade adds the same volume
+   * to existing installs). Without it media lands on the container's
+   * in-memory filesystem and is lost with the instance.
+   */
+  readonly mediaVolume?: ReturnType<typeof adminMediaVolumeTemplate>;
 }
 
 // Inputs of the admin + gateway env contracts. The contracts are shared with
@@ -651,10 +660,17 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
           maxInstanceCount: args.maxInstances,
         },
         timeout: args.timeout,
+        ...(args.mediaVolume
+          ? {
+              executionEnvironment: args.mediaVolume.executionEnvironment,
+              volumes: [...args.mediaVolume.volumes],
+            }
+          : {}),
         containers: [
           {
             image: imageTag(args.serviceName),
             envs: [...args.contractEnv],
+            ...(args.mediaVolume ? { volumeMounts: [...args.mediaVolume.volumeMounts] } : {}),
             resources: { limits: { cpu: "1", memory: args.memory } },
           },
         ],
@@ -698,6 +714,7 @@ const adminSvc = cloudRunService({
   // unused timeout (Cloud Run bills running time, not allocated time).
   timeout: "3600s",
   contractEnv: adminEnvContract(envContractInputs),
+  mediaVolume: adminMediaVolumeTemplate(adminMediaVolume(project, env)),
 });
 const gatewaySvc = cloudRunService({
   serviceName: "gateway",

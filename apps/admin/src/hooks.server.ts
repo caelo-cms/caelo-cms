@@ -27,6 +27,7 @@ process.on("sveltekit:shutdown", (reason: string) => {
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import {
+  assertDurableMediaRoot,
   buildEmailTransport,
   configureMcpBridge,
   configurePluginUninstallFinalizer,
@@ -56,9 +57,9 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import type { Handle } from "@sveltejs/kit/hooks";
+import type { Handle, ServerInit } from "@sveltejs/kit/hooks";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
-import { getQueryContext } from "#lib/server/query.js";
+import { getQueryContext, mediaStorageSetup } from "#lib/server/query.js";
 
 // Dev-mode KEK auto-gen. secret-box reads CAELO_SECRET_KEK lazily
 // (only at first encrypt/decrypt), so populating it before any DB
@@ -398,6 +399,16 @@ function ensureProviderResolverConfigured(): void {
   const { adapter, registry } = getQueryContext();
   configureProviderResolver({ adapter, registry });
 }
+
+/**
+ * Runs once at server start, before any request. A cloud install whose media
+ * would land on the container's ephemeral filesystem refuses to start here,
+ * so the Cloud Run revision fails its startup (and `cms-provision upgrade`
+ * rolls back) instead of silently losing every upload.
+ */
+export const init: ServerInit = async () => {
+  await assertDurableMediaRoot(mediaStorageSetup());
+};
 
 export const handle: Handle = async ({ event, resolve }) => {
   ensureProviderResolverConfigured();

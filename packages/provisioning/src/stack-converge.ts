@@ -12,6 +12,9 @@
  *     is checked against the resource's policy first and only added when
  *     missing, so an operator without IAM-admin rights can still upgrade an
  *     install that is already in shape.
+ *   - {@link planMediaVolume}: the admin's media bucket volume (gen2 + Cloud
+ *     Storage volume + mount), added in the same `services update` when
+ *     missing.
  */
 
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
@@ -29,6 +32,7 @@ import {
   type IamInvariant,
   type IamTarget,
   iamMember,
+  type MediaVolumeContract,
   memoryQuantityMiB,
   RETIRED_SERVICE_ENV,
   type RuntimeEnvInputs,
@@ -636,6 +640,146 @@ export function planAdminMemory(
   return { ok: true, flags: [`--memory=${desired}`], from: live };
 }
 
+// ===========================================================================
+// Media volume
+// ===========================================================================
+
+/** The CSI driver Cloud Run reports for a Cloud Storage (gcsfuse) volume. */
+const GCSFUSE_DRIVER = "gcsfuse.run.googleapis.com";
+const EXECUTION_ENVIRONMENT_ANNOTATION = "run.googleapis.com/execution-environment";
+
+interface KnativeVolume {
+  readonly name: string;
+  readonly csi?: {
+    readonly driver?: string;
+    readonly readOnly?: boolean;
+    readonly volumeAttributes?: { readonly bucketName?: string; readonly mountOptions?: string };
+  };
+}
+
+interface KnativeVolumeMount {
+  readonly name: string;
+  readonly mountPath: string;
+}
+
+/** The volume-related parts of a `gcloud run services describe --format=json` service. */
+export interface LiveVolumes {
+  /** `gen1`, `gen2`, or null when the service leaves it to Cloud Run. */
+  readonly executionEnvironment: string | null;
+  readonly volumes: readonly KnativeVolume[];
+  /** Mounts of the first container. */
+  readonly mounts: readonly KnativeVolumeMount[];
+}
+
+/** Read the execution environment, volumes and mounts of a described service. */
+export function liveVolumes(serviceJson: string): LiveVolumes {
+  const svc = JSON.parse(serviceJson) as {
+    spec?: {
+      template?: {
+        metadata?: { annotations?: Record<string, string> };
+        spec?: {
+          volumes?: KnativeVolume[];
+          containers?: { volumeMounts?: KnativeVolumeMount[] }[];
+        };
+      };
+    };
+  };
+  const template = svc.spec?.template;
+  return {
+    executionEnvironment:
+      template?.metadata?.annotations?.[EXECUTION_ENVIRONMENT_ANNOTATION] ?? null,
+    volumes: template?.spec?.volumes ?? [],
+    mounts: template?.spec?.containers?.[0]?.volumeMounts ?? [],
+  };
+}
+
+export type MediaVolumePlan =
+  | {
+      readonly ok: true;
+      /** Flags for the roll's `services update`; empty when converged. */
+      readonly flags: string[];
+      /** One line per change, for the upgrade log. */
+      readonly changes: string[];
+    }
+  | { readonly ok: false; readonly error: string };
+
+function describeVolume(v: KnativeVolume): string {
+  if (v.csi?.driver === GCSFUSE_DRIVER) {
+    return `Cloud Storage volume "${v.name}" of bucket ${v.csi.volumeAttributes?.bucketName ?? "(none)"}${v.csi.readOnly ? " (read-only)" : ""}`;
+  }
+  return `volume "${v.name}" (not a Cloud Storage volume)`;
+}
+
+/**
+ * The flags that give the admin service its media volume
+ * ({@link adminMediaVolume} in stack-contract.ts), adding only what is
+ * missing: the gen2 execution environment, the volume, the mount. A service
+ * that already has exactly that volume and mount — from the stack, an
+ * earlier upgrade, or an operator's manual
+ * `gcloud run services update … --execution-environment gen2
+ *   --add-volume name=media,type=cloud-storage,bucket=<bucket>
+ *   --add-volume-mount volume=media,mount-path=<path>` — is converged and
+ * gets no volume flags. Mount options on that volume are left as they are.
+ *
+ * Something else at that name or path (another bucket, a read-only or
+ * non-Cloud-Storage volume, the media volume mounted elsewhere) is refused
+ * with what was found instead of being replaced: replacing it could point
+ * the admin at different media than it has been serving.
+ */
+export function planMediaVolume(live: LiveVolumes, desired: MediaVolumeContract): MediaVolumePlan {
+  const flags: string[] = [];
+  const changes: string[] = [];
+  const fix = `Remove it (gcloud run services update <admin-service> --remove-volume-mount=${desired.mountPath} --remove-volume=${desired.volumeName}) only if it is not the media you mean to keep, then re-run upgrade.`;
+
+  const volume = live.volumes.find((v) => v.name === desired.volumeName);
+  if (volume) {
+    const inShape =
+      volume.csi?.driver === GCSFUSE_DRIVER &&
+      volume.csi.volumeAttributes?.bucketName === desired.bucket &&
+      volume.csi.readOnly !== true;
+    if (!inShape) {
+      return {
+        ok: false,
+        error: `the admin has ${describeVolume(volume)}, but media must be the read-write Cloud Storage volume of bucket ${desired.bucket}. ${fix}`,
+      };
+    }
+  }
+  const atPath = live.mounts.find((m) => m.mountPath === desired.mountPath);
+  if (atPath && atPath.name !== desired.volumeName) {
+    return {
+      ok: false,
+      error: `the admin mounts volume "${atPath.name}" at ${desired.mountPath}, where the media bucket belongs. ${fix}`,
+    };
+  }
+  const elsewhere = live.mounts.find(
+    (m) => m.name === desired.volumeName && m.mountPath !== desired.mountPath,
+  );
+  if (elsewhere && !atPath) {
+    return {
+      ok: false,
+      error: `the admin mounts the media volume at ${elsewhere.mountPath}, but the admin reads media from ${desired.mountPath}. ${fix}`,
+    };
+  }
+
+  if (live.executionEnvironment !== "gen2") {
+    flags.push("--execution-environment=gen2");
+    changes.push(
+      `execution environment: ${live.executionEnvironment ?? "(default)"} → gen2 (Cloud Storage volumes need it)`,
+    );
+  }
+  if (!volume) {
+    flags.push(
+      `--add-volume=name=${desired.volumeName},type=cloud-storage,bucket=${desired.bucket}`,
+    );
+    changes.push(`volume ${desired.volumeName}: (none) → Cloud Storage bucket ${desired.bucket}`);
+  }
+  if (!atPath) {
+    flags.push(`--add-volume-mount=volume=${desired.volumeName},mount-path=${desired.mountPath}`);
+    changes.push(`volume mount: (none) → ${desired.volumeName} at ${desired.mountPath}`);
+  }
+  return { ok: true, flags, changes };
+}
+
 /**
  * The single `gcloud run services update` that rolls a service to a new
  * image, its run SA and its env changes, so all land in one new revision.
@@ -650,6 +794,8 @@ export function serviceRollArgs(roll: {
   readonly envFlags: readonly string[];
   /** Resource changes (`--memory=…`) that ride the same revision. */
   readonly resourceFlags?: readonly string[];
+  /** The admin's media volume ({@link planMediaVolume}), in the same revision. */
+  readonly volumeFlags?: readonly string[];
 }): string[] {
   return [
     "run",
@@ -665,6 +811,7 @@ export function serviceRollArgs(roll: {
     `--service-account=${roll.serviceAccount}`,
     ...roll.envFlags,
     ...(roll.resourceFlags ?? []),
+    ...(roll.volumeFlags ?? []),
     "--quiet",
   ];
 }

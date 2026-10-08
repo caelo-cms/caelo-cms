@@ -40,6 +40,7 @@ The AWS stack requires `caelo-aws:region`; there is no default, so it never land
 
 ## Notes specific to AWS
 
+- **Media storage is not wired yet** — the stack creates a media bucket but does not mount persistent storage into the admin, so the admin refuses to start rather than lose uploads on the next redeploy ([#618](https://github.com/caelo-cms/caelo-cms/issues/618)).
 - **Cold-start sensitivity** — Lambda is cheaper than Fargate but cold-starts are 1–2s for the admin's first request after idle. For low-traffic installs this is fine; busy installs should switch to Fargate via `--compute fargate`.
 - **CloudFront cache behaviour** — the static-generated pages cache aggressively (24h default); the admin + gateway routes are pass-through with `Cache-Control: no-store`. The provisioner configures both.
 - **A/B edge split** — the gateway uses a Lambda@Edge function to compute the FNV-1a hash and route to the right variant; assignment logs land in CloudWatch and feed the analytics plugin.

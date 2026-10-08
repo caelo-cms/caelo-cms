@@ -24,6 +24,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { importMediaFromUrlsTool } from "../ai/tools/import-media-from-urls.js";
+import { listMissingMediaTool } from "../ai/tools/list-missing-media.js";
 import { LocalVolumeAdapter, setMediaStorage } from "../media/storage.js";
 import { registerAdminOps } from "../register.js";
 
@@ -239,6 +240,52 @@ describe("import_media_from_urls tool output", () => {
     expect(line).toBeDefined();
     const id = line?.match(/mediaId ([0-9a-f-]{36})/)?.[1] ?? "";
     expect(id).toMatch(UUID_RE);
+  });
+});
+
+describe("lost media files: list_missing_media + restore by re-import", () => {
+  interface Missing {
+    missingCount: number;
+    assets: Array<{ assetId: string; sourceDetail: string | null; missingVariants: string[] }>;
+  }
+  const listMissing = async () => {
+    const r = await listMissingMediaTool.handler(AI, { limit: 500 }, {
+      adapter,
+      registry,
+    } as ToolContext);
+    expect(r.ok).toBe(true);
+    return r as { content: string; value: Missing };
+  };
+
+  it("lists an asset whose stored files are gone, and re-importing its URL restores them", async () => {
+    const url = `${baseUrl}/importurls-logo.png`;
+    const first = await execute(registry, adapter, AI, "imports.import_media_urls", {
+      assets: [{ url, name: "importurls lost logo" }],
+    });
+    const mediaId = (first as { value: ImportResult }).value.imported[0]?.mediaId ?? "";
+    expect(mediaId).toMatch(UUID_RE);
+    // Storage keys are `<sha256 of the downloaded bytes>/<variant>.<ext>`.
+    const sha = new Bun.CryptoHasher("sha256").update(PNG_BYTES).digest("hex");
+
+    // What a Cloud Run revision change did to the files: the row stays.
+    await rm(join(mediaRoot, sha), { recursive: true, force: true });
+
+    const lost = await listMissing();
+    const entry = lost.value.assets.find((a) => a.assetId === mediaId);
+    expect(entry?.sourceDetail).toBe(url);
+    expect(entry?.missingVariants).toContain("orig");
+    expect(lost.content).toContain(`${mediaId} "importurls-logo.png"`);
+    expect(lost.content).toContain(`imported from ${url}`);
+
+    const again = await execute(registry, adapter, AI, "imports.import_media_urls", {
+      assets: [{ url, name: "importurls lost logo" }],
+    });
+    const v = (again as { value: ImportResult }).value;
+    expect(v.skipped).toEqual([]);
+    expect(v.imported[0]?.mediaId).toBe(mediaId);
+
+    const after = await listMissing();
+    expect(after.value.assets.some((a) => a.assetId === mediaId)).toBe(false);
   });
 });
 
