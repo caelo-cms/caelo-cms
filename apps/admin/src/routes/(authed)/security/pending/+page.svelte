@@ -30,6 +30,7 @@
     site_defaults: "/security/seo",
     plugins: "/security/plugins/pending",
     owner_settings: "/security/owner-settings/pending",
+    quality: "/security/quality/pending",
     gateway: "/security/gateway",
     site_memory: "/security/ai/memory-proposals",
     skills: "/security/skills",

@@ -672,6 +672,24 @@ export const actions: Actions = {
    * Returns `{ staged: { previewUrl, ... } }` so the same toast/iframe-
    * reload pattern as ?/stage works unchanged.
    */
+  /**
+   * #553 — publish over a FAILED quality check. An explicit human decision
+   * with a recorded reason; quality_audits.publish_anyway refuses anything
+   * but the current staged build's failed check, records the override and
+   * runs the same deploy.promote as Publish live.
+   */
+  publishAnyway: async ({ request, locals }) => {
+    requirePermission(locals, "deploy.trigger");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const r = await execute(registry, adapter, locals.ctx, "quality_audits.publish_anyway", {
+      auditRunId: String(form.get("auditRunId") ?? ""),
+      reason: String(form.get("reason") ?? ""),
+    });
+    if (!r.ok) return fail(400, { error: describeError(r.error) });
+    return { published: true };
+  },
   stageAndDeployStaging: async ({ request, locals }) => {
     requirePermission(locals, "deploy.trigger");
     const { adapter, registry } = getQueryContext();

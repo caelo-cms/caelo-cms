@@ -12,6 +12,8 @@ function run(overrides: Partial<ClaimedAuditRun> = {}): ClaimedAuditRun {
     performanceRuns: 3,
     pageUrlStyle: "directory",
     previewUrl: null,
+    env: "staging",
+    outDir: "output/staging",
     pages: [{ pageId: "00000000-0000-4000-8000-0000000000cc", currentPath: "/" }],
     ...overrides,
   };
@@ -85,8 +87,43 @@ describe("resolveStagingOrigin", () => {
     expect(missing.ok).toBe(false);
   });
 
-  it("other providers fail with an explanation instead of guessing", async () => {
-    const r = await resolveStagingOrigin(run(), { provider: "gcp" });
+  it("gcp / aws / azure: a loopback origin serving the run's files, closed after use", async () => {
+    for (const provider of ["gcp", "aws", "azure"]) {
+      const r = await resolveStagingOrigin(run(), {
+        provider,
+        loopbackSource: () => ({
+          read: async (key) =>
+            key === "index.html"
+              ? { bytes: new TextEncoder().encode("<h1>staged</h1>"), contentType: "text/html" }
+              : null,
+        }),
+      });
+      if (!r.ok) throw new Error(r.message);
+      expect(r.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(await (await fetch(`${r.baseUrl}/`)).text()).toBe("<h1>staged</h1>");
+      await r.close?.();
+    }
+  });
+
+  it("gcp without its bucket env and aws without the build on this instance fail loudly", async () => {
+    const saved = process.env.CAELO_STAGING_BUCKET;
+    delete process.env.CAELO_STAGING_BUCKET;
+    try {
+      expect(await resolveStagingOrigin(run(), { provider: "gcp" })).toMatchObject({
+        ok: false,
+        code: "staging-unresolvable",
+      });
+    } finally {
+      if (saved !== undefined) process.env.CAELO_STAGING_BUCKET = saved;
+    }
+    expect(await resolveStagingOrigin(run(), { provider: "aws" })).toMatchObject({
+      ok: false,
+      code: "build-unavailable",
+    });
+  });
+
+  it("unknown providers fail with an explanation instead of guessing", async () => {
+    const r = await resolveStagingOrigin(run(), { provider: "mystery-cloud" });
     expect(r).toMatchObject({ ok: false, code: "provider-unsupported" });
   });
 });

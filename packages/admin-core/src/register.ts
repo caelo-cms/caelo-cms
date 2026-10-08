@@ -341,7 +341,22 @@ import {
   verifyDnsRecordOp,
 } from "./ops/provisioning_outputs.js";
 import { classifyStageOp } from "./ops/quality/classify_stage.js";
+import {
+  ackChatNotificationOp,
+  chatStatusOp,
+  claimChatNotificationOp,
+  gateStatusOp,
+  publishAnywayOp,
+  retryAuditOp,
+} from "./ops/quality/gate.js";
 import { claimNextAuditOp, enqueueAuditOp, recordAuditResultOp } from "./ops/quality/lifecycle.js";
+import {
+  executeQualityProposalOp,
+  listPendingQualityProposalsOp,
+  proposeAcceptOp,
+  proposePublishAnywayOp,
+  rejectQualityProposalOp,
+} from "./ops/quality/pending.js";
 import { getAuditOp, listAcceptancesOp, listAuditsOp } from "./ops/quality/read.js";
 import {
   createRedirectOp,
@@ -650,6 +665,17 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listAuditsOp);
   registry.register(getAuditOp);
   registry.register(listAcceptancesOp);
+  registry.register(gateStatusOp);
+  registry.register(retryAuditOp);
+  registry.register(chatStatusOp);
+  registry.register(claimChatNotificationOp);
+  registry.register(ackChatNotificationOp);
+  registry.register(publishAnywayOp);
+  registry.register(proposeAcceptOp);
+  registry.register(proposePublishAnywayOp);
+  registry.register(executeQualityProposalOp);
+  registry.register(rejectQualityProposalOp);
+  registry.register(listPendingQualityProposalsOp);
   // P4 snapshots
   registry.register(listSnapshotsOp);
   registry.register(getSnapshotWithEntitiesOp);
