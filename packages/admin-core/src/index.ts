@@ -96,6 +96,13 @@ export {
 export * from "./ops/roles.js";
 // P17 PR4 — MCP bridge wiring helper.
 export { configureMcpBridge } from "./ops/security/mcp_tokens.js";
+// Operator access (Google IAP) follows user changes made in the panel too.
+export {
+  describeOperatorAccessSync,
+  latestOperatorAccessRun,
+  type OperatorAccessSync,
+  syncOperatorAccess,
+} from "./ops/user_access.js";
 export * from "./ops/users.js";
 export * from "./password.js";
 export * from "./permissions.js";

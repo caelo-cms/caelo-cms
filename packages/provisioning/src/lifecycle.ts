@@ -31,6 +31,7 @@ import {
   recordImageDigests,
 } from "./install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
+import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "./operator-access.js";
 import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
@@ -41,7 +42,7 @@ import {
   rotateRuntimeSecret,
   rotationRefusal,
 } from "./runtime-secrets.js";
-import { MCP_ENV_VAR } from "./stack-contract.js";
+import { MCP_ENV_VAR, OPERATOR_ACCESS_JOB_ENV_VAR } from "./stack-contract.js";
 import {
   type DeployedService,
   type EnvChange,
@@ -699,6 +700,9 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   // provisioned before this existed get it here, with no operator config.
   // A failure only costs MCP access, so it warns instead of aborting.
   // ────────────────────────────────────────────────────────────────
+  // Env vars the rolls must leave as the service has them, because the
+  // thing they point at could not be set up.
+  const leaveUntouched: string[] = [];
   if (adminPlan) {
     const sMcp = spinner();
     sMcp.start("Ensuring MCP access through IAP...");
@@ -718,14 +722,50 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       // Don't hand the admin an MCP service account that may not exist or
       // lacks its bindings: /security/mcp would print a `claude mcp add`
       // command that can't work. Leave the var as the service has it.
-      const replan = planContractEnv(install, deployed, { leaveUntouched: [MCP_ENV_VAR] });
-      if (replan.ok) {
-        rolls = rolls.map((r) => ({
-          ...r,
-          envFlags: replan.services[r.slug].flags,
-          envChanges: replan.services[r.slug].changes,
-        }));
-      }
+      leaveUntouched.push(MCP_ENV_VAR);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Operator access: the sync job that keeps Google IAP in step with the
+    // user list (operator-access.ts) — its own SA, the only principal that
+    // may change the IAP binding; the admin may only start it. Also removes
+    // the operator-access rights an earlier revision gave the admin's SA.
+    // After migrations: the job's database user gets the role migration
+    // 0239 creates. A failure only costs IAP following the user list, so it
+    // warns; the admin then reports the sync as not set up, loudly.
+    // ──────────────────────────────────────────────────────────────
+    const sOa = spinner();
+    sOa.start("Ensuring the operator-access sync job...");
+    const resolved = await resolveOperatorAccessTarget({
+      provider: meta.provider,
+      projectId: meta.projectId,
+      region,
+      env: GCP_STACK_ENV,
+      ownerEmail: meta.ownerEmail,
+      imageRef: adminPlan.imageRef,
+    });
+    const oa = resolved.ok
+      ? await ensureOperatorAccessSync(resolved.target)
+      : { ok: false as const, done: [], error: resolved.error };
+    for (const step of oa.done) log.info(`  ${dim(step)}`);
+    if (oa.ok) {
+      sOa.stop(green("Operator-access sync job ready (IAP follows the user list)"));
+    } else {
+      sOa.stop(yellow(`Operator-access sync job not set up: ${oa.error}`));
+      log.warn(
+        "The upgrade continues; user changes will report that Google IAP could not be updated until this succeeds. Re-run upgrade once the cause is fixed.",
+      );
+      leaveUntouched.push(OPERATOR_ACCESS_JOB_ENV_VAR);
+    }
+  }
+  if (leaveUntouched.length > 0) {
+    const replan = planContractEnv(install, deployed, { leaveUntouched });
+    if (replan.ok) {
+      rolls = rolls.map((r) => ({
+        ...r,
+        envFlags: replan.services[r.slug].flags,
+        envChanges: replan.services[r.slug].changes,
+      }));
     }
   }
 

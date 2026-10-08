@@ -111,6 +111,12 @@ The rule is that an operator never has to do by hand what the agent cannot do. R
 
 Approval cards from these tools wait in `/security/tool-approvals/pending` when no chat is open to show them.
 
+## Google Cloud installs (IAP)
+
+On `gcp` and `gcp-firebase` installs the admin sits behind Google Identity-Aware Proxy, so the `claude mcp add` command from `/security/mcp` carries one more variable, `CAELO_IAP_SERVICE_ACCOUNT`, and you run `gcloud auth application-default login` once. The MCP server then signs a short-lived Google credential as the install's `caelo-mcp` service account and sends it next to your Caelo token.
+
+Who may sign it follows the user list: when the Owner adds a user (in `/security/users`, or by approving the AI's `propose_create_user` card) the operator-access sync job lets that person's Google account sign as `caelo-mcp`; deleting the user, or removing their last role, revokes it again. (The job, not the admin, holds that right: see [Who can open the admin](/install-gcp#who-can-open-the-admin-google-iap).) No `gcloud` commands, no re-running the provisioner. The person still needs their own Caelo MCP token — Google's credential only gets the request past IAP.
+
 ## Token scopes, caps, rotation
 
 - **Scopes.** `chat` drives `caelo_chat` and image uploads. `admin` additionally unlocks the Power-MCP endpoints. Existing tokens stay `chat`; using one against the Power-MCP returns a 401 naming the fix.

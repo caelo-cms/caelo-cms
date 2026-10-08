@@ -153,6 +153,12 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       monthlyUsd: 0,
       notes: "Free tier — pay only on >1 TB/mo query",
     },
+    {
+      name: "Operator-access sync (Cloud Run job + Cloud Scheduler)",
+      monthlyUsd: 0,
+      notes:
+        "Hourly ~20 s job keeps Google IAP in step with the user list; within the Cloud Run free tier, 1 of 3 free scheduler jobs",
+    },
   ];
 
   const totalUsd = lines.reduce((sum, l) => sum + l.monthlyUsd, 0);
