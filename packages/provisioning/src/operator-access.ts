@@ -18,7 +18,8 @@
  */
 
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
-import { type IapResource, iapResourceArgs, mcpIapServiceAccountEmail } from "./mcp-iap.js";
+import { mcpIapServiceAccountEmail } from "./gcp-names.js";
+import { type IapResource, iapResourceArgs } from "./mcp-iap.js";
 import {
   ADMIN_RUNTIME_OPERATOR_ACCESS_GRANTS,
   type CustomRoleSpec,

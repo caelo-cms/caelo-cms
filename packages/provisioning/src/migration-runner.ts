@@ -9,7 +9,9 @@
  * `bun /app/packages/migrations/src/migrate.ts <target>` against the
  * private-IP Cloud SQL instance. The job inherits the running admin
  * Cloud Run's image (so it always carries the matching migration set)
- * + its DB URLs + its network/subnet.
+ * + its database host + its network/subnet. Its database env follows the
+ * env contract (stack-contract.ts): password-less URLs plus the password
+ * as a Secret Manager reference, so the job spec never holds a password.
  *
  * Idempotent: drizzle's `__drizzle_migrations` table tracks applied
  * versions, so re-runs only apply NEW migrations. Returns `{ok}` so
@@ -20,6 +22,9 @@
 import { spinner } from "@clack/prompts";
 import { green, red } from "kleur/colors";
 import { gcloud } from "./gcloud.js";
+import { GCP_STACK_ENV, gcpSecretId, runServiceAccountEmail } from "./gcp-names.js";
+import { databaseUrls, SERVICE_SECRET_ENV } from "./stack-contract.js";
+import { liveContainerEnv, liveDatabaseHost } from "./stack-converge.js";
 
 interface MigrationRunnerOpts {
   readonly projectId: string;
@@ -28,14 +33,45 @@ interface MigrationRunnerOpts {
 
 interface AdminConfig {
   readonly imageRef: string;
-  readonly adminUrl: string;
-  readonly publicUrl: string;
+  /** Cloud SQL private IP, from the admin's ADMIN_DATABASE_URL. */
+  readonly databaseHost: string;
   readonly networkRef: string;
   readonly subnetRef: string;
+  /**
+   * Whether the admin already reads the database password from Secret
+   * Manager. If not, its image may predate `databaseUrlFromEnv` and can't
+   * run a job with password-less URLs.
+   */
+  readonly secretEnv: boolean;
+}
+
+/** Why a job on the installed admin image would fail, for an install `upgrade` hasn't moved over. */
+const NEEDS_UPGRADE =
+  "the admin still reads the database password from its plain env, so its image may predate Secret Manager runtime secrets and can't run a job with password-less URLs. Run `upgrade` first.";
+
+/**
+ * The database env of a migration/truncate job: the admin's URLs (no
+ * password) as plain vars, the password vars as Secret Manager references
+ * — the same pairs the admin service carries. The job runs as the admin's
+ * run SA, which can read them.
+ */
+export function migrationJobEnvArgs(databaseHost: string, env = GCP_STACK_ENV): string[] {
+  const urls = databaseUrls(databaseHost);
+  const passwords = (["ADMIN_DATABASE_PASSWORD", "PUBLIC_ADMIN_DATABASE_PASSWORD"] as const).map(
+    (name) => {
+      const secret = SERVICE_SECRET_ENV.admin[name];
+      if (!secret) throw new Error(`the admin env contract has no ${name}`);
+      return `${name}=${gcpSecretId(env, secret)}:latest`;
+    },
+  );
+  return [
+    `--set-env-vars=ADMIN_DATABASE_URL=${urls.admin},PUBLIC_ADMIN_DATABASE_URL=${urls.publicAdmin}`,
+    `--set-secrets=${passwords.join(",")}`,
+  ];
 }
 
 /**
- * Resolve the running admin Cloud Run service's image + DB URLs +
+ * Resolve the running admin Cloud Run service's image + database host +
  * VPC config. Returns null on any failure; caller surfaces the error.
  */
 async function readAdminConfig(opts: MigrationRunnerOpts): Promise<AdminConfig | null> {
@@ -69,14 +105,21 @@ async function readAdminConfig(opts: MigrationRunnerOpts): Promise<AdminConfig |
     "--format=json",
   ]);
   if (!descr.ok) return null;
+  return parseAdminConfig(descr.stdout);
+}
 
+/**
+ * The job config from the admin service (`gcloud run services describe
+ * --format=json`), or null when something the job needs is missing.
+ */
+export function parseAdminConfig(serviceJson: string): AdminConfig | null {
   try {
-    const d = JSON.parse(descr.stdout) as {
+    const d = JSON.parse(serviceJson) as {
       spec: {
         template: {
           metadata?: { annotations?: Record<string, string> };
           spec: {
-            containers: { image?: string; env?: { name: string; value?: string }[] }[];
+            containers: { image?: string }[];
             vpcAccess?: { networkInterfaces?: { network?: string; subnetwork?: string }[] };
           };
         };
@@ -84,12 +127,8 @@ async function readAdminConfig(opts: MigrationRunnerOpts): Promise<AdminConfig |
     };
     const c = d.spec.template.spec.containers[0];
     const imageRef = c?.image ?? "";
-    let adminUrl = "";
-    let publicUrl = "";
-    for (const e of c?.env ?? []) {
-      if (e.name === "ADMIN_DATABASE_URL") adminUrl = e.value ?? "";
-      if (e.name === "PUBLIC_ADMIN_DATABASE_URL") publicUrl = e.value ?? "";
-    }
+    const liveEnv = liveContainerEnv(serviceJson);
+    const host = liveDatabaseHost(liveEnv);
     let networkRef = "";
     let subnetRef = "";
     const niAnnotation =
@@ -108,8 +147,14 @@ async function readAdminConfig(opts: MigrationRunnerOpts): Promise<AdminConfig |
       networkRef ||= ni?.network ?? "";
       subnetRef ||= ni?.subnetwork ?? "";
     }
-    if (!imageRef || !adminUrl || !publicUrl || !networkRef || !subnetRef) return null;
-    return { imageRef, adminUrl, publicUrl, networkRef, subnetRef };
+    if (!imageRef || !host.ok || !networkRef || !subnetRef) return null;
+    return {
+      imageRef,
+      databaseHost: host.host,
+      networkRef,
+      subnetRef,
+      secretEnv: liveEnv.get("ADMIN_DATABASE_PASSWORD")?.kind === "secret",
+    };
   } catch {
     return null;
   }
@@ -140,6 +185,10 @@ export async function truncateViaCloudRunJob(
     sAdmin.stop(red("Couldn't resolve admin config — admin may not be deployed yet"));
     return { ok: false, error: "admin-config-unresolved" };
   }
+  if (!cfg.secretEnv) {
+    sAdmin.stop(red(`Not truncating: ${NEEDS_UPGRADE}`));
+    return { ok: false, error: NEEDS_UPGRADE };
+  }
   sAdmin.stop(green(`Admin config resolved (${cfg.imageRef.slice(-19)})`));
 
   for (const target of ["admin", "public"] as const) {
@@ -167,7 +216,7 @@ export async function truncateViaCloudRunJob(
       "--project",
       opts.projectId,
       "--service-account",
-      `caelo-production-run-sa@${opts.projectId}.iam.gserviceaccount.com`,
+      runServiceAccountEmail(opts.projectId, GCP_STACK_ENV),
       "--network",
       cfg.networkRef.split("/").pop() ?? cfg.networkRef,
       "--subnet",
@@ -175,8 +224,7 @@ export async function truncateViaCloudRunJob(
       "--vpc-egress=private-ranges-only",
       "--command=bun",
       `--args=--bun,/app/packages/migrations/src/truncate.ts,${target}`,
-      "--set-env-vars",
-      `ADMIN_DATABASE_URL=${cfg.adminUrl},PUBLIC_ADMIN_DATABASE_URL=${cfg.publicUrl}`,
+      ...migrationJobEnvArgs(cfg.databaseHost),
       "--max-retries=0",
       "--task-timeout=5m",
       "--quiet",
@@ -228,6 +276,12 @@ export async function runMigrationsViaCloudRunJob(
     sAdmin.stop(red("Couldn't resolve admin config — admin may not be deployed yet"));
     return { ok: false, error: "admin-config-unresolved" };
   }
+  // With an override (upgrade) the job runs the NEW release, which reads
+  // the split env; without one it runs the installed image.
+  if (!opts.imageOverride && !cfg.secretEnv) {
+    sAdmin.stop(red(`Not migrating: ${NEEDS_UPGRADE}`));
+    return { ok: false, error: NEEDS_UPGRADE };
+  }
   const migrationImage = opts.imageOverride ?? cfg.imageRef;
   if (opts.imageOverride && opts.imageOverride !== cfg.imageRef) {
     sAdmin.stop(
@@ -266,7 +320,7 @@ export async function runMigrationsViaCloudRunJob(
       "--project",
       opts.projectId,
       "--service-account",
-      `caelo-production-run-sa@${opts.projectId}.iam.gserviceaccount.com`,
+      runServiceAccountEmail(opts.projectId, GCP_STACK_ENV),
       "--network",
       cfg.networkRef.split("/").pop() ?? cfg.networkRef,
       "--subnet",
@@ -274,8 +328,7 @@ export async function runMigrationsViaCloudRunJob(
       "--vpc-egress=private-ranges-only",
       "--command=bun",
       `--args=--bun,/app/packages/migrations/src/migrate.ts,${target}`,
-      "--set-env-vars",
-      `ADMIN_DATABASE_URL=${cfg.adminUrl},PUBLIC_ADMIN_DATABASE_URL=${cfg.publicUrl}`,
+      ...migrationJobEnvArgs(cfg.databaseHost),
       "--max-retries=0",
       "--task-timeout=10m",
       "--quiet",

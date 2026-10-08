@@ -128,8 +128,8 @@ If a Caelo secret (Anthropic key, OAuth client secret, postgres password, intern
 1. **Rotate at the source FIRST.** Before any cleanup, the leaked value must be invalid:
    - **Anthropic / OpenAI / Gemini key** — rotate in provider dashboard, set new value at `/security/ai/providers` (Owner only). Old key stops working within seconds at the provider.
    - **OAuth client secret** — rotate at provider (Google / GitHub), update `/security/auth`, hard-fail any in-flight OAuth flows (acceptable; visitors retry).
-   - **Postgres password** — `ALTER ROLE caelo_admin WITH PASSWORD '<new>'` then update `ADMIN_DATABASE_URL` env (self-hosted: `.caelo/config.json` + restart; cloud: `pulumi config set --secret … && pulumi up`).
-   - **`CAELO_INTERNAL_SECRET`** — generate new 48-byte hex, update env across admin + all internal callers (`pulumi config set` for cloud; restart for self-hosted). Any in-flight internal-API tokens become invalid (5-min replay window auto-expires anyway).
+   - **Postgres password** — GCP: `bunx @caelo-cms/provisioning rotate-secret postgres-password` (sets both database roles, stores the new value in Secret Manager, rolls admin + gateway). Self-hosted: `ALTER ROLE … WITH PASSWORD '<new>'`, update the database URLs in `.caelo/config.json`, restart.
+   - **`CAELO_INTERNAL_SECRET`** — GCP: `bunx @caelo-cms/provisioning rotate-secret internal-secret`. Self-hosted: generate new 48-byte hex, update env across admin + all internal callers, restart. Any in-flight internal-API tokens become invalid (5-min replay window auto-expires anyway).
    - **`CAELO_COOKIE_SECRET` / `CAELO_CSRF_SECRET`** — rotate in env. Existing sessions invalidated; users re-login.
 
 2. **Audit access during the leak window.**

@@ -41,7 +41,7 @@ import {
   execute,
   type OperationRegistry,
 } from "@caelo-cms/query-api";
-import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
+import { databaseUrlFromEnv, type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -273,8 +273,9 @@ async function runGenerator(
     changedPageIds?: ReadonlyArray<string>;
   },
 ): Promise<{ ok: true; result: SubprocessDone } | { ok: false; message: string; stderr: string }> {
-  const adminUrl = process.env.ADMIN_DATABASE_URL;
-  const publicUrl = process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_DATABASE_URL;
+  // The generator gets the composed URLs on stdin, never on argv or env.
+  const adminUrl = databaseUrlFromEnv(["ADMIN_DATABASE_URL"]);
+  const publicUrl = databaseUrlFromEnv(["PUBLIC_ADMIN_DATABASE_URL", "PUBLIC_DATABASE_URL"]);
   if (!adminUrl || !publicUrl) {
     return { ok: false, message: "ADMIN_DATABASE_URL / PUBLIC_DATABASE_URL not set", stderr: "" };
   }

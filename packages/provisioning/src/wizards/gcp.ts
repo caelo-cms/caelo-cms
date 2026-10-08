@@ -26,6 +26,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
+import {
+  checkDeployedRuntimeEnv,
+  chooseImageDigests,
+  readDeployedImageDigests,
+} from "../deployed-release.js";
 import { pickDnsAdapter } from "../dns/index.js";
 import {
   activeAccount,
@@ -45,12 +50,15 @@ import {
 } from "../gcloud.js";
 import {
   ensureInstallDir,
+  type ImageDigests,
   type InstallMetadata,
   installRoot,
   isStepDone,
   markStepDone,
   readMetadata,
   readSecret,
+  recordedImageDigests,
+  recordImageDigests,
   writeMetadata,
   writeSecret,
 } from "../install-state.js";
@@ -170,13 +178,42 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     }
   }
 
-  // === 9. Resolve image digests so each pulumi up rolls Cloud Run ===
-  // Cloud Run keys revisions by image reference; if the reference is
-  // a floating tag like ":latest", a fresh release doesn't trigger a
-  // new revision because the reference text is unchanged. Resolve the
-  // floating tag to its current sha256 digest so each provisioning run
-  // pulls the newest release image.
-  const imageDigests = await resolveImageDigests(["admin", "gateway"]);
+  // === 9. Image digests to deploy ===
+  // An install that already runs a recorded release (from an earlier
+  // wizard run or from `upgrade`) keeps it: re-running the wizard converges
+  // infrastructure, it never changes versions — that is `upgrade`'s job,
+  // which also migrates the database before shifting traffic. Without this
+  // a re-run silently rolled a pinned/rc install back to `:latest`.
+  //
+  // An install provisioned before the record existed keeps what its
+  // services run. A new install resolves the floating `:latest` tag to a
+  // fixed sha256 digest: Cloud Run keys revisions by image reference, so a
+  // tag would never trigger a new revision.
+  const deployed = isStepDone(installId, `pulumi-up-${projectId}`);
+  if (deployed) {
+    // The kept release must be able to use the env the stack deploys.
+    const runtimeEnv = await checkDeployedRuntimeEnv({ projectId, region });
+    if (!runtimeEnv.ok) {
+      cancel(runtimeEnv.error);
+      process.exit(1);
+    }
+  }
+  const choice = await chooseImageDigests({
+    recorded: meta ? recordedImageDigests(meta) : null,
+    deployed,
+    readLive: () => readDeployedImageDigests({ projectId, region }),
+    resolveLatest: resolveImageDigests,
+  });
+  if (!choice.ok) {
+    cancel(choice.error);
+    process.exit(1);
+  }
+  const imageDigests = choice.digests;
+  if (choice.source !== "latest") {
+    log.info(
+      `Keeping the release this install runs (admin ${dim(`${imageDigests.admin.slice(0, 19)}...`)}). Change versions with ${bold("upgrade")}.`,
+    );
+  }
 
   // === 9.5. Drain the legacy `caelo_admin` SQL user before pulumi-up ===
   // The 3a81c37 rename (caelo_admin → admin_role) leaves the old role
@@ -210,6 +247,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     // matching config namespace.
     provider: opts.provider ?? "gcp",
   });
+  recordImageDigests(installId, imageDigests);
 
   // === 10. Wait for managed cert to flip from PROVISIONING → ACTIVE ===
   // Pulumi reports the cert "created" the moment GCP queues it; the
@@ -281,12 +319,12 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
  * start on a released version, and the per-merge dev images are pruned
  * after 7 days (docs/maintainer-public-registry-setup.md, "Retention").
  */
-async function resolveImageDigests(services: string[]): Promise<Record<string, string>> {
+async function resolveImageDigests(): Promise<ImageDigests> {
   const project = "caelo-website";
   const region = "europe-west1";
   const repo = "caelo-cms-images";
-  const out: Record<string, string> = {};
-  for (const service of services) {
+  const out = { admin: "", gateway: "" };
+  for (const service of ["admin", "gateway"] as const) {
     const s = spinner();
     s.start(`Resolving ${service}:latest → digest...`);
     // gcloud's --filter='tag=latest' is in a transitional state (warns +
@@ -621,7 +659,7 @@ interface PulumiUpOpts {
   gatewayMinInstances: number;
   wafAdaptiveProtection: boolean;
   iapAllowlist: string[];
-  imageDigests: Record<string, string>;
+  imageDigests: ImageDigests;
   /** v0.3.1 — provider variant; routes pulumi up at the right stack. */
   provider?: "gcp" | "gcp-firebase";
 }

@@ -109,13 +109,24 @@ Google only maps a domain for a verified owner of it. If you have not verified y
 
 | Task | How |
 |---|---|
-| Apply migrations on a new release | `bunx @caelo-cms/provisioning upgrade` |
+| Upgrade to a new release | `bunx @caelo-cms/provisioning upgrade` (see below) |
 | Give someone admin access | Add them at `/security/users` (or ask the AI) — IAP follows automatically |
 | Serve the admin at `admin.<domain>` (gcp-firebase) | `bunx @caelo-cms/provisioning admin-domain enable` |
 | Read logs | Cloud Logging — filter by `resource.labels.service_name="caelo-admin-prod"` |
 | Restore from PITR | `gcloud sql backups restore` — see [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
-| Rotate the Anthropic key | Secret Manager → version add → admin Cloud Run service redeploys |
+| Rotate the AI provider key | Owner → `/security/ai` (stored encrypted in the database) |
+| Rotate a runtime secret | `bunx @caelo-cms/provisioning rotate-secret <postgres-password\|internal-secret\|tool-approval-secret>` — stores a new value in Secret Manager (for `postgres-password` also on both database roles) and rolls the services that read it |
 | Scale Cloud Run | `gcloud run services update caelo-admin-prod --max-instances=20` |
+
+### What `upgrade` does
+
+`upgrade` brings an existing install to what a fresh install of the target release looks like, without re-running the full provisioning:
+
+1. Resolves the release images and verifies their signatures.
+2. Ensures the gateway's own service account and the generated runtime secrets (the internal-API and tool-approval keys) exist, creating them once in Secret Manager. Then ensures the IAM bindings and Cloud CDN settings the release's infrastructure declares — each service account can read exactly the secrets its service uses. It only adds what is missing and never removes anything. If a binding the install needs can't be added (usually a missing IAM permission on your gcloud account), it stops here: bindings it already added stay (they are additive and harmless), but no migration has run and no traffic has shifted. Fix the reported binding and re-run; `upgrade` skips what is already in place.
+3. Applies the database migrations.
+4. Rolls the admin and gateway to the new images. Configuration the release expects (for example the public site URL your canonical tags and sitemap use) is applied in the same step, so it lands in the same new revision and rolls back with it. Secrets are Secret Manager references, never plain values: the database URLs carry no password, and the password reaches the services from Secret Manager.
+5. Records the images it rolled to. Re-running the installer later keeps that release instead of switching to the newest one — version changes always go through `upgrade`.
 
 ## Common issues
 

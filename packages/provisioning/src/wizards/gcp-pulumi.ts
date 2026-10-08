@@ -12,6 +12,9 @@
 
 import { join, resolve as resolvePath } from "node:path";
 import * as pulumi from "@pulumi/pulumi/automation";
+import { GCP_STACK_ENV } from "../gcp-names.js";
+import type { ImageDigests } from "../install-state.js";
+import { ensureGeneratedSecrets, stackSecretReplication } from "../runtime-secrets.js";
 
 export interface PulumiUpInputs {
   installId: string;
@@ -32,7 +35,7 @@ export interface PulumiUpInputs {
   /** Resolved sha256 digests per service (admin, gateway). The wizard
    *  pre-resolves the floating `:latest` release tag to a fixed digest
    *  so each pulumi up rolls Cloud Run to the newest release image. */
-  imageDigests: Record<string, string>;
+  imageDigests: ImageDigests;
   /**
    * v0.3.1 — provider variant. Selects which stack dir to apply
    * + which config namespace (caelo-gcp vs caelo-gcp-firebase).
@@ -57,6 +60,65 @@ function gcpStackWorkDir(provider: "gcp" | "gcp-firebase" = "gcp"): string {
   // runtime (dist/wizards/gcp-pulumi.js), the stack dir is two
   // levels up + into the provider-specific stack folder.
   return resolvePath(import.meta.dir, `../../stacks/${provider}`);
+}
+
+/**
+ * The stack config keys that pin each Cloud Run service's image
+ * (`<ns>:image-digest-<service>`, read by `imageRef` / `imageTag` in the
+ * stacks). Shared by the wizard and by `upgrade`'s write-back so both pin
+ * the same keys.
+ */
+export function imageDigestConfig(
+  provider: "gcp" | "gcp-firebase",
+  digests: ImageDigests,
+): Record<string, { value: string }> {
+  return Object.fromEntries(
+    Object.entries(digests).map(([service, digest]) => [
+      `caelo-${provider}:image-digest-${service}`,
+      { value: digest },
+    ]),
+  );
+}
+
+/**
+ * Write the digests `upgrade` rolled to into the install's Pulumi stack
+ * config, without running `pulumi up`, so a later `pulumi up` keeps them
+ * instead of re-resolving the floating tag. On `gcp`, an `image-<service>`
+ * override wins over the digest pin (stacks/gcp `imageTag`), so any such
+ * override is removed: it no longer describes what the service runs.
+ * Needs the `pulumi` CLI (the Automation API shells out to it); throws when
+ * the CLI or the stack is missing — the caller reports that.
+ *
+ * @returns the override keys it removed.
+ */
+export async function writeImageDigestsToStack(inputs: {
+  installRoot: string;
+  pulumiPassphrase: string;
+  provider: "gcp" | "gcp-firebase";
+  digests: ImageDigests;
+}): Promise<{ removedOverrides: string[] }> {
+  const stack = await pulumi.LocalWorkspace.selectStack(
+    { stackName: GCP_STACK_ENV, workDir: gcpStackWorkDir(inputs.provider) },
+    {
+      envVars: {
+        PULUMI_CONFIG_PASSPHRASE: inputs.pulumiPassphrase,
+        PULUMI_BACKEND_URL: `file://${join(inputs.installRoot, "state")}`,
+      },
+    },
+  );
+  await stack.setAllConfig(imageDigestConfig(inputs.provider, inputs.digests));
+  const config = await stack.getAllConfig();
+  const removedOverrides = imageOverrideKeys(inputs.provider).filter((k) => k in config);
+  if (removedOverrides.length > 0) await stack.removeAllConfig(removedOverrides);
+  return { removedOverrides };
+}
+
+/**
+ * Stack config keys that override the image a service runs, ahead of the
+ * digest pin. Only the `gcp` stack reads them.
+ */
+function imageOverrideKeys(provider: "gcp" | "gcp-firebase"): string[] {
+  return provider === "gcp" ? ["caelo-gcp:image-admin", "caelo-gcp:image-gateway"] : [];
 }
 
 /**
@@ -102,7 +164,7 @@ export async function pulumiUpGcp(
   };
 
   const provider = inputs.provider ?? "gcp";
-  const stackName = "production";
+  const stackName = GCP_STACK_ENV;
   const workDir = gcpStackWorkDir(provider);
   // Pulumi config namespace mirrors the stack's `name:` field in
   // Pulumi.yaml (caelo-gcp vs caelo-gcp-firebase).
@@ -139,12 +201,7 @@ export async function pulumiUpGcp(
     // /security/ai → ai_providers (KEK-encrypted). The pre-v0.3.2
     // Secret + SecretVersion in Secret Manager were never mounted
     // on Cloud Run, so the config was dead.
-    ...Object.fromEntries(
-      Object.entries(inputs.imageDigests).map(([service, digest]) => [
-        `${ns}:image-digest-${service}`,
-        { value: digest },
-      ]),
-    ),
+    ...imageDigestConfig(provider, inputs.imageDigests),
   });
 
   // Read back only after the required keys are set: `pulumi config` refuses to
@@ -164,6 +221,20 @@ export async function pulumiUpGcp(
     }>,
   );
   await stack.setConfig(`${ns}:secretReplication`, { value: secretReplication });
+
+  // The stack references the CLI-generated runtime secrets (stack-contract.ts
+  // CLI_GENERATED_SECRETS) by id, so they must exist before `up`.
+  const generated = await ensureGeneratedSecrets({
+    projectId: inputs.projectId,
+    env: stackName,
+    replication: stackSecretReplication(secretReplication, inputs.region),
+  });
+  const notEnsured = generated.filter((o) => o.status === "failed");
+  if (notEnsured.length > 0) {
+    throw new Error(
+      `could not create the runtime secrets: ${notEnsured.map((o) => `${o.id}: ${o.error ?? ""}`).join("; ")}`,
+    );
+  }
 
   // Refresh state first to detect drift from any out-of-band changes.
   await stack.refresh({ onOutput: (msg) => onEvent("log", msg) });

@@ -11,6 +11,7 @@ export * from "./content.js";
 export * from "./context.js";
 export * from "./css-gradient-scan.js";
 export * from "./css-var-scan.js";
+export * from "./database-url.js";
 export * from "./design-draft-shell.js";
 export * from "./document-language.js";
 export * from "./font-assets.js";

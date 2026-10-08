@@ -225,12 +225,12 @@ async function init(): Promise<void> {
 
   // P15.1 — mint the shared HMAC secret for /api/internal/* endpoints.
   // Same secret is read by:
-  //   - admin app (process.env.CAELO_INTERNAL_SECRET, set by docker-compose
-  //     or the Pulumi cloud stack via secret env var),
+  //   - admin app (process.env.CAELO_INTERNAL_SECRET),
   //   - cms-provision pulumi-output-sync (when running in CI / by hand),
   //   - any future internal-only orchestration.
-  // Long enough to defeat brute-force; rotation via `pulumi config set
-  // --secret caelo-internal-secret <new>` + `pulumi up` for cloud installs.
+  // Long enough to defeat brute-force. GCP installs keep their own copy in
+  // Secret Manager (runtime-secrets.ts), rotated by `rotate-secret
+  // internal-secret`.
   const internalSecret = randomSecret(48);
   const internalSecretPath = resolve(CAELO_DIR, "internal-secret.json");
   writeFileSync(internalSecretPath, JSON.stringify({ secret: internalSecret }, null, 2));
@@ -619,7 +619,7 @@ async function pulumiOutputSync(): Promise<void> {
   const adminBaseUrl = process.env.CAELO_ADMIN_URL;
   if (!internalSecret || internalSecret.length < 32) {
     console.error(
-      "CAELO_INTERNAL_SECRET not set or too short (need ≥32 chars). Pulumi mints this in `cms-provision init`; export it (or `pulumi stack output --show-secrets internalSecretOut`) and re-run.",
+      "CAELO_INTERNAL_SECRET not set or too short (need ≥32 chars). Self-hosted: `cms-provision init` writes it to .caelo/internal-secret.json. GCP: it lives in Secret Manager — export CAELO_INTERNAL_SECRET=$(gcloud secrets versions access latest --secret=caelo-production-internal-secret --project=<project>) and re-run.",
     );
     process.exit(2);
   }

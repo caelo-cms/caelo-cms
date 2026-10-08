@@ -7,5 +7,10 @@
     "noEmit": false
   },
   "include": ["src/**/*"],
-  "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]
+  "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"],
+  "references": [
+    {
+      "path": "../shared"
+    }
+  ]
 }
