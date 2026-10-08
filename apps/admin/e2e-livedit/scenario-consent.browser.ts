@@ -33,6 +33,7 @@ import {
   assertNoOrphanLocks,
   attachChatSessionTracker,
   awaitStageComplete,
+  getStagingUrl,
   loginAsDevOwner,
   publishSeededPage,
   resetLiveditFixtures,
@@ -170,6 +171,20 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
   const second = await page.goto(`/edit/preview/${secondPageId}`);
   expect(second?.status() ?? 0).toBeLessThan(400);
   expect((await second?.text()) ?? "").toContain("data-consent-banner");
+
+  // #605 — and on the STAGED build, which is what production receives.
+  // The preview renders in the admin process; the build runs in the
+  // generator subprocess, which before #605 had no plugin host and
+  // shipped the raw list markers and no runtime.
+  const staged = await page.request.get(`${getStagingUrl().replace(/\/+$/, "")}/`);
+  expect(staged.status(), "GET staging /").toBeLessThan(400);
+  const stagedHtml = await staged.text();
+  expect(stagedHtml).toContain("data-consent-banner");
+  expect(stagedHtml).not.toMatch(/\{\{[#^/]\s*consent_categories/);
+  for (const key of ["functional", "analytics", "marketing"]) {
+    expect(stagedHtml).toContain(`data-consent-category="${key}"`);
+  }
+  expect(stagedHtml).toMatch(/src="\/_caelo\/plugin\/consent-manager\/[^"]+\.js"/);
 
   assertNoOrphanLocks(sessionId ?? "");
   assertNoChatRunnerDiagWarnings();

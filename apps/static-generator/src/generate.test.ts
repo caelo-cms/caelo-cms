@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  assertNoPluginMarkers,
   buildRobotsTxt,
   envNoindexBuildError,
   manifestBakesEnvNoindex,
@@ -181,5 +182,33 @@ describe("missingRootPageError", () => {
     expect(msg).toContain("page-9");
     expect(msg).not.toContain("page-10");
     expect(msg).toContain(", …");
+  });
+});
+
+describe("assertNoPluginMarkers (#605)", () => {
+  const lists = ["language_links", "consent_categories"];
+
+  it("passes pages whose plugin lists were resolved", () => {
+    expect(() =>
+      assertNoPluginMarkers(
+        [{ pageSlug: "home", html: "<ul><li>Deutsch</li></ul>{{#own_field}}x{{/own_field}}" }],
+        lists,
+      ),
+    ).not.toThrow();
+  });
+
+  it("names every page and list that would ship raw markers", () => {
+    expect(() =>
+      assertNoPluginMarkers(
+        [
+          {
+            pageSlug: "home",
+            html: "{{#consent_categories}}<label>{{label}}</label>{{/consent_categories}}",
+          },
+          { pageSlug: "about", html: "{{ ^language_links }}none{{/language_links}}" },
+        ],
+        lists,
+      ),
+    ).toThrow(/2 page\(s\).*"home": consent_categories.*"about": language_links/);
   });
 });

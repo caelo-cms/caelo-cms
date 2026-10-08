@@ -60,7 +60,7 @@ graph TD
 
 - `admin_role` and `public_role` are isolated. The API Gateway never holds `admin_role` credentials.
 - RLS is `FORCE`d on every table in both databases — role isolation alone is not enough.
-- The static generator runs as a subprocess at deploy time. It is not a long-running service.
+- The static generator runs as a subprocess at deploy time. It is not a long-running service. It has no plugin host of its own: every plugin answer a build needs (data lists, head contributions, public URLs, content variants, withheld modules, `staticRender`, client assets) is a call back over its stdio to the admin's plugin host (`packages/plugin-host/src/build-services.ts`, #605), so the published site gets what the preview shows.
 
 ---
 
@@ -163,7 +163,7 @@ graph TD
 
 **Branch-aware writes.** Each chat session owns an ephemeral `chat_branches` row. Snapshots emitted from a chat are tagged with that `chat_branch_id`. The branch only merges into main on publish (`publishChatSessionOp`). This is why two editors in two chats can edit the same page without colliding.
 
-**Static-generator parity.** Both the admin's `/edit` preview AND `apps/static-generator` (deploy) call `composePageWithLayout` from `packages/shared/preview-compose.ts`. Same input → byte-identical output. There is no separate "production renderer".
+**Static-generator parity.** Both the admin's `/edit` preview AND `apps/static-generator` (deploy) call `composePageWithLayout` from `packages/shared/preview-compose.ts`. Same input → byte-identical output. There is no separate "production renderer". Plugin input reaches both through the same resolvers: the preview calls the plugin host in-process, the generator subprocess calls it through the admin (`BuildPluginServices`, #605).
 
 ---
 

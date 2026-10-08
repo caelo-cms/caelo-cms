@@ -15,12 +15,10 @@
  */
 
 import {
+  type BuildPluginServices,
   type ContentVariantPlacement,
   contentVariantProblemMarker,
-  hasContentVariantContributors,
-  MAIN_RENDER,
   type ResolvedContentVariants,
-  resolveContentVariants,
 } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ModuleFieldKind, PageUrlStyle } from "@caelo-cms/shared";
@@ -109,6 +107,7 @@ export function variantPlacementsOf(page: VariantPassPage): ContentVariantPlacem
  */
 export async function resolveBuildContentVariants(
   tx: TransactionRunner,
+  plugins: BuildPluginServices,
   pages: ReadonlyArray<VariantPassPage>,
   pageUrlStyle: PageUrlStyle,
 ): Promise<{
@@ -116,10 +115,9 @@ export async function resolveBuildContentVariants(
   overrideModules: ReadonlyMap<string, VariantComposeModule>;
 }> {
   const empty = { resolutions: new Map(), overrideModules: new Map() };
-  if (pages.length === 0 || !hasContentVariantContributors()) return empty;
-  const resolutions = await resolveContentVariants(
+  if (pages.length === 0 || !(await plugins.hasContentVariantContributors())) return empty;
+  const resolutions = await plugins.resolveContentVariants(
     pages.map((p) => ({ pageId: p.pageId, placements: variantPlacementsOf(p) })),
-    MAIN_RENDER,
     pageUrlStyle,
   );
 

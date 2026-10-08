@@ -18,14 +18,7 @@
  * it" UX).
  */
 
-import {
-  loadedPlugins,
-  MAIN_RENDER,
-  renderInvocation,
-  runPluginMetaSignature,
-  runPluginMetaSignatureBatch,
-  runPluginStaticRender,
-} from "@caelo-cms/plugin-host";
+import type { BuildPluginServices } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import type { PageUrlStyle } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -63,6 +56,11 @@ function escapeForRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Does this page carry the plugin's placeholder for itself? */
+function hasPlaceholder(html: string, slug: string, pageId: string): boolean {
+  return placeholderRegex(slug, pageId).test(html);
+}
+
 function placeholderRegex(slug: string, pageId: string): RegExp {
   return new RegExp(
     `<div\\s+data-caelo-plugin="${escapeForRegex(slug)}"[^>]*data-page-id="${escapeForRegex(pageId)}"[^>]*>(?:[\\s\\S]*?)<\\/div>`,
@@ -72,35 +70,43 @@ function placeholderRegex(slug: string, pageId: string): RegExp {
 
 export async function runPluginRenderPass(args: {
   adapter: DatabaseAdapter;
+  /** #605 — the plugin host rendering the placeholders. */
+  plugins: BuildPluginServices;
   pages: BakedPage[];
   bakeTargets: ReadonlyMap<string, BakeTarget>;
   /** The target's page URL style, handed to every `staticRender`. */
   pageUrlStyle: PageUrlStyle;
 }): Promise<PluginPassResult> {
-  const { adapter, pages, bakeTargets, pageUrlStyle } = args;
+  const { adapter, plugins, pages, bakeTargets, pageUrlStyle } = args;
 
-  const activePlugins = loadedPlugins
-    .all()
-    .filter((lp) => lp.tier === 1 && typeof lp.definition.staticRender === "function")
-    .map((lp) => ({ id: lp.pluginId, slug: lp.slug, version: lp.version }));
+  const activePlugins = await plugins.staticRenderPlugins();
   if (activePlugins.length === 0) return { bakedCount: 0, skippedCount: 0 };
 
   // P13 perf-pass — pre-resolve metaSignatures in one batch when the
   // plugin exposes metaSignatureBatch. Saves N DB roundtrips on large
   // sites. Cache shape: Map<pluginSlug, Map<pageId, sig>>.
-  const batchedSigs = new Map<string, ReadonlyMap<string, string>>();
-  const allPageIds = [...bakeTargets.values()].map((t) => t.pageId);
+  //
+  // Only pages that carry the plugin's placeholder are asked about: a
+  // page without the widget renders nothing for it, so a failure there
+  // must not be able to stop the build.
+  const placedPages = new Map<string, string[]>();
   for (const plugin of activePlugins) {
-    try {
-      const m = await runPluginMetaSignatureBatch({
-        invocation: renderInvocation(MAIN_RENDER),
-        pluginSlug: plugin.slug,
-        pageIds: allPageIds,
-      });
-      if (m.size > 0) batchedSigs.set(plugin.slug, m);
-    } catch {
-      // best-effort; per-page fallback handles failures.
+    const ids: string[] = [];
+    for (const page of pages) {
+      const target = bakeTargets.get(page.pageSlug);
+      if (target && hasPlaceholder(page.html, plugin.slug, target.pageId)) ids.push(target.pageId);
     }
+    placedPages.set(plugin.slug, ids);
+  }
+  const batchedSigs = new Map<string, ReadonlyMap<string, string>>();
+  for (const plugin of activePlugins) {
+    const allPageIds = placedPages.get(plugin.slug) ?? [];
+    if (allPageIds.length === 0) continue;
+    // Empty for a plugin without the batch variant (per-page below).
+    // A plugin that declares it and throws stops the build: a wrong
+    // cache key would ship a stale bake as if it were current.
+    const m = await plugins.metaSignatureBatch(plugin.slug, allPageIds);
+    if (m.size > 0) batchedSigs.set(plugin.slug, m);
   }
 
   let bakedCount = 0;
@@ -110,6 +116,7 @@ export async function runPluginRenderPass(args: {
     const target = bakeTargets.get(page.pageSlug);
     if (!target) continue;
     for (const plugin of activePlugins) {
+      if (!(placedPages.get(plugin.slug) ?? []).includes(target.pageId)) continue;
       // P13 audit fix #4 — the plugin's own data signature IS the
       // cache key (plus plugin version): plugin render output depends
       // on plugin data + pageId, not on the page's own content.
@@ -117,12 +124,7 @@ export async function runPluginRenderPass(args: {
       // P13 perf-pass — prefer the pre-batched value when present.
       const batched = batchedSigs.get(plugin.slug);
       const metaSig =
-        batched?.get(target.pageId) ??
-        (await runPluginMetaSignature({
-          invocation: renderInvocation(MAIN_RENDER),
-          pluginSlug: plugin.slug,
-          pageId: target.pageId,
-        }).catch(() => ""));
+        batched?.get(target.pageId) ?? (await plugins.metaSignature(plugin.slug, target.pageId));
       // The URL style is part of the key: a plugin linking to pages renders
       // different hrefs per style (#590).
       const cacheKey = `${plugin.version}:${pageUrlStyle}:${metaSig}`;
@@ -149,16 +151,14 @@ export async function runPluginRenderPass(args: {
             : String(cached[0].baked_at);
         skippedCount += 1;
       } else {
+        // A failing render stops the build (CLAUDE.md §2): the page would
+        // otherwise ship an empty placeholder where the plugin belongs.
         try {
-          const rendered = await runPluginStaticRender({
-            invocation: renderInvocation(MAIN_RENDER),
-            pluginSlug: plugin.slug,
-            pageId: target.pageId,
-            pageUrlStyle,
-          });
-          html = rendered ?? "";
-        } catch {
-          continue; // best-effort; failures don't kill the build
+          html = await plugins.staticRender(plugin.slug, target.pageId, pageUrlStyle);
+        } catch (e) {
+          throw new Error(
+            `static-generator: plugin "${plugin.slug}" staticRender failed for page ${target.pageId}: ${e instanceof Error ? e.message : String(e)}`,
+          );
         }
         bakedAtIso = new Date().toISOString();
         await adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {

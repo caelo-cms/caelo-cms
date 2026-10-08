@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
+
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fontMetadata, fontReader } from "@caelo-cms/font-service";
+import { localBuildPluginServices } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { applyDtcgWrites, type ExecutionContext, type ThemeDocument } from "@caelo-cms/shared";
 import { generateSite, resolveThemeFonts } from "@caelo-cms/static-generator";
@@ -195,6 +197,8 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
       await tx.execute(sql`UPDATE themes SET is_active=true WHERE slug=${THEME_SLUG}`);
       const published = await generateSite({
         tx,
+        adapter,
+        plugins: localBuildPluginServices,
         runId: crypto.randomUUID(),
         repoRoot: cacheDir,
         target: {

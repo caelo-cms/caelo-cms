@@ -13,6 +13,18 @@
 export { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
 export type { ContentVariantPage, ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
 export { pluginManifest } from "@caelo-cms/plugin-sdk";
+export {
+  BUILD_PLUGIN_METHODS,
+  type BuildPluginMethod,
+  type BuildPluginServices,
+  decodeBuildPayload,
+  encodeBuildPayload,
+  isBuildPluginMethod,
+  localBuildPluginServices,
+  remoteBuildPluginServices,
+  type StaticRenderPlugin,
+  serveBuildPluginCall,
+} from "./build-services.js";
 export { makePluginContext } from "./capabilities.js";
 export {
   collectBuildAssets,
@@ -28,6 +40,7 @@ export {
   resolveContentVariants,
 } from "./content-variants.js";
 export {
+  dormantDataListNames,
   type ResolvedDataLists,
   resolveDataLists,
 } from "./data-list-resolution.js";

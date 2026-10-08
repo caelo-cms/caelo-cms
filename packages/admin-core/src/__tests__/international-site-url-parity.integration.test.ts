@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   bootstrap,
+  localBuildPluginServices,
   MAIN_RENDER,
   resetPluginHost,
   resolveDataLists,
@@ -216,6 +217,7 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
       await adapter.withAdminTransaction(SYS_CTX, async (tx) => {
         await runSeoPass({
           tx,
+          plugins: localBuildPluginServices,
           buildDir,
           pages: built,
           settings: {

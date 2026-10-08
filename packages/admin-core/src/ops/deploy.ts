@@ -36,6 +36,11 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  decodeBuildPayload,
+  encodeBuildPayload,
+  serveBuildPluginCall,
+} from "@caelo-cms/plugin-host";
+import {
   type DatabaseAdapter,
   defineOperation,
   execute,
@@ -288,7 +293,14 @@ interface SubprocessError {
   kind: "error";
   message: string;
 }
-type SubprocessEvent = SubprocessProgress | SubprocessDone | SubprocessError;
+/** #605 — the generator asks the admin's plugin host (build-services.ts). */
+interface SubprocessPluginCall {
+  kind: "plugin-call";
+  id: number;
+  method: unknown;
+  args: unknown;
+}
+type SubprocessEvent = SubprocessProgress | SubprocessDone | SubprocessError | SubprocessPluginCall;
 
 /**
  * Spawn the generator CLI and stream its JSON-line stdout. Each progress
@@ -325,8 +337,10 @@ async function runGenerator(
     let stdoutBuf = "";
     let finalEvent: SubprocessDone | SubprocessError | null = null;
 
+    // The config is the first line; stdin then stays open for the answers
+    // to the generator's plugin calls (#605) until the child exits.
     child.stdin.write(
-      JSON.stringify({
+      `${JSON.stringify({
         adminDatabaseUrl: adminUrl,
         publicDatabaseUrl: publicUrl,
         target: args.target,
@@ -335,9 +349,26 @@ async function runGenerator(
         ...(args.changedPageIds && args.changedPageIds.length > 0
           ? { changedPageIds: [...args.changedPageIds] }
           : {}),
-      }),
+      })}\n`,
     );
-    child.stdin.end();
+    // Answer one plugin call with THIS process's plugin host — the same
+    // resolvers the editor preview uses. A failure is handed back to the
+    // generator, which fails the build with it.
+    const answerPluginCall = async (call: SubprocessPluginCall): Promise<void> => {
+      let reply: Record<string, unknown>;
+      try {
+        const value = await serveBuildPluginCall(call.method, call.args);
+        reply = { kind: "plugin-result", id: call.id, ok: true, value };
+      } catch (e) {
+        reply = {
+          kind: "plugin-result",
+          id: call.id,
+          ok: false,
+          message: e instanceof Error ? e.message : String(e),
+        };
+      }
+      if (!child.stdin.destroyed) child.stdin.write(`${encodeBuildPayload(reply)}\n`);
+    };
 
     child.stdout.on("data", (chunk: Buffer) => {
       stdoutBuf += chunk.toString("utf8");
@@ -349,11 +380,13 @@ async function runGenerator(
         if (line.length === 0) continue;
         let ev: SubprocessEvent;
         try {
-          ev = JSON.parse(line) as SubprocessEvent;
+          ev = decodeBuildPayload(line) as SubprocessEvent;
         } catch {
           continue;
         }
-        if (ev.kind === "progress") {
+        if (ev.kind === "plugin-call") {
+          void answerPluginCall(ev);
+        } else if (ev.kind === "progress") {
           // Fire-and-forget: progress updates are advisory, a stale row
           // is preferable to blocking the parent on each line.
           void execute(registry, adapter, ctx, "deploy.update_progress", {
@@ -372,6 +405,7 @@ async function runGenerator(
       respond({ ok: false, message: e.message, stderr: Buffer.concat(stderrChunks).toString() });
     });
     child.on("close", (code) => {
+      if (!child.stdin.destroyed) child.stdin.end();
       const stderr = Buffer.concat(stderrChunks).toString();
       if (finalEvent && finalEvent.kind === "done") {
         respond({ ok: true, result: finalEvent });
