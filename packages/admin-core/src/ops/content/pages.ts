@@ -24,6 +24,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
 import { emitDomainEvent } from "../../domain-events.js";
+import { pendingSnapshotSql } from "../../draft.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -32,6 +33,7 @@ import {
   loadPageState,
   loadPageStateWithBranchOverlay,
 } from "../../snapshots/index.js";
+import type { PageState } from "../../snapshots/state.js";
 import { buildPatchSet, buildWhere } from "../../sql-helpers.js";
 // A slug change fans out beyond the pages table (301 + link rewrites). These
 // handlers are composed on the caller's tx so the whole move is atomic; none
@@ -209,7 +211,7 @@ export const listPagesOp = defineOperation({
         SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
           FROM page_snapshots ps
           JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-         WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+         WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
          ORDER BY ps.page_id, ss.created_at DESC
       `)) as unknown as { page_id: string; state: unknown }[];
       if (overlayRows.length > 0) {
@@ -371,7 +373,7 @@ export const getPageWithModulesOp = defineOperation({
           SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
           FROM module_snapshots ms
           JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-          WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+          WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
             AND ms.module_id = ANY(${sql.raw(
               `ARRAY[${allModuleIds.map((id) => `'${id}'::uuid`).join(",")}]`,
             )})
@@ -557,7 +559,7 @@ async function branchDeletedPageIds(
     SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
       FROM page_snapshots ps
       JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-     WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+     WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
        AND ps.page_id = ANY(${sql.raw(
          `ARRAY[${candidateIds.map((id) => `'${id}'::uuid`).join(",")}]`,
        )})
@@ -1152,15 +1154,57 @@ export const updatePageOp = defineOperation({
  * This op does both writes in one transaction:
  *   1. UPDATE the live `pages` row so `pages.list` (and the toolbar
  *      badge) reflects the new status immediately.
- *   2. PATCH the LATEST branched `page_snapshots.state.status` for this
- *      page on the active chat's branch (when `ctx.chatBranchId` is
- *      set). Without this patch, `chat.merge_to_main` would UPSERT the
- *      live row from a stale snapshot at Stage and revert the status.
- *
- * Direct UPDATE of `page_snapshots` is intentional here — we're patching
- * an existing snapshot's state, not emitting a new one. The Query API
- * rule "all DB access through ops" still holds: this op IS the op.
+ *   2. When the active chat's branch has pending state for the page,
+ *      record the new status as a NEW page snapshot on it (see
+ *      {@link recordBranchedStatus}). Without it, `chat.merge_to_main`
+ *      would UPSERT the live row from a stale snapshot at Stage and
+ *      revert the status.
  */
+/**
+ * Record a status flip on the caller's branch as the CALLER's change: for
+ * every page the branch has pending state for, a new page snapshot (that
+ * state with the new status) under the caller's chat task. Patching the
+ * latest snapshot in place — the earlier approach — rewrote whichever
+ * chat wrote it last: on the shared draft that is often another chat, so
+ * its pending change silently carried this chat's status (wrong
+ * attribution, and undoing this chat could not restore the old status).
+ * Pages the branch has no pending state for need nothing: a merge does
+ * not upsert a page it has no snapshot for, so the live status stands.
+ */
+async function recordBranchedStatus(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  ctx: ExecutionContext,
+  pageIds: readonly string[],
+  status: "draft" | "published",
+  operation: "pages.set_status" | "pages.set_status_many",
+): Promise<void> {
+  if (!ctx.chatBranchId || pageIds.length === 0) return;
+  const latest = (await tx.execute(sql`
+    SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
+      FROM page_snapshots ps
+      JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+     WHERE ps.page_id IN (${sql.join(
+       pageIds.map((id) => sql`${id}::uuid`),
+       sql`, `,
+     )})
+       AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
+     ORDER BY ps.page_id, ss.created_at DESC
+  `)) as unknown as { page_id: string; state: unknown }[];
+  if (latest.length === 0) return;
+  const entities = latest.map((row) => {
+    const prior = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as PageState;
+    return { kind: "page" as const, entityId: row.page_id, state: { ...prior, status } };
+  });
+  await emitSnapshot(tx, {
+    actorId: ctx.actorId,
+    opKind: "pages.update",
+    description: `${operation} status=${status} pages=${entities.length} (branched)`,
+    chatTaskId: ctx.chatTaskId ?? null,
+    chatBranchId: ctx.chatBranchId,
+    entities,
+  });
+}
+
 export const setPageStatusOp = defineOperation({
   name: "pages.set_status",
   actorScope: ["human", "ai", "system"],
@@ -1189,43 +1233,7 @@ export const setPageStatusOp = defineOperation({
       });
     }
 
-    if (ctx.chatBranchId) {
-      // v0.10.7 — read state, patch in JS, write the whole jsonb back.
-      // jsonb_set + to_jsonb on a parameterized text value hits a
-      // bun-sql query-prep failure (ERR_POSTGRES_SERVER_ERROR with no
-      // SQLSTATE / no PG response — see v0.10.5 / v0.10.6 history).
-      // Writing a JSON.stringify'd blob via `::jsonb` cast is the
-      // pattern `structured_sets.set` and every audit/proposal write
-      // already uses successfully.
-      //
-      // No-op when the chat has no branched snapshots for this page
-      // (SELECT returns 0 rows). That case is correct:
-      // `chat.merge_to_main` won't UPSERT a page it has no snapshot
-      // for, so the live row's new status stands.
-      const latest = (await tx.execute(sql`
-        SELECT ps.id::text AS id, ps.state
-          FROM page_snapshots ps
-          JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-         WHERE ps.page_id = ${input.pageId}::uuid
-           AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
-         ORDER BY ss.created_at DESC
-         LIMIT 1
-      `)) as unknown as { id: string; state: unknown }[];
-      const row = latest[0];
-      if (row) {
-        const stateObj =
-          typeof row.state === "string"
-            ? (JSON.parse(row.state) as Record<string, unknown>)
-            : ((row.state ?? {}) as Record<string, unknown>);
-        stateObj.status = input.status;
-        const nextJson = JSON.stringify(stateObj);
-        await tx.execute(sql`
-          UPDATE page_snapshots
-             SET state = ${nextJson}::text::jsonb
-           WHERE id = ${row.id}::uuid
-        `);
-      }
-    }
+    await recordBranchedStatus(tx, ctx, [input.pageId], input.status, "pages.set_status");
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -1290,33 +1298,13 @@ export const setPagesStatusManyOp = defineOperation({
       });
     }
 
-    // Patch the latest branched snapshot for each updated page on this
-    // chat's branch. v0.10.7 — read state, patch in JS, write whole
-    // blob back per-snapshot. See singular variant for why jsonb_set
-    // can't be used here.
-    if (ctx.chatBranchId) {
-      const latest = (await tx.execute(sql`
-        SELECT DISTINCT ON (ps.page_id) ps.id::text AS id, ps.state
-          FROM page_snapshots ps
-          JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-         WHERE ps.page_id = ANY(${sql.raw(`ARRAY[${input.pageIds.map((id) => `'${id}'::uuid`).join(",")}]`)})
-           AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
-         ORDER BY ps.page_id, ss.created_at DESC
-      `)) as unknown as { id: string; state: unknown }[];
-      for (const row of latest) {
-        const stateObj =
-          typeof row.state === "string"
-            ? (JSON.parse(row.state) as Record<string, unknown>)
-            : ((row.state ?? {}) as Record<string, unknown>);
-        stateObj.status = input.status;
-        const nextJson = JSON.stringify(stateObj);
-        await tx.execute(sql`
-          UPDATE page_snapshots
-             SET state = ${nextJson}::text::jsonb
-           WHERE id = ${row.id}::uuid
-        `);
-      }
-    }
+    await recordBranchedStatus(
+      tx,
+      ctx,
+      updated.map((r) => r.id),
+      input.status,
+      "pages.set_status_many",
+    );
 
     await recordAudit(tx, {
       actorId: ctx.actorId,

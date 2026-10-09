@@ -54,13 +54,35 @@ import {
 } from "./persistence.js";
 import type { UsageAccumulator } from "./streaming.js";
 import { buildToolCatalogue, resolveExcludedToolNames } from "./tool-catalogue.js";
+import { acquireChatTurn } from "./turn-serializer.js";
 import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
 // Public surface re-exports — the `../chat-runner.ts` shim does `export *`
 // from here, so these keep the pre-split import paths working.
 export type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
+/**
+ * Run one turn of a chat — after any earlier turn of the same chat ended
+ * (turn-serializer.ts: two turns at once interleave their rows and corrupt
+ * the history for good). A turn aborted while it waited does nothing.
+ */
 export async function* runChatTurn(
+  options: ChatRunnerOptions,
+  input: ChatSendMessageInput,
+): AsyncIterable<ClientEvent> {
+  const release = await acquireChatTurn(input.chatSessionId);
+  try {
+    if (options.abortSignal?.aborted === true) {
+      yield { kind: "done" };
+      return;
+    }
+    yield* runSerializedChatTurn(options, input);
+  } finally {
+    release();
+  }
+}
+
+async function* runSerializedChatTurn(
   options: ChatRunnerOptions,
   input: ChatSendMessageInput,
 ): AsyncIterable<ClientEvent> {

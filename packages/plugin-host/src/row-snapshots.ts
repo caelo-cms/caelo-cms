@@ -165,6 +165,8 @@ export async function loadBranchRowStates(
     WHERE prs.plugin_id = ${input.pluginId}::uuid
       AND prs.table_name = ${input.table}
       AND ss.chat_branch_id = ${input.chatBranchId}::uuid
+      -- issue #620: only pending branch snapshots (not staged, not undone).
+      AND ss.staged_at IS NULL AND ss.undone_at IS NULL
       ${onlyRows}
     ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
   `)) as unknown as { row_id: string; state: unknown }[];
@@ -244,16 +246,29 @@ export async function applyPluginRowState(
  * branch are tombstoned and stay tagged, so no main-line read ever sees
  * them. Edits to main rows need no work — they only ever lived in
  * branch snapshots. Returns the number of rows tombstoned.
+ *
+ * @param rowIds issue #620 — restrict to these rows (an undo of one chat
+ *   on the shared draft drops only the rows THAT chat created); omit to
+ *   drop everything the branch created (discarding a whole branch).
  */
 export async function discardBranchPluginRows(
   tx: TransactionRunner,
   chatBranchId: string,
+  rowIds?: readonly string[],
 ): Promise<number> {
+  if (rowIds !== undefined && rowIds.length === 0) return 0;
+  const idList = (column: string) =>
+    rowIds === undefined
+      ? sql``
+      : sql`AND ${sql.raw(column)} IN (${sql.join(
+          rowIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})`;
   const tables = (await tx.execute(sql`
     SELECT DISTINCT prs.plugin_id::text AS plugin_id, prs.schema_name, prs.table_name
     FROM plugin_row_snapshots prs
     JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
-    WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+    WHERE ss.chat_branch_id = ${chatBranchId}::uuid ${idList("prs.row_id")}
   `)) as unknown as { plugin_id: string; schema_name: string; table_name: string }[];
   let dropped = 0;
   for (const t of tables) {
@@ -266,6 +281,7 @@ export async function discardBranchPluginRows(
           UPDATE ${target}
           SET "caelo_deleted_at" = now(), "caelo_updated_at" = now()
           WHERE "caelo_chat_branch_id" = ${chatBranchId}::uuid AND "caelo_deleted_at" IS NULL
+            ${idList("id")}
           RETURNING id
         `)) as unknown as unknown[],
     );

@@ -27,6 +27,11 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
+// Issue #620 — these chats run on ISOLATED branches (experiments): the
+// suite covers the per-branch mechanics isolated chats keep (experiments,
+// migrations, pre-draft chats). The shared draft has its own suite
+// (shared-draft.integration.test.ts).
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -97,6 +102,7 @@ describe("issue #264 — entity leases refuse concurrent same-branch writers", (
 
     // Parent orchestrator chat → its branch is the shared preview branch.
     const parent = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}parent`,
     });
     if (!parent.ok) throw new Error("seed parent chat");
@@ -105,9 +111,11 @@ describe("issue #264 — entity leases refuse concurrent same-branch writers", (
 
     // Two ephemeral "subagent" sessions — their ids are the lease holders.
     const s1 = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}sub1`,
     });
     const s2 = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}sub2`,
     });
     if (!s1.ok || !s2.ok) throw new Error("seed subagent sessions");

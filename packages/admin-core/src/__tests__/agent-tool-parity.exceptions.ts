@@ -45,6 +45,34 @@ const MEDIA_CURATION_FOLLOW_UP =
 
 export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   // ── covered by a bulk / composite / aggregate tool ────────────────────
+  // issue #620 Part B — the Stage flow (admin-core stageChatSessions) runs
+  // these as the AI when it stages; stage_changes is the only way in, and
+  // the classification it enqueues is computed inside the flow.
+  "chat.merge_to_main": {
+    kind: "covered",
+    by: ["stage_changes"],
+    note: "isolated chats' merge step of the Stage flow (stage/stage-chats.ts)",
+  },
+  "chat.finalize_stage": {
+    kind: "covered",
+    by: ["stage_changes"],
+    note: "isolated chats' finalize step of the Stage flow, after the staging build succeeded",
+  },
+  "chat.merge_draft_to_main": {
+    kind: "covered",
+    by: ["stage_changes"],
+    note: "the shared draft's selective merge step of the Stage flow",
+  },
+  "chat.finalize_draft_stage": {
+    kind: "covered",
+    by: ["stage_changes"],
+    note: "the shared draft's finalize step of the Stage flow",
+  },
+  "quality_audits.enqueue": {
+    kind: "covered",
+    by: ["stage_changes"],
+    note: "the Stage flow queues the audit of the build it made, with the classification classify_stage computed before the merge — never model input",
+  },
   "pages.create": {
     kind: "covered",
     by: ["build_page"],

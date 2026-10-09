@@ -85,7 +85,7 @@ export interface ModuleTextWithProvenance {
  *     `page_layout_snapshots` state, because live `page_modules` is EMPTY
  *     for chat-built pages; live runs: the live `page_modules` rows).
  *   - `chromeModuleIds` — layout-bound chrome from the `layout_modules`
- *     join (written live even in branched chats, layouts.ts).
+ *     join (the import's compose binds chrome to the live table).
  *   - `moduleTextById` — per-module branch-latest text + provenance.
  *
  * Returns the page-module and chrome rows for `assembleDirectBuildUnits`,

@@ -411,7 +411,7 @@ export const listPendingUserProposalsOp = defineOperation({
 
 async function queueProposal(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  ctx: { actorId: string; requestId: string; chatBranchId?: string },
+  ctx: { actorId: string; requestId: string; chatBranchId?: string; chatTaskId?: string },
   kind: "create" | "set_roles" | "delete",
   userId: string | null,
   payload: unknown,
@@ -422,7 +422,7 @@ async function queueProposal(
   | { ok: false; error: { kind: "HandlerError"; operation: string; message: string } }
 > {
   const payloadHash = await hashProposalPayload(payload);
-  const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+  const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
   let rows: { id: string }[];
   try {
     rows = (await tx.execute(sql`

@@ -28,6 +28,11 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
+// Issue #620 — these chats run on ISOLATED branches (experiments): the
+// suite covers the per-branch mechanics isolated chats keep (experiments,
+// migrations, pre-draft chats). The shared draft has its own suite
+// (shared-draft.integration.test.ts).
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -77,12 +82,14 @@ describe("v0.9.0 branched-create", () => {
   it("same-chat sees its own branched module; cross-chat does not", async () => {
     // Two chats, each with a branched-create module.
     const s1 = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}c1-vis`,
     });
     if (!s1.ok) throw new Error("seed s1");
     const s1Branch = (s1.value as { chatBranchId: string }).chatBranchId;
 
     const s2 = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}c2-vis`,
     });
     if (!s2.ok) throw new Error("seed s2");
@@ -144,6 +151,7 @@ describe("v0.9.0 branched-create", () => {
 
     // chat-1 creates a branched module.
     const s1 = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}c1-block`,
     });
     if (!s1.ok) throw new Error("seed s1");
@@ -164,6 +172,7 @@ describe("v0.9.0 branched-create", () => {
 
     // chat-2 tries to attach chat-1's branched module to the main page.
     const s2 = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}c2-block`,
     });
     if (!s2.ok) throw new Error("seed s2");
@@ -187,6 +196,7 @@ describe("v0.9.0 branched-create", () => {
 
   it("merge clears chat_branch_id; entity becomes visible to all chats post-merge", async () => {
     const s1 = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}c1-merge`,
     });
     if (!s1.ok) throw new Error("seed s1");
@@ -240,6 +250,7 @@ describe("v0.9.0 branched-create", () => {
 
   it("v0.5.7 regression — create_page → pages.get → set_modules chain works in same chat", async () => {
     const s = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}c1-chain`,
     });
     if (!s.ok) throw new Error("seed chat");

@@ -26,6 +26,12 @@ import {
 } from "./ops/auth.js";
 import { cancelProposalOp } from "./ops/cancel_proposal.js";
 import { discardChatBranchOp } from "./ops/chat/discard.js";
+import {
+  finalizeDraftStageOp,
+  isolateSessionOp,
+  mergeDraftToMainOp,
+  undoChatChangesOp,
+} from "./ops/chat/draft-ops.js";
 import { listForeignLocksOp } from "./ops/chat/foreign-locks.js";
 import {
   appendChatMessageOp,
@@ -749,6 +755,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #620 — Open changes overview + lock-takeover notices.
   registry.register(listOpenChangesOp);
   registry.register(drainTakeoverNoticesOp);
+  // issue #620 Part A/B — the shared draft: selective Stage, undo per chat,
+  // isolation for experiments and migrations.
+  registry.register(mergeDraftToMainOp);
+  registry.register(finalizeDraftStageOp);
+  registry.register(undoChatChangesOp);
+  registry.register(isolateSessionOp);
   registry.register(listPendingChangesOp);
   registry.register(stageChatChangesOp);
   registry.register(unstageChatChangesOp);

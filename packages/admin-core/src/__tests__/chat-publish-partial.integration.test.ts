@@ -16,6 +16,11 @@ import { FixtureProvider } from "../ai/providers/anthropic.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { registerAdminOps } from "../register.js";
 
+// Issue #620 — these chats run on ISOLATED branches (experiments): the
+// suite covers the per-branch mechanics isolated chats keep (experiments,
+// migrations, pre-draft chats). The shared draft has its own suite
+// (shared-draft.integration.test.ts).
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -100,6 +105,7 @@ describe("chat.publish partial", () => {
     const modB = (cb.value as { moduleId: string }).moduleId;
 
     const session = await execute(registry, adapter, HUMAN, "chat.create_session", {
+      isolation: "experiment",
       title: "p5-2-partial-1",
     });
     if (!session.ok) throw new Error("session");

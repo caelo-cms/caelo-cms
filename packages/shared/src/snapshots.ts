@@ -32,6 +32,9 @@ export const snapshotsListInput = z
      * Used by `revert_chat_changes` to enumerate everything one chat did
      * without scanning the full timeline. */
     forChatBranchId: z.string().uuid().optional(),
+    /** Issue #620 — only snapshots written by this chat (or its
+     *  subagents). On the shared draft many chats share one branch. */
+    forChatSessionId: z.string().uuid().optional(),
   })
   .strict();
 

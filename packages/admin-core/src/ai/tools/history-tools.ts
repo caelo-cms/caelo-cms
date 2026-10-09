@@ -197,7 +197,7 @@ async function renderOpenChanges(ctx: ExecutionContext, toolCtx: ToolContext): P
     ok: true,
     content:
       `${blocks.join("\n")}\n` +
-      "Writing an entity another chat holds adopts that chat's unstaged change into this chat (you are told when it happens). The operator stages or discards chats at /content/changes.",
+      "Draft chats share their changes; an item held on an experiment/older chat branch is adopted when you write it (you are told). Stage with stage_changes (scope all_my_chats for everything of the operator); the operator can also stage or discard chats at /content/changes.",
     value: v,
   };
 }

@@ -18,6 +18,11 @@
  *
  * Whatever the chat already staged is on main and stays there; that is
  * undone with the snapshot revert, like any other main-line change.
+ *
+ * Issue #620 — a chat on the shared draft does not own its branch: its
+ * discard drops only ITS unstaged changes (the "undo this chat" selection,
+ * see draft.ts). When that would also drop another chat's later change on
+ * the same entity, the op refuses and names it until `confirmOverlap`.
  */
 
 import { discardBranchPluginRows } from "@caelo-cms/plugin-host";
@@ -26,7 +31,9 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { loadChatBinding } from "../../draft.js";
 import { releaseChatLocks } from "../../locks.js";
+import { undoDraftChat } from "./draft-ops.js";
 
 /** Core tables whose rows can be created on a branch (migration 0089, 0093). */
 const BRANCHED_CREATE_TABLES = ["pages", "modules", "templates", "layouts", "content_instances"];
@@ -38,10 +45,31 @@ export const discardChatBranchOp = defineOperation({
   // own conversation.
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: z.object({ chatSessionId: z.string().uuid() }).strict(),
+  input: z
+    .object({
+      chatSessionId: z.string().uuid(),
+      /** Draft chats: also drop the later changes of the other chats the refusal named. */
+      confirmOverlap: z.boolean().optional(),
+    })
+    .strict(),
   output: z.object({
     /** Branch-created rows soft-deleted, core and plugin. */
     droppedRows: z.number().int().nonnegative(),
+    /**
+     * Issue #620 — false when a draft chat's discard would also undo other
+     * chats' later changes and `confirmOverlap` was not set: nothing was
+     * discarded; `overlap` names those chats.
+     */
+    discarded: z.boolean(),
+    overlap: z.array(
+      z
+        .object({
+          chatSessionId: z.string().nullable(),
+          title: z.string(),
+          labels: z.array(z.string()),
+        })
+        .strict(),
+    ),
   }),
   handler: async (ctx, input, tx) => {
     const sessions = (await tx.execute(sql`
@@ -70,7 +98,35 @@ export const discardChatBranchOp = defineOperation({
           "chat already published — its changes are live; undo them with a snapshot revert instead",
       });
     }
-    if (session.discarded_at !== null) return ok({ droppedRows: 0 });
+    if (session.discarded_at !== null) return ok({ droppedRows: 0, discarded: true, overlap: [] });
+    const binding = await loadChatBinding(tx, input.chatSessionId);
+    if (binding?.kind === "draft") {
+      const undone = await undoDraftChat(
+        tx,
+        ctx,
+        binding,
+        input.confirmOverlap === true,
+        "chat.discard_branch",
+      );
+      if (!undone.applied) {
+        return ok({ droppedRows: 0, discarded: false, overlap: undone.overlap });
+      }
+      await tx.execute(sql`
+        UPDATE chat_sessions
+        SET discarded_at = now(), archived_at = COALESCE(archived_at, now())
+        WHERE id = ${input.chatSessionId}::uuid
+      `);
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "chat.discard_branch",
+        input,
+        succeeded: true,
+        entityId: input.chatSessionId,
+        resultSummary: `draft undone=${undone.undoneSnapshots} dropped=${undone.droppedRows}`,
+      });
+      return ok({ droppedRows: undone.droppedRows, discarded: true, overlap: undone.overlap });
+    }
     const branchId = session.chat_branch_id;
 
     let droppedRows = 0;
@@ -105,6 +161,6 @@ export const discardChatBranchOp = defineOperation({
       entityId: input.chatSessionId,
       resultSummary: `dropped=${droppedRows}`,
     });
-    return ok({ droppedRows });
+    return ok({ droppedRows, discarded: true, overlap: [] });
   },
 });

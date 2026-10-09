@@ -283,11 +283,13 @@ describe("issue #297 — auto-armed ceiling + live gate state", () => {
     sessId = (sess.value as { chatSessionId: string }).chatSessionId;
     const branchId = (sess.value as { chatBranchId: string }).chatBranchId;
 
-    // Propose FROM the chat (branch ctx) so the run links to the session.
+    // Propose FROM the chat (branch + task ctx, as the chat-runner does) so
+    // the run links to the session — on the shared draft (issue #620) the
+    // branch alone names no single chat.
     const prop = await execute(
       registry,
       adapter,
-      { ...SYSTEM, chatBranchId: branchId },
+      { ...SYSTEM, chatBranchId: branchId, chatTaskId: sessId },
       "imports.propose_run",
       {
         sourceUrl: "https://issue297.example/",

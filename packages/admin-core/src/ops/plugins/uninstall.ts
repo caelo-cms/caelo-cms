@@ -126,7 +126,7 @@ export const proposeUninstallPluginOp = defineOperation({
         "Uninstalling DROPS both plugin schemas — every row in the tables above is permanently deleted. Pages whose URLs the plugin reshaped move back with 301 redirects.",
       ...(input.reason ? { reason: input.reason } : {}),
     };
-    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
     try {
       const inserted = (await tx.execute(sql`
         INSERT INTO plugin_pending_actions

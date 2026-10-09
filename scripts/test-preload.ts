@@ -123,6 +123,9 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   "roles",
   "site_defaults",
   "site_settings",
+  // Seed-bearing since 0246 (issue #620): the singleton row naming the
+  // site's shared draft branch; every new chat binds to it.
+  "site_draft",
   "skills",
   "structured_sets",
   "telemetry_settings",

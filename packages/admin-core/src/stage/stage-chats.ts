@@ -5,17 +5,21 @@
  * the Open changes overview's "Stage all" / "Stage selected"; /edit's Stage
  * button is the one-chat case).
  *
- *   1. quality_audits.classify_stage per chat — BEFORE any merge: once the
+ *   1. quality_audits.classify_stage per unit — BEFORE any merge: once the
  *      live rows hold the branch state, "did this module's code change"
- *      can no longer be told (#553).
- *   2. chat.merge_to_main (deferConsume) per chat — promote what each chat
- *      changed since its last Stage to main, without consuming the branch.
+ *      can no longer be told (#553). It returns the exact snapshot headers
+ *      it classified.
+ *   2. chat.merge_draft_to_main / chat.merge_to_main (deferConsume) per
+ *      unit — merges EXACTLY the classified headers, so a change committed
+ *      in between never reaches the build unaudited. When a classified
+ *      header was undone or staged meanwhile the merge refuses ("Conflict:
+ *      …") and that unit is classified and merged again.
  *   3. deploy.trigger(staging) ONCE — a full-site rebuild of the merged
  *      main state (one build for the whole selection, not one per chat).
- *   4. chat.finalize_stage per chat — only after the build succeeded:
- *      stamps last_staged_at to that chat's merge time and releases its
- *      locks. A failed build consumes nothing, so every chat stays pending
- *      and Stage stays retryable (run #8 R6).
+ *   4. chat.finalize_draft_stage / chat.finalize_stage per unit — only
+ *      after the build succeeded: marks exactly the merged headers staged
+ *      and releases locks. A failed build consumes nothing, so every chat
+ *      stays pending and Stage stays retryable (run #8 R6).
  *   5. quality_audits.enqueue — one audit for the build, with the chats'
  *      classifications combined.
  *
@@ -29,6 +33,8 @@ import type { DatabaseAdapter, OperationRegistry, QueryError } from "@caelo-cms/
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { describeError } from "../ai/tools/_describe-error.js";
+import type { AffectedChat } from "../draft.js";
+import { STAGE_CHANGED_PREFIX } from "../ops/chat/publish.js";
 import { kickQualityAuditWorker } from "../quality/audit-worker.js";
 
 /** Registry + adapter the flow executes ops through. */
@@ -36,6 +42,9 @@ export interface StageFlowDeps {
   readonly registry: OperationRegistry;
   readonly adapter: DatabaseAdapter;
 }
+
+/** How often a unit is classified again when its changes moved on mid-Stage. */
+const MAX_STAGE_ATTEMPTS = 3;
 
 /** `quality_audits.classify_stage` output, carried to the enqueue. */
 export interface ChatStageClassification {
@@ -58,7 +67,22 @@ export interface StagedChats {
   readonly previewUrl?: string;
   readonly mergedEntityCount: number;
   readonly brokenInternalLinks: readonly string[];
-  readonly chats: readonly { readonly chatSessionId: string; readonly entityCount: number }[];
+  /**
+   * One entry per merge: the shared draft's selected chats together, each
+   * isolated chat on its own.
+   */
+  readonly chats: readonly {
+    readonly chatSessionIds: readonly string[];
+    readonly entityCount: number;
+  }[];
+  /** Other chats whose draft changes rode along because they share an entity (issue #620). */
+  readonly alsoIncludes: readonly AffectedChat[];
+}
+
+/** One merge of a Stage: the shared draft's chats, or one isolated chat. */
+interface Unit {
+  readonly draft: boolean;
+  readonly chatSessionIds: readonly string[];
 }
 
 /** A Stage failure, with the step that failed and an operator-facing message. */
@@ -180,6 +204,13 @@ export async function stageChatSessions(
   deps: StageFlowDeps,
   ctx: ExecutionContext,
   chatSessionIds: readonly string[],
+  options: {
+    /**
+     * The AI initiated this Stage (stage_changes runs it with the
+     * operator's context): the merges open the production hold.
+     */
+    readonly aiInitiated?: boolean;
+  } = {},
 ): Promise<{ ok: true; value: StagedChats } | { ok: false; error: StageFailure }> {
   const { adapter, registry } = deps;
   const ids = [...new Set(chatSessionIds)];
@@ -189,10 +220,16 @@ export async function stageChatSessions(
 
   // Verify the whole selection BEFORE any merge: a refusal halfway would
   // leave the chats merged before it in main but unconsumed.
+  const draftIds: string[] = [];
+  const isolatedIds: string[] = [];
   for (const chatSessionId of ids) {
     const r = await execute(registry, adapter, ctx, "chat.get_session", { chatSessionId });
     const session = r.ok
-      ? (r.value as { session: { publishedAt: string | null; archivedAt: string | null } }).session
+      ? (
+          r.value as {
+            session: { publishedAt: string | null; archivedAt: string | null; branchKind: string };
+          }
+        ).session
       : null;
     if (!r.ok || !session || session.publishedAt !== null || session.archivedAt !== null) {
       return {
@@ -207,54 +244,116 @@ export async function stageChatSessions(
         },
       };
     }
+    (session.branchKind === "draft" ? draftIds : isolatedIds).push(chatSessionId);
   }
+  // Issue #620 — the shared draft's chats are one unit (one selective
+  // merge of exactly their changes); every isolated chat is its own unit.
+  const units: Unit[] = [
+    ...(draftIds.length > 0 ? [{ draft: true as const, chatSessionIds: draftIds }] : []),
+    ...isolatedIds.map((id) => ({ draft: false as const, chatSessionIds: [id] })),
+  ];
 
-  const classified: { chatSessionId: string; value: ChatStageClassification }[] = [];
-  for (const chatSessionId of ids) {
-    const r = await execute(registry, adapter, ctx, "quality_audits.classify_stage", {
-      chatSessionId,
-    });
+  type Classified = ChatStageClassification & { readonly headerIds: readonly string[] };
+  const classify = async (
+    unit: Unit,
+  ): Promise<{ ok: true; value: Classified } | { ok: false; error: StageFailure }> => {
+    const r = await execute(
+      registry,
+      adapter,
+      ctx,
+      "quality_audits.classify_stage",
+      unit.draft
+        ? { chatSessionIds: unit.chatSessionIds }
+        : { chatSessionId: unit.chatSessionIds[0] },
+    );
     if (!r.ok) {
       return {
         ok: false,
         error: {
           step: "classify",
-          chatSessionId,
+          chatSessionId: unit.chatSessionIds[0] ?? null,
           message: `Could not check which quality audits this Stage needs — nothing was staged, try again: ${describeError(r.error)}`,
           error: r.error,
         },
       };
     }
-    classified.push({ chatSessionId, value: r.value as ChatStageClassification });
+    return { ok: true, value: r.value as Classified };
+  };
+
+  const classified: { unit: Unit; chatSessionId: string; value: Classified }[] = [];
+  for (const unit of units) {
+    const c = await classify(unit);
+    if (!c.ok) return c;
+    classified.push({ unit, chatSessionId: unit.chatSessionIds[0] ?? "", value: c.value });
   }
 
   const merged: {
-    chatSessionId: string;
+    unit: Unit;
     entityCount: number;
     mergedAt: string;
+    mergedHeaderIds: string[];
     brokenInternalLinks: string[];
+    alsoIncludes: AffectedChat[];
   }[] = [];
-  for (const chatSessionId of ids) {
-    const r = await execute(registry, adapter, ctx, "chat.merge_to_main", {
-      chatSessionId,
-      deferConsume: true,
-    });
-    if (!r.ok) {
-      // issue #262 — stderr breadcrumb: the UI shows describeError()'s
-      // stripped text; the full structured error only survives here.
-      console.error("[stage] chat.merge_to_main failed", { chatSessionId, error: r.error });
-      return {
-        ok: false,
-        error: {
-          step: "merge",
-          chatSessionId,
-          message: `Merge to main failed: ${describeError(r.error)}`,
+  for (const entry of classified) {
+    const { unit } = entry;
+    let attempt = 1;
+    for (;;) {
+      const aiFlag = options.aiInitiated ? { aiInitiated: true } : {};
+      const r = unit.draft
+        ? await execute(registry, adapter, ctx, "chat.merge_draft_to_main", {
+            chatSessionIds: unit.chatSessionIds,
+            deferConsume: true,
+            headerIds: entry.value.headerIds,
+            ...aiFlag,
+          })
+        : await execute(registry, adapter, ctx, "chat.merge_to_main", {
+            chatSessionId: unit.chatSessionIds[0],
+            deferConsume: true,
+            headerIds: entry.value.headerIds,
+            ...aiFlag,
+          });
+      if (
+        !r.ok &&
+        r.error.kind === "HandlerError" &&
+        r.error.message.startsWith(STAGE_CHANGED_PREFIX) &&
+        attempt < MAX_STAGE_ATTEMPTS
+      ) {
+        // The unit's pending changes moved on between classification and
+        // merge: classify the current set and merge exactly that.
+        attempt += 1;
+        const again = await classify(unit);
+        if (!again.ok) return again;
+        entry.value = again.value;
+        continue;
+      }
+      if (!r.ok) {
+        // issue #262 — stderr breadcrumb: the UI shows describeError()'s
+        // stripped text; the full structured error only survives here.
+        console.error("[stage] merge failed", {
+          chatSessionIds: unit.chatSessionIds,
           error: r.error,
-        },
+        });
+        return {
+          ok: false,
+          error: {
+            step: "merge",
+            chatSessionId: unit.chatSessionIds[0] ?? null,
+            message: `Merge to main failed: ${describeError(r.error)}`,
+            error: r.error,
+          },
+        };
+      }
+      const v = r.value as {
+        entityCount: number;
+        mergedAt: string;
+        mergedHeaderIds: string[];
+        brokenInternalLinks: string[];
+        alsoIncludes?: AffectedChat[];
       };
+      merged.push({ unit, ...v, alsoIncludes: v.alsoIncludes ?? [] });
+      break;
     }
-    const v = r.value as { entityCount: number; mergedAt: string; brokenInternalLinks: string[] };
-    merged.push({ chatSessionId, ...v });
   }
 
   const deployed = await execute(registry, adapter, ctx, "deploy.trigger", {
@@ -277,23 +376,30 @@ export async function stageChatSessions(
   }
 
   for (const m of merged) {
-    const r = await execute(registry, adapter, ctx, "chat.finalize_stage", {
-      chatSessionId: m.chatSessionId,
-      stagedAt: m.mergedAt,
-    });
+    const r = m.unit.draft
+      ? await execute(registry, adapter, ctx, "chat.finalize_draft_stage", {
+          chatSessionIds: m.unit.chatSessionIds,
+          stagedAt: m.mergedAt,
+          headerIds: m.mergedHeaderIds,
+        })
+      : await execute(registry, adapter, ctx, "chat.finalize_stage", {
+          chatSessionId: m.unit.chatSessionIds[0],
+          stagedAt: m.mergedAt,
+          headerIds: m.mergedHeaderIds,
+        });
     if (!r.ok) {
-      // The build shipped but this chat's consumption markers didn't land;
-      // its pending counter still shows the changes. Retrying is safe
-      // (merge is idempotent), so say that instead of claiming success.
-      console.error("[stage] chat.finalize_stage failed", {
-        chatSessionId: m.chatSessionId,
+      // The build shipped but the consumption markers didn't land; the
+      // pending counters still show the changes. Retrying is safe (merge
+      // is idempotent), so say that instead of claiming success.
+      console.error("[stage] finalize failed", {
+        chatSessionIds: m.unit.chatSessionIds,
         error: r.error,
       });
       return {
         ok: false,
         error: {
           step: "finalize",
-          chatSessionId: m.chatSessionId,
+          chatSessionId: m.unit.chatSessionIds[0] ?? null,
           message: `Staging deployed but the stage could not be finalized — stage again: ${describeError(r.error)}`,
           error: r.error,
         },
@@ -334,7 +440,11 @@ export async function stageChatSessions(
       ...(summary.previewUrl ? { previewUrl: summary.previewUrl } : {}),
       mergedEntityCount: merged.reduce((n, m) => n + m.entityCount, 0),
       brokenInternalLinks: finalLinkWarnings(merged),
-      chats: merged.map((m) => ({ chatSessionId: m.chatSessionId, entityCount: m.entityCount })),
+      chats: merged.map((m) => ({
+        chatSessionIds: m.unit.chatSessionIds,
+        entityCount: m.entityCount,
+      })),
+      alsoIncludes: merged.flatMap((m) => m.alsoIncludes),
     },
   };
 }

@@ -536,6 +536,8 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const pageId = String(form.get("pageId") ?? "");
     const isGlobal = pageId.length === 0;
+    // Issue #620 — chats share the site draft; an experiment is explicit.
+    const experiment = form.get("isolation") === "experiment";
 
     // v0.5.8 — per-page gate. If the page already has an open chat,
     // resume it instead of failing on the server-side reject. Keeps
@@ -558,8 +560,9 @@ export const actions: Actions = {
     }
 
     const created = await execute(registry, adapter, locals.ctx, "chat.create_session", {
-      title: isGlobal ? "Global chat" : "Page chat",
+      title: experiment ? "Experiment" : isGlobal ? "Global chat" : "Page chat",
       ...(isGlobal ? {} : { pageId }),
+      ...(experiment ? { isolation: "experiment" } : {}),
     });
     if (!created.ok) return fail(500, { error: "Could not create chat." });
     const newId = (created.value as { chatSessionId: string }).chatSessionId;
@@ -602,11 +605,16 @@ export const actions: Actions = {
     const pageId = String(form.get("pageId") ?? "");
     const status = String(form.get("status") ?? "");
     const chatBranchId = String(form.get("chatBranchId") ?? "");
+    // Issue #620 — the write belongs to the active chat: on the shared draft
+    // the branch alone does not say whose change it is.
+    const chatSessionId = String(form.get("chatSessionId") ?? "");
     if (!pageId) return fail(400, { error: "missing pageId" });
     if (status !== "draft" && status !== "published") {
       return fail(400, { error: "status must be 'draft' or 'published'" });
     }
-    const ctx: ExecutionContext = chatBranchId ? { ...locals.ctx, chatBranchId } : locals.ctx;
+    const ctx: ExecutionContext = chatBranchId
+      ? { ...locals.ctx, chatBranchId, ...(chatSessionId ? { chatTaskId: chatSessionId } : {}) }
+      : locals.ctx;
     const r = await execute(registry, adapter, ctx, "pages.set_status", {
       pageId,
       status,
@@ -720,6 +728,8 @@ export const actions: Actions = {
         previewUrl,
         mergedEntityCount: summary.mergedEntityCount,
         draftPageCount,
+        // Issue #620 — other chats' changes to the same things rode along.
+        alsoIncludes: summary.alsoIncludes.map((a) => a.title),
       },
     };
   },

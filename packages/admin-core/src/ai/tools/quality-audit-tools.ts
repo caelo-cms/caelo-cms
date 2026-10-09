@@ -38,6 +38,14 @@ const getAuditInput = z
   })
   .strict();
 
+/** Markdown inline code that survives backticks inside the text. */
+function inlineCode(text: string): string {
+  const runs = text.match(/`+/g) ?? [];
+  const fence = "`".repeat(Math.max(0, ...runs.map((r) => r.length)) + 1);
+  const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
+
 const CATEGORY_LABEL: Record<string, string> = {
   performance: "Performance",
   accessibility: "Accessibility",
@@ -45,11 +53,20 @@ const CATEGORY_LABEL: Record<string, string> = {
   seo: "SEO",
 };
 
+/**
+ * What to do while a check runs. Polling it costs a full model call per
+ * read (the PR #624 homepage turn re-read a running audit 19 times and
+ * blew its token ceiling) while the result is delivered anyway: the
+ * operator's open chat posts it as a message when the check settles.
+ */
+export const AUDIT_PENDING_NEXT_STEP =
+  "Do not re-read it now: when the operator's chat is open, the result arrives in this chat as a message (with the next step) — finish your turn with your summary. Only without an open chat (Power-MCP) read it again after a couple of minutes.";
+
 function statusLine(run: AuditRun): string {
   switch (run.status) {
     case "queued":
     case "running":
-      return `Audit ${run.status} — results land when it finishes; call this tool again in a minute.`;
+      return `Audit ${run.status} — it takes 1–2 minutes. ${AUDIT_PENDING_NEXT_STEP}`;
     case "passed":
       return "Audit passed: no new problems.";
     case "problems":
@@ -87,7 +104,15 @@ function formatPage(p: AuditPage): string[] {
       // The flagged elements locate the fix (which module, which rule):
       // without them a color-contrast finding is guesswork.
       for (const el of problem.elements ?? []) {
-        const where = [el.selector ? `\`${el.selector}\`` : null, el.snippet ?? null]
+        // The snippet is the STAGED build's markup (deploy URLs such as
+        // /_assets/<slug>.png): quoted as code, never as live HTML — the
+        // chat renders tool results as markdown, and a bare `<img>` made
+        // the operator's browser fetch a URL the admin does not serve
+        // (404s in the console of the homepage real-AI run, PR #624).
+        const where = [
+          el.selector ? inlineCode(el.selector) : null,
+          el.snippet ? inlineCode(el.snippet) : null,
+        ]
           .filter((x) => x !== null)
           .join(" ");
         lines.push(`  - element ${where}${el.explanation ? ` — ${el.explanation}` : ""}`);

@@ -79,8 +79,11 @@ async function ok<T>(name: string, input: unknown, ctx: ExecutionContext = SYSTE
 
 /** A chat session's AI context (branch + task), as the chat-runner builds it. */
 async function openChat(label: string): Promise<{ ai: ExecutionContext; chatSessionId: string }> {
+  // Issue #620 — an isolated (experiment) chat: these cases cover the
+  // per-branch staging mechanics; the shared draft has its own suite.
   const s = await ok<{ chatSessionId: string; chatBranchId: string }>("chat.create_session", {
     title: `${P}-${label}`,
+    isolation: "experiment",
   });
   return {
     chatSessionId: s.chatSessionId,

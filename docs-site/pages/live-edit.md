@@ -39,21 +39,27 @@ The `scoped-edit` skill auto-engages whenever chips are present; the AI knows to
 
 Without the modifier, your clicks pass through normally — links navigate, forms submit, in-page JS runs. The iframe behaves like a real browser session of your site. URL display updates, the chat overlay's branch context follows.
 
-## Stage + Confirm
+## Stage + Publish live
 
 When you have pending changes, the toolbar shows:
 
 - A pending-changes pill: `1 pending change` / `5 pending changes`
-- A **Stage** button — promotes the chat-branch to staging
-- (After staging) a preview link + a **Confirm publish** button
+- A **Stage** button — merges the chat's changes into the site and rebuilds the staging site
+- (After staging) a preview link + a **Publish live** button
 
-Two-step on purpose: staging gives you a non-localhost preview URL you can share before flipping production. The publish action merges the chat's snapshot branch into main; the static-generator (or auto-redeploy hook) picks up the change.
+The AI stages finished work itself: you describe what you want, it makes the changes, stages them and checks the staging build (Lighthouse quality check). **Publish live is always your click** — nothing the AI staged ever goes live on its own, not even with automatic redeploys switched on. Staging gives you a preview URL you can share before production changes.
 
-## Branch isolation
+## One shared draft
 
-Each chat session operates on its own ephemeral preview branch of the snapshot tree. Two editors in two parallel chats see only their own changes. Branches merge into main only when staged; abandoned chats can be discarded with one click.
+All chats work in the site's **shared draft**: open two chats and each sees the other's unstaged changes in its preview. Chats are conversations, not separate copies of the site.
 
-When a chat edits something another chat has unstaged changes on (the same module, page or theme), it **takes that change over**: the other chat's edit moves into this chat, and the new edit builds on it. Nothing is lost and nothing is silently overwritten — both chats are told, and the AI says so in the conversation. Locks never expire on a timer: an expired lock over unstaged work would let the next Stage silently overwrite one of the two versions.
+- **Same thing, two chats:** if another chat changed a module or page after this chat last looked at it, the AI gets a gentle conflict, re-reads it and redoes its edit on the current version — nothing is silently overwritten.
+- **Undo a chat:** ask the AI to undo this chat. If another chat has since built on the same thing, the AI tells you ("this also undoes X from chat Y") and asks before going ahead.
+- **Stage a selection:** Stage merges exactly the chosen chats' changes. If another chat changed the same module, its change comes along and the result says so.
+
+**Experiments get their own branch.** Ask the AI to *try* something ("try a redesign of the homepage") or start a site migration, and that chat works on an isolated branch: nothing it does shows up in the draft or other chats until it is staged. You can also start one yourself: **New experiment** in the chat menu. Chats that existed before the shared draft keep their own branches until they are staged or discarded.
+
+When a chat writes something an experiment (or an older chat) has unstaged changes on, it **takes that change over**: the change moves into this chat and the new edit builds on it. Both chats are told. Locks never expire on a timer: an expired lock over unstaged work would let the next Stage silently overwrite one of the two versions.
 
 ## Open changes
 
@@ -61,9 +67,11 @@ When a chat edits something another chat has unstaged changes on (the same modul
 
 - **Stage all** — stage every one of your chats in one go (one staging build, one quality check);
 - tick some chats and **Stage selected** — so a half-finished chat stays out of staging;
-- **Discard** a chat — throw its unstaged changes away and close it.
+- **Discard** a chat — throw its unstaged changes away and close it (for a draft chat: only its own changes; if another chat built on them, you are asked first).
 
 Other editors' chats are shown read-only, so nobody is surprised when work moves between chats.
+
+A chat with unstaged changes in the shared draft cannot be archived: stage or discard its changes first, so nothing stays in the draft without a chat that owns it. Site chrome the AI adds in a chat (a footer, a header nav) is unstaged work like everything else — it shows in the preview and reaches the site with the next Stage.
 
 ## What the toolbar's status colours mean
 

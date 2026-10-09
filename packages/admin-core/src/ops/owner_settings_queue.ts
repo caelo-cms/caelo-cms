@@ -70,7 +70,7 @@ export async function queueProposal(
   | { ok: false; error: { kind: "HandlerError"; operation: string; message: string } }
 > {
   const payloadHash = await hashProposalPayload({ kind, payload });
-  const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+  const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
   let rows: { id: string }[];
   try {
     rows = (await tx.execute(sql`

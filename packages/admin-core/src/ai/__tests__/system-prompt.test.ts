@@ -46,6 +46,16 @@ describe("composeSystemPrompt", () => {
     const out = composeSystemPrompt([]);
     expect(out.startsWith("You are Caelo")).toBe(true);
   });
+
+  // Issue #620 / PR #624 real-AI run — the AI staged its first build but
+  // left a later content edit unstaged ("let me know when you want to stage
+  // it"): every site-changing turn ends with stage_changes, small edits and
+  // pending quality decisions included.
+  it("makes stage_changes the end of every site-changing turn", () => {
+    const out = composeSystemPrompt([]);
+    expect(out).toContain("Every turn that changed the site ends with `stage_changes`");
+    expect(out).toContain("Never leave the Stage to the user");
+  });
 });
 
 it("keeps typographic intent in the active theme context", () => {

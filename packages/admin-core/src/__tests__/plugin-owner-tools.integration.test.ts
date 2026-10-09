@@ -255,7 +255,7 @@ describe("propose_revoke_plugin_capability", () => {
       ok: boolean;
       value?: { disabled: boolean };
     };
-    expect(out).toEqual({ ok: true, value: expect.objectContaining({ disabled: true }) });
+    expect(out).toMatchObject({ ok: true, value: { disabled: true } });
     expect(await pluginStatus(inst.slug)).toBe("disabled");
   });
 

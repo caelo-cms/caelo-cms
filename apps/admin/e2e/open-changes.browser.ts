@@ -3,9 +3,9 @@
 /**
  * Issue #620 Part C — the Open changes overview (/content/changes).
  *
- * Seeded through the real ops: chat A edits a module, chat B edits the
- * same module (B takes it over — A's unstaged change moves into B), and
- * chat C edits another module. The overview must show B with the module
+ * Seeded through the real ops: experiment chat A edits a module, draft
+ * chat B edits the same module (B takes it over — A's unstaged change moves
+ * into the shared draft), and draft chat C edits another module. The overview must show B with the module
  * and the visible takeover note, hide A (nothing unstaged, nothing held
  * any more), and Discard C through the real form action (routing + CSRF +
  * chat.discard_branch). The multi-chat Stage itself (merge, one staging
@@ -20,7 +20,7 @@ import { clearLoginRateBucket, runBunInline } from "./helpers.js";
 test.beforeAll(clearLoginRateBucket);
 
 const TAG = `e2e-oc-${Date.now()}`;
-let chats: { a: string; b: string; c: string; other: string };
+let chats: { a: string; b: string; c: string; d: string; e: string; other: string };
 
 test.beforeAll(() => {
   const out = runBunInline(
@@ -53,11 +53,12 @@ test.beforeAll(() => {
     const own = (await run(human, "modules.create", {
       slug: tag + "-own", displayName: tag + " Own card", html: "<p>v0</p>",
     })).moduleId;
-    const open = async (title) => {
-      const s = await run(human, "chat.create_session", { title: tag + " " + title });
+    const open = async (title, isolation) => {
+      const s = await run(human, "chat.create_session", { title: tag + " " + title, ...(isolation ? { isolation } : {}) });
       return { id: s.chatSessionId, ctx: { ...human, actorKind: "ai", chatBranchId: s.chatBranchId, chatTaskId: s.chatSessionId } };
     };
-    const a = await open("Website");
+    // A is an experiment (own branch); B and C work in the shared draft.
+    const a = await open("Website", "experiment");
     const b = await open("Pricing");
     const c = await open("Scratch");
     await run(a.ctx, "modules.update", { moduleId: shared, html: "<p>from A</p>" });
@@ -79,8 +80,21 @@ test.beforeAll(() => {
     const oc = await run(colleague, "chat.create_session", { title: tag + " Colleague" });
     await run({ ...colleague, actorKind: "ai", chatBranchId: oc.chatBranchId, chatTaskId: oc.chatSessionId },
       "modules.update", { moduleId: theirs, html: "<p>from the colleague</p>" });
+    // D and E share the draft and touch the same module: E builds on D's
+    // change (its first write is a version conflict, the retry passes), so
+    // discarding D would also undo E's later change.
+    const layered = (await run(human, "modules.create", {
+      slug: tag + "-layered", displayName: tag + " Layered", html: "<p>v0</p>",
+    })).moduleId;
+    const d = await open("Base work");
+    const e = await open("Built on top");
+    await run(d.ctx, "modules.update", { moduleId: layered, html: "<p>from D</p>" });
+    await execute(registry, adapter, e.ctx, "modules.update", { moduleId: layered, css: ".e{}" });
+    await run(e.ctx, "modules.update", { moduleId: layered, css: ".e{}" });
     await adapter.close();
-    process.stdout.write(JSON.stringify({ a: a.id, b: b.id, c: c.id, other: oc.chatSessionId }));
+    process.stdout.write(
+      JSON.stringify({ a: a.id, b: b.id, c: c.id, d: d.id, e: e.id, other: oc.chatSessionId }),
+    );
     `,
     { OC_TAG: TAG },
   );
@@ -126,4 +140,26 @@ test("lists open chats with the takeover note and discards a chat", async ({ pag
   await page.locator(`[data-chat-id="${chats.c}"]`).getByTestId("discard-chat").click();
   await expect(page.locator(`[data-chat-id="${chats.c}"]`)).toHaveCount(0, { timeout: 15_000 });
   await expect(page.locator(`[data-chat-id="${chats.b}"]`)).toBeVisible();
+});
+
+test("asks before a discard also undoes another draft chat's later change", async ({ page }) => {
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("dev-owner@example.com");
+  await page.getByLabel("Password").fill("dev owner password");
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
+
+  await page.goto("/content/changes");
+  const cardD = page.locator(`[data-chat-id="${chats.d}"]`);
+  await expect(cardD).toContainText(`${TAG} Layered`);
+  page.once("dialog", (d) => d.accept());
+  await cardD.getByTestId("discard-chat").click();
+  // Refused with the overlap named — nothing discarded yet.
+  await expect(page.getByText(`'${TAG} Built on top'`).first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(`[data-chat-id="${chats.d}"]`)).toBeVisible();
+
+  await page.getByTestId("discard-anyway").click();
+  await expect(page.locator(`[data-chat-id="${chats.d}"]`)).toHaveCount(0, { timeout: 15_000 });
+  // E's change on the same module was built on D's, so it went too.
+  await expect(page.locator(`[data-chat-id="${chats.e}"]`)).toHaveCount(0);
 });

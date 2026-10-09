@@ -70,11 +70,17 @@ function canonicalize(value: unknown): string {
 export async function resolveChatSessionId(
   tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
   chatBranchId: string | undefined,
+  chatTaskId?: string | null,
 ): Promise<string | null> {
   if (!chatBranchId) return null;
+  // Issue #620 — many chats share the site draft's branch, so the branch
+  // alone no longer names the chat: prefer the caller's own chat (a
+  // subagent task resolves to its parent chat).
   const rows = (await tx.execute(sql`
-    SELECT id::text AS chat_session_id
-    FROM chat_sessions WHERE chat_branch_id = ${chatBranchId}::uuid LIMIT 1
+    SELECT caelo_chat_owner(id)::text AS chat_session_id
+    FROM chat_sessions WHERE chat_branch_id = ${chatBranchId}::uuid
+    ORDER BY (id = ${chatTaskId ?? null}::uuid) DESC NULLS LAST, created_at
+    LIMIT 1
   `)) as unknown as Array<{ chat_session_id: string }>;
   return rows[0]?.chat_session_id ?? null;
 }
@@ -132,6 +138,7 @@ export interface ProposeCtx {
   readonly actorId: string;
   readonly requestId: string;
   readonly chatBranchId?: string;
+  readonly chatTaskId?: string;
 }
 
 /**

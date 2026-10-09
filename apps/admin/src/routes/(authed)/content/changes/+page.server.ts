@@ -32,6 +32,7 @@ interface OpenChat {
   chatSessionId: string;
   title: string;
   isMine: boolean;
+  branchKind: "draft" | "experiment" | "migration" | "legacy";
   anchorPageSlug: string | null;
   lastActiveAt: string;
   lastStagedAt: string | null;
@@ -122,19 +123,24 @@ export const actions: Actions = {
     );
     return {
       staged: {
-        chatCount: staged.value.chats.length,
+        chatCount: requested.length,
         pageCount: staged.value.pageCount,
         fileCount: staged.value.fileCount,
         buildId: staged.value.buildId,
         mergedEntityCount: staged.value.mergedEntityCount,
         brokenInternalLinks: [...staged.value.brokenInternalLinks],
+        alsoIncludes: staged.value.alsoIncludes.map((a) => a.title),
         previewUrl,
         draftPageCount,
       },
     };
   },
 
-  /** Throw away one chat's unstaged work and close it (chat.discard_branch). */
+  /**
+   * Throw away one chat's unstaged work and close it (chat.discard_branch).
+   * A shared-draft chat whose changes other chats built on is NOT discarded
+   * until the operator confirms that those later changes go too.
+   */
   discard: async ({ request, locals }) => {
     requirePermission(locals, "content.write");
     const { adapter, registry } = getQueryContext();
@@ -144,10 +150,24 @@ export const actions: Actions = {
     if (!chatSessionId) return fail(400, { error: "missing chatSessionId" });
     const r = await execute(registry, adapter, locals.ctx, "chat.discard_branch", {
       chatSessionId,
+      ...(form.get("confirmOverlap") === "1" ? { confirmOverlap: true } : {}),
     });
     if (!r.ok) {
       console.error("[changes] chat.discard_branch failed", { chatSessionId, error: r.error });
       return fail(400, { error: `Could not discard the chat: ${describeError(r.error)}` });
+    }
+    const v = r.value as {
+      discarded: boolean;
+      overlap: { chatSessionId: string | null; title: string; labels: string[] }[];
+    };
+    if (!v.discarded) {
+      return fail(409, {
+        error:
+          "Discarding this chat would also undo later changes other chats made on top of it: " +
+          v.overlap.map((o) => `'${o.title}' (${o.labels.join(", ")})`).join("; ") +
+          ". Use “Discard anyway” to undo them too.",
+        confirmDiscard: chatSessionId,
+      });
     }
     return { ok: "Chat discarded — its unstaged changes are gone." };
   },

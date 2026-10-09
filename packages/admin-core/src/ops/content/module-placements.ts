@@ -15,9 +15,8 @@
  *   - a page deleted on this branch (branched page snapshot with
  *     `deletedAt`) does not count.
  *
- * Only branch snapshots written after the chat's last Stage count
- * (`chat_sessions.last_staged_at`, strict `>` — the boundary every
- * branch-overlay reader uses): Stage consumed the older ones into main,
+ * Only PENDING branch snapshots count (not staged, not undone — the
+ * boundary every branch-overlay reader uses): Stage consumed the others into main,
  * so an already-staged unplacement must not hide a placement another
  * chat has since made live.
  *
@@ -37,9 +36,11 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { pendingSnapshotSql } from "../../draft.js";
 import { loadBranchedModuleStates } from "../../snapshots/load.js";
 import type { PageLayoutState, PageState } from "../../snapshots/state.js";
 import { findContentInstancesContaining } from "./content-instance-refs.js";
+import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 
 /** Pages + layouts that still place one module (slugs, sorted, deduped). */
 export interface ModulePlacements {
@@ -88,9 +89,7 @@ export async function findModulePlacements(
       SELECT DISTINCT ON (pls.page_id) pls.page_id::text AS page_id, pls.state
         FROM page_layout_snapshots pls
         JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-        LEFT JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
-       WHERE ss.chat_branch_id = ${branchId}::uuid
-         AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
+       WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
        ORDER BY pls.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const r of layoutRows) {
@@ -100,9 +99,7 @@ export async function findModulePlacements(
       SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
         FROM page_snapshots ps
         JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-        LEFT JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
-       WHERE ss.chat_branch_id = ${branchId}::uuid
-         AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
+       WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
        ORDER BY ps.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const r of pageRows) {
@@ -153,7 +150,7 @@ export async function findModulePlacements(
 
   const layoutRows = (await tx.execute(sql`
     SELECT DISTINCT lm.module_id::text AS module_id, l.slug
-      FROM layout_modules lm
+      FROM (${effectiveLayoutModulesSql(branchId)}) lm
       JOIN layouts l ON l.id = lm.layout_id
      WHERE lm.module_id IN (${idList(moduleIds)}) AND l.deleted_at IS NULL
   `)) as unknown as { module_id: string; slug: string }[];

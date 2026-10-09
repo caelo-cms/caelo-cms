@@ -29,6 +29,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { type ChatBinding, chatPendingSql, loadChatBinding } from "../../draft.js";
 
 /**
  * Categorized read of every snapshot tagged with the chat's branch
@@ -83,43 +84,31 @@ export const listPendingChangesOp = defineOperation({
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
   output: pendingChangesSchema,
   handler: async (_ctx, input, tx) => {
-    const sessionRows = (await tx.execute(sql`
-      SELECT chat_branch_id::text AS chat_branch_id,
-             last_staged_at
-      FROM chat_sessions
-      WHERE id = ${input.chatSessionId}::uuid LIMIT 1
-    `)) as unknown as { chat_branch_id: string; last_staged_at: string | Date | null }[];
-    const branchId = sessionRows[0]?.chat_branch_id;
-    if (!branchId) {
+    const binding = await loadChatBinding(tx, input.chatSessionId);
+    if (!binding) {
       return err({
         kind: "HandlerError",
         operation: "chat.list_pending_changes",
         message: "session not found",
       });
     }
-    return ok(await loadPendingChanges(tx, branchId, sessionRows[0]?.last_staged_at ?? null));
+    return ok(await loadPendingChanges(tx, binding));
   },
 });
 
 /**
- * Categorized change refs of a chat branch since its last Stage — the
- * Stage picker's and the Open changes overview's view of "what this chat
+ * Categorized change refs of a chat's pending snapshots — the Stage
+ * picker's and the Open changes overview's view of "what this chat
  * changed". Every branched snapshot table is walked once; the publish
- * marks decide pending vs staged.
- *
- * @param lastStagedAt the chat's `last_staged_at` (null = never staged).
+ * marks decide pending vs staged. Pending = not staged, not undone (issue
+ * #620); on the shared draft only the snapshots this chat wrote.
  */
 export async function loadPendingChanges(
   tx: TransactionRunner,
-  branchId: string,
-  lastStagedAt: string | Date | null,
+  binding: ChatBinding,
 ): Promise<PendingChanges> {
-  // v0.10.8 — filter snapshots to those created after the last
-  // Stage (merge_to_main). Pre-v0.10.8 the dropdown showed every
-  // edit in the chat's lifetime, not edits since the last merge.
-  const sinceFilter = lastStagedAt
-    ? sql` AND ss.created_at > ${lastStagedAt instanceof Date ? lastStagedAt.toISOString() : lastStagedAt}::timestamptz`
-    : sql``;
+  const branchId = binding.branchId;
+  const window = chatPendingSql(binding);
 
   /**
    * Walk every branched snapshot table once. For each entity, ask
@@ -139,7 +128,7 @@ export async function loadPendingChanges(
         pmcs.position
       FROM page_module_content_snapshots pmcs
       JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
-      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      WHERE ${window}
       ORDER BY pmcs.page_module_content_id, ss.created_at DESC
     )
     SELECT
@@ -161,7 +150,7 @@ export async function loadPendingChanges(
       SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS entity_id
       FROM page_snapshots ps
       JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      WHERE ${window}
       ORDER BY ps.page_id, ss.created_at DESC
     )
     SELECT
@@ -183,7 +172,7 @@ export async function loadPendingChanges(
       SELECT DISTINCT ON (pls.page_id) pls.page_id::text AS entity_id
       FROM page_layout_snapshots pls
       JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      WHERE ${window}
       ORDER BY pls.page_id, ss.created_at DESC
     )
     SELECT
@@ -205,7 +194,7 @@ export async function loadPendingChanges(
       SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS entity_id
       FROM module_snapshots ms
       JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      WHERE ${window}
       ORDER BY ms.module_id, ss.created_at DESC
     )
     SELECT
@@ -226,7 +215,7 @@ export async function loadPendingChanges(
       SELECT DISTINCT ON (ts.template_id) ts.template_id::text AS entity_id
       FROM template_snapshots ts
       JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      WHERE ${window}
       ORDER BY ts.template_id, ss.created_at DESC
     )
     SELECT
@@ -256,8 +245,8 @@ export async function loadPendingChanges(
       ss.description,
       'pending' AS stage_state
     FROM site_snapshots ss
-    WHERE ss.chat_branch_id = ${branchId}::uuid
-      AND ss.op_kind = 'layout_modules.set'${sinceFilter}
+    WHERE ${window}
+      AND ss.op_kind = 'layout_modules.set'
     ORDER BY ss.created_at DESC
   `)) as unknown as {
     entity_id: string;
@@ -275,7 +264,7 @@ export async function loadPendingChanges(
         sss.state
       FROM structured_set_snapshots sss
       JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-      WHERE ss.chat_branch_id = ${branchId}::uuid
+      WHERE ${window}
       ORDER BY sss.structured_set_id, ss.created_at DESC
     )
     SELECT
@@ -302,7 +291,7 @@ export async function loadPendingChanges(
         cis.content_instance_id::text AS entity_id
       FROM content_instance_snapshots cis
       JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      WHERE ${window}
       ORDER BY cis.content_instance_id, ss.created_at DESC
     )
     SELECT
@@ -330,7 +319,7 @@ export async function loadPendingChanges(
       SELECT DISTINCT ON (ts.theme_id) ts.theme_id::text AS entity_id
       FROM theme_snapshots ts
       JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      WHERE ${window}
       ORDER BY ts.theme_id, ss.created_at DESC
     )
     SELECT
@@ -354,7 +343,7 @@ export async function loadPendingChanges(
         prs.row_id::text AS entity_id, prs.plugin_id, prs.table_name, prs.state
       FROM plugin_row_snapshots prs
       JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
-      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      WHERE ${window}
       ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
     )
     SELECT
@@ -495,25 +484,35 @@ const stageInput = z
  */
 export const stageChatChangesOp = defineOperation({
   name: "chat.stage",
-  // Why human-only: staging moves a chat's changes toward publish — the operator's review step; AI
-  // (and Power-MCP) writes stay on the preview branch until a human stages them.
+  // Why human-only: the legacy per-entity stage PICKER (marks an isolated chat's entities for
+  // chat.publish). The AI stages through the Stage flow (stage_changes, issue #620), not this
+  // picker; it is an operator UI gesture.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: stageInput,
   output: z.object({ staged: z.number().int().nonnegative() }),
   handler: async (ctx, input, tx) => {
-    const sessionRows = (await tx.execute(sql`
-      SELECT chat_branch_id::text AS chat_branch_id FROM chat_sessions
-      WHERE id = ${input.chatSessionId}::uuid LIMIT 1
-    `)) as unknown as { chat_branch_id: string }[];
-    const branchId = sessionRows[0]?.chat_branch_id;
-    if (!branchId) {
+    const binding = await loadChatBinding(tx, input.chatSessionId);
+    if (!binding) {
       return err({
         kind: "HandlerError",
         operation: "chat.stage",
         message: "session not found",
       });
     }
+    if (binding.kind === "draft") {
+      // Issue #620 — the per-entity stage picker predates the shared draft
+      // (its marks key on the branch every draft chat shares). Draft chats
+      // stage through the Stage flow (Open changes, /edit, stage_changes).
+      return err({
+        kind: "HandlerError",
+        operation: "chat.stage",
+        message:
+          "this chat works on the shared draft — stage it from Open changes or the Stage button (the AI: stage_changes); the per-entity picker is for isolated chats only",
+      });
+    }
+    const branchId = binding.branchId;
+    const window = chatPendingSql(binding);
 
     // For each (kind, entityId) in selection: upsert a publish-mark row
     // with stage_state='staged'. site_snapshot_id picks the latest
@@ -578,7 +577,7 @@ export const stageChatChangesOp = defineOperation({
           SELECT site_snapshot_id::text AS site_snapshot_id
           FROM ${sql.raw(table)}
           JOIN site_snapshots ss ON ss.id = ${sql.raw(table)}.site_snapshot_id
-          WHERE ss.chat_branch_id = ${branchId}::uuid
+          WHERE ${window}
             AND ${sql.raw(table)}.${sql.raw(col)} = ${e.entityId}::uuid
           ORDER BY ss.created_at DESC
           LIMIT 1
@@ -600,7 +599,7 @@ export const stageChatChangesOp = defineOperation({
             ss.created_at
           FROM module_snapshots ms
           JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-          WHERE ss.chat_branch_id = ${branchId}::uuid
+          WHERE ${window}
           ORDER BY ms.module_id, ss.created_at DESC
         ) m
         UNION ALL
@@ -612,7 +611,7 @@ export const stageChatChangesOp = defineOperation({
             ss.created_at
           FROM template_snapshots ts
           JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-          WHERE ss.chat_branch_id = ${branchId}::uuid
+          WHERE ${window}
           ORDER BY ts.template_id, ss.created_at DESC
         ) t
         UNION ALL
@@ -624,7 +623,7 @@ export const stageChatChangesOp = defineOperation({
             ss.created_at
           FROM page_snapshots ps
           JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-          WHERE ss.chat_branch_id = ${branchId}::uuid
+          WHERE ${window}
           ORDER BY ps.page_id, ss.created_at DESC
         ) p
         UNION ALL
@@ -636,7 +635,7 @@ export const stageChatChangesOp = defineOperation({
             ss.created_at
           FROM page_layout_snapshots pls
           JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-          WHERE ss.chat_branch_id = ${branchId}::uuid
+          WHERE ${window}
           ORDER BY pls.page_id, ss.created_at DESC
         ) pl
         UNION ALL
@@ -648,7 +647,7 @@ export const stageChatChangesOp = defineOperation({
             ss.created_at
           FROM page_module_content_snapshots pmcs
           JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
-          WHERE ss.chat_branch_id = ${branchId}::uuid
+          WHERE ${window}
           ORDER BY pmcs.page_module_content_id, ss.created_at DESC
         ) c
         UNION ALL
@@ -660,7 +659,7 @@ export const stageChatChangesOp = defineOperation({
             ss.created_at
           FROM structured_set_snapshots sss
           JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-          WHERE ss.chat_branch_id = ${branchId}::uuid
+          WHERE ${window}
           ORDER BY sss.structured_set_id, ss.created_at DESC
         ) s
         UNION ALL
@@ -672,7 +671,7 @@ export const stageChatChangesOp = defineOperation({
             ss.created_at
           FROM content_instance_snapshots cis
           JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-          WHERE ss.chat_branch_id = ${branchId}::uuid
+          WHERE ${window}
           ORDER BY cis.content_instance_id, ss.created_at DESC
         ) ci
         UNION ALL
@@ -684,7 +683,7 @@ export const stageChatChangesOp = defineOperation({
             ss.created_at
           FROM plugin_row_snapshots prs
           JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
-          WHERE ss.chat_branch_id = ${branchId}::uuid
+          WHERE ${window}
           ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
         ) pr
       `)) as unknown as { entity_id: string; entity_kind: string; site_snapshot_id: string }[];
@@ -760,18 +759,26 @@ export const unstageChatChangesOp = defineOperation({
   input: unstageInput,
   output: z.object({ unstaged: z.number().int().nonnegative() }),
   handler: async (ctx, input, tx) => {
-    const sessionRows = (await tx.execute(sql`
-      SELECT chat_branch_id::text AS chat_branch_id FROM chat_sessions
-      WHERE id = ${input.chatSessionId}::uuid LIMIT 1
-    `)) as unknown as { chat_branch_id: string }[];
-    const branchId = sessionRows[0]?.chat_branch_id;
-    if (!branchId) {
+    const binding = await loadChatBinding(tx, input.chatSessionId);
+    if (!binding) {
       return err({
         kind: "HandlerError",
         operation: "chat.unstage",
         message: "session not found",
       });
     }
+    if (binding.kind === "draft") {
+      // Issue #620 — the per-entity stage picker predates the shared draft
+      // (its marks key on the branch every draft chat shares). Draft chats
+      // stage through the Stage flow (Open changes, /edit, stage_changes).
+      return err({
+        kind: "HandlerError",
+        operation: "chat.unstage",
+        message:
+          "this chat works on the shared draft — stage it from Open changes or the Stage button (the AI: stage_changes); the per-entity picker is for isolated chats only",
+      });
+    }
+    const branchId = binding.branchId;
 
     let unstaged = 0;
     if (input.entities && input.entities.length > 0) {

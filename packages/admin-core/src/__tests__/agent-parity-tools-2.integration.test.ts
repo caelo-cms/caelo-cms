@@ -91,7 +91,9 @@ async function openOwnerChat(
 ): Promise<{ ai: ExecutionContext; chatSessionId: string }> {
   const s = await ok<{ chatSessionId: string; chatBranchId: string }>(
     "chat.create_session",
-    { title: `${P}-${label}` },
+    // Issue #620 — isolated (experiment) chats: these cases cover the
+    // per-branch visibility rules; the shared draft has its own suite.
+    { title: `${P}-${label}`, isolation: "experiment" },
     OWNER,
   );
   return {
