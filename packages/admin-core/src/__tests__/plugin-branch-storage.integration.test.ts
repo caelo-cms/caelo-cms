@@ -240,12 +240,6 @@ describe("branch-aware plugin storage", () => {
     expect(live.find((r) => r.id === seedId)?.label).toBe("seed");
     expect(live.find((r) => r.id === idOf(added.value))?.caelo_chat_branch_id).toBe(a.chatBranchId);
 
-    // Another chat cannot diverge on a row the first one holds.
-    const b = await newChat("b");
-    const blocked = await call(b.invocation, "rename", { id: seedId, label: "seed-b" });
-    expect(blocked.ok).toBe(false);
-    if (!blocked.ok) expect(blocked.error.message).toContain("busy in another chat");
-
     // Pending changes and the change counter list both rows.
     const pending = await execute(registry, adapter, humanCtx, "chat.list_pending_changes", {
       chatSessionId: a.chatSessionId,
@@ -292,8 +286,33 @@ describe("branch-aware plugin storage", () => {
     );
     expect(mainCopies[0]?.n).toBe(2);
 
-    // Stage released the lock: the other chat may now edit the row.
+    // Stage released the lock: the other chat acquires the row freely.
+    const b = await newChat("b");
     expect((await call(b.invocation, "rename", { id: seedId, label: "seed-b" })).ok).toBe(true);
+
+    // Issue #620 — a held row is taken over, not blocked: chat A's write
+    // adopts B's unstaged rename (A builds on it, B's pending set loses it).
+    expect((await call(a.invocation, "rename", { id: seedId, label: "seed-a2" })).ok).toBe(true);
+    expect(await labels(a.invocation)).toContain("seed-a2");
+    const bPending = await execute(registry, adapter, humanCtx, "chat.list_pending_changes", {
+      chatSessionId: b.chatSessionId,
+    });
+    if (!bPending.ok) throw new Error("pending b");
+    expect(
+      (bPending.value as { pending: { globals: { kind: string }[] } }).pending.globals.filter(
+        (g) => g.kind === "pluginRow",
+      ),
+    ).toEqual([]);
+    const takeover = await withSystemSql(
+      async (tx) =>
+        (await tx`
+          SELECT adopted_snapshot_count AS n FROM chat_lock_takeovers
+          WHERE entity_kind = 'pluginRow' AND entity_id = ${seedId}::uuid
+        `) as { n: number }[],
+    );
+    expect(takeover.map((t) => t.n)).toEqual([1]);
+    // Main is untouched by both unstaged edits.
+    expect(await labels(MAIN)).toEqual(["a-new", "seed-a"]);
   });
 
   it("discards a chat's branch state and never merges a discarded chat", async () => {

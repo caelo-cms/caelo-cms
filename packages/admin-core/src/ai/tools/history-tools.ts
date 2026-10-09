@@ -11,15 +11,16 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { snapshotsListInput } from "@caelo-cms/shared";
+import { type ExecutionContext, snapshotsListInput } from "@caelo-cms/shared";
 import { z } from "zod";
+import type { listOpenChangesOp } from "../../ops/chat/open-changes.js";
 import type { listPendingChangesOp } from "../../ops/chat/stage.js";
 import type { getSnapshotWithEntitiesOp } from "../../ops/snapshots/get.js";
 import type { moduleImpactOp } from "../../ops/snapshots/impact.js";
 import type { listSnapshotsOp } from "../../ops/snapshots/list.js";
 import { describeError } from "./_describe-error.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
 type OpValue<O extends { output: z.ZodType }> = z.infer<O["output"]>;
 
@@ -143,16 +144,68 @@ export const getModuleImpactTool = makeReadTool({
 
 type ChangeRef = OpValue<typeof listPendingChangesOp>["pending"]["pages"][number];
 
-const noInput = z.object({}).strict();
+const unpublishedInput = z
+  .object({
+    allChats: z
+      .boolean()
+      .optional()
+      .describe(
+        "true = every open chat's unstaged changes and held entities (all editors), not only this chat's.",
+      ),
+  })
+  .strict();
 
-export const listUnpublishedChangesTool: ToolDefinitionWithHandler<Record<string, never>> = {
+const renderRefs = (state: string, group: string, refs: readonly ChangeRef[]): string[] =>
+  refs.map((c) => `${state} ${group} ${c.kind} ${c.label}${c.detail ? ` — ${c.detail}` : ""}`);
+
+/** Issue #620 — the Open changes overview as text, one block per chat. */
+async function renderOpenChanges(ctx: ExecutionContext, toolCtx: ToolContext): Promise<ToolResult> {
+  const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "chat.list_open_changes", {});
+  if (!r.ok) {
+    return { ok: false, content: `chat.list_open_changes failed: ${describeError(r.error)}` };
+  }
+  const v = r.value as OpValue<typeof listOpenChangesOp>;
+  if (v.chats.length === 0) {
+    return {
+      ok: true,
+      content: "No open changes — no chat has unstaged work or holds anything.",
+      value: v,
+    };
+  }
+  const blocks = v.chats.map((c) => {
+    const head =
+      `chat '${c.title}' (${c.chatSessionId})${c.chatSessionId === toolCtx.chatSessionId ? " [this chat]" : ""}` +
+      `${c.isMine ? "" : " [another editor]"}${c.anchorPageSlug ? ` on /${c.anchorPageSlug}` : ""}: ` +
+      `${c.pendingCount} unstaged change(s), ${c.locks.length} held entit${c.locks.length === 1 ? "y" : "ies"}`;
+    return [
+      head,
+      ...renderRefs("  pending", "page", c.changes.pending.pages),
+      ...renderRefs("  pending", "global", c.changes.pending.globals),
+      ...renderRefs("  pending", "list", c.changes.pending.lists),
+      ...c.locks.map((l) => `  holds ${l.entityKind} ${l.label}`),
+    ].join("\n");
+  });
+  return {
+    ok: true,
+    content:
+      `${blocks.join("\n")}\n` +
+      "Writing an entity another chat holds adopts that chat's unstaged change into this chat (you are told when it happens). The operator stages or discards chats at /content/changes.",
+    value: v,
+  };
+}
+
+export const listUnpublishedChangesTool: ToolDefinitionWithHandler<
+  z.infer<typeof unpublishedInput>
+> = {
   name: "list_unpublished_changes",
   description:
     "List what THIS chat session changed that is not published yet — pages, site-wide pieces (modules, templates, layouts, theme) and lists — split into not-yet-staged and already staged. " +
-    "Use before telling the operator the work is ready to publish, to summarise what publishing will ship, or to check an edit landed on the branch.",
-  schema: noInput,
-  inputSchema: z.toJSONSchema(noInput) as Record<string, unknown>,
-  handler: async (ctx, _input, toolCtx) => {
+    "Use before telling the operator the work is ready to publish, to summarise what publishing will ship, or to check an edit landed on the branch. " +
+    "With allChats: true it lists EVERY open chat's unstaged changes and the entities each holds (all editors) — use it when the operator asks what is still open across chats, or before touching something another chat may be working on.",
+  schema: unpublishedInput,
+  inputSchema: z.toJSONSchema(unpublishedInput) as Record<string, unknown>,
+  handler: async (ctx, input, toolCtx) => {
+    if (input.allChats) return renderOpenChanges(ctx, toolCtx);
     if (!toolCtx.chatSessionId) {
       return {
         ok: false,
@@ -167,15 +220,13 @@ export const listUnpublishedChangesTool: ToolDefinitionWithHandler<Record<string
       return { ok: false, content: `chat.list_pending_changes failed: ${describeError(r.error)}` };
     }
     const v = r.value as OpValue<typeof listPendingChangesOp>;
-    const render = (state: string, group: string, refs: readonly ChangeRef[]) =>
-      refs.map((c) => `${state} ${group} ${c.kind} ${c.label}${c.detail ? ` — ${c.detail}` : ""}`);
     const lines = [
-      ...render("pending", "page", v.pending.pages),
-      ...render("pending", "global", v.pending.globals),
-      ...render("pending", "list", v.pending.lists),
-      ...render("staged", "page", v.staged.pages),
-      ...render("staged", "global", v.staged.globals),
-      ...render("staged", "list", v.staged.lists),
+      ...renderRefs("pending", "page", v.pending.pages),
+      ...renderRefs("pending", "global", v.pending.globals),
+      ...renderRefs("pending", "list", v.pending.lists),
+      ...renderRefs("staged", "page", v.staged.pages),
+      ...renderRefs("staged", "global", v.staged.globals),
+      ...renderRefs("staged", "list", v.staged.lists),
     ];
     return {
       ok: true,

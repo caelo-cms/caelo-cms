@@ -82,6 +82,40 @@ export async function autoApproveChatProposals(
 }
 
 /**
+ * Issue #620 — append undelivered lock-takeover notes to a tool result.
+ * A takeover (another chat's unstaged change adopted into this chat, or
+ * this chat's change adopted by another) is recorded by the write that
+ * caused it; this is where both chats get told, on their next tool result,
+ * so the AI can tell the operator. Shared by the chat-runner and the
+ * Power-MCP dispatch. A failed drain is logged and leaves the notes queued
+ * for the next call — it never fails the tool.
+ */
+export async function withTakeoverNotices<R extends { ok: boolean; content: string }>(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  humanCtx: ExecutionContext,
+  chatSessionId: string,
+  result: R,
+): Promise<R> {
+  const drained = await execute(registry, adapter, humanCtx, "chat.drain_takeover_notices", {
+    chatSessionId,
+  });
+  if (!drained.ok) {
+    console.error("[chat-runner] takeover notices could not be drained", {
+      chatSessionId,
+      error: drained.error,
+    });
+    return result;
+  }
+  const notes = (drained.value as { notes: string[] }).notes;
+  if (notes.length === 0) return result;
+  return {
+    ...result,
+    content: `${result.content}\n\n${notes.map((n) => `Note: ${n}`).join("\n")}`,
+  };
+}
+
+/**
  * One tool dispatch's outcome, reported back to the loop so the
  * repeated-identical-failure breaker can observe results without re-parsing
  * the mutated `messages` array. See `repeat-failure-guard.ts`.
@@ -376,6 +410,7 @@ export async function dispatchToolCall(
       );
       if (applied) result = { ...result, content: `${result.content}\n${applied}` };
     }
+    result = await withTakeoverNotices(registry, adapter, humanCtx, deps.chatSessionId, result);
     await execute(registry, adapter, humanCtx, "chat.cache_tool_result", {
       chatSessionId: deps.chatSessionId,
       toolCallId: call.id,

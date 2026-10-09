@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describeError } from "@caelo-cms/admin-core";
+import { describeError, stageChatSessions } from "@caelo-cms/admin-core";
 import { loadedPlugins } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -13,9 +13,8 @@ import {
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission, requireUser } from "#lib/server/guards.js";
 import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
-import { classifyChatStage, enqueueStagingAudit } from "#lib/server/quality-audit.js";
 import { getQueryContext } from "#lib/server/query.js";
-import { stagingPreviewPath } from "#lib/server/staging-preview-path.js";
+import { describeStagedBuild } from "#lib/server/stage-result.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 interface PageRow {
@@ -699,112 +698,18 @@ export const actions: Actions = {
     if (!chatSessionId) return fail(400, { error: "missing chatSessionId" });
     const pageId = String(form.get("pageId") ?? "");
 
-    // #553 — classify BEFORE the merge: afterwards the live rows hold the
-    // branch state and a module's code change can no longer be detected.
-    const qualityClassification = await classifyChatStage(locals.ctx, chatSessionId);
-    if (!qualityClassification.ok) {
-      console.error("[stageAndDeployStaging] quality_audits.classify_stage failed", {
-        chatSessionId,
-        error: qualityClassification.error,
-      });
-      return fail(500, {
-        error: `Could not check which quality audits this Stage needs — nothing was staged, try again: ${describeError(qualityClassification.error)}`,
-      });
-    }
-
-    const merged = await execute(registry, adapter, locals.ctx, "chat.merge_to_main", {
-      chatSessionId,
-      deferConsume: true,
-    });
-    if (!merged.ok) {
-      // issue #262 — stderr breadcrumb (same rationale as setPageStatus
-      // v0.10.4): the toast/dialog show describeError()'s stripped text;
-      // the full structured error only survives here.
-      console.error("[stageAndDeployStaging] chat.merge_to_main failed", {
-        chatSessionId,
-        error: merged.error,
-      });
-      return fail(500, { error: `Merge to main failed: ${describeError(merged.error)}` });
-    }
-
-    const stagingDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
-      targetName: "staging",
-    });
-    if (!stagingDeploy.ok) {
-      // issue #262 — run #7's "silent no-op": deploy.trigger threw
-      // (`require is not defined`), the tx rolled back (so not even a
-      // failed deploy_runs row existed), and nothing was logged. Keep
-      // this breadcrumb so a Stage failure is ALWAYS visible in stderr
-      // even when the UI feedback is missed. chat.finalize_stage is
-      // deliberately NOT called on this path — the branch stays
-      // pending + Stage stays retryable (run #8 R6).
-      console.error("[stageAndDeployStaging] deploy.trigger failed", {
-        chatSessionId,
-        error: stagingDeploy.error,
-      });
-      return fail(500, { error: `Staging build failed: ${describeError(stagingDeploy.error)}` });
-    }
-
-    const mergedSummaryValue = merged.value as { entityCount: number; mergedAt: string };
-    const finalized = await execute(registry, adapter, locals.ctx, "chat.finalize_stage", {
-      chatSessionId,
-      stagedAt: mergedSummaryValue.mergedAt,
-    });
-    if (!finalized.ok) {
-      // The build shipped but the consumption markers didn't land; the
-      // pending counter will still show the changes. Retrying Stage is
-      // safe (merge is idempotent), so surface that instead of claiming
-      // success with a UI that contradicts it.
-      console.error("[stageAndDeployStaging] chat.finalize_stage failed", {
-        chatSessionId,
-        error: finalized.error,
-      });
-      return fail(500, {
-        error: `Staging deployed but the stage could not be finalized — click Stage again: ${describeError(finalized.error)}`,
-      });
-    }
-
-    const summary = stagingDeploy.value as {
-      pageCount: number;
-      fileCount: number;
-      buildId: string;
-      runId: string;
-      targetName: string;
-      previewUrl?: string;
-    };
-    await enqueueStagingAudit(locals.ctx, {
-      deployRunId: summary.runId,
-      targetName: summary.targetName,
-      chatSessionId,
-      branch: qualityClassification.value,
-    });
-    let previewUrl: string;
-    if (summary.previewUrl) {
-      previewUrl = summary.previewUrl;
-    } else if (process.env.CAELO_PROVIDER === "gcp" && pageId) {
-      const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
-      if (pageRow.ok) {
-        const p = (pageRow.value as { page: { currentPath: string } }).page;
-        previewUrl = `/_staging-preview/${summary.runId}/${stagingPreviewPath(p.currentPath)}`;
-      } else {
-        previewUrl = `/_staging-preview/${summary.runId}/`;
-      }
-    } else {
-      previewUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
-    }
-
-    // Migration run #9 R10 (issue #262) — the partial success-lie:
-    // staging builds only status='published' pages, so a build can
-    // "succeed" while the operator's draft work (e.g. an entire
-    // migration) is absent from it. Surface the draft count in the
-    // staged result so the toast says what is NOT in the preview
-    // instead of implying everything shipped.
-    let draftPageCount = 0;
-    const pagesForDraftCount = await execute(registry, adapter, locals.ctx, "pages.list", {});
-    if (pagesForDraftCount.ok) {
-      const allPages = (pagesForDraftCount.value as { pages: { status: string }[] }).pages;
-      draftPageCount = allPages.filter((p) => p.status === "draft").length;
-    }
+    // The whole flow — #553 classification before the merge, merge
+    // (deferConsume), staging build, finalize only on build success, audit
+    // enqueue — lives in admin-core's stageChatSessions, shared with the
+    // Open changes overview's multi-chat Stage (issue #620).
+    const staged = await stageChatSessions({ adapter, registry }, locals.ctx, [chatSessionId]);
+    if (!staged.ok) return fail(500, { error: staged.error.message });
+    const summary = staged.value;
+    const { previewUrl, draftPageCount } = await describeStagedBuild(
+      locals.ctx,
+      summary,
+      pageId || null,
+    );
 
     return {
       staged: {
@@ -813,7 +718,7 @@ export const actions: Actions = {
         fileCount: summary.fileCount,
         buildId: summary.buildId,
         previewUrl,
-        mergedEntityCount: mergedSummaryValue.entityCount,
+        mergedEntityCount: summary.mergedEntityCount,
         draftPageCount,
       },
     };

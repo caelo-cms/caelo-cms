@@ -45,14 +45,20 @@ const ownerCtx: ExecutionContext = {
   actorKind: "human",
   requestId: "mcp-power-test-owner",
 };
+/** A second editor — issue #620: their token must never resume the owner's session. */
+const otherCtx: ExecutionContext = {
+  actorId: "00000000-0000-0000-0000-000000000003",
+  actorKind: "human",
+  requestId: "mcp-power-test-other",
+};
 
-async function ensureOwnerActor(): Promise<void> {
+async function ensureActor(actorId: string, displayName: string): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`INSERT INTO actors (id, kind, display_name)
-               VALUES (${ownerCtx.actorId}::uuid, 'human', 'mcp-power-test owner')
+               VALUES (${actorId}::uuid, 'human', ${displayName})
                ON CONFLICT (id) DO NOTHING`;
     });
   } finally {
@@ -60,12 +66,16 @@ async function ensureOwnerActor(): Promise<void> {
   }
 }
 
+async function ensureOwnerActor(): Promise<void> {
+  await ensureActor(ownerCtx.actorId, "mcp-power-test owner");
+}
+
 async function wipeOurRows(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx`DELETE FROM mcp_tokens WHERE actor_id = ${ownerCtx.actorId}::uuid`;
+      await tx`DELETE FROM mcp_tokens WHERE actor_id IN (${ownerCtx.actorId}::uuid, ${otherCtx.actorId}::uuid)`;
       await tx`DELETE FROM structured_sets WHERE slug LIKE 'mcp-power-test-%'`;
     });
   } finally {
@@ -206,6 +216,69 @@ describe("Power-MCP surface (admin token)", () => {
     if (!resumed.ok) return;
     expect((resumed.value as { resumed: boolean }).resumed).toBe(true);
     expect((resumed.value as { chatBranchId: string }).chatBranchId).toBe(chatBranchId);
+  });
+
+  it("resumes the owner's most recent open session when no id is given (issue #620)", async () => {
+    const again = await execute(registry, adapter, systemCtx, "mcp.open_session", {
+      plaintextToken: adminToken,
+    });
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    const v = again.value as { chatSessionId: string; resumed: boolean; title: string };
+    expect(v.resumed).toBe(true);
+    expect(v.chatSessionId).toBe(chatSessionId);
+    expect(v.title).toBe("mcp-power-test session");
+  });
+
+  it("opens a fresh session only on an explicit newSession: true (issue #620)", async () => {
+    const fresh = await execute(registry, adapter, systemCtx, "mcp.open_session", {
+      plaintextToken: adminToken,
+      newSession: true,
+      title: "mcp-power-test second session",
+    });
+    expect(fresh.ok).toBe(true);
+    if (!fresh.ok) return;
+    const f = fresh.value as { chatSessionId: string; resumed: boolean };
+    expect(f.resumed).toBe(false);
+    expect(f.chatSessionId).not.toBe(chatSessionId);
+    // Now the fresh one is the most recent — a plain open resumes it.
+    const plain = await execute(registry, adapter, systemCtx, "mcp.open_session", {
+      plaintextToken: adminToken,
+    });
+    expect(plain.ok && (plain.value as { chatSessionId: string }).chatSessionId).toBe(
+      f.chatSessionId,
+    );
+    const both = await execute(registry, adapter, systemCtx, "mcp.open_session", {
+      plaintextToken: adminToken,
+      newSession: true,
+      chatSessionId,
+    });
+    expect(both.ok).toBe(false);
+  });
+
+  it("never resumes another user's session (issue #620)", async () => {
+    await ensureActor(otherCtx.actorId, "mcp-power-test other editor");
+    const r = await execute(registry, adapter, otherCtx, "mcp_tokens.create", {
+      displayName: "power-test-other-admin",
+      scope: "admin",
+    });
+    if (!r.ok) throw new Error("other token mint failed");
+    const otherToken = (r.value as { plaintextToken: string }).plaintextToken;
+    const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
+      plaintextToken: otherToken,
+    });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const o = opened.value as { chatSessionId: string; resumed: boolean };
+    expect(o.resumed).toBe(false);
+    expect(o.chatSessionId).not.toBe(chatSessionId);
+    const stolen = await execute(registry, adapter, systemCtx, "mcp.open_session", {
+      plaintextToken: otherToken,
+      chatSessionId,
+    });
+    expect(stolen.ok).toBe(false);
+    if (stolen.ok) return;
+    expect("message" in stolen.error ? stolen.error.message : "").toContain("session_not_found");
   });
 
   it("refuses execute_tool without a valid session, pointing at open_session", async () => {
@@ -421,6 +494,7 @@ describe("Power-MCP surface (admin token)", () => {
     const cappedToken = await mintToken("admin", 1_000);
     const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
       plaintextToken: cappedToken,
+      newSession: true,
       title: "mcp-power-test capped session",
     });
     expect(opened.ok).toBe(true);

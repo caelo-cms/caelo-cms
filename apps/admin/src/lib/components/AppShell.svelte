@@ -5,6 +5,7 @@
     Bug,
     Gauge,
     FileText,
+    GitPullRequestArrow,
     Image as ImageIcon,
     Layers,
     Layout,
@@ -67,6 +68,13 @@
         show: has("content.read"),
       },
       { href: "/content/chat", label: "Chats", icon: MessageSquare, show: has("content.write") },
+      // issue #620 — unstaged work across chats: Stage all / selected, Discard.
+      {
+        href: "/content/changes",
+        label: "Open changes",
+        icon: GitPullRequestArrow,
+        show: has("content.write"),
+      },
       // v0.11.1 (issue #76) — operator-facing theme editor. roles.manage
       // matches the existing /security/themes/pending permission: theme
       // edits affect every page on the site.

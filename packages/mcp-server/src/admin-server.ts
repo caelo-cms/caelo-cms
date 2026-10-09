@@ -12,11 +12,12 @@
  * Local companion tools:
  *
  * - `caelo_upload_images` — uploads local or base64 image references to the media library.
- * - `caelo_open_session` — opens (or resumes) the work session whose
+ * - `caelo_open_session` — resumes the operator's most recent open work
+ *   session (issue #620; `newSession: true` opens a fresh one) whose
  *   preview branch every subsequent tool call writes to. The session id
  *   is held here in process state so the agent doesn't thread it through
  *   every call; it also rides the response so a restarted server can
- *   resume via `chatSessionId`.
+ *   resume a specific session via `chatSessionId`.
  * - `caelo_get_context` — the composed site context (module model, tool
  *   playbook, staging rules, site memory, skills index) the agent should
  *   load once before working. For a checked-in variant, see
@@ -47,7 +48,7 @@ export interface StartAdminOpts {
  */
 export const ADMIN_MCP_INSTRUCTIONS = [
   "This server edits a Caelo CMS site. Before any other caelo tool:",
-  "1. Call caelo_open_session once (pass chatSessionId to resume an earlier session). Every write lands on that session's preview branch; nothing reaches the live site until the operator reviews and publishes in the Caelo admin.",
+  "1. Call caelo_open_session once. It resumes the operator's most recent open session (pass newSession: true only when the operator asks for a fresh one; chatSessionId resumes a specific one). Every write lands on that session's preview branch; nothing reaches the live site until the operator reviews and publishes in the Caelo admin.",
   "2. Call caelo_get_context once and follow it: it carries the site model, tool playbook, staging rules, site memory (brand voice, glossary) and the skills index.",
   "3. Load every skill the context marks ALWAYS APPLIES with load_skill before the work it covers (e.g. before writing any visitor-facing copy).",
   "Tool errors name the next step to take; follow them instead of retrying unchanged.",
@@ -73,6 +74,7 @@ interface ExecuteToolResponse {
 interface OpenSessionResponse {
   readonly chatSessionId: string;
   readonly chatBranchId: string;
+  readonly title: string;
   readonly resumed: boolean;
 }
 
@@ -92,16 +94,19 @@ const openSessionInput = z
     title: z.string().min(1).max(200).optional(),
     pageId: z.string().uuid().optional(),
     chatSessionId: z.string().uuid().optional(),
+    newSession: z.boolean().optional(),
   })
   .strict();
 
 const OPEN_SESSION_TOOL = {
   name: "caelo_open_session",
   description:
-    "Open (or resume) the Caelo work session your subsequent tool calls run in. Every write lands on the " +
-    "session's preview branch — invisible to the live site until the operator reviews and publishes in the " +
-    "Caelo admin. Call this ONCE before any other caelo tool; pass chatSessionId to resume an earlier " +
-    "session after a restart. Optional pageId binds the session to one page.",
+    "Open the Caelo work session your subsequent tool calls run in. Every write lands on the session's " +
+    "preview branch — invisible to the live site until the operator reviews and publishes in the Caelo admin. " +
+    "Call this ONCE before any other caelo tool. By default it RESUMES the operator's own most recent open " +
+    "session (so earlier unstaged work continues in the same chat); pass newSession: true only when the " +
+    "operator wants a separate fresh session, or chatSessionId to resume a specific one. Optional pageId " +
+    "resumes (or opens) that page's session.",
   inputSchema: {
     type: "object",
     properties: {
@@ -109,7 +114,11 @@ const OPEN_SESSION_TOOL = {
       pageId: { type: "string", description: "Optional page UUID to bind the session to." },
       chatSessionId: {
         type: "string",
-        description: "Resume this existing session instead of creating a new one.",
+        description: "Resume this specific session instead of the most recent one.",
+      },
+      newSession: {
+        type: "boolean",
+        description: "Open a fresh session instead of resuming the most recent open one.",
       },
     },
   },
@@ -178,7 +187,10 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
               type: "text",
               text:
                 JSON.stringify(currentSession, null, 2) +
-                "\nSession is active — subsequent caelo tool calls run on its preview branch. " +
+                (currentSession.resumed
+                  ? `\nResumed the operator's session '${currentSession.title}' — its earlier unstaged work continues here. `
+                  : `\nOpened a new session '${currentSession.title}'. `) +
+                "Subsequent caelo tool calls run on its preview branch. " +
                 "The operator reviews + publishes in the Caelo admin.",
             },
           ],

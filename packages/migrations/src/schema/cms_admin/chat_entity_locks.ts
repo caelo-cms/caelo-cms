@@ -8,13 +8,12 @@ import { chatSessions } from "./chat_sessions.js";
  *
  * When a chat writes to a module / template / layout / structured_set
  * / redirect, the entity is locked to that chat's session until the
- * chat publishes or is discarded. Other chats get a structured
- * `kind: "Locked"` error at write time instead of silently
- * overwriting each other.
+ * chat stages, publishes or is discarded. Since issue #620 another chat
+ * writing the entity TAKES IT OVER (adopting the holder's unstaged change,
+ * recorded in `chat_lock_takeovers`) instead of being refused — the lock
+ * still keeps two branches from silently overwriting each other.
  *
- * Page-bound entities (pages, page_modules, page_module_content) are
- * covered by the per-page-chat gate (one chat per page); they don't
- * need entry-level locks here.
+ * Page-bound entities lock under the `page` kind.
  */
 export const chatEntityLocks = pgTable(
   "chat_entity_locks",

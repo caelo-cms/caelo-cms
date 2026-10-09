@@ -5,14 +5,20 @@
  *
  * When a chat writes to a module / template / layout / structured_set /
  * redirect, the entity is locked to that chat's session until the chat
- * publishes or is discarded. Other chats' writes are rejected with a
- * structured `{ kind: "Locked", holder: <chatSessionId> }` so the AI
- * can surface "module 'hero' is being edited in chat 'X' — pick a
- * different target or ask the operator to publish that chat first".
+ * stages, publishes or is discarded. The lock keeps two branches from
+ * holding divergent unmerged edits of the same entity — merge is "latest
+ * state wins", so the second Stage would silently overwrite the first.
+ *
+ * Issue #620 — a lock no longer BLOCKS another chat. When chat B writes
+ * an entity chat A holds, B takes it over: A's unstaged change on that
+ * entity moves to B's branch and the lock moves with it
+ * (`lock-takeover.ts`), and B's write builds on the adopted state. Both
+ * chats are told on their next tool result. There is no time-based
+ * expiry — an expired lock over unstaged changes is exactly the silent
+ * overwrite the lock exists to prevent.
  *
  * Page-bound entities (`pages`, `page_modules`, `page_module_content`)
- * are NOT locked here — they're protected by the per-page-chat gate
- * (one chat per page), which is enforced at chat-session-create time.
+ * lock under the `page` kind.
  *
  * System writes (`ctx.chatBranchId === null/undefined`) bypass locks.
  * Locks are released on `chat.publish`, `chat.merge_to_main` (Stage —
@@ -28,6 +34,7 @@ import {
   releaseLeasesByBranch,
   siblingLeaseError,
 } from "./entity-leases.js";
+import { type TakeoverOutcome, takeOverEntity } from "./lock-takeover.js";
 
 export type LockedEntityKind =
   | "module"
@@ -56,38 +63,41 @@ export type LockedEntityKind =
   // across plugin tables, so the row id alone keys the lock.
   | "pluginRow";
 
-export interface LockHolder {
-  chatSessionId: string;
-  chatBranchId: string;
-  lockedAt: string;
-}
-
 export interface LockCheckResult {
-  /** True iff caller holds the lock OR the entity is unlocked. */
+  /** True iff the caller may write (it holds, acquired or took over the lock). */
   permitted: boolean;
-  /** Set when permitted=false because ANOTHER CHAT holds the branch lock. */
-  holder?: LockHolder;
+  /**
+   * Issue #620 — set when the caller took the entity over from another
+   * chat: that chat's unstaged change on it now belongs to the caller.
+   */
+  takeover?: TakeoverOutcome;
   /**
    * issue #264 — set when permitted=false because a SIBLING TASK on the
-   * SAME branch already holds the per-entity sub-lease. Distinct from
-   * `holder` (a different-chat conflict): this is a disjointness violation
-   * between parallel subagents, surfaced via {@link siblingLeaseError}.
+   * SAME branch already holds the per-entity sub-lease — a disjointness
+   * violation between parallel subagents, surfaced via
+   * {@link siblingLeaseError}. Since #620 the only way a write is refused:
+   * another chat's lock is taken over, never a refusal.
    */
   siblingLease?: LeaseHolder;
 }
 
 /**
- * Check whether the caller's chat may write to (entityKind, entityId).
+ * Check whether the caller's chat may write to (entityKind, entityId),
+ * acquiring or taking over the lock.
  *
  * - System writes (no chatBranchId on ctx) always permitted.
  * - Caller already holds the lock → permitted.
  * - Entity unlocked → permitted; CALLER acquires it.
- * - Held by another chat → not permitted; returns holder info.
+ * - Held by another chat → the caller TAKES IT OVER (issue #620): the
+ *   holder's unstaged change on the entity moves to the caller's branch,
+ *   the lock moves with it, and `result.takeover` says what was adopted.
  *
  * Caller supplies `chatBranchId`; this helper resolves the session id
  * from `chat_sessions` so callers don't have to thread it through every
  * op handler. Lock rows reference chat_session_id directly so
- * `ON DELETE CASCADE` from a chat-session delete tears down locks.
+ * `ON DELETE CASCADE` from a chat-session delete tears down locks. The
+ * lock row is read `FOR UPDATE`, so two chats racing for one entity are
+ * serialized and the second one adopts the first one's committed change.
  *
  * issue #264 — the branch lock alone lets parallel sibling subagents (all
  * on the parent's branch) write the same entity, since they resolve to
@@ -138,42 +148,42 @@ export async function checkAndAcquireEntityLock(
     FROM chat_entity_locks
     WHERE entity_kind = ${args.kind} AND entity_id = ${args.entityId}::uuid
     LIMIT 1
+    FOR UPDATE
   `)) as unknown as { chat_session_id: string; chat_branch_id: string; locked_at: string | Date }[];
   const row = rows[0];
   if (!row) {
     return { permitted: true };
   }
-  if (row.chat_session_id === sessionId) {
-    // Caller holds the branch lock. issue #264 — layer the per-entity
-    // sub-lease so a SIBLING task on this same branch (same resolved
-    // session, different `holderKey`) can't clobber the entity we're
-    // taking. Skipped when the writer can't be identified (no holderKey),
-    // since siblings can only be told apart by their own session id.
-    if (args.holderKey) {
-      const lease = await acquireEntityLease(tx, {
-        kind: args.kind,
-        entityId: args.entityId,
-        branchId: args.chatBranchId,
-        holderKey: args.holderKey,
-        now: args.now,
-        ttlMs: args.ttlMs,
-      });
-      if (!lease.acquired && lease.holder) {
-        return { permitted: false, siblingLease: lease.holder };
-      }
+  // issue #264 — the per-entity sub-lease on the caller's own branch, so a
+  // SIBLING task on this branch (same resolved session, different
+  // `holderKey`) can't clobber the entity. Taken BEFORE any takeover: a
+  // refused write must not have moved another chat's change. Skipped when
+  // the writer can't be identified (no holderKey), since siblings can
+  // only be told apart by their own session id.
+  if (args.holderKey) {
+    const lease = await acquireEntityLease(tx, {
+      kind: args.kind,
+      entityId: args.entityId,
+      branchId: args.chatBranchId,
+      holderKey: args.holderKey,
+      now: args.now,
+      ttlMs: args.ttlMs,
+    });
+    if (!lease.acquired && lease.holder) {
+      return { permitted: false, siblingLease: lease.holder };
     }
+  }
+  if (row.chat_session_id === sessionId) {
     return { permitted: true };
   }
-  const lockedAt =
-    row.locked_at instanceof Date ? row.locked_at.toISOString() : String(row.locked_at);
-  return {
-    permitted: false,
-    holder: {
-      chatSessionId: row.chat_session_id,
-      chatBranchId: row.chat_branch_id,
-      lockedAt,
-    },
-  };
+  // issue #620 — adopt the holder's unstaged change instead of refusing.
+  const takeover = await takeOverEntity(tx, {
+    kind: args.kind,
+    entityId: args.entityId,
+    holder: { chatSessionId: row.chat_session_id, chatBranchId: row.chat_branch_id },
+    taker: { chatSessionId: sessionId, chatBranchId: args.chatBranchId },
+  });
+  return { permitted: true, takeover };
 }
 
 /**
@@ -206,112 +216,29 @@ export async function releaseChatLocks(
 }
 
 /**
- * Build a structured error payload for a Locked rejection. The op
- * `err()` helper accepts a free-form shape; this returns the canonical
- * one so every locked-write returns the same error so the AI can
- * react uniformly.
- *
- * v0.8.0 — async + tx-aware. The helper does one extra read to look up
- * the holder chat's title + anchor page slug so the message
- * names the *other chat the operator already knows about* instead of
- * a raw session UUID. The AI then surfaces something like:
- *   "module 'hero' is busy in another chat ('Build the docs site')
- *   on /home — finish that chat or pick a different target"
- * which the operator can act on without going to /security/locks.
- *
- * Failures during the enrich-read (deleted chat row, RLS surprise)
- * fall back to the v0.5.x UUID wording so the original Locked error
- * still surfaces. The lock check itself isn't affected.
- */
-export async function lockedError(
-  tx: TransactionRunner,
-  operation: string,
-  kind: LockedEntityKind,
-  entityId: string,
-  holder: LockHolder,
-): Promise<{
-  kind: "Locked";
-  operation: string;
-  message: string;
-  entityKind: LockedEntityKind;
-  entityId: string;
-  holder: LockHolder & {
-    title?: string;
-    anchorPageSlug?: string;
-  };
-}> {
-  let title: string | undefined;
-  let anchorPageSlug: string | undefined;
-  try {
-    const rows = (await tx.execute(sql`
-      SELECT cs.title,
-             p.slug   AS page_slug
-      FROM chat_sessions cs
-      LEFT JOIN pages p ON p.id = cs.page_id AND p.deleted_at IS NULL
-      WHERE cs.id = ${holder.chatSessionId}::uuid
-      LIMIT 1
-    `)) as unknown as {
-      title: string | null;
-      page_slug: string | null;
-    }[];
-    const r = rows[0];
-    if (r) {
-      if (typeof r.title === "string") title = r.title;
-      if (typeof r.page_slug === "string") anchorPageSlug = r.page_slug;
-    }
-  } catch {
-    // Enrich-read failed — keep the structural error, fall through to
-    // the UUID-only message below.
-  }
-
-  const titlePart = title ? ` ('${title}')` : "";
-  const pagePart = anchorPageSlug ? ` on /${anchorPageSlug}` : "";
-  const message = title
-    ? `${kind} ${entityId} is busy in another chat${titlePart}${pagePart} — finish that chat (Stage + Publish) or pick a different target`
-    : `${kind} ${entityId} is being edited in another chat (session ${holder.chatSessionId}); wait for that chat to publish or pick a different target`;
-
-  return {
-    kind: "Locked",
-    operation,
-    message,
-    entityKind: kind,
-    entityId,
-    holder: {
-      ...holder,
-      ...(title !== undefined ? { title } : {}),
-      ...(anchorPageSlug !== undefined ? { anchorPageSlug } : {}),
-    },
-  };
-}
-
-/**
- * Build the right structured error for a blocked entity write. A
- * `siblingLease` conflict (issue #264 — a parallel task on the same branch)
- * yields the disjointness-violation error; otherwise a `holder` conflict
- * (another chat holds the branch lock) yields the enriched Locked error.
+ * Build the structured error for a refused entity write. Since #620 the
+ * only refusal is a `siblingLease` conflict (issue #264 — a parallel task
+ * on the same branch holds the entity); another chat's lock is taken over
+ * instead (see {@link checkAndAcquireEntityLock}).
  *
  * Every op that guards a write with {@link checkAndAcquireEntityLock}
- * routes its `!permitted` case through this helper so both conflict kinds
- * surface uniformly. Precondition: `result.permitted === false` with
- * exactly one of `siblingLease` / `holder` set.
+ * routes its `!permitted` case through this helper. Precondition:
+ * `result.permitted === false` with `siblingLease` set.
  */
 export async function entityWriteBlockedError(
-  tx: TransactionRunner,
+  _tx: TransactionRunner,
   operation: string,
   kind: LockedEntityKind,
   entityId: string,
   result: LockCheckResult,
-): Promise<Awaited<ReturnType<typeof lockedError>> | ReturnType<typeof siblingLeaseError>> {
+): Promise<ReturnType<typeof siblingLeaseError>> {
   if (result.siblingLease) {
     return siblingLeaseError(operation, kind, entityId, result.siblingLease);
   }
-  if (result.holder) {
-    return lockedError(tx, operation, kind, entityId, result.holder);
-  }
-  // Defensive: a blocked write must carry a conflict source. Fail loud
+  // Defensive: a refused write must carry its conflict. Fail loud
   // (CLAUDE.md §2 no silent fallbacks) rather than returning a vague error.
   throw new Error(
-    `entityWriteBlockedError called for ${operation} on ${kind} ${entityId} with no siblingLease or holder`,
+    `entityWriteBlockedError called for ${operation} on ${kind} ${entityId} without a siblingLease conflict`,
   );
 }
 
@@ -319,10 +246,8 @@ export async function entityWriteBlockedError(
  * The `pluginRow` lock taker the plugin host calls for every branch write
  * to a plugin's private storage (PluginHostInfra.lockPluginRow).
  *
- * Same branch lock + per-task sub-lease as core entities. The busy
- * message names the holding chat by title only: the write runs as the
- * plugin's actor, and a failed enrich read (lockedError also reads pages)
- * would abort the caller's transaction.
+ * Same branch lock + per-task sub-lease as core entities — including the
+ * #620 takeover of another chat's unstaged change on the row.
  */
 export const lockPluginRow: PluginRowLocker = async (tx, args) => {
   const result = await checkAndAcquireEntityLock(tx, {
@@ -332,18 +257,8 @@ export const lockPluginRow: PluginRowLocker = async (tx, args) => {
     holderKey: args.chatTaskId,
   });
   if (result.permitted) return null;
-  if (result.siblingLease) {
-    return siblingLeaseError(args.operation, "pluginRow", args.rowId, result.siblingLease).message;
+  if (!result.siblingLease) {
+    throw new Error(`lockPluginRow: ${args.operation} refused on ${args.rowId} without a conflict`);
   }
-  if (!result.holder) {
-    throw new Error(`lockPluginRow: ${args.operation} blocked on ${args.rowId} with no holder`);
-  }
-  const rows = (await tx.execute(sql`
-    SELECT title FROM chat_sessions WHERE id = ${result.holder.chatSessionId}::uuid LIMIT 1
-  `)) as unknown as { title: string | null }[];
-  const title = rows[0]?.title;
-  const chat = title
-    ? `another chat ('${title}')`
-    : `another chat (session ${result.holder.chatSessionId})`;
-  return `${args.operation}: row ${args.rowId} is busy in ${chat} — finish that chat (Stage + Publish) or change a different row`;
+  return siblingLeaseError(args.operation, "pluginRow", args.rowId, result.siblingLease).message;
 };

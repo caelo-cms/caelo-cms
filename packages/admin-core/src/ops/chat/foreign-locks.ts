@@ -7,12 +7,11 @@
  * Why this exists: run #7's migration chat only discovered that a stale
  * "Live edit" chat held the theme, the layout-bound chrome modules, and
  * the homepage when its writes started bouncing with `Locked` errors
- * MID-RUN. The chat-runner feeds this op's output into a system-prompt
- * context block so the AI can warn the operator in the plan-check step
- * ("another chat holds the theme — Stage/Publish or discard it first")
- * before any work starts. This is the interim guard until task leases
- * replace chat-session locks (epic #264) — it adds NO lease/TTL
- * mechanics, it only makes the existing lock state visible up front.
+ * MID-RUN. The AI reads this op through `list_entity_locks` in its
+ * plan-check step. Since issue #620 a held entity no longer blocks: a
+ * write adopts the holder's unstaged change (`lock-takeover.ts`), so the
+ * read tells the AI up front WHOSE work it is about to take over, which it
+ * says to the operator before starting.
  *
  * Each row carries decision-support context per CLAUDE.md §1A: a human
  * label for the entity, the holding chat's title + anchor page, and the

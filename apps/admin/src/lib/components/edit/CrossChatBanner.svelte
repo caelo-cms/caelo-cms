@@ -59,8 +59,12 @@
         </li>
       {/each}
     </ul>
-    <span class="ml-auto text-amber-900/70 dark:text-amber-200/70">
-      Stage them before deploying so nothing's left behind.
-    </span>
+    <a
+      href="/content/changes"
+      class="ml-auto text-amber-900/70 underline underline-offset-2 dark:text-amber-200/70"
+      data-testid="open-changes-link"
+    >
+      Review and stage all open changes
+    </a>
   </div>
 {/if}
