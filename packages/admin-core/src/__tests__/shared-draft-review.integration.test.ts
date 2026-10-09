@@ -229,9 +229,16 @@ describe("#620 review — the draft tools in the browser chat", () => {
     const a = await chat("Stage from the chat");
     await op(a.ai, "modules.update", { moduleId: m, html: "<p>staged by the AI</p>" });
     const holdsBefore = await openHolds();
-    const staged = await stageChangesTool.handler(a.ai, { scope: "this_chat" }, toolCtx(a));
+    const staged = await stageChangesTool.handler(
+      a.ai,
+      { scope: "this_chat" },
+      { ...toolCtx(a), operatorBrowserAttached: true },
+    );
     expect(staged.ok).toBe(true);
     expect(staged.content).toContain("Staged 1 change");
+    // The operator's open chat delivers the check's result; polling it
+    // cost the real-AI homepage turn 19 full model calls (PR #624).
+    expect(staged.content).toContain("do NOT poll get_quality_audit");
     // The AI initiated it: the production hold is open although the ops ran
     // under the operator's context.
     expect(await openHolds()).toBe(holdsBefore + 1);

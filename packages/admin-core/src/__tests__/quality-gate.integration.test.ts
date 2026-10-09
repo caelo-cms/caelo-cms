@@ -575,6 +575,9 @@ describe("acceptances in the chat", () => {
     );
     expect(read.ok).toBe(true);
     expect(read.content).toContain("element `header > a.cta`");
+    // The staged markup is quoted as code, never live HTML in the chat
+    // (a bare <img src="/_assets/…"> made the operator's browser 404).
+    expect(read.content).toContain('`<a class="cta" href="/signup">`');
     expect(read.content).toContain("insufficient color contrast of 2.9");
   });
 });
