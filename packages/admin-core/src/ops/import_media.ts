@@ -172,6 +172,16 @@ export const importMediaUrlsOp = defineOperation({
     const deadline = Date.now() + PER_CALL_TIME_BUDGET_MS;
     const hosts = allowedHosts();
 
+    /** Whether any stored file of an existing asset is gone. */
+    const assetFilesMissing = async (assetId: string): Promise<boolean> => {
+      const keys = (await tx.execute(sql`
+        SELECT storage_key FROM media_variants WHERE asset_id = ${assetId}::uuid
+      `)) as unknown as Array<{ storage_key: string }>;
+      for (const k of keys) {
+        if (!(await mediaStorage.exists(k.storage_key))) return true;
+      }
+      return false;
+    };
     type PersistResult =
       | { ok: true; assetId: string; slug: string }
       | { ok: false; reason: string };
@@ -298,6 +308,18 @@ export const importMediaUrlsOp = defineOperation({
         WHERE sha256 = ${sha} AND deleted_at IS NULL LIMIT 1
       `)) as unknown as Array<{ id: string; slug: string }>;
       if (existing[0]) {
+        // The asset exists but its stored files may be gone (media lost from
+        // a cloud container's disk). The same bytes refill the same storage
+        // keys; the upload op dedupes the row, so every page using the asset
+        // is fixed — this is the recovery list_missing_media points at.
+        if (await assetFilesMissing(existing[0].id)) {
+          const restored = await persistAsset(url, name, mime, sha, res.bodyBytes);
+          if (!restored.ok) {
+            skipped.push({ url, reason: restored.reason });
+            continue;
+          }
+          downloadedBytes += res.bodyBytes.byteLength;
+        }
         imported.push({
           sourceUrl: url,
           mediaId: existing[0].id,

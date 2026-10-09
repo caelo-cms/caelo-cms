@@ -9,6 +9,8 @@
  *   - referenced variant bytes are copied to <buildDir>/_assets/...
  *   - cdn_manifest.json is always emitted
  *   - missing asset/variant references throw a structured error
+ *   - library rows whose stored files are gone fail with the asset names
+ *     and the recovery steps (media lost from a cloud container's disk)
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -349,6 +351,44 @@ describe("media-pass", () => {
     expect((thrown as Error).message).toContain("reference images");
     expect((thrown as Error).message).toContain(assetSlug);
     expect((thrown as Error).message).toContain("set_media_visibility_many");
+  });
+
+  it("names every asset whose stored file is gone, and the way back", async () => {
+    // The rows exist but this media root has none of their files — what a
+    // GCP install saw after its container filesystem was replaced.
+    const emptyRoot = mkdtempSync(join(tmpdir(), "caelo-media-pass-empty-"));
+    let thrown: unknown = null;
+    try {
+      await adapter.withAdminTransaction(systemCtx, async (tx) => {
+        await runMediaPass({
+          tx,
+          buildDir,
+          pages: [
+            {
+              html: `<img src="/_caelo/media/${assetSlug}" alt="x" /><img src="/_caelo/media/${heroSlug}/webp-800" alt="y" />`,
+              pageSlug: "lost",
+            },
+          ],
+          mediaRoot: emptyRoot,
+          settings: { cdnEnabled: false, threshold: 5 },
+        });
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    const message = (thrown as Error).message;
+    expect(message).toContain("stored files of 2 media asset(s) are missing");
+    expect(message).toContain(`"test.png" (/_caelo/media/${assetSlug}, id ${assetId}`);
+    expect(message).toContain(`"hero.jpg" (/_caelo/media/${heroSlug}, id`);
+    expect(message).toMatch(/"hero\.jpg"[^)]*missing: [^)]*webp-800/);
+    for (const step of [
+      "list_missing_media",
+      "import_media_from_urls",
+      "re-upload",
+      "delete_media_many",
+    ]) {
+      expect(message).toContain(step);
+    }
   });
 
   it("throws when a page references an asset/variant that doesn't exist", async () => {

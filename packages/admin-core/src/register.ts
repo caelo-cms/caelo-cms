@@ -285,6 +285,7 @@ import {
   setFocalPointOp,
   setMediaCdnOp,
 } from "./ops/media.js";
+import { mediaListMissingFilesOp } from "./ops/media_missing.js";
 import { regenerateMediaVariantsOp } from "./ops/media_regenerate.js";
 import {
   mediaSetSourceManyOp,
@@ -1066,6 +1067,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setMediaCdnOp);
   // run #10 D4 — recovery path for missing derived variants.
   registry.register(regenerateMediaVariantsOp);
+  registry.register(mediaListMissingFilesOp);
   // P7 optimizations — focal-point/crops, processing status, alt proposals.
   registry.register(setFocalPointOp);
   registry.register(addCropOp);
