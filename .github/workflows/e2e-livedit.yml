@@ -404,6 +404,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
+      # The chat transcripts every scenario reset writes (helpers.ts
+      # dumpChatTranscripts), uploaded on EVERY run: a scenario that failed
+      # its first attempt and passed the retry ("flaky") leaves the job
+      # green, so the failure-only bundle below never carries the failed
+      # attempt's turn — and a flake is a bug to root-cause (CLAUDE.md §4).
+      - name: Upload chat transcripts (always)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-livedit-transcripts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/admin/test-results/livedit/transcripts/
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Dump diagnostic DB tables on failure
         if: failure()
         env:
