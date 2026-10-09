@@ -29,6 +29,12 @@ import { BASE_TECHNICAL_CSS } from "./base-css.js";
 import type { ModuleFieldKind } from "./content.js";
 import { NAV_FUNCTIONAL_CSS, NAV_TOGGLE_JS } from "./interactions.js";
 import {
+  type NestedModuleResource,
+  type NestedRenderFailure,
+  type NestedRenderResolver,
+  renderPlacedModule,
+} from "./nested-module-render.js";
+import {
   applySlotReplacements,
   extractInnerOfTopLevelContentSlot,
   listSlotNames,
@@ -60,9 +66,8 @@ export interface ComposeModule {
    * visible to visitors as literal `{{name}}` text.
    *
    * Per-placement overrides (content_instances.values) are applied
-   * here via the `contentValues` field below. The chat-branched
-   * preview path additionally walks nested-module refs in
-   * preview-render before reaching here.
+   * here via the `contentValues` field below. Nested-module refs
+   * render through `ComposeInput.nestedModules`.
    */
   readonly fields?: readonly { name: string; kind?: ModuleFieldKind; default?: unknown }[];
   /**
@@ -161,12 +166,38 @@ export interface ComposeInput {
    * gating plugin active.
    */
   readonly deferredModules?: Readonly<Record<string, ComposeDeferral>>;
+  /**
+   * Every module and content instance a `module` / `module-list` field
+   * can reference, batch-loaded by the caller (the static generator).
+   * With it, nested modules render through the same recursive renderer
+   * the editor preview uses, and their CSS/JS joins the page bundles.
+   * Without it, a nested ref renders as a loud comment and a
+   * `nested-renderer-unavailable` failure.
+   */
+  readonly nestedModules?: NestedRenderResolver;
+}
+
+/**
+ * A failure marker raised while rendering one placed module (or a
+ * module nested inside it) — the structured twin of the
+ * `<!-- caelo:missing … -->` comments in the HTML. Deploy builds refuse
+ * pages that carry any; see the static generator.
+ */
+export interface ComposeModuleFailure {
+  readonly blockName: string;
+  readonly moduleId: string;
+  readonly moduleSlug: string;
+  /** Field trail inside the module; empty when the marker names the field. */
+  readonly field: string;
+  readonly reason: string;
 }
 
 export interface ComposeOutput {
   readonly html: string;
   readonly replacedSlots: readonly string[];
   readonly missingSlots: readonly string[];
+  /** Per-module failure markers, in render order. */
+  readonly moduleFailures: readonly ComposeModuleFailure[];
 }
 
 const HEAD_CLOSE_RE = /<\/head\s*>/i;
@@ -235,6 +266,8 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   let navRendered = false;
   // issue #158 — same per-module dedup as composePageWithLayout.
   const seenAssetModules = new Set<string>();
+  const moduleFailures: ComposeModuleFailure[] = [];
+  const nestedAssetIds: string[] = [];
   // Template CSS first so module CSS can override it via source-order specificity.
   if (input.templateCss.trim().length > 0) allCss.push(input.templateCss);
 
@@ -254,7 +287,10 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
         navRendered = true;
         baseHtml = renderNavMenuHtml(navMenuItems);
       } else {
-        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme, input);
+        const rendered = renderModuleFields(m, input);
+        baseHtml = rendered.html;
+        recordFailures(moduleFailures, block.blockName, m, rendered.failures);
+        nestedAssetIds.push(...rendered.nestedModuleIds);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
@@ -265,6 +301,14 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
       seenAssetModules.add(m.moduleId);
       if (m.css.trim().length > 0) allCss.push(m.css);
       if (m.js.trim().length > 0) allJs.push(m.js);
+    }
+    for (const id of nestedAssetIds.splice(0)) {
+      if (seenAssetModules.has(id)) continue;
+      seenAssetModules.add(id);
+      const nested = input.nestedModules?.getModule(id);
+      if (!nested) continue;
+      if (nested.css.trim().length > 0) allCss.push(nested.css);
+      if (nested.js.trim().length > 0) allJs.push(nested.js);
     }
   }
 
@@ -321,6 +365,7 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     html,
     replacedSlots: replaced.replacedSlots,
     missingSlots: replaced.missingSlots,
+    moduleFailures,
   };
 }
 
@@ -420,70 +465,104 @@ function renderThemeCss(theme: ComposeTheme | undefined): string | null {
   return renderThemeCssFromTokens(theme.tokens);
 }
 
+/** What rendering one placed module's fields produced. */
+interface RenderedModuleFields {
+  readonly html: string;
+  readonly failures: readonly NestedRenderFailure[];
+  /** Nested modules rendered inside it, in first-seen order. */
+  readonly nestedModuleIds: readonly string[];
+}
+
 /**
  * Substitute `{{name}}` placeholders and `{{#name}}…{{/name}}`
- * sections in module HTML. Thin wrapper around the shared template
- * engine (#71); see `template-engine.ts` for the full substitution
- * grammar and the loud-raw / failure-marker invariants.
+ * sections in a placed module's HTML. Thin wrapper around the shared
+ * template engine (#71); see `template-engine.ts` for the full
+ * substitution grammar and the loud-raw / failure-marker invariants.
  *
- * Compose is the no-DB path: nested-module field kinds (`module`,
- * `module-list`) cannot be resolved here because the partial loader
- * needs a DB walk to fetch nested content_instances. The engine
- * emits a loud HTML comment for those refs so static-gen output is
- * visible-broken (per CLAUDE.md §2) rather than silent-empty. The
- * chat-branched preview path resolves nested refs via
- * `preview-render.ts` BEFORE the substituted HTML reaches the
- * composer, so this branch never trips for that path. Issue #70
- * tracks pre-resolving in static-gen so the loud comment goes away
- * there too.
+ * Nested-module field kinds (`module`, `module-list`) render through
+ * the recursive renderer (`nested-module-render.ts`, the one the editor
+ * preview uses) when the caller supplied `nestedModules`. Without it
+ * the engine emits a loud comment plus a `nested-renderer-unavailable`
+ * failure (CLAUDE.md §2) — visible-broken, never silent-empty. The
+ * editor preview pre-renders its page modules through the same renderer
+ * before they reach the composer, so their `html` arrives substituted
+ * and with no `fields`.
  *
  * Both `fields` and `contentValues` are optional. Field `kind` is
  * optional for back-compat with callers that haven't been updated;
  * the engine treats absent kinds as primitives (the legacy
  * compose-path behaviour).
  */
-function applyFieldSubstitution(
-  html: string,
-  fields: readonly { name: string; kind?: ModuleFieldKind; default?: unknown }[] | undefined,
-  contentValues: Readonly<Record<string, unknown>> | undefined,
-  theme: ComposeTheme | undefined,
-  lists: {
+function renderModuleFields(
+  m: ComposeModule,
+  input: {
+    readonly theme?: ComposeTheme;
     readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
     readonly dormantDataLists?: Readonly<Record<string, string>>;
+    readonly nestedModules?: NestedRenderResolver;
   },
-): string {
+): RenderedModuleFields {
   // The substitution engine (renderTemplate) already unwraps CDATA
   // guards; cover the no-op early-return path so a chrome module with no
   // fields/values/theme is cleaned too.
   const hasLists =
-    Object.keys(lists.dataLists ?? {}).length > 0 ||
-    Object.keys(lists.dormantDataLists ?? {}).length > 0;
-  if (!fields && !contentValues && !theme && !hasLists) return stripCdataGuards(html);
-  const engineFields: TemplateField[] = (fields ?? []).map((f) => ({
+    Object.keys(input.dataLists ?? {}).length > 0 ||
+    Object.keys(input.dormantDataLists ?? {}).length > 0;
+  if (!m.fields && !m.contentValues && !input.theme && !hasLists) {
+    return { html: stripCdataGuards(m.html), failures: [], nestedModuleIds: [] };
+  }
+  const fields: TemplateField[] = (m.fields ?? []).map((f) => ({
     name: f.name,
     kind: f.kind ?? "text",
     default: f.default,
   }));
-  return renderTemplate({
-    html,
-    fields: engineFields,
-    contentValues,
-    dataLists: lists.dataLists,
-    dormantDataLists: lists.dormantDataLists,
-    // v0.11.1 (issue #76) — thread the active theme's asset URLs so
-    // module HTML carrying `{{theme_logo_url}}` etc. resolves. Unbound
-    // slots emit loud-raw + `theme-asset-unbound:<slot>` markers.
-    themeAssets: theme
-      ? {
-          logo: theme.assets.logo?.url ?? null,
-          logoDark: theme.assets.logoDark?.url ?? null,
-          favicon: theme.assets.favicon?.url ?? null,
-          socialShare: theme.assets.socialShare?.url ?? null,
-        }
-      : undefined,
-    // Compose path has no DB; pass no partials so module/module-list
-    // refs emit the loud HTML comment per CLAUDE.md §2.
-  }).html;
+  // v0.11.1 (issue #76) — thread the active theme's asset URLs so
+  // module HTML carrying `{{theme_logo_url}}` etc. resolves. Unbound
+  // slots emit loud-raw + `theme-asset-unbound:<slot>` markers.
+  const themeAssets = input.theme
+    ? {
+        logo: input.theme.assets.logo?.url ?? null,
+        logoDark: input.theme.assets.logoDark?.url ?? null,
+        favicon: input.theme.assets.favicon?.url ?? null,
+        socialShare: input.theme.assets.socialShare?.url ?? null,
+      }
+    : undefined;
+  if (input.nestedModules) {
+    const r = renderPlacedModule(
+      {
+        html: m.html,
+        fields,
+        values: m.contentValues ?? {},
+      },
+      input.nestedModules,
+      { themeAssets, dataLists: input.dataLists, dormantDataLists: input.dormantDataLists },
+    );
+    return { html: r.html, failures: r.failures, nestedModuleIds: [...r.touchedModuleIds] };
+  }
+  const r = renderTemplate({
+    html: m.html,
+    fields,
+    contentValues: m.contentValues,
+    dataLists: input.dataLists,
+    dormantDataLists: input.dormantDataLists,
+    themeAssets,
+  });
+  return {
+    html: r.html,
+    failures: r.missingSlots.map((reason) => ({ field: "", reason })),
+    nestedModuleIds: [],
+  };
+}
+
+function recordFailures(
+  out: ComposeModuleFailure[],
+  blockName: string,
+  m: ComposeModule,
+  failures: readonly NestedRenderFailure[],
+): void {
+  for (const f of failures) {
+    out.push({ blockName, moduleId: m.moduleId, moduleSlug: m.slug, ...f });
+  }
 }
 
 export function tagModuleId(html: string, moduleId: string): string {
@@ -542,20 +621,32 @@ export interface ComposeDeferral {
  * `<iframe src>` does. The JS is parked as `type="text/plain"` (inert
  * even once cloned) and the plugin runtime executes it once per module,
  * after the markup it expects is in the DOM.
+ *
+ * The same holds for the modules nested inside it (its `module` /
+ * `module-list` fields): their markup is already part of `moduleHtml`,
+ * and their CSS/JS ride in the same `<template>`, each script under its
+ * own module id, so the runtime runs every one of them once.
  */
 function wrapDeferredModule(
   moduleHtml: string,
   module: Pick<ComposeModule, "moduleId" | "slug" | "css" | "js">,
+  nestedModules: readonly Pick<NestedModuleResource, "moduleId" | "css" | "js">[],
   deferral: ComposeDeferral,
 ): string {
   const attr = (v: string): string =>
     v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
-  const css =
-    module.css.trim().length > 0 ? `<style data-source="module">${module.css}</style>` : "";
-  const js =
-    module.js.trim().length > 0
-      ? `<script type="text/plain" data-caelo-deferred-script="${attr(module.moduleId)}">${module.js}</script>`
-      : "";
+  const gated = [module, ...nestedModules];
+  const css = gated
+    .filter((g) => g.css.trim().length > 0)
+    .map((g) => `<style data-source="module">${g.css}</style>`)
+    .join("");
+  const js = gated
+    .filter((g) => g.js.trim().length > 0)
+    .map(
+      (g) =>
+        `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}">${g.js}</script>`,
+    )
+    .join("");
   return [
     `<div data-caelo-deferred="${attr(deferral.pluginSlug)}" data-reason="${attr(deferral.reason)}" data-module="${attr(module.slug)}">`,
     `<div data-caelo-deferred-placeholder>${deferral.placeholderHtml}</div>`,
@@ -582,11 +673,17 @@ export interface ComposeWithLayoutInput extends ComposeInput {
  *   - `layout-missing-content`: the layout HTML lacks
  *     `<caelo-slot name="content">…</caelo-slot>` so the page body has
  *     nowhere to land.
+ *   - `nested-module-deferred`: a plugin withholds a module that sits
+ *     INSIDE another module's `module` / `module-list` field. Only placed
+ *     modules can be parked behind the plugin's gate, so rendering it
+ *     would ship the withheld content ungated.
  */
+export type ComposeErrorKind = "layout-missing-content" | "nested-module-deferred";
+
 export class ComposeError extends Error {
-  readonly kind: "layout-missing-content";
+  readonly kind: ComposeErrorKind;
   readonly layoutSlug: string | undefined;
-  constructor(kind: "layout-missing-content", message: string, layoutSlug?: string) {
+  constructor(kind: ComposeErrorKind, message: string, layoutSlug?: string) {
     super(message);
     this.name = "ComposeError";
     this.kind = kind;
@@ -659,26 +756,60 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   // Placeholder CSS, keyed by placeholder slug: one withheld module's
   // placeholder used on five placements is emitted once.
   const deferredCss = new Map<string, string>();
+  const moduleFailures: ComposeModuleFailure[] = [];
+  // Nested modules rendered since the last asset flush (see flushNestedAssets).
+  const nestedAssetIds: string[] = [];
   if (input.layoutCss.trim().length > 0) cssParts.push(input.layoutCss);
   if (input.templateCss.trim().length > 0) cssParts.push(input.templateCss);
 
   // 1. Render the page modules into the template (slot replacement only;
   //    no head/body manipulation here — that belongs to the layout).
   const templateContentByName = new Map<string, string>();
-  const renderPlaced = (m: ComposeModule): string => {
+  const renderPlaced = (blockName: string, m: ComposeModule): string => {
+    const deferral = input.deferredModules?.[m.moduleId];
+    // Nested modules rendered inside THIS placement when it is withheld.
+    const gatedNestedIds = new Set<string>();
     const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
     let baseHtml: string;
     if (navMenuItems !== null) {
       navRendered = true;
       baseHtml = renderNavMenuHtml(navMenuItems);
     } else {
-      baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme, input);
+      const rendered = renderModuleFields(m, input);
+      baseHtml = rendered.html;
+      recordFailures(moduleFailures, blockName, m, rendered.failures);
+      for (const id of rendered.nestedModuleIds) {
+        const nestedDeferral = input.deferredModules?.[id];
+        if (nestedDeferral) {
+          const nestedSlug = input.nestedModules?.getModule(id)?.slug ?? id;
+          throw new ComposeError(
+            "nested-module-deferred",
+            `module "${nestedSlug}" is withheld by plugin "${nestedDeferral.pluginSlug}" (${nestedDeferral.reason}) but sits inside module "${m.slug}" in block "${blockName}", where it cannot be gated — ` +
+              "place it on the page directly instead of inside another module's field",
+            input.layoutSlug,
+          );
+        }
+        // Inside a withheld parent the nested module is withheld too:
+        // its CSS/JS go into the parent's <template>, never the page-wide
+        // bundles, or its `fetch()` / `url(…)` would run before consent.
+        if (deferral) {
+          if (id !== m.moduleId) gatedNestedIds.add(id);
+        } else {
+          nestedAssetIds.push(id);
+        }
+      }
     }
     const tagged = tagModuleId(baseHtml, m.moduleId);
-    const deferral = input.deferredModules?.[m.moduleId];
     if (!deferral) return tagged;
     deferredCss.set(deferral.placeholderModuleSlug, deferral.placeholderCss);
-    return wrapDeferredModule(tagged, m, deferral);
+    const gatedNested = [...gatedNestedIds].map((id) => {
+      const nested = input.nestedModules?.getModule(id);
+      // renderModuleFields resolved every id it reports through this
+      // same resolver; an unresolvable one here is a broken resolver.
+      if (!nested) throw new Error(`nested module ${id} rendered but not resolvable`);
+      return nested;
+    });
+    return wrapDeferredModule(tagged, m, gatedNested, deferral);
   };
   // A withheld module's CSS/JS travel inside its <template> (see
   // wrapDeferredModule); only modules that render normally feed the
@@ -690,10 +821,23 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     if (m.css.trim().length > 0) cssParts.push(m.css);
     if (m.js.trim().length > 0) jsParts.push(m.js);
   };
+  // Nested modules' CSS/JS join the bundles right after the block whose
+  // modules contain them, deduped with the placed modules (#158).
+  const flushNestedAssets = (): void => {
+    for (const id of nestedAssetIds.splice(0)) {
+      if (seenAssetModules.has(id)) continue;
+      seenAssetModules.add(id);
+      const nested = input.nestedModules?.getModule(id);
+      if (!nested) continue;
+      if (nested.css.trim().length > 0) cssParts.push(nested.css);
+      if (nested.js.trim().length > 0) jsParts.push(nested.js);
+    }
+  };
   for (const block of input.blocks) {
-    const renderedModuleHtml = block.modules.map(renderPlaced);
+    const renderedModuleHtml = block.modules.map((m) => renderPlaced(block.blockName, m));
     templateContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
     for (const m of block.modules) collectAssets(m);
+    flushNestedAssets();
   }
   const renderedTemplate = applySlotReplacements(input.templateHtml, {
     contentByName: templateContentByName,
@@ -708,9 +852,10 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   layoutContentByName.set("content", innerBody);
   for (const block of input.layoutBlocks) {
     if (block.blockName === "content") continue; // reserved for the page body
-    const renderedModuleHtml = block.modules.map(renderPlaced);
+    const renderedModuleHtml = block.modules.map((m) => renderPlaced(block.blockName, m));
     layoutContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
     for (const m of block.modules) collectAssets(m);
+    flushNestedAssets();
   }
 
   for (const css of deferredCss.values()) {
@@ -779,5 +924,6 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     html,
     replacedSlots: [...replacedSet],
     missingSlots: [...missingSet],
+    moduleFailures,
   };
 }

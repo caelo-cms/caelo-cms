@@ -19,8 +19,9 @@ import { fontReader } from "@caelo-cms/font-service";
  * `builds/<runId>/` archive stays immutable for content-addressed
  * rollback (`deploy.rollback` re-syncs an older build into `current/`).
  *
- * Composition reuses `composePagePreview` from shared so preview and
- * production produce the same HTML byte-for-byte.
+ * Composition reuses `composePageWithLayout` from shared, with nested
+ * modules rendered by the same recursive renderer as the editor preview,
+ * so preview and production produce the same HTML.
  */
 
 import { copyFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
@@ -47,6 +48,11 @@ import {
 } from "./content-variants-pass.js";
 import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
+import {
+  assertNoRenderFailures,
+  loadNestedModules,
+  type RenderedPageForGate,
+} from "./nested-modules-pass.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import {
   buildRobotsTxtWithSitemap,
@@ -163,7 +169,7 @@ function parseModuleFields(
       // dispatch fails to find a matching branch), so propagating the
       // raw string as the union type is a deliberate lie that keeps
       // the fail-loud channel intact. Compile-time safety lives at the
-      // callers (compose, preview-render) where `kind` originates from
+      // callers (compose, nested-module-render) where `kind` originates from
       // typed authoring tools rather than raw jsonb.
       const kind = typeof o.kind === "string" ? (o.kind as ModuleFieldKind) : undefined;
       out.push({ name: o.name, kind, default: o.default });
@@ -177,7 +183,7 @@ function parseModuleFields(
 /**
  * Parse the jsonb `content_instances.values` column. Per-placement
  * override map keyed by module field name — see
- * `applyFieldSubstitution` in `@caelo-cms/shared/preview-compose` for
+ * `renderModuleFields` in `@caelo-cms/shared/preview-compose` for
  * substitution semantics. Returns undefined on null / malformed /
  * non-object so compose falls back to field defaults.
  */
@@ -790,9 +796,17 @@ export async function generateSite(args: {
     pageUrlStyle,
   );
 
-  for (let i = 0; i < pageRows.length; i++) {
-    const page = pageRows[i];
-    if (!page) continue;
+  // Every page's blocks as the composer will receive them (content
+  // variants applied), so the nested-module load below sees exactly the
+  // values that render.
+  const composeInputsByPage = new Map<
+    string,
+    {
+      blocks: ReturnType<typeof groupModulesByBlock>;
+      layoutBlocks: ReturnType<typeof applyContentVariants>["layoutBlocks"];
+    }
+  >();
+  for (const page of pageRows) {
     const modRows = modRowsByPage.get(page.page_id) ?? [];
     const applied = applyContentVariants(
       page.page_id,
@@ -807,7 +821,27 @@ export async function generateSite(args: {
         return values === undefined ? r : { ...r, content_values: JSON.stringify(values) };
       }),
     );
-    const layoutBlocks = applied.layoutBlocks;
+    composeInputsByPage.set(page.page_id, { blocks, layoutBlocks: applied.layoutBlocks });
+  }
+  // Modules reached only through a module / module-list field (cards in
+  // a grid, plans in a pricing table) have no placement row of their
+  // own; load them so the composer renders them recursively, exactly as
+  // the editor preview does.
+  const nestedModules = await loadNestedModules(
+    tx,
+    [...composeInputsByPage.values()].flatMap((c) =>
+      [...c.blocks, ...c.layoutBlocks].flatMap((b) => b.modules),
+    ),
+  );
+  const renderedForGate: RenderedPageForGate[] = [];
+
+  for (let i = 0; i < pageRows.length; i++) {
+    const page = pageRows[i];
+    if (!page) continue;
+    const modRows = modRowsByPage.get(page.page_id) ?? [];
+    const composeInput = composeInputsByPage.get(page.page_id);
+    if (!composeInput) continue;
+    const { blocks, layoutBlocks } = composeInput;
     // P6.7.6 — composer throws ComposeError on layout misconfiguration
     // (e.g. layout HTML missing the required `content` slot). Surface
     // it with the page slug so the deploy operator can locate the
@@ -828,6 +862,7 @@ export async function generateSite(args: {
         dataLists: allLists.get(page.page_id) ?? {},
         dormantDataLists: dormantLists,
         deferredModules,
+        nestedModules,
       });
     } catch (e) {
       if (e instanceof ComposeError) {
@@ -841,6 +876,11 @@ export async function generateSite(args: {
       pageSlug: page.slug,
       pageTitle: page.title,
       relPath: pageOutputPath(page.current_path, target.pageUrlStyle),
+    });
+    renderedForGate.push({
+      pageSlug: page.slug,
+      html: composed.html,
+      moduleFailures: composed.moduleFailures,
     });
     // P13 — record per-page bake target for the plugin render pass.
     bakeTargets.set(page.slug, {
@@ -870,6 +910,11 @@ export async function generateSite(args: {
     }
     args.onProgress?.({ pagesDone: i + 1, pagesTotal: pageRows.length });
   }
+
+  // A module whose content could not render (a broken nested ref, a
+  // malformed list item, …) would ship as a silently empty section.
+  // Refuse the build and name every page / module / field instead.
+  assertNoRenderFailures(renderedForGate);
 
   // P7 — media pass. Mutates each composedPages[i].html in place to
   // swap /_caelo/media/... URLs for /_assets/...; copies variant bytes

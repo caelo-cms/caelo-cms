@@ -42,10 +42,31 @@ export const setContentInstanceValuesTool: ToolDefinitionWithHandler<
         content: `content_instances.set_values failed: ${describeError(r.error)}`,
       };
     }
-    const { placementCount, version } = r.value as { placementCount: number; version: number };
+    const { placementCount, nestedParentCount, version } = r.value as {
+      placementCount: number;
+      nestedParentCount: number;
+      version: number;
+    };
     return {
       ok: true,
-      content: `content_instance ${input.id} updated to v${version}. ${placementCount === 0 ? "Orphan — no placements affected." : `Propagated to ${placementCount} placement(s).`}`,
+      content: `content_instance ${input.id} updated to v${version}. ${reachSummary(placementCount, nestedParentCount)}`,
     };
   },
 };
+
+/**
+ * Where the edit shows. An instance listed in another instance's
+ * `module` / `module-list` field has no placement of its own yet renders
+ * inside its parents — calling it an orphan sent the AI looking for a
+ * problem that was not there.
+ */
+function reachSummary(placementCount: number, nestedParentCount: number): string {
+  const nested =
+    nestedParentCount > 0
+      ? `Nested in ${nestedParentCount} parent content instance(s) — shows wherever those render.`
+      : "";
+  if (placementCount > 0) {
+    return `Propagated to ${placementCount} placement(s).${nested ? ` ${nested}` : ""}`;
+  }
+  return nested || "Orphan — not placed on any page and not nested in another module.";
+}

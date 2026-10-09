@@ -49,6 +49,8 @@ When you have pending changes, the toolbar shows:
 
 The AI stages finished work itself: you describe what you want, it makes the changes, stages them and checks the staging build (Lighthouse quality check). **Publish live is always your click** — nothing the AI staged ever goes live on its own, not even with automatic redeploys switched on. Staging gives you a preview URL you can share before production changes.
 
+Sections built from smaller pieces — a grid of cards, a pricing table of plans, a list of FAQ items — are published exactly as the editor preview shows them. If a piece cannot be rendered (for example, a card list still points at a card that was deleted), the Stage stops instead of publishing the section empty, and the message names the page, the section and the field to fix.
+
 ## One shared draft
 
 All chats work in the site's **shared draft**: open two chats and each sees the other's unstaged changes in its preview. Chats are conversations, not separate copies of the site.

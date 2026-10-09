@@ -34,6 +34,7 @@ import {
   type ComposeFonts,
   type ComposeTheme,
   type ComposeThemeAsset,
+  collectNestedRefs,
   composePageWithLayout,
   enrichResponsiveImages,
   err,
@@ -42,7 +43,11 @@ import {
   injectSeoIntoHead,
   listThemeCssVarNames,
   type ModuleFieldKind,
+  type NestedContentInstanceResource,
+  type NestedModuleResource,
+  type NestedRenderResolver,
   ok,
+  renderModuleWithContent,
   renderSeoHead,
   resolveDocumentLanguage,
   type SiteSeoSettings,
@@ -55,13 +60,6 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { pendingSnapshotSql } from "../../draft.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
-import {
-  type ContentInstanceResource,
-  collectNestedRefs,
-  type ModuleResource,
-  type RenderResolver,
-  renderModuleWithContent,
-} from "./preview-render.js";
 import { resolvePreviewContentVariants } from "./preview-variants.js";
 import { loadPublishPageUrlStyle } from "./public-urls.js";
 
@@ -79,7 +77,7 @@ interface ModuleSourceRow {
 }
 
 // v0.12.1 — `substituteFields` was replaced by the recursive renderer
-// in `./preview-render.ts`. The new renderer subsumes the v0.4.0 flat
+// shared with the static generator (`@caelo-cms/shared` nested-module-render.ts). The new renderer subsumes the v0.4.0 flat
 // behaviour AND handles {{>field}} / {{#field}}…{{/field}} slots for
 // nested module / module-list field kinds.
 
@@ -536,8 +534,8 @@ export const renderPagePreviewOp = defineOperation({
     // the renderer never blocks on I/O. Mirrors the v0.4.0 substitution
     // for the flat case (modules with primitive fields only); recurses
     // into module / module-list fields.
-    const moduleByIdResource = new Map<string, ModuleResource>();
-    const instanceByIdResource = new Map<string, ContentInstanceResource>();
+    const moduleByIdResource = new Map<string, NestedModuleResource>();
+    const instanceByIdResource = new Map<string, NestedContentInstanceResource>();
     for (const m of modRows) {
       moduleByIdResource.set(m.module_id, {
         moduleId: m.module_id,
@@ -696,7 +694,7 @@ export const renderPagePreviewOp = defineOperation({
       }
     }
 
-    const resolver: RenderResolver = {
+    const resolver: NestedRenderResolver = {
       getModule: (id) => moduleByIdResource.get(id) ?? null,
       getContentInstance: (id) => instanceByIdResource.get(id) ?? null,
     };
@@ -828,7 +826,7 @@ export const renderPagePreviewOp = defineOperation({
       placementBindings.set(key, { ...binding, contentInstanceId: id });
     }
 
-    const nestedCssJsByModuleId = new Map<string, ModuleResource>();
+    const nestedCssJsByModuleId = new Map<string, NestedModuleResource>();
     for (const m of modRows) {
       const binding = placementBindings.get(`${m.block_name}#${m.position}`);
       if (!binding) {

@@ -215,6 +215,8 @@ describe("renderTemplate — module-list section", () => {
       "<!-- caelo:module-list cards needs recursive renderer (compose path) -->",
     );
     expect(r.html).not.toMatch(/\{\{[#/]/);
+    // Structured twin of the comment, so a deploy can refuse it.
+    expect(r.missingSlots).toEqual(["nested-renderer-unavailable:cards[0]"]);
   });
 
   it("per-element malformed ref becomes loud comment + tracks module-list-malformed", () => {
@@ -253,6 +255,7 @@ describe("renderTemplate — single nested {{>name}}", () => {
       contentValues: { hero: { moduleId: "m", contentInstanceId: "c" } },
     });
     expect(r.html).toContain("<!-- caelo:module hero needs recursive renderer (compose path) -->");
+    expect(r.missingSlots).toEqual(["nested-renderer-unavailable:hero"]);
   });
 
   it("malformed ref value becomes module-ref-malformed comment + tracks marker", () => {
