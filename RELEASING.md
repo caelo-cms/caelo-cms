@@ -22,10 +22,10 @@ that PR merges the workflow tags the merge commit and dispatches
 
 Before it bumps anything, release-cut requires the real-AI live-edit
 suite (`e2e-livedit.yml`) to be green on the exact `main` commit being
-released. Main is covered nightly, not per push, so when no green run
-exists for that commit the cut dispatches one and waits for it (about
-15 minutes, ~$4.50 of API spend). A red run stops the cut; fix main and
-re-run release-cut.
+released. Main gets no real-AI run per push, so the cut dispatches one
+on that commit and waits for it (about 15 minutes, ~$4.50 of API spend);
+a green run from an earlier attempt on the same commit is reused. A red
+run stops the cut; fix main and re-run release-cut.
 
 One-time setup: CI needs the shipped-plugin manifest signing key
 (release.ts re-signs the plugin manifests; the `TIER1` in the secret

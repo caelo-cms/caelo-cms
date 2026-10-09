@@ -77,43 +77,27 @@ for (const { file, aiJob } of CASES) {
 }
 
 /**
- * Main coverage for the real-AI suite (2026-10-09): nightly instead of per
- * push, and release-cut refuses to cut unless the suite is green on the
- * exact commit being released.
+ * Main coverage for the real-AI suite (2026-10-09): once per release instead
+ * of per push.
  *
- * N1: e2e-livedit.yml has no push trigger (a squash merge re-ran what its PR
- *     already ran) and does have a nightly schedule + workflow_dispatch.
- * N2: the nightly run only skips when the AI JOB already succeeded on the
- *     same commit (head_sha), never on a merely green workflow.
- * N3: release-cut's cut job gates on the AI job's success on HEAD before the
+ * N1: e2e-livedit.yml has no push or schedule trigger (a squash merge re-ran
+ *     what its PR already ran); workflow_dispatch stays for release-cut.
+ * N2: release-cut's cut job gates on the AI job's success on HEAD before the
  *     release script runs, dispatching a run when there is none.
  */
-describe("e2e-livedit.yml — main runs nightly, release-cut gates on it", () => {
+describe("e2e-livedit.yml — main runs once per release, gated in release-cut", () => {
   const livedit = yaml.load(
     readFileSync(resolve(REPO_ROOT, ".github/workflows/e2e-livedit.yml"), "utf8"),
   ) as { on: Record<string, unknown>; jobs: Record<string, Job> };
   const cut = yaml.load(
     readFileSync(resolve(REPO_ROOT, ".github/workflows/release-cut.yml"), "utf8"),
   ) as { jobs: Record<string, Job> };
-  const gateRun = livedit.jobs["prior-success"]?.steps?.find((s) => s.id === "check")?.run ?? "";
 
-  it("N1: no push trigger; nightly schedule and manual dispatch", () => {
-    expect(livedit.on).not.toHaveProperty("push");
-    expect(livedit.on).toHaveProperty("schedule");
-    expect(livedit.on).toHaveProperty("workflow_dispatch");
+  it("N1: PR and manual dispatch only; no push or schedule trigger", () => {
+    expect(Object.keys(livedit.on).sort()).toEqual(["pull_request", "workflow_dispatch"]);
   });
 
-  it("N2: the nightly skip requires the AI job's success on the same commit", () => {
-    const schedule = gateRun.slice(gateRun.indexOf('if [ "$EVENT" = "schedule" ]'));
-    expect(schedule).toContain("head_sha=$HEAD_SHA");
-    expect(schedule).toContain('.conclusion == \\"success\\"');
-    expect(livedit.jobs["prior-success"]?.steps?.[0]?.env?.HEAD_SHA).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: a literal GitHub Actions expression
-      "${{ github.sha }}",
-    );
-  });
-
-  it("N3: release-cut gates on the AI job before the release script runs", () => {
+  it("N2: release-cut gates on the AI job before the release script runs", () => {
     const steps = cut.jobs.cut?.steps ?? [];
     const gate = steps.findIndex((s) => (s.run ?? "").includes('gh workflow run "$WORKFLOW_FILE"'));
     const release = steps.findIndex((s) => (s.run ?? "").includes("scripts/release.ts"));

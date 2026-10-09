@@ -78,11 +78,11 @@ jobs:
           token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Gate — real-AI suite green on this main commit
-        # Main is no longer covered per push (e2e-livedit.yml runs nightly),
-        # so no release ships without the real-AI suite having passed on the
-        # exact commit being released. Reuse a green run on this SHA if one
-        # exists (nightly, or an earlier dispatch); otherwise dispatch one on
-        # main and wait for it. A workflow_dispatch made with GITHUB_TOKEN
+        # Main is not covered per push (e2e-livedit.yml runs on PRs only),
+        # so this is where main gets its real-AI run: once per release, on
+        # the exact commit being released. A green run on this SHA from an
+        # earlier attempt of this cut is reused instead of paid for twice;
+        # otherwise dispatch one on main and wait for it. A workflow_dispatch made with GITHUB_TOKEN
         # does trigger the target workflow (the same path tag-and-publish
         # uses for release.yml).
         timeout-minutes: 75
