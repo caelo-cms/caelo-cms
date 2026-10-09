@@ -97,7 +97,10 @@ describe("attachGatedExecute — approver permission (#589)", () => {
   it("applies when the approving human holds the executor's permission", async () => {
     const { calls, run } = harness(true);
     const r = await run(OWNER);
-    expect(r).toEqual({ ok: true, value: { applied: true } });
+    // The model reads the status first: approved and applied, nothing
+    // pending (a bare op output read as "still waiting for the click").
+    expect(r).toMatchObject({ ok: true, value: { applied: true } });
+    expect((r as { status?: string }).status).toContain("APPLIED");
     expect(calls.map((c) => c.op)).toEqual(["widgets.propose_update", "widgets.execute_proposal"]);
   });
 

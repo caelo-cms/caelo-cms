@@ -148,6 +148,11 @@ describe("chatFeedbackFor", () => {
     expect(at(0)?.text).toContain("Fix round 1 of 2");
     expect(at(0)?.text).toContain("/, /a, /b, /c and 1 more");
     expect(at(1)?.text).toContain("Fix round 2 of 2");
+    // Issue #620 — the AI stages its own fixes; a "ask me to Stage" here
+    // taught it the operator stages, and it stopped staging later work
+    // (PR #624 real-AI homepage run).
+    expect(at(0)?.text).toContain("Stage again yourself (stage_changes)");
+    expect(at(0)?.text).not.toContain("ask me to Stage");
     expect(at(MAX_AUTO_FIX_ROUNDS)?.text).toContain("Do not change the site further");
     expect(at(MAX_AUTO_FIX_ROUNDS)?.text).toContain("accept_quality_findings");
   });

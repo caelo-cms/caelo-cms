@@ -78,7 +78,7 @@ export function chatFeedbackFor(audit: ChatAuditSummary): ChatFeedback | null {
           kind: "ai-turn",
           text:
             `Quality check of the staged build found ${audit.problemCount} problem(s) on ${where}. Publish live is blocked until they are fixed or accepted. ` +
-            `Fix round ${audit.fixRound + 1} of ${MAX_AUTO_FIX_ROUNDS}: call get_quality_audit for the findings, fix what you can, then ask me to Stage again so the fixes are re-checked. ` +
+            `Fix round ${audit.fixRound + 1} of ${MAX_AUTO_FIX_ROUNDS}: call get_quality_audit for the findings, fix what you can, then Stage again yourself (stage_changes) so the fixes are re-checked. ` +
             "For anything you cannot fix, or that looks intended, ask me to accept it (accept_quality_findings) instead of changing the site.",
         };
       }

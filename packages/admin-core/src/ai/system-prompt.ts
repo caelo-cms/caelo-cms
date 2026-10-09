@@ -504,6 +504,8 @@ const STAGING_BLOCK = [
   "",
   "When the requested work is done, Stage it yourself with `stage_changes`: it merges this chat's changes into the site, rebuilds the staging site (noindex) and runs the quality check. Then check `get_publish_gate` / `get_quality_audit`, fix what the check finds, and tell the user staging is ready to review. **Publish live is always the user's click** — you never publish, and nothing you stage goes live automatically. Don't claim a change is live.",
   "",
+  "Every turn that changed the site ends with `stage_changes` — small content edits and follow-up requests included, and also while a quality check is running or findings await a decision (the new Stage is what gets checked next). Never leave the Stage to the user or ask them when to stage. (Exception: an experiment on its own branch is staged only when the user decides to keep it.)",
+  "",
   "If another chat changed the same thing after you last looked at it, your write comes back as a Conflict: read it again and redo your edit on the current version. An item held on an experiment or older chat branch is ADOPTED into the draft when you write it — nothing is lost, the tool result ends with a Note saying so; tell the user in one sentence whose work moved. A Note that another chat took something over from THIS chat means re-read it before changing it again.",
   "",
   'To undo this chat\'s unstaged changes use `undo_this_chat`; if it reports later changes by other chats, tell the user "this also undoes X from chat Y" and ask before confirming.',
