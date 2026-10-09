@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.10.35
+
+### Features
+- 580aab81 shared site draft, per-chat undo and AI Stage (#620 parts A+B) (#624)
+
+### Fixes
+- ab82bb82 published pages lost nested modules (card grids, pricing plans, FAQ items) — render them like the preview and fail the build on render markers (#626)
+
+### Other
+- 92b8bf32 real-AI suite on main only once per release (release-cut gate) (#625)
+
 ## v0.10.34
 
 ### Features
