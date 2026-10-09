@@ -75,3 +75,38 @@ for (const { file, aiJob } of CASES) {
     });
   });
 }
+
+/**
+ * Main coverage for the real-AI suite (2026-10-09): once per release instead
+ * of per push.
+ *
+ * N1: e2e-livedit.yml has no push or schedule trigger (a squash merge re-ran
+ *     what its PR already ran); workflow_dispatch stays for release-cut.
+ * N2: release-cut's cut job gates on the AI job's success on HEAD before the
+ *     release script runs, dispatching a run when there is none.
+ */
+describe("e2e-livedit.yml — main runs once per release, gated in release-cut", () => {
+  const livedit = yaml.load(
+    readFileSync(resolve(REPO_ROOT, ".github/workflows/e2e-livedit.yml"), "utf8"),
+  ) as { on: Record<string, unknown>; jobs: Record<string, Job> };
+  const cut = yaml.load(
+    readFileSync(resolve(REPO_ROOT, ".github/workflows/release-cut.yml"), "utf8"),
+  ) as { jobs: Record<string, Job> };
+
+  it("N1: PR and manual dispatch only; no push or schedule trigger", () => {
+    expect(Object.keys(livedit.on).sort()).toEqual(["pull_request", "workflow_dispatch"]);
+  });
+
+  it("N2: release-cut gates on the AI job before the release script runs", () => {
+    const steps = cut.jobs.cut?.steps ?? [];
+    const gate = steps.findIndex((s) => (s.run ?? "").includes('gh workflow run "$WORKFLOW_FILE"'));
+    const release = steps.findIndex((s) => (s.run ?? "").includes("scripts/release.ts"));
+    expect(gate).toBeGreaterThanOrEqual(0);
+    expect(gate).toBeLessThan(release);
+    const step = steps[gate];
+    expect(step?.env?.WORKFLOW_FILE).toBe("e2e-livedit.yml");
+    expect(step?.env?.JOB_NAME).toBe(livedit.jobs["e2e-livedit"]?.name);
+    expect(step?.run ?? "").toContain("head_sha=$SHA");
+    expect(step?.run ?? "").toContain('.conclusion == \\"success\\"');
+  });
+});

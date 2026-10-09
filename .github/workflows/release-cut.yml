@@ -77,6 +77,60 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
+      - name: Gate — real-AI suite green on this main commit
+        # Main is not covered per push (e2e-livedit.yml runs on PRs only),
+        # so this is where main gets its real-AI run: once per release, on
+        # the exact commit being released. A green run on this SHA from an
+        # earlier attempt of this cut is reused instead of paid for twice;
+        # otherwise dispatch one on main and wait for it. A workflow_dispatch made with GITHUB_TOKEN
+        # does trigger the target workflow (the same path tag-and-publish
+        # uses for release.yml).
+        timeout-minutes: 75
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          WORKFLOW_FILE: e2e-livedit.yml
+          JOB_NAME: Real-AI live-edit scenario
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          # Prints the id of a finished e2e-livedit run on $SHA whose AI job
+          # succeeded; fails when there is none. A green workflow is not
+          # enough (its AI job may have been skipped by a cost gate).
+          ai_job_ok() {
+            for id in $(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?head_sha=$SHA&status=success&per_page=50" --jq '.workflow_runs[].id'); do
+              ok=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
+                --jq "[.jobs[] | select(.name == \"$JOB_NAME\" and .conclusion == \"success\")] | length")
+              if [ "$ok" -gt 0 ]; then echo "$id"; return 0; fi
+            done
+            return 1
+          }
+          if run=$(ai_job_ok); then
+            echo "::notice::real-AI suite already green on $SHA (run $run)."
+            exit 0
+          fi
+          since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run "$WORKFLOW_FILE" --ref main
+          echo "dispatched $WORKFLOW_FILE on main for $SHA; waiting for the run to appear"
+          run=""
+          for _ in $(seq 1 20); do
+            run=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?event=workflow_dispatch&head_sha=$SHA&per_page=20" \
+              --jq "[.workflow_runs[] | select(.created_at >= \"$since\") | .id] | first // empty")
+            [ -n "$run" ] && break
+            sleep 15
+          done
+          if [ -z "$run" ]; then
+            echo "::error::no e2e-livedit run appeared for $SHA within 5 minutes. If main moved after this cut started, re-run release-cut."
+            exit 1
+          fi
+          echo "waiting for run $run: ${GITHUB_SERVER_URL}/${REPO}/actions/runs/$run"
+          gh run watch "$run" --repo "$REPO" --interval 60 >/dev/null || true
+          if ! ai_job_ok >/dev/null; then
+            echo "::error::the real-AI live-edit suite did not pass on $SHA (run ${GITHUB_SERVER_URL}/${REPO}/actions/runs/$run). Fix main, then re-run release-cut."
+            exit 1
+          fi
+          echo "::notice::real-AI suite green on $SHA (run $run)."
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
