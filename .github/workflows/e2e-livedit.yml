@@ -4,7 +4,9 @@ name: E2E Live Edit (real AI)
 # (Sonnet 5, adaptive thinking) so the regression classes the mock-AI
 # suite cannot catch (empty AI turns, orphan locks, missing primers)
 # get caught. Real cost is the cost of correctness per the operator
-# direction in the issue; no schedule, no label gating, no cost guard.
+# direction in the issue; no label gating. Repeat runs are cut by the
+# cost gates described at the trigger block (PR prior-success, nightly
+# main instead of per push).
 #
 # NOTE: this ran on every PR until the #315 regression made it
 # permanently red — see the trigger block below for the current scope
@@ -30,26 +32,36 @@ name: E2E Live Edit (real AI)
 # ai_pricing row that had been zeroing cost_estimate_microcents.
 
 # Runs on every PR to main (the real-AI regression gate — issue #47; on later
-# commits only until it has passed once on that PR — see prior-success), on push to
-# main, and on demand via workflow_dispatch. The `pull_request` trigger was
+# commits only until it has passed once on that PR — see prior-success), nightly
+# on main, and on demand via workflow_dispatch. The `pull_request` trigger was
 # temporarily removed in #325 while the #315 `scenario-extract-fields` regression
 # kept the suite red; it is restored here per operator direction. This suite is
 # the only thing that catches the regression classes the mock-AI suite cannot —
 # empty AI turns, orphan locks, schema drift, missing primers — see CLAUDE.md §6
 # and docs/internal/e2e-livedit.md. Required status check "Real-AI live-edit
 # scenario" (ruleset main-protection) is satisfied by this job's result.
+#
+# Main is covered nightly, not per push (operator direction, 2026-10-09): a
+# squash merge re-runs code its PR already ran green, and at ~15 merges a day
+# the per-push run was half of the suite's spend (~$4.50 per run). The nightly
+# run skips when main has not moved since its last green run, and release-cut
+# refuses to cut a release unless this suite is green on the exact main commit
+# being released (it dispatches a run when there is none). Trade-off: a
+# regression that only appears when two PRs combine on main surfaces at the
+# next nightly run or release, not at merge time.
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
+  schedule:
+    # 02:17 UTC — off the top of the hour, when scheduled runs queue longest.
+    - cron: "17 2 * * *"
   workflow_dispatch:
 
 concurrency:
   # A `git push` to a PR branch supersedes the prior run — cancel the
   # in-flight job so a fast push iteration doesn't queue a stale run.
-  # Push-to-main keeps cancel-in-progress = false so a main-bound run
-  # is never interrupted.
+  # Nightly and dispatched runs on main keep cancel-in-progress = false so
+  # a main-bound run (and a release-cut waiting on it) is never interrupted.
   group: e2e-livedit-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -92,8 +104,10 @@ jobs:
   # Cost gate: once the real-AI live-edit suite has succeeded on a PR, later commits to the
   # same PR skip it (Real-AI live-edit scenario reports SKIPPED; it is not a required check).
   # A new or reopened PR always runs. Accepted trade-off: a later commit
-  # that breaks something this run would catch goes unchecked until main
-  # (push-to-main still runs) — rerun by closing/reopening the PR.
+  # that breaks something this run would catch goes unchecked until the
+  # nightly main run or the release-cut gate — rerun by closing/reopening the PR.
+  # The nightly run skips when this suite already passed on the same main
+  # commit (no merge since the last green run). A manual dispatch always runs.
   prior-success:
     name: Prior AI run check
     runs-on: ubuntu-latest
@@ -113,10 +127,29 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_CREATED: ${{ github.event.pull_request.created_at }}
           RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
           WORKFLOW_FILE: e2e-livedit.yml
           JOB_NAME: Real-AI live-edit scenario
         run: |
           set -euo pipefail
+          if [ "$EVENT" = "schedule" ]; then
+            # Nightly: skip when the suite already passed on this exact
+            # commit (main has not moved since the last green run).
+            hit=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?head_sha=$HEAD_SHA&status=success&per_page=50" \
+              --jq "[.workflow_runs[] | select(.id != $RUN_ID) | .id] | .[]")
+            passed=false
+            for id in $hit; do
+              ok=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
+                --jq "[.jobs[] | select(.name == \"$JOB_NAME\" and .conclusion == \"success\")] | length")
+              if [ "$ok" -gt 0 ]; then
+                passed=true
+                echo "::notice::the real-AI live-edit suite already passed on $HEAD_SHA (run $id); main has not moved, skipping the nightly run."
+                break
+              fi
+            done
+            echo "passed=$passed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$EVENT" != "pull_request" ] || [ "$ACTION" != "synchronize" ]; then
             echo "passed=false" >> "$GITHUB_OUTPUT"
             exit 0
