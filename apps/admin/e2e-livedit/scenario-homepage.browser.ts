@@ -81,11 +81,17 @@ interface PageModuleSnapshot {
 }
 
 /**
- * Find the most-recently-touched page (created or content-updated)
- * and snapshot its placements + content rows. Returns null when no
- * page has been touched since `sinceTimestamp` — surfaces "AI emitted
- * no add_page tool call" loudly rather than asserting against stale
- * seed pages.
+ * Find the HOMEPAGE the scenario built — the touched page that serves the
+ * site root (slug 'home' / 'index'), else the most-recently-touched page —
+ * and snapshot its placements + content rows. Returns null when no page
+ * has been touched since `sinceTimestamp` — surfaces "AI emitted no
+ * add_page tool call" loudly rather than asserting against stale seed
+ * pages.
+ *
+ * Issue #620 — the AI stages its own work now, and a Stage reports broken
+ * internal links ("fix them before publishing"): the AI then builds the
+ * pages its nav links to. "Most recently touched" picked one of those
+ * one-section pages instead of the homepage the assertions are about.
  */
 function snapshotMostRecentPage(sinceTimestamp: string): PageModuleSnapshot | null {
   const raw = spawnSync(
@@ -107,7 +113,8 @@ function snapshotMostRecentPage(sinceTimestamp: string): PageModuleSnapshot | nu
             FROM pages p
             WHERE p.deleted_at IS NULL
               AND GREATEST(p.created_at, p.updated_at) >= \${process.env.SINCE}::timestamptz
-            ORDER BY GREATEST(p.created_at, p.updated_at) DESC
+            ORDER BY (p.slug IN ('home', 'index')) DESC,
+                     GREATEST(p.created_at, p.updated_at) DESC
             LIMIT 1
           \`;
           if (pages.length === 0) {

@@ -56,6 +56,14 @@ export function resetLiveditFixtures(): void {
     const sql = new SQL(process.env.ADMIN_DATABASE_URL);
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      // Issue #620 — every chat shares the site draft: the chats deleted
+      // below leave their unstaged draft changes (a theme edit, a layout
+      // block) pending on the shared branch, owned by a chat that no longer
+      // exists. The next scenario's chats would see them as "a change made
+      // outside a chat" (version conflicts) and every Stage would carry
+      // them. End them with their chats.
+      await tx\`UPDATE site_snapshots SET undone_at = now()
+               WHERE chat_branch_id IS NOT NULL AND staged_at IS NULL AND undone_at IS NULL\`;
       await tx\`DELETE FROM chat_entity_locks\`;
       await tx\`DELETE FROM chat_tool_results\`;
       await tx\`DELETE FROM chat_branch_publish_marks\`;
