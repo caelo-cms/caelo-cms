@@ -25,6 +25,7 @@
 
 import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
 import {
+  collectNestedRefs,
   contentInstanceCreateSchema,
   contentInstanceDeleteSchema,
   contentInstancesCreateManySchema,
@@ -49,6 +50,7 @@ import {
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { findContentInstancesContaining } from "./content-instance-refs.js";
 
 // ─── Row shape returned by reads ─────────────────────────────────────
 
@@ -791,6 +793,13 @@ export const setContentInstanceValuesOp = defineOperation({
   input: contentInstanceUpdateSchema,
   output: z.object({
     placementCount: z.number().int().nonnegative(),
+    /**
+     * Content instances (as the caller sees them) that list this one in a
+     * `module` / `module-list` field. An instance with no placement of its
+     * own still renders wherever those parents render — it is not an
+     * orphan.
+     */
+    nestedParentCount: z.number().int().nonnegative(),
     version: z.number().int().positive(),
   }),
   handler: async (ctx, input, tx) => {
@@ -884,6 +893,7 @@ export const setContentInstanceValuesOp = defineOperation({
     // live row stays untouched until chat.publish merges.
 
     const placementCount = await countPlacements(tx, input.id);
+    const nestedParentCount = await countNestedParents(tx, branchId, input.id);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -936,9 +946,29 @@ export const setContentInstanceValuesOp = defineOperation({
       });
     }
 
-    return ok({ placementCount, version: nextVersion });
+    return ok({ placementCount, nestedParentCount, version: nextVersion });
   },
 });
+
+/**
+ * How many content instances (live + the caller's branch view) reference
+ * `contentInstanceId` from a `module` / `module-list` field. The substring
+ * prefilter is confirmed against the parsed refs.
+ */
+async function countNestedParents(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  chatBranchId: string | null,
+  contentInstanceId: string,
+): Promise<number> {
+  const candidates = await findContentInstancesContaining(tx, chatBranchId, [contentInstanceId]);
+  return candidates.filter(
+    (c) =>
+      c.contentInstanceId !== contentInstanceId &&
+      collectNestedRefs(JSON.parse(c.valuesText) as Record<string, unknown>).some(
+        (r) => r.contentInstanceId === contentInstanceId,
+      ),
+  ).length;
+}
 
 // ─── content_instances.delete ────────────────────────────────────────
 

@@ -261,8 +261,12 @@ describe("static build renders nested modules", () => {
       { id: card.contentInstanceId, values: { plan_name: "Enterprise" } },
     );
     expect(edit.ok).toBe(true);
-    // Nested-only: no placement of its own.
-    expect((edit.value as { placementCount: number }).placementCount).toBe(0);
+    // Nested-only: no placement of its own, but listed by the grid — not
+    // an orphan (the AI used to be told "Orphan — no placements affected").
+    expect(edit.value as { placementCount: number; nestedParentCount: number }).toMatchObject({
+      placementCount: 0,
+      nestedParentCount: 1,
+    });
 
     // Branched: main (and so the build) is unchanged until the merge.
     const before = build(page.pageId, `${PFX}-pre-merge`);
