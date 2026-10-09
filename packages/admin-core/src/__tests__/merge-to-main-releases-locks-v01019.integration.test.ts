@@ -27,6 +27,11 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
+// Issue #620 — these chats run on ISOLATED branches (experiments): the
+// suite covers the per-branch mechanics isolated chats keep (experiments,
+// migrations, pre-draft chats). The shared draft has its own suite
+// (shared-draft.integration.test.ts).
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -97,6 +102,7 @@ describe("v0.10.19 — chat.merge_to_main releases entity locks", () => {
 
     // Chat A — the chat that holds (and then should release) the lock.
     const cA = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}Chat A`,
     });
     if (!cA.ok) throw new Error("seed chat A");
@@ -107,6 +113,7 @@ describe("v0.10.19 — chat.merge_to_main releases entity locks", () => {
 
     // Chat B — the contender that gets stuck pre-v0.10.19.
     const cB = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}Chat B`,
     });
     if (!cB.ok) throw new Error("seed chat B");

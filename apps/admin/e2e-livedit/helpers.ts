@@ -8,10 +8,11 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Page, Response } from "@playwright/test";
 import { expect } from "@playwright/test";
-import { ADMIN_LOG_PATH } from "./global-setup.js";
+import { ADMIN_LOG_DIR, ADMIN_LOG_PATH } from "./global-setup.js";
 import { fetchVisionVerdict, type VisionVerdict } from "./lib/vision-verdict.js";
 
 // Re-export for spec convenience (parallel to apps/admin/e2e/helpers.ts).
@@ -34,6 +35,50 @@ function runBunInline(script: string, extraEnv: Record<string, string> = {}): st
   return result.stdout;
 }
 
+/** Where scenario chat transcripts land (uploaded with the run's artifacts). */
+const TRANSCRIPT_DIR = resolve(ADMIN_LOG_DIR, "transcripts");
+
+/**
+ * Write every chat session with its messages — role, content, tool calls,
+ * tool results, thinking blocks and the SDK's canonical
+ * `response_messages` — to one JSON file per call, named
+ * `<label>-<timestamp>.json`, so the transcripts of every scenario and
+ * every retry survive until the artifact upload.
+ */
+export function dumpChatTranscripts(label: string): void {
+  mkdirSync(TRANSCRIPT_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  runBunInline(
+    `
+    import { SQL } from "bun";
+    import { writeFileSync } from "node:fs";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    let sessions = [];
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      sessions = await tx\`
+        SELECT cs.id::text AS id, cs.title, cs.branch_kind, cs.created_at,
+               COALESCE((
+                 SELECT json_agg(json_build_object(
+                   'role', m.role, 'createdAt', m.created_at, 'content', m.content,
+                   'toolCalls', m.tool_calls, 'toolCallId', m.tool_call_id,
+                   'status', m.status, 'origin', m.origin,
+                   'thinkingBlocks', m.thinking_blocks,
+                   'responseMessages', m.response_messages
+                 ) ORDER BY m.created_at, m.id)
+                 FROM chat_messages m WHERE m.chat_session_id = cs.id
+               ), '[]'::json) AS messages
+        FROM chat_sessions cs
+        ORDER BY cs.created_at
+      \`;
+    });
+    await sql.end();
+    if (sessions.length > 0) writeFileSync(process.env.OUT, JSON.stringify(sessions, null, 2));
+    `,
+    { OUT: resolve(TRANSCRIPT_DIR, `${label}-${stamp}.json`) },
+  );
+}
+
 /**
  * Truncate the fixtures the real-AI scenarios create so Playwright's
  * `retries: 1` doesn't trip over orphan rows from a prior attempt.
@@ -49,13 +94,28 @@ function runBunInline(script: string, extraEnv: Record<string, string> = {}): st
  * Safe because the e2e seed (apps/admin/e2e/_seed.ts) does not insert
  * any of these — only users/roles/ai_providers. Each test starts from
  * a known empty content/chat state.
+ *
+ * Before wiping, the chats about to be deleted are written to
+ * `test-results/livedit/transcripts/` (see {@link dumpChatTranscripts}):
+ * the workflow's failure-time DB dump runs after the LAST scenario, by
+ * which time every earlier scenario's (and every failed attempt's) chat
+ * is gone — a failing turn could not be read afterwards.
  */
 export function resetLiveditFixtures(): void {
+  dumpChatTranscripts("pre-reset");
   runBunInline(`
     import { SQL } from "bun";
     const sql = new SQL(process.env.ADMIN_DATABASE_URL);
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      // Issue #620 — every chat shares the site draft: the chats deleted
+      // below leave their unstaged draft changes (a theme edit, a layout
+      // block) pending on the shared branch, owned by a chat that no longer
+      // exists. The next scenario's chats would see them as "a change made
+      // outside a chat" (version conflicts) and every Stage would carry
+      // them. End them with their chats.
+      await tx\`UPDATE site_snapshots SET undone_at = now()
+               WHERE chat_branch_id IS NOT NULL AND staged_at IS NULL AND undone_at IS NULL\`;
       await tx\`DELETE FROM chat_entity_locks\`;
       await tx\`DELETE FROM chat_tool_results\`;
       await tx\`DELETE FROM chat_branch_publish_marks\`;
@@ -85,6 +145,8 @@ export function resetLiveditFixtures(): void {
       // migration-seeded rows; scenarios that need chrome modules
       // re-seed after this reset.
       await tx\`DELETE FROM layout_modules\`;
+      // Issue #620 — chrome placed in a chat is pending draft state.
+      await tx\`DELETE FROM layout_module_snapshots\`;
       await tx\`DELETE FROM modules\`;
       // Templates + import state persist across scenarios if not wiped. A
       // migrate/compose scenario running AFTER template-creating scenarios
@@ -434,6 +496,12 @@ export function assertNoBrowserConsoleErrors(tracker: BrowserConsoleErrorTracker
  * free of SvelteKit/devalue wire-format coupling.
  */
 export async function awaitStageComplete(page: Page): Promise<void> {
+  // Issue #620 — the AI stages finished work itself (stage_changes). When it
+  // already did, nothing is pending and the toolbar offers no Stage; the
+  // open AI stage hold proves the merge happened.
+  const stageBtn = page.getByTestId("stage-btn");
+  await stageBtn.waitFor({ state: "visible", timeout: 10_000 }).catch(() => undefined);
+  if (!(await stageBtn.isVisible()) && openAiStageHoldCount() > 0) return;
   const responsePromise = page.waitForResponse(
     (r: Response) => r.url().includes("?/stageAndDeployStaging") && r.request().method() === "POST",
     // 360s since #155 — see waitForChatTurnIdle's rationale (hang guard,
@@ -528,8 +596,9 @@ const QUALITY_ACCEPT_REMAINING_PROMPT =
  *
  * The admin's worker audits the staged build (real Lighthouse, real
  * bundled Chromium). When it finds problems the chat panel posts the fix
- * request to the AI by itself; this helper only waits for that turn, then
- * Stages again (the operator's click), up to the 2 automatic fix rounds.
+ * request to the AI by itself; this helper only waits for that turn. The
+ * AI re-stages its fix itself (issue #620); only when it did not does the
+ * helper Stage again (the operator's click), up to the 2 automatic fix rounds.
  * When findings remain after those rounds the AI asks the operator whether
  * to accept them; the helper answers "accept" once, like an operator who
  * wants to publish. Acceptances the AI proposes are auto-approved in this suite
@@ -589,6 +658,12 @@ export async function awaitQualityGateOpen(
     await letTheAiTurnRun();
     const after = await read();
     if (after.gate?.open) return await opened(after.gate.state);
+    // Issue #620 — the AI re-stages its own fix (stage_changes); a newer
+    // audit run means it did, and that audit decides next.
+    if (after.audit && after.audit.id !== st.audit?.id) {
+      restages += 1;
+      continue;
+    }
     if (restages >= 2) {
       // After the automatic fix rounds the product tells the AI to stop
       // changing the site and to ASK the operator whether to accept what is
@@ -799,4 +874,61 @@ export async function verifyPublishedPageWithVision(page: Page): Promise<VisionV
     screenshotBase64: buffer.toString("base64"),
     mediaType: "image/png",
   });
+}
+
+/**
+ * Issue #620 Part B — wait until the AI staged its own work: an AI-initiated
+ * merge into main opens a production hold (ai_stage_holds) in the same
+ * transaction, so a hold created after `sinceIso` means the AI's
+ * stage_changes merged real changes. Returns the number of such holds.
+ */
+export async function awaitAiStaged(sinceIso: string, timeoutMs = 360_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const n = Number.parseInt(
+      runBunInline(
+        `
+        import { SQL } from "bun";
+        const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          const rows = await tx\`
+            SELECT count(*)::int AS n FROM ai_stage_holds
+            WHERE created_at > \${process.env.SINCE}::timestamptz
+          \`;
+          process.stdout.write(String(rows[0]?.n ?? 0));
+        });
+        await sql.end();
+        `,
+        { SINCE: sinceIso },
+      ).trim(),
+      10,
+    );
+    if (n > 0) return n;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `awaitAiStaged: the AI did not stage its work (no AI stage hold since ${sinceIso}) — it must call stage_changes when the requested work is done`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 3_000));
+  }
+}
+
+/** Issue #620 Part B — AI stage holds still open (a human Publish live releases them). */
+export function openAiStageHoldCount(): number {
+  return Number.parseInt(
+    runBunInline(
+      `
+      import { SQL } from "bun";
+      const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const rows = await tx\`SELECT count(*)::int AS n FROM ai_stage_holds WHERE released_at IS NULL\`;
+        process.stdout.write(String(rows[0]?.n ?? 0));
+      });
+      await sql.end();
+      `,
+    ).trim(),
+    10,
+  );
 }

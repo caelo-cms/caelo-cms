@@ -88,7 +88,15 @@ export { runSubagentBatch } from "./subagent-batch.js";
 // run measured 14 such timeouts, ~7min wasted), and no contention when
 // parallel children screenshot at once (rate-capped per session by
 // `_preview-screenshot-budget.ts`).
-const EXCLUDED_FOR_CHILD = new Set(["spawn_subagent", "spawn_subagents"]);
+// issue #620 — staging, undoing and re-binding are the parent chat's
+// decisions: a child works on its parent's binding and returns a result.
+const EXCLUDED_FOR_CHILD = new Set([
+  "spawn_subagent",
+  "spawn_subagents",
+  "stage_changes",
+  "undo_this_chat",
+  "start_isolated_branch",
+]);
 
 /**
  * issue #268 — parse an OPTIONAL numeric env override to a finite

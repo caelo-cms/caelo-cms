@@ -151,7 +151,7 @@ export const proposeSiteSeoSetOp = defineOperation({
         "applies on approve; the next publish rebuilds canonical URLs, og:url, hreflang, JSON-LD, robots.txt and the sitemap from these settings",
     };
     const payloadHash = await hashProposalPayload(payload);
-    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
     let rows: { id: string }[];
     try {
       rows = (await tx.execute(sql`

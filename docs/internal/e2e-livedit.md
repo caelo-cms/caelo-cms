@@ -383,6 +383,16 @@ bun run e2e-livedit
 PR description records the green local run output. CI is the
 secondary guard — local pass is the primary one.
 
+### When it runs
+
+- **Pull requests:** on open / reopen / ready-for-review, and on later
+  commits only until it has passed once on that PR (`prior-success` cost
+  gate; close and reopen the PR to force a fresh run).
+- **`main`:** not on every push (a squash merge re-runs code its PR
+  already ran green). Instead `release-cut` runs it once on the exact
+  `main` commit it releases and refuses to cut unless it is green.
+- **Manual:** `gh workflow run e2e-livedit.yml --ref main` always runs.
+
 ### CI secret gate
 
 `.github/workflows/e2e-livedit.yml` starts with a one-step `preflight`

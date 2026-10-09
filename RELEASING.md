@@ -20,6 +20,13 @@ Actions → **release-cut** → *Run workflow* → pick `patch` / `minor` /
 that PR merges the workflow tags the merge commit and dispatches
 `release.yml` automatically — identical artifacts to the local flow.
 
+Before it bumps anything, release-cut requires the real-AI live-edit
+suite (`e2e-livedit.yml`) to be green on the exact `main` commit being
+released. Main gets no real-AI run per push, so the cut dispatches one
+on that commit and waits for it (about 15 minutes, ~$4.50 of API spend);
+a green run from an earlier attempt on the same commit is reused. A red
+run stops the cut; fix main and re-run release-cut.
+
 One-time setup: CI needs the shipped-plugin manifest signing key
 (release.ts re-signs the plugin manifests; the `TIER1` in the secret
 and script names predates the single plugin model and is historical). The pair stored here IS the release

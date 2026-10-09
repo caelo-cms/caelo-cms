@@ -15,6 +15,7 @@ import { err, ok, pageModuleContentSetManySchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { pendingSnapshotSql } from "../../draft.js";
 import { setContentInstanceValuesOp } from "./content-instances.js";
 
 const pageModuleContentRowSchema = z.object({
@@ -160,7 +161,7 @@ export const setPageModuleContentOp = defineOperation({
         FROM page_layout_snapshots pls
         JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
         WHERE pls.page_id = ${input.pageId}::uuid
-          AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+          AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
         ORDER BY ss.created_at DESC
         LIMIT 1
       `)) as unknown as { state: unknown }[];

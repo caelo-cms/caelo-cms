@@ -154,7 +154,7 @@ export const proposeUrlMigrationOp = defineOperation({
       sample: diff.slice(0, 10).map((d) => `${d.from} → ${d.to}`),
       ...(input.reason ? { reason: input.reason } : {}),
     };
-    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
     try {
       const rows = (await tx.execute(sql`
         INSERT INTO url_migration_pending_actions

@@ -24,6 +24,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { type BranchKind, sessionPendingSql } from "../../draft.js";
 import { drainTakeoverNotices } from "../../lock-takeover.js";
 import { loadPendingChanges, pendingChangesSchema } from "./stage.js";
 
@@ -38,6 +39,8 @@ const openChatSchema = z
     title: z.string(),
     /** True when the caller owns the chat — only then may they Stage or Discard it. */
     isMine: z.boolean(),
+    /** Issue #620 — 'draft' (shared draft), 'experiment' / 'migration' (isolated) or 'legacy'. */
+    branchKind: z.enum(["draft", "experiment", "migration", "legacy"]),
     anchorPageSlug: z.string().nullable(),
     lastActiveAt: z.string(),
     lastStagedAt: z.string().nullable(),
@@ -94,7 +97,7 @@ export const listOpenChangesOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const sessions = (await tx.execute(sql`
       SELECT cs.id::text AS id, cs.title, cs.created_by::text AS created_by,
-             cs.chat_branch_id::text AS chat_branch_id,
+             cs.chat_branch_id::text AS chat_branch_id, cs.branch_kind,
              cs.last_active_at, cs.last_staged_at,
              p.slug AS page_slug
       FROM chat_sessions cs
@@ -106,9 +109,7 @@ export const listOpenChangesOp = defineOperation({
         -- with unstaged work must not fall off behind newer idle ones.
         AND (
           EXISTS (
-            SELECT 1 FROM site_snapshots ss
-            WHERE ss.chat_branch_id = cs.chat_branch_id
-              AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
+            SELECT 1 FROM site_snapshots ss WHERE ${sessionPendingSql()}
           )
           OR EXISTS (SELECT 1 FROM chat_entity_locks l WHERE l.chat_session_id = cs.id)
         )
@@ -119,6 +120,7 @@ export const listOpenChangesOp = defineOperation({
       title: string;
       created_by: string;
       chat_branch_id: string;
+      branch_kind: BranchKind;
       last_active_at: string | Date;
       last_staged_at: string | Date | null;
       page_slug: string | null;
@@ -126,7 +128,16 @@ export const listOpenChangesOp = defineOperation({
 
     const chats: OpenChatChanges[] = [];
     for (const s of sessions) {
-      const changes = await loadPendingChanges(tx, s.chat_branch_id, s.last_staged_at);
+      const changes = await loadPendingChanges(tx, {
+        chatSessionId: s.id,
+        branchId: s.chat_branch_id,
+        kind: s.branch_kind,
+        createdBy: s.created_by,
+        title: s.title,
+        publishedAt: null,
+        archivedAt: null,
+        discardedAt: null,
+      });
       const pendingCount =
         changes.pending.pages.length +
         changes.pending.globals.length +
@@ -185,6 +196,7 @@ export const listOpenChangesOp = defineOperation({
         chatSessionId: s.id,
         title: s.title,
         isMine: s.created_by === ctx.actorId,
+        branchKind: s.branch_kind,
         anchorPageSlug: s.page_slug,
         lastActiveAt: iso(s.last_active_at) ?? "",
         lastStagedAt: iso(s.last_staged_at),

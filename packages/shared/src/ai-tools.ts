@@ -377,8 +377,16 @@ export const chatCreateSessionInput = z
     templateId: z.string().uuid().optional(),
     /** P10.5 — when set, this is an ephemeral subagent session; sidebar filters it out. */
     subagentRole: z.string().min(1).max(120).optional(),
-    /** P10.5 — parent chat session id for subagent attribution (audit trail). */
+    /**
+     * P10.5 — parent chat session id. Issue #620: a subagent session takes
+     * its parent's branch binding and its writes count as the parent's.
+     */
     parentChatSessionId: z.string().uuid().nullable().optional(),
+    /**
+     * Issue #620 — bind to an ISOLATED branch instead of the site's shared
+     * draft: an explicit experiment ("try a redesign") or a site migration.
+     */
+    isolation: z.enum(["experiment", "migration"]).optional(),
   })
   .strict();
 

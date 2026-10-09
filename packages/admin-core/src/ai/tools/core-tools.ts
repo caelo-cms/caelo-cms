@@ -19,6 +19,9 @@
  * them via tool search when a task needs them.
  */
 export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  // Issue #620 — the AI stages its finished work itself; the last step of
+  // every routine change, so it stays loaded.
+  "stage_changes",
   // Build + page lifecycle
   "build_page",
   "duplicate_page",

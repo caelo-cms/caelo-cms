@@ -127,6 +127,9 @@ export {
   kekFingerprint,
 } from "./security/secret-box.js";
 export { emitSnapshot } from "./snapshots/emit.js";
+// issue #620 — the advisory lock that orders AI merges against automatic
+// production publishes (the serialization regression tests take it).
+export { AI_STAGE_LOCK_KEY } from "./stage/ai-stage-hold.js";
 // issue #620 — the Stage flow for one chat or a selection of chats (/edit's
 // Stage button, the Open changes overview).
 export {

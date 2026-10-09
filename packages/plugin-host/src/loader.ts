@@ -924,7 +924,9 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
         `plugin "${def.slug}" declares urlContributions but is not release-signed — refused`,
       );
     }
-    urlContributionsRegistry.register(def.slug, def.urlContributions, def.urlAnnotationsOperation);
+    // Checked now (a conflict fails the activation before anything is
+    // provisioned), claimed only once the plugin is loaded — see below.
+    urlContributionsRegistry.assertClaimable(def.slug, def.urlContributions);
   }
 
   // #387 — provision the plugin's declared cms_public schema at load.
@@ -968,6 +970,22 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     pluginActorId,
   };
   loadedPlugins.set(lp);
+  // URL slots + the annotation op go live only now that the plugin can
+  // answer: claimed earlier, a render running concurrently with this
+  // activation called the annotation op of a plugin not yet loaded
+  // (PluginNotFound in every preview during the activation window).
+  if (def.urlContributions && def.urlContributions.length > 0) {
+    try {
+      urlContributionsRegistry.register(
+        def.slug,
+        def.urlContributions,
+        def.urlAnnotationsOperation,
+      );
+    } catch (e) {
+      loadedPlugins.unload(def.slug);
+      throw e;
+    }
+  }
 
   // Create-time defaults, on main, before anything can read them.
   if (def.onActivate) {

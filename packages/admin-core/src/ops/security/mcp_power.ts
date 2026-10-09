@@ -16,8 +16,10 @@
  *   unreachable and gated `propose_*` tools fall back to their
  *   propose-only handler ("Queued proposal <uuid>: …") — the Owner
  *   approves in the per-domain pending queue, never the caller.
- * - Every call runs inside a chat session's preview branch. Publishing
- *   stays human/system-only; the operator publishes from the admin UI.
+ * - Every call runs inside a chat session's binding (the site's shared
+ *   draft, or an isolated experiment/migration branch). The AI may Stage
+ *   (stage_changes, issue #620); Publish live stays the operator's click
+ *   in the admin UI, and an AI Stage never publishes automatically.
  */
 
 import { pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";

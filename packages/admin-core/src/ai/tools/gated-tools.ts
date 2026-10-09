@@ -45,6 +45,16 @@ import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
 import { approvedPluginInvocation } from "../plugin-invocation.js";
 
 /**
+ * What the model reads first in a gated tool's success result. The bare op
+ * output (`{kind:"accept", accepted:4}`) left the model believing its
+ * proposal still waited for a click — the propose tools' own description
+ * says "the Owner approves" — so it told the operator to approve something
+ * already applied and parked follow-up work behind it (PR #624 real-AI run).
+ */
+const APPLIED_STATUS =
+  "APPROVED by the operator in this chat and APPLIED — nothing is pending any more; do not ask for approval again.";
+
+/**
  * Attach the SDK `execute` to a gated catalogue tool. The returned tool ships
  * to the provider with `approvalMode` + `execute`; the SDK pauses before
  * `execute` until a human approves, then runs propose (AI) + execute_proposal
@@ -143,6 +153,7 @@ export function attachGatedExecute(
             // them re-approving something already applied.
             return {
               ok: true,
+              status: APPLIED_STATUS,
               value: {
                 ...(applied.value as Record<string, unknown>),
                 loadedIntoHost: false,
@@ -152,6 +163,7 @@ export function attachGatedExecute(
           }
           return {
             ok: true,
+            status: APPLIED_STATUS,
             value: {
               ...(applied.value as Record<string, unknown>),
               loadedIntoHost: true,
@@ -163,6 +175,7 @@ export function attachGatedExecute(
       if (gated.afterApply === "sync-operator-access") {
         return {
           ok: true,
+          status: APPLIED_STATUS,
           value: await withOperatorAccessSync(
             registry,
             adapter,
@@ -171,7 +184,7 @@ export function attachGatedExecute(
           ),
         };
       }
-      return { ok: true, value: applied.value };
+      return { ok: true, status: APPLIED_STATUS, value: applied.value };
     },
   };
 }

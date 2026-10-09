@@ -33,6 +33,11 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
+// Issue #620 — these chats run on ISOLATED branches (experiments): the
+// suite covers the per-branch mechanics isolated chats keep (experiments,
+// migrations, pre-draft chats). The shared draft has its own suite
+// (shared-draft.integration.test.ts).
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -133,6 +138,7 @@ describe("run #8 R6 — deferred stage consumption", () => {
     const moduleId = (modRes.value as { moduleId: string }).moduleId;
 
     const session = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}chat`,
     });
     if (!session.ok) throw new Error("seed session");
@@ -188,7 +194,11 @@ describe("run #8 R6 — deferred stage consumption", () => {
     });
     expect(merge2.ok).toBe(true);
     if (!merge2.ok) return;
-    const merged2 = merge2.value as { entityCount: number; mergedAt: string };
+    const merged2 = merge2.value as {
+      entityCount: number;
+      mergedAt: string;
+      mergedHeaderIds: string[];
+    };
     expect(merged2.entityCount).toBe(1);
     expect(await pendingCount(chatSessionId)).toBe(1);
 
@@ -202,10 +212,11 @@ describe("run #8 R6 — deferred stage consumption", () => {
     expect(w2.ok).toBe(true);
 
     // Success path: the build succeeded, so the Stage flow finalizes
-    // with the merge timestamp.
+    // exactly the headers the merge replayed.
     const finalize = await execute(registry, adapter, sysCtx, "chat.finalize_stage", {
       chatSessionId,
       stagedAt: merged2.mergedAt,
+      headerIds: merged2.mergedHeaderIds,
     });
     expect(finalize.ok).toBe(true);
 
@@ -250,6 +261,7 @@ describe("run #9 — re-stage merges only since last_staged_at", () => {
     const moduleB = (modB.value as { moduleId: string }).moduleId;
 
     const session = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}since-chat`,
     });
     if (!session.ok) throw new Error("seed session");
@@ -278,11 +290,16 @@ describe("run #9 — re-stage merges only since last_staged_at", () => {
     });
     expect(merge1.ok).toBe(true);
     if (!merge1.ok) return;
-    const merged1 = merge1.value as { entityCount: number; mergedAt: string };
+    const merged1 = merge1.value as {
+      entityCount: number;
+      mergedAt: string;
+      mergedHeaderIds: string[];
+    };
     expect(merged1.entityCount).toBe(2);
     const finalize1 = await execute(registry, adapter, sysCtx, "chat.finalize_stage", {
       chatSessionId,
       stagedAt: merged1.mergedAt,
+      headerIds: merged1.mergedHeaderIds,
     });
     expect(finalize1.ok).toBe(true);
 

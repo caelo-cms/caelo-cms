@@ -56,28 +56,44 @@ class UrlContributionsRegistry {
     contributions: ReadonlyArray<UrlContributionDef>,
     annotationsOperation?: string,
   ): void {
+    this.assertClaimable(pluginSlug, contributions);
+    for (const c of contributions) this.#bySlot.set(c.slot, { pluginSlug, contribution: c });
+    if (annotationsOperation) {
+      this.#annotationOps.set(pluginSlug, annotationsOperation);
+    }
+  }
+
+  /**
+   * Throw when `register` would conflict, without claiming anything. The
+   * loader checks this BEFORE provisioning a plugin and registers only once
+   * the plugin is loaded: a claim made earlier would let a concurrent
+   * render call the plugin's annotation op before the plugin can run it
+   * (PluginNotFound mid-activation).
+   */
+  assertClaimable(pluginSlug: string, contributions: ReadonlyArray<UrlContributionDef>): void {
+    const claimed = new Map(this.#bySlot);
     for (const c of contributions) {
-      const existing = this.#bySlot.get(c.slot);
+      const existing = claimed.get(c.slot);
       if (existing && existing.pluginSlug !== pluginSlug) {
         throw new Error(
           `URL slot "${c.slot}" is already claimed by plugin "${existing.pluginSlug}" — conflicts with "${pluginSlug}". Slots are exclusive; deactivate one of the plugins.`,
         );
       }
-      if (c.slot === "full-path" && this.activeSlots().some((s) => s !== "full-path")) {
+      const active = [...claimed.entries()]
+        .filter(([, e]) => !isPluginDisabled(e.pluginSlug))
+        .map(([slot]) => slot);
+      if (c.slot === "full-path" && active.some((s) => s !== "full-path")) {
         throw new Error(
-          `URL slot "full-path" is exclusive with every other slot, but ${this.activeSlots().join(", ")} are claimed.`,
+          `URL slot "full-path" is exclusive with every other slot, but ${active.join(", ")} are claimed.`,
         );
       }
-      if (c.slot !== "full-path" && this.#bySlot.has("full-path")) {
-        const holder = this.#bySlot.get("full-path");
+      if (c.slot !== "full-path" && claimed.has("full-path")) {
+        const holder = claimed.get("full-path");
         throw new Error(
           `URL slot "${c.slot}" cannot be claimed while "${holder?.pluginSlug}" holds "full-path" (exclusive).`,
         );
       }
-      this.#bySlot.set(c.slot, { pluginSlug, contribution: c });
-    }
-    if (annotationsOperation) {
-      this.#annotationOps.set(pluginSlug, annotationsOperation);
+      claimed.set(c.slot, { pluginSlug, contribution: c });
     }
   }
 

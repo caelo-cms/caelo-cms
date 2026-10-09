@@ -29,13 +29,22 @@
     } else if (f["published"] && typeof f["published"] === "object") {
       toast.success("Published to production.");
     } else if (f["staged"] && typeof f["staged"] === "object") {
-      const s = f["staged"] as { previewUrl?: string; draftPageCount?: number };
+      const s = f["staged"] as {
+        previewUrl?: string;
+        draftPageCount?: number;
+        alsoIncludes?: string[];
+      };
       // Run #9 R10 — say what is NOT in the staged build. Staging ships
       // published pages only; a success toast that hides "your 92 draft
       // pages are absent" reads as "everything shipped" and sends the
       // operator to a preview that 404s their work.
       const parts: string[] = [];
       if (s.previewUrl) parts.push(`Preview: ${s.previewUrl}`);
+      // Issue #620 — on the shared draft another chat's change to the same
+      // module/page ships with this Stage; say whose.
+      if (Array.isArray(s.alsoIncludes) && s.alsoIncludes.length > 0) {
+        parts.push(`Also staged changes from: ${s.alsoIncludes.join(", ")}.`);
+      }
       if (typeof s.draftPageCount === "number" && s.draftPageCount > 0) {
         parts.push(
           `${s.draftPageCount} draft page(s) are NOT in this build — publish them to stage them.`,

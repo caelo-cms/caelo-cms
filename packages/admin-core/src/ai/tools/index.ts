@@ -44,6 +44,7 @@ import {
 } from "./design-draft-tools.js";
 import { ToolRegistry } from "./dispatch.js";
 import { verifyDnsRecordsTool, verifyDomainsTool } from "./dns-verification.js";
+import { stageChangesTool, startIsolatedBranchTool, undoThisChatTool } from "./draft-tools.js";
 import { duplicatePageTool } from "./duplicate-page.js";
 import { duplicateThemeTool } from "./duplicate-theme.js";
 import { editContentTool } from "./edit-content.js";
@@ -574,6 +575,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(getSnapshotTool);
   registry.register(getModuleImpactTool);
   registry.register(listUnpublishedChangesTool);
+  // issue #620 — the shared draft: the AI may Stage; undo per chat;
+  // isolated branches for experiments and migrations.
+  registry.register(stageChangesTool);
+  registry.register(undoThisChatTool);
+  registry.register(startIsolatedBranchTool);
   registry.register(listMediaUsagesTool);
   registry.register(getPageSeoTool);
   registry.register(listStaleSeoPagesTool);

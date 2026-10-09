@@ -12,14 +12,15 @@
  * helper so a nested module or a content-field image is "in use" too.
  *
  * Branch view: live rows visible to the caller (main + rows this branch
- * created), with the branch's latest content-instance snapshot written
- * after its last Stage (`chat_sessions.last_staged_at`, the same boundary
- * `loadBranchedModuleStates` uses) superseding the live values. A
+ * created), with the branch's latest PENDING content-instance snapshot
+ * (the same boundary `loadBranchedModuleStates` uses) superseding the
+ * live values. A
  * content instance the branch deleted does not count.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { pendingSnapshotSql } from "../../draft.js";
 import type { ContentInstanceState } from "../../snapshots/state.js";
 
 /** One content instance whose values matched, with its values as JSON text. */
@@ -53,9 +54,7 @@ export async function findContentInstancesContaining(
              cis.content_instance_id::text AS id, cis.state
         FROM content_instance_snapshots cis
         JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-        LEFT JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
-       WHERE ss.chat_branch_id = ${branchId}::uuid
-         AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
+       WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
        ORDER BY cis.content_instance_id, ss.created_at DESC
     `)) as unknown as { id: string; state: unknown }[];
     for (const r of rows) {

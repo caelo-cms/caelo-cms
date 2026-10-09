@@ -110,11 +110,13 @@ async function nextFixRound(tx: Tx, chatSessionId: string | null): Promise<numbe
 
 export const enqueueAuditOp = defineOperation({
   name: "quality_audits.enqueue",
-  // Why human-only: called by the Stage flow right after the staging
-  // deploy the human triggered, with the classification it computed before
-  // the merge. Letting the AI enqueue would let it hand in its own
-  // "nothing to audit" verdict; the AI re-runs audits by re-staging.
-  actorScope: ["human", "system"],
+  // Issue #620 Part B — the AI may Stage, and the Stage flow (admin-core
+  // stageChatSessions) enqueues the audit of the build it made, so the
+  // flow runs this op as the AI. The classification it passes is computed
+  // by quality_audits.classify_stage inside the same flow, never taken from
+  // the model: no tool exposes this op's input (the parity guard lists it
+  // as covered by stage_changes).
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({

@@ -31,6 +31,11 @@ import { contentSha } from "../ai/content-edit/text-ops.js";
 import { createDefaultToolRegistry, type ToolContext } from "../ai/tools/index.js";
 import { registerAdminOps } from "../register.js";
 
+// Issue #620 — these chats run on ISOLATED branches (experiments): the
+// suite covers the per-branch mechanics isolated chats keep (experiments,
+// migrations, pre-draft chats). The shared draft has its own suite
+// (shared-draft.integration.test.ts).
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -99,6 +104,7 @@ async function setup(label: string): Promise<{ moduleId: string; aiCtx: Executio
   const moduleId = (created.value as { moduleId: string }).moduleId;
 
   const session = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+    isolation: "experiment",
     title: `${SESSION_PREFIX}${label}`,
   });
   if (!session.ok) throw new Error("session");
@@ -169,6 +175,7 @@ describe("branch-effective module reads (read_content / edit_content / edit_modu
     // A second chat never sees this chat's pending edit: the overlay is
     // keyed on the caller's own branch only (CLAUDE.md §2).
     const other = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+      isolation: "experiment",
       title: `${SESSION_PREFIX}read-other`,
     });
     if (!other.ok) throw new Error("second session");

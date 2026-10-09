@@ -28,9 +28,9 @@
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">Open changes</h1>
     <p class="text-sm text-muted-foreground">
-      Unstaged work across your chats. Stage sends the selected chats to the staging site in one
-      build; Publish live happens after you review staging. When a chat edits something another chat
-      holds, it takes that chat's change over — nothing is lost.
+      Unstaged work across your chats. Chats share the site's draft, so they see each other's
+      changes; experiments and older chats keep their own branch. Stage sends the selected chats to
+      the staging site in one build; Publish live happens after you review staging.
     </p>
   </div>
 
@@ -38,7 +38,21 @@
     <Alert variant="destructive"><AlertDescription>{data.loadError}</AlertDescription></Alert>
   {/if}
   {#if form?.error}
-    <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
+    <Alert variant="destructive">
+      <AlertDescription>
+        {form.error}
+        {#if "confirmDiscard" in form && form.confirmDiscard}
+          <form method="post" action="?/discard" class="mt-2">
+            <input type="hidden" name="_csrf" value={data.csrfToken} />
+            <input type="hidden" name="chatSessionId" value={form.confirmDiscard} />
+            <input type="hidden" name="confirmOverlap" value="1" />
+            <Button type="submit" variant="destructive" size="sm" data-testid="discard-anyway">
+              Discard anyway
+            </Button>
+          </form>
+        {/if}
+      </AlertDescription>
+    </Alert>
   {/if}
   {#if form?.staged}
     <Alert>
@@ -47,6 +61,9 @@
         staging site — <a class="underline" href={form.staged.previewUrl}>open the preview</a>.
         {#if form.staged.draftPageCount > 0}
           {form.staged.draftPageCount} draft page(s) are not in this build.
+        {/if}
+        {#if form.staged.alsoIncludes.length > 0}
+          Also staged, because they changed the same things: {form.staged.alsoIncludes.join(", ")}.
         {/if}
         {#if form.staged.brokenInternalLinks.length > 0}
           Broken internal links: {form.staged.brokenInternalLinks.join(", ")}.
@@ -104,6 +121,11 @@
                 <Badge variant="secondary">your chat</Badge>
               {:else}
                 <Badge variant="outline">another editor</Badge>
+              {/if}
+              {#if c.branchKind === "experiment" || c.branchKind === "migration"}
+                <Badge variant="outline">{c.branchKind} · own branch</Badge>
+              {:else if c.branchKind === "legacy"}
+                <Badge variant="outline">older chat · own branch</Badge>
               {/if}
               {#if c.anchorPageSlug}
                 <Badge variant="outline">/{c.anchorPageSlug}</Badge>

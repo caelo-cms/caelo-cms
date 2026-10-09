@@ -92,7 +92,12 @@ async function openChat(
   const s = await op<{ chatSessionId: string; chatBranchId: string }>(ctx, "chat.create_session", {
     title: `${PFX}${title}`,
   });
-  return { id: s.chatSessionId, branch: { ...ctx, chatBranchId: s.chatBranchId } };
+  // The chat task attributes each write to its chat — on the shared draft
+  // (issue #620) the branch alone does not.
+  return {
+    id: s.chatSessionId,
+    branch: { ...ctx, chatBranchId: s.chatBranchId, chatTaskId: s.chatSessionId },
+  };
 }
 
 interface OpenChatRow {
@@ -203,7 +208,10 @@ describe("#620 Open changes + multi-chat Stage", () => {
     // Stage A + B together; C (half-finished) stays out.
     const staged = await stageChatSessions({ registry, adapter }, OWNER, [a.id, b.id]);
     if (!staged.ok) throw new Error(`stage: ${JSON.stringify(staged.error)}`);
-    expect(staged.value.chats.map((x) => x.entityCount)).toEqual([1, 1]);
+    // Both chats work in the shared draft: ONE selective merge of exactly
+    // their two changes (C's stays out).
+    expect(staged.value.chats).toEqual([{ chatSessionIds: [a.id, b.id], entityCount: 2 }]);
+    expect(staged.value.alsoIncludes).toEqual([]);
     expect(staged.value.mergedEntityCount).toBe(2);
 
     const runs = await withSql(
@@ -280,9 +288,16 @@ describe("#620 Open changes + multi-chat Stage", () => {
   });
 
   it("keeps an older chat with open work although many newer chats are idle (PR #622 review)", async () => {
-    const [m1] = moduleIds as [string];
+    // A module of its own: m1 still carries the unstaged draft change of an
+    // earlier test's chat, and a write over it from a chat that never read
+    // it is (correctly) a shared-draft version conflict.
+    const { moduleId } = await op<{ moduleId: string }>(OWNER, "modules.create", {
+      slug: `${PFX}old-open`,
+      displayName: "old open",
+      html: "<p>v0</p>",
+    });
     const old = await openChat(OWNER, "Old but open");
-    await op(old.branch, "modules.update", { moduleId: m1, html: "<p>old open work</p>" });
+    await op(old.branch, "modules.update", { moduleId, html: "<p>old open work</p>" });
     for (let i = 0; i < 101; i += 1) await openChat(OWNER, `idle ${i}`);
     expect((await openChanges(OWNER)).some((r) => r.chatSessionId === old.id)).toBe(true);
   });

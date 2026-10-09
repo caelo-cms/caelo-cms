@@ -117,6 +117,27 @@ export async function withTakeoverNotices<R extends { ok: boolean; content: stri
 }
 
 /**
+ * The chat's current branch. Falls back to the turn's branch only when the
+ * session row is gone (the turn is then failing on its own) — logged.
+ */
+async function currentChatBranch(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  humanCtx: ExecutionContext,
+  chatSessionId: string,
+  turnBranchId: string,
+): Promise<string> {
+  const r = await execute(registry, adapter, humanCtx, "chat.get_branch_id", { chatSessionId });
+  const branch = r.ok ? (r.value as { chatBranchId: string | null }).chatBranchId : null;
+  if (!branch) {
+    // Constant line: see withTakeoverNotices on CodeQL's view of execute().
+    console.error("[chat-runner] chat branch could not be re-read; using the turn's branch");
+    return turnBranchId;
+  }
+  return branch;
+}
+
+/**
  * One tool dispatch's outcome, reported back to the loop so the
  * repeated-identical-failure breaker can observe results without re-parsing
  * the mutated `messages` array. See `repeat-failure-guard.ts`.
@@ -219,8 +240,19 @@ export async function dispatchToolCall(
     outcomes: ToolCallOutcome[];
   },
 ): Promise<void> {
-  const { registry, adapter, humanCtx, aiCtxWithBranch, provider, tools, options } = deps;
+  const { registry, adapter, humanCtx, provider, tools, options } = deps;
   const { emit, stepToolRows, deferredImageMessages, outcomes } = sinks;
+  // Issue #620 — a chat can move from the shared draft onto its own branch
+  // mid-turn (start_isolated_branch), so every call re-reads the chat's
+  // binding instead of trusting the branch captured at turn start. A
+  // subagent turn keeps its parent's branch (the override).
+  const chatBranchId = options.chatBranchIdOverride
+    ? deps.chatBranchId
+    : await currentChatBranch(registry, adapter, humanCtx, deps.chatSessionId, deps.chatBranchId);
+  const aiCtxWithBranch =
+    chatBranchId === deps.chatBranchId
+      ? deps.aiCtxWithBranch
+      : { ...deps.aiCtxWithBranch, chatBranchId };
 
   emit({
     kind: "tool-start",
@@ -272,7 +304,7 @@ export async function dispatchToolCall(
           adapter,
           registry,
           chatSessionId: deps.chatSessionId,
-          chatBranchId: deps.chatBranchId,
+          chatBranchId,
           // Thread this call's id so a tool emitting `request-screenshot` can
           // tag it — ChatPanel then stores its own captured bytes by toolCallId.
           toolCallId: call.id,
@@ -364,7 +396,7 @@ export async function dispatchToolCall(
             adapter,
             registry,
             chatSessionId: deps.chatSessionId,
-            chatBranchId: deps.chatBranchId,
+            chatBranchId,
             provider,
             tools,
             humanCtx,

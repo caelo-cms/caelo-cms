@@ -58,6 +58,8 @@ import {
 import { defaultFontsCacheDir, resolveThemeFonts } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { pendingSnapshotSql } from "../../draft.js";
+import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 import { resolvePreviewContentVariants } from "./preview-variants.js";
 import { loadPublishPageUrlStyle } from "./public-urls.js";
 
@@ -196,7 +198,7 @@ export const renderPagePreviewOp = defineOperation({
         SELECT state FROM page_snapshots ps
         JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
         WHERE ps.page_id = ${input.pageId}::uuid
-          AND ss.chat_branch_id = ${chatBranchId}::uuid
+          AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
         ORDER BY ss.created_at DESC LIMIT 1
       `)) as unknown as { state: unknown }[];
       const raw = snap[0]?.state;
@@ -247,7 +249,7 @@ export const renderPagePreviewOp = defineOperation({
         SELECT state FROM page_layout_snapshots pls
         JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
         WHERE pls.page_id = ${input.pageId}::uuid
-          AND ss.chat_branch_id = ${chatBranchId}::uuid
+          AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
         ORDER BY ss.created_at DESC
         LIMIT 1
       `)) as unknown as { state: unknown }[];
@@ -366,7 +368,7 @@ export const renderPagePreviewOp = defineOperation({
           SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
           FROM module_snapshots ms
           JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-          WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+          WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
             AND ms.module_id IN (${sql.join(moduleIds, sql`, `)})
           ORDER BY ms.module_id, ss.created_at DESC
         `)) as unknown as { module_id: string; state: unknown }[];
@@ -446,7 +448,7 @@ export const renderPagePreviewOp = defineOperation({
         SELECT state FROM page_layout_snapshots pls
         JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
         WHERE pls.page_id = ${input.pageId}::uuid
-          AND ss.chat_branch_id = ${chatBranchId}::uuid
+          AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
         ORDER BY ss.created_at DESC
         LIMIT 1
       `)) as unknown as { state: unknown }[];
@@ -506,7 +508,7 @@ export const renderPagePreviewOp = defineOperation({
                  cis.state AS state
           FROM content_instance_snapshots cis
           JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-          WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+          WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
             AND cis.content_instance_id IN (${sql.join(
               allInstanceIds.map((id) => sql`${id}::uuid`),
               sql`, `,
@@ -603,7 +605,7 @@ export const renderPagePreviewOp = defineOperation({
               SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
               FROM module_snapshots ms
               JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-              WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+              WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
                 AND ms.module_id IN (${sql.join(
                   fetched.map((f) => sql`${f.module_id}::uuid`),
                   sql`, `,
@@ -659,7 +661,7 @@ export const renderPagePreviewOp = defineOperation({
                      cis.content_instance_id::text AS id, cis.state AS state
               FROM content_instance_snapshots cis
               JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-              WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+              WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
                 AND cis.content_instance_id IN (${sql.join(
                   fetched.map((f) => sql`${f.id}::uuid`),
                   sql`, `,
@@ -761,7 +763,7 @@ export const renderPagePreviewOp = defineOperation({
              m.css         AS css,
              m.js          AS js,
              m.fields      AS fields
-      FROM layout_modules lm JOIN modules m ON m.id = lm.module_id
+      FROM (${effectiveLayoutModulesSql(chatBranchId)}) lm JOIN modules m ON m.id = lm.module_id
       WHERE lm.layout_id = ${pageRow.layout_id}::uuid AND m.deleted_at IS NULL
       ORDER BY lm.block_name ASC, lm.position ASC
     `)) as unknown as ModuleSourceRow[];
@@ -780,7 +782,7 @@ export const renderPagePreviewOp = defineOperation({
         SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
         FROM module_snapshots ms
         JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-        WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+        WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
           AND ms.module_id IN (${sql.join(layoutModuleIds, sql`, `)})
         ORDER BY ms.module_id, ss.created_at DESC
       `)) as unknown as { module_id: string; state: unknown }[];
@@ -952,7 +954,7 @@ export const renderPagePreviewOp = defineOperation({
             sss.structured_set_id::text AS set_id, sss.state
           FROM structured_set_snapshots sss
           JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-          WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+          WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
           ORDER BY sss.structured_set_id, ss.created_at DESC
         `)) as unknown as { set_id: string; state: unknown }[];
         for (const r of branchSets) {
@@ -1394,7 +1396,7 @@ export async function loadActiveThemeForCompose(
       FROM theme_snapshots ts
       JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
       WHERE ts.theme_id = ${row.id}::uuid
-        AND ss.chat_branch_id = ${chatBranchId}::uuid
+        AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
       ORDER BY ss.created_at DESC
       LIMIT 1
     `)) as unknown as Array<{ state: unknown }>;

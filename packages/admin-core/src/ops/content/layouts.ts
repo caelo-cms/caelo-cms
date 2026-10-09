@@ -21,6 +21,8 @@ import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { emitSnapshot } from "../../snapshots/index.js";
+import { jsonbParam } from "../../sql-helpers.js";
+import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 
 const layoutBlockShape = z.object({
   name: z.string().min(1).max(80),
@@ -74,6 +76,8 @@ function iso(v: string | Date | null): string | null {
 async function loadBlocks(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   layoutId: string,
+  /** The caller's branch: its pending chrome placements show (issue #620). */
+  branchId: string | undefined,
 ): Promise<z.infer<typeof layoutBlockShape>[]> {
   const rows = (await tx.execute(sql`
     SELECT name, display_name, position FROM layout_blocks
@@ -83,7 +87,7 @@ async function loadBlocks(
   // Placed chrome modules per block — one query for the whole layout.
   const placed = (await tx.execute(sql`
     SELECT lm.block_name, m.slug
-    FROM layout_modules lm JOIN modules m ON m.id = lm.module_id
+    FROM (${effectiveLayoutModulesSql(branchId)}) lm JOIN modules m ON m.id = lm.module_id
     WHERE lm.layout_id = ${layoutId}::uuid AND m.deleted_at IS NULL
     ORDER BY lm.block_name ASC, lm.position ASC
   `)) as unknown as { block_name: string; slug: string }[];
@@ -126,7 +130,7 @@ export const listLayoutsOp = defineOperation({
         displayName: r.display_name,
         html: r.html,
         css: r.css,
-        blocks: await loadBlocks(tx, r.id),
+        blocks: await loadBlocks(tx, r.id, ctx.chatBranchId),
         createdAt: iso(r.created_at) ?? "",
         updatedAt: iso(r.updated_at) ?? "",
         deletedAt: iso(r.deleted_at),
@@ -167,7 +171,7 @@ export const getLayoutOp = defineOperation({
         displayName: r.display_name,
         html: r.html,
         css: r.css,
-        blocks: await loadBlocks(tx, r.id),
+        blocks: await loadBlocks(tx, r.id, ctx.chatBranchId),
         createdAt: iso(r.created_at) ?? "",
         updatedAt: iso(r.updated_at) ?? "",
         deletedAt: iso(r.deleted_at),
@@ -392,12 +396,14 @@ export const getLayoutBlockModulesOp = defineOperation({
     })
     .strict(),
   output: z.object({ moduleIds: z.array(z.string()) }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    // Issue #620 — the caller's branch sees its own pending chrome changes
+    // (add_module_to_layout reads, splices and writes back through here).
     const rows = (await tx.execute(sql`
-      SELECT module_id::text AS module_id
-      FROM layout_modules
-      WHERE layout_id = ${input.layoutId}::uuid AND block_name = ${input.blockName}
-      ORDER BY position ASC
+      SELECT lm.module_id::text AS module_id
+      FROM (${effectiveLayoutModulesSql(ctx.chatBranchId)}) lm
+      WHERE lm.layout_id = ${input.layoutId}::uuid AND lm.block_name = ${input.blockName}
+      ORDER BY lm.position ASC
     `)) as unknown as { module_id: string }[];
     return ok({ moduleIds: rows.map((r) => r.module_id) });
   },
@@ -444,6 +450,23 @@ export const setLayoutModulesOp = defineOperation({
         message: `block "${input.blockName}" not on layout. Available blocks: ${allowed.map((r) => r.name).join(", ")}`,
       });
     }
+    // Issue #620 — the block list is branch state inside a chat: the layout
+    // lock keeps an isolated branch and the draft from holding diverging
+    // lists (takeover), and inside the draft a write over another chat's
+    // newer list is a version conflict ("re-read, then redo").
+    if (ctx.chatBranchId) {
+      const lock = await checkAndAcquireEntityLock(tx, {
+        kind: "layout",
+        entityId: input.layoutId,
+        chatBranchId: ctx.chatBranchId,
+        holderKey: ctx.chatTaskId,
+      });
+      if (!lock.permitted) {
+        return err(
+          await entityWriteBlockedError(tx, "layout_modules.set", "layout", input.layoutId, lock),
+        );
+      }
+    }
     if (input.moduleIds.length > 0) {
       // v0.9.0 — cross-chat write-block. Each moduleId must be on
       // main or branched to the caller's chat; references to
@@ -469,17 +492,22 @@ export const setLayoutModulesOp = defineOperation({
         });
       }
     }
-    await tx.execute(sql`
-      DELETE FROM layout_modules
-      WHERE layout_id = ${input.layoutId}::uuid AND block_name = ${input.blockName}
-    `);
-    let position = 0;
-    for (const moduleId of input.moduleIds) {
+    // Issue #620 — inside a chat the new block list is DRAFT state: a
+    // pending layout_module_snapshots row on the chat's branch (written
+    // below), overlaid in that branch's views and replayed into the live
+    // table by a Stage. Outside a chat (the Owner's layout screens) it is
+    // a live write, as before.
+    if (!ctx.chatBranchId) {
       await tx.execute(sql`
-        INSERT INTO layout_modules (layout_id, block_name, position, module_id)
-        VALUES (${input.layoutId}::uuid, ${input.blockName}, ${position}, ${moduleId}::uuid)
+        DELETE FROM layout_modules
+        WHERE layout_id = ${input.layoutId}::uuid AND block_name = ${input.blockName}
       `);
-      position += 1;
+      for (const [position, moduleId] of input.moduleIds.entries()) {
+        await tx.execute(sql`
+          INSERT INTO layout_modules (layout_id, block_name, position, module_id)
+          VALUES (${input.layoutId}::uuid, ${input.blockName}, ${position}, ${moduleId}::uuid)
+        `);
+      }
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -491,8 +519,9 @@ export const setLayoutModulesOp = defineOperation({
       resultSummary: `${input.blockName} modules=${input.moduleIds.length}`,
     });
     // Layout module changes affect chrome on every page using the
-    // layout. Snapshot once at the layout level so revert can undo.
-    await emitSnapshot(tx, {
+    // layout: one header, with the block's new list as its entity row (the
+    // draft state itself on a branch; history for a live write).
+    const { siteSnapshotId } = await emitSnapshot(tx, {
       actorId: ctx.actorId,
       opKind: "layout_modules.set",
       description: `layout_modules.set block=${input.blockName}`,
@@ -500,6 +529,11 @@ export const setLayoutModulesOp = defineOperation({
       chatBranchId: ctx.chatBranchId ?? null,
       entities: [],
     });
+    await tx.execute(sql`
+      INSERT INTO layout_module_snapshots (site_snapshot_id, layout_id, block_name, state)
+      VALUES (${siteSnapshotId}::uuid, ${input.layoutId}::uuid, ${input.blockName},
+              ${jsonbParam({ schemaVersion: 1, moduleIds: input.moduleIds })})
+    `);
     return ok({});
   },
 });

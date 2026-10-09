@@ -21,6 +21,7 @@ import { describeError } from "./_describe-error.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 import { makeReadTool } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { AUDIT_PENDING_NEXT_STEP } from "./quality-audit-tools.js";
 
 const noInput = z.object({}).strict();
 
@@ -41,7 +42,8 @@ export const getPublishGateTool = makeReadTool<Record<string, never>>({
     if (v.gate.open) {
       return `Publish live is open (${v.gate.state}).${v.gate.message ? ` ${v.gate.message}` : ""}`;
     }
-    return `Publish live is BLOCKED (${v.gate.state}, audit ${v.gate.auditRunId ?? "none"}): ${v.gate.message}`;
+    const pending = v.gate.state === "running" || v.gate.state === "queued";
+    return `Publish live is BLOCKED (${v.gate.state}, audit ${v.gate.auditRunId ?? "none"}): ${v.gate.message}${pending ? ` ${AUDIT_PENDING_NEXT_STEP}` : ""}`;
   },
 });
 

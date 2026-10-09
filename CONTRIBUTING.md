@@ -94,7 +94,7 @@ The review is skipped (and no Claude call is made) when:
 - the PR is in Draft state,
 - the PR carries the `skip-ai-review` label, or
 - the PR changes more than 200 files (token-spend guard — split the PR, or add the `skip-ai-review` label if the large diff is intentional).
-- the review already passed on this PR and the trigger is a new commit (cost gate — the review runs when a PR is opened, reopened or marked ready, and on later commits only until it has succeeded once; close and reopen the PR to force a fresh review). The real-AI live-edit suite (`e2e-livedit.yml`) uses the same gate; it still runs on every push to `main`.
+- the review already passed on this PR and the trigger is a new commit (cost gate — the review runs when a PR is opened, reopened or marked ready, and on later commits only until it has succeeded once; close and reopen the PR to force a fresh review). The real-AI live-edit suite (`e2e-livedit.yml`) uses the same gate. It does not run on pushes to `main`; release-cut runs it once on the commit being released and refuses to cut unless it is green (see RELEASING.md).
 
 Reviewers check (per CLAUDE.md §9):
 - Permission layer respected

@@ -659,7 +659,7 @@ export const listPendingThemeProposalsOp = defineOperation({
 
 async function queueProposal(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  ctx: { actorId: string; requestId: string; chatBranchId?: string },
+  ctx: { actorId: string; requestId: string; chatBranchId?: string; chatTaskId?: string },
   kind: "create" | "activate" | "delete",
   themeId: string | null,
   payload: unknown,
@@ -670,7 +670,7 @@ async function queueProposal(
   | { ok: false; error: { kind: "HandlerError"; operation: string; message: string } }
 > {
   const payloadHash = await hashProposalPayload(payload);
-  const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+  const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
   let rows: { id: string }[];
   // The double cast (::text::jsonb) matters: a bare ::jsonb on a string
   // parameter stores the payload as a jsonb *string* scalar (issue #112

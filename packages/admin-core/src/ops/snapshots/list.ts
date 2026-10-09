@@ -12,6 +12,12 @@ const snapshotRowSchema = z.object({
   description: z.string(),
   chatTaskId: z.string().nullable(),
   chatBranchId: z.string().nullable(),
+  /**
+   * Issue #620 — the chat the snapshot belongs to (its chat task, or the
+   * parent chat of a subagent task). On the shared draft many chats share
+   * one branch, so this — not the branch — says whose change it is.
+   */
+  chatSessionId: z.string().nullable(),
   revertOf: z.string().nullable(),
   createdAt: z.string(),
   /** Counts so the timeline UI can show "12 changes" without a join roundtrip. */
@@ -65,6 +71,9 @@ export const listSnapshotsOp = defineOperation({
     const chatBranchFilter = input.forChatBranchId
       ? sql`AND s.chat_branch_id = ${input.forChatBranchId}::uuid`
       : sql``;
+    const chatSessionFilter = input.forChatSessionId
+      ? sql`AND caelo_chat_owner(s.chat_task_id) = ${input.forChatSessionId}::uuid`
+      : sql``;
     const rows = (await tx.execute(sql`
       SELECT s.id::text AS id,
              s.actor_id::text AS actor_id,
@@ -72,6 +81,7 @@ export const listSnapshotsOp = defineOperation({
              s.description,
              s.chat_task_id::text AS chat_task_id,
              s.chat_branch_id::text AS chat_branch_id,
+             caelo_chat_owner(s.chat_task_id)::text AS chat_session_id,
              s.revert_of::text AS revert_of,
              s.created_at,
              (SELECT count(*) FROM module_snapshots ms WHERE ms.site_snapshot_id = s.id)::int AS module_count,
@@ -79,7 +89,7 @@ export const listSnapshotsOp = defineOperation({
              (SELECT count(*) FROM page_snapshots ps WHERE ps.site_snapshot_id = s.id)::int AS page_count,
              (SELECT count(*) FROM page_layout_snapshots pls WHERE pls.site_snapshot_id = s.id)::int AS page_layout_count
       FROM site_snapshots s
-      WHERE 1=1 ${beforeFilter} ${moduleFilter} ${templateFilter} ${pageFilter} ${opKindFilter} ${archivedFilter} ${chatBranchFilter}
+      WHERE 1=1 ${beforeFilter} ${moduleFilter} ${templateFilter} ${pageFilter} ${opKindFilter} ${archivedFilter} ${chatBranchFilter} ${chatSessionFilter}
       ORDER BY s.created_at DESC
       LIMIT ${input.limit}
     `)) as unknown as {
@@ -89,6 +99,7 @@ export const listSnapshotsOp = defineOperation({
       description: string;
       chat_task_id: string | null;
       chat_branch_id: string | null;
+      chat_session_id: string | null;
       revert_of: string | null;
       created_at: string | Date;
       module_count: number;
@@ -104,6 +115,7 @@ export const listSnapshotsOp = defineOperation({
         description: r.description,
         chatTaskId: r.chat_task_id,
         chatBranchId: r.chat_branch_id,
+        chatSessionId: r.chat_session_id,
         revertOf: r.revert_of,
         createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
         moduleCount: r.module_count,
