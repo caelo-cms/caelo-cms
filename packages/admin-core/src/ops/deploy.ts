@@ -53,7 +53,13 @@ import { z } from "zod";
 import { loadStaticPublisher } from "../deploy/static-publisher.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { jsonbParam } from "../sql-helpers.js";
-import { aiStageHoldRefusal, releaseAiStageHolds } from "../stage/ai-stage-hold.js";
+import {
+  aiStageHoldRefusal,
+  lockForAutomaticProductionPublish,
+  openAiStageHoldIds,
+  releaseAiStageHolds,
+} from "../stage/ai-stage-hold.js";
+import { json, uuidList } from "./quality/_shared.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
 import {
   checkProductionBuildGate,
@@ -525,6 +531,10 @@ export const triggerDeployOp = defineOperation({
       // Issue #620 Part B — an automatic production build (the
       // auto-redeploy) never ships changes the AI staged that no human has
       // published yet. Recorded as a failed run like a quality-gate stop.
+      // The exclusive lock waits for in-flight AI merges (their holds are
+      // visible after it) and keeps new ones out of this transaction —
+      // which spans the generator run — so none can land in this build.
+      await lockForAutomaticProductionPublish(tx);
       const held = await aiStageHoldRefusal(tx);
       if (held) {
         await tx.execute(sql`
@@ -554,14 +564,16 @@ export const triggerDeployOp = defineOperation({
     // generator runs: a change landing mid-build counts as unchecked).
     const fingerprint =
       target.env === "staging" ? jsonbParam(await computeRenderFingerprint(tx)) : sql`NULL`;
+    // Issue #620 — the AI holds this build covers: open now means committed
+    // together with its merge, before the generator reads main.
+    const coveredHolds = await openAiStageHoldIds(tx);
     const runIdRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status, render_fingerprint)
-      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running', ${fingerprint})
-      RETURNING id::text AS id,
-                to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS started_at
-    `)) as unknown as { id: string; started_at: string }[];
+      INSERT INTO deploy_runs (target_id, actor_id, status, render_fingerprint, covered_ai_hold_ids)
+      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running', ${fingerprint},
+              ${uuidList(coveredHolds)})
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
     const runId = runIdRows[0]?.id;
-    const startedAt = runIdRows[0]?.started_at ?? "";
     if (!runId) {
       return err({
         kind: "HandlerError",
@@ -702,10 +714,10 @@ export const triggerDeployOp = defineOperation({
     // The publish-anyway decision is recorded only now that the build it
     // allowed is live; a failed build leaves the quality gate closed.
     if (override) await recordProductionOverride(tx, ctx, override);
-    // Issue #620 — a human production build from main publishes whatever
-    // the AI staged before it started: those holds are released.
+    // Issue #620 — a human production build from main publishes what the
+    // AI staged before it started: exactly those holds are released.
     if (target.env === "production" && ctx.actorKind === "human") {
-      await releaseAiStageHolds(tx, { coveredUntil: startedAt, productionRunId: runId });
+      await releaseAiStageHolds(tx, { holdIds: coveredHolds, productionRunId: runId });
     }
 
     await tx.execute(sql`
@@ -788,11 +800,11 @@ export const promoteDeployOp = defineOperation({
     }
     const fromRunRows = (await tx.execute(sql`
       SELECT id::text AS id, build_id,
-             to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS started_at
+             COALESCE(to_jsonb(covered_ai_hold_ids), '[]'::jsonb) AS covered_ai_hold_ids
       FROM deploy_runs
       WHERE target_id = ${from.id}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
       ORDER BY started_at DESC LIMIT 1
-    `)) as unknown as { id: string; build_id: string | null; started_at: string }[];
+    `)) as unknown as { id: string; build_id: string | null; covered_ai_hold_ids: unknown }[];
     const fromRow = fromRunRows[0];
     const fromRunId = fromRow?.id;
     const buildId = fromRow?.build_id;
@@ -817,6 +829,7 @@ export const promoteDeployOp = defineOperation({
     // redeploy runs this handler as system) never ships changes the AI
     // staged that no human has published yet.
     if (to.env === "production" && ctx.actorKind === "system") {
+      await lockForAutomaticProductionPublish(tx);
       const held = await aiStageHoldRefusal(tx);
       if (held) {
         return err({ kind: "HandlerError", operation: "deploy.promote", message: held });
@@ -880,10 +893,10 @@ export const promoteDeployOp = defineOperation({
         WHERE id = ${toRunId}::uuid
       `);
       // Issue #620 — a human Publish live ships the staged build, and with
-      // it everything the AI staged before that build started.
+      // it exactly the AI Stages that build covered.
       if (to.env === "production" && ctx.actorKind === "human" && fromRow) {
         await releaseAiStageHolds(tx, {
-          coveredUntil: fromRow.started_at,
+          holdIds: json<string[]>(fromRow.covered_ai_hold_ids),
           productionRunId: toRunId,
         });
       }

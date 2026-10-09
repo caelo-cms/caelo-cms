@@ -36,8 +36,13 @@ import {
   pendingSnapshotSql,
   releaseIdleDraftLocks,
 } from "../../draft.js";
-import { recordAiStageHold } from "../../stage/ai-stage-hold.js";
-import { mergeWindowToMain } from "./publish.js";
+import {
+  AI_MERGE_BUSY_MESSAGE,
+  enterAiMerge,
+  isAiInitiated,
+  recordAiStageHold,
+} from "../../stage/ai-stage-hold.js";
+import { mergeWindowToMain, STAGE_CHANGED_PREFIX } from "./publish.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -50,6 +55,7 @@ const affectedChatSchema = z
   .strict();
 
 const chatIdsSchema = z.array(z.string().uuid()).min(1).max(50);
+const headerIdsSchema = z.array(z.string().uuid()).max(20000);
 
 /**
  * Load and check the draft chats of a selection: each must exist, belong
@@ -105,22 +111,31 @@ function headerFilter(ids: readonly string[]) {
       )})`;
 }
 
+/**
+ * Mark exactly the merged headers staged — never "everything up to the
+ * merge time": a write whose transaction started before the merge but
+ * committed after it was not merged and must stay pending.
+ */
 async function finalizeDraftSelection(
   tx: Tx,
   branchId: string,
   chatSessionIds: readonly string[],
+  headerIds: readonly string[],
   stagedAt: string,
 ): Promise<number> {
-  const selection = await draftStageSelection(tx, branchId, chatSessionIds, stagedAt);
-  if (selection.headerIds.length > 0) {
-    await tx.execute(sql`
+  let staged = 0;
+  if (headerIds.length > 0) {
+    const rows = (await tx.execute(sql`
       UPDATE site_snapshots SET staged_at = ${stagedAt}::timestamptz
       WHERE ${pendingSnapshotSql("site_snapshots")}
+        AND chat_branch_id = ${branchId}::uuid
         AND id IN (${sql.join(
-          selection.headerIds.map((id) => sql`${id}::uuid`),
+          headerIds.map((id) => sql`${id}::uuid`),
           sql`, `,
         )})
-    `);
+      RETURNING 1
+    `)) as unknown as unknown[];
+    staged = rows.length;
   }
   await tx.execute(sql`
     UPDATE chat_sessions
@@ -131,7 +146,7 @@ async function finalizeDraftSelection(
     )})
   `);
   await releaseIdleDraftLocks(tx, branchId);
-  return selection.headerIds.length;
+  return staged;
 }
 
 export const mergeDraftToMainOp = defineOperation({
@@ -147,13 +162,23 @@ export const mergeDraftToMainOp = defineOperation({
       chatSessionIds: chatIdsSchema,
       /** Defer marking the snapshots staged until the staging build succeeded (chat.finalize_draft_stage). */
       deferConsume: z.boolean().optional(),
+      /**
+       * Merge exactly these headers — the set quality_audits.classify_stage
+       * classified, so nothing unaudited slips in between. A header no
+       * longer pending refuses the merge ("Conflict: …"; classify again).
+       */
+      headerIds: headerIdsSchema.optional(),
+      /** The AI initiated this Stage (stage_changes): open the production hold. */
+      aiInitiated: z.boolean().optional(),
     })
     .strict(),
   output: z.object({
     siteSnapshotId: z.string().nullable(),
     entityCount: z.number().int().nonnegative(),
-    /** Merge time — chat.finalize_draft_stage marks exactly what was merged up to it. */
+    /** Merge time — chat.finalize_draft_stage stamps it on the merged headers. */
     mergedAt: z.string(),
+    /** The merged headers — pass them to chat.finalize_draft_stage. */
+    mergedHeaderIds: z.array(z.string()),
     brokenInternalLinks: z.array(z.string()),
     /** Other chats whose changes ride along because they share an entity. */
     alsoIncludes: z.array(affectedChatSchema),
@@ -168,8 +193,28 @@ export const mergeDraftToMainOp = defineOperation({
     if (!chats.ok) return err(chats.error);
     const branchId = chats.bindings[0]?.branchId;
     if (!branchId) throw new Error("merge_draft_to_main: empty selection after validation");
+    const ai = isAiInitiated(ctx, input.aiInitiated);
+    if (ai && !(await enterAiMerge(tx))) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.merge_draft_to_main",
+        message: AI_MERGE_BUSY_MESSAGE,
+      });
+    }
     const mergedAt = await txNow(tx);
-    const selection = await draftStageSelection(tx, branchId, input.chatSessionIds, mergedAt);
+    const selection = await draftStageSelection(
+      tx,
+      branchId,
+      input.chatSessionIds,
+      input.headerIds,
+    );
+    if (selection.missingHeaderIds.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.merge_draft_to_main",
+        message: `${STAGE_CHANGED_PREFIX} ${selection.missingHeaderIds.length} of the checked changes were staged or undone meanwhile — nothing was merged; stage again.`,
+      });
+    }
     const merged = await mergeWindowToMain(
       tx,
       ctx,
@@ -191,9 +236,17 @@ export const mergeDraftToMainOp = defineOperation({
     );
     if (!merged.ok) return err(merged.error);
     const { siteSnapshotId, entityCount, brokenInternalLinks } = merged.value;
-    if (entityCount > 0) await recordAiStageHold(tx, ctx, input.chatSessionIds);
+    // Even a merge of nothing: the AI still triggers the staging build an
+    // automatic publish would promote.
+    if (ai) await recordAiStageHold(tx, ctx, input.chatSessionIds);
     if (!input.deferConsume) {
-      await finalizeDraftSelection(tx, branchId, input.chatSessionIds, mergedAt);
+      await finalizeDraftSelection(
+        tx,
+        branchId,
+        input.chatSessionIds,
+        selection.headerIds,
+        mergedAt,
+      );
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -211,6 +264,7 @@ export const mergeDraftToMainOp = defineOperation({
       siteSnapshotId,
       entityCount,
       mergedAt,
+      mergedHeaderIds: [...selection.headerIds],
       brokenInternalLinks,
       alsoIncludes: selection.alsoIncludes.map((a) => ({ ...a, labels: [...a.labels] })),
     });
@@ -228,6 +282,8 @@ export const finalizeDraftStageOp = defineOperation({
       chatSessionIds: chatIdsSchema,
       /** `mergedAt` of the paired chat.merge_draft_to_main. */
       stagedAt: z.string().datetime(),
+      /** `mergedHeaderIds` of the paired merge: exactly these become staged. */
+      headerIds: headerIdsSchema,
     })
     .strict(),
   output: z.object({ stagedSnapshots: z.number().int().nonnegative() }),
@@ -245,6 +301,7 @@ export const finalizeDraftStageOp = defineOperation({
       tx,
       branchId,
       input.chatSessionIds,
+      input.headerIds,
       input.stagedAt,
     );
     await recordAudit(tx, {

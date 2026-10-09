@@ -597,6 +597,25 @@ export const archiveChatSessionOp = defineOperation({
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // Issue #620 — a draft chat's unstaged changes live on the SHARED
+    // branch: archiving the chat would hide them from every chat list and
+    // the Open changes overview while they stay in the draft — in effect
+    // for every other chat's preview and shipped by the next Stage that
+    // touches the same things, with no chat left to stage or undo them.
+    const binding = await loadChatBinding(tx, input.chatSessionId);
+    if (binding && binding.createdBy === ctx.actorId && binding.kind === "draft") {
+      const pending = (await tx.execute(sql`
+        SELECT count(*)::int AS n FROM site_snapshots ss WHERE ${chatPendingSql(binding)}
+      `)) as unknown as { n: number }[];
+      const n = pending[0]?.n ?? 0;
+      if (n > 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "chat.archive_session",
+          message: `this chat still has ${n} unstaged change(s) in the shared draft — stage them (stage_changes, or Stage in Open changes) or undo them (undo_this_chat, or Discard in Open changes) first; then it can be archived`,
+        });
+      }
+    }
     await tx.execute(sql`
       UPDATE chat_sessions SET archived_at = now()
       WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid

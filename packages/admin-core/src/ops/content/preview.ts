@@ -54,6 +54,7 @@ import { defaultFontsCacheDir, resolveThemeFonts } from "@caelo-cms/static-gener
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { pendingSnapshotSql } from "../../draft.js";
+import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 import {
   type ContentInstanceResource,
   collectNestedRefs,
@@ -764,7 +765,7 @@ export const renderPagePreviewOp = defineOperation({
              m.css         AS css,
              m.js          AS js,
              m.fields      AS fields
-      FROM layout_modules lm JOIN modules m ON m.id = lm.module_id
+      FROM (${effectiveLayoutModulesSql(chatBranchId)}) lm JOIN modules m ON m.id = lm.module_id
       WHERE lm.layout_id = ${pageRow.layout_id}::uuid AND m.deleted_at IS NULL
       ORDER BY lm.block_name ASC, lm.position ASC
     `)) as unknown as ModuleSourceRow[];

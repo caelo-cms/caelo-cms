@@ -194,7 +194,11 @@ describe("run #8 R6 — deferred stage consumption", () => {
     });
     expect(merge2.ok).toBe(true);
     if (!merge2.ok) return;
-    const merged2 = merge2.value as { entityCount: number; mergedAt: string };
+    const merged2 = merge2.value as {
+      entityCount: number;
+      mergedAt: string;
+      mergedHeaderIds: string[];
+    };
     expect(merged2.entityCount).toBe(1);
     expect(await pendingCount(chatSessionId)).toBe(1);
 
@@ -208,10 +212,11 @@ describe("run #8 R6 — deferred stage consumption", () => {
     expect(w2.ok).toBe(true);
 
     // Success path: the build succeeded, so the Stage flow finalizes
-    // with the merge timestamp.
+    // exactly the headers the merge replayed.
     const finalize = await execute(registry, adapter, sysCtx, "chat.finalize_stage", {
       chatSessionId,
       stagedAt: merged2.mergedAt,
+      headerIds: merged2.mergedHeaderIds,
     });
     expect(finalize.ok).toBe(true);
 
@@ -285,11 +290,16 @@ describe("run #9 — re-stage merges only since last_staged_at", () => {
     });
     expect(merge1.ok).toBe(true);
     if (!merge1.ok) return;
-    const merged1 = merge1.value as { entityCount: number; mergedAt: string };
+    const merged1 = merge1.value as {
+      entityCount: number;
+      mergedAt: string;
+      mergedHeaderIds: string[];
+    };
     expect(merged1.entityCount).toBe(2);
     const finalize1 = await execute(registry, adapter, sysCtx, "chat.finalize_stage", {
       chatSessionId,
       stagedAt: merged1.mergedAt,
+      headerIds: merged1.mergedHeaderIds,
     });
     expect(finalize1.ok).toBe(true);
 

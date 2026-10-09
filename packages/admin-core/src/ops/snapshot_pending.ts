@@ -445,8 +445,11 @@ async function loadSnapshot(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   snapshotId: string,
 ): Promise<{ id: string; created_at_iso: string; chat_id: string | null } | null> {
+  // site_snapshots has no chat_id column (it never had one — every
+  // proposal failed on this read); the snapshot's chat is its chat task's
+  // owning chat (a subagent task maps to its parent chat).
   const rows = (await tx.execute(sql`
-    SELECT id::text AS id, created_at, chat_id::text AS chat_id
+    SELECT id::text AS id, created_at, caelo_chat_owner(chat_task_id)::text AS chat_id
     FROM site_snapshots WHERE id = ${snapshotId}::uuid LIMIT 1
   `)) as unknown as Array<{ id: string; created_at: Date | string; chat_id: string | null }>;
   const r = rows[0];

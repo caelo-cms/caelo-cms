@@ -85,6 +85,8 @@ export function resetLiveditFixtures(): void {
       // migration-seeded rows; scenarios that need chrome modules
       // re-seed after this reset.
       await tx\`DELETE FROM layout_modules\`;
+      // Issue #620 — chrome placed in a chat is pending draft state.
+      await tx\`DELETE FROM layout_module_snapshots\`;
       await tx\`DELETE FROM modules\`;
       // Templates + import state persist across scenarios if not wiped. A
       // migrate/compose scenario running AFTER template-creating scenarios

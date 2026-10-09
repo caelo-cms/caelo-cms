@@ -139,9 +139,24 @@ function snapshotFooter(): FooterSnap {
         let payload = JSON.stringify({ footerModuleCount: 0, hasLinkListField: false, lastAssistant: "" });
         await sql.begin(async (tx) => {
           await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          // Issue #620 — chrome placed in a chat is draft state until a
+          // Stage: read the draft view (pending block state over live rows).
           const rows = await tx\`
+            WITH overlay AS (
+              SELECT DISTINCT ON (lms.layout_id, lms.block_name) lms.layout_id, lms.block_name, lms.state
+              FROM layout_module_snapshots lms JOIN site_snapshots ss ON ss.id = lms.site_snapshot_id
+              WHERE ss.chat_branch_id = (SELECT branch_id FROM site_draft WHERE id = 1)
+                AND ss.staged_at IS NULL AND ss.undone_at IS NULL
+              ORDER BY lms.layout_id, lms.block_name, ss.created_at DESC, lms.created_at DESC
+            ), eff AS (
+              SELECT live.layout_id, live.block_name, live.module_id FROM layout_modules live
+              WHERE NOT EXISTS (SELECT 1 FROM overlay o WHERE o.layout_id = live.layout_id AND o.block_name = live.block_name)
+              UNION ALL
+              SELECT o.layout_id, o.block_name, e.mid::uuid FROM overlay o
+              CROSS JOIN LATERAL jsonb_array_elements_text(o.state->'moduleIds') AS e(mid)
+            )
             SELECT m.fields::text AS fields, m.html AS html
-            FROM layout_modules lm
+            FROM eff lm
             JOIN modules m ON m.id = lm.module_id
             WHERE lm.block_name = 'footer'
           \`;

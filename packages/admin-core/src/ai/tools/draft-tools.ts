@@ -22,6 +22,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
 import type { AffectedChat } from "../../draft.js";
 import { stageChatSessions } from "../../stage/stage-chats.js";
@@ -30,6 +31,21 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const NO_CHAT =
   "this tool works on a chat session — open one first (Power-MCP: caelo_open_session).";
+
+/**
+ * The context the draft ops run under: the OPERATOR's. A chat belongs to
+ * the operator (`created_by`), and the session/stage/undo ops are scoped to
+ * the chat's owner — under the AI actor they would find no chat at all
+ * (the browser chat's AI actor is not the chat's creator). The Stage still
+ * counts as the AI's: stage_changes passes `aiInitiated`, which opens the
+ * production hold.
+ */
+function operatorCtx(
+  ctx: ExecutionContext,
+  toolCtx: { readonly humanCtx?: ExecutionContext },
+): ExecutionContext {
+  return toolCtx.humanCtx ?? ctx;
+}
 
 function describeAffected(list: readonly AffectedChat[]): string {
   return list.map((a) => `chat '${a.title}' (${a.labels.join(", ") || "changes"})`).join("; ");
@@ -57,9 +73,10 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
   schema: stageInput,
   handler: async (ctx, input, toolCtx) => {
     if (!toolCtx.chatSessionId) return { ok: false, content: `stage_changes: ${NO_CHAT}` };
+    const opCtx = operatorCtx(ctx, toolCtx);
     let ids = [toolCtx.chatSessionId];
     if (input.scope === "all_my_chats") {
-      const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "chat.list_open_changes", {
+      const r = await execute(toolCtx.registry, toolCtx.adapter, opCtx, "chat.list_open_changes", {
         mineOnly: true,
       });
       if (!r.ok) {
@@ -77,8 +94,9 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
     }
     const staged = await stageChatSessions(
       { registry: toolCtx.registry, adapter: toolCtx.adapter },
-      ctx,
+      opCtx,
       ids,
+      { aiInitiated: true },
     );
     if (!staged.ok)
       return { ok: false, content: `Stage failed (${staged.error.step}): ${staged.error.message}` };
@@ -140,10 +158,16 @@ export const undoThisChatTool: ToolDefinitionWithHandler<z.infer<typeof undoInpu
   }),
   handler: async (ctx, input, toolCtx) => {
     if (!toolCtx.chatSessionId) return { ok: false, content: `undo_this_chat: ${NO_CHAT}` };
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "chat.undo_changes", {
-      chatSessionId: toolCtx.chatSessionId,
-      ...(input.confirmOverlap ? { confirmOverlap: true } : {}),
-    });
+    const r = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      operatorCtx(ctx, toolCtx),
+      "chat.undo_changes",
+      {
+        chatSessionId: toolCtx.chatSessionId,
+        ...(input.confirmOverlap ? { confirmOverlap: true } : {}),
+      },
+    );
     if (!r.ok) return { ok: false, content: `chat.undo_changes failed: ${describeError(r.error)}` };
     const v = r.value as {
       applied: boolean;
@@ -193,10 +217,16 @@ export const startIsolatedBranchTool: ToolDefinitionWithHandler<z.infer<typeof i
   schema: isolateInput,
   handler: async (ctx, input, toolCtx) => {
     if (!toolCtx.chatSessionId) return { ok: false, content: `start_isolated_branch: ${NO_CHAT}` };
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "chat.isolate_session", {
-      chatSessionId: toolCtx.chatSessionId,
-      reason: input.reason,
-    });
+    const r = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      operatorCtx(ctx, toolCtx),
+      "chat.isolate_session",
+      {
+        chatSessionId: toolCtx.chatSessionId,
+        reason: input.reason,
+      },
+    );
     if (!r.ok) {
       return { ok: false, content: `chat.isolate_session failed: ${describeError(r.error)}` };
     }

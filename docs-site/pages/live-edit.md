@@ -71,6 +71,8 @@ When a chat writes something an experiment (or an older chat) has unstaged chang
 
 Other editors' chats are shown read-only, so nobody is surprised when work moves between chats.
 
+A chat with unstaged changes in the shared draft cannot be archived: stage or discard its changes first, so nothing stays in the draft without a chat that owns it. Site chrome the AI adds in a chat (a footer, a header nav) is unstaged work like everything else — it shows in the preview and reaches the site with the next Stage.
+
 ## What the toolbar's status colours mean
 
 - **Grey pill** — no pending changes, no staged build

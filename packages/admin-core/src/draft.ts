@@ -21,18 +21,22 @@
  * or half-undone:
  *   - a Stage of chats S takes every pending snapshot of every entity S
  *     touched (the merge ships an entity's latest draft state, which may
- *     include another chat's later edit — that chat is reported), plus
- *     every plugin row when one is included (plugin rows can shape URLs and
- *     go live together);
+ *     include another chat's later edit — that chat is reported), every
+ *     pending snapshot of a row created in the draft that the selection
+ *     references (a placement of a module another chat created must not
+ *     reach main without that module), plus every plugin row when one is
+ *     included (plugin rows can shape URLs and go live together);
  *   - an undo of chat C drops C's snapshots plus every LATER pending
  *     snapshot of the same entities (those were built on C's change), plus
- *     snapshots that reference rows C created — the other chats affected
- *     are reported so the AI warns and asks before confirming.
+ *     snapshots that belong to or reference rows C created (a page's
+ *     sections, a placement of C's module) — the other chats affected are
+ *     reported so the AI warns and asks before confirming.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
 import { lockedEntityLabel } from "./entity-labels.js";
+import { createdOnBranch, referencedEntities } from "./entity-refs.js";
 import type { LockedEntityKind } from "./locks.js";
 
 /** How a chat is bound to a branch. */
@@ -135,22 +139,59 @@ export function sessionPendingSql(csAlias = "cs", ssAlias = "ss"): SQL {
   );
 }
 
-/** Entity snapshot tables and the key prefix of the entity each row records. */
-const ENTITY_TABLES: readonly { table: string; column: string; key: string }[] = [
-  { table: "module_snapshots", column: "module_id", key: "module" },
-  { table: "template_snapshots", column: "template_id", key: "template" },
-  { table: "page_snapshots", column: "page_id", key: "page" },
-  { table: "page_layout_snapshots", column: "page_id", key: "pageLayout" },
+/**
+ * Entity snapshot tables: the key prefix of the entity each row records,
+ * the column naming it (`idExpr` when the identity is not one column), the
+ * live row it belongs to (`ownerColumn`: a page's sections and content
+ * belong to the page) and the kind passed to `referencedEntities`.
+ */
+const ENTITY_TABLES: readonly {
+  table: string;
+  column: string;
+  key: string;
+  idExpr?: string;
+  ownerColumn?: string;
+  refKind: LockedEntityKind;
+}[] = [
+  { table: "module_snapshots", column: "module_id", key: "module", refKind: "module" },
+  { table: "template_snapshots", column: "template_id", key: "template", refKind: "template" },
+  { table: "page_snapshots", column: "page_id", key: "page", refKind: "page" },
+  { table: "page_layout_snapshots", column: "page_id", key: "pageLayout", refKind: "page" },
   {
     table: "page_module_content_snapshots",
     column: "page_module_content_id",
     key: "pageModuleContent",
+    ownerColumn: "page_id",
+    refKind: "page",
   },
-  { table: "structured_set_snapshots", column: "structured_set_id", key: "structuredSet" },
-  { table: "content_instance_snapshots", column: "content_instance_id", key: "contentInstance" },
-  { table: "theme_snapshots", column: "theme_id", key: "theme" },
-  { table: "plugin_row_snapshots", column: "row_id", key: "pluginRow" },
+  {
+    table: "structured_set_snapshots",
+    column: "structured_set_id",
+    key: "structuredSet",
+    refKind: "structuredSet",
+  },
+  {
+    table: "content_instance_snapshots",
+    column: "content_instance_id",
+    key: "contentInstance",
+    refKind: "contentInstance",
+  },
+  { table: "theme_snapshots", column: "theme_id", key: "theme", refKind: "theme" },
+  {
+    table: "layout_module_snapshots",
+    column: "layout_id",
+    key: "layoutBlock",
+    idExpr: "layout_id::text || '/' || block_name",
+    refKind: "layout",
+  },
+  { table: "plugin_row_snapshots", column: "row_id", key: "pluginRow", refKind: "pluginRow" },
 ];
+
+/** Split an entity key `kind:id` (a layout block's id is `layoutId/block`). */
+function splitKey(key: string): [string, string] {
+  const at = key.indexOf(":");
+  return [key.slice(0, at), key.slice(at + 1)];
+}
 
 /** One pending header with the chat it belongs to and the entities it records. */
 interface PendingHeader {
@@ -162,23 +203,18 @@ interface PendingHeader {
   readonly keys: readonly string[];
 }
 
-async function pendingHeaders(
-  tx: TransactionRunner,
-  branchId: string,
-  bound: string | null,
-): Promise<PendingHeader[]> {
-  const boundSql = bound ? sql` AND ss.created_at <= ${bound}::timestamptz` : sql``;
+async function pendingHeaders(tx: TransactionRunner, branchId: string): Promise<PendingHeader[]> {
   const entityUnion = sql.join(
     ENTITY_TABLES.map(
       (t) =>
-        sql`SELECT site_snapshot_id AS h, ${t.key} || ':' || ${sql.raw(t.column)}::text AS k FROM ${sql.raw(t.table)} WHERE site_snapshot_id IN (SELECT id FROM pending)`,
+        sql`SELECT site_snapshot_id AS h, ${t.key} || ':' || (${sql.raw(t.idExpr ?? `${t.column}::text`)}) AS k FROM ${sql.raw(t.table)} WHERE site_snapshot_id IN (SELECT id FROM pending)`,
     ),
     sql` UNION ALL `,
   );
   const rows = (await tx.execute(sql`
     WITH pending AS (
       SELECT ss.id, ss.chat_task_id, ss.created_at FROM site_snapshots ss
-      WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}${boundSql}
+      WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
     ),
     ents AS (${entityUnion})
     SELECT p.id::text AS id,
@@ -217,7 +253,12 @@ async function chatTitles(
 
 /** Human label of an entity key (`kind:id`). */
 async function keyLabel(tx: TransactionRunner, key: string): Promise<string> {
-  const [kind, id] = key.split(":") as [string, string];
+  const [kind, id] = splitKey(key);
+  if (kind === "layoutBlock") {
+    const slash = id.indexOf("/");
+    const label = await lockedEntityLabel(tx, "layout", id.slice(0, slash));
+    return `${label} (${id.slice(slash + 1)})`;
+  }
   const lockKind: Partial<Record<string, LockedEntityKind>> = {
     module: "module",
     template: "template",
@@ -280,34 +321,91 @@ export interface DraftStageSelection {
   readonly entityKeys: readonly string[];
   /** Other chats whose changes ride along because they share an entity. */
   readonly alsoIncludes: readonly AffectedChat[];
+  /**
+   * Only with `fixedHeaderIds`: the ids no longer pending (undone or staged
+   * since they were selected) — the caller must select again.
+   */
+  readonly missingHeaderIds: readonly string[];
+}
+
+/**
+ * Keys of the rows created in the draft (not yet merged) that the entity
+ * states under `headerIds` reference. A Stage including those states must
+ * include the rows they point at.
+ */
+async function branchCreatedRefs(
+  tx: TransactionRunner,
+  branchId: string,
+  headerIds: readonly string[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (headerIds.length === 0) return out;
+  const ids = sql.join(
+    headerIds.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+  const checked = new Set<string>();
+  for (const t of ENTITY_TABLES) {
+    if (t.key === "pluginRow") continue;
+    const rows = (await tx.execute(sql`
+      SELECT state FROM ${sql.raw(t.table)} WHERE site_snapshot_id IN (${ids})
+    `)) as unknown as { state: unknown }[];
+    for (const r of rows) {
+      const state = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+      for (const ref of referencedEntities(t.refKind, t.table, state)) {
+        const key = `${ref.kind}:${ref.id}`;
+        if (checked.has(key)) continue;
+        checked.add(key);
+        if (await createdOnBranch(tx, ref.kind, ref.id, branchId)) out.add(key);
+      }
+    }
+  }
+  return out;
 }
 
 /**
  * The pending draft snapshots a Stage of the given draft chats merges:
  * their own snapshots, closed over shared entities (all pending snapshots
- * of every entity they touched) and over plugin rows (all or none), plus
- * changes written outside any chat (they belong to nobody, so the next
- * Stage ships them — reported).
+ * of every entity they touched), over rows created in the draft that they
+ * reference (all pending snapshots of those rows), and over plugin rows
+ * (all or none), plus changes written outside any chat (they belong to
+ * nobody, so the next Stage ships them — reported).
  *
- * @param bound only headers created at or before this ISO time (the merge
- *   time; finalize recomputes the same set with it).
+ * @param fixedHeaderIds the selection an earlier call returned (the Stage
+ *   flow classifies, then merges exactly that set): the closure is not
+ *   recomputed; ids no longer pending come back in `missingHeaderIds`.
  */
 export async function draftStageSelection(
   tx: TransactionRunner,
   branchId: string,
   chatSessionIds: readonly string[],
-  bound: string | null,
+  fixedHeaderIds?: readonly string[],
 ): Promise<DraftStageSelection> {
-  const headers = await pendingHeaders(tx, branchId, bound);
+  const headers = await pendingHeaders(tx, branchId);
   const chats = new Set(chatSessionIds);
+  const keys = new Set<string>();
+  if (fixedHeaderIds) {
+    const pending = new Set(headers.map((h) => h.id));
+    const fixed = new Set(fixedHeaderIds);
+    for (const h of headers) if (fixed.has(h.id)) for (const k of h.keys) keys.add(k);
+    return {
+      headerIds: headers.filter((h) => fixed.has(h.id)).map((h) => h.id),
+      entityKeys: [...keys],
+      alsoIncludes: await describeAffected(tx, headers, fixed, chats),
+      missingHeaderIds: fixedHeaderIds.filter((id) => !pending.has(id)),
+    };
+  }
   const selected = new Set(
     headers.filter((h) => h.owner === null || chats.has(h.owner)).map((h) => h.id),
   );
-  const keys = new Set<string>();
+  const scanned = new Set<string>();
   let changed = true;
   while (changed) {
     changed = false;
     for (const h of headers) if (selected.has(h.id)) for (const k of h.keys) keys.add(k);
+    const unscanned = [...selected].filter((id) => !scanned.has(id));
+    for (const id of unscanned) scanned.add(id);
+    for (const k of await branchCreatedRefs(tx, branchId, unscanned)) keys.add(k);
     const pluginRows = [...keys].some((k) => k.startsWith("pluginRow:"));
     for (const h of headers) {
       if (selected.has(h.id)) continue;
@@ -321,6 +419,7 @@ export async function draftStageSelection(
     headerIds: headers.filter((h) => selected.has(h.id)).map((h) => h.id),
     entityKeys: [...keys],
     alsoIncludes: await describeAffected(tx, headers, selected, chats),
+    missingHeaderIds: [],
   };
 }
 
@@ -363,7 +462,7 @@ export async function draftUndoSelection(
   branchId: string,
   chatSessionId: string,
 ): Promise<DraftUndoSelection> {
-  const headers = await pendingHeaders(tx, branchId, null);
+  const headers = await pendingHeaders(tx, branchId);
   const selected = new Set(headers.filter((h) => h.owner === chatSessionId).map((h) => h.id));
   const created = new Map<string, CreatedRow>();
   const pluginRowIds = new Set<string>();
@@ -390,7 +489,7 @@ export async function draftUndoSelection(
     // first recorded by a selected header) are deleted by the undo; any
     // other pending change pointing at them must go with them.
     for (const key of earliest.keys()) {
-      const [kind, id] = key.split(":") as [string, string];
+      const [kind, id] = splitKey(key);
       const firstHeader = headers.find((h) => h.keys.includes(key));
       if (!firstHeader || !selected.has(firstHeader.id)) continue;
       if (kind === "pluginRow") {
@@ -404,13 +503,17 @@ export async function draftUndoSelection(
       `)) as unknown as unknown[];
       if (rows.length === 0) continue;
       created.set(key, { table, id });
+      // Every pending change that belongs to the row (its own column, or
+      // the owning column — a page's sections and content) or points at it
+      // anywhere in its state (a placement, a nested module reference, a
+      // template binding).
       const referencing = (await tx.execute(sql`
         SELECT DISTINCT ss.id::text AS id FROM site_snapshots ss
         WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
           AND (${sql.join(
             ENTITY_TABLES.map(
               (t) =>
-                sql`EXISTS (SELECT 1 FROM ${sql.raw(t.table)} es WHERE es.site_snapshot_id = ss.id AND es.state::text LIKE ${`%${id}%`})`,
+                sql`EXISTS (SELECT 1 FROM ${sql.raw(t.table)} es WHERE es.site_snapshot_id = ss.id AND (es.${sql.raw(t.column)}::text = ${id}${t.ownerColumn ? sql` OR es.${sql.raw(t.ownerColumn)}::text = ${id}` : sql``} OR es.state::text LIKE ${`%${id}%`}))`,
             ),
             sql` OR `,
           )})
@@ -436,8 +539,9 @@ export async function draftUndoSelection(
  * changes on. Draft locks exist only to keep isolated branches (experiments,
  * migrations, legacy chats) from diverging with the draft; once a Stage or
  * an undo consumed an entity's draft changes, its lock has no purpose.
- * Live-write kinds (layout, redirect, site settings/defaults) never have
- * pending snapshots and are released here too.
+ * Live-write kinds (redirect, site settings/defaults) never have pending
+ * snapshots and are released here too; a layout lock stays while the
+ * draft has a pending chrome placement change on it.
  */
 export async function releaseIdleDraftLocks(
   tx: TransactionRunner,
@@ -469,6 +573,7 @@ export async function releaseIdleDraftLocks(
         WHEN 'contentInstance' THEN ${touched(["contentInstance"], "l.entity_id")}
         WHEN 'theme' THEN ${touched(["theme"], "l.entity_id")}
         WHEN 'pluginRow' THEN ${touched(["pluginRow"], "l.entity_id")}
+        WHEN 'layout' THEN ${touched(["layoutBlock"], "l.entity_id")}
         ELSE false
       END
   `);

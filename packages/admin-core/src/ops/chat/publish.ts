@@ -45,7 +45,12 @@ import {
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
-import { recordAiStageHold } from "../../stage/ai-stage-hold.js";
+import {
+  AI_MERGE_BUSY_MESSAGE,
+  enterAiMerge,
+  isAiInitiated,
+  recordAiStageHold,
+} from "../../stage/ai-stage-hold.js";
 import { refreshLivePathsAfterMerge } from "../content/current-path.js";
 import { scanBranchInternalLinks } from "../content/link-integrity.js";
 import { applyMediaUsageDelta } from "../content/media-usage.js";
@@ -106,6 +111,12 @@ interface MergeResult {
   readonly siteSnapshotId: string | null;
   readonly entityCount: number;
   readonly session: SessionRow;
+  /**
+   * The pending branch headers this merge replayed — exactly what the
+   * consumption step marks staged (never "everything older than the merge
+   * time": a write that committed after the merge was not replayed).
+   */
+  readonly headerIds: readonly string[];
   readonly includeAll: boolean;
   /**
    * Internal hrefs in the merged pages that resolve to no existing page.
@@ -134,6 +145,8 @@ export async function mergeBranchSnapshotsToMain(
   ctx: ExecutionContext,
   input: ChatPublishInput,
   options: MergeOptions,
+  /** Merge exactly these pending headers (the set the Stage classified). */
+  fixedHeaderIds?: readonly string[],
 ): Promise<
   | { ok: true; value: MergeResult }
   | {
@@ -183,7 +196,38 @@ export async function mergeBranchSnapshotsToMain(
   // Issue #620 — pending is per snapshot (staged_at / undone_at), so a
   // Stage replays exactly what is still pending. chat.publish ships the
   // whole branch (its dedup is the publish marks).
-  const filter = options.sinceLastStagedAt ? sql` AND ${pendingSnapshotSql()}` : sql``;
+  const pendingRows = (await tx.execute(sql`
+    SELECT ss.id::text AS id FROM site_snapshots ss
+    WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid AND ${pendingSnapshotSql()}
+    ORDER BY ss.created_at, ss.id
+  `)) as unknown as { id: string }[];
+  let headerIds = pendingRows.map((r) => r.id);
+  if (fixedHeaderIds) {
+    const pending = new Set(headerIds);
+    const missing = fixedHeaderIds.filter((id) => !pending.has(id));
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        error: {
+          kind: "HandlerError",
+          operation: options.opKind,
+          message: `${STAGE_CHANGED_PREFIX} ${missing.length} of the changes this Stage checked were staged or undone meanwhile — nothing was merged; stage again.`,
+        },
+      };
+    }
+    headerIds = [...fixedHeaderIds];
+  }
+  const windowFilter =
+    headerIds.length === 0
+      ? sql` AND false`
+      : sql` AND ss.id IN (${sql.join(
+          headerIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})`;
+  const filter =
+    options.sinceLastStagedAt || fixedHeaderIds
+      ? sql` AND ${pendingSnapshotSql()}${windowFilter}`
+      : sql``;
   const merged = await mergeWindowToMain(
     tx,
     ctx,
@@ -198,8 +242,16 @@ export async function mergeBranchSnapshotsToMain(
     options,
   );
   if (!merged.ok) return merged;
-  return { ok: true, value: { ...merged.value, session } };
+  return { ok: true, value: { ...merged.value, session, headerIds } };
 }
+
+/**
+ * Message prefix of a Stage refused because the branch changed between the
+ * classification and the merge — the Stage flow classifies again and
+ * retries (stage/stage-chats.ts).
+ */
+export const STAGE_CHANGED_PREFIX =
+  "Conflict: the changes to stage moved on while this Stage was prepared:";
 
 /** The snapshots one merge replays: a branch plus a header filter. */
 export interface MergeWindow {
@@ -231,7 +283,7 @@ export async function mergeWindowToMain(
   entitiesFilter: ChatPublishInput["entities"],
   options: MergeOptions,
 ): Promise<
-  | { ok: true; value: Omit<MergeResult, "session"> }
+  | { ok: true; value: Omit<MergeResult, "session" | "headerIds"> }
   | {
       ok: false;
       error: { kind: "HandlerError"; operation: string; message: string };
@@ -498,7 +550,23 @@ export async function mergeWindowToMain(
     }
   }
 
+  // Issue #620 — layout chrome placed inside a chat (`layout_modules.set`
+  // on a branch writes a pending block state, not the live table): the
+  // latest state per (layout, block) in the window. Whole-window merges
+  // only — an entity-filtered publish has no way to name a layout block.
+  const layoutBlockRows = !includeAll
+    ? []
+    : ((await tx.execute(sql`
+    SELECT DISTINCT ON (lms.layout_id, lms.block_name)
+           lms.layout_id::text AS layout_id, lms.block_name, lms.state
+    FROM layout_module_snapshots lms
+    JOIN site_snapshots ss ON ss.id = lms.site_snapshot_id
+    WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
+    ORDER BY lms.layout_id, lms.block_name, ss.created_at DESC, lms.created_at DESC
+  `)) as unknown as { layout_id: string; block_name: string; state: unknown }[]);
+
   const total =
+    layoutBlockRows.length +
     pluginRowRows.length +
     moduleRows.length +
     templateRows.length +
@@ -847,6 +915,42 @@ export async function mergeWindowToMain(
     await insertPluginRowSnapshot(tx, result.siteSnapshotId, ref, state);
   }
 
+  // Layout chrome: the merged block state becomes the live placement list
+  // (the referenced modules were replayed above — a module created in the
+  // branch graduates in the same merge). Recorded under the main snapshot
+  // with the state it replaced, so the history shows what changed.
+  for (const b of layoutBlockRows) {
+    const state = (typeof b.state === "string" ? JSON.parse(b.state) : b.state) as {
+      moduleIds?: unknown;
+    };
+    if (!Array.isArray(state.moduleIds)) {
+      return {
+        ok: false,
+        error: {
+          kind: "HandlerError",
+          operation: options.opKind,
+          message: `layout block snapshot for ${b.layout_id}/${b.block_name} has no moduleIds — the snapshot is corrupt; undo that chat's layout change and redo it`,
+        },
+      };
+    }
+    const moduleIds = state.moduleIds.filter((m): m is string => typeof m === "string");
+    await tx.execute(sql`
+      DELETE FROM layout_modules
+      WHERE layout_id = ${b.layout_id}::uuid AND block_name = ${b.block_name}
+    `);
+    for (const [position, moduleId] of moduleIds.entries()) {
+      await tx.execute(sql`
+        INSERT INTO layout_modules (layout_id, block_name, position, module_id)
+        VALUES (${b.layout_id}::uuid, ${b.block_name}, ${position}, ${moduleId}::uuid)
+      `);
+    }
+    await tx.execute(sql`
+      INSERT INTO layout_module_snapshots (site_snapshot_id, layout_id, block_name, state)
+      VALUES (${result.siteSnapshotId}::uuid, ${b.layout_id}::uuid, ${b.block_name},
+              ${jsonbParam({ schemaVersion: 1, moduleIds })})
+    `);
+  }
+
   // Plugin rows can carry URL annotations (a locale variant link); now
   // that they are live, recompose main-line paths and 301 what moved.
   if (pluginRowRows.length > 0) {
@@ -915,12 +1019,17 @@ export async function mergeWindowToMain(
 async function markBranchStaged(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   branchId: string,
-  bound: string | null,
+  headerIds: readonly string[],
+  stagedAt: string | null,
 ): Promise<void> {
+  if (headerIds.length === 0) return;
   await tx.execute(sql`
-    UPDATE site_snapshots SET staged_at = COALESCE(${bound}::timestamptz, now())
+    UPDATE site_snapshots SET staged_at = COALESCE(${stagedAt}::timestamptz, now())
     WHERE chat_branch_id = ${branchId}::uuid AND staged_at IS NULL AND undone_at IS NULL
-      ${bound === null ? sql`` : sql`AND created_at <= ${bound}::timestamptz`}
+      AND id IN (${sql.join(
+        headerIds.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )})
   `);
 }
 
@@ -999,7 +1108,7 @@ export const publishChatSessionOp = defineOperation({
         UPDATE chat_sessions SET published_at = now()
         WHERE id = ${input.chatSessionId}::uuid
       `);
-      await markBranchStaged(tx, merged.value.session.chat_branch_id, null);
+      await markBranchStaged(tx, merged.value.session.chat_branch_id, merged.value.headerIds, null);
       // v0.5.0 — release every per-entity lock held by this chat once
       // it's fully published. Partial publishes keep their locks so
       // subsequent writes against the same entities stay scoped to
@@ -1053,6 +1162,19 @@ const chatMergeToMainInput = chatPublishInput.extend({
    * re-merges the freshest branch state.
    */
   deferConsume: z.boolean().optional(),
+  /**
+   * Issue #620 — merge exactly these pending headers: the set
+   * `quality_audits.classify_stage` classified, so nothing unaudited slips
+   * in between. A header no longer pending refuses the merge ("Conflict:
+   * …", the Stage flow classifies again).
+   */
+  headerIds: z.array(z.string().uuid()).max(20000).optional(),
+  /**
+   * Issue #620 Part B — the AI initiated this Stage (stage_changes runs the
+   * flow with the operator's context): opens the production hold. Asking
+   * for a hold only ever restricts, so any caller may set it.
+   */
+  aiInitiated: z.boolean().optional(),
 });
 
 export const mergeChatToMainOp = defineOperation({
@@ -1080,15 +1202,32 @@ export const mergeChatToMainOp = defineOperation({
      * caught before the operator promotes staging to production.
      */
     brokenInternalLinks: z.array(z.string()),
+    /** The headers replayed — pass them to chat.finalize_stage. */
+    mergedHeaderIds: z.array(z.string()),
   }),
   handler: async (ctx, input, tx) => {
-    const merged = await mergeBranchSnapshotsToMain(tx, ctx, input, {
-      opKind: "chat.merge_to_main",
-      skipAlreadyPublished: false,
-      honourStageFilter: false,
-      recordPublishMarks: false,
-      sinceLastStagedAt: true,
-    });
+    const ai = isAiInitiated(ctx, input.aiInitiated);
+    if (ai && !(await enterAiMerge(tx))) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.merge_to_main",
+        message: AI_MERGE_BUSY_MESSAGE,
+      });
+    }
+    const { headerIds: fixedHeaderIds, aiInitiated: _ai, ...publishInput } = input;
+    const merged = await mergeBranchSnapshotsToMain(
+      tx,
+      ctx,
+      publishInput,
+      {
+        opKind: "chat.merge_to_main",
+        skipAlreadyPublished: false,
+        honourStageFilter: false,
+        recordPublishMarks: false,
+        sinceLastStagedAt: true,
+      },
+      fixedHeaderIds,
+    );
     if (!merged.ok) return err(merged.error);
 
     const { siteSnapshotId, entityCount, includeAll, brokenInternalLinks } = merged.value;
@@ -1108,10 +1247,17 @@ export const mergeChatToMainOp = defineOperation({
       });
     }
 
-    if (entityCount > 0) await recordAiStageHold(tx, ctx, [input.chatSessionId]);
+    // Even a merge of nothing: the AI still triggers the staging build an
+    // automatic publish would promote.
+    if (ai) await recordAiStageHold(tx, ctx, [input.chatSessionId]);
 
     if (!input.deferConsume) {
-      await markBranchStaged(tx, merged.value.session.chat_branch_id, mergedAt);
+      await markBranchStaged(
+        tx,
+        merged.value.session.chat_branch_id,
+        merged.value.headerIds,
+        mergedAt,
+      );
       // v0.10.8 — stamp `last_staged_at` so chat.branch_change_count /
       // branch_edited_entities / list_pending_changes can filter out
       // already-merged snapshots. Without this, the toolbar's pending-
@@ -1152,7 +1298,13 @@ export const mergeChatToMainOp = defineOperation({
         (includeAll ? `entities=${entityCount}` : `partial entities=${entityCount}`) + linkWarning,
     });
 
-    return ok({ siteSnapshotId, entityCount, mergedAt, brokenInternalLinks });
+    return ok({
+      siteSnapshotId,
+      entityCount,
+      mergedAt,
+      brokenInternalLinks,
+      mergedHeaderIds: [...merged.value.headerIds],
+    });
   },
 });
 
@@ -1180,6 +1332,8 @@ export const finalizeStageOp = defineOperation({
       chatSessionId: z.string().uuid(),
       /** `mergedAt` as returned by the paired chat.merge_to_main call. */
       stagedAt: z.string().datetime(),
+      /** `mergedHeaderIds` of the paired merge: exactly these become staged. */
+      headerIds: z.array(z.string().uuid()).max(20000),
     })
     .strict(),
   output: z.object({}),
@@ -1201,7 +1355,7 @@ export const finalizeStageOp = defineOperation({
         message: "session not found",
       });
     }
-    await markBranchStaged(tx, finalized.chat_branch_id, input.stagedAt);
+    await markBranchStaged(tx, finalized.chat_branch_id, input.headerIds, input.stagedAt);
 
     await releaseChatLocks(tx, input.chatSessionId);
 

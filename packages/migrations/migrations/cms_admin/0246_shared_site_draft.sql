@@ -33,7 +33,11 @@
 --    leaves main holding changes no human has published; while such a
 --    hold is open, no automatic production publish (auto-redeploy direct
 --    build or the audit-gated automatic publish) may run. A human Publish
---    live (or an Owner-initiated production build) releases it.
+--    live (or an Owner-initiated production build) releases exactly the
+--    holds its build covers (`deploy_runs.covered_ai_hold_ids`).
+--
+-- 7. `layout_module_snapshots` — layout chrome placed inside a chat is
+--    pending draft state (restorable, stageable), not a live write.
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
@@ -134,7 +138,34 @@ CREATE POLICY ai_stage_holds_authenticated_scope ON ai_stage_holds
   USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL)
   WITH CHECK (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
 
--- 7. Skills (CLAUDE.md §2: new AI behaviour ships as skills). Targeted
+-- The holds a build covers, read as it starts (a hold visible then was
+-- committed together with its merge, so the build contains that merge). A
+-- human production publish releases exactly these — never by time.
+ALTER TABLE deploy_runs ADD COLUMN covered_ai_hold_ids uuid[] NULL;
+
+-- Layout chrome placements written inside a chat are draft state like
+-- every other content change: the latest pending row per (layout, block)
+-- overlays the live `layout_modules` in that branch's views, a Stage
+-- replays it into the live table, an undo simply stops it being pending.
+-- state: { schemaVersion: 1, moduleIds: [uuid, ...] }
+CREATE TABLE layout_module_snapshots (
+  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  site_snapshot_id  uuid NOT NULL REFERENCES site_snapshots(id) ON DELETE CASCADE,
+  layout_id         uuid NOT NULL REFERENCES layouts(id) ON DELETE CASCADE,
+  block_name        text NOT NULL,
+  state             jsonb NOT NULL,
+  created_at        timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX layout_module_snapshots_block_idx
+  ON layout_module_snapshots (layout_id, block_name, site_snapshot_id);
+CREATE INDEX layout_module_snapshots_site_idx ON layout_module_snapshots (site_snapshot_id);
+ALTER TABLE layout_module_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE layout_module_snapshots FORCE ROW LEVEL SECURITY;
+CREATE POLICY layout_module_snapshots_authenticated_scope ON layout_module_snapshots
+  USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL)
+  WITH CHECK (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
+
+-- 8. Skills (CLAUDE.md §2: new AI behaviour ships as skills). Targeted
 --    `replace()` guarded by `body LIKE` on the exact old sentence:
 --    idempotent, a no-op on an install whose text has moved on, and it
 --    never touches an Owner-edited body that no longer carries it.

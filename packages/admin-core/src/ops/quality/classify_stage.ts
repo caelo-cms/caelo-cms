@@ -256,6 +256,13 @@ export const classifyStageOp = defineOperation({
     classification: stageClassificationSchema,
     /** Pages whose rendering the Stage touches (audit candidates). */
     touchedPageIds: z.array(z.string()),
+    /**
+     * The snapshot headers this classification covers. The Stage flow
+     * merges exactly these (chat.merge_draft_to_main / chat.merge_to_main
+     * `headerIds`), so a change committed after the classification never
+     * reaches the build unaudited.
+     */
+    headerIds: z.array(z.string()),
   }),
   handler: async (_ctx, input, tx) => {
     const ids = input.chatSessionIds ?? (input.chatSessionId ? [input.chatSessionId] : []);
@@ -273,7 +280,7 @@ export const classifyStageOp = defineOperation({
     }
     const first = bindings[0];
     if (!first) throw new Error("classify_stage: no chat after validation");
-    let w: Window;
+    let headerIds: string[];
     if (first.kind === "draft") {
       if (bindings.some((b) => b.kind !== "draft")) {
         return err({
@@ -286,18 +293,8 @@ export const classifyStageOp = defineOperation({
         tx,
         first.branchId,
         bindings.map((b) => b.chatSessionId),
-        null,
       );
-      w = {
-        branchId: first.branchId,
-        filter:
-          selection.headerIds.length === 0
-            ? sql` AND false`
-            : sql` AND ss.id IN (${sql.join(
-                selection.headerIds.map((id) => sql`${id}::uuid`),
-                sql`, `,
-              )})`,
-      };
+      headerIds = [...selection.headerIds];
     } else {
       if (bindings.length > 1) {
         return err({
@@ -306,8 +303,23 @@ export const classifyStageOp = defineOperation({
           message: "an isolated chat is classified on its own — pass chatSessionId",
         });
       }
-      w = { branchId: first.branchId, filter: sql` AND ${pendingSnapshotSql()}` };
+      const rows = (await tx.execute(sql`
+        SELECT ss.id::text AS id FROM site_snapshots ss
+        WHERE ss.chat_branch_id = ${first.branchId}::uuid AND ${pendingSnapshotSql()}
+        ORDER BY ss.created_at, ss.id
+      `)) as unknown as { id: string }[];
+      headerIds = rows.map((r) => r.id);
     }
+    const w: Window = {
+      branchId: first.branchId,
+      filter:
+        headerIds.length === 0
+          ? sql` AND false`
+          : sql` AND ss.id IN (${sql.join(
+              headerIds.map((id) => sql`${id}::uuid`),
+              sql`, `,
+            )})`,
+    };
     const changes = [
       ...(await moduleChanges(tx, w)),
       ...(await pageChanges(tx, w)),
@@ -316,6 +328,7 @@ export const classifyStageOp = defineOperation({
     return ok({
       classification: classifyStageChanges(changes),
       touchedPageIds: await touchedPageIds(tx, changes),
+      headerIds,
     });
   },
 });

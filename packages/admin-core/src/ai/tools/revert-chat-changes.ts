@@ -39,6 +39,7 @@ interface SnapshotRow {
   id: string;
   createdAt: string;
   chatBranchId: string | null;
+  chatSessionId: string | null;
   moduleCount: number;
   templateCount: number;
   pageCount: number;
@@ -155,7 +156,15 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
       };
     }
     const priorSnapshots = (priorR.value as { snapshots: SnapshotRow[] }).snapshots;
-    const preChat = priorSnapshots.find((s) => s.chatBranchId !== chatBranchId);
+    // Issue #620 — on the shared draft every chat writes to the same
+    // branch, so "not on this chat's branch" would skip every other chat's
+    // draft change too and rewind far past the chat's start. What is not
+    // this chat's is decided by the snapshot's owning chat there.
+    const preChat = priorSnapshots.find((s) =>
+      branchKind === "draft"
+        ? s.chatSessionId !== input.chatSessionId
+        : s.chatBranchId !== chatBranchId,
+    );
     if (!preChat) {
       return {
         ok: false,

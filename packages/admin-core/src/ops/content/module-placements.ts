@@ -40,6 +40,7 @@ import { pendingSnapshotSql } from "../../draft.js";
 import { loadBranchedModuleStates } from "../../snapshots/load.js";
 import type { PageLayoutState, PageState } from "../../snapshots/state.js";
 import { findContentInstancesContaining } from "./content-instance-refs.js";
+import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 
 /** Pages + layouts that still place one module (slugs, sorted, deduped). */
 export interface ModulePlacements {
@@ -149,7 +150,7 @@ export async function findModulePlacements(
 
   const layoutRows = (await tx.execute(sql`
     SELECT DISTINCT lm.module_id::text AS module_id, l.slug
-      FROM layout_modules lm
+      FROM (${effectiveLayoutModulesSql(branchId)}) lm
       JOIN layouts l ON l.id = lm.layout_id
      WHERE lm.module_id IN (${idList(moduleIds)}) AND l.deleted_at IS NULL
   `)) as unknown as { module_id: string; slug: string }[];

@@ -126,16 +126,25 @@ async function opErr(ctx: ExecutionContext, name: string, input: unknown): Promi
 
 /** The /edit Stage flow, op for op (classify → merge → build → finalize → enqueue). */
 async function stage(chatSessionId: string): Promise<{ runId: string; status: string }> {
-  const branch = await op<object>(HUMAN, "quality_audits.classify_stage", { chatSessionId });
-  const merged = await op<{ mergedAt: string }>(HUMAN, "chat.merge_to_main", {
-    chatSessionId,
-    deferConsume: true,
-  });
+  const { headerIds, ...branch } = await op<{ headerIds: string[] }>(
+    HUMAN,
+    "quality_audits.classify_stage",
+    { chatSessionId },
+  );
+  const merged = await op<{ mergedAt: string; mergedHeaderIds: string[] }>(
+    HUMAN,
+    "chat.merge_to_main",
+    { chatSessionId, deferConsume: true, headerIds },
+  );
   const built = await op<{ runId: string }>(HUMAN, "deploy.trigger", {
     targetName: "staging",
     repoRoot: testRoot,
   });
-  await op(HUMAN, "chat.finalize_stage", { chatSessionId, stagedAt: merged.mergedAt });
+  await op(HUMAN, "chat.finalize_stage", {
+    chatSessionId,
+    stagedAt: merged.mergedAt,
+    headerIds: merged.mergedHeaderIds,
+  });
   const q = await op<{ status: string }>(HUMAN, "quality_audits.enqueue", {
     deployRunId: built.runId,
     chatSessionId,
