@@ -8,10 +8,11 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Page, Response } from "@playwright/test";
 import { expect } from "@playwright/test";
-import { ADMIN_LOG_PATH } from "./global-setup.js";
+import { ADMIN_LOG_DIR, ADMIN_LOG_PATH } from "./global-setup.js";
 import { fetchVisionVerdict, type VisionVerdict } from "./lib/vision-verdict.js";
 
 // Re-export for spec convenience (parallel to apps/admin/e2e/helpers.ts).
@@ -34,6 +35,50 @@ function runBunInline(script: string, extraEnv: Record<string, string> = {}): st
   return result.stdout;
 }
 
+/** Where scenario chat transcripts land (uploaded with the run's artifacts). */
+const TRANSCRIPT_DIR = resolve(ADMIN_LOG_DIR, "transcripts");
+
+/**
+ * Write every chat session with its messages — role, content, tool calls,
+ * tool results, thinking blocks and the SDK's canonical
+ * `response_messages` — to one JSON file per call, named
+ * `<label>-<timestamp>.json`, so the transcripts of every scenario and
+ * every retry survive until the artifact upload.
+ */
+export function dumpChatTranscripts(label: string): void {
+  mkdirSync(TRANSCRIPT_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  runBunInline(
+    `
+    import { SQL } from "bun";
+    import { writeFileSync } from "node:fs";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    let sessions = [];
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      sessions = await tx\`
+        SELECT cs.id::text AS id, cs.title, cs.branch_kind, cs.created_at,
+               COALESCE((
+                 SELECT json_agg(json_build_object(
+                   'role', m.role, 'createdAt', m.created_at, 'content', m.content,
+                   'toolCalls', m.tool_calls, 'toolCallId', m.tool_call_id,
+                   'status', m.status, 'origin', m.origin,
+                   'thinkingBlocks', m.thinking_blocks,
+                   'responseMessages', m.response_messages
+                 ) ORDER BY m.created_at, m.id)
+                 FROM chat_messages m WHERE m.chat_session_id = cs.id
+               ), '[]'::json) AS messages
+        FROM chat_sessions cs
+        ORDER BY cs.created_at
+      \`;
+    });
+    await sql.end();
+    if (sessions.length > 0) writeFileSync(process.env.OUT, JSON.stringify(sessions, null, 2));
+    `,
+    { OUT: resolve(TRANSCRIPT_DIR, `${label}-${stamp}.json`) },
+  );
+}
+
 /**
  * Truncate the fixtures the real-AI scenarios create so Playwright's
  * `retries: 1` doesn't trip over orphan rows from a prior attempt.
@@ -49,8 +94,15 @@ function runBunInline(script: string, extraEnv: Record<string, string> = {}): st
  * Safe because the e2e seed (apps/admin/e2e/_seed.ts) does not insert
  * any of these — only users/roles/ai_providers. Each test starts from
  * a known empty content/chat state.
+ *
+ * Before wiping, the chats about to be deleted are written to
+ * `test-results/livedit/transcripts/` (see {@link dumpChatTranscripts}):
+ * the workflow's failure-time DB dump runs after the LAST scenario, by
+ * which time every earlier scenario's (and every failed attempt's) chat
+ * is gone — a failing turn could not be read afterwards.
  */
 export function resetLiveditFixtures(): void {
+  dumpChatTranscripts("pre-reset");
   runBunInline(`
     import { SQL } from "bun";
     const sql = new SQL(process.env.ADMIN_DATABASE_URL);
