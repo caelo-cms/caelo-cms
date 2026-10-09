@@ -322,6 +322,30 @@ export async function loadPendingChanges(
      AND marks.entity_id::text = l.entity_id
   `)) as unknown as Row[];
 
+  // Theme edits (tokens, assets, meta) — globals. Before issue #620's
+  // review a theme-only chat listed nothing here, so the Open changes
+  // overview showed it as idle and could not stage it.
+  const themeRows = (await tx.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (ts.theme_id) ts.theme_id::text AS entity_id
+      FROM theme_snapshots ts
+      JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
+      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      ORDER BY ts.theme_id, ss.created_at DESC
+    )
+    SELECT
+      l.entity_id,
+      COALESCE(t.display_name, t.slug, l.entity_id) AS label,
+      t.slug AS detail,
+      COALESCE(marks.stage_state, 'pending') AS stage_state
+    FROM latest l
+    LEFT JOIN themes t ON t.id::text = l.entity_id
+    LEFT JOIN chat_branch_publish_marks marks
+      ON marks.chat_branch_id = ${branchId}::uuid
+     AND marks.entity_kind = 'theme'
+     AND marks.entity_id::text = l.entity_id
+  `)) as unknown as Row[];
+
   // Plugin private-storage rows. Labelled "<plugin> · <table>" so the
   // picker groups them by plugin; the row id is the detail.
   const pluginRowRows = (await tx.execute(sql`
@@ -377,6 +401,7 @@ export async function loadPendingChanges(
   // editing a synced instance has cross-page blast radius.
   const contentInstances = bucketize(contentInstanceRows, "contentInstance");
   const pluginRows = bucketize(pluginRowRows, "pluginRow");
+  const themes = bucketize(themeRows, "theme");
 
   // v0.8.0 — layoutChromeRows always stage_state='pending'; bucket
   // into globals so the Stage modal shows them alongside module /
@@ -424,6 +449,7 @@ export async function loadPendingChanges(
         ...layoutChromePending,
         ...contentInstances.pending,
         ...pluginRows.pending,
+        ...themes.pending,
       ],
       lists: ssPendingLists,
     },
@@ -435,6 +461,7 @@ export async function loadPendingChanges(
         ...ssStagedGlobals,
         ...contentInstances.staged,
         ...pluginRows.staged,
+        ...themes.staged,
       ],
       lists: ssStagedLists,
     },

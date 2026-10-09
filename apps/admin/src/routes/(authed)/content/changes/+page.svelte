@@ -89,10 +89,16 @@
                 />
               {/if}
               <CardTitle class="text-base">
-                <a
-                  class="underline-offset-4 hover:underline"
-                  href={`/edit?chat=${c.chatSessionId}`}>{c.title}</a
-                >
+                {#if c.isMine}
+                  <a
+                    class="underline-offset-4 hover:underline"
+                    href={`/edit?chat=${c.chatSessionId}`}>{c.title}</a
+                  >
+                {:else}
+                  <!-- Another editor's chat cannot be opened here: /edit
+                       only resumes the operator's own chats. -->
+                  <span data-testid="foreign-chat-title">{c.title}</span>
+                {/if}
               </CardTitle>
               {#if c.isMine}
                 <Badge variant="secondary">your chat</Badge>

@@ -160,7 +160,15 @@ const renderRefs = (state: string, group: string, refs: readonly ChangeRef[]): s
 
 /** Issue #620 — the Open changes overview as text, one block per chat. */
 async function renderOpenChanges(ctx: ExecutionContext, toolCtx: ToolContext): Promise<ToolResult> {
-  const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "chat.list_open_changes", {});
+  // The operator's ctx: "isMine" compares chat owners with the caller, and
+  // the AI ctx's actor is not the operator in every runtime.
+  const r = await execute(
+    toolCtx.registry,
+    toolCtx.adapter,
+    toolCtx.humanCtx ?? ctx,
+    "chat.list_open_changes",
+    {},
+  );
   if (!r.ok) {
     return { ok: false, content: `chat.list_open_changes failed: ${describeError(r.error)}` };
   }

@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { listUnpublishedChangesTool } from "../ai/tools/history-tools.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { stageChatSessions } from "../stage/stage-chats.js";
@@ -263,5 +264,49 @@ describe("#620 Open changes + multi-chat Stage", () => {
       (tx) => tx`SELECT html FROM modules WHERE id = ${m1}::uuid` as Promise<{ html: string }[]>,
     );
     expect(live[0]?.html).not.toBe("<p>mine</p>");
+  });
+
+  it("lists and stages a chat whose only change is a theme edit (PR #622 review)", async () => {
+    const t = await openChat(OWNER, "Theme only");
+    await op(t.branch, "themes.update_tokens", {
+      themeSlug: "site-default",
+      set: { fontBody: "serif" },
+    });
+    const row = (await openChanges(OWNER)).find((r) => r.chatSessionId === t.id);
+    expect(row?.pendingCount).toBe(1);
+    const staged = await stageChatSessions({ registry, adapter }, OWNER, [t.id]);
+    if (!staged.ok) throw new Error(JSON.stringify(staged.error));
+    expect(staged.value.mergedEntityCount).toBe(1);
+  });
+
+  it("keeps an older chat with open work although many newer chats are idle (PR #622 review)", async () => {
+    const [m1] = moduleIds as [string];
+    const old = await openChat(OWNER, "Old but open");
+    await op(old.branch, "modules.update", { moduleId: m1, html: "<p>old open work</p>" });
+    for (let i = 0; i < 101; i += 1) await openChat(OWNER, `idle ${i}`);
+    expect((await openChanges(OWNER)).some((r) => r.chatSessionId === old.id)).toBe(true);
+  });
+
+  it("marks the operator's own chats as theirs in the AI's view (PR #622 review)", async () => {
+    const mine = await openChat(OWNER, "Seen by the AI");
+    const [, m2] = moduleIds as [string, string];
+    await op(mine.branch, "modules.update", { moduleId: m2, html: "<p>for the AI view</p>" });
+    // The chat-runner's AI ctx may carry an AI actor; the human ctx is the operator.
+    const aiCtx: ExecutionContext = {
+      actorId: "00000000-0000-0000-0000-000000000a1a",
+      actorKind: "ai",
+      requestId: "t620-ai-view",
+      chatBranchId: mine.branch.chatBranchId,
+      chatTaskId: mine.id,
+    };
+    const r = await listUnpublishedChangesTool.handler(
+      aiCtx,
+      { allChats: true },
+      { registry, adapter, chatSessionId: mine.id, humanCtx: OWNER },
+    );
+    expect(r.ok).toBe(true);
+    const line = r.content.split("\n").find((l) => l.includes(mine.id)) ?? "";
+    expect(line).toContain("Seen by the AI");
+    expect(line).not.toContain("[another editor]");
   });
 });

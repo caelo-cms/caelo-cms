@@ -20,7 +20,7 @@ import { clearLoginRateBucket, runBunInline } from "./helpers.js";
 test.beforeAll(clearLoginRateBucket);
 
 const TAG = `e2e-oc-${Date.now()}`;
-let chats: { a: string; b: string; c: string };
+let chats: { a: string; b: string; c: string; other: string };
 
 test.beforeAll(() => {
   const out = runBunInline(
@@ -63,12 +63,28 @@ test.beforeAll(() => {
     await run(a.ctx, "modules.update", { moduleId: shared, html: "<p>from A</p>" });
     await run(b.ctx, "modules.update", { moduleId: shared, css: ".b{}" });
     await run(c.ctx, "modules.update", { moduleId: own, html: "<p>from C</p>" });
+    // Another editor's chat with open work: listed read-only, not a link
+    // (/edit only resumes the operator's own chats).
+    const colleagueId = crypto.randomUUID();
+    const db2 = new SQL(process.env.ADMIN_DATABASE_URL);
+    await db2.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx\`INSERT INTO actors (id, kind, display_name) VALUES (\${colleagueId}::uuid, 'human', 'e2e colleague')\`;
+    });
+    await db2.end();
+    const colleague = { actorId: colleagueId, actorKind: "human", requestId: tag + "-colleague" };
+    const theirs = (await run(colleague, "modules.create", {
+      slug: tag + "-theirs", displayName: tag + " Theirs", html: "<p>v0</p>",
+    })).moduleId;
+    const oc = await run(colleague, "chat.create_session", { title: tag + " Colleague" });
+    await run({ ...colleague, actorKind: "ai", chatBranchId: oc.chatBranchId, chatTaskId: oc.chatSessionId },
+      "modules.update", { moduleId: theirs, html: "<p>from the colleague</p>" });
     await adapter.close();
-    process.stdout.write(JSON.stringify({ a: a.id, b: b.id, c: c.id }));
+    process.stdout.write(JSON.stringify({ a: a.id, b: b.id, c: c.id, other: oc.chatSessionId }));
     `,
     { OC_TAG: TAG },
   );
-  chats = JSON.parse(out) as { a: string; b: string; c: string };
+  chats = JSON.parse(out) as typeof chats;
 });
 
 test("lists open chats with the takeover note and discards a chat", async ({ page }) => {
@@ -89,6 +105,13 @@ test("lists open chats with the takeover note and discards a chat", async ({ pag
   );
   // A's change moved into B: A has nothing unstaged and holds nothing.
   await expect(page.locator(`[data-chat-id="${chats.a}"]`)).toHaveCount(0);
+
+  // Another editor's chat: read-only, its title is not a link.
+  const cardOther = page.locator(`[data-chat-id="${chats.other}"]`);
+  await expect(cardOther).toContainText("another editor");
+  await expect(cardOther.getByTestId("foreign-chat-title")).toBeVisible();
+  await expect(cardOther.locator("a")).toHaveCount(0);
+  await expect(cardOther.getByTestId("discard-chat")).toHaveCount(0);
 
   const cardC = page.locator(`[data-chat-id="${chats.c}"]`);
   await expect(cardC).toContainText(`${TAG} Own card`);

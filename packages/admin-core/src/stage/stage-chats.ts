@@ -153,6 +153,23 @@ export async function enqueueStagingAudit(
 }
 
 /**
+ * The link-integrity warnings of the final merged state. Each merge scans
+ * main right after its own replay, so a link an earlier chat broke can be
+ * fixed by a later chat's merge — only the LAST merge that changed anything
+ * saw the state that is staged (a merge with nothing to replay leaves main
+ * as it was and reports no scan).
+ */
+export function finalLinkWarnings(
+  merges: readonly {
+    readonly entityCount: number;
+    readonly brokenInternalLinks: readonly string[];
+  }[],
+): string[] {
+  const last = [...merges].reverse().find((m) => m.entityCount > 0);
+  return last ? [...last.brokenInternalLinks] : [];
+}
+
+/**
  * Stage the given chats together: verify, classify, merge each, build
  * staging once, finalize each, queue one audit. Every chat must be an open
  * chat of the caller; the selection is checked before anything merges.
@@ -316,7 +333,7 @@ export async function stageChatSessions(
       fileCount: summary.fileCount,
       ...(summary.previewUrl ? { previewUrl: summary.previewUrl } : {}),
       mergedEntityCount: merged.reduce((n, m) => n + m.entityCount, 0),
-      brokenInternalLinks: [...new Set(merged.flatMap((m) => m.brokenInternalLinks))],
+      brokenInternalLinks: finalLinkWarnings(merged),
       chats: merged.map((m) => ({ chatSessionId: m.chatSessionId, entityCount: m.entityCount })),
     },
   };

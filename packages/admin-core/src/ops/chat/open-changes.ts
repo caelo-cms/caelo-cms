@@ -102,6 +102,16 @@ export const listOpenChangesOp = defineOperation({
       WHERE cs.published_at IS NULL AND cs.archived_at IS NULL AND cs.discarded_at IS NULL
         AND cs.subagent_role IS NULL
         ${input.mineOnly ? sql`AND cs.created_by = ${ctx.actorId}::uuid` : sql``}
+        -- Only chats with something open, BEFORE the cap: an older chat
+        -- with unstaged work must not fall off behind newer idle ones.
+        AND (
+          EXISTS (
+            SELECT 1 FROM site_snapshots ss
+            WHERE ss.chat_branch_id = cs.chat_branch_id
+              AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
+          )
+          OR EXISTS (SELECT 1 FROM chat_entity_locks l WHERE l.chat_session_id = cs.id)
+        )
       ORDER BY cs.last_active_at DESC
       LIMIT ${MAX_CHATS}
     `)) as unknown as {

@@ -281,4 +281,104 @@ describe("#620 lock takeover", () => {
     });
     expect(editNew.ok).toBe(true);
   });
+
+  it("retags a taken-over entity the holder created on its branch (PR #622 review)", async () => {
+    const a = await chat("Creator");
+    const b = await chat("Adopter");
+    const created = await execute(registry, adapter, a.ctx, "modules.create", {
+      slug: `${PFX}created-root`,
+      displayName: "Created root",
+      html: "<p>new</p>",
+    });
+    if (!created.ok) throw new Error(`create: ${JSON.stringify(created.error)}`);
+    const moduleId = (created.value as { moduleId: string }).moduleId;
+    // A edits it, so A holds the lock on it.
+    expect(
+      (await execute(registry, adapter, a.ctx, "modules.update", { moduleId, html: "<p>A</p>" }))
+        .ok,
+    ).toBe(true);
+    const wB = await execute(registry, adapter, b.ctx, "modules.update", { moduleId, css: ".b{}" });
+    expect(wB.ok).toBe(true);
+    const tag = await asSystem(
+      (tx) =>
+        tx`SELECT chat_branch_id::text AS branch FROM modules WHERE id = ${moduleId}::uuid` as Promise<
+          { branch: string }[]
+        >,
+    );
+    expect(tag[0]?.branch).toBe(b.branch);
+    const seen = await execute(registry, adapter, b.ctx, "modules.get", { moduleId });
+    expect(seen.ok).toBe(true);
+    // Discarding the old holder no longer tombstones the adopted row.
+    const discarded = await execute(registry, adapter, SYS, "chat.discard_branch", {
+      chatSessionId: a.id,
+    });
+    expect(discarded.ok).toBe(true);
+    const alive = await asSystem(
+      (tx) =>
+        tx`SELECT deleted_at FROM modules WHERE id = ${moduleId}::uuid` as Promise<
+          { deleted_at: Date | null }[]
+        >,
+    );
+    expect(alive[0]?.deleted_at).toBeNull();
+  });
+
+  it("adopts content instances and modules nested in adopted content values (PR #622 review)", async () => {
+    const parent = await execute(registry, adapter, SYS, "modules.create", {
+      slug: `${PFX}nest-parent`,
+      displayName: "Nest parent",
+      html: "<section>{{>child}}</section>",
+      fields: [{ name: "child", kind: "module", label: "Child" } as never],
+    });
+    if (!parent.ok) throw new Error(`parent: ${JSON.stringify(parent.error)}`);
+    const parentId = (parent.value as { moduleId: string }).moduleId;
+    const ci = await execute(registry, adapter, SYS, "content_instances.create", {
+      moduleId: parentId,
+      values: {},
+    });
+    if (!ci.ok) throw new Error(`ci: ${JSON.stringify(ci.error)}`);
+    const ciId =
+      (ci.value as { id?: string; contentInstanceId?: string }).contentInstanceId ??
+      (ci.value as { id: string }).id;
+
+    const a = await chat("Nester");
+    const b = await chat("Nest adopter");
+    const child = await execute(registry, adapter, a.ctx, "modules.create", {
+      slug: `${PFX}nest-child`,
+      displayName: "Nest child",
+      html: "<p>child</p>",
+    });
+    if (!child.ok) throw new Error(`child: ${JSON.stringify(child.error)}`);
+    const childId = (child.value as { moduleId: string }).moduleId;
+    const childCi = await execute(registry, adapter, a.ctx, "content_instances.create", {
+      moduleId: childId,
+      values: {},
+    });
+    if (!childCi.ok) throw new Error(`child ci: ${JSON.stringify(childCi.error)}`);
+    const childCiId =
+      (childCi.value as { contentInstanceId?: string }).contentInstanceId ??
+      (childCi.value as { id: string }).id;
+    const nested = { child: { moduleId: childId, contentInstanceId: childCiId } };
+    const setA = await execute(registry, adapter, a.ctx, "content_instances.set_values", {
+      id: ciId,
+      values: nested,
+    });
+    if (!setA.ok) throw new Error(`set A: ${JSON.stringify(setA.error)}`);
+
+    const setB = await execute(registry, adapter, b.ctx, "content_instances.set_values", {
+      id: ciId,
+      values: nested,
+    });
+    if (!setB.ok) throw new Error(`set B: ${JSON.stringify(setB.error)}`);
+
+    const tags = await asSystem(
+      (tx) =>
+        tx`
+        SELECT 'module' AS kind, chat_branch_id::text AS branch FROM modules WHERE id = ${childId}::uuid
+        UNION ALL
+        SELECT 'ci', chat_branch_id::text FROM content_instances WHERE id = ${childCiId}::uuid
+      ` as Promise<{ kind: string; branch: string }[]>,
+    );
+    expect(tags).toHaveLength(2);
+    for (const t of tags) expect(t.branch).toBe(b.branch);
+  });
 });

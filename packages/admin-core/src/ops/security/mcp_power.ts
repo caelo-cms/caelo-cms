@@ -552,6 +552,15 @@ export const mcpExecuteToolOp = defineOperation({
       },
     );
 
+    // Issue #620 — MCP work is activity in this session: without the bump
+    // a later reconnect could resume a browser chat that merely looked
+    // more recently active.
+    if (result.ok) {
+      await tx.execute(sql`
+        UPDATE chat_sessions SET last_active_at = now() WHERE id = ${input.chatSessionId}::uuid
+      `);
+    }
+
     if (input.toolCallId) {
       await execute(registry, adapter, humanCtxWithBranch, "chat.cache_tool_result", {
         chatSessionId: input.chatSessionId,

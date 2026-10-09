@@ -200,10 +200,34 @@ function referencedEntities(
     }
   } else if (table === "page_snapshots" && typeof s.templateId === "string") {
     out.push({ kind: "template", id: s.templateId });
-  } else if (kind === "contentInstance" && typeof s.moduleId === "string") {
-    out.push({ kind: "module", id: s.moduleId });
+  } else if (kind === "contentInstance") {
+    if (typeof s.moduleId === "string") out.push({ kind: "module", id: s.moduleId });
+    collectNestedRefs(s.values, out);
+  } else if (table === "page_module_content_snapshots") {
+    collectNestedRefs(s.contentValues, out);
   }
   return out;
+}
+
+/**
+ * Nested module references inside content values: a `module` field holds
+ * `{ moduleId, contentInstanceId }`, a `module-list` field an array of
+ * them, at any depth. Each referenced module and content instance is a
+ * dependency of the adopted content (the referenced instance's own values
+ * are scanned in turn when it is adopted).
+ */
+function collectNestedRefs(value: unknown, out: { kind: LockedEntityKind; id: string }[]): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectNestedRefs(item, out);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  const v = value as Record<string, unknown>;
+  if (typeof v.moduleId === "string") out.push({ kind: "module", id: v.moduleId });
+  if (typeof v.contentInstanceId === "string") {
+    out.push({ kind: "contentInstance", id: v.contentInstanceId });
+  }
+  for (const nested of Object.values(v)) collectNestedRefs(nested, out);
 }
 
 /** True iff the live row exists and was created on `branchId` (not yet merged). */
@@ -272,9 +296,14 @@ export async function takeOverEntity(
   const since = sinceFilter(holderInfo.lastStagedAt);
 
   // Worklist: the requested entity, then every holder-created row the
-  // adopted states reference (transitively).
+  // adopted states reference (transitively). Every unit is retagged: a row
+  // the holder CREATED on its branch (the requested entity included) moves
+  // to the taker's branch — otherwise the taker could not see it, and
+  // discarding the holder's chat would tombstone it. The UPDATE only
+  // matches rows still tagged with the holder's branch, so main rows are
+  // untouched.
   const queue: { kind: LockedEntityKind; id: string; retag: boolean }[] = [
-    { kind: args.kind, id: args.entityId, retag: false },
+    { kind: args.kind, id: args.entityId, retag: true },
   ];
   const seen = new Set<string>([`${args.kind}:${args.entityId}`]);
   const moved: MovedRow[] = [];

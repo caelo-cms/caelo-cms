@@ -256,6 +256,28 @@ describe("Power-MCP surface (admin token)", () => {
     expect(both.ok).toBe(false);
   });
 
+  it("counts MCP tool calls as session activity, so a reconnect resumes the MCP session (PR #622 review)", async () => {
+    // The owner opens a browser chat AFTER the MCP session — it is now the
+    // most recently active one.
+    const browser = await execute(registry, adapter, ownerCtx, "chat.create_session", {
+      title: "mcp-power-test browser chat",
+    });
+    if (!browser.ok) throw new Error("browser chat");
+    // MCP work in the earlier session makes that session the active one.
+    const call = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
+      plaintextToken: adminToken,
+      chatSessionId,
+      toolName: "list_pages",
+    });
+    expect(call.ok && (call.value as { ok: boolean }).ok).toBe(true);
+    const resumed = await execute(registry, adapter, systemCtx, "mcp.open_session", {
+      plaintextToken: adminToken,
+    });
+    expect(resumed.ok && (resumed.value as { chatSessionId: string }).chatSessionId).toBe(
+      chatSessionId,
+    );
+  });
+
   it("never resumes another user's session (issue #620)", async () => {
     await ensureActor(otherCtx.actorId, "mcp-power-test other editor");
     const r = await execute(registry, adapter, otherCtx, "mcp_tokens.create", {
