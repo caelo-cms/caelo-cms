@@ -101,9 +101,11 @@ export async function withTakeoverNotices<R extends { ok: boolean; content: stri
     chatSessionId,
   });
   if (!drained.ok) {
+    // Only the error kind: the generic execute() result is typed over every
+    // op's output, so a full dump is flagged as possible secret logging.
     console.error("[chat-runner] takeover notices could not be drained", {
       chatSessionId,
-      error: drained.error,
+      errorKind: drained.error.kind,
     });
     return result;
   }
