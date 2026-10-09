@@ -7,7 +7,7 @@
  * No new Query API ops are introduced; the boundary that needs
  * coverage is the round-trip from `content_instances.values` jsonb
  * through `pages.render_preview` (which calls the engine via
- * `preview-render.ts`). The unit tests in
+ * `packages/shared/src/nested-module-render.ts`). The unit tests in
  * `packages/shared/src/template-engine.test.ts` pin the engine in
  * isolation; this file proves the jsonb adapter round-trip + the
  * preview op + the engine compose end-to-end.
@@ -331,7 +331,7 @@ describe("pages.render_preview list iteration (#71)", () => {
     // currently aggregate into its response — the HTML comment is
     // the operator-facing signal at the op boundary. Direct callers
     // of renderModuleWithContent (covered by the unit tests in
-    // preview-render.test.ts) read the structured channel.
+    // nested-module-render.test.ts in shared) read the structured channel.
     const r = await execute(registry, adapter, systemCtx, "pages.render_preview", {
       pageId: seeded.missingInstancePageId,
     });

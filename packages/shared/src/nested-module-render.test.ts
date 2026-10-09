@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Tier-1 unit tests for `renderModuleWithContent` (preview-render.ts).
+ * Tier-1 unit tests for `renderModuleWithContent` (nested-module-render.ts).
  *
  * The recursive renderer is the §2.1 hot path during every preview
  * render and carries two safety invariants the integration tests can
@@ -20,15 +20,19 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-  type ContentInstanceResource,
   collectNestedRefs,
-  type ModuleResource,
+  type NestedContentInstanceResource,
+  type NestedModuleResource,
   type NestedRefValue,
-  type RenderResolver,
+  type NestedRenderResolver,
   renderModuleWithContent,
-} from "./preview-render.js";
+  renderPlacedModule,
+} from "./nested-module-render.js";
 
-function buildResolver(modules: ModuleResource[], cis: ContentInstanceResource[]): RenderResolver {
+function buildResolver(
+  modules: NestedModuleResource[],
+  cis: NestedContentInstanceResource[],
+): NestedRenderResolver {
   const modByIdx = new Map(modules.map((m) => [m.moduleId, m]));
   const ciByIdx = new Map(cis.map((c) => [c.id, c]));
   return {
@@ -351,8 +355,8 @@ describe("renderModuleWithContent — safety invariants", () => {
   it("emits depth-limit comment when recursion exceeds MAX_RECURSION_DEPTH=8", () => {
     // Build a chain of 12 modules each referencing the next, blowing
     // past the 8-level cap. Modules and CIs share the index suffix.
-    const modules: ModuleResource[] = [];
-    const cis: ContentInstanceResource[] = [];
+    const modules: NestedModuleResource[] = [];
+    const cis: NestedContentInstanceResource[] = [];
     for (let i = 0; i < 12; i += 1) {
       const nextIdx = i + 1;
       modules.push({
@@ -712,5 +716,98 @@ describe("collectNestedRefs", () => {
     });
     expect(refs).toHaveLength(3);
     expect(refs).toEqual(expect.arrayContaining([refA, refB, refC]));
+  });
+});
+
+describe("renderPlacedModule — the composer's entry point", () => {
+  const resolver = buildResolver(
+    [
+      {
+        moduleId: CHILD_MOD_ID,
+        slug: "plan",
+        html: "<div>{{name}}{{>cta}}</div>",
+        css: "",
+        js: "",
+        fields: [
+          { name: "name", kind: "text" },
+          { name: "cta", kind: "module" },
+        ],
+      },
+      {
+        moduleId: GRAND_MOD_ID,
+        slug: "button",
+        html: "<a>{{label}}</a>",
+        css: "",
+        js: "",
+        fields: [{ name: "label", kind: "text" }],
+      },
+    ],
+    [
+      {
+        id: CHILD_CI_ID,
+        moduleId: CHILD_MOD_ID,
+        values: {
+          name: "Pro",
+          cta: { moduleId: GRAND_MOD_ID, contentInstanceId: GRAND_CI_ID },
+        },
+        deletedAt: null,
+      },
+      { id: GRAND_CI_ID, moduleId: GRAND_MOD_ID, values: { label: "Buy" }, deletedAt: null },
+      {
+        id: PARENT_CI_ID,
+        moduleId: CHILD_MOD_ID,
+        values: {
+          name: "Broken",
+          cta: {
+            moduleId: GRAND_MOD_ID,
+            contentInstanceId: "00000000-0000-0000-0000-00000000dead",
+          },
+        },
+        deletedAt: null,
+      },
+    ],
+  );
+  const placed = {
+    html: "<section>{{#plans}}{{/plans}}</section>",
+    fields: [{ name: "plans", kind: "module-list" as const }],
+  };
+
+  it("renders values that belong to no instance (e.g. a content variant)", () => {
+    const r = renderPlacedModule(
+      {
+        ...placed,
+        values: { plans: [{ moduleId: CHILD_MOD_ID, contentInstanceId: CHILD_CI_ID }] },
+      },
+      resolver,
+      {},
+    );
+    expect(r.html).toBe("<section><div>Pro<a>Buy</a></div></section>");
+    expect(r.failures).toEqual([]);
+    expect([...r.touchedModuleIds].sort()).toEqual([CHILD_MOD_ID, GRAND_MOD_ID].sort());
+  });
+
+  it("attributes a failure deep in the tree to its field trail", () => {
+    const r = renderPlacedModule(
+      {
+        ...placed,
+        values: {
+          plans: [
+            { moduleId: CHILD_MOD_ID, contentInstanceId: CHILD_CI_ID },
+            { moduleId: CHILD_MOD_ID, contentInstanceId: PARENT_CI_ID },
+          ],
+        },
+      },
+      resolver,
+      {},
+    );
+    expect(r.failures).toEqual([
+      {
+        field: "plans[1] > cta",
+        reason: "content-instance-missing:00000000-0000-0000-0000-00000000dead",
+      },
+    ]);
+    expect(r.missingSlots).toEqual([
+      "content-instance-missing:00000000-0000-0000-0000-00000000dead",
+    ]);
   });
 });

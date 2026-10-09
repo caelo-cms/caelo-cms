@@ -49,6 +49,8 @@ When you have pending changes, the toolbar shows:
 
 Two-step on purpose: staging gives you a non-localhost preview URL you can share before flipping production. The publish action merges the chat's snapshot branch into main; the static-generator (or auto-redeploy hook) picks up the change.
 
+Sections built from smaller pieces — a grid of cards, a pricing table of plans, a list of FAQ items — are published exactly as the editor preview shows them. If a piece cannot be rendered (for example, a card list still points at a card that was deleted), the Stage stops instead of publishing the section empty, and the message names the page, the section and the field to fix.
+
 ## Branch isolation
 
 Each chat session operates on its own ephemeral preview branch of the snapshot tree. Two editors in two parallel chats see only their own changes. Branches merge into main only when staged; abandoned chats can be discarded with one click.

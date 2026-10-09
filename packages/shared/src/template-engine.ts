@@ -3,7 +3,7 @@
 /**
  * Shared template engine for AI-authored module HTML. Consolidates the
  * no-DB `applyFieldSubstitution` in `preview-compose.ts` and the
- * DB-aware `substituteWithRecursion` in `preview-render.ts` into a
+ * DB-aware `substituteWithRecursion` in `nested-module-render.ts` into a
  * single engine built on `mustache.js` (Plan B per issue #71).
  *
  * Grammar (a Mustache subset — see CMS_REQUIREMENTS §3.1 / §5):
@@ -35,7 +35,9 @@
  * for `missingSlots`: `field-not-declared:<name>`,
  * `kind-mismatch:<name> expected=<…> actual=<kind>`,
  * `text-list-malformed:<name>[<i>]`, `link-list-malformed:<name>[<i>]`,
- * `module-list-malformed:<name>[<i>]`, `module-ref-malformed:<name>`.
+ * `module-list-malformed:<name>[<i>]`, `module-ref-malformed:<name>`,
+ * `nested-renderer-unavailable:<name>` / `…:<name>[<i>]` (a nested ref
+ * rendered without the recursive renderer's partial).
  * v0.11.1 (issue #76): `theme-asset-unbound:<slot>` for the four
  * `{{theme_<slot>_url}}` placeholders when the active theme's asset
  * slot isn't bound.
@@ -51,12 +53,12 @@
  * effect.
  *
  * Partials are caller-supplied (sync `Record<string, string>`). The
- * compose path passes an empty map (no DB) — module / module-list
- * refs become loud HTML comments so static-gen output is visible-
- * broken instead of silent-empty. The preview-render path
- * pre-resolves each nested ref via its existing RenderResolver walk
- * (depth-limit + cycle-detection live there, untouched) and supplies
- * the rendered HTML as a partial.
+ * recursive renderer (`nested-module-render.ts` — used by the editor
+ * preview and, through the composer's `nestedModules` resolver, by the
+ * static generator) pre-resolves each nested ref (depth-limit +
+ * cycle-detection live there) and supplies the rendered HTML as a
+ * partial. A caller without it gets loud HTML comments plus a
+ * `nested-renderer-unavailable` marker instead of silent-empty output.
  */
 
 import Mustache from "mustache";
@@ -89,8 +91,8 @@ export interface RenderTemplateInput {
    * Pre-rendered nested-module HTML keyed by:
    *   - `<name>`            for single `{{>name}}` (module field kind)
    *   - `<name>__<index>`   for each `{{#name}}` element (module-list)
-   * Compose path: empty map (no DB → loud HTML comments emit).
-   * Preview-render path: built from RenderResolver walks.
+   * Built by the recursive renderer (nested-module-render.ts); absent
+   * → loud HTML comments + `nested-renderer-unavailable` markers.
    */
   readonly partials?: Readonly<Record<string, string>>;
   /**
@@ -193,14 +195,21 @@ function isNestedRef(v: unknown): v is NestedRef {
  * public failure-marker contract — the chat-runner diag pass reads
  * the comment text out of rendered HTML, and the editor's missing-
  * content surface highlights it for the operator. Exported so the
- * DB-aware preview-render path (`packages/admin-core/src/ops/content/
- * preview-render.ts`) emits the exact same shape without redeclaring.
+ * recursive nested-module renderer (`nested-module-render.ts`) emits
+ * the exact same shape without redeclaring.
  */
 export function caeloMissingComment(reason: string): string {
   return `<!-- caelo:missing reason=${reason} -->`;
 }
 
 const comment = caeloMissingComment;
+
+/**
+ * `missingSlots` marker prefix for a `module` / `module-list` ref the
+ * caller gave the engine no partial for — it rendered without the
+ * recursive nested-module renderer. Never legitimate in deployed HTML.
+ */
+const NESTED_RENDERER_UNAVAILABLE = "nested-renderer-unavailable";
 
 /**
  * Render `html` against `contentValues` + `fields` + `partials`,
@@ -546,11 +555,12 @@ function renderModuleList(
     const partialKey = `${name}__${i}`;
     const partialHtml = partials[partialKey];
     if (partialHtml === undefined) {
-      // Compose path: no DB → no partials → loud comment so
-      // operators see the gap. The preview-render path always
-      // supplies a partial (or routes a structured failure marker
-      // through it from renderInner), so this branch is the
-      // static-gen escape hatch until #70 lands.
+      // The caller rendered without a nested-module resolver (the
+      // recursive renderer in nested-module-render.ts supplies a
+      // partial — or a structured failure marker — for every
+      // well-formed ref). Loud comment + structured marker, so the
+      // editor flags it and the static generator refuses to ship it.
+      missing.push(`${NESTED_RENDERER_UNAVAILABLE}:${name}[${i}]`);
       parts.push(`<!-- caelo:module-list ${name} needs recursive renderer (compose path) -->`);
       continue;
     }
@@ -585,6 +595,8 @@ function renderPartialRef(
   }
   const partialHtml = partials[name];
   if (partialHtml === undefined) {
+    // See renderModuleList: rendered without a nested-module resolver.
+    missing.push(`${NESTED_RENDERER_UNAVAILABLE}:${name}`);
     return `<!-- caelo:module ${name} needs recursive renderer (compose path) -->`;
   }
   return partialHtml;
