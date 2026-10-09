@@ -243,8 +243,12 @@ describe("static build renders nested modules", () => {
   });
 
   it("an edit to a placement-less nested instance in a chat reaches the build after Stage's merge", async () => {
+    // An isolated (experiment) chat: its edit stays off main until the
+    // merge, which is the window the pre-merge build below checks. A
+    // shared-draft chat (#620) is staged through the draft instead.
     const chat = await execute(registry, adapter, SYSTEM, "chat.create_session", {
       title: `${PFX} chat`,
+      isolation: "experiment",
     });
     if (!chat.ok) throw new Error(`chat seed failed: ${JSON.stringify(chat.error)}`);
     const { chatSessionId, chatBranchId } = chat.value as {
