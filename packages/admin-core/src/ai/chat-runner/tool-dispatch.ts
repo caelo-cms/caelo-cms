@@ -101,11 +101,11 @@ export async function withTakeoverNotices<R extends { ok: boolean; content: stri
     chatSessionId,
   });
   if (!drained.ok) {
-    // No fields of the failed result: execute() is typed over every op's
-    // output, so dumping it is flagged as possible secret logging.
-    console.error("[chat-runner] takeover notices could not be drained; they stay queued", {
-      chatSessionId,
-    });
+    // A constant line on purpose: every value reachable from execute() is
+    // typed over every op's output, which CodeQL's clear-text-logging query
+    // flags (docs/dev/codeql.md, known false-positive class). The notes stay
+    // queued and arrive with the next tool result.
+    console.error("[chat-runner] lock-takeover notices could not be drained; they stay queued");
     return result;
   }
   const notes = (drained.value as { notes: string[] }).notes;
