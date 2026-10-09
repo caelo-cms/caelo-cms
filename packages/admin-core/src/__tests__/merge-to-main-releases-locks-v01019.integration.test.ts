@@ -53,6 +53,19 @@ async function wipe(): Promise<void> {
   }
 }
 
+/** Read past RLS (the policies require an actor kind) in a system tx. */
+async function asSystem(query: (tx: SQL) => Promise<unknown>): Promise<unknown[]> {
+  const sql = new SQL(ADMIN_URL as string);
+  try {
+    return (await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return query(tx);
+    })) as unknown[];
+  } finally {
+    await sql.end();
+  }
+}
+
 beforeAll(async () => {
   await wipe();
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
@@ -115,23 +128,25 @@ describe("v0.10.19 — chat.merge_to_main releases entity locks", () => {
     });
     expect(w1.ok).toBe(true);
 
-    // Pre-v0.10.19 baseline: while chat A holds the lock, chat B is
-    // rejected. Asserting this so the test is meaningful — if some
-    // future refactor removes the lock entirely, this guard fails
+    // Baseline: chat A holds the lock now. Asserted so the test is
+    // meaningful — if a refactor stopped taking the lock, this guard fails
     // loudly instead of giving a false-positive pass on the release.
+    // (Since #620 a held lock no longer blocks chat B — B would take it
+    // over — so the release is observed through the lock row and the
+    // absence of a takeover below.)
     const editAsB: ExecutionContext = {
       actorId: HUMAN,
       actorKind: "system",
-      requestId: "v01019-write-b-pre",
+      requestId: "v01019-write-b",
       chatBranchId: branchB,
     };
-    const wBBlocked = await execute(registry, adapter, editAsB, "modules.update", {
-      moduleId,
-      html: "<p>v-from-b</p>",
-    });
-    expect(wBBlocked.ok).toBe(false);
-    if (wBBlocked.ok) return;
-    expect((wBBlocked.error as { kind: string }).kind).toBe("Locked");
+    const heldRows = await asSystem(
+      (tx) => tx`
+        SELECT 1 FROM chat_entity_locks
+        WHERE chat_session_id = ${idA}::uuid AND entity_id = ${moduleId}::uuid
+      `,
+    );
+    expect(heldRows.length).toBe(1);
 
     // Chat A Stages — pre-v0.10.19 left the lock behind; v0.10.19
     // releases it.
@@ -148,16 +163,18 @@ describe("v0.10.19 — chat.merge_to_main releases entity locks", () => {
     expect(wBNow.ok).toBe(true);
 
     // Belt-and-braces: the lock row is gone.
-    const sql = new SQL(ADMIN_URL as string);
-    try {
-      const rows = (await sql`
+    const rows = await asSystem(
+      (tx) => tx`
         SELECT entity_id::text AS entity_id
         FROM chat_entity_locks
         WHERE chat_session_id = ${idA}::uuid
-      `) as unknown as { entity_id: string }[];
-      expect(rows.length).toBe(0);
-    } finally {
-      await sql.end();
-    }
+      `,
+    );
+    expect(rows.length).toBe(0);
+    // Chat B acquired a free lock — nothing was taken over from A.
+    const takeovers = await asSystem(
+      (tx) => tx`SELECT 1 FROM chat_lock_takeovers WHERE entity_id = ${moduleId}::uuid`,
+    );
+    expect(takeovers.length).toBe(0);
   });
 });

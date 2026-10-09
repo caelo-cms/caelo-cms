@@ -24,7 +24,7 @@
  *   from 'pending' to 'staged'; publish does the merge atomically.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -61,23 +61,27 @@ const entityRefSchema = z
   .strict();
 type EntityRef = z.infer<typeof entityRefSchema>;
 
+const refGroupsSchema = z.object({
+  pages: z.array(entityRefSchema),
+  globals: z.array(entityRefSchema),
+  lists: z.array(entityRefSchema),
+});
+
+/** Output shape of `chat.list_pending_changes`, reused by the Open changes overview. */
+export const pendingChangesSchema = z.object({
+  pending: refGroupsSchema,
+  staged: refGroupsSchema,
+});
+
+/** Pending (not yet staged) vs staged change refs of one chat branch. */
+export type PendingChanges = z.infer<typeof pendingChangesSchema>;
+
 export const listPendingChangesOp = defineOperation({
   name: "chat.list_pending_changes",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
-  output: z.object({
-    pending: z.object({
-      pages: z.array(entityRefSchema),
-      globals: z.array(entityRefSchema),
-      lists: z.array(entityRefSchema),
-    }),
-    staged: z.object({
-      pages: z.array(entityRefSchema),
-      globals: z.array(entityRefSchema),
-      lists: z.array(entityRefSchema),
-    }),
-  }),
+  output: pendingChangesSchema,
   handler: async (_ctx, input, tx) => {
     const sessionRows = (await tx.execute(sql`
       SELECT chat_branch_id::text AS chat_branch_id,
@@ -93,334 +97,376 @@ export const listPendingChangesOp = defineOperation({
         message: "session not found",
       });
     }
-    // v0.10.8 — filter snapshots to those created after the last
-    // Stage (merge_to_main). Pre-v0.10.8 the dropdown showed every
-    // edit in the chat's lifetime, not edits since the last merge.
-    const lastStagedAt = sessionRows[0]?.last_staged_at ?? null;
-    const sinceFilter = lastStagedAt
-      ? sql` AND ss.created_at > ${lastStagedAt instanceof Date ? lastStagedAt.toISOString() : lastStagedAt}::timestamptz`
-      : sql``;
+    return ok(await loadPendingChanges(tx, branchId, sessionRows[0]?.last_staged_at ?? null));
+  },
+});
 
-    /**
-     * Walk every branched snapshot table once. For each entity, ask
-     * the publish-marks table what stage_state it's in (pending if no
-     * mark exists yet; 'staged' if marked; 'published' if already
-     * shipped and we should hide it).
-     */
-    type Row = { entity_id: string; label: string; detail: string | null; stage_state: string };
+/**
+ * Categorized change refs of a chat branch since its last Stage — the
+ * Stage picker's and the Open changes overview's view of "what this chat
+ * changed". Every branched snapshot table is walked once; the publish
+ * marks decide pending vs staged.
+ *
+ * @param lastStagedAt the chat's `last_staged_at` (null = never staged).
+ */
+export async function loadPendingChanges(
+  tx: TransactionRunner,
+  branchId: string,
+  lastStagedAt: string | Date | null,
+): Promise<PendingChanges> {
+  // v0.10.8 — filter snapshots to those created after the last
+  // Stage (merge_to_main). Pre-v0.10.8 the dropdown showed every
+  // edit in the chat's lifetime, not edits since the last merge.
+  const sinceFilter = lastStagedAt
+    ? sql` AND ss.created_at > ${lastStagedAt instanceof Date ? lastStagedAt.toISOString() : lastStagedAt}::timestamptz`
+    : sql``;
 
-    // page_module_content — branch overlay rows since v0.4.0.
-    const contentRows = (await tx.execute(sql`
-      WITH latest AS (
-        SELECT DISTINCT ON (pmcs.page_module_content_id)
-          pmcs.page_module_content_id::text AS entity_id,
-          pmcs.page_id::text AS page_id,
-          pmcs.block_name,
-          pmcs.position
-        FROM page_module_content_snapshots pmcs
-        JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
-        ORDER BY pmcs.page_module_content_id, ss.created_at DESC
-      )
-      SELECT
-        l.entity_id,
-        COALESCE(p.title, p.slug) AS label,
-        (p.slug || ' · ' || l.block_name || '#' || l.position) AS detail,
-        COALESCE(m.stage_state, 'pending') AS stage_state
-      FROM latest l
-      LEFT JOIN pages p ON p.id::text = l.page_id
-      LEFT JOIN chat_branch_publish_marks m
-        ON m.chat_branch_id = ${branchId}::uuid
-       AND m.entity_kind = 'pageModuleContent'
-       AND m.entity_id::text = l.entity_id
-    `)) as unknown as Row[];
+  /**
+   * Walk every branched snapshot table once. For each entity, ask
+   * the publish-marks table what stage_state it's in (pending if no
+   * mark exists yet; 'staged' if marked; 'published' if already
+   * shipped and we should hide it).
+   */
+  type Row = { entity_id: string; label: string; detail: string | null; stage_state: string };
 
-    // page snapshots — page metadata edits.
-    const pageRows = (await tx.execute(sql`
-      WITH latest AS (
-        SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS entity_id
-        FROM page_snapshots ps
-        JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
-        ORDER BY ps.page_id, ss.created_at DESC
-      )
-      SELECT
-        l.entity_id,
-        COALESCE(p.title, p.slug) AS label,
-        ('/' || p.slug) AS detail,
-        COALESCE(m.stage_state, 'pending') AS stage_state
-      FROM latest l
-      LEFT JOIN pages p ON p.id::text = l.entity_id
-      LEFT JOIN chat_branch_publish_marks m
-        ON m.chat_branch_id = ${branchId}::uuid
-       AND m.entity_kind = 'page'
-       AND m.entity_id::text = l.entity_id
-    `)) as unknown as Row[];
+  // page_module_content — branch overlay rows since v0.4.0.
+  const contentRows = (await tx.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (pmcs.page_module_content_id)
+        pmcs.page_module_content_id::text AS entity_id,
+        pmcs.page_id::text AS page_id,
+        pmcs.block_name,
+        pmcs.position
+      FROM page_module_content_snapshots pmcs
+      JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
+      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      ORDER BY pmcs.page_module_content_id, ss.created_at DESC
+    )
+    SELECT
+      l.entity_id,
+      COALESCE(p.title, p.slug) AS label,
+      (p.slug || ' · ' || l.block_name || '#' || l.position) AS detail,
+      COALESCE(m.stage_state, 'pending') AS stage_state
+    FROM latest l
+    LEFT JOIN pages p ON p.id::text = l.page_id
+    LEFT JOIN chat_branch_publish_marks m
+      ON m.chat_branch_id = ${branchId}::uuid
+     AND m.entity_kind = 'pageModuleContent'
+     AND m.entity_id::text = l.entity_id
+  `)) as unknown as Row[];
 
-    // pageLayout snapshots (placements).
-    const layoutRows = (await tx.execute(sql`
-      WITH latest AS (
-        SELECT DISTINCT ON (pls.page_id) pls.page_id::text AS entity_id
-        FROM page_layout_snapshots pls
-        JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
-        ORDER BY pls.page_id, ss.created_at DESC
-      )
-      SELECT
-        l.entity_id,
-        COALESCE(p.title, p.slug) AS label,
-        ('/' || p.slug || ' · placements') AS detail,
-        COALESCE(m.stage_state, 'pending') AS stage_state
-      FROM latest l
-      LEFT JOIN pages p ON p.id::text = l.entity_id
-      LEFT JOIN chat_branch_publish_marks m
-        ON m.chat_branch_id = ${branchId}::uuid
-       AND m.entity_kind = 'pageLayout'
-       AND m.entity_id::text = l.entity_id
-    `)) as unknown as Row[];
+  // page snapshots — page metadata edits.
+  const pageRows = (await tx.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS entity_id
+      FROM page_snapshots ps
+      JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      ORDER BY ps.page_id, ss.created_at DESC
+    )
+    SELECT
+      l.entity_id,
+      COALESCE(p.title, p.slug) AS label,
+      ('/' || p.slug) AS detail,
+      COALESCE(m.stage_state, 'pending') AS stage_state
+    FROM latest l
+    LEFT JOIN pages p ON p.id::text = l.entity_id
+    LEFT JOIN chat_branch_publish_marks m
+      ON m.chat_branch_id = ${branchId}::uuid
+     AND m.entity_kind = 'page'
+     AND m.entity_id::text = l.entity_id
+  `)) as unknown as Row[];
 
-    // module + template snapshots — global category.
-    const moduleRows = (await tx.execute(sql`
-      WITH latest AS (
-        SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS entity_id
-        FROM module_snapshots ms
-        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
-        ORDER BY ms.module_id, ss.created_at DESC
-      )
-      SELECT
-        l.entity_id,
-        m.display_name AS label,
-        m.slug AS detail,
-        COALESCE(marks.stage_state, 'pending') AS stage_state
-      FROM latest l
-      LEFT JOIN modules m ON m.id::text = l.entity_id
-      LEFT JOIN chat_branch_publish_marks marks
-        ON marks.chat_branch_id = ${branchId}::uuid
-       AND marks.entity_kind = 'module'
-       AND marks.entity_id::text = l.entity_id
-    `)) as unknown as Row[];
+  // pageLayout snapshots (placements).
+  const layoutRows = (await tx.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (pls.page_id) pls.page_id::text AS entity_id
+      FROM page_layout_snapshots pls
+      JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
+      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      ORDER BY pls.page_id, ss.created_at DESC
+    )
+    SELECT
+      l.entity_id,
+      COALESCE(p.title, p.slug) AS label,
+      ('/' || p.slug || ' · placements') AS detail,
+      COALESCE(m.stage_state, 'pending') AS stage_state
+    FROM latest l
+    LEFT JOIN pages p ON p.id::text = l.entity_id
+    LEFT JOIN chat_branch_publish_marks m
+      ON m.chat_branch_id = ${branchId}::uuid
+     AND m.entity_kind = 'pageLayout'
+     AND m.entity_id::text = l.entity_id
+  `)) as unknown as Row[];
 
-    const templateRows = (await tx.execute(sql`
-      WITH latest AS (
-        SELECT DISTINCT ON (ts.template_id) ts.template_id::text AS entity_id
-        FROM template_snapshots ts
-        JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
-        ORDER BY ts.template_id, ss.created_at DESC
-      )
-      SELECT
-        l.entity_id,
-        t.display_name AS label,
-        t.slug AS detail,
-        COALESCE(marks.stage_state, 'pending') AS stage_state
-      FROM latest l
-      LEFT JOIN templates t ON t.id::text = l.entity_id
-      LEFT JOIN chat_branch_publish_marks marks
-        ON marks.chat_branch_id = ${branchId}::uuid
-       AND marks.entity_kind = 'template'
-       AND marks.entity_id::text = l.entity_id
-    `)) as unknown as Row[];
+  // module + template snapshots — global category.
+  const moduleRows = (await tx.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS entity_id
+      FROM module_snapshots ms
+      JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      ORDER BY ms.module_id, ss.created_at DESC
+    )
+    SELECT
+      l.entity_id,
+      m.display_name AS label,
+      m.slug AS detail,
+      COALESCE(marks.stage_state, 'pending') AS stage_state
+    FROM latest l
+    LEFT JOIN modules m ON m.id::text = l.entity_id
+    LEFT JOIN chat_branch_publish_marks marks
+      ON marks.chat_branch_id = ${branchId}::uuid
+     AND marks.entity_kind = 'module'
+     AND marks.entity_id::text = l.entity_id
+  `)) as unknown as Row[];
 
-    // v0.8.0 — layout-chrome snapshots (op_kind='layout_modules.set').
-    // These write site_snapshots rows with `entities: []` so no
-    // entity-snapshot table covers them. Surface one entry per
-    // snapshot row, parsing the block name from the description
-    // (layouts.ts stamps "layout_modules.set block=<name>" / similar).
-    // Always stage_state='pending' for this kind — there's no
-    // per-layout publish-marks attribution to do.
-    const layoutChromeRows = (await tx.execute(sql`
-      SELECT
-        ss.id::text AS entity_id,
-        ss.op_kind,
-        ss.description,
-        'pending' AS stage_state
-      FROM site_snapshots ss
+  const templateRows = (await tx.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (ts.template_id) ts.template_id::text AS entity_id
+      FROM template_snapshots ts
+      JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
+      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      ORDER BY ts.template_id, ss.created_at DESC
+    )
+    SELECT
+      l.entity_id,
+      t.display_name AS label,
+      t.slug AS detail,
+      COALESCE(marks.stage_state, 'pending') AS stage_state
+    FROM latest l
+    LEFT JOIN templates t ON t.id::text = l.entity_id
+    LEFT JOIN chat_branch_publish_marks marks
+      ON marks.chat_branch_id = ${branchId}::uuid
+     AND marks.entity_kind = 'template'
+     AND marks.entity_id::text = l.entity_id
+  `)) as unknown as Row[];
+
+  // v0.8.0 — layout-chrome snapshots (op_kind='layout_modules.set').
+  // These write site_snapshots rows with `entities: []` so no
+  // entity-snapshot table covers them. Surface one entry per
+  // snapshot row, parsing the block name from the description
+  // (layouts.ts stamps "layout_modules.set block=<name>" / similar).
+  // Always stage_state='pending' for this kind — there's no
+  // per-layout publish-marks attribution to do.
+  const layoutChromeRows = (await tx.execute(sql`
+    SELECT
+      ss.id::text AS entity_id,
+      ss.op_kind,
+      ss.description,
+      'pending' AS stage_state
+    FROM site_snapshots ss
+    WHERE ss.chat_branch_id = ${branchId}::uuid
+      AND ss.op_kind = 'layout_modules.set'${sinceFilter}
+    ORDER BY ss.created_at DESC
+  `)) as unknown as {
+    entity_id: string;
+    op_kind: string;
+    description: string;
+    stage_state: string;
+  }[];
+
+  // v0.5.3 — structured_set snapshots. Theme kind goes in `globals`;
+  // ordered-list kinds (nav-menu / taxonomy / link-list) go in `lists`.
+  const structuredSetRows = (await tx.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (sss.structured_set_id)
+        sss.structured_set_id::text AS entity_id,
+        sss.state
+      FROM structured_set_snapshots sss
+      JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
       WHERE ss.chat_branch_id = ${branchId}::uuid
-        AND ss.op_kind = 'layout_modules.set'${sinceFilter}
-      ORDER BY ss.created_at DESC
-    `)) as unknown as {
-      entity_id: string;
-      op_kind: string;
-      description: string;
-      stage_state: string;
-    }[];
+      ORDER BY sss.structured_set_id, ss.created_at DESC
+    )
+    SELECT
+      l.entity_id,
+      ss.display_name AS label,
+      (ss.kind || '/' || ss.slug) AS detail,
+      ss.kind AS kind,
+      COALESCE(marks.stage_state, 'pending') AS stage_state
+    FROM latest l
+    LEFT JOIN structured_sets ss ON ss.id::text = l.entity_id
+    LEFT JOIN chat_branch_publish_marks marks
+      ON marks.chat_branch_id = ${branchId}::uuid
+     AND marks.entity_kind = 'structuredSet'
+     AND marks.entity_id::text = l.entity_id
+  `)) as unknown as (Row & { kind: string })[];
 
-    // v0.5.3 — structured_set snapshots. Theme kind goes in `globals`;
-    // ordered-list kinds (nav-menu / taxonomy / link-list) go in `lists`.
-    const structuredSetRows = (await tx.execute(sql`
-      WITH latest AS (
-        SELECT DISTINCT ON (sss.structured_set_id)
-          sss.structured_set_id::text AS entity_id,
-          sss.state
-        FROM structured_set_snapshots sss
-        JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid
-        ORDER BY sss.structured_set_id, ss.created_at DESC
-      )
-      SELECT
-        l.entity_id,
-        ss.display_name AS label,
-        (ss.kind || '/' || ss.slug) AS detail,
-        ss.kind AS kind,
-        COALESCE(marks.stage_state, 'pending') AS stage_state
-      FROM latest l
-      LEFT JOIN structured_sets ss ON ss.id::text = l.entity_id
-      LEFT JOIN chat_branch_publish_marks marks
-        ON marks.chat_branch_id = ${branchId}::uuid
-       AND marks.entity_kind = 'structuredSet'
-       AND marks.entity_id::text = l.entity_id
-    `)) as unknown as (Row & { kind: string })[];
+  // v0.12.0 — content_instance edits. Each row carries the module slug
+  // + the content_instance's slug/displayName so the Stage picker can
+  // distinguish reusable instances (e.g. "primary-cta") from one-off
+  // per-placement rows.
+  const contentInstanceRows = (await tx.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (cis.content_instance_id)
+        cis.content_instance_id::text AS entity_id
+      FROM content_instance_snapshots cis
+      JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
+      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      ORDER BY cis.content_instance_id, ss.created_at DESC
+    )
+    SELECT
+      l.entity_id,
+      COALESCE(ci.display_name, ci.slug, ci.id::text) AS label,
+      (
+        m.slug
+        || CASE WHEN ci.slug IS NOT NULL THEN ' · ' || ci.slug ELSE '' END
+      ) AS detail,
+      COALESCE(marks.stage_state, 'pending') AS stage_state
+    FROM latest l
+    LEFT JOIN content_instances ci ON ci.id::text = l.entity_id
+    LEFT JOIN modules m ON m.id = ci.module_id
+    LEFT JOIN chat_branch_publish_marks marks
+      ON marks.chat_branch_id = ${branchId}::uuid
+     AND marks.entity_kind = 'contentInstance'
+     AND marks.entity_id::text = l.entity_id
+  `)) as unknown as Row[];
 
-    // v0.12.0 — content_instance edits. Each row carries the module slug
-    // + the content_instance's slug/displayName so the Stage picker can
-    // distinguish reusable instances (e.g. "primary-cta") from one-off
-    // per-placement rows.
-    const contentInstanceRows = (await tx.execute(sql`
-      WITH latest AS (
-        SELECT DISTINCT ON (cis.content_instance_id)
-          cis.content_instance_id::text AS entity_id
-        FROM content_instance_snapshots cis
-        JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
-        ORDER BY cis.content_instance_id, ss.created_at DESC
-      )
-      SELECT
-        l.entity_id,
-        COALESCE(ci.display_name, ci.slug, ci.id::text) AS label,
-        (
-          m.slug
-          || CASE WHEN ci.slug IS NOT NULL THEN ' · ' || ci.slug ELSE '' END
-        ) AS detail,
-        COALESCE(marks.stage_state, 'pending') AS stage_state
-      FROM latest l
-      LEFT JOIN content_instances ci ON ci.id::text = l.entity_id
-      LEFT JOIN modules m ON m.id = ci.module_id
-      LEFT JOIN chat_branch_publish_marks marks
-        ON marks.chat_branch_id = ${branchId}::uuid
-       AND marks.entity_kind = 'contentInstance'
-       AND marks.entity_id::text = l.entity_id
-    `)) as unknown as Row[];
+  // Theme edits (tokens, assets, meta) — globals. Before issue #620's
+  // review a theme-only chat listed nothing here, so the Open changes
+  // overview showed it as idle and could not stage it.
+  const themeRows = (await tx.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (ts.theme_id) ts.theme_id::text AS entity_id
+      FROM theme_snapshots ts
+      JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
+      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      ORDER BY ts.theme_id, ss.created_at DESC
+    )
+    SELECT
+      l.entity_id,
+      COALESCE(t.display_name, t.slug, l.entity_id) AS label,
+      t.slug AS detail,
+      COALESCE(marks.stage_state, 'pending') AS stage_state
+    FROM latest l
+    LEFT JOIN themes t ON t.id::text = l.entity_id
+    LEFT JOIN chat_branch_publish_marks marks
+      ON marks.chat_branch_id = ${branchId}::uuid
+     AND marks.entity_kind = 'theme'
+     AND marks.entity_id::text = l.entity_id
+  `)) as unknown as Row[];
 
-    // Plugin private-storage rows. Labelled "<plugin> · <table>" so the
-    // picker groups them by plugin; the row id is the detail.
-    const pluginRowRows = (await tx.execute(sql`
-      WITH latest AS (
-        SELECT DISTINCT ON (prs.row_id)
-          prs.row_id::text AS entity_id, prs.plugin_id, prs.table_name, prs.state
-        FROM plugin_row_snapshots prs
-        JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
-        ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
-      )
-      SELECT
-        l.entity_id,
-        COALESCE(p.slug, l.plugin_id::text) || ' · ' || l.table_name AS label,
-        CASE WHEN l.state->>'deletedAt' IS NOT NULL THEN 'deleted ' ELSE '' END
-          || left(l.entity_id, 8) AS detail,
-        COALESCE(marks.stage_state, 'pending') AS stage_state
-      FROM latest l
-      LEFT JOIN plugins p ON p.id = l.plugin_id
-      LEFT JOIN chat_branch_publish_marks marks
-        ON marks.chat_branch_id = ${branchId}::uuid
-       AND marks.entity_kind = 'pluginRow'
-       AND marks.entity_id::text = l.entity_id
-      ORDER BY label, l.entity_id
-    `)) as unknown as Row[];
+  // Plugin private-storage rows. Labelled "<plugin> · <table>" so the
+  // picker groups them by plugin; the row id is the detail.
+  const pluginRowRows = (await tx.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (prs.row_id)
+        prs.row_id::text AS entity_id, prs.plugin_id, prs.table_name, prs.state
+      FROM plugin_row_snapshots prs
+      JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
+      WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
+      ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
+    )
+    SELECT
+      l.entity_id,
+      COALESCE(p.slug, l.plugin_id::text) || ' · ' || l.table_name AS label,
+      CASE WHEN l.state->>'deletedAt' IS NOT NULL THEN 'deleted ' ELSE '' END
+        || left(l.entity_id, 8) AS detail,
+      COALESCE(marks.stage_state, 'pending') AS stage_state
+    FROM latest l
+    LEFT JOIN plugins p ON p.id = l.plugin_id
+    LEFT JOIN chat_branch_publish_marks marks
+      ON marks.chat_branch_id = ${branchId}::uuid
+     AND marks.entity_kind = 'pluginRow'
+     AND marks.entity_id::text = l.entity_id
+    ORDER BY label, l.entity_id
+  `)) as unknown as Row[];
 
-    function bucketize(
-      rows: Row[],
-      kind: EntityRef["kind"],
-    ): { pending: EntityRef[]; staged: EntityRef[] } {
-      const pending: EntityRef[] = [];
-      const staged: EntityRef[] = [];
-      for (const r of rows) {
-        const ref: EntityRef = {
-          kind,
-          entityId: r.entity_id,
-          label: r.label ?? r.entity_id,
-          ...(r.detail ? { detail: r.detail } : {}),
-        };
-        if (r.stage_state === "staged") staged.push(ref);
-        else if (r.stage_state === "pending") pending.push(ref);
-        // 'published' → drop (already shipped from this branch).
-      }
-      return { pending, staged };
-    }
-
-    const content = bucketize(contentRows, "pageModuleContent");
-    const pages = bucketize(pageRows, "page");
-    const layouts = bucketize(layoutRows, "pageLayout");
-    const modules = bucketize(moduleRows, "module");
-    const templates = bucketize(templateRows, "template");
-    // v0.12.0 — content_instance edits join the globals bucket since
-    // editing a synced instance has cross-page blast radius.
-    const contentInstances = bucketize(contentInstanceRows, "contentInstance");
-    const pluginRows = bucketize(pluginRowRows, "pluginRow");
-
-    // v0.8.0 — layoutChromeRows always stage_state='pending'; bucket
-    // into globals so the Stage modal shows them alongside module /
-    // template / theme edits. Parse the block name from the
-    // description for the detail subtitle when present.
-    const layoutChromePending: EntityRef[] = layoutChromeRows.map((r) => {
-      const blockMatch = /block=([\w-]+)/.exec(r.description);
-      const blockDetail = blockMatch ? `block=${blockMatch[1]}` : r.op_kind;
-      return {
-        kind: "layout" as const,
-        entityId: r.entity_id,
-        label: "Layout chrome",
-        detail: blockDetail,
-      };
-    });
-
-    // v0.5.3 — structured_set rows split between globals (theme) and
-    // lists (nav-menu / taxonomy / link-list) based on `kind`.
-    const ssPendingGlobals: EntityRef[] = [];
-    const ssPendingLists: EntityRef[] = [];
-    const ssStagedGlobals: EntityRef[] = [];
-    const ssStagedLists: EntityRef[] = [];
-    for (const r of structuredSetRows) {
+  function bucketize(
+    rows: Row[],
+    kind: EntityRef["kind"],
+  ): { pending: EntityRef[]; staged: EntityRef[] } {
+    const pending: EntityRef[] = [];
+    const staged: EntityRef[] = [];
+    for (const r of rows) {
       const ref: EntityRef = {
-        kind: "structuredSet",
+        kind,
         entityId: r.entity_id,
         label: r.label ?? r.entity_id,
         ...(r.detail ? { detail: r.detail } : {}),
       };
-      const isList = r.kind === "nav-menu" || r.kind === "taxonomy" || r.kind === "link-list";
-      if (r.stage_state === "staged") {
-        (isList ? ssStagedLists : ssStagedGlobals).push(ref);
-      } else if (r.stage_state === "pending") {
-        (isList ? ssPendingLists : ssPendingGlobals).push(ref);
-      }
+      if (r.stage_state === "staged") staged.push(ref);
+      else if (r.stage_state === "pending") pending.push(ref);
+      // 'published' → drop (already shipped from this branch).
     }
+    return { pending, staged };
+  }
 
-    return ok({
-      pending: {
-        pages: [...content.pending, ...pages.pending, ...layouts.pending],
-        globals: [
-          ...modules.pending,
-          ...templates.pending,
-          ...ssPendingGlobals,
-          ...layoutChromePending,
-          ...contentInstances.pending,
-          ...pluginRows.pending,
-        ],
-        lists: ssPendingLists,
-      },
-      staged: {
-        pages: [...content.staged, ...pages.staged, ...layouts.staged],
-        globals: [
-          ...modules.staged,
-          ...templates.staged,
-          ...ssStagedGlobals,
-          ...contentInstances.staged,
-          ...pluginRows.staged,
-        ],
-        lists: ssStagedLists,
-      },
-    });
-  },
-});
+  const content = bucketize(contentRows, "pageModuleContent");
+  const pages = bucketize(pageRows, "page");
+  const layouts = bucketize(layoutRows, "pageLayout");
+  const modules = bucketize(moduleRows, "module");
+  const templates = bucketize(templateRows, "template");
+  // v0.12.0 — content_instance edits join the globals bucket since
+  // editing a synced instance has cross-page blast radius.
+  const contentInstances = bucketize(contentInstanceRows, "contentInstance");
+  const pluginRows = bucketize(pluginRowRows, "pluginRow");
+  const themes = bucketize(themeRows, "theme");
+
+  // v0.8.0 — layoutChromeRows always stage_state='pending'; bucket
+  // into globals so the Stage modal shows them alongside module /
+  // template / theme edits. Parse the block name from the
+  // description for the detail subtitle when present.
+  const layoutChromePending: EntityRef[] = layoutChromeRows.map((r) => {
+    const blockMatch = /block=([\w-]+)/.exec(r.description);
+    const blockDetail = blockMatch ? `block=${blockMatch[1]}` : r.op_kind;
+    return {
+      kind: "layout" as const,
+      entityId: r.entity_id,
+      label: "Layout chrome",
+      detail: blockDetail,
+    };
+  });
+
+  // v0.5.3 — structured_set rows split between globals (theme) and
+  // lists (nav-menu / taxonomy / link-list) based on `kind`.
+  const ssPendingGlobals: EntityRef[] = [];
+  const ssPendingLists: EntityRef[] = [];
+  const ssStagedGlobals: EntityRef[] = [];
+  const ssStagedLists: EntityRef[] = [];
+  for (const r of structuredSetRows) {
+    const ref: EntityRef = {
+      kind: "structuredSet",
+      entityId: r.entity_id,
+      label: r.label ?? r.entity_id,
+      ...(r.detail ? { detail: r.detail } : {}),
+    };
+    const isList = r.kind === "nav-menu" || r.kind === "taxonomy" || r.kind === "link-list";
+    if (r.stage_state === "staged") {
+      (isList ? ssStagedLists : ssStagedGlobals).push(ref);
+    } else if (r.stage_state === "pending") {
+      (isList ? ssPendingLists : ssPendingGlobals).push(ref);
+    }
+  }
+
+  return {
+    pending: {
+      pages: [...content.pending, ...pages.pending, ...layouts.pending],
+      globals: [
+        ...modules.pending,
+        ...templates.pending,
+        ...ssPendingGlobals,
+        ...layoutChromePending,
+        ...contentInstances.pending,
+        ...pluginRows.pending,
+        ...themes.pending,
+      ],
+      lists: ssPendingLists,
+    },
+    staged: {
+      pages: [...content.staged, ...pages.staged, ...layouts.staged],
+      globals: [
+        ...modules.staged,
+        ...templates.staged,
+        ...ssStagedGlobals,
+        ...contentInstances.staged,
+        ...pluginRows.staged,
+        ...themes.staged,
+      ],
+      lists: ssStagedLists,
+    },
+  };
+}
 
 const stageInput = z
   .object({

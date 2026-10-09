@@ -22,6 +22,7 @@ const BASELINE_ROUTES = [
   "/content/modules",
   "/content/templates",
   "/content/chat",
+  "/content/changes",
   "/security",
   "/security/users",
   "/security/roles",

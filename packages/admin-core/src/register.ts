@@ -35,6 +35,7 @@ import {
   recordAiCallOp,
   setResponseMessagesOp,
 } from "./ops/chat/messages.js";
+import { drainTakeoverNoticesOp, listOpenChangesOp } from "./ops/chat/open-changes.js";
 import { finalizeStageOp, mergeChatToMainOp, publishChatSessionOp } from "./ops/chat/publish.js";
 import {
   archiveChatSessionOp,
@@ -745,6 +746,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(finalizeStageOp);
   // issue #262 — pre-run foreign-lock visibility for the chat runner.
   registry.register(listForeignLocksOp);
+  // issue #620 — Open changes overview + lock-takeover notices.
+  registry.register(listOpenChangesOp);
+  registry.register(drainTakeoverNoticesOp);
   registry.register(listPendingChangesOp);
   registry.register(stageChatChangesOp);
   registry.register(unstageChatChangesOp);

@@ -29,6 +29,7 @@ import { z } from "zod";
 import { buildSkillsContext } from "../../ai/chat-runner/context/skills.js";
 import { buildStatusLine } from "../../ai/chat-runner/context-blocks.js";
 import { loadMemory } from "../../ai/chat-runner/persistence.js";
+import { withTakeoverNotices } from "../../ai/chat-runner/tool-dispatch.js";
 import { chatPluginInvocation } from "../../ai/plugin-invocation.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
@@ -202,6 +203,9 @@ export const mcpListToolsOp = defineOperation({
 
 // ─── mcp.open_session ────────────────────────────────────────────────
 
+/** Title of a session the Power-MCP opens without one. */
+const MCP_SESSION_TITLE = "MCP · admin session";
+
 export const mcpOpenSessionOp = defineOperation({
   name: "mcp.open_session",
   // Why system-only: the bearer token is in the input (same reason as mcp.list_tools) — the HTTP
@@ -211,16 +215,27 @@ export const mcpOpenSessionOp = defineOperation({
   input: z
     .object({
       plaintextToken: z.string().min(8).max(200),
-      /** Resume an existing session instead of creating one. */
+      /** Resume this session (it must belong to the token's owner). */
       chatSessionId: z.string().uuid().optional(),
+      /**
+       * Issue #620 — open a FRESH session even though the owner has an
+       * open one. Without it (and without chatSessionId) the owner's most
+       * recently active open session is resumed.
+       */
+      newSession: z.boolean().optional(),
       title: z.string().min(1).max(200).optional(),
-      /** Bind a NEW session to a page (subject to the one-open-chat-per-page gate). */
+      /** Resume / bind to this page's session (subject to the one-open-chat-per-page gate). */
       pageId: z.string().uuid().optional(),
     })
-    .strict(),
+    .strict()
+    .refine((v) => !(v.newSession && v.chatSessionId), {
+      message:
+        "pass chatSessionId to resume a session OR newSession: true for a fresh one, not both",
+    }),
   output: z.object({
     chatSessionId: z.string(),
     chatBranchId: z.string(),
+    title: z.string(),
     resumed: z.boolean(),
   }),
   handler: async (_ctx, input, _tx) => {
@@ -239,6 +254,8 @@ export const mcpOpenSessionOp = defineOperation({
       requestId: crypto.randomUUID(),
     };
     if (input.chatSessionId) {
+      // chat.get_session filters by created_by: another user's session
+      // reads as not found, so a token can never resume someone else's.
       const existing = await execute(registry, adapter, humanCtx, "chat.get_session", {
         chatSessionId: input.chatSessionId,
       });
@@ -246,18 +263,69 @@ export const mcpOpenSessionOp = defineOperation({
         return err({
           kind: "HandlerError",
           operation: "mcp.open_session",
-          message: `session_not_found: ${input.chatSessionId} — omit chatSessionId to open a fresh session`,
+          message: `session_not_found: ${input.chatSessionId} — omit chatSessionId to resume your most recent open session, or pass newSession: true for a fresh one`,
         });
       }
-      const v = existing.value as { session: { chatBranchId: string } };
+      const v = existing.value as {
+        session: {
+          chatBranchId: string;
+          title: string;
+          publishedAt: string | null;
+          archivedAt: string | null;
+        };
+      };
+      if (v.session.publishedAt !== null || v.session.archivedAt !== null) {
+        return err({
+          kind: "HandlerError",
+          operation: "mcp.open_session",
+          message: `session_closed: ${input.chatSessionId} was already published, archived or discarded — omit chatSessionId to resume your most recent open session, or pass newSession: true`,
+        });
+      }
       return ok({
         chatSessionId: input.chatSessionId,
         chatBranchId: v.session.chatBranchId,
+        title: v.session.title,
         resumed: true,
       });
     }
+    if (!input.newSession) {
+      // Issue #620 — resume the owner's own most recent open session
+      // instead of minting a new chat per MCP connection. chat.list_sessions
+      // returns only the caller's sessions (created_by), excludes archived
+      // (and therefore discarded) ones and subagent sessions, newest first.
+      const listed = await execute(registry, adapter, humanCtx, "chat.list_sessions", {
+        includeArchived: false,
+        ...(input.pageId ? { pageId: input.pageId } : {}),
+      });
+      if (!listed.ok) {
+        const detail = "message" in listed.error ? listed.error.message : listed.error.kind;
+        return err({
+          kind: "HandlerError",
+          operation: "mcp.open_session",
+          message: `session_lookup_failed: ${detail}`,
+        });
+      }
+      const open = (
+        listed.value as {
+          sessions: {
+            id: string;
+            title: string;
+            chatBranchId: string;
+            publishedAt: string | null;
+          }[];
+        }
+      ).sessions.find((s) => s.publishedAt === null);
+      if (open) {
+        return ok({
+          chatSessionId: open.id,
+          chatBranchId: open.chatBranchId,
+          title: open.title,
+          resumed: true,
+        });
+      }
+    }
     const created = await execute(registry, adapter, humanCtx, "chat.create_session", {
-      title: input.title ?? "MCP · admin session",
+      title: input.title ?? MCP_SESSION_TITLE,
       ...(input.pageId ? { pageId: input.pageId } : {}),
     });
     if (!created.ok) {
@@ -269,7 +337,12 @@ export const mcpOpenSessionOp = defineOperation({
       });
     }
     const c = created.value as { chatSessionId: string; chatBranchId: string };
-    return ok({ chatSessionId: c.chatSessionId, chatBranchId: c.chatBranchId, resumed: false });
+    return ok({
+      chatSessionId: c.chatSessionId,
+      chatBranchId: c.chatBranchId,
+      title: input.title ?? MCP_SESSION_TITLE,
+      resumed: false,
+    });
   },
 });
 
@@ -466,10 +539,27 @@ export const mcpExecuteToolOp = defineOperation({
     // (e.g. inspect_page_render's summary hint says to call an excluded
     // screenshot tool next). Annotate at the same boundary as the catalogue
     // descriptions, BEFORE caching, so replays serve the same honest copy.
-    const result: ToolResult = {
-      ...rawResult,
-      content: annotateExcludedToolMentions(rawResult.content, POWER_MCP_EXCLUDED_TOOLS),
-    };
+    // issue #620 — a write that took over another chat's lock (or lost one)
+    // says so in this result, same as in the browser chat.
+    const result: ToolResult = await withTakeoverNotices(
+      registry,
+      adapter,
+      humanCtxWithBranch,
+      input.chatSessionId,
+      {
+        ...rawResult,
+        content: annotateExcludedToolMentions(rawResult.content, POWER_MCP_EXCLUDED_TOOLS),
+      },
+    );
+
+    // Issue #620 — MCP work is activity in this session: without the bump
+    // a later reconnect could resume a browser chat that merely looked
+    // more recently active.
+    if (result.ok) {
+      await tx.execute(sql`
+        UPDATE chat_sessions SET last_active_at = now() WHERE id = ${input.chatSessionId}::uuid
+      `);
+    }
 
     if (input.toolCallId) {
       await execute(registry, adapter, humanCtxWithBranch, "chat.cache_tool_result", {

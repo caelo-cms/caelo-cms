@@ -127,4 +127,12 @@ export {
   kekFingerprint,
 } from "./security/secret-box.js";
 export { emitSnapshot } from "./snapshots/emit.js";
+// issue #620 — the Stage flow for one chat or a selection of chats (/edit's
+// Stage button, the Open changes overview).
+export {
+  enqueueStagingAudit,
+  type StagedChats,
+  type StageFailure,
+  stageChatSessions,
+} from "./stage/stage-chats.js";
 export * from "./tokens.js";

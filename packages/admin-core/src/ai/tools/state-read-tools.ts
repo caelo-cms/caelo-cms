@@ -93,8 +93,9 @@ export const listEntityLocksTool = makeListReadTool<
 >({
   name: "list_entity_locks",
   description:
-    "List entities currently locked by OTHER chat sessions (module/page/template/… + who holds the lock). " +
-    "The `## Locks held by other chats` context block is a snapshot from turn start — call this when a write fails with a Locked error to see the CURRENT holder, or before planning edits on entities another chat may be touching.",
+    "List entities currently held by OTHER chat sessions (module/page/template/… + which chat holds it). " +
+    "A held entity is not blocked: writing it ADOPTS that chat's unstaged change on it into this chat (nothing is lost; your write builds on it, and the tool result tells you so — tell the operator). " +
+    "Call this before planning edits on entities another chat may be working on, so you can say up front which chat's work you will take over. For every open chat's unstaged changes use list_unpublished_changes({ allChats: true }).",
   opName: "chat.list_foreign_locks",
   input: noInput,
   buildOpInput: (_input, _ctx, toolCtx) => ({ chatSessionId: toolCtx.chatSessionId }),

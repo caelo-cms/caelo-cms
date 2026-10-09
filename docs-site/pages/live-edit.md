@@ -51,7 +51,19 @@ Two-step on purpose: staging gives you a non-localhost preview URL you can share
 
 ## Branch isolation
 
-Each chat session operates on its own ephemeral preview branch of the snapshot tree. Two editors in two parallel chats see only their own changes — no collision. Branches merge into main only on publish; abandoned chats can be reverted with one click.
+Each chat session operates on its own ephemeral preview branch of the snapshot tree. Two editors in two parallel chats see only their own changes. Branches merge into main only when staged; abandoned chats can be discarded with one click.
+
+When a chat edits something another chat has unstaged changes on (the same module, page or theme), it **takes that change over**: the other chat's edit moves into this chat, and the new edit builds on it. Nothing is lost and nothing is silently overwritten — both chats are told, and the AI says so in the conversation. Locks never expire on a timer: an expired lock over unstaged work would let the next Stage silently overwrite one of the two versions.
+
+## Open changes
+
+**Content → Open changes** lists every open chat with unstaged work: what each chat changed, what it currently holds, and which changes moved between chats. From there you can:
+
+- **Stage all** — stage every one of your chats in one go (one staging build, one quality check);
+- tick some chats and **Stage selected** — so a half-finished chat stays out of staging;
+- **Discard** a chat — throw its unstaged changes away and close it.
+
+Other editors' chats are shown read-only, so nobody is surprised when work moves between chats.
 
 ## What the toolbar's status colours mean
 
