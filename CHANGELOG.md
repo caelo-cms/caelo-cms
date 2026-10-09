@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.10.34
+
+### Features
+- 837bff65 lock takeover, Open changes overview, MCP session resume (#620 part C) (#622)
+
+### Fixes
+- a6091320 persist GCP media in the media bucket instead of the container disk (data loss) (#619)
+
 ## v0.10.33
 
 ### Features
