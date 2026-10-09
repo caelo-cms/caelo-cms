@@ -28,13 +28,20 @@
 import type { PluginRowLocker } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { pendingSnapshotSql, releaseIdleDraftLocks } from "./draft.js";
+import { lockedEntityLabel } from "./entity-labels.js";
 import {
   acquireEntityLease,
   type LeaseHolder,
   releaseLeasesByBranch,
+  releaseLeasesByHolder,
   siblingLeaseError,
 } from "./entity-leases.js";
-import { type TakeoverOutcome, takeOverEntity } from "./lock-takeover.js";
+import {
+  snapshotTablesForLockKind,
+  type TakeoverOutcome,
+  takeOverEntity,
+} from "./lock-takeover.js";
 
 export type LockedEntityKind =
   | "module"
@@ -63,6 +70,13 @@ export type LockedEntityKind =
   // across plugin tables, so the row id alone keys the lock.
   | "pluginRow";
 
+/** A newer draft change by another chat that a write would overwrite. */
+export interface StaleDraftChange {
+  readonly chatTitle: string;
+  /** ISO time of that change. */
+  readonly changedAt: string;
+}
+
 export interface LockCheckResult {
   /** True iff the caller may write (it holds, acquired or took over the lock). */
   permitted: boolean;
@@ -71,6 +85,12 @@ export interface LockCheckResult {
    * chat: that chat's unstaged change on it now belongs to the caller.
    */
   takeover?: TakeoverOutcome;
+  /**
+   * Issue #620 — set when permitted=false because another chat changed the
+   * entity in the shared draft after this chat last saw it (optimistic
+   * versioning): the AI re-reads and redoes its edit.
+   */
+  staleDraft?: StaleDraftChange;
   /**
    * issue #264 — set when permitted=false because a SIBLING TASK on the
    * SAME branch already holds the per-entity sub-lease — a disjointness
@@ -123,19 +143,34 @@ export async function checkAndAcquireEntityLock(
   if (!args.chatBranchId) {
     return { permitted: true };
   }
-  // Resolve sessionId from branchId (1:1). If the branch isn't tied to
-  // a session row (deleted, never created), treat as system-write.
+  // The writing chat on this branch: the caller's own chat (a subagent's
+  // task counts as its parent chat — caelo_chat_owner) when the caller is
+  // identified, else any chat on the branch. Issue #620 — on the shared
+  // draft many chats share one branch, so the branch alone no longer names
+  // the writer. No chat on the branch (deleted, never created) = system
+  // write.
   const sessionRows = (await tx.execute(sql`
-    SELECT id::text AS id FROM chat_sessions
-    WHERE chat_branch_id = ${args.chatBranchId}::uuid
+    SELECT caelo_chat_owner(cs.id)::text AS owner, cs.branch_kind,
+           (cs.id = ${args.holderKey ?? null}::uuid) AS is_caller,
+           (cs.parent_chat_session_id IS NOT NULL) AS is_subagent
+    FROM chat_sessions cs
+    WHERE cs.chat_branch_id = ${args.chatBranchId}::uuid
+    ORDER BY (cs.id = ${args.holderKey ?? null}::uuid) DESC NULLS LAST, cs.created_at
     LIMIT 1
-  `)) as unknown as { id: string }[];
-  const sessionId = sessionRows[0]?.id;
-  if (!sessionId) {
+  `)) as unknown as {
+    owner: string;
+    branch_kind: string;
+    is_caller: boolean | null;
+    is_subagent: boolean;
+  }[];
+  const writer = sessionRows[0];
+  if (!writer) {
     return { permitted: true };
   }
+  const sessionId = writer.owner;
+  const onDraft = writer.branch_kind === "draft";
   // Atomic upsert: INSERT-ON-CONFLICT-DO-NOTHING then read back. The
-  // returned row tells us who holds the lock — caller or other.
+  // returned row tells us which branch holds the lock — caller's or other.
   await tx.execute(sql`
     INSERT INTO chat_entity_locks (entity_kind, entity_id, chat_session_id, chat_branch_id)
     VALUES (${args.kind}, ${args.entityId}::uuid, ${sessionId}::uuid, ${args.chatBranchId}::uuid)
@@ -155,12 +190,15 @@ export async function checkAndAcquireEntityLock(
     return { permitted: true };
   }
   // issue #264 — the per-entity sub-lease on the caller's own branch, so a
-  // SIBLING task on this branch (same resolved session, different
-  // `holderKey`) can't clobber the entity. Taken BEFORE any takeover: a
-  // refused write must not have moved another chat's change. Skipped when
-  // the writer can't be identified (no holderKey), since siblings can
-  // only be told apart by their own session id.
-  if (args.holderKey) {
+  // SIBLING task on this branch (same resolved chat, different `holderKey`)
+  // can't clobber the entity. Taken BEFORE any takeover: a refused write
+  // must not have moved another chat's change. Skipped when the writer
+  // can't be identified (no holderKey), since siblings can only be told
+  // apart by their own session id. Issue #620 — on the shared draft only
+  // subagents lease: two draft chats are not siblings of one task set, and
+  // a timed lease between them would be the time-based block the draft
+  // replaces with optimistic versioning (below).
+  if (args.holderKey && (!onDraft || (writer.is_caller === true && writer.is_subagent))) {
     const lease = await acquireEntityLease(tx, {
       kind: args.kind,
       entityId: args.entityId,
@@ -173,17 +211,95 @@ export async function checkAndAcquireEntityLock(
       return { permitted: false, siblingLease: lease.holder };
     }
   }
-  if (row.chat_session_id === sessionId) {
+  if (row.chat_branch_id === args.chatBranchId) {
+    if (onDraft && writer.is_caller === true) {
+      const stale = await draftConflict(tx, args.kind, args.entityId, args.chatBranchId, sessionId);
+      if (stale) return { permitted: false, staleDraft: stale };
+    }
     return { permitted: true };
   }
-  // issue #620 — adopt the holder's unstaged change instead of refusing.
+  // issue #620 — another branch holds it: adopt that branch's unstaged
+  // change instead of refusing.
   const takeover = await takeOverEntity(tx, {
     kind: args.kind,
     entityId: args.entityId,
     holder: { chatSessionId: row.chat_session_id, chatBranchId: row.chat_branch_id },
     taker: { chatSessionId: sessionId, chatBranchId: args.chatBranchId },
   });
+  if (onDraft && writer.is_caller === true) {
+    await observeDraftEntity(tx, sessionId, args.kind, args.entityId);
+  }
   return { permitted: true, takeover };
+}
+
+/**
+ * Issue #620 — optimistic per-entity versioning inside the shared draft.
+ * Draft chats take no locks against each other; instead a write is a
+ * conflict when ANOTHER chat changed the entity in the draft after this
+ * chat last saw it (its own last write of the entity, or the last conflict
+ * it was told about). Concurrent writers are serialized by the lock row
+ * read `FOR UPDATE` above, so the check sees committed state.
+ *
+ * A conflict records the observation (the AI is now told about the change
+ * and re-reads), so the retry with the fresh state passes. A permitted
+ * write records it too.
+ *
+ * @returns the newer change by another chat, or null when the write may go.
+ */
+async function draftConflict(
+  tx: TransactionRunner,
+  kind: LockedEntityKind,
+  entityId: string,
+  branchId: string,
+  chatSessionId: string,
+): Promise<StaleDraftChange | null> {
+  const tables = snapshotTablesForLockKind(kind);
+  let stale: StaleDraftChange | null = null;
+  if (tables.length > 0) {
+    const newer = sql.join(
+      tables.map(
+        (t) => sql`
+          SELECT ss.created_at, caelo_chat_owner(ss.chat_task_id) AS owner
+          FROM ${sql.raw(t.table)} es JOIN site_snapshots ss ON ss.id = es.site_snapshot_id
+          WHERE es.${sql.raw(t.column)} = ${entityId}::uuid
+            AND ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}`,
+      ),
+      sql` UNION ALL `,
+    );
+    const rows = (await tx.execute(sql`
+      WITH changes AS (${newer})
+      SELECT to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS at,
+             COALESCE(cs.title, 'a change made outside a chat') AS title
+      FROM changes c
+      LEFT JOIN chat_sessions cs ON cs.id = c.owner
+      WHERE c.owner IS DISTINCT FROM ${chatSessionId}::uuid
+        AND c.created_at > COALESCE(
+          (SELECT seen_at FROM draft_entity_observations
+            WHERE chat_session_id = ${chatSessionId}::uuid
+              AND entity_kind = ${kind} AND entity_id = ${entityId}::uuid),
+          '-infinity'::timestamptz)
+      ORDER BY c.created_at DESC
+      LIMIT 1
+    `)) as unknown as { at: string; title: string }[];
+    const r = rows[0];
+    if (r) stale = { chatTitle: r.title, changedAt: r.at };
+  }
+  await observeDraftEntity(tx, chatSessionId, kind, entityId);
+  return stale;
+}
+
+/** Record that a draft chat has now seen the entity's current draft state. */
+async function observeDraftEntity(
+  tx: TransactionRunner,
+  chatSessionId: string,
+  kind: LockedEntityKind,
+  entityId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO draft_entity_observations (chat_session_id, entity_kind, entity_id, seen_at)
+    VALUES (${chatSessionId}::uuid, ${kind}, ${entityId}::uuid, now())
+    ON CONFLICT (chat_session_id, entity_kind, entity_id) DO UPDATE SET seen_at = now()
+  `);
 }
 
 /**
@@ -200,45 +316,68 @@ export async function releaseChatLocks(
   tx: TransactionRunner,
   chatSessionId: string,
 ): Promise<void> {
+  const rows = (await tx.execute(sql`
+    SELECT chat_branch_id::text AS chat_branch_id, branch_kind
+    FROM chat_sessions WHERE id = ${chatSessionId}::uuid
+    LIMIT 1
+  `)) as unknown as { chat_branch_id: string | null; branch_kind: string }[];
+  const session = rows[0];
+  if (session?.branch_kind === "draft" && session.chat_branch_id) {
+    // Issue #620 — draft locks belong to the shared draft, not to the chat
+    // that happened to write first: other draft chats may still have
+    // pending changes on the same entities. Release only what the draft no
+    // longer has pending, and only this chat's own sibling leases.
+    await releaseIdleDraftLocks(tx, session.chat_branch_id);
+    await releaseLeasesByHolder(tx, chatSessionId);
+    return;
+  }
   await tx.execute(sql`
     DELETE FROM chat_entity_locks
     WHERE chat_session_id = ${chatSessionId}::uuid
   `);
-  const rows = (await tx.execute(sql`
-    SELECT chat_branch_id::text AS chat_branch_id
-    FROM chat_sessions WHERE id = ${chatSessionId}::uuid
-    LIMIT 1
-  `)) as unknown as { chat_branch_id: string | null }[];
-  const branchId = rows[0]?.chat_branch_id;
-  if (branchId) {
-    await releaseLeasesByBranch(tx, branchId);
+  if (session?.chat_branch_id) {
+    await releaseLeasesByBranch(tx, session.chat_branch_id);
   }
 }
 
 /**
- * Build the structured error for a refused entity write. Since #620 the
- * only refusal is a `siblingLease` conflict (issue #264 — a parallel task
- * on the same branch holds the entity); another chat's lock is taken over
- * instead (see {@link checkAndAcquireEntityLock}).
+ * Build the structured error for a refused entity write: a `siblingLease`
+ * conflict (issue #264 — a parallel task on the same branch holds the
+ * entity) or a `staleDraft` conflict (issue #620 — another chat changed
+ * the entity in the shared draft since this chat last saw it). Another
+ * branch's lock is taken over instead of refused (see
+ * {@link checkAndAcquireEntityLock}).
  *
  * Every op that guards a write with {@link checkAndAcquireEntityLock}
- * routes its `!permitted` case through this helper. Precondition:
- * `result.permitted === false` with `siblingLease` set.
+ * routes its `!permitted` case through this helper.
  */
 export async function entityWriteBlockedError(
-  _tx: TransactionRunner,
+  tx: TransactionRunner,
   operation: string,
   kind: LockedEntityKind,
   entityId: string,
   result: LockCheckResult,
-): Promise<ReturnType<typeof siblingLeaseError>> {
+): Promise<
+  | ReturnType<typeof siblingLeaseError>
+  | { kind: "HandlerError"; operation: string; message: string }
+> {
   if (result.siblingLease) {
     return siblingLeaseError(operation, kind, entityId, result.siblingLease);
+  }
+  if (result.staleDraft) {
+    const label = await lockedEntityLabel(tx, kind, entityId);
+    return {
+      kind: "HandlerError",
+      operation,
+      message:
+        `Conflict: ${kind} '${label}' was changed in the shared draft by chat '${result.staleDraft.chatTitle}' (${result.staleDraft.changedAt}) after this chat last looked at it, so this write was NOT applied. ` +
+        "Read it again to get the current version, then redo your edit on top of it (do not resend the old content).",
+    };
   }
   // Defensive: a refused write must carry its conflict. Fail loud
   // (CLAUDE.md §2 no silent fallbacks) rather than returning a vague error.
   throw new Error(
-    `entityWriteBlockedError called for ${operation} on ${kind} ${entityId} without a siblingLease conflict`,
+    `entityWriteBlockedError called for ${operation} on ${kind} ${entityId} without a conflict`,
   );
 }
 
@@ -257,8 +396,6 @@ export const lockPluginRow: PluginRowLocker = async (tx, args) => {
     holderKey: args.chatTaskId,
   });
   if (result.permitted) return null;
-  if (!result.siblingLease) {
-    throw new Error(`lockPluginRow: ${args.operation} refused on ${args.rowId} without a conflict`);
-  }
-  return siblingLeaseError(args.operation, "pluginRow", args.rowId, result.siblingLease).message;
+  return (await entityWriteBlockedError(tx, args.operation, "pluginRow", args.rowId, result))
+    .message;
 };

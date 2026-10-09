@@ -4,7 +4,7 @@
  * Scenario 1 (v0.13.0) — Create a homepage from scratch via real AI,
  * then re-edit just the hero headline.
  *
- * Validates the full chat → Stage → Publish → re-edit loop against
+ * Validates the full chat → AI Stage → human Publish → re-edit loop against
  * the live Anthropic API (Opus 4.7, temperature=0). Every mid-flow
  * assertion is deterministic (DOM via getByRole/locator, DB via
  * bun:SQL, admin-stderr via captured admin.log); the only AI call in
@@ -26,11 +26,12 @@ import {
   assertNoChatRunnerDiagWarnings,
   assertNoOrphanLocks,
   attachChatSessionTracker,
+  awaitAiStaged,
   awaitPublishComplete,
   awaitQualityGateOpen,
-  awaitStageComplete,
   getProductionUrl,
   loginAsDevOwner,
+  openAiStageHoldCount,
   resetLiveditFixtures,
   sendChatPromptAndWait,
   verifyPublishedPageWithVision,
@@ -336,12 +337,12 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     expect(chatSessionId, "Expected the SSE tracker to capture a chat session id").not.toBeNull();
     if (!chatSessionId) throw new Error("unreachable");
 
-    // ── Step 3: DOM assertions (chat-branch state visible in iframe) ──
-    // Chat-branch writes are visible in the preview iframe immediately
-    // (the chat session renders against its own branch). The DB-level
-    // count assertion runs AFTER awaitStageComplete because, per
-    // CLAUDE.md §2, chat-branch writes don't hit the main `pages` /
-    // `page_modules` tables until Stage merges them.
+    // ── Step 3: DOM assertions (draft state visible in iframe) ────────
+    // Draft writes are visible in the preview iframe immediately (the
+    // chat renders against the site's shared draft). The DB-level count
+    // assertion runs AFTER the AI's Stage because, per CLAUDE.md §2, draft
+    // writes don't hit the main `pages` / `page_modules` tables until a
+    // Stage merges them.
     const previewFrame = page.frameLocator("iframe").first();
     // ≥1 <h1>, not exactly 1: a hero + sub-section heading shouldn't flake
     // the test. Asserting the first <h1> is visible covers both cases.
@@ -373,13 +374,12 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
       `Expected the rendered page body to contain substantive text. Got ${bodyText.trim().length} chars.`,
     ).toBeGreaterThan(100);
 
-    // ── Step 4: Stage (AC #2, #7) ──────────────────────────────────
-    await awaitStageComplete(page);
-    // Stage triggers a real static-generator run AND merges the chat
-    // session's preview branch into the main DB. The DB structural
-    // assertions below now read the merged state. Browser-side
-    // navigation isn't required; the action synchronously awaits
-    // deploy.trigger.
+    // ── Step 4: The AI stages its own work (#620 Part B) ───────────
+    // The target flow: the operator says what they want; the AI changes,
+    // STAGES (stage_changes → merge + real staging build + quality audit)
+    // and checks; the operator only clicks Publish live. No Stage click
+    // here — the AI must have staged within its turn.
+    await awaitAiStaged(startTimestamp);
 
     // ── Step 5: DB structural floor (AC #2) ────────────────────────
     // Structural minimum: the AI must have created a page row and at
@@ -412,7 +412,14 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     console.log(
       `[scenario-homepage] quality gate open (${quality.state}) after ${quality.restages} fix re-Stage(s)`,
     );
+    // The AI's Stage held production: nothing it staged may go live until
+    // a human Publish live (#620 Part B) — the click below is that human.
+    expect(
+      openAiStageHoldCount(),
+      "AI-staged work must wait for a human Publish live",
+    ).toBeGreaterThan(0);
     await awaitPublishComplete(page);
+    expect(openAiStageHoldCount(), "a human Publish live releases the AI stage hold").toBe(0);
 
     // Compose the production URL from the snapshot's slug. Caelo's
     // routing manifest maps slug='home' to outputPath 'index.html'
@@ -522,14 +529,15 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     expect(preReeditSnapshot, "snapshot pre-reedit").not.toBeNull();
     if (!preReeditSnapshot) throw new Error("unreachable");
 
+    const reeditStart = new Date().toISOString();
     await page.goto("/edit");
     await sendChatPromptAndWait(page, HERO_REEDIT_PROMPT);
 
-    // Merge the re-edit chat-branch into main so the post-reedit
-    // snapshot reads the updated content_values. Publish is not
-    // required here — the assertion is pure DB shape (placement
+    // The AI stages the re-edit itself, merging it into main, so the
+    // post-reedit snapshot reads the updated content_values. Publish is
+    // not required here — the assertion is pure DB shape (placement
     // identity + updated_at advance), not a production URL check.
-    await awaitStageComplete(page);
+    await awaitAiStaged(reeditStart);
 
     const postReeditSnapshot = snapshotMostRecentPage(startTimestamp);
     expect(postReeditSnapshot, "snapshot post-reedit").not.toBeNull();

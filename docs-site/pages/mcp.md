@@ -79,7 +79,7 @@ On connect the server sends MCP `instructions`, which Claude Code and other clie
 
 Two meta-tools frame every Power-MCP session:
 
-1. **`caelo_open_session`** — call once before any other tool. It **resumes your own most recent open session** (never another user's), so unstaged work from an earlier connection continues in the same chat instead of a new chat per session. Pass `newSession: true` for a fresh session, or `chatSessionId` to resume a specific one. All subsequent calls write to that session's preview branch.
+1. **`caelo_open_session`** — call once before any other tool. It **resumes your own most recent open session** (never another user's), so unstaged work from an earlier connection continues in the same chat instead of a new chat per session. Pass `newSession: true` for a fresh session, or `chatSessionId` to resume a specific one. All subsequent calls write to the site's shared draft (the same working state the admin's chats see); the agent can stage finished work with `stage_changes`, and Publish live stays the operator's click in the admin.
 2. **`caelo_get_context`** — the composed site context Caelo's own AI gets in its system prompt: the module model, the tool playbook, staging rules, site memory, and the active-skills index. Load it once; load individual skills on demand via the regular `load_skill` tool.
 
 Then work with the catalogue directly. Tool failures come back AI-actionable (naming valid choices and next steps), the same error surfaces Caelo's own agent self-corrects from.

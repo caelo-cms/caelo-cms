@@ -65,6 +65,9 @@ export const listSnapshotsOp = defineOperation({
     const chatBranchFilter = input.forChatBranchId
       ? sql`AND s.chat_branch_id = ${input.forChatBranchId}::uuid`
       : sql``;
+    const chatSessionFilter = input.forChatSessionId
+      ? sql`AND caelo_chat_owner(s.chat_task_id) = ${input.forChatSessionId}::uuid`
+      : sql``;
     const rows = (await tx.execute(sql`
       SELECT s.id::text AS id,
              s.actor_id::text AS actor_id,
@@ -79,7 +82,7 @@ export const listSnapshotsOp = defineOperation({
              (SELECT count(*) FROM page_snapshots ps WHERE ps.site_snapshot_id = s.id)::int AS page_count,
              (SELECT count(*) FROM page_layout_snapshots pls WHERE pls.site_snapshot_id = s.id)::int AS page_layout_count
       FROM site_snapshots s
-      WHERE 1=1 ${beforeFilter} ${moduleFilter} ${templateFilter} ${pageFilter} ${opKindFilter} ${archivedFilter} ${chatBranchFilter}
+      WHERE 1=1 ${beforeFilter} ${moduleFilter} ${templateFilter} ${pageFilter} ${opKindFilter} ${archivedFilter} ${chatBranchFilter} ${chatSessionFilter}
       ORDER BY s.created_at DESC
       LIMIT ${input.limit}
     `)) as unknown as {

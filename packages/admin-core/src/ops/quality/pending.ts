@@ -160,7 +160,7 @@ async function resolveItems(
 
 async function queueProposal(
   tx: Tx,
-  ctx: { actorId: string; requestId: string; chatBranchId?: string },
+  ctx: { actorId: string; requestId: string; chatBranchId?: string; chatTaskId?: string },
   kind: "accept" | "publish_anyway",
   auditRunId: string,
   payload: unknown,
@@ -168,7 +168,7 @@ async function queueProposal(
   opName: string,
 ): Promise<Result<{ proposalId: string; preview: Record<string, unknown> }, QueryError>> {
   const payloadHash = await hashProposalPayload({ kind, payload });
-  const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+  const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
   let rows: { id: string }[];
   try {
     rows = (await tx.execute(sql`

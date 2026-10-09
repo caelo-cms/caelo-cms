@@ -37,6 +37,11 @@ import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
+// Issue #620 — these chats run on ISOLATED branches (experiments): the
+// suite covers the per-branch mechanics isolated chats keep (experiments,
+// migrations, pre-draft chats). The shared draft has its own suite
+// (shared-draft.integration.test.ts).
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -303,7 +308,10 @@ describe("block → fix → publish", () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
       HUMAN,
       "chat.create_session",
-      { title: `${PFX}fix-loop` },
+      {
+        isolation: "experiment",
+        title: `${PFX}fix-loop`,
+      },
     );
     chatSessionId = s.chatSessionId;
     branch = { ...HUMAN, chatBranchId: s.chatBranchId };
@@ -401,7 +409,10 @@ describe("acceptances in the chat", () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
       HUMAN,
       "chat.create_session",
-      { title: `${PFX}accept` },
+      {
+        isolation: "experiment",
+        title: `${PFX}accept`,
+      },
     );
     chatSessionId = s.chatSessionId;
     await editModule({ ...HUMAN, chatBranchId: s.chatBranchId }, "<p>brand grey</p>");
@@ -479,7 +490,10 @@ describe("acceptances in the chat", () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
       HUMAN,
       "chat.create_session",
-      { title: `${PFX}stale` },
+      {
+        isolation: "experiment",
+        title: `${PFX}stale`,
+      },
     );
     await editModule({ ...HUMAN, chatBranchId: s.chatBranchId }, "<p>stale-1</p>");
     await stage(s.chatSessionId);
@@ -529,7 +543,10 @@ describe("acceptances in the chat", () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
       HUMAN,
       "chat.create_session",
-      { title: `${PFX}accept-2` },
+      {
+        isolation: "experiment",
+        title: `${PFX}accept-2`,
+      },
     );
     await editModule({ ...HUMAN, chatBranchId: s.chatBranchId }, "<p>brand grey 2</p>");
     await stage(s.chatSessionId);
@@ -560,7 +577,10 @@ describe("a failed quality check", () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
       HUMAN,
       "chat.create_session",
-      { title: `${PFX}errored` },
+      {
+        isolation: "experiment",
+        title: `${PFX}errored`,
+      },
     );
     chatSessionId = s.chatSessionId;
     await editModule({ ...HUMAN, chatBranchId: s.chatBranchId }, "<p>v-err</p>");
@@ -636,7 +656,10 @@ describe("a failed quality check", () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
       HUMAN,
       "chat.create_session",
-      { title: `${PFX}not-errored` },
+      {
+        isolation: "experiment",
+        title: `${PFX}not-errored`,
+      },
     );
     await editModule({ ...HUMAN, chatBranchId: s.chatBranchId }, "<p>v-prob</p>");
     await stage(s.chatSessionId);
@@ -656,7 +679,10 @@ describe("2-round fix cap", () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
       HUMAN,
       "chat.create_session",
-      { title: `${PFX}cap` },
+      {
+        isolation: "experiment",
+        title: `${PFX}cap`,
+      },
     );
     const branch = { ...HUMAN, chatBranchId: s.chatBranchId };
     const stubborn = fakeLighthouse(() => ({ failing: [imageAlt] }));

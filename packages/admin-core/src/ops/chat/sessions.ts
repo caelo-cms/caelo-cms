@@ -4,7 +4,8 @@
  * Chat session lifecycle ops.
  *
  *   chat.list_sessions    — caller's sessions, most-recent first.
- *   chat.create_session   — new session with its own chat_branch_id.
+ *   chat.create_session   — new session, bound to the site's shared draft
+ *                           (or an isolated experiment/migration branch).
  *   chat.get_session      — load one session + its messages.
  *   chat.rename_session   — title edit.
  *   chat.archive_session  — soft-archive (sets archived_at).
@@ -18,9 +19,16 @@ import {
   err,
   ok,
 } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import {
+  type BranchKind,
+  chatPendingSql,
+  draftBranchId,
+  loadChatBinding,
+  sessionPendingSql,
+} from "../../draft.js";
 import { releaseChatLocks } from "../../locks.js";
 import { jsonbParam } from "../../sql-helpers.js";
 
@@ -37,6 +45,12 @@ const sessionRow = z.object({
   title: z.string(),
   createdBy: z.string(),
   chatBranchId: z.string(),
+  /**
+   * Issue #620 — how the chat is bound: 'draft' (the site's shared draft,
+   * the default), 'experiment' / 'migration' (an isolated branch), or
+   * 'legacy' (a chat from before the shared draft, still on its own branch).
+   */
+  branchKind: z.enum(["draft", "experiment", "migration", "legacy"]),
   createdAt: z.string(),
   lastActiveAt: z.string(),
   publishedAt: z.string().nullable(),
@@ -102,7 +116,7 @@ export const listChatSessionsOp = defineOperation({
       input.query && input.query.length > 0 ? sql`AND title ILIKE ${`%${input.query}%`}` : sql``;
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, title, created_by::text AS created_by,
-             chat_branch_id::text AS chat_branch_id,
+             chat_branch_id::text AS chat_branch_id, branch_kind,
              created_at, last_active_at, published_at, last_staged_at, archived_at,
              pinned_elements,
              page_id::text     AS page_id,
@@ -120,6 +134,7 @@ export const listChatSessionsOp = defineOperation({
       title: string;
       created_by: string;
       chat_branch_id: string;
+      branch_kind: "draft" | "experiment" | "migration" | "legacy";
       created_at: string | Date;
       last_active_at: string | Date;
       published_at: string | Date | null;
@@ -141,6 +156,7 @@ export const listChatSessionsOp = defineOperation({
         title: r.title,
         createdBy: r.created_by,
         chatBranchId: r.chat_branch_id,
+        branchKind: r.branch_kind,
         createdAt: iso(r.created_at) ?? "",
         lastActiveAt: iso(r.last_active_at) ?? "",
         publishedAt: iso(r.published_at),
@@ -164,7 +180,11 @@ export const createChatSessionOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: chatCreateSessionInput,
-  output: z.object({ chatSessionId: z.string(), chatBranchId: z.string() }),
+  output: z.object({
+    chatSessionId: z.string(),
+    chatBranchId: z.string(),
+    branchKind: z.enum(["draft", "experiment", "migration", "legacy"]),
+  }),
   handler: async (ctx, input, tx) => {
     const title = input.title?.trim() || "New chat";
     const pageId = input.pageId ?? null;
@@ -203,15 +223,40 @@ export const createChatSessionOp = defineOperation({
       }
     }
 
+    // Issue #620 — the binding. A subagent works on its parent chat's
+    // binding (the draft, or the parent's experiment/migration branch); an
+    // explicit experiment / migration gets an isolated branch; every other
+    // chat binds to the site's shared draft.
+    let branch: { id: SQL; kind: BranchKind };
+    const parentId = subagentRole ? (input.parentChatSessionId ?? null) : null;
+    if (parentId) {
+      const parent = await loadChatBinding(tx, parentId);
+      if (!parent) {
+        return err({
+          kind: "HandlerError",
+          operation: "chat.create_session",
+          message: `parent chat ${parentId} not found — a subagent session needs its parent's id`,
+        });
+      }
+      branch = { id: sql`${parent.branchId}::uuid`, kind: parent.kind };
+    } else if (input.isolation) {
+      branch = { id: sql`gen_random_uuid()`, kind: input.isolation };
+    } else {
+      branch = { id: sql`${await draftBranchId(tx)}::uuid`, kind: "draft" };
+    }
+
     const rows = (await tx.execute(sql`
-      INSERT INTO chat_sessions (title, created_by, chat_branch_id, page_id, template_id, subagent_role)
+      INSERT INTO chat_sessions
+        (title, created_by, chat_branch_id, branch_kind, page_id, template_id, subagent_role, parent_chat_session_id)
       VALUES (
         ${title},
         ${ctx.actorId}::uuid,
-        gen_random_uuid(),
+        ${branch.id},
+        ${branch.kind},
         ${pageId ? sql`${pageId}::uuid` : sql`NULL`},
         ${templateId ? sql`${templateId}::uuid` : sql`NULL`},
-        ${subagentRole}
+        ${subagentRole},
+        ${parentId ? sql`${parentId}::uuid` : sql`NULL`}
       )
       RETURNING id::text AS id, chat_branch_id::text AS chat_branch_id
     `)) as unknown as { id: string; chat_branch_id: string }[];
@@ -230,9 +275,9 @@ export const createChatSessionOp = defineOperation({
       input,
       succeeded: true,
       entityId: row.id,
-      resultSummary: `branch=${row.chat_branch_id.slice(0, 8)}`,
+      resultSummary: `branch=${row.chat_branch_id.slice(0, 8)} kind=${branch.kind}`,
     });
-    return ok({ chatSessionId: row.id, chatBranchId: row.chat_branch_id });
+    return ok({ chatSessionId: row.id, chatBranchId: row.chat_branch_id, branchKind: branch.kind });
   },
 });
 
@@ -274,7 +319,7 @@ export const getChatSessionOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const sessionRows = (await tx.execute(sql`
       SELECT id::text AS id, title, created_by::text AS created_by,
-             chat_branch_id::text AS chat_branch_id,
+             chat_branch_id::text AS chat_branch_id, branch_kind,
              created_at, last_active_at, published_at, last_staged_at, archived_at,
              pinned_elements,
              page_id::text     AS page_id,
@@ -289,6 +334,7 @@ export const getChatSessionOp = defineOperation({
       title: string;
       created_by: string;
       chat_branch_id: string;
+      branch_kind: "draft" | "experiment" | "migration" | "legacy";
       created_at: string | Date;
       last_active_at: string | Date;
       published_at: string | Date | null;
@@ -340,6 +386,7 @@ export const getChatSessionOp = defineOperation({
         title: session.title,
         createdBy: session.created_by,
         chatBranchId: session.chat_branch_id,
+        branchKind: session.branch_kind,
         createdAt: iso(session.created_at) ?? "",
         lastActiveAt: iso(session.last_active_at) ?? "",
         publishedAt: iso(session.published_at),
@@ -427,18 +474,29 @@ export const getChatBranchIdOp = defineOperation({
   output: z.object({
     chatBranchId: z.string().nullable(),
     createdBy: z.string().nullable(),
+    /** Issue #620 — 'draft' = the shared draft branch (many chats on it). */
+    branchKind: z.enum(["draft", "experiment", "migration", "legacy"]).nullable(),
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT chat_branch_id::text AS chat_branch_id,
-             created_by::text AS created_by
+             created_by::text AS created_by,
+             branch_kind
       FROM chat_sessions
       WHERE id = ${input.chatSessionId}::uuid
       LIMIT 1
-    `)) as unknown as { chat_branch_id: string | null; created_by: string | null }[];
+    `)) as unknown as {
+      chat_branch_id: string | null;
+      created_by: string | null;
+      branch_kind: BranchKind;
+    }[];
     const row = rows[0];
-    if (!row) return ok({ chatBranchId: null, createdBy: null });
-    return ok({ chatBranchId: row.chat_branch_id, createdBy: row.created_by });
+    if (!row) return ok({ chatBranchId: null, createdBy: null, branchKind: null });
+    return ok({
+      chatBranchId: row.chat_branch_id,
+      createdBy: row.created_by,
+      branchKind: row.branch_kind,
+    });
   },
 });
 
@@ -571,12 +629,13 @@ export const listBranchEditedModulesOp = defineOperation({
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
   output: z.object({ moduleIds: z.array(z.string()) }),
   handler: async (_ctx, input, tx) => {
+    const binding = await loadChatBinding(tx, input.chatSessionId);
+    if (!binding) return ok({ moduleIds: [] });
     const rows = (await tx.execute(sql`
       SELECT DISTINCT ms.module_id::text AS module_id
       FROM module_snapshots ms
       JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-      JOIN chat_sessions cs  ON cs.chat_branch_id = ss.chat_branch_id
-      WHERE cs.id = ${input.chatSessionId}::uuid
+      WHERE ${chatPendingSql(binding)}
     `)) as unknown as { module_id: string }[];
     return ok({ moduleIds: rows.map((r) => r.module_id) });
   },
@@ -624,15 +683,21 @@ export const listBranchEditedEntitiesOp = defineOperation({
     pageLayoutPageIds: z.array(z.string()),
   }),
   handler: async (_ctx, input, tx) => {
+    const binding = await loadChatBinding(tx, input.chatSessionId);
+    if (!binding) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.branch_edited_entities",
+        message: `chat session ${input.chatSessionId} not found`,
+      });
+    }
     const rows = (await tx.execute(sql`
       WITH branch AS (
         SELECT ss.id AS snapshot_id
         FROM site_snapshots ss
-        JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
-        WHERE cs.id = ${input.chatSessionId}::uuid
-          -- v0.10.8 — only snapshots since the last Stage. NULL means
-          -- "never staged" → -infinity → all snapshots count.
-          AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
+        -- issue #620: this chat's pending snapshots (on the shared draft,
+        -- only the ones it wrote).
+        WHERE ${chatPendingSql(binding)}
       )
       SELECT 'module'::text AS kind, module_id::text AS entity_id
         FROM module_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)
@@ -707,6 +772,14 @@ export const countBranchChangesOp = defineOperation({
     }),
   }),
   handler: async (_ctx, input, tx) => {
+    const binding = await loadChatBinding(tx, input.chatSessionId);
+    if (!binding) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.branch_change_count",
+        message: `chat session ${input.chatSessionId} not found`,
+      });
+    }
     // Single query, six sub-counts. Entity-bound kinds dedupe by their
     // entity column. layoutChrome counts the site_snapshot rows
     // themselves because layout-module writes don't populate any
@@ -715,10 +788,9 @@ export const countBranchChangesOp = defineOperation({
       WITH branch AS (
         SELECT ss.id AS snapshot_id, ss.op_kind
         FROM site_snapshots ss
-        JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
-        WHERE cs.id = ${input.chatSessionId}::uuid
-          -- v0.10.8 — only snapshots since the last Stage (see sibling op).
-          AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
+        -- issue #620: this chat's pending snapshots (on the shared draft,
+        -- only the ones it wrote).
+        WHERE ${chatPendingSql(binding)}
       )
       SELECT
         (SELECT COUNT(DISTINCT module_id)::int   FROM module_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch))   AS modules,
@@ -874,40 +946,38 @@ export const listOpenChatsWithPendingOp = defineOperation({
           cs.page_id::text AS page_id,
           p.slug       AS page_slug,
           (
-            -- v0.10.15 — only snapshots since each chat's last Stage.
-            -- v0.10.8 fixed branch_change_count + branch_edited_entities
-            -- + list_pending_changes; this 4th op was missed, so the
-            -- cross-chat banner kept showing "N pending changes" for
-            -- chats whose work had already been Staged + Promoted.
-            (SELECT COUNT(DISTINCT module_id)::int   FROM module_snapshots ms
+            -- issue #620: each chat's pending snapshots (on the shared
+            -- draft, only the ones it wrote) — the same definition as
+            -- chat.branch_change_count, so the banner and the pill agree.
+            (SELECT COUNT(DISTINCT ms.module_id)::int FROM module_snapshots ms
               JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-              WHERE ss.chat_branch_id = cs.chat_branch_id
-                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)) +
-            (SELECT COUNT(DISTINCT page_id)::int     FROM page_snapshots ps
+              WHERE ${sessionPendingSql()}) +
+            (SELECT COUNT(DISTINCT ps.page_id)::int FROM page_snapshots ps
               JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-              WHERE ss.chat_branch_id = cs.chat_branch_id
-                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)) +
-            (SELECT COUNT(DISTINCT template_id)::int FROM template_snapshots ts
+              WHERE ${sessionPendingSql()}) +
+            (SELECT COUNT(DISTINCT ts.template_id)::int FROM template_snapshots ts
               JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-              WHERE ss.chat_branch_id = cs.chat_branch_id
-                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)) +
-            (SELECT COUNT(DISTINCT page_id)::int     FROM page_layout_snapshots pls
+              WHERE ${sessionPendingSql()}) +
+            (SELECT COUNT(DISTINCT pls.page_id)::int FROM page_layout_snapshots pls
               JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-              WHERE ss.chat_branch_id = cs.chat_branch_id
-                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)) +
-            (SELECT COUNT(DISTINCT page_module_content_id)::int FROM page_module_content_snapshots pmcs
+              WHERE ${sessionPendingSql()}) +
+            (SELECT COUNT(DISTINCT pmcs.page_module_content_id)::int FROM page_module_content_snapshots pmcs
               JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
-              WHERE ss.chat_branch_id = cs.chat_branch_id
-                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)) +
+              WHERE ${sessionPendingSql()}) +
+            (SELECT COUNT(DISTINCT cis.content_instance_id)::int FROM content_instance_snapshots cis
+              JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
+              WHERE ${sessionPendingSql()}) +
+            (SELECT COUNT(DISTINCT prs.row_id)::int FROM plugin_row_snapshots prs
+              JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
+              WHERE ${sessionPendingSql()}) +
             (SELECT COUNT(*)::int FROM site_snapshots ss
-              WHERE ss.chat_branch_id = cs.chat_branch_id
-                AND ss.op_kind = 'layout_modules.set'
-                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz))
+              WHERE ${sessionPendingSql()} AND ss.op_kind = 'layout_modules.set')
           )::int AS pending_count
         FROM chat_sessions cs
         LEFT JOIN pages p ON p.id = cs.page_id AND p.deleted_at IS NULL
         WHERE cs.published_at IS NULL
           AND cs.archived_at IS NULL
+          AND cs.subagent_role IS NULL
           AND (${exclude}::uuid IS NULL OR cs.id <> ${exclude}::uuid)
       )
       SELECT chat_session_id, title, page_id, page_slug, pending_count

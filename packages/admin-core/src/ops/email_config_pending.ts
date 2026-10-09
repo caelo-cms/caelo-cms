@@ -119,7 +119,7 @@ export const proposeEmailConfigSetOp = defineOperation({
       requiresSecrets,
     };
     const payloadHash = await hashProposalPayload(input);
-    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
     let rows: { id: string }[];
     try {
       rows = (await tx.execute(sql`

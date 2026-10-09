@@ -24,6 +24,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
 import { emitDomainEvent } from "../../domain-events.js";
+import { pendingSnapshotSql } from "../../draft.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -209,7 +210,7 @@ export const listPagesOp = defineOperation({
         SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
           FROM page_snapshots ps
           JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-         WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+         WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
          ORDER BY ps.page_id, ss.created_at DESC
       `)) as unknown as { page_id: string; state: unknown }[];
       if (overlayRows.length > 0) {
@@ -371,7 +372,7 @@ export const getPageWithModulesOp = defineOperation({
           SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
           FROM module_snapshots ms
           JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-          WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+          WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
             AND ms.module_id = ANY(${sql.raw(
               `ARRAY[${allModuleIds.map((id) => `'${id}'::uuid`).join(",")}]`,
             )})
@@ -557,7 +558,7 @@ async function branchDeletedPageIds(
     SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
       FROM page_snapshots ps
       JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-     WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+     WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
        AND ps.page_id = ANY(${sql.raw(
          `ARRAY[${candidateIds.map((id) => `'${id}'::uuid`).join(",")}]`,
        )})
@@ -1207,7 +1208,7 @@ export const setPageStatusOp = defineOperation({
           FROM page_snapshots ps
           JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
          WHERE ps.page_id = ${input.pageId}::uuid
-           AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+           AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
          ORDER BY ss.created_at DESC
          LIMIT 1
       `)) as unknown as { id: string; state: unknown }[];
@@ -1300,7 +1301,7 @@ export const setPagesStatusManyOp = defineOperation({
           FROM page_snapshots ps
           JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
          WHERE ps.page_id = ANY(${sql.raw(`ARRAY[${input.pageIds.map((id) => `'${id}'::uuid`).join(",")}]`)})
-           AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+           AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
          ORDER BY ps.page_id, ss.created_at DESC
       `)) as unknown as { id: string; state: unknown }[];
       for (const row of latest) {

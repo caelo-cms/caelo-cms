@@ -434,6 +434,12 @@ export function assertNoBrowserConsoleErrors(tracker: BrowserConsoleErrorTracker
  * free of SvelteKit/devalue wire-format coupling.
  */
 export async function awaitStageComplete(page: Page): Promise<void> {
+  // Issue #620 — the AI stages finished work itself (stage_changes). When it
+  // already did, nothing is pending and the toolbar offers no Stage; the
+  // open AI stage hold proves the merge happened.
+  const stageBtn = page.getByTestId("stage-btn");
+  await stageBtn.waitFor({ state: "visible", timeout: 10_000 }).catch(() => undefined);
+  if (!(await stageBtn.isVisible()) && openAiStageHoldCount() > 0) return;
   const responsePromise = page.waitForResponse(
     (r: Response) => r.url().includes("?/stageAndDeployStaging") && r.request().method() === "POST",
     // 360s since #155 — see waitForChatTurnIdle's rationale (hang guard,
@@ -528,8 +534,9 @@ const QUALITY_ACCEPT_REMAINING_PROMPT =
  *
  * The admin's worker audits the staged build (real Lighthouse, real
  * bundled Chromium). When it finds problems the chat panel posts the fix
- * request to the AI by itself; this helper only waits for that turn, then
- * Stages again (the operator's click), up to the 2 automatic fix rounds.
+ * request to the AI by itself; this helper only waits for that turn. The
+ * AI re-stages its fix itself (issue #620); only when it did not does the
+ * helper Stage again (the operator's click), up to the 2 automatic fix rounds.
  * When findings remain after those rounds the AI asks the operator whether
  * to accept them; the helper answers "accept" once, like an operator who
  * wants to publish. Acceptances the AI proposes are auto-approved in this suite
@@ -589,6 +596,12 @@ export async function awaitQualityGateOpen(
     await letTheAiTurnRun();
     const after = await read();
     if (after.gate?.open) return await opened(after.gate.state);
+    // Issue #620 — the AI re-stages its own fix (stage_changes); a newer
+    // audit run means it did, and that audit decides next.
+    if (after.audit && after.audit.id !== st.audit?.id) {
+      restages += 1;
+      continue;
+    }
     if (restages >= 2) {
       // After the automatic fix rounds the product tells the AI to stop
       // changing the site and to ASK the operator whether to accept what is
@@ -799,4 +812,61 @@ export async function verifyPublishedPageWithVision(page: Page): Promise<VisionV
     screenshotBase64: buffer.toString("base64"),
     mediaType: "image/png",
   });
+}
+
+/**
+ * Issue #620 Part B — wait until the AI staged its own work: an AI-initiated
+ * merge into main opens a production hold (ai_stage_holds) in the same
+ * transaction, so a hold created after `sinceIso` means the AI's
+ * stage_changes merged real changes. Returns the number of such holds.
+ */
+export async function awaitAiStaged(sinceIso: string, timeoutMs = 360_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const n = Number.parseInt(
+      runBunInline(
+        `
+        import { SQL } from "bun";
+        const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          const rows = await tx\`
+            SELECT count(*)::int AS n FROM ai_stage_holds
+            WHERE created_at > \${process.env.SINCE}::timestamptz
+          \`;
+          process.stdout.write(String(rows[0]?.n ?? 0));
+        });
+        await sql.end();
+        `,
+        { SINCE: sinceIso },
+      ).trim(),
+      10,
+    );
+    if (n > 0) return n;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `awaitAiStaged: the AI did not stage its work (no AI stage hold since ${sinceIso}) — it must call stage_changes when the requested work is done`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 3_000));
+  }
+}
+
+/** Issue #620 Part B — AI stage holds still open (a human Publish live releases them). */
+export function openAiStageHoldCount(): number {
+  return Number.parseInt(
+    runBunInline(
+      `
+      import { SQL } from "bun";
+      const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const rows = await tx\`SELECT count(*)::int AS n FROM ai_stage_holds WHERE released_at IS NULL\`;
+        process.stdout.write(String(rows[0]?.n ?? 0));
+      });
+      await sql.end();
+      `,
+    ).trim(),
+    10,
+  );
 }

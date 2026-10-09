@@ -8,6 +8,7 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { pendingSnapshotSql } from "../draft.js";
 import type {
   ContentInstanceState,
   ModuleState,
@@ -215,14 +216,13 @@ export async function loadModuleStateWithBranchOverlay(
  * body, and the next write built on that body would clobber the branch's
  * earlier edit.
  *
- * Only snapshots written AFTER the chat's last Stage count
- * (`chat_sessions.last_staged_at`, strict `>` — the same pending-changes
- * boundary `chat.merge_to_main` and `chat.list_pending_changes` use).
- * Stage consumed everything before it into main and released the chat's
- * locks, so another chat may since have changed the module on main; an
- * already-consumed branch snapshot is stale, and overlaying it would
- * hand this chat the pre-change body and let its next write revert main
- * at the following Stage.
+ * Only PENDING snapshots count (`staged_at` / `undone_at` unset — the
+ * same boundary `chat.merge_to_main` and `chat.list_pending_changes`
+ * use; issue #620 made it per snapshot so a Stage of selected draft chats
+ * consumes exactly what it merged). A staged snapshot is in main already
+ * and another chat may since have changed the module there; overlaying it
+ * would hand this chat the pre-change body and let its next write revert
+ * main at the following Stage. An undone snapshot was dropped on purpose.
  *
  * @param moduleIds restrict to these ids; omit to load every module the
  *   branch touched (bounded by the branch's own edit count).
@@ -245,9 +245,7 @@ export async function loadBranchedModuleStates(
     SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
       FROM module_snapshots ms
       JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-      LEFT JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
-     WHERE ss.chat_branch_id = ${chatBranchId}::uuid ${idFilter}
-       AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
+     WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()} ${idFilter}
      ORDER BY ms.module_id, ss.created_at DESC
   `)) as unknown as { module_id: string; state: unknown }[];
   for (const row of rows) {
@@ -270,7 +268,7 @@ export async function loadPageStateWithBranchOverlay(
         FROM page_snapshots ps
         JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
        WHERE ps.page_id = ${pageId}::uuid
-         AND ss.chat_branch_id = ${chatBranchId}::uuid
+         AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
        ORDER BY ss.created_at DESC
        LIMIT 1
     `)) as unknown as { state: unknown }[];
@@ -306,7 +304,7 @@ export async function loadPageLayoutStateWithBranchOverlay(
         FROM page_layout_snapshots pls
         JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
        WHERE pls.page_id = ${pageId}::uuid
-         AND ss.chat_branch_id = ${chatBranchId}::uuid
+         AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
        ORDER BY ss.created_at DESC
        LIMIT 1
     `)) as unknown as { state: unknown }[];
@@ -372,7 +370,7 @@ export async function loadContentInstanceStateWithBranchOverlay(
         FROM content_instance_snapshots cis
         JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
        WHERE cis.content_instance_id = ${contentInstanceId}::uuid
-         AND ss.chat_branch_id = ${chatBranchId}::uuid
+         AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
        ORDER BY ss.created_at DESC
        LIMIT 1
     `)) as unknown as { state: unknown }[];

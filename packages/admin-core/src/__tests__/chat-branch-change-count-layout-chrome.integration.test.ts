@@ -18,6 +18,11 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
+// Issue #620 — these chats run on ISOLATED branches (experiments): the
+// suite covers the per-branch mechanics isolated chats keep (experiments,
+// migrations, pre-draft chats). The shared draft has its own suite
+// (shared-draft.integration.test.ts).
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -63,6 +68,7 @@ describe("chat.branch_change_count layoutChrome term (v0.8.0)", () => {
       requestId: "count-test",
     };
     const c = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}c1`,
     });
     if (!c.ok) throw new Error("seed chat");

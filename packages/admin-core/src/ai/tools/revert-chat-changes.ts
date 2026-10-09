@@ -86,7 +86,10 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
         content: `revert_chat_changes: chat.get_branch_id failed: ${describeError(branchRes.error)}`,
       };
     }
-    const chatBranchId = (branchRes.value as { chatBranchId: string | null }).chatBranchId;
+    const { chatBranchId, branchKind } = branchRes.value as {
+      chatBranchId: string | null;
+      branchKind: string | null;
+    };
     if (!chatBranchId) {
       return {
         ok: false,
@@ -95,8 +98,11 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
     }
 
     // STEP 2 — enumerate the chat's snapshots.
+    // Issue #620 — on the shared draft many chats share the branch: only
+    // this chat's own snapshots (it and its subagents) count.
     const chatSnapshotsR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "snapshots.list", {
       forChatBranchId: chatBranchId,
+      ...(branchKind === "draft" ? { forChatSessionId: input.chatSessionId } : {}),
       limit: 200,
       includeArchived: true,
     });

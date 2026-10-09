@@ -48,7 +48,7 @@ export interface StartAdminOpts {
  */
 export const ADMIN_MCP_INSTRUCTIONS = [
   "This server edits a Caelo CMS site. Before any other caelo tool:",
-  "1. Call caelo_open_session once. It resumes the operator's most recent open session (pass newSession: true only when the operator asks for a fresh one; chatSessionId resumes a specific one). Every write lands on that session's preview branch; nothing reaches the live site until the operator reviews and publishes in the Caelo admin.",
+  "1. Call caelo_open_session once. It resumes the operator's most recent open session (pass newSession: true only when the operator asks for a fresh one; chatSessionId resumes a specific one). Every write lands in the site's shared draft (or the session's own experiment branch); you may stage finished work with stage_changes, but nothing reaches the live site until the operator clicks Publish live in the Caelo admin.",
   "2. Call caelo_get_context once and follow it: it carries the site model, tool playbook, staging rules, site memory (brand voice, glossary) and the skills index.",
   "3. Load every skill the context marks ALWAYS APPLIES with load_skill before the work it covers (e.g. before writing any visitor-facing copy).",
   "Tool errors name the next step to take; follow them instead of retrying unchanged.",
@@ -101,8 +101,8 @@ const openSessionInput = z
 const OPEN_SESSION_TOOL = {
   name: "caelo_open_session",
   description:
-    "Open the Caelo work session your subsequent tool calls run in. Every write lands on the session's " +
-    "preview branch — invisible to the live site until the operator reviews and publishes in the Caelo admin. " +
+    "Open the Caelo work session your subsequent tool calls run in. Every write lands in the site's shared " +
+    "draft — invisible to the live site until it is staged and the operator clicks Publish live in the Caelo admin. " +
     "Call this ONCE before any other caelo tool. By default it RESUMES the operator's own most recent open " +
     "session (so earlier unstaged work continues in the same chat); pass newSession: true only when the " +
     "operator wants a separate fresh session, or chatSessionId to resume a specific one. Optional pageId " +
@@ -190,8 +190,8 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
                 (currentSession.resumed
                   ? `\nResumed the operator's session '${currentSession.title}' — its earlier unstaged work continues here. `
                   : `\nOpened a new session '${currentSession.title}'. `) +
-                "Subsequent caelo tool calls run on its preview branch. " +
-                "The operator reviews + publishes in the Caelo admin.",
+                "Subsequent caelo tool calls write to the site's shared draft (or this session's experiment branch). " +
+                "Stage finished work with stage_changes; the operator clicks Publish live in the Caelo admin.",
             },
           ],
         };

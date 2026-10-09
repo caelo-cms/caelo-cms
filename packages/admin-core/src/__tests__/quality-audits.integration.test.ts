@@ -115,7 +115,12 @@ async function newChat(
   const s = await op<{ chatSessionId: string; chatBranchId: string }>(SYS, "chat.create_session", {
     title: `${PFX}${title}`,
   });
-  return { chatSessionId: s.chatSessionId, branch: { ...SYS, chatBranchId: s.chatBranchId } };
+  // The chat task attributes each write to its chat (issue #620: on the
+  // shared draft the branch alone names no single chat).
+  return {
+    chatSessionId: s.chatSessionId,
+    branch: { ...SYS, chatBranchId: s.chatBranchId, chatTaskId: s.chatSessionId },
+  };
 }
 
 type Classified = {
@@ -682,11 +687,9 @@ describe("read surfaces", () => {
 
   it("the AI may read but not drive the lifecycle", async () => {
     expect((await execute(registry, adapter, AI, "quality_audits.list", {})).ok).toBe(true);
+    // quality_audits.enqueue is AI-scoped since issue #620 (the AI's Stage
+    // flow enqueues the audit of its own build; no tool exposes its input).
     for (const [name, input] of [
-      [
-        "quality_audits.enqueue",
-        { deployRunId: "00000000-0000-4000-8000-000000000001", chatSessionId: null, branch: null },
-      ],
       ["quality_audits.claim_next", {}],
       [
         "quality_audits.record_result",

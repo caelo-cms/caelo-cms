@@ -53,6 +53,7 @@ import { z } from "zod";
 import { loadStaticPublisher } from "../deploy/static-publisher.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { aiStageHoldRefusal, releaseAiStageHolds } from "../stage/ai-stage-hold.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
 import {
   checkProductionBuildGate,
@@ -520,6 +521,20 @@ export const triggerDeployOp = defineOperation({
     // recorded as a failed run, so Ops and the notification bell show it
     // even when nobody watched the request (the automatic redeploy).
     let override: ProductionOverride | null = null;
+    if (target.env === "production" && ctx.actorKind === "system") {
+      // Issue #620 Part B — an automatic production build (the
+      // auto-redeploy) never ships changes the AI staged that no human has
+      // published yet. Recorded as a failed run like a quality-gate stop.
+      const held = await aiStageHoldRefusal(tx);
+      if (held) {
+        await tx.execute(sql`
+          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', now(),
+                  ${`Automatic publish stopped: ${held}`})
+        `);
+        return err({ kind: "HandlerError", operation: "deploy.trigger", message: held });
+      }
+    }
     if (target.env === "production") {
       const gate = await checkProductionBuildGate(tx, ctx, input.publishAnyway);
       if (gate.ok) override = gate.override;
@@ -542,9 +557,11 @@ export const triggerDeployOp = defineOperation({
     const runIdRows = (await tx.execute(sql`
       INSERT INTO deploy_runs (target_id, actor_id, status, render_fingerprint)
       VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running', ${fingerprint})
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
+      RETURNING id::text AS id,
+                to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS started_at
+    `)) as unknown as { id: string; started_at: string }[];
     const runId = runIdRows[0]?.id;
+    const startedAt = runIdRows[0]?.started_at ?? "";
     if (!runId) {
       return err({
         kind: "HandlerError",
@@ -685,6 +702,11 @@ export const triggerDeployOp = defineOperation({
     // The publish-anyway decision is recorded only now that the build it
     // allowed is live; a failed build leaves the quality gate closed.
     if (override) await recordProductionOverride(tx, ctx, override);
+    // Issue #620 — a human production build from main publishes whatever
+    // the AI staged before it started: those holds are released.
+    if (target.env === "production" && ctx.actorKind === "human") {
+      await releaseAiStageHolds(tx, { coveredUntil: startedAt, productionRunId: runId });
+    }
 
     await tx.execute(sql`
       UPDATE deploy_runs
@@ -765,10 +787,12 @@ export const promoteDeployOp = defineOperation({
       });
     }
     const fromRunRows = (await tx.execute(sql`
-      SELECT id::text AS id, build_id FROM deploy_runs
+      SELECT id::text AS id, build_id,
+             to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS started_at
+      FROM deploy_runs
       WHERE target_id = ${from.id}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
       ORDER BY started_at DESC LIMIT 1
-    `)) as unknown as { id: string; build_id: string | null }[];
+    `)) as unknown as { id: string; build_id: string | null; started_at: string }[];
     const fromRow = fromRunRows[0];
     const fromRunId = fromRow?.id;
     const buildId = fromRow?.build_id;
@@ -787,6 +811,16 @@ export const promoteDeployOp = defineOperation({
         operation: "deploy.promote",
         message: `a newer build was staged on '${from.name}' since build ${input.expectedSourceRunId}; that newer build goes through its own quality check before it can be published`,
       });
+    }
+
+    // Issue #620 Part B — an automatic publish (the audit-gated automatic
+    // redeploy runs this handler as system) never ships changes the AI
+    // staged that no human has published yet.
+    if (to.env === "production" && ctx.actorKind === "system") {
+      const held = await aiStageHoldRefusal(tx);
+      if (held) {
+        return err({ kind: "HandlerError", operation: "deploy.promote", message: held });
+      }
     }
 
     // #553 — the quality gate. Every Publish-live path runs this handler
@@ -845,6 +879,14 @@ export const promoteDeployOp = defineOperation({
             publish_summary = ${jsonbParam(summary)}
         WHERE id = ${toRunId}::uuid
       `);
+      // Issue #620 — a human Publish live ships the staged build, and with
+      // it everything the AI staged before that build started.
+      if (to.env === "production" && ctx.actorKind === "human" && fromRow) {
+        await releaseAiStageHolds(tx, {
+          coveredUntil: fromRow.started_at,
+          productionRunId: toRunId,
+        });
+      }
       return ok({ fromRunId, toRunId, buildId: summary.destinationBuildId });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

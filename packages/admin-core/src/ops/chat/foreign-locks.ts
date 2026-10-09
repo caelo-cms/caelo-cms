@@ -23,6 +23,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { pendingSnapshotSql } from "../../draft.js";
 
 const foreignLockSchema = z
   .object({
@@ -38,9 +39,10 @@ const foreignLockSchema = z
       /** Anchor page slug when the holding chat is page-bound. */
       pageSlug: z.string().nullable(),
       /**
-       * Count of the holder branch's site_snapshots since its last Stage —
-       * an upper bound of "unshipped edits in that chat". 0 means the chat
-       * already Staged everything and merely still holds stale locks.
+       * Count of the holder branch's pending site_snapshots — an upper
+       * bound of "unshipped edits in that chat" (on the shared draft: in
+       * the whole draft). 0 means everything was staged and the lock is
+       * merely stale.
        */
       pendingChangeCount: z.number().int().nonnegative(),
     }),
@@ -75,10 +77,11 @@ export const listForeignLocksOp = defineOperation({
     // Verify the caller's session exists so a typo'd id fails loudly
     // instead of silently returning EVERY lock as "foreign".
     const sessionRows = (await tx.execute(sql`
-      SELECT id::text AS id FROM chat_sessions
+      SELECT id::text AS id, chat_branch_id::text AS chat_branch_id FROM chat_sessions
       WHERE id = ${input.chatSessionId}::uuid LIMIT 1
-    `)) as unknown as { id: string }[];
-    if (!sessionRows[0]) {
+    `)) as unknown as { id: string; chat_branch_id: string }[];
+    const caller = sessionRows[0];
+    if (!caller) {
       return err({
         kind: "HandlerError",
         operation: "chat.list_foreign_locks",
@@ -101,8 +104,7 @@ export const listForeignLocksOp = defineOperation({
         anchor.slug AS holder_page_slug,
         (
           SELECT COUNT(*)::int FROM site_snapshots ss
-          WHERE ss.chat_branch_id = cs.chat_branch_id
-            AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
+          WHERE ss.chat_branch_id = l.chat_branch_id AND ${pendingSnapshotSql()}
         ) AS pending_change_count,
         COALESCE(
           m.display_name, t.display_name,
@@ -126,7 +128,9 @@ export const listForeignLocksOp = defineOperation({
       LEFT JOIN content_instances ci ON l.entity_kind = 'contentInstance' AND ci.id = l.entity_id
       LEFT JOIN modules ci_module ON ci_module.id = ci.module_id
       LEFT JOIN redirects r ON l.entity_kind = 'redirect' AND r.id = l.entity_id
-      WHERE l.chat_session_id <> ${input.chatSessionId}::uuid
+      -- Issue #620: locks on the caller's own branch are not foreign — on
+      -- the shared draft every draft chat writes the same branch.
+      WHERE l.chat_branch_id <> ${caller.chat_branch_id}::uuid
       ORDER BY l.locked_at DESC
       LIMIT 50
     `)) as unknown as ForeignLockRow[];

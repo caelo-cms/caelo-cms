@@ -7,8 +7,9 @@
  * error, and a forgotten chat could block every other chat indefinitely.
  * Now the writing chat ADOPTS the holder's unstaged change on that entity:
  *
- *   - every branch snapshot the holder wrote for the entity since its last
- *     Stage moves to the writer's branch (re-pointed under new
+ *   - every PENDING branch snapshot the holder's branch has for the entity
+ *     (not staged, not undone — on the shared draft that is every draft
+ *     chat's pending change on it) moves to the writer's branch (re-pointed under new
  *     `chat.adopt_change` headers, oldest first, so "latest snapshot wins"
  *     still picks the newest state);
  *   - rows the holder CREATED on its branch that the adopted state points
@@ -31,7 +32,9 @@
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import { type SQL, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
+import { pendingSnapshotSql } from "./draft.js";
+import { lockedEntityLabel } from "./entity-labels.js";
 import type { LockedEntityKind } from "./locks.js";
 
 /** One snapshot table + the column that names the entity in it. */
@@ -115,6 +118,16 @@ const SNAPSHOT_TABLES: Partial<Record<LockedEntityKind, readonly SnapshotTable[]
   ],
 };
 
+/**
+ * The snapshot tables (and entity column) that record changes to an entity
+ * of this lock kind — empty for kinds that write the live tables directly.
+ */
+export function snapshotTablesForLockKind(
+  kind: LockedEntityKind,
+): readonly { readonly table: string; readonly column: string }[] {
+  return SNAPSHOT_TABLES[kind] ?? [];
+}
+
 /** Live tables whose rows can be created on a chat branch (migrations 0089, 0093). */
 const BRANCH_CREATED_TABLE: Partial<Record<LockedEntityKind, string>> = {
   module: "modules",
@@ -141,7 +154,6 @@ export interface TakeoverOutcome {
 interface SessionInfo {
   readonly title: string;
   readonly createdBy: string;
-  readonly lastStagedAt: string | null;
 }
 
 interface MovedRow {
@@ -154,21 +166,16 @@ interface MovedRow {
 
 async function loadSession(tx: TransactionRunner, chatSessionId: string): Promise<SessionInfo> {
   const rows = (await tx.execute(sql`
-    SELECT title, created_by::text AS created_by,
-           to_char(last_staged_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS last_staged_at
+    SELECT title, created_by::text AS created_by
     FROM chat_sessions WHERE id = ${chatSessionId}::uuid
-  `)) as unknown as { title: string; created_by: string; last_staged_at: string | null }[];
+  `)) as unknown as { title: string; created_by: string }[];
   const row = rows[0];
   if (!row) {
     // The lock row references the session with ON DELETE CASCADE, so a
     // missing session here means the caller passed a wrong id — fail loud.
     throw new Error(`lock takeover: chat session ${chatSessionId} not found`);
   }
-  return { title: row.title, createdBy: row.created_by, lastStagedAt: row.last_staged_at };
-}
-
-function sinceFilter(lastStagedAt: string | null): SQL {
-  return lastStagedAt === null ? sql`` : sql` AND ss.created_at > ${lastStagedAt}::timestamptz`;
+  return { title: row.title, createdBy: row.created_by };
 }
 
 /**
@@ -246,32 +253,6 @@ async function createdOnBranch(
   return rows.length > 0;
 }
 
-/** Human label of a locked entity (slug / title / name), falling back to the id. */
-export async function lockedEntityLabel(
-  tx: TransactionRunner,
-  kind: LockedEntityKind,
-  entityId: string,
-): Promise<string> {
-  const lookup: Partial<Record<LockedEntityKind, SQL>> = {
-    module: sql`SELECT COALESCE(display_name, slug) AS label FROM modules WHERE id = ${entityId}::uuid`,
-    template: sql`SELECT COALESCE(display_name, slug) AS label FROM templates WHERE id = ${entityId}::uuid`,
-    page: sql`SELECT COALESCE(title, slug) AS label FROM pages WHERE id = ${entityId}::uuid`,
-    pageLayout: sql`SELECT COALESCE(title, slug) AS label FROM pages WHERE id = ${entityId}::uuid`,
-    layout: sql`SELECT display_name AS label FROM layouts WHERE id = ${entityId}::uuid`,
-    structuredSet: sql`SELECT display_name AS label FROM structured_sets WHERE id = ${entityId}::uuid`,
-    theme: sql`SELECT display_name AS label FROM themes WHERE id = ${entityId}::uuid`,
-    contentInstance: sql`
-      SELECT COALESCE(ci.display_name, ci.slug, m.slug) AS label
-      FROM content_instances ci LEFT JOIN modules m ON m.id = ci.module_id
-      WHERE ci.id = ${entityId}::uuid`,
-    redirect: sql`SELECT from_path AS label FROM redirects WHERE id = ${entityId}::uuid`,
-  };
-  const query = lookup[kind];
-  if (!query) return `${kind} ${entityId}`;
-  const rows = (await tx.execute(query)) as unknown as { label: string | null }[];
-  return rows[0]?.label ?? `${kind} ${entityId}`;
-}
-
 /**
  * Move the holder's unstaged change on (kind, entityId) — plus the rows it
  * created that the change references — to the taker's branch, move the
@@ -293,7 +274,6 @@ export async function takeOverEntity(
   const { holder, taker } = args;
   const holderInfo = await loadSession(tx, holder.chatSessionId);
   const takerInfo = await loadSession(tx, taker.chatSessionId);
-  const since = sinceFilter(holderInfo.lastStagedAt);
 
   // Worklist: the requested entity, then every holder-created row the
   // adopted states reference (transitively). Every unit is retagged: a row
@@ -334,7 +314,7 @@ export async function takeOverEntity(
         FROM ${sql.raw(t.table)} es
         JOIN site_snapshots ss ON ss.id = es.site_snapshot_id
         WHERE ss.chat_branch_id = ${holder.chatBranchId}::uuid
-          AND es.${sql.raw(t.column)} = ${unit.id}::uuid${since}
+          AND es.${sql.raw(t.column)} = ${unit.id}::uuid AND ${pendingSnapshotSql()}
         ORDER BY ss.created_at, es.created_at, es.id
         FOR UPDATE OF es
       `)) as unknown as {
@@ -391,19 +371,10 @@ export async function takeOverEntity(
         ${taker.chatSessionId}::uuid, ${taker.chatBranchId}::uuid,
         now() - make_interval(secs => ${offsetMicros}::double precision / 1000000)
       )
-      RETURNING id::text AS id,
-                (created_at > COALESCE(${takerInfo.lastStagedAt}::timestamptz, '-infinity'::timestamptz)) AS after_stage
-    `)) as unknown as { id: string; after_stage: boolean }[];
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
     const header = inserted[0];
-    if (!header?.after_stage) {
-      // The taker staged within the last few microseconds of this
-      // transaction's start — the adopted rows would fall behind its
-      // pending window and vanish from its next Stage. Fail loud; the
-      // write is retried by the caller.
-      throw new Error(
-        "lock takeover: the adopting chat was staged at this very moment — retry the write",
-      );
-    }
+    if (!header) throw new Error("lock takeover: site_snapshots insert returned no row");
     for (const row of group) {
       await tx.execute(sql`
         UPDATE ${sql.raw(row.table)} SET site_snapshot_id = ${header.id}::uuid

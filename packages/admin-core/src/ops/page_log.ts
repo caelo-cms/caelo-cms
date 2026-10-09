@@ -51,7 +51,7 @@ export const appendPageLogOp = defineOperation({
 
     // Chat origin is inferred from the branch the write runs on, not passed
     // by the caller, so the AI can't spoof a different session's log.
-    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
 
     const rows = (await tx.execute(sql`
       INSERT INTO page_edit_log

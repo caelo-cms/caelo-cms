@@ -29,9 +29,10 @@ import {
 import { defineOperation } from "@caelo-cms/query-api";
 import type { ChatPublishInput, ExecutionContext } from "@caelo-cms/shared";
 import { chatPublishInput, err, ok } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { pendingSnapshotSql } from "../../draft.js";
 import { releaseChatLocks } from "../../locks.js";
 import {
   emitSnapshot,
@@ -44,6 +45,7 @@ import {
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { recordAiStageHold } from "../../stage/ai-stage-hold.js";
 import { refreshLivePathsAfterMerge } from "../content/current-path.js";
 import { scanBranchInternalLinks } from "../content/link-integrity.js";
 import { applyMediaUsageDelta } from "../content/media-usage.js";
@@ -140,11 +142,12 @@ export async function mergeBranchSnapshotsToMain(
     }
 > {
   const sessionRows = (await tx.execute(sql`
-    SELECT chat_branch_id::text AS chat_branch_id, published_at, title, last_staged_at, discarded_at
+    SELECT chat_branch_id::text AS chat_branch_id, published_at, title, last_staged_at, discarded_at,
+           branch_kind
     FROM chat_sessions
     WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
     LIMIT 1
-  `)) as unknown as SessionRow[];
+  `)) as unknown as (SessionRow & { branch_kind: string })[];
   const session = sessionRows[0];
   if (!session) {
     return {
@@ -163,7 +166,77 @@ export async function mergeBranchSnapshotsToMain(
       },
     };
   }
+  if (session.branch_kind === "draft") {
+    // Issue #620 — a draft chat shares its branch with every other draft
+    // chat; merging "its branch" would ship theirs too. Draft chats merge
+    // through chat.merge_draft_to_main, which selects exactly their changes.
+    return {
+      ok: false,
+      error: {
+        kind: "HandlerError",
+        operation: options.opKind,
+        message:
+          "this chat works on the shared draft — stage it through the Stage flow (Open changes, the Stage button, or stage_changes), which merges exactly its changes",
+      },
+    };
+  }
+  // Issue #620 — pending is per snapshot (staged_at / undone_at), so a
+  // Stage replays exactly what is still pending. chat.publish ships the
+  // whole branch (its dedup is the publish marks).
+  const filter = options.sinceLastStagedAt ? sql` AND ${pendingSnapshotSql()}` : sql``;
+  const merged = await mergeWindowToMain(
+    tx,
+    ctx,
+    {
+      branchId: session.chat_branch_id,
+      title: session.title,
+      filter,
+      pluginCompletenessFilter: filter,
+      graduateLayouts: input.entities === undefined,
+    },
+    input.entities,
+    options,
+  );
+  if (!merged.ok) return merged;
+  return { ok: true, value: { ...merged.value, session } };
+}
 
+/** The snapshots one merge replays: a branch plus a header filter. */
+export interface MergeWindow {
+  readonly branchId: string;
+  /** Snapshot-description title (the chat's, or "shared draft"). */
+  readonly title: string;
+  /** Extra predicate on `ss` (leading " AND"), e.g. pending or a header set. */
+  readonly filter: SQL;
+  /**
+   * The window the "plugin rows go live together" check compares against
+   * (leading " AND"). For a draft selection: every pending draft snapshot —
+   * the selection closes over plugin rows, so it must contain them all.
+   */
+  readonly pluginCompletenessFilter: SQL;
+  /** Clear chat_branch_id on layouts the branch created (whole-branch merges only). */
+  readonly graduateLayouts: boolean;
+}
+
+/**
+ * The replay core shared by every merge: latest snapshot per entity inside
+ * the window → one main snapshot → live-table writes the branched handlers
+ * deliberately skipped. Callers decide the window (an isolated chat's
+ * pending branch snapshots, or a draft Stage selection).
+ */
+export async function mergeWindowToMain(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  ctx: ExecutionContext,
+  window: MergeWindow,
+  entitiesFilter: ChatPublishInput["entities"],
+  options: MergeOptions,
+): Promise<
+  | { ok: true; value: Omit<MergeResult, "session"> }
+  | {
+      ok: false;
+      error: { kind: "HandlerError"; operation: string; message: string };
+    }
+> {
   type Row = { entity_id: string; state: unknown };
   const filterByKind = (
     kind:
@@ -176,7 +249,7 @@ export async function mergeBranchSnapshotsToMain(
       | "contentInstance"
       | "theme"
       | "pluginRow",
-  ) => input.entities?.filter((e) => e.kind === kind).map((e) => e.entityId) ?? null;
+  ) => entitiesFilter?.filter((e) => e.kind === kind).map((e) => e.entityId) ?? null;
   const wantModules = filterByKind("module");
   const wantTemplates = filterByKind("template");
   const wantPages = filterByKind("page");
@@ -185,24 +258,12 @@ export async function mergeBranchSnapshotsToMain(
   const wantStructuredSets = filterByKind("structuredSet");
   const wantContentInstances = filterByKind("contentInstance");
   const wantThemes = filterByKind("theme");
-  const includeAll = input.entities === undefined;
+  const includeAll = entitiesFilter === undefined;
 
-  // Issue #262 (livedit placement-isolation regression) — when the
-  // caller opts in, only snapshots created AFTER the last successful
-  // Stage participate in the replay. Strict '>' matters: every write in
-  // the previous merge tx (including its own emitted snapshot) carries
-  // created_at == that tx's now(), which is exactly the value
-  // chat.finalize_stage stamped into last_staged_at — so '>' excludes
-  // the prior merge's own rows, same contract as
-  // chat.list_pending_changes (v0.10.8).
-  const sinceFilter =
-    options.sinceLastStagedAt && session.last_staged_at !== null
-      ? sql` AND ss.created_at > ${
-          session.last_staged_at instanceof Date
-            ? session.last_staged_at.toISOString()
-            : session.last_staged_at
-        }::timestamptz`
-      : sql``;
+  // The window (pending snapshots, or a draft Stage selection) — see
+  // MergeWindow. Strict pending semantics replaced the per-chat
+  // last_staged_at boundary in issue #620.
+  const sinceFilter = window.filter;
 
   const inFilter = (ids: readonly string[] | null) =>
     ids === null
@@ -227,7 +288,7 @@ export async function mergeBranchSnapshotsToMain(
       ? sql`
           AND entity_id_text NOT IN (
             SELECT entity_id::text FROM chat_branch_publish_marks
-            WHERE chat_branch_id = ${session.chat_branch_id}::uuid
+            WHERE chat_branch_id = ${window.branchId}::uuid
               AND entity_kind = ${kind}
               AND stage_state = 'published'
           )
@@ -235,7 +296,7 @@ export async function mergeBranchSnapshotsToMain(
       : sql``;
   const stagedCountRows = (await tx.execute(sql`
     SELECT COUNT(*)::int AS n FROM chat_branch_publish_marks
-    WHERE chat_branch_id = ${session.chat_branch_id}::uuid
+    WHERE chat_branch_id = ${window.branchId}::uuid
       AND stage_state = 'staged'
   `)) as unknown as { n: number }[];
   const hasStagedMarks = (stagedCountRows[0]?.n ?? 0) > 0;
@@ -255,7 +316,7 @@ export async function mergeBranchSnapshotsToMain(
       ? sql`
           AND entity_id_text IN (
             SELECT entity_id::text FROM chat_branch_publish_marks
-            WHERE chat_branch_id = ${session.chat_branch_id}::uuid
+            WHERE chat_branch_id = ${window.branchId}::uuid
               AND entity_kind = ${kind}
               AND stage_state = 'staged'
           )
@@ -270,7 +331,7 @@ export async function mergeBranchSnapshotsToMain(
       SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS entity_id, ms.state, ms.module_id::text AS entity_id_text
       FROM module_snapshots ms
       JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+      WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
       ORDER BY ms.module_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("module")} ${stageFilter("module")} ${inFilter(includeAll ? null : (wantModules ?? []))}
@@ -283,7 +344,7 @@ export async function mergeBranchSnapshotsToMain(
       SELECT DISTINCT ON (ts.template_id) ts.template_id::text AS entity_id, ts.state, ts.template_id::text AS entity_id_text
       FROM template_snapshots ts
       JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+      WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
       ORDER BY ts.template_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("template")} ${stageFilter("template")} ${inFilter(includeAll ? null : (wantTemplates ?? []))}
@@ -296,7 +357,7 @@ export async function mergeBranchSnapshotsToMain(
       SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS entity_id, ps.state, ps.page_id::text AS entity_id_text
       FROM page_snapshots ps
       JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+      WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
       ORDER BY ps.page_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("page")} ${stageFilter("page")} ${inFilter(includeAll ? null : (wantPages ?? []))}
@@ -309,7 +370,7 @@ export async function mergeBranchSnapshotsToMain(
       SELECT DISTINCT ON (pls.page_id) pls.page_id::text AS entity_id, pls.state, pls.page_id::text AS entity_id_text
       FROM page_layout_snapshots pls
       JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+      WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
       ORDER BY pls.page_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("pageLayout")} ${stageFilter("pageLayout")} ${inFilter(includeAll ? null : (wantLayouts ?? []))}
@@ -326,7 +387,7 @@ export async function mergeBranchSnapshotsToMain(
              pmcs.page_module_content_id::text AS entity_id_text
       FROM page_module_content_snapshots pmcs
       JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+      WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
       ORDER BY pmcs.page_module_content_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("pageModuleContent")} ${stageFilter("pageModuleContent")} ${inFilter(includeAll ? null : (wantContent ?? []))}
@@ -343,7 +404,7 @@ export async function mergeBranchSnapshotsToMain(
              sss.structured_set_id::text AS entity_id_text
       FROM structured_set_snapshots sss
       JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+      WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
       ORDER BY sss.structured_set_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("structuredSet")} ${stageFilter("structuredSet")} ${inFilter(includeAll ? null : (wantStructuredSets ?? []))}
@@ -361,7 +422,7 @@ export async function mergeBranchSnapshotsToMain(
              cis.content_instance_id::text AS entity_id_text
       FROM content_instance_snapshots cis
       JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+      WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
       ORDER BY cis.content_instance_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("contentInstance")} ${stageFilter("contentInstance")} ${inFilter(includeAll ? null : (wantContentInstances ?? []))}
@@ -382,7 +443,7 @@ export async function mergeBranchSnapshotsToMain(
              ts.theme_id::text AS entity_id_text
       FROM theme_snapshots ts
       JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+      WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
       ORDER BY ts.theme_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("theme")} ${stageFilter("theme")} ${inFilter(includeAll ? null : (wantThemes ?? []))}
@@ -402,7 +463,7 @@ export async function mergeBranchSnapshotsToMain(
              prs.plugin_id::text AS plugin_id, prs.schema_name, prs.table_name
       FROM plugin_row_snapshots prs
       JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+      WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
       ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("pluginRow")} ${stageFilter("pluginRow")} ${inFilter(includeAll ? null : (wantPluginRows ?? []))}
@@ -417,10 +478,10 @@ export async function mergeBranchSnapshotsToMain(
       SELECT count(DISTINCT prs.row_id)::int AS n
       FROM plugin_row_snapshots prs
       JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
+      WHERE ss.chat_branch_id = ${window.branchId}::uuid${window.pluginCompletenessFilter}
         AND prs.row_id::text NOT IN (
           SELECT entity_id::text FROM chat_branch_publish_marks
-          WHERE chat_branch_id = ${session.chat_branch_id}::uuid
+          WHERE chat_branch_id = ${window.branchId}::uuid
             AND entity_kind = 'pluginRow' AND stage_state = 'published'
         )
     `)) as unknown as { n: number }[];
@@ -450,7 +511,7 @@ export async function mergeBranchSnapshotsToMain(
   if (total === 0) {
     return {
       ok: true,
-      value: { siteSnapshotId: null, entityCount: 0, session, includeAll, brokenInternalLinks: [] },
+      value: { siteSnapshotId: null, entityCount: 0, includeAll, brokenInternalLinks: [] },
     };
   }
 
@@ -552,8 +613,8 @@ export async function mergeBranchSnapshotsToMain(
     actorId: ctx.actorId,
     opKind: options.opKind,
     description: includeAll
-      ? `${options.opKind} title=${session.title}`
-      : `${options.opKind} (partial) title=${session.title} entities=${total}`,
+      ? `${options.opKind} title=${window.title}`
+      : `${options.opKind} (partial) title=${window.title} entities=${total}`,
     entities,
   });
 
@@ -789,7 +850,7 @@ export async function mergeBranchSnapshotsToMain(
   // Plugin rows can carry URL annotations (a locale variant link); now
   // that they are live, recompose main-line paths and 301 what moved.
   if (pluginRowRows.length > 0) {
-    await refreshLivePathsAfterMerge(ctx, tx, session.chat_branch_id);
+    await refreshLivePathsAfterMerge(ctx, tx, window.branchId);
   }
 
   // v0.9.0 — bulk clear chat_branch_id for any branched-create layouts
@@ -797,14 +858,14 @@ export async function mergeBranchSnapshotsToMain(
   // the per-entity replay loop above never sees them; query the live
   // table directly. Same for any layout entities the operator's filter
   // doesn't already cover via the replay path.
-  if (includeAll) {
+  if (window.graduateLayouts) {
     // Honor includeAll only — partial-merge with entities filter doesn't
     // sweep layouts because we have no way to map a layout id into the
     // entities[] filter today (layouts.create snapshot carries no
     // entity row). Full-merge clears everything branched to this chat.
     await tx.execute(sql`
       UPDATE layouts SET chat_branch_id = NULL
-      WHERE chat_branch_id = ${session.chat_branch_id}::uuid
+      WHERE chat_branch_id = ${window.branchId}::uuid
     `);
   }
 
@@ -818,7 +879,7 @@ export async function mergeBranchSnapshotsToMain(
         INSERT INTO chat_branch_publish_marks
           (chat_branch_id, entity_kind, entity_id, site_snapshot_id)
         VALUES (
-          ${session.chat_branch_id}::uuid,
+          ${window.branchId}::uuid,
           ${e.kind},
           ${e.entityId}::uuid,
           ${result.siteSnapshotId}::uuid
@@ -832,18 +893,35 @@ export async function mergeBranchSnapshotsToMain(
   // state to the live tables, so the scan reads post-merge slugs +
   // content. Warn-only: dead links are surfaced in the op result, never
   // block the merge (CLAUDE.md §2 loud-honesty).
-  const { brokenInternalLinks } = await scanBranchInternalLinks(tx, session.chat_branch_id);
+  const { brokenInternalLinks } = await scanBranchInternalLinks(tx, window.branchId);
 
   return {
     ok: true,
     value: {
       siteSnapshotId: result.siteSnapshotId,
       entityCount: total,
-      session,
       includeAll,
       brokenInternalLinks,
     },
   };
+}
+
+/**
+ * Issue #620 — mark an isolated branch's pending snapshots consumed: the
+ * ones a Stage merged (created at or before the merge time; edits made
+ * while the staging build ran stay pending), or all of them (`bound` null —
+ * the publish boundary).
+ */
+async function markBranchStaged(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  branchId: string,
+  bound: string | null,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE site_snapshots SET staged_at = COALESCE(${bound}::timestamptz, now())
+    WHERE chat_branch_id = ${branchId}::uuid AND staged_at IS NULL AND undone_at IS NULL
+      ${bound === null ? sql`` : sql`AND created_at <= ${bound}::timestamptz`}
+  `);
 }
 
 export const publishChatSessionOp = defineOperation({
@@ -921,6 +999,7 @@ export const publishChatSessionOp = defineOperation({
         UPDATE chat_sessions SET published_at = now()
         WHERE id = ${input.chatSessionId}::uuid
       `);
+      await markBranchStaged(tx, merged.value.session.chat_branch_id, null);
       // v0.5.0 — release every per-entity lock held by this chat once
       // it's fully published. Partial publishes keep their locks so
       // subsequent writes against the same entities stay scoped to
@@ -978,9 +1057,12 @@ const chatMergeToMainInput = chatPublishInput.extend({
 
 export const mergeChatToMainOp = defineOperation({
   name: "chat.merge_to_main",
-  // Why human-only: same boundary as chat.publish — the operator owns the
-  // decision to ship a merge, even when re-stageable.
-  actorScope: ["human", "system"],
+  // Issue #620 Part B — the AI may Stage (stage_changes runs this op as
+  // the AI). Staging is not public, snapshots stay revertable (§11.A
+  // routine test), and an AI merge opens a production hold in this same
+  // transaction, so it can never reach production without a human Publish
+  // live (stage/ai-stage-hold.ts).
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: chatMergeToMainInput,
   output: z.object({
@@ -1026,7 +1108,10 @@ export const mergeChatToMainOp = defineOperation({
       });
     }
 
+    if (entityCount > 0) await recordAiStageHold(tx, ctx, [input.chatSessionId]);
+
     if (!input.deferConsume) {
+      await markBranchStaged(tx, merged.value.session.chat_branch_id, mergedAt);
       // v0.10.8 — stamp `last_staged_at` so chat.branch_change_count /
       // branch_edited_entities / list_pending_changes can filter out
       // already-merged snapshots. Without this, the toolbar's pending-
@@ -1085,9 +1170,10 @@ export const mergeChatToMainOp = defineOperation({
  */
 export const finalizeStageOp = defineOperation({
   name: "chat.finalize_stage",
-  // Why human-only: paired with chat.merge_to_main (same Stage boundary);
-  // only the Stage form action calls it, after deploy.trigger succeeded.
-  actorScope: ["human", "system"],
+  // Issue #620 Part B — paired with chat.merge_to_main, which the AI may
+  // run (stage_changes); the Stage flow calls it after the staging build
+  // succeeded.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({
@@ -1105,15 +1191,17 @@ export const finalizeStageOp = defineOperation({
         ${input.stagedAt}::timestamptz
       )
       WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
-      RETURNING 1
-    `)) as unknown as unknown[];
-    if (rows.length === 0) {
+      RETURNING chat_branch_id::text AS chat_branch_id
+    `)) as unknown as { chat_branch_id: string }[];
+    const finalized = rows[0];
+    if (!finalized) {
       return err({
         kind: "HandlerError",
         operation: "chat.finalize_stage",
         message: "session not found",
       });
     }
+    await markBranchStaged(tx, finalized.chat_branch_id, input.stagedAt);
 
     await releaseChatLocks(tx, input.chatSessionId);
 

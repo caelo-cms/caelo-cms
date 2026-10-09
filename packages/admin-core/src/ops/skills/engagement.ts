@@ -38,10 +38,12 @@ async function pinOwner(
   operation: string,
 ): Promise<{ ok: true; userId: string } | { ok: false; message: string }> {
   if (ctx.actorKind !== "ai") return { ok: true, userId: ctx.actorId };
-  const rows = ctx.chatBranchId
+  // Issue #620 — the draft branch is shared by every editor's chats; the
+  // chat task (not the branch) names whose chat this is.
+  const rows = ctx.chatTaskId
     ? ((await tx.execute(sql`
         SELECT created_by::text AS user_id FROM chat_sessions
-        WHERE chat_branch_id = ${ctx.chatBranchId}::uuid LIMIT 1
+        WHERE id = caelo_chat_owner(${ctx.chatTaskId}::uuid) LIMIT 1
       `)) as unknown as { user_id: string }[])
     : [];
   const userId = rows[0]?.user_id;

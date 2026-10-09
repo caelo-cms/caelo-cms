@@ -33,6 +33,11 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
+// Issue #620 — these chats run on ISOLATED branches (experiments): the
+// suite covers the per-branch mechanics isolated chats keep (experiments,
+// migrations, pre-draft chats). The shared draft has its own suite
+// (shared-draft.integration.test.ts).
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -133,6 +138,7 @@ describe("run #8 R6 — deferred stage consumption", () => {
     const moduleId = (modRes.value as { moduleId: string }).moduleId;
 
     const session = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}chat`,
     });
     if (!session.ok) throw new Error("seed session");
@@ -250,6 +256,7 @@ describe("run #9 — re-stage merges only since last_staged_at", () => {
     const moduleB = (modB.value as { moduleId: string }).moduleId;
 
     const session = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      isolation: "experiment",
       title: `${PFX}since-chat`,
     });
     if (!session.ok) throw new Error("seed session");

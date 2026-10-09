@@ -172,7 +172,7 @@ export const proposeRevokePluginCapabilityOp = defineOperation({
         : `the pending update of "${input.slug}" is abandoned (it has to be staged and approved again); the running version is unchanged.`,
       ...(input.reason ? { reason: input.reason } : {}),
     };
-    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
     let inserted: { id: string }[];
     try {
       inserted = (await tx.execute(sql`

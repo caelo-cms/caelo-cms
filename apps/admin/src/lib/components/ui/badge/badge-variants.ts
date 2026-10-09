@@ -9,10 +9,11 @@ export const badgeVariants = tv({
       secondary: "border-transparent bg-secondary text-secondary-foreground",
       destructive: "border-transparent bg-destructive text-destructive-foreground",
       outline: "text-foreground",
-      // P6.6a — bumped from green-600 / amber-500 to green-700 /
-      // amber-600 so white-on-color badges clear WCAG AA contrast.
+      // White-on-color must clear WCAG AA (4.5:1) at text-xs: green-700
+      // does (~5.0:1); amber-600 does not (~3.2:1, axe color-contrast on
+      // /content/changes), so warning uses amber-700 (~5.0:1).
       success: "border-transparent bg-green-700 text-white",
-      warning: "border-transparent bg-amber-600 text-white",
+      warning: "border-transparent bg-amber-700 text-white",
     },
   },
   defaultVariants: { variant: "default" },

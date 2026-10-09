@@ -284,7 +284,7 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
     if (!r.ok) {
       return { ok: false, content: `propose_site_import failed: ${describeError(r.error)}` };
     }
-    const v = r.value as { runId: string };
+    const v = r.value as { runId: string; migrationBranch: boolean };
     const mode = listMode
       ? `list mode: ${input.urls?.length} specific page${input.urls?.length === 1 ? "" : "s"}`
       : `depth=${input.depth ?? 2}, max=${input.maxPages ?? 50}`;
@@ -301,7 +301,12 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
     return {
       ok: true,
       // v0.5.11 — canonical shape so ProposeCard renders inline approve.
-      content: `Queued proposal ${v.runId}: site-import ${input.sourceUrl} (${mode}).${scopeNote} ${describeEstimate(estimate)} Approve it on the proposal card in this chat (queue: /security/import/pending).`,
+      content:
+        `Queued proposal ${v.runId}: site-import ${input.sourceUrl} (${mode}).${scopeNote} ${describeEstimate(estimate)} Approve it on the proposal card in this chat (queue: /security/import/pending).` +
+        // Issue #620 — the migration builds on its own branch.
+        (v.migrationBranch
+          ? " This chat now works on its own migration branch: the migration stays out of the shared draft until you stage it."
+          : ""),
     };
   },
 };

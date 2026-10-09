@@ -4,8 +4,8 @@
  * Issue #553 — `quality_audits.classify_stage`: does the chat's next Stage
  * need a quality audit, and which pages does it touch?
  *
- * Reads the same window `chat.list_pending_changes` shows (branch
- * snapshots since the chat's last Stage), takes the latest state of every
+ * Reads the window the Stage will merge (an isolated chat's pending branch
+ * snapshots, or a shared-draft Stage selection — issue #620), takes the latest state of every
  * entity, compares it with the main (live) version, and hands the reduced
  * `StageChange` list to the pure `classifyStageChanges`. Must run BEFORE
  * `chat.merge_to_main`: afterwards the live rows already hold the branch
@@ -14,8 +14,14 @@
 
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
+import {
+  type ChatBinding,
+  draftStageSelection,
+  loadChatBinding,
+  pendingSnapshotSql,
+} from "../../draft.js";
 import { classifyStageChanges, type StageChange } from "../../quality/classify.js";
 import { stageClassificationSchema, uuidList } from "./_shared.js";
 
@@ -24,13 +30,18 @@ const LIST_KINDS = new Set(["nav-menu", "taxonomy", "link-list"]);
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
+/**
+ * The snapshots the next Stage will merge: a branch plus a predicate on
+ * `ss` (leading " AND") — an isolated chat's pending snapshots, or a draft
+ * Stage selection (issue #620).
+ */
 interface Window {
   readonly branchId: string;
-  readonly since: string | null;
+  readonly filter: SQL;
 }
 
-function sinceFilter(w: Window) {
-  return w.since ? sql` AND ss.created_at > ${w.since}::timestamptz` : sql``;
+function sinceFilter(w: Window): SQL {
+  return w.filter;
 }
 
 async function moduleChanges(tx: Tx, w: Window): Promise<StageChange[]> {
@@ -230,34 +241,73 @@ export const classifyStageOp = defineOperation({
   // audited (and why) before telling the operator what to expect.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ chatSessionId: z.string().uuid() }).strict(),
+  input: z
+    .object({
+      /** One chat (any binding). */
+      chatSessionId: z.string().uuid().optional(),
+      /** Issue #620 — a Stage selection of shared-draft chats. */
+      chatSessionIds: z.array(z.string().uuid()).min(1).max(50).optional(),
+    })
+    .strict()
+    .refine((v) => (v.chatSessionId === undefined) !== (v.chatSessionIds === undefined), {
+      message: "pass chatSessionId (one chat) or chatSessionIds (draft chats), not both",
+    }),
   output: z.object({
     classification: stageClassificationSchema,
     /** Pages whose rendering the Stage touches (audit candidates). */
     touchedPageIds: z.array(z.string()),
   }),
   handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
-      SELECT chat_branch_id::text AS branch_id, last_staged_at
-      FROM chat_sessions WHERE id = ${input.chatSessionId}::uuid
-    `)) as unknown as { branch_id: string; last_staged_at: string | Date | null }[];
-    const session = rows[0];
-    if (!session) {
-      return err({
-        kind: "HandlerError",
-        operation: "quality_audits.classify_stage",
-        message: `chat session ${input.chatSessionId} not found — pass the id of the chat whose changes will be staged`,
-      });
+    const ids = input.chatSessionIds ?? (input.chatSessionId ? [input.chatSessionId] : []);
+    const bindings: ChatBinding[] = [];
+    for (const id of ids) {
+      const b = await loadChatBinding(tx, id);
+      if (!b) {
+        return err({
+          kind: "HandlerError",
+          operation: "quality_audits.classify_stage",
+          message: `chat session ${id} not found — pass the id of the chat whose changes will be staged`,
+        });
+      }
+      bindings.push(b);
     }
-    const w: Window = {
-      branchId: session.branch_id,
-      since:
-        session.last_staged_at === null
-          ? null
-          : session.last_staged_at instanceof Date
-            ? session.last_staged_at.toISOString()
-            : session.last_staged_at,
-    };
+    const first = bindings[0];
+    if (!first) throw new Error("classify_stage: no chat after validation");
+    let w: Window;
+    if (first.kind === "draft") {
+      if (bindings.some((b) => b.kind !== "draft")) {
+        return err({
+          kind: "HandlerError",
+          operation: "quality_audits.classify_stage",
+          message: "classify draft chats together and isolated chats one by one",
+        });
+      }
+      const selection = await draftStageSelection(
+        tx,
+        first.branchId,
+        bindings.map((b) => b.chatSessionId),
+        null,
+      );
+      w = {
+        branchId: first.branchId,
+        filter:
+          selection.headerIds.length === 0
+            ? sql` AND false`
+            : sql` AND ss.id IN (${sql.join(
+                selection.headerIds.map((id) => sql`${id}::uuid`),
+                sql`, `,
+              )})`,
+      };
+    } else {
+      if (bindings.length > 1) {
+        return err({
+          kind: "HandlerError",
+          operation: "quality_audits.classify_stage",
+          message: "an isolated chat is classified on its own — pass chatSessionId",
+        });
+      }
+      w = { branchId: first.branchId, filter: sql` AND ${pendingSnapshotSql()}` };
+    }
     const changes = [
       ...(await moduleChanges(tx, w)),
       ...(await pageChanges(tx, w)),

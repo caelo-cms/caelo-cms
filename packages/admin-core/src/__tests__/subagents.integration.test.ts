@@ -25,6 +25,11 @@ import { FixtureProvider } from "../ai/providers/anthropic.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { registerAdminOps } from "../register.js";
 
+// Issue #620 — these chats run on ISOLATED branches (experiments): the
+// suite covers the per-branch mechanics isolated chats keep (experiments,
+// migrations, pre-draft chats). The shared draft has its own suite
+// (shared-draft.integration.test.ts).
+
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -70,6 +75,7 @@ afterAll(async () => {
 describe("subagent ops", () => {
   it("chat.create_session accepts subagentRole and parentChatSessionId", async () => {
     const parent = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      isolation: "experiment",
       title: "p10_5_test parent",
     });
     expect(parent.ok).toBe(true);
@@ -77,6 +83,7 @@ describe("subagent ops", () => {
     const parentId = (parent.value as { chatSessionId: string }).chatSessionId;
 
     const sub = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      isolation: "experiment",
       title: "[subagent] p10_5_test",
       subagentRole: "p10_5_test_role",
       parentChatSessionId: parentId,
@@ -86,9 +93,11 @@ describe("subagent ops", () => {
 
   it("chat.list_sessions filters subagent_role IS NOT NULL out of the sidebar", async () => {
     await execute(registry, adapter, systemCtx, "chat.create_session", {
+      isolation: "experiment",
       title: "p10_5_test parent visible",
     });
     await execute(registry, adapter, systemCtx, "chat.create_session", {
+      isolation: "experiment",
       title: "[subagent] p10_5_test hidden",
       subagentRole: "p10_5_test_role",
     });
@@ -102,6 +111,7 @@ describe("subagent ops", () => {
 
   it("subagent_runs.create_pending → finish round-trip", async () => {
     const sub = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      isolation: "experiment",
       title: "[subagent] p10_5_test_round_trip",
       subagentRole: "p10_5_test_round_trip",
     });
@@ -149,6 +159,7 @@ describe("subagent ops", () => {
 
   it("ai_calls.aggregate_for_session sums correctly", async () => {
     const sess = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      isolation: "experiment",
       title: "p10_5_test_aggregate",
     });
     if (!sess.ok) throw new Error("session create failed");
@@ -219,6 +230,7 @@ describe("subagent ops", () => {
     const moduleId = (seed.value as { moduleId: string }).moduleId;
 
     const parent = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      isolation: "experiment",
       title: "p10_5_test p264 orchestrator",
     });
     if (!parent.ok) throw new Error("parent session create failed");
@@ -233,7 +245,9 @@ describe("subagent ops", () => {
     if (!child.ok) throw new Error("child session create failed");
     const childId = (child.value as { chatSessionId: string }).chatSessionId;
     const childOwnBranchId = (child.value as { chatBranchId: string }).chatBranchId;
-    expect(childOwnBranchId).not.toBe(parentBranchId);
+    // Issue #620 — a subagent session takes its parent's binding (the
+    // draft, or here the parent's experiment branch).
+    expect(childOwnBranchId).toBe(parentBranchId);
 
     // One-tool-call fixture, same pattern as chat-send-edit-module.
     class QueueProvider extends FixtureProvider {
@@ -300,11 +314,15 @@ describe("subagent ops", () => {
           WHERE chat_branch_id = ${parentBranchId}::uuid
         `) as unknown as { c: number }[];
         expect(onParent[0]?.c).toBeGreaterThanOrEqual(1);
-        const onChildOwn = (await tx`
+        // Issue #620 — the child's writes count as the PARENT chat's (its
+        // task maps to the parent), so "undo/stage this chat" covers them.
+        const ownedByParent = (await tx`
           SELECT count(*)::int AS c FROM site_snapshots
-          WHERE chat_branch_id = ${childOwnBranchId}::uuid
+          WHERE chat_branch_id = ${parentBranchId}::uuid
+            AND chat_task_id = ${childId}::uuid
+            AND caelo_chat_owner(chat_task_id) = ${parentId}::uuid
         `) as unknown as { c: number }[];
-        expect(onChildOwn[0]?.c).toBe(0);
+        expect(ownedByParent[0]?.c).toBeGreaterThanOrEqual(1);
       });
     } finally {
       await sql.end();
@@ -313,6 +331,7 @@ describe("subagent ops", () => {
 
   it("run #10 D2: spawn_subagent collects the child's result via submit_result", async () => {
     const parent = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      isolation: "experiment",
       title: "p10_5_test d2 orchestrator",
     });
     if (!parent.ok) throw new Error("parent session create failed");
@@ -437,6 +456,7 @@ describe("subagent ops", () => {
 
   it("run #10 D2: a child provider error surfaces as a structured child-error, never parseable output", async () => {
     const parent = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      isolation: "experiment",
       title: "p10_5_test d2 child-error orchestrator",
     });
     if (!parent.ok) throw new Error("parent session create failed");
@@ -539,12 +559,14 @@ describe("subagent ops", () => {
 
   it("ai_calls accepts parentChatSessionId + parentAiCallId", async () => {
     const parent = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      isolation: "experiment",
       title: "p10_5_test parent for attribution",
     });
     if (!parent.ok) throw new Error("parent session create failed");
     const parentId = (parent.value as { chatSessionId: string }).chatSessionId;
 
     const sub = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      isolation: "experiment",
       title: "[subagent] p10_5_test attribution",
       subagentRole: "p10_5_test_attr",
       parentChatSessionId: parentId,

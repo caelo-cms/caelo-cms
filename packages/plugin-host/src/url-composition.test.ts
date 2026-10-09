@@ -49,6 +49,18 @@ describe("#390 — composition grammar", () => {
     expect(resolvePageUrl(page("welcome", {}, true)).path).toBe("/");
   });
 
+  it("assertClaimable reports a conflict without claiming anything (activation-race fix)", () => {
+    // Checking a plugin's slots must not make them live: the loader checks
+    // before provisioning and claims only once the plugin is loaded.
+    urlContributionsRegistry.assertClaimable("intl", [localePrefix]);
+    expect(urlContributionsRegistry.activeSlots()).toEqual([]);
+    expect(urlContributionsRegistry.annotationOps().size).toBe(0);
+    urlContributionsRegistry.register("intl", [localePrefix], "url_annotations");
+    expect(() => urlContributionsRegistry.assertClaimable("other", [localePrefix])).toThrow(
+      /already claimed/,
+    );
+  });
+
   it("two plugins compose in grammar order, not registration order", () => {
     // Register the slug-format FIRST — the prefix must still lead.
     urlContributionsRegistry.register("dasher", [dashSlugFormat]);

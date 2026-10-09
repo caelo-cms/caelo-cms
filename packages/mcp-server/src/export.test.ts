@@ -33,7 +33,8 @@ describe("renderClaudeMd", () => {
     expect(md).toContain(".claude/skills/<slug>/SKILL.md");
     expect(md).toContain("- site-migrate: Staged flow for rebuilding an existing site.");
     // The generated file must set expectations about publish semantics.
-    expect(md).toContain("preview branch");
+    expect(md).toContain("shared draft");
+    expect(md).toContain("Publish live");
   });
 
   it("renders a complete-setup line when the status line is null", () => {

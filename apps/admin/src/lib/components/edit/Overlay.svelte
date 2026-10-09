@@ -377,7 +377,9 @@
             </Button>
           {/snippet}
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" class="min-w-[240px]">
+        <!-- Scrollable: with many chats the list outgrows the viewport and the
+             New-chat actions at its end became unreachable. -->
+        <DropdownMenuContent align="start" class="max-h-[min(70vh,32rem)] min-w-[240px] overflow-y-auto">
           {#if activePageId}
             <div class="px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               This page
@@ -462,6 +464,27 @@
                 <Plus class="size-3" />
                 <button type="submit" class="flex-1 text-left" data-testid="new-global-chat-btn">
                   New global chat
+                </button>
+              </form>
+            {/snippet}
+          </DropdownMenuItem>
+          <!-- Issue #620 — every chat works in the site's shared draft; an
+               experiment gets its own branch, invisible to other chats until
+               it is staged. -->
+          <DropdownMenuItem>
+            {#snippet child({ props })}
+              <form
+                {...props}
+                method="post"
+                action="?/newChat"
+                class="flex w-full items-center gap-1.5 px-2 py-1.5 text-xs hover:bg-accent"
+              >
+                <input type="hidden" name="_csrf" value={csrfToken} />
+                <input type="hidden" name="pageId" value="" />
+                <input type="hidden" name="isolation" value="experiment" />
+                <Plus class="size-3" />
+                <button type="submit" class="flex-1 text-left" data-testid="new-experiment-btn">
+                  New experiment (own branch)
                 </button>
               </form>
             {/snippet}

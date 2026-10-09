@@ -40,6 +40,7 @@ import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { deriveRunCalibration } from "../ai/import-cost-model.js";
 import { recordAudit } from "../audit.js";
+import { loadChatBinding } from "../draft.js";
 import {
   loadContentInstanceStateWithBranchOverlay,
   loadModuleStateWithBranchOverlay,
@@ -49,6 +50,7 @@ import { jsonbParam } from "../sql-helpers.js";
 import { requiresApproverPermission } from "./_approver-permission.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
+import { isolateDraftChat } from "./chat/draft-ops.js";
 import {
   buildZeroPagesAbortMessage,
   type ComposeSkip,
@@ -611,12 +613,28 @@ export const proposeImportRunOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeImportRunInput,
-  output: z.object({ runId: z.string() }),
+  output: z.object({
+    runId: z.string(),
+    /** Issue #620 — true when the chat was moved onto its own migration branch. */
+    migrationBranch: z.boolean(),
+  }),
   handler: async (ctx, input, tx) => {
     // 0124 — record the originating chat so the chat's pending strip
     // (pending_proposals.list, filtered per session) can surface this
     // run's Approve button pinned above the composer.
-    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
+    // Issue #620 — a site migration gets its own branch automatically: a
+    // chat still on the shared draft (with nothing changed there yet) moves
+    // onto an isolated migration branch now, before anything is built. The
+    // chat-runner re-reads the binding on every tool call, so the build
+    // tools that follow write to the migration branch.
+    let migrationBranch = false;
+    if (chatSessionId) {
+      const binding = await loadChatBinding(tx, chatSessionId);
+      if (binding?.kind === "draft") {
+        migrationBranch = (await isolateDraftChat(tx, binding, "migration")) !== null;
+      }
+    }
     // issue #229 — LIST mode ignores BFS depth (fetches an exact set):
     // store depth at its default and pin max_pages to the list length so
     // the "up to N pages" summaries read truthfully. `explicit_urls`
@@ -647,9 +665,9 @@ export const proposeImportRunOp = defineOperation({
       operation: "imports.propose_run",
       input,
       succeeded: true,
-      resultSummary: `proposed crawl ${input.sourceUrl}`,
+      resultSummary: `proposed crawl ${input.sourceUrl}${migrationBranch ? " (chat moved to a migration branch)" : ""}`,
     });
-    return ok({ runId: id });
+    return ok({ runId: id, migrationBranch });
   },
 });
 

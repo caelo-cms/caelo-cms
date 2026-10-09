@@ -146,7 +146,7 @@ export const proposeDeployPromoteOp = defineOperation({
         sourceBuildAt: toIsoRequired(from.started_at, "deploy_runs.started_at"),
       };
       const payloadHash = await hashProposalPayload(input);
-      const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+      const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
       let rows: { id: string }[];
       try {
         rows = (await tx.execute(sql`
@@ -239,7 +239,7 @@ export const proposeDeployRollbackOp = defineOperation({
         restoreRunId: prior.run_id,
       };
       const payloadHash = await hashProposalPayload(input);
-      const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+      const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
       let ins: { id: string }[];
       try {
         ins = (await tx.execute(sql`
