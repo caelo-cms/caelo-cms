@@ -16,7 +16,7 @@ The `--provider gcp` adapter spins up a managed stack that mirrors the self-host
 | Layer | GCP service | Notes |
 |---|---|---|
 | Database | **Cloud SQL Postgres 16** (Regional HA) | Automatic failover, daily snapshots, 7-day PITR |
-| Object storage | **Cloud Storage** | Two buckets: `<install>-static` (public, CDN-fronted) + `<install>-uploads` (private) |
+| Object storage | **Cloud Storage** | The public site's bucket (CDN-fronted) and a private media bucket. The media bucket is mounted into the admin as a Cloud Storage volume, so uploads survive new revisions and scale-to-zero and every admin instance sees the same files |
 | Edge | **Cloud CDN** + Load Balancer | TLS via Google-managed cert; A/B edge split honoured |
 | Compute (admin + gateway) | **Cloud Run** | Autoscaling, scales to zero idle |
 | Secrets | **Secret Manager** | Bearer tokens, OAuth secrets, AI provider keys |
@@ -149,7 +149,7 @@ Google only maps a domain for a verified owner of it. If you have not verified y
 1. Resolves the release images and verifies their signatures.
 2. Ensures the gateway's own service account and the generated runtime secrets (the internal-API and tool-approval keys) exist, creating them once in Secret Manager. Then ensures the IAM bindings and Cloud CDN settings the release's infrastructure declares — each service account can read exactly the secrets its service uses. It only adds what is missing and never removes anything. If a binding the install needs can't be added (usually a missing IAM permission on your gcloud account), it stops here: bindings it already added stay (they are additive and harmless), but no migration has run and no traffic has shifted. Fix the reported binding and re-run; `upgrade` skips what is already in place.
 3. Applies the database migrations.
-4. Rolls the admin and gateway to the new images. The admin's memory is raised to the release's default (2 GiB for the [quality checks](/quality-gate)) if it runs with less; a larger value you set is kept. Configuration the release expects (for example the public site URL your canonical tags and sitemap use) is applied in the same step, so it lands in the same new revision and rolls back with it. Secrets are Secret Manager references, never plain values: the database URLs carry no password, and the password reaches the services from Secret Manager.
+4. Rolls the admin and gateway to the new images. The admin's memory is raised to the release's default (2 GiB for the [quality checks](/quality-gate)) if it runs with less; a larger value you set is kept. Configuration the release expects (for example the public site URL your canonical tags and sitemap use, or the media bucket mounted into the admin as a Cloud Storage volume) is applied in the same step, so it lands in the same new revision and rolls back with it. Secrets are Secret Manager references, never plain values: the database URLs carry no password, and the password reaches the services from Secret Manager.
 5. Records the images it rolled to. Re-running the installer later keeps that release instead of switching to the newest one — version changes always go through `upgrade`.
 
 ## Common issues
@@ -157,6 +157,8 @@ Google only maps a domain for a verified owner of it. If you have not verified y
 - **TLS cert stuck on `provisioning`** — DNS hasn't propagated. `dig caelo.example.com` should return the load balancer IP. Wait 10-30 min; Google-managed certs poll for a valid challenge.
 - **`Cannot allocate memory` from Cloud SQL** — bump tier from `db-g1-small` to `db-custom-2-7680` via `gcloud sql instances patch`.
 - **A new user gets "You don't have access" from Google** — the approval result says why. Most often their email is not a Google account, or the install predates operator access: run `bunx @caelo-cms/provisioning upgrade` once, then click **Re-sync Google IAP access** at `/security/users`.
+- **Stage fails with "the stored files of … media asset(s) are missing"** — the install ran a release that kept media on the admin container's own disk, which Cloud Run discards on every new revision and scale-to-zero. Run `bunx @caelo-cms/provisioning upgrade`: it mounts the media bucket into the admin (execution environment gen2, a Cloud Storage volume named `media` of the `<project>-caelo-production-media` bucket at `/app/apps/admin/data/media`). If you already added exactly that volume by hand, upgrade keeps it. Files lost before the upgrade cannot be recovered from Cloud Run; ask the AI to "fix the missing media" — it lists them (`list_missing_media`), re-imports what came from a URL, and tells you which files to re-upload at `/content/media` (re-uploading the same file restores it on every page that uses it).
+- **The admin refuses to start: "media storage is not durable"** — the admin found no persistent volume at its media root. Run `bunx @caelo-cms/provisioning upgrade`, which adds it.
 - **Cloud Run cold-starts feel slow** — set `--min-instances=1` on the admin service. Costs ~$15/mo extra; eliminates first-request latency.
 
 ## Next

@@ -136,6 +136,23 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
     expect(src).toContain("envs: [...args.contractEnv],");
   });
 
+  it("mounts the media bucket on the admin, and only there, from the contract upgrade applies", () => {
+    // The stack's admin gets adminMediaVolume() — the same volume
+    // stack-converge.ts planMediaVolume adds to installs that lack it.
+    expect(src).toMatch(
+      /serviceName: "admin",[\s\S]*?mediaVolume: adminMediaVolumeTemplate\(adminMediaVolume\(project, env\)\),\n\}\);/,
+    );
+    expect(src.match(/mediaVolume: adminMediaVolumeTemplate\(/g)).toHaveLength(1);
+    expect(src).not.toMatch(/serviceName: "gateway",[^}]*mediaVolume:/);
+    // No volume, mount or execution environment besides the contract's.
+    expect(src.match(/executionEnvironment:/g)).toHaveLength(1);
+    expect(src).toContain("executionEnvironment: args.mediaVolume.executionEnvironment,");
+    expect(src.match(/volumes:/g)).toHaveLength(1);
+    expect(src).toContain("volumes: [...args.mediaVolume.volumes],");
+    expect(src.match(/volumeMounts:/g)).toHaveLength(1);
+    expect(src).toContain("volumeMounts: [...args.mediaVolume.volumeMounts]");
+  });
+
   it("sets no env var outside the contract (C1: no secret value in a plain var)", () => {
     const envNames = [...src.matchAll(/\{\s*name: "([A-Z][A-Z0-9_]+)"/g)].map((m) => m[1]);
     expect(envNames).toEqual([]);

@@ -142,6 +142,61 @@ export const OPERATOR_ACCESS_JOB_ENV_VAR = "CAELO_OPERATOR_ACCESS_JOB";
 const GENERATOR_CLI = "/app/apps/static-generator/src/cli.ts";
 
 // ===========================================================================
+// Media volume
+// ===========================================================================
+
+/**
+ * Where the admin keeps media: the image's default media root
+ * (`/app/apps/admin` + `data/media`), now the mount point of the media
+ * bucket. The admin's `MEDIA_ROOT_DIR` and the static generator (a child
+ * process of the admin, same env) both read this path.
+ */
+export const MEDIA_MOUNT_PATH = "/app/apps/admin/data/media";
+
+/** Name of the admin's Cloud Storage volume. */
+export const MEDIA_VOLUME_NAME = "media";
+
+/**
+ * The admin's media storage on GCP: the install's media bucket, mounted
+ * read-write with Cloud Run's Cloud Storage (gcsfuse) volume at
+ * {@link MEDIA_MOUNT_PATH}. Before this, media lived on the container's
+ * in-memory filesystem: lost on every new revision and every scale-to-zero,
+ * and different on every instance.
+ *
+ * Cloud Storage volumes need the second-generation execution environment.
+ * The stacks deploy this shape ({@link adminMediaVolumeTemplate}); upgrade
+ * adds whatever part of it a service is missing (stack-converge.ts
+ * `planMediaVolume`).
+ */
+export interface MediaVolumeContract {
+  readonly volumeName: string;
+  readonly bucket: string;
+  readonly mountPath: string;
+}
+
+/** The admin's media volume on an install. */
+export function adminMediaVolume(projectId: string, env: string): MediaVolumeContract {
+  return {
+    volumeName: MEDIA_VOLUME_NAME,
+    bucket: gcpBucketName(projectId, env, "media"),
+    mountPath: MEDIA_MOUNT_PATH,
+  };
+}
+
+/**
+ * {@link adminMediaVolume} in the shape `gcp.cloudrunv2.Service` takes:
+ * `executionEnvironment` + `volumes` on the template, `volumeMounts` on the
+ * container.
+ */
+export function adminMediaVolumeTemplate(volume: MediaVolumeContract) {
+  return {
+    executionEnvironment: "EXECUTION_ENVIRONMENT_GEN2",
+    volumes: [{ name: volume.volumeName, gcs: { bucket: volume.bucket, readOnly: false } }],
+    volumeMounts: [{ name: volume.volumeName, mountPath: volume.mountPath }],
+  } as const;
+}
+
+// ===========================================================================
 // Runtime secrets
 // ===========================================================================
 
@@ -274,6 +329,9 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     // og:url, sitemap) when it is not configured yet.
     { name: "CAELO_SITE_URL", value: publicSiteUrl(domain) },
     { name: "CAELO_GENERATOR_CLI", value: GENERATOR_CLI },
+    // The mounted media bucket (adminMediaVolume). Explicit so the admin's
+    // boot check and the static generator name the same path.
+    { name: "MEDIA_ROOT_DIR", value: MEDIA_MOUNT_PATH },
     // Issue #37 — shown in the /security/mcp `claude mcp add` command.
     { name: MCP_ENV_VAR, value: mcpIapServiceAccountEmail(projectId) },
     // The operator-access sync job the admin starts after user/role changes

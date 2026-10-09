@@ -41,6 +41,7 @@ The Azure stack requires `caelo-azure:region` (it replaces the earlier `caelo-az
 
 ## Notes specific to Azure
 
+- **Media storage is not wired yet** — the stack creates a media bucket but does not mount persistent storage into the admin, so the admin refuses to start rather than lose uploads on the next redeploy ([#618](https://github.com/caelo-cms/caelo-cms/issues/618)).
 - **Front Door A/B split** — implemented via Front Door rule engine on the same FNV-1a hash as the GCP / AWS adapters, so cross-provider variant routing is byte-identical.
 - **Container Apps cold-start** — comparable to Cloud Run; configure `--min-instances 1` for production.
 - **Postgres flexible-server vs single-server** — adapter defaults to flexible-server (current generation). Single-server is deprecated; the adapter refuses to provision it.

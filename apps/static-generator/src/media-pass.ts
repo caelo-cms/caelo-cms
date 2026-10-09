@@ -30,10 +30,11 @@
  * cloud adapter's job.
  */
 
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
+  buildMediaUrl,
   enrichResponsiveImages,
   extractMediaRefs,
   parseVariantWidth,
@@ -46,6 +47,11 @@ const MEDIA_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 
 interface VariantRow {
   asset_id: string;
+  /** The asset's library identity, for the missing-file error. */
+  slug: string;
+  original_name: string;
+  source_kind: string | null;
+  source_detail: string | null;
   variant: string;
   format: string;
   storage_key: string;
@@ -134,6 +140,7 @@ export async function runMediaPass(args: {
     const rows = (info.isSlug
       ? await args.tx.execute(sql`
             SELECT mv.asset_id::text AS asset_id,
+                   ma.slug, ma.original_name, ma.source_kind, ma.source_detail,
                    mv.variant,
                    mv.format,
                    mv.storage_key,
@@ -146,6 +153,7 @@ export async function runMediaPass(args: {
           `)
       : await args.tx.execute(sql`
             SELECT mv.asset_id::text AS asset_id,
+                   ma.slug, ma.original_name, ma.source_kind, ma.source_detail,
                    mv.variant,
                    mv.format,
                    mv.storage_key,
@@ -207,13 +215,15 @@ export async function runMediaPass(args: {
   let assetsBytes = 0;
   const manifest: ManifestEntry[] = [];
   const mediaRoot = resolve(args.mediaRoot);
+  // Every asset whose stored file is gone, collected so one failed Stage
+  // names all of them instead of one per attempt.
+  const missingFiles = new Map<string, { row: VariantRow; variants: string[] }>();
 
   for (const res of resolved.values()) {
     for (const r of res.variants.values()) {
       const ext = formatToExt(r.format);
       const outRel = assetRelPath(res.ref, res.isSlug, r.variant, ext);
       const outPath = join(args.buildDir, outRel);
-      await mkdir(dirname(outPath), { recursive: true });
       const sourcePath = join(mediaRoot, r.storage_key);
       // Containment guard — storage keys are server-controlled (sha-prefixed)
       // but defence-in-depth.
@@ -221,18 +231,20 @@ export async function runMediaPass(args: {
       if (!resolvedSource.startsWith(`${mediaRoot}/`) && resolvedSource !== mediaRoot) {
         throw new Error(`static-generator: storage key escapes mediaRoot: ${r.storage_key}`);
       }
-      let bytes: number;
+      let body: Uint8Array;
       try {
-        const stat = await readFile(resolvedSource);
-        bytes = stat.byteLength;
+        body = await readFile(resolvedSource);
       } catch (e) {
-        throw new Error(
-          `static-generator: storage object missing for asset=${r.asset_id} variant=${r.variant}: ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        );
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+        const entry = missingFiles.get(r.asset_id) ?? { row: r, variants: [] };
+        entry.variants.push(r.variant);
+        missingFiles.set(r.asset_id, entry);
+        continue;
       }
-      await copyFile(resolvedSource, outPath);
+      if (missingFiles.size > 0) continue;
+      await mkdir(dirname(outPath), { recursive: true });
+      await writeFile(outPath, body);
+      const bytes = body.byteLength;
       assetsBytes += bytes;
       if (args.settings.cdnEnabled && r.usage_count >= args.settings.threshold) {
         manifest.push({
@@ -245,6 +257,9 @@ export async function runMediaPass(args: {
         });
       }
     }
+  }
+  if (missingFiles.size > 0) {
+    throw new Error(missingMediaFilesError([...missingFiles.values()], mediaRoot));
   }
 
   // 5. Rewrite the HTML. Two passes:
@@ -293,6 +308,35 @@ export async function runMediaPass(args: {
   );
 
   return { assetsBytes, manifest };
+}
+
+/**
+ * The Stage failure for media whose stored files are gone (the library row
+ * exists, the bytes do not — e.g. media written to a cloud container's
+ * ephemeral disk before the media bucket was mounted). Names each asset the
+ * way the operator and the AI know it, and the way back (CLAUDE.md §11).
+ */
+function missingMediaFilesError(
+  missing: readonly { row: VariantRow; variants: readonly string[] }[],
+  mediaRoot: string,
+): string {
+  const assets = missing.map(({ row, variants }) => {
+    const source =
+      row.source_kind === "imported" && row.source_detail
+        ? `, imported from ${row.source_detail}`
+        : row.source_kind
+          ? `, source: ${row.source_kind}`
+          : "";
+    return `"${row.original_name}" (${buildMediaUrl(row.slug, "orig")}, id ${row.asset_id}${source}; missing: ${variants.join(", ")})`;
+  });
+  return (
+    `static-generator: the stored files of ${missing.length} media asset(s) are missing from ${mediaRoot}: ${assets.join("; ")}. ` +
+    "The library rows exist but the image files are gone, so these cannot be published. Next step: list every affected asset " +
+    "with list_missing_media, then for each one either restore it — re-import it with import_media_from_urls when it came from a URL, " +
+    "or ask the operator to re-upload the same file at /content/media (identical files reuse the asset, so every page " +
+    "referencing it is fixed) — or remove it from the pages that use it (find them via media.list_usages) and delete it " +
+    "with delete_media_many."
+  );
 }
 
 function formatToExt(format: string): string {

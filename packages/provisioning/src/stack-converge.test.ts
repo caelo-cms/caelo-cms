@@ -309,7 +309,7 @@ describe("planContractEnv", () => {
     );
     if (!plan.ok) throw new Error(plan.error);
     expect(plan.services.admin.flags).toEqual([
-      "--update-env-vars=CAELO_SITE_URL=https://acme.com,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
+      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
     ]);
     expect(plan.services.gateway.flags).toEqual([]);
   });

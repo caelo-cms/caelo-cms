@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { resolve } from "node:path";
 import {
   getMediaStorageFactory,
   LocalVolumeAdapter,
+  type MediaStorageSetup,
   PostgresRateLimiter,
   registerAdminOps,
   setDeployBridge,
@@ -55,6 +57,21 @@ if (!existing) {
 }
 const slot: QueryContextSlot = existing;
 
+/**
+ * How this admin stores media, from env: the storage adapter
+ * (`MEDIA_STORAGE_PROVIDER`, default `local`) and the local adapter's root
+ * (`MEDIA_ROOT_DIR`, default `data/media` under the cwd). The static
+ * generator inherits the same env, so it reads the same root.
+ */
+export function mediaStorageSetup(env: NodeJS.ProcessEnv = process.env): MediaStorageSetup {
+  return {
+    provider: env.CAELO_PROVIDER,
+    storageProvider: env.MEDIA_STORAGE_PROVIDER ?? "local",
+    rootDir: resolve(env.MEDIA_ROOT_DIR ?? "data/media"),
+    ...(env.MEDIA_STORAGE_URL ? { mediaStorageUrl: env.MEDIA_STORAGE_URL } : {}),
+  };
+}
+
 export function getQueryContext(): QueryContext {
   if (slot.ctx) return slot.ctx;
 
@@ -86,19 +103,20 @@ export function getQueryContext(): QueryContext {
   // by default; plugins / cloud adapters override via the
   // MEDIA_STORAGE_PROVIDER env + a registered factory (see
   // registerMediaStorageFactory in @caelo-cms/admin-core/media/storage).
-  const providerName = process.env.MEDIA_STORAGE_PROVIDER ?? "local";
-  if (providerName === "local") {
-    const mediaRoot = process.env.MEDIA_ROOT_DIR ?? "data/media";
-    setMediaStorage(new LocalVolumeAdapter(mediaRoot), "local");
+  // On cloud installs the boot check (`init` in hooks.server.ts) has
+  // already refused a local root that is not a persistent volume.
+  const media = mediaStorageSetup();
+  if (media.storageProvider === "local") {
+    setMediaStorage(new LocalVolumeAdapter(media.rootDir), "local");
   } else {
-    const factory = getMediaStorageFactory(providerName);
+    const factory = getMediaStorageFactory(media.storageProvider);
     if (!factory) {
       throw new Error(
-        `MEDIA_STORAGE_PROVIDER=${providerName} but no factory registered. ` +
-          `Cloud adapters land in P15; until then, use the default 'local' provider.`,
+        `MEDIA_STORAGE_PROVIDER=${media.storageProvider} but no factory registered. ` +
+          `Use the default 'local' provider with a persistent volume at MEDIA_ROOT_DIR.`,
       );
     }
-    setMediaStorage(factory(process.env), providerName);
+    setMediaStorage(factory(process.env), media.storageProvider);
   }
 
   slot.ctx = { adapter, registry, loginLimiter };

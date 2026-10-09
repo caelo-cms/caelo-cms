@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.33
+
+### Features
+- 2bfa2b63 close the agent-tool parity gaps — 23 tools, two Owner proposals, every human-only op justified (#615)
+
 ## v0.10.32
 
 ### Other

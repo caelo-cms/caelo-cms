@@ -43,17 +43,20 @@ import {
   rotateRuntimeSecret,
   rotationRefusal,
 } from "./runtime-secrets.js";
-import { MCP_ENV_VAR, OPERATOR_ACCESS_JOB_ENV_VAR } from "./stack-contract.js";
+import { adminMediaVolume, MCP_ENV_VAR, OPERATOR_ACCESS_JOB_ENV_VAR } from "./stack-contract.js";
 import {
   type DeployedService,
   type EnvChange,
   ensureStackInvariants,
   type LiveEnvValue,
+  type LiveVolumes,
   liveContainerEnv,
   liveContainerMemory,
   liveEnvHasInlinePassword,
+  liveVolumes,
   planAdminMemory,
   planContractEnv,
+  planMediaVolume,
   rollService,
   serviceRollArgs,
 } from "./stack-converge.js";
@@ -302,6 +305,8 @@ interface ServicePlan {
   readonly liveEnv: ReadonlyMap<string, LiveEnvValue>;
   /** Container memory limit now (null = Cloud Run's default). */
   readonly liveMemory: string | null;
+  /** Execution environment, volumes and mounts now. */
+  readonly liveVolumes: LiveVolumes;
 }
 
 /** A service plan plus the env changes its roll applies. */
@@ -310,6 +315,9 @@ interface RollPlan extends ServicePlan {
   readonly envChanges: readonly EnvChange[];
   /** #553 — e.g. `--memory=2Gi` when the admin runs below the stack default. */
   readonly resourceFlags: readonly string[];
+  /** The admin's media bucket volume when it is (partly) missing; empty otherwise. */
+  readonly volumeFlags: readonly string[];
+  readonly volumeChanges: readonly string[];
 }
 
 /**
@@ -555,6 +563,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       priorRevision,
       liveEnv: liveContainerEnv(serviceJson),
       liveMemory: liveContainerMemory(serviceJson),
+      liveVolumes: liveVolumes(serviceJson),
     });
   }
   const install = {
@@ -573,6 +582,18 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     log.error(envPlan.error);
     return;
   }
+  // The admin's media lives in the media bucket, mounted as a Cloud Storage
+  // volume. Without it every upload is lost on the next revision or
+  // scale-to-zero, so a volume upgrade cannot add is a pre-flight failure.
+  const adminLive = plans.find((p) => p.slug === "admin");
+  const mediaVolume = adminLive
+    ? planMediaVolume(adminLive.liveVolumes, adminMediaVolume(meta.projectId, GCP_STACK_ENV))
+    : ({ ok: false, error: "no admin service planned" } as const);
+  if (!mediaVolume.ok) {
+    sPre.stop(red("Pre-flight failed: the admin's media volume can't be set up"));
+    log.error(mediaVolume.error);
+    return;
+  }
   let rolls: RollPlan[] = plans.map((p) => {
     // #553 — the admin runs the Lighthouse quality audit; raise it to the
     // stack's memory default (never lowered; an unparsable value is kept).
@@ -583,10 +604,13 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       envFlags: envPlan.services[p.slug].flags,
       envChanges: envPlan.services[p.slug].changes,
       resourceFlags: memory?.ok ? memory.flags : [],
+      volumeFlags: p.slug === "admin" ? mediaVolume.flags : [],
+      volumeChanges: p.slug === "admin" ? mediaVolume.changes : [],
     };
   });
   sPre.stop(green(`Pre-flight ok — ${rolls.length} services planned`));
   for (const roll of rolls) {
+    for (const c of roll.volumeChanges) log.info(`${roll.slug} ${bold("media")}: ${c}`);
     for (const f of roll.resourceFlags) {
       log.info(`${roll.slug} ${bold("resources")}: ${roll.liveMemory ?? dim("(default)")} → ${f}`);
     }
@@ -820,6 +844,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
             : gatewayServiceAccountEmail(meta.projectId, GCP_STACK_ENV),
         envFlags: plan.envFlags,
         resourceFlags: plan.resourceFlags,
+        volumeFlags: plan.volumeFlags,
       }),
     );
     if (!upd.ok) {

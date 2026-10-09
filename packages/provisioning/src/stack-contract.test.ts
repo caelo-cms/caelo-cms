@@ -64,6 +64,7 @@ describe("adminEnvContract", () => {
         "postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
       CAELO_SITE_URL: "https://acme.com",
       CAELO_GENERATOR_CLI: "/app/apps/static-generator/src/cli.ts",
+      MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
       CAELO_MCP_IAP_SERVICE_ACCOUNT: "caelo-mcp@acme.iam.gserviceaccount.com",
       CAELO_OPERATOR_ACCESS_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
@@ -92,6 +93,7 @@ describe("adminEnvContract", () => {
         "postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
       CAELO_SITE_URL: "https://acme.com",
       CAELO_GENERATOR_CLI: "/app/apps/static-generator/src/cli.ts",
+      MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
       CAELO_MCP_IAP_SERVICE_ACCOUNT: "caelo-mcp@acme.iam.gserviceaccount.com",
       CAELO_OPERATOR_ACCESS_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
