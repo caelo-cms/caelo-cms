@@ -811,3 +811,77 @@ describe("renderPlacedModule — the composer's entry point", () => {
     ]);
   });
 });
+
+describe("renderPlacedModule — only template-referenced nested fields render", () => {
+  const GONE_CI = "00000000-0000-0000-0000-00000000dead";
+  const child: NestedModuleResource = {
+    moduleId: CHILD_MOD_ID,
+    slug: "card",
+    html: "<article>{{title}}</article>",
+    css: "",
+    js: "",
+    fields: [{ name: "title", kind: "text" }],
+  };
+  const resolver = buildResolver(
+    [child],
+    [{ id: CHILD_CI_ID, moduleId: CHILD_MOD_ID, values: { title: "Pro" }, deletedAt: null }],
+  );
+
+  it("does not resolve a declared module / module-list field the HTML never references", () => {
+    const r = renderPlacedModule(
+      {
+        html: "<section>{{>featured}}</section>",
+        fields: [
+          { name: "featured", kind: "module" },
+          { name: "legacy_card", kind: "module" },
+          { name: "legacy_cards", kind: "module-list" },
+        ],
+        values: {
+          featured: { moduleId: CHILD_MOD_ID, contentInstanceId: CHILD_CI_ID },
+          // Stale refs in fields the template no longer uses.
+          legacy_card: { moduleId: CHILD_MOD_ID, contentInstanceId: GONE_CI },
+          legacy_cards: [
+            { moduleId: "00000000-0000-0000-0000-0000000000ff", contentInstanceId: GONE_CI },
+          ],
+        },
+      },
+      resolver,
+      {},
+    );
+    expect(r.html).toBe("<section><article>Pro</article></section>");
+    expect(r.failures).toEqual([]);
+    expect(r.missingSlots).toEqual([]);
+    expect([...r.touchedModuleIds]).toEqual([CHILD_MOD_ID]);
+  });
+
+  it("does not resolve a module ref inside a conditional section that renders empty", () => {
+    const r = renderPlacedModule(
+      {
+        html: "<section>{{#show}}{{>card}}{{/show}}</section>",
+        fields: [
+          { name: "show", kind: "text" },
+          { name: "card", kind: "module" },
+        ],
+        values: { show: "", card: { moduleId: CHILD_MOD_ID, contentInstanceId: GONE_CI } },
+      },
+      resolver,
+      {},
+    );
+    expect(r.html).toBe("<section></section>");
+    expect(r.failures).toEqual([]);
+    expect(r.touchedModuleIds.size).toBe(0);
+  });
+
+  it("renders a ref referenced twice once, reporting its failure once", () => {
+    const r = renderPlacedModule(
+      {
+        html: "<a>{{>card}}</a><b>{{>card}}</b>",
+        fields: [{ name: "card", kind: "module" }],
+        values: { card: { moduleId: CHILD_MOD_ID, contentInstanceId: GONE_CI } },
+      },
+      resolver,
+      {},
+    );
+    expect(r.failures).toEqual([{ field: "card", reason: `content-instance-missing:${GONE_CI}` }]);
+  });
+});

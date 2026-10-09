@@ -82,19 +82,29 @@ export interface TemplateField {
   readonly default?: unknown;
 }
 
+/**
+ * Renders the nested-module partial for `key` (see
+ * {@link RenderTemplateInput.partials}) on demand, or `undefined` when
+ * the caller has no renderer for it.
+ */
+export type PartialResolver = (key: string) => string | undefined;
+
 export interface RenderTemplateInput {
   readonly html: string;
   readonly fields: readonly TemplateField[];
   /** Per-placement values from `content_instances.values`. */
   readonly contentValues?: Readonly<Record<string, unknown>>;
   /**
-   * Pre-rendered nested-module HTML keyed by:
+   * Nested-module HTML keyed by:
    *   - `<name>`            for single `{{>name}}` (module field kind)
    *   - `<name>__<index>`   for each `{{#name}}` element (module-list)
-   * Built by the recursive renderer (nested-module-render.ts); absent
-   * → loud HTML comments + `nested-renderer-unavailable` markers.
+   * Either pre-rendered, or a {@link PartialResolver} the engine calls
+   * only for the refs the template actually dispatches — the recursive
+   * renderer (nested-module-render.ts) passes a resolver so a declared
+   * but unreferenced field is never rendered. Absent / `undefined` for
+   * a key → loud HTML comments + `nested-renderer-unavailable` markers.
    */
-  readonly partials?: Readonly<Record<string, string>>;
+  readonly partials?: Readonly<Record<string, string>> | PartialResolver;
   /**
    * Plugin-provided lists for THIS page, keyed by the claimed name a
    * module iterates as `{{#name}}`. The plugin supplies the data, the
@@ -243,7 +253,11 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   const fieldByName = new Map<string, TemplateField>();
   for (const f of input.fields) fieldByName.set(f.name, f);
   const cvs = input.contentValues ?? {};
-  const partials = input.partials ?? {};
+  const partialSource = input.partials ?? {};
+  const partials: PartialResolver =
+    typeof partialSource === "function"
+      ? partialSource
+      : (key) => (Object.hasOwn(partialSource, key) ? partialSource[key] : undefined);
 
   // Sentinels survive Mustache.render untouched (they contain no
   // `{{` `}}`), then get restored to the original Mustache source
@@ -350,7 +364,7 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   });
 
   // 4. Render. The view holds only lowercase keys; sentinels survive
-  //    untouched; sections + partials are already pre-substituted.
+  //    untouched; sections + partials are already substituted.
   const rendered = Mustache.render(html, view);
 
   // 5. Restore loud-raw sentinels.
@@ -368,7 +382,7 @@ function renderSection(
   inner: string,
   fields: Map<string, TemplateField>,
   cvs: Readonly<Record<string, unknown>>,
-  partials: Readonly<Record<string, string>>,
+  partials: PartialResolver,
   missing: string[],
   mkSentinel: (original: string) => string,
   dataLists: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>,
@@ -539,7 +553,7 @@ function renderModuleList(
   name: string,
   field: TemplateField,
   cvs: Readonly<Record<string, unknown>>,
-  partials: Readonly<Record<string, string>>,
+  partials: PartialResolver,
   missing: string[],
 ): string {
   const raw = Object.hasOwn(cvs, name) ? cvs[name] : field.default;
@@ -553,7 +567,7 @@ function renderModuleList(
       continue;
     }
     const partialKey = `${name}__${i}`;
-    const partialHtml = partials[partialKey];
+    const partialHtml = partials(partialKey);
     if (partialHtml === undefined) {
       // The caller rendered without a nested-module resolver (the
       // recursive renderer in nested-module-render.ts supplies a
@@ -574,7 +588,7 @@ function renderPartialRef(
   name: string,
   fields: Map<string, TemplateField>,
   cvs: Readonly<Record<string, unknown>>,
-  partials: Readonly<Record<string, string>>,
+  partials: PartialResolver,
   missing: string[],
   mkSentinel: (original: string) => string,
 ): string {
@@ -593,7 +607,7 @@ function renderPartialRef(
     missing.push(`module-ref-malformed:${name}`);
     return comment(`module-ref-malformed ${name}`);
   }
-  const partialHtml = partials[name];
+  const partialHtml = partials(name);
   if (partialHtml === undefined) {
     // See renderModuleList: rendered without a nested-module resolver.
     missing.push(`${NESTED_RENDERER_UNAVAILABLE}:${name}`);

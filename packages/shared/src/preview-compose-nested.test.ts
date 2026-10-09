@@ -144,4 +144,38 @@ describe("composePageWithLayout — nested modules", () => {
       compose(grid(refs), resolver([card], instances), { [CARD_MOD]: deferral }),
     ).toThrow(ComposeError);
   });
+
+  it("keeps a withheld parent's nested CSS/JS inside its gate, never in the page bundles", () => {
+    const tracker: NestedModuleResource = {
+      ...card,
+      css: ".card{background:url(https://vendor.example/bg.png)}",
+      js: "fetch('https://vendor.example/beacon')",
+    };
+    const parent = grid(refs);
+    const deferral: ComposeDeferral = {
+      pluginSlug: "consent",
+      reason: "needs-consent",
+      placeholderModuleSlug: "consent-placeholder",
+      placeholderHtml: "<p>consent</p>",
+      placeholderCss: "",
+    };
+    const out = compose(parent, resolver([tracker], instances), {
+      [parent.moduleId]: deferral,
+    });
+    const gateStart = out.html.indexOf("<template data-caelo-deferred-content>");
+    const gateEnd = out.html.indexOf("</template>", gateStart);
+    expect(gateStart).toBeGreaterThan(-1);
+    const gate = out.html.slice(gateStart, gateEnd);
+    const outsideGate = out.html.slice(0, gateStart) + out.html.slice(gateEnd);
+
+    // The nested JS is parked inert under its own module id, once.
+    expect(gate).toContain(
+      `<script type="text/plain" data-caelo-deferred-script="${CARD_MOD}">${tracker.js}</script>`,
+    );
+    expect(gate.split(tracker.js).length - 1).toBe(1);
+    expect(gate).toContain(`<style data-source="module">${tracker.css}</style>`);
+    // ...and nowhere outside the gate: no page-wide module bundle carries it.
+    expect(outsideGate).not.toContain("vendor.example");
+    expect(out.html).not.toContain('<script defer data-source="modules">');
+  });
 });

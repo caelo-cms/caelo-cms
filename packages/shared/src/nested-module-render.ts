@@ -15,12 +15,10 @@
  * cycle-detection + depth-limit guards. Per-call shape:
  *   1. `renderInner` validates the (moduleId, contentInstanceId)
  *      pair against the resolver and the depth / cycle bookkeeping.
- *   2. `substituteWithRecursion` pre-resolves every nested
- *      ref declared via field.kind === 'module' / 'module-list' by
- *      recursing through `renderInner`, builds a deterministic
- *      partials map (`<name>` for single refs, `<name>__<index>`
- *      for list elements), and hands the engine the HTML + view +
- *      partials.
+ *   2. `substituteWithRecursion` hands the engine the HTML + view +
+ *      a partial resolver (`<name>` for single refs, `<name>__<index>`
+ *      for list elements) that recurses through `renderInner` only
+ *      for the nested refs the template actually dispatches.
  *   3. The engine performs primitive substitution, section
  *      iteration, and loud-raw / failure-marker emission. Its
  *      `missingSlots` are merged into the recursion context's
@@ -264,18 +262,18 @@ function renderInner(moduleId: string, contentInstanceId: string, ctx: RenderCon
 
 /**
  * v0.13 (#71) — Thin wrapper around the shared template engine.
- * Pre-resolves nested module / module-list refs by recursing through
+ * Hands the engine a partial resolver that recurses through
  * `renderInner` (which keeps the depth-limit + cycle-detection +
- * module-missing / content-instance-missing guards), builds the
- * partials map the engine consumes, then delegates substitution +
- * loud-raw + failure-marker emission to the engine.
+ * module-missing / content-instance-missing guards) for exactly the
+ * nested refs the template dispatches, then lets the engine do
+ * substitution + loud-raw + failure-marker emission.
  *
  * Partial-key contract (matches the engine's expectations):
- *   - single `{{>name}}` (module field): partials[<name>] = rendered
- *     HTML (or the loud comment from renderInner if recursion failed).
- *   - `{{#name}}…{{/name}}` over module-list: partials[`<name>__<i>`]
- *     = rendered HTML for element i. Malformed elements (non-NestedRef
- *     shape) are NOT pre-resolved — the engine emits the existing
+ *   - single `{{>name}}` (module field): `<name>` → rendered HTML (or
+ *     the loud comment from renderInner if recursion failed).
+ *   - `{{#name}}…{{/name}}` over module-list: `<name>__<i>` → rendered
+ *     HTML for element i. Malformed elements (non-NestedRef shape)
+ *     resolve to `undefined` — the engine emits the existing
  *     `module-list-malformed:<name>[<i>]` marker.
  *
  * Failure-marker parity: every literal `missingSlots` string the
@@ -292,33 +290,17 @@ function substituteWithRecursion(
   values: Readonly<Record<string, unknown>>,
   ctx: RenderContext,
 ): string {
-  const partials: Record<string, string> = {};
-  for (const field of fields) {
-    if (field.kind === "module") {
-      const ref = values[field.name];
-      if (isNestedRef(ref)) {
-        partials[field.name] = renderInner(
-          ref.moduleId,
-          ref.contentInstanceId,
-          descend(ctx, field.name),
-        );
-      }
-      continue;
-    }
-    if (field.kind === "module-list") {
-      const raw = Object.hasOwn(values, field.name) ? values[field.name] : field.default;
-      if (!Array.isArray(raw)) continue;
-      for (let i = 0; i < raw.length; i += 1) {
-        const el = raw[i];
-        if (!isNestedRef(el)) continue; // engine emits module-list-malformed
-        partials[`${field.name}__${i}`] = renderInner(
-          el.moduleId,
-          el.contentInstanceId,
-          descend(ctx, `${field.name}[${i}]`),
-        );
-      }
-    }
-  }
+  // Resolved lazily: the engine asks only for the refs the template
+  // dispatches (a `{{>name}}` it reaches, a `{{#name}}` module-list
+  // section). A declared field the HTML never references is not
+  // rendered, so a stale ref in it cannot fail the build and its CSS/JS
+  // stays off the page. Memoised: `{{>name}}` twice renders it once.
+  const fieldByName = new Map(fields.map((f) => [f.name, f]));
+  const rendered = new Map<string, string | undefined>();
+  const partials = (key: string): string | undefined => {
+    if (!rendered.has(key)) rendered.set(key, renderPartial(key, fieldByName, values, ctx));
+    return rendered.get(key);
+  };
 
   const result = renderTemplate({
     html,
@@ -331,6 +313,38 @@ function substituteWithRecursion(
   });
   for (const m of result.missingSlots) fail(ctx, m);
   return result.html;
+}
+
+/**
+ * Render the partial the engine asked for: `<name>` (a `module` field)
+ * or `<name>__<i>` (element i of a `module-list`). `undefined` when the
+ * value is not a well-formed ref — the engine then emits its own
+ * `module-ref-malformed` / `module-list-malformed` marker.
+ */
+function renderPartial(
+  key: string,
+  fieldByName: ReadonlyMap<string, TemplateField>,
+  values: Readonly<Record<string, unknown>>,
+  ctx: RenderContext,
+): string | undefined {
+  const single = fieldByName.get(key);
+  if (single?.kind === "module") {
+    const ref = values[key];
+    if (!isNestedRef(ref)) return undefined;
+    return renderInner(ref.moduleId, ref.contentInstanceId, descend(ctx, key));
+  }
+  const sep = key.lastIndexOf("__");
+  const index = key.slice(sep + 2);
+  if (sep <= 0 || !/^\d+$/.test(index)) return undefined;
+  const name = key.slice(0, sep);
+  const list = fieldByName.get(name);
+  if (list?.kind !== "module-list") return undefined;
+  const raw = Object.hasOwn(values, name) ? values[name] : list.default;
+  if (!Array.isArray(raw)) return undefined;
+  const i = Number(index);
+  const el = raw[i];
+  if (!isNestedRef(el)) return undefined;
+  return renderInner(el.moduleId, el.contentInstanceId, descend(ctx, `${name}[${i}]`));
 }
 
 /** The context for rendering the nested module at `step` under ctx's module. */

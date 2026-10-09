@@ -29,6 +29,7 @@ import { BASE_TECHNICAL_CSS } from "./base-css.js";
 import type { ModuleFieldKind } from "./content.js";
 import { NAV_FUNCTIONAL_CSS, NAV_TOGGLE_JS } from "./interactions.js";
 import {
+  type NestedModuleResource,
   type NestedRenderFailure,
   type NestedRenderResolver,
   renderPlacedModule,
@@ -620,20 +621,32 @@ export interface ComposeDeferral {
  * `<iframe src>` does. The JS is parked as `type="text/plain"` (inert
  * even once cloned) and the plugin runtime executes it once per module,
  * after the markup it expects is in the DOM.
+ *
+ * The same holds for the modules nested inside it (its `module` /
+ * `module-list` fields): their markup is already part of `moduleHtml`,
+ * and their CSS/JS ride in the same `<template>`, each script under its
+ * own module id, so the runtime runs every one of them once.
  */
 function wrapDeferredModule(
   moduleHtml: string,
   module: Pick<ComposeModule, "moduleId" | "slug" | "css" | "js">,
+  nestedModules: readonly Pick<NestedModuleResource, "moduleId" | "css" | "js">[],
   deferral: ComposeDeferral,
 ): string {
   const attr = (v: string): string =>
     v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
-  const css =
-    module.css.trim().length > 0 ? `<style data-source="module">${module.css}</style>` : "";
-  const js =
-    module.js.trim().length > 0
-      ? `<script type="text/plain" data-caelo-deferred-script="${attr(module.moduleId)}">${module.js}</script>`
-      : "";
+  const gated = [module, ...nestedModules];
+  const css = gated
+    .filter((g) => g.css.trim().length > 0)
+    .map((g) => `<style data-source="module">${g.css}</style>`)
+    .join("");
+  const js = gated
+    .filter((g) => g.js.trim().length > 0)
+    .map(
+      (g) =>
+        `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}">${g.js}</script>`,
+    )
+    .join("");
   return [
     `<div data-caelo-deferred="${attr(deferral.pluginSlug)}" data-reason="${attr(deferral.reason)}" data-module="${attr(module.slug)}">`,
     `<div data-caelo-deferred-placeholder>${deferral.placeholderHtml}</div>`,
@@ -753,6 +766,9 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   //    no head/body manipulation here — that belongs to the layout).
   const templateContentByName = new Map<string, string>();
   const renderPlaced = (blockName: string, m: ComposeModule): string => {
+    const deferral = input.deferredModules?.[m.moduleId];
+    // Nested modules rendered inside THIS placement when it is withheld.
+    const gatedNestedIds = new Set<string>();
     const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
     let baseHtml: string;
     if (navMenuItems !== null) {
@@ -763,24 +779,37 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
       baseHtml = rendered.html;
       recordFailures(moduleFailures, blockName, m, rendered.failures);
       for (const id of rendered.nestedModuleIds) {
-        const deferral = input.deferredModules?.[id];
-        if (deferral) {
+        const nestedDeferral = input.deferredModules?.[id];
+        if (nestedDeferral) {
           const nestedSlug = input.nestedModules?.getModule(id)?.slug ?? id;
           throw new ComposeError(
             "nested-module-deferred",
-            `module "${nestedSlug}" is withheld by plugin "${deferral.pluginSlug}" (${deferral.reason}) but sits inside module "${m.slug}" in block "${blockName}", where it cannot be gated — ` +
+            `module "${nestedSlug}" is withheld by plugin "${nestedDeferral.pluginSlug}" (${nestedDeferral.reason}) but sits inside module "${m.slug}" in block "${blockName}", where it cannot be gated — ` +
               "place it on the page directly instead of inside another module's field",
             input.layoutSlug,
           );
         }
-        nestedAssetIds.push(id);
+        // Inside a withheld parent the nested module is withheld too:
+        // its CSS/JS go into the parent's <template>, never the page-wide
+        // bundles, or its `fetch()` / `url(…)` would run before consent.
+        if (deferral) {
+          if (id !== m.moduleId) gatedNestedIds.add(id);
+        } else {
+          nestedAssetIds.push(id);
+        }
       }
     }
     const tagged = tagModuleId(baseHtml, m.moduleId);
-    const deferral = input.deferredModules?.[m.moduleId];
     if (!deferral) return tagged;
     deferredCss.set(deferral.placeholderModuleSlug, deferral.placeholderCss);
-    return wrapDeferredModule(tagged, m, deferral);
+    const gatedNested = [...gatedNestedIds].map((id) => {
+      const nested = input.nestedModules?.getModule(id);
+      // renderModuleFields resolved every id it reports through this
+      // same resolver; an unresolvable one here is a broken resolver.
+      if (!nested) throw new Error(`nested module ${id} rendered but not resolvable`);
+      return nested;
+    });
+    return wrapDeferredModule(tagged, m, gatedNested, deferral);
   };
   // A withheld module's CSS/JS travel inside its <template> (see
   // wrapDeferredModule); only modules that render normally feed the
