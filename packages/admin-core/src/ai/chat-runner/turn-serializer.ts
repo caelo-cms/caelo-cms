@@ -138,8 +138,9 @@ export interface ChatTurnSerializerOptions {
 function positiveIntFromEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined) return fallback;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  // Digits only: parseInt would read "1e3" as 1 and "1.5" as 1.
+  const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new Error(`${name} must be a positive integer of milliseconds, got "${raw}"`);
   }
   return parsed;
@@ -197,10 +198,24 @@ export class ChatTurnSerializer {
     abortSignal?: AbortSignal;
   }): Promise<ChatTurnAcquireResult> {
     const { chatSessionId, store, abortSignal } = args;
-    const startedAt = Date.now();
+    const deadline = Date.now() + this.waitTimeoutMs;
+    const busy = (heldSince: string | null): ChatTurnAcquireResult => {
+      const since = heldSince ? ` (running since ${heldSince})` : "";
+      return {
+        kind: "busy",
+        message:
+          `This chat is still answering an earlier message${since}, and it did not finish ` +
+          `within ${Math.round(this.waitTimeoutMs / 1000)} seconds. Your message was NOT sent, ` +
+          "so the conversation stays in order. Wait for the current answer to finish (or stop " +
+          "it), then send the message again.",
+      };
+    };
 
     // 1. In-process FIFO. `tail` resolves once every earlier local turn AND
-    // this one let go, so the chain stays intact whichever way we exit.
+    // this one let go. The map entry is dropped only when `tail` itself
+    // resolved: a waiter that gives up early (abort, wait bound) resolves
+    // `mine`, but a turn arriving after it must still queue behind the
+    // earlier turns that are running.
     const previous = this.tails.get(chatSessionId) ?? Promise.resolve();
     let releaseLocal!: () => void;
     const mine = new Promise<void>((resolve) => {
@@ -208,104 +223,141 @@ export class ChatTurnSerializer {
     });
     const tail = previous.then(() => mine);
     this.tails.set(chatSessionId, tail);
+    void tail.then(() => {
+      if (this.tails.get(chatSessionId) === tail) this.tails.delete(chatSessionId);
+    });
     let localReleased = false;
     const letGoLocally = (): void => {
       if (localReleased) return;
       localReleased = true;
       releaseLocal();
-      if (this.tails.get(chatSessionId) === tail) this.tails.delete(chatSessionId);
     };
 
-    const previousDone = await Promise.race([
-      previous.then(() => true),
-      new Promise<false>((resolve) => {
-        if (abortSignal?.aborted) resolve(false);
-        abortSignal?.addEventListener("abort", () => resolve(false), { once: true });
-      }),
-    ]);
-    if (!previousDone) {
+    let stopWaiting!: (outcome: "aborted" | "timeout") => void;
+    const gaveUp = new Promise<"aborted" | "timeout">((resolve) => {
+      stopWaiting = resolve;
+    });
+    const onAbort = (): void => stopWaiting("aborted");
+    if (abortSignal?.aborted) stopWaiting("aborted");
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
+    const waitTimer = setTimeout(() => stopWaiting("timeout"), this.waitTimeoutMs);
+    const localOutcome = await Promise.race([previous.then(() => "ready" as const), gaveUp]);
+    clearTimeout(waitTimer);
+    abortSignal?.removeEventListener("abort", onAbort);
+    if (localOutcome !== "ready") {
       letGoLocally();
-      return { kind: "aborted" };
+      return localOutcome === "aborted" ? { kind: "aborted" } : busy(null);
     }
 
-    // 2. Cross-instance lease. Only the local queue's head gets here.
+    // 2. Cross-instance lease. Only the local queue's head gets here. Any
+    // throw from the store frees the local queue — otherwise every later
+    // turn of this chat on this instance would wait forever.
     const holderId = crypto.randomUUID();
-    const deadline = startedAt + this.waitTimeoutMs;
-    let pollMs = this.pollMinMs;
-    for (;;) {
-      if (abortSignal?.aborted) {
-        letGoLocally();
-        return { kind: "aborted" };
+    let lastRenewOkAt = 0;
+    const releaseQuietly = async (): Promise<void> => {
+      try {
+        await store.release({ chatSessionId, holderId });
+      } catch {
+        // The lease lapses after its TTL; the next turn takes it over.
       }
-      const claim = await store.acquire({ chatSessionId, holderId, ttlMs: this.leaseTtlMs });
-      if (!claim.ok) {
-        letGoLocally();
-        return {
-          kind: "failed",
-          message:
-            `Could not reserve this chat for the new message (${claim.message}). ` +
-            "Nothing was sent; send the message again.",
-        };
-      }
-      if (claim.acquired) {
-        if (claim.tookOverExpiredHolderId !== null) {
-          // A previous turn's instance stopped renewing (crash, freeze).
-          console.error("[chat-runner] turn lease taken over after it lapsed", {
-            chatSessionId,
-            previousHolderId: claim.tookOverExpiredHolderId,
-          });
+    };
+    try {
+      let pollMs = this.pollMinMs;
+      for (;;) {
+        if (abortSignal?.aborted) {
+          letGoLocally();
+          return { kind: "aborted" };
         }
-        break;
+        // Measured BEFORE the claim: the lease's expiry is at least this + TTL.
+        const claimStartedAt = Date.now();
+        const claim = await store.acquire({ chatSessionId, holderId, ttlMs: this.leaseTtlMs });
+        if (!claim.ok) {
+          letGoLocally();
+          return {
+            kind: "failed",
+            message:
+              `Could not reserve this chat for the new message (${claim.message}). ` +
+              "Nothing was sent; send the message again.",
+          };
+        }
+        if (claim.acquired) {
+          if (claim.tookOverExpiredHolderId !== null) {
+            // A previous turn's instance stopped renewing (crash, freeze).
+            console.error("[chat-runner] turn lease taken over after it lapsed", {
+              chatSessionId,
+            });
+          }
+          if (abortSignal?.aborted) {
+            // Aborted while the claim was in flight: hand the chat straight back.
+            await releaseQuietly();
+            letGoLocally();
+            return { kind: "aborted" };
+          }
+          lastRenewOkAt = claimStartedAt;
+          break;
+        }
+        if (Date.now() >= deadline) {
+          letGoLocally();
+          return busy(claim.heldSince);
+        }
+        const slept = await abortableSleep(
+          Math.min(pollMs, Math.max(1, deadline - Date.now())),
+          abortSignal,
+        );
+        if (!slept) {
+          letGoLocally();
+          return { kind: "aborted" };
+        }
+        pollMs = Math.min(pollMs * 2, this.pollMaxMs);
       }
-      if (Date.now() >= deadline) {
-        letGoLocally();
-        const since = claim.heldSince ? ` (running since ${claim.heldSince})` : "";
-        return {
-          kind: "busy",
-          message:
-            `This chat is still answering an earlier message${since}, and it did not finish ` +
-            `within ${Math.round(this.waitTimeoutMs / 1000)} seconds. Your message was NOT sent, ` +
-            "so the conversation stays in order. Wait for the current answer to finish (or stop " +
-            "it), then send the message again.",
-        };
-      }
-      const slept = await abortableSleep(
-        Math.min(pollMs, Math.max(1, deadline - Date.now())),
-        abortSignal,
-      );
-      if (!slept) {
-        letGoLocally();
-        return { kind: "aborted" };
-      }
-      pollMs = Math.min(pollMs * 2, this.pollMaxMs);
+    } catch {
+      console.error("[chat-runner] turn lease claim threw", { chatSessionId });
+      await releaseQuietly();
+      letGoLocally();
+      return {
+        kind: "failed",
+        message:
+          "Could not reserve this chat for the new message (the database did not answer). " +
+          "Nothing was sent; send the message again.",
+      };
     }
 
-    // 3. Heartbeat. A failed renew is retried on the next beat (the TTL
-    // leaves three more); a renew that finds the lease gone means another
-    // turn took the chat over — stop this one.
+    // 3. Heartbeat. A failed renew is retried on the next beat. But once no
+    // renew has SUCCEEDED for all but two beats of the TTL, the lease could
+    // lapse before a late beat lands and another instance could take the
+    // chat: stop this turn first (`lost`), so the two never write at once.
+    // Two beats of margin, not one, so a busy event loop delaying a timer
+    // does not eat the whole margin.
+    // A renew that finds the lease gone means that already happened.
     const lost = new AbortController();
+    const loseLease = (reason: string): void => {
+      if (lost.signal.aborted) return;
+      console.error(`[chat-runner] turn lease ${reason}; stopping the turn`, { chatSessionId });
+      lost.abort(new Error(`chat turn lease ${reason}`));
+    };
     let renewing = false;
     const heartbeat = setInterval(() => {
-      if (renewing || lost.signal.aborted) return;
+      if (lost.signal.aborted) return;
+      if (Date.now() - lastRenewOkAt > this.leaseTtlMs - 2 * this.heartbeatMs) {
+        loseLease("could not be renewed in time");
+        return;
+      }
+      if (renewing) return;
       renewing = true;
+      const renewStartedAt = Date.now();
       store
         .renew({ chatSessionId, holderId, ttlMs: this.leaseTtlMs })
         .then((r) => {
           if (!r.ok) {
-            console.error("[chat-runner] turn lease renew failed", {
-              chatSessionId,
-              error: r.message,
-            });
+            console.error("[chat-runner] turn lease renew failed", { chatSessionId });
           } else if (!r.held) {
-            console.error("[chat-runner] turn lease lost mid-turn; stopping the turn", {
-              chatSessionId,
-              holderId,
-            });
-            lost.abort(new Error("chat turn lease lost"));
+            loseLease("lost mid-turn");
+          } else {
+            lastRenewOkAt = Math.max(lastRenewOkAt, renewStartedAt);
           }
         })
-        .catch((e: unknown) => {
-          console.error("[chat-runner] turn lease renew threw", { chatSessionId, error: e });
+        .catch(() => {
+          console.error("[chat-runner] turn lease renew threw", { chatSessionId });
         })
         .finally(() => {
           renewing = false;
@@ -325,13 +377,10 @@ export class ChatTurnSerializer {
             const r = await store.release({ chatSessionId, holderId });
             if (!r.ok) {
               // The lease lapses after its TTL; the next turn then takes it over.
-              console.error("[chat-runner] turn lease release failed", {
-                chatSessionId,
-                error: r.message,
-              });
+              console.error("[chat-runner] turn lease release failed", { chatSessionId });
             }
-          } catch (e) {
-            console.error("[chat-runner] turn lease release threw", { chatSessionId, error: e });
+          } catch {
+            console.error("[chat-runner] turn lease release threw", { chatSessionId });
           } finally {
             letGoLocally();
           }

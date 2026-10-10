@@ -83,10 +83,10 @@ export async function* runChatTurn(
     return;
   }
   if (acquired.kind !== "held") {
+    // The reason code only: the message can carry store/op error text.
     console.error("[chat-runner] turn not started", {
       chatSessionId: input.chatSessionId,
       reason: acquired.kind,
-      message: acquired.message,
     });
     yield { kind: "error", message: acquired.message };
     yield { kind: "done" };

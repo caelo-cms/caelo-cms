@@ -217,3 +217,137 @@ describe("ChatTurnSerializer — two instances sharing one lease store (issue #6
     if (r.kind === "failed") expect(r.message).toContain("db down");
   });
 });
+
+describe("ChatTurnSerializer — PR #631 review findings", () => {
+  // Renew-failure cases: a TTL long enough that timer jitter under a loaded
+  // test run cannot eat the two-beat safety margin.
+  const RENEW: ChatTurnSerializerOptions = { ...FAST, leaseTtlMs: 1_000, heartbeatMs: 100 };
+
+  it("a store that THROWS on acquire frees the local queue (no hang for later turns)", async () => {
+    const store = new MemoryLeaseStore();
+    const realAcquire = store.acquire.bind(store);
+    let throwOnce = true;
+    store.acquire = async (args) => {
+      if (throwOnce) {
+        throwOnce = false;
+        throw new Error("connection reset");
+      }
+      return realAcquire(args);
+    };
+    const s = new ChatTurnSerializer(FAST);
+    const r = await s.acquire({ chatSessionId: "chat-throw", store });
+    expect(r.kind).toBe("failed");
+    if (r.kind === "failed") expect(r.message).toContain("Nothing was sent");
+    const next = await Promise.race([
+      hold(s, store, "chat-throw"),
+      Bun.sleep(1_000).then(() => null),
+    ]);
+    expect(next).not.toBeNull();
+    await next?.release();
+  });
+
+  it("stops the turn before its lease can lapse when renewals keep failing", async () => {
+    const store = new MemoryLeaseStore();
+    store.renew = async () => ({ ok: false as const, message: "db unreachable" });
+    const startedAt = Date.now();
+    const h = await hold(new ChatTurnSerializer(RENEW), store, "chat-renew-fail");
+    await Bun.sleep(500);
+    expect(h.lost.aborted).toBe(false);
+    while (!h.lost.aborted && Date.now() - startedAt < 2_000) await Bun.sleep(5);
+    // Lost strictly before the lease would lapse for another instance.
+    expect(h.lost.aborted).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(RENEW.leaseTtlMs as number);
+    await h.release();
+  });
+
+  it("stops the turn in time when a renew hangs or throws", async () => {
+    for (const renew of [
+      () => new Promise<never>(() => undefined),
+      async () => {
+        throw new Error("socket closed");
+      },
+    ]) {
+      const store = new MemoryLeaseStore();
+      store.renew = renew;
+      const startedAt = Date.now();
+      const h = await hold(new ChatTurnSerializer(RENEW), store, "chat-renew-hang");
+      while (!h.lost.aborted && Date.now() - startedAt < 2_000) await Bun.sleep(5);
+      expect(h.lost.aborted).toBe(true);
+      expect(Date.now() - startedAt).toBeLessThan(RENEW.leaseTtlMs as number);
+      await h.release();
+    }
+  });
+
+  it("an abort that fires while the claim is in flight releases the lease and holds nothing", async () => {
+    const store = new MemoryLeaseStore();
+    const realAcquire = store.acquire.bind(store);
+    let openGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      openGate = r;
+    });
+    let claimStarted!: () => void;
+    const claimInFlight = new Promise<void>((r) => {
+      claimStarted = r;
+    });
+    store.acquire = async (args) => {
+      claimStarted();
+      await gate;
+      return realAcquire(args);
+    };
+    const s = new ChatTurnSerializer(FAST);
+    const ctl = new AbortController();
+    const pending = s.acquire({
+      chatSessionId: "chat-abort-claim",
+      store,
+      abortSignal: ctl.signal,
+    });
+    await claimInFlight;
+    ctl.abort();
+    openGate();
+    expect((await pending).kind).toBe("aborted");
+    expect(store.leases.size).toBe(0);
+    store.acquire = realAcquire;
+    const next = await hold(s, store, "chat-abort-claim");
+    await next.release();
+  });
+
+  it("bounds the local queue wait too, and a later turn still queues behind the running one", async () => {
+    const store = new MemoryLeaseStore();
+    const s = new ChatTurnSerializer({ ...FAST, waitTimeoutMs: 300 });
+    const order: string[] = [];
+    const a = await hold(s, store, "chat-local-bound");
+    const startedAt = Date.now();
+    const b = await s.acquire({ chatSessionId: "chat-local-bound", store });
+    expect(b.kind).toBe("busy");
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(290);
+    // C arrives after B gave up: it must wait for A, not slip in front of it.
+    const c = s.acquire({ chatSessionId: "chat-local-bound", store }).then((r) => {
+      order.push(`C ${r.kind}`);
+      return r;
+    });
+    await Bun.sleep(80);
+    expect(order).toEqual([]);
+    order.push("A end");
+    await a.release();
+    const rc = await c;
+    expect(order).toEqual(["A end", "C held"]);
+    if (rc.kind === "held") await rc.hold.release();
+  });
+
+  it("rejects non-integer env values instead of misreading them", () => {
+    const saved = process.env.CAELO_CHAT_TURN_WAIT_MS;
+    try {
+      for (const bad of ["1e3", "1.5", "-5", "0", "15s", ""]) {
+        process.env.CAELO_CHAT_TURN_WAIT_MS = bad;
+        expect(() => new ChatTurnSerializer({ leaseTtlMs: 1_000 })).toThrow(
+          "CAELO_CHAT_TURN_WAIT_MS",
+        );
+      }
+      process.env.CAELO_CHAT_TURN_WAIT_MS = "1500";
+      expect(() => new ChatTurnSerializer({ leaseTtlMs: 1_000 })).not.toThrow();
+    } finally {
+      if (saved === undefined) delete process.env.CAELO_CHAT_TURN_WAIT_MS;
+      else process.env.CAELO_CHAT_TURN_WAIT_MS = saved;
+    }
+  });
+});
