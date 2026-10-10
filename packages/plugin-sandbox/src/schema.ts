@@ -254,36 +254,61 @@ export function adminSchemaFromSpec(opts: {
     );
   }
 
-  stmts.push(gatewayReadGrants(schemaName, Object.keys(opts.adminSchema), opts.visitorReadable));
+  stmts.push(gatewayReadGrants(schemaName, opts.adminSchema, opts.visitorReadable));
 
   return { schemaName, sql: stmts.join("\n\n") };
 }
 
 /**
- * Issue #613 — grant (or revoke) the API gateway's read access to a plugin's
- * private tables. Guarded on the role existing: a database bootstrapped
- * before `gateway_role` (migration 0248) still provisions plugins.
+ * The columns the gateway may read on a private table: its id, the declared
+ * columns and the host columns private-storage reads filter on. Exported
+ * so the storage read (plugin-host `privateList`) selects exactly these.
+ */
+export function gatewayReadableColumns(columns: Readonly<Record<string, string>>): string[] {
+  return [
+    ...new Set([
+      "id",
+      ...Object.keys(columns),
+      ...PRIVATE_HOST_COLUMN_DEFS.map((d) => d.split(" ")[0] as string),
+    ]),
+  ];
+}
+
+/**
+ * Issue #613 — the API gateway's read access to a plugin's private tables,
+ * recomputed from the CURRENT spec on every provisioning: everything the
+ * role held on the schema is revoked first (revoking on a table also
+ * revokes its column privileges), then SELECT is granted column by column
+ * on the declared tables only. A table or column a plugin update dropped
+ * from its spec stays physically (evolution is additive) but is no longer
+ * readable by the gateway. Guarded on the role existing: a database
+ * bootstrapped before `gateway_role` (migration 0248) still provisions.
  */
 function gatewayReadGrants(
   schemaName: string,
-  tables: readonly string[],
+  adminSchema: PluginSchemaMap,
   visitorReadable: boolean | undefined,
 ): string {
   const schema = quoteIdent(schemaName);
-  const body = visitorReadable
+  const revoke = [
+    `    REVOKE ALL ON ALL TABLES IN SCHEMA ${schema} FROM gateway_role;`,
+    `    REVOKE ALL ON SCHEMA ${schema} FROM gateway_role;`,
+  ];
+  const grant = visitorReadable
     ? [
         `    GRANT USAGE ON SCHEMA ${schema} TO gateway_role;`,
-        ...tables.map((t) => `    GRANT SELECT ON ${schema}.${quoteIdent(t)} TO gateway_role;`),
+        ...Object.entries(adminSchema).map(
+          ([t, columns]) =>
+            `    GRANT SELECT (${gatewayReadableColumns(columns).map(quoteIdent).join(", ")}) ON ${schema}.${quoteIdent(t)} TO gateway_role;`,
+        ),
       ]
-    : [
-        `    REVOKE ALL ON ALL TABLES IN SCHEMA ${schema} FROM gateway_role;`,
-        `    REVOKE ALL ON SCHEMA ${schema} FROM gateway_role;`,
-      ];
+    : [];
   return [
     "DO $caelo_gateway$",
     "BEGIN",
     "  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') THEN",
-    ...body,
+    ...revoke,
+    ...grant,
     "  END IF;",
     "END",
     "$caelo_gateway$;",

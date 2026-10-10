@@ -41,7 +41,6 @@ import {
   syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
-import { databaseUrlFromEnv } from "@caelo-cms/shared";
 // Read SQL via globalThis.Bun rather than a value-import of "bun".
 // The type-only import is erased at compile; the runtime constructor
 // comes from Bun's globals. Keeps this file bundler-safe for any
@@ -55,6 +54,7 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
 ) => SQLType;
 
 import { handleVariantAssign, VARIANT_SCRIPT } from "./ab-router.js";
+import { GATEWAY_DATABASE_ROLES, gatewayDatabaseUrls } from "./database-env.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
 import {
   type CaptchaConfig,
@@ -73,50 +73,12 @@ import {
 } from "./middleware/rate-limit.js";
 import { signCookieValue, verifySignedCookie } from "./middleware/signed-cookie.js";
 
-/**
- * Env vars that would hand the gateway an admin_role credential. The
- * gateway refuses to boot while any is set (CLAUDE.md §2: never let the API
- * Gateway hold admin_role credentials) — an install whose env still carries
- * one has not converged, and running anyway would hide that.
- */
-export const ADMIN_CREDENTIAL_ENV = [
-  "ADMIN_DATABASE_URL",
-  "ADMIN_DATABASE_PASSWORD",
-  "PUBLIC_ADMIN_DATABASE_URL",
-  "PUBLIC_ADMIN_DATABASE_PASSWORD",
-] as const;
+export {
+  ADMIN_CREDENTIAL_ENV,
+  GATEWAY_DATABASE_ROLES,
+  gatewayDatabaseUrls,
+} from "./database-env.js";
 
-/** The database roles the gateway's two pools must connect as. */
-export const GATEWAY_DATABASE_ROLES = {
-  admin: "gateway_role",
-  public: ["public_role"],
-} as const;
-
-/**
- * The gateway's connection URLs: `GATEWAY_DATABASE_URL` (gateway_role on
- * cms_admin) and `PUBLIC_DATABASE_URL` (public_role on cms_public), each
- * with its `_PASSWORD` companion applied. Throws, naming what is wrong,
- * when an admin credential is present or either URL is missing.
- */
-export function gatewayDatabaseUrls(env: Readonly<Record<string, string | undefined>>): {
-  readonly gateway: string;
-  readonly public: string;
-} {
-  const leaked = ADMIN_CREDENTIAL_ENV.filter((name) => env[name]);
-  if (leaked.length > 0) {
-    throw new Error(
-      `the API gateway must not hold admin_role credentials (CLAUDE.md §2) but ${leaked.join(", ")} ${leaked.length === 1 ? "is" : "are"} set. Remove ${leaked.length === 1 ? "it" : "them"} from the gateway's environment; it connects as gateway_role (GATEWAY_DATABASE_URL) and public_role (PUBLIC_DATABASE_URL). Cloud installs: run \`cms-provision upgrade\`.`,
-    );
-  }
-  const gateway = databaseUrlFromEnv(["GATEWAY_DATABASE_URL"], env);
-  const pub = databaseUrlFromEnv(["PUBLIC_DATABASE_URL"], env);
-  const missing = [
-    ...(gateway ? [] : ["GATEWAY_DATABASE_URL (gateway_role on cms_admin)"]),
-    ...(pub ? [] : ["PUBLIC_DATABASE_URL (public_role on cms_public)"]),
-  ];
-  if (!gateway || !pub) throw new Error(`the API gateway needs ${missing.join(" and ")}`);
-  return { gateway, public: pub };
-}
 const SYSTEM_ACTOR_ID = process.env.CAELO_SYSTEM_ACTOR_ID ?? "00000000-0000-0000-0000-00000000ffff";
 // Cloud Run sets PORT=8080 on every container; read that first so a
 // platform deploy needs no extra config. GATEWAY_PORT is the historical
@@ -252,6 +214,41 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
 /** The gateway cannot serve yet; answered as 503 with the reason. */
 export class GatewayNotReadyError extends Error {
   override readonly name = "GatewayNotReadyError";
+}
+
+/**
+ * The 503 for settings that could not be loaded. Only the gateway's own
+ * readiness reason ({@link GatewayNotReadyError}) reaches the caller; any
+ * other failure (an unreachable database, a refused login, a broken query)
+ * would hand an unauthenticated visitor hosts, role names or SQL, so it is
+ * logged here and the visitor gets a generic message.
+ */
+export function settingsUnavailable(e: unknown): Response {
+  if (e instanceof GatewayNotReadyError) {
+    return jsonResponse(
+      { ok: false, error: { kind: "ServiceUnavailable", message: e.message } },
+      { status: 503 },
+    );
+  }
+  console.error(`[api-gateway] gateway settings could not be loaded: ${describeFailure(e)}`);
+  return jsonResponse(
+    {
+      ok: false,
+      error: { kind: "ServiceUnavailable", message: "the gateway is temporarily unavailable" },
+    },
+    { status: 503 },
+  );
+}
+
+/**
+ * A failure for the server log: its class, SQLSTATE and message, with the
+ * credentials a connection URL in the message could carry masked.
+ */
+function describeFailure(e: unknown): string {
+  if (!(e instanceof Error)) return "non-Error thrown";
+  const code = (e as { code?: unknown }).code;
+  const message = e.message.replace(/(\w+:\/\/)[^\s@/]*@/g, "$1***@");
+  return `${e.name}${typeof code === "string" ? ` (${code})` : ""}: ${message}`;
 }
 
 export function invalidateGatewaySettings(): void {
@@ -397,10 +394,7 @@ export async function handleRequest(req: Request): Promise<Response> {
   try {
     settings = await loadSettings(cachedAdapter);
   } catch (e) {
-    return jsonResponse(
-      { ok: false, error: { kind: "ServiceUnavailable", message: (e as Error).message } },
-      { status: 503 },
-    );
+    return settingsUnavailable(e);
   }
 
   // ---- Captcha challenge endpoint ----

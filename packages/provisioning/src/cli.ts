@@ -28,6 +28,7 @@ import { generateBootstrapToken } from "./bootstrap-token.js";
 import { type CaddyDomainSpec, generateCaddyfile } from "./caddy.js";
 import { initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
 import { generateDockerCompose, type RolePasswords } from "./compose.js";
+import { convergeSelfHostedRoles, decideUp } from "./self-hosted-roles.js";
 
 interface CaeloConfig {
   domain: string;
@@ -45,9 +46,16 @@ interface CaeloConfig {
   caeloSecretKek?: string;
   /**
    * #613 — one password per application role. Optional in the type so
-   * config.json files from before still load; emitConfig() back-fills.
+   * config.json files from before still load; `up` back-fills them and
+   * applies them to the database before any Compose URL uses them.
    */
   rolePasswords?: RolePasswords;
+  /**
+   * Whether the database's roles are known to carry `rolePasswords`: true
+   * from `init` (bootstrap.sh applies them on the fresh volume's first
+   * start), false for passwords `up` just back-filled, until applied.
+   */
+  rolesConverged?: boolean;
   anthropicApiKey?: string;
   resendApiKey?: string;
 }
@@ -136,8 +144,8 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
     saveConfig(cfg);
   }
   if (!cfg.rolePasswords) {
-    cfg.rolePasswords = newRolePasswords();
-    saveConfig(cfg);
+    // `init` sets them and `up` back-fills + applies them before calling here.
+    throw new Error("config has no rolePasswords — run `cms-provision up`");
   }
   // Generate compose + Caddyfile from the canonical config.
   const compose = generateDockerCompose({
@@ -222,6 +230,8 @@ async function init(): Promise<void> {
     ownerEmail,
     postgresPassword: randomSecret(32),
     rolePasswords: newRolePasswords(),
+    // A fresh volume: bootstrap.sh creates the roles with these on first start.
+    rolesConverged: true,
     minioRootUser: "caelo",
     minioRootPassword: randomSecret(32),
     caeloSecretKek: randomSecret(32),
@@ -271,9 +281,78 @@ async function up(): Promise<void> {
     console.error("no config — run `cms-provision init` first");
     process.exit(2);
   }
+  // #613 — the database roles first, then the Compose URLs that use them.
+  if (!cfg.rolePasswords) {
+    cfg.rolePasswords = newRolePasswords();
+    cfg.rolesConverged = false;
+    saveConfig(cfg);
+  }
+  const decision = decideUp(
+    cfg.rolesConverged ?? false,
+    await convergeSelfHostedRoles(cfg.rolePasswords, {
+      probe: postgresIsUp,
+      psql: superuserPsql,
+    }),
+  );
+  if (decision.kind === "abort") {
+    console.error(decision.error);
+    process.exit(1);
+  }
+  if (decision.warning) console.warn(decision.warning);
+  if (decision.markConverged) {
+    cfg.rolesConverged = true;
+    saveConfig(cfg);
+  }
   emitConfig(cfg, await tryFetchExtraDomains(cfg));
   console.log(`Re-emitted ${COMPOSE_PATH} + ${CADDYFILE_PATH}`);
   console.log("Run `docker compose -f .caelo/docker-compose.yml up -d` to apply.");
+}
+
+/** Whether the install's Postgres container answers (with the CURRENT Compose file). */
+async function postgresIsUp(): Promise<boolean> {
+  if (!existsSync(COMPOSE_PATH)) return false;
+  const proc = Bun.spawn(
+    [
+      "docker",
+      "compose",
+      "-f",
+      COMPOSE_PATH,
+      "exec",
+      "-T",
+      "postgres",
+      "pg_isready",
+      "-U",
+      "caelo",
+    ],
+    { stdout: "ignore", stderr: "ignore" },
+  );
+  return (await proc.exited) === 0;
+}
+
+/** Run a psql script as the superuser inside the Postgres container; the script goes on stdin. */
+async function superuserPsql(script: string): Promise<{ exitCode: number; stderr: string }> {
+  const proc = Bun.spawn(
+    [
+      "docker",
+      "compose",
+      "-f",
+      COMPOSE_PATH,
+      "exec",
+      "-T",
+      "postgres",
+      "psql",
+      "-U",
+      "caelo",
+      "-d",
+      "postgres",
+      "-q",
+      "-f",
+      "-",
+    ],
+    { stdin: new TextEncoder().encode(script), stdout: "ignore", stderr: "pipe" },
+  );
+  const stderr = await new Response(proc.stderr).text();
+  return { exitCode: await proc.exited, stderr };
 }
 
 interface DomainRow {

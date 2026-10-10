@@ -8,6 +8,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   adminSchemaFromSpec,
+  gatewayReadableColumns,
   generateManifestKeyPair,
   schemaFromSpec,
   signManifest,
@@ -390,19 +391,46 @@ describe("the API gateway's read access to private storage (#613)", () => {
     adminSchema: { settings: { label: "string" }, categories: { key: "string" } },
   };
 
-  it("a plugin serving visitors grants gateway_role SELECT only, guarded on the role", () => {
+  it("a plugin serving visitors grants gateway_role SELECT on the declared columns only", () => {
     const { sql } = adminSchemaFromSpec({ ...spec, visitorReadable: true });
     expect(sql).toContain("IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role')");
     expect(sql).toContain('GRANT USAGE ON SCHEMA "plugin_probe" TO gateway_role;');
-    expect(sql).toContain('GRANT SELECT ON "plugin_probe"."settings" TO gateway_role;');
-    expect(sql).toContain('GRANT SELECT ON "plugin_probe"."categories" TO gateway_role;');
+    expect(sql).toContain(
+      'GRANT SELECT ("id", "label", "caelo_chat_branch_id", "caelo_deleted_at", "caelo_version", "caelo_updated_at") ON "plugin_probe"."settings" TO gateway_role;',
+    );
+    expect(sql).toContain('GRANT SELECT ("id", "key", ');
+    // Never table-wide: that would cover columns a later version dropped.
+    expect(sql).not.toMatch(/GRANT SELECT ON [^;]*gateway_role/);
     expect(sql).not.toMatch(/GRANT (INSERT|UPDATE|DELETE)[^;]*gateway_role/);
   });
 
-  it("any other plugin revokes it, so one that stops serving visitors converges", () => {
+  it("recomputes from scratch: every earlier grant is revoked before granting", () => {
+    const { sql } = adminSchemaFromSpec({ ...spec, visitorReadable: true });
+    const revoke = sql.indexOf(
+      'REVOKE ALL ON ALL TABLES IN SCHEMA "plugin_probe" FROM gateway_role;',
+    );
+    expect(revoke).toBeGreaterThan(-1);
+    expect(revoke).toBeLessThan(
+      sql.indexOf('GRANT USAGE ON SCHEMA "plugin_probe" TO gateway_role'),
+    );
+  });
+
+  it("any other plugin only revokes, so one that stops serving visitors converges", () => {
     const { sql } = adminSchemaFromSpec(spec);
     expect(sql).not.toMatch(/GRANT [^;]*gateway_role/);
     expect(sql).toContain('REVOKE ALL ON ALL TABLES IN SCHEMA "plugin_probe" FROM gateway_role;');
+    expect(sql).toContain('REVOKE ALL ON SCHEMA "plugin_probe" FROM gateway_role;');
+  });
+
+  it("gatewayReadableColumns: id, declared, host columns, no duplicates", () => {
+    expect(gatewayReadableColumns({ id: "uuid", label: "string" })).toEqual([
+      "id",
+      "label",
+      "caelo_chat_branch_id",
+      "caelo_deleted_at",
+      "caelo_version",
+      "caelo_updated_at",
+    ]);
   });
 });
 

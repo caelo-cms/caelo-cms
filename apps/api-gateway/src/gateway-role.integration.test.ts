@@ -23,6 +23,7 @@ import {
   resetPluginHost,
   syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
+import { adminSchemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { definePlugin, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
@@ -58,7 +59,11 @@ const fixture = definePlugin({
   version: "1.0.0",
   tier: 1,
   schema: { notes: { id: "uuid", visitor_id: "string", message: "string" } },
-  adminSchema: { settings: { label: "string" } },
+  // `internal_note` and `drafts` are what a later version drops (#613 review).
+  adminSchema: {
+    settings: { label: "string", internal_note: "string" },
+    drafts: { body: "string" },
+  },
   requestedCapabilities: ["cms_admin_schema"],
   publicOperations: ["save", "read_setting"],
   operations: {
@@ -442,5 +447,35 @@ describe("gateway_role reaches nothing else in cms_admin (#613, adversarial)", (
         }[],
     );
     expect(rows[0]?.c).toBe(false);
+  });
+});
+
+describe("a plugin update that drops private columns/tables (#613 review)", () => {
+  /** Whether gateway_role may SELECT a column of the plugin's private schema. */
+  async function canRead(table: string, column: string): Promise<boolean> {
+    const rows = await asAdmin(
+      async (tx) =>
+        (await tx`SELECT has_column_privilege('gateway_role', ${`${SCHEMA}.${table}`}, ${column}, 'SELECT') AS c`) as {
+          c: boolean;
+        }[],
+    );
+    return rows[0]?.c ?? false;
+  }
+
+  it("re-provisioning revokes what the new spec no longer declares, keeps what it does", async () => {
+    expect(await canRead("settings", "internal_note")).toBe(true);
+    expect(await canRead("drafts", "body")).toBe(true);
+    // The new version: `internal_note` and `drafts` are gone from the spec
+    // but stay physically (schema evolution is additive).
+    const next = adminSchemaFromSpec({
+      pluginId,
+      slug: SLUG,
+      adminSchema: { settings: { label: "string" } },
+      visitorReadable: true,
+    });
+    await adminAdapter.provisionPluginAdminSchema({ pluginId, sql: next.sql });
+    expect(await canRead("settings", "label")).toBe(true);
+    expect(await canRead("settings", "internal_note")).toBe(false);
+    expect(await canRead("drafts", "body")).toBe(false);
   });
 });

@@ -19,6 +19,7 @@
  * main and on a branch (the overlay comes from JSON snapshots).
  */
 
+import { gatewayReadableColumns } from "@caelo-cms/plugin-sandbox";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -403,10 +404,28 @@ function notFound(operation: string, rowId: string): { ok: false; message: strin
   };
 }
 
+/**
+ * A row as JSON built from named columns only — never `to_jsonb(t)`, whose
+ * whole-row reference needs SELECT on every physical column. The API
+ * gateway's role may read just the declared columns (plugin-sandbox
+ * `gatewayReadableColumns`, #613), and a column a plugin update dropped from
+ * its spec must not come back in a list either. `jsonb_build_object` takes
+ * at most 100 arguments, so the pairs are built in chunks and merged.
+ */
+function declaredRowJson(columns: Readonly<Record<string, string>>) {
+  const names = gatewayReadableColumns(columns);
+  const chunks: ReturnType<typeof sql>[] = [];
+  for (let i = 0; i < names.length; i += 40) {
+    const pairs = names.slice(i, i + 40).map((n) => sql`${n}::text, t.${col(n)}`);
+    chunks.push(sql`jsonb_build_object(${sql.join(pairs, sql`, `)})`);
+  }
+  return sql.join(chunks, sql` || `);
+}
+
 export async function privateList(
   tx: TransactionRunner,
   ctx: ExecutionContext,
-  t: Target,
+  t: Target & { readonly columns: Readonly<Record<string, string>> },
   plan: ListPlan,
 ): Promise<Record<string, unknown>[]> {
   const overlay =
@@ -434,7 +453,7 @@ export async function privateList(
     ? sql.raw(`ORDER BY t."${plan.orderBy}" ${plan.orderDir.toUpperCase()}`)
     : sql.raw("");
   const rows = (await tx.execute(sql`
-    SELECT to_jsonb(t) AS row FROM ${table(t)} t
+    SELECT ${declaredRowJson(t.columns)} AS row FROM ${table(t)} t
     WHERE ${sql.join(wheres, sql` AND `)} ${orderSql} ${sql.raw(`LIMIT ${plan.limit}`)}
   `)) as unknown as { row: Record<string, unknown> }[];
   const main = rows.map((r) => rowToState(r.row).values);
