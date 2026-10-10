@@ -26,6 +26,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { PERMISSIONS } from "../permissions.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -227,6 +228,20 @@ describe("#569 branch visibility", () => {
     expectBranchNotFound(r, "not-a-uuid");
   });
 
+  it("answers a malformed INPUT branch as not found too, not as a schema failure", async () => {
+    // `?branch=not-a-uuid` on /edit/preview reaches render_preview's input,
+    // whose schema would reject it before the adapter gate (review on #632).
+    const r = await execute(registry, adapter, editorB, "pages.render_preview", {
+      pageId,
+      chatBranchId: "not-a-uuid",
+    });
+    expectBranchNotFound(r, "not-a-uuid");
+    const ghost = crypto.randomUUID();
+    const unknown = await preview(editorB, ghost);
+    const msg = (x: { error?: unknown }) => (x.error as { message: string }).message;
+    expect(msg(r).replace("not-a-uuid", "<id>")).toBe(msg(unknown).replace(ghost, "<id>"));
+  });
+
   it("shows the shared draft to every editor", async () => {
     expect((await preview(editorB, draftA.branch)).ok).toBe(true);
     expect((await preview(editorA, chatB.branch)).ok).toBe(true);
@@ -236,6 +251,36 @@ describe("#569 branch visibility", () => {
     const r = await preview(owner, experimentA.branch);
     expect(r.ok).toBe(true);
     expect((r.value as { html: string }).html).toContain("secret experiment");
+  });
+
+  it("still answers a nonexistent branch as not found for the Owner", async () => {
+    // drafts.view_all opens existing branches only (review on #632).
+    const ghost = crypto.randomUUID();
+    expectBranchNotFound(await preview(owner, ghost), ghost);
+    const listed = await execute(
+      registry,
+      adapter,
+      { ...owner, chatBranchId: ghost },
+      "pages.list",
+      {},
+    );
+    expectBranchNotFound(listed, ghost);
+  });
+
+  it("keeps drafts.view_all grantable: in PERMISSIONS, in the DB, accepted by roles.create", async () => {
+    // roles.create and the pending-role ops validate against PERMISSIONS, so
+    // a DB-only permission could never be granted to a custom role.
+    expect(PERMISSIONS as readonly string[]).toContain("drafts.view_all");
+    const rows = await asSystem(
+      async (tx) => (await tx`SELECT name FROM permissions ORDER BY name`) as { name: string }[],
+    );
+    expect(rows.map((r) => r.name)).toEqual([...PERMISSIONS].sort());
+    const created = await op<{ roleId: string }>(owner, "roles.create", {
+      name: `${PFX}drafts-reviewer`,
+      description: "reviews every draft",
+      permissions: ["content.read", "drafts.view_all"],
+    });
+    expect(typeof created.roleId).toBe("string");
   });
 
   it("gives the AI in a chat exactly what the chat's owner may see", async () => {

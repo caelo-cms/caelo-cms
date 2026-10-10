@@ -121,6 +121,13 @@ test("another editor's isolated branch preview is a 404", async ({ page }) => {
     `/edit/preview/${seed.pageId}?branch=${crypto.randomUUID()}`,
   );
   expect(ghost.status()).toBe(404);
+  // A malformed id is "not found" too, not a validation error.
+  const malformed = await page.request.get(`/edit/preview/${seed.pageId}?branch=not-a-uuid`);
+  expect(malformed.status()).toBe(404);
+  const malformedByPath = await page.request.get(
+    `/edit/preview-by-path/${seed.slug}?branch=not-a-uuid`,
+  );
+  expect(malformedByPath.status()).toBe(404);
   // The shared draft is everyone's.
   const draft = await page.request.get(`/edit/preview/${seed.pageId}?branch=${seed.draft}`);
   expect(draft.status()).toBe(200);

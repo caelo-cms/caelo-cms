@@ -55,6 +55,16 @@ export function branchNotFound(operation: string, chatBranchId: string): QueryEr
 }
 
 /**
+ * The first named branch that is not even shaped like a branch id, or
+ * null. `execute()` answers it as {@link branchNotFound} BEFORE the op's
+ * Zod schema runs: otherwise `?branch=not-a-uuid` would come back as a
+ * validation failure and be distinguishable from "not found".
+ */
+export function firstMalformedBranch(branches: readonly string[]): string | null {
+  return branches.find((b) => !UUID_RE.test(b)) ?? null;
+}
+
+/**
  * Check the branches a call names against the caller, inside the call's
  * transaction (the `caelo.*` session vars are already set). Returns the
  * first branch the caller may not see, or null when all are visible.

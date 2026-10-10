@@ -3,6 +3,7 @@
 import type { ExecutionContext, Result } from "@caelo-cms/shared";
 import { err, isErr } from "@caelo-cms/shared";
 import type { DatabaseAdapter } from "./adapter.js";
+import { branchNotFound, firstMalformedBranch, namedBranches } from "./branch-access.js";
 import type { QueryError } from "./errors.js";
 import type { OperationRegistry } from "./registry.js";
 
@@ -31,7 +32,8 @@ export interface ExecuteOptions {
 /**
  * Top-level Query API entry point. No other path reaches the database.
  *
- *   lookup op → scope-check actor → rate-limit → zod-validate input → adapter runs it in a txn
+ *   lookup op → scope-check actor → rate-limit → malformed-branch check →
+ *   zod-validate input → adapter runs it in a txn (branch-visibility gate first)
  *
  * Any step can fail and returns a Result.Err without throwing. A thrown error
  * here is always a real bug (registry corrupt, adapter connection gone).
@@ -59,6 +61,12 @@ export async function execute(
   const limiter = options.rateLimiter ?? allowAllRateLimiter;
   const limiterVerdict = await limiter.check(ctx, name);
   if (limiterVerdict !== null) return err(limiterVerdict);
+
+  // Issue #569 — a malformed branch id names no branch: answer it exactly
+  // like an unknown or invisible one (the adapter's check), not as a
+  // schema failure that would tell the two apart.
+  const malformed = firstMalformedBranch(namedBranches(ctx, rawInput));
+  if (malformed !== null) return err(branchNotFound(name, malformed));
 
   const parsed = op.input.safeParse(rawInput);
   if (!parsed.success) {

@@ -29,8 +29,11 @@
 --     server-built the same way (mcp.send_chat binds it to a session it
 --     verified first).
 --
--- A branch that does not exist is not visible to anyone but the trusted
--- actors above, so "not yours" and "does not exist" are indistinguishable.
+-- A branch that does not exist (no chat is bound to it and it is not the
+-- draft) is not visible to any human or chat AI — `drafts.view_all`
+-- included — so "not yours" and "does not exist" are indistinguishable.
+-- The trusted actors above skip the lookup: they only ever carry a branch
+-- the server resolved itself.
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
@@ -80,11 +83,17 @@ CREATE FUNCTION caelo_branch_visible(branch uuid) RETURNS boolean
         WHERE cs.chat_branch_id = branch
           AND cs.created_by = p.person
       )
-      OR EXISTS (
-        SELECT 1 FROM user_roles ur
-        JOIN role_permissions rp ON rp.role_id = ur.role_id
-        JOIN permissions pm ON pm.id = rp.permission_id
-        WHERE ur.user_id = p.person AND pm.name = 'drafts.view_all'
+      OR (
+        -- drafts.view_all opens every EXISTING branch only: a made-up id
+        -- stays "not found" for an Owner too (chat_sessions is the
+        -- registry of chat branches; the draft is matched above).
+        EXISTS (SELECT 1 FROM chat_sessions cs WHERE cs.chat_branch_id = branch)
+        AND EXISTS (
+          SELECT 1 FROM user_roles ur
+          JOIN role_permissions rp ON rp.role_id = ur.role_id
+          JOIN permissions pm ON pm.id = rp.permission_id
+          WHERE ur.user_id = p.person AND pm.name = 'drafts.view_all'
+        )
       )
     ), false)
     FROM principal p
