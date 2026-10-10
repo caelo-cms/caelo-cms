@@ -181,6 +181,82 @@ export function listInstalls(): InstallMetadata[] {
   return out;
 }
 
+/**
+ * The install a command names on its argv: `--install <id or domain>` or
+ * `--install=<…>`. `--install-id` is accepted as an alias, the spelling
+ * older docs and code comments used.
+ *
+ * @returns the value, or undefined when no flag is given
+ * @throws when the flag is given without a value
+ */
+export function installFlag(argv: readonly string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i] ?? "";
+    for (const name of ["--install", "--install-id"]) {
+      if (a === name) {
+        const v = argv[i + 1];
+        if (v === undefined || v.startsWith("-")) {
+          throw new Error(
+            `${name} needs a value: the install id or domain (e.g. ${name} example.com)`,
+          );
+        }
+        return v;
+      }
+      if (a.startsWith(`${name}=`)) {
+        const v = a.slice(name.length + 1);
+        if (v === "") throw new Error(`${name} needs a value: the install id or domain`);
+        return v;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Outcome of {@link selectInstall}. */
+export type InstallSelection = { ok: true; meta: InstallMetadata } | { ok: false; message: string };
+
+/**
+ * Pick the install a lifecycle command acts on. `wanted` (from `--install`)
+ * matches an install id or its domain. Without it, exactly one install may
+ * exist: with several, guessing would upgrade, back up or destroy the wrong
+ * site, so the operator is asked to name one instead.
+ *
+ * @param installs every install on this machine (see {@link listInstalls})
+ * @param wanted the `--install` value, if given
+ */
+export function selectInstall(
+  installs: readonly InstallMetadata[],
+  wanted: string | undefined,
+): InstallSelection {
+  const listed = (ms: readonly InstallMetadata[]): string =>
+    ms.map((m) => `  ${m.installId}  (${m.domain}, ${m.provider})`).join("\n");
+  if (wanted !== undefined) {
+    const hits = installs.filter((m) => m.installId === wanted || m.domain === wanted);
+    if (hits.length === 1 && hits[0]) return { ok: true, meta: hits[0] };
+    if (hits.length === 0) {
+      return {
+        ok: false,
+        message:
+          installs.length === 0
+            ? `No install "${wanted}" on this machine (no ~/.caelo-<install-id>/install.json found).`
+            : `No install "${wanted}" on this machine. Installs found:\n${listed(installs)}\nPass one of these ids (or its domain) with --install.`,
+      };
+    }
+    return {
+      ok: false,
+      message: `"${wanted}" matches several installs:\n${listed(hits)}\nPass the install id with --install.`,
+    };
+  }
+  if (installs.length === 1 && installs[0]) return { ok: true, meta: installs[0] };
+  if (installs.length === 0) {
+    return { ok: false, message: "No Caelo install found on this machine." };
+  }
+  return {
+    ok: false,
+    message: `Several Caelo installs on this machine:\n${listed(installs)}\nPick one with --install <install-id or domain>.`,
+  };
+}
+
 export function readMetadata(installId: string): InstallMetadata | null {
   const path = join(installRoot(installId), "install.json");
   if (!existsSync(path)) return null;
