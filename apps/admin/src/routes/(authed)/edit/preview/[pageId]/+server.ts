@@ -10,7 +10,9 @@
  * module rows so the iframe shows the post-AI-edit view of the page.
  *
  * Read-only + content.write-gated. No CSRF (GET; the chat-stream POST
- * inside the overlay still carries `x-csrf-token`).
+ * inside the overlay still carries `x-csrf-token`). The branch is
+ * authorized by the Query API itself (issue #569): one the caller may not
+ * see answers 404.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -36,6 +38,9 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
     // content block, a plugin gate that cannot render its placeholder, …)
     // is surfaced with its message: reporting it as "not found" hid the
     // real cause from the operator and the AI alike.
+    // Issue #569 — a branch the caller may not see is a 404 too, worded
+    // like a missing one so a guessed id confirms nothing.
+    if (result.error.kind === "BranchNotFound") throw error(404, "Branch not found");
     const message = "message" in result.error ? String(result.error.message) : result.error.kind;
     if (message === "page not found") throw error(404, "Page not found");
     throw error(500, `Preview render failed: ${message}`);

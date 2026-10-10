@@ -182,6 +182,8 @@ export function describePersistError(e: QueryError): string {
       return `${e.operation}: ${e.message}`;
     case "SiblingLeaseConflict":
       return `${e.operation}: ${e.message}`;
+    case "BranchNotFound":
+      return `${e.operation}: ${e.message}`;
   }
 }
 

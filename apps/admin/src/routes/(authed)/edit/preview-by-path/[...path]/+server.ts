@@ -15,7 +15,9 @@
  * `/edit/preview-by-path/de/about` — no JS interception required for
  * plain link navigation.
  *
- * Read-only + content.write-gated. CSRF not needed (GET-only).
+ * Read-only + content.write-gated. CSRF not needed (GET-only). The branch
+ * is authorized by the Query API itself (issue #569): one the caller may
+ * not see answers 404.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -54,6 +56,9 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
     : locals.ctx;
 
   const pagesR = await execute(registry, adapter, ctxWithBranch, "pages.list", {});
+  // Issue #569 — the Query API refuses a branch the caller may not see;
+  // answer 404 like for a branch that does not exist.
+  if (!pagesR.ok && pagesR.error.kind === "BranchNotFound") throw error(404, "Branch not found");
   if (!pagesR.ok) throw error(500, "Could not list pages");
   const pages = (pagesR.value as { pages: PageRow[] }).pages;
   // Primary: composed-path match. Legacy slug match keeps pre-#390
@@ -78,6 +83,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
     ...(excludeBranchModules ? { excludeBranchModules } : {}),
   });
   if (!composed.ok) {
+    if (composed.error.kind === "BranchNotFound") throw error(404, "Branch not found");
     // The page was found above, so a failure here is a render failure,
     // not a 404; surface its message (see preview/[pageId]).
     const message =

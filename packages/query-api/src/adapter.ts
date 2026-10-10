@@ -23,6 +23,7 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string, options?: PoolOption
 
 import { sql } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
+import { branchNotFound, firstInvisibleBranch, namedBranches } from "./branch-access.js";
 import { extractPgFields, isRlsDenial, OperationAbortError, type QueryError } from "./errors.js";
 import type { OperationDefinition, TransactionRunner } from "./operation.js";
 
@@ -203,6 +204,15 @@ export class DatabaseAdapter {
           sql`SELECT set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`,
         );
 
+        // Issue #569 — a branch the caller may not see is answered as
+        // "not found" before the handler runs, so no op can read or write
+        // another editor's unpublished work by naming its branch. Branches
+        // (and the visibility rule) live in cms_admin only.
+        if (op.database === "cms_admin") {
+          const denied = await firstInvisibleBranch(tx, namedBranches(ctx, validatedInput));
+          if (denied !== null) return err(branchNotFound(op.name, denied));
+        }
+
         return await op.handler(ctx, validatedInput, tx);
       });
     } catch (thrown) {
@@ -246,6 +256,8 @@ export class DatabaseAdapter {
    *
    * Throws on RLS denial and any handler error — callers handle their
    * own error shape since they don't pass through the op result type.
+   * A `ctx.chatBranchId` the caller may not see throws an
+   * `OperationAbortError` carrying `BranchNotFound` (issue #569).
    */
   async withAdminTransaction<T>(
     ctx: ExecutionContext,
@@ -260,6 +272,11 @@ export class DatabaseAdapter {
         sql`SELECT set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true)`,
       );
       await tx.execute(sql`SELECT set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`);
+      // Issue #569 — same branch-visibility gate as runOperation.
+      const denied = await firstInvisibleBranch(tx, namedBranches(ctx, undefined));
+      if (denied !== null) {
+        throw new OperationAbortError(branchNotFound("withAdminTransaction", denied));
+      }
       return await fn(tx);
     });
   }

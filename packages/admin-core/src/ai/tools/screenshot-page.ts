@@ -22,9 +22,11 @@
  * it), so the sink's presence cannot distinguish the surfaces.
  */
 
+import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { capturePreviewScreenshot } from "../preview-screenshot.js";
 import { awaitScreenshot } from "../screenshot-orchestrator.js";
+import { describeError } from "./_describe-error.js";
 import { takePreviewScreenshotBudget } from "./_preview-screenshot-budget.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
@@ -135,7 +137,7 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
         type: "string",
         format: "uuid",
         description:
-          "Optional override. Defaults to the current chat's branch, so you normally omit it. Set it only to capture another branch's staged edits.",
+          "Optional override. Defaults to the current chat's branch, so you normally omit it. Set it only to capture another branch's staged edits — only branches the operator may see work (the shared draft, their own chats' branches); another editor's experiment answers 'branch not found'.",
       },
       viewport: {
         type: "string",
@@ -152,7 +154,7 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
       },
     },
   },
-  handler: async (_ctx, input, toolCtx) => {
+  handler: async (ctx, input, toolCtx) => {
     // Run #8 R3 (follow-up from live-edit CI) — default to the CURRENT
     // chat's branch, mirroring inspect_page_render. Without this, an
     // omitted chatBranchId made ChatPanel mount the PUBLISHED preview:
@@ -160,6 +162,25 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
     // operator sees) and the model concluded "the page isn't served
     // yet" instead of seeing its own work.
     const chatBranchId = input.chatBranchId ?? toolCtx.chatBranchId;
+    // Issue #569 — an explicit branch override is checked against the
+    // chat's owner before anything renders it: the server-side capture
+    // renders as the system actor through a signed token, which would
+    // otherwise show another editor's isolated branch to this chat.
+    if (input.chatBranchId && input.chatBranchId !== toolCtx.chatBranchId) {
+      const access = await execute(
+        toolCtx.registry,
+        toolCtx.adapter,
+        ctx,
+        "chat.check_branch_access",
+        { chatBranchId: input.chatBranchId },
+      );
+      if (!access.ok) {
+        return {
+          ok: false,
+          content: `screenshot_page: ${describeError(access.error)} Omit chatBranchId to capture this chat's own preview.`,
+        };
+      }
+    }
     // issue #412 — backend selection. Only an interactive chat whose SSE
     // stream a real browser consumes may use the operator-browser path;
     // everything else (Power-MCP dispatch, headless send_chat, subagent

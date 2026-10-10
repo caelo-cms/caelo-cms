@@ -20,6 +20,8 @@ export const PERMISSIONS = [
   "roles.manage",
   "settings.read",
   "settings.write",
+  // Issue #569: see other editors' isolated chat branches (migration 0249).
+  "drafts.view_all",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
