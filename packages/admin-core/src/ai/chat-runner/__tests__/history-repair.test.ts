@@ -396,3 +396,87 @@ describe("repairToolCallPairing — passthrough-aware (messages.18 interrupt 400
     expect(out.some((m) => m.role === "tool" && m.toolCallId === "toolu_ok")).toBe(true);
   });
 });
+
+describe("repairToolCallPairing — results separated by an interleaved turn (issue #628)", () => {
+  // The PR #624 wedge: turn A persisted its stage_changes call, a fix-round
+  // message (turn B) was persisted while the tool still ran, B answered, and
+  // only then A's result and A's answer landed.
+  const callA: ChatMessageInput = {
+    role: "assistant",
+    content: "",
+    sdkMessages: [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "toolu_stage", toolName: "stage_changes", input: {} },
+        ],
+      },
+    ],
+  };
+  const userB: ChatMessageInput = { role: "user", content: "Fix round 1 of 2: fix the findings." };
+  const answerB: ChatMessageInput = { role: "assistant", content: "Fixing it." };
+  const resultA: ChatMessageInput = { role: "tool", content: "staged", toolCallId: "toolu_stage" };
+  const answerA: ChatMessageInput = { role: "assistant", content: "Staged." };
+  const userA: ChatMessageInput = { role: "user", content: "Build it and stage it." };
+
+  it("moves the result back next to its call: call → result → answer → next message", () => {
+    const r = repairToolCallPairing([userA, callA, userB, answerB, resultA, answerA]);
+    expect(r.relocatedToolResultIds).toEqual(["toolu_stage"]);
+    expect(r.messages).toEqual([userA, callA, resultA, userB, answerB, answerA]);
+    // The real result survives — nothing stripped, dropped, or synthesized.
+    expect(r.strippedToolCallIds).toEqual([]);
+    expect(r.droppedToolResultIds).toEqual([]);
+    expect(r.answeredInterruptedCalls).toEqual([]);
+  });
+
+  it("works for the reconstruction lane and keeps in-place sibling results first", () => {
+    const call: ChatMessageInput = {
+      role: "assistant",
+      content: "",
+      toolCalls: [
+        { id: "t1", name: "list_pages", arguments: {} },
+        { id: "t2", name: "stage_changes", arguments: {} },
+      ],
+    };
+    const r1: ChatMessageInput = { role: "tool", content: "3 pages", toolCallId: "t1" };
+    const r2: ChatMessageInput = { role: "tool", content: "staged", toolCallId: "t2" };
+    const r = repairToolCallPairing([userA, call, r1, userB, r2, answerA]);
+    expect(r.relocatedToolResultIds).toEqual(["t2"]);
+    expect(r.messages).toEqual([userA, call, r1, r2, userB, answerA]);
+  });
+
+  it("leaves a correctly ordered history byte-identical", () => {
+    const input = [userA, callA, resultA, answerA, userB, answerB];
+    const r = repairToolCallPairing(input);
+    expect(r.relocatedToolResultIds).toEqual([]);
+    expect(r.messages).toEqual(input);
+  });
+
+  it("buildProviderHistory heals the persisted wedge and reports it", async () => {
+    const noopLoader = async (): Promise<{ failed: string }> => ({ failed: "not used" });
+    const row = (m: Partial<HistoryMessage> & Pick<HistoryMessage, "role">): HistoryMessage => ({
+      content: "",
+      toolCalls: null,
+      toolCallId: null,
+      thinkingBlocks: null,
+      ...m,
+    });
+    const persisted: HistoryMessage[] = [
+      row({ role: "user", content: "Build it and stage it." }),
+      row({ role: "assistant", responseMessages: callA.sdkMessages as unknown[] }),
+      row({ role: "user", content: "Fix round 1 of 2: fix the findings." }),
+      row({ role: "assistant", content: "Fixing it." }),
+      row({ role: "tool", content: "staged", toolCallId: "toolu_stage" }),
+      row({ role: "assistant", content: "Staged." }),
+      row({ role: "user", content: "Anything else?" }),
+    ];
+    let reported: string[] = [];
+    const out = await buildProviderHistory(persisted, noopLoader, (repair) => {
+      reported = repair.relocatedToolResultIds;
+    });
+    expect(reported).toEqual(["toolu_stage"]);
+    const resultIndex = out.findIndex((m) => m.role === "tool" && m.toolCallId === "toolu_stage");
+    expect(resultIndex).toBe(2);
+    expect(out[3]?.content).toBe("Fix round 1 of 2: fix the findings.");
+  });
+});

@@ -14,7 +14,13 @@
  *   - a `tool_use` with no `tool_result` anywhere after it ("Tool
  *     result is missing for tool call …") — the same sessions
  *     accumulated these once the first 400 aborted a turn between
- *     persisting the assistant tool_calls and persisting their results.
+ *     persisting the assistant tool_calls and persisting their results;
+ *   - a `tool_use` whose `tool_result` exists but sits AFTER a later
+ *     user or assistant message ("tool_use ids were found without
+ *     tool_result blocks immediately after") — two turns of one chat
+ *     ran at once and the second persisted its message while the first
+ *     turn's tool was still running (PR #624, issue #628). The result is
+ *     moved back next to its call.
  *
  * Both faults are PERMANENT once persisted: every later turn replays
  * the poisoned transcript and 400s, so the session is wedged with no
@@ -183,6 +189,91 @@ export interface HistoryRepairResult {
    * surface those loudly.
    */
   answeredInterruptedCalls: { toolCallId: string; toolName: string; approved: boolean }[];
+  /**
+   * issue #628 — tool results moved back next to their call because a later
+   * user/assistant message had been persisted between the two (two turns of
+   * the chat ran at once). Non-empty means the session WAS wedged — callers
+   * surface it loudly.
+   */
+  relocatedToolResultIds: string[];
+}
+
+/**
+ * The client tool calls a row OPENS: reconstruction `toolCalls`, or the
+ * client tool-calls inside a passthrough assembly that the same assembly does
+ * not already answer (the normal Option-C shape answers them in separate
+ * reconstruction tool rows).
+ */
+function openedClientCallIds(m: ChatMessageInput): string[] {
+  if (isPassthroughRow(m)) {
+    const calls: PassthroughClientCall[] = [];
+    harvestClientCallsAndApprovals(m.sdkMessages ?? [], calls, new Map(), new Map());
+    const answeredInRow = new Set<string>();
+    harvestSdkPairIds(m.sdkMessages ?? [], new Set(), answeredInRow, new Set());
+    return calls.map((c) => c.toolCallId).filter((id) => !answeredInRow.has(id));
+  }
+  if (m.role === "assistant") return (m.toolCalls ?? []).map((tc) => tc.id);
+  return [];
+}
+
+const isTurnRow = (m: ChatMessageInput): boolean => m.role === "user" || m.role === "assistant";
+
+/**
+ * issue #628 — move every tool-result row that a later user/assistant message
+ * separated from its call back to the end of its call's tool block, keeping
+ * the original relative order otherwise. The provider requires a call's
+ * result in the message right after it; a result that exists but sits after
+ * an interleaved message (a second turn of the chat persisted its message
+ * while the first turn's tool still ran) wedges the chat for good. Using the
+ * REAL result keeps what the tool actually did in the conversation; a call
+ * with no result anywhere is left to the strip / synthetic-answer repairs.
+ * Deterministic for a given stored history, so replays stay byte-stable.
+ */
+function relocateDisplacedToolResults(messages: readonly ChatMessageInput[]): {
+  messages: readonly ChatMessageInput[];
+  relocatedIds: string[];
+} {
+  const ownerOf = new Map<string, number>();
+  const displacedByOwner = new Map<number, ChatMessageInput[]>();
+  const displaced = new Set<number>();
+  const relocatedIds: string[] = [];
+  let lastTurnRow = -1;
+  messages.forEach((m, i) => {
+    if (m.role === "tool" && !isPassthroughRow(m) && m.toolCallId) {
+      const owner = ownerOf.get(m.toolCallId);
+      // Displaced: its call is in an earlier row, and a user/assistant row
+      // came after that call. A result with no call at all stays for the
+      // orphan-drop below.
+      if (owner !== undefined && lastTurnRow > owner) {
+        displaced.add(i);
+        relocatedIds.push(m.toolCallId);
+        const rows = displacedByOwner.get(owner) ?? [];
+        rows.push(m);
+        displacedByOwner.set(owner, rows);
+      }
+    }
+    for (const id of openedClientCallIds(m)) {
+      if (!ownerOf.has(id)) ownerOf.set(id, i);
+    }
+    if (isTurnRow(m)) lastTurnRow = i;
+  });
+  if (displaced.size === 0) return { messages, relocatedIds };
+
+  const out: ChatMessageInput[] = [];
+  let openOwner = -1;
+  const flush = (): void => {
+    out.push(...(displacedByOwner.get(openOwner) ?? []));
+  };
+  messages.forEach((m, i) => {
+    if (displaced.has(i)) return;
+    if (isTurnRow(m)) {
+      flush();
+      openOwner = i;
+    }
+    out.push(m);
+  });
+  flush();
+  return { messages: out, relocatedIds };
 }
 
 /**
@@ -250,7 +341,14 @@ function stripDanglingServerCalls(
  * correctly healed here. Callers surface a heal loudly via
  * `strippedServerToolCallIds` (bug-report row), never silently.
  */
-export function repairToolCallPairing(messages: readonly ChatMessageInput[]): HistoryRepairResult {
+export function repairToolCallPairing(
+  storedMessages: readonly ChatMessageInput[],
+): HistoryRepairResult {
+  // issue #628 — first put results that an interleaved turn separated from
+  // their call back in place; every check below then sees a call → result
+  // order.
+  const { messages, relocatedIds: relocatedToolResultIds } =
+    relocateDisplacedToolResults(storedMessages);
   // Pass 1 — global id inventory. Results virtually always follow their
   // use, but the sets are order-independent on purpose: the repair must
   // never turn one wedged-session shape into another 400.
@@ -400,5 +498,6 @@ export function repairToolCallPairing(messages: readonly ChatMessageInput[]): Hi
     droppedEmptyAssistantMessages,
     strippedServerToolCallIds,
     answeredInterruptedCalls,
+    relocatedToolResultIds,
   };
 }

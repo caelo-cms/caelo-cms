@@ -54,7 +54,7 @@ import {
 } from "./persistence.js";
 import type { UsageAccumulator } from "./streaming.js";
 import { buildToolCatalogue, resolveExcludedToolNames } from "./tool-catalogue.js";
-import { acquireChatTurn } from "./turn-serializer.js";
+import { defaultChatTurnSerializer, queryApiChatTurnLeaseStore } from "./turn-serializer.js";
 import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
 // Public surface re-exports — the `../chat-runner.ts` shim does `export *`
@@ -62,23 +62,48 @@ import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 export type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
 /**
- * Run one turn of a chat — after any earlier turn of the same chat ended
- * (turn-serializer.ts: two turns at once interleave their rows and corrupt
- * the history for good). A turn aborted while it waited does nothing.
+ * Run one turn of a chat — after any earlier turn of the same chat ended,
+ * on this admin instance or another (turn-serializer.ts: two turns at once
+ * interleave their rows and corrupt the history for good). A turn aborted
+ * while it waited does nothing; one that waited too long reports why and
+ * persists nothing.
  */
 export async function* runChatTurn(
   options: ChatRunnerOptions,
   input: ChatSendMessageInput,
 ): AsyncIterable<ClientEvent> {
-  const release = await acquireChatTurn(input.chatSessionId);
+  const serializer = options.turnSerializer ?? defaultChatTurnSerializer;
+  const acquired = await serializer.acquire({
+    chatSessionId: input.chatSessionId,
+    store: queryApiChatTurnLeaseStore(options.registry, options.adapter, options.humanCtx),
+    ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+  });
+  if (acquired.kind === "aborted") {
+    yield { kind: "done" };
+    return;
+  }
+  if (acquired.kind !== "held") {
+    console.error("[chat-runner] turn not started", {
+      chatSessionId: input.chatSessionId,
+      reason: acquired.kind,
+      message: acquired.message,
+    });
+    yield { kind: "error", message: acquired.message };
+    yield { kind: "done" };
+    return;
+  }
+  const { hold } = acquired;
   try {
-    if (options.abortSignal?.aborted === true) {
-      yield { kind: "done" };
-      return;
-    }
-    yield* runSerializedChatTurn(options, input);
+    // A turn that lost its lease (lapsed and taken over by another turn)
+    // stops like an aborted one instead of writing into the other turn.
+    const abortSignal = options.abortSignal
+      ? AbortSignal.any([options.abortSignal, hold.lost])
+      : hold.lost;
+    // The stop persists the usual interrupted marker, so the operator sees
+    // where the answer ended; turn-serializer.ts logs the lease loss.
+    yield* runSerializedChatTurn({ ...options, abortSignal }, input);
   } finally {
-    release();
+    await hold.release();
   }
 }
 
@@ -243,6 +268,25 @@ async function* runSerializedChatTurn(
             "continues; the action may or may not have been applied.",
           expected: "An approved action's result is saved with the turn that ran it.",
           suspectedTool: interruptedApproved[0]?.toolName ?? null,
+          severity: "degraded",
+          source: "auto",
+        }).catch(() => undefined);
+      }
+      // issue #628 — a result that an interleaved turn separated from its
+      // call wedged this chat until the replay moved it back. The turn
+      // serializer prevents new interleavings; this records an old one.
+      if (repair.relocatedToolResultIds.length > 0) {
+        await execute(registry, adapter, aiCtx, "ai_bug_reports.create", {
+          chatSessionId: input.chatSessionId,
+          title: "Chat history healed: tool results separated by an interleaved turn",
+          whatHappened:
+            `${repair.relocatedToolResultIds.length} tool result(s) ` +
+            `(${repair.relocatedToolResultIds.join(", ")}) were persisted after a later ` +
+            "message of this chat, so the provider rejected every turn of it (tool_use " +
+            "without tool_result). Two turns of the chat had run at once. The replay moves " +
+            "each result back next to its call; this turn proceeds on the healed history.",
+          expected: "Turns of one chat run one after another (chat turn serializer).",
+          suspectedTool: null,
           severity: "degraded",
           source: "auto",
         }).catch(() => undefined);
