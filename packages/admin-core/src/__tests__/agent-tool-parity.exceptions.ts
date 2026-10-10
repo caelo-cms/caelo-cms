@@ -162,6 +162,18 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   // ── internal: not an agent action ─────────────────────────────────────
   "chat.append_message": { kind: "internal", reason: "chat-runner transcript persistence" },
   "chat.mark_message_interrupted": { kind: "internal", reason: "chat-runner abort bookkeeping" },
+  "chat.acquire_turn_lease": {
+    kind: "internal",
+    reason: "chat-runner turn serialization across admin instances (issue #628)",
+  },
+  "chat.renew_turn_lease": {
+    kind: "internal",
+    reason: "chat-runner turn-lease heartbeat (issue #628)",
+  },
+  "chat.release_turn_lease": {
+    kind: "internal",
+    reason: "chat-runner turn-lease release at turn end (issue #628)",
+  },
   "chat.set_response_messages": {
     kind: "internal",
     reason: "chat-runner persists the SDK response.messages (CLAUDE.md §12)",

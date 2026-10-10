@@ -11,7 +11,7 @@ Pulumi stack provisioning Caelo on GCP managed services. Implements the shared `
 | CDN | Cloud CDN backend bucket (operator wires the URL map + load balancer for v1; full LB in P15 review-pass) |
 | Edge compute (A/B + redirects) | Cloud Run service `<env>-edge-router` running `edge-handler.ts` with `@caelo-cms/edge-router` |
 | Container runtime | Four Cloud Run services (admin / gateway / orchestrator / runner) |
-| Secret store | Secret Manager: postgres-password + secret-kek (Pulumi), internal-secret + tool-approval-secret (created by the CLI before `pulumi up`, see `src/runtime-secrets.ts`). Cloud Run reads each as a `secretKeyRef`; database URLs carry no password. |
+| Secret store | Secret Manager: postgres-password (admin_role) + secret-kek (Pulumi); internal-secret, tool-approval-secret, public-role-password and gateway-role-password (created by the CLI before `pulumi up`, see `src/runtime-secrets.ts`). Cloud Run reads each as a `secretKeyRef`; database URLs carry no password. The gateway's service account reads only the two gateway role passwords (#613); `gateway_role` itself is created by migration 0248 and gets its password from the CLI after migrations. |
 | Edge-log sink | Cloud Logging project sink → BigQuery dataset `<env>_edge_logs` (queryable by P12A analytics plugin) |
 
 The Caelo runtime never knows it's on GCP — every Cloud Run service consumes plain `DATABASE_URL` / `MEDIA_STORAGE_URL` / `SECRETS_PROVIDER` env vars.

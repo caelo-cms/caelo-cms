@@ -104,13 +104,13 @@ describe("readSecretReplication / stackSecretReplication", () => {
 describe("ensureGeneratedSecrets", () => {
   const regional = { kind: "user-managed" as const, locations: ["europe-west1"] };
 
-  it("is a read-only no-op when both secrets have an enabled version", async () => {
+  it("is a read-only no-op when every secret has an enabled version", async () => {
     const { run, lines } = fakeGcloud({
       "secrets describe": [ok("projects/1/secrets/x")],
       "secrets versions list": [ok("projects/1/secrets/x/versions/1")],
     });
     const outcomes = await ensureGeneratedSecrets({ ...install, replication: regional }, { run });
-    expect(outcomes.map((o) => o.status)).toEqual(["present", "present"]);
+    expect(outcomes.map((o) => o.status)).toEqual(["present", "present", "present", "present"]);
     expect(lines().some((l) => l.includes(" create ") || l.includes(" add "))).toBe(false);
   });
 
@@ -121,7 +121,7 @@ describe("ensureGeneratedSecrets", () => {
       { ...install, replication: regional },
       { run, generate: () => `generated-value-${++n}` },
     );
-    expect(outcomes.map((o) => o.status)).toEqual(["applied", "applied"]);
+    expect(outcomes.map((o) => o.status)).toEqual(["applied", "applied", "applied", "applied"]);
     const creates = calls.filter((c) => c.line.startsWith("secrets create"));
     expect(creates).toEqual([
       {
@@ -131,6 +131,15 @@ describe("ensureGeneratedSecrets", () => {
       {
         line: "secrets create caelo-production-tool-approval-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
         stdin: "generated-value-2",
+      },
+      // #613 — the gateway's role passwords: fresh values, never admin_role's.
+      {
+        line: "secrets create caelo-production-public-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+        stdin: "generated-value-3",
+      },
+      {
+        line: "secrets create caelo-production-gateway-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+        stdin: "generated-value-4",
       },
     ]);
     for (const c of calls) expect(c.line).not.toContain("generated-value");
@@ -150,7 +159,12 @@ describe("ensureGeneratedSecrets", () => {
       { run, generate: () => "generated" },
     );
     const creates = calls.filter((c) => c.line.startsWith("secrets create"));
-    expect(creates.map((c) => c.stdin)).toEqual(["operator-set", "generated"]);
+    expect(creates.map((c) => c.stdin)).toEqual([
+      "operator-set",
+      "generated",
+      "generated",
+      "generated",
+    ]);
     for (const c of calls) expect(c.line).not.toContain("operator-set");
   });
 
@@ -159,12 +173,14 @@ describe("ensureGeneratedSecrets", () => {
       "secrets describe": [ok("x")],
       "secrets versions list caelo-production-internal-secret": [ok("")],
       "secrets versions list caelo-production-tool-approval-secret": [ok("v/1")],
+      "secrets versions list caelo-production-public-role-password": [ok("v/1")],
+      "secrets versions list caelo-production-gateway-role-password": [ok("v/1")],
     });
     const outcomes = await ensureGeneratedSecrets(
       { ...install, replication: { kind: "automatic" } },
       { run, generate: () => "v" },
     );
-    expect(outcomes.map((o) => o.status)).toEqual(["applied", "present"]);
+    expect(outcomes.map((o) => o.status)).toEqual(["applied", "present", "present", "present"]);
     expect(calls.filter((c) => c.line.startsWith("secrets versions add"))).toEqual([
       {
         line: "secrets versions add caelo-production-internal-secret --project=acme --data-file=-",
@@ -184,8 +200,14 @@ describe("ensureGeneratedSecrets", () => {
 });
 
 describe("rotationRefusal", () => {
-  it("rotates the database password and the generated secrets", () => {
-    for (const s of ["postgres-password", "internal-secret", "tool-approval-secret"]) {
+  it("rotates every database role's password and the generated secrets", () => {
+    for (const s of [
+      "postgres-password",
+      "public-role-password",
+      "gateway-role-password",
+      "internal-secret",
+      "tool-approval-secret",
+    ]) {
       expect(rotationRefusal(s)).toBeNull();
     }
   });
@@ -223,8 +245,8 @@ describe("rotateRuntimeSecret", () => {
     ],
     "run services describe gw-svc": [
       service([
-        ref("ADMIN_DATABASE_PASSWORD", "postgres-password"),
-        ref("PUBLIC_DATABASE_PASSWORD", "postgres-password"),
+        ref("GATEWAY_DATABASE_PASSWORD", "gateway-role-password"),
+        ref("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
       ]),
     ],
     "auth print-access-token": [ok("tok\n")],
@@ -259,7 +281,7 @@ describe("rotateRuntimeSecret", () => {
     return { http, requests, passwords };
   }
 
-  it("postgres-password: roles first (via the API, not argv), then the new version, then rolls both services", async () => {
+  it("postgres-password: admin_role first (via the API, not argv), then the new version, then rolls the admin only", async () => {
     const { run, calls, lines } = fakeGcloud({
       ...converged(),
       "secrets versions access": [ok("old-pw")],
@@ -272,7 +294,8 @@ describe("rotateRuntimeSecret", () => {
       generate: () => "new-pw",
     });
     expect(report.ok).toBe(true);
-    expect(sql.passwords()).toEqual(["admin_role new-pw", "public_role new-pw"]);
+    // #613 — admin_role's password is admin_role's alone.
+    expect(sql.passwords()).toEqual(["admin_role new-pw"]);
     expect(sql.requests[0]?.url).toBe(
       "https://sqladmin.googleapis.com/v1/projects/acme/instances/caelo-production-pg-1/users?name=admin_role",
     );
@@ -286,8 +309,6 @@ describe("rotateRuntimeSecret", () => {
       "secrets versions add caelo-production-postgres-password",
       "run services update adm-svc",
       "run services update-traffic adm-svc",
-      "run services update gw-svc",
-      "run services update-traffic gw-svc",
     ]);
     expect(calls.find((c) => c.line.startsWith("secrets versions add"))?.stdin).toBe("new-pw");
     expect(
@@ -297,27 +318,67 @@ describe("rotateRuntimeSecret", () => {
     ).toBe(true);
   });
 
-  it("postgres-password: sets admin_role back when public_role can't be changed", async () => {
+  it("gateway-role-password: changes gateway_role only and rolls the gateway only (#613)", async () => {
+    const { run, lines } = fakeGcloud({
+      ...converged(),
+      "secrets versions access": [ok("old-pw")],
+    });
+    const sql = fakeSqlApi();
+    const report = await rotateRuntimeSecret(target, "gateway-role-password", {
+      run,
+      http: sql.http,
+      sleep: async () => {},
+      generate: () => "new-pw",
+    });
+    expect(report.ok).toBe(true);
+    expect(sql.passwords()).toEqual(["gateway_role new-pw"]);
+    expect(lines().filter((l) => l.startsWith("run services update "))).toEqual([
+      expect.stringContaining("run services update gw-svc"),
+    ]);
+    expect(lines()).toContain(
+      "secrets versions access latest --secret=caelo-production-gateway-role-password --project=acme",
+    );
+  });
+
+  it("public-role-password: stores nothing and rolls nothing when public_role can't be changed", async () => {
     const { run, lines } = fakeGcloud({
       ...converged(),
       "secrets versions access": [ok("old-pw")],
     });
     const sql = fakeSqlApi("public_role");
-    const report = await rotateRuntimeSecret(target, "postgres-password", {
+    const report = await rotateRuntimeSecret(target, "public-role-password", {
       run,
       http: sql.http,
       sleep: async () => {},
       generate: () => "new-pw",
     });
     expect(report.ok).toBe(false);
-    expect(report.error).toContain("set back to the previous password");
-    expect(sql.passwords()).toEqual([
-      "admin_role new-pw",
-      "public_role new-pw",
-      "admin_role old-pw",
-    ]);
+    expect(report.error).toContain("set the public_role password");
+    expect(sql.passwords()).toEqual(["public_role new-pw"]);
     expect(lines().some((l) => l.startsWith("secrets versions add"))).toBe(false);
     expect(lines().some((l) => l.startsWith("run services update"))).toBe(false);
+  });
+
+  it("refuses postgres-password while the gateway still reads it (an install from before #613)", async () => {
+    const answers = converged();
+    answers["run services describe gw-svc"] = [
+      service([
+        ref("ADMIN_DATABASE_PASSWORD", "postgres-password"),
+        ref("PUBLIC_DATABASE_PASSWORD", "postgres-password"),
+      ]),
+    ];
+    const { run, lines } = fakeGcloud(answers);
+    const sql = fakeSqlApi();
+    const report = await rotateRuntimeSecret(target, "postgres-password", {
+      run,
+      http: sql.http,
+      generate: () => "new-pw",
+    });
+    expect(report.ok).toBe(false);
+    expect(report.error).toContain("ADMIN_DATABASE_PASSWORD");
+    expect(report.error).toContain("Run `cms-provision upgrade` first");
+    expect(sql.requests).toHaveLength(0);
+    expect(lines().every((l) => l.startsWith("run services describe"))).toBe(true);
   });
 
   it("refuses before changing anything on an install upgrade hasn't moved over", async () => {
@@ -355,23 +416,23 @@ describe("rotateRuntimeSecret", () => {
     expect(lines().some((l) => l.startsWith("secrets versions add"))).toBe(false);
   });
 
-  it("still rolls the gateway when the admin roll fails, and says how to resume", async () => {
-    const { run, lines } = fakeGcloud({
+  it("says how to resume when the roll fails after the database took the new value", async () => {
+    const { run } = fakeGcloud({
       ...converged(),
       "secrets versions access": [ok("old-pw")],
-      "run services update adm-svc": [fail("revision failed")],
+      "run services update gw-svc": [fail("revision failed")],
     });
-    const report = await rotateRuntimeSecret(target, "postgres-password", {
+    const report = await rotateRuntimeSecret(target, "public-role-password", {
       run,
       http: fakeSqlApi().http,
       sleep: async () => {},
       generate: () => "new-pw",
     });
     expect(report.ok).toBe(false);
-    expect(lines().some((l) => l.startsWith("run services update-traffic gw-svc"))).toBe(true);
+    expect(report.error).toContain("the database uses it");
     expect(report.error).toContain("Do not rotate again");
-    expect(report.error).toContain("gcloud run services update adm-svc");
-    expect(report.steps).toContain("rolled the gateway onto the new value");
+    expect(report.error).toContain("gcloud run services update gw-svc");
+    expect(report.steps).toContain("set a new password on database role public_role");
   });
 
   it("an admin-only secret rolls only the admin", async () => {
@@ -382,7 +443,7 @@ describe("rotateRuntimeSecret", () => {
     });
     expect(report.ok).toBe(true);
     expect(lines().filter((l) => l.startsWith("run services update "))).toHaveLength(1);
-    expect(lines().some((l) => l.includes("gw-svc"))).toBe(false);
+    expect(lines().some((l) => l.startsWith("run services update gw-svc"))).toBe(false);
     expect(lines().some((l) => l.startsWith("sql "))).toBe(false);
   });
 });

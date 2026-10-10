@@ -83,9 +83,9 @@ describe("readDeployedImageDigests", () => {
 describe("checkDeployedRuntimeEnv", () => {
   const svc = (env: unknown[]) =>
     ok(JSON.stringify({ spec: { template: { spec: { containers: [{ env }] } } } }));
-  const secret = (name: string) => ({
+  const secret = (name: string, id = "postgres-password") => ({
     name,
-    valueFrom: { secretKeyRef: { name: "caelo-production-postgres-password", key: "latest" } },
+    valueFrom: { secretKeyRef: { name: `caelo-production-${id}`, key: "latest" } },
   });
   const lists = () => ({
     "metadata.name~^caelo-production-admin": [ok("caelo-production-admin-abc\n")],
@@ -99,12 +99,33 @@ describe("checkDeployedRuntimeEnv", () => {
         svc([secret("ADMIN_DATABASE_PASSWORD"), secret("PUBLIC_ADMIN_DATABASE_PASSWORD")]),
       ],
       "describe caelo-production-gateway-def": [
-        svc([secret("ADMIN_DATABASE_PASSWORD"), secret("PUBLIC_DATABASE_PASSWORD")]),
+        svc([
+          secret("GATEWAY_DATABASE_PASSWORD", "gateway-role-password"),
+          secret("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
+        ]),
       ],
     });
     expect(await checkDeployedRuntimeEnv({ projectId: "p", region: "r", run })).toEqual({
       ok: true,
     });
+  });
+
+  it("stops a wizard re-run on a gateway from before #613 (it needs the admin_role pool)", async () => {
+    const { run } = fakeGcloud({
+      ...lists(),
+      "describe caelo-production-admin-abc": [
+        svc([secret("ADMIN_DATABASE_PASSWORD"), secret("PUBLIC_ADMIN_DATABASE_PASSWORD")]),
+      ],
+      "describe caelo-production-gateway-def": [
+        svc([secret("ADMIN_DATABASE_PASSWORD"), secret("PUBLIC_DATABASE_PASSWORD")]),
+      ],
+    });
+    const r = await checkDeployedRuntimeEnv({ projectId: "p", region: "r", run });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("GATEWAY_DATABASE_PASSWORD");
+      expect(r.error).toContain("Run `upgrade` first");
+    }
   });
 
   it("stops a wizard re-run on an install upgrade hasn't moved over (password in the URL)", async () => {

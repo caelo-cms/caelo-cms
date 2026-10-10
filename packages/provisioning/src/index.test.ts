@@ -112,6 +112,7 @@ describe("docker-compose generator", () => {
     const out = generateDockerCompose({
       domain: "example.com",
       postgresPassword: "supersecret",
+      rolePasswords: { admin: "adminpw", public: "publicpw", gateway: "gatewaypw" },
       minioRootUser: "caelo",
       minioRootPassword: "miniopass",
       caeloSecretKek: "0".repeat(64),
@@ -128,10 +129,33 @@ describe("docker-compose generator", () => {
     expect(out).toContain("CAELO_SECRET_KEK");
   });
 
+  it("gives the gateway gateway_role + public_role and no admin credential (#613)", () => {
+    const out = generateDockerCompose({
+      domain: "example.com",
+      postgresPassword: "supersecret",
+      rolePasswords: { admin: "adminpw", public: "publicpw", gateway: "gatewaypw" },
+      minioRootUser: "caelo",
+      minioRootPassword: "miniopass",
+      caeloSecretKek: "0".repeat(64),
+      diskSize: "20Gi",
+    });
+    const gateway = out.slice(out.indexOf("caelo-gateway:"), out.indexOf("\nvolumes:"));
+    expect(gateway).toContain(
+      'GATEWAY_DATABASE_URL: "postgres://gateway_role:gatewaypw@postgres:5432/cms_admin"',
+    );
+    expect(gateway).toContain(
+      'PUBLIC_DATABASE_URL: "postgres://public_role:publicpw@postgres:5432/cms_public"',
+    );
+    expect(gateway).not.toMatch(/ADMIN_DATABASE|admin_role|adminpw|supersecret|CAELO_SECRET_KEK/);
+    // bootstrap.sh creates the three roles from these.
+    expect(out).toContain('GATEWAY_ROLE_PASSWORD: "gatewaypw"');
+  });
+
   it("escapes secrets containing quotes safely", () => {
     const out = generateDockerCompose({
       domain: "example.com",
       postgresPassword: 'pa"ss',
+      rolePasswords: { admin: "a", public: "b", gateway: "g" },
       minioRootUser: "caelo",
       minioRootPassword: "x",
       caeloSecretKek: "0".repeat(64),

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "typecheck": "tsc -b",
-    "dev": "bun run --hot src/server.ts"
+    "dev": "bun --env-file=../../.env src/dev.ts"
   },
   "dependencies": {
     "@caelo-cms/plugin-host": "workspace:*",

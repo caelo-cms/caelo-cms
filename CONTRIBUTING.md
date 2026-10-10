@@ -26,7 +26,10 @@ docker compose up -d                  # postgres + caddy
 bun run db:migrate                    # apply both cms_admin + cms_public migrations
 bun run --filter @caelo-cms/admin seed:dev  # owner + sample pages
 bun run --filter @caelo-cms/admin dev     # admin at http://localhost:5173
+bun run --filter @caelo-cms/api-gateway dev  # public API gateway at http://localhost:8090 (optional)
 ```
+
+The API gateway never holds the admin's database credential (CLAUDE.md §2): it connects as `gateway_role` (`GATEWAY_DATABASE_URL`) and `public_role` (`PUBLIC_DATABASE_URL`) and refuses to start while any `ADMIN_*` / `PUBLIC_ADMIN_*` database var is in its environment. The shared root `.env` carries those for the admin, so start the gateway through its `dev` script above: it loads `.env` and leaves the admin's credentials out of the gateway's process. A database created before `gateway_role` existed: re-run `packages/migrations/src/bootstrap.sh` (idempotent, with `GATEWAY_ROLE_PASSWORD` set) — it creates the role and re-applies its grants.
 
 Verify everything passes locally before opening a PR:
 

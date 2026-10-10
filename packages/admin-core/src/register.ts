@@ -65,6 +65,11 @@ import {
   unstageChatChangesOp,
 } from "./ops/chat/stage.js";
 import { summarizeChatOp } from "./ops/chat/summarize.js";
+import {
+  acquireChatTurnLeaseOp,
+  releaseChatTurnLeaseOp,
+  renewChatTurnLeaseOp,
+} from "./ops/chat/turn-leases.js";
 import { buildPageOp } from "./ops/content/build-page.js";
 import {
   createContentInstanceOp,
@@ -744,6 +749,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(discardChatBranchOp);
   registry.register(appendChatMessageOp);
   registry.register(markChatMessageInterruptedOp);
+  // issue #628 — cross-instance turn serialization (turn-serializer.ts).
+  registry.register(acquireChatTurnLeaseOp);
+  registry.register(renewChatTurnLeaseOp);
+  registry.register(releaseChatTurnLeaseOp);
   registry.register(setResponseMessagesOp);
   registry.register(cacheToolResultOp);
   registry.register(lookupToolResultOp);

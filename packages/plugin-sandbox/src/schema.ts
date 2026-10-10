@@ -195,6 +195,14 @@ export function adminSchemaFromSpec(opts: {
   pluginId: string;
   slug: string;
   adminSchema: PluginSchemaMap;
+  /**
+   * Issue #613 — the plugin serves visitors (`publicOperations`) and those
+   * operations may read its private tables, so the API gateway's
+   * `gateway_role` gets SELECT on them. Read-only: a visitor call never
+   * writes private storage. When false, any earlier grant is revoked, so a
+   * plugin that stops serving visitors converges on the next load.
+   */
+  visitorReadable?: boolean;
 }): EmittedSchema {
   const schemaName = `plugin_${opts.slug.replace(/-/g, "_")}`;
   const stmts: string[] = [];
@@ -246,7 +254,65 @@ export function adminSchemaFromSpec(opts: {
     );
   }
 
+  stmts.push(gatewayReadGrants(schemaName, opts.adminSchema, opts.visitorReadable));
+
   return { schemaName, sql: stmts.join("\n\n") };
+}
+
+/**
+ * The columns the gateway may read on a private table: its id, the declared
+ * columns and the host columns private-storage reads filter on. Exported
+ * so the storage read (plugin-host `privateList`) selects exactly these.
+ */
+export function gatewayReadableColumns(columns: Readonly<Record<string, string>>): string[] {
+  return [
+    ...new Set([
+      "id",
+      ...Object.keys(columns),
+      ...PRIVATE_HOST_COLUMN_DEFS.map((d) => d.split(" ")[0] as string),
+    ]),
+  ];
+}
+
+/**
+ * Issue #613 — the API gateway's read access to a plugin's private tables,
+ * recomputed from the CURRENT spec on every provisioning: everything the
+ * role held on the schema is revoked first (revoking on a table also
+ * revokes its column privileges), then SELECT is granted column by column
+ * on the declared tables only. A table or column a plugin update dropped
+ * from its spec stays physically (evolution is additive) but is no longer
+ * readable by the gateway. Guarded on the role existing: a database
+ * bootstrapped before `gateway_role` (migration 0248) still provisions.
+ */
+function gatewayReadGrants(
+  schemaName: string,
+  adminSchema: PluginSchemaMap,
+  visitorReadable: boolean | undefined,
+): string {
+  const schema = quoteIdent(schemaName);
+  const revoke = [
+    `    REVOKE ALL ON ALL TABLES IN SCHEMA ${schema} FROM gateway_role;`,
+    `    REVOKE ALL ON SCHEMA ${schema} FROM gateway_role;`,
+  ];
+  const grant = visitorReadable
+    ? [
+        `    GRANT USAGE ON SCHEMA ${schema} TO gateway_role;`,
+        ...Object.entries(adminSchema).map(
+          ([t, columns]) =>
+            `    GRANT SELECT (${gatewayReadableColumns(columns).map(quoteIdent).join(", ")}) ON ${schema}.${quoteIdent(t)} TO gateway_role;`,
+        ),
+      ]
+    : [];
+  return [
+    "DO $caelo_gateway$",
+    "BEGIN",
+    "  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') THEN",
+    ...revoke,
+    ...grant,
+    "  END IF;",
+    "END",
+    "$caelo_gateway$;",
+  ].join("\n");
 }
 
 function emitAdminColumnDef(name: string, spec: string): string {

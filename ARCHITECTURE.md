@@ -17,7 +17,7 @@ graph TD
   subgraph apps["apps/"]
     Admin["apps/admin<br/>SvelteKit + adapter-node (on Bun)<br/>authoring UI · /edit · /security · API"]
     StaticGen["apps/static-generator<br/>subprocess invoked at deploy<br/>emits HTML to output/&lt;env&gt;/"]
-    Gateway["apps/api-gateway<br/>P12+ · public plugin writes<br/>cms_public role only"]
+    Gateway["apps/api-gateway<br/>P12+ · public plugin writes<br/>public_role + gateway_role, never admin_role"]
   end
 
   subgraph pkgs["packages/"]
@@ -47,6 +47,7 @@ graph TD
 
   QueryApi -- admin_role --> CmsAdmin
   QueryApi -- public_role --> CmsPublic
+  Gateway -- "gateway_role (narrow grants)" --> CmsAdmin
 
   Migrations -. apply on boot .-> CmsAdmin
   Migrations -. apply on boot .-> CmsPublic
@@ -58,7 +59,7 @@ graph TD
 
 **Key invariants** (see [CLAUDE.md §2](./CLAUDE.md#2-non-negotiable-invariants)):
 
-- `admin_role` and `public_role` are isolated. The API Gateway never holds `admin_role` credentials.
+- `admin_role` and `public_role` are isolated. The API Gateway never holds `admin_role` credentials: it connects to cms_public as `public_role` and to cms_admin as `gateway_role`, a login with column-level grants on exactly what serving `/api/*` needs (its settings, rate limits, captcha challenges, request log, plugin op audit, and read access to the plugin registry — migration 0248). Its plugin host is dispatch-only: it attaches the plugins the admin registered and an Owner activated, and never writes the registry (`packages/plugin-host/src/gateway-attach.ts`, #613). Every role has its own password secret, so the gateway's service account cannot read admin_role's.
 - RLS is `FORCE`d on every table in both databases — role isolation alone is not enough.
 - The static generator runs as a subprocess at deploy time. It is not a long-running service. It has no plugin host of its own: every plugin answer a build needs (data lists, head contributions, public URLs, content variants, withheld modules, `staticRender`, client assets) is a call back over its stdio to the admin's plugin host (`packages/plugin-host/src/build-services.ts`, #605), so the published site gets what the preview shows.
 

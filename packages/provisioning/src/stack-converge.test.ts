@@ -17,6 +17,7 @@ import {
   planContractEnv,
   planEnvUpdate,
   policyGrants,
+  removeRetiredIamBindings,
   rollService,
   serviceRollArgs,
 } from "./stack-converge.js";
@@ -268,11 +269,11 @@ const CONVERGED_GATEWAY_DB = [
     value: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
   },
   {
-    name: "ADMIN_DATABASE_URL",
-    value: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+    name: "GATEWAY_DATABASE_URL",
+    value: "postgresql://gateway_role@10.20.0.3:5432/cms_admin?sslmode=require",
   },
-  secretRef("PUBLIC_DATABASE_PASSWORD", "postgres-password"),
-  secretRef("ADMIN_DATABASE_PASSWORD", "postgres-password"),
+  secretRef("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
+  secretRef("GATEWAY_DATABASE_PASSWORD", "gateway-role-password"),
 ];
 
 describe("planContractEnv", () => {
@@ -732,7 +733,7 @@ describe("ensureStackInvariants", () => {
       );
     });
 
-    it("grants the gateway SA the database password and nothing admin-only", async () => {
+    it("grants the gateway SA its own role passwords and nothing admin-only", async () => {
       const answers = {
         ...fullGcp(),
         "secrets get-iam-policy": [policy([])],
@@ -743,8 +744,10 @@ describe("ensureStackInvariants", () => {
       const gatewayGrants = calls.filter(
         (c) => c.startsWith("secrets add-iam-policy-binding") && c.includes(GW_SA),
       );
+      // #613 — never admin_role's postgres-password.
       expect(gatewayGrants).toEqual([
-        `secrets add-iam-policy-binding caelo-production-postgres-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+        `secrets add-iam-policy-binding caelo-production-gateway-role-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+        `secrets add-iam-policy-binding caelo-production-public-role-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
       ]);
       for (const secret of ["internal-secret", "tool-approval-secret", "secret-kek"]) {
         expect(calls).toContain(
@@ -752,5 +755,45 @@ describe("ensureStackInvariants", () => {
         );
       }
     });
+  });
+});
+
+describe("removeRetiredIamBindings (#613)", () => {
+  const REMOVE = `secrets remove-iam-policy-binding caelo-production-postgres-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`;
+
+  it("takes the gateway SA off admin_role's password", async () => {
+    const { run, calls } = fakeGcloud({
+      "secrets get-iam-policy caelo-production-postgres-password": [
+        policy([{ role: "roles/secretmanager.secretAccessor", members: [RUN_SA, GW_SA] }]),
+      ],
+    });
+    const outcomes = await removeRetiredIamBindings(gcp, { run, sleep: async () => {} });
+    expect(outcomes.map((o) => o.status)).toEqual(["removed"]);
+    expect(calls).toContain(REMOVE);
+    // The admin's own binding on the same secret is never touched.
+    expect(calls.some((c) => c.includes("remove") && c.includes(RUN_SA))).toBe(false);
+  });
+
+  it("is a read-only no-op on an install that is already clean", async () => {
+    const { run, calls } = fakeGcloud({
+      "secrets get-iam-policy caelo-production-postgres-password": [
+        policy([{ role: "roles/secretmanager.secretAccessor", members: [RUN_SA] }]),
+      ],
+    });
+    const outcomes = await removeRetiredIamBindings(firebase, { run, sleep: async () => {} });
+    expect(outcomes.map((o) => o.status)).toEqual(["absent"]);
+    expect(calls.filter((c) => c.includes("remove-iam-policy-binding"))).toEqual([]);
+  });
+
+  it("reports a failed removal instead of throwing", async () => {
+    const { run } = fakeGcloud({
+      "secrets get-iam-policy caelo-production-postgres-password": [
+        policy([{ role: "roles/secretmanager.secretAccessor", members: [GW_SA] }]),
+      ],
+      "secrets remove-iam-policy-binding": [fail("PERMISSION_DENIED: setIamPolicy")],
+    });
+    const [o] = await removeRetiredIamBindings(gcp, { run, sleep: async () => {} });
+    expect(o?.status).toBe("failed");
+    expect(o?.error).toContain("PERMISSION_DENIED");
   });
 });
