@@ -122,13 +122,17 @@
                     <form method="post" action="?/disable" use:enhance>
                       <input type="hidden" name="slug" value={p.slug} />
                     <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
-                      <Button type="submit" size="sm" variant="outline">Disable</Button>
+                      <Button type="submit" size="sm" variant="outline" data-testid="disable-{p.slug}">
+                        Disable
+                      </Button>
                     </form>
                   {:else if p.status === "disabled"}
                     <form method="post" action="?/reenable" use:enhance>
                       <input type="hidden" name="slug" value={p.slug} />
                     <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
-                      <Button type="submit" size="sm" variant="outline">Re-enable</Button>
+                      <Button type="submit" size="sm" variant="outline" data-testid="reenable-{p.slug}">
+                        Re-enable
+                      </Button>
                     </form>
                   {:else if p.status === "awaiting_activation"}
                     <!-- A shipped plugin does nothing until this click.
@@ -237,7 +241,9 @@
                   <form method="post" action="?/disable" use:enhance>
                     <input type="hidden" name="slug" value={p.slug} />
                     <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
-                    <Button type="submit" size="sm" variant="outline">Disable</Button>
+                    <Button type="submit" size="sm" variant="outline" data-testid="disable-{p.slug}">
+                      Disable
+                    </Button>
                   </form>
                 </TableCell>
               </TableRow>
@@ -356,7 +362,7 @@
                   <form method="post" action="?/activate" use:enhance>
                     <input type="hidden" name="slug" value={p.slug} />
                     <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
-                    <Button type="submit" size="sm">Re-enable</Button>
+                    <Button type="submit" size="sm" data-testid="reenable-{p.slug}">Re-enable</Button>
                   </form>
                 </TableCell>
               </TableRow>

@@ -62,8 +62,12 @@ export interface FlaggedElement {
   readonly snippet?: string;
   /** Lighthouse's short label (often the element's text). */
   readonly label?: string;
-  /** Why it failed, e.g. the measured contrast ratio and the colours. */
+  /** Why it failed, e.g. the measured contrast ratio and the colours — or,
+   *  for a console entry, its source and message. */
   readonly explanation?: string;
+  /** The script or resource a console entry came from (e.g. the URL that
+   *  404'd), so the fix goes to that URL instead of being guessed. */
+  readonly url?: string;
 }
 
 /** The measured state of one page in one audit. Scores are 0..100. */

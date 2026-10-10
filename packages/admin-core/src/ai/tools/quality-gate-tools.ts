@@ -81,6 +81,7 @@ export const acceptQualityFindingsTool = makeProposeTool<AcceptInput>({
     "Ask an editor to accept quality findings that should stay as they are (an intended design choice, or something you cannot fix): failing Lighthouse audits by id (e.g. `color-contrast`) or a category score drop, each on a specific page path. " +
     "An acceptance applies ONLY to that page — the same finding on another page still blocks. An accepted score becomes the page's new baseline. " +
     "Take auditRunId, page paths and audit ids from get_quality_audit; give one short reason the editor can agree with. Bundle every item of one decision into one call. " +
+    "Once approved, an acceptance counts at once — Publish live opens without a new Stage. Do NOT call stage_changes afterwards just to 'pick up' the acceptance: a Stage with nothing new still re-runs the whole quality check, which can report fresh findings and start another fix round. " +
     "Never use it to get past a problem you could fix.",
   schema: proposeAcceptInput,
   inputSchema: z.toJSONSchema(proposeAcceptInput) as Record<string, unknown>,

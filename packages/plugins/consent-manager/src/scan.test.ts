@@ -155,6 +155,58 @@ describe("moduleHosts counts only what loads with the page", () => {
     ]);
   });
 
+  it("ignores SVG namespace declarations, even in a module with JS", () => {
+    // PR #641 homepage run: a header with a menu-toggle script and an
+    // inline SVG icon was withheld behind "www.w3.org" — the site header
+    // vanished until the AI classified a namespace URI as an embed.
+    const icon =
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 24 24"><path d="M0 0h24v24H0z"/></svg>';
+    const js = "document.querySelector('.toggle').addEventListener('click', open);";
+    expect(mod(icon, { js })).toEqual([]);
+    // What the SVG does load still counts.
+    expect(
+      mod(
+        '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://cdn.example.net/a.png"/></svg>',
+        {
+          js,
+        },
+      ),
+    ).toEqual(["cdn.example.net"]);
+  });
+
+  it("ignores every standard XML namespace URI, matched exactly", () => {
+    const js = "init();";
+    for (const ns of [
+      "http://www.w3.org/2000/svg",
+      "http://www.w3.org/1999/xlink",
+      "http://www.w3.org/1999/xhtml",
+      "http://www.w3.org/1998/Math/MathML",
+      "http://www.w3.org/XML/1998/namespace",
+    ]) {
+      expect(mod(`<svg xmlns:x="${ns}"></svg>`, { js })).toEqual([]);
+    }
+    // Not exact (trailing path) → an ordinary URL, scanned.
+    expect(mod('<svg xmlns="http://www.w3.org/2000/svg/track"></svg>', { js })).toEqual([
+      "www.w3.org",
+    ]);
+  });
+
+  it("still scans a non-standard xmlns value a script can read and fetch", () => {
+    // Smuggling: the namespace slot carries a tracker URL the module's JS
+    // fetches. Exempting every xmlns:* would let it past the consent gate.
+    const html =
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:telemetry="https://tracker.example/collect"></svg>';
+    const js = 'fetch(document.querySelector("svg").getAttribute("xmlns:telemetry"));';
+    expect(mod(html, { js })).toEqual(["tracker.example"]);
+    // Through a field placeholder too.
+    expect(
+      mod('<svg xmlns:t="{{ns}}"></svg>', {
+        js,
+        contentValues: [{ ns: "https://tracker.example/collect" }],
+      }),
+    ).toEqual(["tracker.example"]);
+  });
+
   it("still reads the module's JS over-inclusively", () => {
     expect(
       mod("<div></div>", { js: 'const api = "https://api.tracker.example/collect";' }),

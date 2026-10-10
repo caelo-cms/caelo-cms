@@ -115,6 +115,15 @@ const LOADING_ATTRS = new Set([
   "background",
 ]);
 
+/** XML namespace URIs fixed by spec. Identifiers only — browsers never fetch them. */
+const STANDARD_XML_NAMESPACES: ReadonlySet<string> = new Set([
+  "http://www.w3.org/2000/svg",
+  "http://www.w3.org/1999/xlink",
+  "http://www.w3.org/1999/xhtml",
+  "http://www.w3.org/1998/Math/MathML",
+  "http://www.w3.org/XML/1998/namespace",
+]);
+
 const TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/g;
 const ATTR_RE = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
 const PLACEHOLDER_RE = /\{\{\{?\s*[#^/>&]?\s*([a-zA-Z_][a-zA-Z0-9_.-]*)\s*\}?\}\}/g;
@@ -129,6 +138,19 @@ const CSS_URL_RE = /url\(\s*["']?([^"')]+)["']?\s*\)/gi;
 function attrLoads(tag: string, attr: string, attrs: Map<string, string>, hasJs: boolean): boolean {
   const t = tag.toLowerCase();
   const a = attr.toLowerCase();
+  // A STANDARD namespace declaration (`xmlns="http://www.w3.org/2000/svg"`)
+  // is an identifier the parser compares, never an address anything
+  // fetches. Counting it withheld every module with JS and an inline SVG
+  // icon (the site header of the PR #641 homepage run) behind "www.w3.org".
+  // Only the well-known URIs, matched exactly: any other `xmlns:*` value is
+  // just an attribute the module's script can read and fetch
+  // (`xmlns:telemetry="https://tracker.example/collect"`), so it is scanned.
+  if (
+    (a === "xmlns" || a.startsWith("xmlns:")) &&
+    STANDARD_XML_NAMESPACES.has(attrs.get(a) ?? "")
+  ) {
+    return false;
+  }
   if (a === "href") {
     if (t === "a" || t === "area" || t === "base") return false;
     if (t === "link") {

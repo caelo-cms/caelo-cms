@@ -142,6 +142,36 @@ describe("flagged elements", () => {
     });
   });
 
+  it("carry an errors-in-console entry's message and the URL it came from", () => {
+    // PR #641's homepage run: the finding said only "Browser errors were
+    // logged to the console", the AI blamed a plugin's runtime for what was
+    // a /favicon.ico 404, and built a cookie banner to "fix" it.
+    const consoleErrors: Audit = {
+      ...audit("errors-in-console", 0),
+      details: {
+        items: [
+          {
+            source: "network",
+            description:
+              "Failed to load resource: the server responded with a status of 404 (Not Found)",
+            sourceLocation: { type: "source-location", url: "http://localhost:8081/favicon.ico" },
+          },
+          { source: "exception", description: "TypeError: x is undefined" },
+          { source: "console.error" },
+        ],
+      },
+    };
+    const [finding] = failingAudits(lhr({ performance: 100, audits: [consoleErrors] }));
+    expect(finding?.elements).toEqual([
+      {
+        explanation:
+          "network: Failed to load resource: the server responded with a status of 404 (Not Found)",
+        url: "http://localhost:8081/favicon.ico",
+      },
+      { explanation: "exception: TypeError: x is undefined" },
+    ]);
+  });
+
   it("are omitted when the audit names no element", () => {
     const [finding] = failingAudits(lhr({ performance: 100, audits: [audit("image-alt", 0)] }));
     expect(finding && "elements" in finding).toBe(false);

@@ -23,6 +23,7 @@ import { spawnSync } from "node:child_process";
 import { expect, test } from "./fixtures.js";
 import { ADMIN_LOG_PATH } from "./global-setup.js";
 import {
+  activePluginSlugs,
   assertNoChatRunnerDiagWarnings,
   assertNoOrphanLocks,
   attachChatSessionTracker,
@@ -66,6 +67,9 @@ const HOMEPAGE_PROMPT =
 // is unambiguous.
 const HERO_REEDIT_PROMPT =
   "Update the hero headline to 'Ship faster with Caelo'. Keep all other modules unchanged.";
+
+/** Plugins other scenarios of this suite activate (activatePluginAsOwner). */
+const SCENARIO_PLUGINS: readonly string[] = ["consent-manager", "international-site"];
 
 interface PageModuleSnapshot {
   readonly pageId: string;
@@ -315,6 +319,17 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
   // on attempt 2 (per plan §6 open question 4).
   test.beforeEach(() => {
     resetLiveditFixtures();
+    // The site is built from scratch. A plugin another scenario switched on
+    // changes what the AI sees and what visitors get: in PR #641's run the
+    // leftover consent-manager runtime led the AI to build a cookie banner
+    // (which then covered the page in the vision check) and its embed gate
+    // hid the site header. The suite's plugin guard (fixtures.ts) switches
+    // them off after each scenario; this states the precondition loudly.
+    const leftover = activePluginSlugs().filter((s) => SCENARIO_PLUGINS.includes(s));
+    expect(
+      leftover,
+      `plugins left active by an earlier scenario (or an aborted local run — disable them at /security/plugins): ${leftover.join(", ")}`,
+    ).toEqual([]);
   });
 
   test("AI creates a homepage, stages, publishes, re-edits hero — vision verdict + regression guards", async ({
