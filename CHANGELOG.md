@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.37
+
+### Fixes
+- 27da81e1 homepage scenario isolation — leaked consent plugin, embed false positive, console findings, gate settle (#643)
+- af63674e GCP stacks export the gateway's database URL; CI typechecks the stacks (#642)
+
+### Other
+- 5d6247b6 give the release gate the superuser password (#641)
+- cf799fb9 give the release gate the gateway_role env (#613 follow-up) (#640)
+
 ## v0.10.36
 
 ### Fixes
