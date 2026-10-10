@@ -848,23 +848,19 @@ async function adminDomain(): Promise<void> {
     console.log("Usage: cms-provision admin-domain enable [--install <install-id>]");
     process.exit(2);
   }
-  const { listInstalls } = await import("./install-state.js");
+  const { installFlag, listInstalls, selectInstall } = await import("./install-state.js");
   const { enableAdminDomain } = await import("./admin-domain.js");
-  const flag = process.argv.indexOf("--install");
-  const wanted = flag >= 0 ? process.argv[flag + 1] : undefined;
-  const cloud = listInstalls().filter((m) => m.projectId);
-  const candidates = wanted ? cloud.filter((m) => m.installId === wanted) : cloud;
-  if (candidates.length !== 1) {
-    // Guessing among several installs could map the domain in the wrong project.
-    console.error(
-      candidates.length === 0
-        ? `No cloud install${wanted ? ` "${wanted}"` : ""} found on this machine (~/.caelo-<install-id>/install.json).`
-        : `Several installs on this machine: ${candidates.map((m) => `${m.installId} (${m.domain})`).join(", ")}.\nPick one with --install <install-id>.`,
-    );
+  // Guessing among several installs could map the domain in the wrong project.
+  const selected = selectInstall(
+    listInstalls().filter((m) => m.projectId),
+    installFlag(process.argv),
+  );
+  if (!selected.ok) {
+    console.error(selected.message);
     process.exit(1);
   }
-  const meta = candidates[0];
-  if (!meta?.projectId) process.exit(1);
+  const meta = selected.meta;
+  if (!meta.projectId) process.exit(1);
   if (!meta.region) {
     console.error(
       `install ${meta.installId} has no region recorded in install.json; re-run the wizard to record it.`,
@@ -935,6 +931,7 @@ if (route.kind === "handler") {
 } else {
   console.log(
     "Usage: cms-provision [wizard] [--provider <name> --domain <d> --owner-email <e> --region <r>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|pulumi-output-sync|version> [options]\n" +
+      "With several installs on this machine, pick one with --install <install-id or domain> (status, upgrade and backup also take --install all); in a terminal you are asked otherwise.\n" +
       "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
   );
   process.exit(cmd && !cmd.startsWith("-") ? 2 : 0);

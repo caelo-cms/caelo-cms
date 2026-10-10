@@ -8,17 +8,16 @@
  * into provider tools for any of them.
  *
  * Each command:
- *   - reads the install id from the active install (single install
- *     per machine for v1; multi-install via `--install-id` flag)
+ *   - acts on the install named by `--install <install-id or domain>`, or
+ *     on the only install on this machine; with several and no flag it
+ *     stops and lists them (selectInstall in install-state.ts)
  *   - dispatches to provider-specific implementations (gcp / aws /
  *     azure / self-hosted)
  *   - emits human-readable progress + a final summary
  */
 
-import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
-import { cancel, confirm, isCancel, log, note, spinner } from "@clack/prompts";
+import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { ensureGatewayRolePassword, planPublicRoleSwitch } from "./gateway-credentials.js";
 import { gcloud } from "./gcloud.js";
@@ -26,10 +25,12 @@ import { GCP_STACK_ENV, gatewayServiceAccountEmail, runServiceAccountEmail } fro
 import {
   type ImageDigests,
   type InstallMetadata,
+  installFlag,
   installRoot,
-  readMetadata,
+  listInstalls,
   readSecret,
   recordImageDigests,
+  selectInstall,
 } from "./install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "./operator-access.js";
@@ -64,30 +65,113 @@ import {
   serviceRollArgs,
 } from "./stack-converge.js";
 
-/** Find the single install on this machine — or warn if 0/multiple. */
-function findActiveInstall(): { installId: string; meta: InstallMetadata } | null {
-  const home = homedir();
-  if (!existsSync(home)) return null;
-  const candidates = readdirSync(home)
-    .filter((entry) => entry.startsWith(".caelo-"))
-    .map((entry) => entry.replace(/^\.caelo-/, ""));
-  for (const installId of candidates) {
-    const meta = readMetadata(installId);
-    if (meta) return { installId, meta };
+/**
+ * The installs a command acts on. `--install <id or domain>` names one
+ * (`--install all` every one, where the command allows it). Without the flag:
+ * the only install on this machine; with several, an interactive terminal
+ * asks which one (or all), and a non-interactive run stops with the list.
+ * Never guesses — acting on the wrong install upgrades or wipes the wrong
+ * site (see selectInstall).
+ */
+async function chooseInstalls(opts: {
+  readonly verb: string;
+  readonly allowAll: boolean;
+}): Promise<InstallMetadata[]> {
+  const installs = listInstalls();
+  let wanted: string | undefined;
+  try {
+    wanted = installFlag(process.argv);
+  } catch (e) {
+    log.error(red(e instanceof Error ? e.message : String(e)));
+    process.exit(2);
   }
-  return null;
+  if (wanted === "all") {
+    if (!opts.allowAll) {
+      log.error(
+        red(`${opts.verb} runs on one install at a time; pass --install <install-id or domain>.`),
+      );
+      process.exit(2);
+    }
+    if (installs.length === 0) return exitNoInstall("No Caelo install found on this machine.");
+    return installs;
+  }
+  if (wanted === undefined && installs.length > 1 && process.stdin.isTTY) {
+    const choice = await select<string>({
+      message: `Which install should ${opts.verb} act on?`,
+      options: [
+        ...installs.map((m) => ({
+          value: m.installId,
+          label: m.domain,
+          hint: `${m.installId}, ${m.provider}`,
+        })),
+        ...(opts.allowAll
+          ? [{ value: "all", label: `All ${installs.length} installs`, hint: "one after another" }]
+          : []),
+      ],
+    });
+    if (isCancel(choice)) {
+      cancel("Aborted.");
+      process.exit(1);
+    }
+    if (choice === "all") return installs;
+    wanted = choice;
+  }
+  const selected = selectInstall(installs, wanted);
+  if (!selected.ok) return exitNoInstall(selected.message);
+  return [selected.meta];
 }
 
-function requireInstall(): { installId: string; meta: InstallMetadata } {
-  const found = findActiveInstall();
-  if (!found) {
-    log.error(red("No Caelo install found on this machine."));
+function exitNoInstall(message: string): never {
+  log.error(red(message));
+  if (listInstalls().length === 0) {
     log.warn(
       `Run ${bold("bunx @caelo-cms/provisioning")} first to provision an install, OR copy ${dim("~/.caelo-<install-id>/")} from the provisioning machine.`,
     );
-    process.exit(1);
   }
-  return found;
+  process.exit(1);
+}
+
+/** The one install a single-install command (rotate-secret, truncate, destroy) acts on. */
+async function requireInstall(verb: string): Promise<{ installId: string; meta: InstallMetadata }> {
+  const [meta] = await chooseInstalls({ verb, allowAll: false });
+  if (!meta) return exitNoInstall("No Caelo install found on this machine.");
+  return { installId: meta.installId, meta };
+}
+
+/**
+ * Run `run` for each chosen install in turn, with a header when there are
+ * several. `run` reports whether the install succeeded; the first failure
+ * stops the batch (the installs after it are left untouched) and sets a
+ * non-zero exit code, so scripts see it too.
+ *
+ * @param check validates the chosen set before anything runs (e.g. a
+ *   --region that cannot match several installs); returns an error or null
+ */
+async function forEachInstall(
+  verb: string,
+  run: (installId: string, meta: InstallMetadata) => Promise<boolean>,
+  check?: (chosen: readonly InstallMetadata[]) => string | null,
+): Promise<void> {
+  const chosen = await chooseInstalls({ verb, allowAll: true });
+  const problem = check?.(chosen) ?? null;
+  if (problem) {
+    log.error(red(problem));
+    process.exit(2);
+  }
+  for (const [i, meta] of chosen.entries()) {
+    if (chosen.length > 1) {
+      note(`${meta.domain} ${dim(`(${meta.installId})`)}`, `${verb} ${i + 1}/${chosen.length}`);
+    }
+    if (await run(meta.installId, meta)) continue;
+    process.exitCode = 1;
+    const skipped = chosen.slice(i + 1);
+    if (skipped.length > 0) {
+      log.warn(
+        `${verb} failed for ${meta.domain}; stopped before ${skipped.map((m) => m.domain).join(", ")}.`,
+      );
+    }
+    return;
+  }
 }
 
 /**
@@ -165,7 +249,10 @@ async function resolveGcpResourceName(
 // =========================================================================
 
 export async function statusCommand(): Promise<void> {
-  const { installId, meta } = requireInstall();
+  await forEachInstall("status", statusOf);
+}
+
+async function statusOf(installId: string, meta: InstallMetadata): Promise<boolean> {
   log.info(`Install: ${bold(installId)} ${dim(`(${meta.provider})`)}`);
   log.info(`Domain:  ${bold(meta.domain)}`);
   log.info(`Project: ${bold(meta.projectId ?? "<self-hosted>")}`);
@@ -175,6 +262,7 @@ export async function statusCommand(): Promise<void> {
   } else {
     log.warn(`status command for provider ${meta.provider} not yet implemented.`);
   }
+  return true;
 }
 
 /**
@@ -296,6 +384,12 @@ interface UpgradeOpts {
    * given it must match install.json, because upgrade never moves regions.
    */
   readonly region?: string;
+  /**
+   * The install to upgrade, already chosen by the caller (the wizard's
+   * "Upgrade <install>" entry). Without it the install comes from
+   * `--install` or the picker (chooseInstalls).
+   */
+  readonly installId?: string;
 }
 
 interface ServicePlan {
@@ -474,7 +568,29 @@ async function resolveAdminIapResource(
 }
 
 export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
-  const { installId, meta } = requireInstall();
+  if (opts.installId) {
+    const selected = selectInstall(listInstalls(), opts.installId);
+    if (!selected.ok) return exitNoInstall(selected.message);
+    if (!(await upgradeInstall(selected.meta.installId, selected.meta, opts))) process.exitCode = 1;
+    return;
+  }
+  await forEachInstall(
+    "upgrade",
+    (installId, meta) => upgradeInstall(installId, meta, opts),
+    // Each install has its own recorded region (#607); one --region can't
+    // match several, and finding out halfway would leave a partial batch.
+    (chosen) =>
+      opts.region && chosen.length > 1
+        ? "--region names one install's region; drop it when upgrading several installs."
+        : null,
+  );
+}
+
+async function upgradeInstall(
+  installId: string,
+  meta: InstallMetadata,
+  opts: UpgradeOpts,
+): Promise<boolean> {
   // v0.5.15 — extended to cover gcp-firebase too. Both providers share
   // the identical admin + gateway shape on Cloud Run (Artifact
   // Registry image, `caelo-production-<slug>` service naming, the same
@@ -484,9 +600,9 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   // provider adapters land.
   if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") {
     log.warn(`upgrade for provider ${meta.provider} not yet implemented.`);
-    return;
+    return false;
   }
-  if (!meta.projectId) return;
+  if (!meta.projectId) return false;
 
   // #607 — upgrade never moves an install: a `--region` other than the
   // recorded one is refused before anything rolls.
@@ -520,7 +636,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     );
     if (!serviceName) {
       sPre.stop(red(`Could not find caelo-production-${slug}* Cloud Run service`));
-      return;
+      return false;
     }
     // Resolve the tag via the public Docker Registry V2 API directly,
     // not `gcloud artifacts docker tags list`. The gcloud path requires
@@ -545,18 +661,18 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
           `Verify the tag exists at https://${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}:${targetTag}\n` +
           `(latest releases live at https://github.com/caelo-cms/caelo-cms/releases — pass --version vX.Y.Z to pin.)`,
       );
-      return;
+      return false;
     }
     const digest = digestRes.digest;
     const priorRevision = await findCurrentRevision(meta.projectId, region, serviceName);
     if (!priorRevision) {
       sPre.stop(red(`Could not capture current revision for ${slug} — refusing to roll`));
-      return;
+      return false;
     }
     const serviceJson = await describeServiceJson(meta.projectId, region, serviceName);
     if (!serviceJson) {
       sPre.stop(red(`Could not read the ${slug} service's configuration — refusing to roll`));
-      return;
+      return false;
     }
     plans.push({
       slug,
@@ -583,7 +699,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   if (!envPlan.ok) {
     sPre.stop(red("Pre-flight failed: the install's env contract can't be applied"));
     log.error(envPlan.error);
-    return;
+    return false;
   }
   // The admin's media lives in the media bucket, mounted as a Cloud Storage
   // volume. Without it every upload is lost on the next revision or
@@ -595,7 +711,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   if (!mediaVolume.ok) {
     sPre.stop(red("Pre-flight failed: the admin's media volume can't be set up"));
     log.error(mediaVolume.error);
-    return;
+    return false;
   }
   let rolls: RollPlan[] = plans.map((p) => {
     // #553 — the admin runs the Lighthouse quality audit; raise it to the
@@ -637,7 +753,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   // ────────────────────────────────────────────────────────────────
   if (!opts.skipVerify) {
     const verified = await verifyCosignAll(plans, registryRegion, registryProject, registryRepo);
-    if (!verified) return;
+    if (!verified) return false;
   } else {
     log.warn(yellow("--skip-verify set — image signatures NOT verified."));
   }
@@ -668,7 +784,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     sRt.stop(red("Runtime identities/secrets could not be ensured. Aborting upgrade."));
     for (const o of runtimeFailed) log.error(red(`  FAILED: ${o.id}\n    ${o.error ?? ""}`));
     log.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
-    return;
+    return false;
   }
   sRt.stop(green("Gateway service account + runtime secrets ok"));
   for (const o of runtime.filter((o) => o.status === "applied")) log.info(`  created: ${o.id}`);
@@ -711,7 +827,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   }
   if (invariants.mustAbort) {
     log.warn("No traffic was shifted and no migrations ran. Fix the bindings above and re-run.");
-    return;
+    return false;
   }
 
   // ────────────────────────────────────────────────────────────────
@@ -743,7 +859,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
         'resource.labels.job_name=~"caelo-migrate-.*"\' ' +
         `--project=${meta.projectId} --limit=50`,
     );
-    return;
+    return false;
   }
   sMig.stop(green("Migrations applied"));
 
@@ -766,7 +882,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   if (!sqlInstance) {
     sRole.stop(red("Could not find the Cloud SQL instance. Aborting upgrade."));
     log.warn("Migrations ran; no traffic was shifted. Re-run upgrade once the instance is found.");
-    return;
+    return false;
   }
   const roleTarget = { projectId: meta.projectId, env: GCP_STACK_ENV, sqlInstance };
   const gatewayRole = await ensureGatewayRolePassword(roleTarget);
@@ -776,7 +892,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     log.warn(
       "Migrations ran (0248 creates gateway_role); no traffic was shifted. Fix the above and re-run upgrade.",
     );
-    return;
+    return false;
   }
   sRole.stop(green("gateway_role ready"));
   const gatewayLive = plans.find((p) => p.slug === "gateway");
@@ -882,7 +998,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       if (moved.status === "failed") {
         s.stop(red(`public_role could not be moved onto its own password: ${moved.error ?? ""}`));
         await rollbackPriorlyRolled(meta.projectId, region, rolled);
-        return;
+        return false;
       }
     }
     const upd = await rollService(
@@ -904,7 +1020,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       s.stop(red(`Failed: ${upd.stderr.trim()}`));
       await restorePublicRole(plan.slug);
       await rollbackPriorlyRolled(meta.projectId, region, rolled);
-      return;
+      return false;
     }
     // Force traffic onto the new revision. `update --image` only auto-
     // flips when the service has no explicit traffic config — but our
@@ -931,14 +1047,14 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       s.stop(red(`Traffic flip to latest failed: ${flip.stderr.trim()}`));
       await restorePublicRole(plan.slug);
       await rollbackPriorlyRolled(meta.projectId, region, rolled);
-      return;
+      return false;
     }
     if (!(await findServiceUrl(meta.projectId, region, plan.serviceName))) {
       s.stop(red(`Could not resolve service URL for ${plan.slug} — rolling back`));
       await rollbackTraffic(meta.projectId, region, plan.serviceName, plan.priorRevision);
       await restorePublicRole(plan.slug);
       await rollbackPriorlyRolled(meta.projectId, region, rolled);
-      return;
+      return false;
     }
     // Cloud Run's `update --image` (with default --quiet) returns only
     // after the new revision passes its container-readiness probe AND
@@ -1010,6 +1126,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     admin: digestOf("admin"),
     gateway: digestOf("gateway"),
   });
+  return true;
 }
 
 /**
@@ -1244,12 +1361,15 @@ async function rollbackPriorlyRolled(
 // =========================================================================
 
 export async function backupCommand(): Promise<void> {
-  const { meta } = requireInstall();
+  await forEachInstall("backup", (_installId, meta) => backupOf(meta));
+}
+
+async function backupOf(meta: InstallMetadata): Promise<boolean> {
   if (meta.provider !== "gcp") {
     log.warn(`backup for provider ${meta.provider} not yet implemented.`);
-    return;
+    return false;
   }
-  if (!meta.projectId) return;
+  if (!meta.projectId) return false;
 
   const s = spinner();
   s.start("Resolving Cloud SQL instance + triggering on-demand backup...");
@@ -1260,7 +1380,7 @@ export async function backupCommand(): Promise<void> {
   );
   if (!sqlName) {
     s.stop(red("Could not find caelo-production-pg* Cloud SQL instance"));
-    return;
+    return false;
   }
   const r = await gcloud([
     "sql",
@@ -1275,9 +1395,10 @@ export async function backupCommand(): Promise<void> {
   ]);
   if (!r.ok) {
     s.stop(red(`Failed: ${r.stderr.trim()}`));
-    return;
+    return false;
   }
   s.stop(green(`Backup created. List with \`gcloud sql backups list --instance=${sqlName}\`.`));
+  return true;
 }
 
 // =========================================================================
@@ -1296,7 +1417,7 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
     process.exit(2);
   }
   const secret = name as RotatableSecret;
-  const { meta } = requireInstall();
+  const { meta } = await requireInstall("rotate-secret");
   if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") {
     log.warn(`rotate-secret for provider ${meta.provider} not yet implemented.`);
     return;
@@ -1359,7 +1480,7 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
  * longer renders cleanly.
  */
 export async function truncateCommand(): Promise<void> {
-  const { meta } = requireInstall();
+  const { meta } = await requireInstall("truncate");
 
   log.warn(
     yellow(
@@ -1419,7 +1540,7 @@ export async function truncateCommand(): Promise<void> {
 }
 
 export async function destroyCommand(): Promise<void> {
-  const { installId, meta } = requireInstall();
+  const { installId, meta } = await requireInstall("destroy");
 
   log.warn(
     red(

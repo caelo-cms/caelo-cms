@@ -224,8 +224,10 @@ async function pickInstallToResume(installs: InstallMetadata[]): Promise<Install
     }
     const { upgradeCommand } = await import("./lifecycle.js");
     // Defaults to channel=stable / tag=:latest — explicit-version is
-    // available via `cms-provision upgrade --version vX.Y.Z`.
-    await upgradeCommand();
+    // available via `cms-provision upgrade --version vX.Y.Z`. The picked
+    // install is passed on: without it upgrade would choose again (and,
+    // before that was fixed, took the first ~/.caelo-* it found).
+    await upgradeCommand({ installId: target.installId });
     process.exit(0);
   }
   const installId = choice.startsWith("resume:") ? choice.slice("resume:".length) : choice;
