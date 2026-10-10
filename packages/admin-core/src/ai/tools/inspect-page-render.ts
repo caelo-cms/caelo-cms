@@ -76,7 +76,7 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
         type: "string",
         format: "uuid",
         description:
-          "Optional override. Defaults to the current chat's branch, so you normally omit it. Set it only to inspect another branch's staged edits.",
+          "Optional override. Defaults to the current chat's branch, so you normally omit it. Set it only to inspect another branch's staged edits — only branches the operator may see work (the shared draft, their own chats' branches); another editor's experiment answers 'branch not found'.",
       },
       target: {
         type: "string",

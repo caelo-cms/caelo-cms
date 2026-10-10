@@ -61,6 +61,8 @@ All chats work in the site's **shared draft**: open two chats and each sees the 
 
 **Experiments get their own branch.** Ask the AI to *try* something ("try a redesign of the homepage") or start a site migration, and that chat works on an isolated branch: nothing it does shows up in the draft or other chats until it is staged. You can also start one yourself: **New experiment** in the chat menu. Chats that existed before the shared draft keep their own branches until they are staged or discarded.
 
+**Who can preview what.** The shared draft is visible to every editor. An isolated branch (an experiment, a migration, an older chat's branch) is visible only to the editor whose chat it is, and to roles with the **View all drafts** permission (`drafts.view_all`, held by the Owner role; it can be granted to custom roles). The AI working in your chat sees what you can see. Asking a preview for a branch you may not see answers *not found* — the same answer as for a branch that does not exist.
+
 When a chat writes something an experiment (or an older chat) has unstaged changes on, it **takes that change over**: the change moves into this chat and the new edit builds on it. Both chats are told. Locks never expire on a timer: an expired lock over unstaged work would let the next Stage silently overwrite one of the two versions.
 
 ## Open changes

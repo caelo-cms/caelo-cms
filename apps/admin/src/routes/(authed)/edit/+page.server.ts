@@ -619,6 +619,8 @@ export const actions: Actions = {
       pageId,
       status,
     });
+    // Issue #569 — the form named a branch this operator may not see.
+    if (!r.ok && r.error.kind === "BranchNotFound") return fail(404, { error: "Branch not found" });
     if (!r.ok) {
       // v0.10.4 — log full error to stderr so the Cloud Run operator can
       // see the underlying SQL/PG detail. The toast renders the stripped

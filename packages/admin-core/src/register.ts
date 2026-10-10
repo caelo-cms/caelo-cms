@@ -27,6 +27,7 @@ import {
 import { cancelProposalOp } from "./ops/cancel_proposal.js";
 import { discardChatBranchOp } from "./ops/chat/discard.js";
 import {
+  checkBranchAccessOp,
   finalizeDraftStageOp,
   isolateSessionOp,
   mergeDraftToMainOp,
@@ -761,6 +762,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(finalizeDraftStageOp);
   registry.register(undoChatChangesOp);
   registry.register(isolateSessionOp);
+  registry.register(checkBranchAccessOp);
   registry.register(listPendingChangesOp);
   registry.register(stageChatChangesOp);
   registry.register(unstageChatChangesOp);

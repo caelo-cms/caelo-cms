@@ -114,6 +114,18 @@ export type QueryError =
         readonly holderKey: string;
         readonly expiresAt: string;
       };
+    }
+  /**
+   * Issue #569 — the call named a chat branch (context or input
+   * `chatBranchId`) the caller may not see. Deliberately the same answer
+   * for a branch that does not exist, so a guessed id confirms nothing.
+   * Surfaces map it to 404.
+   */
+  | {
+      readonly kind: "BranchNotFound";
+      readonly operation: string;
+      readonly chatBranchId: string;
+      readonly message: string;
     };
 
 /**
@@ -141,7 +153,8 @@ export class OperationAbortError extends Error {
     super(
       queryError.kind === "HandlerError" ||
         queryError.kind === "Locked" ||
-        queryError.kind === "SiblingLeaseConflict"
+        queryError.kind === "SiblingLeaseConflict" ||
+        queryError.kind === "BranchNotFound"
         ? queryError.message
         : queryError.kind,
     );

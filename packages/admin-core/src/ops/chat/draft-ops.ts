@@ -512,3 +512,21 @@ export const isolateSessionOp = defineOperation({
     return ok({ chatBranchId, branchKind: input.reason });
   },
 });
+
+/**
+ * Issue #569 — "may the caller see this branch?" for surfaces that hand a
+ * branch to something outside the Query API (the server-side screenshot
+ * renders through a signed token as the system actor). The adapter checks
+ * every branch an op names against the caller BEFORE the handler runs, so
+ * reaching the handler means the branch is visible; an invisible or
+ * unknown branch comes back as `BranchNotFound`.
+ */
+export const checkBranchAccessOp = defineOperation({
+  name: "chat.check_branch_access",
+  // Read-only and answers only for the caller itself: every actor kind.
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ chatBranchId: z.string().uuid() }).strict(),
+  output: z.object({ visible: z.literal(true) }),
+  handler: async () => ok({ visible: true as const }),
+});
