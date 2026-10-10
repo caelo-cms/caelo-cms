@@ -17,6 +17,7 @@
 import { z } from "zod";
 import { translationModelChoices } from "../../ops/security/ai_providers.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
+import { withHostingStatus } from "./domain-hosting-status.js";
 
 const noInput = z.object({}).strict();
 
@@ -208,32 +209,38 @@ export const listAiProvidersTool = makeListReadTool<Record<string, never>, Provi
   emptyMessage: "No AI providers configured.",
 });
 
-/** domains chunk — renders from domains.list. */
-export const listDomainsTool = makeListReadTool<
-  Record<string, never>,
-  {
-    hostname: string;
-    kind: string;
-    tlsStatus: string;
-  }
->({
-  name: "list_domains",
-  description:
-    "List the site's domains (hostname, kind, TLS status). Domain changes go through propose_add_domain / propose_remove_domain (Owner-approved). " +
-    "The `## Domains` context block is a snapshot from turn start.",
-  opName: "domains.list",
-  input: noInput,
-  label: "domains",
-  rows: (value) =>
-    (
-      value as {
-        domains: { hostname: string; kind: string; tlsStatus: string }[];
-      }
-    ).domains,
-  columns: [
-    { key: "hostname", value: (d) => d.hostname },
-    { key: "kind", value: (d) => d.kind },
-    { key: "tls", value: (d) => d.tlsStatus },
-  ],
-  emptyMessage: "No domains configured.",
-});
+/**
+ * domains chunk — renders from domains.list, plus the live Firebase Hosting
+ * custom-domain state on gcp-firebase installs (stuck-domain detection).
+ */
+export const listDomainsTool = withHostingStatus(
+  makeListReadTool<
+    Record<string, never>,
+    {
+      hostname: string;
+      kind: string;
+      tlsStatus: string;
+    }
+  >({
+    name: "list_domains",
+    description:
+      "List the site's domains (hostname, kind, TLS status). Domain changes go through propose_add_domain / propose_remove_domain (Owner-approved). " +
+      "On Firebase Hosting installs it also lists every hosting custom domain with its live state (active / waiting for DNS / verifying / stuck) — when one is 'stuck', propose_reconnect_domain heals it, and the CDN cache is cleared automatically once a domain turns active. " +
+      "The `## Domains` context block is a snapshot from turn start.",
+    opName: "domains.list",
+    input: noInput,
+    label: "domains",
+    rows: (value) =>
+      (
+        value as {
+          domains: { hostname: string; kind: string; tlsStatus: string }[];
+        }
+      ).domains,
+    columns: [
+      { key: "hostname", value: (d) => d.hostname },
+      { key: "kind", value: (d) => d.kind },
+      { key: "tls", value: (d) => d.tlsStatus },
+    ],
+    emptyMessage: "No domains configured.",
+  }),
+);
