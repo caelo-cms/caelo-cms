@@ -12,7 +12,8 @@
  *   8. Mints a JSON SA key into `~/.caelo-<install-id>/secrets/sa-key.json`
  *   9. Generates Pulumi passphrase if absent → secrets/pulumi-passphrase
  *  10. Pre-flight cost-estimate table; single y/N confirm
- *  11. Pulumi up via the Automation SDK; streams progress
+ *  11. Pulumi up via the Automation SDK; streams progress, then deletes
+ *      the default network's SSH/RDP-from-anywhere firewall rules
  *  12. Prints DNS records + bootstrap URL + a note pointing the
  *      operator at /security/ai for AI provider key configuration
  *      (the runtime path; pre-v0.3.2 there was a wizard prompt for
@@ -26,6 +27,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
+import { removeDefaultIngressRules } from "../default-firewall.js";
 import {
   checkDeployedRuntimeEnv,
   chooseImageDigests,
@@ -70,7 +72,7 @@ import {
   resolveOperatorAccessTarget,
 } from "../operator-access.js";
 import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
-import { ADMIN_MEMORY_DEFAULT } from "../stack-contract.js";
+import { ABSENT_DEFAULT_FIREWALL_RULES, ADMIN_MEMORY_DEFAULT } from "../stack-contract.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { pulumiUpGcp } from "./gcp-pulumi.js";
 
@@ -179,6 +181,8 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
       ),
       "",
       `  ${bold("TOTAL".padEnd(40))} ${bold(`$${estimate.totalUsd}`.padStart(5))}/mo`,
+      "",
+      `  ${dim(`Also deletes the default network's internet-open firewall rules ${ABSENT_DEFAULT_FIREWALL_RULES.map((r) => r.name).join(" + ")} (Caelo runs no VMs).`)}`,
     ].join("\n"),
     "Pre-flight",
   );
@@ -265,6 +269,12 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     provider: opts.provider ?? "gcp",
   });
   recordImageDigests(installId, imageDigests);
+
+  // === 10.1. Remove the default network's SSH/RDP-from-anywhere rules ===
+  // GCP creates them when Compute Engine is enabled (step 5). Run after
+  // Pulumi rather than right after enabling the API: the default network
+  // can appear asynchronously, and by now it has. Idempotent, every pass.
+  await stepRemoveDefaultIngressRules(projectId);
 
   // === 10. Wait for managed cert to flip from PROVISIONING → ACTIVE ===
   // Pulumi reports the cert "created" the moment GCP queues it; the
@@ -721,6 +731,29 @@ async function stepOperatorAccessSync(
     process.exit(1);
   }
   s.stop(green(`Operator-access sync job ready (${r.done.length} steps)`));
+}
+
+/**
+ * Delete the internet-open SSH/RDP firewall rules GCP auto-creates on the
+ * `default` network (default-firewall.ts). A customised rule of the same
+ * name or a failed delete is reported with the next step but does not stop
+ * the install: the rules open nothing Caelo runs, and `upgrade` retries.
+ */
+async function stepRemoveDefaultIngressRules(projectId: string): Promise<void> {
+  const s = spinner();
+  s.start("Removing the default network's SSH/RDP-from-anywhere firewall rules...");
+  const outcomes = await removeDefaultIngressRules(projectId);
+  const failed = outcomes.filter((o) => o.status === "failed");
+  const deleted = outcomes.filter((o) => o.status === "applied");
+  const summary =
+    deleted.length > 0
+      ? `deleted ${deleted.length} default firewall rule(s)`
+      : "no default SSH/RDP firewall rules present";
+  if (failed.length > 0) s.stop(yellow(`Default firewall rules: ${failed.length} not removed`));
+  else s.stop(green(`Default firewall rules ok (${summary})`));
+  for (const o of deleted) log.info(`  deleted: ${o.id} ${dim(`(${o.why})`)}`);
+  for (const o of failed)
+    log.warn(yellow(`  not removed: ${o.id} — ${o.why}\n    ${o.error ?? ""}`));
 }
 
 async function stepMintKey(

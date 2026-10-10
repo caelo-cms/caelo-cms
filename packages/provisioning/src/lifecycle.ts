@@ -675,10 +675,13 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   // from an image roll: IAM bindings + CDN policy added to the stacks after
   // this install was provisioned (stack-contract.ts). Additive + idempotent.
   // A failure the install can't work without aborts here, before
-  // migrations or any traffic shift; the rest warn.
+  // migrations or any traffic shift; the rest warn. Also deletes GCP's
+  // auto-created SSH/RDP-from-anywhere firewall rules (default-firewall.ts).
   // ────────────────────────────────────────────────────────────────
   const sInv = spinner();
-  sInv.start("Ensuring the IAM bindings + CDN settings the stack declares...");
+  sInv.start(
+    "Ensuring the IAM bindings + CDN settings the stack declares, removing default SSH/RDP firewall rules...",
+  );
   const invariants = await ensureStackInvariants({
     provider: meta.provider,
     projectId: meta.projectId,
