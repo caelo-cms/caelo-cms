@@ -121,12 +121,44 @@ export interface LoadReport {
  * instead of a laxer second path.
  */
 async function verifyAndRegisterInMemory(
-  tp: {
-    readonly definition: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
-    readonly sourcePath?: string;
-  },
+  tp: InMemoryPlugin,
   opts: BootstrapOpts,
 ): Promise<RegisterOutcome> {
+  const verified = await verifyInMemoryPlugin(tp);
+  return registerLoadedPlugin({
+    definition: tp.definition,
+    manifest: verified.manifest,
+    sourcePath: tp.sourcePath ?? null,
+    manifestSignatureHex: verified.signatureHex,
+    infra: opts.infra,
+    systemActorId: opts.systemActorId,
+    // Handing the host a definition IS the activation decision — the
+    // caller already chose to run this plugin. Discovery is the case
+    // that needs an Owner.
+    activation: "explicit",
+  });
+}
+
+/** A plugin handed to the host as a definition (tests). */
+export interface InMemoryPlugin {
+  readonly definition: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
+  readonly sourcePath?: string;
+}
+
+/** A plugin whose manifest, signature and source passed verification. */
+export interface VerifiedPlugin {
+  readonly definition: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
+  readonly manifest: PluginManifest;
+  readonly signatureHex: string;
+}
+
+/**
+ * The verification half of {@link verifyAndRegisterInMemory}: manifest
+ * projected from the definition, validated, signed with a fresh in-process
+ * key and signature-verified. No side effects — the gateway's dispatch-only
+ * host (gateway-attach.ts) runs exactly these checks without registering.
+ */
+export async function verifyInMemoryPlugin(tp: InMemoryPlugin): Promise<VerifiedPlugin> {
   const ephemeral = await generateManifestKeyPair();
   let manifest: PluginManifest;
   try {
@@ -159,18 +191,7 @@ async function verifyAndRegisterInMemory(
       validateDistDirectory(distDir, tp.definition.slug);
     }
   }
-  return registerLoadedPlugin({
-    definition: tp.definition,
-    manifest,
-    sourcePath: tp.sourcePath ?? null,
-    manifestSignatureHex: signatureHex,
-    infra: opts.infra,
-    systemActorId: opts.systemActorId,
-    // Handing the host a definition IS the activation decision — the
-    // caller already chose to run this plugin. Discovery is the case
-    // that needs an Owner.
-    activation: "explicit",
-  });
+  return { definition: tp.definition, manifest, signatureHex };
 }
 
 /**
@@ -443,7 +464,9 @@ async function loadActiveTier2Plugins(
  * container images self-contained (the key travels with the manifests
  * it covers; image provenance is cosign's job).
  */
-function resolveTrustRoot(opts: BootstrapOpts): string | undefined {
+export function resolveTrustRoot(
+  opts: Pick<BootstrapOpts, "publicKeyHex" | "pluginsRoot">,
+): string | undefined {
   const explicit = opts.publicKeyHex ?? process.env.CAELO_TIER1_PUBLIC_KEY;
   if (explicit) return explicit;
   try {
@@ -464,6 +487,27 @@ interface LoadOpts {
 }
 
 async function loadOnePlugin(opts: LoadOpts): Promise<RegisterOutcome> {
+  const verified = await verifyDiskPlugin(opts);
+  return registerLoadedPlugin({
+    definition: verified.definition,
+    manifest: verified.manifest,
+    sourcePath: opts.pluginDir,
+    manifestSignatureHex: verified.signatureHex,
+    infra: opts.infra,
+    systemActorId: opts.systemActorId,
+    activation: "discovered",
+  });
+}
+
+/**
+ * Verify one disk plugin — manifest shape, Tier 1, Ed25519 signature
+ * against the trust root, the validator over every dist file — and import
+ * its definition. No side effects: {@link loadOnePlugin} registers the
+ * result; the gateway's dispatch-only host only attaches it.
+ */
+export async function verifyDiskPlugin(
+  opts: Pick<LoadOpts, "slug" | "pluginDir" | "rawManifest" | "publicKeyHex">,
+): Promise<VerifiedPlugin> {
   // 1. Manifest shape.
   const parsed = pluginManifest.safeParse(opts.rawManifest);
   if (!parsed.success) {
@@ -518,16 +562,7 @@ async function loadOnePlugin(opts: LoadOpts): Promise<RegisterOutcome> {
   } catch (e) {
     throw new Error(`import failed: ${(e as Error).message}`);
   }
-
-  return registerLoadedPlugin({
-    definition,
-    manifest,
-    sourcePath: opts.pluginDir,
-    manifestSignatureHex: signatureHex,
-    infra: opts.infra,
-    systemActorId: opts.systemActorId,
-    activation: "discovered",
-  });
+  return { definition, manifest, signatureHex };
 }
 
 /**
@@ -952,6 +987,9 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       pluginId,
       slug: def.slug,
       adminSchema: def.adminSchema,
+      // #613 — a visitor operation may read this storage, and visitor
+      // calls run in the API gateway as gateway_role.
+      visitorReadable: (def.publicOperations?.length ?? 0) > 0,
     });
     await opts.infra.adapter.provisionPluginAdminSchema({ pluginId, sql: emitted.sql });
   }

@@ -2,8 +2,9 @@
 
 /**
  * Upgrade of a v0.10.29 install — database passwords in plain env vars,
- * the gateway holding the KEK, no internal/tool-approval secret — onto the
- * Secret Manager-backed env contract. A fake Cloud Run applies the
+ * the gateway holding the KEK, no internal/tool-approval secret — and of a
+ * v0.10.35 install — Secret Manager references, but the gateway still on an
+ * admin_role pool (#613) — onto the current env contract. A fake Cloud Run applies the
  * `services update` flags with gcloud's semantics (all literal env changes
  * before the secret changes, a type switch inside one kind rejected) and
  * records one revision per update, so the tests can assert that no revision
@@ -32,7 +33,18 @@ const SECRET_VALUES: Record<string, string> = {
   "caelo-production-secret-kek": "k".repeat(64),
   "caelo-production-internal-secret": "i".repeat(64),
   "caelo-production-tool-approval-secret": "t".repeat(64),
+  // #613 — the gateway's own role passwords (CLI-generated).
+  "caelo-production-public-role-password": "p".repeat(64),
+  "caelo-production-gateway-role-password": "g".repeat(64),
 };
+
+/** Env vars that would hand the gateway an admin_role credential (apps/api-gateway ADMIN_CREDENTIAL_ENV). */
+const ADMIN_CREDENTIAL_ENV = [
+  "ADMIN_DATABASE_URL",
+  "ADMIN_DATABASE_PASSWORD",
+  "PUBLIC_ADMIN_DATABASE_URL",
+  "PUBLIC_ADMIN_DATABASE_PASSWORD",
+];
 
 /** Split a gcloud list flag value, honouring the `^<delim>^` escape. */
 function splitList(value: string): string[] {
@@ -100,6 +112,29 @@ function containerEnv(env: ReadonlyMap<string, LiveEnvValue>): Record<string, st
     out[name] = v.kind === "value" ? v.value : (SECRET_VALUES[v.secret] ?? "<missing secret>");
   }
   return out;
+}
+
+/** `user:password@host/db?query` of a composed URL. */
+function credentials(url: string | undefined): string {
+  if (!url) throw new Error("no URL");
+  const u = new URL(url);
+  return `${u.username}:${u.password}@${u.host}${u.pathname}${u.search}`;
+}
+
+/**
+ * The gateway's process env after the upgrade: gateway_role on cms_admin and
+ * public_role on cms_public, each with its own secret, and no admin_role
+ * credential at all (the gateway refuses to boot with one).
+ */
+function expectGatewayOnItsOwnLogins(env: Record<string, string>): void {
+  for (const name of ADMIN_CREDENTIAL_ENV) expect(Object.keys(env)).not.toContain(name);
+  expect(Object.values(env).join("\n")).not.toContain(PW);
+  expect(credentials(databaseUrlFromEnv(["GATEWAY_DATABASE_URL"], env))).toBe(
+    `gateway_role:${"g".repeat(64)}@${HOST}:5432/cms_admin?sslmode=require`,
+  );
+  expect(credentials(databaseUrlFromEnv(["PUBLIC_DATABASE_URL"], env))).toBe(
+    `public_role:${"p".repeat(64)}@${HOST}:5432/cms_public?sslmode=require`,
+  );
 }
 
 const plainEnv = (entries: Record<string, string>) =>
@@ -200,7 +235,7 @@ describe.each(["postgresql", "postgres"] as const)(
       }
     });
 
-    it("the apps compose the same credentials from the new revision as from the old one", () => {
+    it("the admin composes the same credentials; the gateway its own two logins (#613)", () => {
       const services = v01029Install(scheme);
       const before = {
         admin: containerEnv(services.admin.env),
@@ -211,22 +246,15 @@ describe.each(["postgresql", "postgres"] as const)(
         admin: containerEnv(services.admin.env),
         gateway: containerEnv(services.gateway.env),
       };
-      const same = (url: string | undefined) => {
-        if (!url) throw new Error("no URL");
-        const u = new URL(url);
-        return `${u.username}:${u.password}@${u.host}${u.pathname}${u.search}`;
-      };
-      const pairs: [CloudRunSlug, string[]][] = [
-        ["admin", ["ADMIN_DATABASE_URL"]],
-        ["admin", ["PUBLIC_ADMIN_DATABASE_URL", "PUBLIC_DATABASE_URL"]],
-        ["gateway", ["ADMIN_DATABASE_URL"]],
-        ["gateway", ["PUBLIC_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL"]],
-      ];
-      for (const [slug, vars] of pairs) {
-        expect(same(databaseUrlFromEnv(vars, after[slug]))).toBe(
-          same(databaseUrlFromEnv(vars, before[slug])),
+      for (const vars of [
+        ["ADMIN_DATABASE_URL"],
+        ["PUBLIC_ADMIN_DATABASE_URL", "PUBLIC_DATABASE_URL"],
+      ]) {
+        expect(credentials(databaseUrlFromEnv(vars, after.admin))).toBe(
+          credentials(databaseUrlFromEnv(vars, before.admin)),
         );
       }
+      expectGatewayOnItsOwnLogins(after.gateway);
     });
 
     it("mounts the internal + tool-approval secrets on the admin and takes the KEK off the gateway", () => {
@@ -252,6 +280,96 @@ describe.each(["postgresql", "postgres"] as const)(
     });
   },
 );
+
+/**
+ * What `gcloud run services describe` shows on a v0.10.35 install — after
+ * #579 (Secret Manager references, the gateway on its own SA), before #613
+ * (the gateway still on an admin_role pool with admin_role's password).
+ */
+function v01035Install() {
+  const url = (role: string, db: string) =>
+    `postgresql://${role}@${HOST}:5432/${db}?sslmode=require`;
+  const ref = (name: string, secret: string) => ({
+    name,
+    valueFrom: { secretKeyRef: { name: `caelo-production-${secret}`, key: "latest" } },
+  });
+  const common = {
+    CAELO_PROVIDER: "gcp",
+    CAELO_ENV: "production",
+    MEDIA_STORAGE_URL: "gs://acme-caelo-production-media",
+  };
+  const admin = liveContainerEnv(
+    serviceJson([
+      ...plainEnv({
+        ...common,
+        ADMIN_DATABASE_URL: url("admin_role", "cms_admin"),
+        PUBLIC_ADMIN_DATABASE_URL: url("admin_role", "cms_public"),
+      }),
+      ref("ADMIN_DATABASE_PASSWORD", "postgres-password"),
+      ref("PUBLIC_ADMIN_DATABASE_PASSWORD", "postgres-password"),
+      ref("CAELO_SECRET_KEK", "secret-kek"),
+      ref("CAELO_INTERNAL_SECRET", "internal-secret"),
+      ref("CAELO_TOOL_APPROVAL_SECRET", "tool-approval-secret"),
+    ]),
+  );
+  const gateway = liveContainerEnv(
+    serviceJson([
+      ...plainEnv({
+        ...common,
+        PUBLIC_DATABASE_URL: url("public_role", "cms_public"),
+        ADMIN_DATABASE_URL: url("admin_role", "cms_admin"),
+      }),
+      ref("ADMIN_DATABASE_PASSWORD", "postgres-password"),
+      ref("PUBLIC_DATABASE_PASSWORD", "postgres-password"),
+    ]),
+  );
+  return {
+    admin: new FakeService(admin, SERVICE_ACCOUNTS.admin),
+    gateway: new FakeService(gateway, SERVICE_ACCOUNTS.gateway),
+  };
+}
+
+describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", () => {
+  it("drops the admin_role credential and adds the gateway's own logins in one revision", () => {
+    const services = v01035Install();
+    const plan = upgrade(services);
+    expect(services.gateway.revisions).toHaveLength(2);
+    expectGatewayOnItsOwnLogins(containerEnv(services.gateway.env));
+    // The flags name what changes, never a password.
+    expect(JSON.stringify(plan)).not.toContain(PW);
+    expect(plan.ok && plan.services.gateway.changes.map((c) => c.name).sort()).toEqual([
+      "ADMIN_DATABASE_PASSWORD",
+      "ADMIN_DATABASE_URL",
+      "GATEWAY_DATABASE_PASSWORD",
+      "GATEWAY_DATABASE_URL",
+      "PUBLIC_DATABASE_PASSWORD",
+    ]);
+  });
+
+  it("never leaves a gateway revision without its public pool; the admin keeps its credentials", () => {
+    const services = v01035Install();
+    const adminBefore = containerEnv(services.admin.env);
+    upgrade(services);
+    for (const revision of services.gateway.revisions) {
+      expect(revision.has("PUBLIC_DATABASE_URL")).toBe(true);
+      expect(revision.has("PUBLIC_DATABASE_PASSWORD")).toBe(true);
+    }
+    const adminAfter = containerEnv(services.admin.env);
+    for (const vars of [["ADMIN_DATABASE_URL"], ["PUBLIC_ADMIN_DATABASE_URL"]]) {
+      expect(credentials(databaseUrlFromEnv(vars, adminAfter))).toBe(
+        credentials(databaseUrlFromEnv(vars, adminBefore)),
+      );
+    }
+  });
+
+  it("is idempotent: a second upgrade changes no env", () => {
+    const services = v01035Install();
+    upgrade(services);
+    const again = upgrade(services);
+    expect(again.ok && again.services.gateway.flags).toEqual([]);
+    expect(again.ok && again.services.admin.flags).toEqual([]);
+  });
+});
 
 describe("plain → Secret Manager migration of an existing var", () => {
   it("never leaves a revision without the var", () => {

@@ -11,7 +11,7 @@ Pulumi stack provisioning Caelo on AWS managed services. Implements the shared `
 | CDN | CloudFront distribution with two origins (S3 static + S3 media) |
 | Edge compute (A/B + redirects) | Lambda@Edge function (us-east-1 pinned) on `viewer-request` |
 | Container runtime | ECS Fargate cluster + four services (admin / gateway / orchestrator / runner) |
-| Secret store | AWS Secrets Manager (postgres-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key) |
+| Secret store | AWS Secrets Manager (postgres-password, public-role-password, gateway-role-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key). The gateway gets `gatewayDatabaseUrlOut` + `publicDatabaseUrlOut`, never the admin URL (#613). |
 | DNS + cert | ACM cert (us-east-1, DNS-validated, supports `*.<domain>`) |
 | Edge-log sink | CloudWatch Logs → Kinesis Firehose → S3 → Athena (queryable by P12A analytics plugin) |
 

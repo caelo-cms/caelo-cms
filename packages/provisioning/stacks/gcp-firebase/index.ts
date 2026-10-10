@@ -219,7 +219,21 @@ const runtimeSecretIds: Record<RuntimeSecret, pulumi.Input<string>> = {
   "secret-kek": kekSecret.resource.secretId,
   "internal-secret": gcpSecretId(env, "internal-secret"),
   "tool-approval-secret": gcpSecretId(env, "tool-approval-secret"),
+  "public-role-password": gcpSecretId(env, "public-role-password"),
+  "gateway-role-password": gcpSecretId(env, "gateway-role-password"),
 };
+
+// #613 — public_role's own password (CLI-generated, stack-contract.ts
+// DATABASE_ROLE_SECRET), so the gateway, which reads it, never holds
+// admin_role's. gateway_role is not declared here: migration 0248 creates
+// it in SQL (an API-created user would join cloudsqlsuperuser) and the CLI
+// sets its password after migrations.
+const publicRolePassword = pulumi.secret(
+  gcp.secretmanager.getSecretVersionOutput(
+    { project, secret: gcpSecretId(env, "public-role-password") },
+    { provider: gcpProvider },
+  ).secretData,
+);
 
 // =========================================================================
 // Tier 4 — Cloud SQL Postgres (private IP only; HA configurable)
@@ -279,7 +293,7 @@ const pgAdminUser = new gcp.sql.User(
 );
 new gcp.sql.User(
   `${namePrefix}-public-user`,
-  { instance: sqlInstance.name, name: "public_role", password: postgresPassword },
+  { instance: sqlInstance.name, name: "public_role", password: publicRolePassword },
   opts,
 );
 
@@ -576,7 +590,12 @@ const envContractInputs = {
   env,
   domain,
   region,
-  databaseUrls: { admin: dbUrls.admin, publicAdmin: dbUrls.publicAdmin, public: dbUrls.public },
+  databaseUrls: {
+    admin: dbUrls.admin,
+    publicAdmin: dbUrls.publicAdmin,
+    public: dbUrls.public,
+    gateway: dbUrls.gateway,
+  },
 } as const;
 
 // Gateway provisioned first so we can pass its name/region into the

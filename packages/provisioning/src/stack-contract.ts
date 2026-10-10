@@ -81,6 +81,12 @@ export interface DatabaseUrls<V = string> {
   readonly publicAdmin: V;
   /** public_role on cms_public — the gateway's visitor-write pool. */
   readonly public: V;
+  /**
+   * gateway_role on cms_admin — the gateway's narrow pool (#613): its
+   * settings, rate limits, captcha, request log, plugin op audit and the
+   * plugin registry, read-mostly (migration 0248).
+   */
+  readonly gateway: V;
 }
 
 /** Port Cloud SQL Postgres listens on (private IP). */
@@ -98,6 +104,7 @@ export function databaseUrls(host: string): DatabaseUrls {
     admin: url("admin_role", "cms_admin"),
     publicAdmin: url("admin_role", "cms_public"),
     public: url("public_role", "cms_public"),
+    gateway: url("gateway_role", "cms_admin"),
   };
 }
 
@@ -206,9 +213,27 @@ export function adminMediaVolumeTemplate(volume: MediaVolumeContract) {
  */
 export type RuntimeSecret =
   | "postgres-password"
+  | "public-role-password"
+  | "gateway-role-password"
   | "secret-kek"
   | "internal-secret"
   | "tool-approval-secret";
+
+/** The Postgres roles Caelo's services log in as, with their passwords. */
+export type DatabaseRole = "admin_role" | "public_role" | "gateway_role";
+
+/**
+ * Each database role's password secret — one per role (#613), so the
+ * gateway's SA, which reads only the public_role and gateway_role
+ * passwords, can never read admin_role's. `postgres-password` keeps its
+ * name: it has always been admin_role's (and, before #613, shared with
+ * public_role). `rotate-secret` changes exactly the role(s) listed here.
+ */
+export const DATABASE_ROLE_SECRET: Readonly<Record<DatabaseRole, RuntimeSecret>> = {
+  admin_role: "postgres-password",
+  public_role: "public-role-password",
+  gateway_role: "gateway-role-password",
+};
 
 /**
  * Secrets the CLI generates and stores (runtime-secrets.ts
@@ -220,6 +245,10 @@ export type RuntimeSecret =
 export const CLI_GENERATED_SECRETS = [
   "internal-secret",
   "tool-approval-secret",
+  // #613 — the gateway's own role passwords. Generated (never seeded from
+  // `postgres-password`), so the gateway never learns admin_role's.
+  "public-role-password",
+  "gateway-role-password",
 ] as const satisfies readonly RuntimeSecret[];
 
 /**
@@ -243,14 +272,10 @@ export const SERVICE_SECRET_ENV: Readonly<
     CAELO_TOOL_APPROVAL_SECRET: "tool-approval-secret",
   },
   gateway: {
-    // Known gap against CLAUDE.md §2 ("never let the API Gateway hold
-    // admin_role credentials"): the gateway reads site_settings, rate
-    // limits, captcha challenges, the request log and the plugin registry
-    // through an admin_role pool (apps/api-gateway/src/server.ts), and fails
-    // to boot without it. Until that moves behind a narrower role the
-    // gateway needs this credential; it is no longer a plain env var.
-    ADMIN_DATABASE_PASSWORD: "postgres-password",
-    PUBLIC_DATABASE_PASSWORD: "postgres-password",
+    // CLAUDE.md §2: never an admin_role credential (#613). gateway_role on
+    // cms_admin + public_role on cms_public, each with its own password.
+    GATEWAY_DATABASE_PASSWORD: "gateway-role-password",
+    PUBLIC_DATABASE_PASSWORD: "public-role-password",
   },
 };
 
@@ -262,11 +287,12 @@ export function serviceSecrets(service: CloudRunSlug): RuntimeSecret[] {
 /**
  * Env vars an older stack set that the contract no longer gives a service;
  * upgrade removes them. The gateway never used the KEK, and its run SA
- * cannot read it.
+ * cannot read it. Its admin_role pool went with #613 — the gateway refuses
+ * to boot while either var is set (apps/api-gateway `gatewayDatabaseUrls`).
  */
 export const RETIRED_SERVICE_ENV: Readonly<Record<CloudRunSlug, readonly string[]>> = {
   admin: [],
-  gateway: ["CAELO_SECRET_KEK"],
+  gateway: ["CAELO_SECRET_KEK", "ADMIN_DATABASE_URL", "ADMIN_DATABASE_PASSWORD"],
 };
 
 function secretEnv(service: CloudRunSlug, env: string): CloudRunEnvVar[] {
@@ -300,8 +326,7 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
   return [
     ...commonEnv(inputs),
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
-    // See the known gap noted on SERVICE_SECRET_ENV.gateway.
-    { name: "ADMIN_DATABASE_URL", value: inputs.databaseUrls.admin },
+    { name: "GATEWAY_DATABASE_URL", value: inputs.databaseUrls.gateway },
     ...secretEnv("gateway", inputs.env),
   ];
 }
@@ -584,6 +609,32 @@ const GCP_FIREBASE_ONLY: readonly IamInvariant[] = [
     target: { kind: "run-service", service: "admin" },
     onFailure: "abort",
     why: "IAP forwards admin traffic to Cloud Run as its service agent",
+  },
+];
+
+/**
+ * A binding an older stack declared that upgrade removes once nothing reads
+ * through it any more (after the rolls). Pulumi drops it on its own: the
+ * stacks no longer declare it.
+ */
+export interface RetiredIamBinding {
+  readonly role: string;
+  readonly member: IamPrincipal;
+  readonly target: IamTarget;
+  readonly why: string;
+}
+
+/**
+ * #613 — the gateway SA's read access to admin_role's password. Removed
+ * only after the gateway rolled onto its own role passwords: a revision
+ * that still references the secret would fail to start without it.
+ */
+export const RETIRED_IAM_BINDINGS: readonly RetiredIamBinding[] = [
+  {
+    role: SECRET_ACCESSOR,
+    member: "gateway-sa",
+    target: { kind: "secret", name: "postgres-password" },
+    why: "the gateway no longer logs in as admin_role and must not be able to read its password (CLAUDE.md §2)",
   },
 ];
 

@@ -239,7 +239,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       const denied = pluginOnly(ctx, op);
       if (denied) return denied;
       if (zone === "private") {
-        const refused = await privateStorageRefusal(tx, ctx);
+        const refused = await privateStorageRefusal(tx, ctx, "read");
         if (refused) return fail(op, `${op}: ${refused}`);
       }
       const plan = parseListFilter(op, input.columns, input.filter ?? {});

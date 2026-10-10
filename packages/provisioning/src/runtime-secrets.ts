@@ -11,6 +11,11 @@
  *     `pulumi up`, upgrade on every roll, so installs that predate a secret
  *     get it without operator action. Values are generated here and go to
  *     Secret Manager on stdin — never on argv, never to disk.
+ *   - {@link ensureDatabaseRolePassword}: a database role's password set
+ *     from its secret (`DATABASE_ROLE_SECRET`), through the Cloud SQL Admin
+ *     API — how `gateway_role` (created by migration 0248, without a
+ *     password) and `public_role` (moved off admin_role's password, #613)
+ *     get theirs.
  *   - {@link rotateRuntimeSecret}: `cms-provision rotate-secret`.
  *
  * Every function reports instead of throwing on a gcloud failure.
@@ -23,6 +28,8 @@ import { gatewayServiceAccountEmail, gatewayServiceAccountId, gcpSecretId } from
 import {
   CLI_GENERATED_SECRETS,
   type CloudRunSlug,
+  DATABASE_ROLE_SECRET,
+  type DatabaseRole,
   type RuntimeSecret,
   SERVICE_SECRET_ENV,
   serviceSecrets,
@@ -263,6 +270,8 @@ async function addVersion(
 /** The secrets `rotate-secret` can rotate. */
 export const ROTATABLE_SECRETS = [
   "postgres-password",
+  "public-role-password",
+  "gateway-role-password",
   "internal-secret",
   "tool-approval-secret",
 ] as const satisfies readonly RuntimeSecret[];
@@ -301,8 +310,12 @@ export interface RotationReport {
   readonly error?: string;
 }
 
-/** The database roles that authenticate with `postgres-password`. */
-const DATABASE_ROLES = ["admin_role", "public_role"] as const;
+/** The database roles whose password `secret` is (none for a non-database secret). */
+export function rolesOfSecret(secret: RuntimeSecret): DatabaseRole[] {
+  return (Object.entries(DATABASE_ROLE_SECRET) as [DatabaseRole, RuntimeSecret][])
+    .filter(([, s]) => s === secret)
+    .map(([role]) => role);
+}
 
 /**
  * The env vars each reader of `secret` must take from Secret Manager at
@@ -318,11 +331,13 @@ async function checkRotationReaders(
   secret: RotatableSecret,
 ): Promise<string | null> {
   const secretId = gcpSecretId(target.env, secret);
+  const isSecret = (live: { kind: string; secret?: string } | undefined) =>
+    live?.kind === "secret" &&
+    (live.secret === secretId || (live.secret?.endsWith(`/secrets/${secretId}`) ?? false));
   for (const service of ["admin", "gateway"] as const) {
     const vars = Object.entries(SERVICE_SECRET_ENV[service])
       .filter(([, s]) => s === secret)
       .map(([name]) => name);
-    if (vars.length === 0) continue;
     const name = target.services[service];
     const describe = await run([
       "run",
@@ -336,6 +351,14 @@ async function checkRotationReaders(
     ]);
     if (!describe.ok) return `read the ${service} (${name}): ${describe.stderr.trim()}`;
     const env = liveContainerEnv(describe.stdout);
+    // A var the contract no longer gives this service but it still reads
+    // from the secret (the gateway's ADMIN_DATABASE_PASSWORD before #613):
+    // it would not be rolled, so it would keep a password the database
+    // stopped accepting.
+    const stale = [...env].filter(([v, live]) => !vars.includes(v) && isSecret(live));
+    if (stale.length > 0) {
+      return `the ${service} (${name}) still reads ${stale.map(([v]) => v).join(", ")} from ${secretId}, which its env contract no longer gives it. Run \`cms-provision upgrade\` first, then rotate. Nothing was changed.`;
+    }
     const wrong = vars.filter((v) => {
       const live = env.get(v);
       return (
@@ -475,7 +498,7 @@ export async function rotateRuntimeSecret(
   if (notReady) return { ok: false, steps, error: notReady };
   const value = generate();
 
-  if (secret === "postgres-password") {
+  if (rolesOfSecret(secret).length > 0) {
     if (!target.sqlInstance) {
       return { ok: false, steps, error: "the Cloud SQL instance was not found" };
     }
@@ -509,7 +532,7 @@ export async function rotateRuntimeSecret(
         ? "the database roles were set back to the previous password"
         : `could NOT set ${failed.join(", ")} back to the previous password — set it to the latest version of ${secretId} by hand`;
     };
-    for (const role of DATABASE_ROLES) {
+    for (const role of rolesOfSecret(secret)) {
       const r = await setPassword(role, value);
       if (!r.ok) {
         const restored = changed.length > 0 ? `; ${await restore()}` : "";
@@ -555,8 +578,77 @@ export async function rotateRuntimeSecret(
     return {
       ok: false,
       steps,
-      error: `The new value is stored${secret === "postgres-password" ? " and the database uses it" : ""}, but not every service runs on it yet. Do not rotate again — roll the remaining services onto it:\n${failures.join("\n")}`,
+      error: `The new value is stored${rolesOfSecret(secret).length > 0 ? " and the database uses it" : ""}, but not every service runs on it yet. Do not rotate again — roll the remaining services onto it:\n${failures.join("\n")}`,
     };
   }
   return { ok: true, steps };
+}
+
+// ===========================================================================
+// Database role passwords
+// ===========================================================================
+
+/** The deployed install whose database role passwords are set. */
+export interface DatabaseRoleTarget {
+  readonly projectId: string;
+  readonly env: string;
+  /** Cloud SQL instance name. */
+  readonly sqlInstance: string;
+}
+
+/**
+ * The latest value of a runtime secret. Read through gcloud (the operator's
+ * session) into memory only; never logged.
+ */
+export async function readSecretValue(
+  run: GcloudRunner,
+  install: { readonly projectId: string; readonly env: string },
+  secret: RuntimeSecret,
+): Promise<{ ok: true; value: string } | { ok: false; error: string }> {
+  const secretId = gcpSecretId(install.env, secret);
+  const r = await run([
+    "secrets",
+    "versions",
+    "access",
+    "latest",
+    `--secret=${secretId}`,
+    `--project=${install.projectId}`,
+  ]);
+  if (!r.ok) return { ok: false, error: `read ${secretId}: ${r.stderr.trim()}` };
+  if (!r.stdout) return { ok: false, error: `${secretId} has an empty latest version` };
+  return { ok: true, value: r.stdout };
+}
+
+/**
+ * Set `role`'s password to its secret's latest value
+ * ({@link DATABASE_ROLE_SECRET}), or to `password` when given (used to put
+ * a role back on the value an older revision still uses). Setting the value
+ * the role already has is a no-op for every client, so upgrade runs this on
+ * every roll and an install converges whatever state it was left in.
+ *
+ * The role must exist: `gateway_role` is created by migration 0248, so this
+ * runs after migrations.
+ */
+export async function ensureDatabaseRolePassword(
+  target: DatabaseRoleTarget,
+  role: DatabaseRole,
+  deps: RuntimeDeps & { readonly http?: HttpFetch; readonly password?: string } = {},
+): Promise<EnsureOutcome> {
+  const run = deps.run ?? defaultGcloud;
+  const sleep = deps.sleep ?? realSleep;
+  const http = deps.http ?? (fetch as unknown as HttpFetch);
+  const id = `database role ${role}`;
+  let password = deps.password;
+  if (password === undefined) {
+    const value = await readSecretValue(run, target, DATABASE_ROLE_SECRET[role]);
+    if (!value.ok) return { id, status: "failed", error: value.error };
+    password = value.value;
+  }
+  const set = await setSqlUserPassword(run, http, sleep, {
+    projectId: target.projectId,
+    instance: target.sqlInstance,
+    role,
+    password,
+  });
+  return set.ok ? { id, status: "applied" } : { id, status: "failed", error: set.error };
 }
