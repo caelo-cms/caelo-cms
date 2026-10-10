@@ -74,6 +74,7 @@ jobs:
     # #613 suites log in as the gateway's own role.
     env:
       POSTGRES_USER: caelo
+      POSTGRES_PASSWORD: caelo_dev
       POSTGRES_PORT: 5432
       ADMIN_ROLE_PASSWORD: caelo_admin_dev
       PUBLIC_ROLE_PASSWORD: caelo_public_dev
