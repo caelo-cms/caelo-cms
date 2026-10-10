@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.10.36
+
+### Fixes
+- 504cb7f8 remove GCP's default SSH/RDP-from-anywhere firewall rules (#638)
+- c48e2843 lifecycle commands never guess the install — ask, or take --install (#637)
+- 692e2948 the API gateway no longer holds admin_role credentials (#613) (#636)
+- 56fd5883 serialize a chat's turns across admin instances and heal interleaved histories (#628) (#631)
+- 5d1122c3 authorize every named chat branch against the caller (#569) (#632)
+
 ## v0.10.35
 
 ### Features
