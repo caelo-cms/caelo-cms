@@ -80,7 +80,14 @@ function statusLine(run: AuditRun): string {
   }
 }
 
-function formatPage(p: AuditPage): string[] {
+/**
+ * One audited page as the AI reads it in `get_quality_audit`: scores vs.
+ * baselines, each problem with the elements / console entries that locate
+ * its fix, and the held-back Performance signals.
+ *
+ * @returns the page's lines (joined by the tool's formatter)
+ */
+export function formatPage(p: AuditPage): string[] {
   const lines = [`## ${p.pageTitle} (${p.pagePath}) — ${p.status}`, `url: ${p.url}`];
   if (p.status === "errored") {
     lines.push(`error ${p.errorCode ?? ""}: ${p.errorMessage ?? ""}`);
@@ -115,6 +122,12 @@ function formatPage(p: AuditPage): string[] {
         ]
           .filter((x) => x !== null)
           .join(" ");
+        if (where === "" && el.explanation) {
+          // A console / network entry (errors-in-console): its message and
+          // the URL it came from name the cause. The URL is code too.
+          lines.push(`  - console ${el.url ? `${inlineCode(el.url)} ` : ""}— ${el.explanation}`);
+          continue;
+        }
         lines.push(`  - element ${where}${el.explanation ? ` — ${el.explanation}` : ""}`);
       }
     } else {

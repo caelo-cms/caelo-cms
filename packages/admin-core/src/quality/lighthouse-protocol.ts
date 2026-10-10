@@ -28,6 +28,7 @@ const flaggedElementSchema = z
     snippet: z.string().optional(),
     label: z.string().optional(),
     explanation: z.string().optional(),
+    url: z.string().optional(),
   })
   .strict();
 

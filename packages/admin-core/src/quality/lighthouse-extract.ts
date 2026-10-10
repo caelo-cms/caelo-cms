@@ -58,25 +58,49 @@ export interface LhrLike {
 const MAX_FLAGGED_ELEMENTS = 5;
 const MAX_ELEMENT_TEXT = 300;
 
-/** The elements an audit flagged, read from Lighthouse's `node` details. */
+function nonEmpty(v: unknown): string | undefined {
+  return typeof v === "string" && v.length > 0 ? v.slice(0, MAX_ELEMENT_TEXT) : undefined;
+}
+
+/**
+ * A console / network entry (`errors-in-console`): the message and the URL
+ * it came from. Without these an `errors-in-console` finding names no
+ * cause, and the fix is a guess — in the homepage real-AI run of PR #641
+ * the AI blamed a plugin's runtime for what was a `/favicon.ico` 404 and
+ * built a cookie banner to "fix" it.
+ */
+function consoleEntry(item: Record<string, unknown>): FlaggedElement | null {
+  const description = nonEmpty(item.description);
+  if (!description) return null;
+  const location = item.sourceLocation as { url?: unknown } | null | undefined;
+  const url = nonEmpty(location?.url) ?? nonEmpty(item.url);
+  const source = nonEmpty(item.source);
+  return {
+    explanation: source ? `${source}: ${description}` : description,
+    ...(url ? { url } : {}),
+  };
+}
+
+/** The elements (or console entries) an audit flagged, read from its details. */
 function flaggedElements(
   details: { readonly items?: readonly unknown[] } | undefined,
 ): FlaggedElement[] {
   const out: FlaggedElement[] = [];
   for (const item of details?.items ?? []) {
     if (out.length >= MAX_FLAGGED_ELEMENTS) break;
-    const node = (item as { node?: unknown } | null)?.node;
-    if (node === null || typeof node !== "object") continue;
+    if (item === null || typeof item !== "object") continue;
+    const node = (item as { node?: unknown }).node;
+    if (node === null || typeof node !== "object") {
+      const entry = consoleEntry(item as Record<string, unknown>);
+      if (entry) out.push(entry);
+      continue;
+    }
     const n = node as Record<string, unknown>;
-    const text = (k: string) =>
-      typeof n[k] === "string" && (n[k] as string).length > 0
-        ? (n[k] as string).slice(0, MAX_ELEMENT_TEXT)
-        : undefined;
     const element: FlaggedElement = {
-      ...(text("selector") ? { selector: text("selector") } : {}),
-      ...(text("snippet") ? { snippet: text("snippet") } : {}),
-      ...(text("nodeLabel") ? { label: text("nodeLabel") } : {}),
-      ...(text("explanation") ? { explanation: text("explanation") } : {}),
+      ...(nonEmpty(n.selector) ? { selector: nonEmpty(n.selector) } : {}),
+      ...(nonEmpty(n.snippet) ? { snippet: nonEmpty(n.snippet) } : {}),
+      ...(nonEmpty(n.nodeLabel) ? { label: nonEmpty(n.nodeLabel) } : {}),
+      ...(nonEmpty(n.explanation) ? { explanation: nonEmpty(n.explanation) } : {}),
     };
     if (Object.keys(element).length > 0) out.push(element);
   }
