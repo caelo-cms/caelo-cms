@@ -966,6 +966,7 @@ const out: CloudAdapterOutputs = {
   // Password-less — the password lives only in Secret Manager.
   adminDatabaseUrl: dbUrls.admin as unknown as string,
   publicDatabaseUrl: dbUrls.public as unknown as string,
+  gatewayDatabaseUrl: dbUrls.gateway as unknown as string,
   mediaStorageUrl: pulumi.interpolate`gs://${mediaBucket.name}` as unknown as string,
   // Firebase Hosting serves media via its own CDN; we proxy through
   // the Firebase site's apex domain for canonical URLs.
@@ -982,6 +983,7 @@ const out: CloudAdapterOutputs = {
 
 export const adminDatabaseUrlOut = out.adminDatabaseUrl;
 export const publicDatabaseUrlOut = out.publicDatabaseUrl;
+export const gatewayDatabaseUrlOut = out.gatewayDatabaseUrl;
 export const mediaStorageUrlOut = out.mediaStorageUrl;
 export const mediaCdnBaseUrlOut = out.mediaCdnBaseUrl;
 export const bootstrapUrlOut = out.bootstrapUrl;

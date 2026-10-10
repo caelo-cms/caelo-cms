@@ -11,7 +11,7 @@
     "packages/plugins/*"
   ],
   "scripts": {
-    "typecheck": "tsc -b && bun run --filter=@caelo-cms/admin typecheck",
+    "typecheck": "tsc -b && bun run --filter=@caelo-cms/admin typecheck && bun run --filter=@caelo-cms/provisioning typecheck",
     "typecheck:clean": "tsc -b --clean",
     "test": "CAELO_TEST_DB_RESET=1 bun test --isolate",
     "coverage": "CAELO_TEST_DB_RESET=1 bun test --coverage",
