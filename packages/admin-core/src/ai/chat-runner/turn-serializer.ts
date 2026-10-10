@@ -283,9 +283,7 @@ export class ChatTurnSerializer {
         if (claim.acquired) {
           if (claim.tookOverExpiredHolderId !== null) {
             // A previous turn's instance stopped renewing (crash, freeze).
-            console.error("[chat-runner] turn lease taken over after it lapsed", {
-              chatSessionId,
-            });
+            console.error("[chat-runner] turn lease taken over after it lapsed");
           }
           if (abortSignal?.aborted) {
             // Aborted while the claim was in flight: hand the chat straight back.
@@ -311,7 +309,7 @@ export class ChatTurnSerializer {
         pollMs = Math.min(pollMs * 2, this.pollMaxMs);
       }
     } catch {
-      console.error("[chat-runner] turn lease claim threw", { chatSessionId });
+      console.error("[chat-runner] turn lease claim threw");
       await releaseQuietly();
       letGoLocally();
       return {
@@ -330,9 +328,12 @@ export class ChatTurnSerializer {
     // does not eat the whole margin.
     // A renew that finds the lease gone means that already happened.
     const lost = new AbortController();
+    // Every lease log line here is constant (no ids): the store results flow
+    // from execute(), which CodeQL's clear-text-logging query flags
+    // (docs/dev/codeql.md, known false-positive class).
     const loseLease = (reason: string): void => {
       if (lost.signal.aborted) return;
-      console.error(`[chat-runner] turn lease ${reason}; stopping the turn`, { chatSessionId });
+      console.error(`[chat-runner] turn lease ${reason}; stopping the turn`);
       lost.abort(new Error(`chat turn lease ${reason}`));
     };
     let renewing = false;
@@ -349,7 +350,7 @@ export class ChatTurnSerializer {
         .renew({ chatSessionId, holderId, ttlMs: this.leaseTtlMs })
         .then((r) => {
           if (!r.ok) {
-            console.error("[chat-runner] turn lease renew failed", { chatSessionId });
+            console.error("[chat-runner] turn lease renew failed");
           } else if (!r.held) {
             loseLease("lost mid-turn");
           } else {
@@ -357,7 +358,7 @@ export class ChatTurnSerializer {
           }
         })
         .catch(() => {
-          console.error("[chat-runner] turn lease renew threw", { chatSessionId });
+          console.error("[chat-runner] turn lease renew threw");
         })
         .finally(() => {
           renewing = false;
@@ -377,10 +378,10 @@ export class ChatTurnSerializer {
             const r = await store.release({ chatSessionId, holderId });
             if (!r.ok) {
               // The lease lapses after its TTL; the next turn then takes it over.
-              console.error("[chat-runner] turn lease release failed", { chatSessionId });
+              console.error("[chat-runner] turn lease release failed");
             }
           } catch {
-            console.error("[chat-runner] turn lease release threw", { chatSessionId });
+            console.error("[chat-runner] turn lease release threw");
           } finally {
             letGoLocally();
           }

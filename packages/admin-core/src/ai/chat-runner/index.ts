@@ -83,11 +83,10 @@ export async function* runChatTurn(
     return;
   }
   if (acquired.kind !== "held") {
-    // The reason code only: the message can carry store/op error text.
-    console.error("[chat-runner] turn not started", {
-      chatSessionId: input.chatSessionId,
-      reason: acquired.kind,
-    });
+    // A constant line on purpose: the acquire result flows from execute(),
+    // which CodeQL's clear-text-logging query flags (docs/dev/codeql.md,
+    // known false-positive class). The operator sees the reason in the chat.
+    console.error("[chat-runner] turn not started");
     yield { kind: "error", message: acquired.message };
     yield { kind: "done" };
     return;
