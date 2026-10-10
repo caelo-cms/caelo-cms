@@ -9,7 +9,9 @@
  *     release gate's bootstrap step (job env or step env).
  * R2: every database role/URL variable ci.yml's `check` job sets is also
  *     set on the release gate job, so a suite added to CI can't find it
- *     missing at release time.
+ *     missing at release time. That includes the superuser's password: the
+ *     self-hosted role convergence suite logs in as the superuser, and its
+ *     absence failed the v0.10.36 publish a second time.
  */
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -34,7 +36,7 @@ function workflow(file: string): Workflow {
   return yaml.load(readFileSync(resolve(REPO_ROOT, ".github/workflows", file), "utf8")) as Workflow;
 }
 
-const ROLE_VAR = /^(POSTGRES_(USER|PORT)|[A-Z]+_ROLE_PASSWORD|[A-Z_]+_DATABASE_URL)$/;
+const ROLE_VAR = /^(POSTGRES_(USER|PASSWORD|PORT)|[A-Z]+_ROLE_PASSWORD|[A-Z_]+_DATABASE_URL)$/;
 
 const gate = workflow("release.yml").jobs.gate;
 
