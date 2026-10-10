@@ -320,23 +320,65 @@ export async function loginAsDevOwner(page: Page): Promise<void> {
  */
 export async function activatePluginAsOwner(page: Page, slug: string): Promise<void> {
   await page.goto("/security/plugins");
-  const activate = page.getByTestId(`activate-${slug}`);
-  if ((await activate.count()) === 0) {
-    // Absent button, two very different causes. Already active on a
-    // warm DB is fine; the plugin never having loaded is not, and
-    // treating them alike is how a missing plugin masquerades as an AI
-    // that ignored its tools — which is exactly what it looked like
-    // before this check existed, at the cost of a full CI cycle.
-    const known = await page.getByTestId(`plugin-row-${slug}`).count();
-    if (known === 0) {
-      throw new Error(
-        `activatePluginAsOwner: plugin "${slug}" is not installed on this stack, so the AI runs without its tools and skills. Check the admin log for "dist/index.js missing" — the plugin's dist has to be built before boot.`,
-      );
-    }
+  // The suite's plugin guard (fixtures.ts) disables what a scenario
+  // activated, so a retry — or a warm local DB — finds the plugin
+  // `disabled`, which takes the Re-enable button, not Activate.
+  for (const action of ["activate", "reenable"] as const) {
+    const button = page.getByTestId(`${action}-${slug}`);
+    if ((await button.count()) === 0) continue;
+    await button.click();
+    await expect(page.getByTestId(`disable-${slug}`)).toHaveCount(1, { timeout: 30_000 });
     return;
   }
-  await activate.click();
-  await expect(page.getByTestId(`activate-${slug}`)).toHaveCount(0, { timeout: 30_000 });
+  // No button to switch it on, two very different causes. Already active
+  // is fine; the plugin never having loaded is not, and treating them alike
+  // is how a missing plugin masquerades as an AI that ignored its tools —
+  // which is exactly what it looked like before this check existed, at the
+  // cost of a full CI cycle.
+  const known = await page.getByTestId(`plugin-row-${slug}`).count();
+  if (known === 0) {
+    throw new Error(
+      `activatePluginAsOwner: plugin "${slug}" is not installed on this stack, so the AI runs without its tools and skills. Check the admin log for "dist/index.js missing" — the plugin's dist has to be built before boot.`,
+    );
+  }
+  await expect(
+    page.getByTestId(`disable-${slug}`),
+    `activatePluginAsOwner: plugin "${slug}" is installed but neither activatable nor active`,
+  ).toHaveCount(1);
+}
+
+/**
+ * Switch a plugin off the way an Owner does (the Disable button on
+ * /security/plugins). Goes through the admin on purpose: the `plugins.disable`
+ * op also flips the running plugin host's flag, so its tools, skills, head
+ * injection and module deferrals stop at once — a DB-only status update
+ * would leave the live host injecting the plugin into every render.
+ * Logs in first when the page's session is gone.
+ */
+export async function deactivatePluginAsOwner(page: Page, slug: string): Promise<void> {
+  await page.goto("/security/plugins");
+  if (new URL(page.url()).pathname.startsWith("/login")) {
+    await loginAsDevOwner(page);
+    await page.goto("/security/plugins");
+  }
+  await page.getByTestId(`disable-${slug}`).click();
+  await expect(page.getByTestId(`reenable-${slug}`)).toHaveCount(1, { timeout: 30_000 });
+}
+
+/** Slugs of every plugin whose row says `active` (both tiers). */
+export function activePluginSlugs(): string[] {
+  const out = runBunInline(`
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    let rows = [];
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      rows = await tx\`SELECT slug FROM plugins WHERE status = 'active' ORDER BY slug\`;
+    });
+    await sql.end();
+    console.log(JSON.stringify(rows.map((r) => r.slug)));
+  `);
+  return JSON.parse(out) as string[];
 }
 
 export async function waitForChatTurnIdle(page: Page, timeoutMs = 480_000): Promise<void> {
@@ -624,9 +666,15 @@ export async function awaitQualityGateOpen(
   // accept_quality_findings applies before the AI writes its reply). Return
   // only once that turn ended: the caller navigates next, and navigating
   // interrupts a running turn — the operator would wait for the answer too.
-  const opened = async (state: string) => {
+  // And only if it is STILL open then: the same turn may Stage again after
+  // accepting, which queues a new audit and closes the gate. PR #641's retry
+  // returned on that two-second-old "accepted" while the new audit ran; its
+  // fix round then ran during Publish and was charged to the homepage
+  // token/loop thresholds (4 of the 27 loops). Null = closed again.
+  const opened = async (): Promise<{ restages: number; state: string } | null> => {
     await waitForChatTurnIdle(page);
-    return { restages, state };
+    const settled = await read();
+    return settled.gate?.open ? { restages, state: settled.gate.state } : null;
   };
   // The panel posts the AI's fix request on its own once the chat is idle;
   // wait for that turn to start (bounded) and then to end, instead of
@@ -644,7 +692,11 @@ export async function awaitQualityGateOpen(
       throw new Error(`awaitQualityGateOpen: gate still closed after ${timeoutMs / 1000}s`);
     }
     const st = await read();
-    if (st.gate?.open) return await opened(st.gate.state);
+    if (st.gate?.open) {
+      const done = await opened();
+      if (done) return done;
+      continue;
+    }
     const running = !st.audit || st.audit.status === "queued" || st.audit.status === "running";
     if (running || !st.notified) {
       await page.waitForTimeout(5_000);
@@ -657,7 +709,11 @@ export async function awaitQualityGateOpen(
     // request as soon as it is idle. Let that turn run to the end.
     await letTheAiTurnRun();
     const after = await read();
-    if (after.gate?.open) return await opened(after.gate.state);
+    if (after.gate?.open) {
+      const done = await opened();
+      if (done) return done;
+      continue;
+    }
     // Issue #620 — the AI re-stages its own fix (stage_changes); a newer
     // audit run means it did, and that audit decides next.
     if (after.audit && after.audit.id !== st.audit?.id) {
@@ -673,7 +729,11 @@ export async function awaitQualityGateOpen(
         askedToAccept = true;
         await sendChatPromptAndWait(page, QUALITY_ACCEPT_REMAINING_PROMPT);
         const decided = await read();
-        if (decided.gate?.open) return await opened(decided.gate.state);
+        if (decided.gate?.open) {
+          const done = await opened();
+          if (done) return done;
+          continue;
+        }
       }
       throw new Error(
         `awaitQualityGateOpen: still blocked after ${restages} fix rounds and the operator's accept — ${after.gate?.message ?? "no gate"}`,

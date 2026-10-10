@@ -17,6 +17,11 @@
  *     line lands in admin.log during the scenario's slice (byte offset
  *     scoped, so scenario N doesn't trip on scenario N-1's noise).
  *
+ *   - `_pluginActivationGuard` — disables, after the test, every plugin
+ *     the test activated (see `lib/plugin-isolation.ts`), so a scenario
+ *     that switches on `consent-manager` does not leave the cookie
+ *     runtime and the embed gate on the next scenario's site.
+ *
  * Scenarios opt in by importing `test` + `expect` from this file
  * instead of `@playwright/test`. No call-site change is otherwise
  * required — the assertions run at teardown.
@@ -24,16 +29,37 @@
 
 import { test as base, expect } from "@playwright/test";
 import {
+  activePluginSlugs,
   assertNoBackendErrors,
   assertNoBrowserConsoleErrors,
   attachBrowserConsoleErrorTracker,
+  deactivatePluginAsOwner,
   snapshotBackendLogOffset,
 } from "./helpers.js";
+import { pluginsActivatedDuring } from "./lib/plugin-isolation.js";
 
 export const test = base.extend<{
   _browserConsoleErrorGuard: undefined;
   _backendLogErrorGuard: undefined;
+  _pluginActivationGuard: undefined;
 }>({
+  // Declared FIRST so it is set up first and torn down LAST: its teardown
+  // navigates to /security/plugins, which must not land inside the slices
+  // the console / backend-log guards below judge the scenario by.
+  _pluginActivationGuard: [
+    async ({ page }, use) => {
+      const before = activePluginSlugs();
+      await use(undefined);
+      // Runs on failure too: a scenario that died after activating a
+      // plugin must not hand it to the next scenario (or to its own retry).
+      for (const slug of pluginsActivatedDuring(before, activePluginSlugs())) {
+        await deactivatePluginAsOwner(page, slug);
+      }
+    },
+    // Own budget: a test that ran into its timeout still gets its plugins
+    // switched off.
+    { auto: true, timeout: 90_000 },
+  ],
   _browserConsoleErrorGuard: [
     async ({ page }, use) => {
       const tracker = attachBrowserConsoleErrorTracker(page);

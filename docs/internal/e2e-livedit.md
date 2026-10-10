@@ -282,6 +282,40 @@ out of CI: 10× a 5-min suite is ~50 min, only worth running when
 something material changed (new scenario, new model pin, structural
 edit to assertions).
 
+## Scenario isolation (what carries over between scenarios)
+
+All scenarios share one admin process and one database (`workers: 1`),
+so every piece of site state a scenario changes is visible to the
+scenarios after it — and to its own Playwright retry. Two mechanisms
+reset it:
+
+- **`resetLiveditFixtures()`** (each scenario calls it first) wipes the
+  content state by SQL: chats, pages, modules, content instances,
+  layout placements, non-default templates, import runs.
+- **The plugin activation guard** (`_pluginActivationGuard` in
+  `fixtures.ts`, automatic for every scenario importing `test` from
+  `./fixtures.js`) disables, after each test — pass or fail — every
+  plugin the test activated. It cannot be a SQL reset: the running
+  plugin host keeps its own disabled flag, which only the admin's
+  Disable action flips, so the guard drives `/security/plugins`
+  (`deactivatePluginAsOwner`). `activatePluginAsOwner` re-enables a
+  plugin a previous attempt left `disabled`.
+
+Why the guard exists: in PR #641's run the consent scenario left
+`consent-manager` active. On the homepage scenario after it, the
+plugin's runtime sat in every page; the AI attributed the page's
+`errors-in-console` finding (really a `/favicon.ico` 404) to it and
+built a cookie banner, which then covered the published page in the
+vision check. On the retry the plugin's embed gate withheld the site
+header (an inline SVG's `xmlns` read as a third-party host), costing
+six extra loops. Scenario 1 asserts the precondition in its
+`beforeEach`.
+
+**Not reset today:** the active theme's tokens, site identity
+(`site_defaults`), media and plugin-owned tables. A scenario that
+depends on one of them starting from the seed has to restore it
+itself (the consent scenario wipes its plugin's tables first).
+
 ## Adding a new scenario
 
 Each scenario is a single `apps/admin/e2e-livedit/scenario-*.browser.ts`
