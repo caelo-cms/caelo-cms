@@ -52,8 +52,16 @@ export const test = base.extend<{
       await use(undefined);
       // Runs on failure too: a scenario that died after activating a
       // plugin must not hand it to the next scenario (or to its own retry).
+      // One plugin that cannot be switched off must not keep the others on:
+      // try every one, then fail loudly with all failures.
+      const failures: string[] = [];
       for (const slug of pluginsActivatedDuring(before, activePluginSlugs())) {
-        await deactivatePluginAsOwner(page, slug);
+        await deactivatePluginAsOwner(page, slug).catch((e: unknown) => {
+          failures.push(e instanceof Error ? e.message : String(e));
+        });
+      }
+      if (failures.length > 0) {
+        throw new Error(`plugin activation guard:\n${failures.join("\n")}`);
       }
     },
     // Own budget: a test that ran into its timeout still gets its plugins

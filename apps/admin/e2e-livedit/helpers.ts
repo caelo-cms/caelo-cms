@@ -361,7 +361,16 @@ export async function deactivatePluginAsOwner(page: Page, slug: string): Promise
     await loginAsDevOwner(page);
     await page.goto("/security/plugins");
   }
-  await page.getByTestId(`disable-${slug}`).click();
+  const disable = page.getByTestId(`disable-${slug}`);
+  const found = await disable.count();
+  if (found !== 1) {
+    // Never wait out the fixture budget on a button that is not there: a
+    // plugin left active poisons every later scenario, so say exactly why.
+    throw new Error(
+      `deactivatePluginAsOwner: expected one [data-testid="disable-${slug}"] on /security/plugins, found ${found} — "${slug}" stays ACTIVE and leaks into the next scenario. Every Disable button (Tier 1 and Tier 2 tables) must carry that test id.`,
+    );
+  }
+  await disable.click();
   await expect(page.getByTestId(`reenable-${slug}`)).toHaveCount(1, { timeout: 30_000 });
 }
 
