@@ -47,6 +47,49 @@
     <div class="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-700 dark:bg-red-950 dark:text-red-300">Could not load domains: {data.error}</div>
   {/if}
 
+  {#if data.hosting.supported}
+    <Card>
+      <CardHeader>
+        <CardTitle>Firebase Hosting custom domains</CardTitle>
+        <CardDescription>
+          What visitors actually reach. A domain marked <em>stuck</em> has all DNS records in place but
+          Firebase stopped verifying it — Reconnect re-creates it (it is not serving yet, so nothing
+          goes offline). The CDN cache is cleared automatically once a domain turns active.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-3 text-sm">
+        {#if data.hosting.error}
+          <p class="text-red-600">Status unavailable: {data.hosting.error}</p>
+        {:else if data.hosting.domains.length === 0}
+          <p class="text-muted-foreground">No custom domains on the Firebase Hosting site.</p>
+        {:else}
+          {#each data.hosting.domains as h (h.hostname)}
+            <div class="flex items-start justify-between gap-3 rounded border p-3">
+              <div class="space-y-1">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-xs">{h.hostname}</span>
+                  <Badge variant={h.status === "active" ? "secondary" : h.status === "stuck" ? "destructive" : "outline"}>{h.status.replace("_", " ")}</Badge>
+                </div>
+                <p class="text-xs text-muted-foreground">{h.summary}</p>
+              </div>
+              {#if h.status === "stuck" || h.status === "deleted"}
+                <form method="post" action="?/reconnect" use:enhance>
+                  <input type="hidden" name="hostname" value={h.hostname} />
+                  <Button type="submit" size="sm">Reconnect</Button>
+                </form>
+              {/if}
+            </div>
+          {/each}
+        {/if}
+        {#if data.hosting.cdnPurge}
+          <p class="text-xs text-muted-foreground">
+            CDN cache cleared for {data.hosting.cdnPurge.hostnames.join(", ")} (the live version was re-released).
+          </p>
+        {/if}
+      </CardContent>
+    </Card>
+  {/if}
+
   <Card>
     <CardHeader>
       <CardTitle>Add a domain</CardTitle>

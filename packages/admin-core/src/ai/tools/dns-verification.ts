@@ -25,6 +25,7 @@ import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { hostingStatusSection } from "./domain-hosting-status.js";
 
 const MAX_DOMAINS = 20;
 const MAX_RECORDS = 50;
@@ -53,6 +54,7 @@ export const verifyDomainsTool: ToolDefinitionWithHandler<VerifyDomainsInput> = 
   description:
     "Check whether the site's registered domains resolve in DNS yet (A/AAAA lookup) and refresh each domain's verification stamp + provisional TLS status. " +
     "Use after the operator says they updated DNS, after a `propose_add_domain` was approved, or when a domain shows TLS 'unknown'/'pending' in `list_domains`. Omit `hostnames` to check all domains at once. " +
+    "On Firebase Hosting installs the result also carries each hosting custom domain's live state; a domain reported 'stuck' is healed with `propose_reconnect_domain`. " +
     "Read-only diagnostics — safe to call any time. 'not resolved' usually means the registrar change has not propagated yet (minutes to hours); report it instead of retrying in a loop. " +
     "To check the exact records the installer asked for (CNAME/TXT values), use `verify_dns_records`.",
   schema: verifyDomainsInput,
@@ -63,6 +65,13 @@ export const verifyDomainsTool: ToolDefinitionWithHandler<VerifyDomainsInput> = 
     }
     const all = (listed.value as { domains: DomainRow[] }).domains;
     if (all.length === 0) {
+      const hosting = await hostingStatusSection(ctx, toolCtx);
+      if (hosting) {
+        return {
+          ok: true,
+          content: `No domains are registered in Caelo's domain list (the hosting custom domains below come from the installer).\n\n${hosting}`,
+        };
+      }
       return {
         ok: false,
         content:
@@ -109,9 +118,10 @@ export const verifyDomainsTool: ToolDefinitionWithHandler<VerifyDomainsInput> = 
       !input.hostnames && all.length > MAX_DOMAINS
         ? `\n# ${MAX_DOMAINS} of ${all.length} domains checked — pass hostnames to check the rest.`
         : "";
+    const hosting = await hostingStatusSection(ctx, toolCtx);
     return {
       ok: failures < targets.length,
-      content: `${lines.join("\n")}${truncated}`,
+      content: `${lines.join("\n")}${truncated}${hosting ? `\n\n${hosting}` : ""}`,
     };
   },
 };
