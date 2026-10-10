@@ -690,6 +690,57 @@ export function iamMember(
   }
 }
 
+// ===========================================================================
+// Firewall rules that must not exist
+// ===========================================================================
+
+/**
+ * One firewall rule GCP auto-creates on the project's `default` network that
+ * a Caelo install must not have, in the exact shape GCP creates it. Only a
+ * rule matching this shape is deleted; a rule with the same name in any other
+ * shape is someone's deliberate change and is reported instead
+ * (default-firewall.ts).
+ */
+export interface AbsentDefaultFirewallRule {
+  readonly name: string;
+  readonly protocol: "tcp";
+  readonly port: string;
+  readonly why: string;
+}
+
+/** The auto-created network every new GCP project gets with Compute Engine. */
+export const GCP_DEFAULT_NETWORK = "default";
+
+/**
+ * Enabling Compute Engine gives a new project the `default` VPC network with
+ * four firewall rules. Two of them open SSH and RDP to the whole internet
+ * (`0.0.0.0/0`) for any VM on that network. Caelo runs no VMs and does not
+ * use the `default` network at all (the stacks create their own
+ * `${namePrefix}-vpc`, with no firewall rules, for Cloud SQL private IP and
+ * Cloud Run direct VPC egress), so the rules grant nothing today. They are
+ * still an open admin port on the books: every ISO 27001-style audit flags
+ * them, and the first VM anyone adds to the project would be reachable.
+ * The wizard and `upgrade` delete them.
+ *
+ * `default-allow-internal` (all traffic between instances on the network)
+ * and `default-allow-icmp` stay: neither opens a remote-admin port, and the
+ * network itself stays because deleting it is not ours to decide.
+ */
+export const ABSENT_DEFAULT_FIREWALL_RULES: readonly AbsentDefaultFirewallRule[] = [
+  {
+    name: "default-allow-ssh",
+    protocol: "tcp",
+    port: "22",
+    why: "SSH open to 0.0.0.0/0 on the default network; Caelo runs no VMs",
+  },
+  {
+    name: "default-allow-rdp",
+    protocol: "tcp",
+    port: "3389",
+    why: "RDP open to 0.0.0.0/0 on the default network; Caelo runs no VMs",
+  },
+];
+
 /** Name prefix of the `gcp` stack's static backend bucket (Pulumi auto-suffixed). */
 export function staticBackendBucketPrefix(env: string): string {
   return `${gcpNamePrefix(env)}-static-backend`;

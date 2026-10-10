@@ -12,11 +12,15 @@
  *     is checked against the resource's policy first and only added when
  *     missing, so an operator without IAM-admin rights can still upgrade an
  *     install that is already in shape.
+ *   - {@link ensureStackInvariants} also deletes the internet-open SSH/RDP
+ *     firewall rules GCP auto-creates on the `default` network
+ *     (default-firewall.ts), the one thing it removes.
  *   - {@link planMediaVolume}: the admin's media bucket volume (gen2 + Cloud
  *     Storage volume + mount), added in the same `services update` when
  *     missing.
  */
 
+import { removeDefaultIngressRules } from "./default-firewall.js";
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import { gcpBucketName, gcpSecretId } from "./gcp-names.js";
@@ -553,7 +557,9 @@ async function ensureCdnPolicy(
 
 /**
  * Idempotently ensure every IAM binding and CDN setting the install's stack
- * declares (stack-contract.ts). Additive only — nothing is removed. Never
+ * declares (stack-contract.ts), and that the default network's internet-open
+ * SSH/RDP rules are gone (ABSENT_DEFAULT_FIREWALL_RULES). Bindings are only
+ * added, never removed; the two firewall rules are the only deletion. Never
  * throws for a gcloud failure; the report says what failed and whether the
  * upgrade must stop.
  */
@@ -594,6 +600,7 @@ export async function ensureStackInvariants(
     : invariants.filter((i) => i.member !== "iap-service-agent");
   outcomes.push(...(await ensureIam(checkable, install, projectNumber, run, sleep)));
   if (install.provider === "gcp") outcomes.push(await ensureCdnPolicy(install, run));
+  outcomes.push(...(await removeDefaultIngressRules(install.projectId, { run })));
 
   return {
     outcomes,

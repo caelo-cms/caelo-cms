@@ -2,7 +2,11 @@
 
 import { describe, expect, it } from "bun:test";
 import type { GcloudResult } from "./gcloud.js";
-import { STATIC_CDN_POLICY, stackIamInvariants } from "./stack-contract.js";
+import {
+  ABSENT_DEFAULT_FIREWALL_RULES,
+  STATIC_CDN_POLICY,
+  stackIamInvariants,
+} from "./stack-contract.js";
 import {
   ensureStackInvariants,
   type InstallTarget,
@@ -480,6 +484,7 @@ describe("ensureStackInvariants", () => {
     "run services get-iam-policy caelo-production-admin-aaa": [
       policy([{ role: "roles/run.invoker", members: [IAP_AGENT] }]),
     ],
+    "compute firewall-rules list": [ok("[]")],
   });
 
   it("is a read-only no-op on an install that is already in shape", async () => {
@@ -487,8 +492,41 @@ describe("ensureStackInvariants", () => {
     const report = await ensureStackInvariants(firebase, { run, sleep: async () => {} });
     expect(report.mustAbort).toBe(false);
     expect(report.outcomes.every((o) => o.status === "present")).toBe(true);
-    expect(report.outcomes).toHaveLength(stackIamInvariants("gcp-firebase").length);
+    expect(report.outcomes).toHaveLength(
+      stackIamInvariants("gcp-firebase").length + ABSENT_DEFAULT_FIREWALL_RULES.length,
+    );
+    expect(calls.some((c) => c.startsWith("compute firewall-rules delete"))).toBe(false);
     expect(calls.some((c) => c.includes("add-iam-policy-binding"))).toBe(false);
+  });
+
+  it("upgrade deletes GCP's default SSH/RDP-from-anywhere firewall rules without aborting", async () => {
+    const stock = (name: string, port: string) => ({
+      name,
+      network: "https://www.googleapis.com/compute/v1/projects/acme/global/networks/default",
+      direction: "INGRESS",
+      priority: 65534,
+      sourceRanges: ["0.0.0.0/0"],
+      allowed: [{ IPProtocol: "tcp", ports: [port] }],
+    });
+    const answers = {
+      ...fullFirebase(),
+      "compute firewall-rules list": [
+        ok(JSON.stringify([stock("default-allow-ssh", "22"), stock("default-allow-rdp", "3389")])),
+      ],
+    };
+    const { run, calls } = fakeGcloud(answers);
+    const report = await ensureStackInvariants(firebase, { run, sleep: async () => {} });
+    expect(report.mustAbort).toBe(false);
+    expect(calls).toContain(
+      "compute firewall-rules delete default-allow-ssh --project=acme --quiet",
+    );
+    expect(calls).toContain(
+      "compute firewall-rules delete default-allow-rdp --project=acme --quiet",
+    );
+    expect(report.outcomes.filter((o) => o.status === "applied").map((o) => o.id)).toEqual([
+      "firewall rule default-allow-ssh (tcp:22 from 0.0.0.0/0)",
+      "firewall rule default-allow-rdp (tcp:3389 from 0.0.0.0/0)",
+    ]);
   });
 
   it("regression A5: adds the gateway run.viewer + telemetry roles an older install lacks", async () => {
@@ -621,6 +659,7 @@ describe("ensureStackInvariants", () => {
         policy([{ role: "roles/run.invoker", members: [IAP_AGENT] }]),
       ],
       "compute backend-buckets list": [ok("caelo-production-static-backend-9f8e7d6\n")],
+      "compute firewall-rules list": [ok("[]")],
     });
 
     it("raises the pre-#555 1h/24h TTLs to a year", async () => {
