@@ -38,7 +38,7 @@ export {
   loadCdnCopyAdapter,
   selfHostedCdnCopy,
 } from "./cdn-copy.js";
-export { type ComposeSpec, generateDockerCompose } from "./compose.js";
+export { type ComposeSpec, generateDockerCompose, type RolePasswords } from "./compose.js";
 export {
   type CloudFrontRedirectArtifact,
   emitRedirectsAzureFrontDoor,

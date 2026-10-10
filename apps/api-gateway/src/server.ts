@@ -21,17 +21,26 @@
  *   6. Plugin host dispatch + sessionMutation cookie emission.
  *   7. Request log row written async (best-effort; failure does not
  *      affect the response).
+ *
+ * Database identity (issue #613, CLAUDE.md §2): the gateway never holds an
+ * admin_role credential. It reaches cms_admin as `gateway_role` — read
+ * access to its settings and the plugin registry, append access to its own
+ * state (rate-limit buckets, captcha challenges, request log, plugin op
+ * audit), nothing else (migration 0248) — and cms_public as `public_role`.
+ * Its plugin host only attaches what the admin registered and an Owner
+ * activated (plugin-host gateway-attach.ts); it never registers, provisions
+ * or activates anything itself.
  */
 
 import { resolve } from "node:path";
 import {
-  bootstrap as bootstrapPluginHost,
+  bootstrapDispatchOnly,
   ensureDevSignedManifests,
   loadedPlugins,
   runPluginOperation,
+  syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
-import { databaseUrlFromEnv } from "@caelo-cms/shared";
 // Read SQL via globalThis.Bun rather than a value-import of "bun".
 // The type-only import is erased at compile; the runtime constructor
 // comes from Bun's globals. Keeps this file bundler-safe for any
@@ -45,6 +54,7 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
 ) => SQLType;
 
 import { handleVariantAssign, VARIANT_SCRIPT } from "./ab-router.js";
+import { GATEWAY_DATABASE_ROLES, gatewayDatabaseUrls } from "./database-env.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
 import {
   type CaptchaConfig,
@@ -61,14 +71,14 @@ import {
   rateLimitKey,
   resolveRateLimitSpec,
 } from "./middleware/rate-limit.js";
-import {
-  generateCookieSecret,
-  signCookieValue,
-  verifySignedCookie,
-} from "./middleware/signed-cookie.js";
+import { signCookieValue, verifySignedCookie } from "./middleware/signed-cookie.js";
 
-const ADMIN_URL = databaseUrlFromEnv(["ADMIN_DATABASE_URL"]);
-const PUBLIC_URL = databaseUrlFromEnv(["PUBLIC_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL"]);
+export {
+  ADMIN_CREDENTIAL_ENV,
+  GATEWAY_DATABASE_ROLES,
+  gatewayDatabaseUrls,
+} from "./database-env.js";
+
 const SYSTEM_ACTOR_ID = process.env.CAELO_SYSTEM_ACTOR_ID ?? "00000000-0000-0000-0000-00000000ffff";
 // Cloud Run sets PORT=8080 on every container; read that first so a
 // platform deploy needs no extra config. GATEWAY_PORT is the historical
@@ -179,14 +189,15 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
       }[],
   );
   const row = rows[0];
-  let secret = row?.cookie_secret;
-  if (!secret) {
-    secret = generateCookieSecret();
-    await adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
-      await tx.execute(sql`
-        UPDATE site_settings SET gateway_cookie_secret = ${secret} WHERE id = 1
-      `);
-    });
+  const secret = row?.cookie_secret;
+  if (!row || !secret) {
+    // Migration 0248 seeds the secret and the admin rotates it; the gateway
+    // has no write access to site_settings (#613), so it cannot mint one.
+    throw new GatewayNotReadyError(
+      row
+        ? "site_settings.gateway_cookie_secret is not set; run the database migrations (0248 seeds it) or rotate it from /security/gateway"
+        : "site_settings has no row; run the database migrations",
+    );
   }
   const settings: GatewaySettings = {
     cookieSecret: secret,
@@ -198,6 +209,48 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
   };
   cachedSettings = { settings, loadedAt: Date.now() };
   return settings;
+}
+
+/** The gateway cannot serve yet; answered as 503 with the reason. */
+export class GatewayNotReadyError extends Error {
+  override readonly name = "GatewayNotReadyError";
+}
+
+/**
+ * The 503 for settings that could not be loaded. Only the gateway's own
+ * readiness reason ({@link GatewayNotReadyError}) reaches the caller; any
+ * other failure (an unreachable database, a refused login, a broken query)
+ * would hand an unauthenticated visitor hosts, role names or SQL, so it is
+ * logged here and the visitor gets a generic message.
+ */
+export function settingsUnavailable(e: unknown): Response {
+  if (e instanceof GatewayNotReadyError) {
+    return jsonResponse(
+      { ok: false, error: { kind: "ServiceUnavailable", message: e.message } },
+      { status: 503 },
+    );
+  }
+  console.error(`[api-gateway] gateway settings could not be loaded: ${describeFailure(e)}`);
+  return jsonResponse(
+    {
+      ok: false,
+      error: { kind: "ServiceUnavailable", message: "the gateway is temporarily unavailable" },
+    },
+    { status: 503 },
+  );
+}
+
+/**
+ * A failure for the server log: its class, SQLSTATE and message, with the
+ * credentials a connection URL in the message could carry masked.
+ */
+function describeFailure(e: unknown): string {
+  if (!(e instanceof Error)) return "non-Error thrown";
+  const code = (e as { code?: unknown }).code;
+  // Bounded quantifiers: an unbounded `\w+` before `://` backtracks
+  // quadratically on a long message without one (CodeQL js/polynomial-redos).
+  const message = e.message.replace(/([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s@/]{0,512}@/gi, "$1***@");
+  return `${e.name}${typeof code === "string" ? ` (${code})` : ""}: ${message}`;
 }
 
 export function invalidateGatewaySettings(): void {
@@ -339,7 +392,12 @@ export async function handleRequest(req: Request): Promise<Response> {
       { status: 503 },
     );
   }
-  const settings = await loadSettings(cachedAdapter);
+  let settings: GatewaySettings;
+  try {
+    settings = await loadSettings(cachedAdapter);
+  } catch (e) {
+    return settingsUnavailable(e);
+  }
 
   // ---- Captcha challenge endpoint ----
   if (req.method === "GET" && url.pathname === "/api/captcha/challenge") {
@@ -519,7 +577,9 @@ export async function handleRequest(req: Request): Promise<Response> {
     return jsonResponse({ ok: true, data: { accepted: true } });
   }
 
-  // 4. Rate limit.
+  // 4. Rate limit. The registry sync first, so a plugin an Owner just
+  // activated (or disabled) is seen with its manifest's limits.
+  await syncDispatchPlugins();
   const plugin = loadedPlugins.bySlug(slug);
   const spec = await resolveRateLimitSpec(cachedAdapter, slug, operationName, plugin);
   const rl = await consumeRateLimit(cachedAdapter, {
@@ -661,12 +721,13 @@ export async function handleRequest(req: Request): Promise<Response> {
 // ---------------------------------------------------------------------------
 
 if (import.meta.main) {
-  if (!ADMIN_URL || !PUBLIC_URL) {
-    throw new Error("ADMIN_DATABASE_URL + PUBLIC_DATABASE_URL must be set");
-  }
+  const urls = gatewayDatabaseUrls(process.env);
+  // The "admin" pool is the cms_admin pool, opened as gateway_role.
+  // verifyRoles fails loudly if either URL resolves to another role.
   const adapter = new DatabaseAdapter({
-    adminDatabaseUrl: ADMIN_URL,
-    publicDatabaseUrl: PUBLIC_URL,
+    adminDatabaseUrl: urls.gateway,
+    publicDatabaseUrl: urls.public,
+    expectedRoles: GATEWAY_DATABASE_ROLES,
   });
   const registry = new OperationRegistry();
   setGatewayAdapter(adapter);
@@ -679,7 +740,7 @@ if (import.meta.main) {
   // when this fails (e.g. during DB restart) so we don't block boot.
   void (async () => {
     try {
-      const listenSql = new SQL(ADMIN_URL);
+      const listenSql = new SQL(urls.gateway);
       // Bun's `unsafe` runs LISTEN on the bound connection; subsequent
       // notifications stream via `for await` on the connection's
       // notifications iterator.
@@ -714,7 +775,9 @@ if (import.meta.main) {
       }
     }
   }
-  const report = await bootstrapPluginHost({
+  // Dispatch-only: verify what this image ships, attach what the admin's
+  // registry marks active, write nothing (#613).
+  const report = await bootstrapDispatchOnly({
     infra: { adapter, registry },
     pluginsRoot: PLUGINS_ROOT,
     systemActorId: SYSTEM_ACTOR_ID,

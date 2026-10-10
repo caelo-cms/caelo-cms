@@ -82,6 +82,11 @@ function randomHex(bytes: number): string {
 }
 
 const postgresPassword = pulumi.secret(randomHex(32));
+// #613 — one password per database role, so the gateway (public_role +
+// gateway_role) never holds admin_role's. bootstrap.sh creates the roles
+// with these (PUBLIC_ROLE_PASSWORD / GATEWAY_ROLE_PASSWORD).
+const publicRolePassword = pulumi.secret(randomHex(32));
+const gatewayRolePassword = pulumi.secret(randomHex(32));
 const csrfSecret = pulumi.secret(randomHex(32));
 const cookieSecret = pulumi.secret(randomHex(32));
 const anthropicApiKey = pulumi.secret(process.env.ANTHROPIC_API_KEY ?? "");
@@ -110,6 +115,8 @@ function keyVaultSecret(shortName: string, value: pulumi.Output<string>): azure.
 }
 
 const _pgSecret = keyVaultSecret("pg-password", postgresPassword);
+keyVaultSecret("public-role-password", publicRolePassword);
+keyVaultSecret("gateway-role-password", gatewayRolePassword);
 keyVaultSecret("csrf-secret", csrfSecret);
 keyVaultSecret("cookie-secret", cookieSecret);
 keyVaultSecret("anthropic-api-key", anthropicApiKey);
@@ -152,9 +159,18 @@ const _pgPublic = new azure.dbforpostgresql.Database(`${namePrefix}-cms-public-d
 const adminDatabaseUrl = pulumi
   .all([pgServer.fullyQualifiedDomainName, postgresPassword])
   .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_admin?sslmode=require`);
-const publicDatabaseUrl = pulumi
+// What the admin connects to cms_public with (DDL, migrations, moderation).
+const publicAdminDatabaseUrl = pulumi
   .all([pgServer.fullyQualifiedDomainName, postgresPassword])
-  .apply(([host, pw]) => `postgresql://caelo_public:${pw}@${host}:5432/cms_public?sslmode=require`);
+  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_public?sslmode=require`);
+// The gateway's two logins (#613): public_role on cms_public and
+// gateway_role on cms_admin, each with its own password.
+const publicDatabaseUrl = pulumi
+  .all([pgServer.fullyQualifiedDomainName, publicRolePassword])
+  .apply(([host, pw]) => `postgresql://public_role:${pw}@${host}:5432/cms_public?sslmode=require`);
+const gatewayDatabaseUrl = pulumi
+  .all([pgServer.fullyQualifiedDomainName, gatewayRolePassword])
+  .apply(([host, pw]) => `postgresql://gateway_role:${pw}@${host}:5432/cms_admin?sslmode=require`);
 
 // === 4. Storage account + containers ===
 const storage = new azure.storage.StorageAccount(`${namePrefix}-st`, {
@@ -215,6 +231,12 @@ const cappEnv = new azure.app.ManagedEnvironment(`${namePrefix}-capp-env`, {
 
 interface ContainerAppArgs {
   readonly serviceName: string;
+  /**
+   * The service's database connection env. The admin-side services get
+   * admin_role's URLs; the gateway gets only its own two logins (#613,
+   * CLAUDE.md §2 — never an admin_role credential).
+   */
+  readonly databaseEnv: ReadonlyArray<{ name: string; value: pulumi.Input<string> }>;
   readonly extraEnv?: ReadonlyArray<{ name: string; value: pulumi.Input<string> }>;
   /** Defaults to 0.5 vCPU / 1 GiB. */
   readonly resources?: { readonly cpu: number; readonly memory: string };
@@ -246,8 +268,7 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
           env: [
             { name: "CAELO_PROVIDER", value: "azure" },
             { name: "CAELO_ENV", value: env },
-            { name: "ADMIN_DATABASE_URL", value: adminDatabaseUrl },
-            { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicDatabaseUrl },
+            ...args.databaseEnv,
             {
               name: "MEDIA_STORAGE_URL",
               value: pulumi.interpolate`https://${storage.name}.blob.core.windows.net/media`,
@@ -261,18 +282,34 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
   });
 }
 
+const adminDatabaseEnv = [
+  { name: "ADMIN_DATABASE_URL", value: adminDatabaseUrl },
+  { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl },
+];
 const adminApp = containerApp({
   serviceName: "admin",
+  databaseEnv: adminDatabaseEnv,
   resources: adminResources,
   // #551 — the public site URL; the admin seeds site_defaults.site_base_url
   // from it (canonical, og:url, sitemap) when it is not configured yet.
   extraEnv: [{ name: "CAELO_SITE_URL", value: `https://${domain}` }],
 });
-const _gatewayApp = containerApp({ serviceName: "gateway" });
-const _orchestratorApp = containerApp({ serviceName: "orchestrator" });
-const _runnerApp = containerApp({ serviceName: "runner" });
+const _gatewayApp = containerApp({
+  serviceName: "gateway",
+  databaseEnv: [
+    { name: "GATEWAY_DATABASE_URL", value: gatewayDatabaseUrl },
+    { name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl },
+  ],
+});
+const _orchestratorApp = containerApp({
+  serviceName: "orchestrator",
+  databaseEnv: adminDatabaseEnv,
+});
+const _runnerApp = containerApp({ serviceName: "runner", databaseEnv: adminDatabaseEnv });
 const edgeRouterApp = containerApp({
   serviceName: "edge-router",
+  // Serves the static site and the A/B routing manifest; no database.
+  databaseEnv: [],
   extraEnv: [
     {
       name: "STATIC_BUCKET_URL",
@@ -304,6 +341,7 @@ const dnsRecordsRequired: DnsRecord[] = [
 const out: CloudAdapterOutputs = {
   adminDatabaseUrl: adminDatabaseUrl as unknown as string,
   publicDatabaseUrl: publicDatabaseUrl as unknown as string,
+  gatewayDatabaseUrl: gatewayDatabaseUrl as unknown as string,
   mediaStorageUrl:
     pulumi.interpolate`https://${storage.name}.blob.core.windows.net/media` as unknown as string,
   mediaCdnBaseUrl: pulumi.interpolate`https://${domain}/media` as unknown as string,
@@ -317,6 +355,7 @@ const out: CloudAdapterOutputs = {
 
 export const adminDatabaseUrlOut = out.adminDatabaseUrl;
 export const publicDatabaseUrlOut = out.publicDatabaseUrl;
+export const gatewayDatabaseUrlOut = out.gatewayDatabaseUrl;
 export const mediaStorageUrlOut = out.mediaStorageUrl;
 export const mediaCdnBaseUrlOut = out.mediaCdnBaseUrl;
 export const bootstrapUrlOut = out.bootstrapUrl;

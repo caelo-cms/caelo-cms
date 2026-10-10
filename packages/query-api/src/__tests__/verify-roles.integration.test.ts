@@ -98,4 +98,23 @@ describe("DatabaseAdapter.verifyRoles()", () => {
       },
     );
   });
+
+  it("does not memoise a failure — the next call probes again (#613)", async () => {
+    // The API gateway boots before migrations on a fresh install; a cached
+    // rejection would fail every call until a restart.
+    await withAdapter(
+      {
+        adminDatabaseUrl: ADMIN_URL,
+        publicDatabaseUrl: PUBLIC_ROLE_URL,
+        expectedRoles: { admin: "job@p.iam", public: ["job@p.iam"] },
+      },
+      async (a) => {
+        const p1 = a.verifyRoles();
+        await expect(p1).rejects.toThrow(/admin pool expected/);
+        const p2 = a.verifyRoles();
+        expect(p2).not.toBe(p1);
+        await expect(p2).rejects.toThrow(/admin pool expected/);
+      },
+    );
+  });
 });

@@ -232,7 +232,8 @@ export async function buildProviderHistory(
     repaired.strippedToolCallIds.length > 0 ||
     repaired.droppedEmptyAssistantMessages > 0 ||
     repaired.strippedServerToolCallIds.length > 0 ||
-    repaired.answeredInterruptedCalls.length > 0
+    repaired.answeredInterruptedCalls.length > 0 ||
+    repaired.relocatedToolResultIds.length > 0
   ) {
     console.error("[chat-runner] history-repaired", {
       droppedToolResultIds: repaired.droppedToolResultIds,
@@ -240,6 +241,7 @@ export async function buildProviderHistory(
       droppedEmptyAssistantMessages: repaired.droppedEmptyAssistantMessages,
       strippedServerToolCallIds: repaired.strippedServerToolCallIds,
       answeredInterruptedCalls: repaired.answeredInterruptedCalls,
+      relocatedToolResultIds: repaired.relocatedToolResultIds,
     });
     await onRepair?.(repaired);
   }

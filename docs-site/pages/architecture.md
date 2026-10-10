@@ -31,6 +31,7 @@ Query API (packages/query-api)                  ← every write goes through her
   ↓
 Postgres
   ├ cms_admin (admin_role)                      ← pages, modules, snapshots, audit
+  │   └ gateway_role                            ← the API gateway's narrow login
   └ cms_public (public_role + per-plugin scope) ← plugin data, visitor sessions
 
 Plugin host (packages/plugin-host)              ← loads active plugins, brokers grants
@@ -38,7 +39,8 @@ Plugin host (packages/plugin-host)              ← loads active plugins, broker
   └ runtime-installed plugins (Deno sandbox)    ← built by the AI or pasted by an Owner
 
 Static generator (apps/static-generator)        ← runs at deploy; emits dist/
-API gateway (apps/api-gateway)                  ← public visitor writes; cms_public role
+API gateway (apps/api-gateway)                  ← public visitor writes; public_role +
+                                                  gateway_role, never admin_role
 MCP server (packages/mcp-server)                ← talk to your install from any IDE
 ```
 

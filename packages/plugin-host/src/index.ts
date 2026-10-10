@@ -85,6 +85,13 @@ export {
 export { operatorHasPermission } from "./external-authorization.js";
 export { resolvePreviewFonts } from "./font-preview.js";
 export {
+  bootstrapDispatchOnly,
+  type DispatchOnlyBootstrapOpts,
+  resetDispatchOnlyHost,
+  SYNC_TTL_MS,
+  syncDispatchPlugins,
+} from "./gateway-attach.js";
+export {
   type CollectedContributions,
   collectContributions,
   composeHeadBlock,

@@ -12,6 +12,8 @@
 #   POSTGRES_USER / POSTGRES_DB         — superuser creds (required)
 #   ADMIN_ROLE_PASSWORD                 — required
 #   PUBLIC_ROLE_PASSWORD                — required
+#   GATEWAY_ROLE_PASSWORD               — required (the API gateway's own
+#                                         cms_admin login, issue #613)
 #   PGHOST / PGPORT / PGPASSWORD        — optional; libpq picks them up so the
 #                                         same script works for CI (TCP) and
 #                                         initdb.d (socket) without code change.
@@ -20,6 +22,7 @@ set -e
 
 : "${ADMIN_ROLE_PASSWORD:?must be set in environment}"
 : "${PUBLIC_ROLE_PASSWORD:?must be set in environment}"
+: "${GATEWAY_ROLE_PASSWORD:?must be set in environment}"
 
 PSQL="psql -v ON_ERROR_STOP=1 --username ${POSTGRES_USER} --dbname ${POSTGRES_DB}"
 
@@ -36,6 +39,10 @@ exists_role admin_role \
   || $PSQL -c "CREATE ROLE admin_role NOINHERIT LOGIN PASSWORD '${ADMIN_ROLE_PASSWORD}';"
 exists_role public_role \
   || $PSQL -c "CREATE ROLE public_role NOINHERIT LOGIN PASSWORD '${PUBLIC_ROLE_PASSWORD}';"
+# The API gateway's cms_admin login (issue #613). Its grants come from
+# migration 0248 (caelo_grant_gateway_role); it never connects to cms_public.
+exists_role gateway_role \
+  || $PSQL -c "CREATE ROLE gateway_role NOINHERIT LOGIN PASSWORD '${GATEWAY_ROLE_PASSWORD}';"
 
 # Read-only role of the operator-access sync job (migration 0239 grants it
 # its columns). Created here because the local admin_role has no CREATEROLE;
@@ -55,3 +62,10 @@ $PSQL -c "GRANT CONNECT ON DATABASE cms_public TO public_role, admin_role;"
 
 # public_role gets zero default-schema privileges on cms_admin by omission;
 # enforced by the role-isolation.integration.test suite.
+
+# A cms_admin that ran migration 0248 before gateway_role existed (a local
+# database created before the role was added here) has no grants for it yet:
+# re-apply them. Idempotent; a database without the migration skips this.
+if $PSQL -d cms_admin -Atc "SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_gateway_role'" | grep -q 1; then
+  $PSQL -d cms_admin -c "SELECT caelo_grant_gateway_role();"
+fi

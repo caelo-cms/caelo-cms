@@ -74,6 +74,7 @@ describe("self-hosted compose", () => {
   const base = {
     domain: "acme.com",
     postgresPassword: "pw",
+    rolePasswords: { admin: "a", public: "b", gateway: "g" },
     minioRootUser: "caelo",
     minioRootPassword: "pw",
     caeloSecretKek: "0".repeat(64),

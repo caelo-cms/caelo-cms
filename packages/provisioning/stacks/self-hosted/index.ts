@@ -42,21 +42,35 @@ const tokenPath = resolve(caeloDir, "pending-token.json");
 // in the state file; `pulumi stack output --show-secrets postgresPassword`
 // is the operator's recovery path.
 const postgresPassword = pulumi.secret(randomHex(32));
+// #613 — one password per application role; the gateway gets only the
+// public_role and gateway_role ones.
+const adminRolePassword = pulumi.secret(randomHex(32));
+const publicRolePassword = pulumi.secret(randomHex(32));
+const gatewayRolePassword = pulumi.secret(randomHex(32));
 const minioRootUser = "caelo";
 const minioRootPassword = pulumi.secret(randomHex(32));
 
-const composeYaml = pulumi.all([postgresPassword, minioRootPassword]).apply(([pgPw, minioPw]) =>
-  generateDockerCompose({
-    domain,
-    postgresPassword: pgPw,
-    minioRootUser,
-    minioRootPassword: minioPw,
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-    resendApiKey: process.env.RESEND_API_KEY,
-    diskSize: "20Gi",
-    ...(adminMemory ? { adminMemory } : {}),
-  }),
-);
+const composeYaml = pulumi
+  .all([
+    postgresPassword,
+    minioRootPassword,
+    adminRolePassword,
+    publicRolePassword,
+    gatewayRolePassword,
+  ])
+  .apply(([pgPw, minioPw, adminPw, publicPw, gatewayPw]) =>
+    generateDockerCompose({
+      domain,
+      postgresPassword: pgPw,
+      rolePasswords: { admin: adminPw, public: publicPw, gateway: gatewayPw },
+      minioRootUser,
+      minioRootPassword: minioPw,
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+      resendApiKey: process.env.RESEND_API_KEY,
+      diskSize: "20Gi",
+      ...(adminMemory ? { adminMemory } : {}),
+    }),
+  );
 
 const caddyConf = generateCaddyfile({
   ownerEmail,
