@@ -14,6 +14,7 @@ import type { AIProvider } from "../provider.js";
 import type { SubagentResultCapture } from "../tools/dispatch.js";
 import type { ToolRegistry } from "../tools/index.js";
 import type { JudgeTurnCompleteness } from "./turn-completeness-judge.js";
+import type { ChatTurnSerializer } from "./turn-serializer.js";
 
 export type ClientEvent =
   | { kind: "text-delta"; text: string }
@@ -138,6 +139,12 @@ export interface ChatRunnerOptions {
   readonly maxToolLoops?: number;
   /** P5.2 #2 — propagated to the provider; aborts halt the loop cleanly. */
   readonly abortSignal?: AbortSignal;
+  /**
+   * issue #628 — the per-chat turn serializer. Production leaves it unset
+   * (one serializer per admin process); tests pass separate instances to
+   * stand in for separate admin instances sharing one database.
+   */
+  readonly turnSerializer?: ChatTurnSerializer;
   /**
    * issue #106 (redesign) — override the narrate-then-stop completeness judge.
    * Tests inject a stub so the RECOVER layer can be driven without an AI

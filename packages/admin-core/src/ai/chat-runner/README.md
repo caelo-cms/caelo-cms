@@ -31,10 +31,13 @@ directory, so every existing import path keeps resolving.
 | `passive-turn.ts` | Loop-0 empty/passive-response diagnostics. |
 | `write-tools.ts` | Read/meta vs. write tool classification — the cheap structural pre-filter in front of the narrate-then-stop judge (issue #106 redesign). |
 | `turn-completeness-judge.ts` | Small-model verdict on whether a text-only turn answered the operator or merely announced work it never did (issue #106 redesign). |
+| `turn-serializer.ts` | One turn at a time per chat, across admin instances (issue #628): an in-process FIFO per chat in front of a heartbeat-renewed lease row in `chat_turn_leases` (`chat.*_turn_lease` ops). Released in `runChatTurn`'s `finally`; a crashed holder's lease lapses after its TTL. |
+| `history-repair.ts` | Replay-time tool_use/tool_result pairing repair: orphan results dropped, unanswered calls stripped or answered, dangling tool-search calls stripped (#442), results separated from their call by an interleaved turn moved back (#628). |
 | `types.ts` | Shared types (`ClientEvent`, `ChatRunnerOptions`, `StopReason`, `ToolDispatchResult`, `StoppingDiagnostics`, `AccumulatedToolCall`, `RunChatTurnFn`). |
 
 ## Orchestration order (`runChatTurn`)
 
+0. Wait for the chat's previous turn and hold the chat (`turn-serializer.ts`).
 1. `persistUserMessage` → `loadMemory` + `loadSession` (`persistence.ts`).
 2. `buildSystemContextBlocks` → pre-catalogue blocks + skill engagement (`context-blocks.ts` → `context/*`).
 3. `buildToolCatalogue` (`tool-catalogue.ts`). Tool definitions are STATIC (#335 — no per-turn describe-state embedding, so Anthropic's `tools` prefix stays prompt-cacheable).
