@@ -247,7 +247,9 @@ export function settingsUnavailable(e: unknown): Response {
 function describeFailure(e: unknown): string {
   if (!(e instanceof Error)) return "non-Error thrown";
   const code = (e as { code?: unknown }).code;
-  const message = e.message.replace(/(\w+:\/\/)[^\s@/]*@/g, "$1***@");
+  // Bounded quantifiers: an unbounded `\w+` before `://` backtracks
+  // quadratically on a long message without one (CodeQL js/polynomial-redos).
+  const message = e.message.replace(/([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s@/]{0,512}@/gi, "$1***@");
   return `${e.name}${typeof code === "string" ? ` (${code})` : ""}: ${message}`;
 }
 
