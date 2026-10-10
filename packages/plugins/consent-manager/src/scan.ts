@@ -129,6 +129,12 @@ const CSS_URL_RE = /url\(\s*["']?([^"')]+)["']?\s*\)/gi;
 function attrLoads(tag: string, attr: string, attrs: Map<string, string>, hasJs: boolean): boolean {
   const t = tag.toLowerCase();
   const a = attr.toLowerCase();
+  // A namespace declaration (`xmlns="http://www.w3.org/2000/svg"`) is an
+  // identifier the parser compares, never an address anything fetches —
+  // not even the module's own script, which reads it as `namespaceURI`.
+  // Counting it withheld every module with JS and an inline SVG icon (the
+  // site header of the PR #641 homepage run) behind "www.w3.org".
+  if (a === "xmlns" || a.startsWith("xmlns:")) return false;
   if (a === "href") {
     if (t === "a" || t === "area" || t === "base") return false;
     if (t === "link") {
