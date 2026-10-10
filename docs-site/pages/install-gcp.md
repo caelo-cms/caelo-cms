@@ -139,7 +139,7 @@ Google only maps a domain for a verified owner of it. If you have not verified y
 | Read logs | Cloud Logging — filter by `resource.labels.service_name="caelo-admin-prod"` |
 | Restore from PITR | `gcloud sql backups restore` — see [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
 | Rotate the AI provider key | Owner → `/security/ai` (stored encrypted in the database) |
-| Rotate a runtime secret | `bunx @caelo-cms/provisioning rotate-secret <postgres-password\|internal-secret\|tool-approval-secret>` — stores a new value in Secret Manager (for `postgres-password` also on both database roles) and rolls the services that read it |
+| Rotate a runtime secret | `bunx @caelo-cms/provisioning rotate-secret <postgres-password\|public-role-password\|gateway-role-password\|internal-secret\|tool-approval-secret>` — stores a new value in Secret Manager (for a database password also on its role: `postgres-password` is `admin_role`'s, the other two the gateway's `public_role` and `gateway_role`) and rolls the services that read it |
 | Scale Cloud Run | `gcloud run services update caelo-admin-prod --max-instances=20` |
 
 ### What `upgrade` does
@@ -147,10 +147,23 @@ Google only maps a domain for a verified owner of it. If you have not verified y
 `upgrade` brings an existing install to what a fresh install of the target release looks like, without re-running the full provisioning:
 
 1. Resolves the release images and verifies their signatures.
-2. Ensures the gateway's own service account and the generated runtime secrets (the internal-API and tool-approval keys) exist, creating them once in Secret Manager. Then ensures the IAM bindings and Cloud CDN settings the release's infrastructure declares — each service account can read exactly the secrets its service uses. It only adds what is missing and never removes anything. If a binding the install needs can't be added (usually a missing IAM permission on your gcloud account), it stops here: bindings it already added stay (they are additive and harmless), but no migration has run and no traffic has shifted. Fix the reported binding and re-run; `upgrade` skips what is already in place.
+2. Ensures the gateway's own service account and the generated runtime secrets (the internal-API and tool-approval keys, and the gateway's two database role passwords) exist, creating them once in Secret Manager. Then ensures the IAM bindings and Cloud CDN settings the release's infrastructure declares — each service account can read exactly the secrets its service uses. It only adds what is missing here (a binding a release retired — the gateway's former access to the admin's database password — is removed only at the very end, once both services run without it). If a binding the install needs can't be added (usually a missing IAM permission on your gcloud account), it stops here: bindings it already added stay (they are additive and harmless), but no migration has run and no traffic has shifted. Fix the reported binding and re-run; `upgrade` skips what is already in place.
 3. Applies the database migrations.
 4. Rolls the admin and gateway to the new images. The admin's memory is raised to the release's default (2 GiB for the [quality checks](/quality-gate)) if it runs with less; a larger value you set is kept. Configuration the release expects (for example the public site URL your canonical tags and sitemap use, or the media bucket mounted into the admin as a Cloud Storage volume) is applied in the same step, so it lands in the same new revision and rolls back with it. Secrets are Secret Manager references, never plain values: the database URLs carry no password, and the password reaches the services from Secret Manager.
 5. Records the images it rolled to. Re-running the installer later keeps that release instead of switching to the newest one — version changes always go through `upgrade`.
+
+#### The gateway's own database logins
+
+The public API gateway never holds the admin's database credential. It connects as two roles of its own: `public_role` on `cms_public` and `gateway_role` on `cms_admin` — a login that can read the gateway's settings and the plugin registry and append to its own request log, rate limits, captcha challenges and plugin audit, and nothing else. Each role has its own password in Secret Manager (`postgres-password` for the admin, `public-role-password` and `gateway-role-password` for the gateway), and the gateway's service account can read only the gateway's two.
+
+An install from before this change converges on its first `upgrade`, without anything for you to do:
+
+- the migrations create `gateway_role`, and `upgrade` gives it its password;
+- right before the gateway rolls, `public_role` moves off the admin's password onto its own (if the gateway's roll fails, it is put back, so the rolled-back gateway keeps working);
+- the gateway's new revision gets `GATEWAY_DATABASE_URL` and loses `ADMIN_DATABASE_URL` in the same step;
+- after both services rolled, the gateway's service account loses its access to the admin's password.
+
+`upgrade` then suggests `rotate-secret postgres-password`: until that upgrade the gateway knew the admin's password. Run it.
 
 ## Common issues
 

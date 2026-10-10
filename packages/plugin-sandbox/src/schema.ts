@@ -195,6 +195,14 @@ export function adminSchemaFromSpec(opts: {
   pluginId: string;
   slug: string;
   adminSchema: PluginSchemaMap;
+  /**
+   * Issue #613 — the plugin serves visitors (`publicOperations`) and those
+   * operations may read its private tables, so the API gateway's
+   * `gateway_role` gets SELECT on them. Read-only: a visitor call never
+   * writes private storage. When false, any earlier grant is revoked, so a
+   * plugin that stops serving visitors converges on the next load.
+   */
+  visitorReadable?: boolean;
 }): EmittedSchema {
   const schemaName = `plugin_${opts.slug.replace(/-/g, "_")}`;
   const stmts: string[] = [];
@@ -246,7 +254,40 @@ export function adminSchemaFromSpec(opts: {
     );
   }
 
+  stmts.push(gatewayReadGrants(schemaName, Object.keys(opts.adminSchema), opts.visitorReadable));
+
   return { schemaName, sql: stmts.join("\n\n") };
+}
+
+/**
+ * Issue #613 — grant (or revoke) the API gateway's read access to a plugin's
+ * private tables. Guarded on the role existing: a database bootstrapped
+ * before `gateway_role` (migration 0248) still provisions plugins.
+ */
+function gatewayReadGrants(
+  schemaName: string,
+  tables: readonly string[],
+  visitorReadable: boolean | undefined,
+): string {
+  const schema = quoteIdent(schemaName);
+  const body = visitorReadable
+    ? [
+        `    GRANT USAGE ON SCHEMA ${schema} TO gateway_role;`,
+        ...tables.map((t) => `    GRANT SELECT ON ${schema}.${quoteIdent(t)} TO gateway_role;`),
+      ]
+    : [
+        `    REVOKE ALL ON ALL TABLES IN SCHEMA ${schema} FROM gateway_role;`,
+        `    REVOKE ALL ON SCHEMA ${schema} FROM gateway_role;`,
+      ];
+  return [
+    "DO $caelo_gateway$",
+    "BEGIN",
+    "  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') THEN",
+    ...body,
+    "  END IF;",
+    "END",
+    "$caelo_gateway$;",
+  ].join("\n");
 }
 
 function emitAdminColumnDef(name: string, spec: string): string {

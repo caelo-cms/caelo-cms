@@ -20,6 +20,7 @@ import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { cancel, confirm, isCancel, log, note, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
+import { ensureGatewayRolePassword, planPublicRoleSwitch } from "./gateway-credentials.js";
 import { gcloud } from "./gcloud.js";
 import { GCP_STACK_ENV, gatewayServiceAccountEmail, runServiceAccountEmail } from "./gcp-names.js";
 import {
@@ -40,6 +41,7 @@ import {
   ROTATABLE_SECRETS,
   type RotatableSecret,
   readSecretReplication,
+  rolesOfSecret,
   rotateRuntimeSecret,
   rotationRefusal,
 } from "./runtime-secrets.js";
@@ -57,6 +59,7 @@ import {
   planAdminMemory,
   planContractEnv,
   planMediaVolume,
+  removeRetiredIamBindings,
   rollService,
   serviceRollArgs,
 } from "./stack-converge.js";
@@ -745,6 +748,41 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   sMig.stop(green("Migrations applied"));
 
   // ────────────────────────────────────────────────────────────────
+  // #613 — the gateway's own database login. Migration 0248 created
+  // gateway_role without a password; give it the gateway-role-password
+  // secret's value now, before the gateway rolls onto it. Without it the
+  // new gateway could not reach cms_admin, so a failure aborts here.
+  // public_role moves onto its own password right before the gateway's
+  // roll (gateway-credentials.ts), so the old revision keeps working
+  // until then.
+  // ────────────────────────────────────────────────────────────────
+  const sRole = spinner();
+  sRole.start("Ensuring the gateway's database login (gateway_role)...");
+  const sqlInstance = await resolveGcpResourceName(
+    "sql-instance",
+    "caelo-production-pg",
+    meta.projectId,
+  );
+  if (!sqlInstance) {
+    sRole.stop(red("Could not find the Cloud SQL instance. Aborting upgrade."));
+    log.warn("Migrations ran; no traffic was shifted. Re-run upgrade once the instance is found.");
+    return;
+  }
+  const roleTarget = { projectId: meta.projectId, env: GCP_STACK_ENV, sqlInstance };
+  const gatewayRole = await ensureGatewayRolePassword(roleTarget);
+  if (gatewayRole.status === "failed") {
+    sRole.stop(red("gateway_role could not be given its password. Aborting upgrade."));
+    log.error(red(`  ${gatewayRole.error ?? ""}`));
+    log.warn(
+      "Migrations ran (0248 creates gateway_role); no traffic was shifted. Fix the above and re-run upgrade.",
+    );
+    return;
+  }
+  sRole.stop(green("gateway_role ready"));
+  const gatewayLive = plans.find((p) => p.slug === "gateway");
+  const publicRole = planPublicRoleSwitch(roleTarget, gatewayLive?.liveEnv ?? new Map());
+
+  // ────────────────────────────────────────────────────────────────
   // Issue #37 — MCP through IAP. Idempotently ensure the MCP service
   // account + its IAP/token-creator bindings; the admin learns the SA's
   // email from CAELO_MCP_IAP_SERVICE_ACCOUNT in the env contract. Installs
@@ -829,9 +867,24 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   // service's run SA: the gateway moves to its own SA here.
   // ────────────────────────────────────────────────────────────────
   const rolled: ServicePlan[] = [];
+  /** A failed gateway roll goes back to a revision that reads public_role's old password. */
+  const restorePublicRole = async (slug: "admin" | "gateway"): Promise<void> => {
+    if (slug !== "gateway") return;
+    const outcome = await publicRole.afterGatewayRollFailed();
+    if (outcome.startsWith("could NOT")) log.error(red(`  ${outcome}`));
+    else log.info(`  ${outcome}`);
+  };
   for (const plan of rolls) {
     const s = spinner();
     s.start(`Rolling ${plan.slug} → ${plan.digest.slice(0, 19)}...`);
+    if (plan.slug === "gateway") {
+      const moved = await publicRole.beforeGatewayRoll();
+      if (moved.status === "failed") {
+        s.stop(red(`public_role could not be moved onto its own password: ${moved.error ?? ""}`));
+        await rollbackPriorlyRolled(meta.projectId, region, rolled);
+        return;
+      }
+    }
     const upd = await rollService(
       serviceRollArgs({
         serviceName: plan.serviceName,
@@ -849,6 +902,7 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     );
     if (!upd.ok) {
       s.stop(red(`Failed: ${upd.stderr.trim()}`));
+      await restorePublicRole(plan.slug);
       await rollbackPriorlyRolled(meta.projectId, region, rolled);
       return;
     }
@@ -875,12 +929,14 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     ]);
     if (!flip.ok) {
       s.stop(red(`Traffic flip to latest failed: ${flip.stderr.trim()}`));
+      await restorePublicRole(plan.slug);
       await rollbackPriorlyRolled(meta.projectId, region, rolled);
       return;
     }
     if (!(await findServiceUrl(meta.projectId, region, plan.serviceName))) {
       s.stop(red(`Could not resolve service URL for ${plan.slug} — rolling back`));
       await rollbackTraffic(meta.projectId, region, plan.serviceName, plan.priorRevision);
+      await restorePublicRole(plan.slug);
       await rollbackPriorlyRolled(meta.projectId, region, rolled);
       return;
     }
@@ -901,6 +957,40 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
     rolled.push(plan);
   }
   log.success(`Upgrade to ${bold(targetTag)} complete (admin + gateway revisions Ready).`);
+
+  // #613 — with both services on their new revisions, drop the bindings
+  // nothing reads through any more: above all the gateway SA's access to
+  // admin_role's password. Loud on failure — until it is gone, a
+  // compromised gateway could still read that password.
+  const retired = await removeRetiredIamBindings({
+    provider: meta.provider,
+    projectId: meta.projectId,
+    region,
+    env: GCP_STACK_ENV,
+    services: Object.fromEntries(rolls.map((r) => [r.slug, r.serviceName])) as Record<
+      "admin" | "gateway",
+      string
+    >,
+  });
+  for (const o of retired) {
+    if (o.status === "removed") log.info(`  removed: ${o.id} ${dim(`(${o.why})`)}`);
+    if (o.status === "failed") {
+      log.error(
+        red(
+          `  NOT removed: ${o.id} — ${o.why}\n    ${o.error ?? ""}\n    Re-run upgrade with an account that may change IAM, or remove the binding by hand.`,
+        ),
+      );
+    }
+  }
+  if (publicRole.moves) {
+    // Until this upgrade the gateway held admin_role's password; anyone who
+    // ever compromised it could have kept a copy.
+    log.warn(
+      yellow(
+        `The gateway no longer holds admin_role's password, but it did until now. Rotate it: ${bold("bunx @caelo-cms/provisioning rotate-secret postgres-password")}`,
+      ),
+    );
+  }
   if (rolls.some((r) => liveEnvHasInlinePassword(r.liveEnv))) {
     // The services just moved their database password to Secret Manager,
     // but every earlier revision still shows it in its env.
@@ -1231,7 +1321,7 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
     services[slug] = serviceName;
   }
   const sqlInstance =
-    secret === "postgres-password"
+    rolesOfSecret(secret).length > 0
       ? await resolveGcpResourceName("sql-instance", "caelo-production-pg", meta.projectId)
       : null;
   const report = await rotateRuntimeSecret(

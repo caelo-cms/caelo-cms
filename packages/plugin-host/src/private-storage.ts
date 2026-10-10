@@ -324,13 +324,19 @@ function jsonEqual(a: unknown, b: unknown): boolean {
  * unrevoked `cms_admin_schema` receipt for the artifact it runs
  * (CMS_REQUIREMENTS §14.5).
  *
+ * A read (`access: "read"`) checks the same state without the lock: there
+ * is no write for a revocation to wait for, and `FOR SHARE` needs UPDATE
+ * privilege on `plugins`, which the API gateway's read-only role — where
+ * visitor operations read private storage (#613) — does not have.
+ *
  * @returns null when allowed, else the reason
  */
 export function privateStorageRefusal(
   tx: TransactionRunner,
   ctx: ExecutionContext,
+  access: "read" | "write" = "write",
 ): Promise<string | null> {
-  return privateGrantRefusal(tx, ctx, "cms_admin_schema");
+  return privateGrantRefusal(tx, ctx, "cms_admin_schema", access);
 }
 
 /**
@@ -347,14 +353,16 @@ export async function privateGrantRefusal(
     | "image_generation"
     | "font_assets"
     | "site_media_read",
+  access: "read" | "write" = "write",
 ): Promise<string | null> {
   if (!ctx.pluginId) return "no plugin id on the context";
-  // Statement 1 takes the lock. Statement 2 runs after it, so under READ
-  // COMMITTED it sees whatever a finalize or revocation committed while
-  // this one waited — a single statement would keep its earlier snapshot
-  // for the joined rows.
+  // Statement 1 takes the lock (writes only). Statement 2 runs after it, so
+  // under READ COMMITTED it sees whatever a finalize or revocation
+  // committed while this one waited — a single statement would keep its
+  // earlier snapshot for the joined rows.
+  const lock = access === "write" ? sql.raw("FOR SHARE") : sql.raw("");
   const plugin = (await tx.execute(sql`
-    SELECT status FROM plugins WHERE id = ${ctx.pluginId}::uuid FOR SHARE
+    SELECT status FROM plugins WHERE id = ${ctx.pluginId}::uuid ${lock}
   `)) as unknown as { status: string }[];
   if (plugin[0]?.status !== "active") return "the plugin is not active";
   const rows = (await tx.execute(sql`

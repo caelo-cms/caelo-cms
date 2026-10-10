@@ -60,9 +60,11 @@ async function findDeployedService(
  * The stacks deploy that env; a release from before it can't use it (it
  * reads the password from the URL). The wizard keeps the release an install
  * runs, so re-running it on an install `upgrade` hasn't moved over yet would
- * pair the old release with env it can't connect with. Such an install has
- * to go through `upgrade` first, which moves the image and the env in one
- * revision.
+ * pair the old release with env it can't connect with. The same holds for a
+ * gateway from before #613: its release needs the admin_role pool the
+ * current contract no longer gives it (no GATEWAY_DATABASE_PASSWORD yet).
+ * Such an install has to go through `upgrade` first, which moves the image
+ * and the env in one revision.
  */
 export async function checkDeployedRuntimeEnv(opts: {
   projectId: string;
@@ -92,7 +94,7 @@ export async function checkDeployedRuntimeEnv(opts: {
     if (missing.length > 0) {
       return {
         ok: false,
-        error: `${found.name} still reads the database password from its plain env (no ${missing.join(", ")} from Secret Manager) — it predates Secret Manager runtime secrets. Run \`upgrade\` first: it moves the release and its env over together. Re-running the installer now would give the running release a database env it can't connect with.`,
+        error: `${found.name} does not read ${missing.join(", ")} from Secret Manager — its release predates the current database env (Secret Manager runtime secrets; for the gateway, its own database logins, #613). Run \`upgrade\` first: it moves the release and its env over together. Re-running the installer now would give the running release a database env it can't connect with.`,
       };
     }
   }

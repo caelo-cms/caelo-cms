@@ -141,7 +141,15 @@ export class DatabaseAdapter {
     // second call === the first; `async` would wrap it in a fresh Promise and
     // break that identity.
     if (this.#verifyPromise !== null) return this.#verifyPromise;
-    this.#verifyPromise = this.#verifyRolesOnce();
+    // Only a success is remembered. A failure (the database is still being
+    // migrated, a role has no password yet) is retried by the next caller,
+    // so a long-running process — the API gateway on a fresh install —
+    // recovers once the database is ready instead of failing every call
+    // until it restarts. A wrong identity keeps failing loudly each time.
+    this.#verifyPromise = this.#verifyRolesOnce().catch((e: unknown) => {
+      this.#verifyPromise = null;
+      throw e;
+    });
     return this.#verifyPromise;
   }
 

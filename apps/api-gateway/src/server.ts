@@ -21,14 +21,24 @@
  *   6. Plugin host dispatch + sessionMutation cookie emission.
  *   7. Request log row written async (best-effort; failure does not
  *      affect the response).
+ *
+ * Database identity (issue #613, CLAUDE.md §2): the gateway never holds an
+ * admin_role credential. It reaches cms_admin as `gateway_role` — read
+ * access to its settings and the plugin registry, append access to its own
+ * state (rate-limit buckets, captcha challenges, request log, plugin op
+ * audit), nothing else (migration 0248) — and cms_public as `public_role`.
+ * Its plugin host only attaches what the admin registered and an Owner
+ * activated (plugin-host gateway-attach.ts); it never registers, provisions
+ * or activates anything itself.
  */
 
 import { resolve } from "node:path";
 import {
-  bootstrap as bootstrapPluginHost,
+  bootstrapDispatchOnly,
   ensureDevSignedManifests,
   loadedPlugins,
   runPluginOperation,
+  syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { databaseUrlFromEnv } from "@caelo-cms/shared";
@@ -61,14 +71,52 @@ import {
   rateLimitKey,
   resolveRateLimitSpec,
 } from "./middleware/rate-limit.js";
-import {
-  generateCookieSecret,
-  signCookieValue,
-  verifySignedCookie,
-} from "./middleware/signed-cookie.js";
+import { signCookieValue, verifySignedCookie } from "./middleware/signed-cookie.js";
 
-const ADMIN_URL = databaseUrlFromEnv(["ADMIN_DATABASE_URL"]);
-const PUBLIC_URL = databaseUrlFromEnv(["PUBLIC_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL"]);
+/**
+ * Env vars that would hand the gateway an admin_role credential. The
+ * gateway refuses to boot while any is set (CLAUDE.md §2: never let the API
+ * Gateway hold admin_role credentials) — an install whose env still carries
+ * one has not converged, and running anyway would hide that.
+ */
+export const ADMIN_CREDENTIAL_ENV = [
+  "ADMIN_DATABASE_URL",
+  "ADMIN_DATABASE_PASSWORD",
+  "PUBLIC_ADMIN_DATABASE_URL",
+  "PUBLIC_ADMIN_DATABASE_PASSWORD",
+] as const;
+
+/** The database roles the gateway's two pools must connect as. */
+export const GATEWAY_DATABASE_ROLES = {
+  admin: "gateway_role",
+  public: ["public_role"],
+} as const;
+
+/**
+ * The gateway's connection URLs: `GATEWAY_DATABASE_URL` (gateway_role on
+ * cms_admin) and `PUBLIC_DATABASE_URL` (public_role on cms_public), each
+ * with its `_PASSWORD` companion applied. Throws, naming what is wrong,
+ * when an admin credential is present or either URL is missing.
+ */
+export function gatewayDatabaseUrls(env: Readonly<Record<string, string | undefined>>): {
+  readonly gateway: string;
+  readonly public: string;
+} {
+  const leaked = ADMIN_CREDENTIAL_ENV.filter((name) => env[name]);
+  if (leaked.length > 0) {
+    throw new Error(
+      `the API gateway must not hold admin_role credentials (CLAUDE.md §2) but ${leaked.join(", ")} ${leaked.length === 1 ? "is" : "are"} set. Remove ${leaked.length === 1 ? "it" : "them"} from the gateway's environment; it connects as gateway_role (GATEWAY_DATABASE_URL) and public_role (PUBLIC_DATABASE_URL). Cloud installs: run \`cms-provision upgrade\`.`,
+    );
+  }
+  const gateway = databaseUrlFromEnv(["GATEWAY_DATABASE_URL"], env);
+  const pub = databaseUrlFromEnv(["PUBLIC_DATABASE_URL"], env);
+  const missing = [
+    ...(gateway ? [] : ["GATEWAY_DATABASE_URL (gateway_role on cms_admin)"]),
+    ...(pub ? [] : ["PUBLIC_DATABASE_URL (public_role on cms_public)"]),
+  ];
+  if (!gateway || !pub) throw new Error(`the API gateway needs ${missing.join(" and ")}`);
+  return { gateway, public: pub };
+}
 const SYSTEM_ACTOR_ID = process.env.CAELO_SYSTEM_ACTOR_ID ?? "00000000-0000-0000-0000-00000000ffff";
 // Cloud Run sets PORT=8080 on every container; read that first so a
 // platform deploy needs no extra config. GATEWAY_PORT is the historical
@@ -179,14 +227,15 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
       }[],
   );
   const row = rows[0];
-  let secret = row?.cookie_secret;
-  if (!secret) {
-    secret = generateCookieSecret();
-    await adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
-      await tx.execute(sql`
-        UPDATE site_settings SET gateway_cookie_secret = ${secret} WHERE id = 1
-      `);
-    });
+  const secret = row?.cookie_secret;
+  if (!row || !secret) {
+    // Migration 0248 seeds the secret and the admin rotates it; the gateway
+    // has no write access to site_settings (#613), so it cannot mint one.
+    throw new GatewayNotReadyError(
+      row
+        ? "site_settings.gateway_cookie_secret is not set; run the database migrations (0248 seeds it) or rotate it from /security/gateway"
+        : "site_settings has no row; run the database migrations",
+    );
   }
   const settings: GatewaySettings = {
     cookieSecret: secret,
@@ -198,6 +247,11 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
   };
   cachedSettings = { settings, loadedAt: Date.now() };
   return settings;
+}
+
+/** The gateway cannot serve yet; answered as 503 with the reason. */
+export class GatewayNotReadyError extends Error {
+  override readonly name = "GatewayNotReadyError";
 }
 
 export function invalidateGatewaySettings(): void {
@@ -339,7 +393,15 @@ export async function handleRequest(req: Request): Promise<Response> {
       { status: 503 },
     );
   }
-  const settings = await loadSettings(cachedAdapter);
+  let settings: GatewaySettings;
+  try {
+    settings = await loadSettings(cachedAdapter);
+  } catch (e) {
+    return jsonResponse(
+      { ok: false, error: { kind: "ServiceUnavailable", message: (e as Error).message } },
+      { status: 503 },
+    );
+  }
 
   // ---- Captcha challenge endpoint ----
   if (req.method === "GET" && url.pathname === "/api/captcha/challenge") {
@@ -519,7 +581,9 @@ export async function handleRequest(req: Request): Promise<Response> {
     return jsonResponse({ ok: true, data: { accepted: true } });
   }
 
-  // 4. Rate limit.
+  // 4. Rate limit. The registry sync first, so a plugin an Owner just
+  // activated (or disabled) is seen with its manifest's limits.
+  await syncDispatchPlugins();
   const plugin = loadedPlugins.bySlug(slug);
   const spec = await resolveRateLimitSpec(cachedAdapter, slug, operationName, plugin);
   const rl = await consumeRateLimit(cachedAdapter, {
@@ -661,12 +725,13 @@ export async function handleRequest(req: Request): Promise<Response> {
 // ---------------------------------------------------------------------------
 
 if (import.meta.main) {
-  if (!ADMIN_URL || !PUBLIC_URL) {
-    throw new Error("ADMIN_DATABASE_URL + PUBLIC_DATABASE_URL must be set");
-  }
+  const urls = gatewayDatabaseUrls(process.env);
+  // The "admin" pool is the cms_admin pool, opened as gateway_role.
+  // verifyRoles fails loudly if either URL resolves to another role.
   const adapter = new DatabaseAdapter({
-    adminDatabaseUrl: ADMIN_URL,
-    publicDatabaseUrl: PUBLIC_URL,
+    adminDatabaseUrl: urls.gateway,
+    publicDatabaseUrl: urls.public,
+    expectedRoles: GATEWAY_DATABASE_ROLES,
   });
   const registry = new OperationRegistry();
   setGatewayAdapter(adapter);
@@ -679,7 +744,7 @@ if (import.meta.main) {
   // when this fails (e.g. during DB restart) so we don't block boot.
   void (async () => {
     try {
-      const listenSql = new SQL(ADMIN_URL);
+      const listenSql = new SQL(urls.gateway);
       // Bun's `unsafe` runs LISTEN on the bound connection; subsequent
       // notifications stream via `for await` on the connection's
       // notifications iterator.
@@ -714,7 +779,9 @@ if (import.meta.main) {
       }
     }
   }
-  const report = await bootstrapPluginHost({
+  // Dispatch-only: verify what this image ships, attach what the admin's
+  // registry marks active, write nothing (#613).
+  const report = await bootstrapDispatchOnly({
     infra: { adapter, registry },
     pluginsRoot: PLUGINS_ROOT,
     systemActorId: SYSTEM_ACTOR_ID,

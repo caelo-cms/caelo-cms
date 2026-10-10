@@ -34,7 +34,9 @@ import {
   iamMember,
   type MediaVolumeContract,
   memoryQuantityMiB,
+  RETIRED_IAM_BINDINGS,
   RETIRED_SERVICE_ENV,
+  type RetiredIamBinding,
   type RuntimeEnvInputs,
   type ServiceEnvInputs,
   STATIC_CDN_POLICY,
@@ -382,7 +384,7 @@ function targetLabel(target: IamTarget): string {
 /** gcloud argv (minus the trailing verb args) addressing an IAM target. */
 function iamCommand(
   target: IamTarget,
-  verb: "get-iam-policy" | "add-iam-policy-binding",
+  verb: "get-iam-policy" | "add-iam-policy-binding" | "remove-iam-policy-binding",
   install: InstallTarget,
 ): string[] {
   const project = `--project=${install.projectId}`;
@@ -597,6 +599,59 @@ export async function ensureStackInvariants(
     outcomes,
     mustAbort: outcomes.some((o) => o.status === "failed" && o.onFailure === "abort"),
   };
+}
+
+/** What happened to one retired binding. */
+export interface RetiredBindingOutcome {
+  readonly id: string;
+  /** `absent`: nothing to remove. */
+  readonly status: "absent" | "removed" | "failed";
+  readonly why: string;
+  readonly error?: string;
+}
+
+/**
+ * Remove the bindings older stacks declared and the contract retired
+ * ({@link RETIRED_IAM_BINDINGS}) — run by upgrade AFTER the services rolled
+ * off them. Checks the policy first, so an operator without IAM-admin
+ * rights can still upgrade an install that is already clean. Never throws
+ * for a gcloud failure; the caller decides how loudly to report it.
+ */
+export async function removeRetiredIamBindings(
+  install: InstallTarget,
+  deps: { run?: GcloudRunner; sleep?: Sleep; retired?: readonly RetiredIamBinding[] } = {},
+): Promise<RetiredBindingOutcome[]> {
+  const run = deps.run ?? defaultGcloud;
+  const sleep = deps.sleep ?? realSleep;
+  const outcomes: RetiredBindingOutcome[] = [];
+  for (const b of deps.retired ?? RETIRED_IAM_BINDINGS) {
+    // Retired bindings never name the IAP agent, so no project number.
+    const member = iamMember(b.member, { ...install, projectNumber: "" });
+    const id = `${b.role} → ${member} on ${targetLabel(b.target)}`;
+    const policy = await run([...iamCommand(b.target, "get-iam-policy", install), "--format=json"]);
+    if (policy.ok && !policyGrants(policy.stdout, b.role, member)) {
+      outcomes.push({ id, status: "absent", why: b.why });
+      continue;
+    }
+    if (!policy.ok && RESOURCE_MISSING.test(policy.stderr)) {
+      outcomes.push({ id, status: "absent", why: b.why });
+      continue;
+    }
+    const remove = await runWithRetry(run, sleep, [
+      ...iamCommand(b.target, "remove-iam-policy-binding", install),
+      `--member=${member}`,
+      `--role=${b.role}`,
+      ...(b.target.kind === "project" ? ["--condition=None"] : []),
+      "--quiet",
+      "--format=none",
+    ]);
+    outcomes.push(
+      remove.ok
+        ? { id, status: "removed", why: b.why }
+        : { id, status: "failed", why: b.why, error: remove.stderr.trim() },
+    );
+  }
+  return outcomes;
 }
 
 /** The memory limit of the service's container (`512Mi`, `2Gi`), or null

@@ -383,6 +383,29 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
   });
 });
 
+describe("the API gateway's read access to private storage (#613)", () => {
+  const spec = {
+    pluginId: "11111111-1111-4111-8111-111111111111",
+    slug: "probe",
+    adminSchema: { settings: { label: "string" }, categories: { key: "string" } },
+  };
+
+  it("a plugin serving visitors grants gateway_role SELECT only, guarded on the role", () => {
+    const { sql } = adminSchemaFromSpec({ ...spec, visitorReadable: true });
+    expect(sql).toContain("IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role')");
+    expect(sql).toContain('GRANT USAGE ON SCHEMA "plugin_probe" TO gateway_role;');
+    expect(sql).toContain('GRANT SELECT ON "plugin_probe"."settings" TO gateway_role;');
+    expect(sql).toContain('GRANT SELECT ON "plugin_probe"."categories" TO gateway_role;');
+    expect(sql).not.toMatch(/GRANT (INSERT|UPDATE|DELETE)[^;]*gateway_role/);
+  });
+
+  it("any other plugin revokes it, so one that stops serving visitors converges", () => {
+    const { sql } = adminSchemaFromSpec(spec);
+    expect(sql).not.toMatch(/GRANT [^;]*gateway_role/);
+    expect(sql).toContain('REVOKE ALL ON ALL TABLES IN SCHEMA "plugin_probe" FROM gateway_role;');
+  });
+});
+
 describe("identifiers past Postgres' 63-byte limit (#515 review)", () => {
   it("refuses them instead of letting Postgres truncate them into a shared name", () => {
     expect(() =>

@@ -27,7 +27,7 @@ import { resolve } from "node:path";
 import { generateBootstrapToken } from "./bootstrap-token.js";
 import { type CaddyDomainSpec, generateCaddyfile } from "./caddy.js";
 import { initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
-import { generateDockerCompose } from "./compose.js";
+import { generateDockerCompose, type RolePasswords } from "./compose.js";
 
 interface CaeloConfig {
   domain: string;
@@ -43,6 +43,11 @@ interface CaeloConfig {
    * generated before P18 still load — emitConfig() back-fills if missing.
    */
   caeloSecretKek?: string;
+  /**
+   * #613 — one password per application role. Optional in the type so
+   * config.json files from before still load; emitConfig() back-fills.
+   */
+  rolePasswords?: RolePasswords;
   anthropicApiKey?: string;
   resendApiKey?: string;
 }
@@ -117,6 +122,11 @@ function arg(name: string): string | undefined {
   return process.argv[idx + 1];
 }
 
+/** Fresh passwords for the three application roles. */
+function newRolePasswords(): RolePasswords {
+  return { admin: randomSecret(32), public: randomSecret(32), gateway: randomSecret(32) };
+}
+
 function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): void {
   // Back-fill caeloSecretKek for installs created before P18. Persists
   // immediately so the next emitConfig run sees the same value (existing
@@ -125,10 +135,15 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
     cfg.caeloSecretKek = randomSecret(32);
     saveConfig(cfg);
   }
+  if (!cfg.rolePasswords) {
+    cfg.rolePasswords = newRolePasswords();
+    saveConfig(cfg);
+  }
   // Generate compose + Caddyfile from the canonical config.
   const compose = generateDockerCompose({
     domain: cfg.domain,
     postgresPassword: cfg.postgresPassword,
+    rolePasswords: cfg.rolePasswords,
     minioRootUser: cfg.minioRootUser,
     minioRootPassword: cfg.minioRootPassword,
     caeloSecretKek: cfg.caeloSecretKek,
@@ -206,6 +221,7 @@ async function init(): Promise<void> {
     domain,
     ownerEmail,
     postgresPassword: randomSecret(32),
+    rolePasswords: newRolePasswords(),
     minioRootUser: "caelo",
     minioRootPassword: randomSecret(32),
     caeloSecretKek: randomSecret(32),

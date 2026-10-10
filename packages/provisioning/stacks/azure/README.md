@@ -11,7 +11,7 @@ Pulumi stack provisioning Caelo on Azure managed services. Implements the shared
 | CDN / Edge | Azure Container Apps `edge-router` instance (Front Door + custom-domain bindings land in P15.4 review-pass) |
 | Edge compute (A/B + redirects) | Container App `edge-router` running `edge-handler.ts` with `@caelo-cms/edge-router` |
 | Container runtime | Five Container Apps (admin / gateway / orchestrator / runner / edge-router) in one managed environment |
-| Secret store | Key Vault (postgres-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key) |
+| Secret store | Key Vault (postgres-password, public-role-password, gateway-role-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key). The gateway container gets `GATEWAY_DATABASE_URL` + `PUBLIC_DATABASE_URL`, never an admin credential (#613). |
 | Edge-log sink | Log Analytics workspace receives Container Apps logs (queryable by P12A analytics plugin via Azure Monitor) |
 
 The Caelo runtime never knows it's on Azure — every Container App consumes plain `DATABASE_URL` / `MEDIA_STORAGE_URL` / `SECRETS_PROVIDER` env vars.

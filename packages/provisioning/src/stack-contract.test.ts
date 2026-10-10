@@ -7,9 +7,11 @@ import {
   adminEnvContract,
   CLI_GENERATED_SECRETS,
   type CloudRunEnvVar,
+  DATABASE_ROLE_SECRET,
   databaseUrls,
   gatewayEnvContract,
   iamMember,
+  RETIRED_IAM_BINDINGS,
   RETIRED_SERVICE_ENV,
   runtimeSecretBindings,
   SERVICE_SECRET_ENV,
@@ -44,11 +46,12 @@ const ADMIN_SECRETS = {
 };
 
 describe("databaseUrls", () => {
-  it("builds password-less URLs for the three role/database pairs", () => {
+  it("builds password-less URLs for the four role/database pairs", () => {
     expect(databaseUrls("10.20.0.3")).toEqual({
       admin: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
       publicAdmin: "postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
       public: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
+      gateway: "postgresql://gateway_role@10.20.0.3:5432/cms_admin?sslmode=require",
     });
   });
 });
@@ -145,20 +148,20 @@ describe.each([
 describe("gatewayEnvContract", () => {
   const gateway = gatewayEnvContract({ ...base, provider: "gcp" });
 
-  it("carries the public_role URL and none of the admin's cms_public or app secrets", () => {
+  it("carries its two own logins and none of the admin's database or app secrets", () => {
     expect(asRecord(gateway)).toEqual({
       CAELO_PROVIDER: "gcp",
       CAELO_ENV: "production",
       MEDIA_STORAGE_URL: "gs://acme-caelo-production-media",
       PUBLIC_DATABASE_URL: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
-      ADMIN_DATABASE_URL: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
-      PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-postgres-password:latest",
-      ADMIN_DATABASE_PASSWORD: "secret:caelo-production-postgres-password:latest",
+      GATEWAY_DATABASE_URL: "postgresql://gateway_role@10.20.0.3:5432/cms_admin?sslmode=require",
+      PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-role-password:latest",
+      GATEWAY_DATABASE_PASSWORD: "secret:caelo-production-gateway-role-password:latest",
     });
   });
 
-  it("the gateway's run SA reads no admin-only secret (KEK, internal, tool approval)", () => {
-    expect(serviceSecrets("gateway")).toEqual(["postgres-password"]);
+  it("the gateway's run SA reads no admin-only secret (admin password, KEK, internal, tool approval)", () => {
+    expect(serviceSecrets("gateway")).toEqual(["gateway-role-password", "public-role-password"]);
     for (const v of gateway) {
       expect(v.name).not.toMatch(/KEK|INTERNAL|TOOL_APPROVAL|PUBLIC_ADMIN/);
     }
@@ -169,14 +172,64 @@ describe("gatewayEnvContract", () => {
     expect(gateway.map((v) => v.name)).not.toContain("CAELO_SECRET_KEK");
   });
 
-  // Documents the known gap (stack-contract.ts SERVICE_SECRET_ENV.gateway):
-  // the gateway boots an admin_role pool, so it still gets that credential —
-  // as a Secret Manager reference. When the gateway stops needing admin_role,
-  // flip this to `not.toContain` and drop the two vars from the contract.
-  it("still carries the admin_role credential the gateway boots with (CLAUDE.md §2 gap)", () => {
+  // Issue #613 closed the CLAUDE.md §2 gap #579 documented here ("still
+  // carries the admin_role credential the gateway boots with"): the gateway
+  // gets no admin_role URL, password or secret, and upgrade removes the
+  // ones older installs carry.
+  it("holds no admin_role credential, and upgrade retires the old ones (CLAUDE.md §2, #613)", () => {
     const names = gateway.map((v) => v.name);
-    expect(names).toContain("ADMIN_DATABASE_URL");
-    expect(names).toContain("ADMIN_DATABASE_PASSWORD");
+    expect(names).not.toContain("ADMIN_DATABASE_URL");
+    expect(names).not.toContain("ADMIN_DATABASE_PASSWORD");
+    for (const v of gateway) {
+      if ("value" in v && v.value.includes("://")) {
+        expect(new URL(v.value).username).not.toBe("admin_role");
+      }
+    }
+    expect(serviceSecrets("gateway")).not.toContain(DATABASE_ROLE_SECRET.admin_role);
+    expect(RETIRED_SERVICE_ENV.gateway).toEqual(
+      expect.arrayContaining(["ADMIN_DATABASE_URL", "ADMIN_DATABASE_PASSWORD"]),
+    );
+  });
+});
+
+describe("database role secrets (#613)", () => {
+  it("gives every role its own password secret", () => {
+    const secrets = Object.values(DATABASE_ROLE_SECRET);
+    expect(new Set(secrets).size).toBe(secrets.length);
+    expect(DATABASE_ROLE_SECRET).toEqual({
+      admin_role: "postgres-password",
+      public_role: "public-role-password",
+      gateway_role: "gateway-role-password",
+    });
+  });
+
+  it("the CLI generates the gateway's role passwords (never seeded from admin_role's)", () => {
+    expect(CLI_GENERATED_SECRETS).toEqual(
+      expect.arrayContaining(["public-role-password", "gateway-role-password"]),
+    );
+  });
+
+  it("retires the gateway SA's read access to admin_role's password", () => {
+    expect(RETIRED_IAM_BINDINGS).toContainEqual(
+      expect.objectContaining({
+        role: "roles/secretmanager.secretAccessor",
+        member: "gateway-sa",
+        target: { kind: "secret", name: "postgres-password" },
+      }),
+    );
+    for (const provider of ["gcp", "gcp-firebase"] as const) {
+      // Never both ensured and retired.
+      for (const r of RETIRED_IAM_BINDINGS) {
+        expect(
+          stackIamInvariants(provider).some(
+            (i) =>
+              i.role === r.role &&
+              i.member === r.member &&
+              JSON.stringify(i.target) === JSON.stringify(r.target),
+          ),
+        ).toBe(false);
+      }
+    }
   });
 });
 
@@ -193,8 +246,13 @@ describe("runtime secrets", () => {
       },
       {
         service: "gateway",
-        secret: "postgres-password",
-        stackResource: "gateway-postgres-password-binding",
+        secret: "gateway-role-password",
+        stackResource: "gateway-gateway-role-password-binding",
+      },
+      {
+        service: "gateway",
+        secret: "public-role-password",
+        stackResource: "gateway-public-role-password-binding",
       },
     ]);
   });
@@ -211,6 +269,7 @@ describe("self-hosted compose", () => {
     const yaml = generateDockerCompose({
       domain: "acme.com",
       postgresPassword: "p",
+      rolePasswords: { admin: "a", public: "b", gateway: "g" },
       minioRootUser: "u",
       minioRootPassword: "m",
       caeloSecretKek: "k",
@@ -246,13 +305,14 @@ describe("stackIamInvariants", () => {
     }
   });
 
-  it("grants the gateway SA only its secret + telemetry roles", () => {
+  it("grants the gateway SA only its two role passwords + telemetry roles", () => {
     for (const provider of ["gcp", "gcp-firebase"] as const) {
       const gateway = stackIamInvariants(provider).filter((i) => i.member === "gateway-sa");
       expect(gateway.map((i) => `${i.role} ${JSON.stringify(i.target)}`).sort()).toEqual([
         'roles/logging.logWriter {"kind":"project"}',
         'roles/monitoring.metricWriter {"kind":"project"}',
-        'roles/secretmanager.secretAccessor {"kind":"secret","name":"postgres-password"}',
+        'roles/secretmanager.secretAccessor {"kind":"secret","name":"gateway-role-password"}',
+        'roles/secretmanager.secretAccessor {"kind":"secret","name":"public-role-password"}',
       ]);
     }
   });
