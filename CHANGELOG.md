@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.39
+
+### Features
+- 5cd4ffb4 operator guidance — cert waits, go-live DNS split, MCP next steps, policy-safe secrets (#655)
+- 3f637e27 protected, configurable staging host on gcp-firebase — host as build variable, parity guard, gated proxy (#650) (#652)
+
+### Fixes
+- 72cef4b5 never block on a hidden gcloud prompt; install beta up front (#654)
+- 314b819b assign A/B variants from the HttpOnly visitor cookie server-side (#653)
+
 ## v0.10.38
 
 ### Fixes
