@@ -24,7 +24,7 @@ import {
 
 export type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
-/** Every action the owner-settings gate can apply (migration 0244 CHECK). */
+/** Every action the owner-settings gate can apply (migration 0251 CHECK). */
 export const ownerSettingsKind = z.enum([
   "set_ai_budget",
   "set_ai_pricing",
@@ -32,6 +32,9 @@ export const ownerSettingsKind = z.enum([
   "set_translation_model",
   "set_plugin_ai_cost_cap",
   "rotate_gateway_cookie_secret",
+  "set_staging_access",
+  "rotate_staging_credentials",
+  "set_staging_host",
 ]);
 export type OwnerSettingsKind = z.infer<typeof ownerSettingsKind>;
 

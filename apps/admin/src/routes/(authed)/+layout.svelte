@@ -31,6 +31,7 @@
     } else if (f["staged"] && typeof f["staged"] === "object") {
       const s = f["staged"] as {
         previewUrl?: string;
+        previewLabel?: string;
         draftPageCount?: number;
         alsoIncludes?: string[];
       };
@@ -39,7 +40,7 @@
       // pages are absent" reads as "everything shipped" and sends the
       // operator to a preview that 404s their work.
       const parts: string[] = [];
-      if (s.previewUrl) parts.push(`Preview: ${s.previewUrl}`);
+      if (s.previewLabel ?? s.previewUrl) parts.push(`Preview: ${s.previewLabel ?? s.previewUrl}`);
       // Issue #620 — on the shared draft another chat's change to the same
       // module/page ships with this Stage; say whose.
       if (Array.isArray(s.alsoIncludes) && s.alsoIncludes.length > 0) {

@@ -68,7 +68,7 @@
         Staged — {form.staged.pageCount} page(s), {form.staged.fileCount} file(s) on staging.
         Preview:
         <a class="underline" href={form.staged.previewUrl} target="_blank" rel="noopener"
-          >{form.staged.previewUrl}</a
+          >{form.staged.previewLabel}</a
         >. Click <strong>Confirm publish</strong> below to ship to production.
       </AlertDescription>
     </Alert>

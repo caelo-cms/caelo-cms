@@ -110,7 +110,13 @@ describe("ensureGeneratedSecrets", () => {
       "secrets versions list": [ok("projects/1/secrets/x/versions/1")],
     });
     const outcomes = await ensureGeneratedSecrets({ ...install, replication: regional }, { run });
-    expect(outcomes.map((o) => o.status)).toEqual(["present", "present", "present", "present"]);
+    expect(outcomes.map((o) => o.status)).toEqual([
+      "present",
+      "present",
+      "present",
+      "present",
+      "present",
+    ]);
     expect(lines().some((l) => l.includes(" create ") || l.includes(" add "))).toBe(false);
   });
 
@@ -121,7 +127,13 @@ describe("ensureGeneratedSecrets", () => {
       { ...install, replication: regional },
       { run, generate: () => `generated-value-${++n}` },
     );
-    expect(outcomes.map((o) => o.status)).toEqual(["applied", "applied", "applied", "applied"]);
+    expect(outcomes.map((o) => o.status)).toEqual([
+      "applied",
+      "applied",
+      "applied",
+      "applied",
+      "applied",
+    ]);
     const creates = calls.filter((c) => c.line.startsWith("secrets create"));
     expect(creates).toEqual([
       {
@@ -140,6 +152,11 @@ describe("ensureGeneratedSecrets", () => {
       {
         line: "secrets create caelo-production-gateway-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
         stdin: "generated-value-4",
+      },
+      // #650 — the staging access gate's key.
+      {
+        line: "secrets create caelo-production-staging-gate-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+        stdin: "generated-value-5",
       },
     ]);
     for (const c of calls) expect(c.line).not.toContain("generated-value");
@@ -164,6 +181,7 @@ describe("ensureGeneratedSecrets", () => {
       "generated",
       "generated",
       "generated",
+      "generated",
     ]);
     for (const c of calls) expect(c.line).not.toContain("operator-set");
   });
@@ -175,12 +193,19 @@ describe("ensureGeneratedSecrets", () => {
       "secrets versions list caelo-production-tool-approval-secret": [ok("v/1")],
       "secrets versions list caelo-production-public-role-password": [ok("v/1")],
       "secrets versions list caelo-production-gateway-role-password": [ok("v/1")],
+      "secrets versions list caelo-production-staging-gate-secret": [ok("v/1")],
     });
     const outcomes = await ensureGeneratedSecrets(
       { ...install, replication: { kind: "automatic" } },
       { run, generate: () => "v" },
     );
-    expect(outcomes.map((o) => o.status)).toEqual(["applied", "present", "present", "present"]);
+    expect(outcomes.map((o) => o.status)).toEqual([
+      "applied",
+      "present",
+      "present",
+      "present",
+      "present",
+    ]);
     expect(calls.filter((c) => c.line.startsWith("secrets versions add"))).toEqual([
       {
         line: "secrets versions add caelo-production-internal-secret --project=acme --data-file=-",
@@ -207,6 +232,7 @@ describe("rotationRefusal", () => {
       "gateway-role-password",
       "internal-secret",
       "tool-approval-secret",
+      "staging-gate-secret",
     ]) {
       expect(rotationRefusal(s)).toBeNull();
     }

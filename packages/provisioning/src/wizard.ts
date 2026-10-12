@@ -20,6 +20,7 @@
  * so adding a new provider is one new file, not a sprawling switch.
  */
 
+import { defaultStagingHost, normalizeStagingHost, stagingHostProblem } from "@caelo-cms/shared";
 import { cancel, confirm, intro, isCancel, outro, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim } from "kleur/colors";
 import {
@@ -42,6 +43,11 @@ export interface WizardOptions {
   provider?: Provider;
   /** Pre-supplied domain — skips the prompt. */
   domain?: string;
+  /**
+   * #650 — `--staging-domain`: the protected staging site's host; skips the
+   * prompt. Default `staging.<domain>`.
+   */
+  stagingDomain?: string;
   /** Pre-supplied owner email — skips the prompt. */
   ownerEmail?: string;
   /** Pre-supplied GCP project id — skips the prompt for gcp. */
@@ -88,6 +94,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   } else {
     provider = opts.provider ?? (await pickProvider());
     domain = opts.domain ?? (await promptDomain());
+    const stagingDomain = await resolveStagingDomain(domain, provider, opts);
     ownerEmail = opts.ownerEmail ?? (await promptOwnerEmail());
     projectIdHint = opts.projectId ?? null;
     installId = deriveInstallId(provider, projectIdHint ?? domain);
@@ -114,16 +121,17 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
       // metadata (createdAt, region, the recorded release in imageDigests)
       // so the re-run converges infrastructure instead of looking like a
       // new install that deploys `:latest`.
-      writeMetadata(
-        installId,
-        resumedMetadata(existingForId, { domain, ownerEmail, projectId: projectIdHint }),
-      );
+      writeMetadata(installId, {
+        ...resumedMetadata(existingForId, { domain, ownerEmail, projectId: projectIdHint }),
+        ...(opts.stagingDomain ? { stagingDomain } : {}),
+      });
     } else {
       writeMetadata(installId, {
         installId,
         provider,
         projectId: projectIdHint,
         domain,
+        stagingDomain,
         ownerEmail,
         region: null,
         createdAt: new Date().toISOString(),
@@ -291,6 +299,49 @@ async function promptDomain(): Promise<string> {
     process.exit(0);
   }
   return value as string;
+}
+
+/**
+ * #650 — the protected staging site's host: `--staging-domain`, else asked
+ * (default `staging.<domain>`; any other FQDN, also on another domain),
+ * else — non-interactive — the default. Never the live or admin host.
+ */
+async function resolveStagingDomain(
+  domain: string,
+  provider: Provider,
+  opts: Pick<WizardOptions, "stagingDomain" | "nonInteractive">,
+): Promise<string> {
+  const reserved = { liveHosts: [domain, `www.${domain}`], adminHosts: [`admin.${domain}`] };
+  const problemOf = (host: string) => stagingHostProblem(host, reserved, { provider });
+  if (opts.stagingDomain) {
+    const problem = problemOf(opts.stagingDomain);
+    if (problem) {
+      cancel(`--staging-domain: ${problem}`);
+      process.exit(1);
+    }
+    return normalizeStagingHost(opts.stagingDomain);
+  }
+  const suggested = defaultStagingHost(domain);
+  if (opts.nonInteractive) {
+    // The default can be too long for the provider (gcp-firebase: 64).
+    const problem = problemOf(suggested);
+    if (problem) {
+      cancel(`the default staging host ${problem}. Pass --staging-domain <host>.`);
+      process.exit(1);
+    }
+    return suggested;
+  }
+  const value = await text({
+    message: "Host of the protected staging site (where you review changes before they go live)",
+    placeholder: suggested,
+    initialValue: suggested,
+    validate: (v) => problemOf(v || suggested) ?? undefined,
+  });
+  if (isCancel(value)) {
+    cancel("Cancelled.");
+    process.exit(0);
+  }
+  return normalizeStagingHost((value as string) || suggested);
 }
 
 async function promptOwnerEmail(): Promise<string> {

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describeError } from "@caelo-cms/admin-core";
+import { describeError, providerHasStagingDomain } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { enqueueStagingAudit } from "#lib/server/quality-audit.js";
 import { getQueryContext } from "#lib/server/query.js";
+import { openStagingHref, stagingOriginForAdmin } from "#lib/server/staging-link.js";
 import { stagingPreviewPath } from "#lib/server/staging-preview-path.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -112,10 +113,17 @@ export const actions: Actions = {
     });
 
     let previewUrl: string;
-    // v0.3.0 — gcp-firebase publishes to a Firebase preview channel
-    // and surfaces the URL through summary.previewUrl. Consume it
-    // verbatim.
-    if (summary.previewUrl) {
+    let previewLabel: string | null = null;
+    if (providerHasStagingDomain(process.env.CAELO_PROVIDER)) {
+      // #650 — staging.<domain> through "Open staging"; the provider's
+      // preview origin is never shown.
+      const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
+      const path = pageRow.ok
+        ? (pageRow.value as { page: { currentPath: string } }).page.currentPath
+        : "/";
+      previewUrl = openStagingHref(path);
+      previewLabel = `${await stagingOriginForAdmin(locals.ctx)}${path}`;
+    } else if (summary.previewUrl) {
       previewUrl = summary.previewUrl;
     } else if (process.env.CAELO_PROVIDER === "gcp") {
       // v0.2.84 — see apps/admin/src/lib/server/staging-preview-path.ts
@@ -138,6 +146,7 @@ export const actions: Actions = {
         fileCount: summary.fileCount,
         buildId: summary.buildId,
         previewUrl,
+        previewLabel: previewLabel ?? previewUrl,
       },
     };
   },

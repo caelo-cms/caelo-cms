@@ -69,3 +69,7 @@ $PSQL -c "GRANT CONNECT ON DATABASE cms_public TO public_role, admin_role;"
 if $PSQL -d cms_admin -Atc "SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_gateway_role'" | grep -q 1; then
   $PSQL -d cms_admin -c "SELECT caelo_grant_gateway_role();"
 fi
+# Same for the staging-gate grants of migration 0251 (issue #650).
+if $PSQL -d cms_admin -Atc "SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_gateway_staging_access'" | grep -q 1; then
+  $PSQL -d cms_admin -c "SELECT caelo_grant_gateway_staging_access();"
+fi

@@ -52,6 +52,8 @@ export function roleConvergenceScript(passwords: RolePasswords): string {
     // A database that ran migration 0248 before gateway_role existed has no
     // grants for it yet; one that has not run it yet gets them from it.
     "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_gateway_role') THEN PERFORM caelo_grant_gateway_role(); END IF; END $$;",
+    // Migration 0251's staging-gate grants (issue #650), same convergence.
+    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_gateway_staging_access') THEN PERFORM caelo_grant_gateway_staging_access(); END IF; END $$;",
     "",
   ].join("\n");
 }

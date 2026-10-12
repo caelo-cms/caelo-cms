@@ -53,10 +53,30 @@ export const load: PageServerLoad = async ({ locals }) => {
   const hosting: HostingStatus = h.ok
     ? (h.value as HostingStatus)
     : { supported: true, domains: [], cdnPurge: null, error: h.error.kind };
-  return { domains, hosting, error: r.ok ? null : r.error.kind };
+  // #650 — the staging host setting (default staging.<domain>).
+  const st = await execute(registry, adapter, locals.ctx, "staging_access.get", {});
+  const staging = st.ok
+    ? (st.value as { stagingHost: string | null; stagingDomainSupported: boolean })
+    : null;
+  return { domains, hosting, staging, error: r.ok ? null : r.error.kind };
 };
 
 export const actions: Actions = {
+  setStagingHost: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const form = await request.formData();
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "staging_access.set_host", {
+      host: String(form.get("stagingHost") ?? ""),
+    });
+    if (!r.ok) {
+      const message =
+        "message" in r.error ? String((r.error as { message: unknown }).message) : r.error.kind;
+      return fail(400, { error: message });
+    }
+    const v = r.value as { host: string; nextSteps: string };
+    return { ok: true, message: `Staging host set to ${v.host}. ${v.nextSteps}` };
+  },
   add: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");
     const form = await request.formData();

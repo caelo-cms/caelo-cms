@@ -127,6 +127,10 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   // site's shared draft branch; every new chat binds to it.
   "site_draft",
   "skills",
+  // Seed-bearing since 0251 (issue #650): the staging access gate's
+  // singleton settings row. Tests that change it restore it themselves
+  // (staging-domain.integration.test.ts).
+  "staging_access",
   "structured_sets",
   "telemetry_settings",
   "template_blocks",

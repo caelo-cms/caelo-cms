@@ -3,8 +3,8 @@
 /**
  * Owner queue for AI-proposed Owner-settings changes (AI budgets, AI
  * pricing, gateway settings, translation model, a plugin's AI cost cap,
- * gateway cookie-secret rotation) — `owner_settings.*` ops, migrations
- * 0235 / 0241 / 0244.
+ * gateway cookie-secret rotation, the staging access gate) —
+ * `owner_settings.*` ops, migrations 0235 / 0241 / 0244 / 0251.
  *
  * In the chat the operator approves on the inline card and the row is
  * written + applied atomically, so it never waits here. Rows land here when
@@ -27,7 +27,9 @@ interface Proposal {
     | "set_gateway_settings"
     | "set_translation_model"
     | "set_plugin_ai_cost_cap"
-    | "rotate_gateway_cookie_secret";
+    | "rotate_gateway_cookie_secret"
+    | "set_staging_access"
+    | "rotate_staging_credentials";
   proposedBy: string;
   payload: Record<string, unknown>;
   preview: Record<string, unknown>;

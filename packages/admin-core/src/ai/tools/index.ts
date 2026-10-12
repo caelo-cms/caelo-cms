@@ -218,6 +218,12 @@ import { setThemeMetaTool } from "./set-theme-meta.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
 import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
 import {
+  getStagingAccessTool,
+  proposeRotateStagingCredentialsTool,
+  proposeSetStagingAccessTool,
+  proposeSetStagingHostTool,
+} from "./staging-access-tools.js";
+import {
   getSiteDefaultsTool,
   listAiProvidersTool,
   listDomainsTool,
@@ -526,6 +532,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeSetTranslationModelTool);
   registry.register(proposeSetPluginAiCostCapTool);
   registry.register(proposeRotateGatewayCookieSecretTool);
+  // Issue #650 — the protected staging domain's access gate.
+  registry.register(getStagingAccessTool);
+  registry.register(proposeSetStagingAccessTool);
+  registry.register(proposeRotateStagingCredentialsTool);
+  registry.register(proposeSetStagingHostTool);
   // v0.2.37 — AI can withdraw its own pending proposals.
   registry.register(cancelProposalTool);
   // v0.11.0 — themes primitive (#45). Routine + the §11.A propose

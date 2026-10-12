@@ -16,7 +16,7 @@
  *
  *   stdin, first line — the config:
  *     { adminDatabaseUrl, publicDatabaseUrl, target, runId, repoRoot,
- *       changedPageIds? }
+ *       changedPageIds?, siteBaseUrlOverride?, syncCurrent? }
  *   stdout — progress and the outcome:
  *     {kind:"progress", pagesDone, pagesTotal}
  *     {kind:"done", pageCount, fileCount, durationMs, buildDir}
@@ -53,6 +53,10 @@ interface CliInput {
   /** P13 ideas-pass — incremental rebuild whitelist (page ids).
    *  Empty/missing = full-site rebuild. */
   changedPageIds?: string[];
+  /** #650 — see generateSite's `siteBaseUrlOverride`. */
+  siteBaseUrlOverride?: string;
+  /** #650 — see generateSite's `syncCurrent`. */
+  syncCurrent?: boolean;
 }
 
 interface PluginResult {
@@ -133,6 +137,8 @@ async function main(): Promise<void> {
           runId: input.runId,
           repoRoot: input.repoRoot,
           changedPageIds: input.changedPageIds,
+          siteBaseUrlOverride: input.siteBaseUrlOverride,
+          syncCurrent: input.syncCurrent,
           onProgress: (p) => emit({ kind: "progress", ...p }),
         }),
     );

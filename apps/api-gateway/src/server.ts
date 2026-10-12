@@ -7,6 +7,8 @@
  *   POST /api/plugin/<slug>/<operation>     JSON body → JSON response
  *   GET  /api/captcha/challenge             PoW challenge envelope
  *   GET  /healthz                           liveness probe
+ *   *    (Host: staging.<domain>)           #650 staging gate + proxy to the
+ *                                           staged build (staging-proxy.ts)
  *
  * Each public-write request flows through (in order):
  *   1. Body-size cap (default 64 KB; 1 MB hard ceiling).
@@ -74,6 +76,12 @@ import {
   resolveRateLimitSpec,
 } from "./middleware/rate-limit.js";
 import { signCookieValue, verifySignedCookie } from "./middleware/signed-cookie.js";
+import {
+  handleStagingRequest,
+  isStagingRequest,
+  type StagingState,
+  stagingGateFromEnv,
+} from "./staging-proxy.js";
 
 export {
   ADMIN_CREDENTIAL_ENV,
@@ -257,6 +265,65 @@ function describeFailure(e: unknown): string {
 
 export function invalidateGatewaySettings(): void {
   cachedSettings = null;
+  cachedStagingState = null;
+}
+
+// ---------------------------------------------------------------------------
+// Staging gate state (#650) — the staging_access row: access modes and the
+// current staged build's origin. Same short TTL + NOTIFY invalidation as
+// the settings above (the admin notifies on every change and every Stage).
+// ---------------------------------------------------------------------------
+
+let cachedStagingState: { state: StagingState; loadedAt: number } | null = null;
+
+async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState> {
+  if (cachedStagingState && Date.now() - cachedStagingState.loadedAt < SETTINGS_TTL_MS) {
+    return cachedStagingState.state;
+  }
+  const rows = (await adapter.withAdminTransaction(
+    SYSTEM_CTX,
+    async (tx) =>
+      await tx.execute(sql`
+        SELECT staging_host, cookie_enabled, basic_auth_enabled, basic_auth_user, basic_auth_nonce,
+               header_enabled, header_name, header_nonce,
+               to_jsonb(ip_allowlist) AS ip_allowlist, origin_url
+        FROM staging_access WHERE id = 1
+      `),
+  )) as unknown as {
+    staging_host: string | null;
+    cookie_enabled: boolean;
+    basic_auth_enabled: boolean;
+    basic_auth_user: string;
+    basic_auth_nonce: string | null;
+    header_enabled: boolean;
+    header_name: string;
+    header_nonce: string | null;
+    ip_allowlist: string[] | string;
+    origin_url: string | null;
+  }[];
+  const row = rows[0];
+  if (!row) {
+    throw new GatewayNotReadyError("staging_access has no row; run the database migrations (0251)");
+  }
+  const state: StagingState = {
+    host: row.staging_host,
+    settings: {
+      cookieEnabled: row.cookie_enabled,
+      basicAuthEnabled: row.basic_auth_enabled,
+      basicAuthUser: row.basic_auth_user,
+      basicAuthNonce: row.basic_auth_nonce,
+      headerEnabled: row.header_enabled,
+      headerName: row.header_name,
+      headerNonce: row.header_nonce,
+      ipAllowlist:
+        typeof row.ip_allowlist === "string"
+          ? (JSON.parse(row.ip_allowlist) as string[])
+          : row.ip_allowlist,
+    },
+    originUrl: row.origin_url,
+  };
+  cachedStagingState = { state, loadedAt: Date.now() };
+  return state;
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +439,28 @@ function jsonResponse(
 
 export async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
+
+  // #650 — the staging host (gcp-firebase; the stored setting, default
+  // staging.<domain>): the access gate + proxy to the staged build. Nothing
+  // below (plugin dispatch, captcha) serves it.
+  const stagingGate = stagingGateFromEnv(process.env);
+  if (stagingGate && cachedAdapter && url.pathname !== "/healthz") {
+    let state: StagingState | null = null;
+    try {
+      state = await loadStagingState(cachedAdapter);
+    } catch (e) {
+      // Not knowing the staging host must not take /api/* down with it; the
+      // routes below answer from their own settings (or 503 on their own).
+      console.error(`[api-gateway] staging host unavailable: ${describeFailure(e)}`);
+    }
+    if (state?.host && isStagingRequest(req, state.host)) {
+      const loaded = state;
+      return handleStagingRequest(req, {
+        config: { stagingOrigin: `https://${loaded.host}`, secret: stagingGate.secret },
+        loadState: async () => loaded,
+      });
+    }
+  }
 
   if (url.pathname === "/healthz") {
     return jsonResponse({ ok: true });

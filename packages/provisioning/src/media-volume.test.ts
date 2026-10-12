@@ -150,6 +150,7 @@ describe("admin media volume contract", () => {
       projectId: "acme",
       env: "production",
       domain: "acme.com",
+      stagingHost: "staging.acme.com",
       region: "europe-west1",
       databaseUrls: databaseUrls("10.0.0.3"),
     });

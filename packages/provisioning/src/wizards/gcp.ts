@@ -58,6 +58,7 @@ import {
   type ImageDigests,
   type InstallMetadata,
   installRoot,
+  installStagingHost,
   isStepDone,
   markStepDone,
   readMetadata,
@@ -252,6 +253,11 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   await stepPulumiUp(installId, {
     projectId,
     domain,
+    // #650 — the wizard recorded it (or the install predates the setting).
+    stagingDomain: installStagingHost({
+      domain,
+      stagingDomain: readMetadata(installId)?.stagingDomain,
+    }),
     ownerEmail,
     region,
     saKeyPath: keyPath,
@@ -829,6 +835,8 @@ function stepPulumiPassphrase(installId: string): string {
 interface PulumiUpOpts {
   projectId: string;
   domain: string;
+  /** #650 — the protected staging site's host (install setting). */
+  stagingDomain: string;
   ownerEmail: string;
   region: string;
   saKeyPath: string;
@@ -1375,6 +1383,11 @@ async function stepFinalize(installId: string): Promise<void> {
           `  To bind ${cyan(`admin.${meta.domain}`)}, run`,
           `  ${dim("bunx @caelo-cms/provisioning admin-domain enable")}`,
           `  (it walks you through the one-time Search Console verification and prints the DNS record).`,
+          "",
+          bold("Protected staging site:"),
+          `  Stage builds render ${cyan(installStagingHost(meta))}; to serve it, run`,
+          `  ${dim("bunx @caelo-cms/provisioning staging-domain enable")}`,
+          `  and add the DNS record it prints. Access: admin → Security → Staging access.`,
         ]
       : [];
 

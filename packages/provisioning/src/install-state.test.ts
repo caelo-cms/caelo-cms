@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import {
   type InstallMetadata,
   installFlag,
+  installStagingHost,
   recordedImageDigests,
   resumedMetadata,
   selectInstall,
@@ -148,5 +149,14 @@ describe("installFlag", () => {
       /needs a value/,
     );
     expect(() => installFlag(["bun", "cli", "upgrade", "--install="])).toThrow(/needs a value/);
+  });
+});
+
+describe("installStagingHost (#650)", () => {
+  it("is the recorded setting, else staging.<domain>", () => {
+    expect(installStagingHost({ domain: "acme.com" })).toBe("staging.acme.com");
+    expect(installStagingHost({ domain: "acme.com", stagingDomain: "preview.other.de" })).toBe(
+      "preview.other.de",
+    );
   });
 });

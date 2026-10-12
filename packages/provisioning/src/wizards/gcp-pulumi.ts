@@ -22,6 +22,8 @@ export interface PulumiUpInputs {
   secretsDir: string;
   projectId: string;
   domain: string;
+  /** #650 — the protected staging site's host (install setting). */
+  stagingDomain: string;
   ownerEmail: string;
   region: string;
   saKeyPath: string;
@@ -233,6 +235,7 @@ export async function pulumiUpGcp(
   await stack.setAllConfig({
     [`${ns}:project`]: { value: inputs.projectId },
     [`${ns}:domain`]: { value: inputs.domain },
+    [`${ns}:stagingDomain`]: { value: inputs.stagingDomain },
     [`${ns}:ownerEmail`]: { value: inputs.ownerEmail },
     [`${ns}:region`]: { value: inputs.region },
     [`${ns}:cloudSqlTier`]: { value: inputs.cloudSqlTier },

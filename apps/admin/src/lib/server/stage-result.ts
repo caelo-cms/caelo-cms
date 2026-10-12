@@ -9,10 +9,13 @@
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { getQueryContext } from "./query.js";
+import { openStagingHref, stagingOriginForAdmin } from "./staging-link.js";
 import { stagingPreviewPath } from "./staging-preview-path.js";
 
 /**
- * Preview URL of a staged build plus the draft-page count.
+ * Preview URL of a staged build plus the draft-page count. `previewLabel`
+ * is what to SHOW for it (#650: the staging.<domain> address, while the
+ * link itself goes through "Open staging").
  *
  * @param build - the staging deploy's run id and provider preview URL.
  * @param pageId - the page to open in the preview (GCP preview paths),
@@ -22,10 +25,22 @@ export async function describeStagedBuild(
   ctx: ExecutionContext,
   build: { readonly runId: string; readonly previewUrl?: string },
   pageId: string | null,
-): Promise<{ previewUrl: string; draftPageCount: number }> {
+): Promise<{ previewUrl: string; previewLabel: string; draftPageCount: number }> {
   const { adapter, registry } = getQueryContext();
   let previewUrl: string;
-  if (build.previewUrl) {
+  let previewLabel: string | null = null;
+  const stagingOrigin = await stagingOriginForAdmin(ctx);
+  if (stagingOrigin) {
+    // #650 — through "Open staging" on staging.<domain>, never the
+    // provider's preview origin.
+    let path = "/";
+    if (pageId) {
+      const pageRow = await execute(registry, adapter, ctx, "pages.get", { pageId });
+      if (pageRow.ok) path = (pageRow.value as { page: { currentPath: string } }).page.currentPath;
+    }
+    previewUrl = openStagingHref(path);
+    previewLabel = `${stagingOrigin}${path.startsWith("/") ? path : `/${path}`}`;
+  } else if (build.previewUrl) {
     previewUrl = build.previewUrl;
   } else if (process.env.CAELO_PROVIDER === "gcp") {
     previewUrl = `/_staging-preview/${build.runId}/`;
@@ -51,5 +66,5 @@ export async function describeStagedBuild(
       (p) => p.status === "draft",
     ).length;
   }
-  return { previewUrl, draftPageCount };
+  return { previewUrl, previewLabel: previewLabel ?? previewUrl, draftPageCount };
 }

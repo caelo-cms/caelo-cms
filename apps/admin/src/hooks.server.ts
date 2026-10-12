@@ -262,6 +262,39 @@ async function consumePendingBootstrapToken(): Promise<void> {
   }
 }
 
+// #650 — seed staging_access.staging_host from CAELO_STAGING_HOST, which
+// provisioning sets from the install's staging host setting (the wizard's
+// answer, default staging.<domain>; `upgrade` defaults installs that
+// predate it). Fills an unset value only, so an Owner's later change in
+// Security → Domains is never overwritten. Same memoised shape as the
+// site base URL seed below.
+let stagingHostSeed: Promise<void> | null = null;
+function seedStagingHost(): Promise<void> {
+  if (stagingHostSeed) return stagingHostSeed;
+  stagingHostSeed = (async () => {
+    const host = process.env.CAELO_STAGING_HOST?.trim();
+    if (!host) return;
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, SYSTEM_CTX, "staging_access.seed_host", { host });
+    if (!r.ok) {
+      // A rejected host (not an FQDN, the live or admin host) is permanent
+      // until provisioning changes it; anything else is retried.
+      if (r.error.kind === "ValidationFailed" || r.error.kind === "HandlerError") {
+        console.error("[bootstrap.staging_host] CAELO_STAGING_HOST rejected", r.error);
+        return;
+      }
+      throw new Error(`seed_host failed: ${JSON.stringify(r.error)}`);
+    }
+    if ((r.value as { seeded: boolean }).seeded) {
+      console.log(`[bootstrap.staging_host] staging host set to ${host}`);
+    }
+  })().catch((e) => {
+    console.error("[bootstrap.staging_host] failed", e);
+    stagingHostSeed = null;
+  });
+  return stagingHostSeed;
+}
+
 // #551 — seed site_defaults.site_base_url from CAELO_SITE_URL, which
 // provisioning sets to https://<install domain>. Fills an unset value only
 // (the op never overwrites), so it covers fresh installs and upgrades of
@@ -426,6 +459,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   await seedSiteBaseUrl();
+  await seedStagingHost();
   const { adapter, registry } = getQueryContext();
   const token = event.cookies.get(SESSION_COOKIE);
   let user: App.Locals["user"] = null;
