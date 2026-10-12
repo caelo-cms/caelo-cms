@@ -31,12 +31,16 @@ import {
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
+import { pickVariant } from "./ab-router.js";
+import { hashVisitorId } from "./middleware/captcha.js";
 import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
+import { verifySignedCookie } from "./middleware/signed-cookie.js";
 import {
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
   handleRequest,
   invalidateGatewaySettings,
+  parseCookies,
   setGatewayAdapter,
   setGatewayRegistry,
 } from "./server.js";
@@ -231,51 +235,112 @@ afterAll(async () => {
   await adminAdapter.close();
 });
 
-describe("POST /api/variant/assign as gateway_role (#634)", () => {
-  it("returns a variant for an active experiment and counts the impression", async () => {
-    // A returning visitor: the signed cookie the gateway minted earlier
-    // (here via the captcha challenge) keys the impression row.
-    await setCaptcha("pow");
-    const minted = await handleRequest(new Request("http://localhost/api/captcha/challenge"));
-    const cookie = { cookie: minted.headers.get("set-cookie")?.split(";")[0] ?? "" };
-    expect(cookie.cookie).toStartWith("caelo_visitor_id=");
-    const r = await handleRequest(
-      post(
-        `/api/variant/assign?exp=${ACTIVE_EXP}`,
-        { visitorId: "v-1", page: `/${P}-page` },
-        cookie,
-      ),
-    );
-    await expectStatus(r, 200);
-    const { variant } = ((await r.json()) as { data: { variant: string } }).data;
-    expect(["control", "b"]).toContain(variant);
+describe("POST /api/variant/assign as gateway_role (#634, #649)", () => {
+  /** What /api/variant.js sends: no body, only the cookies the browser holds. */
+  function assign(slug: string, cookie?: string): Request {
+    clientIp++;
+    return new Request(`http://localhost/api/variant/assign?exp=${slug}`, {
+      method: "POST",
+      headers: {
+        "X-Forwarded-For": `203.0.113.${clientIp % 250}`,
+        ...(cookie ? { cookie } : {}),
+      },
+    });
+  }
 
-    // Same visitor again: same variant, impressions counted on one row.
-    const again = await handleRequest(
-      post(
-        `/api/variant/assign?exp=${ACTIVE_EXP}`,
-        { visitorId: "v-1", page: `/${P}-page` },
-        cookie,
-      ),
-    );
-    await expectStatus(again, 200);
-    expect(((await again.json()) as { data: { variant: string } }).data.variant).toBe(variant);
-    const rows = await asAdmin(
+  async function impressionRows(): Promise<
+    { variant_label: string; impressions: number; visitor_id_hash: string }[]
+  > {
+    return asAdmin(
       async (tx) =>
-        (await tx`SELECT variant_label, impressions FROM experiment_assignments
+        (await tx`SELECT variant_label, impressions, visitor_id_hash FROM experiment_assignments
                   WHERE experiment_id = ${activeExperimentId}::uuid`) as {
           variant_label: string;
           impressions: number;
+          visitor_id_hash: string;
         }[],
     );
-    expect(rows).toEqual([{ variant_label: variant, impressions: 2 }]);
+  }
+
+  it("assigns a first-time visitor from the cookie alone and keeps them in that variant", async () => {
+    await asAdmin(async (tx) => {
+      await tx`DELETE FROM experiment_assignments WHERE experiment_id = ${activeExperimentId}::uuid`;
+    });
+    const secret = await asAdmin(
+      async (tx) =>
+        (
+          (await tx`SELECT gateway_cookie_secret AS s FROM site_settings WHERE id = 1`) as {
+            s: string;
+          }[]
+        )[0]?.s ?? "",
+    );
+
+    // No cookie, no body — exactly the browser's first request (#649).
+    const first = await handleRequest(assign(ACTIVE_EXP));
+    await expectStatus(first, 200);
+    const { variant } = ((await first.json()) as { data: { variant: string } }).data;
+    expect(["control", "b"]).toContain(variant);
+
+    // The gateway minted the id it bucketed on, and page script cannot read it.
+    const setCookie = first.headers.get("set-cookie") ?? "";
+    expect(setCookie).toStartWith("caelo_visitor_id=");
+    expect(setCookie).toContain("HttpOnly");
+    const signed = parseCookies(setCookie.split(";")[0] ?? null).caelo_visitor_id ?? "";
+    const verified = await verifySignedCookie({ signed, secret });
+    const visitorId = verified?.value ?? "";
+    expect(visitorId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(variant).toBe(
+      pickVariant(visitorId, ACTIVE_EXP, [
+        { label: "control", weight: 0.5 },
+        { label: "b", weight: 0.5 },
+      ]) ?? "",
+    );
+
+    // Reload: the browser sends the cookie back, same variant, no new cookie.
+    const cookie = `caelo_visitor_id=${signed}`;
+    for (let i = 0; i < 3; i++) {
+      const again = await handleRequest(assign(ACTIVE_EXP, cookie));
+      await expectStatus(again, 200);
+      expect(again.headers.get("set-cookie")).toBeNull();
+      expect(((await again.json()) as { data: { variant: string } }).data.variant).toBe(variant);
+    }
+
+    // Bucketing and the impression row use the same verified id.
+    expect(await impressionRows()).toEqual([
+      { variant_label: variant, impressions: 4, visitor_id_hash: hashVisitorId(visitorId) },
+    ]);
   });
 
-  it("answers 400 for a draft experiment — drafts are not served", async () => {
+  it("ignores a client-supplied visitorId — only the signed cookie decides", async () => {
+    const minted = await handleRequest(assign(ACTIVE_EXP));
+    await expectStatus(minted, 200);
+    const cookie = minted.headers.get("set-cookie")?.split(";")[0] ?? "";
+    const expected = ((await minted.json()) as { data: { variant: string } }).data.variant;
+    for (const visitorId of ["attacker-1", "attacker-2", "attacker-3", "attacker-4"]) {
+      const r = await handleRequest(
+        post(
+          `/api/variant/assign?exp=${ACTIVE_EXP}`,
+          { visitorId, page: `/${P}-page` },
+          { cookie },
+        ),
+      );
+      await expectStatus(r, 200);
+      expect(((await r.json()) as { data: { variant: string } }).data.variant).toBe(expected);
+    }
+  });
+
+  it("treats a tampered cookie as a new visitor and re-mints it", async () => {
     const r = await handleRequest(
-      post(`/api/variant/assign?exp=${DRAFT_EXP}`, { visitorId: "v-1", page: `/${P}-page` }),
+      assign(ACTIVE_EXP, `caelo_visitor_id=${"0".repeat(36)}.forged-signature`),
     );
+    await expectStatus(r, 200);
+    expect(r.headers.get("set-cookie") ?? "").toStartWith("caelo_visitor_id=");
+  });
+
+  it("answers 400 for a draft experiment — drafts are not served, and no cookie is minted", async () => {
+    const r = await handleRequest(assign(DRAFT_EXP));
     await expectStatus(r, 400);
+    expect(r.headers.get("set-cookie")).toBeNull();
     expect(((await r.json()) as { error: { message: string } }).error.message).toBe(
       "no active experiment",
     );
