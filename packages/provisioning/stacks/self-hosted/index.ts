@@ -29,6 +29,8 @@ import { generateDockerCompose } from "../../dist/compose.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
+// #650 — the staging site's host (install setting, default staging.<domain>).
+const stagingHost = cfg.get("stagingDomain") ?? `staging.${domain}`;
 const ownerEmail = cfg.require("ownerEmail");
 const caeloDir = cfg.get("caeloDir") ?? "./.caelo";
 // #553 — same knob as every adapter; undefined = stack-contract default.
@@ -81,7 +83,7 @@ const caddyConf = generateCaddyfile({
   domains: [
     { hostname: domain, kind: "admin", env: "production" as const },
     { hostname: domain, kind: "public", env: "production" as const },
-    { hostname: `staging.${domain}`, kind: "public", env: "staging" as const },
+    { hostname: stagingHost, kind: "public", env: "staging" as const },
   ],
 });
 

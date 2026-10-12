@@ -17,6 +17,8 @@ import type { Actions, PageServerLoad } from "./$types";
 
 interface StagingAccess {
   stagingUrl: string | null;
+  stagingHost: string | null;
+  stagingDomainSupported: boolean;
   provider: string;
   hasStagedBuild: boolean;
   settings: {

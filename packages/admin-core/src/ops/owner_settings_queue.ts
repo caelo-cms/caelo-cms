@@ -34,6 +34,7 @@ export const ownerSettingsKind = z.enum([
   "rotate_gateway_cookie_secret",
   "set_staging_access",
   "rotate_staging_credentials",
+  "set_staging_host",
 ]);
 export type OwnerSettingsKind = z.infer<typeof ownerSettingsKind>;
 

@@ -137,13 +137,13 @@ Google only maps a domain for a verified owner of it. If you have not verified y
 
 ## Protected staging on your own domain (`gcp-firebase`)
 
-Every Stage is served at `staging.<your domain>` behind an access gate — the same artefacts Publish live ships, with only the host swapped (see [Protected staging](/staging-access)). The gateway serves that host; map it once:
+Every Stage is served on the staging host behind an access gate — the same artefacts Publish live ships, with only the host swapped (see [Protected staging](/staging-access)). The wizard asks for the host (default `staging.<your domain>`; `--staging-domain <host>` when non-interactive). The gateway serves it; map it once:
 
 ```bash
 bunx @caelo-cms/provisioning staging-domain enable
 ```
 
-It works like `admin-domain enable` (same Search Console verification, run as your own gcloud account), opens the gateway's ingress for the domain mapping, and prints the DNS record to add (usually `CNAME staging → ghs.googlehosted.com.`). Running it again is safe. Who may open staging is set in the admin under **Security → Staging access**.
+After changing the host in the admin (Security → Domains), run it again with `--staging-domain <new host>`. It works like `admin-domain enable` (same Search Console verification, run as your own gcloud account), opens the gateway's ingress for the domain mapping, and prints the DNS record to add (usually `CNAME staging → ghs.googlehosted.com.`). Running it again is safe. Who may open staging is set in the admin under **Security → Staging access**.
 
 ## Day-2 operations
 
@@ -152,7 +152,7 @@ It works like `admin-domain enable` (same Search Console verification, run as yo
 | Upgrade to a new release | `bunx @caelo-cms/provisioning upgrade` (see below) |
 | Give someone admin access | Add them at `/security/users` (or ask the AI) — IAP follows automatically |
 | Serve the admin at `admin.<domain>` (gcp-firebase) | `bunx @caelo-cms/provisioning admin-domain enable` |
-| Serve staging at `staging.<domain>` (gcp-firebase) | `bunx @caelo-cms/provisioning staging-domain enable` |
+| Serve the staging host (gcp-firebase) | `bunx @caelo-cms/provisioning staging-domain enable` |
 | Read logs | Cloud Logging — filter by `resource.labels.service_name="caelo-admin-prod"` |
 | Restore from PITR | `gcloud sql backups restore` — see [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
 | Rotate the AI provider key | Owner → `/security/ai` (stored encrypted in the database) |

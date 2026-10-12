@@ -64,7 +64,7 @@ export {
 } from "./chat-image-gc-worker.js";
 export * from "./csrf.js";
 // #650 — which installs serve staging at a protected staging.<domain>.
-export { providerHasStagingDomain, stagingSiteUrl } from "./deploy/staging-domain.js";
+export { providerHasStagingDomain } from "./deploy/staging-domain.js";
 // P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
 export {
   _domainEventGcOnceForTests,

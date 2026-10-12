@@ -221,6 +221,7 @@ import {
   getStagingAccessTool,
   proposeRotateStagingCredentialsTool,
   proposeSetStagingAccessTool,
+  proposeSetStagingHostTool,
 } from "./staging-access-tools.js";
 import {
   getSiteDefaultsTool,
@@ -535,6 +536,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(getStagingAccessTool);
   registry.register(proposeSetStagingAccessTool);
   registry.register(proposeRotateStagingCredentialsTool);
+  registry.register(proposeSetStagingHostTool);
   // v0.2.37 — AI can withdraw its own pending proposals.
   registry.register(cancelProposalTool);
   // v0.11.0 — themes primitive (#45). Routine + the §11.A propose

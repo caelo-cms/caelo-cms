@@ -5,7 +5,8 @@
  *
  *  - get_staging_access: the staging URL and who may open it (and, for an
  *    Owner who asks, the crawler credentials — e.g. to set up a crawl).
- *  - propose_set_staging_access / propose_rotate_staging_credentials: the
+ *  - propose_set_staging_access / propose_rotate_staging_credentials /
+ *    propose_set_staging_host: the
  *    §11.A-gated writes (owner_settings_staging.ts). They change who can
  *    see unpublished work, so the operator approves each one in the chat.
  *
@@ -16,6 +17,7 @@
 import { z } from "zod";
 import {
   proposeRotateStagingCredentialsInput,
+  proposeSetStagingHostInput,
   proposeStagingAccessInput,
 } from "../../ops/owner_settings_staging.js";
 import type { stagingAccessOutput } from "../../ops/staging_access.js";
@@ -30,9 +32,13 @@ type StagingAccessValue = z.infer<typeof stagingAccessOutput>;
 export function formatStagingAccess(v: StagingAccessValue): string {
   const s = v.settings;
   const lines: string[] = [];
-  if (v.stagingUrl === null) {
+  if (!v.stagingDomainSupported) {
     lines.push(
       `Staging URL: none — this install's provider (${v.provider}) has no protected staging domain yet; the Stage result links the staged build.`,
+    );
+  } else if (v.stagingUrl === null) {
+    lines.push(
+      "Staging host: not configured yet — the admin stores it from provisioning on its next start (`cms-provision upgrade`), or propose one with propose_set_staging_host.",
     );
   } else {
     lines.push(
@@ -111,4 +117,15 @@ export const proposeRotateStagingCredentialsTool = makeProposeTool({
     "Give the reason in `reason`; it is shown on the approval. You never see the new value unless the Owner asks for it via get_staging_access.",
   schema: proposeRotateStagingCredentialsInput,
   summarize: (_input, preview) => String(preview.summary ?? "rotate staging credentials"),
+});
+
+export const proposeSetStagingHostTool = makeProposeTool({
+  toolName: "propose_set_staging_host",
+  opName: "owner_settings.propose_set_staging_host",
+  pendingQueuePath: PENDING_QUEUE,
+  when:
+    "Propose moving the protected staging site to another host (default staging.<domain>; any FQDN the operator names, also on another domain, e.g. preview.example.com). " +
+    "ONLY when the operator asks for a different staging host. Never the live or admin host. After approval the new host needs a DNS record and domain mapping (the result says how) and a fresh Stage. Read the current host with get_staging_access first.",
+  schema: proposeSetStagingHostInput,
+  summarize: (_input, preview) => String(preview.summary ?? "staging host change"),
 });

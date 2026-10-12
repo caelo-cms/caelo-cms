@@ -74,7 +74,7 @@ export type StagingOrigin =
 export interface OriginEnv {
   readonly provider?: string;
   readonly stagingBaseUrl?: string;
-  /** #650 — `CAELO_STAGING_SITE_URL`, the protected staging host. */
+  /** #650 — the protected staging site's origin (the staging host setting). */
   readonly stagingSiteUrl?: string;
   /** Override the file source of a loopback origin (tests). */
   readonly loopbackSource?: (run: ClaimedAuditRun) => StagedFileSource;
@@ -139,7 +139,7 @@ export async function resolveStagingOrigin(
         ok: false,
         code: "staging-unresolvable",
         message:
-          "CAELO_STAGING_SITE_URL is not set on the admin service, so the audit cannot name the staging site it checked — run `cms-provision upgrade` and Stage again",
+          "no staging host is configured, so the audit cannot name the staging site it checked — set it under Security → Domains (or run `cms-provision upgrade`) and Stage again",
       };
     }
     return { ok: true, baseUrl: run.previewUrl, displayBaseUrl: env.stagingSiteUrl };
@@ -239,12 +239,19 @@ async function record(
   }
 }
 
+/** #650 — the staging host setting as an origin, when one is configured. */
+async function configuredStagingSiteUrl(deps: WorkerDeps): Promise<{ stagingSiteUrl?: string }> {
+  const r = await execute(deps.registry, deps.adapter, WORKER_CTX, "staging_access.get", {});
+  const url = r.ok ? (r.value as { stagingUrl: string | null }).stagingUrl : null;
+  return url ? { stagingSiteUrl: url } : {};
+}
+
 /** Audit one claimed run end to end. Exported for tests. */
 export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun): Promise<void> {
   const env = deps.env ?? {
     provider: process.env.CAELO_PROVIDER,
     stagingBaseUrl: process.env.CAELO_STAGING_BASE_URL,
-    stagingSiteUrl: process.env.CAELO_STAGING_SITE_URL,
+    ...(await configuredStagingSiteUrl(deps)),
   };
   if (run.pages.length === 0) {
     await record(deps, run.auditRunId, null, {

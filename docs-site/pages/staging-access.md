@@ -4,19 +4,23 @@ template: doc-page
 status: published
 seo:
   title: Protected staging — Caelo CMS
-  description: Staging lives at staging.<domain>, serves exactly what Publish live ships, and is closed to everyone you have not let in. How to open it, how crawlers get in, and what Publish live checks.
+  description: Staging lives on its own host (default staging.<domain>), serves exactly what Publish live ships, and is closed to everyone you have not let in. How to open it, how crawlers get in, and what Publish live checks.
 ---
 
-# Protected staging (staging.&lt;domain&gt;)
+# Protected staging
 
-Every **Stage** builds your site exactly as **Publish live** will ship it and serves it at `https://staging.<domain>`. Staging is always `noindex` and closed to the public: only people and tools you let in can open it.
+Every **Stage** builds your site exactly as **Publish live** will ship it and serves it on the **staging host** — `staging.<domain>` unless you chose another one. Staging is always `noindex` and closed to the public: only people and tools you let in can open it.
+
+## The staging host
+
+The staging host is a setting, not a fixed name. The install wizard asks for it (default `staging.<your domain>`; any host works, also one on another domain such as `preview.example.org`), non-interactive installs pass `--staging-domain <host>`, and installs from before the setting get `staging.<domain>` on their next `cms-provision upgrade`. Change it later under **Security → Domains** (or ask the AI — `propose_set_staging_host`, which you approve in the chat). It must be a bare host name and must not be the live site's or the admin's host. After a change, run `cms-provision staging-domain enable --staging-domain <host>`, add the DNS record it prints, and Stage again so the build renders the new host.
 
 > Available on **gcp-firebase** installs. Self-hosted and `gcp` installs follow; until then they keep their current staging preview.
 
 ## What staging shows
 
 - **The same artefacts and hosting behaviour as live** — redirects, response headers, cache rules, trailing-slash handling — with only the host swapped.
-- **Its own host everywhere.** Canonical links, `sitemap.xml`, the `Sitemap:` line in `robots.txt`, `og:url`, `hreflang` and every other absolute link name `staging.<domain>`, so a crawl of staging stays on staging and is self-consistent.
+- **Its own host everywhere.** Canonical links, `sitemap.xml`, the `Sitemap:` line in `robots.txt`, `og:url`, `hreflang` and every other absolute link name the staging host, so a crawl of staging stays on staging and is self-consistent.
 - **Always `noindex`** — `X-Robots-Tag: noindex` on every response, `Disallow: /` in robots.txt.
 
 ## Publish live checks that live matches staging
@@ -42,7 +46,7 @@ The AI can read the staging URL and the enabled modes (`get_staging_access`) and
 
 ## Crawling staging (searchVIU)
 
-Point the crawl at `https://staging.<domain>/` and give it one way in:
+Point the crawl at `https://<staging host>/` and give it one way in:
 
 - **Basic auth:** enable it, then in the crawl profile set `dev_auth_type: "PW"`, `dev_auth_user` = the user name, `dev_auth_pw` = the generated password.
 - **IP allowlist:** add the crawler's static egress IP, then set `dev_auth_type: "IP"`.
@@ -52,14 +56,14 @@ Always set `ignore_robots_tag_noindex: true` — staging is `noindex` by design.
 
 ## The quality check does not go through the gate
 
-The Lighthouse check of a Stage loads the staged build directly, not through `staging.<domain>`: the gateway scales to zero, and its cold start would skew the performance score. Reports still name `staging.<domain>`.
+The Lighthouse check of a Stage loads the staged build directly, not through the staging host: the gateway scales to zero, and its cold start would skew the performance score. Reports still name the staging host.
 
 ## Setting it up (operator, once)
 
-1. `cms-provision upgrade` — creates the staging gate key in Secret Manager and gives admin + gateway the staging host.
-2. `cms-provision staging-domain enable` — maps `staging.<domain>` to the gateway (run as the Search Console owner of the domain, like `admin-domain enable`) and prints the DNS record to add, typically `CNAME staging → ghs.googlehosted.com.` TLS follows within 15–60 minutes of DNS resolving.
+1. `cms-provision upgrade` — creates the staging gate key in Secret Manager and records the staging host (default `staging.<domain>`) for the admin.
+2. `cms-provision staging-domain enable` — maps the staging host to the gateway (run as the Search Console owner of the domain, like `admin-domain enable`) and prints the DNS record to add, typically a `CNAME` to `ghs.googlehosted.com.` TLS follows within 15–60 minutes of DNS resolving.
 3. Stage once; *Open staging* takes you there.
 
 ## Residual risk on gcp-firebase
 
-Firebase Hosting cannot put access control on a preview channel. The gateway proxies `staging.<domain>` to the **current** staged build's preview channel, whose own URL (`<site>--runid-….web.app`) therefore stays publicly reachable for anyone who learns it. Caelo never shows that URL, deletes older channels as soon as a newer Stage succeeds and the last one after Publish live, and every channel expires after 7 days. If staging must be truly private, use the `gcp` provider or a self-hosted install.
+Firebase Hosting cannot put access control on a preview channel. The gateway proxies the staging host to the **current** staged build's preview channel, whose own URL (`<site>--runid-….web.app`) therefore stays publicly reachable for anyone who learns it. Caelo never shows that URL, deletes older channels as soon as a newer Stage succeeds and the last one after Publish live, and every channel expires after 7 days. If staging must be truly private, use the `gcp` provider or a self-hosted install.

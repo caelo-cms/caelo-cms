@@ -189,6 +189,7 @@ const INSTALL = {
   projectId: "acme",
   env: "production",
   domain: "acme.com",
+  stagingHost: "staging.acme.com",
   region: "europe-west1",
 };
 const SERVICE_ACCOUNTS: Record<CloudRunSlug, string> = {

@@ -105,7 +105,7 @@
       "slug": "staging-access",
       "template": "doc-page",
       "name": "Protected staging",
-      "title": "Protected staging (staging.<domain>)"
+      "title": "Protected staging"
     },
     {
       "source": "pages/plugins-build.md",

@@ -47,6 +47,10 @@
         {#if access.stagingUrl}
           <span class="font-mono">{access.stagingUrl}/</span> —
           {access.hasStagedBuild ? "serving the latest staged build" : "nothing staged right now (the last Stage was published live)"}.
+          <a class="underline" href="/security/domains">Change the host</a>.
+        {:else if access.stagingDomainSupported}
+          No staging host is configured yet — set it under
+          <a class="underline" href="/security/domains">Security → Domains</a>.
         {:else}
           This install's provider ({access.provider}) has no protected staging domain yet; the Stage
           result links the staged build.

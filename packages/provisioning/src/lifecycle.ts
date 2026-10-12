@@ -27,10 +27,12 @@ import {
   type InstallMetadata,
   installFlag,
   installRoot,
+  installStagingHost,
   listInstalls,
   readSecret,
   recordImageDigests,
   selectInstall,
+  writeMetadata,
 } from "./install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "./operator-access.js";
@@ -685,12 +687,20 @@ async function upgradeInstall(
       liveVolumes: liveVolumes(serviceJson),
     });
   }
+  // #650 — an install from before the staging host setting converges to
+  // the default (staging.<domain>) without operator action: recorded here,
+  // handed to the admin as CAELO_STAGING_HOST, which seeds its setting.
+  const stagingHost = installStagingHost(meta);
+  if (!meta.stagingDomain) {
+    writeMetadata(installId, { ...meta, stagingDomain: stagingHost });
+  }
   const install = {
     provider: meta.provider,
     projectId: meta.projectId,
     env: GCP_STACK_ENV,
     domain: meta.domain,
     region,
+    stagingHost,
   };
   const deployed = Object.fromEntries(
     plans.map((p) => [p.slug, { serviceName: p.serviceName, liveEnv: p.liveEnv }]),
@@ -1077,11 +1087,11 @@ async function upgradeInstall(
   }
   log.success(`Upgrade to ${bold(targetTag)} complete (admin + gateway revisions Ready).`);
   if (meta.provider === "gcp-firebase") {
-    // #650 — staging builds now render staging.<domain>; the gateway
+    // #650 — staging builds now render the staging host; the gateway
     // serves it once it is mapped. The command is idempotent, so this
     // reminder is safe to repeat on every upgrade.
     log.info(
-      `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve ${bold(`staging.${meta.domain}`)} (it prints the DNS record). Access: admin → Security → Staging access.`,
+      `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve ${bold(installStagingHost(meta))} (it prints the DNS record). Host and access: admin → Security → Domains / Staging access.`,
     );
   }
 

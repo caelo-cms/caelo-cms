@@ -20,6 +20,7 @@
  * so adding a new provider is one new file, not a sprawling switch.
  */
 
+import { defaultStagingHost, normalizeStagingHost, stagingHostProblem } from "@caelo-cms/shared";
 import { cancel, confirm, intro, isCancel, outro, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim } from "kleur/colors";
 import {
@@ -42,6 +43,11 @@ export interface WizardOptions {
   provider?: Provider;
   /** Pre-supplied domain — skips the prompt. */
   domain?: string;
+  /**
+   * #650 — `--staging-domain`: the protected staging site's host; skips the
+   * prompt. Default `staging.<domain>`.
+   */
+  stagingDomain?: string;
   /** Pre-supplied owner email — skips the prompt. */
   ownerEmail?: string;
   /** Pre-supplied GCP project id — skips the prompt for gcp. */
@@ -68,6 +74,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   //    re-run is a single Enter to "resume <id>".
   let provider: Provider;
   let domain: string;
+  let stagingDomain: string | undefined;
   let ownerEmail: string;
   let projectIdHint: string | null;
   let installId: string;
@@ -81,6 +88,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   if (resumeChoice) {
     provider = resumeChoice.provider;
     domain = resumeChoice.domain;
+    stagingDomain = resumeChoice.stagingDomain;
     ownerEmail = resumeChoice.ownerEmail;
     projectIdHint = resumeChoice.projectId;
     installId = resumeChoice.installId;
@@ -88,6 +96,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   } else {
     provider = opts.provider ?? (await pickProvider());
     domain = opts.domain ?? (await promptDomain());
+    stagingDomain = await resolveStagingDomain(domain, opts);
     ownerEmail = opts.ownerEmail ?? (await promptOwnerEmail());
     projectIdHint = opts.projectId ?? null;
     installId = deriveInstallId(provider, projectIdHint ?? domain);
@@ -114,16 +123,17 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
       // metadata (createdAt, region, the recorded release in imageDigests)
       // so the re-run converges infrastructure instead of looking like a
       // new install that deploys `:latest`.
-      writeMetadata(
-        installId,
-        resumedMetadata(existingForId, { domain, ownerEmail, projectId: projectIdHint }),
-      );
+      writeMetadata(installId, {
+        ...resumedMetadata(existingForId, { domain, ownerEmail, projectId: projectIdHint }),
+        ...(opts.stagingDomain ? { stagingDomain } : {}),
+      });
     } else {
       writeMetadata(installId, {
         installId,
         provider,
         projectId: projectIdHint,
         domain,
+        ...(stagingDomain ? { stagingDomain } : {}),
         ownerEmail,
         region: null,
         createdAt: new Date().toISOString(),
@@ -291,6 +301,39 @@ async function promptDomain(): Promise<string> {
     process.exit(0);
   }
   return value as string;
+}
+
+/**
+ * #650 — the protected staging site's host: `--staging-domain`, else asked
+ * (default `staging.<domain>`; any other FQDN, also on another domain),
+ * else — non-interactive — the default. Never the live or admin host.
+ */
+async function resolveStagingDomain(
+  domain: string,
+  opts: Pick<WizardOptions, "stagingDomain" | "nonInteractive">,
+): Promise<string> {
+  const reserved = { liveHosts: [domain, `www.${domain}`], adminHosts: [`admin.${domain}`] };
+  if (opts.stagingDomain) {
+    const problem = stagingHostProblem(opts.stagingDomain, reserved);
+    if (problem) {
+      cancel(`--staging-domain: ${problem}`);
+      process.exit(1);
+    }
+    return normalizeStagingHost(opts.stagingDomain);
+  }
+  const suggested = defaultStagingHost(domain);
+  if (opts.nonInteractive) return suggested;
+  const value = await text({
+    message: "Host of the protected staging site (where you review changes before they go live)",
+    placeholder: suggested,
+    initialValue: suggested,
+    validate: (v) => stagingHostProblem(v || suggested, reserved) ?? undefined,
+  });
+  if (isCancel(value)) {
+    cancel("Cancelled.");
+    process.exit(0);
+  }
+  return normalizeStagingHost((value as string) || suggested);
 }
 
 async function promptOwnerEmail(): Promise<string> {

@@ -78,7 +78,7 @@ import {
   handleStagingRequest,
   isStagingRequest,
   type StagingState,
-  stagingGateConfigFromEnv,
+  stagingGateFromEnv,
 } from "./staging-proxy.js";
 
 export {
@@ -282,12 +282,13 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
     SYSTEM_CTX,
     async (tx) =>
       await tx.execute(sql`
-        SELECT cookie_enabled, basic_auth_enabled, basic_auth_user, basic_auth_nonce,
+        SELECT staging_host, cookie_enabled, basic_auth_enabled, basic_auth_user, basic_auth_nonce,
                header_enabled, header_name, header_nonce,
                to_jsonb(ip_allowlist) AS ip_allowlist, origin_url
         FROM staging_access WHERE id = 1
       `),
   )) as unknown as {
+    staging_host: string | null;
     cookie_enabled: boolean;
     basic_auth_enabled: boolean;
     basic_auth_user: string;
@@ -303,6 +304,7 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
     throw new GatewayNotReadyError("staging_access has no row; run the database migrations (0251)");
   }
   const state: StagingState = {
+    host: row.staging_host,
     settings: {
       cookieEnabled: row.cookie_enabled,
       basicAuthEnabled: row.basic_auth_enabled,
@@ -434,24 +436,29 @@ function jsonResponse(
 // ---------------------------------------------------------------------------
 
 export async function handleRequest(req: Request): Promise<Response> {
-  // #650 — staging.<domain> (gcp-firebase): the access gate + proxy to the
-  // staged build. Nothing below (plugin dispatch, captcha) serves it.
-  const stagingGate = stagingGateConfigFromEnv(process.env);
-  if (stagingGate && isStagingRequest(req, stagingGate.stagingOrigin)) {
-    const adapter = cachedAdapter;
-    if (!adapter) {
-      return jsonResponse(
-        { ok: false, error: { kind: "ServiceUnavailable", message: "gateway not bootstrapped" } },
-        { status: 503 },
-      );
-    }
-    return handleStagingRequest(req, {
-      config: stagingGate,
-      loadState: () => loadStagingState(adapter),
-    });
-  }
-
   const url = new URL(req.url);
+
+  // #650 — the staging host (gcp-firebase; the stored setting, default
+  // staging.<domain>): the access gate + proxy to the staged build. Nothing
+  // below (plugin dispatch, captcha) serves it.
+  const stagingGate = stagingGateFromEnv(process.env);
+  if (stagingGate && cachedAdapter && url.pathname !== "/healthz") {
+    let state: StagingState | null = null;
+    try {
+      state = await loadStagingState(cachedAdapter);
+    } catch (e) {
+      // Not knowing the staging host must not take /api/* down with it; the
+      // routes below answer from their own settings (or 503 on their own).
+      console.error(`[api-gateway] staging host unavailable: ${describeFailure(e)}`);
+    }
+    if (state?.host && isStagingRequest(req, state.host)) {
+      const loaded = state;
+      return handleStagingRequest(req, {
+        config: { stagingOrigin: `https://${loaded.host}`, secret: stagingGate.secret },
+        loadState: async () => loaded,
+      });
+    }
+  }
 
   if (url.pathname === "/healthz") {
     return jsonResponse({ ok: true });

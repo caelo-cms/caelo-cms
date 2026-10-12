@@ -113,13 +113,16 @@ export async function enableAdminDomain(opts: DomainOpts): Promise<AdminDomainRe
 }
 
 /**
- * #650 — map `staging.<domain>` to the gateway, which serves the protected
+ * #650 — map the install's staging host (its setting, default
+ * `staging.<domain>`; any FQDN) to the gateway, which serves the protected
  * staging site. Cloud Run refuses domain-mapped requests while a service's
  * ingress is internal-only, so the gateway's ingress is opened first (the
  * stack declares the same since #650; installs from before keep the old
  * value until this runs). Idempotent like the admin mapping.
  */
-export async function enableStagingDomain(opts: DomainOpts): Promise<StagingDomainResult> {
+export async function enableStagingDomain(
+  opts: DomainOpts & { stagingHost: string },
+): Promise<StagingDomainResult> {
   const run = opts.run ?? defaultGcloud;
   const scope = [`--region=${opts.region}`, `--project=${opts.projectId}`];
   const found = await findService(run, scope, "gateway");
@@ -152,7 +155,13 @@ export async function enableStagingDomain(opts: DomainOpts): Promise<StagingDoma
       };
     }
   }
-  return mapDomain(run, scope, opts.domain, `staging.${opts.domain}`, found.service);
+  // Search Console verification: the install domain covers its own
+  // subdomains; a host on another domain is verified itself.
+  const verifyDomain =
+    opts.stagingHost === opts.domain || opts.stagingHost.endsWith(`.${opts.domain}`)
+      ? opts.domain
+      : opts.stagingHost;
+  return mapDomain(run, scope, verifyDomain, opts.stagingHost, found.service);
 }
 
 /** Steps 2–4 of the module doc for `hostname` → `service`. */

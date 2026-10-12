@@ -43,6 +43,7 @@ describe("admin env contract — operator access", () => {
       projectId: "acme",
       env: "production",
       domain: "acme.com",
+      stagingHost: "staging.acme.com",
       region: "europe-west1",
       databaseUrls: databaseUrls("10.0.0.3"),
     });

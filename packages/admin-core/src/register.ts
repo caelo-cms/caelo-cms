@@ -324,6 +324,7 @@ import {
 import {
   proposeRotateStagingCredentialsOp,
   proposeSetStagingAccessOp,
+  proposeSetStagingHostOp,
 } from "./ops/owner_settings_staging.js";
 import {
   anyBootstrapTokenIssuedOp,
@@ -497,7 +498,9 @@ import {
   getStagingAccessOp,
   issueStagingOpenLinkOp,
   rotateStagingCredentialsOp,
+  seedStagingHostOp,
   setStagingAccessOp,
+  setStagingHostOp,
 } from "./ops/staging_access.js";
 import {
   deleteStructuredSetOp,
@@ -962,6 +965,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeRotateGatewayCookieSecretOp);
   registry.register(proposeSetStagingAccessOp);
   registry.register(proposeRotateStagingCredentialsOp);
+  registry.register(proposeSetStagingHostOp);
   registry.register(executeOwnerSettingsProposalOp);
   registry.register(rejectOwnerSettingsProposalOp);
   registry.register(listPendingOwnerSettingsProposalsOp);
@@ -1044,6 +1048,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setStagingAccessOp);
   registry.register(rotateStagingCredentialsOp);
   registry.register(issueStagingOpenLinkOp);
+  registry.register(seedStagingHostOp);
+  registry.register(setStagingHostOp);
   // P13 — gateway hardening surface.
   registry.register(getGatewaySettingsOp);
   registry.register(setGatewaySettingsOp);

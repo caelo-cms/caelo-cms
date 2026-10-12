@@ -71,6 +71,12 @@ export interface ServiceEnvInputs {
   /** Install domain; the public site is served at its apex. */
   readonly domain: string;
   readonly region: string;
+  /**
+   * #650 — the protected staging site's host: the install's setting (the
+   * wizard's answer / `--staging-domain`, {@link defaultStagingHost} when
+   * the install predates it). Seeds the admin's staging host setting.
+   */
+  readonly stagingHost: string;
 }
 
 /** The password-less connection URLs of the install's Cloud SQL databases. */
@@ -134,13 +140,16 @@ export function publicSiteUrl(domain: string): string {
 }
 
 /**
- * #650 — the protected staging site's origin. On gcp-firebase the gateway
- * serves it (Cloud Run domain mapping, `cms-provision staging-domain
- * enable`) and every staging build renders it into its absolute URLs.
+ * #650 — the staging host an install gets when the operator names none.
+ * Same rule as @caelo-cms/shared `defaultStagingHost` (the stacks load this
+ * module from `dist/` without the shared package, hence the local copy).
  */
-export function stagingSiteUrl(domain: string): string {
-  return `https://staging.${domain}`;
+export function defaultStagingHost(domain: string): string {
+  return `staging.${domain.trim().toLowerCase().replace(/\.$/, "")}`;
 }
+
+/** Env var the admin seeds its staging host setting from. */
+export const STAGING_HOST_ENV = "CAELO_STAGING_HOST";
 
 /**
  * The admin env var naming the MCP service account (issue #37). `upgrade`
@@ -293,7 +302,7 @@ export const SERVICE_SECRET_ENV: Readonly<
     // cms_admin + public_role on cms_public, each with its own password.
     GATEWAY_DATABASE_PASSWORD: "gateway-role-password",
     PUBLIC_DATABASE_PASSWORD: "public-role-password",
-    // #650 — verifies staging.<domain> requests (api-gateway staging-proxy.ts).
+    // #650 — verifies staging-host requests (api-gateway staging-proxy.ts).
     CAELO_STAGING_GATE_SECRET: "staging-gate-secret",
   },
 };
@@ -346,11 +355,6 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
     ...commonEnv(inputs),
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
     { name: "GATEWAY_DATABASE_URL", value: inputs.databaseUrls.gateway },
-    // #650 — on gcp-firebase the gateway also serves staging.<domain>
-    // (the access gate + proxy to the staged build).
-    ...(inputs.provider === "gcp-firebase"
-      ? [{ name: "CAELO_STAGING_SITE_URL", value: stagingSiteUrl(inputs.domain) }]
-      : []),
     ...secretEnv("gateway", inputs.env),
   ];
 }
@@ -404,8 +408,10 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
       { name: "CAELO_FIREBASE_SITE", value: inputs.firebaseSiteId },
       { name: "CAELO_GATEWAY_SERVICE", value: inputs.gatewayService },
       { name: "CAELO_GATEWAY_REGION", value: inputs.region },
-      // #650 — staging builds render this host; the admin links to it.
-      { name: "CAELO_STAGING_SITE_URL", value: stagingSiteUrl(domain) },
+      // #650 — seeds the admin's staging host setting (staging builds render
+      // it, the gateway's gate answers on it); the admin DB is the truth
+      // afterwards, changed under Security → Domains.
+      { name: STAGING_HOST_ENV, value: inputs.stagingHost },
     );
   }
   admin.push(...secretEnv("admin", env));

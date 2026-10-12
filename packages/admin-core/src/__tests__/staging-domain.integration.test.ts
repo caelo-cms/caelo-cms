@@ -141,7 +141,6 @@ let testRoot: string;
 let moduleId = "";
 const ENV = {
   CAELO_PROVIDER: "gcp-firebase",
-  CAELO_STAGING_SITE_URL: STAGING,
   CAELO_STAGING_GATE_SECRET: GATE_SECRET,
   CAELO_FIREBASE_SITE: SITE,
   CAELO_GATEWAY_SERVICE: "gateway",
@@ -172,7 +171,7 @@ async function wipe(): Promise<void> {
     await tx`UPDATE staging_access SET cookie_enabled = true, basic_auth_enabled = false,
                basic_auth_user = 'caelo', basic_auth_nonce = NULL, header_enabled = false,
                header_name = 'X-Caelo-Staging-Key', header_nonce = NULL, ip_allowlist = '{}',
-               origin_url = NULL, origin_run_id = NULL WHERE id = 1`;
+               origin_url = NULL, origin_run_id = NULL, staging_host = NULL WHERE id = 1`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${tx(SLUGS)})`;
     await tx`DELETE FROM pages WHERE slug IN ${tx(SLUGS)}`;
     await tx`DELETE FROM modules WHERE slug = ${MOD_SLUG}`;
@@ -218,6 +217,11 @@ beforeAll(async () => {
   registerAdminOps(registry);
   setDeployBridge({ registry, adapter });
   testRoot = await mkdtemp(join(tmpdir(), "caelo-staging-domain-"));
+  // What the admin does at boot with CAELO_STAGING_HOST (provisioning's
+  // staging host setting).
+  expect(
+    await ok<{ seeded: boolean }>("staging_access.seed_host", { host: "staging.example.com" }),
+  ).toEqual({ seeded: true });
 
   const { templateId } = await ok<{ templateId: string }>("templates.create", {
     slug: TPL_SLUG,
@@ -238,8 +242,15 @@ beforeAll(async () => {
     })
   ).moduleId;
   for (const slug of SLUGS) {
-    const { pageId } = await ok<{ pageId: string }>("pages.create", { slug, title: slug, templateId });
-    await ok("pages.set_modules", { pageId, blocks: [{ blockName: "content", moduleIds: [moduleId] }] });
+    const { pageId } = await ok<{ pageId: string }>("pages.create", {
+      slug,
+      title: slug,
+      templateId,
+    });
+    await ok("pages.set_modules", {
+      pageId,
+      blocks: [{ blockName: "content", moduleIds: [moduleId] }],
+    });
     await ok("pages.update", { pageId, status: "published" });
   }
 });
@@ -274,7 +285,11 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     const [run] = (await withSql(
       (tx) => tx`SELECT site_url, parity_manifest, publish_summary
                  FROM deploy_runs WHERE id = ${second.runId}::uuid`,
-    )) as { site_url: string; parity_manifest: Record<string, string>; publish_summary: { location: string; previewUrl: string } }[];
+    )) as {
+      site_url: string;
+      parity_manifest: Record<string, string>;
+      publish_summary: { location: string; previewUrl: string };
+    }[];
     expect(run?.site_url).toBe(STAGING);
     expect(Object.keys(run?.parity_manifest ?? {})).toContain(`${PAGE_SLUG}/index.html`);
     expect(Object.keys(run?.parity_manifest ?? {})).not.toContain("robots.txt");
@@ -345,6 +360,41 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
   });
 });
 
+describe("the staging host setting", () => {
+  it("seeding never overwrites; set_host validates and the gateway-facing row follows", async () => {
+    expect(
+      await ok<{ seeded: boolean }>("staging_access.seed_host", { host: "other.example.com" }),
+    ).toEqual({ seeded: false });
+    for (const bad of ["example.com", "https://x.example.com", "nodot"]) {
+      const r = await execute(registry, adapter, SYSTEM, "staging_access.set_host", { host: bad });
+      expect(r.ok).toBe(false);
+    }
+    const proposal = await ok<{ proposalId: string; preview: { summary: string } }>(
+      "owner_settings.propose_set_staging_host",
+      { host: "Preview.Other-Domain.de" },
+    );
+    expect(proposal.preview.summary).toBe(
+      "staging host: staging.example.com → preview.other-domain.de",
+    );
+    await ok("owner_settings.execute_proposal", { proposalId: proposal.proposalId });
+    const v = await ok<{ stagingUrl: string; stagingHost: string }>("staging_access.get", {});
+    expect(v).toMatchObject({
+      stagingUrl: "https://preview.other-domain.de",
+      stagingHost: "preview.other-domain.de",
+    });
+    const again = await execute(registry, adapter, SYSTEM, "staging_access.set_host", {
+      host: "preview.other-domain.de",
+    });
+    expect(again.ok).toBe(false);
+    const back = await ok<{ host: string; nextSteps: string }>("staging_access.set_host", {
+      host: "staging.example.com",
+    });
+    expect(back.nextSteps).toContain(
+      "cms-provision staging-domain enable --staging-domain staging.example.com",
+    );
+  });
+});
+
 describe("staging access settings", () => {
   it("get reports the staging URL and modes; credentials are for humans with settings.write only", async () => {
     const v = await ok<{ stagingUrl: string; settings: { cookieEnabled: boolean } }>(
@@ -372,7 +422,11 @@ describe("staging access settings", () => {
       (
         (await withSql(
           (tx) => tx`SELECT basic_auth_nonce, header_nonce, ip_allowlist FROM staging_access`,
-        )) as { basic_auth_nonce: string | null; header_nonce: string | null; ip_allowlist: string[] }[]
+        )) as {
+          basic_auth_nonce: string | null;
+          header_nonce: string | null;
+          ip_allowlist: string[];
+        }[]
       )[0]!;
     const first = await nonce();
     expect(first.basic_auth_nonce).not.toBeNull();

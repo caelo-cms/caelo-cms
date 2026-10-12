@@ -305,6 +305,7 @@ describe("planContractEnv", () => {
         projectId: "acme",
         env: "production",
         domain: "acme.com",
+        stagingHost: "staging.acme.com",
         region: "europe-west1",
       },
       {
@@ -316,11 +317,10 @@ describe("planContractEnv", () => {
     // #650 — the same roll converges the protected staging domain's host
     // and gate key onto an install that predates it.
     expect(plan.services.admin.flags).toEqual([
-      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_STAGING_SITE_URL=https://staging.acme.com",
+      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_STAGING_HOST=staging.acme.com",
       "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
     expect(plan.services.gateway.flags).toEqual([
-      "--update-env-vars=CAELO_STAGING_SITE_URL=https://staging.acme.com",
       "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
   });
@@ -338,6 +338,7 @@ describe("planContractEnv", () => {
         projectId: "acme",
         env: "production",
         domain: "acme.com",
+        stagingHost: "staging.acme.com",
         region: "europe-west1",
       },
       {

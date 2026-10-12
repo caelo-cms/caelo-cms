@@ -458,14 +458,15 @@ describe("staging.<domain> served as gateway_role (#650)", () => {
 
   it("reads the gate settings + origin with its grants and proxies an admitted request", async () => {
     const saved = {
-      url: process.env.CAELO_STAGING_SITE_URL,
+      provider: process.env.CAELO_PROVIDER,
       secret: process.env.CAELO_STAGING_GATE_SECRET,
     };
     const realFetch = globalThis.fetch;
-    process.env.CAELO_STAGING_SITE_URL = STAGING;
+    process.env.CAELO_PROVIDER = "gcp-firebase";
     process.env.CAELO_STAGING_GATE_SECRET = SECRET;
     await asAdmin(async (tx) => {
-      await tx`UPDATE staging_access SET origin_url = ${PREVIEW}, cookie_enabled = true WHERE id = 1`;
+      await tx`UPDATE staging_access SET origin_url = ${PREVIEW}, cookie_enabled = true,
+                 staging_host = 'staging.example.com' WHERE id = 1`;
     });
     invalidateGatewaySettings();
     const upstream: string[] = [];
@@ -492,12 +493,12 @@ describe("staging.<domain> served as gateway_role (#650)", () => {
       expect(upstream).toEqual([`${PREVIEW}/about/`]);
     } finally {
       globalThis.fetch = realFetch;
-      if (saved.url === undefined) delete process.env.CAELO_STAGING_SITE_URL;
-      else process.env.CAELO_STAGING_SITE_URL = saved.url;
+      if (saved.provider === undefined) delete process.env.CAELO_PROVIDER;
+      else process.env.CAELO_PROVIDER = saved.provider;
       if (saved.secret === undefined) delete process.env.CAELO_STAGING_GATE_SECRET;
       else process.env.CAELO_STAGING_GATE_SECRET = saved.secret;
       await asAdmin(async (tx) => {
-        await tx`UPDATE staging_access SET origin_url = NULL WHERE id = 1`;
+        await tx`UPDATE staging_access SET origin_url = NULL, staging_host = NULL WHERE id = 1`;
       });
       invalidateGatewaySettings();
     }

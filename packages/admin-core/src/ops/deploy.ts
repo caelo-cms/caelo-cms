@@ -582,7 +582,7 @@ export const triggerDeployOp = defineOperation({
     let stagingOrigin: string | null = null;
     if (target.env === "staging") {
       try {
-        stagingOrigin = stagingSiteUrl(provider);
+        stagingOrigin = await stagingSiteUrl(tx, provider);
       } catch (e) {
         return err({
           kind: "HandlerError",

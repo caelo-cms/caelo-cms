@@ -5,9 +5,11 @@ import {
   constantTimeEqual,
   DEFAULT_STAGING_HEADER_NAME,
   decideStagingAccess,
+  defaultStagingHost,
   deriveStagingCredential,
   ipMatchesCidr,
   newStagingCredentialNonce,
+  normalizeStagingHost,
   parseBasicAuthorization,
   parseCidr,
   readCookie,
@@ -16,6 +18,7 @@ import {
   type StagingAccessSettings,
   safeStagingNextPath,
   signStagingToken,
+  stagingHostProblem,
   verifyStagingToken,
 } from "./staging-gate.js";
 
@@ -248,5 +251,34 @@ describe("safeStagingNextPath", () => {
     expect(safeStagingNextPath("/\\evil")).toBe("/");
     expect(safeStagingNextPath("/a\r\nSet-Cookie: x")).toBe("/");
     expect(safeStagingNextPath(null)).toBe("/");
+  });
+});
+
+describe("staging host setting", () => {
+  const reserved = {
+    liveHosts: ["example.com", "www.example.com"],
+    adminHosts: ["admin.example.com"],
+  };
+  it("defaults to staging.<domain>", () => {
+    expect(defaultStagingHost("Example.com.")).toBe("staging.example.com");
+  });
+  it("accepts any other FQDN, also on another domain", () => {
+    expect(stagingHostProblem("preview.example.com", reserved)).toBeNull();
+    expect(stagingHostProblem("Staging.Other-Domain.de.", reserved)).toBeNull();
+    expect(normalizeStagingHost(" Staging.Example.com. ")).toBe("staging.example.com");
+  });
+  it("refuses non-hosts, the live host and the admin host", () => {
+    for (const bad of [
+      "https://staging.example.com",
+      "staging",
+      "staging.example.com:8443",
+      "a/b.com",
+      "-x.example.com",
+      "",
+    ]) {
+      expect(stagingHostProblem(bad, reserved)).toContain("not a valid host name");
+    }
+    expect(stagingHostProblem("WWW.example.com", reserved)).toContain("live site");
+    expect(stagingHostProblem("admin.example.com", reserved)).toContain("admin");
   });
 });

@@ -6,11 +6,10 @@
  * Stage button and the Open changes overview (issue #620).
  */
 
-import { providerHasStagingDomain, stagingSiteUrl } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { getQueryContext } from "./query.js";
-import { openStagingHref } from "./staging-link.js";
+import { openStagingHref, stagingOriginForAdmin } from "./staging-link.js";
 import { stagingPreviewPath } from "./staging-preview-path.js";
 
 /**
@@ -30,9 +29,7 @@ export async function describeStagedBuild(
   const { adapter, registry } = getQueryContext();
   let previewUrl: string;
   let previewLabel: string | null = null;
-  const stagingOrigin = providerHasStagingDomain(process.env.CAELO_PROVIDER)
-    ? stagingSiteUrl()
-    : null;
+  const stagingOrigin = await stagingOriginForAdmin(ctx);
   if (stagingOrigin) {
     // #650 — through "Open staging" on staging.<domain>, never the
     // provider's preview origin.

@@ -2,7 +2,7 @@
 
 /**
  * owner_settings.{propose_set_staging_access,
- * propose_rotate_staging_credentials} — issue #650: the staging gate's
+ * propose_rotate_staging_credentials, propose_set_staging_host} — issue #650: the staging gate's
  * settings behind the owner-settings §11.A gate (CLAUDE.md §11.A,
  * migration 0251).
  *
@@ -12,6 +12,8 @@
  *    crawler has fetched the staged site.
  *  - Rotating a credential breaks every crawler profile that uses it, and
  *    the old value cannot be restored.
+ *  - Moving the staging host needs DNS + a domain mapping before the new
+ *    host answers, and every later Stage renders it.
  *
  * Both direct ops (`staging_access.set`, `staging_access.rotate_credentials`)
  * stay human+system; `owner_settings.execute_proposal` applies the queued
@@ -21,6 +23,7 @@
 import { defineOperation } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
+import { readStagingHost } from "../deploy/staging-domain.js";
 import {
   errorMessage,
   handlerError,
@@ -30,13 +33,16 @@ import {
   type Tx,
 } from "./owner_settings_queue.js";
 import {
+  checkStagingHost,
   credentialKind,
   currentStagingAccessInput,
   describeModes,
   rotateStagingCredentialsOp,
   setStagingAccessOp,
+  setStagingHostOp,
   stagingAccessFields,
   stagingAccessInput,
+  stagingHostNextSteps,
 } from "./staging_access.js";
 
 // ─── propose_set_staging_access ──────────────────────────────────────
@@ -148,12 +154,59 @@ export const proposeRotateStagingCredentialsOp = defineOperation({
   },
 });
 
+// ─── propose_set_staging_host ────────────────────────────────────────
+
+export const proposeSetStagingHostInput = z
+  .object({
+    host: z
+      .string()
+      .trim()
+      .min(1)
+      .max(253)
+      .describe(
+        "The new staging host, e.g. preview.example.com (no https://, port or path). Must not be the live or admin host.",
+      ),
+  })
+  .strict();
+
+export const proposeSetStagingHostOp = defineOperation({
+  name: "owner_settings.propose_set_staging_host",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: proposeSetStagingHostInput,
+  output: proposeOutput,
+  handler: async (ctx, input, tx) => {
+    const op = "owner_settings.propose_set_staging_host";
+    const checked = await checkStagingHost(tx, input.host);
+    if (!checked.ok) return handlerError(op, checked.message);
+    const current = await readStagingHost(tx);
+    if (current === checked.host) {
+      return handlerError(op, `the staging host already is ${checked.host} — nothing to change.`);
+    }
+    const summary = `staging host: ${current ?? "(unset)"} → ${checked.host}`;
+    return queueProposal(
+      tx,
+      ctx,
+      "set_staging_host",
+      { host: checked.host },
+      {
+        changes: { stagingHost: { from: current, to: checked.host } },
+        summary,
+        effect: `Staging moves to https://${checked.host}/: the gate answers on that host and every Stage renders it. It is reachable only after DNS and the domain mapping follow — ${stagingHostNextSteps(checked.host)}`,
+      },
+      op,
+      summary,
+    );
+  },
+});
+
 // ─── apply (called by owner_settings.execute_proposal) ───────────────
 
 /** The kinds this module queues; `execute_proposal` routes them here. */
 export const OWNER_STAGING_KINDS: ReadonlySet<OwnerSettingsKind> = new Set([
   "set_staging_access",
   "rotate_staging_credentials",
+  "set_staging_host",
 ]);
 
 /**
@@ -177,6 +230,11 @@ export async function applyOwnerStagingProposal(
     const p = proposeRotateStagingCredentialsInput.parse(payload);
     const r = await rotateStagingCredentialsOp.handler(ctx, { which: p.which }, tx);
     return r.ok ? null : `staging_access.rotate_credentials failed: ${errorMessage(r.error)}`;
+  }
+  if (kind === "set_staging_host") {
+    const p = proposeSetStagingHostInput.parse(payload);
+    const r = await setStagingHostOp.handler(ctx, p, tx);
+    return r.ok ? null : `staging_access.set_host failed: ${errorMessage(r.error)}`;
   }
   return `kind ${kind} is not a staging-access proposal`;
 }

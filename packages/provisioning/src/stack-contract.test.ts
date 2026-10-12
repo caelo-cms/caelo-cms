@@ -9,6 +9,7 @@ import {
   type CloudRunEnvVar,
   DATABASE_ROLE_SECRET,
   databaseUrls,
+  defaultStagingHost,
   gatewayEnvContract,
   iamMember,
   RETIRED_IAM_BINDINGS,
@@ -24,6 +25,7 @@ const base = {
   projectId: "acme",
   env: "production",
   domain: "acme.com",
+  stagingHost: "staging.acme.com",
   region: "europe-west1",
   databaseUrls: databaseUrls("10.20.0.3"),
 };
@@ -104,7 +106,7 @@ describe("adminEnvContract", () => {
       CAELO_FIREBASE_SITE: "caelo-production-site-abc123",
       CAELO_GATEWAY_SERVICE: "caelo-production-gateway-1a2b3c4",
       CAELO_GATEWAY_REGION: "europe-west1",
-      CAELO_STAGING_SITE_URL: "https://staging.acme.com",
+      CAELO_STAGING_HOST: "staging.acme.com",
       ...ADMIN_SECRETS,
     });
   });
@@ -163,10 +165,24 @@ describe("gatewayEnvContract", () => {
     });
   });
 
-  it("#650 — on gcp-firebase it also serves the protected staging host", () => {
+  it("#650 — reads the staging host from the database, not its env", () => {
     const fb = asRecord(gatewayEnvContract({ ...base, provider: "gcp-firebase" }));
-    expect(fb.CAELO_STAGING_SITE_URL).toBe("https://staging.acme.com");
-    expect(asRecord(gateway).CAELO_STAGING_SITE_URL).toBeUndefined();
+    expect(fb.CAELO_STAGING_HOST).toBeUndefined();
+    expect(fb.CAELO_STAGING_GATE_SECRET).toBe("secret:caelo-production-staging-gate-secret:latest");
+  });
+
+  it("#650 — the admin's staging host seed is the install setting, any host", () => {
+    const fb = asRecord(
+      adminEnvContract({
+        ...base,
+        stagingHost: "preview.other.de",
+        provider: "gcp-firebase",
+        firebaseSiteId: "s",
+        gatewayService: "g",
+      }),
+    );
+    expect(fb.CAELO_STAGING_HOST).toBe("preview.other.de");
+    expect(defaultStagingHost("Acme.com.")).toBe("staging.acme.com");
   });
 
   it("the gateway's run SA reads no admin-only secret (admin password, KEK, internal, tool approval)", () => {

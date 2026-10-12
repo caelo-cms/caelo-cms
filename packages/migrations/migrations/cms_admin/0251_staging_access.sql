@@ -3,7 +3,8 @@
 -- 0251 — issue #650: a protected staging domain (staging.<domain>) that
 -- serves exactly what goes live.
 --
--- `staging_access` (singleton) holds the access gate's settings: which
+-- `staging_access` (singleton) holds the staging host (an install setting,
+-- default staging.<domain>) and the access gate's settings: which
 -- modes let a request in (the admin's "Open staging" cookie, generated
 -- basic-auth credentials, a secret request header, an IP allowlist) and,
 -- on gcp-firebase, the preview-channel origin the gateway proxies
@@ -28,6 +29,12 @@ SET LOCAL caelo.actor_kind = 'system';
 
 CREATE TABLE staging_access (
   id                  smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  -- The staging site's host (e.g. staging.example.com, or any host the
+  -- operator chose). Every staging build renders it and the gate matches
+  -- requests on it. NULL until the admin seeds it from CAELO_STAGING_HOST
+  -- (provisioning: the wizard's answer, default staging.<domain>); changed
+  -- by staging_access.set_host (Owner, or the AI through the §11.A gate).
+  staging_host        text CHECK (staging_host ~ '^[a-z0-9.-]{4,253}$'),
   -- "Open staging" from the admin: admin access ⇒ staging access.
   cookie_enabled      boolean NOT NULL DEFAULT true,
   basic_auth_enabled  boolean NOT NULL DEFAULT false,
@@ -71,7 +78,8 @@ ALTER TABLE owner_settings_pending_actions
     'set_plugin_ai_cost_cap',
     'rotate_gateway_cookie_secret',
     'set_staging_access',
-    'rotate_staging_credentials'
+    'rotate_staging_credentials',
+    'set_staging_host'
   ));
 
 COMMIT;
@@ -87,7 +95,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') THEN
     RETURN;
   END IF;
-  GRANT SELECT (id, cookie_enabled, basic_auth_enabled, basic_auth_user, basic_auth_nonce,
+  GRANT SELECT (id, staging_host, cookie_enabled, basic_auth_enabled, basic_auth_user, basic_auth_nonce,
                 header_enabled, header_name, header_nonce, ip_allowlist, origin_url)
     ON staging_access TO gateway_role;
 END

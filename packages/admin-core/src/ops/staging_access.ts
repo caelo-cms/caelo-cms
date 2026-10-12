@@ -25,17 +25,25 @@ import {
   type ExecutionContext,
   err,
   newStagingCredentialNonce,
+  normalizeStagingHost,
   ok,
   parseCidr,
   STAGING_ACCESS_PATH,
   STAGING_OPEN_TOKEN_TTL_SECONDS,
   safeStagingNextPath,
   signStagingToken,
+  stagingHostProblem,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { stagingGateSecret, stagingSiteUrl } from "../deploy/staging-domain.js";
+import {
+  providerHasStagingDomain,
+  readStagingHost,
+  reservedStagingHosts,
+  stagingGateSecret,
+  stagingSiteUrl,
+} from "../deploy/staging-domain.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { actorHasPermission } from "./quality/_permissions.js";
 
@@ -200,8 +208,12 @@ async function notifyGateway(tx: Tx): Promise<void> {
 
 /** What `staging_access.get` returns. */
 export const stagingAccessOutput = z.object({
-  /** `https://staging.<domain>`, or null when this provider has no staging domain yet. */
+  /** `https://<staging host>`, or null when this provider has no staging domain yet or no host is set. */
   stagingUrl: z.string().nullable(),
+  /** The staging host setting (default staging.<domain>); null until provisioning seeded it. */
+  stagingHost: z.string().nullable(),
+  /** This install's provider serves staging at its own gated host. */
+  stagingDomainSupported: z.boolean(),
   provider: z.string(),
   settings: settingsOutput,
   /** True while a staged build is being served (gcp-firebase: a preview channel exists). */
@@ -235,14 +247,12 @@ export const getStagingAccessOp = defineOperation({
     const op = "staging_access.get";
     const row = await readStagingAccessRow(tx);
     const provider = process.env.CAELO_PROVIDER ?? "self-hosted";
-    let stagingUrl: string | null;
-    try {
-      stagingUrl = stagingSiteUrl(provider);
-    } catch (e) {
-      return handlerError(op, e instanceof Error ? e.message : String(e));
-    }
+    const supported = providerHasStagingDomain(provider);
+    const stagingHost = await readStagingHost(tx);
     const base = {
-      stagingUrl,
+      stagingUrl: supported && stagingHost ? `https://${stagingHost}` : null,
+      stagingHost,
+      stagingDomainSupported: supported,
       provider,
       settings: toOutput(row),
       hasStagedBuild: row.origin_run_id !== null,
@@ -399,7 +409,7 @@ export const issueStagingOpenLinkOp = defineOperation({
     let stagingUrl: string | null;
     let secret: string;
     try {
-      stagingUrl = stagingSiteUrl();
+      stagingUrl = await stagingSiteUrl(tx);
       secret = stagingGateSecret();
     } catch (e) {
       return handlerError(op, e instanceof Error ? e.message : String(e));
@@ -451,4 +461,96 @@ export async function setStagingOrigin(
     WHERE id = 1
   `);
   await notifyGateway(tx);
+}
+
+// ─── the staging host setting ────────────────────────────────────────
+
+const stagingHostInput = z
+  .string()
+  .trim()
+  .min(1)
+  .max(253)
+  .describe(
+    "Host name of the staging site, e.g. staging.example.com or preview.other-domain.com (no https://, port or path).",
+  );
+
+/** The validated, normalised host, or a refusal naming why it cannot be one. */
+export async function checkStagingHost(
+  tx: Tx,
+  host: string,
+): Promise<{ ok: true; host: string } | { ok: false; message: string }> {
+  const problem = stagingHostProblem(host, await reservedStagingHosts(tx));
+  return problem ? { ok: false, message: problem } : { ok: true, host: normalizeStagingHost(host) };
+}
+
+export const seedStagingHostOp = defineOperation({
+  name: "staging_access.seed_host",
+  // Why human-only: system-only. The admin calls it at boot with the host
+  // provisioning recorded (CAELO_STAGING_HOST: the wizard's answer, default
+  // staging.<domain>); it fills an unset value and never overwrites one, so
+  // it cannot replace an Owner's choice. Changing it is staging_access.set_host.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({ host: stagingHostInput }).strict(),
+  output: z.object({ seeded: z.boolean() }),
+  handler: async (ctx, input, tx) => {
+    const checked = await checkStagingHost(tx, input.host);
+    if (!checked.ok) return handlerError("staging_access.seed_host", checked.message);
+    const updated = (await tx.execute(sql`
+      UPDATE staging_access SET staging_host = ${checked.host}, updated_at = now()
+      WHERE id = 1 AND staging_host IS NULL
+      RETURNING id
+    `)) as unknown as { id: number }[];
+    if (updated.length > 0) {
+      await notifyGateway(tx);
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "staging_access.seed_host",
+        input: { host: checked.host },
+        succeeded: true,
+        resultSummary: `staging host=${checked.host} (from CAELO_STAGING_HOST)`,
+      });
+    }
+    return ok({ seeded: updated.length > 0 });
+  },
+});
+
+export const setStagingHostOp = defineOperation({
+  name: "staging_access.set_host",
+  // Why human-only: the Owner's Security → Domains form. A new staging host
+  // needs its own DNS record and domain mapping before anyone can open it,
+  // and every Stage renders it; the AI reaches it only through the §11.A
+  // gate (owner_settings.propose_set_staging_host → the operator's Approve).
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ host: stagingHostInput }).strict(),
+  output: z.object({ host: z.string(), previous: z.string().nullable(), nextSteps: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const op = "staging_access.set_host";
+    const checked = await checkStagingHost(tx, input.host);
+    if (!checked.ok) return handlerError(op, checked.message);
+    const previous = await readStagingHost(tx);
+    if (previous === checked.host) {
+      return handlerError(op, `the staging host already is ${checked.host} — nothing to change.`);
+    }
+    await tx.execute(sql`
+      UPDATE staging_access SET staging_host = ${checked.host}, updated_at = now() WHERE id = 1
+    `);
+    await notifyGateway(tx);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: op,
+      input: { host: checked.host },
+      succeeded: true,
+      resultSummary: `staging host ${previous ?? "(unset)"} → ${checked.host}`,
+    });
+    return ok({ host: checked.host, previous, nextSteps: stagingHostNextSteps(checked.host) });
+  },
+});
+
+/** What the operator does after the staging host changed. */
+export function stagingHostNextSteps(host: string): string {
+  return `Point ${host} at the gateway: run \`cms-provision staging-domain enable --staging-domain ${host}\` (it records the host for the install, maps it and prints the DNS record to add), then Stage again so the staged build renders the new host.`;
 }

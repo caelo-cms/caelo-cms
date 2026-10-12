@@ -45,6 +45,7 @@ import {
   type CloudRunEnvVar,
   type CloudRunSlug,
   databaseUrls,
+  defaultStagingHost,
   gatewayEnvContract,
   type RuntimeSecret,
   runtimeSecretBindings,
@@ -52,6 +53,8 @@ import {
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
+// #650 — the protected staging site's host (wizard / `--staging-domain`).
+const stagingHost = cfg.get("stagingDomain") ?? defaultStagingHost(domain);
 const ownerEmail = cfg.require("ownerEmail");
 const project = cfg.require("project");
 // #607 — chosen by the operator in the wizard and fixed after install; no
@@ -591,6 +594,7 @@ const envContractInputs = {
   env,
   domain,
   region,
+  stagingHost,
   databaseUrls: {
     admin: dbUrls.admin,
     publicAdmin: dbUrls.publicAdmin,

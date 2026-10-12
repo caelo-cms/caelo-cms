@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #650 — which installs serve staging at its own protected host
- * (`staging.<domain>`), and that host.
+ * Issue #650 — which installs serve staging at its own protected host, and
+ * that host.
  *
  * On those installs a staging build renders the staging host into every
  * absolute URL and Publish live rebuilds the same content with the live
@@ -10,22 +10,29 @@
  * is built with the live host and Publish live ships the staged build as
  * it is — unchanged behaviour until the provider gets its gate:
  *
- *   gcp-firebase  the gateway proxies staging.<domain> to the current
+ *   gcp-firebase  the gateway proxies the staging host to the current
  *                 preview channel behind the access gate (this PR)
- *   self-hosted   Caddy already serves staging.<domain>; its gate is the
+ *   self-hosted   Caddy already serves a staging host; its gate is the
  *                 follow-up to #650
  *   gcp           staging stays the IAP-gated admin route (follow-up)
  *   aws / azure   no publisher yet
  *
- * The host comes from `CAELO_STAGING_SITE_URL`, which provisioning sets
- * (stack-contract.ts) — the same pattern as `CAELO_SITE_URL`. On a
- * provider that has a staging domain, a missing value is a provisioning
- * error and fails loudly (CLAUDE.md §2) instead of silently building
- * staging with the live host.
+ * The host is an install SETTING, not a derivation: the wizard asks for it
+ * (default `staging.<domain>`), provisioning hands it to the admin as
+ * `CAELO_STAGING_HOST`, the admin seeds `staging_access.staging_host` from
+ * it once, and from then on the database row is the truth — the Owner (or
+ * the AI through the §11.A gate) changes it with `staging_access.set_host`.
+ * On a provider with a staging domain an unset host fails loudly
+ * (CLAUDE.md §2) instead of building staging with the live host.
  */
 
-/** Env var carrying the staging origin, e.g. `https://staging.example.com`. */
-export const STAGING_SITE_URL_ENV = "CAELO_STAGING_SITE_URL";
+import type { defineOperation } from "@caelo-cms/query-api";
+import { sql } from "drizzle-orm";
+
+type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
+
+/** Env var with the provisioned staging host — the seed of the DB setting. */
+export const STAGING_HOST_ENV = "CAELO_STAGING_HOST";
 
 /** Env var carrying the gate's shared key (Secret Manager `staging-gate-secret`). */
 export const STAGING_GATE_SECRET_ENV = "CAELO_STAGING_GATE_SECRET";
@@ -39,38 +46,62 @@ export function providerHasStagingDomain(provider: string | undefined): boolean 
   return provider !== undefined && PROVIDERS_WITH_STAGING_DOMAIN.has(provider);
 }
 
+/** The stored staging host (`staging_access.staging_host`), or null when unset. */
+export async function readStagingHost(tx: Tx): Promise<string | null> {
+  const rows = (await tx.execute(
+    sql`SELECT staging_host FROM staging_access WHERE id = 1`,
+  )) as unknown as { staging_host: string | null }[];
+  return rows[0]?.staging_host ?? null;
+}
+
 /**
- * The staging origin (no trailing slash) for this install, or null when
- * its provider has no staging domain.
+ * The staging origin (`https://<staging host>`) for this install, or null
+ * when its provider has no staging domain.
  *
- * @throws when the provider has one but `CAELO_STAGING_SITE_URL` is unset
- *   or not an https origin.
+ * @throws when the provider has one but no staging host is stored.
  */
-export function stagingSiteUrl(
+export async function stagingSiteUrl(
+  tx: Tx,
   provider: string | undefined = process.env.CAELO_PROVIDER,
-  env: Env = process.env,
-): string | null {
+): Promise<string | null> {
   if (!providerHasStagingDomain(provider)) return null;
-  const raw = env[STAGING_SITE_URL_ENV];
-  if (!raw) {
+  const host = await readStagingHost(tx);
+  if (!host) {
     throw new Error(
-      `${STAGING_SITE_URL_ENV} is not set on the admin service. A ${provider} install serves staging at https://staging.<domain>, and every staging build renders that host. Next step: run \`cms-provision upgrade\` (it sets the variable), then Stage again.`,
+      `No staging host is configured. A ${provider} install serves staging at its own host (default staging.<domain>), and every staging build renders it. Next step: run \`cms-provision upgrade\` (it sets ${STAGING_HOST_ENV}, which the admin stores on its next start), or set the host under Security → Domains, then Stage again.`,
     );
   }
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new Error(
-      `${STAGING_SITE_URL_ENV}="${raw}" is not a URL; expected https://staging.<domain>`,
-    );
-  }
-  if (url.protocol !== "https:" || url.pathname !== "/" || url.search !== "") {
-    throw new Error(
-      `${STAGING_SITE_URL_ENV}="${raw}" must be a bare https origin (https://staging.<domain>)`,
-    );
-  }
-  return url.origin;
+  return `https://${host}`;
+}
+
+/**
+ * Hosts the staging host must not take: the live site's (the stored base
+ * URL and the provisioned site URL) and the admin's (`admin.<domain>`, and
+ * the admin's own origin when the admin knows it).
+ */
+export async function reservedStagingHosts(
+  tx: Tx,
+  env: Env = process.env,
+): Promise<{ liveHosts: string[]; adminHosts: string[] }> {
+  const hostOf = (u: string | null | undefined): string | null => {
+    if (!u) return null;
+    try {
+      return new URL(u).host;
+    } catch {
+      return null;
+    }
+  };
+  const rows = (await tx.execute(
+    sql`SELECT site_base_url FROM site_defaults WHERE id = 1`,
+  )) as unknown as { site_base_url: string | null }[];
+  const live = [hostOf(rows[0]?.site_base_url), hostOf(env.CAELO_SITE_URL)].filter(
+    (h): h is string => h !== null,
+  );
+  const installDomain = hostOf(env.CAELO_SITE_URL);
+  const admin = [installDomain ? `admin.${installDomain}` : null, hostOf(env.ORIGIN)].filter(
+    (h): h is string => h !== null,
+  );
+  return { liveHosts: live, adminHosts: admin };
 }
 
 /**

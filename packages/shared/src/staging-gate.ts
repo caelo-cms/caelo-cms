@@ -332,3 +332,49 @@ export function safeStagingNextPath(next: string | null): string {
   if (next.includes("\\") || /[\r\n]/.test(next)) return "/";
   return next;
 }
+
+// ─── the staging host setting ─────────────────────────────────────────
+
+/**
+ * The staging host an install gets when the operator names none:
+ * `staging.<install domain>`.
+ */
+export function defaultStagingHost(domain: string): string {
+  return `staging.${domain.trim().toLowerCase().replace(/\.$/, "")}`;
+}
+
+const FQDN =
+  /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** Lower-case, trailing-dot-free form of a host the operator typed. */
+export function normalizeStagingHost(host: string): string {
+  return host.trim().toLowerCase().replace(/\.$/, "");
+}
+
+/**
+ * Why `host` cannot be the staging host, or null when it can. It must be a
+ * bare fully-qualified domain name (no scheme, port or path) and must not be
+ * the live site's host or an admin host — staging would otherwise shadow
+ * the site or the admin it is served next to.
+ *
+ * @example
+ *   stagingHostProblem("preview.example.com", { liveHosts: ["example.com"], adminHosts: ["admin.example.com"] })
+ *   // → null
+ */
+export function stagingHostProblem(
+  host: string,
+  reserved: { readonly liveHosts: readonly string[]; readonly adminHosts: readonly string[] },
+): string | null {
+  const h = normalizeStagingHost(host);
+  if (!FQDN.test(h)) {
+    return `"${host}" is not a valid host name — use a bare domain such as staging.example.com (no https://, port or path)`;
+  }
+  const norm = (list: readonly string[]) => list.map(normalizeStagingHost).filter(Boolean);
+  if (norm(reserved.liveHosts).includes(h)) {
+    return `"${h}" is the live site's host — staging needs a host of its own (e.g. staging.${h})`;
+  }
+  if (norm(reserved.adminHosts).includes(h)) {
+    return `"${h}" is the admin's host — pick another host for staging`;
+  }
+  return null;
+}

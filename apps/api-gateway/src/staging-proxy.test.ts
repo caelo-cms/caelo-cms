@@ -19,7 +19,7 @@ import {
   isStagingRequest,
   rewriteLocation,
   type StagingState,
-  stagingGateConfigFromEnv,
+  stagingGateFromEnv,
 } from "./staging-proxy.js";
 
 const SECRET = "gate-secret-for-tests";
@@ -45,7 +45,12 @@ interface Captured {
 
 function harness(over: Partial<StagingState> = {}, upstream?: (c: Captured) => Response) {
   const calls: Captured[] = [];
-  const state: StagingState = { settings: SETTINGS, originUrl: PREVIEW, ...over };
+  const state: StagingState = {
+    host: "staging.example.com",
+    settings: SETTINGS,
+    originUrl: PREVIEW,
+    ...over,
+  };
   const fetchImpl = (async (url: string, init: RequestInit) => {
     const c = { url, init };
     calls.push(c);
@@ -71,19 +76,19 @@ async function sessionCookieHeader(): Promise<string> {
 }
 
 describe("staging host detection + config", () => {
-  it("reads the gate config from env and matches the Host header", () => {
-    expect(stagingGateConfigFromEnv({})).toBeNull();
+  it("serves a staging host on gcp-firebase only, and matches the configured host", () => {
+    expect(stagingGateFromEnv({ CAELO_PROVIDER: "gcp" })).toBeNull();
+    expect(stagingGateFromEnv({})).toBeNull();
     expect(
-      stagingGateConfigFromEnv({
-        CAELO_STAGING_SITE_URL: "https://staging.example.com/",
-        CAELO_STAGING_GATE_SECRET: "s",
-      }),
-    ).toEqual({ stagingOrigin: STAGING, secret: "s" });
-    expect(stagingGateConfigFromEnv({ CAELO_STAGING_SITE_URL: STAGING })?.secret).toBeNull();
+      stagingGateFromEnv({ CAELO_PROVIDER: "gcp-firebase", CAELO_STAGING_GATE_SECRET: "s" }),
+    ).toEqual({ secret: "s" });
+    expect(stagingGateFromEnv({ CAELO_PROVIDER: "gcp-firebase" })?.secret).toBeNull();
     const req = (host: string) => new Request("http://gateway.internal/x", { headers: { host } });
-    expect(isStagingRequest(req("staging.example.com"), STAGING)).toBe(true);
-    expect(isStagingRequest(req("STAGING.example.com"), STAGING)).toBe(true);
-    expect(isStagingRequest(req("www.example.com"), STAGING)).toBe(false);
+    expect(isStagingRequest(req("staging.example.com"), "staging.example.com")).toBe(true);
+    expect(isStagingRequest(req("STAGING.example.com"), "staging.example.com")).toBe(true);
+    // A host the operator chose instead of staging.<domain>.
+    expect(isStagingRequest(req("preview.other.de"), "preview.other.de")).toBe(true);
+    expect(isStagingRequest(req("www.example.com"), "staging.example.com")).toBe(false);
   });
 
   it("trusts only the last X-Forwarded-For entry (the one Cloud Run appended)", () => {
@@ -174,7 +179,11 @@ describe("handleStagingRequest — gate", () => {
   it("refuses to serve without the gate key", async () => {
     const r = await handleStagingRequest(new Request(`${STAGING}/`), {
       config: { stagingOrigin: STAGING, secret: null },
-      loadState: async () => ({ settings: SETTINGS, originUrl: PREVIEW }),
+      loadState: async () => ({
+        host: "staging.example.com",
+        settings: SETTINGS,
+        originUrl: PREVIEW,
+      }),
     });
     expect(r.status).toBe(503);
     expect(await r.text()).toContain("cms-provision upgrade");

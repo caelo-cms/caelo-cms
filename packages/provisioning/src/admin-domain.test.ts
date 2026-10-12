@@ -141,7 +141,7 @@ describe("enableStagingDomain (#650)", () => {
       "domains list-user-verified": [ok("example.com\n")],
     });
     const { enableStagingDomain } = await import("./admin-domain.js");
-    const r = await enableStagingDomain({ ...base, run });
+    const r = await enableStagingDomain({ ...base, stagingHost: "staging.example.com", run });
     expect(r).toEqual({
       status: "mapped",
       hostname: "staging.example.com",
@@ -171,15 +171,32 @@ describe("enableStagingDomain (#650)", () => {
       "beta run domain-mappings describe": [ok(STAGING_MAPPING)],
     });
     const { enableStagingDomain } = await import("./admin-domain.js");
-    const r = await enableStagingDomain({ ...base, run });
+    const r = await enableStagingDomain({ ...base, stagingHost: "staging.example.com", run });
     expect(r.status === "mapped" && !r.created).toBe(true);
     expect(calls.some((c) => c.includes("update") || c.includes("create"))).toBe(false);
+  });
+
+  it("maps a host the operator chose on another domain, verifying that host itself", async () => {
+    const { run, calls } = fakeGcloud({
+      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services describe": [ok("all\n")],
+      "beta run domain-mappings describe": [fail("NOT_FOUND")],
+      "domains list-user-verified": [ok("example.com\n")],
+    });
+    const { enableStagingDomain } = await import("./admin-domain.js");
+    const r = await enableStagingDomain({ ...base, stagingHost: "preview.other.de", run });
+    expect(r).toEqual({
+      status: "needs-verification",
+      hostname: "preview.other.de",
+      verifyDomain: "preview.other.de",
+    });
+    expect(calls).toContainEqual(["domains", "verify", "preview.other.de"]);
   });
 
   it("fails closed without exactly one gateway service", async () => {
     const { run } = fakeGcloud({ "run services list": [ok("a\nb\n")] });
     const { enableStagingDomain } = await import("./admin-domain.js");
-    const r = await enableStagingDomain({ ...base, run });
+    const r = await enableStagingDomain({ ...base, stagingHost: "staging.example.com", run });
     expect(r.status).toBe("failed");
   });
 });

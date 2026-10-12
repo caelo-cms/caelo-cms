@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #650 — `staging.<domain>` on gcp-firebase: the access gate plus a
+ * Issue #650 — the staging host on gcp-firebase (an install setting,
+ * default `staging.<domain>`): the access gate plus a
  * transparent reverse proxy to the current staged build.
  *
  * Firebase Hosting has no access control and a preview channel is public
  * by URL, so the gateway (already a public Cloud Run service, scaled to
  * zero when idle) serves the staging host instead, mapped to it with a
- * Cloud Run domain mapping (`cms-provision staging-domain enable`):
+ * Cloud Run domain mapping (`cms-provision staging-domain enable`). Which
+ * host that is comes from the database (`staging_access.staging_host`), so
+ * an Owner's change applies without a redeploy:
  *
  *   1. `/_caelo/staging-access?t=<token>&next=<path>` — the admin's "Open
  *      staging" link. A valid, unexpired token becomes the staging session
@@ -54,6 +57,8 @@ export interface StagingGateConfig {
 
 /** What the gate needs from the database, cached briefly by the caller. */
 export interface StagingState {
+  /** The staging host setting (`staging_access.staging_host`); null until configured. */
+  readonly host: string | null;
   readonly settings: StagingAccessSettings;
   /** Origin of the current staged build (the preview channel); null when nothing is staged. */
   readonly originUrl: string | null;
@@ -68,24 +73,21 @@ export interface StagingProxyDeps {
 }
 
 /**
- * The staging gate's configuration from the gateway env, or null when this
- * gateway serves no staging host (every provider but gcp-firebase).
+ * Whether this gateway serves a staging host at all (only gcp-firebase
+ * today), and the gate key it verifies with — null when the deployment
+ * lacks it (requests then get a 503 naming the fix).
  */
-export function stagingGateConfigFromEnv(
+export function stagingGateFromEnv(
   env: Readonly<Record<string, string | undefined>>,
-): StagingGateConfig | null {
-  const raw = env.CAELO_STAGING_SITE_URL;
-  if (!raw) return null;
-  return {
-    stagingOrigin: new URL(raw).origin,
-    secret: env.CAELO_STAGING_GATE_SECRET || null,
-  };
+): { readonly secret: string | null } | null {
+  if (env.CAELO_PROVIDER !== "gcp-firebase") return null;
+  return { secret: env.CAELO_STAGING_GATE_SECRET || null };
 }
 
-/** True when `req` is addressed to the staging host. */
-export function isStagingRequest(req: Request, stagingOrigin: string): boolean {
+/** True when `req` is addressed to the staging host (the stored setting). */
+export function isStagingRequest(req: Request, stagingHost: string): boolean {
   const host = (req.headers.get("host") ?? new URL(req.url).host).toLowerCase();
-  return host === new URL(stagingOrigin).host.toLowerCase();
+  return host === stagingHost.toLowerCase();
 }
 
 /**

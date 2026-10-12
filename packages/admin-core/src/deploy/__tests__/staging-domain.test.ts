@@ -8,33 +8,32 @@ import {
   stagingSiteUrl,
 } from "../staging-domain.js";
 
+/** A transaction stub answering the staging_access read with `host`. */
+function txWith(host: string | null) {
+  return { execute: async () => [{ staging_host: host }] } as never;
+}
+
 describe("stagingSiteUrl (#650)", () => {
-  it("is null on providers without a protected staging domain", () => {
+  it("is null on providers without a protected staging domain, whatever is stored", async () => {
     for (const p of ["gcp", "aws", "azure", "self-hosted", undefined]) {
-      expect(stagingSiteUrl(p, { CAELO_STAGING_SITE_URL: "https://staging.example.com" })).toBe(
-        null,
-      );
+      expect(await stagingSiteUrl(txWith("staging.example.com"), p)).toBe(null);
       expect(providerHasStagingDomain(p)).toBe(false);
     }
   });
 
-  it("returns the bare origin on gcp-firebase", () => {
-    expect(
-      stagingSiteUrl("gcp-firebase", { CAELO_STAGING_SITE_URL: "https://staging.example.com/" }),
-    ).toBe("https://staging.example.com");
+  it("is the stored staging host on gcp-firebase — any host the operator chose", async () => {
+    expect(await stagingSiteUrl(txWith("staging.example.com"), "gcp-firebase")).toBe(
+      "https://staging.example.com",
+    );
+    expect(await stagingSiteUrl(txWith("preview.other.de"), "gcp-firebase")).toBe(
+      "https://preview.other.de",
+    );
   });
 
-  it("fails loudly when gcp-firebase has no or a malformed staging URL", () => {
-    expect(() => stagingSiteUrl("gcp-firebase", {})).toThrow("cms-provision upgrade");
-    expect(() => stagingSiteUrl("gcp-firebase", { CAELO_STAGING_SITE_URL: "nope" })).toThrow(
-      "not a URL",
+  it("fails loudly on gcp-firebase when no host is stored", async () => {
+    await expect(stagingSiteUrl(txWith(null), "gcp-firebase")).rejects.toThrow(
+      "No staging host is configured",
     );
-    expect(() =>
-      stagingSiteUrl("gcp-firebase", { CAELO_STAGING_SITE_URL: "http://staging.example.com" }),
-    ).toThrow("bare https origin");
-    expect(() =>
-      stagingSiteUrl("gcp-firebase", { CAELO_STAGING_SITE_URL: "https://staging.example.com/x" }),
-    ).toThrow("bare https origin");
   });
 });
 
