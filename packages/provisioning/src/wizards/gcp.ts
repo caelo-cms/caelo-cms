@@ -44,6 +44,7 @@ import {
   createServiceAccountKey,
   enableApis,
   gcloud,
+  gcloudEnv,
   grantProvisionerRoles,
   linkBilling,
   listBillingAccounts,
@@ -1280,7 +1281,7 @@ async function stepUploadStaticPlaceholder(
         "--project",
         projectId,
       ],
-      { stdio: ["pipe", "inherit", "pipe"] },
+      { stdio: ["pipe", "inherit", "pipe"], env: gcloudEnv() },
     );
     let stderr = "";
     child.stderr.on("data", (d) => {
