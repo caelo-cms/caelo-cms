@@ -25,6 +25,7 @@ import {
   slugSchema,
 } from "./content.js";
 import { pluginPreviewSelectionSchema } from "./plugin-preview.js";
+import { redirectTargetPathSchema } from "./redirect-target.js";
 
 /**
  * v0.6.2 — `position` argument shared across the three `add_module_to_*`
@@ -905,7 +906,7 @@ export const bulkCreateRedirectsToolInput = z
         z
           .object({
             fromPath: z.string().min(1).max(500),
-            toPath: z.string().min(1).max(500),
+            toPath: redirectTargetPathSchema,
             statusCode: z
               .union([
                 z.literal(301),

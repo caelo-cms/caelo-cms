@@ -39,6 +39,7 @@ export * from "./plugin-preview.js";
 export * from "./preview-compose.js";
 export * from "./preview-scanner.js";
 export * from "./proposal-status.js";
+export * from "./redirect-target.js";
 export * from "./responsive-images.js";
 export * from "./result.js";
 export * from "./safe-keys.js";

@@ -26,6 +26,7 @@ import {
   formatGenesisInventory,
   inventoryGenesisDraft,
   ok,
+  redirectTargetIssue,
 } from "@caelo-cms/shared";
 import {
   type BoilerplatePageInput,
@@ -3744,6 +3745,17 @@ export const composeFromImportRunOp = defineOperation({
               kind: "HandlerError",
               operation: "imports.compose_from_run",
               message: `redirect ${sourcePath} → ${caeloPath} would shadow the existing page '${sourcePath.slice(1)}' (${shadow[0].id}). Rename one of them (update_pages_many with a new slug) or exclude this import page, then re-run compose. Nothing from this compose was applied.`,
+            });
+          }
+          // #657 — the same target rule as redirects.create. The path is
+          // derived from a proposed slug, so a hit means a malformed
+          // slug; abort rather than write an off-site/broken 301.
+          const targetIssue = redirectTargetIssue(caeloPath);
+          if (targetIssue) {
+            throw new OperationAbortError({
+              kind: "HandlerError",
+              operation: "imports.compose_from_run",
+              message: `import page ${r.id}: redirect ${sourcePath} → ${caeloPath} rejected — ${targetIssue} Fix the page's proposed slug (a plain slug like 'about-us'), then re-run compose. Nothing from this compose was applied.`,
             });
           }
           // Upsert keeps re-composes idempotent; pointing an existing

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { execute } from "@caelo-cms/query-api";
+import { redirectTargetIssue } from "@caelo-cms/shared";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
@@ -32,8 +33,14 @@ export const actions: Actions = {
     const statusCodeRaw = Number(form.get("statusCode") ?? "301");
     const statusCode: 301 | 302 | 307 | 308 =
       statusCodeRaw === 302 || statusCodeRaw === 307 || statusCodeRaw === 308 ? statusCodeRaw : 301;
-    if (!fromPath.startsWith("/") || !toPath.startsWith("/")) {
-      return fail(400, { error: "fromPath and toPath must start with /" });
+    if (!fromPath.startsWith("/")) {
+      return fail(400, { error: "fromPath must start with /" });
+    }
+    // Same rule as the op's schema, surfaced here so the form shows the
+    // specific reason (e.g. a pasted full URL) instead of a generic 400.
+    const targetIssue = redirectTargetIssue(toPath);
+    if (targetIssue) {
+      return fail(400, { error: targetIssue });
     }
     const r = await execute(registry, adapter, locals.ctx, "redirects.create", {
       fromPath,

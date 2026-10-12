@@ -14,6 +14,8 @@
  * idempotent — same input → same byte output.
  */
 
+import { redirectTargetIssue } from "@caelo-cms/shared";
+
 export type RedirectStatusCode = 301 | 302 | 307 | 308;
 
 export interface RedirectRow {
@@ -46,6 +48,10 @@ function assertRowsClean(rows: ReadonlyArray<RedirectRow>): void {
   for (const r of rows) {
     assertPathClean("fromPath", r.fromPath);
     assertPathClean("toPath", r.toPath);
+    // #657 — a `//host` or `/https://…` target would ship as an open
+    // redirect or a broken 301 in every CDN format below.
+    const targetIssue = redirectTargetIssue(r.toPath);
+    if (targetIssue) throw new Error(`redirects-emit: ${targetIssue}`);
   }
 }
 

@@ -16,6 +16,7 @@ import {
   pageCreateSchema,
   pageSetModulesSchema,
   pageUpdateSchema,
+  redirectTargetPathSchema,
   slugSchema,
   trimSlashes,
 } from "@caelo-cms/shared";
@@ -1637,7 +1638,7 @@ export const deletePageOp = defineOperation({
     .object({
       pageId: z.string().uuid(),
       disposition: z.enum(["404", "redirect"]).optional(),
-      redirectTo: z.string().min(1).max(500).optional(),
+      redirectTo: redirectTargetPathSchema.optional(),
     })
     .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
       message: "disposition 'redirect' requires redirectTo",
@@ -2236,7 +2237,7 @@ export const deletePagesManyOp = defineOperation({
             .object({
               pageId: z.string().uuid(),
               disposition: z.enum(["404", "redirect"]).optional(),
-              redirectTo: z.string().min(1).max(500).optional(),
+              redirectTo: redirectTargetPathSchema.optional(),
             })
             .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
               message: "disposition 'redirect' requires redirectTo",

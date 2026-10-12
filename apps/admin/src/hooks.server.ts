@@ -56,7 +56,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, redirectTargetIssue } from "@caelo-cms/shared";
 import type { Handle, ServerInit } from "@sveltejs/kit/hooks";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
 import { getQueryContext, mediaStorageSetup } from "#lib/server/query.js";
@@ -522,7 +522,13 @@ export const handle: Handle = async ({ event, resolve }) => {
             match: { toPath: string; statusCode: number } | null;
           }
         ).match;
-        if (m) {
+        // #657 — never emit a Location that leaves the site (`//host`)
+        // or embeds a URL in the path; such a stored row is reported
+        // and the 404 stands (the static build refuses the same rows).
+        const unsafeTarget = m ? redirectTargetIssue(m.toPath) : null;
+        if (m && unsafeTarget) {
+          console.error(`[hooks] redirect ${event.url.pathname} not served: ${unsafeTarget}`);
+        } else if (m) {
           return new Response(null, {
             status: m.statusCode,
             headers: { Location: m.toPath },
