@@ -305,6 +305,7 @@ describe("planContractEnv", () => {
         projectId: "acme",
         env: "production",
         domain: "acme.com",
+        stagingHost: "staging.acme.com",
         region: "europe-west1",
       },
       {
@@ -313,10 +314,15 @@ describe("planContractEnv", () => {
       },
     );
     if (!plan.ok) throw new Error(plan.error);
+    // #650 — the same roll converges the protected staging domain's host
+    // and gate key onto an install that predates it.
     expect(plan.services.admin.flags).toEqual([
-      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
+      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_STAGING_HOST=staging.acme.com",
+      "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
-    expect(plan.services.gateway.flags).toEqual([]);
+    expect(plan.services.gateway.flags).toEqual([
+      "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
+    ]);
   });
 
   it("leaves the MCP service account untouched when upgrade couldn't set it up", () => {
@@ -332,6 +338,7 @@ describe("planContractEnv", () => {
         projectId: "acme",
         env: "production",
         domain: "acme.com",
+        stagingHost: "staging.acme.com",
         region: "europe-west1",
       },
       {
@@ -744,10 +751,12 @@ describe("ensureStackInvariants", () => {
       const gatewayGrants = calls.filter(
         (c) => c.startsWith("secrets add-iam-policy-binding") && c.includes(GW_SA),
       );
-      // #613 — never admin_role's postgres-password.
+      // #613 — never admin_role's postgres-password. #650 — the staging
+      // gate key is the one secret the gateway shares with the admin.
       expect(gatewayGrants).toEqual([
         `secrets add-iam-policy-binding caelo-production-gateway-role-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
         `secrets add-iam-policy-binding caelo-production-public-role-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+        `secrets add-iam-policy-binding caelo-production-staging-gate-secret --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
       ]);
       for (const secret of ["internal-secret", "tool-approval-secret", "secret-kek"]) {
         expect(calls).toContain(

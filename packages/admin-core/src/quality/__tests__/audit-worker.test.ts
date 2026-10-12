@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { type ClaimedAuditRun, resolveStagingOrigin, stagedPageUrl } from "../audit-worker.js";
+import {
+  type ClaimedAuditRun,
+  processClaimedRun,
+  resolveStagingOrigin,
+  stagedPageUrl,
+  toDisplayUrl,
+} from "../audit-worker.js";
 
 const RUN_ID = "00000000-0000-4000-8000-0000000000aa";
 
@@ -12,6 +18,7 @@ function run(overrides: Partial<ClaimedAuditRun> = {}): ClaimedAuditRun {
     performanceRuns: 3,
     pageUrlStyle: "directory",
     previewUrl: null,
+    siteUrl: null,
     env: "staging",
     outDir: "output/staging",
     pages: [{ pageId: "00000000-0000-4000-8000-0000000000cc", currentPath: "/" }],
@@ -77,14 +84,36 @@ describe("resolveStagingOrigin", () => {
     expect(r.message).toContain(RUN_ID);
   });
 
-  it("gcp-firebase: the deploy run's preview channel", async () => {
-    expect(
-      await resolveStagingOrigin(run({ previewUrl: "https://site--ch.web.app" }), {
-        provider: "gcp-firebase",
-      }),
-    ).toEqual({ ok: true, baseUrl: "https://site--ch.web.app" });
-    const missing = await resolveStagingOrigin(run(), { provider: "gcp-firebase" });
+  it("gcp-firebase: audits the preview channel directly, reported as the staging host (#650)", async () => {
+    const staged = {
+      previewUrl: "https://site--ch.web.app",
+      siteUrl: "https://staging.example.com",
+    };
+    expect(await resolveStagingOrigin(run(staged), { provider: "gcp-firebase" })).toEqual({
+      ok: true,
+      baseUrl: "https://site--ch.web.app",
+      displayBaseUrl: "https://staging.example.com",
+    });
+    const missing = await resolveStagingOrigin(run({ siteUrl: staged.siteUrl }), {
+      provider: "gcp-firebase",
+    });
     expect(missing.ok).toBe(false);
+    // Without the run's staging host the report could only name the internal origin.
+    const noHost = await resolveStagingOrigin(run({ previewUrl: staged.previewUrl }), {
+      provider: "gcp-firebase",
+    });
+    expect(noHost).toMatchObject({ ok: false, code: "staging-unresolvable" });
+  });
+
+  it("gcp-firebase: reports under the host the run was STAGED for, not a host set later (Codex review on #652)", async () => {
+    // The Owner moved staging to preview.example.com while this audit of a
+    // build rendered for staging.example.com was queued: the report keeps
+    // the run's host. (OriginEnv no longer carries the mutable setting.)
+    const r = await resolveStagingOrigin(
+      run({ previewUrl: "https://site--ch.web.app", siteUrl: "https://staging.example.com" }),
+      { provider: "gcp-firebase" },
+    );
+    expect(r).toMatchObject({ ok: true, displayBaseUrl: "https://staging.example.com" });
   });
 
   it("gcp / aws / azure: a loopback origin serving the run's files, closed after use", async () => {
@@ -125,5 +154,85 @@ describe("resolveStagingOrigin", () => {
   it("unknown providers fail with an explanation instead of guessing", async () => {
     const r = await resolveStagingOrigin(run(), { provider: "mystery-cloud" });
     expect(r).toMatchObject({ ok: false, code: "provider-unsupported" });
+  });
+});
+
+describe("toDisplayUrl (#650)", () => {
+  it("re-addresses URLs on the audited origin and leaves others alone", () => {
+    const base = "https://site--ch.web.app";
+    const shown = "https://staging.example.com";
+    expect(toDisplayUrl(`${base}/a/`, base, shown)).toBe(`${shown}/a/`);
+    expect(toDisplayUrl(base, base, shown)).toBe(shown);
+    expect(toDisplayUrl(`${base}?x=1`, base, shown)).toBe(`${shown}?x=1`);
+    expect(toDisplayUrl("https://elsewhere.example/a", base, shown)).toBe(
+      "https://elsewhere.example/a",
+    );
+    // A host that merely starts with the origin is not the origin.
+    expect(toDisplayUrl(`${base}.evil.example/a`, base, shown)).toBe(`${base}.evil.example/a`);
+  });
+});
+
+describe("processClaimedRun on gcp-firebase (#650)", () => {
+  it("runs Lighthouse against the preview origin but records only the staging host", async () => {
+    const recorded: unknown[] = [];
+    const jobs: unknown[] = [];
+    const registry = {
+      lookup: () => ({
+        ok: true,
+        value: {
+          name: "quality_audits.record_result",
+          actorScope: ["human", "ai", "system"],
+          database: "cms_admin",
+          input: { safeParse: (v: unknown) => ({ success: true, data: v }) },
+          output: { safeParse: (v: unknown) => ({ success: true, data: v }) },
+          handler: async (_c: unknown, input: unknown) => {
+            recorded.push(input);
+            return { ok: true, value: { status: "recorded" } };
+          },
+        },
+      }),
+    };
+    const adapter = {
+      runOperation: async (
+        op: { handler: (c: unknown, i: unknown, tx: unknown) => unknown },
+        ctx: unknown,
+        input: unknown,
+      ) => op.handler(ctx, input, {}),
+    };
+    await processClaimedRun(
+      {
+        registry: registry as never,
+        adapter: adapter as never,
+        env: { provider: "gcp-firebase" },
+        runJob: async (job) => {
+          jobs.push(job);
+          return {
+            ok: true,
+            pages: [
+              {
+                pageId: job.pages[0]!.pageId,
+                url: job.pages[0]!.url,
+                finalUrl: job.pages[0]!.url,
+                measurement: {} as never,
+                performanceRuns: [],
+              },
+            ],
+            pageErrors: [
+              {
+                pageId: "p2",
+                url: "https://site--ch.web.app/b/",
+                code: "load-failed",
+                message: "could not load https://site--ch.web.app/b/",
+              },
+            ],
+          };
+        },
+      },
+      run({ previewUrl: "https://site--ch.web.app", siteUrl: "https://staging.example.com" }),
+    );
+    expect(JSON.stringify(jobs)).toContain("https://site--ch.web.app/");
+    const text = JSON.stringify(recorded);
+    expect(text).not.toContain("web.app");
+    expect(text).toContain("https://staging.example.com/");
   });
 });

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 // SPDX-License-Identifier: MPL-2.0
 
 /**
@@ -24,6 +25,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { defaultStagingHost, normalizeStagingHost, stagingHostProblem } from "@caelo-cms/shared";
 import { generateBootstrapToken } from "./bootstrap-token.js";
 import { type CaddyDomainSpec, generateCaddyfile } from "./caddy.js";
 import { initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
@@ -32,6 +34,12 @@ import { convergeSelfHostedRoles, decideUp } from "./self-hosted-roles.js";
 
 interface CaeloConfig {
   domain: string;
+  /**
+   * #650 — the staging site's host (`--staging-domain`, default
+   * `staging.<domain>`). Optional so older config.json files load;
+   * emitConfig() back-fills the default.
+   */
+  stagingDomain?: string;
   ownerEmail: string;
   postgresPassword: string;
   minioRootUser: string;
@@ -143,6 +151,10 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
     cfg.caeloSecretKek = randomSecret(32);
     saveConfig(cfg);
   }
+  if (!cfg.stagingDomain) {
+    cfg.stagingDomain = defaultStagingHost(cfg.domain);
+    saveConfig(cfg);
+  }
   if (!cfg.rolePasswords) {
     // `init` sets them and `up` back-fills + applies them before calling here.
     throw new Error("config has no rolePasswords — run `cms-provision up`");
@@ -166,7 +178,7 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
   const baseDomains: CaddyDomainSpec[] = [
     { hostname: cfg.domain, kind: "admin", env: "production" },
     { hostname: cfg.domain, kind: "public", env: "production" },
-    { hostname: `staging.${cfg.domain}`, kind: "public", env: "staging" },
+    { hostname: cfg.stagingDomain, kind: "public", env: "staging" },
   ];
   const caddy = generateCaddyfile({
     ownerEmail: cfg.ownerEmail,
@@ -215,7 +227,7 @@ async function init(): Promise<void> {
   }
   if (!domain || !ownerEmail) {
     console.error(
-      "Usage: cms-provision init [--provider self-hosted] --domain example.com --owner-email me@example.com\n" +
+      "Usage: cms-provision init [--provider self-hosted] --domain example.com [--staging-domain staging.example.com] --owner-email me@example.com\n" +
         "Cloud providers (gcp | gcp-firebase | aws | azure) run the wizard: cms-provision --provider <name>",
     );
     process.exit(2);
@@ -224,9 +236,21 @@ async function init(): Promise<void> {
     console.error(`config already exists at ${CONFIG_PATH}; run \`cms-provision up\` to re-deploy`);
     process.exit(2);
   }
+  const stagingArg = arg("staging-domain");
+  const stagingProblem = stagingArg
+    ? stagingHostProblem(stagingArg, {
+        liveHosts: [domain, `www.${domain}`],
+        adminHosts: [`admin.${domain}`],
+      })
+    : null;
+  if (stagingProblem) {
+    console.error(`--staging-domain: ${stagingProblem}`);
+    process.exit(2);
+  }
   saveProvider(providerArg);
   const cfg: CaeloConfig = {
     domain,
+    stagingDomain: stagingArg ? normalizeStagingHost(stagingArg) : defaultStagingHost(domain),
     ownerEmail,
     postgresPassword: randomSecret(32),
     rolePasswords: newRolePasswords(),
@@ -782,6 +806,7 @@ const handlers: Record<string, () => Promise<void>> = {
   destroy: lifecycleDestroy,
   truncate: lifecycleTruncate,
   "admin-domain": adminDomain,
+  "staging-domain": stagingDomain,
   // Misc
   "pulumi-output-sync": pulumiOutputSync,
   version,
@@ -843,13 +868,32 @@ async function lifecycleTruncate(): Promise<void> {
  * (see admin-domain.ts for why this runs as the operator, not Pulumi).
  */
 async function adminDomain(): Promise<void> {
+  await domainMappingCommand("admin");
+}
+
+/**
+ * #650 `staging-domain enable [--staging-domain <host>]` — bind the install's
+ * staging host (its setting, default staging.<domain>) to the gcp-firebase
+ * gateway, which serves the protected staging site. `--staging-domain`
+ * records a new host for the install first (after it was changed in the
+ * admin under Security → Domains, or to choose one).
+ */
+async function stagingDomain(): Promise<void> {
+  await domainMappingCommand("staging");
+}
+
+async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
+  const command = `${kind}-domain`;
   const sub = process.argv[3];
   if (sub !== "enable") {
-    console.log("Usage: cms-provision admin-domain enable [--install <install-id>]");
+    console.log(
+      `Usage: cms-provision ${command} enable [--install <install-id>]${kind === "staging" ? " [--staging-domain <host>]" : ""}`,
+    );
     process.exit(2);
   }
-  const { installFlag, listInstalls, selectInstall } = await import("./install-state.js");
-  const { enableAdminDomain } = await import("./admin-domain.js");
+  const { installFlag, installStagingHost, listInstalls, selectInstall, writeMetadata } =
+    await import("./install-state.js");
+  const { enableAdminDomain, enableStagingDomain } = await import("./admin-domain.js");
   // Guessing among several installs could map the domain in the wrong project.
   const selected = selectInstall(
     listInstalls().filter((m) => m.projectId),
@@ -859,7 +903,30 @@ async function adminDomain(): Promise<void> {
     console.error(selected.message);
     process.exit(1);
   }
-  const meta = selected.meta;
+  let meta = selected.meta;
+  if (kind === "staging") {
+    // The install's staging host setting; `--staging-domain` changes it.
+    // Validated either way: the recorded/default host may predate a check
+    // (e.g. a long default staging.<domain> a Cloud Run mapping refuses).
+    const requested = arg("staging-domain");
+    const { normalizeStagingHost, stagingHostProblem } = await import("@caelo-cms/shared");
+    const host = requested ?? installStagingHost(meta);
+    const problem = stagingHostProblem(
+      host,
+      { liveHosts: [meta.domain, `www.${meta.domain}`], adminHosts: [`admin.${meta.domain}`] },
+      { provider: meta.provider },
+    );
+    if (problem) {
+      console.error(
+        requested
+          ? `--staging-domain: ${problem}`
+          : `the install's staging host: ${problem}. Pass --staging-domain <host>.`,
+      );
+      process.exit(1);
+    }
+    meta = { ...meta, stagingDomain: normalizeStagingHost(host) };
+    writeMetadata(meta.installId, meta);
+  }
   if (!meta.projectId) process.exit(1);
   if (!meta.region) {
     console.error(
@@ -869,36 +936,44 @@ async function adminDomain(): Promise<void> {
   }
   if (meta.provider !== "gcp-firebase") {
     console.log(
-      meta.provider === "gcp"
-        ? `Nothing to do: on gcp the load balancer already serves admin.${meta.domain}.`
-        : `admin-domain is for gcp-firebase installs; this one is ${meta.provider}.`,
+      kind === "admin"
+        ? meta.provider === "gcp"
+          ? `Nothing to do: on gcp the load balancer already serves admin.${meta.domain}.`
+          : `admin-domain is for gcp-firebase installs; this one is ${meta.provider}.`
+        : meta.provider === "self-hosted"
+          ? `Recorded staging host ${installStagingHost(meta)}; Caddy serves it after \`cms-provision regenerate-caddy\`.`
+          : `staging-domain is for gcp-firebase installs; on ${meta.provider} the protected staging domain is not available yet (issue #650 follow-up).`,
     );
     return;
   }
-  const r = await enableAdminDomain({
-    projectId: meta.projectId,
-    region: meta.region,
-    domain: meta.domain,
-  });
+  const target = { projectId: meta.projectId, region: meta.region, domain: meta.domain };
+  const r =
+    kind === "admin"
+      ? await enableAdminDomain(target)
+      : await enableStagingDomain({ ...target, stagingHost: installStagingHost(meta) });
   if (r.status === "failed") {
-    console.error(`admin-domain: ${r.error}`);
+    console.error(`${command}: ${r.error}`);
     process.exit(1);
   }
   if (r.status === "needs-verification") {
     console.log(
       `Google only maps ${r.hostname} for a verified owner of ${r.verifyDomain}.\n` +
         "Search Console was opened for you: add the TXT record it shows at your registrar,\n" +
-        "click Verify, then run `cms-provision admin-domain enable` again.",
+        `click Verify, then run \`cms-provision ${command} enable\` again.`,
     );
     process.exit(3);
   }
+  const mappedTo = kind === "admin" ? "the admin" : "the gateway (protected staging site)";
   console.log(
-    `${r.hostname} ${r.created ? "is now mapped" : "was already mapped"} to the admin.` +
+    `${r.hostname} ${r.created ? "is now mapped" : "was already mapped"} to ${mappedTo}.` +
       (r.records.length > 0
         ? `\nAdd at your registrar (TLS is issued once DNS resolves, typically 15-60 min):\n${r.records
             .map((d) => `  ${d.type.padEnd(6)} ${d.name} -> ${d.value}`)
             .join("\n")}`
-        : "\nGoogle has not published the DNS records yet; run the command again in a minute."),
+        : "\nGoogle has not published the DNS records yet; run the command again in a minute.") +
+      (kind === "staging"
+        ? `\nStaging access (who may open it, crawler credentials): admin → Security → Staging access.\nIf you changed the host here, set the same host in the admin (Security → Domains) so Stage renders it.`
+        : ""),
   );
 }
 
@@ -914,6 +989,7 @@ async function wizardCommand(): Promise<void> {
     nonInteractive: process.argv.includes("--non-interactive"),
     provider: arg("provider") as Provider | undefined,
     domain: arg("domain"),
+    stagingDomain: arg("staging-domain"),
     ownerEmail: arg("owner-email"),
     projectId: arg("project-id"),
     region: arg("region"),
@@ -930,7 +1006,7 @@ if (route.kind === "handler") {
   await wizardCommand();
 } else {
   console.log(
-    "Usage: cms-provision [wizard] [--provider <name> --domain <d> --owner-email <e> --region <r>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|pulumi-output-sync|version> [options]\n" +
+    "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|pulumi-output-sync|version> [options]\n" +
       "With several installs on this machine, pick one with --install <install-id or domain> (status, upgrade and backup also take --install all); in a terminal you are asked otherwise.\n" +
       "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
   );

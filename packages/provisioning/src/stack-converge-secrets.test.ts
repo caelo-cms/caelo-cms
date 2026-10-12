@@ -189,6 +189,7 @@ const INSTALL = {
   projectId: "acme",
   env: "production",
   domain: "acme.com",
+  stagingHost: "staging.acme.com",
   region: "europe-west1",
 };
 const SERVICE_ACCOUNTS: Record<CloudRunSlug, string> = {
@@ -340,6 +341,8 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
     expect(plan.ok && plan.services.gateway.changes.map((c) => c.name).sort()).toEqual([
       "ADMIN_DATABASE_PASSWORD",
       "ADMIN_DATABASE_URL",
+      // #650 — the staging gate key arrives in the same roll.
+      "CAELO_STAGING_GATE_SECRET",
       "GATEWAY_DATABASE_PASSWORD",
       "GATEWAY_DATABASE_URL",
       "PUBLIC_DATABASE_PASSWORD",

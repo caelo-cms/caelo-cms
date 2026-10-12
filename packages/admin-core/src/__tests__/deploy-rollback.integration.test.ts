@@ -216,5 +216,27 @@ describe("deploy.rollback", () => {
     const v1 = await readFile(pageFile, "utf8");
     expect(v1).toContain("VERSION_ONE");
     expect(v1).not.toContain("VERSION_TWO");
+
+    // Codex review on #652 — the rollback run records the publisher's
+    // summary (Firebase: the Hosting version the rollback released), so it
+    // can itself be the source of a later rollback.
+    const newRunId = (rb.value as { newRunId: string }).newRunId;
+    const db = new SQL(ADMIN_URL!);
+    try {
+      const rows = (await db.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return await tx`SELECT publish_summary->>'location' AS location
+                        FROM deploy_runs WHERE id = ${newRunId}::uuid`;
+      })) as { location: string | null }[];
+      expect(rows[0]?.location).toMatch(/current\/$/);
+    } finally {
+      await db.end();
+    }
+    const again = await execute(registry, adapter, HUMAN, "deploy.rollback", {
+      targetName: "production",
+      runId: newRunId,
+      repoRoot: testRoot,
+    });
+    expect(again.ok).toBe(true);
   });
 });

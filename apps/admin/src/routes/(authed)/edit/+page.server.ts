@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describeError, stageChatSessions } from "@caelo-cms/admin-core";
+import { describeError, providerHasStagingDomain, stageChatSessions } from "@caelo-cms/admin-core";
 import { loadedPlugins } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -15,6 +15,7 @@ import { requirePermission, requireUser } from "#lib/server/guards.js";
 import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { describeStagedBuild } from "#lib/server/stage-result.js";
+import { openStagingHref } from "#lib/server/staging-link.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 interface PageRow {
@@ -415,7 +416,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
         lastStaged = {
           runId: r.id,
           finishedAt: r.finishedAt,
-          previewUrl: r.publishSummary?.previewUrl ?? null,
+          // #650 — staging.<domain> through "Open staging", never the
+          // provider's preview origin.
+          previewUrl: providerHasStagingDomain(process.env.CAELO_PROVIDER)
+            ? openStagingHref("/")
+            : (r.publishSummary?.previewUrl ?? null),
         };
       }
       // v0.10.12 — latest production deploy. build_id points back to
@@ -715,7 +720,7 @@ export const actions: Actions = {
     const staged = await stageChatSessions({ adapter, registry }, locals.ctx, [chatSessionId]);
     if (!staged.ok) return fail(500, { error: staged.error.message });
     const summary = staged.value;
-    const { previewUrl, draftPageCount } = await describeStagedBuild(
+    const { previewUrl, previewLabel, draftPageCount } = await describeStagedBuild(
       locals.ctx,
       summary,
       pageId || null,
@@ -728,6 +733,7 @@ export const actions: Actions = {
         fileCount: summary.fileCount,
         buildId: summary.buildId,
         previewUrl,
+        previewLabel,
         mergedEntityCount: summary.mergedEntityCount,
         draftPageCount,
         // Issue #620 — other chats' changes to the same things rode along.

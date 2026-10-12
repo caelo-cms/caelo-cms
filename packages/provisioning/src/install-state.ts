@@ -29,6 +29,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { defaultStagingHost } from "./stack-contract.js";
 
 export type Provider = "self-hosted" | "gcp" | "gcp-firebase" | "aws" | "azure";
 
@@ -49,6 +50,19 @@ export interface InstallMetadata {
    * installs that predate it.
    */
   imageDigests?: ImageDigests;
+  /**
+   * #650 — the protected staging site's host (wizard / `--staging-domain`,
+   * default `staging.<domain>`). Absent on installs that predate it;
+   * `upgrade` records the default ({@link installStagingHost}).
+   */
+  stagingDomain?: string;
+}
+
+/** The install's staging host: its recorded setting, else the default. */
+export function installStagingHost(
+  meta: Pick<InstallMetadata, "domain" | "stagingDomain">,
+): string {
+  return meta.stagingDomain ?? defaultStagingHost(meta.domain);
 }
 
 /** Release image digest per Cloud Run service. */

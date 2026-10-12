@@ -19,6 +19,8 @@
     set_translation_model: "Translation model",
     set_plugin_ai_cost_cap: "Plugin AI cost cap",
     rotate_gateway_cookie_secret: "Rotate gateway cookie secret",
+    set_staging_access: "Staging access",
+    rotate_staging_credentials: "Rotate staging credentials",
   };
 </script>
 

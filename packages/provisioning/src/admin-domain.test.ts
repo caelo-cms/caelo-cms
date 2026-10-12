@@ -162,3 +162,93 @@ describe("enableAdminDomain", () => {
     expect(calls.some((c) => c[0] === "beta")).toBe(false);
   });
 });
+
+describe("enableStagingDomain (#650)", () => {
+  const STAGING_MAPPING = JSON.stringify({
+    status: {
+      resourceRecords: [{ name: "staging", type: "CNAME", rrdata: "ghs.googlehosted.com." }],
+    },
+  });
+
+  it("opens the gateway's ingress, maps staging.<domain> to the gateway and prints the record", async () => {
+    const { run, calls } = fakeGcloud({
+      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services describe": [ok("internal-and-cloud-load-balancing\n")],
+      "beta run domain-mappings describe": [fail("NOT_FOUND"), ok(STAGING_MAPPING)],
+      "domains list-user-verified": [ok("example.com\n")],
+    });
+    const { enableStagingDomain } = await import("./admin-domain.js");
+    const r = await enableStagingDomain({ ...base, stagingHost: "staging.example.com", run });
+    expect(r).toEqual({
+      status: "mapped",
+      hostname: "staging.example.com",
+      created: true,
+      records: [{ name: "staging.example.com", type: "CNAME", value: "ghs.googlehosted.com." }],
+    });
+    expect(calls).toContainEqual([
+      "run",
+      "services",
+      "update",
+      "caelo-production-gateway-xyz",
+      "--region=europe-west1",
+      "--project=p",
+      "--ingress=all",
+      "--quiet",
+    ]);
+    expect(calls.find((c) => c.includes("create"))).toContain(
+      "--service=caelo-production-gateway-xyz",
+    );
+    expect(calls[0]).toContain("--filter=metadata.name~^caelo-production-gateway");
+  });
+
+  it("is idempotent: ingress already open and mapping present ⇒ no update, no create", async () => {
+    const { run, calls } = fakeGcloud({
+      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services describe": [ok("all\n")],
+      "beta run domain-mappings describe": [ok(STAGING_MAPPING)],
+    });
+    const { enableStagingDomain } = await import("./admin-domain.js");
+    const r = await enableStagingDomain({ ...base, stagingHost: "staging.example.com", run });
+    expect(r.status === "mapped" && !r.created).toBe(true);
+    expect(calls.some((c) => c.includes("update") || c.includes("create"))).toBe(false);
+  });
+
+  it("maps a host the operator chose on another domain, verifying that host itself", async () => {
+    const { run, calls } = fakeGcloud({
+      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services describe": [ok("all\n")],
+      "beta run domain-mappings describe": [fail("NOT_FOUND")],
+      "domains list-user-verified": [ok("example.com\n")],
+    });
+    const { enableStagingDomain } = await import("./admin-domain.js");
+    const r = await enableStagingDomain({ ...base, stagingHost: "preview.other.de", run });
+    expect(r).toEqual({
+      status: "needs-verification",
+      hostname: "preview.other.de",
+      verifyDomain: "preview.other.de",
+    });
+    expect(calls).toContainEqual(["domains", "verify", "preview.other.de"]);
+  });
+
+  it("fails closed without exactly one gateway service", async () => {
+    const { run } = fakeGcloud({ "run services list": [ok("a\nb\n")] });
+    const { enableStagingDomain } = await import("./admin-domain.js");
+    const r = await enableStagingDomain({ ...base, stagingHost: "staging.example.com", run });
+    expect(r.status).toBe("failed");
+  });
+
+  it("installs the missing beta component before its first beta command", async () => {
+    const { run, calls } = fakeGcloud({
+      "components list": [ok("")],
+      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services describe": [ok("all\n")],
+      "beta run domain-mappings describe": [ok(STAGING_MAPPING)],
+    });
+    const { enableStagingDomain } = await import("./admin-domain.js");
+    const r = await enableStagingDomain({ ...base, stagingHost: "staging.example.com", run });
+    expect(r.status).toBe("mapped");
+    const install = calls.findIndex((c) => c.join(" ") === "components install beta --quiet");
+    expect(install).toBeGreaterThanOrEqual(0);
+    expect(install).toBeLessThan(calls.findIndex((c) => c[0] === "beta"));
+  });
+});

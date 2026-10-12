@@ -45,6 +45,7 @@ import {
   type CloudRunEnvVar,
   type CloudRunSlug,
   databaseUrls,
+  defaultStagingHost,
   gatewayEnvContract,
   type RuntimeSecret,
   runtimeSecretBindings,
@@ -52,6 +53,8 @@ import {
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
+// #650 — the protected staging site's host (wizard / `--staging-domain`).
+const stagingHost = cfg.get("stagingDomain") ?? defaultStagingHost(domain);
 const ownerEmail = cfg.require("ownerEmail");
 const project = cfg.require("project");
 // #607 — chosen by the operator in the wizard and fixed after install; no
@@ -219,6 +222,7 @@ const runtimeSecretIds: Record<RuntimeSecret, pulumi.Input<string>> = {
   "secret-kek": kekSecret.resource.secretId,
   "internal-secret": gcpSecretId(env, "internal-secret"),
   "tool-approval-secret": gcpSecretId(env, "tool-approval-secret"),
+  "staging-gate-secret": gcpSecretId(env, "staging-gate-secret"),
   "public-role-password": gcpSecretId(env, "public-role-password"),
   "gateway-role-password": gcpSecretId(env, "gateway-role-password"),
 };
@@ -590,6 +594,7 @@ const envContractInputs = {
   env,
   domain,
   region,
+  stagingHost,
   databaseUrls: {
     admin: dbUrls.admin,
     publicAdmin: dbUrls.publicAdmin,
@@ -606,10 +611,14 @@ const gatewaySvc = cloudRunService({
   maxInstances: 100,
   memory: "512Mi",
   timeout: "60s",
-  // v0.3.1 — gateway is reachable ONLY via Firebase Hosting
-  // rewrites or any caller holding roles/run.invoker on the
-  // service. Anonymous internet traffic gets a Cloud Run 403.
-  ingress: "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER",
+  // #650 — all traffic: the gateway also serves staging.<domain> through
+  // a Cloud Run domain mapping (`cms-provision staging-domain enable`),
+  // and Cloud Run refuses domain-mapped requests under an internal-only
+  // ingress. Exposure is unchanged in substance: the service was already
+  // invokable by allUsers (gateway-public-invoker below) and every /api
+  // request passes its rate limits, captcha and honeypot; staging requests
+  // pass the staging access gate.
+  ingress: "INGRESS_TRAFFIC_ALL",
   contractEnv: gatewayEnvContract(envContractInputs),
 });
 

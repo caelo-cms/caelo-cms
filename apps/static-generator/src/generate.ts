@@ -383,6 +383,21 @@ export async function generateSite(args: {
    *  the build dir. Auto-redeploy passes the audit_events tail's
    *  touched page ids; manual triggers omit it for full rebuild. */
   changedPageIds?: ReadonlyArray<string>;
+  /**
+   * #650 — the origin this build renders into every absolute URL
+   * (canonical, sitemap, og:url, hreflang, robots `Sitemap:`) instead of
+   * `site_defaults.site_base_url`. A staging build on a provider with its
+   * own staging host (`https://staging.<domain>`) passes that host; Publish
+   * live rebuilds the same content without it. Omitted = the stored site URL.
+   */
+  siteBaseUrlOverride?: string;
+  /**
+   * Mirror the finished build into `<outDir>/current/` (the directory the
+   * self-hosted serving layer serves). Default true. #650 — Publish live's
+   * rebuild passes false: the build must pass the parity guard before
+   * anything serves it, and the publisher puts it live afterwards.
+   */
+  syncCurrent?: boolean;
 }): Promise<GenerateResult> {
   const start = Date.now();
   const { tx, target, runId } = args;
@@ -394,7 +409,10 @@ export async function generateSite(args: {
 
   // #551 — read first: a missing site base URL or site language fails the
   // run before any file is written, not halfway through the page passes.
-  const seoSettings = requireSiteLanguage(await readSeoSettings(tx));
+  const storedSeo = requireSiteLanguage(await readSeoSettings(tx));
+  const seoSettings = args.siteBaseUrlOverride
+    ? { ...storedSeo, siteBaseUrl: args.siteBaseUrlOverride }
+    : storedSeo;
 
   await mkdir(buildDir, { recursive: true });
 
@@ -1214,8 +1232,10 @@ export async function generateSite(args: {
   // dirs, the bind mount stays valid because the directory inode never
   // changes. The `builds/<runId>/` archive stays for content-addressed
   // history and for `deploy.rollback` to copy back when invoked.
-  await mkdir(currentLink, { recursive: true });
-  await syncContents(buildDir, currentLink);
+  if (args.syncCurrent !== false) {
+    await mkdir(currentLink, { recursive: true });
+    await syncContents(buildDir, currentLink);
+  }
 
   // Best-effort old-build retention: keep the most recent 5, remove the
   // rest. Failures are swallowed because they don't affect the live

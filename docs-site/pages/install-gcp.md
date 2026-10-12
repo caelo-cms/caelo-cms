@@ -135,6 +135,16 @@ bunx @caelo-cms/provisioning admin-domain enable
 
 Google only maps a domain for a verified owner of it. If you have not verified yours yet, the command opens Search Console for you: add the TXT record it shows at your registrar, click **Verify**, then run the command again. It creates the mapping as your own gcloud account and prints the DNS record to add (usually a `CNAME` to `ghs.googlehosted.com.`); TLS follows once DNS resolves. Running it again is safe. With more than one install on the machine, pick one with `--install <install-id>`. (`--provider gcp` needs none of this: its load balancer serves `admin.<your domain>` from the start.)
 
+## Protected staging on your own domain (`gcp-firebase`)
+
+Every Stage is served on the staging host behind an access gate — the same artefacts Publish live ships, with only the host swapped (see [Protected staging](/staging-access)). The wizard asks for the host (default `staging.<your domain>`; `--staging-domain <host>` when non-interactive). The gateway serves it; map it once:
+
+```bash
+bunx @caelo-cms/provisioning staging-domain enable
+```
+
+After changing the host in the admin (Security → Domains), run it again with `--staging-domain <new host>`. It works like `admin-domain enable` (same Search Console verification, run as your own gcloud account), opens the gateway's ingress for the domain mapping, and prints the DNS record to add (usually `CNAME staging → ghs.googlehosted.com.`). Running it again is safe. Who may open staging is set in the admin under **Security → Staging access**.
+
 ## Day-2 operations
 
 | Task | How |
@@ -142,10 +152,11 @@ Google only maps a domain for a verified owner of it. If you have not verified y
 | Upgrade to a new release | `bunx @caelo-cms/provisioning upgrade` (see below) |
 | Give someone admin access | Add them at `/security/users` (or ask the AI) — IAP follows automatically |
 | Serve the admin at `admin.<domain>` (gcp-firebase) | `bunx @caelo-cms/provisioning admin-domain enable` |
+| Serve the staging host (gcp-firebase) | `bunx @caelo-cms/provisioning staging-domain enable` |
 | Read logs | Cloud Logging — filter by `resource.labels.service_name="caelo-admin-prod"` |
 | Restore from PITR | `gcloud sql backups restore` — see [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
 | Rotate the AI provider key | Owner → `/security/ai` (stored encrypted in the database) |
-| Rotate a runtime secret | `bunx @caelo-cms/provisioning rotate-secret <postgres-password\|public-role-password\|gateway-role-password\|internal-secret\|tool-approval-secret>` — stores a new value in Secret Manager (for a database password also on its role: `postgres-password` is `admin_role`'s, the other two the gateway's `public_role` and `gateway_role`) and rolls the services that read it |
+| Rotate a runtime secret | `bunx @caelo-cms/provisioning rotate-secret <postgres-password\|public-role-password\|gateway-role-password\|internal-secret\|tool-approval-secret\|staging-gate-secret>` — stores a new value in Secret Manager (for a database password also on its role: `postgres-password` is `admin_role`'s, the other two the gateway's `public_role` and `gateway_role`) and rolls the services that read it |
 | Scale Cloud Run | `gcloud run services update caelo-admin-prod --max-instances=20` |
 
 ### What `upgrade` does
@@ -182,7 +193,7 @@ An install from before this change converges on its first `upgrade`, without any
 - **Stage fails with "the stored files of … media asset(s) are missing"** — the install ran a release that kept media on the admin container's own disk, which Cloud Run discards on every new revision and scale-to-zero. Run `bunx @caelo-cms/provisioning upgrade`: it mounts the media bucket into the admin (execution environment gen2, a Cloud Storage volume named `media` of the `<project>-caelo-production-media` bucket at `/app/apps/admin/data/media`). If you already added exactly that volume by hand, upgrade keeps it. Files lost before the upgrade cannot be recovered from Cloud Run; ask the AI to "fix the missing media" — it lists them (`list_missing_media`), re-imports what came from a URL, and tells you which files to re-upload at `/content/media` (re-uploading the same file restores it on every page that uses it).
 - **The admin refuses to start: "media storage is not durable"** — the admin found no persistent volume at its media root. Run `bunx @caelo-cms/provisioning upgrade`, which adds it.
 - **"not removed: firewall rule default-allow-ssh …" (or `default-allow-rdp`)** — a rule with that name exists but is not the one Google created (for example its source range was narrowed to an office IP, or it targets tagged VMs), so the provisioner left it in place; the message shows how it differs. If nothing on the project needs it, delete it with the `gcloud compute firewall-rules delete …` command the message prints. If it is intentional, give it another name (create a copy under the new name, then delete the old one) and the warning stops. If the message says the delete was denied, your gcloud account needs `compute.firewalls.delete` (for example `roles/compute.securityAdmin`); re-run with an account that has it.
-- **`admin-domain enable` says the gcloud `beta` component is missing** — Cloud Run domain mappings for `gcp-firebase` are only available through `gcloud beta`. The command installs the `beta` component for you the first time ("Installing the gcloud "beta" component…", about a minute). If your gcloud came from a system package manager (apt/dnf `google-cloud-cli`, snap), gcloud cannot install components itself and the command stops with the package-manager command to run instead, for example `sudo apt-get install google-cloud-cli`; run it, then re-run `admin-domain enable`. If the install fails because your Google Cloud CLI directory is not writable, run `gcloud components install beta` yourself (with `sudo` if needed). The provisioner runs gcloud with prompts disabled, so a missing component or any other question gcloud would ask shows up as an error instead of a silent hang.
+- **`admin-domain enable` or `staging-domain enable` says the gcloud `beta` component is missing** — Cloud Run domain mappings for `gcp-firebase` are only available through `gcloud beta`. The command installs the `beta` component for you the first time ("Installing the gcloud "beta" component…", about a minute). If your gcloud came from a system package manager (apt/dnf `google-cloud-cli`, snap), gcloud cannot install components itself and the command stops with the package-manager command to run instead, for example `sudo apt-get install google-cloud-cli`; run it, then re-run the command. If the install fails because your Google Cloud CLI directory is not writable, run `gcloud components install beta` yourself (with `sudo` if needed). The provisioner runs gcloud with prompts disabled, so a missing component or any other question gcloud would ask shows up as an error instead of a silent hang.
 - **Cloud Run cold-starts feel slow** — set `--min-instances=1` on the admin service. Costs ~$15/mo extra; eliminates first-request latency.
 
 ## Next

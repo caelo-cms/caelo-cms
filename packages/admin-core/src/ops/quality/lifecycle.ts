@@ -287,6 +287,11 @@ const claimedRunSchema = z.object({
   pageUrlStyle: z.enum(["directory", "no-extension"]),
   /** Provider preview URL of the staged build (Firebase channels). */
   previewUrl: z.string().nullable(),
+  /** #650 — the origin the staged build rendered its absolute URLs with
+   *  (`deploy_runs.site_url`: the staging host at Stage time); null when
+   *  it was built with the live host. Reports name THIS host, not the
+   *  current setting, which may have moved since. */
+  siteUrl: z.string().nullable(),
   /** The deploy target's env + out_dir: where this process wrote the
    *  build archive (served by the loopback origin on providers without a
    *  reachable staging URL). */
@@ -344,12 +349,14 @@ export const claimNextAuditOp = defineOperation({
     const row = claimed[0];
     if (!row) return ok({ run: null, superseded: superseded.length });
     const runInfo = (await tx.execute(sql`
-      SELECT t.page_url_style, r.publish_summary->>'previewUrl' AS preview_url, t.env, t.out_dir
+      SELECT t.page_url_style, r.publish_summary->>'previewUrl' AS preview_url, r.site_url,
+             t.env, t.out_dir
       FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
       WHERE r.id = ${row.deploy_run_id}::uuid
     `)) as unknown as {
       page_url_style: "directory" | "no-extension";
       preview_url: string | null;
+      site_url: string | null;
       env: string;
       out_dir: string;
     }[];
@@ -377,6 +384,7 @@ export const claimNextAuditOp = defineOperation({
         performanceRuns: row.performance_runs,
         pageUrlStyle: info.page_url_style,
         previewUrl: info.preview_url,
+        siteUrl: info.site_url,
         env: info.env,
         outDir: info.out_dir,
         pages: pages.map((p) => ({ pageId: p.page_id, currentPath: p.current_path })),

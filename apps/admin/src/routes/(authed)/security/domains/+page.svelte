@@ -90,6 +90,29 @@
     </Card>
   {/if}
 
+  {#if data.staging?.stagingDomainSupported}
+    <Card>
+      <CardHeader>
+        <CardTitle>Staging host</CardTitle>
+        <CardDescription>
+          The protected staging site's host — every Stage renders it, and the staging gate answers on
+          it. Default <code>staging.&lt;domain&gt;</code>; any other host works, also on another domain.
+          After a change, map it with <code>cms-provision staging-domain enable --staging-domain &lt;host&gt;</code>
+          and add the DNS record it prints. Who may open staging: <a class="underline" href="/security/staging">Staging access</a>.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form method="post" action="?/setStagingHost" use:enhance class="flex max-w-xl flex-wrap items-end gap-2">
+          <label class="grid flex-1 gap-1 text-sm">
+            <span>Host</span>
+            <Input name="stagingHost" value={data.staging.stagingHost ?? ""} placeholder="staging.example.com" required />
+          </label>
+          <Button type="submit">Save staging host</Button>
+        </form>
+      </CardContent>
+    </Card>
+  {/if}
+
   <Card>
     <CardHeader>
       <CardTitle>Add a domain</CardTitle>

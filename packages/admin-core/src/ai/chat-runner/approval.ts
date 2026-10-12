@@ -24,6 +24,12 @@ const TOOL_LABELS: Record<string, string> = {
   propose_rotate_gateway_cookie_secret:
     "Rotate the public gateway's cookie secret — every site visitor is logged out and re-identified (rate-limit and captcha state restart); this cannot be undone",
   propose_set_plugin_ai_cost_cap: "Change a plugin's AI spend cap (max AI cost per 24h)",
+  propose_set_staging_access:
+    "Change who can open the protected staging site (the unpublished work) — access modes, crawler login, IP allowlist",
+  propose_set_staging_host:
+    "Move the protected staging site to another host — it needs a DNS record and domain mapping before it answers",
+  propose_rotate_staging_credentials:
+    "Replace the staging crawler credentials — every crawler using the old one is locked out; this cannot be undone",
 };
 
 /** Compact, readable rendering of a tool call for the Approve/Reject card. */

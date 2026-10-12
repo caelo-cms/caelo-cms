@@ -13,12 +13,15 @@
  *     uploads for files NOT already content-addressed in the site
  *     (sha256 of gzipped body). No manual CRC32C-manifest needed.
  *   - Preview channels: each Stage deploys the version to a
- *     per-runId preview channel with a 7-day TTL — Firebase
- *     generates the URL automatically. Replaces v0.2.78's
- *     /_staging-preview/ proxy on `gcp` installs.
- *   - Atomic promote: Confirm-publish creates a release on the
- *     live channel pointing at the staged version. Native rollback
- *     is `POST releases:create` with an older version.
+ *     per-runId preview channel with a 7-day TTL. #650 — the channel
+ *     URL is never shown: the gateway serves staging.<domain> from it
+ *     behind the access gate, older channels are pruned when a newer
+ *     Stage succeeds, the last one after Publish live.
+ *   - Publish live: a release on the live channel. When staging has
+ *     its own host (#650) it is a fresh version of the rebuild with the
+ *     live host (publishLiveBuild, after the parity guard); otherwise a
+ *     copy of the staged version (promoteToProduction). Rollback
+ *     re-releases the Hosting version a run recorded.
  *
  * Auth: ADC via the Cloud Run service identity. The runSa needs
  * roles/firebasehosting.admin on the Firebase project — provisioned
@@ -375,8 +378,11 @@ async function uploadGzippedFile(
   }
 }
 
+/** Every channel Stage creates is named `runid-<runId>`; nothing else is. */
+const RUN_CHANNEL_PREFIX = "runid-";
+
 function channelIdFor(runId: string): string {
-  return `runid-${runId.replace(/[^a-z0-9-]/gi, "").toLowerCase()}`.slice(0, 63);
+  return `${RUN_CHANNEL_PREFIX}${runId.replace(/[^a-z0-9-]/gi, "").toLowerCase()}`.slice(0, 63);
 }
 
 /** The version behind the latest release on a runId's preview channel. */
@@ -384,7 +390,7 @@ async function channelHeadVersion(
   site: string,
   runId: string,
   token: string,
-  op: "promote" | "rollback",
+  op: "promote",
 ): Promise<string> {
   const channelId = channelIdFor(runId);
   type ListReleasesResponse = { releases?: { name: string; version: { name: string } }[] };
@@ -499,113 +505,160 @@ async function releaseAsTarget(args: {
   };
 }
 
+/**
+ * Create, upload and finalize a Hosting version holding exactly the files
+ * of `buildDir`, with the site config for `target`: the redirects table,
+ * the `/api/**` rewrite to the gateway, the cache headers and the target's
+ * env-level robots header. Shared by Stage (released on a preview channel)
+ * and #650's Publish live rebuild (released on the live channel).
+ */
+async function createVersionFromBuild(args: {
+  site: string;
+  token: string;
+  buildDir: string;
+  target: DeployTarget;
+}): Promise<{ versionName: string; uploadedCount: number; skippedUnchangedCount: number }> {
+  const { site, token, buildDir, target } = args;
+  // 1. Walk + gzip + hash every file in the build dir.
+  const walked = await walkBuildDir(buildDir);
+  const fileEntries = await Promise.all(
+    walked.map(async (f) => {
+      const { body, sha256 } = await gzipAndHash(f.absolutePath);
+      return {
+        relativePath: f.relativePath,
+        gzipped: body,
+        sha256,
+      };
+    }),
+  );
+
+  // 2. Create a new version with site config — rewrites for the
+  //    gateway + per-extension caching headers. The rewrites send
+  //    `/api/**` traffic to the gateway Cloud Run service so visitor
+  //    form submissions, comments, ratings, etc. work end-to-end.
+  //    Without rewrites those requests would 404 against the static
+  //    bucket — v0.3.0 shipped without them which was the launch
+  //    blocker the v0.3.1 audit surfaced.
+  //
+  //    Gateway service name + region come from env vars set by the
+  //    gcp-firebase Pulumi stack on the admin Cloud Run service.
+  //    No fallback per CLAUDE.md §2 — failing to set these env vars
+  //    means the gcp-firebase Pulumi stack is misconfigured.
+  const gatewayService = process.env.CAELO_GATEWAY_SERVICE;
+  const gatewayRegion = process.env.CAELO_GATEWAY_REGION;
+  if (!gatewayService || !gatewayRegion) {
+    throw new Error(
+      "static-publisher-firebase: CAELO_GATEWAY_SERVICE / CAELO_GATEWAY_REGION not set. The gcp-firebase Pulumi stack must set these env vars on the admin Cloud Run service.",
+    );
+  }
+  // The redirects table rides the version config — Hosting ignores the
+  // `_redirects` file the generator writes. Every build carries that
+  // file; a build without it is not one the generator produced.
+  let redirectsFile: string;
+  try {
+    redirectsFile = await readFile(join(buildDir, "_redirects"), "utf8");
+  } catch (e) {
+    throw new Error(
+      `static-publisher-firebase: ${join(buildDir, "_redirects")} is missing (${(e as Error).message}). The static generator writes it on every build; re-run the build instead of deploying a partial directory.`,
+    );
+  }
+  const redirects = firebaseRedirectsFromFile(
+    redirectsFile,
+    target.pageUrlStyle ?? "directory",
+    new Set(walked.map((f) => f.relativePath)),
+  );
+  const config = withTargetRobotsHeader(
+    {
+      redirects,
+      rewrites: [
+        {
+          glob: "/api/**",
+          run: { serviceId: gatewayService, region: gatewayRegion },
+        },
+      ],
+      headers: VERSION_CONFIG_HEADERS,
+    },
+    target.robotsDefault,
+  );
+  const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
+    method: "POST",
+    body: JSON.stringify({ config }),
+    token,
+  });
+  const versionName = created.name; // "sites/<site>/versions/<versionId>"
+  const versionId = versionName.split("/").pop() ?? "";
+
+  // 3. populateFiles — tell Firebase which files this version has.
+  //    Firebase returns which hashes still need upload.
+  const filesMap: Record<string, string> = {};
+  for (const f of fileEntries) {
+    // Firebase expects paths to start with `/` (e.g. "/about").
+    filesMap[`/${f.relativePath}`] = f.sha256;
+  }
+  const populate = await firebaseFetch<PopulateFilesResponse>(
+    `sites/${site}/versions/${versionId}:populateFiles`,
+    {
+      method: "POST",
+      body: JSON.stringify({ files: filesMap }),
+      token,
+    },
+  );
+  const required = new Set(populate.uploadRequiredHashes ?? []);
+
+  // 4. Upload only the required hashes (Firebase already has the rest).
+  const toUpload = fileEntries.filter((f) => required.has(f.sha256));
+  await runBatched(toUpload, PARALLEL_UPLOADS, async (f) => {
+    await uploadGzippedFile(populate.uploadUrl, f.sha256, f.gzipped, token);
+  });
+
+  // 5. Finalize the version.
+  await firebaseFetch(`sites/${site}/versions/${versionId}?updateMask=status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status: "FINALIZED" }),
+    token,
+  });
+  return {
+    versionName,
+    uploadedCount: toUpload.length,
+    skippedUnchangedCount: fileEntries.length - toUpload.length,
+  };
+}
+
+/** Ids of every `runid-*` preview channel Stage created on the site (any order). */
+async function listRunPreviewChannels(site: string, token: string): Promise<string[]> {
+  type ListChannelsResponse = { channels?: { name: string }[]; nextPageToken?: string };
+  const ids: string[] = [];
+  let pageToken: string | undefined;
+  do {
+    const page = await firebaseFetch<ListChannelsResponse>(
+      `sites/${site}/channels?pageSize=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`,
+      { token },
+    );
+    for (const c of page.channels ?? []) {
+      const id = c.name.split("/").pop() ?? "";
+      if (id.startsWith(RUN_CHANNEL_PREFIX)) ids.push(id);
+    }
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  return ids;
+}
+
 export const firebaseHostingPublisher: StaticPublisher = {
   async publishStaging({ buildDir, runId, target }) {
     const site = siteName();
     const token = await googleAuthToken();
-
-    // 1. Walk + gzip + hash every file in the build dir.
-    const walked = await walkBuildDir(buildDir);
-    const fileEntries = await Promise.all(
-      walked.map(async (f) => {
-        const { body, sha256 } = await gzipAndHash(f.absolutePath);
-        return {
-          relativePath: f.relativePath,
-          gzipped: body,
-          sha256,
-        };
-      }),
-    );
-
-    // 2. Create a new version with site config — rewrites for the
-    //    gateway + per-extension caching headers. The rewrites send
-    //    `/api/**` traffic to the gateway Cloud Run service so visitor
-    //    form submissions, comments, ratings, etc. work end-to-end.
-    //    Without rewrites those requests would 404 against the static
-    //    bucket — v0.3.0 shipped without them which was the launch
-    //    blocker the v0.3.1 audit surfaced.
-    //
-    //    Gateway service name + region come from env vars set by the
-    //    gcp-firebase Pulumi stack on the admin Cloud Run service.
-    //    No fallback per CLAUDE.md §2 — failing to set these env vars
-    //    means the gcp-firebase Pulumi stack is misconfigured.
-    const gatewayService = process.env.CAELO_GATEWAY_SERVICE;
-    const gatewayRegion = process.env.CAELO_GATEWAY_REGION;
-    if (!gatewayService || !gatewayRegion) {
-      throw new Error(
-        "static-publisher-firebase: CAELO_GATEWAY_SERVICE / CAELO_GATEWAY_REGION not set. The gcp-firebase Pulumi stack must set these env vars on the admin Cloud Run service.",
-      );
-    }
-    // The redirects table rides the version config — Hosting ignores the
-    // `_redirects` file the generator writes. Every build carries that
-    // file; a build without it is not one the generator produced.
-    let redirectsFile: string;
-    try {
-      redirectsFile = await readFile(join(buildDir, "_redirects"), "utf8");
-    } catch (e) {
-      throw new Error(
-        `static-publisher-firebase: ${join(buildDir, "_redirects")} is missing (${(e as Error).message}). The static generator writes it on every build; re-run the build instead of deploying a partial directory.`,
-      );
-    }
-    const redirects = firebaseRedirectsFromFile(
-      redirectsFile,
-      target.pageUrlStyle ?? "directory",
-      new Set(walked.map((f) => f.relativePath)),
-    );
-    const versionConfig = withTargetRobotsHeader(
-      {
-        redirects,
-        rewrites: [
-          {
-            glob: "/api/**",
-            run: { serviceId: gatewayService, region: gatewayRegion },
-          },
-        ],
-        headers: VERSION_CONFIG_HEADERS,
-      },
-      target.robotsDefault,
-    );
-    const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
-      method: "POST",
-      body: JSON.stringify({ config: versionConfig }),
-      token,
-    });
-    const versionName = created.name; // "sites/<site>/versions/<versionId>"
-    const versionId = versionName.split("/").pop() ?? "";
-
-    // 3. populateFiles — tell Firebase which files this version has.
-    //    Firebase returns which hashes still need upload.
-    const filesMap: Record<string, string> = {};
-    for (const f of fileEntries) {
-      // Firebase expects paths to start with `/` (e.g. "/about").
-      filesMap[`/${f.relativePath}`] = f.sha256;
-    }
-    const populate = await firebaseFetch<PopulateFilesResponse>(
-      `sites/${site}/versions/${versionId}:populateFiles`,
-      {
-        method: "POST",
-        body: JSON.stringify({ files: filesMap }),
-        token,
-      },
-    );
-    const required = new Set(populate.uploadRequiredHashes ?? []);
-
-    // 4. Upload only the required hashes (Firebase already has the rest).
-    const toUpload = fileEntries.filter((f) => required.has(f.sha256));
-    await runBatched(toUpload, PARALLEL_UPLOADS, async (f) => {
-      await uploadGzippedFile(populate.uploadUrl, f.sha256, f.gzipped, token);
-    });
-
-    // 5. Finalize the version.
-    await firebaseFetch(`sites/${site}/versions/${versionId}?updateMask=status`, {
-      method: "PATCH",
-      body: JSON.stringify({ status: "FINALIZED" }),
-      token,
-    });
+    const version = await createVersionFromBuild({ site, token, buildDir, target });
+    const versionName = version.versionName;
 
     // 6. Create a per-runId preview channel with a 7-day TTL.
     //    Firebase channel IDs must be lowercase alphanumeric +
     //    dashes; sanitise the runId UUID (already alphanumeric+dashes).
+    //    #650 — the channel URL is an internal origin: the gateway proxies
+    //    staging.<domain> to it behind the access gate, and it is never
+    //    shown to operators or the AI. Firebase cannot lock a channel
+    //    (preview channels are public by URL), so older channels are
+    //    deleted as soon as a newer Stage succeeds and the last one after
+    //    Publish live (pruneStagingPreviews), and the TTL is the backstop.
     const channelId = channelIdFor(runId);
     const channel = await firebaseFetch<CreateChannelResponse>(
       `sites/${site}/channels?channelId=${channelId}`,
@@ -613,12 +666,6 @@ export const firebaseHostingPublisher: StaticPublisher = {
         method: "POST",
         body: JSON.stringify({
           ttl: `${PREVIEW_CHANNEL_TTL_DAYS * 24 * 60 * 60}s`,
-          // Channels default to public — for IAP-equivalent privacy
-          // we'd need Firebase Hosting's "private preview" feature
-          // (still in preview as of Jan 2026). For v0.3.0 the
-          // channel URL is operator-only (surfaced through the admin
-          // UI which is IAP-gated); recipients have to know the
-          // hash-suffixed URL. Acceptable for the dogfood phase.
           retainedReleaseCount: 1,
         }),
         token,
@@ -634,12 +681,51 @@ export const firebaseHostingPublisher: StaticPublisher = {
 
     const summary: PublishSummary = {
       provider: "gcp-firebase",
-      uploadedCount: toUpload.length,
-      skippedUnchangedCount: fileEntries.length - toUpload.length,
+      uploadedCount: version.uploadedCount,
+      skippedUnchangedCount: version.skippedUnchangedCount,
       location: versionName,
       previewUrl: channel.url,
     };
     return summary;
+  },
+
+  async publishLiveBuild({ buildDir, target, sourceRunId }) {
+    const site = siteName();
+    const token = await googleAuthToken();
+    const version = await createVersionFromBuild({ site, token, buildDir, target });
+    await firebaseFetch(`sites/${site}/releases?versionName=${version.versionName}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+      token,
+    });
+    const summary: PromoteSummary = {
+      provider: "gcp-firebase",
+      uploadedCount: version.uploadedCount,
+      skippedUnchangedCount: version.skippedUnchangedCount,
+      location: version.versionName,
+      // The staged run this live build was checked against — the same id a
+      // copy-promote records, so "live matches staging" keeps working.
+      destinationBuildId: sourceRunId,
+    };
+    return summary;
+  },
+
+  async pruneStagingPreviews({ keepRunId }) {
+    const site = siteName();
+    const token = await googleAuthToken();
+    const keep = keepRunId === null ? null : channelIdFor(keepRunId);
+    const deleted: string[] = [];
+    for (const id of await listRunPreviewChannels(site, token)) {
+      if (id === keep) continue;
+      try {
+        await firebaseFetch(`sites/${site}/channels/${id}`, { method: "DELETE", token });
+      } catch (e) {
+        // Already gone (expired, deleted by a concurrent prune) is the goal.
+        if (!(e instanceof FirebaseHostingHttpError && e.status === 404)) throw e;
+      }
+      deleted.push(id);
+    }
+    return { deleted };
   },
 
   async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl }) {
@@ -675,21 +761,25 @@ export const firebaseHostingPublisher: StaticPublisher = {
     return summary;
   },
 
-  async rollback({ targetBuildId, target, siteBaseUrl }): Promise<PublishSummary> {
+  async rollback({ targetBuildId, target, siteBaseUrl, sourceLocation }): Promise<PublishSummary> {
     const site = siteName();
     const token = await googleAuthToken();
-    // The channel for a promoted build holds the STAGING version (a
-    // promoted run's build id is the staging runId), so re-releasing it
-    // verbatim would put staging's robots.txt + noindex header live.
-    // Re-derive the release for the rollback target instead — the same
-    // path promote takes, and a no-op rewrite for a build that was
-    // staged straight to this target.
-    const sourceVersionName = await channelHeadVersion(site, targetBuildId, token, "rollback");
+    // The Hosting version the run released, as its publish summary recorded
+    // it — not the run's preview channel, which #650 deletes once a newer
+    // Stage succeeds or the build is published. A promoted run's version is
+    // already production-shaped; a staging run's carries staging's robots,
+    // so the release is re-derived for the rollback target either way —
+    // a no-op rewrite for a version that already matches it.
+    if (!sourceLocation || !/^sites\/[^/]+\/versions\/[^/]+$/.test(sourceLocation)) {
+      throw new Error(
+        `firebase publisher rollback: deploy run ${targetBuildId} has no recorded Hosting version (publish_summary.location = ${JSON.stringify(sourceLocation ?? null)}), so there is nothing to re-release. Pick a run published since v0.3.0, or Stage and Publish live again.`,
+      );
+    }
     const released = await releaseAsTarget({
       site,
       token,
-      sourceVersionName,
-      sourceConfig: await versionConfig(site, sourceVersionName, token),
+      sourceVersionName: sourceLocation,
+      sourceConfig: await versionConfig(site, sourceLocation, token),
       target,
       siteBaseUrl,
     });

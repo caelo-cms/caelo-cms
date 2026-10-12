@@ -71,6 +71,12 @@ export interface ServiceEnvInputs {
   /** Install domain; the public site is served at its apex. */
   readonly domain: string;
   readonly region: string;
+  /**
+   * #650 — the protected staging site's host: the install's setting (the
+   * wizard's answer / `--staging-domain`, {@link defaultStagingHost} when
+   * the install predates it). Seeds the admin's staging host setting.
+   */
+  readonly stagingHost: string;
 }
 
 /** The password-less connection URLs of the install's Cloud SQL databases. */
@@ -132,6 +138,18 @@ export type AdminEnvInputs<V = string> =
 export function publicSiteUrl(domain: string): string {
   return `https://${domain}`;
 }
+
+/**
+ * #650 — the staging host an install gets when the operator names none.
+ * Same rule as @caelo-cms/shared `defaultStagingHost` (the stacks load this
+ * module from `dist/` without the shared package, hence the local copy).
+ */
+export function defaultStagingHost(domain: string): string {
+  return `staging.${domain.trim().toLowerCase().replace(/\.$/, "")}`;
+}
+
+/** Env var the admin seeds its staging host setting from. */
+export const STAGING_HOST_ENV = "CAELO_STAGING_HOST";
 
 /**
  * The admin env var naming the MCP service account (issue #37). `upgrade`
@@ -217,7 +235,8 @@ export type RuntimeSecret =
   | "gateway-role-password"
   | "secret-kek"
   | "internal-secret"
-  | "tool-approval-secret";
+  | "tool-approval-secret"
+  | "staging-gate-secret";
 
 /** The Postgres roles Caelo's services log in as, with their passwords. */
 export type DatabaseRole = "admin_role" | "public_role" | "gateway_role";
@@ -249,6 +268,10 @@ export const CLI_GENERATED_SECRETS = [
   // `postgres-password`), so the gateway never learns admin_role's.
   "public-role-password",
   "gateway-role-password",
+  // #650 — the staging access gate's key: signs "Open staging" links and
+  // session cookies, derives the crawler credentials. Read by the admin
+  // (issues) and the gateway (verifies).
+  "staging-gate-secret",
 ] as const satisfies readonly RuntimeSecret[];
 
 /**
@@ -270,12 +293,17 @@ export const SERVICE_SECRET_ENV: Readonly<
     // Binds an AI tool-approval to the exact call the operator approved
     // (admin-core ai/providers/_sdk-shared.ts).
     CAELO_TOOL_APPROVAL_SECRET: "tool-approval-secret",
+    // #650 — issues "Open staging" links, shows the Owner the crawler
+    // credentials (admin-core ops/staging_access.ts).
+    CAELO_STAGING_GATE_SECRET: "staging-gate-secret",
   },
   gateway: {
     // CLAUDE.md §2: never an admin_role credential (#613). gateway_role on
     // cms_admin + public_role on cms_public, each with its own password.
     GATEWAY_DATABASE_PASSWORD: "gateway-role-password",
     PUBLIC_DATABASE_PASSWORD: "public-role-password",
+    // #650 — verifies staging-host requests (api-gateway staging-proxy.ts).
+    CAELO_STAGING_GATE_SECRET: "staging-gate-secret",
   },
 };
 
@@ -380,6 +408,10 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
       { name: "CAELO_FIREBASE_SITE", value: inputs.firebaseSiteId },
       { name: "CAELO_GATEWAY_SERVICE", value: inputs.gatewayService },
       { name: "CAELO_GATEWAY_REGION", value: inputs.region },
+      // #650 — seeds the admin's staging host setting (staging builds render
+      // it, the gateway's gate answers on it); the admin DB is the truth
+      // afterwards, changed under Security → Domains.
+      { name: STAGING_HOST_ENV, value: inputs.stagingHost },
     );
   }
   admin.push(...secretEnv("admin", env));

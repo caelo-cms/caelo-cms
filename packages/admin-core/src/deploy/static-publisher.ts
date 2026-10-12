@@ -52,12 +52,12 @@ export interface PublishSummary {
    *  'output/staging/builds/<runId>/' (self-hosted). */
   location: string;
   /**
-   * v0.3.0 — provider-supplied preview URL for the staged build.
-   * Populated by the Firebase Hosting publisher (Firebase generates
-   * the channel URL like https://<site>--runid-<runId>-<hash>.web.app).
-   * Absent on other publishers — callers fall back to the
-   * provider-specific URL construction (e.g. /_staging-preview/
-   * proxy on `gcp`).
+   * v0.3.0 — provider-supplied origin of the staged build. Populated by
+   * the Firebase Hosting publisher (the preview channel URL, like
+   * https://<site>--runid-<runId>-<hash>.web.app). #650 — internal only:
+   * the quality audit loads it directly and the gateway proxies
+   * staging.<domain> to it; operators and the AI are shown the staging
+   * host instead. Absent on other publishers.
    */
   previewUrl?: string;
 }
@@ -128,7 +128,34 @@ export interface StaticPublisher {
      *  target's robots.txt on rollback (Firebase) need it for the
      *  `Sitemap:` line. */
     siteBaseUrl: string;
+    /** The rolled-back run's `publish_summary.location` — where that run's
+     *  artefact lives on publishers that keep it remotely (Firebase: the
+     *  Hosting version). Null when the run recorded none. */
+    sourceLocation: string | null;
   }): Promise<PublishSummary>;
+
+  /**
+   * #650 — put a freshly built tree live as it is (Publish live on a
+   * provider whose staging has its own host: the live build is a rebuild
+   * of the staged content with the live host, checked by the parity guard
+   * first). Implemented by the publishers of providers with a staging
+   * domain (deploy/staging-domain.ts); absent elsewhere.
+   */
+  publishLiveBuild?(args: {
+    buildDir: string;
+    runId: string;
+    target: DeployTarget;
+    /** The staged run the build was checked against. */
+    sourceRunId: string;
+  }): Promise<PromoteSummary>;
+
+  /**
+   * #650 — retire public preview artefacts of staged builds that are no
+   * longer the current one: every one except `keepRunId` (after a Stage),
+   * or all of them (`keepRunId: null`, after Publish live). Absent on
+   * publishers whose staging is not publicly reachable per run.
+   */
+  pruneStagingPreviews?(args: { keepRunId: string | null }): Promise<{ deleted: string[] }>;
 }
 
 /**
