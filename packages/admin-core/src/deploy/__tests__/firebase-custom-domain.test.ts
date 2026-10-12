@@ -77,6 +77,23 @@ class FakeFirebase {
   /** Never goes active after a reconnect. */
   neverActive = false;
   clock = "2026-10-10T19:00:00Z";
+  /**
+   * Operation polls a DELETE needs before Firebase has deleted the domain.
+   * 0 = deleted synchronously. Until then the domain is still live, so a
+   * create collides with it (409) — what real Firebase does.
+   */
+  deletePolls = 0;
+  /** Never finish the DELETE operation. */
+  deleteNeverDone = false;
+  /** The create Operation comes back already failed. */
+  createFails = false;
+  private pendingDelete: { host: string; polls: number } | null = null;
+
+  private finishDelete(host: string): void {
+    this.domains.delete(host);
+    this.softDeleted.add(host);
+    this.pendingDelete = null;
+  }
 
   private activate(host: string): void {
     const d = this.domains.get(host);
@@ -116,8 +133,25 @@ class FakeFirebase {
       if (this.domains.has(id) || (this.conflictOnSoftDeleted && this.softDeleted.has(id))) {
         return json({ error: { code: 409, message: "already exists" } }, 409);
       }
+      if (this.createFails) {
+        return json({
+          name: `${DOMAINS}/${id}/operations/create`,
+          done: true,
+          error: { code: 9, message: "domain is not eligible" },
+        });
+      }
       this.recreate(id);
-      return json({ name: "operations/create" });
+      return json({ name: `${DOMAINS}/${id}/operations/create`, done: false });
+    }
+    const op = route.match(new RegExp(`^${DOMAINS}/([^/:]+)/operations/delete$`));
+    if (op && method === "GET") {
+      const host = decodeURIComponent(op[1] ?? "");
+      const pending = this.pendingDelete;
+      if (pending && pending.host === host && !this.deleteNeverDone) {
+        pending.polls -= 1;
+        if (pending.polls <= 0) this.finishDelete(host);
+      }
+      return json({ name: route, done: this.pendingDelete === null });
     }
     const undelete = route.match(new RegExp(`^${DOMAINS}/([^/:]+):undelete$`));
     if (undelete && method === "POST") {
@@ -133,9 +167,13 @@ class FakeFirebase {
       const d = this.domains.get(host);
       if (method === "DELETE") {
         if (!d) return json({ error: { code: 404 } }, 404);
-        this.domains.delete(host);
-        this.softDeleted.add(host);
-        return new Response("", { status: 200 });
+        const opName = `${DOMAINS}/${host}/operations/delete`;
+        if (this.deletePolls > 0 || this.deleteNeverDone) {
+          this.pendingDelete = { host, polls: this.deletePolls };
+          return json({ name: opName, done: false });
+        }
+        this.finishDelete(host);
+        return json({ name: opName, done: true, response: {} });
       }
       if (!d) return json({ error: { code: 404, message: "not found" } }, 404);
       if (this.pendingGetsBeforeActive > 0) {
@@ -179,6 +217,7 @@ const realFetch = globalThis.fetch;
 const ENV_KEYS = ["CAELO_PROVIDER", "CAELO_FIREBASE_SITE", "GOOGLE_CLOUD_PROJECT"] as const;
 const savedEnv: Record<string, string | undefined> = {};
 const noSleep = async () => {};
+const lockFree = async () => true;
 
 beforeEach(() => {
   fake = new FakeFirebase();
@@ -206,7 +245,10 @@ afterEach(() => {
 describe("reconnectCustomDomain", () => {
   it("deletes, re-creates, and purges the CDN by re-releasing the live version", async () => {
     const { reconnectCustomDomain } = await import("../firebase-custom-domain.js");
-    const r = await reconnectCustomDomain(TARGET, HOST, { sleep: noSleep });
+    const r = await reconnectCustomDomain(TARGET, HOST, {
+      sleep: noSleep,
+      acquireLiveReleaseLock: lockFree,
+    });
     expect(r.method).toBe("recreated");
     expect(r.active).toBe(true);
     expect(r.cdnPurge).toEqual({
@@ -225,7 +267,10 @@ describe("reconnectCustomDomain", () => {
   it("falls back to :undelete when the create says the id still exists", async () => {
     fake.conflictOnSoftDeleted = true;
     const { reconnectCustomDomain } = await import("../firebase-custom-domain.js");
-    const r = await reconnectCustomDomain(TARGET, HOST, { sleep: noSleep });
+    const r = await reconnectCustomDomain(TARGET, HOST, {
+      sleep: noSleep,
+      acquireLiveReleaseLock: lockFree,
+    });
     expect(r.method).toBe("undeleted");
     expect(r.active).toBe(true);
     expect(fake.calls).toContain(`POST ${DOMAINS}/${HOST}:undelete`);
@@ -234,7 +279,10 @@ describe("reconnectCustomDomain", () => {
   it("creates the domain when it was already deleted (DELETE 404)", async () => {
     fake.domains.clear();
     const { reconnectCustomDomain } = await import("../firebase-custom-domain.js");
-    const r = await reconnectCustomDomain(TARGET, HOST, { sleep: noSleep });
+    const r = await reconnectCustomDomain(TARGET, HOST, {
+      sleep: noSleep,
+      acquireLiveReleaseLock: lockFree,
+    });
     expect(r.method).toBe("recreated");
     expect(r.active).toBe(true);
   });
@@ -245,6 +293,7 @@ describe("reconnectCustomDomain", () => {
     const { reconnectCustomDomain } = await import("../firebase-custom-domain.js");
     const r = await reconnectCustomDomain(TARGET, HOST, {
       pollMs: 1000,
+      acquireLiveReleaseLock: lockFree,
       sleep: async (ms) => {
         slept.push(ms);
       },
@@ -262,6 +311,7 @@ describe("reconnectCustomDomain", () => {
       waitMs: 10_000,
       pollMs: 5_000,
       now: () => t,
+      acquireLiveReleaseLock: lockFree,
       sleep: async (ms) => {
         t += ms;
       },
@@ -275,7 +325,10 @@ describe("reconnectCustomDomain", () => {
   it("does not purge when nothing is live yet", async () => {
     fake.live = [];
     const { reconnectCustomDomain } = await import("../firebase-custom-domain.js");
-    const r = await reconnectCustomDomain(TARGET, HOST, { sleep: noSleep });
+    const r = await reconnectCustomDomain(TARGET, HOST, {
+      sleep: noSleep,
+      acquireLiveReleaseLock: lockFree,
+    });
     expect(r.active).toBe(true);
     expect(r.cdnPurge).toBeNull();
     expect(fake.live).toHaveLength(0);
@@ -290,7 +343,70 @@ describe("reconnectCustomDomain", () => {
       }
       return failing(input, init);
     }) as typeof fetch;
-    await expect(reconnectCustomDomain(TARGET, HOST, { sleep: noSleep })).rejects.toThrow("403");
+    await expect(
+      reconnectCustomDomain(TARGET, HOST, { sleep: noSleep, acquireLiveReleaseLock: lockFree }),
+    ).rejects.toThrow("403");
+  });
+});
+
+describe("reconnectCustomDomain — Firebase long-running operations", () => {
+  it("waits for the DELETE operation to finish before re-creating", async () => {
+    // Regression: the DELETE answers with a pending Operation and the domain
+    // stays live until it is done. Creating right away hit "already exists",
+    // fell back to :undelete on a domain that was not deleted yet, and failed.
+    fake.deletePolls = 2;
+    const { reconnectCustomDomain } = await import("../firebase-custom-domain.js");
+    const r = await reconnectCustomDomain(TARGET, HOST, {
+      sleep: noSleep,
+      acquireLiveReleaseLock: lockFree,
+    });
+    expect(r.method).toBe("recreated");
+    expect(r.active).toBe(true);
+    const create = fake.calls.indexOf(`POST ${DOMAINS}?customDomainId=${HOST}`);
+    const polls = fake.calls.filter((c) => c === `GET ${DOMAINS}/${HOST}/operations/delete`);
+    expect(polls).toHaveLength(2);
+    expect(fake.calls.lastIndexOf(`GET ${DOMAINS}/${HOST}/operations/delete`)).toBeLessThan(create);
+    expect(fake.calls.some((c) => c.endsWith(":undelete"))).toBe(false);
+  });
+
+  it("stops with an actionable error when the DELETE does not finish, without creating", async () => {
+    fake.deleteNeverDone = true;
+    let t = 0;
+    const { reconnectCustomDomain } = await import("../firebase-custom-domain.js");
+    await expect(
+      reconnectCustomDomain(TARGET, HOST, {
+        deleteWaitMs: 10_000,
+        pollMs: 5_000,
+        now: () => t,
+        sleep: async (ms) => {
+          t += ms;
+        },
+        acquireLiveReleaseLock: lockFree,
+      }),
+    ).rejects.toThrow(/still running in Firebase.*reconnecting again finishes the job/);
+    expect(fake.calls.some((c) => c.startsWith("POST"))).toBe(false);
+  });
+
+  it("fails when the create operation comes back already failed", async () => {
+    fake.createFails = true;
+    const { reconnectCustomDomain } = await import("../firebase-custom-domain.js");
+    await expect(
+      reconnectCustomDomain(TARGET, HOST, { sleep: noSleep, acquireLiveReleaseLock: lockFree }),
+    ).rejects.toThrow("re-creating example.com failed (9): domain is not eligible");
+    expect(fake.live).toHaveLength(1);
+  });
+
+  it("leaves the purge to a running publish when the live-release lock is taken", async () => {
+    const { reconnectCustomDomain } = await import("../firebase-custom-domain.js");
+    const r = await reconnectCustomDomain(TARGET, HOST, {
+      sleep: noSleep,
+      acquireLiveReleaseLock: async () => false,
+    });
+    expect(r.active).toBe(true);
+    expect(r.cdnPurge).toBeNull();
+    expect(r.cdnPurgeDeferred).toBe(true);
+    expect(fake.live).toHaveLength(1);
+    expect(fake.calls.some((c) => c.includes("channels/live/releases"))).toBe(false);
   });
 });
 
@@ -308,21 +424,69 @@ describe("purgeCdnIfDomainsActivatedSinceLastRelease", () => {
     const first = await purgeCdnIfDomainsActivatedSinceLastRelease(
       TARGET,
       await listCustomDomains(TARGET),
+      lockFree,
     );
     expect(first).toEqual({ versionName: `sites/${SITE}/versions/v-live`, hostnames: [HOST] });
     const second = await purgeCdnIfDomainsActivatedSinceLastRelease(
       TARGET,
       await listCustomDomains(TARGET),
+      lockFree,
     );
     expect(second).toBeNull();
     expect(fake.live).toHaveLength(2);
+  });
+
+  it("reads the live version only after taking the lock, so a publish is never rolled back", async () => {
+    // Regression: the purge read the live version, a publish released v2,
+    // then the purge re-released v1 — silently undoing the publish. The lock
+    // is now taken before the read; a publish that commits before the lock
+    // is granted is what the purge re-releases.
+    const { purgeCdnIfDomainsActivatedSinceLastRelease } = await import(
+      "../firebase-custom-domain.js"
+    );
+    const active = {
+      ...stuckDomain(),
+      hostState: "HOST_ACTIVE",
+      ownershipState: "OWNERSHIP_ACTIVE",
+      updateTime: "2026-10-10T18:00:00Z",
+    };
+    const purge = await purgeCdnIfDomainsActivatedSinceLastRelease(TARGET, [active], async () => {
+      fake.live.unshift({
+        name: `sites/${SITE}/releases/r-publish`,
+        type: "DEPLOY",
+        releaseTime: "2026-10-10T17:00:00Z",
+        version: { name: `sites/${SITE}/versions/v2` },
+      });
+      return true;
+    });
+    expect(purge?.versionName).toBe(`sites/${SITE}/versions/v2`);
+    expect(fake.live[0]?.version.name).toBe(`sites/${SITE}/versions/v2`);
+  });
+
+  it("skips the purge while a publish holds the live-release lock", async () => {
+    const { purgeCdnIfDomainsActivatedSinceLastRelease } = await import(
+      "../firebase-custom-domain.js"
+    );
+    const active = {
+      ...stuckDomain(),
+      hostState: "HOST_ACTIVE",
+      ownershipState: "OWNERSHIP_ACTIVE",
+      updateTime: "2026-10-10T18:00:00Z",
+    };
+    expect(
+      await purgeCdnIfDomainsActivatedSinceLastRelease(TARGET, [active], async () => false),
+    ).toBeNull();
+    expect(fake.live).toHaveLength(1);
+    expect(fake.calls).toEqual([]);
   });
 
   it("does nothing for inactive domains or a disabled site", async () => {
     const { purgeCdnIfDomainsActivatedSinceLastRelease } = await import(
       "../firebase-custom-domain.js"
     );
-    expect(await purgeCdnIfDomainsActivatedSinceLastRelease(TARGET, [stuckDomain()])).toBeNull();
+    expect(
+      await purgeCdnIfDomainsActivatedSinceLastRelease(TARGET, [stuckDomain()], lockFree),
+    ).toBeNull();
     fake.live = [
       {
         name: "r",
@@ -337,9 +501,11 @@ describe("purgeCdnIfDomainsActivatedSinceLastRelease", () => {
       ownershipState: "OWNERSHIP_ACTIVE",
     };
     expect(
-      await purgeCdnIfDomainsActivatedSinceLastRelease(TARGET, [
-        { ...active, updateTime: "2026-10-10T18:00:00Z" },
-      ]),
+      await purgeCdnIfDomainsActivatedSinceLastRelease(
+        TARGET,
+        [{ ...active, updateTime: "2026-10-10T18:00:00Z" }],
+        lockFree,
+      ),
     ).toBeNull();
   });
 });
@@ -350,14 +516,27 @@ describe("domains.hosting_status / domains.reconnect_hosting ops", () => {
     actorKind: "human",
     requestId: "firebase-custom-domain-test",
   };
-  /** recordAudit writes through tx.execute — capture instead of a DB. */
-  function fakeTx() {
+  /**
+   * recordAudit writes through tx.execute — capture instead of a DB. The
+   * live-release try-lock is answered with `lockHeld` (a publish holding
+   * it = false) and counted apart from the audit writes.
+   */
+  function fakeTx(lockHeld = true) {
     const executed: unknown[] = [];
+    const lockAttempts: unknown[] = [];
+    const sqlText = (q: unknown) =>
+      ((q as { queryChunks?: unknown[] }).queryChunks ?? [])
+        .flatMap((c) => (c as { value?: unknown } | null)?.value ?? [])
+        .join("");
     const execute = async (q: unknown) => {
+      if (sqlText(q).includes("pg_try_advisory_xact_lock")) {
+        lockAttempts.push(q);
+        return [{ ok: lockHeld }];
+      }
       executed.push(q);
       return [];
     };
-    return { executed, tx: { execute } as never };
+    return { executed, lockAttempts, tx: { execute } as never };
   }
 
   function firebaseEnv(): void {
@@ -404,6 +583,53 @@ describe("domains.hosting_status / domains.reconnect_hosting ops", () => {
     expect(r.value.cdnPurge?.versionName).toBe(`sites/${SITE}/versions/v-live`);
     expect(r.value.message).toContain("active again");
     expect(executed).toHaveLength(1);
+  });
+
+  it("hosting_status does not purge while a publish holds the live-release lock", async () => {
+    firebaseEnv();
+    fake.domains.set(HOST, {
+      ...stuckDomain(),
+      hostState: "HOST_ACTIVE",
+      ownershipState: "OWNERSHIP_ACTIVE",
+      updateTime: "2026-10-10T18:00:00Z",
+    });
+    const { hostingStatusOp } = await import("../../ops/domain_hosting.js");
+    const held = fakeTx(false);
+    const r = await hostingStatusOp.handler(ctx, {}, held.tx);
+    if (!r.ok) throw new Error("hosting_status failed");
+    expect(r.value.cdnPurge).toBeNull();
+    expect(held.lockAttempts).toHaveLength(1);
+    expect(held.executed).toHaveLength(0);
+    expect(fake.live).toHaveLength(1);
+    // Once the publish is done the next read purges.
+    const free = fakeTx(true);
+    const again = await hostingStatusOp.handler(ctx, {}, free.tx);
+    if (!again.ok) throw new Error("hosting_status failed");
+    expect(again.value.cdnPurge?.hostnames).toEqual([HOST]);
+    expect(free.executed).toHaveLength(1);
+  });
+
+  it("reconnect_hosting turns a Firebase failure into an actionable HandlerError", async () => {
+    firebaseEnv();
+    fake.createFails = true;
+    const { reconnectHostingDomainOp } = await import("../../ops/domain_hosting.js");
+    const r = await reconnectHostingDomainOp.handler(ctx, { hostname: HOST }, fakeTx().tx);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe("HandlerError");
+    expect((r.error as { message: string }).message).toContain(
+      'reconnecting "example.com" failed: firebase-custom-domain: re-creating example.com failed',
+    );
+  });
+
+  it("reconnect_hosting reports a purge left to a running publish", async () => {
+    firebaseEnv();
+    const { reconnectHostingDomainOp } = await import("../../ops/domain_hosting.js");
+    const r = await reconnectHostingDomainOp.handler(ctx, { hostname: HOST }, fakeTx(false).tx);
+    if (!r.ok) throw new Error(`reconnect failed: ${JSON.stringify(r.error)}`);
+    expect(r.value.cdnPurge).toBeNull();
+    expect(r.value.message).toContain("a publish is running right now");
+    expect(fake.live).toHaveLength(1);
   });
 
   it("hosting_status lists a soft-deleted domain as deleted, without recommending anything", async () => {
