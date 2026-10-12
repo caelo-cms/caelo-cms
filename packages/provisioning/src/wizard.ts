@@ -74,7 +74,6 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   //    re-run is a single Enter to "resume <id>".
   let provider: Provider;
   let domain: string;
-  let stagingDomain: string | undefined;
   let ownerEmail: string;
   let projectIdHint: string | null;
   let installId: string;
@@ -88,7 +87,6 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   if (resumeChoice) {
     provider = resumeChoice.provider;
     domain = resumeChoice.domain;
-    stagingDomain = resumeChoice.stagingDomain;
     ownerEmail = resumeChoice.ownerEmail;
     projectIdHint = resumeChoice.projectId;
     installId = resumeChoice.installId;
@@ -96,7 +94,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   } else {
     provider = opts.provider ?? (await pickProvider());
     domain = opts.domain ?? (await promptDomain());
-    stagingDomain = await resolveStagingDomain(domain, opts);
+    const stagingDomain = await resolveStagingDomain(domain, provider, opts);
     ownerEmail = opts.ownerEmail ?? (await promptOwnerEmail());
     projectIdHint = opts.projectId ?? null;
     installId = deriveInstallId(provider, projectIdHint ?? domain);
@@ -133,7 +131,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         provider,
         projectId: projectIdHint,
         domain,
-        ...(stagingDomain ? { stagingDomain } : {}),
+        stagingDomain,
         ownerEmail,
         region: null,
         createdAt: new Date().toISOString(),
@@ -310,11 +308,13 @@ async function promptDomain(): Promise<string> {
  */
 async function resolveStagingDomain(
   domain: string,
+  provider: Provider,
   opts: Pick<WizardOptions, "stagingDomain" | "nonInteractive">,
 ): Promise<string> {
   const reserved = { liveHosts: [domain, `www.${domain}`], adminHosts: [`admin.${domain}`] };
+  const problemOf = (host: string) => stagingHostProblem(host, reserved, { provider });
   if (opts.stagingDomain) {
-    const problem = stagingHostProblem(opts.stagingDomain, reserved);
+    const problem = problemOf(opts.stagingDomain);
     if (problem) {
       cancel(`--staging-domain: ${problem}`);
       process.exit(1);
@@ -322,12 +322,20 @@ async function resolveStagingDomain(
     return normalizeStagingHost(opts.stagingDomain);
   }
   const suggested = defaultStagingHost(domain);
-  if (opts.nonInteractive) return suggested;
+  if (opts.nonInteractive) {
+    // The default can be too long for the provider (gcp-firebase: 64).
+    const problem = problemOf(suggested);
+    if (problem) {
+      cancel(`the default staging host ${problem}. Pass --staging-domain <host>.`);
+      process.exit(1);
+    }
+    return suggested;
+  }
   const value = await text({
     message: "Host of the protected staging site (where you review changes before they go live)",
     placeholder: suggested,
     initialValue: suggested,
-    validate: (v) => stagingHostProblem(v || suggested, reserved) ?? undefined,
+    validate: (v) => problemOf(v || suggested) ?? undefined,
   });
   if (isCancel(value)) {
     cancel("Cancelled.");

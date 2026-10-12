@@ -906,21 +906,25 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
   let meta = selected.meta;
   if (kind === "staging") {
     // The install's staging host setting; `--staging-domain` changes it.
+    // Validated either way: the recorded/default host may predate a check
+    // (e.g. a long default staging.<domain> a Cloud Run mapping refuses).
     const requested = arg("staging-domain");
-    if (requested) {
-      const { normalizeStagingHost, stagingHostProblem } = await import("@caelo-cms/shared");
-      const problem = stagingHostProblem(requested, {
-        liveHosts: [meta.domain, `www.${meta.domain}`],
-        adminHosts: [`admin.${meta.domain}`],
-      });
-      if (problem) {
-        console.error(`--staging-domain: ${problem}`);
-        process.exit(1);
-      }
-      meta = { ...meta, stagingDomain: normalizeStagingHost(requested) };
-    } else {
-      meta = { ...meta, stagingDomain: installStagingHost(meta) };
+    const { normalizeStagingHost, stagingHostProblem } = await import("@caelo-cms/shared");
+    const host = requested ?? installStagingHost(meta);
+    const problem = stagingHostProblem(
+      host,
+      { liveHosts: [meta.domain, `www.${meta.domain}`], adminHosts: [`admin.${meta.domain}`] },
+      { provider: meta.provider },
+    );
+    if (problem) {
+      console.error(
+        requested
+          ? `--staging-domain: ${problem}`
+          : `the install's staging host: ${problem}. Pass --staging-domain <host>.`,
+      );
+      process.exit(1);
     }
+    meta = { ...meta, stagingDomain: normalizeStagingHost(host) };
     writeMetadata(meta.installId, meta);
   }
   if (!meta.projectId) process.exit(1);

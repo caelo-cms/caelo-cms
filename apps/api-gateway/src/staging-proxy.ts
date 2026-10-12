@@ -27,9 +27,11 @@
  *      compressed body — so staging behaves exactly like Hosting serves the
  *      release that goes live. `X-Robots-Tag: noindex` is guaranteed.
  *
- * The gate's own credentials never reach the origin: the Authorization
- * header (when it carried the staging login), the secret header and the
- * session cookie are removed before forwarding.
+ * The gate's own credentials never reach the origin: the session cookie,
+ * and the Authorization / secret header when they carried a valid staging
+ * credential, are removed before forwarding. A header that only shares
+ * the gate's name (a mode that is off, or a value that is not the gate's)
+ * belongs to the staged site and is forwarded as production would get it.
  *
  * The quality audit does NOT come through here — it loads the preview
  * channel directly, so a cold gateway never skews performance scores.
@@ -37,10 +39,10 @@
 
 import {
   decideStagingAccess,
-  parseBasicAuthorization,
   STAGING_ACCESS_PATH,
   STAGING_SESSION_COOKIE,
   STAGING_SESSION_TTL_SECONDS,
+  type StagingAccessMode,
   type StagingAccessSettings,
   safeStagingNextPath,
   signStagingToken,
@@ -92,9 +94,18 @@ export function isStagingRequest(req: Request, stagingHost: string): boolean {
 
 /**
  * The client address Cloud Run vouches for: the LAST `X-Forwarded-For`
- * entry. Google's front end appends the address it received the
- * connection from; anything before it came from the client and can be
- * forged, so an allowlist must never trust the first entry.
+ * entry. The staging host reaches the gateway through a Cloud Run domain
+ * mapping (gcp-firebase has no load balancer — §11.B), so the only proxy
+ * on the path is Google's front end, which appends the address it received
+ * the connection from; anything before it came from the client and can be
+ * forged, so an allowlist must never trust an earlier entry.
+ *
+ * Behind an external Application Load Balancer the front end appends TWO
+ * entries (`<client>, <load-balancer IP>`) and the client would be the
+ * second-to-last. That topology does not serve the staging host today; a
+ * provider that puts one in front must pass its own hop count here rather
+ * than reuse this function, or the allowlist would match the LB address
+ * for every visitor.
  */
 export function cloudRunClientIp(xForwardedFor: string | null): string | null {
   if (!xForwardedFor) return null;
@@ -163,16 +174,24 @@ function cookiesWithoutSession(header: string | null): string | null {
   return kept.length > 0 ? kept.join("; ") : null;
 }
 
-function upstreamHeaders(req: Request, settings: StagingAccessSettings, stagingHost: string) {
+/**
+ * The headers forwarded to the staged build's origin. The gate's own
+ * credentials stay at the gate — but only those that actually
+ * authenticated (`satisfied`): stripping every header that merely shares a
+ * gate name would make staging answer differently from production.
+ */
+export function upstreamHeaders(
+  req: Request,
+  settings: StagingAccessSettings,
+  satisfied: readonly StagingAccessMode[],
+  stagingHost: string,
+): Headers {
   const headers = new Headers();
   for (const [name, value] of req.headers) {
     const n = name.toLowerCase();
     if (HOP_BY_HOP.has(n) || n === "host" || n === "cookie" || n === "content-length") continue;
-    // The gate's own credentials stay at the gate.
-    if (n === settings.headerName.toLowerCase()) continue;
-    if (n === "authorization" && parseBasicAuthorization(value)?.user === settings.basicAuthUser) {
-      continue;
-    }
+    if (satisfied.includes("header") && n === settings.headerName.toLowerCase()) continue;
+    if (satisfied.includes("basic-auth") && n === "authorization") continue;
     headers.set(name, value);
   }
   const cookies = cookiesWithoutSession(req.headers.get("cookie"));
@@ -185,6 +204,7 @@ function upstreamHeaders(req: Request, settings: StagingAccessSettings, stagingH
 async function proxy(
   req: Request,
   state: StagingState & { originUrl: string },
+  satisfied: readonly StagingAccessMode[],
   config: StagingGateConfig,
   fetchImpl: typeof fetch,
 ): Promise<Response> {
@@ -196,7 +216,7 @@ async function proxy(
   try {
     upstream = await fetchImpl(target, {
       method: req.method,
-      headers: upstreamHeaders(req, state.settings, new URL(config.stagingOrigin).host),
+      headers: upstreamHeaders(req, state.settings, satisfied, new URL(config.stagingOrigin).host),
       ...(hasBody ? { body: req.body, duplex: "half" } : {}),
       redirect: "manual",
       // Pass the origin's encoded bytes through untouched: decoding here
@@ -317,5 +337,11 @@ export async function handleStagingRequest(
       "The last staged build has been published live. Stage changes in the Caelo admin to see them here.",
     );
   }
-  return proxy(req, { ...state, originUrl: state.originUrl }, config, deps.fetchImpl ?? fetch);
+  return proxy(
+    req,
+    { ...state, originUrl: state.originUrl },
+    decision.satisfied,
+    config,
+    deps.fetchImpl ?? fetch,
+  );
 }

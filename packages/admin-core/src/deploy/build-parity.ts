@@ -19,9 +19,13 @@
  * build directory, unnormalised. Equal manifests ⇔ the live build is the
  * staging build with only the host replaced.
  *
- * Files that are per-build by design (robots.txt, the deploy and A/B
- * manifests that carry the run id and target) are excluded; every
- * publisher already rewrites them for the destination target.
+ * Files that are per-build by design (robots.txt and the deploy manifest,
+ * which carry the target and run id) are excluded; every publisher already
+ * rewrites them for the destination target. The A/B routing manifest is
+ * NOT excluded: its experiments, weights and variant paths decide what
+ * visitors get, so only its per-build `manifestVersion` (the run id) is
+ * blanked before hashing — a routing change after the Stage blocks the
+ * publish like any other unreviewed change.
  */
 
 import { createHash } from "node:crypto";
@@ -30,14 +34,37 @@ import { join } from "node:path";
 
 /**
  * Build artefacts that legitimately differ between two builds of the same
- * content: robots.txt follows the target's robots policy, and the two
- * manifests carry the target, environment, run id and build time.
+ * content: robots.txt follows the target's robots policy, and the deploy
+ * manifest carries the target, environment, run id and build time.
  */
 export const PER_BUILD_FILES: ReadonlySet<string> = new Set([
   "robots.txt",
   "routing-manifest.json",
-  "ab-routing.json",
 ]);
+
+/** The A/B routing manifest the generator writes (apps/static-generator generate.ts). */
+export const AB_ROUTING_FILE = "ab-routing.json";
+
+/**
+ * `ab-routing.json` with its per-build `manifestVersion` (the run id)
+ * blanked, everything that routes visitors kept. Throws on a file that is
+ * not the generator's JSON — a parity check that silently skipped it would
+ * let routing changes through.
+ */
+export function canonicalAbRouting(content: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (e) {
+    throw new Error(
+      `${AB_ROUTING_FILE} in the build is not valid JSON (${e instanceof Error ? e.message : String(e)}) — the parity guard cannot compare A/B routing; rebuild with the current static generator`,
+    );
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${AB_ROUTING_FILE} in the build is not a JSON object`);
+  }
+  return JSON.stringify({ ...(parsed as Record<string, unknown>), manifestVersion: null });
+}
 
 /** `relative path → content hash`. Paths use `/` and no leading slash. */
 export type BuildManifest = Record<string, string>;
@@ -109,6 +136,13 @@ export async function buildManifestOf(
   for (const rel of (await walk(buildDir)).sort()) {
     if (PER_BUILD_FILES.has(rel)) continue;
     const bytes = await readFile(join(buildDir, rel));
+    if (rel === AB_ROUTING_FILE) {
+      // Canonicalised on BOTH sides (staged and live) so only the run id
+      // drops out; the host swap still applies to the staged side.
+      const canonical = canonicalAbRouting(bytes.toString("utf8"));
+      manifest[rel] = contentHash(normalise ? normalise(canonical) : canonical);
+      continue;
+    }
     manifest[rel] = normalise
       ? contentHash(Buffer.from(normalise(bytes.toString("latin1")), "latin1"))
       : contentHash(bytes);

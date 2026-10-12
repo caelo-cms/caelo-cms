@@ -82,6 +82,14 @@ ALTER TABLE owner_settings_pending_actions
     'set_staging_host'
   ));
 
+-- One staging-credential rotation waits at a time, whichever credential it
+-- names: approving two would rotate twice and void the value handed out
+-- after the first ('both' overlaps either single one, so the key is the
+-- kind alone). Same shape as 0244's cookie-secret rotation.
+CREATE UNIQUE INDEX IF NOT EXISTS owner_settings_pending_actions_one_staging_rotation_uniq
+  ON owner_settings_pending_actions (kind)
+  WHERE status = 'pending' AND kind = 'rotate_staging_credentials';
+
 COMMIT;
 
 -- gateway_role reads the gate's settings + origin. A function like

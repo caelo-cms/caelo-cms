@@ -479,7 +479,9 @@ export async function checkStagingHost(
   tx: Tx,
   host: string,
 ): Promise<{ ok: true; host: string } | { ok: false; message: string }> {
-  const problem = stagingHostProblem(host, await reservedStagingHosts(tx));
+  const problem = stagingHostProblem(host, await reservedStagingHosts(tx), {
+    provider: process.env.CAELO_PROVIDER,
+  });
   return problem ? { ok: false, message: problem } : { ok: true, host: normalizeStagingHost(host) };
 }
 

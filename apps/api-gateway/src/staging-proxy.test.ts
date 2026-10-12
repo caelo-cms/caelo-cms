@@ -166,6 +166,37 @@ describe("handleStagingRequest — gate", () => {
     expect(new Headers(h.calls[0]?.init.headers).get("x-caelo-staging-key")).toBeNull();
   });
 
+  it("forwards a site's own Authorization / same-named header when they did not authenticate the gate", async () => {
+    // Codex review on #652: the staged app may use Basic auth itself, or a
+    // header that happens to share the gate's name. Admitted by the session
+    // cookie, those must reach the origin exactly as production gets them.
+    const h = harness({ settings: { ...SETTINGS, basicAuthEnabled: true, headerEnabled: false } });
+    const siteLogin = `Basic ${btoa("crawler:the-sites-own-password")}`;
+    const r = await h.serve("/members/", {
+      headers: {
+        cookie: await sessionCookieHeader(),
+        authorization: siteLogin,
+        "x-caelo-staging-key": "an-app-value",
+      },
+    });
+    expect(r.status).toBe(200);
+    const fwd = new Headers(h.calls[0]?.init.headers);
+    expect(fwd.get("authorization")).toBe(siteLogin);
+    expect(fwd.get("x-caelo-staging-key")).toBe("an-app-value");
+    // The gate's own session cookie still never leaves the gate.
+    expect(fwd.get("cookie")).toBeNull();
+  });
+
+  it("strips the secret header only when it carried the gate's credential", async () => {
+    const h = harness({ settings: { ...SETTINGS, headerEnabled: true } });
+    await h.serve("/", {
+      headers: { cookie: await sessionCookieHeader(), "x-caelo-staging-key": "not-the-gate-value" },
+    });
+    expect(new Headers(h.calls[0]?.init.headers).get("x-caelo-staging-key")).toBe(
+      "not-the-gate-value",
+    );
+  });
+
   it("IP allowlist uses the Cloud Run client address, not a spoofed first hop", async () => {
     const h = harness({ settings: { ...SETTINGS, ipAllowlist: ["198.51.100.0/24"] } });
     const ok = await h.serve("/", { headers: { "x-forwarded-for": "198.51.100.9" } });
@@ -225,6 +256,14 @@ describe("handleStagingRequest — Open staging", () => {
     const token = await signStagingToken(SECRET, "open", NOW + 60);
     const r = await h.serve(`/_caelo/staging-access?t=${token}&next=//evil.example`);
     expect(r.headers.get("location")).toBe("/");
+    // A tab or newline is deleted by the browser's URL parser, turning
+    // `/<TAB>/evil.example` into `//evil.example`: refused as off-site.
+    for (const sneaky of ["/\t/evil.example", "/\n/evil.example", "/\u0000x"]) {
+      const s = await h.serve(
+        `/_caelo/staging-access?t=${token}&next=${encodeURIComponent(sneaky)}`,
+      );
+      expect(s.headers.get("location")).toBe("/");
+    }
   });
 
   it("refuses when the admin cookie mode is off", async () => {

@@ -59,7 +59,17 @@ export interface StagingAccessSettings {
 
 /** What the gate decided for one request. */
 export type StagingAccessDecision =
-  | { readonly allowed: true; readonly via: StagingAccessMode }
+  | {
+      readonly allowed: true;
+      readonly via: StagingAccessMode;
+      /**
+       * Every mode the request satisfied. The proxy strips a credential
+       * header only when its mode is in here: a header that merely shares
+       * the gate's name (or a Basic login for the staged app itself) is the
+       * site's, and reaches the origin as it would in production.
+       */
+      readonly satisfied: readonly StagingAccessMode[];
+    }
   | {
       readonly allowed: false;
       /** 401 + `WWW-Authenticate: Basic` when basic auth is on, else 403. */
@@ -319,17 +329,23 @@ export async function decideStagingAccess(args: {
   if (ip && settings.ipAllowlist.some((c) => ipMatchesCidr(ip, c))) granted.push("ip");
 
   const via = granted[0];
-  if (via) return { allowed: true, via };
+  if (via) return { allowed: true, via, satisfied: granted };
   return { allowed: false, status: settings.basicAuthEnabled ? 401 : 403 };
 }
 
 /**
  * Where "Open staging" may send the browser after setting the cookie: a
  * same-origin path only (never `//host` or a scheme), else `/`.
+ *
+ * Control characters are refused outright, not only CR/LF: the WHATWG URL
+ * parser deletes tabs and newlines before it parses a Location, so
+ * `/<TAB>/evil.example` would otherwise become `//evil.example` in the
+ * browser — an open redirect off the staging host.
  */
 export function safeStagingNextPath(next: string | null): string {
   if (next === null || !next.startsWith("/") || next.startsWith("//")) return "/";
-  if (next.includes("\\") || /[\r\n]/.test(next)) return "/";
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point
+  if (next.includes("\\") || /[\u0000-\u001f\u007f]/.test(next)) return "/";
   return next;
 }
 
@@ -343,6 +359,14 @@ export function defaultStagingHost(domain: string): string {
   return `staging.${domain.trim().toLowerCase().replace(/\.$/, "")}`;
 }
 
+/**
+ * Longest host a Cloud Run domain mapping accepts — the gcp-firebase
+ * gateway is mapped to the staging host, so a longer one would be stored,
+ * rendered into every staged build and then never answer.
+ * https://cloud.google.com/run/docs/mapping-custom-domains#limitations
+ */
+export const CLOUD_RUN_DOMAIN_MAPPING_MAX_HOST_LENGTH = 64;
+
 const FQDN =
   /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
@@ -355,7 +379,9 @@ export function normalizeStagingHost(host: string): string {
  * Why `host` cannot be the staging host, or null when it can. It must be a
  * bare fully-qualified domain name (no scheme, port or path) and must not be
  * the live site's host or an admin host — staging would otherwise shadow
- * the site or the admin it is served next to.
+ * the site or the admin it is served next to. On gcp-firebase (`provider`)
+ * it must also fit a Cloud Run domain mapping
+ * ({@link CLOUD_RUN_DOMAIN_MAPPING_MAX_HOST_LENGTH} characters).
  *
  * @example
  *   stagingHostProblem("preview.example.com", { liveHosts: ["example.com"], adminHosts: ["admin.example.com"] })
@@ -364,10 +390,14 @@ export function normalizeStagingHost(host: string): string {
 export function stagingHostProblem(
   host: string,
   reserved: { readonly liveHosts: readonly string[]; readonly adminHosts: readonly string[] },
+  opts: { readonly provider?: string | undefined } = {},
 ): string | null {
   const h = normalizeStagingHost(host);
   if (!FQDN.test(h)) {
     return `"${host}" is not a valid host name — use a bare domain such as staging.example.com (no https://, port or path)`;
+  }
+  if (opts.provider === "gcp-firebase" && h.length > CLOUD_RUN_DOMAIN_MAPPING_MAX_HOST_LENGTH) {
+    return `"${h}" is ${h.length} characters long; on gcp-firebase the staging host is served through a Cloud Run domain mapping, which accepts at most ${CLOUD_RUN_DOMAIN_MAPPING_MAX_HOST_LENGTH} — pick a shorter host (e.g. stg.<your domain>, or a shorter domain you own)`;
   }
   const norm = (list: readonly string[]) => list.map(normalizeStagingHost).filter(Boolean);
   if (norm(reserved.liveHosts).includes(h)) {

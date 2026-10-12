@@ -168,6 +168,7 @@ describe("decideStagingAccess", () => {
     expect(await decide(s, req({ cookieHeader: `${STAGING_SESSION_COOKIE}=${session}` }))).toEqual({
       allowed: true,
       via: "cookie",
+      satisfied: ["cookie"],
     });
     const expired = await signStagingToken(SECRET, "session", NOW - 1);
     expect(
@@ -189,6 +190,7 @@ describe("decideStagingAccess", () => {
     expect(await decide(s, req({ authorizationHeader: basic("crawler", pw) }))).toEqual({
       allowed: true,
       via: "basic-auth",
+      satisfied: ["basic-auth"],
     });
     expect(await decide(s, req({ authorizationHeader: basic("other", pw) }))).toEqual({
       allowed: false,
@@ -220,6 +222,7 @@ describe("decideStagingAccess", () => {
     expect(await decide(s, req({ headers: { "x-caelo-staging-key": value } }))).toEqual({
       allowed: true,
       via: "header",
+      satisfied: ["header"],
     });
     expect((await decide(s, req({ headers: { "x-other": value } }))).allowed).toBe(false);
     expect((await decide(s, req({ headers: { "x-caelo-staging-key": "" } }))).allowed).toBe(false);
@@ -233,13 +236,31 @@ describe("decideStagingAccess", () => {
     expect(await decide(s, req({ clientIp: "198.51.100.20" }))).toEqual({
       allowed: true,
       via: "ip",
+      satisfied: ["ip"],
     });
     expect(await decide(s, req({ clientIp: "2001:db8:0:1::5" }))).toEqual({
       allowed: true,
       via: "ip",
+      satisfied: ["ip"],
     });
     expect((await decide(s, req({ clientIp: "198.51.101.20" }))).allowed).toBe(false);
     expect((await decide(s, req({ clientIp: null }))).allowed).toBe(false);
+  });
+
+  it("reports every satisfied mode, so the proxy strips only credentials that authenticated", async () => {
+    const s = { ...OFF, cookieEnabled: true, headerEnabled: true, basicAuthEnabled: true };
+    const session = await signStagingToken(SECRET, "session", NOW + 100);
+    const value = await deriveStagingCredential(SECRET, "header", "nonce-header");
+    expect(
+      await decide(
+        s,
+        req({
+          cookieHeader: `${STAGING_SESSION_COOKIE}=${session}`,
+          headers: { "x-caelo-staging-key": value },
+          authorizationHeader: basic("crawler", "the-sites-own-password"),
+        }),
+      ),
+    ).toEqual({ allowed: true, via: "cookie", satisfied: ["cookie", "header"] });
   });
 });
 
@@ -250,6 +271,10 @@ describe("safeStagingNextPath", () => {
     expect(safeStagingNextPath("https://evil.example")).toBe("/");
     expect(safeStagingNextPath("/\\evil")).toBe("/");
     expect(safeStagingNextPath("/a\r\nSet-Cookie: x")).toBe("/");
+    // Tabs/newlines vanish in the browser's URL parser: `/\t/evil` → `//evil`.
+    expect(safeStagingNextPath("/\t/evil.example")).toBe("/");
+    expect(safeStagingNextPath("/\n/evil.example")).toBe("/");
+    expect(safeStagingNextPath("/a\u007fb")).toBe("/");
     expect(safeStagingNextPath(null)).toBe("/");
   });
 });
@@ -280,5 +305,16 @@ describe("staging host setting", () => {
     }
     expect(stagingHostProblem("WWW.example.com", reserved)).toContain("live site");
     expect(stagingHostProblem("admin.example.com", reserved)).toContain("admin");
+  });
+  it("on gcp-firebase refuses hosts a Cloud Run domain mapping cannot take (> 64 chars)", () => {
+    const long = `staging.${"a".repeat(50)}.example.com`; // 70 characters
+    expect(stagingHostProblem(long, reserved)).toBeNull();
+    expect(stagingHostProblem(long, reserved, { provider: "self-hosted" })).toBeNull();
+    const problem = stagingHostProblem(long, reserved, { provider: "gcp-firebase" });
+    expect(problem).toContain("at most 64");
+    expect(problem).toContain("pick a shorter host");
+    const fits = `s.${"a".repeat(50)}.example.com`; // 64 characters
+    expect(fits.length).toBe(64);
+    expect(stagingHostProblem(fits, reserved, { provider: "gcp-firebase" })).toBeNull();
   });
 });

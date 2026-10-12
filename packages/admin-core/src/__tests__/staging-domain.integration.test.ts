@@ -509,4 +509,41 @@ describe("staging access settings", () => {
     expect(after).not.toBeNull();
     expect(after).not.toBe(before);
   });
+
+  it("keeps one staging credential rotation pending at a time, whichever credential (Codex review on #652)", async () => {
+    const first = await ok<{ proposalId: string }>(
+      "owner_settings.propose_rotate_staging_credentials",
+      { which: "basic-auth", reason: "the crawler vendor changed" },
+    );
+    // A different reason (payload hash differs) and an overlapping kind.
+    for (const which of ["basic-auth", "both", "header"] as const) {
+      const again = await execute(
+        registry,
+        adapter,
+        SYSTEM,
+        "owner_settings.propose_rotate_staging_credentials",
+        { which, reason: `another reason for ${which}` },
+      );
+      expect(again.ok).toBe(false);
+      expect(JSON.stringify(again.ok ? null : again.error)).toContain(first.proposalId);
+    }
+    // The index holds it even past the op's read (a racing insert).
+    let raced: unknown = null;
+    try {
+      await withSql(
+        (
+          tx,
+        ) => tx`INSERT INTO owner_settings_pending_actions (kind, proposed_by, payload, preview, status, payload_hash)
+                   VALUES ('rotate_staging_credentials', ${SYSTEM.actorId}::uuid,
+                           '{"which":"header","reason":"raced past the read"}'::jsonb, '{}'::jsonb,
+                           'pending', 'race-hash')`,
+      );
+    } catch (e) {
+      raced = e;
+    }
+    expect(String(raced)).toContain("one_staging_rotation_uniq");
+    await withSql(
+      (tx) => tx`DELETE FROM owner_settings_pending_actions WHERE id = ${first.proposalId}::uuid`,
+    );
+  });
 });

@@ -99,6 +99,27 @@ describe("buildManifestOf on real build trees", () => {
     await writeFile(join(dir, rel), body);
   }
 
+  /** The generator's ab-routing.json shape: one experiment, control at `controlWeight`. */
+  function abRouting(manifestVersion: string, controlWeight: number): string {
+    return JSON.stringify(
+      {
+        manifestVersion,
+        experiments: [
+          {
+            pageSlug: "/about",
+            experimentId: "00000000-0000-4000-8000-000000000001",
+            variants: [
+              { label: "control", weight: controlWeight, path: "/about" },
+              { label: "b", weight: 100 - controlWeight, path: "/_variants/hero__b/about" },
+            ],
+          },
+        ],
+      },
+      null,
+      2,
+    );
+  }
+
   /** A build as the generator writes it, rendered for `origin`. */
   async function build(dir: string, origin: string, env: string): Promise<void> {
     await put(
@@ -115,7 +136,7 @@ describe("buildManifestOf on real build trees", () => {
       env === "staging" ? "User-agent: *\nDisallow: /\n" : `Sitemap: ${origin}/sitemap.xml\n`,
     );
     await put(dir, "routing-manifest.json", JSON.stringify({ env, runId: `${env}-run` }));
-    await put(dir, "ab-routing.json", JSON.stringify({ manifestVersion: `${env}-run` }));
+    await put(dir, "ab-routing.json", abRouting(`${env}-run`, 50));
   }
 
   beforeEach(async () => {
@@ -134,6 +155,8 @@ describe("buildManifestOf on real build trees", () => {
     const live = await buildManifestOf(liveDir);
     expect(Object.keys(staged)).not.toContain("robots.txt");
     expect(Object.keys(staged)).not.toContain("routing-manifest.json");
+    // The A/B routing is compared; only its per-build manifestVersion is not.
+    expect(Object.keys(staged)).toContain("ab-routing.json");
     expect(Object.keys(staged)).toContain("_assets/logo.png");
     expect(manifestsMatch(compareBuildManifests(staged, live))).toBe(true);
   });
@@ -163,5 +186,21 @@ describe("buildManifestOf on real build trees", () => {
       await buildManifestOf(liveDir),
     );
     expect(diff.changed).toEqual(["_assets/logo.png"]);
+  });
+
+  it("an A/B routing change after the Stage blocks the publish (Codex review on #652)", async () => {
+    // Weights moved 50/50 → 90/10 after the Stage; the variant pages are
+    // byte-identical, so ab-routing.json is the only difference.
+    await put(liveDir, "ab-routing.json", abRouting("production-run", 90));
+    const diff = compareBuildManifests(
+      await buildManifestOf(stagingDir, hostNormaliser(STAGING, LIVE)),
+      await buildManifestOf(liveDir),
+    );
+    expect(diff).toEqual({ added: [], removed: [], changed: ["ab-routing.json"] });
+  });
+
+  it("refuses an ab-routing.json that is not the generator's JSON instead of skipping it", async () => {
+    await put(liveDir, "ab-routing.json", "not json");
+    await expect(buildManifestOf(liveDir)).rejects.toThrow(/ab-routing.json.*not valid JSON/);
   });
 });

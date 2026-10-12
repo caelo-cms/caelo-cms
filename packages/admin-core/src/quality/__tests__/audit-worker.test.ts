@@ -18,6 +18,7 @@ function run(overrides: Partial<ClaimedAuditRun> = {}): ClaimedAuditRun {
     performanceRuns: 3,
     pageUrlStyle: "directory",
     previewUrl: null,
+    siteUrl: null,
     env: "staging",
     outDir: "output/staging",
     pages: [{ pageId: "00000000-0000-4000-8000-0000000000cc", currentPath: "/" }],
@@ -84,26 +85,35 @@ describe("resolveStagingOrigin", () => {
   });
 
   it("gcp-firebase: audits the preview channel directly, reported as the staging host (#650)", async () => {
-    expect(
-      await resolveStagingOrigin(run({ previewUrl: "https://site--ch.web.app" }), {
-        provider: "gcp-firebase",
-        stagingSiteUrl: "https://staging.example.com",
-      }),
-    ).toEqual({
+    const staged = {
+      previewUrl: "https://site--ch.web.app",
+      siteUrl: "https://staging.example.com",
+    };
+    expect(await resolveStagingOrigin(run(staged), { provider: "gcp-firebase" })).toEqual({
       ok: true,
       baseUrl: "https://site--ch.web.app",
       displayBaseUrl: "https://staging.example.com",
     });
-    const missing = await resolveStagingOrigin(run(), {
+    const missing = await resolveStagingOrigin(run({ siteUrl: staged.siteUrl }), {
       provider: "gcp-firebase",
-      stagingSiteUrl: "https://staging.example.com",
     });
     expect(missing.ok).toBe(false);
-    // Without the staging host the report could only name the internal origin.
-    const noHost = await resolveStagingOrigin(run({ previewUrl: "https://site--ch.web.app" }), {
+    // Without the run's staging host the report could only name the internal origin.
+    const noHost = await resolveStagingOrigin(run({ previewUrl: staged.previewUrl }), {
       provider: "gcp-firebase",
     });
     expect(noHost).toMatchObject({ ok: false, code: "staging-unresolvable" });
+  });
+
+  it("gcp-firebase: reports under the host the run was STAGED for, not a host set later (Codex review on #652)", async () => {
+    // The Owner moved staging to preview.example.com while this audit of a
+    // build rendered for staging.example.com was queued: the report keeps
+    // the run's host. (OriginEnv no longer carries the mutable setting.)
+    const r = await resolveStagingOrigin(
+      run({ previewUrl: "https://site--ch.web.app", siteUrl: "https://staging.example.com" }),
+      { provider: "gcp-firebase" },
+    );
+    expect(r).toMatchObject({ ok: true, displayBaseUrl: "https://staging.example.com" });
   });
 
   it("gcp / aws / azure: a loopback origin serving the run's files, closed after use", async () => {
@@ -193,7 +203,7 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
       {
         registry: registry as never,
         adapter: adapter as never,
-        env: { provider: "gcp-firebase", stagingSiteUrl: "https://staging.example.com" },
+        env: { provider: "gcp-firebase" },
         runJob: async (job) => {
           jobs.push(job);
           return {
@@ -218,7 +228,7 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
           };
         },
       },
-      run({ previewUrl: "https://site--ch.web.app" }),
+      run({ previewUrl: "https://site--ch.web.app", siteUrl: "https://staging.example.com" }),
     );
     expect(JSON.stringify(jobs)).toContain("https://site--ch.web.app/");
     const text = JSON.stringify(recorded);

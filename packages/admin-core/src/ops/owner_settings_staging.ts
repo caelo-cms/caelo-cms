@@ -22,6 +22,7 @@
 
 import { defineOperation } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { readStagingHost } from "../deploy/staging-domain.js";
 import {
@@ -131,6 +132,21 @@ export const proposeRotateStagingCredentialsOp = defineOperation({
   output: proposeOutput,
   handler: async (ctx, input, tx) => {
     const op = "owner_settings.propose_rotate_staging_credentials";
+    // One rotation waiting is enough — whichever credential it names (`both`
+    // overlaps either single one): approving a second would rotate again
+    // and void the value handed out after the first. This read names the
+    // waiting proposal; migration 0251's partial unique index holds the
+    // invariant when two proposals race past it.
+    const pending = (await tx.execute(sql`
+      SELECT id::text AS id, payload->>'which' AS which FROM owner_settings_pending_actions
+      WHERE kind = 'rotate_staging_credentials' AND status = 'pending' LIMIT 1
+    `)) as unknown as { id: string; which: string | null }[];
+    if (pending[0]) {
+      return handlerError(
+        op,
+        `a staging credential rotation (${pending[0].which ?? "unknown"}) is already waiting for approval (proposal ${pending[0].id}) — tell the operator to approve or reject that one instead of proposing another; to rotate a different credential as well, reject it and propose which: "both".`,
+      );
+    }
     const label =
       input.which === "both"
         ? "the basic-auth password and the secret header value"

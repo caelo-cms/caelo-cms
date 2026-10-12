@@ -472,7 +472,9 @@ describe("staging.<domain> served as gateway_role (#650)", () => {
     const upstream: string[] = [];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (!url.startsWith(PREVIEW)) return realFetch(input, init);
+      // Compare the parsed origin exactly: a prefix test would also match
+      // `https://site--runid-t650-x1.web.app.evil.example`.
+      if (new URL(url).origin !== PREVIEW) return realFetch(input, init);
       upstream.push(url);
       return new Response("<h1>staged</h1>", { headers: { "content-type": "text/html" } });
     }) as typeof fetch;

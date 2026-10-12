@@ -58,7 +58,11 @@ import {
 } from "../deploy/build-parity.js";
 import { lockLiveReleases } from "../deploy/live-release-lock.js";
 import { stagingSiteUrl } from "../deploy/staging-domain.js";
-import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publisher.js";
+import {
+  loadStaticPublisher,
+  type PublishSummary,
+  type StaticPublisher,
+} from "../deploy/static-publisher.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { jsonbParam } from "../sql-helpers.js";
 import {
@@ -1178,6 +1182,7 @@ export const rollbackDeployOp = defineOperation({
     const root = resolveOutputRoot(input.repoRoot);
     const outDir = resolve(root, target.out_dir);
     const buildDir = join(outDir, "builds", buildId);
+    let summary: PublishSummary;
     try {
       // v0.2.78 — delegate to the per-provider StaticPublisher.
       // A CDN purge must not re-release the old live version mid-rollback.
@@ -1185,7 +1190,7 @@ export const rollbackDeployOp = defineOperation({
       const provider = process.env.CAELO_PROVIDER;
       const publisher = await loadStaticPublisher(provider);
       const { siteBaseUrl } = await readSeoSettings(tx);
-      await publisher.rollback({
+      summary = await publisher.rollback({
         targetBuildId: buildId,
         sourceBuildDir: buildDir,
         target: rowToTarget(target),
@@ -1200,9 +1205,14 @@ export const rollbackDeployOp = defineOperation({
         message: `rollback failed: ${message}`,
       });
     }
+    // The summary names where the rolled-back release now lives (Firebase:
+    // the Hosting version the rollback created). Recording it makes this
+    // run itself a valid rollback source later — without it the Firebase
+    // publisher refuses a run with no `publish_summary.location`.
     const newRunRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, build_id)
-      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'succeeded', now(), ${buildId})
+      INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, build_id, publish_summary)
+      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'succeeded', now(), ${buildId},
+              ${jsonbParam(summary)})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const newRunId = newRunRows[0]?.id ?? "";
