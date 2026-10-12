@@ -106,50 +106,72 @@ function html(main: string, withScript: boolean): string {
   return `<!doctype html><html><head><title>t</title></head><body><main>${main}</main>${script}</body></html>`;
 }
 
+/**
+ * The gateway paths the page uses, matched exactly. The proxy forwards
+ * only these constants, never the request's own URL, so the harness
+ * cannot be pointed anywhere else.
+ */
+const SCRIPT_PATH = "/api/variant.js";
+const ASSIGN_PATH = `/api/variant/assign?exp=${EXP}`;
+
+/** Static files this site serves: the page, and one file per variant. */
+const STATIC_FILES = new Map<string, string>([
+  [PAGE, html("as served", true)],
+  ...["control", "b"].map(
+    (label) => [`/_variants/${EXP}__${label}${PAGE}`, html(`variant ${label}`, false)] as const,
+  ),
+]);
+
+async function proxy(
+  req: IncomingMessage,
+  res: ServerResponse,
+  gatewayPort: number,
+  target: string,
+): Promise<void> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (typeof v === "string" && k !== "host" && k !== "connection") headers.set(k, v);
+  }
+  const upstream = await fetch(`http://127.0.0.1:${gatewayPort}${target}`, {
+    method: req.method,
+    headers,
+    body: chunks.length > 0 ? Buffer.concat(chunks) : undefined,
+  });
+  const out: Record<string, string | string[]> = {};
+  upstream.headers.forEach((v, k) => {
+    if (k !== "set-cookie" && k !== "content-encoding" && k !== "content-length") out[k] = v;
+  });
+  const cookies = upstream.headers.getSetCookie();
+  if (cookies.length > 0) out["set-cookie"] = cookies;
+  res.writeHead(upstream.status, out);
+  res.end(Buffer.from(await upstream.arrayBuffer()));
+}
+
 /** The static host + the LB's `/api/*` → gateway rule. */
 async function startSite(gatewayPort: number): Promise<void> {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    void (async () => {
-      const path = req.url ?? "/";
-      if (path.startsWith("/api/")) {
-        const chunks: Buffer[] = [];
-        for await (const c of req) chunks.push(c as Buffer);
-        const headers = new Headers();
-        for (const [k, v] of Object.entries(req.headers)) {
-          if (typeof v === "string" && k !== "host" && k !== "connection") headers.set(k, v);
-        }
-        const upstream = await fetch(`http://127.0.0.1:${gatewayPort}${path}`, {
-          method: req.method,
-          headers,
-          body: chunks.length > 0 ? Buffer.concat(chunks) : undefined,
-        });
-        const out: Record<string, string | string[]> = {};
-        upstream.headers.forEach((v, k) => {
-          if (k !== "set-cookie" && k !== "content-encoding" && k !== "content-length") out[k] = v;
-        });
-        const cookies = upstream.headers.getSetCookie();
-        if (cookies.length > 0) out["set-cookie"] = cookies;
-        res.writeHead(upstream.status, out);
-        res.end(Buffer.from(await upstream.arrayBuffer()));
-        return;
-      }
-      const variant = /^\/_variants\/[^/]+__([a-z0-9_-]+)(\/.*)$/i.exec(path);
-      if (variant && variant[2] === PAGE) {
-        res.writeHead(200, { "content-type": "text/html" });
-        res.end(html(`variant ${variant[1]}`, false));
-        return;
-      }
-      if (path === PAGE) {
-        res.writeHead(200, { "content-type": "text/html" });
-        res.end(html("as served", true));
-        return;
-      }
+    const path = req.url ?? "/";
+    let target: string | null = null;
+    if (path === SCRIPT_PATH) target = SCRIPT_PATH;
+    else if (path === ASSIGN_PATH) target = ASSIGN_PATH;
+    if (target) {
+      proxy(req, res, gatewayPort, target).catch((e: unknown) => {
+        console.error("[ab-variant e2e] gateway proxy failed", e);
+        res.writeHead(502, { "content-type": "text/plain" });
+        res.end("gateway proxy failed");
+      });
+      return;
+    }
+    const file = STATIC_FILES.get(path);
+    if (file === undefined) {
       res.writeHead(404);
       res.end();
-    })().catch((e: unknown) => {
-      res.writeHead(502);
-      res.end(String(e));
-    });
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(file);
   });
   site = server;
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
