@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.10.40
+
+### Fixes
+- 3ff6acbd hand approval decisions back to the external agent instead of the Live Edit AI (#661)
+- 673c53ae keep secrets out of ~/.caelo-<id>/progress.json (#659)
+
 ## v0.10.39
 
 ### Features
