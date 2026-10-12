@@ -35,6 +35,13 @@
     postQualityAction,
     qualityStatusFor,
   } from "#lib/components/edit/quality-status.svelte.js";
+  import {
+    type DecidedHandoff,
+    EXTERNAL_AGENT_LABEL,
+    followUpAfterDecision,
+    handoffStatusText,
+    type RequestedVia,
+  } from "./approval-origin.js";
   import { parseProposalContent } from "./proposal-parser.js";
   import {
     collapseStatusNotes,
@@ -264,8 +271,14 @@
     summary: string;
     proposedAt: string;
     queueUrl: string;
+    /** Issue #658 — "power_mcp" when an external agent queued it. */
+    requestedVia?: RequestedVia;
   }
   let pendingProposals = $state<PendingProposal[]>([]);
+  // Issue #658 — this session's decided external-agent proposals: one
+  // status line each ("handed back to the external agent") instead of a
+  // nudge to this chat's AI.
+  let mcpHandoffs = $state<DecidedHandoff[]>([]);
   let pendingActioning = $state<Record<string, "approving" | "rejecting" | null>>({});
 
   // Plan B (SDK approval gate) — gated tool calls the current turn paused on,
@@ -302,8 +315,12 @@
         headers: { accept: "application/json" },
       });
       if (!res.ok) return;
-      const data = (await res.json()) as { items?: PendingProposal[] };
+      const data = (await res.json()) as {
+        items?: PendingProposal[];
+        handoffs?: DecidedHandoff[];
+      };
       pendingProposals = data.items ?? [];
+      mcpHandoffs = data.handoffs ?? [];
     } catch {
       // Pending strip is best-effort. A network blip leaves the
       // existing list intact rather than wiping it.
@@ -315,6 +332,7 @@
     queueUrl: string,
     action: "approve" | "reject",
     kind?: string,
+    requestedVia: RequestedVia = null,
   ): Promise<void> {
     pendingActioning = {
       ...pendingActioning,
@@ -343,8 +361,19 @@
         //      approval landed + continues without the operator
         //      having to type "ok continue".
         // Both are no-ops outside an /edit-overlay chat context.
-        if (action === "approve") {
+        //
+        // Issue #658 — an external agent's proposal is NOT this chat's
+        // work: its decision goes back to that agent (the hand-back line
+        // in the strip shows it), so this chat's AI is not nudged. The
+        // preview still reloads — an approved change is on the draft.
+        if (followUpAfterDecision(requestedVia, action).continueChatAi) {
           onProposalApproved(kind, proposalId);
+        } else if (action === "approve") {
+          onToolResult?.({
+            toolCallId: `approval-${proposalId}`,
+            ok: true,
+            content: "proposal applied",
+          });
         }
       } else {
         pendingActioning = { ...pendingActioning, [proposalId]: null };
@@ -657,6 +686,17 @@
   // never trips the timer; 180s is the absolute fallback for genuinely
   // dropped connections.
   const STREAM_STALL_THRESHOLD_MS = 180_000;
+
+  // Issue #658 — an external agent (MCP) works on this session concurrently
+  // and queues proposals outside this panel's stream; poll the strip so its
+  // cards (and the hand-back status after a decision) appear without a
+  // reload. Paused while this chat streams — tool results refresh it then.
+  const PENDING_POLL_MS = 10_000;
+  $effect(() => {
+    if (streaming) return;
+    const id = setInterval(() => void loadPendingProposals(), PENDING_POLL_MS);
+    return () => clearInterval(id);
+  });
   $effect(() => {
     if (!streaming) {
       streamStalled = false;
@@ -2286,6 +2326,23 @@
             </ul>
           </div>
         {/if}
+        {#if mcpHandoffs.length > 0}
+          <!-- Issue #658 — decided external-agent proposals: the result went
+               back to the agent, not to this chat's AI. -->
+          <ul class="space-y-1 text-xs" data-testid="chat-mcp-handoffs">
+            {#each mcpHandoffs as h (h.proposalId)}
+              <li
+                class="flex items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-1.5"
+                data-testid="chat-mcp-handoff"
+                data-outcome={h.outcome}
+                data-delivered={h.deliveredAt !== null ? "true" : "false"}
+              >
+                <span class="truncate text-muted-foreground">{h.summary}</span>
+                <span class="ml-auto shrink-0">{handoffStatusText(h)}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
         {#if pendingProposals.length > 0}
           <div
             class="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs"
@@ -2308,6 +2365,14 @@
                     >{p.domain}.{p.kind}</span
                   >
                   <span class="truncate">{p.summary}</span>
+                  {#if p.requestedVia === "power_mcp"}
+                    <span
+                      class="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-700 dark:text-sky-300"
+                      data-testid="pending-external-agent"
+                      title="The decision is handed back to the external agent, which continues the work. This chat's AI does not act on it."
+                      >{EXTERNAL_AGENT_LABEL}</span
+                    >
+                  {/if}
                   <span class="ml-auto flex items-center gap-1.5">
                     <Button
                       type="button"
@@ -2317,7 +2382,8 @@
                         : "default"}
                       disabled={pendingActioning[p.proposalId] !== undefined &&
                         pendingActioning[p.proposalId] !== null}
-                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "approve", p.kind)}
+                      onclick={() =>
+                        actOnPending(p.proposalId, p.queueUrl, "approve", p.kind, p.requestedVia ?? null)}
                       data-testid="pending-approve"
                     >
                       {pendingActioning[p.proposalId] === "approving" ? "Approving…" : "Approve"}
@@ -2328,7 +2394,8 @@
                       variant="outline"
                       disabled={pendingActioning[p.proposalId] !== undefined &&
                         pendingActioning[p.proposalId] !== null}
-                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "reject")}
+                      onclick={() =>
+                        actOnPending(p.proposalId, p.queueUrl, "reject", p.kind, p.requestedVia ?? null)}
                     >
                       {pendingActioning[p.proposalId] === "rejecting" ? "Rejecting…" : "Reject"}
                     </Button>

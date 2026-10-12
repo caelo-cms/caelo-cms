@@ -318,6 +318,14 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
 
   // ── agent-tool parity, part 2 ─────────────────────────────────────────
   "tool_approvals.list_pending": PENDING_QUEUE,
+  // Issue #658 — the Live Edit card's backing read; the agent sees the same
+  // origin as list_pending_proposals' requestedBy column, and the external
+  // agent reads its own outcome via mcp.get_approval_outcome.
+  "mcp_approval_handoffs.list": {
+    kind: "covered",
+    by: ["list_pending_proposals"],
+    note: "origin of MCP-queued proposals (requestedBy column); outcome via caelo_await_approval",
+  },
   "imports.log_event": {
     kind: "covered",
     by: ["log_import_events"],

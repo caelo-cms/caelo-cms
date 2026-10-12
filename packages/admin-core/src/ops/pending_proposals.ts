@@ -48,6 +48,10 @@ const itemSchema = z.object({
    *  Owner clicks. */
   chatSessionId: z.string().nullable(),
   chatSessionTitle: z.string().nullable(),
+  /** Issue #658 — set when an external agent (Power-MCP) queued this
+   *  proposal: its decision is handed back to that agent, so the chat
+   *  showing the card must not continue its own AI on Approve. */
+  requestedVia: z.literal("power_mcp").nullable(),
 });
 
 const byDomainSchema = z.record(z.string(), z.number().int().nonnegative());
@@ -212,9 +216,12 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
           FROM skill_proposals WHERE status = 'pending'
       )
       SELECT p.domain, p.kind, p.id, p.proposed_by, p.proposed_at, p.summary,
-             p.chat_session_id, c.title AS chat_session_title
+             p.chat_session_id, c.title AS chat_session_title,
+             h.channel AS requested_via
       FROM all_pending p
       LEFT JOIN chat_sessions c ON c.id::text = p.chat_session_id
+      LEFT JOIN mcp_approval_handoffs h
+        ON h.proposal_id::text = p.id AND h.domain = p.domain
       ORDER BY p.proposed_at DESC
       LIMIT ${limit}
     `)) as unknown as Array<{
@@ -226,6 +233,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
       summary: string;
       chat_session_id: string | null;
       chat_session_title: string | null;
+      requested_via: "power_mcp" | null;
     }>;
 
     // Per-domain counts (separate query so the items-list LIMIT
@@ -276,6 +284,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
           r.proposed_at instanceof Date ? r.proposed_at.toISOString() : String(r.proposed_at),
         chatSessionId: r.chat_session_id,
         chatSessionTitle: r.chat_session_title,
+        requestedVia: r.requested_via,
       })),
       byDomain,
       total,

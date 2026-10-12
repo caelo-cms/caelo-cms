@@ -80,6 +80,28 @@ interface Proposal {
   resultSummary: string | null;
 }
 
+/** Issue #658 — did an external agent (Power-MCP) queue this proposal? */
+async function requestedByExternalAgent(
+  proposalId: string,
+  ctx: App.Locals["ctx"],
+): Promise<boolean> {
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, ctx, "mcp_approval_handoffs.list", {
+    proposalIds: [proposalId],
+    withinHours: 24 * 30,
+  });
+  // The chat message is best-effort anyway; when the origin cannot be read,
+  // skip it (loudly) rather than risk instructing the Live Edit AI.
+  if (!r.ok) {
+    console.error("[tool-approvals.approve] hand-off lookup failed — chat message skipped", {
+      proposalId,
+      error: r.error,
+    });
+    return true;
+  }
+  return (r.value as { handoffs: unknown[] }).handoffs.length > 0;
+}
+
 export const load: PageServerLoad = async ({ locals }) => {
   // Same permission proxy as the other propose/* queues — the
   // Owner-equivalent role.
@@ -205,7 +227,13 @@ export const actions: Actions = {
     // Best-effort: skip when chatSessionId is missing (out-of-chat
     // approval, currently theoretical) and on append failure (the
     // dispatch already succeeded; the chat-side message is the bonus).
-    if (chatSessionId) {
+    //
+    // Issue #658 — NOT for a call an external agent queued over MCP: the
+    // session is shared with the operator's Live Edit chat, whose AI would
+    // read this user-role message as an instruction on its next turn. The
+    // MCP agent gets the result through mcp.get_approval_outcome instead
+    // (tool_approval_actions.result_summary, written above).
+    if (chatSessionId && !(await requestedByExternalAgent(proposalId, locals.ctx))) {
       try {
         await execute(registry, adapter, locals.ctx, "chat.append_message", {
           chatSessionId,

@@ -62,23 +62,39 @@ export const listPendingProposalsTool = makeListReadTool<
     kind: string;
     proposalId: string;
     summary: string;
+    requestedVia: "power_mcp" | null;
   }
 >({
   name: "list_pending_proposals",
   description:
     "List every proposal currently awaiting Owner approval, across all gated domains (layouts, users, roles, reverts, themes, deploys, …). " +
-    "The `## Pending proposals` context block is a snapshot from turn start — call this BEFORE queueing a proposal you may already have filed this turn (a duplicate is rejected), and after the user says they approved something.",
+    "The `## Pending proposals` context block is a snapshot from turn start — call this BEFORE queueing a proposal you may already have filed this turn (a duplicate is rejected), and after the user says they approved something. " +
+    "Rows with requestedBy=external-agent were queued by an external agent over MCP: their decision is handed back to that agent, which continues the work. In the Caelo chat, do not act on or re-propose them.",
   opName: "pending_proposals.list",
   input: noInput,
   label: "pending_proposals",
   rows: (value) =>
-    (value as { items: { domain: string; kind: string; proposalId: string; summary: string }[] })
-      .items,
+    (
+      value as {
+        items: {
+          domain: string;
+          kind: string;
+          proposalId: string;
+          summary: string;
+          requestedVia: "power_mcp" | null;
+        }[];
+      }
+    ).items,
   columns: [
     { key: "domain", value: (i) => i.domain },
     { key: "kind", value: (i) => i.kind },
     { key: "proposalId", value: (i) => i.proposalId },
     { key: "summary", value: (i) => i.summary },
+    // Issue #658 — an external agent's proposal is not this chat's work.
+    {
+      key: "requestedBy",
+      value: (i) => (i.requestedVia === "power_mcp" ? "external-agent" : "chat"),
+    },
   ],
   emptyMessage: "No pending proposals — the Owner queue is empty.",
 });
