@@ -272,6 +272,7 @@ import {
   updatePageCaptureOp,
   writeExtractedPagesOp,
 } from "./ops/imports.js";
+import { listMcpApprovalHandoffsOp } from "./ops/mcp_approval_handoffs.js";
 import {
   executeMcpTokenProposalOp,
   listPendingMcpTokenProposalsOp,
@@ -429,6 +430,7 @@ import {
 import { auditByRequestIdOp } from "./ops/security/audit_by_request.js";
 import {
   mcpExecuteToolOp,
+  mcpGetApprovalOutcomeOp,
   mcpGetContextOp,
   mcpListToolsOp,
   mcpOpenSessionOp,
@@ -843,6 +845,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mcpOpenSessionOp);
   registry.register(mcpExecuteToolOp);
   registry.register(mcpGetContextOp);
+  // Issue #658 — hand an operator's decision on an MCP-queued proposal
+  // back to the external agent (read-only for the agent).
+  registry.register(mcpGetApprovalOutcomeOp);
+  registry.register(listMcpApprovalHandoffsOp);
   // v0.2.27 — mcp_tokens propose/execute pairs (create / revoke).
   // AI proposes new tokens by displayName + cap; the Owner approves
   // at /security/mcp/pending and the plaintext token is generated

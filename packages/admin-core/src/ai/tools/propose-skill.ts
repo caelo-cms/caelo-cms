@@ -59,6 +59,7 @@ export const proposeSkillTool: ToolDefinitionWithHandler<ProposeSkillToolInput> 
       content:
         `Queued skill proposal ${proposalId} (slug=${input.slug}). ` +
         `An Owner must accept it at /security/skills/proposals; after acceptance, the Owner activates the skill separately. The skill is NOT active yet.`,
+      queuedProposalId: proposalId,
     };
   },
 };

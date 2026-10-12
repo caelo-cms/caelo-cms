@@ -16,6 +16,10 @@
  * summary). The per-domain pending pages keep their own actions; this
  * endpoint is a thin read-projection.
  *
+ * Issue #658 — items carry `requestedVia` (an external agent's proposal is
+ * not this chat's work), and `handoffs` lists this session's recently
+ * decided MCP proposals so the strip can show the hand-back state.
+ *
  * Scope: GET only. Approve / Reject continue to go through the
  * existing /security/<domain>/pending form actions (the same path
  * ProposeCard uses) so we don't fork the action contract.
@@ -36,6 +40,22 @@ interface PendingItem {
   proposedAt: string;
   /** The domain's pending page — where Approve / Reject post. */
   queueUrl: string;
+  /**
+   * Issue #658 — "power_mcp" when an external agent queued it: Approve
+   * hands the decision back to that agent and must NOT continue this
+   * chat's AI.
+   */
+  requestedVia: "power_mcp" | null;
+}
+
+/** A decided MCP-originated proposal from this session (issue #658). */
+interface DecidedHandoff {
+  proposalId: string;
+  summary: string;
+  outcome: string;
+  decidedAt: string | null;
+  /** When the external agent picked the decision up; null while it has not. */
+  deliveredAt: string | null;
 }
 
 export const GET: RequestHandler = async ({ params, locals }) => {
@@ -46,7 +66,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
     limit: 200,
   });
   if (!r.ok) {
-    return json({ items: [] satisfies PendingItem[] });
+    return json({ items: [] satisfies PendingItem[], handoffs: [] satisfies DecidedHandoff[] });
   }
   const v = r.value as {
     items: {
@@ -56,6 +76,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
       summary: string;
       proposedAt: string;
       chatSessionId: string | null;
+      requestedVia: "power_mcp" | null;
     }[];
   };
   const items: PendingItem[] = v.items
@@ -67,6 +88,36 @@ export const GET: RequestHandler = async ({ params, locals }) => {
       summary: i.summary,
       proposedAt: i.proposedAt,
       queueUrl: proposalQueueRoute(i.domain),
+      requestedVia: i.requestedVia,
     }));
-  return json({ items });
+
+  // Issue #658 — decided hand-offs keep a status line in the strip ("result
+  // handed back to the external agent") until the agent picked them up.
+  // Best-effort like the rest of this read: a failure only hides the lines.
+  const h = await execute(registry, adapter, locals.ctx, "mcp_approval_handoffs.list", {
+    chatSessionId: params.sessionId,
+    withinHours: 1,
+  });
+  const handoffs: DecidedHandoff[] = h.ok
+    ? (
+        h.value as {
+          handoffs: {
+            proposalId: string;
+            summary: string;
+            outcome: string;
+            decidedAt: string | null;
+            deliveredAt: string | null;
+          }[];
+        }
+      ).handoffs
+        .filter((x) => x.outcome !== "pending")
+        .map((x) => ({
+          proposalId: x.proposalId,
+          summary: x.summary,
+          outcome: x.outcome,
+          decidedAt: x.decidedAt,
+          deliveredAt: x.deliveredAt,
+        }))
+    : [];
+  return json({ items, handoffs });
 };

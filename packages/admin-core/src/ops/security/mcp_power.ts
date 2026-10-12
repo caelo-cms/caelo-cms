@@ -14,8 +14,11 @@
  * - Calls dispatch as an AI actor bound to the token's owner. An external
  *   model is an AI actor no matter who runs it, so human-only ops stay
  *   unreachable and gated `propose_*` tools fall back to their
- *   propose-only handler ("Queued proposal <uuid>: …") — the Owner
- *   approves in the per-domain pending queue, never the caller.
+ *   propose-only handler ("Queued proposal <uuid>: …") — the operator
+ *   approves (in the Live Edit chat's card or the pending queue), never
+ *   the caller. Issue #658: the proposal is recorded as requested by the
+ *   external agent, and the decision is handed back to it through
+ *   mcp.get_approval_outcome — it never starts a Live Edit AI turn.
  * - Every call runs inside a chat session's binding (the site's shared
  *   draft, or an isolated experiment/migration branch). The AI may Stage
  *   (stage_changes, issue #620); Publish live stays the operator's click
@@ -36,6 +39,12 @@ import { chatPluginInvocation } from "../../ai/plugin-invocation.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
+import {
+  approvalOutcome,
+  findMcpHandoffByToolCall,
+  readHandoffForAgent,
+  recordMcpHandoff,
+} from "../mcp_approval_handoffs.js";
 import { annotateExcludedToolMentions } from "./mcp_power_prose.js";
 import {
   getMcpBridge,
@@ -381,6 +390,12 @@ export const mcpExecuteToolOp = defineOperation({
     image: z.object({ base64: z.string(), mediaType: z.string() }).nullable().optional(),
     /** Structured recovery hint from the tool, passed through verbatim. */
     nextAction: z.unknown().optional(),
+    /**
+     * Issue #658 — set when the call queued an approval-gated proposal.
+     * The operator decides in the Caelo admin; the decision is handed back
+     * through mcp.get_approval_outcome (the MCP server waits on it).
+     */
+    approval: z.object({ proposalId: z.string(), domain: z.string() }).nullable().optional(),
   }),
   handler: async (_ctx, input, tx) => {
     const bridged = bridgeOrError();
@@ -438,12 +453,16 @@ export const mcpExecuteToolOp = defineOperation({
         cachedLookup.ok &&
         (cachedLookup.value as { cached: { ok: boolean; content: string } | null }).cached;
       if (cached) {
+        // The first call recorded the hand-off (the cache keeps only
+        // ok+content); serve the same handle.
+        const approval = await findMcpHandoffByToolCall(tx, input.chatSessionId, toolCallId);
         return ok({
           ok: cached.ok,
           content: cached.content,
           requestId,
           toolCallId,
           cached: true,
+          approval,
         });
       }
     }
@@ -581,6 +600,16 @@ export const mcpExecuteToolOp = defineOperation({
     // surface for MCP work is chat.list_pending_changes + snapshots,
     // which capture every write regardless.
 
+    const approval = await handOffQueuedProposal(tx, {
+      ok: result.ok,
+      content: result.content,
+      ...(result.queuedProposalId ? { queuedProposalId: result.queuedProposalId } : {}),
+      chatSessionId: input.chatSessionId,
+      requestedBy: auth.actorId,
+      toolName: input.toolName,
+      toolCallId,
+    });
+
     return ok({
       ok: result.ok,
       content: result.content,
@@ -589,6 +618,124 @@ export const mcpExecuteToolOp = defineOperation({
       cached: false,
       image: result.image ?? null,
       ...(result.nextAction !== undefined ? { nextAction: result.nextAction } : {}),
+      approval,
+    });
+  },
+});
+
+/**
+ * The canonical shape gated tools' queued results start with (enforced by
+ * propose-content-shape.test.ts); the bespoke skill / site-memory flows
+ * carry `queuedProposalId` instead.
+ */
+const QUEUED_PROPOSAL_RE =
+  /^Queued proposal ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):\s*([^\n]*)/;
+
+/**
+ * Issue #658 — when a gated tool queued a proposal, record that the
+ * EXTERNAL agent asked for it (so the Live Edit card that renders it hands
+ * the decision back here instead of continuing its own AI) and return the
+ * handle the MCP server waits on. Idempotent across cached replays.
+ */
+async function handOffQueuedProposal(
+  tx: Parameters<typeof recordMcpHandoff>[0],
+  r: {
+    ok: boolean;
+    content: string;
+    queuedProposalId?: string;
+    chatSessionId: string;
+    requestedBy: string;
+    toolName: string;
+    toolCallId: string;
+  },
+): Promise<{ proposalId: string; domain: string } | null> {
+  if (!r.ok) return null;
+  const m = QUEUED_PROPOSAL_RE.exec(r.content);
+  const proposalId = r.queuedProposalId ?? m?.[1];
+  if (!proposalId) return null;
+  const recorded = await recordMcpHandoff(tx, {
+    proposalId,
+    chatSessionId: r.chatSessionId,
+    requestedBy: r.requestedBy,
+    toolName: r.toolName,
+    toolCallId: r.toolCallId,
+    summary: m?.[2] ?? r.content.split("\n")[0] ?? "",
+  });
+  if (!recorded) {
+    // Every gated tool queues into a source pending_proposals.list knows;
+    // a miss is drift between the two (CLAUDE.md §2 — say so loudly).
+    console.error("[mcp.execute_tool] queued proposal in no known pending source", {
+      proposalId,
+      toolName: r.toolName,
+    });
+    return null;
+  }
+  return { proposalId, domain: recorded.domain };
+}
+
+// ─── mcp.get_approval_outcome ────────────────────────────────────────
+
+export const mcpGetApprovalOutcomeOp = defineOperation({
+  name: "mcp.get_approval_outcome",
+  // Why system-only: the bearer token is in the input — the handler resolves the real actor from
+  // it. Read-only for the agent: it learns the operator's decision, never makes it (§11.A).
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      plaintextToken: z.string().min(8).max(200),
+      proposalId: z.string().uuid(),
+    })
+    .strict(),
+  output: z.object({
+    proposalId: z.string(),
+    domain: z.string(),
+    toolName: z.string(),
+    summary: z.string(),
+    outcome: approvalOutcome,
+    /** Operator's reject reason, or the applied tool's result summary. */
+    detail: z.string().nullable(),
+    decidedAt: z.string().nullable(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const bridged = bridgeOrError();
+    if (!bridged.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "mcp.get_approval_outcome",
+        message: bridged.message,
+      });
+    }
+    const auth = await resolveAdminScopedToken(
+      bridged.bridge.adapter,
+      input.plaintextToken,
+      "mcp.get_approval_outcome",
+    );
+    if (!auth.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "mcp.get_approval_outcome",
+        message: auth.message,
+      });
+    }
+    const view = await readHandoffForAgent(tx, input.proposalId, auth.actorId);
+    if (!view) {
+      return err({
+        kind: "HandlerError",
+        operation: "mcp.get_approval_outcome",
+        message:
+          `approval_not_found: ${input.proposalId} is not a proposal you queued over MCP — ` +
+          `pass the proposalId from the gated tool's result (list_pending_proposals shows what is waiting).`,
+      });
+    }
+    return ok({
+      proposalId: view.proposalId,
+      domain: view.domain,
+      toolName: view.toolName,
+      summary: view.summary,
+      outcome: view.outcome,
+      detail: view.detail,
+      decidedAt: view.decidedAt,
     });
   },
 });

@@ -58,7 +58,7 @@ Because the executing context is identical to a chat turn, **every invariant car
 - **AI actor.** Calls run as an AI actor bound to the token's owner. An external model is an AI actor no matter who runs it — human-only ops stay unreachable, and actor-scope gates apply unchanged.
 - **Preview branch.** Every call runs inside a work session (a chat session). Writes land on its preview branch, invisible to the live site until the operator reviews and publishes in the admin — publishing is not exposed to the agent.
 - **Snapshots + undo.** Every write emits a snapshot grouped under the session, so chat-keyed undo works exactly as if the work had happened in the browser chat.
-- **Approval gates.** `propose_*` tools queue an Owner proposal ("Queued proposal `<uuid>`… the Owner approves it at `<path>`") — usually the per-domain queue at `/security/<domain>/pending` (plugin activations, uninstalls and capability revokes: `/security/plugins/pending`); site SEO settings (`propose_set_site_seo`: site URL, sitemap, Organization JSON-LD) are approved on `/security/seo`. Every waiting proposal is also listed at `/security/pending`. The agent is told to say "I prepared this — click Approve", and cannot apply it itself. Plugin tools that declare their own in-chat approval (for example `send_newsletter_campaign`) are refused over MCP and must be run from the Caelo chat.
+- **Approval gates.** `propose_*` tools queue an Owner proposal ("Queued proposal `<uuid>`… the Owner approves it at `<path>`") — usually the per-domain queue at `/security/<domain>/pending` (plugin activations, uninstalls and capability revokes: `/security/plugins/pending`); site SEO settings (`propose_set_site_seo`: site URL, sitemap, Organization JSON-LD) are approved on `/security/seo`. Every waiting proposal is also listed at `/security/pending`. The agent cannot apply a proposal itself; the call waits for the operator's decision and returns it (see [Approvals come back to your agent](#approvals-come-back-to-your-agent)). Plugin tools that declare their own in-chat approval (for example `send_newsletter_campaign`) are refused over MCP and must be run from the Caelo chat.
 
 ### Install
 
@@ -83,6 +83,15 @@ Two meta-tools frame every Power-MCP session:
 2. **`caelo_get_context`** — the composed site context Caelo's own AI gets in its system prompt: the module model, the tool playbook, staging rules, site memory, and the active-skills index. Load it once; load individual skills on demand via the regular `load_skill` tool.
 
 Then work with the catalogue directly. Tool failures come back AI-actionable (naming valid choices and next steps), the same error surfaces Caelo's own agent self-corrects from.
+
+### Approvals come back to your agent
+
+When your agent calls an approval-gated tool, the proposal appears in the operator's open chat for that session, usually the Live Edit chat, because `caelo_open_session` resumes it. The card is labelled **Requested by the external agent (MCP)**. It also appears in the per-domain queue and at `/security/pending`.
+
+- **The call waits for the decision.** The gated tool call returns only once the operator has clicked **Approve** or **Reject**, and its result tells your agent what happened: `applied` (the change is in the draft), `rejected` (with the operator's reason), `failed` (approved, but applying it failed), `superseded` or `withdrawn`. Your agent continues from there.
+- **Long waits.** Each call waits up to 50 seconds by default. That is shorter than the usual 60-second MCP client timeout, so the call always returns. Set `CAELO_MCP_APPROVAL_WAIT_MS` in the MCP server's environment to change it, for clients configured with longer timeouts (`0` returns at once). If the limit is reached, the result says the proposal is still waiting and gives its id. Your agent then calls **`caelo_await_approval`** with that `proposalId` to keep waiting. It should not propose the same thing again.
+- **Caelo's own AI stays out of it.** If the operator approves the card in Live Edit, the decision goes back to your agent. Caelo's chat AI does not start a turn, and no message is added to the chat. Once your agent has read the decision, the chat shows **"…the external agent (MCP) received the result"** in place of the card. Proposals that Caelo's own chat AI made still continue that AI as before.
+- **No self-approval.** Your agent can only read the decision on proposals it queued itself. Approving and rejecting remain the operator's clicks.
 
 ### Feeding Claude Code the site context
 
@@ -113,7 +122,7 @@ The rule is that an operator never has to do by hand what the agent cannot do. R
 - **Owner settings:** a plugin's AI cost cap (`propose_set_plugin_ai_cost_cap`) and rotating the gateway cookie secret (`propose_rotate_gateway_cookie_secret`), and who may open the protected staging site (`propose_set_staging_access`, `propose_rotate_staging_credentials`, `propose_set_staging_host`; read with `get_staging_access`) are proposals the Owner approves, like AI budgets and pricing. `list_plugin_installations` shows which submitted plugin packages still wait for the Owner's review. Approving a package and its grants stays the Owner's decision.
 - **Maintenance:** `list_media_usages`, `get_page_seo`, `list_stale_seo_pages`, `refresh_page_path` (re-derives one page's URL and redirects the old one), `list_import_runs`, `log_import_events`, and `list_skill_pin_defaults` / `set_skill_pin_defaults` (the skills pinned for your new chats).
 
-Approval cards from these tools wait in `/security/tool-approvals/pending` when no chat is open to show them.
+Approval cards from these tools wait in `/security/tool-approvals/pending` when no chat is open to show them; either way the decision is returned to your agent.
 
 ## Google Cloud installs (IAP)
 

@@ -18,6 +18,9 @@
  *   is held here in process state so the agent doesn't thread it through
  *   every call; it also rides the response so a restarted server can
  *   resume a specific session via `chatSessionId`.
+ * - `caelo_await_approval` — issue #658: keep waiting for the operator's
+ *   decision on a proposal an approval-gated tool queued (the gated call
+ *   itself already waits, bounded by `CAELO_MCP_APPROVAL_WAIT_MS`).
  * - `caelo_get_context` — the composed site context (module model, tool
  *   playbook, staging rules, site memory, skills index) the agent should
  *   load once before working. For a checked-in variant, see
@@ -29,6 +32,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import {
+  type ApprovalOutcome,
+  describeApprovalOutcome,
+  resolveApprovalWaitMs,
+  waitForApproval,
+} from "./approval-wait.js";
 import { postAdmin, resolveTimeoutMs } from "./http.js";
 import { UPLOAD_IMAGES_TOOL, uploadImages } from "./image-upload.js";
 
@@ -37,6 +46,8 @@ export interface StartAdminOpts {
   readonly token: string;
   /** Defaults to stdio; tests pass an in-memory transport. */
   readonly transport?: Transport;
+  /** Poll interval while waiting on an approval; tests shorten it. */
+  readonly approvalPollMs?: number;
 }
 
 /**
@@ -51,6 +62,7 @@ export const ADMIN_MCP_INSTRUCTIONS = [
   "1. Call caelo_open_session once. It resumes the operator's most recent open session (pass newSession: true only when the operator asks for a fresh one; chatSessionId resumes a specific one). Every write lands in the site's shared draft (or the session's own experiment branch); you may stage finished work with stage_changes, but nothing reaches the live site until the operator clicks Publish live in the Caelo admin.",
   "2. Call caelo_get_context once and follow it: it carries the site model, tool playbook, staging rules, site memory (brand voice, glossary) and the skills index.",
   "3. Load every skill the context marks ALWAYS APPLIES with load_skill before the work it covers (e.g. before writing any visitor-facing copy).",
+  "Approval-gated tools (marked APPROVAL-GATED) wait for the operator to approve or reject in the Caelo admin and return the decision; if the wait times out, call caelo_await_approval with the proposalId. Never re-propose a pending proposal.",
   "Tool errors name the next step to take; follow them instead of retrying unchanged.",
 ].join("\n");
 
@@ -69,6 +81,8 @@ interface ExecuteToolResponse {
   readonly cached: boolean;
   readonly image?: { base64: string; mediaType: string } | null;
   readonly nextAction?: unknown;
+  /** Issue #658 — set when the call queued an approval-gated proposal. */
+  readonly approval?: { proposalId: string; domain: string } | null;
 }
 
 interface OpenSessionResponse {
@@ -124,6 +138,27 @@ const OPEN_SESSION_TOOL = {
   },
 } as const;
 
+const awaitApprovalInput = z.object({ proposalId: z.string().uuid() }).strict();
+
+/** Issue #658 — keep waiting for a decision after a gated call's wait timed out. */
+const AWAIT_APPROVAL_TOOL = {
+  name: "caelo_await_approval",
+  description:
+    "Wait for the operator's Approve/Reject on a proposal you queued with an approval-gated tool, and return " +
+    "the decision (applied / rejected with reason / …). Use it when a gated tool's result says it is still " +
+    "waiting. You cannot approve anything yourself — only the operator can, in the Caelo admin.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      proposalId: {
+        type: "string",
+        description: "The id from the gated tool's 'Queued proposal <id>' result.",
+      },
+    },
+    required: ["proposalId"],
+  },
+} as const;
+
 const GET_CONTEXT_TOOL = {
   name: "caelo_get_context",
   description:
@@ -157,6 +192,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
       UPLOAD_IMAGES_TOOL,
       OPEN_SESSION_TOOL,
       GET_CONTEXT_TOOL,
+      AWAIT_APPROVAL_TOOL,
       ...catalogue.tools.map((t) => ({
         name: t.name,
         description: t.description,
@@ -165,9 +201,48 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
     ],
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  /** Reads the operator's decision; the agent can never make it. */
+  const fetchOutcome = (proposalId: string) => () =>
+    postAdmin<ApprovalOutcome>({
+      adminUrl: opts.adminUrl,
+      token: opts.token,
+      path: "/api/mcp/approval",
+      body: { proposalId },
+      timeoutMs: resolveTimeoutMs(30_000),
+    });
+
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     const name = req.params.name;
+    // Progress notifications keep progress-aware clients from timing the
+    // call out while it waits on the operator (only when they asked).
+    const progressToken = req.params._meta?.progressToken;
+    const onPending =
+      progressToken === undefined
+        ? undefined
+        : async (elapsedMs: number) => {
+            await extra.sendNotification({
+              method: "notifications/progress",
+              params: {
+                progressToken,
+                progress: Math.round(elapsedMs / 1000),
+                message: "Waiting for the operator to approve or reject in the Caelo admin…",
+              },
+            });
+          };
     try {
+      if (name === AWAIT_APPROVAL_TOOL.name) {
+        const parsed = awaitApprovalInput.safeParse(req.params.arguments ?? {});
+        if (!parsed.success) {
+          return errorResult(`invalid arguments: ${parsed.error.message}`);
+        }
+        const outcome = await waitForApproval({
+          fetchOutcome: fetchOutcome(parsed.data.proposalId),
+          waitMs: resolveApprovalWaitMs(),
+          ...(opts.approvalPollMs !== undefined ? { intervalMs: opts.approvalPollMs } : {}),
+          ...(onPending ? { onPending } : {}),
+        });
+        return outcomeResult(outcome);
+      }
       if (name === UPLOAD_IMAGES_TOOL.name) return await uploadImages(opts, req.params.arguments);
       if (name === OPEN_SESSION_TOOL.name) {
         const parsed = openSessionInput.safeParse(req.params.arguments ?? {});
@@ -241,6 +316,28 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
         },
         timeoutMs: resolveTimeoutMs(120_000),
       });
+      if (result.approval) {
+        // Issue #658 — the call queued a proposal: wait for the operator's
+        // decision (bounded) and return it in THIS result, so the agent
+        // continues with the outcome instead of a "queued" note.
+        const outcome = await waitForApproval({
+          fetchOutcome: fetchOutcome(result.approval.proposalId),
+          waitMs: resolveApprovalWaitMs(),
+          ...(opts.approvalPollMs !== undefined ? { intervalMs: opts.approvalPollMs } : {}),
+          ...(onPending ? { onPending } : {}),
+        });
+        const decided = outcomeResult(outcome);
+        return {
+          ...decided,
+          content: [
+            ...decided.content,
+            {
+              type: "text",
+              text: JSON.stringify({ requestId: result.requestId, cached: result.cached }),
+            },
+          ],
+        };
+      }
       return {
         ...(result.ok ? {} : { isError: true }),
         content: [
@@ -271,6 +368,28 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
   });
 
   await server.connect(opts.transport ?? new StdioServerTransport());
+}
+
+/** An outcome as an MCP tool result; a failed apply is an error result. */
+function outcomeResult(o: ApprovalOutcome): {
+  isError?: true;
+  content: Array<{ type: "text"; text: string }>;
+} {
+  return {
+    ...(o.outcome === "failed" ? { isError: true as const } : {}),
+    content: [
+      { type: "text", text: describeApprovalOutcome(o) },
+      {
+        type: "text",
+        text: JSON.stringify({
+          proposalId: o.proposalId,
+          outcome: o.outcome,
+          detail: o.detail,
+          decidedAt: o.decidedAt,
+        }),
+      },
+    ],
+  };
 }
 
 function errorResult(text: string): {
