@@ -50,6 +50,7 @@ import { databaseUrlFromEnv, type ExecutionContext, err, ok } from "@caelo-cms/s
 import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { lockLiveReleases } from "../deploy/live-release-lock.js";
 import { loadStaticPublisher } from "../deploy/static-publisher.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { jsonbParam } from "../sql-helpers.js";
@@ -873,6 +874,8 @@ export const promoteDeployOp = defineOperation({
       // v0.2.78 — delegate to the per-provider StaticPublisher.
       // Self-hosted does the existing copyTreeExcept + syncContents
       // overlay; cloud does cross-bucket server-side object copies.
+      // A CDN purge must not re-release the old live version mid-publish.
+      await lockLiveReleases(tx);
       const provider = process.env.CAELO_PROVIDER;
       const publisher = await loadStaticPublisher(provider);
       const { siteBaseUrl } = await readSeoSettings(tx);
@@ -969,6 +972,8 @@ export const rollbackDeployOp = defineOperation({
     const buildDir = join(outDir, "builds", buildId);
     try {
       // v0.2.78 — delegate to the per-provider StaticPublisher.
+      // A CDN purge must not re-release the old live version mid-rollback.
+      await lockLiveReleases(tx);
       const provider = process.env.CAELO_PROVIDER;
       const publisher = await loadStaticPublisher(provider);
       const { siteBaseUrl } = await readSeoSettings(tx);

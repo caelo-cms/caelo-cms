@@ -20,8 +20,8 @@
  * so it is usually not registered in `domains` at all.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { defineOperation, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
+import { type ExecutionContext, err, ok, type Result } from "@caelo-cms/shared";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import {
@@ -37,6 +37,7 @@ import {
   type CustomDomainHealth,
   customDomainHostname,
 } from "../deploy/firebase-custom-domain-health.js";
+import { tryLockLiveReleases } from "../deploy/live-release-lock.js";
 
 const FIREBASE_PROVIDER = "gcp-firebase";
 
@@ -110,7 +111,9 @@ export const hostingStatusOp = defineOperation({
       const raw = await listCustomDomains(target);
       const now = new Date();
       const domains = raw.map((d) => assessCustomDomain(d, now));
-      const cdnPurge = await purgeCdnIfDomainsActivatedSinceLastRelease(target, raw);
+      const cdnPurge = await purgeCdnIfDomainsActivatedSinceLastRelease(target, raw, () =>
+        tryLockLiveReleases(tx),
+      );
       if (cdnPurge) {
         await recordAudit(tx, {
           actorId: ctx.actorId,
@@ -168,46 +171,67 @@ export const reconnectHostingDomainOp = defineOperation({
   input: reconnectInput,
   output: reconnectResultSchema,
   handler: async (ctx, input, tx) => {
-    const current = await currentHostingHealth(input.hostname);
-    if (!current.ok) {
+    try {
+      return await reconnectHostingDomain(ctx, input, tx);
+    } catch (e) {
+      // Firebase / ADC failures (IAM, a slow delete) come back as a
+      // HandlerError naming the cause, not as an opaque thrown op.
       return err({
         kind: "HandlerError",
         operation: "domains.reconnect_hosting",
-        message: current.message,
+        message: `reconnecting "${input.hostname}" failed: ${(e as Error).message}`,
       });
     }
-    if (current.health.status === "active") {
-      return err({
-        kind: "HandlerError",
-        operation: "domains.reconnect_hosting",
-        message: `"${input.hostname}" is active — reconnecting would take it offline until Firebase re-verifies it. Nothing to heal.`,
-      });
-    }
-    const r = await reconnectCustomDomain(current.target, input.hostname, {
-      alreadyDeleted: current.health.status === "deleted",
-    });
-    const health = r.domain ? assessCustomDomain(r.domain, new Date()) : null;
-    const message = r.active
-      ? r.cdnPurge
-        ? `${input.hostname} is active again; the live version was re-released to clear the CDN's cached "Site Not Found" page.`
-        : r.cdnPurgeError
-          ? `${input.hostname} is active again, but clearing the CDN cache failed (${r.cdnPurgeError}) — publish the site again to clear it.`
-          : `${input.hostname} is active again; nothing is published live yet, so there is no CDN cache to clear.`
-      : `${input.hostname} was reconnected and Firebase is verifying it (${health?.summary ?? "status not readable yet"}). The CDN cache is cleared automatically the next time the domain status is read (list_domains or the Domains page) and it is active.`;
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "domains.reconnect_hosting",
-      input,
-      succeeded: true,
-      resultSummary: `${r.method}; active=${r.active}; cdnPurge=${r.cdnPurge?.versionName ?? "none"}`,
-    });
-    return ok({
-      hostname: input.hostname,
-      method: r.method,
-      health,
-      cdnPurge: r.cdnPurge,
-      message,
-    });
   },
 });
+
+async function reconnectHostingDomain(
+  ctx: ExecutionContext,
+  input: z.infer<typeof reconnectInput>,
+  tx: TransactionRunner,
+): Promise<Result<z.infer<typeof reconnectResultSchema>, QueryError>> {
+  const current = await currentHostingHealth(input.hostname);
+  if (!current.ok) {
+    return err({
+      kind: "HandlerError",
+      operation: "domains.reconnect_hosting",
+      message: current.message,
+    });
+  }
+  if (current.health.status === "active") {
+    return err({
+      kind: "HandlerError",
+      operation: "domains.reconnect_hosting",
+      message: `"${input.hostname}" is active — reconnecting would take it offline until Firebase re-verifies it. Nothing to heal.`,
+    });
+  }
+  const r = await reconnectCustomDomain(current.target, input.hostname, {
+    alreadyDeleted: current.health.status === "deleted",
+    acquireLiveReleaseLock: () => tryLockLiveReleases(tx),
+  });
+  const health = r.domain ? assessCustomDomain(r.domain, new Date()) : null;
+  const message = r.active
+    ? r.cdnPurge
+      ? `${input.hostname} is active again; the live version was re-released to clear the CDN's cached "Site Not Found" page.`
+      : r.cdnPurgeError
+        ? `${input.hostname} is active again, but clearing the CDN cache failed (${r.cdnPurgeError}) — publish the site again to clear it.`
+        : r.cdnPurgeDeferred
+          ? `${input.hostname} is active again; a publish is running right now, and its release clears the CDN cache (otherwise the next domain status read does).`
+          : `${input.hostname} is active again; nothing is published live yet, so there is no CDN cache to clear.`
+    : `${input.hostname} was reconnected and Firebase is verifying it (${health?.summary ?? "status not readable yet"}). The CDN cache is cleared automatically the next time the domain status is read (list_domains or the Domains page) and it is active.`;
+  await recordAudit(tx, {
+    actorId: ctx.actorId,
+    requestId: ctx.requestId,
+    operation: "domains.reconnect_hosting",
+    input,
+    succeeded: true,
+    resultSummary: `${r.method}; active=${r.active}; cdnPurge=${r.cdnPurge?.versionName ?? "none"}`,
+  });
+  return ok({
+    hostname: input.hostname,
+    method: r.method,
+    health,
+    cdnPurge: r.cdnPurge,
+    message,
+  });
+}

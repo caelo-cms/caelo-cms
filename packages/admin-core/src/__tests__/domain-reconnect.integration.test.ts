@@ -19,6 +19,7 @@ import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
 import { attachGatedExecute } from "../ai/tools/gated-tools.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
+import { LIVE_RELEASE_LOCK_KEY } from "../deploy/live-release-lock.js";
 import { registerAdminOps } from "../register.js";
 
 const realGoogleAuthExports = { ...realGoogleAuth };
@@ -217,6 +218,49 @@ describe("stuck Firebase custom domain → propose_reconnect_domain", () => {
         tx`SELECT kind, status, preview->>'status' AS diagnosed FROM domain_pending_actions WHERE proposed_by = ${AI.actorId}::uuid ORDER BY created_at DESC LIMIT 1`,
     );
     expect(rows[0]).toEqual({ kind: "reconnect", status: "applied", diagnosed: "stuck" });
+  });
+
+  it("a status read never re-releases while a publish holds the live-release lock", async () => {
+    // Regression: the stateless CDN purge in domains.hosting_status could
+    // re-release the old live version over a publish landing in between.
+    // deploy.promote / deploy.rollback hold this lock across their release.
+    domain = {
+      ...stuck(),
+      hostState: "HOST_ACTIVE",
+      ownershipState: "OWNERSHIP_ACTIVE",
+      updateTime: new Date().toISOString(),
+    };
+    const publisher = new SQL(ADMIN_URL as string);
+    try {
+      let releaseLock!: () => void;
+      const held = new Promise<void>((r) => {
+        releaseLock = r;
+      });
+      let locked!: () => void;
+      const lockTaken = new Promise<void>((r) => {
+        locked = r;
+      });
+      const publish = publisher.begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(hashtext(${LIVE_RELEASE_LOCK_KEY}))`;
+        locked();
+        await held;
+      });
+      await lockTaken;
+      const during = await execute(registry, adapter, AI, "domains.hosting_status", {});
+      expect(during.ok).toBe(true);
+      expect((during as { value: { cdnPurge: unknown } }).value.cdnPurge).toBeNull();
+      expect(liveVersions).toEqual(["sites/s/versions/v-live"]);
+      releaseLock();
+      await publish;
+      const after = await execute(registry, adapter, AI, "domains.hosting_status", {});
+      expect((after as { value: { cdnPurge: { hostnames: string[] } } }).value.cdnPurge).toEqual({
+        versionName: "sites/s/versions/v-live",
+        hostnames: [HOST],
+      });
+      expect(liveVersions).toHaveLength(2);
+    } finally {
+      await publisher.end();
+    }
   });
 
   it("refuses to propose for an active domain or on another provider", async () => {
