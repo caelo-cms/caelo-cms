@@ -949,12 +949,18 @@ const dnsRecords: pulumi.Output<DnsRecord[]> = pulumi
     // groups; each group has a list of `desired` records the operator
     // creates and `discovered` records currently in DNS. We surface the
     // `desired` set so the operator knows what to put in the registrar.
+    // Each record carries its own name: besides the apex A records Firebase
+    // asks for TXT records, some on `_acme-challenge.<domain>`, which let it
+    // issue the certificate before the apex moves. Records Firebase wants
+    // REMOVED (the old site's A records) are not records to add; replacing
+    // the apex records at go-live drops them.
     const apex = firebaseUpdates?.[0];
     if (apex) {
       for (const desired of apex.desireds ?? []) {
         for (const v of desired.records ?? []) {
+          if (v.requiredAction === "REMOVE") continue;
           out.push({
-            hostname: domain,
+            hostname: (v.domainName ?? desired.domainName ?? domain).replace(/\.$/, ""),
             type: (v.type ?? "A") as DnsRecord["type"],
             value: v.rdata ?? "",
             purpose: "Public site → Firebase Hosting CDN",

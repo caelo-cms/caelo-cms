@@ -39,6 +39,8 @@ function fakeGcloud(answers: Record<string, GcloudResult[]>, fallback: GcloudRes
 }
 
 const install = { projectId: "acme", env: "production" };
+/** ensureGeneratedSecrets also needs the install region (policy retry). */
+const secretsInstall = { ...install, region: "europe-west1" };
 const NOT_FOUND = fail("ERROR: NOT_FOUND: Secret [x] not found or has no versions.");
 
 describe("ensureGatewayServiceAccount", () => {
@@ -109,7 +111,10 @@ describe("ensureGeneratedSecrets", () => {
       "secrets describe": [ok("projects/1/secrets/x")],
       "secrets versions list": [ok("projects/1/secrets/x/versions/1")],
     });
-    const outcomes = await ensureGeneratedSecrets({ ...install, replication: regional }, { run });
+    const outcomes = await ensureGeneratedSecrets(
+      { ...secretsInstall, replication: regional },
+      { run },
+    );
     expect(outcomes.map((o) => o.status)).toEqual([
       "present",
       "present",
@@ -124,7 +129,7 @@ describe("ensureGeneratedSecrets", () => {
     const { run, calls } = fakeGcloud({ "secrets describe": [NOT_FOUND] });
     let n = 0;
     const outcomes = await ensureGeneratedSecrets(
-      { ...install, replication: regional },
+      { ...secretsInstall, replication: regional },
       { run, generate: () => `generated-value-${++n}` },
     );
     expect(outcomes.map((o) => o.status)).toEqual([
@@ -172,7 +177,7 @@ describe("ensureGeneratedSecrets", () => {
     );
     expect(seed).toEqual({ "internal-secret": "operator-set" });
     await ensureGeneratedSecrets(
-      { ...install, replication: regional, seed },
+      { ...secretsInstall, replication: regional, seed },
       { run, generate: () => "generated" },
     );
     const creates = calls.filter((c) => c.line.startsWith("secrets create"));
@@ -196,7 +201,7 @@ describe("ensureGeneratedSecrets", () => {
       "secrets versions list caelo-production-staging-gate-secret": [ok("v/1")],
     });
     const outcomes = await ensureGeneratedSecrets(
-      { ...install, replication: { kind: "automatic" } },
+      { ...secretsInstall, replication: { kind: "automatic" } },
       { run, generate: () => "v" },
     );
     expect(outcomes.map((o) => o.status)).toEqual([
@@ -218,9 +223,74 @@ describe("ensureGeneratedSecrets", () => {
     const { run, lines } = fakeGcloud({
       "secrets describe": [fail("PERMISSION_DENIED: secretmanager.secrets.get")],
     });
-    const outcomes = await ensureGeneratedSecrets({ ...install, replication: regional }, { run });
+    const outcomes = await ensureGeneratedSecrets(
+      { ...secretsInstall, replication: regional },
+      { run },
+    );
     expect(outcomes.every((o) => o.status === "failed")).toBe(true);
     expect(lines().some((l) => l.includes(" create "))).toBe(false);
+  });
+  const POLICY_VIOLATION = fail(
+    "ERROR: (gcloud.secrets.create) FAILED_PRECONDITION: Constraint constraints/gcp.resourceLocations violated for [projects/acme] attempting to create a secret in [global].",
+  );
+
+  it("creates secrets user-managed in the install region when an org policy forbids automatic", async () => {
+    const { run, lines } = fakeGcloud({
+      "secrets describe": [NOT_FOUND],
+      "secrets create caelo-production-internal-secret --project=acme --replication-policy=automatic":
+        [POLICY_VIOLATION],
+    });
+    const outcomes = await ensureGeneratedSecrets(
+      { ...secretsInstall, replication: { kind: "automatic" } },
+      { run, generate: () => "v" },
+    );
+    expect(outcomes.map((o) => o.status)).toEqual([
+      "applied",
+      "applied",
+      "applied",
+      "applied",
+      "applied",
+    ]);
+    expect(outcomes.every((o) => o.detail?.includes("gcp.resourceLocations"))).toBe(true);
+    const creates = lines().filter((l) => l.startsWith("secrets create"));
+    // One refused automatic attempt; then every secret — the refused one
+    // and all later ones — user-managed in the install region.
+    expect(creates).toEqual([
+      "secrets create caelo-production-internal-secret --project=acme --replication-policy=automatic --data-file=- --quiet",
+      "secrets create caelo-production-internal-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+      "secrets create caelo-production-tool-approval-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+      "secrets create caelo-production-public-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+      "secrets create caelo-production-gateway-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+      // #652 — the staging gate's key follows the same path.
+      "secrets create caelo-production-staging-gate-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+    ]);
+  });
+
+  it("keeps automatic replication where no policy refuses it", async () => {
+    const { run, lines } = fakeGcloud({ "secrets describe": [NOT_FOUND] });
+    const outcomes = await ensureGeneratedSecrets(
+      { ...secretsInstall, replication: { kind: "automatic" } },
+      { run, generate: () => "v" },
+    );
+    expect(outcomes.every((o) => o.status === "applied" && o.detail === undefined)).toBe(true);
+    expect(
+      lines()
+        .filter((l) => l.startsWith("secrets create"))
+        .every((l) => l.includes("--replication-policy=automatic")),
+    ).toBe(true);
+  });
+
+  it("does not retry other create failures", async () => {
+    const { run, lines } = fakeGcloud({
+      "secrets describe": [NOT_FOUND],
+      "secrets create": [fail("PERMISSION_DENIED: secretmanager.secrets.create")],
+    });
+    const outcomes = await ensureGeneratedSecrets(
+      { ...secretsInstall, replication: { kind: "automatic" } },
+      { run, generate: () => "v" },
+    );
+    expect(outcomes.every((o) => o.status === "failed")).toBe(true);
+    expect(lines().filter((l) => l.startsWith("secrets create"))).toHaveLength(5);
   });
 });
 
@@ -524,5 +594,34 @@ describe("migrationJobEnvArgs", () => {
       "--set-env-vars=ADMIN_DATABASE_URL=postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require,PUBLIC_ADMIN_DATABASE_URL=postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
       "--set-secrets=ADMIN_DATABASE_PASSWORD=caelo-production-postgres-password:latest,PUBLIC_ADMIN_DATABASE_PASSWORD=caelo-production-postgres-password:latest",
     ]);
+  });
+});
+
+describe("every Secret Manager secret honours the install's replication", () => {
+  const { readdirSync, readFileSync, statSync } = require("node:fs") as typeof import("node:fs");
+  const { join, relative } = require("node:path") as typeof import("node:path");
+  const root = join(import.meta.dir, "..");
+  function sources(dir: string): string[] {
+    return readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      if (name === "node_modules" || name === "dist") return [];
+      if (statSync(path).isDirectory()) return sources(path);
+      return /\.ts$/.test(name) && !/\.test\.ts$/.test(name) ? [path] : [];
+    });
+  }
+  const files = [...sources(join(root, "src")), ...sources(join(root, "stacks"))];
+
+  it("creates secrets through gcloud only in ensureGeneratedSecrets", () => {
+    const creators = files.filter((f) => /"secrets",\s*"create"/.test(readFileSync(f, "utf8")));
+    expect(creators.map((f) => relative(root, f))).toEqual(["src/runtime-secrets.ts"]);
+  });
+
+  it("creates Pulumi secrets only with the stack's secretReplication", () => {
+    for (const f of files) {
+      const src = readFileSync(f, "utf8");
+      const made = src.match(/new gcp\.secretmanager\.Secret\(/g)?.length ?? 0;
+      const honoured = src.match(/replication: secretReplication \}/g)?.length ?? 0;
+      expect(`${relative(root, f)}: ${made}`).toBe(`${relative(root, f)}: ${honoured}`);
+    }
   });
 });
