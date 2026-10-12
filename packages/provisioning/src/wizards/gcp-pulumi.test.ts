@@ -98,3 +98,20 @@ describe("GCP stacks", () => {
     });
   }
 });
+
+describe("GCP stack DNS + certificates (go-live split)", () => {
+  const stack = (provider: string) =>
+    readFileSync(resolve(import.meta.dir, `../../stacks/${provider}/index.ts`), "utf8");
+
+  it("gcp gives the admin its own certificate, so it gets HTTPS before the main domain moves", () => {
+    const src = stack("gcp");
+    expect(src).toContain("{ managed: { domains: [adminDomain] } }");
+    expect(src).toContain("sslCertificates: [adminCert.id, managedCert.id]");
+  });
+
+  it("gcp-firebase reports each record under its own name and drops records to remove", () => {
+    const src = stack("gcp-firebase");
+    expect(src).toContain('if (v.requiredAction === "REMOVE") continue;');
+    expect(src).toContain("v.domainName ?? desired.domainName ?? domain");
+  });
+});

@@ -27,6 +27,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
+import { CERT_WAIT_TIMEOUT_MS, lbCertProbe, waitForCert } from "../cert-wait.js";
 import { removeDefaultIngressRules } from "../default-firewall.js";
 import {
   checkDeployedRuntimeEnv,
@@ -34,7 +35,9 @@ import {
   readDeployedImageDigests,
   readDeployedRegion,
 } from "../deployed-release.js";
+import { formatDnsRecordGroups, groupDnsRecords, type InstallDnsRecord } from "../dns/groups.js";
 import { pickDnsAdapter } from "../dns/index.js";
+import type { DnsRecord } from "../dns/types.js";
 import { ensureGatewayRolePassword, findSqlInstance } from "../gateway-credentials.js";
 import {
   activeAccount,
@@ -295,8 +298,13 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // Hosting's HostingCustomDomain resource handles TLS issuance
   // internally (status surfaces via dnsRecordsRequired output).
   // Skip the cert wait on that provider.
+  //
+  // The DNS records come first: the certificate only validates once the
+  // admin host resolves to the load balancer. Only the "set now" records
+  // are applied here — the main domain moves at go-live (dns/groups.ts).
   if ((opts.provider ?? "gcp") === "gcp") {
-    await stepWaitForCertActive(projectId);
+    await stepGcpDnsRecords(installId);
+    await stepWaitForCertActive(projectId, `admin.${domain}`);
   }
 
   // === 11. Apply DB migrations against Cloud SQL via a one-shot Job ===
@@ -896,75 +904,49 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
 }
 
 /**
- * Poll the LB managed SSL cert until both domains report ACTIVE.
- * Pulumi reports the cert "created" the moment GCP queues it; the actual
- * ACME-style validation against the LB takes 5-30 min. Without this
- * step the wizard would tell the operator "Done. Welcome to Caelo CMS"
- * while HTTPS still ERR_CONNECTION_CLOSEDs and the bootstrap URL is
- * useless. Times out after 35 min with a clear escalation note.
+ * Poll the load balancer's managed certificates until one serves the admin
+ * host (cert-wait.ts). Pulumi reports a certificate "created" the moment GCP
+ * queues it; validation takes 5-60 min after DNS resolves. Without this step
+ * the wizard would print the bootstrap URL while HTTPS still fails. Only the
+ * admin host is waited for: the main domain validates after go-live.
  */
-async function stepWaitForCertActive(projectId: string): Promise<void> {
-  const s = spinner();
-  s.start("Waiting for managed TLS cert to validate (typically 5-15 min)...");
-  const deadline = Date.now() + 35 * 60 * 1000;
-  let lastStatus = "";
-  while (Date.now() < deadline) {
-    const r = await gcloud([
-      "compute",
-      "target-https-proxies",
-      "list",
-      "--project",
-      projectId,
-      "--format=value(sslCertificates)",
-    ]);
-    if (!r.ok) {
-      s.stop(red(`gcloud target-https-proxies list failed: ${r.stderr.trim()}`));
-      cancel("Aborted.");
-      process.exit(1);
-    }
-    const certUrl = r.stdout.trim().split(/\s+/)[0] ?? "";
-    const certName = certUrl.split("/").pop() ?? "";
-    if (!certName) {
-      s.stop(red("Could not resolve managed cert name from HTTPS proxy."));
-      cancel("Aborted.");
-      process.exit(1);
-    }
-    const desc = await gcloud([
-      "compute",
-      "ssl-certificates",
-      "describe",
-      certName,
-      "--global",
-      "--project",
-      projectId,
-      "--format=value(managed.status,managed.domainStatus)",
-    ]);
-    const text = (desc.stdout || "").trim();
-    if (text !== lastStatus) {
-      s.message(`Cert ${certName}: ${text || "(no status yet)"}`);
-      lastStatus = text;
-    }
-    // Status format: "ACTIVE\t{'caelo-cms.com': 'ACTIVE', 'admin.caelo-cms.com': 'ACTIVE'}"
-    if (/^ACTIVE\b/.test(text) && !/FAILED/.test(text) && !/PROVISIONING/.test(text)) {
-      s.stop(green(`Managed TLS cert is ACTIVE for all domains`));
-      return;
-    }
-    if (/FAILED_NOT_VISIBLE/.test(text)) {
-      s.message(
-        `${cyan(certName)} validation can't reach the LB yet — check DNS A records resolve to LB IP. Will keep polling.`,
-      );
-    }
-    await new Promise((res) => setTimeout(res, 30 * 1000));
+async function stepWaitForCertActive(projectId: string, adminHost: string): Promise<void> {
+  // clack's spinner swallows SIGINT; exit explicitly so Ctrl-C stops the wait.
+  const s = spinner({
+    cancelMessage: "Stopped. Re-run the installer to resume waiting for the certificate.",
+    onCancel: () => process.exit(130),
+  });
+  s.start(
+    `Waiting for the TLS certificate of ${adminHost} (usually 15-60 min once DNS resolves)...`,
+  );
+  log.info(
+    dim(
+      "Safe to stop with Ctrl-C: re-running the installer resumes here; finished steps are skipped.",
+    ),
+  );
+  const r = await waitForCert({
+    probe: () => lbCertProbe(gcloud, { projectId, hostname: adminHost }),
+    timeoutMs: CERT_WAIT_TIMEOUT_MS,
+    intervalMs: 30 * 1000,
+    onUpdate: (detail) => s.message(`Certificate: ${detail}`),
+  });
+  if (r.ok) {
+    s.stop(green(`TLS certificate for ${adminHost} is ACTIVE`));
+    return;
   }
-  s.stop(yellow("Cert still not ACTIVE after 35 min."));
+  if (r.reason === "error") {
+    s.stop(red(r.error));
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(yellow(`The certificate for ${adminHost} is not ACTIVE after 60 min.`));
   log.warn(
     [
-      "The cert may still finish on its own — Google Managed Cert validation can take up to 60 min.",
-      "Check status anytime:",
+      "It may still finish on its own. Check its status with:",
       `  ${bold(`gcloud compute ssl-certificates list --global --project=${projectId}`)}`,
-      "Common causes if it never flips ACTIVE:",
-      "  - DNS A records don't resolve to the LB IP yet (check `dig +short caelo-cms.com`)",
-      "  - The LB's HTTP port-80 listener isn't reachable from the public internet",
+      "Common causes if it never turns ACTIVE:",
+      `  - ${adminHost} does not resolve to the load balancer IP yet (check \`dig +short ${adminHost}\`)`,
+      "  - the load balancer's port 80/443 is not reachable from the internet",
     ].join("\n"),
   );
 }
@@ -1299,18 +1281,82 @@ async function stepUploadStaticPlaceholder(
   markStepDone(installId, stepName, { bucket: bucketName });
 }
 
+/** The install's Pulumi outputs, as the `pulumi-up` step recorded them. */
+async function recordedStackOutputs(
+  installId: string,
+  projectId: string,
+): Promise<Record<string, unknown>> {
+  const payload = (await import("../install-state.js")).getStepPayload<{
+    outputs: Record<string, unknown>;
+  }>(installId, `pulumi-up-${projectId}`);
+  return payload?.outputs ?? {};
+}
+
+/** The stack's `dnsRecordsRequiredOut`, as records. */
+function stackDnsRecords(outputs: Record<string, unknown>): InstallDnsRecord[] {
+  return Array.isArray(outputs.dnsRecordsRequiredOut)
+    ? (outputs.dnsRecordsRequiredOut as InstallDnsRecord[])
+    : [];
+}
+
+const ADAPTER_RECORD_TYPES = new Set<string>(["A", "AAAA", "CNAME", "TXT"]);
+
+/**
+ * `gcp`: make the "set now" DNS records real through the DNS adapter
+ * (Cloudflare API, or print + poll for a manual registrar) before the
+ * certificate wait, which needs them. The main-domain records that switch a
+ * live site are never applied here — the summary lists them for go-live.
+ * Idempotent: a finished step is skipped on re-runs.
+ */
+async function stepGcpDnsRecords(installId: string): Promise<void> {
+  const meta = readMetadata(installId);
+  if (!meta?.projectId) return;
+  const stepName = `dns-${meta.projectId}`;
+  if (isStepDone(installId, stepName)) return;
+  const records = stackDnsRecords(await recordedStackOutputs(installId, meta.projectId));
+  if (records.length === 0) {
+    cancel(
+      "The stack reported no DNS records (dnsRecordsRequiredOut). Re-run the installer to refresh its outputs.",
+    );
+    process.exit(1);
+  }
+  const { setNow, atGoLive } = groupDnsRecords(records, meta.domain);
+  if (atGoLive.length > 0) {
+    log.warn(
+      yellow(
+        `Not touching ${meta.domain} itself: its records switch a live website to Caelo and are listed at the end for go-live.`,
+      ),
+    );
+  }
+  const toApply = setNow.filter((r): r is InstallDnsRecord & { type: DnsRecord["type"] } =>
+    ADAPTER_RECORD_TYPES.has(r.type),
+  );
+  const adapter = await pickDnsAdapter({ domain: meta.domain });
+  log.info(`DNS adapter: ${bold(adapter.name)}`);
+  try {
+    await adapter.applyRecords(
+      toApply.map((r) => ({ hostname: r.hostname, type: r.type, value: r.value })),
+    );
+    markStepDone(installId, stepName, { adapter: adapter.name });
+  } catch (e) {
+    log.warn(
+      yellow(`DNS records not confirmed yet: ${e instanceof Error ? e.message : String(e)}`),
+    );
+    log.warn(
+      `Set them at your registrar, then re-run ${bold("bunx @caelo-cms/provisioning")} to resume.`,
+    );
+    cancel("Stopped at the DNS step.");
+    process.exit(1);
+  }
+}
+
 async function stepFinalize(installId: string): Promise<void> {
   const meta = readMetadata(installId);
   const progress = readSecret(installId, "pulumi-passphrase"); // touch to verify state still present
   void progress;
-  if (!meta) return;
-  const upStep = `pulumi-up-${meta.projectId}`;
-  const upPayload = (await import("../install-state.js")).getStepPayload<{
-    outputs: Record<string, unknown>;
-  }>(installId, upStep);
-  const outputs = upPayload?.outputs ?? {};
+  if (!meta?.projectId) return;
+  const outputs = await recordedStackOutputs(installId, meta.projectId);
   const provider = String(outputs.providerOut ?? "gcp");
-  const lbIp = String(outputs.lbIpOut ?? "");
   const adminDomainOut = String(outputs.adminDomainOut ?? `admin.${meta.domain}`);
   const adminCloudRunUrl = String(outputs.adminCloudRunUrlOut ?? "");
 
@@ -1326,55 +1372,26 @@ async function stepFinalize(installId: string): Promise<void> {
       ? `${adminCloudRunUrl}/setup?token=${bootstrapToken}`
       : String(outputs.bootstrapUrlOut ?? "<unknown>");
 
-  // gcp-firebase: surface the Firebase Hosting DNS records.
-  // gcp: auto-create via Cloudflare if CLOUDFLARE_API_TOKEN is set;
-  // otherwise the manual adapter prints + verify-polls.
-  if (provider === "gcp" && lbIp.length > 0 && lbIp !== "<unknown>") {
-    const stepName = `dns-${meta.projectId}`;
-    if (!isStepDone(installId, stepName)) {
-      const adapter = await pickDnsAdapter({ domain: meta.domain });
-      log.info(`DNS adapter: ${bold(adapter.name)}`);
-      try {
-        await adapter.applyRecords([
-          { hostname: meta.domain, type: "A", value: lbIp },
-          { hostname: adminDomainOut, type: "CNAME", value: "ghs.googlehosted.com." },
-        ]);
-        markStepDone(installId, stepName, { adapter: adapter.name });
-      } catch (e) {
-        log.warn(
-          yellow(
-            `DNS auto-create did not fully succeed: ${e instanceof Error ? e.message : String(e)}`,
-          ),
-        );
-        log.warn(
-          `Verify your DNS records manually + re-run ${bold("bunx @caelo-cms/provisioning")} to resume.`,
-        );
-      }
-    }
-  }
-
-  // Firebase Hosting prints A + TXT records; the operator adds them
-  // at the registrar manually (no auto-adapter for now — Cloudflare
-  // is gcp-only because the record-types differ).
-  const dnsRecordsRequired = Array.isArray(outputs.dnsRecordsRequiredOut)
-    ? (outputs.dnsRecordsRequiredOut as Array<{
-        hostname: string;
-        type: string;
-        value: string;
-        purpose?: string;
-      }>)
-    : [];
+  // Both providers report their records in `dnsRecordsRequiredOut`; the
+  // summary lists them in two groups so the main-domain records that take a
+  // live site offline are not set during the install (dns/groups.ts). On gcp
+  // the "set now" group was already applied before the certificate wait.
+  const dnsRecords = stackDnsRecords(outputs);
+  const groups = groupDnsRecords(dnsRecords, meta.domain);
   const dnsLines: string[] = [];
-  if (provider === "gcp-firebase" && dnsRecordsRequired.length > 0) {
-    dnsLines.push("", bold(`DNS records to add at your registrar for ${meta.domain}:`));
-    for (const r of dnsRecordsRequired) {
-      dnsLines.push(`  ${r.type.padEnd(6)} ${r.hostname.padEnd(meta.domain.length)} → ${r.value}`);
+  if (dnsRecords.length > 0) {
+    dnsLines.push("", bold(`DNS records for ${meta.domain}:`));
+    dnsLines.push(...formatDnsRecordGroups(groups, meta.domain).map((l) => `  ${l}`));
+    if (groups.atGoLive.length > 0) {
+      dnsLines.push(
+        provider === "gcp-firebase"
+          ? `    ${dim("Firebase Hosting issues TLS for the main domain itself once its records point at it.")}`
+          : `    ${dim(`The certificate for ${meta.domain} is issued after the switch (15-60 min of HTTPS errors on it).`)}`,
+      );
     }
-    dnsLines.push(
-      `  ${dim("After DNS propagates (5-30 min), Firebase Hosting issues TLS automatically.")}`,
-    );
   }
 
+  const adminBase = provider === "gcp-firebase" ? adminCloudRunUrl : `https://${adminDomainOut}`;
   const adminNote: string[] =
     provider === "gcp-firebase"
       ? [
@@ -1383,7 +1400,7 @@ async function stepFinalize(installId: string): Promise<void> {
           `  Not configured — using the Cloud Run URL above.`,
           `  To bind ${cyan(`admin.${meta.domain}`)}, run`,
           `  ${dim("bunx @caelo-cms/provisioning admin-domain enable")}`,
-          `  (it walks you through the one-time Search Console verification and prints the DNS record).`,
+          `  (it walks you through the one-time Search Console verification, prints the DNS record and waits for the certificate).`,
           "",
           bold("Protected staging site:"),
           `  Stage builds render ${cyan(installStagingHost(meta))}; to serve it, run`,
@@ -1397,15 +1414,17 @@ async function stepFinalize(installId: string): Promise<void> {
       green(`✓ ${meta.domain} provisioned.`),
       ...dnsLines,
       "",
-      bold("Owner setup (open in your browser):"),
-      `  ${cyan(String(bootstrapUrl))}`,
+      bold("Next steps:"),
+      `  1. Owner setup — open in your browser (sign in with ${meta.ownerEmail}):`,
+      `     ${cyan(String(bootstrapUrl))}`,
+      `  2. AI provider — visit ${cyan(`${adminBase}/security/ai`)} and paste your Anthropic API key`,
+      `     (encrypted under the project KEK and stored in the database, no env vars).`,
+      `  3. Optional: connect Claude Code or another MCP client — at ${cyan(`${adminBase}/security/mcp`)}`,
+      `     click ${bold("New token")} (scope ${bold("chat")}: Caelo's AI does the work; ${bold("admin")}: your agent drives Caelo's tools),`,
+      "     copy the bearer (shown once) and run the `claude mcp add` command the page shows.",
+      "     The admin is behind Google IAP, so run `gcloud auth application-default login` once on that machine.",
+      `     Details: ${cyan("https://caelo-cms.com/mcp")}`,
       ...adminNote,
-      "",
-      bold("Configure AI provider:"),
-      provider === "gcp-firebase"
-        ? `  After first login, visit ${cyan(`${adminCloudRunUrl}/security/ai`)} to paste your Anthropic API key.`
-        : `  After first login, visit ${cyan(`https://admin.${meta.domain}/security/ai`)} to paste your Anthropic API key.`,
-      `  The key is encrypted under the project KEK + stored in ai_providers — no env-var management.`,
       "",
       bold("Lifecycle commands:"),
       `  ${dim("bunx @caelo-cms/provisioning status")}     — health check + monthly cost`,

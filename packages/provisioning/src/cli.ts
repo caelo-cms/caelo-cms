@@ -965,16 +965,99 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
   }
   const mappedTo = kind === "admin" ? "the admin" : "the gateway (protected staging site)";
   console.log(
-    `${r.hostname} ${r.created ? "is now mapped" : "was already mapped"} to ${mappedTo}.` +
-      (r.records.length > 0
-        ? `\nAdd at your registrar (TLS is issued once DNS resolves, typically 15-60 min):\n${r.records
-            .map((d) => `  ${d.type.padEnd(6)} ${d.name} -> ${d.value}`)
-            .join("\n")}`
-        : "\nGoogle has not published the DNS records yet; run the command again in a minute.") +
-      (kind === "staging"
-        ? `\nStaging access (who may open it, crawler credentials): admin → Security → Staging access.\nIf you changed the host here, set the same host in the admin (Security → Domains) so Stage renders it.`
-        : ""),
+    `${r.hostname} ${r.created ? "is now mapped" : "was already mapped"} to ${mappedTo}.`,
   );
+  if (kind === "staging") {
+    console.log(
+      "Staging access (who may open it, crawler credentials): admin → Security → Staging access.\n" +
+        "If you changed the host here, set the same host in the admin (Security → Domains) so Stage renders it.",
+    );
+  }
+  if (r.records.length === 0) {
+    console.log(
+      `Google has not published the DNS records yet; run \`cms-provision ${command} enable\` again in a minute.`,
+    );
+    return;
+  }
+  const waited = await waitForDomainMappingCert({
+    command,
+    hostname: r.hostname,
+    records: r.records,
+    projectId: meta.projectId,
+    region: meta.region,
+  });
+  if (!waited) process.exit(4);
+  console.log(
+    kind === "admin"
+      ? `Admin login: https://${r.hostname}/login`
+      : `Protected staging site: https://${r.hostname}/`,
+  );
+}
+
+/**
+ * After `<kind>-domain enable` mapped the host: print the DNS records, then
+ * poll the mapping until Google has issued its certificate (cert-wait.ts),
+ * with a spinner. Returns false on timeout or a gcloud failure, after saying
+ * how to check the status. Ctrl-C is safe: the command is idempotent, and
+ * re-running it finds the mapping and resumes the wait.
+ */
+async function waitForDomainMappingCert(target: {
+  command: string;
+  hostname: string;
+  records: readonly { name: string; type: string; value: string }[];
+  projectId: string;
+  region: string;
+}): Promise<boolean> {
+  const { spinner } = await import("@clack/prompts");
+  const { CERT_WAIT_TIMEOUT_MS, domainMappingProbe, waitForCert } = await import("./cert-wait.js");
+  const { gcloud } = await import("./gcloud.js");
+  const width = Math.max(...target.records.map((d) => d.name.length));
+  console.log(
+    `\nSet this DNS record at your registrar (if you have not already):\n${target.records
+      .map((d) => `  ${d.type.padEnd(6)} ${d.name.padEnd(width)} → ${d.value}`)
+      .join("\n")}\n` +
+      "Google issues the TLS certificate once the record resolves — usually 15-60 minutes.\n" +
+      `Safe to stop with Ctrl-C: \`cms-provision ${target.command} enable\` again resumes waiting.\n`,
+  );
+  // clack's spinner swallows SIGINT; exit explicitly so Ctrl-C stops the wait.
+  const s = spinner({
+    cancelMessage: `Stopped. Run \`cms-provision ${target.command} enable\` again to resume waiting.`,
+    onCancel: () => process.exit(130),
+  });
+  s.start(`Waiting for the certificate of ${target.hostname} (DNS set? this takes 15-60 min)`);
+  const r = await waitForCert({
+    probe: () =>
+      domainMappingProbe(gcloud, {
+        hostname: target.hostname,
+        region: target.region,
+        projectId: target.projectId,
+      }),
+    timeoutMs: CERT_WAIT_TIMEOUT_MS,
+    intervalMs: 30 * 1000,
+    onUpdate: (detail) => s.message(`${target.hostname}: ${detail}`),
+  });
+  if (r.ok) {
+    s.stop(`Certificate for ${target.hostname} is ready.`);
+    return true;
+  }
+  const check = `gcloud beta run domain-mappings describe --domain=${target.hostname} --region=${target.region} --project=${target.projectId}`;
+  if (r.reason === "error") {
+    s.error(`Could not read the domain mapping: ${r.error}`);
+    console.error(`Check it by hand with:\n  ${check}`);
+    return false;
+  }
+  s.error(`No certificate for ${target.hostname} after 60 minutes.`);
+  console.error(
+    [
+      r.lastDetail ? `Google reports: ${r.lastDetail}` : "",
+      `Check that the record resolves: dig +short ${target.hostname} ${target.records[0]?.type ?? "CNAME"}`,
+      `Check the mapping's status:    ${check}`,
+      `Once DNS resolves, run \`cms-provision ${target.command} enable\` again to resume waiting.`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+  return false;
 }
 
 /**
