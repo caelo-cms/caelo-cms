@@ -62,7 +62,7 @@ describe("formatDnsRecordGroups", () => {
     expect(lines).toContain("Only at go-live (these move example.com to Caelo):");
     expect(lines.join("\n")).toContain("takes a website that is live on example.com offline");
     expect(lines.indexOf("Only at go-live (these move example.com to Caelo):")).toBeGreaterThan(
-      lines.findIndex((l) => l.includes("admin.example.com")),
+      lines.findIndex((l) => /^\s+A\s+admin\.example\.com\s/.test(l)),
     );
   });
 
