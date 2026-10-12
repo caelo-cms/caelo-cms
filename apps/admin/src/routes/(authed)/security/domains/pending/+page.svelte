@@ -19,7 +19,8 @@
     <p class="text-sm text-muted-foreground">
       AI-proposed domain add / remove actions wait here. Approving an <code>add</code> triggers
       cms-provision regenerate-caddy on next deploy and ACME issues a TLS cert; approving a
-      <code>remove</code> drops the Caddy vhost on next deploy.
+      <code>remove</code> drops the Caddy vhost on next deploy; approving a <code>reconnect</code>
+      re-creates a stuck Firebase Hosting custom domain.
     </p>
   </div>
 

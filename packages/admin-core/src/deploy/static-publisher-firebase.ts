@@ -49,7 +49,7 @@ const FIREBASE_HOSTING_API = "https://firebasehosting.googleapis.com/v1beta1";
 const PARALLEL_UPLOADS = 50;
 const PREVIEW_CHANNEL_TTL_DAYS = 7;
 
-function siteName(): string {
+export function siteName(): string {
   const site = process.env.CAELO_FIREBASE_SITE;
   if (!site) {
     throw new Error(
@@ -59,14 +59,14 @@ function siteName(): string {
   return site;
 }
 
-async function googleAuthToken(): Promise<string> {
+export async function googleAuthToken(
+  scopes: readonly string[] = ["https://www.googleapis.com/auth/firebase.hosting"],
+): Promise<string> {
   // Use google-auth-library to fetch an ADC access token. On Cloud
   // Run this picks up the service account identity automatically.
   // Lazy-import so self-hosted installs don't pull the dep.
   const { GoogleAuth } = await import("google-auth-library");
-  const auth = new GoogleAuth({
-    scopes: ["https://www.googleapis.com/auth/firebase.hosting"],
-  });
+  const auth = new GoogleAuth({ scopes: [...scopes] });
   const client = await auth.getClient();
   const token = await client.getAccessToken();
   if (!token.token) {
@@ -305,7 +305,23 @@ interface CreateChannelResponse {
   url: string; // public preview URL
 }
 
-async function firebaseFetch<T>(
+/**
+ * A non-2xx answer from the Firebase Hosting REST API. Carries the HTTP
+ * status so callers can branch on it (the custom-domain reconnect treats
+ * 404 on DELETE as "already gone" and 409 on create as "soft-deleted —
+ * undelete instead").
+ */
+export class FirebaseHostingHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "FirebaseHostingHttpError";
+  }
+}
+
+export async function firebaseFetch<T>(
   path: string,
   init: RequestInit & { body?: BodyInit; token?: string } = {},
 ): Promise<T> {
@@ -323,9 +339,14 @@ async function firebaseFetch<T>(
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    throw new Error(`firebase-hosting ${path} → ${res.status} ${res.statusText}: ${detail}`);
+    throw new FirebaseHostingHttpError(
+      res.status,
+      `firebase-hosting ${path} → ${res.status} ${res.statusText}: ${detail}`,
+    );
   }
-  return (await res.json()) as T;
+  // DELETE answers may carry an empty body.
+  const text = await res.text();
+  return (text ? JSON.parse(text) : {}) as T;
 }
 
 /**

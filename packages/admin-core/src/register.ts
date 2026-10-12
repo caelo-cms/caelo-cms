@@ -172,10 +172,12 @@ import {
   proposeDeployRollbackOp,
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
+import { hostingStatusOp, reconnectHostingDomainOp } from "./ops/domain_hosting.js";
 import {
   executeDomainProposalOp,
   listPendingDomainProposalsOp,
   proposeDomainAddOp,
+  proposeDomainReconnectOp,
   proposeDomainRemoveOp,
   rejectDomainProposalOp,
 } from "./ops/domain_pending.js";
@@ -963,6 +965,11 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // same release (diagnostic, no destructive side effect).
   registry.register(proposeDomainAddOp);
   registry.register(proposeDomainRemoveOp);
+  // Firebase Hosting custom domains (gcp-firebase): live status + stuck
+  // detection (AI-readable), reconnect gated through propose_reconnect.
+  registry.register(hostingStatusOp);
+  registry.register(reconnectHostingDomainOp);
+  registry.register(proposeDomainReconnectOp);
   registry.register(executeDomainProposalOp);
   registry.register(rejectDomainProposalOp);
   registry.register(listPendingDomainProposalsOp);
