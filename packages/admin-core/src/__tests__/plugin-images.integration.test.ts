@@ -297,7 +297,11 @@ test("Deno paid calls are idempotent, private, metered and denied in preview/vis
     pluginSlug: items[0]!.slug,
     operationName: "run",
     args: { action: "describe", input: {} },
-    visitorContext: { visitorId: "visitor", sessionToken: null },
+    visitorContext: {
+      visitorId: "visitor",
+      sessionToken: null,
+      captcha: { enforced: true, proofVerified: true },
+    },
     invocation: { origin: "visitor", actorId: "visitor" },
   });
   expect(visitor.ok).toBe(false);

@@ -13,13 +13,10 @@
  *                                   crash-and-retry doesn't double-archive.
  *
  *   comment_archive.list_for_page — read approved archived comments for
- *                                   one page. Used by the
- *                                   comments plugin's staticRender +
- *                                   metaSignature so the static bake
- *                                   reads from cms_admin (the long-term
- *                                   store) rather than cms_public (the
- *                                   inbox). cms_public stays small +
- *                                   ephemeral.
+ *                                   one page (static bake + the visitor
+ *                                   `list_approved`). Defined in
+ *                                   @caelo-cms/plugin-host (gateway-ops.ts)
+ *                                   because the API gateway runs it too.
  *
  * Both ops run as the comments plugin's actor (or any system context).
  * Tier-1 plugin handlers reach them via `ctx.cms.call("comment_archive.*",
@@ -79,80 +76,5 @@ export const commentArchiveInsertOp = defineOperation({
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     return ok({ archiveId: rows[0]?.id ?? null });
-  },
-});
-
-const listForPageInput = z
-  .object({
-    pageId: z.string().uuid(),
-    status: z.enum(["approved", "rejected", "spam"]).optional(),
-    since: z.string().datetime().optional(),
-    limit: z.number().int().min(1).max(500).optional(),
-  })
-  .strict();
-
-const archiveRowSchema = z.object({
-  id: z.string(),
-  publicRowId: z.string(),
-  pageId: z.string(),
-  parentId: z.string().nullable(),
-  authorName: z.string(),
-  content: z.string(),
-  status: z.string(),
-  submittedAt: z.string(),
-  archivedAt: z.string(),
-});
-
-export const commentArchiveListForPageOp = defineOperation({
-  name: "comment_archive.list_for_page",
-  actorScope: ["human", "ai", "system", "plugin"],
-  database: "cms_admin",
-  input: listForPageInput,
-  output: z.object({ comments: z.array(archiveRowSchema) }),
-  handler: async (_ctx, input, tx) => {
-    const status = input.status ?? "approved";
-    const limit = input.limit ?? 200;
-    const since = input.since ?? "1970-01-01T00:00:00Z";
-    const rows = (await tx.execute(sql`
-      SELECT
-        id::text             AS id,
-        public_row_id::text  AS public_row_id,
-        page_id::text        AS page_id,
-        parent_id::text      AS parent_id,
-        author_name,
-        content,
-        status,
-        submitted_at,
-        archived_at
-      FROM comment_archive
-      WHERE page_id = ${input.pageId}::uuid
-        AND status = ${status}
-        AND archived_at > ${since}::timestamptz
-      ORDER BY submitted_at ASC
-      LIMIT ${limit}
-    `)) as unknown as Array<{
-      id: string;
-      public_row_id: string;
-      page_id: string;
-      parent_id: string | null;
-      author_name: string;
-      content: string;
-      status: string;
-      submitted_at: string | Date;
-      archived_at: string | Date;
-    }>;
-    return ok({
-      comments: rows.map((r) => ({
-        id: r.id,
-        publicRowId: r.public_row_id,
-        pageId: r.page_id,
-        parentId: r.parent_id,
-        authorName: r.author_name,
-        content: r.content,
-        status: r.status,
-        submittedAt: r.submitted_at instanceof Date ? r.submitted_at.toISOString() : r.submitted_at,
-        archivedAt: r.archived_at instanceof Date ? r.archived_at.toISOString() : r.archived_at,
-      })),
-    });
   },
 });

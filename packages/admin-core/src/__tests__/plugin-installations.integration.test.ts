@@ -561,7 +561,11 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
       pluginSlug: slug,
       operationName: "public_probe",
       args: {},
-      visitorContext: { visitorId: "test-visitor", sessionToken: null },
+      visitorContext: {
+        visitorId: "test-visitor",
+        sessionToken: null,
+        captcha: { enforced: true, proofVerified: true },
+      },
       invocation: { origin: "visitor", actorId: "test-visitor" },
     }),
   ).toEqual({
@@ -744,7 +748,11 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
         pluginSlug: slug,
         operationName: "public_probe",
         args: {},
-        visitorContext: { visitorId: "test-visitor", sessionToken: null },
+        visitorContext: {
+          visitorId: "test-visitor",
+          sessionToken: null,
+          captcha: { enforced: true, proofVerified: true },
+        },
         invocation: { origin: "visitor", actorId: "test-visitor" },
       })
     ).ok,

@@ -96,17 +96,22 @@ export const VARIANT_SCRIPT = `
 })();
 `.trim();
 
+interface AssignmentVariant {
+  label: string;
+  weight: number;
+}
+
 interface AssignmentBody {
   visitorId: string;
   page: string;
 }
 
-interface ExperimentRow {
-  id: string;
-  variants: Array<{ label: string; weight: number }>;
-  status: string;
-}
-
+/**
+ * Pick and record a visitor's variant for one active experiment. Runs the
+ * gateway's own operations (plugin-host gateway-ops.ts) as the system
+ * actor; `gateway_role` may read only active experiments' assignment
+ * columns and append impressions (migration 0252).
+ */
 export async function handleVariantAssign(args: {
   adapter: DatabaseAdapter;
   registry: OperationRegistry;
@@ -117,25 +122,31 @@ export async function handleVariantAssign(args: {
   if (typeof args.body.visitorId !== "string" || !args.body.visitorId) {
     return { ok: false, reason: "visitorId required" };
   }
-  // Fetch the experiment via the list op + filter (cheap; few experiments).
-  const r = await execute(args.registry, args.adapter, SYSTEM_CTX, "experiments.list", {
-    status: "active",
+  const r = await execute(args.registry, args.adapter, SYSTEM_CTX, "experiments.get_active", {
+    slug: args.expSlug,
   });
-  if (!r.ok) return { ok: false, reason: "could not load experiments" };
-  const list = (r.value as { experiments: Array<ExperimentRow & { slug: string }> }).experiments;
-  const exp = list.find((e) => e.slug === args.expSlug);
+  if (!r.ok) {
+    // A malformed slug is the caller's mistake; anything else is ours.
+    if (r.error.kind === "ValidationFailed") return { ok: false, reason: "invalid experiment" };
+    console.error(`[api-gateway] experiments.get_active failed: ${r.error.kind}`);
+    return { ok: false, reason: "could not load experiments" };
+  }
+  const exp = (r.value as { experiment: { id: string; variants: AssignmentVariant[] } | null })
+    .experiment;
   if (!exp) return { ok: false, reason: "no active experiment" };
   const variant = pickVariant(args.body.visitorId, args.expSlug, exp.variants);
   if (!variant) return { ok: false, reason: "no variant resolved" };
-  // Best-effort assignment record.
-  try {
-    await execute(args.registry, args.adapter, SYSTEM_CTX, "experiments.record_assignment", {
-      experimentId: exp.id,
-      variantLabel: variant,
-      visitorIdHash: args.visitorIdHash,
-    });
-  } catch {
-    // best-effort
+  // The visitor still gets the variant when the impression cannot be
+  // counted, but the lost count is logged, never swallowed.
+  const recorded = await execute(
+    args.registry,
+    args.adapter,
+    SYSTEM_CTX,
+    "experiments.record_assignment",
+    { experimentId: exp.id, variantLabel: variant, visitorIdHash: args.visitorIdHash },
+  );
+  if (!recorded.ok) {
+    console.error(`[api-gateway] experiments.record_assignment failed: ${recorded.error.kind}`);
   }
   return { ok: true, variant };
 }

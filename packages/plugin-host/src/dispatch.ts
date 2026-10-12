@@ -212,6 +212,19 @@ interface MakeContextOpts {
 }
 
 /**
+ * What the gateway established about the request's captcha before
+ * dispatching it (issue #634). A plugin's `ctx.captcha.requireProof` is
+ * satisfied when the Owner turned the captcha off (`enforced: false`, the
+ * /security/gateway "Off" setting) or when the gateway verified and
+ * consumed a proof for this very request (`proofVerified`). There is no
+ * token a visitor can send to the plugin that stands in for either.
+ */
+export interface VisitorCaptchaVerdict {
+  readonly enforced: boolean;
+  readonly proofVerified: boolean;
+}
+
+/**
  * Per-request visitor context populated by the gateway. Optional
  * `sessionMutation` lets the auth plugin's `setSession()` mark the
  * response so the gateway emits a Set-Cookie. Mutated in-place; the
@@ -220,6 +233,8 @@ interface MakeContextOpts {
 export interface VisitorDispatchContext {
   readonly visitorId: string;
   readonly sessionToken: string | null;
+  /** The gateway's captcha verdict for this request; `ctx.captcha.requireProof` answers from it. */
+  readonly captcha: VisitorCaptchaVerdict;
   readonly sessionMutation?: {
     current:
       | { kind: "none" }

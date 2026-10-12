@@ -3,8 +3,9 @@
 /**
  * P13 — A/B experiments ops.
  *  - experiments.create / activate / complete / list / get / get_results
- *  - experiments.record_assignment — system-only; called by the gateway's
- *    /api/variant/assign endpoint to bump per-(variant, visitor) counts.
+ *  - experiments.record_assignment + experiments.get_active — the gateway's
+ *    /api/variant/assign surface; defined in @caelo-cms/plugin-host
+ *    (gateway-ops.ts) so the gateway can run them without admin-core.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -276,31 +277,5 @@ export const getExperimentResultsOp = defineOperation({
         totalImpressions: r.total_impressions,
       })),
     });
-  },
-});
-
-export const recordAssignmentOp = defineOperation({
-  name: "experiments.record_assignment",
-  // Why system-only: the gateway's /api/variant/assign endpoint records visitor assignments —
-  // traffic data, not an authoring action.
-  actorScope: ["system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      experimentId: z.string().uuid(),
-      variantLabel: z.string().min(1).max(120),
-      visitorIdHash: z.string().min(1).max(64),
-    })
-    .strict(),
-  output: z.object({}),
-  handler: async (_ctx, input, tx) => {
-    await tx.execute(sql`
-      INSERT INTO experiment_assignments (experiment_id, variant_label, visitor_id_hash, impressions, first_seen_at, last_seen_at)
-      VALUES (${input.experimentId}::uuid, ${input.variantLabel}, ${input.visitorIdHash}, 1, now(), now())
-      ON CONFLICT (experiment_id, variant_label, visitor_id_hash) DO UPDATE SET
-        impressions  = experiment_assignments.impressions + 1,
-        last_seen_at = now()
-    `);
-    return ok({});
   },
 });

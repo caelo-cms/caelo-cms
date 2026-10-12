@@ -146,9 +146,8 @@ beforeAll(async () => {
   // v0.2.18 — comments.moderate now drains to cms_admin via
   // ctx.cms.call("comment_archive.insert"); register the archive ops
   // here so the test bypassing register.ts still resolves them.
-  const { commentArchiveInsertOp, commentArchiveListForPageOp } = await import(
-    "../ops/plugins/comment_archive.js"
-  );
+  const { commentArchiveInsertOp } = await import("../ops/plugins/comment_archive.js");
+  const { commentArchiveListForPageOp } = await import("@caelo-cms/plugin-host");
   registry.register(commentArchiveInsertOp);
   registry.register(commentArchiveListForPageOp);
 });
@@ -564,6 +563,7 @@ describe("Auth plugin", () => {
       args: { email: "alice@example.com", password: "supersecret" },
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
+        captcha: { enforced: true, proofVerified: true },
         sessionToken: null,
         sessionMutation: mut,
       },
@@ -583,6 +583,7 @@ describe("Auth plugin", () => {
       args: {},
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
+        captcha: { enforced: true, proofVerified: true },
         sessionToken,
       },
     });
@@ -598,6 +599,7 @@ describe("Auth plugin", () => {
       args: {},
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
+        captcha: { enforced: true, proofVerified: true },
         sessionToken,
         sessionMutation: logoutMut,
       },
@@ -613,6 +615,7 @@ describe("Auth plugin", () => {
       args: {},
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
+        captcha: { enforced: true, proofVerified: true },
         sessionToken: null,
       },
     });
@@ -628,6 +631,7 @@ describe("Auth plugin", () => {
       args: { email: "alice@example.com", password: "supersecret" },
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
+        captcha: { enforced: true, proofVerified: true },
         sessionToken: null,
         sessionMutation: loginMut,
       },
@@ -642,6 +646,7 @@ describe("Auth plugin", () => {
       args: {},
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
+        captcha: { enforced: true, proofVerified: true },
         sessionToken: loginMut.current.sessionToken,
       },
     });

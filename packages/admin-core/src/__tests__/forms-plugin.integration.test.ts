@@ -98,6 +98,47 @@ async function bootstrapForms(): Promise<void> {
   await provisionSchemaFor("forms", formsPlugin.schema);
 }
 
+let savedCaptcha: { provider: string; prefix: string } | undefined;
+
+/** Read and overwrite the gateway's captcha settings (system-scoped). */
+async function captchaSettings(next?: {
+  provider: string;
+  prefix: string;
+}): Promise<{ provider: string; prefix: string } | undefined> {
+  const adminSql = new SQL(ADMIN_URL as string);
+  try {
+    return await adminSql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const [row] = (await tx`
+        SELECT captcha_provider AS provider, captcha_pow_target_prefix AS prefix
+        FROM site_settings WHERE id = 1`) as { provider: string; prefix: string }[];
+      if (next) {
+        await tx`UPDATE site_settings SET captcha_provider = ${next.provider},
+                 captcha_pow_target_prefix = ${next.prefix} WHERE id = 1`;
+      }
+      return row;
+    });
+  } finally {
+    await adminSql.end();
+  }
+}
+
+/**
+ * A solved PoW proof, as the forms Web Component attaches one (#634: the
+ * plugin's captcha check follows the gateway's verification in every
+ * environment, so a gateway submission without one is refused).
+ */
+async function captchaProof(): Promise<{ _caelo_captcha: { challenge: string; nonce: string } }> {
+  const c = await handleRequest(new Request("http://localhost/api/captcha/challenge"));
+  const { challenge, target } = (
+    (await c.json()) as { data: { challenge: string; target: string } }
+  ).data;
+  for (let nonce = 0; ; nonce++) {
+    const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
+    if (hex.startsWith(target)) return { _caelo_captcha: { challenge, nonce: String(nonce) } };
+  }
+}
+
 beforeAll(async () => {
   await wipe();
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
@@ -105,6 +146,8 @@ beforeAll(async () => {
   // P13 — gateway needs an adapter handle for body cap, signed cookies,
   // rate limit, captcha, request log middleware.
   setGatewayAdapter(adapter);
+  // One hex digit keeps the proofs cheap to compute.
+  savedCaptcha = await captchaSettings({ provider: "pow", prefix: "0" });
   invalidateGatewaySettings();
 });
 
@@ -114,6 +157,8 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  if (savedCaptcha) await captchaSettings(savedCaptcha);
+  invalidateGatewaySettings();
   await adapter.close();
 });
 
@@ -156,6 +201,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
         formSlug: FORM_SLUG,
         pageId: "00000000-0000-0000-0000-000000000001",
         data: { email: "alice@example.com", message: "hello!" },
+        ...(await captchaProof()),
       }),
     });
     const submitRes = await handleRequest(submitReq);
@@ -323,6 +369,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
         body: JSON.stringify({
           formSlug: "no-such-form",
           data: { x: 1 },
+          ...(await captchaProof()),
         }),
       }),
     );
