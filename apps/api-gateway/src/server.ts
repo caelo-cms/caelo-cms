@@ -446,22 +446,14 @@ export async function handleRequest(req: Request): Promise<Response> {
         { status: 400 },
       );
     }
-    let body: unknown;
-    try {
-      body = await req.json();
-    } catch {
-      return jsonResponse(
-        { ok: false, error: { kind: "BadRequest", message: "expected JSON body" } },
-        { status: 400 },
-      );
-    }
+    // Bucket on the gateway-verified cookie, never on a client-sent id:
+    // the cookie is HttpOnly, so page script cannot read it (#649).
     const visitor = await resolveVisitor(req, settings.cookieSecret);
     const r = await handleVariantAssign({
       adapter: cachedAdapter,
       registry: cachedRegistry,
       expSlug,
-      body: body as { visitorId: string; page: string },
-      visitorIdHash: visitor.visitorIdHash,
+      visitor,
     });
     if (!r.ok) {
       return jsonResponse(
@@ -469,7 +461,17 @@ export async function handleRequest(req: Request): Promise<Response> {
         { status: 400 },
       );
     }
-    return jsonResponse({ ok: true, data: { variant: r.variant } });
+    // A first-time visitor keeps the id they were bucketed on, so the
+    // next page load lands in the same variant.
+    const cookies: string[] = [];
+    if (visitor.isFresh) {
+      const signed = await signCookieValue({
+        value: visitor.visitorId,
+        secret: settings.cookieSecret,
+      });
+      cookies.push(visitorCookieHeader(signed));
+    }
+    return jsonResponse({ ok: true, data: { variant: r.variant } }, { setCookies: cookies });
   }
 
   // ---- Plugin dispatch ----
