@@ -164,7 +164,11 @@ describe("external plugin installation", () => {
       pluginSlug: slug,
       operationName: "save",
       args: { body: "private" },
-      visitorContext: { visitorId: "visitor", sessionToken: null },
+      visitorContext: {
+        visitorId: "visitor",
+        sessionToken: null,
+        captcha: { enforced: true, proofVerified: true },
+      },
     });
     expect(visitorWrite.ok).toBe(false);
     await call("plugins.disable", { slug });

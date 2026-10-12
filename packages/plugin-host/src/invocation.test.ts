@@ -11,7 +11,11 @@ import type { PluginContextTier1, PluginDefinition } from "@caelo-cms/plugin-sdk
 import { makePluginContext } from "./capabilities.js";
 import { assertInvocationConsistent, type LoadedPlugin, type PluginHostInfra } from "./dispatch.js";
 
-const VISITOR = { visitorId: "v", sessionToken: null };
+const VISITOR = {
+  visitorId: "v",
+  sessionToken: null,
+  captcha: { enforced: true, proofVerified: true },
+};
 const BRANCH = "22222222-2222-4222-8222-222222222222";
 
 describe("assertInvocationConsistent", () => {

@@ -31,7 +31,8 @@
  * audit), nothing else (migration 0248) — and cms_public as `public_role`.
  * Its plugin host only attaches what the admin registered and an Owner
  * activated (plugin-host gateway-attach.ts); it never registers, provisions
- * or activates anything itself.
+ * or activates anything itself. Its OperationRegistry holds only the core
+ * operations visitor paths call (plugin-host gateway-ops.ts, #634).
  */
 
 import { resolve } from "node:path";
@@ -39,6 +40,7 @@ import {
   bootstrapDispatchOnly,
   ensureDevSignedManifests,
   loadedPlugins,
+  registerGatewayOperations,
   runPluginOperation,
   syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
@@ -746,6 +748,8 @@ export async function handleRequest(req: Request): Promise<Response> {
       visitorId: visitor.visitorId,
       sessionToken: visitor.sessionToken,
       sessionMutation,
+      // The plugin's ctx.captcha.requireProof answers from this (#634).
+      captcha: { enforced: settings.captcha.provider !== "off", proofVerified: captchaPassed },
     },
   });
 
@@ -818,7 +822,10 @@ if (import.meta.main) {
     publicDatabaseUrl: urls.public,
     expectedRoles: GATEWAY_DATABASE_ROLES,
   });
+  // Exactly the core operations visitor paths need (#634); gateway_role's
+  // grants cover these and nothing more.
   const registry = new OperationRegistry();
+  registerGatewayOperations(registry);
   setGatewayAdapter(adapter);
   setGatewayRegistry(registry);
   // P13 audit re-pass — dedicated long-lived LISTEN connection.

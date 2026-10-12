@@ -17,7 +17,7 @@ These rules bind every plugin identically — shipped with a release or installe
 - `ctx.api` — the plugin's own public read surface for its Web Component.
 - `ctx.theme` — read-only theme tokens.
 - `ctx.visitor` — an opaque visitor id, the public user id and an IP hash. **Never** the visitor's session token.
-- `ctx.captcha` — proof verification for public writes.
+- `ctx.captcha` — proof verification for public writes. `requireProof()` is true when the API gateway verified the visitor's proof-of-work for this request (or the Owner turned the captcha off at /security/gateway). No token a plugin passes can stand in for a verified proof.
 - `publicOperations` — the operations a visitor may call through the API gateway. Everything else is refused (default deny).
 
 ## Grants — approved by the Owner, per plugin version
