@@ -30,7 +30,11 @@ if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SLUG = "test-public-ops";
 
-const VISITOR = { visitorId: "v-1", sessionToken: null };
+const VISITOR = {
+  visitorId: "v-1",
+  sessionToken: null,
+  captcha: { enforced: true, proofVerified: true },
+};
 
 let adapter: DatabaseAdapter;
 let infra: PluginHostInfra;

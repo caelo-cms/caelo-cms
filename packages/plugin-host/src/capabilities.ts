@@ -33,7 +33,12 @@ import type {
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
-import { hostSystemActorId, type LoadedPlugin, type PluginHostInfra } from "./dispatch.js";
+import {
+  hostSystemActorId,
+  type LoadedPlugin,
+  type PluginHostInfra,
+  type VisitorCaptchaVerdict,
+} from "./dispatch.js";
 import { operatorCanAuthor } from "./external-authorization.js";
 import { makePluginFonts } from "./fonts.js";
 import { makePluginImages } from "./images.js";
@@ -57,6 +62,7 @@ export interface MakePluginContextOpts {
 export interface VisitorContext {
   readonly visitorId: string;
   readonly sessionToken: string | null;
+  readonly captcha: VisitorCaptchaVerdict;
   readonly sessionMutation?: { current: SessionMutation };
 }
 
@@ -82,7 +88,7 @@ export async function makePluginContext(
     api: makePluginApi(plugin, infra),
     theme: makePluginTheme(),
     visitor: makePluginVisitor(visitorContext),
-    captcha: makePluginCaptcha(),
+    captcha: makePluginCaptcha(visitorContext),
     invocation: Object.freeze({ ...invocation }),
   };
 
@@ -605,16 +611,26 @@ function makePluginVisitor(visitorContext?: VisitorContext): PluginVisitor {
 }
 
 // ---------------------------------------------------------------------------
-// PluginCaptcha — stub in P12. Returns true on the literal "dev" token + on
-// any token in dev mode (NODE_ENV !== "production"). P13 wires real
-// Cloudflare Turnstile / hCaptcha + a tiny PoW scheme.
+// PluginCaptcha — answers from the gateway's own verification (issue #634).
 // ---------------------------------------------------------------------------
 
-function makePluginCaptcha(): PluginCaptcha {
+/**
+ * The gateway verifies the visitor's proof-of-work (`_caelo_captcha`)
+ * before dispatch and hands its verdict over in the visitor context; this
+ * only reads it. The token argument is ignored: a plugin-supplied string
+ * (the old `"dev"` sentinel) must never stand in for a verified proof, and
+ * it behaves the same in every NODE_ENV so tests exercise production.
+ *
+ * A call without a visitor context did not come from the public gateway
+ * (dispatch.ts rejects a `visitor` origin without one): it is the Owner
+ * panel, the AI or a system worker, already authenticated, with no visitor
+ * to challenge.
+ */
+export function makePluginCaptcha(visitorContext?: VisitorContext): PluginCaptcha {
   return {
-    requireProof: async (token) => {
-      if (process.env.NODE_ENV !== "production") return true;
-      return token === "dev";
+    requireProof: async () => {
+      if (!visitorContext) return true;
+      return !visitorContext.captcha.enforced || visitorContext.captcha.proofVerified;
     },
   };
 }

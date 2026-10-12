@@ -715,11 +715,14 @@ export interface PluginVisitor {
 }
 
 /**
- * Proof-of-work / CAPTCHA validation. Both tiers. Stub in P12 (returns
- * true on a "dev" token); P13 wires real Cloudflare Turnstile / hCaptcha
- * + a tiny PoW scheme. Plugins call this on visitor-write ops (comment
- * submit, form submit, signup) so P13 can drop in real validation
- * without a P12 plugin code change.
+ * Proof-of-work / CAPTCHA validation. Both tiers. Plugins call this on
+ * visitor-write ops (comment submit, form submit, signup). The API gateway
+ * verifies the visitor's proof (`_caelo_captcha` in the request body)
+ * before dispatch; this resolves true when that proof was verified for
+ * this request or the Owner turned the captcha off, and false otherwise.
+ * The `token` argument is ignored — no value a plugin passes can stand in
+ * for a verified proof. Calls that did not come from a visitor resolve
+ * true (there is no visitor to challenge).
  */
 export interface PluginCaptcha {
   requireProof(token: string | null): Promise<boolean>;

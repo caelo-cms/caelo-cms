@@ -7,6 +7,8 @@ import {
   readFontOp,
   resolveFontOp,
 } from "@caelo-cms/font-service";
+// The gateway runs these too, so they live in plugin-host (gateway-ops.ts, #634).
+import { commentArchiveListForPageOp, recordAssignmentOp } from "@caelo-cms/plugin-host";
 import type { OperationRegistry } from "@caelo-cms/query-api";
 import { createBugReportOp, listBugReportsOp } from "./ops/ai/bug-reports.js";
 import { logModuleizeAttemptOp } from "./ops/ai/moduleize_log.js";
@@ -206,7 +208,6 @@ import {
   createExperimentOp,
   getExperimentResultsOp,
   listExperimentsOp,
-  recordAssignmentOp,
 } from "./ops/experiments.js";
 import {
   executeRateLimitProposalOp,
@@ -331,10 +332,7 @@ import {
   listPluginCapabilityGrantsOp,
   proposeRevokePluginCapabilityOp,
 } from "./ops/plugins/capability_proposals.js";
-import {
-  commentArchiveInsertOp,
-  commentArchiveListForPageOp,
-} from "./ops/plugins/comment_archive.js";
+import { commentArchiveInsertOp } from "./ops/plugins/comment_archive.js";
 import {
   approvePluginInstallationOp,
   finalizePluginInstallationOp,
