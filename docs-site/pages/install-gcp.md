@@ -135,6 +135,16 @@ bunx @caelo-cms/provisioning admin-domain enable
 
 Google only maps a domain for a verified owner of it. If you have not verified yours yet, the command opens Search Console for you: add the TXT record it shows at your registrar, click **Verify**, then run the command again. It creates the mapping as your own gcloud account and prints the DNS record to add (usually a `CNAME` to `ghs.googlehosted.com.`); TLS follows once DNS resolves. Running it again is safe. With more than one install on the machine, pick one with `--install <install-id>`. (`--provider gcp` needs none of this: its load balancer serves `admin.<your domain>` from the start.)
 
+## Protected staging on your own domain (`gcp-firebase`)
+
+Every Stage is served at `staging.<your domain>` behind an access gate — the same artefacts Publish live ships, with only the host swapped (see [Protected staging](/staging-access)). The gateway serves that host; map it once:
+
+```bash
+bunx @caelo-cms/provisioning staging-domain enable
+```
+
+It works like `admin-domain enable` (same Search Console verification, run as your own gcloud account), opens the gateway's ingress for the domain mapping, and prints the DNS record to add (usually `CNAME staging → ghs.googlehosted.com.`). Running it again is safe. Who may open staging is set in the admin under **Security → Staging access**.
+
 ## Day-2 operations
 
 | Task | How |
@@ -142,10 +152,11 @@ Google only maps a domain for a verified owner of it. If you have not verified y
 | Upgrade to a new release | `bunx @caelo-cms/provisioning upgrade` (see below) |
 | Give someone admin access | Add them at `/security/users` (or ask the AI) — IAP follows automatically |
 | Serve the admin at `admin.<domain>` (gcp-firebase) | `bunx @caelo-cms/provisioning admin-domain enable` |
+| Serve staging at `staging.<domain>` (gcp-firebase) | `bunx @caelo-cms/provisioning staging-domain enable` |
 | Read logs | Cloud Logging — filter by `resource.labels.service_name="caelo-admin-prod"` |
 | Restore from PITR | `gcloud sql backups restore` — see [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
 | Rotate the AI provider key | Owner → `/security/ai` (stored encrypted in the database) |
-| Rotate a runtime secret | `bunx @caelo-cms/provisioning rotate-secret <postgres-password\|public-role-password\|gateway-role-password\|internal-secret\|tool-approval-secret>` — stores a new value in Secret Manager (for a database password also on its role: `postgres-password` is `admin_role`'s, the other two the gateway's `public_role` and `gateway_role`) and rolls the services that read it |
+| Rotate a runtime secret | `bunx @caelo-cms/provisioning rotate-secret <postgres-password\|public-role-password\|gateway-role-password\|internal-secret\|tool-approval-secret\|staging-gate-secret>` — stores a new value in Secret Manager (for a database password also on its role: `postgres-password` is `admin_role`'s, the other two the gateway's `public_role` and `gateway_role`) and rolls the services that read it |
 | Scale Cloud Run | `gcloud run services update caelo-admin-prod --max-instances=20` |
 
 ### What `upgrade` does
