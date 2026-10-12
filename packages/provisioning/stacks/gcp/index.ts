@@ -1020,17 +1020,29 @@ const urlMap = new gcp.compute.URLMap(
   opts,
 );
 
-// Managed TLS cert covering both hostnames. Single cert resource;
-// the certificate's SAN list grows by one entry vs the prior version.
+// Managed TLS cert covering both hostnames.
 const managedCert = new gcp.compute.ManagedSslCertificate(
   `${namePrefix}-cert`,
   { managed: { domains: [domain, adminDomain] } },
   opts,
 );
 
+// The admin's own certificate. A multi-domain managed certificate is only
+// served once EVERY domain on it validates, and the main domain validates
+// only after its A record points here — which an operator with a live site
+// does at go-live, not during the install. With this one the admin gets
+// HTTPS as soon as admin.<domain> resolves. The combined certificate above
+// stays (replacing it would re-issue the live site's certificate); the load
+// balancer picks whichever ACTIVE certificate matches the requested host.
+const adminCert = new gcp.compute.ManagedSslCertificate(
+  `${namePrefix}-admin-cert`,
+  { managed: { domains: [adminDomain] } },
+  opts,
+);
+
 const httpsProxy = new gcp.compute.TargetHttpsProxy(
   `${namePrefix}-https-proxy`,
-  { urlMap: urlMap.id, sslCertificates: [managedCert.id] },
+  { urlMap: urlMap.id, sslCertificates: [adminCert.id, managedCert.id] },
   opts,
 );
 

@@ -52,6 +52,8 @@ export interface EnsureOutcome {
   readonly id: string;
   readonly status: "present" | "applied" | "failed";
   readonly error?: string;
+  /** How an `applied` outcome differs from the plain case, for the log. */
+  readonly detail?: string;
 }
 
 const NOT_FOUND = /NOT_FOUND|not found|does not exist/i;
@@ -165,6 +167,13 @@ export async function readSecretReplication(
   return { ok: false, error: `${secretId} has no replication policy gcloud reports` };
 }
 
+/**
+ * gcloud's rejection when an org policy (`constraints/gcp.resourceLocations`)
+ * does not allow the location a secret would be created in — for
+ * `automatic` replication that is "global".
+ */
+const RESOURCE_LOCATIONS_VIOLATION = /gcp\.resourceLocations/;
+
 function replicationArgs(replication: SecretReplication): string[] {
   return replication.kind === "automatic"
     ? ["--replication-policy=automatic"]
@@ -180,11 +189,21 @@ function replicationArgs(replication: SecretReplication): string[] {
  * operator-set `CAELO_INTERNAL_SECRET`): the new secret starts with that
  * value, so moving the var to Secret Manager migrates the credential
  * instead of silently rotating it under callers that sign with it.
+ *
+ * Replication: a new secret gets the install's `replication`. Installs from
+ * before regional replication have `automatic` secrets, and an org policy
+ * on `gcp.resourceLocations` added since (or exempting the old secrets)
+ * rejects new automatic ones. Then the secret is created user-managed in
+ * the install `region` instead — the location every other resource of the
+ * install already lives in — and the outcome says so. Only these
+ * CLI-generated secrets can differ that way: the stacks read them by id, so
+ * their replication is not Pulumi state that a mismatch would replace.
  */
 export async function ensureGeneratedSecrets(
   install: {
     readonly projectId: string;
     readonly env: string;
+    readonly region: string;
     readonly replication: SecretReplication;
     readonly seed?: Readonly<Partial<Record<(typeof CLI_GENERATED_SECRETS)[number], string>>>;
   },
@@ -195,6 +214,10 @@ export async function ensureGeneratedSecrets(
   const generate = deps.generate ?? generateSecretValue;
   const project = `--project=${install.projectId}`;
   const outcomes: EnsureOutcome[] = [];
+  const regional: SecretReplication = { kind: "user-managed", locations: [install.region] };
+  // Switches to `regional` after the first policy rejection, so the
+  // remaining secrets are not each refused once first.
+  let createReplication = install.replication;
 
   for (const name of CLI_GENERATED_SECRETS) {
     const secretId = gcpSecretId(install.env, name);
@@ -205,20 +228,39 @@ export async function ensureGeneratedSecrets(
       continue;
     }
     if (!describe.ok) {
-      const create = await run(
-        [
-          "secrets",
-          "create",
-          secretId,
-          project,
-          ...replicationArgs(install.replication),
-          "--data-file=-",
-          "--quiet",
-        ],
-        { stdin: install.seed?.[name] || generate() },
-      );
+      const value = install.seed?.[name] || generate();
+      const createWith = (replication: SecretReplication) =>
+        run(
+          [
+            "secrets",
+            "create",
+            secretId,
+            project,
+            ...replicationArgs(replication),
+            "--data-file=-",
+            "--quiet",
+          ],
+          { stdin: value },
+        );
+      let create = await createWith(createReplication);
+      if (
+        !create.ok &&
+        createReplication.kind === "automatic" &&
+        RESOURCE_LOCATIONS_VIOLATION.test(create.stderr)
+      ) {
+        createReplication = regional;
+        create = await createWith(createReplication);
+      }
       if (create.ok) {
-        outcomes.push({ id, status: "applied" });
+        outcomes.push(
+          createReplication === install.replication
+            ? { id, status: "applied" }
+            : {
+                id,
+                status: "applied",
+                detail: `replicated in ${install.region}: the org policy gcp.resourceLocations does not allow automatic (global) replication`,
+              },
+        );
         continue;
       }
       if (!ALREADY_EXISTS.test(create.stderr)) {

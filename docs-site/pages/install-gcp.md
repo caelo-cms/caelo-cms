@@ -70,18 +70,29 @@ What you'll see:
 3. Cloud SQL provisions in regional-HA mode
 4. Buckets + Secret Manager seeded
 5. Cloud Run services deployed
-6. Load balancer + Cloud CDN configured; managed TLS cert provisions (~5 min after DNS resolves)
-7. The admin migrates the schema + seeds the system actor
-8. Owner-bootstrap URL printed
+6. Load balancer + Cloud CDN configured
+7. DNS records for the admin host set (or printed and polled), then the provisioner waits for the admin's TLS certificate (15-60 min after DNS resolves; Ctrl-C is safe, re-running resumes the wait)
+8. The admin migrates the schema + seeds the system actor
+9. Final summary: the DNS records (in two groups, see below) and the next steps — Owner setup URL, AI key, MCP
 
 ## DNS
 
-The provisioner emits the exact records you need. They're surfaced at `https://caelo.example.com/security/dns` after the install — but TLS won't issue until you actually create them. Two records you'll always need:
+The provisioner prints the exact records your install needs, in two groups:
 
-- `A` record for `caelo.example.com` → load balancer IP
-- `CNAME` for `staging.caelo.example.com` → load balancer IP
+- **Set now** — hosts nothing live uses yet: `admin.<your domain>`, the staging host, and verification `TXT` records (on `gcp-firebase` also `_acme-challenge` records, which let Firebase issue the main domain's certificate before you switch). Set these during the install. On `--provider gcp` the provisioner sets them itself through the Cloudflare API when `CLOUDFLARE_API_TOKEN` is set; otherwise it prints them and waits until they resolve.
+- **Only at go-live** — the `A` / `AAAA` / `CNAME` records of `<your domain>` and `www.<your domain>`. They move the public website to Caelo. **If a site is live on that domain today, setting them during the install takes it offline**: Caelo serves nothing there until your first publish. Replace the existing records once the new site is published. The provisioner never sets these automatically.
 
-If you delegated the entire zone via `gcloud dns managed-zones create` to the install, the provisioner adds both automatically. If you kept your registrar's nameservers, copy the records from `/security/dns` and paste them at the registrar.
+On `--provider gcp`, the admin has its own certificate, so it gets HTTPS as soon as `admin.<your domain>` resolves; the main domain's certificate is issued after the go-live switch (expect 15-60 minutes of HTTPS errors on the main domain right after it). On `gcp-firebase`, Firebase Hosting issues the main domain's certificate itself.
+
+After the install, the records are also listed in the admin at `/security/domains`, where the AI can check them for you (`verify_dns_records`).
+
+## After the install
+
+The provisioner's summary ends with the next steps:
+
+1. **Owner setup** — open the printed setup URL and sign in with the owner email (Google IAP lets only that account through at first).
+2. **AI provider** — at `/security/ai`, paste your Anthropic API key. It is stored encrypted in the database.
+3. **MCP (optional)** — to drive Caelo from Claude Code or another MCP client, open `/security/mcp`, click **New token** (scope `chat` lets Caelo's AI do the work; `admin` lets your own agent use Caelo's tools), copy the token (shown once) and run the `claude mcp add` command the page shows. Because the admin is behind Google IAP, run `gcloud auth application-default login` once on that machine. See [MCP](/mcp).
 
 ## Three environments
 
@@ -133,7 +144,7 @@ With `--provider gcp-firebase`, the admin starts out on its Cloud Run URL (`http
 bunx @caelo-cms/provisioning admin-domain enable
 ```
 
-Google only maps a domain for a verified owner of it. If you have not verified yours yet, the command opens Search Console for you: add the TXT record it shows at your registrar, click **Verify**, then run the command again. It creates the mapping as your own gcloud account and prints the DNS record to add (usually a `CNAME` to `ghs.googlehosted.com.`); TLS follows once DNS resolves. Running it again is safe. With more than one install on the machine, pick one with `--install <install-id>`. (`--provider gcp` needs none of this: its load balancer serves `admin.<your domain>` from the start.)
+Google only maps a domain for a verified owner of it. If you have not verified yours yet, the command opens Search Console for you: add the TXT record it shows at your registrar, click **Verify**, then run the command again. It creates the mapping as your own gcloud account and prints the DNS record to add (usually a `CNAME` to `ghs.googlehosted.com.`). Then it waits, with a spinner, until Google has issued the certificate — usually 15-60 minutes once the record resolves — and prints the admin login URL. You can stop it with Ctrl-C at any time: running the command again finds the mapping and resumes waiting. After 60 minutes it stops and prints how to check the status yourself (`dig +short admin.<your domain> CNAME`, `gcloud beta run domain-mappings describe --domain=admin.<your domain> --region=<region> --project=<project>`). Running it again is safe. With more than one install on the machine, pick one with `--install <install-id>`. (`--provider gcp` needs none of this: its load balancer serves `admin.<your domain>` from the start.)
 
 ## Protected staging on your own domain (`gcp-firebase`)
 
@@ -143,7 +154,7 @@ Every Stage is served on the staging host behind an access gate — the same art
 bunx @caelo-cms/provisioning staging-domain enable
 ```
 
-After changing the host in the admin (Security → Domains), run it again with `--staging-domain <new host>`. It works like `admin-domain enable` (same Search Console verification, run as your own gcloud account), opens the gateway's ingress for the domain mapping, and prints the DNS record to add (usually `CNAME staging → ghs.googlehosted.com.`). Running it again is safe. Who may open staging is set in the admin under **Security → Staging access**.
+After changing the host in the admin (Security → Domains), run it again with `--staging-domain <new host>`. It works like `admin-domain enable` (same Search Console verification, run as your own gcloud account), opens the gateway's ingress for the domain mapping, and prints the DNS record to add (usually `CNAME staging → ghs.googlehosted.com.`). Like `admin-domain enable`, it then waits for the certificate (Ctrl-C safe, re-run to resume). Running it again is safe. Who may open staging is set in the admin under **Security → Staging access**.
 
 ## Day-2 operations
 
@@ -192,7 +203,8 @@ Installers before this change stored the database URLs, with `admin_role`'s and 
 
 ## Common issues
 
-- **TLS cert stuck on `provisioning`** — DNS hasn't propagated. `dig caelo.example.com` should return the load balancer IP. Wait 10-30 min; Google-managed certs poll for a valid challenge.
+- **TLS cert stuck on `provisioning`** — DNS hasn't propagated. `dig +short admin.caelo.example.com` should return the load balancer IP (`gcp`) or `ghs.googlehosted.com.` (`gcp-firebase` admin mapping). Wait 15-60 min; Google-managed certs poll for a valid challenge. The main domain's certificate on `gcp` only validates after its go-live records point at the load balancer.
+- **`Constraint constraints/gcp.resourceLocations violated … in [global]`** — your organization only allows certain locations. New installs keep every secret in the install region, so this does not occur there. Installs created before that keep their existing automatic-replication secrets; when the installer or `upgrade` adds a secret and the policy refuses automatic replication, it creates that secret in the install region instead and says so in its output.
 - **Site shows Firebase's "Site Not Found" although DNS is correct (`gcp-firebase`)** — when the custom domain was created while DNS still pointed at the old host, Firebase can stop re-checking it and leave it at `HOST_MISMATCH` / `OWNERSHIP_PENDING`. The Domains page (`/security/domains`) and the AI's `list_domains` mark such a domain **stuck — reconnect recommended**: click **Reconnect** there, or let the AI propose it and approve in the chat. Caelo deletes and re-creates the custom domain (it is not serving yet, so nothing goes offline), and once it is active re-releases the live version so Firebase's CDN drops the cached 404.
 - **`Cannot allocate memory` from Cloud SQL** — bump tier from `db-g1-small` to `db-custom-2-7680` via `gcloud sql instances patch`.
 - **A new user gets "You don't have access" from Google** — the approval result says why. Most often their email is not a Google account, or the install predates operator access: run `bunx @caelo-cms/provisioning upgrade` once, then click **Re-sync Google IAP access** at `/security/users`.

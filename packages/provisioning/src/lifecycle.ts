@@ -790,6 +790,7 @@ async function upgradeInstall(
     ...(replication.ok
       ? await ensureGeneratedSecrets({
           ...secretsTarget,
+          region,
           replication: replication.replication,
           seed: plainGeneratedSecretSeed(deployed.admin.liveEnv),
         })
@@ -803,7 +804,9 @@ async function upgradeInstall(
     return false;
   }
   sRt.stop(green("Gateway service account + runtime secrets ok"));
-  for (const o of runtime.filter((o) => o.status === "applied")) log.info(`  created: ${o.id}`);
+  for (const o of runtime.filter((o) => o.status === "applied")) {
+    log.info(`  created: ${o.id}${o.detail ? ` (${o.detail})` : ""}`);
+  }
 
   // ────────────────────────────────────────────────────────────────
   // Converge the infrastructure the stack declares but upgrade can't get

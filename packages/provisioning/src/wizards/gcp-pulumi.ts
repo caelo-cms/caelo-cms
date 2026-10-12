@@ -304,6 +304,7 @@ export async function pulumiUpGcp(
   const generated = await ensureGeneratedSecrets({
     projectId: inputs.projectId,
     env: stackName,
+    region: inputs.region,
     replication: stackSecretReplication(secretReplication, inputs.region),
   });
   const notEnsured = generated.filter((o) => o.status === "failed");
@@ -311,6 +312,9 @@ export async function pulumiUpGcp(
     throw new Error(
       `could not create the runtime secrets: ${notEnsured.map((o) => `${o.id}: ${o.error ?? ""}`).join("; ")}`,
     );
+  }
+  for (const o of generated) {
+    if (o.detail) onEvent("log", `created ${o.id} (${o.detail})\n`);
   }
 
   // Refresh state first to detect drift from any out-of-band changes.
