@@ -116,7 +116,7 @@ export const actions: Actions = {
         error: chat ? `${staged.error.message} (chat '${chat.title}')` : staged.error.message,
       });
     }
-    const { previewUrl, draftPageCount } = await describeStagedBuild(
+    const { previewUrl, previewLabel, draftPageCount } = await describeStagedBuild(
       locals.ctx,
       staged.value,
       null,
@@ -131,6 +131,7 @@ export const actions: Actions = {
         brokenInternalLinks: [...staged.value.brokenInternalLinks],
         alsoIncludes: staged.value.alsoIncludes.map((a) => a.title),
         previewUrl,
+        previewLabel,
         draftPageCount,
       },
     };

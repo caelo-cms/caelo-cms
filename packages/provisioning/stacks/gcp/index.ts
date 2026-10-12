@@ -245,6 +245,7 @@ const runtimeSecretIds: Record<RuntimeSecret, pulumi.Input<string>> = {
   "secret-kek": kekSecret.resource.secretId,
   "internal-secret": gcpSecretId(env, "internal-secret"),
   "tool-approval-secret": gcpSecretId(env, "tool-approval-secret"),
+  "staging-gate-secret": gcpSecretId(env, "staging-gate-secret"),
   "public-role-password": gcpSecretId(env, "public-role-password"),
   "gateway-role-password": gcpSecretId(env, "gateway-role-password"),
 };

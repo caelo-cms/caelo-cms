@@ -26,6 +26,7 @@ import {
 import { adminSchemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { definePlugin, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { STAGING_SESSION_COOKIE, signStagingToken } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
@@ -447,6 +448,73 @@ describe("gateway_role reaches nothing else in cms_admin (#613, adversarial)", (
         }[],
     );
     expect(rows[0]?.c).toBe(false);
+  });
+});
+
+describe("staging.<domain> served as gateway_role (#650)", () => {
+  const STAGING = "https://staging.example.com";
+  const PREVIEW = "https://site--runid-t650-x1.web.app";
+  const SECRET = "t650-gate-secret";
+
+  it("reads the gate settings + origin with its grants and proxies an admitted request", async () => {
+    const saved = {
+      url: process.env.CAELO_STAGING_SITE_URL,
+      secret: process.env.CAELO_STAGING_GATE_SECRET,
+    };
+    const realFetch = globalThis.fetch;
+    process.env.CAELO_STAGING_SITE_URL = STAGING;
+    process.env.CAELO_STAGING_GATE_SECRET = SECRET;
+    await asAdmin(async (tx) => {
+      await tx`UPDATE staging_access SET origin_url = ${PREVIEW}, cookie_enabled = true WHERE id = 1`;
+    });
+    invalidateGatewaySettings();
+    const upstream: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.startsWith(PREVIEW)) return realFetch(input, init);
+      upstream.push(url);
+      return new Response("<h1>staged</h1>", { headers: { "content-type": "text/html" } });
+    }) as typeof fetch;
+    try {
+      const denied = await handleRequest(
+        new Request(`${STAGING}/about/`, { headers: { host: "staging.example.com" } }),
+      );
+      expect(denied.status).toBe(403);
+      const session = await signStagingToken(SECRET, "session", Math.floor(Date.now() / 1000) + 60);
+      const allowed = await handleRequest(
+        new Request(`${STAGING}/about/`, {
+          headers: { host: "staging.example.com", cookie: `${STAGING_SESSION_COOKIE}=${session}` },
+        }),
+      );
+      await expectStatus(allowed, 200);
+      expect(await allowed.text()).toBe("<h1>staged</h1>");
+      expect(allowed.headers.get("x-robots-tag")).toBe("noindex");
+      expect(upstream).toEqual([`${PREVIEW}/about/`]);
+    } finally {
+      globalThis.fetch = realFetch;
+      if (saved.url === undefined) delete process.env.CAELO_STAGING_SITE_URL;
+      else process.env.CAELO_STAGING_SITE_URL = saved.url;
+      if (saved.secret === undefined) delete process.env.CAELO_STAGING_GATE_SECRET;
+      else process.env.CAELO_STAGING_GATE_SECRET = saved.secret;
+      await asAdmin(async (tx) => {
+        await tx`UPDATE staging_access SET origin_url = NULL WHERE id = 1`;
+      });
+      invalidateGatewaySettings();
+    }
+  });
+
+  it("cannot change the gate's settings or origin", async () => {
+    let message = "ok";
+    try {
+      await gatewayAdapter.withAdminTransaction(
+        { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t650" },
+        async (tx) => tx.execute(sql`UPDATE staging_access SET ip_allowlist = '{0.0.0.0/0}'`),
+      );
+    } catch (e) {
+      const err = e as { message?: string; cause?: { message?: string } };
+      message = `${err.message ?? ""} ${err.cause?.message ?? ""}`;
+    }
+    expect(message).toMatch(/permission denied/);
   });
 });
 

@@ -322,6 +322,10 @@ import {
   proposeSetPluginAiCostCapOp,
 } from "./ops/owner_settings_security.js";
 import {
+  proposeRotateStagingCredentialsOp,
+  proposeSetStagingAccessOp,
+} from "./ops/owner_settings_staging.js";
+import {
   anyBootstrapTokenIssuedOp,
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
@@ -489,6 +493,12 @@ import { revertModuleOp } from "./ops/snapshots/revert_module.js";
 import { revertPageOp } from "./ops/snapshots/revert_page.js";
 import { revertSiteOp } from "./ops/snapshots/revert_site.js";
 import { revertTemplateOp } from "./ops/snapshots/revert_template.js";
+import {
+  getStagingAccessOp,
+  issueStagingOpenLinkOp,
+  rotateStagingCredentialsOp,
+  setStagingAccessOp,
+} from "./ops/staging_access.js";
 import {
   deleteStructuredSetOp,
   getStructuredSetOp,
@@ -950,6 +960,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeSetTranslationModelOp);
   registry.register(proposeSetPluginAiCostCapOp);
   registry.register(proposeRotateGatewayCookieSecretOp);
+  registry.register(proposeSetStagingAccessOp);
+  registry.register(proposeRotateStagingCredentialsOp);
   registry.register(executeOwnerSettingsProposalOp);
   registry.register(rejectOwnerSettingsProposalOp);
   registry.register(listPendingOwnerSettingsProposalsOp);
@@ -1027,6 +1039,11 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // Complete, searchable asset inventory of a crawled run's stored HTML —
   // the full list behind inspect_external_page's top-20 `images` glance.
   registry.register(listPageAssetsOp);
+  // Issue #650 — the staging.<domain> access gate.
+  registry.register(getStagingAccessOp);
+  registry.register(setStagingAccessOp);
+  registry.register(rotateStagingCredentialsOp);
+  registry.register(issueStagingOpenLinkOp);
   // P13 — gateway hardening surface.
   registry.register(getGatewaySettingsOp);
   registry.register(setGatewaySettingsOp);

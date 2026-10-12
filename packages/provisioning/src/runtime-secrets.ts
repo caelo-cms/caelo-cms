@@ -274,6 +274,9 @@ export const ROTATABLE_SECRETS = [
   "gateway-role-password",
   "internal-secret",
   "tool-approval-secret",
+  // #650 — rotating it signs every staging session out and replaces the
+  // staging crawler credentials (they are derived from it).
+  "staging-gate-secret",
 ] as const satisfies readonly RuntimeSecret[];
 export type RotatableSecret = (typeof ROTATABLE_SECRETS)[number];
 

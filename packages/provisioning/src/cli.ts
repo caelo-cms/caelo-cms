@@ -782,6 +782,7 @@ const handlers: Record<string, () => Promise<void>> = {
   destroy: lifecycleDestroy,
   truncate: lifecycleTruncate,
   "admin-domain": adminDomain,
+  "staging-domain": stagingDomain,
   // Misc
   "pulumi-output-sync": pulumiOutputSync,
   version,
@@ -843,13 +844,26 @@ async function lifecycleTruncate(): Promise<void> {
  * (see admin-domain.ts for why this runs as the operator, not Pulumi).
  */
 async function adminDomain(): Promise<void> {
+  await domainMappingCommand("admin");
+}
+
+/**
+ * #650 `staging-domain enable` — bind staging.<domain> to the gcp-firebase
+ * gateway, which serves the protected staging site.
+ */
+async function stagingDomain(): Promise<void> {
+  await domainMappingCommand("staging");
+}
+
+async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
+  const command = `${kind}-domain`;
   const sub = process.argv[3];
   if (sub !== "enable") {
-    console.log("Usage: cms-provision admin-domain enable [--install <install-id>]");
+    console.log(`Usage: cms-provision ${command} enable [--install <install-id>]`);
     process.exit(2);
   }
   const { installFlag, listInstalls, selectInstall } = await import("./install-state.js");
-  const { enableAdminDomain } = await import("./admin-domain.js");
+  const { enableAdminDomain, enableStagingDomain } = await import("./admin-domain.js");
   // Guessing among several installs could map the domain in the wrong project.
   const selected = selectInstall(
     listInstalls().filter((m) => m.projectId),
@@ -869,36 +883,45 @@ async function adminDomain(): Promise<void> {
   }
   if (meta.provider !== "gcp-firebase") {
     console.log(
-      meta.provider === "gcp"
-        ? `Nothing to do: on gcp the load balancer already serves admin.${meta.domain}.`
-        : `admin-domain is for gcp-firebase installs; this one is ${meta.provider}.`,
+      kind === "admin"
+        ? meta.provider === "gcp"
+          ? `Nothing to do: on gcp the load balancer already serves admin.${meta.domain}.`
+          : `admin-domain is for gcp-firebase installs; this one is ${meta.provider}.`
+        : meta.provider === "self-hosted"
+          ? `Nothing to do: on self-hosted Caddy already serves staging.${meta.domain}.`
+          : `staging-domain is for gcp-firebase installs; on ${meta.provider} the protected staging domain is not available yet (issue #650 follow-up).`,
     );
     return;
   }
-  const r = await enableAdminDomain({
+  const enable = kind === "admin" ? enableAdminDomain : enableStagingDomain;
+  const r = await enable({
     projectId: meta.projectId,
     region: meta.region,
     domain: meta.domain,
   });
   if (r.status === "failed") {
-    console.error(`admin-domain: ${r.error}`);
+    console.error(`${command}: ${r.error}`);
     process.exit(1);
   }
   if (r.status === "needs-verification") {
     console.log(
       `Google only maps ${r.hostname} for a verified owner of ${r.verifyDomain}.\n` +
         "Search Console was opened for you: add the TXT record it shows at your registrar,\n" +
-        "click Verify, then run `cms-provision admin-domain enable` again.",
+        `click Verify, then run \`cms-provision ${command} enable\` again.`,
     );
     process.exit(3);
   }
+  const target = kind === "admin" ? "the admin" : "the gateway (protected staging site)";
   console.log(
-    `${r.hostname} ${r.created ? "is now mapped" : "was already mapped"} to the admin.` +
+    `${r.hostname} ${r.created ? "is now mapped" : "was already mapped"} to ${target}.` +
       (r.records.length > 0
         ? `\nAdd at your registrar (TLS is issued once DNS resolves, typically 15-60 min):\n${r.records
             .map((d) => `  ${d.type.padEnd(6)} ${d.name} -> ${d.value}`)
             .join("\n")}`
-        : "\nGoogle has not published the DNS records yet; run the command again in a minute."),
+        : "\nGoogle has not published the DNS records yet; run the command again in a minute.") +
+      (kind === "staging"
+        ? "\nStaging access (who may open it, crawler credentials): admin → Security → Staging access."
+        : ""),
   );
 }
 
@@ -930,7 +953,7 @@ if (route.kind === "handler") {
   await wizardCommand();
 } else {
   console.log(
-    "Usage: cms-provision [wizard] [--provider <name> --domain <d> --owner-email <e> --region <r>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|pulumi-output-sync|version> [options]\n" +
+    "Usage: cms-provision [wizard] [--provider <name> --domain <d> --owner-email <e> --region <r>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|pulumi-output-sync|version> [options]\n" +
       "With several installs on this machine, pick one with --install <install-id or domain> (status, upgrade and backup also take --install all); in a terminal you are asked otherwise.\n" +
       "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
   );

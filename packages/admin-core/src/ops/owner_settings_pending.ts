@@ -5,8 +5,9 @@
  * propose_set_gateway_settings, propose_set_translation_model,
  * execute_proposal, reject_proposal, list_pending} — the §11.A gate for
  * Owner settings the agent had no path to at all. The plugin AI cost cap
- * and gateway cookie-secret proposals live in `owner_settings_security.ts`
- * and apply through the same `execute_proposal`.
+ * and gateway cookie-secret proposals live in `owner_settings_security.ts`,
+ * the staging gate's in `owner_settings_staging.ts` (#650), and apply
+ * through the same `execute_proposal`.
  *
  * `ai_budgets.set`, `ai_pricing.set`, `gateway.set_settings` and
  * `ai_providers.set_translation_model` stay human+system (see the `Why
@@ -47,6 +48,7 @@ import {
   type Tx,
 } from "./owner_settings_queue.js";
 import { applyOwnerSecurityProposal, OWNER_SECURITY_KINDS } from "./owner_settings_security.js";
+import { applyOwnerStagingProposal, OWNER_STAGING_KINDS } from "./owner_settings_staging.js";
 import { aiBudgetCellInput, listAiBudgetsOp, setAiBudgetOp } from "./security/ai_budgets.js";
 import { aiPricingRowInput, listAiPricingOp, setAiPricingOp } from "./security/ai_pricing.js";
 import {
@@ -416,6 +418,9 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
         row.kind,
         parsePayload(row.payload),
       );
+      if (problem) return handlerError(op, problem);
+    } else if (OWNER_STAGING_KINDS.has(row.kind)) {
+      const problem = await applyOwnerStagingProposal(ctx, tx, row.kind, parsePayload(row.payload));
       if (problem) return handlerError(op, problem);
     } else if (row.kind === "set_ai_budget") {
       const payload = proposeAiBudgetInput.parse(parsePayload(row.payload));

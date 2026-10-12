@@ -55,7 +55,16 @@ export interface ClaimedAuditRun {
 export type StagingOrigin =
   | {
       readonly ok: true;
+      /** Where the audit browser loads the build. */
       readonly baseUrl: string;
+      /**
+       * #650 — the origin operators know staging by, when it differs from
+       * `baseUrl`: on gcp-firebase the audit loads the preview channel
+       * directly (not through the gated gateway, whose cold start would
+       * skew the performance scores), but the recorded report names
+       * `https://staging.<domain>`.
+       */
+      readonly displayBaseUrl?: string;
       /** Set for a loopback origin this audit owns: close it afterwards. */
       readonly close?: () => Promise<void>;
     }
@@ -65,6 +74,8 @@ export type StagingOrigin =
 export interface OriginEnv {
   readonly provider?: string;
   readonly stagingBaseUrl?: string;
+  /** #650 — `CAELO_STAGING_SITE_URL`, the protected staging host. */
+  readonly stagingSiteUrl?: string;
   /** Override the file source of a loopback origin (tests). */
   readonly loopbackSource?: (run: ClaimedAuditRun) => StagedFileSource;
 }
@@ -121,7 +132,17 @@ export async function resolveStagingOrigin(
         message: `deploy run ${run.deployRunId} has no Firebase preview channel URL — Stage again to publish a fresh preview channel`,
       };
     }
-    return { ok: true, baseUrl: run.previewUrl };
+    // The preview channel is the origin staging.<domain> proxies to; the
+    // audit hits it directly and reports under the staging host.
+    if (!env.stagingSiteUrl) {
+      return {
+        ok: false,
+        code: "staging-unresolvable",
+        message:
+          "CAELO_STAGING_SITE_URL is not set on the admin service, so the audit cannot name the staging site it checked — run `cms-provision upgrade` and Stage again",
+      };
+    }
+    return { ok: true, baseUrl: run.previewUrl, displayBaseUrl: env.stagingSiteUrl };
   }
   if (provider === "" || provider === "self-hosted") {
     // Same origin the Stage flow's own serve check and Preview link use.
@@ -158,6 +179,17 @@ export async function resolveStagingOrigin(
     code: "provider-unsupported",
     message: `quality audits do not know how to reach staging on provider "${provider}" — the audit is recorded as failed so the gap stays visible`,
   };
+}
+
+/**
+ * `url` on the audited origin re-addressed to the origin operators know
+ * staging by (#650). URLs outside `baseUrl` (a redirect away) stay as they
+ * are. Pure; exported for tests.
+ */
+export function toDisplayUrl(url: string, baseUrl: string, displayBaseUrl: string): string {
+  const base = trimTrailingSlashes(baseUrl);
+  if (url !== base && !url.startsWith(`${base}/`) && !url.startsWith(`${base}?`)) return url;
+  return `${trimTrailingSlashes(displayBaseUrl)}${url.slice(base.length)}`;
 }
 
 /** URL of a page on the staged origin, matching the generator's output
@@ -212,6 +244,7 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
   const env = deps.env ?? {
     provider: process.env.CAELO_PROVIDER,
     stagingBaseUrl: process.env.CAELO_STAGING_BASE_URL,
+    stagingSiteUrl: process.env.CAELO_STAGING_SITE_URL,
   };
   if (run.pages.length === 0) {
     await record(deps, run.auditRunId, null, {
@@ -244,24 +277,36 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
   } finally {
     await origin.close?.();
   }
+  // Reports name the staging host, never the internal preview origin.
+  const shown = origin.displayBaseUrl ?? origin.baseUrl;
+  const display = (url: string) =>
+    origin.displayBaseUrl ? toDisplayUrl(url, origin.baseUrl, origin.displayBaseUrl) : url;
   if (!result.ok) {
-    await record(deps, run.auditRunId, origin.baseUrl, {
+    await record(deps, run.auditRunId, shown, {
       kind: "failed",
       code: result.failure.code,
-      message: result.failure.message,
+      message: origin.displayBaseUrl
+        ? result.failure.message.split(trimTrailingSlashes(origin.baseUrl)).join(shown)
+        : result.failure.message,
     });
     return;
   }
-  await record(deps, run.auditRunId, origin.baseUrl, {
+  await record(deps, run.auditRunId, shown, {
     kind: "completed",
     pages: result.pages.map((p) => ({
       pageId: p.pageId,
-      url: p.url,
-      ...(p.finalUrl ? { finalUrl: p.finalUrl } : {}),
+      url: display(p.url),
+      ...(p.finalUrl ? { finalUrl: display(p.finalUrl) } : {}),
       measurement: p.measurement,
       performanceRuns: [...p.performanceRuns],
     })),
-    pageErrors: [...result.pageErrors],
+    pageErrors: result.pageErrors.map((e) => ({
+      ...e,
+      url: display(e.url),
+      message: origin.displayBaseUrl
+        ? e.message.split(trimTrailingSlashes(origin.baseUrl)).join(shown)
+        : e.message,
+    })),
   });
 }
 

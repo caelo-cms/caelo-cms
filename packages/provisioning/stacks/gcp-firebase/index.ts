@@ -219,6 +219,7 @@ const runtimeSecretIds: Record<RuntimeSecret, pulumi.Input<string>> = {
   "secret-kek": kekSecret.resource.secretId,
   "internal-secret": gcpSecretId(env, "internal-secret"),
   "tool-approval-secret": gcpSecretId(env, "tool-approval-secret"),
+  "staging-gate-secret": gcpSecretId(env, "staging-gate-secret"),
   "public-role-password": gcpSecretId(env, "public-role-password"),
   "gateway-role-password": gcpSecretId(env, "gateway-role-password"),
 };
@@ -606,10 +607,14 @@ const gatewaySvc = cloudRunService({
   maxInstances: 100,
   memory: "512Mi",
   timeout: "60s",
-  // v0.3.1 — gateway is reachable ONLY via Firebase Hosting
-  // rewrites or any caller holding roles/run.invoker on the
-  // service. Anonymous internet traffic gets a Cloud Run 403.
-  ingress: "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER",
+  // #650 — all traffic: the gateway also serves staging.<domain> through
+  // a Cloud Run domain mapping (`cms-provision staging-domain enable`),
+  // and Cloud Run refuses domain-mapped requests under an internal-only
+  // ingress. Exposure is unchanged in substance: the service was already
+  // invokable by allUsers (gateway-public-invoker below) and every /api
+  // request passes its rate limits, captcha and honeypot; staging requests
+  // pass the staging access gate.
+  ingress: "INGRESS_TRAFFIC_ALL",
   contractEnv: gatewayEnvContract(envContractInputs),
 });
 

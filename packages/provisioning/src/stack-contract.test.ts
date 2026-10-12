@@ -43,6 +43,7 @@ const ADMIN_SECRETS = {
   CAELO_SECRET_KEK: "secret:caelo-production-secret-kek:latest",
   CAELO_INTERNAL_SECRET: "secret:caelo-production-internal-secret:latest",
   CAELO_TOOL_APPROVAL_SECRET: "secret:caelo-production-tool-approval-secret:latest",
+  CAELO_STAGING_GATE_SECRET: "secret:caelo-production-staging-gate-secret:latest",
 };
 
 describe("databaseUrls", () => {
@@ -103,6 +104,7 @@ describe("adminEnvContract", () => {
       CAELO_FIREBASE_SITE: "caelo-production-site-abc123",
       CAELO_GATEWAY_SERVICE: "caelo-production-gateway-1a2b3c4",
       CAELO_GATEWAY_REGION: "europe-west1",
+      CAELO_STAGING_SITE_URL: "https://staging.acme.com",
       ...ADMIN_SECRETS,
     });
   });
@@ -157,11 +159,22 @@ describe("gatewayEnvContract", () => {
       GATEWAY_DATABASE_URL: "postgresql://gateway_role@10.20.0.3:5432/cms_admin?sslmode=require",
       PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-role-password:latest",
       GATEWAY_DATABASE_PASSWORD: "secret:caelo-production-gateway-role-password:latest",
+      CAELO_STAGING_GATE_SECRET: "secret:caelo-production-staging-gate-secret:latest",
     });
   });
 
+  it("#650 — on gcp-firebase it also serves the protected staging host", () => {
+    const fb = asRecord(gatewayEnvContract({ ...base, provider: "gcp-firebase" }));
+    expect(fb.CAELO_STAGING_SITE_URL).toBe("https://staging.acme.com");
+    expect(asRecord(gateway).CAELO_STAGING_SITE_URL).toBeUndefined();
+  });
+
   it("the gateway's run SA reads no admin-only secret (admin password, KEK, internal, tool approval)", () => {
-    expect(serviceSecrets("gateway")).toEqual(["gateway-role-password", "public-role-password"]);
+    expect(serviceSecrets("gateway")).toEqual([
+      "gateway-role-password",
+      "public-role-password",
+      "staging-gate-secret",
+    ]);
     for (const v of gateway) {
       expect(v.name).not.toMatch(/KEK|INTERNAL|TOOL_APPROVAL|PUBLIC_ADMIN/);
     }
@@ -245,6 +258,11 @@ describe("runtime secrets", () => {
         stackResource: "tool-approval-secret-binding",
       },
       {
+        service: "admin",
+        secret: "staging-gate-secret",
+        stackResource: "staging-gate-secret-binding",
+      },
+      {
         service: "gateway",
         secret: "gateway-role-password",
         stackResource: "gateway-gateway-role-password-binding",
@@ -253,6 +271,11 @@ describe("runtime secrets", () => {
         service: "gateway",
         secret: "public-role-password",
         stackResource: "gateway-public-role-password-binding",
+      },
+      {
+        service: "gateway",
+        secret: "staging-gate-secret",
+        stackResource: "gateway-staging-gate-secret-binding",
       },
     ]);
   });
@@ -305,7 +328,7 @@ describe("stackIamInvariants", () => {
     }
   });
 
-  it("grants the gateway SA only its two role passwords + telemetry roles", () => {
+  it("grants the gateway SA only its two role passwords, the staging gate key + telemetry roles", () => {
     for (const provider of ["gcp", "gcp-firebase"] as const) {
       const gateway = stackIamInvariants(provider).filter((i) => i.member === "gateway-sa");
       expect(gateway.map((i) => `${i.role} ${JSON.stringify(i.target)}`).sort()).toEqual([
@@ -313,6 +336,7 @@ describe("stackIamInvariants", () => {
         'roles/monitoring.metricWriter {"kind":"project"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"gateway-role-password"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"public-role-password"}',
+        'roles/secretmanager.secretAccessor {"kind":"secret","name":"staging-gate-secret"}',
       ]);
     }
   });

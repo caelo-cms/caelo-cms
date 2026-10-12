@@ -134,6 +134,15 @@ export function publicSiteUrl(domain: string): string {
 }
 
 /**
+ * #650 — the protected staging site's origin. On gcp-firebase the gateway
+ * serves it (Cloud Run domain mapping, `cms-provision staging-domain
+ * enable`) and every staging build renders it into its absolute URLs.
+ */
+export function stagingSiteUrl(domain: string): string {
+  return `https://staging.${domain}`;
+}
+
+/**
  * The admin env var naming the MCP service account (issue #37). `upgrade`
  * leaves it untouched when it could not set that account up.
  */
@@ -217,7 +226,8 @@ export type RuntimeSecret =
   | "gateway-role-password"
   | "secret-kek"
   | "internal-secret"
-  | "tool-approval-secret";
+  | "tool-approval-secret"
+  | "staging-gate-secret";
 
 /** The Postgres roles Caelo's services log in as, with their passwords. */
 export type DatabaseRole = "admin_role" | "public_role" | "gateway_role";
@@ -249,6 +259,10 @@ export const CLI_GENERATED_SECRETS = [
   // `postgres-password`), so the gateway never learns admin_role's.
   "public-role-password",
   "gateway-role-password",
+  // #650 — the staging access gate's key: signs "Open staging" links and
+  // session cookies, derives the crawler credentials. Read by the admin
+  // (issues) and the gateway (verifies).
+  "staging-gate-secret",
 ] as const satisfies readonly RuntimeSecret[];
 
 /**
@@ -270,12 +284,17 @@ export const SERVICE_SECRET_ENV: Readonly<
     // Binds an AI tool-approval to the exact call the operator approved
     // (admin-core ai/providers/_sdk-shared.ts).
     CAELO_TOOL_APPROVAL_SECRET: "tool-approval-secret",
+    // #650 — issues "Open staging" links, shows the Owner the crawler
+    // credentials (admin-core ops/staging_access.ts).
+    CAELO_STAGING_GATE_SECRET: "staging-gate-secret",
   },
   gateway: {
     // CLAUDE.md §2: never an admin_role credential (#613). gateway_role on
     // cms_admin + public_role on cms_public, each with its own password.
     GATEWAY_DATABASE_PASSWORD: "gateway-role-password",
     PUBLIC_DATABASE_PASSWORD: "public-role-password",
+    // #650 — verifies staging.<domain> requests (api-gateway staging-proxy.ts).
+    CAELO_STAGING_GATE_SECRET: "staging-gate-secret",
   },
 };
 
@@ -327,6 +346,11 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
     ...commonEnv(inputs),
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
     { name: "GATEWAY_DATABASE_URL", value: inputs.databaseUrls.gateway },
+    // #650 — on gcp-firebase the gateway also serves staging.<domain>
+    // (the access gate + proxy to the staged build).
+    ...(inputs.provider === "gcp-firebase"
+      ? [{ name: "CAELO_STAGING_SITE_URL", value: stagingSiteUrl(inputs.domain) }]
+      : []),
     ...secretEnv("gateway", inputs.env),
   ];
 }
@@ -380,6 +404,8 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
       { name: "CAELO_FIREBASE_SITE", value: inputs.firebaseSiteId },
       { name: "CAELO_GATEWAY_SERVICE", value: inputs.gatewayService },
       { name: "CAELO_GATEWAY_REGION", value: inputs.region },
+      // #650 — staging builds render this host; the admin links to it.
+      { name: "CAELO_STAGING_SITE_URL", value: stagingSiteUrl(domain) },
     );
   }
   admin.push(...secretEnv("admin", env));

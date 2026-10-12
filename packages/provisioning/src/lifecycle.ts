@@ -1076,6 +1076,14 @@ async function upgradeInstall(
     rolled.push(plan);
   }
   log.success(`Upgrade to ${bold(targetTag)} complete (admin + gateway revisions Ready).`);
+  if (meta.provider === "gcp-firebase") {
+    // #650 — staging builds now render staging.<domain>; the gateway
+    // serves it once it is mapped. The command is idempotent, so this
+    // reminder is safe to repeat on every upgrade.
+    log.info(
+      `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve ${bold(`staging.${meta.domain}`)} (it prints the DNS record). Access: admin → Security → Staging access.`,
+    );
+  }
 
   // #613 — with both services on their new revisions, drop the bindings
   // nothing reads through any more: above all the gateway SA's access to

@@ -50,8 +50,15 @@ import { databaseUrlFromEnv, type ExecutionContext, err, ok } from "@caelo-cms/s
 import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import {
+  buildManifestOf,
+  compareBuildManifests,
+  hostNormaliser,
+  parityRefusal,
+} from "../deploy/build-parity.js";
 import { lockLiveReleases } from "../deploy/live-release-lock.js";
-import { loadStaticPublisher } from "../deploy/static-publisher.js";
+import { stagingSiteUrl } from "../deploy/staging-domain.js";
+import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publisher.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { jsonbParam } from "../sql-helpers.js";
 import {
@@ -68,6 +75,7 @@ import {
   recordProductionOverride,
 } from "./quality/production-gate.js";
 import { computeRenderFingerprint } from "./quality/render-fingerprint.js";
+import { setStagingOrigin } from "./staging_access.js";
 
 /**
  * Resolve the root directory that relative `deploy_targets.out_dir`
@@ -328,6 +336,10 @@ async function runGenerator(
      *  static-generator filters its page query to these ids only,
      *  re-baking just the changed pages. */
     changedPageIds?: ReadonlyArray<string>;
+    /** #650 — render this origin instead of the stored site URL. */
+    siteBaseUrlOverride?: string;
+    /** #650 — false: leave `<outDir>/current/` alone (Publish live rebuild). */
+    syncCurrent?: boolean;
   },
 ): Promise<{ ok: true; result: SubprocessDone } | { ok: false; message: string; stderr: string }> {
   // The generator gets the composed URLs on stdin, never on argv or env.
@@ -357,6 +369,8 @@ async function runGenerator(
         ...(args.changedPageIds && args.changedPageIds.length > 0
           ? { changedPageIds: [...args.changedPageIds] }
           : {}),
+        ...(args.siteBaseUrlOverride ? { siteBaseUrlOverride: args.siteBaseUrlOverride } : {}),
+        ...(args.syncCurrent === false ? { syncCurrent: false } : {}),
       })}\n`,
     );
     // Answer one plugin call with THIS process's plugin host — the same
@@ -483,10 +497,10 @@ export const triggerDeployOp = defineOperation({
     durationMs: z.number().int(),
     buildId: z.string(),
     /**
-     * v0.3.0 — provider-supplied preview URL for the staged build.
-     * Populated by the Firebase Hosting publisher (Firebase
-     * generates the channel URL); undefined on other publishers
-     * which leaves URL construction to the form action.
+     * Where the staged build can be looked at. #650 — on a provider whose
+     * staging has its own protected host, that host
+     * (`https://staging.<domain>/`); otherwise the provider's preview URL
+     * when it has one, undefined where the form action builds the URL.
      */
     previewUrl: z.string().optional(),
   }),
@@ -559,6 +573,25 @@ export const triggerDeployOp = defineOperation({
       }
     }
 
+    // #650 — on a provider whose staging has its own host, a staging build
+    // renders that host into every absolute URL (canonical, sitemap,
+    // og:url, hreflang, robots) so staging.<domain> is self-consistent for
+    // crawlers. Resolved before the run row exists: a missing host is a
+    // provisioning error, not a build failure.
+    const provider = process.env.CAELO_PROVIDER;
+    let stagingOrigin: string | null = null;
+    if (target.env === "staging") {
+      try {
+        stagingOrigin = stagingSiteUrl(provider);
+      } catch (e) {
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
     // #553 — a staging build records main's render fingerprint as it
     // starts, so a later direct production build can tell whether main
     // still renders what this Stage's quality check saw (taken before the
@@ -610,7 +643,6 @@ export const triggerDeployOp = defineOperation({
     // storage immediately after, and the local copy is irrelevant
     // by the time the next request comes in. Self-hosted keeps the
     // row's configured out_dir.
-    const provider = process.env.CAELO_PROVIDER;
     const effectiveTarget: DeployTarget = {
       ...rowToTarget(target),
       outDir: effectiveOutDir(provider, target.env, target.out_dir),
@@ -621,6 +653,7 @@ export const triggerDeployOp = defineOperation({
       target: effectiveTarget,
       repoRoot,
       changedPageIds: input.changedPageIds,
+      ...(stagingOrigin ? { siteBaseUrlOverride: stagingOrigin } : {}),
     });
     if (!subprocess.ok) {
       const tail = subprocess.stderr ? `\n${subprocess.stderr.slice(-500)}` : "";
@@ -652,8 +685,9 @@ export const triggerDeployOp = defineOperation({
     let publishSummary: Awaited<
       ReturnType<Awaited<ReturnType<typeof loadStaticPublisher>>["publishStaging"]>
     >;
+    let publisher: StaticPublisher;
     try {
-      const publisher = await loadStaticPublisher(provider);
+      publisher = await loadStaticPublisher(provider);
       publishSummary = await publisher.publishStaging({
         buildDir: subprocess.result.buildDir,
         runId,
@@ -712,6 +746,28 @@ export const triggerDeployOp = defineOperation({
       }
     }
 
+    // #650 — what Publish live's parity guard compares against: this
+    // build's content with the staging host swapped back to the live one.
+    // Hashed now, while the build directory is on this instance.
+    let parityManifest: Record<string, string> | null = null;
+    if (stagingOrigin) {
+      try {
+        const { siteBaseUrl } = await readSeoSettings(tx);
+        parityManifest = await buildManifestOf(
+          subprocess.result.buildDir,
+          hostNormaliser(stagingOrigin, siteBaseUrl),
+        );
+      } catch (e) {
+        const message = `staging build ${runId} could not be fingerprinted for Publish live's parity check: ${e instanceof Error ? e.message : String(e)}`;
+        await tx.execute(sql`
+          UPDATE deploy_runs
+          SET status = 'failed', finished_at = now(), error_message = ${message}
+          WHERE id = ${runId}::uuid
+        `);
+        return err({ kind: "HandlerError", operation: "deploy.trigger", message });
+      }
+    }
+
     // The publish-anyway decision is recorded only now that the build it
     // allowed is live; a failed build leaves the quality gate closed.
     if (override) await recordProductionOverride(tx, ctx, override);
@@ -727,10 +783,25 @@ export const triggerDeployOp = defineOperation({
           page_count = ${subprocess.result.pageCount},
           file_count = ${subprocess.result.fileCount},
           build_id = ${runId},
-          publish_summary = ${jsonbParam(publishSummary)}
+          publish_summary = ${jsonbParam(publishSummary)},
+          site_url = ${stagingOrigin},
+          parity_manifest = ${parityManifest === null ? null : jsonbParam(parityManifest)}
       WHERE id = ${runId}::uuid
     `);
 
+    if (stagingOrigin) {
+      // #650 — staging.<domain> now serves this build: the gateway proxies
+      // to its origin, and every older public preview is retired.
+      await setStagingOrigin(tx, {
+        originUrl: publishSummary.previewUrl ?? null,
+        runId,
+      });
+      await pruneStagingPreviews(publisher, runId);
+    }
+
+    // #650 — where staging has its own host, that host is the only staging
+    // URL anyone is shown; the provider's preview origin stays internal.
+    const previewUrl = stagingOrigin ? `${stagingOrigin}/` : publishSummary.previewUrl;
     return ok({
       runId,
       targetName: target.name,
@@ -738,7 +809,7 @@ export const triggerDeployOp = defineOperation({
       fileCount: subprocess.result.fileCount,
       durationMs: subprocess.result.durationMs,
       buildId: runId,
-      ...(publishSummary.previewUrl ? { previewUrl: publishSummary.previewUrl } : {}),
+      ...(previewUrl ? { previewUrl } : {}),
     });
   },
 });
@@ -758,6 +829,12 @@ export const triggerDeployOp = defineOperation({
  * publishers that attach response headers to a release (Firebase) —
  * the env-level `X-Robots-Tag` header. A source build from before the
  * env-independent SEO pass is refused with a "Stage again" next step.
+ *
+ * #650 — a build staged with its own staging host (deploy_runs.site_url
+ * set) is not copied: Publish live rebuilds main with the live host and
+ * ships the rebuild only when it matches the staged build file by file
+ * with the host swapped back (build-parity.ts). Anything else that
+ * differs blocks the publish and names the files.
  */
 export const promoteDeployOp = defineOperation({
   name: "deploy.promote",
@@ -800,12 +877,17 @@ export const promoteDeployOp = defineOperation({
       });
     }
     const fromRunRows = (await tx.execute(sql`
-      SELECT id::text AS id, build_id,
+      SELECT id::text AS id, build_id, site_url,
              COALESCE(to_jsonb(covered_ai_hold_ids), '[]'::jsonb) AS covered_ai_hold_ids
       FROM deploy_runs
       WHERE target_id = ${from.id}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
       ORDER BY started_at DESC LIMIT 1
-    `)) as unknown as { id: string; build_id: string | null; covered_ai_hold_ids: unknown }[];
+    `)) as unknown as {
+      id: string;
+      build_id: string | null;
+      site_url: string | null;
+      covered_ai_hold_ids: unknown;
+    }[];
     const fromRow = fromRunRows[0];
     const fromRunId = fromRow?.id;
     const buildId = fromRow?.build_id;
@@ -879,22 +961,47 @@ export const promoteDeployOp = defineOperation({
       const provider = process.env.CAELO_PROVIDER;
       const publisher = await loadStaticPublisher(provider);
       const { siteBaseUrl } = await readSeoSettings(tx);
-      const summary = await publisher.promoteToProduction({
-        sourceRunId: buildId,
-        sourceBuildDir: fromBuildDir,
-        fromTarget,
-        toTarget,
-        siteBaseUrl,
-      });
+      // #650 — a build staged with its own staging host cannot be copied
+      // live (every absolute URL names staging.<domain>): rebuild the same
+      // content with the live host, prove it differs only in the host, and
+      // publish the rebuild. A build staged with the live host (providers
+      // without a staging domain, or staged before the switch) is copied
+      // as before.
+      const rebuilt = fromRow?.site_url
+        ? await rebuildAndPublishLive(ctx, tx, {
+            publisher,
+            provider,
+            stagingRunId: fromRunId,
+            toRunId,
+            toTarget: to,
+            repoRoot: root,
+          })
+        : null;
+      const summary =
+        rebuilt?.summary ??
+        (await publisher.promoteToProduction({
+          sourceRunId: buildId,
+          sourceBuildDir: fromBuildDir,
+          fromTarget,
+          toTarget,
+          siteBaseUrl,
+        }));
       await tx.execute(sql`
         UPDATE deploy_runs
         SET status = 'succeeded', finished_at = now(),
-            page_count = (SELECT page_count FROM deploy_runs WHERE id = ${fromRunId}::uuid),
-            file_count = (SELECT file_count FROM deploy_runs WHERE id = ${fromRunId}::uuid),
+            page_count = ${rebuilt ? rebuilt.pageCount : sql`(SELECT page_count FROM deploy_runs WHERE id = ${fromRunId}::uuid)`},
+            file_count = ${rebuilt ? rebuilt.fileCount : sql`(SELECT file_count FROM deploy_runs WHERE id = ${fromRunId}::uuid)`},
             build_id = ${summary.destinationBuildId},
-            publish_summary = ${jsonbParam(summary)}
+            publish_summary = ${jsonbParam(summary)},
+            site_url = ${rebuilt ? siteBaseUrl : null}
         WHERE id = ${toRunId}::uuid
       `);
+      if (rebuilt) {
+        // What was staged is live now: nothing is left to serve on
+        // staging.<domain>, and its public preview is retired (#650).
+        await setStagingOrigin(tx, null);
+        await pruneStagingPreviews(publisher, null);
+      }
       // Issue #620 — a human Publish live ships the staged build, and with
       // it exactly the AI Stages that build covered.
       if (to.env === "production" && ctx.actorKind === "human" && fromRow) {
@@ -914,11 +1021,112 @@ export const promoteDeployOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "deploy.promote",
-        message: `promotion failed: ${message}`,
+        // The parity guard's refusal already says what happened and what to
+        // do next; anything else is an unexpected publish failure.
+        message: e instanceof ParityRefusalError ? message : `promotion failed: ${message}`,
       });
     }
   },
 });
+
+/** #650 — the live rebuild differs from the staged build in more than the host. */
+class ParityRefusalError extends Error {
+  override readonly name = "ParityRefusalError";
+}
+
+/**
+ * #650 — Publish live for a build staged with its own staging host:
+ * rebuild main with the live host into the production run (without
+ * touching what is served), compare it file by file with the staged
+ * build's host-normalised manifest, and only on an exact match hand it to
+ * the publisher to go live. Throws {@link ParityRefusalError} naming the
+ * differing files otherwise.
+ */
+async function rebuildAndPublishLive(
+  ctx: ExecutionContext,
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  args: {
+    publisher: StaticPublisher;
+    provider: string | undefined;
+    stagingRunId: string;
+    toRunId: string;
+    toTarget: TargetDbRow;
+    repoRoot: string;
+  },
+): Promise<{
+  summary: Awaited<ReturnType<NonNullable<StaticPublisher["publishLiveBuild"]>>>;
+  pageCount: number;
+  fileCount: number;
+}> {
+  const publishLiveBuild = args.publisher.publishLiveBuild;
+  if (!publishLiveBuild) {
+    throw new Error(
+      `staged build ${args.stagingRunId} was rendered for a separate staging host, but the ${args.provider ?? "self-hosted"} publisher cannot publish a rebuilt tree. Stage again so the build carries the live host.`,
+    );
+  }
+  const manifestRows = (await tx.execute(sql`
+    SELECT parity_manifest FROM deploy_runs WHERE id = ${args.stagingRunId}::uuid
+  `)) as unknown as { parity_manifest: Record<string, string> | string | null }[];
+  const raw = manifestRows[0]?.parity_manifest ?? null;
+  if (raw === null) {
+    throw new Error(
+      `staged build ${args.stagingRunId} has no parity manifest, so Publish live cannot prove the live build matches it. Stage again, then Publish live.`,
+    );
+  }
+  const stagedManifest = json<Record<string, string>>(raw);
+
+  const bridge = getDeployBridge();
+  if (!bridge) throw new Error("deploy-bridge not configured");
+  const target: DeployTarget = {
+    ...rowToTarget(args.toTarget),
+    outDir: effectiveOutDir(args.provider, args.toTarget.env, args.toTarget.out_dir),
+  };
+  const built = await runGenerator(bridge.registry, bridge.adapter, ctx, {
+    cliPath: resolveGeneratorCli(),
+    runId: args.toRunId,
+    target,
+    repoRoot: args.repoRoot,
+    // Nothing may serve this build before the parity guard passed.
+    syncCurrent: false,
+  });
+  if (!built.ok) {
+    const tail = built.stderr ? ` — ${built.stderr.slice(-300).trim()}` : "";
+    throw new Error(`the live rebuild failed: ${built.message}${tail}`);
+  }
+  const diff = compareBuildManifests(stagedManifest, await buildManifestOf(built.result.buildDir));
+  const refusal = parityRefusal(diff, { stagingRunId: args.stagingRunId });
+  if (refusal) throw new ParityRefusalError(refusal);
+
+  const summary = await publishLiveBuild({
+    buildDir: built.result.buildDir,
+    runId: args.toRunId,
+    target,
+    sourceRunId: args.stagingRunId,
+  });
+  return { summary, pageCount: built.result.pageCount, fileCount: built.result.fileCount };
+}
+
+/**
+ * #650 — retire public previews of staged builds that are no longer the
+ * current one (all of them when `keepRunId` is null). Cleanup only: the
+ * release it follows has already happened, and a preview that survives a
+ * failed delete still expires with its 7-day TTL — so a failure is logged
+ * loudly instead of failing a Stage or Publish live that did succeed.
+ */
+async function pruneStagingPreviews(
+  publisher: StaticPublisher,
+  keepRunId: string | null,
+): Promise<void> {
+  if (!publisher.pruneStagingPreviews) return;
+  try {
+    await publisher.pruneStagingPreviews({ keepRunId });
+  } catch (e) {
+    console.error(
+      "[deploy] could not delete superseded staging previews; they stay publicly reachable until their 7-day TTL ends",
+      { keepRunId, error: e instanceof Error ? e.message : String(e) },
+    );
+  }
+}
 
 /**
  * Rollback: re-target a target's `current` symlink at any prior
@@ -952,13 +1160,13 @@ export const rollbackDeployOp = defineOperation({
       });
     }
     const priorRows = (await tx.execute(sql`
-      SELECT build_id FROM deploy_runs
+      SELECT build_id, publish_summary->>'location' AS location FROM deploy_runs
       WHERE id = ${input.runId}::uuid
         AND target_id = ${target.id}::uuid
         AND status = 'succeeded'
         AND build_id IS NOT NULL
       LIMIT 1
-    `)) as unknown as { build_id: string }[];
+    `)) as unknown as { build_id: string; location: string | null }[];
     const buildId = priorRows[0]?.build_id;
     if (!buildId) {
       return err({
@@ -982,6 +1190,7 @@ export const rollbackDeployOp = defineOperation({
         sourceBuildDir: buildDir,
         target: rowToTarget(target),
         siteBaseUrl,
+        sourceLocation: priorRows[0]?.location ?? null,
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

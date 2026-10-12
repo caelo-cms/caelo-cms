@@ -1375,6 +1375,11 @@ async function stepFinalize(installId: string): Promise<void> {
           `  To bind ${cyan(`admin.${meta.domain}`)}, run`,
           `  ${dim("bunx @caelo-cms/provisioning admin-domain enable")}`,
           `  (it walks you through the one-time Search Console verification and prints the DNS record).`,
+          "",
+          bold("Protected staging site (staging.<domain>):"),
+          `  Stage builds render ${cyan(`staging.${meta.domain}`)}; to serve it, run`,
+          `  ${dim("bunx @caelo-cms/provisioning staging-domain enable")}`,
+          `  and add the DNS record it prints. Access: admin → Security → Staging access.`,
         ]
       : [];
 

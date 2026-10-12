@@ -125,3 +125,61 @@ describe("enableAdminDomain", () => {
     });
   });
 });
+
+describe("enableStagingDomain (#650)", () => {
+  const STAGING_MAPPING = JSON.stringify({
+    status: {
+      resourceRecords: [{ name: "staging", type: "CNAME", rrdata: "ghs.googlehosted.com." }],
+    },
+  });
+
+  it("opens the gateway's ingress, maps staging.<domain> to the gateway and prints the record", async () => {
+    const { run, calls } = fakeGcloud({
+      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services describe": [ok("internal-and-cloud-load-balancing\n")],
+      "beta run domain-mappings describe": [fail("NOT_FOUND"), ok(STAGING_MAPPING)],
+      "domains list-user-verified": [ok("example.com\n")],
+    });
+    const { enableStagingDomain } = await import("./admin-domain.js");
+    const r = await enableStagingDomain({ ...base, run });
+    expect(r).toEqual({
+      status: "mapped",
+      hostname: "staging.example.com",
+      created: true,
+      records: [{ name: "staging.example.com", type: "CNAME", value: "ghs.googlehosted.com." }],
+    });
+    expect(calls).toContainEqual([
+      "run",
+      "services",
+      "update",
+      "caelo-production-gateway-xyz",
+      "--region=europe-west1",
+      "--project=p",
+      "--ingress=all",
+      "--quiet",
+    ]);
+    expect(calls.find((c) => c.includes("create"))).toContain(
+      "--service=caelo-production-gateway-xyz",
+    );
+    expect(calls[0]).toContain("--filter=metadata.name~^caelo-production-gateway");
+  });
+
+  it("is idempotent: ingress already open and mapping present ⇒ no update, no create", async () => {
+    const { run, calls } = fakeGcloud({
+      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services describe": [ok("all\n")],
+      "beta run domain-mappings describe": [ok(STAGING_MAPPING)],
+    });
+    const { enableStagingDomain } = await import("./admin-domain.js");
+    const r = await enableStagingDomain({ ...base, run });
+    expect(r.status === "mapped" && !r.created).toBe(true);
+    expect(calls.some((c) => c.includes("update") || c.includes("create"))).toBe(false);
+  });
+
+  it("fails closed without exactly one gateway service", async () => {
+    const { run } = fakeGcloud({ "run services list": [ok("a\nb\n")] });
+    const { enableStagingDomain } = await import("./admin-domain.js");
+    const r = await enableStagingDomain({ ...base, run });
+    expect(r.status).toBe("failed");
+  });
+});
