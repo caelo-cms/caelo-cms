@@ -13,7 +13,7 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { err, ok, redirectTargetIssue, redirectTargetPathSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -44,7 +44,8 @@ export const createRedirectOp = defineOperation({
       // Defense-in-depth: the admin form rewrites already check this,
       // but the AI tool path (and any direct API caller) lands here.
       // 410 Gone redirects use a sentinel `to` that's still rooted.
-      toPath: z.string().min(1).max(500).regex(/^\//, "must start with /"),
+      // #657 — a same-site path only: no `//host`, no `/https://…`.
+      toPath: redirectTargetPathSchema,
       statusCode: z
         .union([z.literal(301), z.literal(302), z.literal(307), z.literal(308), z.literal(410)])
         .default(301),
@@ -52,6 +53,13 @@ export const createRedirectOp = defineOperation({
     .strict(),
   output: z.object({ redirectId: z.string() }),
   handler: async (ctx, input, tx) => {
+    // Re-checked here, not only in the input schema: slug changes, page
+    // deletes and URL migrations call this handler directly on their own
+    // tx, which skips the Validator's Zod parse.
+    const targetIssue = redirectTargetIssue(input.toPath);
+    if (targetIssue) {
+      return err({ kind: "HandlerError", operation: "redirects.create", message: targetIssue });
+    }
     if (input.fromPath === input.toPath) {
       return err({
         kind: "HandlerError",
@@ -241,7 +249,7 @@ export const createRedirectsManyOp = defineOperation({
           z
             .object({
               fromPath: z.string().min(1).max(500).regex(/^\//, "must start with /"),
-              toPath: z.string().min(1).max(500).regex(/^\//, "must start with /"),
+              toPath: redirectTargetPathSchema,
               statusCode: z
                 .union([
                   z.literal(301),

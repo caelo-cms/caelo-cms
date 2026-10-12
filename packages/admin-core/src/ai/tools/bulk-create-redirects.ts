@@ -38,7 +38,13 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
           required: ["fromPath", "toPath"],
           properties: {
             fromPath: { type: "string", minLength: 1, maxLength: 500 },
-            toPath: { type: "string", minLength: 1, maxLength: 500 },
+            toPath: {
+              type: "string",
+              minLength: 1,
+              maxLength: 500,
+              description:
+                "A path on this site starting with a single '/' (e.g. '/blog/new'). Never a full URL ('/https://…') or '//host' — external (other-domain) targets are not supported.",
+            },
             statusCode: { type: "integer", enum: [301, 302, 307, 308, 410], default: 301 },
           },
         },

@@ -18,7 +18,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { moduleUpdateSchema } from "@caelo-cms/shared";
+import { moduleUpdateSchema, redirectTargetPathSchema } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import {
@@ -40,7 +40,7 @@ const deletionItem = z
   .object({
     pageId: uuid,
     disposition: z.enum(["404", "redirect"]),
-    redirectTo: z.string().min(1).max(500).optional(),
+    redirectTo: redirectTargetPathSchema.optional(),
   })
   .strict()
   .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
@@ -114,7 +114,8 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
               type: "string",
               minLength: 1,
               maxLength: 500,
-              description: "Required when disposition='redirect' — the 301 target path.",
+              description:
+                "Required when disposition='redirect' — the 301 target: a path on this site starting with a single '/' (e.g. '/blog'). Never a full URL or '//host'; external targets are not supported.",
             },
           },
         },

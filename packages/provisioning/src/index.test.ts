@@ -278,6 +278,15 @@ describe("redirects-emit", () => {
       ).toThrow(/contains whitespace/);
     });
 
+    it("every emitter rejects an off-site or URL-embedding toPath (#657)", () => {
+      for (const toPath of ["//evil.example/x", "/https://example.com/x"]) {
+        const rows = [{ fromPath: "/old", toPath, statusCode: 301 as const }];
+        expect(() => emitRedirectsCloudflare(rows)).toThrow(/redirects-emit: toPath/);
+        expect(() => emitRedirectsCloudFront(rows)).toThrow(/redirects-emit: toPath/);
+        expect(() => emitRedirectsAzureFrontDoor(rows)).toThrow(/redirects-emit: toPath/);
+      }
+    });
+
     it("Azure emitter rejects tab in path", () => {
       expect(() =>
         emitRedirectsAzureFrontDoor([{ fromPath: "/old\there", toPath: "/x", statusCode: 301 }]),
