@@ -157,6 +157,13 @@ export interface ToolResult {
   readonly ok: boolean;
   readonly content: string;
   /**
+   * Issue #658 — the proposal a gated tool queued, for tools whose content
+   * is NOT the canonical "Queued proposal <uuid>:" shape (skill and
+   * site-memory proposals keep their own wording and Owner pages). The
+   * Power-MCP records the external agent's hand-off from it.
+   */
+  readonly queuedProposalId?: string;
+  /**
    * v0.3.0 — optional image attached to the result. When set, the
    * chat-runner builds a follow-up multimodal user message
    * (containing this image + a small "tool returned image" hint

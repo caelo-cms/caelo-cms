@@ -123,7 +123,11 @@ async function readProposalDecisions(tx: Tx, proposalId: string): Promise<Propos
       FROM site_memory_proposals WHERE id = ${id}
     UNION ALL SELECT 'skills', status, reviewed_at, NULL, NULL, NULL
       FROM skill_proposals WHERE id = ${id}
-    UNION ALL SELECT 'import', status, approved_at, error_message, NULL, NULL
+    -- import: approved_at is the approval evidence (execute_proposal sets
+    -- it, reject_proposal does not); carried in result_ok to tell an
+    -- Owner reject from a crawl that failed after approval.
+    UNION ALL SELECT 'import', status, approved_at, error_message,
+                     approved_at IS NOT NULL, NULL
       FROM import_runs WHERE id = ${id}
   `)) as unknown as ProposalDecisionRow[];
 }
@@ -134,9 +138,9 @@ async function readProposalDecisions(tx: Tx, proposalId: string): Promise<Propos
  *
  * - `tool_approvals` flips to 'applied' BEFORE its tool dispatches (atomic
  *   claim), so an applied row without `result_ok` is still in flight.
- * - `import` has its own lifecycle: 'proposed' waits, 'failed' covers both
- *   an Owner reject and a crawl failure (error_message says which), any
- *   other state means the crawl was approved and started.
+ * - `import` has its own lifecycle: 'proposed' waits; 'failed' is an Owner
+ *   reject when the run was never approved, else a crawl that failed after
+ *   approval; any other state means the crawl was approved and started.
  */
 export function decisionFromRow(row: ProposalDecisionRow): {
   outcome: ApprovalOutcome;
@@ -144,7 +148,12 @@ export function decisionFromRow(row: ProposalDecisionRow): {
 } {
   if (row.domain === "import") {
     if (row.status === "proposed") return { outcome: "pending", detail: null };
-    if (row.status === "failed") return { outcome: "rejected", detail: row.reason };
+    if (row.status === "failed") {
+      // result_ok carries "approved_at IS NOT NULL" for imports.
+      return row.result_ok
+        ? { outcome: "failed", detail: row.reason }
+        : { outcome: "rejected", detail: row.reason };
+    }
     return { outcome: "applied", detail: `crawl approved (status: ${row.status})` };
   }
   switch (row.status) {
@@ -290,6 +299,21 @@ export async function recordMcpHandoff(
     ON CONFLICT (proposal_id) DO NOTHING
   `);
   return { domain };
+}
+
+/** The hand-off a (session, tool call) recorded — serves cached tool-call replays. */
+export async function findMcpHandoffByToolCall(
+  tx: Tx,
+  chatSessionId: string,
+  toolCallId: string,
+): Promise<{ proposalId: string; domain: string } | null> {
+  const rows = (await tx.execute(sql`
+    SELECT proposal_id::text AS proposal_id, domain FROM mcp_approval_handoffs
+     WHERE chat_session_id = ${chatSessionId}::uuid AND tool_call_id = ${toolCallId}
+     ORDER BY created_at DESC LIMIT 1
+  `)) as unknown as Array<{ proposal_id: string; domain: string }>;
+  const row = rows[0];
+  return row ? { proposalId: row.proposal_id, domain: row.domain } : null;
 }
 
 /**

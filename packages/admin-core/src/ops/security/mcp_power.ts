@@ -41,6 +41,7 @@ import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import {
   approvalOutcome,
+  findMcpHandoffByToolCall,
   readHandoffForAgent,
   recordMcpHandoff,
 } from "../mcp_approval_handoffs.js";
@@ -452,14 +453,9 @@ export const mcpExecuteToolOp = defineOperation({
         cachedLookup.ok &&
         (cachedLookup.value as { cached: { ok: boolean; content: string } | null }).cached;
       if (cached) {
-        const approval = await handOffQueuedProposal(tx, {
-          ok: cached.ok,
-          content: cached.content,
-          chatSessionId: input.chatSessionId,
-          requestedBy: auth.actorId,
-          toolName: input.toolName,
-          toolCallId,
-        });
+        // The first call recorded the hand-off (the cache keeps only
+        // ok+content); serve the same handle.
+        const approval = await findMcpHandoffByToolCall(tx, input.chatSessionId, toolCallId);
         return ok({
           ok: cached.ok,
           content: cached.content,
@@ -607,6 +603,7 @@ export const mcpExecuteToolOp = defineOperation({
     const approval = await handOffQueuedProposal(tx, {
       ok: result.ok,
       content: result.content,
+      ...(result.queuedProposalId ? { queuedProposalId: result.queuedProposalId } : {}),
       chatSessionId: input.chatSessionId,
       requestedBy: auth.actorId,
       toolName: input.toolName,
@@ -626,7 +623,11 @@ export const mcpExecuteToolOp = defineOperation({
   },
 });
 
-/** The canonical shape every gated tool's queued result starts with. */
+/**
+ * The canonical shape gated tools' queued results start with (enforced by
+ * propose-content-shape.test.ts); the bespoke skill / site-memory flows
+ * carry `queuedProposalId` instead.
+ */
 const QUEUED_PROPOSAL_RE =
   /^Queued proposal ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):\s*([^\n]*)/;
 
@@ -641,6 +642,7 @@ async function handOffQueuedProposal(
   r: {
     ok: boolean;
     content: string;
+    queuedProposalId?: string;
     chatSessionId: string;
     requestedBy: string;
     toolName: string;
@@ -649,15 +651,15 @@ async function handOffQueuedProposal(
 ): Promise<{ proposalId: string; domain: string } | null> {
   if (!r.ok) return null;
   const m = QUEUED_PROPOSAL_RE.exec(r.content);
-  if (!m?.[1]) return null;
-  const proposalId = m[1];
+  const proposalId = r.queuedProposalId ?? m?.[1];
+  if (!proposalId) return null;
   const recorded = await recordMcpHandoff(tx, {
     proposalId,
     chatSessionId: r.chatSessionId,
     requestedBy: r.requestedBy,
     toolName: r.toolName,
     toolCallId: r.toolCallId,
-    summary: m[2] ?? "",
+    summary: m?.[2] ?? r.content.split("\n")[0] ?? "",
   });
   if (!recorded) {
     // Every gated tool queues into a source pending_proposals.list knows;

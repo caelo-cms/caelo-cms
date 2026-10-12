@@ -88,9 +88,9 @@ describe("resolveApprovalWaitMs", () => {
     if (prev === undefined) delete process.env.CAELO_MCP_APPROVAL_WAIT_MS;
     else process.env.CAELO_MCP_APPROVAL_WAIT_MS = prev;
   });
-  it("defaults to five minutes and rejects garbage loudly", () => {
+  it("defaults below the MCP client timeout and rejects garbage loudly", () => {
     delete process.env.CAELO_MCP_APPROVAL_WAIT_MS;
-    expect(resolveApprovalWaitMs()).toBe(300_000);
+    expect(resolveApprovalWaitMs()).toBe(50_000);
     process.env.CAELO_MCP_APPROVAL_WAIT_MS = "abc";
     expect(() => resolveApprovalWaitMs()).toThrow(/non-negative integer/);
   });

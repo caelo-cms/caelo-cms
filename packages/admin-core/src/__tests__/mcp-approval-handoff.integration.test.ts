@@ -307,6 +307,34 @@ describe("MCP-originated approval → decided in the admin → handed back", () 
   });
 });
 
+describe("bespoke proposal flows (non-canonical result wording)", () => {
+  it("site_memory_propose hands its Owner review back to the agent", async () => {
+    const r = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
+      plaintextToken: adminToken,
+      chatSessionId,
+      toolName: "site_memory_propose",
+      args: {
+        slot: "glossary",
+        body: `handoff-e2e glossary ${crypto.randomUUID().slice(0, 6)}`,
+        rationale: "test",
+      },
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const approval = (r.value as { approval?: { proposalId: string; domain: string } | null })
+      .approval;
+    expect(approval?.domain).toBe("site_memory");
+    if (!approval) return;
+    const reviewed = await execute(registry, adapter, approverCtx, "ai_memory.review", {
+      proposalId: approval.proposalId,
+      decision: "reject",
+    });
+    expect(reviewed.ok).toBe(true);
+    const out = await outcomeFor(adminToken, approval.proposalId);
+    expect(out.ok && (out.value as { outcome: string }).outcome).toBe("rejected");
+  });
+});
+
 describe("a proposal the chat's own AI queued is unchanged", () => {
   it("carries no origin, so the Live Edit chat keeps auto-continuing its AI", async () => {
     const aiCtx: ExecutionContext = {
@@ -367,6 +395,16 @@ describe("decisionFromRow (lifecycle mapping)", () => {
     expect(
       decisionFromRow({ ...base, domain: "import", status: "failed", reason: "rejected by Owner" }),
     ).toEqual({ outcome: "rejected", detail: "rejected by Owner" });
+    // Approved (approved_at set → result_ok), then the crawl failed: not a reject.
+    expect(
+      decisionFromRow({
+        ...base,
+        domain: "import",
+        status: "failed",
+        reason: "crawl timed out",
+        result_ok: true,
+      }),
+    ).toEqual({ outcome: "failed", detail: "crawl timed out" });
     expect(decisionFromRow({ ...base, domain: "layouts", status: "bogus" }).outcome).toBe("failed");
   });
 });

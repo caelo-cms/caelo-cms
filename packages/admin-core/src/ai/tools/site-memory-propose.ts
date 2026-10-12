@@ -47,6 +47,7 @@ export const siteMemoryProposeTool: ToolDefinitionWithHandler<
       return {
         ok: true,
         content: `proposal queued for Owner review (slot=${input.slot})`,
+        queuedProposalId: (result.value as { proposalId: string }).proposalId,
       };
     }
     const message = (result.error as { message?: string }).message ?? "unknown error";

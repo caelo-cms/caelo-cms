@@ -10,9 +10,10 @@
  * The agent never decides — it only reads the outcome via
  * `/api/mcp/approval` (§11.A: no auto-approve, each instance its own click).
  *
- * The wait is bounded (`CAELO_MCP_APPROVAL_WAIT_MS`, default 5 min) so an
- * unattended admin cannot hang an agent forever; past it the result tells
- * the agent to call `caelo_await_approval` to keep waiting.
+ * The wait is bounded (`CAELO_MCP_APPROVAL_WAIT_MS`, default 50s — below
+ * the MCP SDK client's default 60s request timeout) so an unattended admin
+ * cannot hang an agent and no client times out first; past it the result
+ * tells the agent to call `caelo_await_approval` to keep waiting.
  */
 
 /** What `/api/mcp/approval` returns. */
@@ -26,7 +27,12 @@ export interface ApprovalOutcome {
   readonly decidedAt: string | null;
 }
 
-export const DEFAULT_APPROVAL_WAIT_MS = 5 * 60_000;
+/**
+ * Under the MCP SDK client's default 60s request timeout (progress does not
+ * reset it unless the client opts in), so an ordinary client always gets
+ * the proposal id + the caelo_await_approval hint instead of a timeout.
+ */
+export const DEFAULT_APPROVAL_WAIT_MS = 50_000;
 export const APPROVAL_POLL_INTERVAL_MS = 3_000;
 
 /** The bounded wait, from `CAELO_MCP_APPROVAL_WAIT_MS` (0 = return at once). */
