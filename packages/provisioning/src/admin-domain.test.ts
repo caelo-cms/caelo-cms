@@ -7,7 +7,12 @@ import type { GcloudResult } from "./gcloud.js";
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
 
-function fakeGcloud(answers: Record<string, GcloudResult[]>) {
+/** Fake gcloud; the `beta` component is installed unless a test answers `components list`. */
+function fakeGcloud(overrides: Record<string, GcloudResult[]>) {
+  const answers: Record<string, GcloudResult[]> = {
+    "components list": [ok("beta\n")],
+    ...overrides,
+  };
   const calls: string[][] = [];
   const run = async (args: string[]) => {
     calls.push(args);
@@ -20,7 +25,7 @@ function fakeGcloud(answers: Record<string, GcloudResult[]>) {
 const MAPPING = JSON.stringify({
   status: { resourceRecords: [{ name: "admin", type: "CNAME", rrdata: "ghs.googlehosted.com." }] },
 });
-const base = { projectId: "p", region: "europe-west1", domain: "example.com" };
+const base = { projectId: "p", region: "europe-west1", domain: "example.com", log: () => {} };
 
 describe("enableAdminDomain", () => {
   it("creates the mapping as the operator once the domain is verified, and prints the record", async () => {
@@ -124,6 +129,38 @@ describe("enableAdminDomain", () => {
       error: "create domain mapping: Caller is not authorized to administer the domain",
     });
   });
+
+  it("installs the missing beta component before the first beta command (regression: hidden gcloud prompt hung the CLI)", async () => {
+    const logs: string[] = [];
+    const { run, calls } = fakeGcloud({
+      "components list": [ok("")],
+      "run services list": [ok("caelo-production-admin-abc\n")],
+      "beta run domain-mappings describe": [ok(MAPPING)],
+    });
+    const r = await enableAdminDomain({ ...base, run, log: (m) => logs.push(m) });
+    expect(r.status).toBe("mapped");
+    const install = calls.findIndex((c) => c.join(" ") === "components install beta --quiet");
+    const firstBeta = calls.findIndex((c) => c[0] === "beta");
+    expect(install).toBeGreaterThanOrEqual(0);
+    expect(install).toBeLessThan(firstBeta);
+    expect(logs.join("\n")).toContain('Installing the gcloud "beta" component');
+  });
+
+  it("fails with the package-manager command when gcloud cannot install the beta component", async () => {
+    const { run, calls } = fakeGcloud({
+      "components list": [ok("")],
+      "run services list": [ok("caelo-production-admin-abc\n")],
+      "components install": [
+        fail(
+          "ERROR: (gcloud.components.install)\nYou cannot perform this action because the Google Cloud CLI component manager \nis disabled for this installation. You can run the following command \nto achieve the same result for this installation: \n\nsudo apt-get install google-cloud-cli",
+        ),
+      ],
+    });
+    const r = await enableAdminDomain({ ...base, run });
+    expect(r.status).toBe("failed");
+    expect(r.status === "failed" && r.error).toContain("sudo apt-get install google-cloud-cli");
+    expect(calls.some((c) => c[0] === "beta")).toBe(false);
+  });
 });
 
 describe("enableStagingDomain (#650)", () => {
@@ -198,5 +235,20 @@ describe("enableStagingDomain (#650)", () => {
     const { enableStagingDomain } = await import("./admin-domain.js");
     const r = await enableStagingDomain({ ...base, stagingHost: "staging.example.com", run });
     expect(r.status).toBe("failed");
+  });
+
+  it("installs the missing beta component before its first beta command", async () => {
+    const { run, calls } = fakeGcloud({
+      "components list": [ok("")],
+      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services describe": [ok("all\n")],
+      "beta run domain-mappings describe": [ok(STAGING_MAPPING)],
+    });
+    const { enableStagingDomain } = await import("./admin-domain.js");
+    const r = await enableStagingDomain({ ...base, stagingHost: "staging.example.com", run });
+    expect(r.status).toBe("mapped");
+    const install = calls.findIndex((c) => c.join(" ") === "components install beta --quiet");
+    expect(install).toBeGreaterThanOrEqual(0);
+    expect(install).toBeLessThan(calls.findIndex((c) => c[0] === "beta"));
   });
 });

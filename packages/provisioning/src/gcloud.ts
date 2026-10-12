@@ -24,12 +24,29 @@ export interface GcloudResult {
 }
 
 /**
+ * Environment for every non-interactive gcloud child process.
+ *
+ * `CLOUDSDK_CORE_DISABLE_PROMPTS=1` makes gcloud take the non-interactive
+ * path instead of asking a question nobody can see: our runners capture
+ * gcloud's output, so a "(Y/n)" prompt — e.g. "install the beta component?"
+ * — hung the CLI forever (`admin-domain enable`). With prompts disabled,
+ * gcloud fails fast with its error (or proceeds where the command allows it),
+ * and the caller reports the error. Commands that SHOULD talk to the
+ * operator (`gcloud auth login`) are never run through these runners; the
+ * wizard tells the operator to run them in their own terminal.
+ */
+export function gcloudEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...base, CLOUDSDK_CORE_DISABLE_PROMPTS: "1" };
+}
+
+/**
  * Run a gcloud command. Buffered stdout + stderr (max 4 MB each).
  * Throws on spawn failure but NOT on non-zero exit — caller checks `ok`.
+ * stdin is always ended (after `opts.stdin`, if given), so nothing can wait on it.
  */
 export async function gcloud(args: string[], opts: { stdin?: string } = {}): Promise<GcloudResult> {
   return new Promise((resolveResult, reject) => {
-    const child = spawn("gcloud", args, { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("gcloud", args, { stdio: ["pipe", "pipe", "pipe"], env: gcloudEnv() });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
@@ -43,10 +60,7 @@ export async function gcloud(args: string[], opts: { stdin?: string } = {}): Pro
         exitCode: code ?? 1,
       }),
     );
-    if (opts.stdin !== undefined) {
-      child.stdin.write(opts.stdin);
-      child.stdin.end();
-    }
+    child.stdin.end(opts.stdin);
   });
 }
 

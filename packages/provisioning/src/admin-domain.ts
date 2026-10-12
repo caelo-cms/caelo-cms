@@ -30,6 +30,7 @@
  */
 
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
+import { ensureGcloudComponent } from "./gcloud-components.js";
 
 type Run = (args: string[]) => Promise<GcloudResult>;
 
@@ -65,6 +66,12 @@ interface DomainOpts {
   region: string;
   domain: string;
   run?: Run;
+  /** Progress lines (the one-time `beta` component install); defaults to stdout. */
+  log?: (message: string) => void;
+}
+
+function logOf(opts: DomainOpts): (message: string) => void {
+  return opts.log ?? ((message: string) => console.log(message));
 }
 
 /** The one deployed Cloud Run service of `slug` (Pulumi-suffixed name). */
@@ -109,7 +116,7 @@ export async function enableAdminDomain(opts: DomainOpts): Promise<AdminDomainRe
   const scope = [`--region=${opts.region}`, `--project=${opts.projectId}`];
   const found = await findService(run, scope, "admin");
   if (!found.ok) return { status: "failed", error: found.error };
-  return mapDomain(run, scope, opts.domain, `admin.${opts.domain}`, found.service);
+  return mapDomain(run, logOf(opts), scope, opts.domain, `admin.${opts.domain}`, found.service);
 }
 
 /**
@@ -161,17 +168,24 @@ export async function enableStagingDomain(
     opts.stagingHost === opts.domain || opts.stagingHost.endsWith(`.${opts.domain}`)
       ? opts.domain
       : opts.stagingHost;
-  return mapDomain(run, scope, verifyDomain, opts.stagingHost, found.service);
+  return mapDomain(run, logOf(opts), scope, verifyDomain, opts.stagingHost, found.service);
 }
 
 /** Steps 2–4 of the module doc for `hostname` → `service`. */
 async function mapDomain(
   run: Run,
+  log: (message: string) => void,
   scope: string[],
   domain: string,
   hostname: string,
   service: string,
 ): Promise<AdminDomainResult> {
+  // Fully managed Cloud Run domain mappings exist only on the beta track: the
+  // GA `gcloud run domain-mappings` is Cloud Run for Anthos only. Install the
+  // component up front instead of letting gcloud ask for it mid-command.
+  const beta = await ensureGcloudComponent("beta", { run, log });
+  if (!beta.ok) return { status: "failed", error: beta.error };
+
   const describeArgs = [
     "beta",
     "run",
