@@ -23,6 +23,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { gcloudEnv } from "./gcloud.js";
 import {
   AWS_REGIONS,
   AZURE_REGIONS,
@@ -49,7 +50,9 @@ export type CliRunner = (cmd: string, args: readonly string[]) => Promise<CliRes
 /** Default {@link CliRunner}: spawns the binary; a missing binary is a failed result. */
 export const runCli: CliRunner = (cmd, args) =>
   new Promise((resolve) => {
-    const child = spawn(cmd, [...args], { stdio: ["ignore", "pipe", "pipe"] });
+    // gcloudEnv: a hidden gcloud prompt would hang this captured run; the
+    // variable is inert for `aws` / `az`.
+    const child = spawn(cmd, [...args], { stdio: ["ignore", "pipe", "pipe"], env: gcloudEnv() });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     child.stdout.on("data", (c: Buffer) => out.push(c));

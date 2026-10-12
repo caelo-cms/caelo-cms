@@ -28,6 +28,7 @@
  */
 
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
+import { ensureGcloudComponent } from "./gcloud-components.js";
 
 type Run = (args: string[]) => Promise<GcloudResult>;
 
@@ -60,8 +61,11 @@ export async function enableAdminDomain(opts: {
   region: string;
   domain: string;
   run?: Run;
+  /** Progress lines (the one-time `beta` component install); defaults to stdout. */
+  log?: (message: string) => void;
 }): Promise<AdminDomainResult> {
   const run = opts.run ?? defaultGcloud;
+  const log = opts.log ?? ((message: string) => console.log(message));
   const hostname = `admin.${opts.domain}`;
   const scope = [`--region=${opts.region}`, `--project=${opts.projectId}`];
 
@@ -92,6 +96,12 @@ export async function enableAdminDomain(opts: {
           : `expected exactly one caelo-production-admin* Cloud Run service, found ${matches.length} (${matches.join(", ")}); delete the stale one first`,
     };
   }
+
+  // Fully managed Cloud Run domain mappings exist only on the beta track: the
+  // GA `gcloud run domain-mappings` is Cloud Run for Anthos only. Install the
+  // component up front instead of letting gcloud ask for it mid-command.
+  const beta = await ensureGcloudComponent("beta", { run, log });
+  if (!beta.ok) return { status: "failed", error: beta.error };
 
   const describeArgs = [
     "beta",
