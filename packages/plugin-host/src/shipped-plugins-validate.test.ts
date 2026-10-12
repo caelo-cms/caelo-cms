@@ -29,6 +29,7 @@ import {
   verifyManifestSignature,
 } from "@caelo-cms/plugin-sandbox";
 import { manifestFromDefinition, type PluginDefinition } from "@caelo-cms/plugin-sdk";
+import { toolArgsProblem } from "./dispatch.js";
 
 const PLUGINS_ROOT = resolve(import.meta.dir, "../../plugins");
 
@@ -102,6 +103,12 @@ describe("#387 — shipped plugins pass the disk-load pipeline", () => {
         publicKeyHex: pair.publicKeyHex,
       });
       expect(verified).toEqual({ ok: true });
+
+      // 4. #644 — chat tool calls are checked against each tool's input
+      // schema at dispatch, so every declared schema must compile.
+      for (const tool of def.tools ?? []) {
+        expect(() => toolArgsProblem(tool, {})).not.toThrow();
+      }
     });
   }
 });

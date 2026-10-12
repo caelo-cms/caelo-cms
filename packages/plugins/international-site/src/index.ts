@@ -1034,7 +1034,16 @@ export default definePlugin<PluginContextTier1>({
         pageId: duplicated.pageId,
         localeCode,
       });
-      return { pageId: duplicated.pageId, slug: newSlug, isLocaleRoot, ...linked };
+      return {
+        pageId: duplicated.pageId,
+        slug: newSlug,
+        isLocaleRoot,
+        ...linked,
+        // #644 — the clone still carries the source language; name the
+        // follow-up call with its exact argument so the id is not passed
+        // under this result's `pageId` key.
+        nextStep: `The variant is a draft still in the source language. Translate it next: translate_variant({ variantPageId: "${duplicated.pageId}" }).`,
+      };
     },
 
     /**
