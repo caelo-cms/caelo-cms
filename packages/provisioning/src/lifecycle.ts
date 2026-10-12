@@ -31,6 +31,7 @@ import {
   listInstalls,
   readSecret,
   recordImageDigests,
+  scrubInstallProgress,
   selectInstall,
   writeMetadata,
 } from "./install-state.js";
@@ -593,6 +594,11 @@ async function upgradeInstall(
   meta: InstallMetadata,
   opts: UpgradeOpts,
 ): Promise<boolean> {
+  // #656 — earlier installers checkpointed database URLs with role
+  // passwords (and the setup link) into progress.json. Scrub them first,
+  // on every provider and whether or not the roll below succeeds.
+  for (const line of scrubInstallProgress(installId)) log.warn(yellow(line));
+
   // v0.5.15 — extended to cover gcp-firebase too. Both providers share
   // the identical admin + gateway shape on Cloud Run (Artifact
   // Registry image, `caelo-production-<slug>` service naming, the same

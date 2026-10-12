@@ -21,8 +21,18 @@
  */
 
 import { defaultStagingHost, normalizeStagingHost, stagingHostProblem } from "@caelo-cms/shared";
-import { cancel, confirm, intro, isCancel, outro, select, spinner, text } from "@clack/prompts";
-import { bold, cyan, dim } from "kleur/colors";
+import {
+  cancel,
+  confirm,
+  intro,
+  isCancel,
+  log,
+  outro,
+  select,
+  spinner,
+  text,
+} from "@clack/prompts";
+import { bold, cyan, dim, yellow } from "kleur/colors";
 import {
   deriveInstallId,
   ensureInstallDir,
@@ -31,6 +41,7 @@ import {
   type Provider,
   readMetadata,
   resumedMetadata,
+  scrubInstallProgress,
   writeMetadata,
 } from "./install-state.js";
 import { runGcpWizard } from "./wizards/gcp.js";
@@ -138,6 +149,11 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
       });
     }
   }
+
+  // 3.5. #656 — a re-run of an install an earlier CLI set up: drop the
+  // secrets that CLI checkpointed (database passwords, the setup link)
+  // before any step writes progress.json again, and say what to rotate.
+  for (const line of scrubInstallProgress(installId)) log.warn(yellow(line));
 
   // 4. Delegate to the provider-specific wizard.
   switch (provider) {

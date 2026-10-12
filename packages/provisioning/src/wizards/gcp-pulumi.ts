@@ -12,6 +12,7 @@
 
 import { join, resolve as resolvePath } from "node:path";
 import * as pulumi from "@pulumi/pulumi/automation";
+import { checkpointableOutputs } from "../checkpoint-secrets.js";
 import { GCP_STACK_ENV } from "../gcp-names.js";
 import type { ImageDigests } from "../install-state.js";
 import { ensureGeneratedSecrets, stackSecretReplication } from "../runtime-secrets.js";
@@ -49,6 +50,12 @@ export interface PulumiUpInputs {
 }
 
 export interface PulumiUpResult {
+  /**
+   * The stack outputs safe to checkpoint: no output Pulumi marks secret and
+   * none holding a credential (the Owner setup link). Code that needs a
+   * secret output reads it with {@link readStackOutput} when it needs it
+   * (#656).
+   */
   outputs: Record<string, unknown>;
   resourceCount: { created: number; updated: number; deleted: number };
 }
@@ -115,6 +122,32 @@ export async function writeImageDigestsToStack(inputs: {
   const removedOverrides = imageOverrideKeys(inputs.provider).filter((k) => k in config);
   if (removedOverrides.length > 0) await stack.removeAllConfig(removedOverrides);
   return { removedOverrides };
+}
+
+/**
+ * One output of the install's stack, secrets included (the Automation API's
+ * `pulumi stack output --show-secrets`). Read at the moment of use, never
+ * checkpointed (#656). Needs the `pulumi` CLI and the stack's state.
+ *
+ * @returns the output's value, or undefined when the stack has no such output
+ */
+export async function readStackOutput(inputs: {
+  installRoot: string;
+  pulumiPassphrase: string;
+  provider: "gcp" | "gcp-firebase";
+  name: string;
+}): Promise<unknown> {
+  const stack = await pulumi.LocalWorkspace.selectStack(
+    { stackName: GCP_STACK_ENV, workDir: gcpStackWorkDir(inputs.provider) },
+    {
+      envVars: {
+        PULUMI_CONFIG_PASSPHRASE: inputs.pulumiPassphrase,
+        PULUMI_BACKEND_URL: `file://${join(inputs.installRoot, "state")}`,
+      },
+    },
+  );
+  const outputs = await stack.outputs();
+  return outputs[inputs.name]?.value;
 }
 
 /**
@@ -303,13 +336,8 @@ export async function pulumiUpGcp(
 
   const summary = result.summary;
   const changes = summary.resourceChanges ?? {};
-  const outputs: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(result.outputs)) {
-    outputs[k] = v.value;
-  }
-
   return {
-    outputs,
+    outputs: checkpointableOutputs(result.outputs),
     resourceCount: {
       created: changes.create ?? 0,
       updated: changes.update ?? 0,

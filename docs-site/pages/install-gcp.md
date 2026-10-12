@@ -184,6 +184,12 @@ An install from before this change converges on its first `upgrade`, without any
 
 `upgrade` then suggests `rotate-secret postgres-password`: until that upgrade the gateway knew the admin's password. Run it.
 
+#### No secrets in `~/.caelo-<install-id>/`
+
+The install directory on your machine keeps secrets only in `secrets/` (the Anthropic API key, the Pulumi passphrase and, for local deploys, the service-account key) and in Pulumi's encrypted state. `progress.json` (where the installer records the steps it finished, so a re-run resumes) and `install.json` hold no passwords, database URLs with credentials or the Owner setup link; the installer reads those from Secret Manager or the Pulumi stack when it needs them.
+
+Installers before this change stored the database URLs, with `admin_role`'s and `public_role`'s passwords, and the Owner setup link in `progress.json`. The next `upgrade` (or installer re-run) removes them from the file, keeps every finished step, and tells you which password to rotate, with the exact command, for example `bunx @caelo-cms/provisioning rotate-secret postgres-password --install example.com`. Run the commands it prints: copies of the old file may sit in backups or synced folders. The setup link needs no rotation; it expires after 24 hours and stops working once the Owner account exists.
+
 ## Common issues
 
 - **TLS cert stuck on `provisioning`** — DNS hasn't propagated. `dig caelo.example.com` should return the load balancer IP. Wait 10-30 min; Google-managed certs poll for a valid challenge.
