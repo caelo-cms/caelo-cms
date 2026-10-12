@@ -34,6 +34,7 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  assertNoCheckpointSecrets,
   assertNoSecrets,
   rotationHints,
   type ScrubReport,
@@ -303,7 +304,7 @@ export function readProgress(installId: string): ProgressCheckpoint {
 }
 
 export function writeProgress(installId: string, checkpoint: ProgressCheckpoint): void {
-  assertNoSecrets(checkpoint, "progress.json");
+  assertNoCheckpointSecrets(checkpoint, "progress.json");
   writeJsonAtomic(join(installRoot(installId), "progress.json"), {
     ...checkpoint,
     updatedAt: new Date().toISOString(),

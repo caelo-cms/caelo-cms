@@ -19,8 +19,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  assertNoCheckpointSecrets,
   assertNoSecrets,
   checkpointableOutputs,
+  findCheckpointSecrets,
   findSecrets,
   redactCredentials,
   rotationHints,
@@ -197,6 +199,24 @@ describe("checkpoint guard (regression #656)", () => {
   });
 });
 
+describe("checkpoints of projects with secret-sounding ids (codex review)", () => {
+  it("treats step names as identifiers, not secret fields", () => {
+    const checkpoint = {
+      lastCompletedStep: "project-acme-token",
+      updatedAt: "t",
+      steps: { "project-acme-token": { existed: true }, "billing-acme-secret": { count: 1 } },
+    };
+    expect(findCheckpointSecrets(checkpoint)).toEqual([]);
+    expect(() => assertNoCheckpointSecrets(checkpoint, "progress.json")).not.toThrow();
+    // Payloads under such steps are still inspected.
+    expect(
+      findCheckpointSecrets({ steps: { "project-acme-token": { url: legacyAdminUrl } } }),
+    ).toEqual([
+      { path: "steps.project-acme-token.url", kind: "credential-url", user: "admin_role" },
+    ]);
+  });
+});
+
 describe("scrubProgressFile", () => {
   const withFile = (contents: unknown, run: (path: string) => void) => {
     const dir = mkdtempSync(join(tmpdir(), "caelo-scrub-"));
@@ -233,6 +253,25 @@ describe("scrubProgressFile", () => {
       expect(readdirSync(join(path, "..")).filter((f) => f.includes(".tmp-"))).toEqual([]);
       // Idempotent.
       expect(scrubProgressFile(path).removed).toEqual([]);
+    });
+  });
+
+  it("keeps the completed-step markers of a project whose id sounds secret", () => {
+    const cp = {
+      lastCompletedStep: "pulumi-up-acme-token",
+      updatedAt: "t",
+      steps: {
+        "project-acme-token": { existed: true },
+        "pulumi-up-acme-token": { outputs: { adminDatabaseUrlOut: legacyAdminUrl, lbIpOut: "1" } },
+      },
+    };
+    withFile(cp, (path) => {
+      expect(scrubProgressFile(path).removed).toHaveLength(1);
+      const after = JSON.parse(readFileSync(path, "utf8"));
+      expect(after.steps).toEqual({
+        "project-acme-token": { existed: true },
+        "pulumi-up-acme-token": { outputs: { lbIpOut: "1" } },
+      });
     });
   });
 

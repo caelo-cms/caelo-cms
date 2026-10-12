@@ -111,12 +111,52 @@ export function findSecrets(value: unknown, path = ""): SecretFinding[] {
  * @param what what was about to be written, for the message
  */
 export function assertNoSecrets(value: unknown, what: string): void {
-  const found = findSecrets(value);
+  refuseFindings(findSecrets(value), what);
+}
+
+/** {@link assertNoSecrets} for a whole checkpoint (see {@link findCheckpointSecrets}). */
+export function assertNoCheckpointSecrets(checkpoint: unknown, what: string): void {
+  refuseFindings(findCheckpointSecrets(checkpoint), what);
+}
+
+function refuseFindings(found: readonly SecretFinding[], what: string): void {
   if (found.length === 0) return;
   throw new Error(
     `Refusing to write secret material to ${what} (${found.map((f) => `${f.path}: ${f.kind}`).join(", ")}). ` +
       "Secrets belong in Secret Manager or the install's secrets/ directory; read them at the moment of use instead (#656).",
   );
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
+ * {@link findSecrets} for a progress.json checkpoint. Its step names are
+ * derived from operator input (`project-<project id>`), so they are
+ * identifiers, not field names: a project called `acme-token` must not read
+ * as a secret. Only the step payloads (and the other top-level fields) are
+ * inspected.
+ */
+export function findCheckpointSecrets(checkpoint: unknown): SecretFinding[] {
+  if (!isRecord(checkpoint)) return findSecrets(checkpoint);
+  const { steps, ...rest } = checkpoint;
+  const inSteps = isRecord(steps)
+    ? Object.entries(steps).flatMap(([name, payload]) => findSecrets(payload, `steps.${name}`))
+    : findSecrets(steps, "steps");
+  return [...findSecrets(rest), ...inSteps];
+}
+
+/** {@link withoutSecrets} for a checkpoint: every step is kept, its payload cleaned. */
+function checkpointWithoutSecrets(checkpoint: unknown): unknown {
+  if (!isRecord(checkpoint)) return withoutSecrets(checkpoint);
+  const { steps, ...rest } = checkpoint;
+  return {
+    ...(withoutSecrets(rest) as Record<string, unknown>),
+    steps: isRecord(steps)
+      ? Object.fromEntries(Object.entries(steps).map(([n, p]) => [n, withoutSecrets(p)]))
+      : withoutSecrets(steps),
+  };
 }
 
 /**
@@ -178,9 +218,9 @@ export interface ScrubReport {
 export function scrubProgressFile(path: string): ScrubReport {
   if (!existsSync(path)) return { removed: [] };
   const checkpoint: unknown = JSON.parse(readFileSync(path, "utf8"));
-  const removed = findSecrets(checkpoint);
+  const removed = findCheckpointSecrets(checkpoint);
   if (removed.length === 0) return { removed };
-  writeJsonAtomic(path, withoutSecrets(checkpoint));
+  writeJsonAtomic(path, checkpointWithoutSecrets(checkpoint));
   return { removed };
 }
 
