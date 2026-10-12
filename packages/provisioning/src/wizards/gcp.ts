@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { CERT_WAIT_TIMEOUT_MS, lbCertProbe, waitForCert } from "../cert-wait.js";
+import { redactCredentials } from "../checkpoint-secrets.js";
 import { removeDefaultIngressRules } from "../default-firewall.js";
 import {
   checkDeployedRuntimeEnv,
@@ -80,7 +81,7 @@ import {
 import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
 import { ABSENT_DEFAULT_FIREWALL_RULES, ADMIN_MEMORY_DEFAULT } from "../stack-contract.js";
 import { estimateGcpCost } from "./gcp-cost.js";
-import { pulumiUpGcp } from "./gcp-pulumi.js";
+import { pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
 
 const SA_ACCOUNT_ID = "caelo-provisioner";
 
@@ -888,7 +889,7 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
         }
       } else if (kind === "error") {
         process.stdout.write("\n");
-        log.error(red(message));
+        log.error(red(redactCredentials(message)));
       }
       // logs: silent — too noisy for a live progress UI; pulumi
       // diagnostics will print on failure via the SDK's onOutput.
@@ -1281,6 +1282,33 @@ async function stepUploadStaticPlaceholder(
   markStepDone(installId, stepName, { bucket: bucketName });
 }
 
+/**
+ * The Owner setup link from the install's stack (`bootstrapUrlOut`). A
+ * secret: read here, at the moment it is shown, never checkpointed (#656).
+ * Fails loudly when the stack can't be read: the run's last step, so a
+ * re-run picks it up.
+ */
+async function readBootstrapUrl(installId: string, provider: string): Promise<string> {
+  const passphrase = readSecret(installId, "pulumi-passphrase");
+  if (!passphrase) {
+    throw new Error(
+      `~/.caelo-${installId}/secrets/pulumi-passphrase is missing; the Owner setup link can't be read from the stack.`,
+    );
+  }
+  const value = await readStackOutput({
+    installRoot: installRoot(installId),
+    pulumiPassphrase: passphrase,
+    provider: provider === "gcp-firebase" ? "gcp-firebase" : "gcp",
+    name: "bootstrapUrlOut",
+  });
+  if (typeof value !== "string" || value === "") {
+    throw new Error(
+      "The stack has no bootstrapUrlOut output. Re-run the installer to refresh the stack.",
+    );
+  }
+  return value;
+}
+
 /** The install's Pulumi outputs, as the `pulumi-up` step recorded them. */
 async function recordedStackOutputs(
   installId: string,
@@ -1366,11 +1394,15 @@ async function stepFinalize(installId: string): Promise<void> {
   // URL must point at the Cloud Run-generated *.run.app URL. The
   // bootstrap token in Pulumi's output already includes the right
   // path + query; we just swap the host.
-  const bootstrapToken = String(outputs.bootstrapUrlOut ?? "").match(/token=([^&]+)/)?.[1] ?? "";
+  //
+  // #656 — the link carries the setup token, so it is never checkpointed;
+  // it is read from the stack here, where it is shown.
+  const stackBootstrapUrl = await readBootstrapUrl(installId, provider);
+  const bootstrapToken = stackBootstrapUrl.match(/token=([^&]+)/)?.[1] ?? "";
   const bootstrapUrl =
     provider === "gcp-firebase" && adminCloudRunUrl.length > 0
       ? `${adminCloudRunUrl}/setup?token=${bootstrapToken}`
-      : String(outputs.bootstrapUrlOut ?? "<unknown>");
+      : stackBootstrapUrl;
 
   // Both providers report their records in `dnsRecordsRequiredOut`; the
   // summary lists them in two groups so the main-domain records that take a

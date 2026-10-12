@@ -15,6 +15,10 @@
  *   install.json            — install metadata (provider, project id, region,
  *                             domain, owner email, install id, created_at)
  *
+ * Only `secrets/` (and Pulumi's encrypted state) hold secrets. progress.json
+ * and install.json are read by tooling, backups and agents, so writes to
+ * them refuse secret material (checkpoint-secrets.ts, #656).
+ *
  * The CLAUDE.md §11.C contract: end-users never reach into this directory
  * by hand. The wizard + lifecycle commands wrap every read + write.
  */
@@ -29,6 +33,14 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  assertNoCheckpointSecrets,
+  assertNoSecrets,
+  rotationHints,
+  type ScrubReport,
+  scrubProgressFile,
+  writeJsonAtomic,
+} from "./checkpoint-secrets.js";
 import { defaultStagingHost } from "./stack-contract.js";
 
 export type Provider = "self-hosted" | "gcp" | "gcp-firebase" | "aws" | "azure";
@@ -278,6 +290,7 @@ export function readMetadata(installId: string): InstallMetadata | null {
 }
 
 export function writeMetadata(installId: string, meta: InstallMetadata): void {
+  assertNoSecrets(meta, "install.json");
   const path = join(installRoot(installId), "install.json");
   writeFileSync(path, `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o600 });
 }
@@ -291,19 +304,21 @@ export function readProgress(installId: string): ProgressCheckpoint {
 }
 
 export function writeProgress(installId: string, checkpoint: ProgressCheckpoint): void {
-  const path = join(installRoot(installId), "progress.json");
-  writeFileSync(
-    path,
-    `${JSON.stringify({ ...checkpoint, updatedAt: new Date().toISOString() }, null, 2)}\n`,
-    { mode: 0o600 },
-  );
+  assertNoCheckpointSecrets(checkpoint, "progress.json");
+  writeJsonAtomic(join(installRoot(installId), "progress.json"), {
+    ...checkpoint,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 /**
  * Mark a step complete. Wizard re-runs check `isStepDone(installId, name)` to
- * skip already-done steps.
+ * skip already-done steps. The payload is bookkeeping only: one holding a
+ * password, a credential URL or a secret-named key is refused (#656) —
+ * store an identifier and read the secret at the moment of use.
  */
 export function markStepDone(installId: string, stepName: string, payload?: unknown): void {
+  if (payload !== undefined) assertNoSecrets(payload, `progress.json step "${stepName}"`);
   const cur = readProgress(installId);
   cur.lastCompletedStep = stepName;
   if (payload !== undefined) cur.steps[stepName] = payload;
@@ -317,6 +332,22 @@ export function isStepDone(installId: string, stepName: string): boolean {
 export function getStepPayload<T>(installId: string, stepName: string): T | null {
   const v = readProgress(installId).steps[stepName];
   return (v ?? null) as T | null;
+}
+
+/**
+ * Remove secret material an older CLI checkpointed into the install's
+ * progress.json (#656). Idempotent; completed steps stay completed.
+ *
+ * @returns the lines to show the operator: what was removed and which
+ *   secret to rotate with which command; empty when the file was clean
+ */
+export function scrubInstallProgress(installId: string): string[] {
+  const { removed }: ScrubReport = scrubProgressFile(join(installRoot(installId), "progress.json"));
+  if (removed.length === 0) return [];
+  return [
+    `Removed ${removed.length} secret value(s) an earlier installer stored in ~/.caelo-${installId}/progress.json. Copies may remain in backups or synced copies of that file.`,
+    ...rotationHints(removed, installId),
+  ];
 }
 
 /**

@@ -28,6 +28,7 @@ import { resolve } from "node:path";
 import { defaultStagingHost, normalizeStagingHost, stagingHostProblem } from "@caelo-cms/shared";
 import { generateBootstrapToken } from "./bootstrap-token.js";
 import { type CaddyDomainSpec, generateCaddyfile } from "./caddy.js";
+import { redactCredentials } from "./checkpoint-secrets.js";
 import { initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
 import { generateDockerCompose, type RolePasswords } from "./compose.js";
 import { convergeSelfHostedRoles, decideUp } from "./self-hosted-roles.js";
@@ -1083,10 +1084,16 @@ async function wizardCommand(): Promise<void> {
 // documented one-command form) and a bare `cms-provision` drop into the
 // wizard. `--no-wizard` / `--help` keep the legacy "print usage" shape.
 const route = resolveCliRoute(process.argv, Object.keys(handlers));
-if (route.kind === "handler") {
-  await handlers[route.name]?.();
-} else if (route.kind === "wizard") {
-  await wizardCommand();
+if (route.kind === "handler" || route.kind === "wizard") {
+  try {
+    if (route.kind === "handler") await handlers[route.name]?.();
+    else await wizardCommand();
+  } catch (e) {
+    // #656 — an error from Pulumi, gcloud or a database client can quote a
+    // connection URL; print it with any password masked.
+    console.error(redactCredentials(e instanceof Error ? (e.stack ?? e.message) : String(e)));
+    process.exit(1);
+  }
 } else {
   console.log(
     "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|pulumi-output-sync|version> [options]\n" +
