@@ -140,6 +140,23 @@ function valueSql(columns: Readonly<Record<string, string>>, column: string, val
     : sql`${value}`;
 }
 
+/**
+ * #644 — an `undefined` value is refused, never bound. Drizzle renders an
+ * undefined template value as nothing at all, so `{ page_id: undefined }`
+ * became `t."page_id" =  LIMIT 1`: a syntax error far from the caller
+ * whose argument was missing. Fail at the boundary and name the column.
+ */
+function undefinedValueProblem(
+  op: string,
+  where: "filter" | "data" | "patch",
+  column: string,
+  value: unknown,
+): string | null {
+  return value === undefined
+    ? `${op}: ${where} value for column "${column}" is undefined — the caller's value is missing; pass a value (or null explicitly), or leave the key out`
+    : null;
+}
+
 /** Parse a `list` filter once; the private zone applies it as SQL and to overlay rows. */
 function parseListFilter(
   op: string,
@@ -168,7 +185,7 @@ function parseListFilter(
       if (!("created_at" in columns)) return `${op}: \`since\` requires a created_at column`;
       since = v;
     } else {
-      const problem = checkColumn(op, columns, k);
+      const problem = checkColumn(op, columns, k) ?? undefinedValueProblem(op, "filter", k, v);
       if (problem) return problem;
       equals.push([k, v]);
     }
@@ -208,7 +225,8 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       const cols: string[] = [];
       const values: ReturnType<typeof sql>[] = [];
       for (const [k, v] of Object.entries(input.data)) {
-        const problem = checkColumn(op, input.columns, k);
+        const problem =
+          checkColumn(op, input.columns, k) ?? undefinedValueProblem(op, "data", k, v);
         if (problem) return fail(op, problem);
         cols.push(k);
         values.push(valueSql(input.columns, k, v));
@@ -279,7 +297,8 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       const patch: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(input.patch)) {
         if (k === "id") continue; // never update id
-        const problem = checkColumn(op, input.columns, k);
+        const problem =
+          checkColumn(op, input.columns, k) ?? undefinedValueProblem(op, "patch", k, v);
         if (problem) return fail(op, problem);
         sets.push(sql`${sql.raw(`"${k}"`)} = ${valueSql(input.columns, k, v)}`);
         patch[k] = v;

@@ -21,6 +21,30 @@ import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
+const BUG_REPORT_FIELDS = [
+  "title",
+  "whatHappened",
+  "expected",
+  "suspectedTool",
+  "evidence",
+  "severity",
+  "blockedTask",
+] as const;
+
+/**
+ * #644 — a value that carries this call's OTHER parameters as markup
+ * (`…</evidence>\n<suspectedTool">translate_variant</suspectedTool>`).
+ * A live run filed exactly that: the tool-call encoding bled the remaining
+ * parameters into the open `evidence` string, so `suspectedTool` and
+ * `severity` were lost and the excerpt ended in tag soup. Nothing in this
+ * schema asks for markup; refusing the shape makes the AI re-file with each
+ * value in its own field instead of persisting a half-parsed report.
+ */
+const LEAKED_PARAMETER_RE = new RegExp(
+  // `title` is left out: a render excerpt legitimately quotes `<title>`.
+  `</?(?:${BUG_REPORT_FIELDS.filter((f) => f !== "title").join("|")})\\b[^<>]*>`,
+);
+
 export const bugReportToolInput = z
   .object({
     title: z.string().min(1).max(200),
@@ -31,7 +55,20 @@ export const bugReportToolInput = z
     severity: z.enum(["blocking", "degraded", "cosmetic"]).default("degraded"),
     blockedTask: z.boolean().default(false),
   })
-  .strict();
+  .strict()
+  .superRefine((input, issues) => {
+    for (const field of BUG_REPORT_FIELDS) {
+      const value = input[field];
+      if (typeof value !== "string") continue;
+      const leaked = LEAKED_PARAMETER_RE.exec(value);
+      if (!leaked) continue;
+      issues.addIssue({
+        code: "custom",
+        path: [field],
+        message: `contains "${leaked[0]}" — other bug_report parameters were written inside this value. Call bug_report again with each value in its own field (suspectedTool, severity, blockedTask are separate arguments) and plain text in ${field}.`,
+      });
+    }
+  });
 
 export type BugReportToolInput = z.infer<typeof bugReportToolInput>;
 
