@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.10.38
+
+### Fixes
+- 6ca2e606 serve /api/variant/assign, comments list_approved and plugin captcha as gateway_role (#648)
+- 51cd6463 validate plugin tool-call args; refuse undefined storage values (#644) (#647)
+- 0c1a5314 detect and self-heal stuck Firebase Hosting custom domains (#646)
+
 ## v0.10.37
 
 ### Fixes
