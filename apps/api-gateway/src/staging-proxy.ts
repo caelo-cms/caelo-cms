@@ -25,7 +25,9 @@
  *      answer comes back unchanged — status, redirects (their Location
  *      re-addressed from the preview origin to the staging host), headers,
  *      compressed body — so staging behaves exactly like Hosting serves the
- *      release that goes live. `X-Robots-Tag: noindex` is guaranteed.
+ *      release that goes live. `X-Robots-Tag: noindex` and
+ *      `Cache-Control: private, no-store` are guaranteed: no shared cache
+ *      may keep an admitted response for someone the gate would refuse.
  *
  * The gate's own credentials never reach the origin: the session cookie,
  * and the Authorization / secret header when they carried a valid staging
@@ -242,6 +244,14 @@ async function proxy(
   for (const c of upstream.headers.getSetCookie()) headers.append("set-cookie", c);
   const location = upstream.headers.get("location");
   if (location) headers.set("location", rewriteLocation(location, origin, config.stagingOrigin));
+  // The staged site is not public: whatever Hosting says (`public`,
+  // s-maxage for its CDN), a shared cache between the browser and the gate
+  // must never keep an admitted response and hand it to someone the gate
+  // would refuse. The response does not vary by credential, so `private`
+  // alone would not help a cache that ignores it — `no-store` does.
+  headers.set("cache-control", "private, no-store");
+  headers.delete("cdn-cache-control");
+  headers.delete("surrogate-control");
   const robots = headers.get("x-robots-tag");
   if (!robots || !/noindex/i.test(robots)) {
     headers.set("x-robots-tag", robots ? `${robots}, noindex` : "noindex");

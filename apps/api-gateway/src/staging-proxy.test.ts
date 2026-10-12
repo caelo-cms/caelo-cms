@@ -238,6 +238,12 @@ describe("handleStagingRequest — Open staging", () => {
     );
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("/de/preise/");
+    // A page path in any script still redirects (percent-encoded).
+    const ja = await h.serve(
+      `/_caelo/staging-access?t=${encodeURIComponent(token)}&next=${encodeURIComponent("/ja/料金/")}`,
+    );
+    expect(ja.status).toBe(303);
+    expect(ja.headers.get("location")).toBe("/ja/%E6%96%99%E9%87%91/");
     const cookie = r.headers.get("set-cookie") ?? "";
     expect(cookie).toContain(`${STAGING_SESSION_COOKIE}=`);
     expect(cookie).toContain("HttpOnly");
@@ -297,7 +303,9 @@ describe("handleStagingRequest — transparent proxy", () => {
     const redirect = await h.serve("/old", { headers: { cookie } });
     expect(redirect.status).toBe(301);
     expect(redirect.headers.get("location")).toBe(`${STAGING}/new/`);
-    expect(redirect.headers.get("cache-control")).toBe("max-age=60");
+    // Never shareable: a cache between browser and gate must not replay an
+    // admitted response to someone the gate refuses (codex review on #652).
+    expect(redirect.headers.get("cache-control")).toBe("private, no-store");
     expect(redirect.headers.get("x-robots-tag")).toBe("noindex");
     expect(h.calls[0]?.init.redirect).toBe("manual");
     expect(h.calls[0]?.init.decompress).toBe(false);
@@ -307,6 +315,8 @@ describe("handleStagingRequest — transparent proxy", () => {
     expect(missing.status).toBe(404);
     expect(missing.headers.get("content-encoding")).toBe("gzip");
     expect(missing.headers.get("set-cookie")).toBe("a=1");
+    // Hosting's `public, max-age=60` is not passed on.
+    expect(missing.headers.get("cache-control")).toBe("private, no-store");
     expect(await missing.text()).toBe("gz-bytes");
   });
 

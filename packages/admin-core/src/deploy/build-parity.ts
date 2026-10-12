@@ -82,8 +82,8 @@ function originOf(url: string): string {
 
 /**
  * The normaliser that turns staging-host content into live-host content:
- * every occurrence of the staging origin becomes the live origin, then
- * every remaining bare staging host (inside JSON-escaped or URL-encoded
+ * every occurrence of the staging origin becomes the live origin, and
+ * every other bare staging host (inside JSON-escaped or URL-encoded
  * URLs, `og:url` without a scheme, …) becomes the live host.
  *
  * Content is handled as latin1 so every byte maps to one char and back —
@@ -105,8 +105,21 @@ export function hostNormaliser(stagingUrl: string, liveUrl: string): ContentNorm
       `the staging host and the live host are both ${liveHost} — staging must have its own host (staging.<domain>) for a host-swapped build to differ from live`,
     );
   }
+  // ONE pass over the content, origin before bare host at each position,
+  // so a replacement is never reprocessed: chained replaces turned staging
+  // `example.com` → live `www.example.com` into `www.www.example.com`.
+  // A bare host directly after `.` or `-` is part of a longer name (e.g.
+  // `mail.example.com` when staging is `example.com`) and stays as it is.
+  const pattern = new RegExp(
+    `${escapeRegExp(stagingOrigin)}|(?<![.\\-])${escapeRegExp(stagingHost)}`,
+    "g",
+  );
   return (content) =>
-    content.split(stagingOrigin).join(liveOrigin).split(stagingHost).join(liveHost);
+    content.replace(pattern, (match) => (match === stagingOrigin ? liveOrigin : liveHost));
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function contentHash(bytes: Buffer | string): string {

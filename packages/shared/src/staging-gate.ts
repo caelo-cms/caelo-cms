@@ -337,6 +337,8 @@ export async function decideStagingAccess(args: {
  * Where "Open staging" may send the browser after setting the cookie: a
  * same-origin path only (never `//host` or a scheme), else `/`.
  *
+ * The result is always ASCII (safe as a `Location` header value).
+ *
  * Control characters are refused outright, not only CR/LF: the WHATWG URL
  * parser deletes tabs and newlines before it parses a Location, so
  * `/<TAB>/evil.example` would otherwise become `//evil.example` in the
@@ -346,7 +348,13 @@ export function safeStagingNextPath(next: string | null): string {
   if (next === null || !next.startsWith("/") || next.startsWith("//")) return "/";
   // biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point
   if (next.includes("\\") || /[\u0000-\u001f\u007f]/.test(next)) return "/";
-  return next;
+  // Serialise through the URL parser: non-ASCII is percent-encoded (a raw
+  // `/日本/` is not a valid header value and would fail the redirect), and
+  // the origin check is the parser's own verdict, not ours.
+  const base = "https://staging.invalid";
+  const url = new URL(next, base);
+  if (url.origin !== base) return "/";
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 // ─── the staging host setting ─────────────────────────────────────────

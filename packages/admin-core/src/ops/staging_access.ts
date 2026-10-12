@@ -257,7 +257,10 @@ export const getStagingAccessOp = defineOperation({
       settings: toOutput(row),
       hasStagedBuild: row.origin_run_id !== null,
     };
-    if (!input.includeCredentials) return ok(base);
+    // No gate on this provider (yet): there are no crawler credentials to
+    // show, and the gate key is not provisioned — answering the settings
+    // keeps Security → Staging access usable instead of failing on it.
+    if (!input.includeCredentials || !supported) return ok(base);
     if (ctx.actorKind !== "human" || !(await actorHasPermission(tx, ctx, "settings.write"))) {
       return handlerError(
         op,

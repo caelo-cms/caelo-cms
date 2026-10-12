@@ -26,6 +26,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import { deriveStagingCredential, type ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
+import { STAGING_PUBLICATION_LOCK_KEY } from "../deploy/staging-publication-lock.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
@@ -336,6 +337,87 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     expect(fake.channels.size).toBe(0);
   });
 
+  it("a Stage waits for an in-flight Stage / Publish live before it publishes and prunes (codex review on #652)", async () => {
+    // Without ordering, Stage A prunes Stage B's fresh channel and B then
+    // records that deleted channel as the staging origin.
+    const holder = new SQL(ADMIN_URL!);
+    let release!: () => void;
+    const released = new Promise<void>((r) => {
+      release = r;
+    });
+    let held!: () => void;
+    const locked = new Promise<void>((r) => {
+      held = r;
+    });
+    const holderTx = holder.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtext(${STAGING_PUBLICATION_LOCK_KEY}))`;
+      held();
+      await released;
+    });
+    try {
+      await locked;
+      const channelsBefore = [...fake.channels.keys()];
+      let settled = false;
+      const pending = ok<{ runId: string }>("deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      }).finally(() => {
+        settled = true;
+      });
+      for (let i = 0; i < 2400; i++) {
+        const waiting = await holder`
+          SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`;
+        if ((waiting[0] as { n: number }).n > 0) break;
+        await Bun.sleep(25);
+      }
+      // Built, but queued on the lock: no channel published, none pruned.
+      expect(settled).toBe(false);
+      expect([...fake.channels.keys()]).toEqual(channelsBefore);
+      release();
+      await holderTx;
+      const staged = await pending;
+      expect([...fake.channels.keys()]).toEqual([`runid-${staged.runId}`]);
+      expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
+    } finally {
+      release();
+      await holderTx.catch(() => undefined);
+      await holder.end();
+    }
+  });
+
+  it("Publish live keeps a newer Stage served and its preview alive (codex review on #652)", async () => {
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    await markAudited(staged.runId);
+    // A newer Stage committed while this publish ran (simulated: the
+    // gate already points at another run and its channel exists).
+    const newer = "00000000-0000-4000-8000-00000000a652";
+    const newerUrl = `https://${SITE}--runid-${newer}-x1y2.web.app`;
+    fake.channels.set(`runid-${newer}`, newerUrl);
+    await withSql(
+      (tx) => tx`UPDATE staging_access SET origin_url = ${newerUrl}, origin_run_id = ${newer}::uuid
+                 WHERE id = 1`,
+    );
+    const promoted = await execute(registry, adapter, SYSTEM, "deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    // Whether this promote picks the simulated run or the real one, the
+    // newer Stage's origin and channel must survive it.
+    if (promoted.ok) {
+      expect(await stagingRow()).toEqual([{ origin_url: newerUrl, origin_run_id: newer }]);
+      expect([...fake.channels.keys()]).toEqual([`runid-${newer}`]);
+    }
+    fake.channels.delete(`runid-${newer}`);
+    await withSql(
+      (tx) => tx`UPDATE staging_access SET origin_url = NULL, origin_run_id = NULL WHERE id = 1`,
+    );
+    expect(promoted.ok).toBe(true);
+  });
+
   it("a change merged after the Stage blocks Publish live and names the file", async () => {
     const staged = await ok<{ runId: string }>("deploy.trigger", {
       targetName: "staging",
@@ -407,6 +489,26 @@ describe("staging access settings", () => {
       includeCredentials: true,
     });
     expect(r.ok).toBe(false);
+  });
+
+  it("get with includeCredentials answers on a provider without a gate (no gate key needed — codex review on #652)", async () => {
+    const saved = {
+      provider: process.env.CAELO_PROVIDER,
+      secret: process.env.CAELO_STAGING_GATE_SECRET,
+    };
+    process.env.CAELO_PROVIDER = "self-hosted";
+    delete process.env.CAELO_STAGING_GATE_SECRET;
+    try {
+      const v = await ok<{ stagingDomainSupported: boolean; credentials?: unknown }>(
+        "staging_access.get",
+        { includeCredentials: true },
+      );
+      expect(v.stagingDomainSupported).toBe(false);
+      expect(v.credentials).toBeUndefined();
+    } finally {
+      process.env.CAELO_PROVIDER = saved.provider;
+      process.env.CAELO_STAGING_GATE_SECRET = saved.secret;
+    }
   });
 
   it("set generates a credential on first enable, keeps it, validates, and rotate replaces it", async () => {

@@ -275,6 +275,9 @@ describe("safeStagingNextPath", () => {
     expect(safeStagingNextPath("/\t/evil.example")).toBe("/");
     expect(safeStagingNextPath("/\n/evil.example")).toBe("/");
     expect(safeStagingNextPath("/a\u007fb")).toBe("/");
+    // Non-ASCII paths come back percent-encoded: a raw one is not a valid
+    // Location header value (the redirect would fail with a 500).
+    expect(safeStagingNextPath("/日本/?q=ü#x")).toBe("/%E6%97%A5%E6%9C%AC/?q=%C3%BC#x");
     expect(safeStagingNextPath(null)).toBe("/");
   });
 });

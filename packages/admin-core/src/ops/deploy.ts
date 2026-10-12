@@ -45,6 +45,7 @@ import {
   defineOperation,
   execute,
   type OperationRegistry,
+  type TransactionRunner,
 } from "@caelo-cms/query-api";
 import { databaseUrlFromEnv, type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator";
@@ -58,6 +59,7 @@ import {
 } from "../deploy/build-parity.js";
 import { lockLiveReleases } from "../deploy/live-release-lock.js";
 import { stagingSiteUrl } from "../deploy/staging-domain.js";
+import { lockStagingPublication } from "../deploy/staging-publication-lock.js";
 import {
   loadStaticPublisher,
   type PublishSummary,
@@ -691,6 +693,10 @@ export const triggerDeployOp = defineOperation({
     >;
     let publisher: StaticPublisher;
     try {
+      // #650 — publishing a preview, recording it as the staging origin and
+      // pruning the others is one ordered step per Stage: a concurrent Stage
+      // must not prune this channel between its creation and our record.
+      if (stagingOrigin) await lockStagingPublication(tx);
       publisher = await loadStaticPublisher(provider);
       publishSummary = await publisher.publishStaging({
         buildDir: subprocess.result.buildDir,
@@ -962,6 +968,10 @@ export const promoteDeployOp = defineOperation({
       // overlay; cloud does cross-bucket server-side object copies.
       // A CDN purge must not re-release the old live version mid-publish.
       await lockLiveReleases(tx);
+      // #650 — and no Stage may publish or prune previews until this
+      // publish has decided what staging serves next (lock order: live
+      // release first, see staging-publication-lock.ts).
+      if (fromRow?.site_url) await lockStagingPublication(tx);
       const provider = process.env.CAELO_PROVIDER;
       const publisher = await loadStaticPublisher(provider);
       const { siteBaseUrl } = await readSeoSettings(tx);
@@ -1002,9 +1012,12 @@ export const promoteDeployOp = defineOperation({
       `);
       if (rebuilt) {
         // What was staged is live now: nothing is left to serve on
-        // staging.<domain>, and its public preview is retired (#650).
-        await setStagingOrigin(tx, null);
-        await pruneStagingPreviews(publisher, null);
+        // staging.<domain>, and its public preview is retired (#650) —
+        // unless a newer Stage committed while this publish ran: that one
+        // stays served and keeps its preview.
+        const newer = await stagedRunOtherThan(tx, fromRunId);
+        if (newer === null) await setStagingOrigin(tx, null);
+        await pruneStagingPreviews(publisher, newer);
       }
       // Issue #620 — a human Publish live ships the staged build, and with
       // it exactly the AI Stages that build covered.
@@ -1108,6 +1121,18 @@ async function rebuildAndPublishLive(
     sourceRunId: args.stagingRunId,
   });
   return { summary, pageCount: built.result.pageCount, fileCount: built.result.fileCount };
+}
+
+/**
+ * #650 — the run staging serves when it is not `runId`, else null. Read
+ * under the staging-publication lock, so the answer holds until commit.
+ */
+async function stagedRunOtherThan(tx: TransactionRunner, runId: string): Promise<string | null> {
+  const rows = (await tx.execute(sql`
+    SELECT origin_run_id::text AS run_id FROM staging_access WHERE id = 1
+  `)) as unknown as { run_id: string | null }[];
+  const current = rows[0]?.run_id ?? null;
+  return current !== null && current !== runId ? current : null;
 }
 
 /**

@@ -54,6 +54,17 @@ describe("hostNormaliser", () => {
     );
   });
 
+  it("never reprocesses its own output when the staging host is inside the live host (codex review on #652)", () => {
+    const apexStaging = hostNormaliser("https://example.com", "https://www.example.com");
+    expect(apexStaging('<a href="https://example.com/a">example.com</a>')).toBe(
+      '<a href="https://www.example.com/a">www.example.com</a>',
+    );
+    // A longer name that merely ends in the staging host is not the host.
+    expect(apexStaging("mail.example.com and cdn-example.com")).toBe(
+      "mail.example.com and cdn-example.com",
+    );
+  });
+
   it("refuses identical hosts — there would be nothing to tell apart", () => {
     expect(() => hostNormaliser(LIVE, `${LIVE}/`)).toThrow("its own host");
   });
