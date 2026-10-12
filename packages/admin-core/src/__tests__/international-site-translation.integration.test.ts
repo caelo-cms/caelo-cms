@@ -471,4 +471,78 @@ describe("#397 — context-aware translation", () => {
     expect(redraft.seo).toBe("filled");
     expect((await seoOf(variant.pageId))?.metaDescription).toBe("Entwurfsbeschreibung.");
   }, 60_000);
+
+  it("#644 — a misnamed argument is refused with the right field name, never reaches SQL, and the correct call translates", async () => {
+    const sourceId = await seedSourcePage("-644");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const variant = await op<{ pageId: string; nextStep: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-644-preise",
+    });
+    // The create result names the follow-up call with its exact argument.
+    expect(variant.nextStep).toContain(`translate_variant({ variantPageId: "${variant.pageId}" })`);
+
+    const owner = crypto.randomUUID();
+    await sqlSystem(async (tx) => {
+      await tx.unsafe(
+        `INSERT INTO actors (id, kind, display_name) VALUES ('${owner}', 'human', 'owner')`,
+      );
+      await tx.unsafe(
+        `INSERT INTO users (id, email, password_hash) VALUES ('${owner}', '${owner}@t644.test', 'test-only')`,
+      );
+      await tx.unsafe(
+        `INSERT INTO user_roles (user_id, role_id) SELECT '${owner}', id FROM roles WHERE name = 'owner'`,
+      );
+    });
+    const asToolCall = (args: unknown) =>
+      runPluginOperation({
+        invocation: { origin: "approved", actorId: owner },
+        pluginSlug: "international-site",
+        operationName: "translate_variant",
+        args,
+      });
+
+    // The live run's call: the id under the create result's `pageId` key.
+    // The tool's own schema refuses it before the handler runs.
+    const callsBefore = aiCalls.length;
+    const misnamed = await asToolCall({ pageId: variant.pageId });
+    expect(misnamed.ok).toBe(false);
+    if (!misnamed.ok) {
+      expect(misnamed.error.message).toContain("InvalidToolInput");
+      expect(misnamed.error.message).toContain("variantPageId (required)");
+      expect(misnamed.error.message).not.toContain("Failed query");
+    }
+    expect(aiCalls.length).toBe(callsBefore);
+
+    // Below the tool boundary, a missing value is refused by the storage
+    // layer naming the column, not bound as an empty SQL fragment.
+    const unbound = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "international-site",
+      operationName: "translate_variant",
+      args: { pageId: variant.pageId },
+    });
+    expect(unbound.ok).toBe(false);
+    if (!unbound.ok) {
+      expect(unbound.error.message).toContain('value for column "page_id" is undefined');
+      expect(unbound.error.message).not.toContain("Failed query");
+    }
+
+    // The correctly named call translates the variant.
+    aiScript.push(() =>
+      JSON.stringify({
+        title: "Preise",
+        slots: [{ slot: "s0", values: { headline: "Willkommen", body_html: "<p>Hallo Welt</p>" } }],
+      }),
+    );
+    const translated = await asToolCall({ variantPageId: variant.pageId });
+    if (!translated.ok) throw new Error(translated.error.message);
+    expect((translated.value as { slotsApplied: number }).slotsApplied).toBe(1);
+  }, 60_000);
 });

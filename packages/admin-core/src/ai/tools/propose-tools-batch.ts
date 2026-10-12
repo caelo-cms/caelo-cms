@@ -710,6 +710,20 @@ export const proposeDomainRemoveTool = makeProposeTool({
   summarize: (_input, preview) => `remove domain "${preview.hostname ?? "?"}"`,
 });
 
+export const proposeDomainReconnectTool = makeProposeTool({
+  toolName: "propose_reconnect_domain",
+  opName: "domains.propose_reconnect",
+  pendingQueuePath: "/security/domains/pending",
+  when:
+    "Heal a Firebase Hosting custom domain that list_domains / verify_domains reports as 'stuck' (every DNS record is in place, yet Firebase still shows HOST_MISMATCH / OWNERSHIP_PENDING and has stopped re-checking — visitors get \"Site Not Found\"). " +
+    "Approval deletes and re-creates the custom domain so Firebase verifies it afresh (nothing goes offline: the domain is not serving yet); once it is active Caelo re-releases the live version to clear the CDN's cached 404. " +
+    "Also restores a domain reported 'deleted' when that was not intended (e.g. an interrupted reconnect) — ask the operator first, a deletion may be deliberate. " +
+    "Do not use it for a domain that is still waiting for DNS changes — tell the operator which records to add instead. Refused for a domain that is active.",
+  schema: z.object({ hostname: z.string().min(1).max(253) }).strict(),
+  summarize: (input, preview) =>
+    `reconnect hosting domain "${input.hostname}" (${preview.hostState ?? "?"} / ${preview.ownershipState ?? "?"})`,
+});
+
 // ─── themes (v0.11.0, #45) ───────────────────────────────────────────
 
 export const proposeCreateThemeTool = makeProposeTool({

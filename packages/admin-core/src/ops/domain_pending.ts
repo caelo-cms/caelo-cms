@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * v0.2.30 — domains.{propose_add, propose_remove, execute_proposal,
- * reject_proposal, list_pending}.
+ * v0.2.30 — domains.{propose_add, propose_remove, propose_reconnect,
+ * execute_proposal, reject_proposal, list_pending}.
  *
  * Same shape as mcp_token_pending (v0.2.27).
  *
@@ -12,6 +12,11 @@
  * diagnostic, not registry-mutating) so the AI can preflight DNS
  * resolution before proposing an add and surface a status indicator
  * after the Owner approves.
+ *
+ * propose_reconnect heals a Firebase Hosting custom domain that is stuck
+ * (DNS correct, Firebase no longer verifying — see
+ * deploy/firebase-custom-domain-health.ts): approval deletes + re-creates
+ * it via domains.reconnect_hosting.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -28,9 +33,17 @@ import {
   parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
+import {
+  currentHostingHealth,
+  reconnectHostingDomainOp,
+  reconnectInput,
+  reconnectResultSchema,
+} from "./domain_hosting.js";
 import { addDomainOp, removeDomainOp } from "./domains.js";
 
 const domainKind = z.enum(["admin", "public"]);
+const DOMAIN_PROPOSAL_KINDS = ["add", "remove", "reconnect"] as const;
+type DomainProposalKind = (typeof DOMAIN_PROPOSAL_KINDS)[number];
 const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/;
 
 // ─── propose_add ─────────────────────────────────────────────────────
@@ -133,6 +146,63 @@ export const proposeDomainRemoveOp = defineOperation({
   },
 });
 
+// ─── propose_reconnect ───────────────────────────────────────────────
+
+export const proposeDomainReconnectOp = defineOperation({
+  name: "domains.propose_reconnect",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: reconnectInput,
+  output: z.object({
+    proposalId: z.string(),
+    preview: z.record(z.string(), z.unknown()),
+  }),
+  handler: async (ctx, input, tx) => {
+    // Check the live Firebase state at propose time so an approval never
+    // takes down a domain that is serving.
+    const current = await currentHostingHealth(input.hostname);
+    if (!current.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "domains.propose_reconnect",
+        message: current.message,
+      });
+    }
+    const h = current.health;
+    if (h.status === "active") {
+      return err({
+        kind: "HandlerError",
+        operation: "domains.propose_reconnect",
+        message: `"${input.hostname}" is active — Firebase serves the site on it, so there is nothing to reconnect.`,
+      });
+    }
+    const registered = (await tx.execute(sql`
+      SELECT id::text AS id FROM domains WHERE hostname = ${input.hostname} LIMIT 1
+    `)) as unknown as { id: string }[];
+    const preview = {
+      kind: "reconnect",
+      hostname: input.hostname,
+      status: h.status,
+      hostState: h.hostState,
+      ownershipState: h.ownershipState,
+      certState: h.certState,
+      dnsCheckedAt: h.checkTime,
+      diagnosis: h.summary,
+      effect:
+        "deletes and re-creates the Firebase Hosting custom domain so Firebase verifies it afresh (it is not serving yet, so nothing goes offline); once active, the live version is re-released to clear the CDN's cached 404",
+    };
+    return queueProposal(
+      tx,
+      ctx,
+      "reconnect",
+      registered[0]?.id ?? null,
+      input,
+      preview,
+      "domains.propose_reconnect",
+    );
+  },
+});
+
 // ─── execute / reject / list_pending ─────────────────────────────────
 
 const executeDomainProposalOpDefinition = defineOperation({
@@ -142,7 +212,11 @@ const executeDomainProposalOpDefinition = defineOperation({
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
-  output: z.object({ domainId: z.string().nullable() }),
+  output: z.object({
+    domainId: z.string().nullable(),
+    /** Set for a `reconnect` proposal: what the reconnect did. */
+    reconnect: reconnectResultSchema.optional(),
+  }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, kind, domain_id::text AS domain_id, payload, status
@@ -150,7 +224,7 @@ const executeDomainProposalOpDefinition = defineOperation({
       WHERE id = ${input.proposalId}::uuid LIMIT 1
     `)) as unknown as Array<{
       id: string;
-      kind: "add" | "remove";
+      kind: DomainProposalKind;
       domain_id: string | null;
       payload: unknown;
       status: string;
@@ -171,6 +245,7 @@ const executeDomainProposalOpDefinition = defineOperation({
       });
     }
     let resultDomainId: string | null = row.domain_id;
+    let reconnect: z.infer<typeof reconnectResultSchema> | undefined;
     if (row.kind === "add") {
       const r = await addDomainOp.handler(
         ctx,
@@ -186,6 +261,14 @@ const executeDomainProposalOpDefinition = defineOperation({
         tx,
       );
       if (!r.ok) return passthroughError(r.error, "remove");
+    } else if (row.kind === "reconnect") {
+      const r = await reconnectHostingDomainOp.handler(
+        ctx,
+        parsePayload<Parameters<typeof reconnectHostingDomainOp.handler>[1]>(row.payload),
+        tx,
+      );
+      if (!r.ok) return passthroughError(r.error, "reconnect");
+      reconnect = r.value as z.infer<typeof reconnectResultSchema>;
     }
     await tx.execute(sql`
       UPDATE domain_pending_actions
@@ -204,7 +287,7 @@ const executeDomainProposalOpDefinition = defineOperation({
       entityId: input.proposalId,
       resultSummary: `${row.kind} applied (domainId=${resultDomainId ?? "(none)"})`,
     });
-    return ok({ domainId: resultDomainId });
+    return ok({ domainId: resultDomainId, ...(reconnect ? { reconnect } : {}) });
   },
 });
 
@@ -251,7 +334,7 @@ export const rejectDomainProposalOp = defineOperation({
 
 const proposalRowSchema = z.object({
   id: z.string(),
-  kind: z.enum(["add", "remove"]),
+  kind: z.enum(DOMAIN_PROPOSAL_KINDS),
   proposedBy: z.string(),
   domainId: z.string().nullable(),
   payload: z.record(z.string(), z.unknown()),
@@ -286,7 +369,7 @@ export const listPendingDomainProposalsOp = defineOperation({
       LIMIT ${limit}
     `)) as unknown as Array<{
       id: string;
-      kind: "add" | "remove";
+      kind: DomainProposalKind;
       proposed_by: string;
       domain_id: string | null;
       payload: unknown;
@@ -324,7 +407,7 @@ export const listPendingDomainProposalsOp = defineOperation({
 async function queueProposal(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   ctx: { actorId: string; requestId: string; chatBranchId?: string; chatTaskId?: string },
-  kind: "add" | "remove",
+  kind: DomainProposalKind,
   domainId: string | null,
   payload: unknown,
   preview: unknown,

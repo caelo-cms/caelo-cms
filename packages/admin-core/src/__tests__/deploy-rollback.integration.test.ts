@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { LIVE_RELEASE_LOCK_KEY } from "../deploy/live-release-lock.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { openQualityGate } from "./fixtures/quality-gate.js";
@@ -167,12 +168,49 @@ describe("deploy.rollback", () => {
     const v2 = await readFile(pageFile, "utf8");
     expect(v2).toContain("VERSION_TWO");
 
-    // Rollback to build 1.
-    const rb = await execute(registry, adapter, HUMAN, "deploy.rollback", {
-      targetName: "production",
-      runId: b1RunId,
-      repoRoot: testRoot,
-    });
+    // Rollback to build 1 — while a Firebase CDN purge holds the
+    // live-release lock: the rollback must wait for it, never release in
+    // between (the purge would re-release the version it read before).
+    const purge = new SQL(ADMIN_URL!);
+    let rb: Awaited<ReturnType<typeof execute>>;
+    try {
+      let endPurge!: () => void;
+      const purgeDone = new Promise<void>((r) => {
+        endPurge = r;
+      });
+      let purgeLocked!: () => void;
+      const locked = new Promise<void>((r) => {
+        purgeLocked = r;
+      });
+      const purgeTx = purge.begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(hashtext(${LIVE_RELEASE_LOCK_KEY}))`;
+        purgeLocked();
+        await purgeDone;
+      });
+      await locked;
+      let settled = false;
+      const pending = execute(registry, adapter, HUMAN, "deploy.rollback", {
+        targetName: "production",
+        runId: b1RunId,
+        repoRoot: testRoot,
+      }).finally(() => {
+        settled = true;
+      });
+      // Wait until the rollback is queued on the lock.
+      for (let i = 0; i < 200; i++) {
+        const waiting = await purge`
+          SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`;
+        if ((waiting[0] as { n: number }).n > 0) break;
+        await Bun.sleep(25);
+      }
+      expect(settled).toBe(false);
+      expect(await readFile(pageFile, "utf8")).toContain("VERSION_TWO");
+      endPurge();
+      await purgeTx;
+      rb = await pending;
+    } finally {
+      await purge.end();
+    }
     expect(rb.ok).toBe(true);
     if (!rb.ok) return;
     const v1 = await readFile(pageFile, "utf8");

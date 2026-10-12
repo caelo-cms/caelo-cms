@@ -13,7 +13,7 @@ import type { Actions, PageServerLoad } from "./$types";
 
 interface Proposal {
   id: string;
-  kind: "add" | "remove";
+  kind: "add" | "remove" | "reconnect";
   proposedBy: string;
   domainId: string | null;
   payload: Record<string, unknown>;

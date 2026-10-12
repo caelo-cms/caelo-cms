@@ -304,6 +304,33 @@ export function assertInvocationConsistent(
   }
 }
 
+/** Compiled tool input schemas, keyed by the declared JSON Schema object. */
+const toolArgSchemas = new WeakMap<object, z.ZodType>();
+
+/**
+ * Why a tool call's arguments do not match the tool's declared input
+ * schema, phrased so the AI can correct the call itself, or null when
+ * they match.
+ */
+export function toolArgsProblem(
+  tool: { readonly name: string; readonly inputJsonSchema: Record<string, unknown> },
+  args: unknown,
+): string | null {
+  let schema = toolArgSchemas.get(tool.inputJsonSchema);
+  if (!schema) {
+    schema = z.fromJSONSchema(tool.inputJsonSchema);
+    toolArgSchemas.set(tool.inputJsonSchema, schema);
+  }
+  const parsed = schema.safeParse(args);
+  if (parsed.success) return null;
+  const properties = (tool.inputJsonSchema.properties ?? {}) as Record<string, unknown>;
+  const required = (tool.inputJsonSchema.required ?? []) as string[];
+  const accepted = Object.keys(properties)
+    .map((k) => (required.includes(k) ? `${k} (required)` : k))
+    .join(", ");
+  return `InvalidToolInput: "${tool.name}" was called with arguments that do not match its input schema:\n${z.prettifyError(parsed.error)}\nIt accepts: ${accepted || "no arguments"}. Call it again with exactly these field names.`;
+}
+
 export type RunPluginOperationResult =
   | { readonly ok: true; readonly value: unknown }
   | {
@@ -472,13 +499,29 @@ export async function runPluginOperation(
       };
     }
   }
+  const tool = plugin.definition.tools?.find((t) => t.operationName === opts.operationName);
+  // #644 — an AI tool call's arguments are checked against the tool's own
+  // input schema before the handler runs, for every plugin. Handlers read
+  // their args by cast, so a misnamed field (`pageId` for `variantPageId`)
+  // used to reach them as `undefined` and surface far away as a broken SQL
+  // statement. Panel, worker and render calls pass host-built args and are
+  // not tool calls, so only the chat and approved paths are checked here;
+  // an installed plugin's tools are checked on every path below.
+  if (
+    tool &&
+    !plugin.externalApproval &&
+    (opts.invocation.origin === "chat" || opts.invocation.origin === "approved")
+  ) {
+    const problem = toolArgsProblem(tool, opts.args);
+    if (problem) return { ok: false, error: { kind: "OperationFailed", message: problem } };
+  }
   if (plugin.externalApproval) {
-    const tool = plugin.definition.tools?.find((t) => t.operationName === opts.operationName);
     if (tool) {
       try {
         if (tool.approvalMode && opts.approvedToolName !== tool.name)
           throw new Error("ExternalToolApprovalRequired");
-        z.fromJSONSchema(tool.inputJsonSchema).parse(opts.args);
+        const problem = toolArgsProblem(tool, opts.args);
+        if (problem) throw new Error(problem);
         if (tool.approvalMode)
           await consumeExternalToolApproval({
             plugin,

@@ -147,6 +147,7 @@ import {
   proposeCreateThemeTool,
   proposeDeleteThemeTool,
   proposeDomainAddTool,
+  proposeDomainReconnectTool,
   proposeDomainRemoveTool,
   proposeEmailConfigSetTool,
   proposeExperimentActivateTool,
@@ -509,6 +510,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeTemplateDeleteTool);
   registry.register(proposeDomainAddTool);
   registry.register(proposeDomainRemoveTool);
+  registry.register(proposeDomainReconnectTool);
   // Site SEO settings (base URL, sitemap, Organization JSON-LD): §11.A gated
   // write + the read the AI checks first.
   registry.register(proposeSetSiteSeoTool);
