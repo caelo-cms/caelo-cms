@@ -679,6 +679,28 @@ describe("Stop is authoritative (issue #664)", () => {
     expect(latch).not.toBeNull();
   });
 
+  it("does not run a turn whose queued → running transition could not be recorded (codex review)", async () => {
+    const started = await startAgentRun({
+      store: {
+        register: async () => ({ ok: true, registered: true, runId: "flaky-run-664" }),
+        heartbeat: async () => ({ ok: false, message: "connection reset" }),
+        finish: async () => undefined,
+      },
+      registration: {
+        chatSessionId: "00000000-0000-0000-0000-000000000000",
+        kind: "turn",
+        source: "live_edit",
+        label: "Live Edit AI",
+        operatorInitiated: true,
+      },
+      pollMs: 60_000,
+    });
+    if (started.kind !== "started") throw new Error("not started");
+    const t = await started.handle.markRunning();
+    expect(t.kind).toBe("failed");
+    await started.handle.finish();
+  });
+
   it("only a human may Stop", async () => {
     const chatSessionId = await createChat("t664 authz");
     const r = await execute(registry, adapter, AI, "chat.cancel_agents", { chatSessionId });

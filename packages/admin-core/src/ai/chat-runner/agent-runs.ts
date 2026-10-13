@@ -176,11 +176,12 @@ export interface AgentRunHandle {
   /** Aborts (with {@link OperatorStoppedError}) when the operator pressed Stop. */
   readonly signal: AbortSignal;
   /**
-   * The turn got the chat: queued → running. Returns the refusal text when
-   * an external agent started working in the chat while the turn waited
-   * (the turn must then not run), else null.
+   * The turn got the chat: queued → running. `refused` when an external
+   * agent started working in the chat while the turn waited; `failed` when
+   * the transition could not be recorded (the turn must not run on a row
+   * that still says "queued" — its Stop would then drop only itself).
    */
-  markRunning(): Promise<string | null>;
+  markRunning(): Promise<{ kind: "running" } | { kind: "refused" | "failed"; message: string }>;
   /** The run ended: stop polling and drop the row. Idempotent. */
   finish(): Promise<void>;
 }
@@ -256,10 +257,20 @@ export async function startAgentRun(args: {
       runId,
       signal: controller.signal,
       async markRunning() {
-        const r = await store.heartbeat({ runId, state: "running" });
-        if (!r.ok) return null;
+        const r = await store.heartbeat({ runId, state: "running" }).catch((e: unknown) => ({
+          ok: false as const,
+          message: describe(e),
+        }));
+        if (!r.ok) {
+          return {
+            kind: "failed" as const,
+            message: `Could not start the AI's turn in this chat (${r.message}). Nothing was sent; send the message again.`,
+          };
+        }
         if (r.cancelRequested) stop();
-        return r.externalAgentRefusal;
+        return r.externalAgentRefusal !== null
+          ? { kind: "refused" as const, message: r.externalAgentRefusal }
+          : { kind: "running" as const };
       },
       async finish() {
         if (finished) return;

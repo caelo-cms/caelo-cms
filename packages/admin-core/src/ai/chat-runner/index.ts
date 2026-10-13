@@ -155,9 +155,11 @@ export async function* runChatTurn(
     try {
       // Issue #665 — an external agent may have started working in the chat
       // while this turn waited for it: then it does not run either.
-      const refusal = (await run?.markRunning()) ?? null;
-      if (refusal !== null) {
-        yield { kind: "error", message: refusal };
+      // A transition that could not be recorded stops the turn too.
+      const transition = run ? await run.markRunning() : ({ kind: "running" } as const);
+      if (transition.kind !== "running") {
+        if (transition.kind === "failed") console.error("[chat-runner] turn not marked running");
+        yield { kind: "error", message: transition.message };
         yield { kind: "done" };
         return;
       }
