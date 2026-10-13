@@ -283,7 +283,7 @@ describe("#620 review — the draft tools in the browser chat", () => {
     const idle = await chat("Nothing to stage");
     const before = await openHolds();
     const staged = await stageChatSessions({ registry, adapter }, OWNER, [idle.id], {
-      aiInitiated: true,
+      stagedBy: "live_edit_ai",
     });
     if (!staged.ok) throw new Error(JSON.stringify(staged.error));
     expect(staged.value.mergedEntityCount).toBe(0);
@@ -342,12 +342,20 @@ describe("#620 review — layout chrome is draft state", () => {
     });
     const holds = await openHolds();
     const staged = await stageChatSessions({ registry, adapter }, OWNER, [e.id], {
-      aiInitiated: true,
+      stagedBy: "live_edit_ai",
     });
     if (!staged.ok) throw new Error(JSON.stringify(staged.error));
     expect(staged.value.mergedEntityCount).toBe(1);
     expect(await liveHeader()).toEqual([chrome]);
     expect(await openHolds()).toBe(holds + 1);
+    // #685 — the AI's own Stage is recorded as such for the fix request.
+    const audits = await withSql(
+      (tx) =>
+        tx`SELECT staged_by FROM quality_audit_runs WHERE deploy_run_id = ${staged.value.runId}::uuid` as Promise<
+          { staged_by: string | null }[]
+        >,
+    );
+    expect(audits.map((a) => a.staged_by)).toEqual(["live_edit_ai"]);
 
     await op(OWNER, "layout_modules.set", { layoutId, blockName: "header", moduleIds: before });
   });

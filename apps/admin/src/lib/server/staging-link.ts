@@ -17,6 +17,29 @@ export function openStagingHref(path: string): string {
 }
 
 /**
+ * A 303 to the signed staging link on the staging host. SvelteKit 3's
+ * `redirect()` refuses cross-origin targets (`redirect_external_not_allowed`,
+ * a 500), and the staging host is never the admin's origin, so the route
+ * builds the response itself. Only an absolute https URL is accepted, and
+ * the response is never cached because the URL carries a one-time token.
+ */
+export function stagingOpenRedirect(target: string): Response {
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    throw error(500, `staging_access.issue_open_link returned an invalid URL: ${target}`);
+  }
+  if (url.protocol !== "https:") {
+    throw error(500, `staging_access.issue_open_link returned a non-https URL (${url.protocol})`);
+  }
+  return new Response(null, {
+    status: 303,
+    headers: { location: url.toString(), "cache-control": "no-store" },
+  });
+}
+
+/**
  * #650 — the protected staging site's origin (`https://<staging host>`)
  * when this install has one, else null. Fails loudly when the provider
  * serves staging at its own host but no host is configured.

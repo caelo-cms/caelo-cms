@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0260 — the admin's Security section is now Settings (issue #684).
+-- 0261 — the admin's Security section is now Settings (issue #684).
 --
 -- Every Owner page moved from /security/* to /settings/*. The admin answers
 -- the old paths with a permanent redirect, so stored links keep working —

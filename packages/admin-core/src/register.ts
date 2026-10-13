@@ -380,6 +380,7 @@ import {
   claimChatNotificationOp,
   gateStatusOp,
   publishAnywayOp,
+  releaseChatNotificationOp,
   retryAuditOp,
 } from "./ops/quality/gate.js";
 import { claimNextAuditOp, enqueueAuditOp, recordAuditResultOp } from "./ops/quality/lifecycle.js";
@@ -717,6 +718,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(chatStatusOp);
   registry.register(claimChatNotificationOp);
   registry.register(ackChatNotificationOp);
+  registry.register(releaseChatNotificationOp);
   registry.register(publishAnywayOp);
   registry.register(proposeAcceptOp);
   registry.register(proposePublishAnywayOp);
