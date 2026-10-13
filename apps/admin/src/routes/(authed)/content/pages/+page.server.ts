@@ -23,6 +23,8 @@ export const load: PageServerLoad = async ({ locals }) => {
           pages: {
             id: string;
             slug: string;
+            currentPath: string;
+            parentPageId: string | null;
             title: string;
             status: string;
             updatedAt: string;
@@ -50,13 +52,22 @@ export const actions: Actions = {
     const slug = String(form.get("slug") ?? "").trim();
     const title = String(form.get("title") ?? "").trim();
     const templateId = String(form.get("templateId") ?? "");
+    // Empty = top level; otherwise the page the new one sits under.
+    const parentPageId = String(form.get("parentPageId") ?? "");
 
     const result = await execute(registry, adapter, locals.ctx, "pages.create", {
       slug,
       title,
       templateId,
+      ...(parentPageId ? { parentPageId } : {}),
     });
-    if (!result.ok) return fail(400, { error: "Could not create page." });
+    if (!result.ok) {
+      // The op's message names the fix (URL taken, nesting too deep, …).
+      const message = (result.error as { message?: string }).message;
+      return fail(400, {
+        error: message ? `Could not create page: ${message}` : "Could not create page.",
+      });
+    }
     const pageId = (result.value as { pageId: string }).pageId;
     throw redirect(303, `/content/pages/${pageId}`);
   },

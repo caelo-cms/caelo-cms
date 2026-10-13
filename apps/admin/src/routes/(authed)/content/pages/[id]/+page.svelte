@@ -23,6 +23,8 @@
   import { Input } from "#lib/components/ui/input/index.js";
   import { Label } from "#lib/components/ui/label/index.js";
   import { Select } from "#lib/components/ui/select/index.js";
+  import { Combobox } from "#lib/components/ui/combobox/index.js";
+  import { parentCandidates } from "#lib/page-tree.js";
 
   let { data, form } = $props();
 
@@ -53,6 +55,8 @@
   const page = data.page as {
     id: string;
     slug: string;
+    currentPath: string;
+    parentPageId: string | null;
     title: string;
     status: "draft" | "published";
     templateId: string;
@@ -60,6 +64,15 @@
     deletedAt: string | null;
     blocks: Block[];
   };
+  // Epic #690 — parent picker. "" = top level.
+  const TOP_LEVEL = "";
+  const parentItems = [
+    { value: TOP_LEVEL, label: "(top level)" },
+    ...parentCandidates(data.allPages, page.id)
+      .sort((a, b) => a.currentPath.localeCompare(b.currentPath))
+      .map((p) => ({ value: p.id, label: `${p.currentPath} — ${p.title}` })),
+  ];
+  let parentChoice = $state(page.parentPageId ?? TOP_LEVEL);
   const allModules = data.allModules as { id: string; slug: string; displayName: string }[];
   const allTemplates = data.allTemplates as {
     id: string;
@@ -144,6 +157,7 @@
     <h1 class="text-2xl font-semibold tracking-tight">
       {page.slug}
     </h1>
+    <p class="text-sm text-muted-foreground" data-testid="page-path">{page.currentPath}</p>
     <div class="mt-1 flex gap-3 text-sm text-muted-foreground">
       <a class="underline" href={`/content/pages/${page.id}/preview`} target="_blank" rel="noopener"
         >Open preview ↗</a
@@ -162,7 +176,15 @@
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
   {/if}
   {#if form?.ok}
-    <Alert><AlertDescription>Saved.</AlertDescription></Alert>
+    <Alert>
+      <AlertDescription>
+        {#if form && "movedCount" in form}
+          Moved — {form.movedCount} URL(s) changed; the old ones redirect to the new ones.
+        {:else}
+          Saved.
+        {/if}
+      </AlertDescription>
+    </Alert>
   {/if}
 
   <!-- P6.6 polish — version-conflict dialog. When another editor saved
@@ -208,6 +230,39 @@
         </div>
         <div class="md:col-span-2">
           <Button type="submit">Save metadata</Button>
+        </div>
+      </form>
+    </CardContent>
+  </Card>
+
+  <Card>
+    <CardHeader>
+      <CardTitle class="text-base">Location</CardTitle>
+      <CardDescription>
+        Where the page sits in the site. Its URL is the parent's URL plus its slug; pages below it
+        move with it, and every old URL redirects to the new one.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      <form method="post" action="?/move" class="grid gap-4 md:grid-cols-2">
+        <input type="hidden" name="_csrf" value={data.csrfToken} />
+        <input type="hidden" name="parentPageId" value={parentChoice} />
+        <div class="space-y-2">
+          <Label>Parent page</Label>
+          <Combobox items={parentItems} bind:value={parentChoice} placeholder="Search pages…" />
+        </div>
+        <div class="space-y-2">
+          <Label for="newSlug">New slug (optional)</Label>
+          <Input
+            id="newSlug"
+            name="newSlug"
+            type="text"
+            placeholder={page.slug}
+            pattern={"[a-z0-9](?:[a-z0-9\\-]{0,62}[a-z0-9])?"}
+          />
+        </div>
+        <div class="md:col-span-2">
+          <Button type="submit" data-testid="move-page-btn">Move page</Button>
         </div>
       </form>
     </CardContent>
