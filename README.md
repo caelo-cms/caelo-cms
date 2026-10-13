@@ -26,7 +26,18 @@ bunx @caelo-cms/provisioning@latest --provider self-hosted
 
 That stands up Postgres + pgBackRest + Caddy (with auto-SSL) + the admin app + the API gateway as a Docker Compose stack. It works on any Linux box with Docker + Bun.
 
-For cloud:
+### One click on Google Cloud
+
+No laptop needed — install into your own Google Cloud project from the browser:
+
+| | |
+|---|---|
+| Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.46&cloudshell_tutorial=gcp.md) |
+| Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.46&cloudshell_tutorial=gcp-firebase.md) |
+
+Cloud Shell opens a short tutorial: sign in, run `./run.sh`, answer a few questions, confirm the monthly cost. The install then runs as a job in your project — closing the tab doesn't stop it, and clicking the button again picks it up. The links are pinned to this release; `run.sh` verifies the provisioner's npm provenance and the release's signed manifest before anything runs ([how](https://github.com/caelo-cms/install#what-happens-when-you-click)).
+
+For cloud from a terminal:
 
 ```bash
 bunx @caelo-cms/provisioning@latest --provider gcp     # or aws, or azure
