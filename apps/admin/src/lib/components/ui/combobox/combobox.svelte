@@ -23,6 +23,8 @@
 
   interface Props {
     items: Item[];
+    /** id for the text input, so a `<Label for>` names the combobox. */
+    id?: string;
     value?: string;
     placeholder?: string;
     class?: string;
@@ -30,6 +32,7 @@
   }
   let {
     items,
+    id,
     value = $bindable(""),
     placeholder = "Search…",
     class: className,
@@ -52,6 +55,7 @@
 >
   <div class={cn("relative", className)}>
     <ComboboxPrimitive.Input
+      {id}
       class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 pr-8 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       placeholder={selectedLabel || placeholder}
       oninput={(e) => {

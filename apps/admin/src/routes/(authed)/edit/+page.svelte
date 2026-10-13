@@ -105,12 +105,10 @@
   const activePage = $derived(data.pages.find((p) => p.id === activePageId) ?? null);
   // The path the iframe is currently showing (covers click-through nav
   // inside the iframe; updated by `caelo:navigated` postMessage). Falls
-  // back to the active page's slug on first load.
-  let displayPath = $state<{ slug: string } | null>(null);
+  // back to the active page's composed path on first load.
+  let displayPath = $state<string | null>(null);
   const urlText = $derived.by(() => {
-    const cur = displayPath ?? (activePage ? { slug: activePage.slug } : null);
-    if (!cur) return "—";
-    return `/${cur.slug}`;
+    return displayPath ?? activePage?.currentPath ?? "—";
   });
 
   const stagedPreviewUrl = $derived(
@@ -245,7 +243,7 @@
           );
         }
       } else if (msg.kind === "caelo:navigated") {
-        displayPath = { slug: msg.slug };
+        displayPath = msg.path || null;
         // Click-through navigation inside the iframe — sync activePageId
         // (and the parent URL) so the chat-branch context follows. We
         // skip if the iframe is just confirming the current page on
