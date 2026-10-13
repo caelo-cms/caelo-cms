@@ -26,6 +26,18 @@ describe("parseProposalContent", () => {
     expect(result?.queueUrl).toBe("/settings/domains/pending");
   });
 
+  // #684 — tool results persisted before Security became Settings still say
+  // /security/…; their cards must keep Approve / Reject (no HTTP request is
+  // made to parse them, so the 308 redirect cannot help), posting to the
+  // moved route.
+  it("parses a pre-rename /security queue URL and points it at /settings", () => {
+    const old = ["", "security", "layouts", "pending"].join("/");
+    const content = `Queued proposal ${UUID}: layout-create slug=default. Approve it on the proposal card in this chat (queue: ${old}).`;
+    const result = parseProposalContent(content);
+    expect(result?.domain).toBe("layouts");
+    expect(result?.queueUrl).toBe("/settings/layouts/pending");
+  });
+
   it("parses canonical propose_deploy_promote output", () => {
     const content = `Queued proposal ${UUID}: promote staging → production (build=abc, pages=10, files=20). Approve it on the proposal card in this chat (queue: /settings/deployments/pending).`;
     const result = parseProposalContent(content);

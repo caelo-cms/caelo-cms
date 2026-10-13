@@ -616,17 +616,22 @@ function canSee(perms: PermissionSource, permission: SettingsPermission): boolea
  * The groups as the viewer may see them: entries whose page they cannot open
  * are dropped, related links likewise, and empty groups disappear.
  *
+ * A related link is gated by its own page, not by its parent's: when the
+ * parent is hidden but the viewer may open the related page (an editor with
+ * `content.write` and the Template proposals queue under the Owner-only
+ * approvals inbox), the link is promoted to a row of its own, wearing the
+ * parent's icon.
+ *
  * @param perms the viewer's effective permissions.
  */
 export function visibleSettingsGroups(perms: PermissionSource): SettingsGroup[] {
   return SETTINGS_GROUPS.map((g) => ({
     ...g,
-    entries: g.entries
-      .filter((e) => canSee(perms, e.permission))
-      .map((e) => ({
-        ...e,
-        related: (e.related ?? []).filter((r) => canSee(perms, r.permission)),
-      })),
+    entries: g.entries.flatMap((e): SettingsEntry[] => {
+      const related = (e.related ?? []).filter((r) => canSee(perms, r.permission));
+      if (canSee(perms, e.permission)) return [{ ...e, related }];
+      return related.map((r) => ({ ...r, icon: e.icon }));
+    }),
   })).filter((g) => g.entries.length > 0);
 }
 

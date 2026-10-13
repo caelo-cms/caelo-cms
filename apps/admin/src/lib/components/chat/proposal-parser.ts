@@ -18,8 +18,14 @@
 /** v0.5.11 canonical content shape. Anchored at start of string. */
 export const PROPOSAL_CONTENT_PATTERN = /^Queued proposal ([0-9a-f-]{36}):\s*([^.]+)\./;
 
-/** Queue URL embedded in the content, e.g. `/settings/layouts/pending`. */
-export const PROPOSAL_QUEUE_URL_PATTERN = /(\/settings\/([^\s/.]+)\/pending)/;
+/**
+ * Queue URL embedded in the content, e.g. `/settings/layouts/pending`.
+ * Also matches the pre-#684 `/security/...` prefix: tool results persisted in
+ * chat history before the rename still carry it, and their cards must keep
+ * their inline Approve / Reject. {@link parseProposalContent} normalises the
+ * prefix to `/settings`.
+ */
+export const PROPOSAL_QUEUE_URL_PATTERN = /(\/(?:settings|security)\/([^\s/.]+)\/pending)/;
 
 export interface ParsedProposal {
   readonly proposalId: string;
@@ -49,7 +55,7 @@ export function parseProposalContent(content: string): ParsedProposal | null {
   if (!proposalMatch || !queueMatch) return null;
   const proposalId = proposalMatch[1];
   const summary = proposalMatch[2]?.trim();
-  const queueUrl = queueMatch[1];
+  const queueUrl = queueMatch[1]?.replace(/^\/security\//, "/settings/");
   const domain = queueMatch[2];
   if (!proposalId || !summary || !queueUrl || !domain) return null;
   if (DEPRECATED_DOMAINS.has(domain)) return null;

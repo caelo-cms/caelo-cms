@@ -95,6 +95,29 @@ describe("visibleSettingsGroups", () => {
     expect(deployments?.related).toEqual([]);
   });
 
+  // Regression (codex review on #688): a related page is gated by its own
+  // permission, so it must not vanish with an inaccessible parent.
+  it("promotes related pages the viewer may open when their parent is hidden", () => {
+    const hrefs = visibleSettingsGroups(["content.read", "content.write"]).flatMap((g) =>
+      g.entries.map((e) => e.href),
+    );
+    expect(hrefs).toEqual([
+      "/settings/redirects",
+      "/settings/quality/pending",
+      "/settings/templates/pending",
+    ]);
+    expect(hasAnySettingsAccess(["deploy.trigger"])).toBe(true);
+  });
+
+  it("every page in the model is reachable by a role holding only its permission", () => {
+    for (const link of allSettingsLinks()) {
+      const hrefs = visibleSettingsGroups([link.permission]).flatMap((g) =>
+        g.entries.flatMap((e) => [e.href, ...(e.related ?? []).map((r) => r.href)]),
+      );
+      expect(hrefs).toContain(link.href);
+    }
+  });
+
   it("reports no access for a role without any Settings permission", () => {
     expect(hasAnySettingsAccess([])).toBe(false);
     expect(hasAnySettingsAccess(new Set(["settings.read"]))).toBe(true);
