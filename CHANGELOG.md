@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.44
+
+### Features
+- 8c4aaf40 rename Security to Settings, list every page, group by intent (#688)
+
+### Fixes
+- f5453e28 approval-gated plugin tools (set_locales, …) work over the Power-MCP (#693)
+- 0345d752 close the open CodeQL clear-text-logging and http-to-file-access alerts (#691)
+- 3b1b2c92 ask before the AI fixes quality findings after a Stage (#685) (#692)
+
 ## v0.10.43
 
 ### Fixes
