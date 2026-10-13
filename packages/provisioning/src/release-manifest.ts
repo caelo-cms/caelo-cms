@@ -26,20 +26,24 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import {
+  IMAGE_DIGEST,
+  RELEASE_OIDC_ISSUER,
+  RELEASE_WORKFLOWS_URL,
+} from "./upgrade/release-images.js";
 
 /** Release channels. Pre-release versions name theirs (`0.11.0-rc.1` → `rc`). */
 export const RELEASE_CHANNELS = ["stable", "rc", "beta", "alpha"] as const;
 export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
 
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
-const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const GHSA_ID = /^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$/;
 
 /** The services a release ships images for. */
 export const RELEASE_IMAGES = ["admin", "gateway", "ops"] as const;
 export type ReleaseImage = (typeof RELEASE_IMAGES)[number];
 
-const digest = z.string().regex(DIGEST, "expected sha256:<64 hex>");
+const digest = z.string().regex(IMAGE_DIGEST, "expected sha256:<64 hex>");
 
 /** Zod schema of `release-manifest.json` (manifestVersion 1). */
 export const ReleaseManifestSchema = z.object({
@@ -78,8 +82,8 @@ export const RELEASE_MANIFEST_ARTIFACT_TYPE = "application/vnd.caelo.release-man
 export const RELEASE_MANIFEST_MEDIA_TYPE = "application/vnd.caelo.release-manifest.v1+json";
 export const SIGSTORE_BUNDLE_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle.v0.3+json";
 
-/** OIDC issuer of every Caelo release signature (GitHub Actions). */
-export const RELEASE_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
+// The signer constants are shared with the image verification (one source).
+export { RELEASE_OIDC_ISSUER };
 
 /**
  * The only identity allowed to sign the manifest of `version`: release.yml
@@ -87,7 +91,7 @@ export const RELEASE_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
  * a manifest signed on another ref (a branch, another tag) is refused.
  */
 export function releaseManifestSignerIdentity(version: string): string {
-  return `https://github.com/caelo-cms/caelo-cms/.github/workflows/release.yml@refs/tags/v${version}`;
+  return `${RELEASE_WORKFLOWS_URL}/release.yml@refs/tags/v${version}`;
 }
 
 /**
@@ -193,7 +197,7 @@ interface OciDescriptor {
 
 const OciManifestSchema = z.object({
   artifactType: z.string().optional(),
-  layers: z.array(z.object({ mediaType: z.string(), digest: z.string().regex(DIGEST) })),
+  layers: z.array(z.object({ mediaType: z.string(), digest: z.string().regex(IMAGE_DIGEST) })),
 });
 
 function fail(code: ReleaseManifestErrorCode, message: string): ReleaseManifestResult {

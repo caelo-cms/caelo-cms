@@ -313,6 +313,11 @@ describe("self-hosted compose", () => {
       minioRootPassword: "m",
       caeloSecretKek: "k",
       diskSize: "10G",
+      images: {
+        mode: "release" as const,
+        admin: `ghcr.io/caelo-cms/admin@sha256:${"a".repeat(64)}`,
+        gateway: `ghcr.io/caelo-cms/gateway@sha256:${"b".repeat(64)}`,
+      },
     });
     expect(yaml).toContain('CAELO_SITE_URL: "https://acme.com"');
   });

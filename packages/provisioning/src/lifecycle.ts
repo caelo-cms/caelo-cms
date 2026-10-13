@@ -71,8 +71,10 @@ import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
 import { findServiceUrl, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe, type HealthProbe } from "./upgrade/health.js";
 import {
+  fetchLatestReleaseTag,
   RELEASE_REGISTRY,
   releaseImageRef,
+  releaseTag,
   resolveTagDigest,
   verifyCosignAll,
 } from "./upgrade/release-images.js";
@@ -235,22 +237,10 @@ async function getLatestReleaseTag(): Promise<string | null> {
   if (releaseCheckCache && now - releaseCheckCache.fetchedAt < 10 * 60 * 1000) {
     return releaseCheckCache.latest;
   }
-  try {
-    const res = await fetch("https://api.github.com/repos/caelo-cms/caelo-cms/releases/latest", {
-      headers: { Accept: "application/vnd.github+json" },
-    });
-    if (!res.ok) {
-      releaseCheckCache = { fetchedAt: now, latest: null };
-      return null;
-    }
-    const json = (await res.json()) as { tag_name?: string };
-    const latest = json.tag_name ?? null;
-    releaseCheckCache = { fetchedAt: now, latest };
-    return latest;
-  } catch {
-    releaseCheckCache = { fetchedAt: now, latest: null };
-    return null;
-  }
+  const r = await fetchLatestReleaseTag();
+  const latest = r.ok ? r.tag : null;
+  releaseCheckCache = { fetchedAt: now, latest };
+  return latest;
 }
 
 async function gcpStatus(meta: InstallMetadata): Promise<void> {
@@ -379,14 +369,6 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   );
 }
 
-/** The tag `upgrade` rolls to: `--version` (without a leading `v`), else the channel's tag. */
-function upgradeTargetTag(opts: UpgradeOpts): string {
-  if (opts.version) return opts.version.startsWith("v") ? opts.version.slice(1) : opts.version;
-  if (opts.channel === "rc") return "rc";
-  if (opts.channel === "beta") return "beta";
-  return "latest";
-}
-
 /**
  * Resolve both release images' digests from the public registry. Via the
  * registry's anonymous V2 API, not `gcloud artifacts docker tags list`: that
@@ -496,7 +478,7 @@ async function upgradeInstall(
   // #607 — upgrade never moves an install: a `--region` other than the
   // recorded one is refused before anything rolls.
   const region = installRegion(meta, opts.region);
-  const targetTag = upgradeTargetTag(opts);
+  const targetTag = releaseTag(opts);
   log.info(`Upgrading admin + gateway to ${bold(targetTag)}`);
   // #650 — an install from before the staging host setting converges to
   // the default (staging.<domain>) without operator action: recorded here,
