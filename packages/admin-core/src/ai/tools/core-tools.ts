@@ -26,6 +26,8 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "build_page",
   "duplicate_page",
   "update_pages_many",
+  // "Put X under Y" is routine page structuring — no discovery round-trip.
+  "move_pages",
   "delete_pages_many",
   "set_pages_status_many",
   // Module placement + structure

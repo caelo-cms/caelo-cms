@@ -152,7 +152,7 @@ Site snapshot #42
 ## 6. Deployment & Hosting
 
 At deploy time the static generator:
-- Renders one HTML file per page (slug-only paths; plugins reshape URLs via the §7.1 URL composition point)
+- Renders one HTML file per page at its composed path — the parent-page chain plus the page's own slug (`/seo-monitoring/alerts`); plugins reshape URLs on top via the §7.1 URL composition point
 - Fetches all approved plugin data from cms_public and bakes it into HTML as plain static markup
 - Injects a `since` timestamp into Web Components — components only fetch delta data after this point
 - Generates redirect files in provider-appropriate format from the redirects table
@@ -214,6 +214,12 @@ Core is locale-agnostic. It ships exactly the primitives an i18n plugin composes
 - **Global-slug page identity.** A page is identified by its slug alone (unique per
   branch); core has no locale column. Language variants of a page are plugin data — the
   plugin groups pages into variant sets in its own schema (§14).
+- **Nested page URLs (epic #690).** A page may sit under a parent page (`pages.parent_page_id`,
+  at most 6 levels); its path is the ancestor slugs plus its own slug, composed by the
+  single core resolver before plugin contributions apply (`/de/seo-monitoring/alerts`).
+  Renaming or moving a page moves its whole subtree in one transaction, with a 301 per
+  moved URL and every nav-menu / module / content link rewritten. The homepage neither
+  has nor is a parent. Moves of 10+ URLs in one call pass the §11.A in-chat approval.
 - **Homepage designation in `site_defaults.home_page_id`.** One designated site root; the
   static generator, preview composer, and SEO pass all resolve the root from this single
   pointer.

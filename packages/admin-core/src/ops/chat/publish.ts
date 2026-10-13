@@ -689,6 +689,16 @@ export async function mergeWindowToMain(
   // Replay the live-table writes that chat-branched handlers deliberately
   // skip (per kind, the reason is documented at the call site of the
   // skip in the originating op).
+  // Pages this branch created become live in the replay below; their
+  // branch-time path was never public, so a path change at merge is not
+  // a URL move (no 301, no link rewrite).
+  const newlyLivePageIds = new Set(
+    (
+      (await tx.execute(sql`
+        SELECT id::text AS id FROM pages WHERE chat_branch_id = ${window.branchId}::uuid
+      `)) as unknown as { id: string }[]
+    ).map((r) => r.id),
+  );
   for (const e of entities) {
     if (e.kind === "pageModuleContent") {
       const valuesJson = JSON.stringify(e.state.contentValues);
@@ -735,7 +745,7 @@ export async function mergeWindowToMain(
       // v0.9.0 — pages.create now branches; merge UPSERTs the live row
       // AND clears chat_branch_id to graduate to main.
       await tx.execute(sql`
-        INSERT INTO pages (id, slug, name, title, template_id, status, deleted_at, version, chat_branch_id)
+        INSERT INTO pages (id, slug, name, title, template_id, status, deleted_at, version, chat_branch_id, parent_page_id)
         VALUES (
           ${e.entityId}::uuid,
           ${e.state.slug},
@@ -745,10 +755,14 @@ export async function mergeWindowToMain(
           ${e.state.status},
           ${e.state.deletedAt ? sql`now()` : sql`NULL`},
           ${e.state.version},
-          NULL
+          NULL,
+          ${e.state.parentPageId ?? null}::uuid
         )
         ON CONFLICT (id) DO UPDATE SET
           slug           = EXCLUDED.slug,
+          -- 0263: a pre-nesting snapshot captured no parent (undefined) —
+          -- keep the live one rather than invent a value.
+          parent_page_id = ${e.state.parentPageId === undefined ? sql`pages.parent_page_id` : sql`EXCLUDED.parent_page_id`},
           title          = EXCLUDED.title,
           template_id    = EXCLUDED.template_id,
           status         = EXCLUDED.status,
@@ -951,10 +965,17 @@ export async function mergeWindowToMain(
     `);
   }
 
-  // Plugin rows can carry URL annotations (a locale variant link); now
-  // that they are live, recompose main-line paths and 301 what moved.
-  if (pluginRowRows.length > 0) {
-    await refreshLivePathsAfterMerge(ctx, tx, window.branchId);
+  // Replayed pages (a chat's renames / moves — their subtrees move with
+  // them) and plugin rows (a locale variant link) can both move URLs;
+  // now that they are live, recompose main-line paths and give every
+  // moved URL its 301 + link rewrites.
+  if (pageRows.length > 0) await assertLiveParents(tx);
+  if (pageRows.length > 0 || pluginRowRows.length > 0) {
+    await refreshLivePathsAfterMerge(ctx, tx, window.branchId, {
+      pluginRowsMerged: pluginRowRows.length > 0,
+      replayedPageIds: pageRows.map((r) => r.entity_id),
+      newlyLivePageIds,
+    });
   }
 
   // v0.9.0 — bulk clear chat_branch_id for any branched-create layouts
@@ -1008,6 +1029,32 @@ export async function mergeWindowToMain(
       brokenInternalLinks,
     },
   };
+}
+
+/**
+ * Nested pages (0263) — after a merge every live page's parent must be a
+ * live main-line page. A chat that moved a page under a page it created
+ * and then published only the moved page would otherwise leave a live
+ * page pointing at a still-private (or deleted) parent; fail the publish
+ * loudly with the fix instead.
+ */
+async function assertLiveParents(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+): Promise<void> {
+  const orphans = (await tx.execute(sql`
+    SELECT c.current_path AS child_path, p.current_path AS parent_path
+    FROM pages c
+    JOIN pages p ON p.id = c.parent_page_id
+    WHERE c.deleted_at IS NULL AND c.chat_branch_id IS NULL
+      AND (p.deleted_at IS NOT NULL OR p.chat_branch_id IS NOT NULL)
+    LIMIT 5
+  `)) as unknown as { child_path: string; parent_path: string }[];
+  if (orphans.length > 0) {
+    const list = orphans.map((o) => `${o.child_path} (parent ${o.parent_path})`).join(", ");
+    throw new Error(
+      `publish refused — these pages would go live under a parent page that is not live: ${list}. Publish the parent page in the same publish, or move the pages to a live parent first (move_pages).`,
+    );
+  }
 }
 
 /**

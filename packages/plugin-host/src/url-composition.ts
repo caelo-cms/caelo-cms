@@ -6,7 +6,11 @@
  *
  * Core owns a FIXED grammar:
  *
- *   scheme+host · path-prefix · slug (filtered by slug-format)
+ *   scheme+host · path-prefix · ancestor slugs · slug (filtered by slug-format)
+ *
+ * The ancestor slugs are the page's parent chain (nested page URLs,
+ * migration 0263) — core data, never a plugin's; the slug-format
+ * contribution shapes only the page's own segment.
  *
  * plus `full-path`, an escape slot exclusive with all others. Plugins
  * claim slots with pure encode/decode contributions; composition order
@@ -203,12 +207,15 @@ export function resolvePageUrl(page: UrlComposePage): ResolvedPageUrl {
     };
   }
 
+  for (const seg of page.ancestorSlugs) assertSegment(seg, "core/parent-page");
+
   let slugPart = page.slug;
   const slugFmt = urlContributionsRegistry.bySlot("slug-format");
   if (slugFmt && slugFmt.contribution.slot === "slug-format") {
     slugPart = slugFmt.contribution.encode(page);
   }
-  // Slugs may contain "/" (nested paths) — validate each segment.
+  // A slug-format contribution may expand the own slug into several
+  // segments — validate each.
   const slugSegments = slugPart.split("/").filter((s) => s.length > 0);
   if (slugSegments.length === 0) {
     throw new Error(
@@ -219,13 +226,19 @@ export function resolvePageUrl(page: UrlComposePage): ResolvedPageUrl {
     assertSegment(seg, slugFmt ? `${slugFmt.pluginSlug}/slug-format` : "core/slug");
   }
 
-  return { path: `/${[...prefixSegments, ...slugSegments].join("/")}`, host: hostValue };
+  return {
+    path: `/${[...prefixSegments, ...page.ancestorSlugs, ...slugSegments].join("/")}`,
+    host: hostValue,
+  };
 }
 
 export interface DecodedPagePath {
-  /** The stored slug the path maps to, or null when the path is the
-   *  (possibly prefixed) site root. */
+  /** The page's own stored slug (the last path segment, slug-format
+   *  decoded), or null when the path is the (possibly prefixed) site root. */
   readonly slug: string | null;
+  /** The parent chain's slugs the path implies, root first ([] for a
+   *  top-level page or the root). */
+  readonly ancestorSlugs: ReadonlyArray<string>;
   /** Everything the path's shape implies (e.g. `{ locale: "de" }`). */
   readonly annotations: Readonly<Record<string, unknown>>;
 }
@@ -248,7 +261,7 @@ export function decodePagePath(path: string): DecodedPagePath {
         `url-composition: full-path contribution "${full.pluginSlug}" cannot decode "/${trimmed}"`,
       );
     }
-    return { slug: r.slug, annotations: r.annotations };
+    return { slug: r.slug, ancestorSlugs: r.ancestorSlugs ?? [], annotations: r.annotations };
   }
 
   let segments = trimmed.length === 0 ? [] : trimmed.split("/");
@@ -269,15 +282,18 @@ export function decodePagePath(path: string): DecodedPagePath {
   }
 
   if (segments.length === 0) {
-    return { slug: null, annotations };
+    return { slug: null, ancestorSlugs: [], annotations };
   }
 
-  let slugPart = segments.join("/");
+  // Leaf = the page's own (slug-formatted) segment; everything between
+  // the prefix and the leaf is the parent chain.
+  const ancestorSlugs = segments.slice(0, -1);
+  let slugPart = segments[segments.length - 1] as string;
   const slugFmt = urlContributionsRegistry.bySlot("slug-format");
   if (slugFmt && slugFmt.contribution.slot === "slug-format") {
     slugPart = slugFmt.contribution.decode(slugPart);
   }
-  return { slug: slugPart, annotations };
+  return { slug: slugPart, ancestorSlugs, annotations };
 }
 
 // ---------------------------------------------------------------------------

@@ -80,6 +80,9 @@ const pageStateV1 = z.preprocess(
       status: z.enum(["draft", "published"]),
       version: z.number().int().nonnegative(),
       deletedAt: z.string().nullable(),
+      // 0263 — absent on snapshots written before nested pages existed;
+      // see PageState.parentPageId for how writers treat that.
+      parentPageId: z.string().uuid().nullable().optional(),
     })
     .strict(),
 );

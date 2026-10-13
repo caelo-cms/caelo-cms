@@ -306,7 +306,13 @@ export interface ToolDefinitionWithHandler<I> {
    * for approval and logs loudly — a broken gate must cost a click, never
    * let a hard-to-revert action through unapproved.
    */
-  readonly needsApproval?: (input: I, ctx: ExecutionContext) => boolean | Promise<boolean>;
+  readonly needsApproval?: (
+    input: I,
+    ctx: ExecutionContext,
+    /** For predicates whose verdict depends on stored state (e.g. how
+     *  many URLs a page move would touch): read through the Query API. */
+    toolCtx: ToolContext,
+  ) => boolean | Promise<boolean>;
   /**
    * #589 — the permission(s) the human approving a `needsApproval` call
    * must hold (all of them). Required whenever `needsApproval` is set (the
@@ -326,6 +332,7 @@ export interface ToolDefinitionWithHandler<I> {
   readonly buildApprovalPreview?: (
     input: I,
     ctx: ExecutionContext,
+    toolCtx: ToolContext,
   ) => Record<string, unknown> | Promise<Record<string, unknown>>;
   /**
    * Plan B (SDK approval gate, CLAUDE.md §11.A) — marks this tool
@@ -716,7 +723,7 @@ export class ToolRegistry {
       // the gate cannot vouch for the call, so it asks for the click.
       let gated = true;
       try {
-        const verdict: unknown = await tool.needsApproval(parsed.data, ctx);
+        const verdict: unknown = await tool.needsApproval(parsed.data, ctx, toolCtx);
         if (typeof verdict !== "boolean") {
           console.error(
             `[tool.needsApproval] ${name} returned a non-boolean (${typeof verdict}) — requiring approval`,
@@ -734,7 +741,7 @@ export class ToolRegistry {
         };
         if (tool.buildApprovalPreview) {
           try {
-            preview = await tool.buildApprovalPreview(parsed.data, ctx);
+            preview = await tool.buildApprovalPreview(parsed.data, ctx, toolCtx);
           } catch (err) {
             console.error(`[tool.buildApprovalPreview] ${name} threw — using default preview`, err);
           }

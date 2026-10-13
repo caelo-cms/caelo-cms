@@ -580,7 +580,15 @@ export interface PluginAdminQuery extends PluginQuery {}
  */
 export interface UrlComposePage {
   readonly pageId: string;
+  /** The page's OWN slug — one path segment. */
   readonly slug: string;
+  /**
+   * Slugs of the page's ancestors, root first (`["seo-monitoring"]` for
+   * `/seo-monitoring/alerts`); empty for a top-level page. Core places
+   * them between the path prefix and the page's own (slug-formatted)
+   * slug; a `full-path` contribution composes them itself.
+   */
+  readonly ancestorSlugs: ReadonlyArray<string>;
   /** True when this page is the designated site root (site_defaults). */
   readonly isHomePage: boolean;
   readonly annotations: Readonly<Record<string, unknown>>;
@@ -628,8 +636,15 @@ export type UrlContributionDef =
       readonly slot: "full-path";
       /** The complete path (leading slash) — owns the whole grammar. */
       readonly encode: (page: UrlComposePage) => string;
-      /** Inverse: path back to {slug, annotations}; null = unknown path. */
-      readonly decode: (path: string) => (UrlDecodeMatch & { readonly slug: string }) | null;
+      /** Inverse: path back to {slug, ancestorSlugs?, annotations}; null =
+       *  unknown path. `ancestorSlugs` (root first) names the parent chain
+       *  the path implies; omit it when the grammar has no nesting. */
+      readonly decode: (path: string) =>
+        | (UrlDecodeMatch & {
+            readonly slug: string;
+            readonly ancestorSlugs?: ReadonlyArray<string>;
+          })
+        | null;
     };
 
 /**

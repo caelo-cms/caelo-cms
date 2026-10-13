@@ -65,6 +65,13 @@ export interface PageState {
   readonly status: "draft" | "published";
   readonly version: number;
   readonly deletedAt: string | null;
+  /**
+   * 0263 — the parent page (nested URLs), null at top level. `undefined`
+   * only on snapshots written before 0263: they never captured a parent,
+   * so replaying them (merge / revert) leaves the live column untouched
+   * instead of inventing a value.
+   */
+  readonly parentPageId?: string | null;
 }
 
 /**

@@ -29,7 +29,12 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { buildPatchSet } from "../sql-helpers.js";
+import { buildPatchSet, jsonbParam } from "../sql-helpers.js";
+import {
+  buildPathMoveMap,
+  rewritePathLinksInHtml,
+  rewritePathLinksInJson,
+} from "./content/path-link-rewrite.js";
 
 const seoRowOutput = z.object({
   pageId: z.string(),
@@ -581,64 +586,99 @@ export const lookupLinksInModulesOp = defineOperation({
 });
 
 // ---------------------------------------------------------------------
-// pages.rewrite_module_links — system-only. Called from change_page_slug
-// after the redirect insert, in the same tx. Walks every matching
-// module's HTML and rewrites `<a href="/<oldSlug>...">` to point at
-// the new slug. Audit summary lists changed module slugs.
+// pages.rewrite_module_links — system-only. Called by every op that
+// moves page URLs (slug change, reparent / subtree move, publish of a
+// chat's moves), in the same tx as the move. Rewrites every link to a
+// moved page — `<a href>` in module HTML and link values / rich text in
+// content-instance values — exact per path, in one pass (see
+// path-link-rewrite.ts for why exact beats prefix matching).
 // ---------------------------------------------------------------------
+
+/** `LIKE` needles that pre-filter rows mentioning any moved path. */
+function moveNeedles(fromPaths: readonly string[]): string {
+  const needles: string[] = [];
+  for (const p of fromPaths) {
+    const esc = p.replace(/[\\%_]/g, (c) => `\\${c}`);
+    needles.push(`%"${esc}%`, `%'${esc}%`);
+  }
+  // Unit-separator join: bun-postgres cannot bind text[] directly.
+  return needles.join("\u001f");
+}
 
 export const rewriteModuleLinksOp = defineOperation({
   name: "pages.rewrite_module_links",
-  // Why system-only: side-effect of a slug change, run inside pages.update / pages.update_many on
-  // the same tx; the AI triggers it by changing a slug.
+  // Why system-only: side-effect of a page URL move, run inside the
+  // moving op's tx; the AI triggers it by changing a slug or parent.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
     .object({
-      oldSlug: z.string().min(1).max(120),
-      newSlug: z.string().min(1).max(120),
+      moves: z
+        .array(
+          z
+            .object({
+              fromPath: z.string().min(1).max(500).regex(/^\//),
+              toPath: z.string().min(1).max(500).regex(/^\//),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(5000),
     })
     .strict(),
-  output: z.object({ rewrittenModuleIds: z.array(z.string()) }),
+  output: z.object({
+    rewrittenModuleIds: z.array(z.string()),
+    rewrittenContentInstanceIds: z.array(z.string()),
+  }),
   handler: async (ctx, input, tx) => {
-    if (input.oldSlug === input.newSlug) return ok({ rewrittenModuleIds: [] });
-    const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, html FROM modules
+    const map = buildPathMoveMap(input.moves.map((m) => ({ from: m.fromPath, to: m.toPath })));
+    if (map.size === 0) return ok({ rewrittenModuleIds: [], rewrittenContentInstanceIds: [] });
+    const needles = moveNeedles([...map.keys()]);
+
+    const modules = (await tx.execute(sql`
+      SELECT id::text AS id, html FROM modules
       WHERE deleted_at IS NULL
-        AND (html LIKE ${`%href="/${input.oldSlug}"%`}
-          OR html LIKE ${`%href="/${input.oldSlug}/%`}
-          OR html LIKE ${`%href='/${input.oldSlug}'%`}
-          OR html LIKE ${`%href='/${input.oldSlug}/%`})
-    `)) as unknown as { id: string; slug: string; html: string }[];
-    const rewritten: string[] = [];
-    // Rewrite every `<a href="/<oldSlug>" ...>` and
-    // `<a href="/<oldSlug>/whatever" ...>` (single + double quotes,
-    // and trailing slash optional). Bound to the leading "/" so we
-    // don't accidentally rewrite `/some-page-with-<oldSlug>-suffix`.
-    const escapedOld = input.oldSlug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`(href=)(["'])/${escapedOld}(/[^"'<>]*)?\\2`, "g");
-    for (const r of rows) {
-      const next = r.html.replace(re, (_m, prefix, quote, tail) => {
-        return `${prefix}${quote}/${input.newSlug}${tail ?? ""}${quote}`;
-      });
-      if (next === r.html) continue; // pre-filter false positive (substring inside text)
+        AND html LIKE ANY (string_to_array(${needles}, ${"\u001f"}))
+    `)) as unknown as { id: string; html: string }[];
+    const rewrittenModuleIds: string[] = [];
+    for (const r of modules) {
+      const next = rewritePathLinksInHtml(r.html, map);
+      if (next === r.html) continue; // pre-filter false positive
       await tx.execute(sql`
         UPDATE modules SET html = ${next}, updated_at = now()
         WHERE id = ${r.id}::uuid
       `);
-      rewritten.push(r.id);
+      rewrittenModuleIds.push(r.id);
     }
-    if (rewritten.length > 0) {
+
+    const instances = (await tx.execute(sql`
+      SELECT id::text AS id, "values" FROM content_instances
+      WHERE deleted_at IS NULL
+        AND "values"::text LIKE ANY (string_to_array(${needles}, ${"\u001f"}))
+    `)) as unknown as { id: string; values: unknown }[];
+    const rewrittenContentInstanceIds: string[] = [];
+    for (const r of instances) {
+      const values = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
+      const next = rewritePathLinksInJson(values, map);
+      if (next === values) continue;
+      await tx.execute(sql`
+        UPDATE content_instances SET "values" = ${jsonbParam(next)}, updated_at = now()
+        WHERE id = ${r.id}::uuid
+      `);
+      rewrittenContentInstanceIds.push(r.id);
+    }
+
+    if (rewrittenModuleIds.length + rewrittenContentInstanceIds.length > 0) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
         operation: "pages.rewrite_module_links",
-        input,
+        input: { moveCount: map.size },
         succeeded: true,
-        resultSummary: `oldSlug=${input.oldSlug} → newSlug=${input.newSlug}; modules=${rewritten.length}`,
+        resultSummary: `moves=${map.size}; modules=${rewrittenModuleIds.length}; contentInstances=${rewrittenContentInstanceIds.length}`,
       });
     }
-    return ok({ rewrittenModuleIds: rewritten });
+    return ok({ rewrittenModuleIds, rewrittenContentInstanceIds });
   },
 });
 

@@ -74,7 +74,7 @@ flowchart LR
   subgraph primitives["Content primitives"]
     Layout["LAYOUT<br/>site-wide chrome<br/>html with named &lt;caelo-slot&gt;<br/>blocks: header · content · footer"]
     Template["TEMPLATE<br/>page-type structure<br/>fills layout's `content` slot<br/>blocks: hero · body · sidebar · …"]
-    Page["PAGE<br/>the URL surface<br/>slug · title · status"]
+    Page["PAGE<br/>the URL surface<br/>slug · parent page · title · status<br/>path = parent chain + slug"]
     Module["MODULE<br/>html + css + js<br/>live-referenced · reused"]
   end
 
@@ -218,7 +218,8 @@ erDiagram
   deploy_targets ||--o{ deploy_runs : "has"
 
   %% Sideband
-  structured_sets ||--o{ pages : "rewritten on slug change"
+  structured_sets ||--o{ pages : "rewritten on slug change / move"
+  pages ||--o{ pages : "parent_page_id (nested URLs)"
   redirects }o--o| pages : "from_path"
   audit_events }o--|| actors : "by"
   rate_limit_buckets ||--|| actors : "scoped"

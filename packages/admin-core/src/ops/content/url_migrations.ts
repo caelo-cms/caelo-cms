@@ -62,7 +62,7 @@ export async function computeUrlMigrationDiff(
   `)) as unknown as { id: string; slug: string; current_path: string }[];
   const fresh = await resolveCurrentPathsDryRun(
     tx,
-    pages.map((p) => ({ id: p.id, slug: p.slug })),
+    pages.map((p) => p.id),
     // The diff compares live paths against live plugin state.
     MAIN_RENDER,
   );
