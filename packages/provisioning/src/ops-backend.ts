@@ -49,6 +49,9 @@ export const OPS_BUCKET_ROLE = "roles/storage.objectAdmin";
 /** Role the operator + provisioner hold on the state key. */
 export const OPS_KEY_ROLE = "roles/cloudkms.cryptoKeyEncrypterDecrypter";
 
+/** APIs the ops backend needs. */
+const OPS_APIS = ["storage.googleapis.com", "cloudkms.googleapis.com"] as const;
+
 /** Principals that must never appear on the ops bucket. */
 const PUBLIC_MEMBERS = new Set(["allUsers", "allAuthenticatedUsers"]);
 
@@ -160,15 +163,24 @@ export async function ensureOpsBackend(
   });
 
   // --- APIs -------------------------------------------------------------
-  if (!dryRun) {
-    const apis = await run([
-      "services",
-      "enable",
-      "cloudkms.googleapis.com",
-      "storage.googleapis.com",
-      project,
-    ]);
-    if (!apis.ok) return fail("Enabling the Cloud KMS API", apis);
+  // Read first: an operator without serviceusage.services.enable can still
+  // re-run an install whose APIs are on.
+  const enabled = await run([
+    "services",
+    "list",
+    "--enabled",
+    project,
+    "--format=value(config.name)",
+  ]);
+  if (!enabled.ok) return fail(`Listing the enabled APIs of ${projectId}`, enabled);
+  const on = new Set(enabled.stdout.split("\n").map((l) => l.trim()));
+  const missingApis = OPS_APIS.filter((a) => !on.has(a));
+  if (missingApis.length > 0) {
+    act(`enable ${missingApis.join(", ")}`);
+    if (!dryRun) {
+      const apis = await run(["services", "enable", ...missingApis, project]);
+      if (!apis.ok) return fail(`Enabling ${missingApis.join(", ")}`, apis);
+    }
   }
 
   // --- Bucket -----------------------------------------------------------

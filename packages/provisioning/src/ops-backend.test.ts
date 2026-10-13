@@ -29,7 +29,9 @@ type Binding = { role: string; members: string[] };
 /** A tiny in-memory GCP: one bucket, one key ring, one key, their policies. */
 function fakeGcp(initial: { bucket?: boolean; ring?: boolean; key?: boolean } = {}) {
   const state = {
-    apis: new Set<string>(),
+    apis: new Set<string>(
+      initial.bucket ? ["storage.googleapis.com", "cloudkms.googleapis.com"] : [],
+    ),
     bucket: initial.bucket
       ? {
           versioning_enabled: true,
@@ -64,6 +66,7 @@ function fakeGcp(initial: { bucket?: boolean; ring?: boolean; key?: boolean } = 
   const run = async (args: string[]): Promise<GcloudResult> => {
     const line = args.join(" ");
     calls.push(line);
+    if (line.startsWith("services list")) return ok([...state.apis].join("\n"));
     if (line.startsWith("services enable")) {
       for (const a of args.slice(2)) if (!a.startsWith("--")) state.apis.add(a);
       return ok();
@@ -149,10 +152,7 @@ function fakeGcp(initial: { bucket?: boolean; ring?: boolean; key?: boolean } = 
     }
     return fail(`unexpected gcloud ${line}`);
   };
-  const writes = () =>
-    calls.filter(
-      (c) => !/ (describe|get-iam-policy|list) /.test(` ${c} `) && !c.startsWith("services enable"),
-    );
+  const writes = () => calls.filter((c) => !/ (describe|get-iam-policy|list) /.test(` ${c} `));
   return { run, calls, state, writes };
 }
 
@@ -295,7 +295,9 @@ describe("ensureOpsBackend — new install", () => {
     expect(r.actions.join("\n")).toContain("would create gs://acme-caelo-ops in europe-west1");
     expect(r.actions.join("\n")).toContain("would create KMS key caelo/pulumi-state");
     expect(g.writes()).toEqual([]);
-    expect(g.calls.some((c) => c.startsWith("services enable"))).toBe(false);
+    expect(r.actions.join("\n")).toContain(
+      "would enable storage.googleapis.com, cloudkms.googleapis.com",
+    );
   });
 });
 
