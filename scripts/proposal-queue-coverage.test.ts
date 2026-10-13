@@ -21,7 +21,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createDefaultToolRegistry, registerAdminOps } from "@caelo-cms/admin-core";
 import { OperationRegistry } from "@caelo-cms/query-api";
@@ -32,8 +32,12 @@ const AUTHED_ROUTES = join(REPO_ROOT, "apps/admin/src/routes/(authed)");
 
 /** Source of the page's server module, or null when the route has no page. */
 function pageServer(route: string): string | null {
-  const file = join(AUTHED_ROUTES, route, "+page.server.ts");
-  return existsSync(file) ? readFileSync(file, "utf8") : null;
+  try {
+    return readFileSync(join(AUTHED_ROUTES, route, "+page.server.ts"), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
 }
 
 /** Why `route` cannot decide a proposal from a form POST, or null when it can. */
@@ -63,10 +67,10 @@ const executors = registry.names().filter((n) => /\.execute_proposal$/.test(n));
 function settingsServerSources(): string {
   const out: string[] = [];
   const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) walk(full);
-      else if (entry === "+page.server.ts") out.push(readFileSync(full, "utf8"));
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name === "+page.server.ts") out.push(readFileSync(full, "utf8"));
     }
   };
   walk(join(AUTHED_ROUTES, "settings"));
