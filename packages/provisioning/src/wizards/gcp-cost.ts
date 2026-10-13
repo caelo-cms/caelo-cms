@@ -165,6 +165,12 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       notes: "Free tier — pay only on >1 TB/mo query",
     },
     {
+      name: "Install state (ops bucket + Cloud KMS key)",
+      monthlyUsd: 0.06,
+      notes:
+        "< $0.10/mo — versioned bucket with Pulumi state + install metadata, 1 KMS key version ($0.06)",
+    },
+    {
       name: "Operator-access sync (Cloud Run job + Cloud Scheduler)",
       monthlyUsd: 0,
       notes:
@@ -172,7 +178,8 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
     },
   ];
 
-  const totalUsd = lines.reduce((sum, l) => sum + l.monthlyUsd, 0);
+  // Cents, so a sub-dollar line (the KMS key) doesn't print float noise.
+  const totalUsd = Math.round(lines.reduce((sum, l) => sum + l.monthlyUsd, 0) * 100) / 100;
   const regionNote =
     inputs.region === PRICED_REGION
       ? `Region: ${inputs.region} (fixed after install)`
