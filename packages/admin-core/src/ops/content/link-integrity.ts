@@ -115,14 +115,17 @@ export async function scanBranchInternalLinks(
   // prefixes included — plus the slug shape as a legacy alias so
   // pre-composition content that links "/<slug>" doesn't false-flag.
   const pageRows = (await tx.execute(sql`
-    SELECT DISTINCT p.slug AS slug, p.current_path AS current_path
+    SELECT DISTINCT p.slug AS slug, p.current_path AS current_path,
+           (p.parent_page_id IS NOT NULL) AS nested
     FROM pages p
     WHERE p.deleted_at IS NULL ${branchFilter}
-  `)) as unknown as { slug: string; current_path: string }[];
+  `)) as unknown as { slug: string; current_path: string; nested: boolean }[];
   const validSlugs = new Set<string>();
   for (const r of pageRows) {
     validSlugs.add(normalizePath(r.current_path));
-    validSlugs.add(normalizePath(`/${r.slug}`));
+    // The legacy alias is a top-level shape only: "/<slug>" is not where
+    // a nested page lives (0263), so a link there must not count as valid.
+    if (!r.nested) validSlugs.add(normalizePath(`/${r.slug}`));
   }
 
   const homeRows = (await tx.execute(sql`

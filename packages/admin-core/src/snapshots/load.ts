@@ -138,9 +138,11 @@ export async function loadPageState(
   pageId: string,
 ): Promise<PageState | null> {
   const rows = (await tx.execute(sql`
-    SELECT slug, title, template_id, status, version, deleted_at
+    SELECT slug, title, template_id, status, version, deleted_at,
+           parent_page_id::text AS parent_page_id
     FROM pages WHERE id = ${pageId}::uuid LIMIT 1
   `)) as unknown as {
+    parent_page_id: string | null;
     slug: string;
     title: string;
     template_id: string;
@@ -158,6 +160,7 @@ export async function loadPageState(
     status: r.status,
     version: typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version,
     deletedAt: iso(r.deleted_at),
+    parentPageId: r.parent_page_id,
   };
 }
 

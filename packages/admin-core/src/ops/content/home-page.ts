@@ -24,6 +24,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
 import { recomputeCurrentPaths, renderScopeOf } from "./current-path.js";
+import { loadPageTree } from "./page-tree.js";
 
 export const setHomePageOp = defineOperation({
   name: "pages.set_home_page",
@@ -47,6 +48,21 @@ export const setHomePageOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.set_home_page",
         message: "page not found or deleted — pass a live page id from list_pages",
+      });
+    }
+    // 0263 — the homepage serves at "/": it can neither sit under another
+    // page nor have pages under it (top-level pages already sit directly
+    // under it).
+    const tree = await loadPageTree(tx, ctx.chatBranchId ?? null);
+    const node = tree.byId.get(input.pageId);
+    const childCount = tree.childrenOf.get(input.pageId)?.length ?? 0;
+    if (node?.parentPageId || childCount > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.set_home_page",
+        message: node?.parentPageId
+          ? "this page sits under another page, and the homepage must be top-level — move it to the top level first (move_pages with parentPageId null), then designate it"
+          : `this page has ${childCount} child page(s), and the homepage cannot be a parent — move them to the top level or under another page first (move_pages), then designate it`,
       });
     }
     // Capture the previous designation BEFORE the flip — its page's

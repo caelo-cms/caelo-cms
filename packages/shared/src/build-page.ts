@@ -196,6 +196,12 @@ export const buildPageTargetSchema = z
     templateId: z.string().uuid().optional(),
     status: pageStatusSchema.optional(),
     /**
+     * 0263 — create the page UNDER this parent page; its URL becomes
+     * "<parent's path>/<slug>". Create mode only (an existing page moves
+     * with `pages.move_many`).
+     */
+    parentPageId: z.string().uuid().optional(),
+    /**
      * Migration linkage (issue #278 flow): the `import_pages` row this
      * page rebuilds. The op stamps `import_pages.accepted_page_id` with
      * the built page's id so fidelity / inventory / media-migration reads
@@ -208,9 +214,9 @@ export const buildPageTargetSchema = z
   })
   .strict()
   .superRefine((page, ctx) => {
-    const createKeys = (["slug", "title", "name", "templateId", "status"] as const).filter(
-      (k) => page[k] !== undefined,
-    );
+    const createKeys = (
+      ["slug", "title", "name", "templateId", "status", "parentPageId"] as const
+    ).filter((k) => page[k] !== undefined);
     if (page.pageId !== undefined) {
       if (createKeys.length > 0) {
         ctx.addIssue({

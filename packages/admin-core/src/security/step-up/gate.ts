@@ -51,7 +51,11 @@ export async function readSessionStepUp(
   tx: TransactionRunner,
   actorId: string,
   sessionHash: string,
+  opts: { readonly lock?: boolean } = {},
 ): Promise<SessionStepUp | null> {
+  // A guarded action locks the session row until its transaction ends, so a
+  // second action racing on the same step-up waits and then finds it
+  // consumed — one sign-in, one action.
   const rows = (await tx.execute(sql`
     SELECT u.email AS user_email, s.step_up_at, s.step_up_email
       FROM sessions s
@@ -61,6 +65,7 @@ export async function readSessionStepUp(
        AND s.expires_at > now()
        AND u.deleted_at IS NULL
      LIMIT 1
+     ${opts.lock ? sql`FOR UPDATE OF s` : sql``}
   `)) as unknown as {
     user_email: string;
     step_up_at: Date | string | null;
@@ -119,7 +124,7 @@ export async function guardedActionRefusal(
   if (missing.length > 0) {
     return `permission_denied: this needs the ${opts.permission} permission (the Owner has it); your role does not.`;
   }
-  const session = await readSessionStepUp(tx, ctx.actorId, opts.sessionHash);
+  const session = await readSessionStepUp(tx, ctx.actorId, opts.sessionHash, { lock: true });
   const problem = stepUpProblem(session, opts.now ?? new Date());
   if (problem) {
     return `${STEP_UP_REQUIRED}: ${problem}. Confirm with a fresh Google sign-in, then try again.`;

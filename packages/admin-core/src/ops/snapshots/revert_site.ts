@@ -18,6 +18,8 @@ import {
   parseSnapshotState,
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
+import { recomputeCurrentPathsWithMoves } from "../content/current-path.js";
+import { applyPathMoveEffects } from "../content/path-moves.js";
 
 /**
  * Restores every entity that has a row under the target snapshot. Atomic
@@ -139,9 +141,21 @@ export const revertSiteOp = defineOperation({
         UPDATE pages SET
           slug = ${t.slug}, title = ${t.title},
           template_id = ${t.templateId}::uuid, status = ${t.status},
+          ${t.parentPageId === undefined ? sql`` : sql`parent_page_id = ${t.parentPageId}::uuid,`}
           deleted_at = ${t.deletedAt}, updated_at = now(), version = version + 1
         WHERE id = ${r.entity_id}::uuid
       `);
+    }
+    // Restored slugs / parents move URLs (subtrees included): recompose
+    // and give every moved URL its 301 + link rewrites.
+    if (parsedPages.length > 0) {
+      const recomputed = await recomputeCurrentPathsWithMoves(
+        tx,
+        parsedPages.map((r) => r.entity_id),
+        // Revert writes live rows, so the live (main) tree is what moved.
+        { chatBranchId: null },
+      );
+      await applyPathMoveEffects(ctx, tx, recomputed.moves, "auto");
     }
     for (const r of parsedLayouts) {
       const t = r.state;

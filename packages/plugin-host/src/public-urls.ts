@@ -73,8 +73,10 @@ export async function resolvePublicPageUrls(
         : resolvePageHost({
             pageId: page.id,
             slug: page.slug,
-            // The host slot does not depend on the home designation; the
-            // path half of composition is already materialized.
+            // The host slot depends on neither the home designation nor
+            // the parent chain; the path half of composition is already
+            // materialized.
+            ancestorSlugs: [],
             isHomePage: false,
             annotations: annotations.get(page.id) ?? {},
           });

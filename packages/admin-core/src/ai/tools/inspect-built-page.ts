@@ -96,7 +96,7 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
     if (!pageR.ok) {
       return { ok: false, content: `pages.get failed: ${describeError(pageR.error)}` };
     }
-    const page = (pageR.value as { page: { slug: string } }).page;
+    const page = (pageR.value as { page: { slug: string; currentPath: string } }).page;
 
     // Resolve runId for staging target if not pinned.
     let runId = input.runId;
@@ -131,8 +131,11 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
       };
     }
 
-    // Standard generator output layout: <slug>/index.html.
-    const objectKey = `${page.slug}/index.html`;
+    // Standard (directory-style) generator output: the composed path
+    // (pages.current_path — parent chain + plugin prefixes included) +
+    // /index.html; the root is index.html.
+    const trimmedPath = page.currentPath.replace(/^\/+|\/+$/g, "");
+    const objectKey = trimmedPath.length === 0 ? "index.html" : `${trimmedPath}/index.html`;
     const stagingKey = `${runId}/${objectKey}`;
 
     // Lazy-load @google-cloud/storage so self-hosted runtimes don't
