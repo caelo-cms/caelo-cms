@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MPL-2.0
 #
 # Caelo GCP provider stack. Provisions Cloud SQL HA + GCS (media + static
-# output) + Cloud CDN + Cloud Run (admin/gateway/orchestrator/runner +
-# edge-router) + Secret Manager + Cloud Logging → BigQuery sink for
-# A/B assignment logs. Implements the shared CloudAdapterInputs /
+# output) + Cloud CDN + Cloud Run (admin/gateway/orchestrator/runner) +
+# Secret Manager + Cloud Logging → BigQuery sink for gateway request
+# logs. Implements the shared CloudAdapterInputs /
 # CloudAdapterOutputs contract from packages/provisioning/src/adapter.ts.
 name: caelo-gcp
 runtime:

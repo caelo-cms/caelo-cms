@@ -67,7 +67,6 @@ Categories accepted by `ignoreIssues`: `files`, `dependencies`, `devDependencies
 | `apps/admin/src/lib/components/ui/sheet/**` | Temporary (#22) | shadcn-svelte Sheet component generated but not yet placed in a route. |
 | `packages/migrations/src/rls.ts` | Temporary (#22) | RLS helper reachable only from migration tooling; needs an entry-point review. |
 | `packages/migrations/src/schema/cms_admin/rate_limits.ts` | Temporary (#22) | Schema table not yet referenced by a Query API op. |
-| `packages/provisioning/stacks/aws/edge-handler-bundle.js` | Permanent | Deploy-time placeholder, replaced by `build:edge-aws` at deploy. Never imported by source. |
 
 ### `ignoreBinaries`
 

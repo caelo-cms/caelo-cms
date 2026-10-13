@@ -8,12 +8,11 @@ Pulumi stack provisioning Caelo on AWS managed services. Implements the shared `
 |---|---|
 | Managed Postgres | RDS Postgres 16 Multi-AZ + automated backups + encryption (`db.t4g.small` default) |
 | Blob storage | Two S3 buckets (`caelo-<env>-media` + `caelo-<env>-static`) |
-| CDN | CloudFront distribution with two origins (S3 static + S3 media) |
-| Edge compute (A/B + redirects) | Lambda@Edge function (us-east-1 pinned) on `viewer-request` |
+| CDN | CloudFront distribution with two origins (S3 static + S3 media); static files are served as files, no edge compute on the request path |
 | Container runtime | ECS Fargate cluster + four services (admin / gateway / orchestrator / runner) |
 | Secret store | AWS Secrets Manager (postgres-password, public-role-password, gateway-role-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key). The gateway gets `gatewayDatabaseUrlOut` + `publicDatabaseUrlOut`, never the admin URL (#613). |
 | DNS + cert | ACM cert (us-east-1, DNS-validated, supports `*.<domain>`) |
-| Edge-log sink | CloudWatch Logs → Kinesis Firehose → S3 → Athena (queryable by P12A analytics plugin) |
+| Edge-log sink | CloudFront access logs delivered to the CloudWatch log group `/caelo/<env>/cloudfront` in us-east-1 (queryable by P12A analytics plugin) |
 
 The Caelo runtime never knows it's on AWS — it just consumes `DATABASE_URL` / `MEDIA_STORAGE_URL` / `SECRETS_PROVIDER` env vars wired by this stack.
 
@@ -27,9 +26,6 @@ pulumi config set caelo-aws:ownerEmail me@example.com
 # Required (#607): fixed after install; aws:region must match.
 pulumi config set caelo-aws:region eu-central-1
 pulumi config set aws:region eu-central-1
-
-# Build the Lambda@Edge bundle BEFORE the first `pulumi up`.
-bun run packages/provisioning/stacks/aws/build-edge.ts
 
 # Bring the stack up.
 pulumi up
@@ -49,29 +45,9 @@ pulumi stack output bootstrapUrlOut
 
 Open that URL once CloudFront has issued the ACM cert (~10 minutes after DNS records propagate).
 
-## Updating the routing manifest
+## Upgrading a stack created before #676
 
-Lambda@Edge has no DB egress — the routing manifest is bundled into the function source. After every static-generator deploy that changes routing, re-run:
-
-```bash
-bun run packages/provisioning/stacks/aws/build-edge.ts \
-  --manifest apps/static-generator/dist/routing-manifest.json
-pulumi up
-```
-
-L@E versions are immutable; each `pulumi up` after a manifest change creates a new published version + repoints CloudFront's behaviour.
-
-## Lambda@Edge constraints worth knowing
-
-- **Region pinned to us-east-1.** Code lives in us-east-1 regardless of where CloudFront's origins are. The stack creates a separate `us-east-1` Pulumi provider just for L@E.
-- **1 MB unzipped limit.** The build script warns when the bundle exceeds it.
-- **No env vars at runtime.** Anything the function needs must be bundled in.
-- **5-second timeout** at viewer-request. Caelo's edge-router is pure code — well under this.
-- **No async I/O** at viewer-request. The `routeRequest` helper is synchronous-after-import; logging via `console.log` is async-fire-and-forget.
-
-## Edge-router byte-identity
-
-This stack imports `routeRequest` from `@caelo-cms/edge-router` — the same function the P13 self-hosted Caddy gateway, the GCP Cloud Run handler (P15), and the Azure Front Door rules engine (P15) use. The byte-identity test in `packages/edge-router/src/index.test.ts` asserts that a fixed corpus of (visitorId, manifestVersion, experimentId) tuples produces identical variant labels across every runtime — a visitor sees the same variant whether they hit the self-hosted Caddy in dev or the AWS CloudFront in production.
+Stacks created before epic #676 carry a Lambda@Edge function on the CloudFront distribution. The first `pulumi up` after upgrading detaches it and then deletes it, but AWS keeps the function's edge replicas for up to a few hours after detaching and refuses the delete until they are gone. If `pulumi up` fails with `Lambda was unable to delete ... because it is a replicated function`, the distribution is already updated: wait an hour and run `pulumi up` again to finish removing the function.
 
 ## Destroy
 

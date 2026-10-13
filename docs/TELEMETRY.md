@@ -86,7 +86,6 @@ Failure modes (any default-on telemetry, any leak of PII / message body) block t
 | `provider_quota_exceeded` | AI provider returned quota / rate-limit hard error |
 | `db_connection_lost` | Postgres connection dropped + reconnect failed > 3× |
 | `static_gen_panic` | Static-generator subprocess crashed |
-| `edge_router_manifest_load_failed` | Edge router couldn't fetch the routing manifest |
 | `migration_drift_detected` | Migrations applied but RLS-drift check failed |
 
 Adding a new category means: append a row here, add the constant in `apps/admin/src/lib/server/telemetry-categories.ts`, ship in a release. No category = no telemetry.

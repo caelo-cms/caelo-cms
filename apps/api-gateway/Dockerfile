@@ -33,7 +33,6 @@ COPY packages/plugin-sandbox/package.json packages/plugin-sandbox/
 COPY packages/plugin-host/package.json packages/plugin-host/
 COPY packages/redeploy-orchestrator/package.json packages/redeploy-orchestrator/
 COPY packages/site-importer/package.json packages/site-importer/
-COPY packages/edge-router/package.json packages/edge-router/
 COPY packages/migrations/package.json packages/migrations/
 COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/provisioning/package.json packages/provisioning/
