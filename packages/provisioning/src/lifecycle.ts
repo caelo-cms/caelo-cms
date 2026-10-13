@@ -818,7 +818,7 @@ async function upgradeInstall(
   // ────────────────────────────────────────────────────────────────
   const sInv = spinner();
   sInv.start(
-    "Ensuring the IAM bindings + CDN settings the stack declares, removing default SSH/RDP firewall rules...",
+    "Ensuring the IAM bindings + CDN settings the stack declares, removing the default network's pre-populated firewall rules...",
   );
   const invariants = await ensureStackInvariants({
     provider: meta.provider,

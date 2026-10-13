@@ -726,6 +726,12 @@ export function iamMember(
 // Firewall rules that must not exist
 // ===========================================================================
 
+/** One `allowed` entry of a firewall rule, as the Compute API returns it. */
+export interface FirewallAllow {
+  readonly IPProtocol: "tcp" | "udp" | "icmp";
+  readonly ports?: readonly string[];
+}
+
 /**
  * One firewall rule GCP auto-creates on the project's `default` network that
  * a Caelo install must not have, in the exact shape GCP creates it. Only a
@@ -735,8 +741,16 @@ export function iamMember(
  */
 export interface AbsentDefaultFirewallRule {
   readonly name: string;
-  readonly protocol: "tcp";
-  readonly port: string;
+  /** The rule's exact source ranges as GCP creates it. */
+  readonly sourceRanges: readonly string[];
+  /** The rule's exact `allowed` entries as GCP creates it (order-insensitive). */
+  readonly allowed: readonly FirewallAllow[];
+  /**
+   * The rule carries traffic between VMs on the `default` network. Deleting
+   * it cuts that traffic, so it is only deleted when no VM instance in the
+   * project sits on the `default` network (default-firewall.ts checks).
+   */
+  readonly guardsInstanceTraffic: boolean;
   readonly why: string;
 }
 
@@ -745,33 +759,67 @@ export const GCP_DEFAULT_NETWORK = "default";
 
 /**
  * Enabling Compute Engine gives a new project the `default` VPC network with
- * four firewall rules. Two of them open SSH and RDP to the whole internet
- * (`0.0.0.0/0`) for any VM on that network. Caelo runs no VMs and does not
- * use the `default` network at all (the stacks create their own
- * `${namePrefix}-vpc`, with no firewall rules, for Cloud SQL private IP and
- * Cloud Run direct VPC egress), so the rules grant nothing today. They are
- * still an open admin port on the books: every ISO 27001-style audit flags
- * them, and the first VM anyone adds to the project would be reachable.
- * The wizard and `upgrade` delete them.
+ * four pre-populated ingress firewall rules (priority 65534, documented at
+ * https://cloud.google.com/firewall/docs/firewalls, "Pre-populated rules in
+ * the default network").
+ * Caelo runs no VMs and does not use the `default` network at all: the
+ * stacks create their own `${namePrefix}-vpc`, with no firewall rules, for
+ * Cloud SQL private IP and Cloud Run direct VPC egress
+ * (`vpcAccess.networkInterfaces` points at that network;
+ * default-firewall.test.ts pins it). So the rules grant nothing today, but
+ * every ISO 27001-style audit flags them, and the first VM anyone adds to the
+ * project would inherit them. The wizard and `upgrade` delete all four.
  *
- * `default-allow-internal` (all traffic between instances on the network)
- * and `default-allow-icmp` stay: neither opens a remote-admin port, and the
- * network itself stays because deleting it is not ours to decide.
+ * The shapes are the documented ones. GCP documents no other variant (older
+ * legacy-mode default networks are not described), so a rule in any other
+ * shape is reported with the delete command instead of deleted. The network
+ * itself stays: deleting it is not ours to decide.
  */
 export const ABSENT_DEFAULT_FIREWALL_RULES: readonly AbsentDefaultFirewallRule[] = [
   {
     name: "default-allow-ssh",
-    protocol: "tcp",
-    port: "22",
+    sourceRanges: ["0.0.0.0/0"],
+    allowed: [{ IPProtocol: "tcp", ports: ["22"] }],
+    guardsInstanceTraffic: false,
     why: "SSH open to 0.0.0.0/0 on the default network; Caelo runs no VMs",
   },
   {
     name: "default-allow-rdp",
-    protocol: "tcp",
-    port: "3389",
+    sourceRanges: ["0.0.0.0/0"],
+    allowed: [{ IPProtocol: "tcp", ports: ["3389"] }],
+    guardsInstanceTraffic: false,
     why: "RDP open to 0.0.0.0/0 on the default network; Caelo runs no VMs",
   },
+  {
+    name: "default-allow-icmp",
+    sourceRanges: ["0.0.0.0/0"],
+    allowed: [{ IPProtocol: "icmp" }],
+    guardsInstanceTraffic: false,
+    why: "ICMP open to 0.0.0.0/0 on the default network; Caelo runs no VMs",
+  },
+  {
+    name: "default-allow-internal",
+    sourceRanges: ["10.128.0.0/9"],
+    allowed: [
+      { IPProtocol: "tcp", ports: ["0-65535"] },
+      { IPProtocol: "udp", ports: ["0-65535"] },
+      { IPProtocol: "icmp" },
+    ],
+    guardsInstanceTraffic: true,
+    why: "all ports between instances on the default network; Caelo does not use that network",
+  },
 ];
+
+/** `tcp:22 from 0.0.0.0/0` — a rule's shape in one line, for reports. */
+export function describeFirewallShape(
+  allowed: readonly { readonly IPProtocol: string; readonly ports?: readonly string[] }[],
+  sourceRanges: readonly string[],
+): string {
+  const allow = allowed
+    .map((a) => `${a.IPProtocol}${a.ports?.length ? `:${a.ports.join(",")}` : ""}`)
+    .join(" ");
+  return `${allow || "(none)"} from ${sourceRanges.join(",") || "(no ranges)"}`;
+}
 
 /** Name prefix of the `gcp` stack's static backend bucket (Pulumi auto-suffixed). */
 export function staticBackendBucketPrefix(env: string): string {
