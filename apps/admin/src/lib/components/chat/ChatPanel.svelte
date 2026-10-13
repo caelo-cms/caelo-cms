@@ -1657,11 +1657,12 @@
       chatError = `Chat request returned no body (status ${res.status}). The server may be misconfigured — try again or check /security/audit.`;
       return false;
     }
-    // Issue #685 — did the turn start? A turn the server refuses before it
-    // runs (an external agent works here, a Stop it waited behind) answers
-    // only an error or a "turn-dropped" warning and then `done`.
+    // Issue #685 — did the turn start? Only positive evidence counts: model
+    // output, a tool call, or a usage report. A turn the server refuses
+    // before it runs (an external agent works here, a Stop it waited
+    // behind) answers only an error or a "turn-dropped" warning, and one
+    // stopped while it waited answers nothing at all.
     let turnStarted = false;
-    let turnRefused = false;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -1850,12 +1851,6 @@
               ev["kind"] === "assistant-message-saved"
             ) {
               turnStarted = true;
-            } else if (
-              !turnStarted &&
-              (ev["kind"] === "error" ||
-                (ev["kind"] === "warning" && ev["code"] === "turn-dropped"))
-            ) {
-              turnRefused = true;
             }
             if (ev["kind"] === "error") {
               chatError = typeof ev["message"] === "string" ? ev["message"] : "Chat failed.";
@@ -2038,7 +2033,7 @@
     streaming = false;
     streamAbort = null;
     currentActivity = null;
-    return !turnRefused;
+    return turnStarted;
   }
 
   function lineDiff(before: string, after: string): { kind: "ctx" | "del" | "add"; text: string }[] {

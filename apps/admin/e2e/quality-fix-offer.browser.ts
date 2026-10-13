@@ -66,6 +66,9 @@ test.afterAll(async () => {
 
 async function login(page: Page): Promise<string> {
   const ownerId = ensureIsolatedOwner(OWNER_EMAIL);
+  // Three logins in a row, next to parallel specs' logins: stay under the
+  // per-IP login limit.
+  clearLoginRateBucket();
   await page.goto("/login");
   await page.getByLabel("Email").fill(OWNER_EMAIL);
   await page.getByLabel("Password").fill(ISOLATED_OWNER_PASSWORD);
