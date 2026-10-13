@@ -99,7 +99,8 @@ export const MEDIA_VARIANT_WIDTHS: Record<Exclude<MediaVariantTag, "orig">, numb
  * `/_caelo/media/<slug>/<variant>` for a named variant (webp/crops). The
  * `<slug>` is `media_assets.slug` — a human-meaningful name (e.g.
  * `searchviu-logo`); the UUID id stays internal. The static generator
- * rewrites these to `/_assets/<slug>.<ext>` (orig) / `/_assets/<slug>/<variant>.<ext>`.
+ * rewrites these to content-hashed `/_assets/<slug>.<hash>.<ext>` (orig) /
+ * `/_assets/<slug>/<variant>.<hash>.<ext>` (#667).
  *
  * Legacy form `/_caelo/media/<uuid>/<variant>` is still PARSED (existing
  * persisted embeds keep resolving), but never newly EMITTED.
@@ -207,7 +208,7 @@ export const mediaUploadInputSchema = z
     /**
      * Meaningful, human-facing label for the asset (e.g. "SearchVIU logo").
      * The handler slugifies + uniquifies it into `media_assets.slug`, which
-     * becomes the public URL (`/_assets/<slug>.<ext>`); the id stays internal.
+     * becomes the public URL (`/_assets/<slug>.<hash>.<ext>`); the id stays internal.
      * Optional: falls back to `alt` → `originalName` → "image".
      */
     name: z.string().max(200).optional(),

@@ -26,6 +26,7 @@
   import { mode, toggleMode } from "mode-watcher";
   const isDark = $derived(mode.current === "dark");
   import NotificationBell from "#lib/components/NotificationBell.svelte";
+  import RunningAgentsIndicator from "#lib/components/agents/RunningAgentsIndicator.svelte";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Separator } from "#lib/components/ui/separator/index.js";
   import { cn } from "#lib/utils.js";
@@ -218,6 +219,7 @@
             AI · {aiSpend7d.display} / 7d
           </span>
         {/if}
+        <RunningAgentsIndicator {csrfToken} />
         <NotificationBell />
         <Button variant="ghost" size="icon" aria-label="Toggle theme" onclick={toggleMode}>
           {#if isDark}

@@ -3,7 +3,7 @@
 /**
  * P7 — deploy.trigger output verification:
  *  - HTML referencing /_caelo/media/<id>/<variant> is rewritten to
- *    /_assets/<id>/<variant>.<ext> by the static-generator media-pass.
+ *    /_assets/<id>/<variant>.<hash>.<ext> by the static-generator media-pass.
  *  - Variant bytes are copied into output/<env>/builds/<runId>/_assets.
  *  - cdn_manifest.json is always written (entries empty when CDN off).
  *
@@ -116,9 +116,13 @@ describe("P7 deploy.trigger media rewrite", () => {
         settings: { cdnEnabled: false, threshold: 5 },
       });
     });
-    expect(pages[0]?.html).toContain(`/_assets/${assetId}/orig.png`);
+    // #667 — published under a content-hashed name.
+    const published = pages[0]?.html.match(
+      new RegExp(`/(_assets/${assetId}/orig\\.[0-9a-f]{16}\\.png)`),
+    )?.[1];
+    expect(published).toBeDefined();
     expect(pages[0]?.html).not.toContain("/_caelo/media");
-    const copied = await readFile(join(buildDir, "_assets", assetId, "orig.png"));
+    const copied = await readFile(join(buildDir, published as string));
     expect(copied.byteLength).toBe(4);
   });
 });

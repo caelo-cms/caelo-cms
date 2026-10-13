@@ -93,6 +93,17 @@ When your agent calls an approval-gated tool, the proposal appears in the operat
 - **Caelo's own AI stays out of it.** If the operator approves the card in Live Edit, the decision goes back to your agent. Caelo's chat AI does not start a turn, and no message is added to the chat. Once your agent has read the decision, the chat shows **"…the external agent (MCP) received the result"** in place of the card. Proposals that Caelo's own chat AI made still continue that AI as before.
 - **No self-approval.** Your agent can only read the decision on proposals it queued itself. Approving and rejecting remain the operator's clicks.
 
+### One agent per chat, and the operator's Stop
+
+Your agent and Caelo's own Live Edit AI never work in the same chat at the same time. Because `caelo_open_session` resumes the operator's open chat, both would otherwise edit the same pages and undo each other's work.
+
+- **While your agent works, the Live Edit AI waits.** Every tool call marks your agent as working in the chat. For two minutes after its last call the chat shows it in the **Agents running** bar, and a message the operator sends there is not passed to Caelo's AI. The operator sees why and can stop your agent with one click.
+- **While the Live Edit AI works, your writes wait.** A write tool called while Caelo's AI is answering in the chat returns `chat_busy: …` and changes nothing. Read tools (`list_*`, `get_*`, `inspect_*` and the like) keep working. Retry after about a minute, or ask your user whether you should take over.
+- **Stop means stop.** If the operator presses **Stop** for your agent (in the chat's bar, in the admin header's **agents running** list, or with the chat's own Stop button), every later call in that chat returns `stopped_by_operator: …` and does nothing. Your agent should stop and tell its user. It should not retry and should not open a new session to carry on. The operator lifts the block with **Allow again**.
+- **`caelo_chat` turns** are listed and stoppable the same way. A turn the operator stops ends early with `turn_interrupted`. After a Stop, the chat does not start any turn until the operator writes in it again, so a `caelo_chat` message sent in the meantime returns `stopped_by_operator`.
+
+Set `CAELO_EXTERNAL_AGENT_ACTIVE_MS` on the admin to change the two-minute window.
+
 ### Feeding Claude Code the site context
 
 For a checked-in variant of `caelo_get_context`, run:

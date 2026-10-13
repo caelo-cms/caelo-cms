@@ -66,6 +66,7 @@ describe("serveStagedBuild over a local build", () => {
     writeFileSync(join(build, "about", "index.html"), "<h1>about</h1>");
     writeFileSync(join(build, "favicon.ico"), new Uint8Array([0, 0, 1, 0]));
     writeFileSync(join(build, "_assets", "fonts", "inter", "0123456789abcdef.woff2"), "font");
+    writeFileSync(join(build, "_assets", "logo.0123456789abcdef.png"), "png");
     writeFileSync(join(build, "pricing"), "<h1>pricing</h1>");
     writeFileSync(
       join(build, "_content-types.json"),
@@ -105,6 +106,19 @@ describe("serveStagedBuild over a local build", () => {
     expect(font.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
     const bare = await fetch(`${origin.baseUrl}/pricing`);
     expect(bare.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  });
+
+  it("serves content-hashed media immutable and never marks a page no-store (#667)", async () => {
+    // Lighthouse audits this origin: media under a hashed name must pass
+    // "efficient cache lifetimes", and a `no-store` page would fail the
+    // back/forward-cache audit.
+    const logo = await fetch(`${origin.baseUrl}/_assets/logo.0123456789abcdef.png`);
+    expect(logo.headers.get("content-type")).toBe("image/png");
+    expect(logo.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    for (const path of ["/", "/about/", "/pricing"]) {
+      const page = await fetch(`${origin.baseUrl}${path}`);
+      expect(page.headers.get("cache-control") ?? "").not.toContain("no-store");
+    }
   });
 
   it("is read-only and refuses escapes", async () => {

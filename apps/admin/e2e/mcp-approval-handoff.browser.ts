@@ -9,30 +9,18 @@
  */
 
 import { type APIRequestContext, expect, type Page, test } from "@playwright/test";
-import { clearLoginRateBucket, runBunInline } from "./helpers.js";
+import {
+  clearLoginRateBucket,
+  ensureIsolatedOwner,
+  ISOLATED_OWNER_PASSWORD,
+  mintAdminMcpToken,
+} from "./helpers.js";
 
 test.beforeAll(clearLoginRateBucket);
 
-function mintAdminToken(): string {
-  const out = runBunInline(`
-    import { SQL } from "bun";
-    import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
-    import { registerAdminOps } from "@caelo-cms/admin-core";
-    const db = new SQL(process.env.ADMIN_DATABASE_URL);
-    const actorId = await db.begin(async (tx) => {
-      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      const rows = await tx\`SELECT id::text FROM users WHERE email = 'dev-owner@example.com'\`;
-      return rows[0].id;
-    });
-    const adapter = new DatabaseAdapter({ adminDatabaseUrl: process.env.ADMIN_DATABASE_URL, publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL });
-    const registry = new OperationRegistry(); registerAdminOps(registry);
-    const r = await execute(registry, adapter, { actorId, actorKind: "human", requestId: "mcp-handoff-e2e" }, "mcp_tokens.create", { displayName: "mcp-handoff-e2e", scope: "admin" });
-    if (!r.ok) throw new Error(JSON.stringify(r.error));
-    process.stdout.write(r.value.plaintextToken);
-    await adapter.close(); await db.end();
-  `);
-  return out.trim();
-}
+// Issue #665 — its own Owner: the external agent's work keeps the Live Edit
+// AI out of this chat, which must never be a parallel spec's Live Edit chat.
+const OWNER_EMAIL = "mcp-handoff-e2e-owner@example.com";
 
 async function mcpPost<T>(
   request: APIRequestContext,
@@ -47,8 +35,8 @@ async function mcpPost<T>(
 
 async function login(page: Page): Promise<void> {
   await page.goto("/login");
-  await page.getByLabel("Email").fill("dev-owner@example.com");
-  await page.getByLabel("Password").fill("dev owner password");
+  await page.getByLabel("Email").fill(OWNER_EMAIL);
+  await page.getByLabel("Password").fill(ISOLATED_OWNER_PASSWORD);
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 }
@@ -57,7 +45,7 @@ test("an external agent's proposal is decided in the chat and handed back to the
   page,
   request,
 }) => {
-  const token = mintAdminToken();
+  const token = mintAdminMcpToken(ensureIsolatedOwner(OWNER_EMAIL), "mcp-handoff-e2e");
   const session = await mcpPost<{ chatSessionId: string }>(request, token, "/api/mcp/session", {
     newSession: true,
     title: `mcp-handoff-e2e-${Date.now()}`,

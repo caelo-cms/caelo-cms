@@ -552,5 +552,26 @@ describe("the fix-quality-findings skill", () => {
     );
     expect(tools.filter((t) => !live.has(t))).toEqual([]);
     expect(tools).toContain("get_quality_audit");
+    expect(tools).toContain("list_bug_reports");
+  });
+
+  // #667 (0256) — the skill made the AI propose acceptances for anything it
+  // could not fix; it argued "I'd accept all four", two of them Caelo bugs.
+  it("leaves acceptances to the operator and reports Caelo platform findings", async () => {
+    const rows = await withSql(
+      async (tx) =>
+        (await tx`SELECT body FROM skills WHERE slug = 'fix-quality-findings'`) as unknown as {
+          body: string;
+        }[],
+    );
+    const body = rows[0]?.body ?? "";
+    expect(body).toContain("Use `accept_quality_findings` ONLY when the operator explicitly asks");
+    expect(body).toContain(
+      'Do not write "I would accept …" and do not offer to request the approval.',
+    );
+    expect(body).toContain("CAELO PLATFORM");
+    expect(body).toContain("`bug_report`");
+    expect(body).toContain("`image-delivery-insight`");
+    expect(body).not.toContain("propose an acceptance with `accept_quality_findings`");
   });
 });

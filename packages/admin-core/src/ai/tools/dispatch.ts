@@ -136,6 +136,18 @@ export interface ToolContext {
    */
   readonly operatorBrowserAttached?: boolean;
   /**
+   * Issue #664 — the running turn's stop signal (the operator's Stop, a
+   * lost turn lease, a closed request). A tool that runs long work of its
+   * own (spawn_subagent's child turns) ties that work to it, so Stop ends
+   * the children too. Short transactional tools finish atomically.
+   */
+  readonly abortSignal?: AbortSignal;
+  /**
+   * Issue #664 — the running-agents row of the turn dispatching this tool;
+   * spawn_subagent parents its subagent rows to it.
+   */
+  readonly agentRunId?: string;
+  /**
    * v0.3.1 — browser-mediated screenshot tool needs to wait for the
    * operator's browser to capture + upload the image. When set, the
    * tool can register itself with this orchestrator: it generates a

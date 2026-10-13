@@ -19,7 +19,12 @@
  *   3. null → emits SSE error pointing the Owner at /security/ai.
  */
 
-import { getActiveProvider, resolveTestProvider, runChatTurn } from "@caelo-cms/admin-core";
+import {
+  getActiveProvider,
+  readAgentStopEpoch,
+  resolveTestProvider,
+  runChatTurn,
+} from "@caelo-cms/admin-core";
 import { pluginPreviewSelectionSchema } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
@@ -40,6 +45,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   if (!(await verifyCsrfToken(locals.user.csrfSecret, csrf))) {
     throw error(403, "CSRF token mismatch");
   }
+  // Issue #664 — the chat's Stop count as this request ARRIVES, before the
+  // slow parts (provider resolution, history load). A Stop pressed while
+  // this request is still on its way to the runner then refuses it.
+  const stopEpochAtArrival = await readAgentStopEpoch(
+    getQueryContext().registry,
+    getQueryContext().adapter,
+    locals.ctx,
+    params.sessionId,
+  );
 
   const body = (await request.json()) as {
     content?: string;
@@ -53,6 +67,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     // Plan B (SDK approval gate) — resume a paused gated turn with the Owner's
     // in-chat Approve/Reject instead of an operator message.
     resumeApproval?: { approvalId?: unknown; approved?: unknown; reason?: unknown };
+    // Issue #664 — "operator" when a system-origin message is a click the
+    // operator made (choice / suggestion chip) rather than an auto nudge.
+    trigger?: unknown;
   };
   // issue #29 — Zod at the boundary; anything other than the literal
   // "system" (including absent) is treated as operator-authored.
@@ -145,7 +162,13 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   // P5.2 #2: pipe the request abort signal into runChatTurn so closing
   // the browser tab mid-stream stops the loop and marks the in-flight
   // assistant message as 'interrupted'.
-  const abortSignal = request.signal;
+  // Issue #664 — the response body's own cancel (the reader went away) is a
+  // second disconnect signal next to `request.signal`. Neither is how Stop
+  // works: behind Cloud Run neither fired for a stopped turn. Stop goes
+  // through POST …/agents (chat.cancel_agents), which the runner hears on
+  // any instance; these two only end a turn whose reader is gone.
+  const bodyCancelled = new AbortController();
+  const abortSignal = AbortSignal.any([request.signal, bodyCancelled.signal]);
   // v0.2.58 — Forensics: track when the connection aborts + how many
   // events made it to the client before the connection closed. The
   // user reported "AI stops mid-plan with no error in the chat" — the
@@ -205,6 +228,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             aiCtx,
             humanCtx: locals.ctx,
             abortSignal,
+            // Issue #664 — listed in the chat's running agents; Stop
+            // reaches it on any instance.
+            agentRunSource: "live_edit",
+            ...(stopEpochAtArrival !== undefined ? { stopEpochAtArrival } : {}),
+            // Typed messages, clicked chips and in-chat Approve/Reject are the
+            // operator's own; system-origin nudges are not (they never lift
+            // a Stop).
+            operatorInitiated:
+              resumeApproval !== undefined || origin !== "system" || body.trigger === "operator",
             // issue #412 — THIS stream feeds a live ChatPanel, so the
             // operator-browser screenshot path is actually serviceable.
             operatorBrowserAttached: true,
@@ -280,6 +312,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         clearInterval(heartbeat);
         controller.close();
       }
+    },
+    cancel() {
+      bodyCancelled.abort();
     },
   });
 

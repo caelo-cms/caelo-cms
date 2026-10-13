@@ -31,13 +31,18 @@ export function isTestRegistryEnabled(): boolean {
 export function registerTestProvider(
   name: string,
   events: ProviderEvent[][] | ProviderEvent[],
+  /** Multi-step fixtures only: hold each step this long (issue #664 Stop tests). */
+  stepDelayMs = 0,
 ): void {
   if (!isTestRegistryEnabled()) {
     throw new Error("test provider registry is disabled in production");
   }
   const isMulti = Array.isArray(events) && events.length > 0 && Array.isArray(events[0]);
+  if (stepDelayMs > 0 && !isMulti) {
+    throw new Error("stepDelayMs needs a multi-step fixture (an array of steps)");
+  }
   const provider = isMulti
-    ? new MultiFixtureProvider(events as ProviderEvent[][])
+    ? new MultiFixtureProvider(events as ProviderEvent[][], undefined, stepDelayMs)
     : new FixtureProvider(events as ProviderEvent[]);
   registry.set(name, provider);
 }

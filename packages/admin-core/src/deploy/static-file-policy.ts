@@ -54,9 +54,9 @@ export function contentTypeFor(key: string): string {
 
 /** Cache-Control for a file of `contentType` served at site path `key`. */
 export function cacheControlForContentType(contentType: string, key: string): string {
-  // Content-hashed outputs (fonts, plugin bundles, Vite chunks) are
-  // immutable regardless of content-type — the hash in the path is the
-  // signal. Slug-addressed media stays on the 1h default below.
+  // Content-hashed outputs (fonts, plugin bundles, media, Vite chunks)
+  // are immutable regardless of content-type — the hash in the path is
+  // the signal. Anything else under `_assets/` stays on the 1h default.
   if (isContentHashedPath(key)) {
     return IMMUTABLE_CACHE_CONTROL;
   }

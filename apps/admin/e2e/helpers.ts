@@ -85,11 +85,13 @@ export async function registerTestProvider(
   baseURL: string,
   name: string,
   events: unknown[] | unknown[][],
+  /** Multi-step fixtures: hold each step this long (a turn still running when a test acts). */
+  stepDelayMs = 0,
 ): Promise<string> {
   const res = await fetch(`${baseURL}/__test/providers`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name, events }),
+    body: JSON.stringify({ name, events, ...(stepDelayMs > 0 ? { stepDelayMs } : {}) }),
   });
   if (!res.ok) {
     throw new Error(`registerTestProvider failed: ${res.status} ${await res.text()}`);
@@ -116,4 +118,67 @@ export async function attachTestProviderHeader(ctx: BrowserContext, name: string
     const headers = { ...req.headers(), "x-caelo-test-provider": name };
     await route.continue({ headers });
   });
+}
+
+/** Password of every {@link ensureIsolatedOwner} account. */
+export const ISOLATED_OWNER_PASSWORD = "isolated owner password";
+
+/**
+ * Issue #665 — an Owner account of the spec's own. Live Edit resumes the
+ * operator's most recent chat, and an external agent working in a chat
+ * keeps the Live Edit AI out of it for a while; a spec that drives an
+ * external agent (or a long turn) as the shared dev-owner would therefore
+ * land in a parallel spec's Live Edit chat. Its own Owner keeps it apart.
+ *
+ * @returns the account's actor id.
+ */
+export function ensureIsolatedOwner(email: string): string {
+  return runBunInline(
+    `
+    import { SQL } from "bun";
+    import { hashPassword } from "@caelo-cms/admin-core";
+    const email = process.env.OWNER_EMAIL;
+    const passwordHash = await hashPassword(process.env.OWNER_PASSWORD);
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    const id = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      // Parallel workers seed the same account: serialize on the email.
+      await tx\`SELECT pg_advisory_xact_lock(hashtext(\${email}))\`;
+      const existing = await tx\`SELECT id::text AS id FROM users WHERE email = \${email}\`;
+      let actorId = existing[0]?.id;
+      if (actorId) {
+        await tx\`UPDATE users SET password_hash = \${passwordHash}, deleted_at = NULL WHERE id = \${actorId}::uuid\`;
+      } else {
+        const actor = await tx\`INSERT INTO actors (kind, display_name) VALUES ('human', \${email}) RETURNING id::text AS id\`;
+        actorId = actor[0].id;
+        await tx\`INSERT INTO users (id, email, password_hash, onboarded_at)
+                 VALUES (\${actorId}::uuid, \${email}, \${passwordHash}, now())\`;
+      }
+      await tx\`INSERT INTO user_roles (user_id, role_id)
+               SELECT \${actorId}::uuid, r.id FROM roles r WHERE r.name = 'owner'
+               ON CONFLICT DO NOTHING\`;
+      return actorId;
+    });
+    process.stdout.write(id);
+    await sql.end();
+    `,
+    { OWNER_EMAIL: email, OWNER_PASSWORD: ISOLATED_OWNER_PASSWORD },
+  ).trim();
+}
+
+/** Mint an admin-scoped Power-MCP token for `actorId`; returns the plaintext. */
+export function mintAdminMcpToken(actorId: string, displayName: string): string {
+  return runBunInline(
+    `
+    import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
+    import { registerAdminOps } from "@caelo-cms/admin-core";
+    const adapter = new DatabaseAdapter({ adminDatabaseUrl: process.env.ADMIN_DATABASE_URL, publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL });
+    const registry = new OperationRegistry(); registerAdminOps(registry);
+    const r = await execute(registry, adapter, { actorId: process.env.ACTOR_ID, actorKind: "human", requestId: "e2e-mint-mcp" }, "mcp_tokens.create", { displayName: process.env.DISPLAY_NAME, scope: "admin" });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    process.stdout.write(r.value.plaintextToken);
+    await adapter.close();
+    `,
+    { ACTOR_ID: actorId, DISPLAY_NAME: displayName },
+  ).trim();
 }

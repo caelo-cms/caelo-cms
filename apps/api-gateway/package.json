@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/api-gateway",
-  "version": "0.10.40",
+  "version": "0.10.41",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
@@ -20,6 +20,6 @@
     "@caelo-cms/plugin-comments": "workspace:*",
     "@caelo-cms/plugin-sandbox": "workspace:*",
     "@caelo-cms/plugin-sdk": "workspace:*",
-    "drizzle-orm": "0.45.3"
+    "drizzle-orm": "0.45.4"
   }
 }

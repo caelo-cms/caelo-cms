@@ -102,3 +102,77 @@ describe("pickAiImageVariant", () => {
     expect(pickAiImageVariant(["orig", "square-800", "webp-400"])).toBe("webp-400");
   });
 });
+
+describe("enrichResponsiveImages — orig embeds (#667 image delivery)", () => {
+  const SLUG = "searchviu-logo";
+  const logoVariants: ImageVariantInfo[] = [
+    { variant: "orig", format: "png", width: 960 },
+    { variant: "webp-400", format: "webp", width: 400 },
+    { variant: "webp-800", format: "webp", width: 800 },
+  ];
+  const map = new Map([[SLUG, logoVariants]]);
+  const urlFor = (ref: string, v: string, f: string) =>
+    v === "orig" ? `/_assets/${ref}.${f}` : `/_assets/${ref}/${v}.${f}`;
+  const opts = { rewriteSrc: false, urlFor };
+
+  it("offers the WebP ladder plus the original when the author declared sizes", () => {
+    const out = enrichResponsiveImages(
+      `<img src="/_caelo/media/${SLUG}" width="160" height="40" sizes="160px" alt="searchVIU">`,
+      map,
+      { rewriteSrc: true, urlFor, formatFor: (_r, v) => (v === "orig" ? "png" : "webp") },
+    );
+    expect(out).toContain(`src="/_assets/${SLUG}.png"`);
+    expect(out).toContain(
+      `srcset="/_assets/${SLUG}/webp-400.webp 400w, /_assets/${SLUG}/webp-800.webp 800w, /_assets/${SLUG}.png 960w"`,
+    );
+    expect(out.match(/sizes=/g)).toHaveLength(1);
+    expect(out).toContain('sizes="160px"');
+  });
+
+  it("drops the original when a WebP of its width exists", () => {
+    const exact = new Map([
+      [
+        SLUG,
+        [
+          { variant: "orig", format: "jpeg", width: 400 },
+          { variant: "webp-400", format: "webp", width: 400 },
+        ],
+      ],
+    ]);
+    const out = enrichResponsiveImages(
+      `<img src="/_caelo/media/${SLUG}" sizes="120px">`,
+      exact,
+      opts,
+    );
+    expect(out).toContain(`srcset="/_assets/${SLUG}/webp-400.webp 400w"`);
+  });
+
+  it("keeps the original without an author sizes: a width attribute is not the rendered size", () => {
+    // CSS may stretch a `width="400"` image to 1200px; guessing sizes from
+    // the attribute would make the browser pick (and upscale) a 400px file.
+    for (const tag of [
+      `<img src="/_caelo/media/${SLUG}" width="400" style="width:100%" alt="x">`,
+      `<img src="/_caelo/media/${SLUG}" alt="no width">`,
+    ]) {
+      expect(enrichResponsiveImages(tag, map, opts)).not.toContain("srcset=");
+    }
+  });
+
+  it("leaves author srcset, SVG/GIF originals and unknown original widths alone", () => {
+    const authored = enrichResponsiveImages(
+      `<img src="/_caelo/media/${SLUG}" sizes="160px" srcset="a.png 1x">`,
+      map,
+      opts,
+    );
+    expect(authored.match(/srcset=/g)).toHaveLength(1);
+    for (const orig of [
+      { variant: "orig", format: "gif", width: 960 },
+      { variant: "orig", format: "png" },
+    ]) {
+      const m = new Map([[SLUG, [orig, { variant: "webp-400", format: "webp", width: 400 }]]]);
+      expect(
+        enrichResponsiveImages(`<img src="/_caelo/media/${SLUG}" sizes="160px">`, m, opts),
+      ).not.toContain("srcset=");
+    }
+  });
+});

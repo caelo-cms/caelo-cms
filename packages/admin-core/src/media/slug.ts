@@ -2,7 +2,7 @@
 
 /**
  * Media slug resolution — turn a human label into a UNIQUE
- * `media_assets.slug` used as the public asset URL (`/_assets/<slug>.<ext>`)
+ * `media_assets.slug` used as the public asset URL (`/_assets/<slug>.<hash>.<ext>`)
  * and the admin preview URL (`/_caelo/media/<slug>`); the UUID id stays
  * internal. The pure slugify half lives in `@caelo-cms/shared`
  * (`slugifyMediaName`); uniqueness needs the DB, so it lives here.

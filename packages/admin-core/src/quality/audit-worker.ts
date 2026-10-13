@@ -297,7 +297,20 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
       pageId: p.pageId,
       url: display(p.url),
       ...(p.finalUrl ? { finalUrl: display(p.finalUrl) } : {}),
-      measurement: p.measurement,
+      // #667 — flagged resource URLs move to the shown origin with the page
+      // URL, so findings compare and read consistently (a same-site asset on
+      // the preview channel must not look third-party next to the page).
+      measurement: {
+        ...p.measurement,
+        failingAudits: p.measurement.failingAudits.map((a) =>
+          a.elements
+            ? {
+                ...a,
+                elements: a.elements.map((el) => (el.url ? { ...el, url: display(el.url) } : el)),
+              }
+            : a,
+        ),
+      },
       performanceRuns: [...p.performanceRuns],
     })),
     pageErrors: result.pageErrors.map((e) => ({

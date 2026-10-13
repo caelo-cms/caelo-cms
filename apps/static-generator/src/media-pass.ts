@@ -11,12 +11,14 @@
  * rewrites the URLs in the HTML so the deployed pages reference
  * `/_assets/...` (served by Caddy as plain static files).
  *
- * Output-path scheme (issue: meaningful media URLs, id internal):
- *   - slug ref, orig variant  → `_assets/<slug>.<ext>`         (FLAT)
- *   - slug ref, named variant → `_assets/<slug>/<variant>.<ext>` (nested)
- *   - legacy id ref           → `_assets/<id>/<variant>.<ext>`   (old shape)
- * so a plain image reads as a name (`/_assets/searchviu-logo.png`) while
- * the UUID stays internal; legacy embeds keep resolving byte-for-byte.
+ * Output-path scheme (issue: meaningful media URLs, id internal; #667:
+ * content-hashed so every provider can cache them forever — see
+ * media-asset-path.ts):
+ *   - slug ref, orig variant  → `_assets/<slug>.<hash>.<ext>`           (FLAT)
+ *   - slug ref, named variant → `_assets/<slug>/<variant>.<hash>.<ext>` (nested)
+ *   - legacy id ref           → `_assets/<id>/<variant>.<hash>.<ext>`   (old shape)
+ * so a plain image reads as a name (`/_assets/searchviu-logo.3f9a….png`)
+ * while the UUID stays internal.
  *
  * Per CLAUDE.md §2 no-fallbacks: a page referencing a slug/id that isn't
  * in `media_assets` (or whose variant isn't emitted) raises a structured
@@ -30,17 +32,19 @@
  * cloud adapter's job.
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   enrichResponsiveImages,
   extractMediaRefs,
+  type ImageVariantInfo,
   parseVariantWidth,
   variantFamily,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { readStoredMedia, writePublishedMedia } from "./media-asset-path.js";
 
 /** Full-uuid shape — tells a legacy id ref from a slug ref (mirrors shared). */
 const MEDIA_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -54,6 +58,7 @@ interface VariantRow {
   source_detail: string | null;
   variant: string;
   format: string;
+  width: number | null;
   storage_key: string;
   usage_count: number;
   visibility: "library" | "reference";
@@ -68,17 +73,6 @@ interface ResolvedRef {
   ref: string;
   isSlug: boolean;
   variants: Map<string, VariantRow>;
-}
-
-/**
- * Public `_assets/…` relative path (no leading slash) for a ref+variant.
- * Slug orig is flat (`_assets/<slug>.<ext>`); named slug variants nest
- * under the slug; legacy id refs keep the `_assets/<id>/<variant>.<ext>`
- * shape. The public URL is this string with a leading `/`.
- */
-function assetRelPath(ref: string, isSlug: boolean, variant: string, ext: string): string {
-  if (isSlug && variant === "orig") return `_assets/${ref}.${ext}`;
-  return `_assets/${ref}/${variant}.${ext}`;
 }
 
 interface MediaSettings {
@@ -143,6 +137,7 @@ export async function runMediaPass(args: {
                    ma.slug, ma.original_name, ma.source_kind, ma.source_detail,
                    mv.variant,
                    mv.format,
+                   mv.width,
                    mv.storage_key,
                    ma.usage_count,
                    ma.visibility
@@ -156,6 +151,7 @@ export async function runMediaPass(args: {
                    ma.slug, ma.original_name, ma.source_kind, ma.source_detail,
                    mv.variant,
                    mv.format,
+                   mv.width,
                    mv.storage_key,
                    ma.usage_count,
                    ma.visibility
@@ -209,41 +205,39 @@ export async function runMediaPass(args: {
   }
 
   // 4. Copy bytes into the slug-based (or legacy id-based) `_assets/`
-  //    layout; track total. Every emitted variant of each referenced
-  //    asset is copied — the srcset enrichment below needs the full
-  //    breakpoint ladder even when the HTML only names orig.
+  //    layout under content-hashed names (#667); track total. Every
+  //    emitted variant of each referenced asset is copied — the srcset
+  //    enrichment below needs the full breakpoint ladder even when the
+  //    HTML only names orig.
   let assetsBytes = 0;
   const manifest: ManifestEntry[] = [];
   const mediaRoot = resolve(args.mediaRoot);
   // Every asset whose stored file is gone, collected so one failed Stage
   // names all of them instead of one per attempt.
   const missingFiles = new Map<string, { row: VariantRow; variants: string[] }>();
+  // `${ref}|${variant}` → published build-relative path. The hash in the
+  // name comes from the bytes, so URLs can only be built after the copy.
+  const publishedPaths = new Map<string, string>();
 
   for (const res of resolved.values()) {
     for (const r of res.variants.values()) {
-      const ext = formatToExt(r.format);
-      const outRel = assetRelPath(res.ref, res.isSlug, r.variant, ext);
-      const outPath = join(args.buildDir, outRel);
-      const sourcePath = join(mediaRoot, r.storage_key);
-      // Containment guard — storage keys are server-controlled (sha-prefixed)
-      // but defence-in-depth.
-      const resolvedSource = resolve(sourcePath);
-      if (!resolvedSource.startsWith(`${mediaRoot}/`) && resolvedSource !== mediaRoot) {
-        throw new Error(`static-generator: storage key escapes mediaRoot: ${r.storage_key}`);
-      }
-      let body: Uint8Array;
-      try {
-        body = await readFile(resolvedSource);
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      const body = await readStoredMedia(mediaRoot, r.storage_key);
+      if (body === null) {
         const entry = missingFiles.get(r.asset_id) ?? { row: r, variants: [] };
         entry.variants.push(r.variant);
         missingFiles.set(r.asset_id, entry);
         continue;
       }
       if (missingFiles.size > 0) continue;
-      await mkdir(dirname(outPath), { recursive: true });
-      await writeFile(outPath, body);
+      const outRel = await writePublishedMedia({
+        buildDir: args.buildDir,
+        ref: res.ref,
+        isSlug: res.isSlug,
+        variant: r.variant,
+        format: r.format,
+        bytes: body,
+      });
+      publishedPaths.set(publishedKey(res.ref, r.variant), outRel);
       const bytes = body.byteLength;
       assetsBytes += bytes;
       if (args.settings.cdnEnabled && r.usage_count >= args.settings.threshold) {
@@ -275,13 +269,16 @@ export async function runMediaPass(args: {
   // Build the public `/_assets/…` URL for a ref+variant, honouring the
   // slug-flat / variant-nested / legacy-id split. `ref` here is the same
   // string enrichResponsiveImages parsed out of the src (slug or uuid).
-  const urlForRef = (ref: string, variant: string, format: string): string => {
-    const res = resolved.get(ref);
-    if (!res) {
-      // No-fallbacks: every img media ref was extracted + resolved above.
-      throw new Error(`static-generator: media ref ${ref} unresolved during URL rewrite`);
+  const urlForRef = (ref: string, variant: string, _format: string): string => {
+    const path = publishedPaths.get(publishedKey(ref, variant));
+    if (path === undefined) {
+      // No-fallbacks: every img media ref was extracted, resolved and
+      // copied above.
+      throw new Error(
+        `static-generator: media ref ${ref}/${variant} unpublished during URL rewrite`,
+      );
     }
-    return `/${assetRelPath(ref, res.isSlug, variant, formatToExt(format))}`;
+    return `/${path}`;
   };
   for (const p of args.pages) {
     // issue #162 — shared enrichment (identical markup shape in the
@@ -292,8 +289,8 @@ export async function runMediaPass(args: {
       formatFor: (ref, variant) =>
         (variantsByRef.get(ref) ?? []).find((v) => v.variant === variant)?.format ?? "webp",
     });
-    p.html = rewriteCatchAllMediaUrls(p.html, resolved);
-    p.html = injectLcpPreload(p.html, variantsByRef);
+    p.html = rewriteCatchAllMediaUrls(p.html, publishedPaths);
+    p.html = injectLcpPreload(p.html, variantsByRef, publishedPaths);
   }
 
   // 6. Emit cdn_manifest.json (always — empty array when CDN copy is off).
@@ -339,9 +336,9 @@ function missingMediaFilesError(
   );
 }
 
-function formatToExt(format: string): string {
-  if (format === "jpeg") return "jpg";
-  return format;
+/** Key of `publishedPaths`: the ref as written in the HTML + the variant. */
+function publishedKey(ref: string, variant: string): string {
+  return `${ref}|${variant}`;
 }
 
 /**
@@ -349,16 +346,16 @@ function formatToExt(format: string): string {
  * entries from the full WebP breakpoint set during the rewrite. Returns
  * a map keyed by the ref string as it appears in the HTML.
  */
-interface VariantInfo {
-  variant: string;
-  format: string;
-}
-function groupVariantsByRef(resolved: Map<string, ResolvedRef>): Map<string, VariantInfo[]> {
-  const out = new Map<string, VariantInfo[]>();
+function groupVariantsByRef(resolved: Map<string, ResolvedRef>): Map<string, ImageVariantInfo[]> {
+  const out = new Map<string, ImageVariantInfo[]>();
   for (const [ref, res] of resolved) {
     out.set(
       ref,
-      [...res.variants.values()].map((row) => ({ variant: row.variant, format: row.format })),
+      [...res.variants.values()].map((row) => ({
+        variant: row.variant,
+        format: row.format,
+        width: row.width,
+      })),
     );
   }
   return out;
@@ -372,7 +369,10 @@ function groupVariantsByRef(resolved: Map<string, ResolvedRef>): Map<string, Var
  * `/_caelo/media/<uuid>/<variant>` form, routing each to the matching
  * `/_assets/...` URL via the resolution map.
  */
-function rewriteCatchAllMediaUrls(html: string, resolved: Map<string, ResolvedRef>): string {
+function rewriteCatchAllMediaUrls(
+  html: string,
+  publishedPaths: ReadonlyMap<string, string>,
+): string {
   return html.replace(
     /\/_caelo\/media\/([a-z0-9][a-z0-9-]{0,63})(?:\/([a-z][a-z0-9-]{0,63}))?/g,
     (_match, seg1: string, seg2: string | undefined) => {
@@ -380,12 +380,9 @@ function rewriteCatchAllMediaUrls(html: string, resolved: Map<string, ResolvedRe
       // with an explicit variant is the legacy id form; else it's a slug
       // (orig implied when no variant).
       const isLegacyId = MEDIA_UUID_RE.test(seg1) && seg2 !== undefined;
-      const isSlug = !isLegacyId;
-      const variant = isSlug ? (seg2 ?? "orig") : (seg2 as string);
-      const res = resolved.get(seg1);
-      const row = res?.variants.get(variant);
-      if (!res || !row) return _match;
-      return `/${assetRelPath(seg1, isSlug, variant, formatToExt(row.format))}`;
+      const variant = isLegacyId ? (seg2 as string) : (seg2 ?? "orig");
+      const path = publishedPaths.get(publishedKey(seg1, variant));
+      return path === undefined ? _match : `/${path}`;
     },
   );
 }
@@ -396,25 +393,33 @@ function rewriteCatchAllMediaUrls(html: string, resolved: Map<string, ResolvedRe
  * the same priority as critical CSS. Drops a measurable LCP score
  * improvement on heroes-with-images pages.
  *
- * WebP breakpoint variants are always nested (`_assets/<ref>/<variant>.webp`)
- * regardless of the slug/legacy-id split, so the preload srcset uses the
- * ref (first `_assets` path segment) directly.
+ * The ref is the first `_assets` path segment; the preload srcset takes
+ * every ladder entry's published (content-hashed) path from the copy step.
  */
-function injectLcpPreload(html: string, variantsByRef: Map<string, VariantInfo[]>): string {
-  // Match flat (`_assets/<slug>.png`) and nested
-  // (`_assets/<ref>/<variant>.webp`) image URLs; the image-only extension
+function injectLcpPreload(
+  html: string,
+  variantsByRef: Map<string, ImageVariantInfo[]>,
+  publishedPaths: ReadonlyMap<string, string>,
+): string {
+  // Match flat (`_assets/<slug>.<hash>.png`) and nested
+  // (`_assets/<ref>/<variant>.<hash>.webp`) image URLs; the image-only extension
   // set keeps font files (`_assets/fonts/*.woff2`) from short-circuiting.
   // `<link>` tags are skipped: they reference media that is never painted
   // content (the theme's `<link rel="icon">`), and a PNG favicon there
   // would otherwise win "first image" and suppress the hero's preload.
   // Head `<style>` stays in the scan so a CSS-background hero still counts,
   // and no `<body>` tag is required (layouts need not carry one).
-  const firstAssetMatch = html
-    .replace(/<link\b[^>]*>/gi, "")
-    .match(
-      /\/_assets\/([a-z0-9][a-z0-9-]{0,63})(?:\/([a-z][a-z0-9-]{0,63}))?\.(?:png|jpe?g|webp|avif|gif)/,
-    );
+  const scanned = html.replace(/<link\b[^>]*>/gi, "");
+  const firstAssetMatch = scanned.match(
+    /\/_assets\/([a-z0-9][a-z0-9-]{0,63})(?:\/([a-z][a-z0-9-]{0,63}))?\.[0-9a-f]{16}\.(?:png|jpe?g|webp|avif|gif)/,
+  );
   if (!firstAssetMatch) return html;
+  // #667 — when the first image is an `<img>` that carries its own
+  // srcset + sizes, preload exactly that pair, so the preload fetches the
+  // file the image will select (a fixed `imagesizes` preloaded an 800px
+  // WebP for a logo whose `sizes="160px"` picks the 400px one).
+  const own = ownResponsivePair(scanned, firstAssetMatch.index ?? 0);
+  if (own) return insertPreload(html, own.srcset, own.sizes);
   const ref = firstAssetMatch[1] as string;
   const variants = variantsByRef.get(ref);
   if (!variants || variants.length === 0) return html;
@@ -425,10 +430,39 @@ function injectLcpPreload(html: string, variantsByRef: Map<string, VariantInfo[]
     .filter((v): v is { variant: string; width: number } => v.width !== null)
     .sort((a, b) => a.width - b.width);
   if (ladder.length === 0) return html;
-  const imagesrcset = ladder.map((v) => `/_assets/${ref}/${v.variant}.webp ${v.width}w`).join(", ");
-  const tag = `<link rel="preload" as="image" imagesrcset="${imagesrcset}" imagesizes="(max-width: 600px) 400px, (max-width: 1200px) 800px, 1200px" />`;
-  // Insert just before </head>; fall back to prepending the document
-  // if there's no head (very old templates).
+  const imagesrcset = ladder
+    .map((v) => {
+      const path = publishedPaths.get(publishedKey(ref, v.variant));
+      if (path === undefined) {
+        throw new Error(
+          `static-generator: media ref ${ref}/${v.variant} unpublished during preload`,
+        );
+      }
+      return `/${path} ${v.width}w`;
+    })
+    .join(", ");
+  return insertPreload(
+    html,
+    imagesrcset,
+    "(max-width: 600px) 400px, (max-width: 1200px) 800px, 1200px",
+  );
+}
+
+/** The srcset/sizes of the `<img>` tag containing position `at`, when it has both. */
+function ownResponsivePair(html: string, at: number): { srcset: string; sizes: string } | null {
+  const start = html.lastIndexOf("<", at);
+  if (start === -1 || !/^<img\b/i.test(html.slice(start, start + 5))) return null;
+  const end = html.indexOf(">", at);
+  if (end === -1) return null;
+  const tag = html.slice(start, end + 1);
+  const srcset = tag.match(/\ssrcset="([^"]*)"/i)?.[1];
+  const sizes = tag.match(/\ssizes="([^"]*)"/i)?.[1];
+  return srcset && sizes ? { srcset, sizes } : null;
+}
+
+/** Insert an image preload just before `</head>` (or prepend it without a head). */
+function insertPreload(html: string, imagesrcset: string, imagesizes: string): string {
+  const tag = `<link rel="preload" as="image" imagesrcset="${imagesrcset}" imagesizes="${imagesizes}" />`;
   if (html.includes("</head>")) {
     return html.replace("</head>", `  ${tag}\n  </head>`);
   }

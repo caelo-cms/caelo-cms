@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/mcp-server",
-  "version": "0.10.40",
+  "version": "0.10.41",
   "private": false,
   "license": "MPL-2.0",
   "description": "MCP servers for Caelo CMS: `caelo_chat` (talk to Caelo's own AI) and the admin-scoped Power-MCP (the full chat-runner tool catalogue, driven by your own agent). Lets Claude Code (or any MCP-aware client) drive a Caelo install from outside the browser.",
@@ -36,8 +36,8 @@
     "prepublishOnly": "tsc -b --force"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.31.0",
-    "google-auth-library": "11.1.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "google-auth-library": "11.2.0",
     "zod": "4.6.5"
   },
   "publishConfig": {

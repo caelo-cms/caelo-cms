@@ -41,6 +41,7 @@ import {
   type SiteSeoSettings,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { readStoredMedia, writePublishedMedia } from "./media-asset-path.js";
 
 interface PageSeoBundle {
   pageId: string;
@@ -68,6 +69,9 @@ export async function runSeoPass(args: {
   /** #605 — the plugin host answering head contributions and URLs. */
   plugins: BuildPluginServices;
   buildDir: string;
+  /** Absolute filesystem path to the media storage root (`MEDIA_ROOT_DIR`):
+   *  the og:image file is published from here (#667). */
+  mediaRoot: string;
   pages: SeoPagesContext[];
   settings: SiteSeoSettings;
   /** The target's page emission style (v0.2.85). Every URL of the pass
@@ -127,18 +131,17 @@ export async function runSeoPass(args: {
     });
   }
 
-  // Resolve every og_image_asset_id to a public URL (the media-pass
-  // already wrote /_assets/...; we look up the variant we want for OG).
+  // Resolve every og_image_asset_id to a public URL and publish that file
+  // into the build: the og:image need not appear on any page, so the media
+  // pass may not have copied it. Same content-hashed name as the media
+  // pass (#667), so a file that is also on a page lands on the same path.
   const ogImageAssetIds = [
     ...new Set(seoBundles.map((b) => b.ogImageAssetId).filter((x): x is string => x !== null)),
   ];
   const ogImageUrlByAsset = new Map<string, string>();
   for (const id of ogImageAssetIds) {
-    // Resolve to the slug so the og:image URL matches the media-pass
-    // output (`/_assets/<slug>.<ext>` for orig, `/_assets/<slug>/<variant>.<ext>`
-    // for a named variant); the UUID id stays internal.
     const rows = (await args.tx.execute(sql`
-      SELECT ma.slug, ma.visibility, mv.variant, mv.format
+      SELECT ma.slug, ma.visibility, mv.variant, mv.format, mv.storage_key
       FROM media_variants mv
       JOIN media_assets ma ON ma.id = mv.asset_id
       WHERE mv.asset_id = ${id}::uuid
@@ -157,6 +160,7 @@ export async function runSeoPass(args: {
       visibility: "library" | "reference";
       variant: string;
       format: string;
+      storage_key: string;
     }[];
     const v = rows[0];
     if (!v) {
@@ -172,13 +176,24 @@ export async function runSeoPass(args: {
           'image (AI tool: set_media_visibility_many with visibility: "library").',
       );
     }
-    const ext = v.format === "jpeg" ? "jpg" : v.format;
+    const bytes = await readStoredMedia(args.mediaRoot, v.storage_key);
+    if (bytes === null) {
+      throw new Error(
+        `static-generator: the stored file of og:image asset ${v.slug} (${v.variant}) is missing from ${args.mediaRoot}. ` +
+          "Next step: find it with list_missing_media and restore it (import_media_from_urls when it came from a URL, " +
+          "or ask the operator to re-upload it), or pick another og:image for the page (set_page_seo).",
+      );
+    }
+    const relPath = await writePublishedMedia({
+      buildDir: args.buildDir,
+      ref: v.slug,
+      isSlug: true,
+      variant: v.variant,
+      format: v.format,
+      bytes,
+    });
     const base = args.settings.siteBaseUrl.replace(/\/$/, "");
-    const assetUrl =
-      v.variant === "orig"
-        ? `${base}/_assets/${v.slug}.${ext}`
-        : `${base}/_assets/${v.slug}/${v.variant}.${ext}`;
-    ogImageUrlByAsset.set(id, assetUrl);
+    ogImageUrlByAsset.set(id, `${base}/${relPath}`);
   }
 
   // #391 — collect every plugin's head/sitemap contributions in ONE

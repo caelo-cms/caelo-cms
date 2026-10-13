@@ -9,7 +9,7 @@
  *   - editor preview (`pages.render_preview`): the admin media URL
  *     `/_caelo/media/<slug>`;
  *   - static generator (`generateSite`): the published
- *     `/_assets/<slug>.<ext>` URL, with the bytes copied into the build.
+ *     `/_assets/<slug>.<hash>.<ext>` URL, with the bytes copied into the build.
  *
  * Also locks the generator's theme-asset URL shape: it used to build
  * `/_caelo/media/<uuid>` from the media id, which the media pass reads
@@ -231,12 +231,16 @@ describe("theme favicon is emitted into <head>", () => {
       }),
     );
     const html = await readFile(join(result.buildDir, pageOutputPath(pagePath)), "utf8");
-    expect(headOf(html)).toContain(
-      `<link rel="icon" href="/_assets/${faviconSlug}.png" type="image/png">`,
-    );
+    // #667 — the published name carries the content hash.
+    const href = headOf(html).match(
+      new RegExp(
+        `<link rel="icon" href="/(_assets/${faviconSlug}\\.[0-9a-f]{16}\\.png)" type="image/png">`,
+      ),
+    )?.[1];
+    expect(href).toBeDefined();
     expect(html).not.toContain("/_caelo/media");
     expect(html).not.toContain(faviconId);
-    const shipped = await readFile(join(result.buildDir, "_assets", `${faviconSlug}.png`));
+    const shipped = await readFile(join(result.buildDir, href as string));
     expect(shipped.byteLength).toBe(4);
   });
 
@@ -328,10 +332,13 @@ describe("theme favicon is emitted into <head>", () => {
       }),
     );
     const html = await readFile(join(result.buildDir, pageOutputPath(pagePath)), "utf8");
-    expect(headOf(html)).toContain(
-      `<link rel="icon" href="/_assets/${upload.slug}.ico" type="image/x-icon">`,
-    );
-    const shipped = await readFile(join(result.buildDir, "_assets", `${upload.slug}.ico`));
+    const icoHref = headOf(html).match(
+      new RegExp(
+        `<link rel="icon" href="/(_assets/${upload.slug}\\.[0-9a-f]{16}\\.ico)" type="image/x-icon">`,
+      ),
+    )?.[1];
+    expect(icoHref).toBeDefined();
+    const shipped = await readFile(join(result.buildDir, icoHref as string));
     expect(new Uint8Array(shipped)).toEqual(ico);
   });
 });

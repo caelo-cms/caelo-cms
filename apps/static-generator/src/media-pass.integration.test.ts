@@ -14,6 +14,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -32,6 +33,10 @@ const TEST_PREFIX = "f7d77ed0";
 const SHA = `${TEST_PREFIX}${"a".repeat(56)}`;
 // Second seed asset: orig + a webp breakpoint ladder, for the srcset case.
 const HERO_SHA = `${TEST_PREFIX}${"b".repeat(56)}`;
+// Every seeded file holds these bytes, so every published name carries the
+// same content hash (#667: `_assets/<slug>.<hash>.<ext>`).
+const FILE_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+const H = createHash("sha256").update(FILE_BYTES).digest("hex").slice(0, 16);
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
@@ -100,7 +105,7 @@ beforeAll(async () => {
 
   // Write a fake blob at the storage key so the copy step has bytes.
   await mkdir(join(mediaRoot, SHA), { recursive: true });
-  await writeFile(join(mediaRoot, SHA, "orig.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  await writeFile(join(mediaRoot, SHA, "orig.png"), FILE_BYTES);
 
   // Seed a second asset with a webp breakpoint ladder (orig + webp-400 +
   // webp-800) so the srcset enrichment has >= 2 same-family variants.
@@ -134,7 +139,7 @@ beforeAll(async () => {
   await mkdir(join(mediaRoot, HERO_SHA), { recursive: true });
   for (const v of heroVariants) {
     const rel = v.storageKey.slice(HERO_SHA.length + 1);
-    await writeFile(join(mediaRoot, HERO_SHA, rel), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    await writeFile(join(mediaRoot, HERO_SHA, rel), FILE_BYTES);
   }
 });
 
@@ -144,7 +149,7 @@ afterAll(async () => {
 });
 
 describe("media-pass", () => {
-  it("rewrites a slug orig embed to the FLAT _assets/<slug>.<ext> URL and copies bytes", async () => {
+  it("rewrites a slug orig embed to the FLAT, content-hashed _assets/<slug>.<hash>.<ext> URL and copies bytes", async () => {
     const pages = [
       {
         html: `<img src="/_caelo/media/${assetSlug}" alt="x" />`,
@@ -161,11 +166,11 @@ describe("media-pass", () => {
       });
     });
     // Slug orig → flat file, meaningful name, id nowhere in the URL.
-    expect(pages[0]?.html).toContain(`/_assets/${assetSlug}.png`);
+    expect(pages[0]?.html).toContain(`/_assets/${assetSlug}.${H}.png`);
     expect(pages[0]?.html).not.toContain("/_caelo/media");
     expect(pages[0]?.html).not.toContain(assetId);
 
-    const copied = await readFile(join(buildDir, "_assets", `${assetSlug}.png`));
+    const copied = await readFile(join(buildDir, "_assets", `${assetSlug}.${H}.png`));
     expect(copied.byteLength).toBe(4);
 
     const manifest = JSON.parse(await readFile(join(buildDir, "cdn_manifest.json"), "utf8")) as {
@@ -176,7 +181,7 @@ describe("media-pass", () => {
     expect(manifest.entries).toEqual([]);
   });
 
-  it("nests a named variant under the slug and adds a webp srcset (_assets/<slug>/webp-800.webp)", async () => {
+  it("nests a named variant under the slug and adds a webp srcset (_assets/<slug>/webp-800.<hash>.webp)", async () => {
     const pages = [
       {
         html: `<img src="/_caelo/media/${heroSlug}/webp-800" alt="hero" />`,
@@ -194,14 +199,14 @@ describe("media-pass", () => {
     });
     const html = pages[0]?.html ?? "";
     // src rewritten to the nested variant path.
-    expect(html).toContain(`src="/_assets/${heroSlug}/webp-800.webp"`);
+    expect(html).toContain(`src="/_assets/${heroSlug}/webp-800.${H}.webp"`);
     // >= 2 same-family webp variants → responsive srcset spanning the ladder.
     expect(html).toContain("srcset=");
-    expect(html).toContain(`/_assets/${heroSlug}/webp-400.webp 400w`);
-    expect(html).toContain(`/_assets/${heroSlug}/webp-800.webp 800w`);
+    expect(html).toContain(`/_assets/${heroSlug}/webp-400.${H}.webp 400w`);
+    expect(html).toContain(`/_assets/${heroSlug}/webp-800.${H}.webp 800w`);
     expect(html).not.toContain("/_caelo/media");
 
-    const copied = await readFile(join(buildDir, "_assets", heroSlug, "webp-800.webp"));
+    const copied = await readFile(join(buildDir, "_assets", heroSlug, `webp-800.${H}.webp`));
     expect(copied.byteLength).toBe(4);
   });
 
@@ -228,12 +233,14 @@ describe("media-pass", () => {
       });
     });
     const html = pages[0]?.html ?? "";
-    expect(html).toContain(`<link rel="icon" href="/_assets/${assetSlug}.png" type="image/png">`);
+    expect(html).toContain(
+      `<link rel="icon" href="/_assets/${assetSlug}.${H}.png" type="image/png">`,
+    );
     expect(html).not.toContain("/_caelo/media");
     expect(html).toContain(
-      `<link rel="preload" as="image" imagesrcset="/_assets/${heroSlug}/webp-400.webp 400w`,
+      `<link rel="preload" as="image" imagesrcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w`,
     );
-    const copied = await readFile(join(buildDir, "_assets", `${assetSlug}.png`));
+    const copied = await readFile(join(buildDir, "_assets", `${assetSlug}.${H}.png`));
     expect(copied.byteLength).toBe(4);
   });
 
@@ -257,13 +264,13 @@ describe("media-pass", () => {
       });
     });
     const html = pages[0]?.html ?? "";
-    expect(html).toContain(`url(/_assets/${heroSlug}/webp-800.webp)`);
+    expect(html).toContain(`url(/_assets/${heroSlug}/webp-800.${H}.webp)`);
     expect(html).toContain(
-      `<link rel="preload" as="image" imagesrcset="/_assets/${heroSlug}/webp-400.webp 400w`,
+      `<link rel="preload" as="image" imagesrcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w`,
     );
   });
 
-  it("keeps the legacy _assets/<id>/<variant>.<ext> shape for a legacy uuid embed", async () => {
+  it("keeps the legacy _assets/<id>/<variant>.<hash>.<ext> shape for a legacy uuid embed", async () => {
     const pages = [
       {
         html: `<img src="/_caelo/media/${assetId}/orig" alt="legacy" />`,
@@ -280,11 +287,39 @@ describe("media-pass", () => {
       });
     });
     // Legacy id form keeps the nested id path (no flattening).
-    expect(pages[0]?.html).toContain(`/_assets/${assetId}/orig.png`);
+    expect(pages[0]?.html).toContain(`/_assets/${assetId}/orig.${H}.png`);
     expect(pages[0]?.html).not.toContain("/_caelo/media");
 
-    const copied = await readFile(join(buildDir, "_assets", assetId, "orig.png"));
+    const copied = await readFile(join(buildDir, "_assets", assetId, `orig.${H}.png`));
     expect(copied.byteLength).toBe(4);
+  });
+
+  it("gives an orig embed with declared sizes the WebP ladder, and preloads that exact pair (#667)", async () => {
+    const pages = [
+      {
+        html: `<html><head></head><body><img src="/_caelo/media/${heroSlug}" width="320" height="180" sizes="320px" alt="hero" /></body></html>`,
+        pageSlug: "orig-hero",
+      },
+    ];
+    await adapter.withAdminTransaction(systemCtx, async (tx) => {
+      await runMediaPass({
+        tx,
+        buildDir,
+        pages,
+        mediaRoot,
+        settings: { cdnEnabled: false, threshold: 5 },
+      });
+    });
+    const html = pages[0]?.html ?? "";
+    expect(html).toContain(`src="/_assets/${heroSlug}.${H}.jpg"`);
+    expect(html).toContain(
+      `srcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w, /_assets/${heroSlug}/webp-800.${H}.webp 800w, /_assets/${heroSlug}.${H}.jpg 1600w"`,
+    );
+    expect(html).toContain('sizes="320px"');
+    // The preload fetches what the image will select, not a fixed ladder.
+    expect(html).toContain(
+      `<link rel="preload" as="image" imagesrcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w, /_assets/${heroSlug}/webp-800.${H}.webp 800w, /_assets/${heroSlug}.${H}.jpg 1600w" imagesizes="320px" />`,
+    );
   });
 
   it("populates cdn_manifest.entries when enabled and asset usage clears the threshold", async () => {

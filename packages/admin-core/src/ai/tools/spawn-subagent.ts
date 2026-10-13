@@ -53,6 +53,13 @@ import {
   spawnSubagentsToolInput,
   spawnSubagentToolInput,
 } from "@caelo-cms/shared";
+import {
+  type AgentRunHandle,
+  OperatorStoppedError,
+  queryApiAgentRunStore,
+  startAgentRun,
+  stoppedByOperator,
+} from "../chat-runner/agent-runs.js";
 import { budgetTripText, evaluateGateLevel, fetchBudgetGate } from "../chat-runner/budget-gate.js";
 import { availableMappedTiers, parseModelTierMap, resolveTierModel } from "../model-tiers.js";
 import type { AIProvider } from "../provider.js";
@@ -72,6 +79,10 @@ import {
   pageRefList,
   SUBAGENT_MAX_WAVES,
 } from "./subagent-budget.js";
+
+/** Issue #664 — what a subagent that the operator's Stop ended reports. */
+const STOPPED_BY_OPERATOR =
+  "stopped by the operator (Stop in the chat) — the subagent did not finish";
 
 export type { SubagentInvocationResult } from "./subagent-batch.js";
 // issue #268/#304 — the batch/wave core and its types moved to
@@ -378,8 +389,34 @@ async function runOneSubagent(
   const runChildTurn = async (
     content: string,
   ): Promise<{ timedOut: boolean; childErrors: string[] } | { error: string }> => {
+    // Issue #664 — the operator's Stop ends the child too: the parent
+    // turn's signal and this subagent's own running-agents row (Stop on
+    // just this entry) both abort it, alongside the per-spec timeout.
+    if (toolCtx.abortSignal?.aborted) return { error: STOPPED_BY_OPERATOR };
+    let subRun: AgentRunHandle | null = null;
+    if (toolCtx.agentRunId && toolCtx.chatSessionId) {
+      const started = await startAgentRun({
+        store: queryApiAgentRunStore(toolCtx.registry, toolCtx.adapter, ctx),
+        registration: {
+          chatSessionId: toolCtx.chatSessionId,
+          kind: "subagent",
+          source: "subagent",
+          label: `Subagent: ${spec.role}`.slice(0, 200),
+          parentRunId: toolCtx.agentRunId,
+          operatorInitiated: false,
+        },
+      });
+      if (started.kind !== "started") return { error: STOPPED_BY_OPERATOR };
+      subRun = started.handle;
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), spec.timeoutMs);
+    const stopChild = (): void => controller.abort(new OperatorStoppedError());
+    toolCtx.abortSignal?.addEventListener("abort", stopChild, { once: true });
+    subRun?.signal.addEventListener("abort", stopChild, { once: true });
+    // Either may have fired while the registration above was in flight; a
+    // listener added afterwards never hears it.
+    if (toolCtx.abortSignal?.aborted || subRun?.signal.aborted) stopChild();
     const childErrors: string[] = [];
     try {
       // `spawnChildChatTurn` presence was checked at the top of this function.
@@ -422,6 +459,7 @@ async function runOneSubagent(
       // (depth-1 cap on observability for now).
       for await (const ev of stream as AsyncIterable<{ kind: string }>) {
         if (controller.signal.aborted) {
+          if (stoppedByOperator(controller.signal)) return { error: STOPPED_BY_OPERATOR };
           return { timedOut: true, childErrors };
         }
         const inner = ev as { kind: string; message?: unknown };
@@ -442,11 +480,14 @@ async function runOneSubagent(
           });
         }
       }
+      if (stoppedByOperator(controller.signal)) return { error: STOPPED_BY_OPERATOR };
       return { timedOut: false, childErrors };
     } catch (e) {
       return { error: (e as Error).message };
     } finally {
       clearTimeout(timer);
+      toolCtx.abortSignal?.removeEventListener("abort", stopChild);
+      await subRun?.finish();
     }
   };
 

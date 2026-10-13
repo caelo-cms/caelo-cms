@@ -15,6 +15,7 @@
 
 import { z } from "zod";
 import type { getAuditOp, listAcceptancesOp, listAuditsOp } from "../../ops/quality/read.js";
+import { findingOwner } from "../../quality/platform-audits.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
 
 type AuditValue = z.infer<(typeof getAuditOp)["output"]>;
@@ -81,6 +82,24 @@ function statusLine(run: AuditRun): string {
 }
 
 /**
+ * #667 — where the fix of a failing audit belongs, appended to its line.
+ * Without it the AI guessed ("this comes from the hosting") and argued for
+ * accepting what were Caelo bugs.
+ */
+function ownerNote(owner: ReturnType<typeof findingOwner>): string {
+  switch (owner) {
+    case "platform":
+      return " — CAELO PLATFORM: decided by Caelo's hosting/build setup, not by this site. Do not edit the site for it and do not propose accepting it: report it with bug_report and tell the operator it is a Caelo issue you reported; Publish live stays blocked unless the operator decides to accept it.";
+    case "site":
+      return " — caused by this site: the flagged URLs/reasons point at a module's script or third-party embed; fix that module.";
+    case "check":
+      return " — read the flagged items: same-site files (/_assets/…, /_caelo/…, pages) and browser-flag or response-header reasons are a CAELO PLATFORM issue (report with bug_report, do not propose accepting it); third-party URLs and script reasons (e.g. an unload handler) are fixed in the module; any other browser reason (e.g. memory) is neither — describe it, don't change the site for it.";
+    case null:
+      return "";
+  }
+}
+
+/**
  * One audited page as the AI reads it in `get_quality_audit`: scores vs.
  * baselines, each problem with the elements / console entries that locate
  * its fix, and the held-back Performance signals.
@@ -106,13 +125,13 @@ export function formatPage(p: AuditPage): string[] {
   for (const problem of p.problems) {
     if (problem.kind === "failing_audit") {
       lines.push(
-        `- PROBLEM failing audit \`${problem.auditId}\` — ${problem.title}${problem.displayValue ? ` (${problem.displayValue})` : ""} [${problem.categories.join(", ")}]`,
+        `- PROBLEM failing audit \`${problem.auditId}\` — ${problem.title}${problem.displayValue ? ` (${problem.displayValue})` : ""} [${problem.categories.join(", ")}]${ownerNote(findingOwner(problem.auditId, problem.elements ?? [], p.url))}`,
       );
       // The flagged elements locate the fix (which module, which rule):
       // without them a color-contrast finding is guesswork.
       for (const el of problem.elements ?? []) {
         // The snippet is the STAGED build's markup (deploy URLs such as
-        // /_assets/<slug>.png): quoted as code, never as live HTML — the
+        // /_assets/<slug>.<hash>.png): quoted as code, never as live HTML — the
         // chat renders tool results as markdown, and a bare `<img>` made
         // the operator's browser fetch a URL the admin does not serve
         // (404s in the console of the homepage real-AI run, PR #624).
@@ -122,10 +141,19 @@ export function formatPage(p: AuditPage): string[] {
         ]
           .filter((x) => x !== null)
           .join(" ");
-        if (where === "" && el.explanation) {
-          // A console / network entry (errors-in-console): its message and
-          // the URL it came from name the cause. The URL is code too.
-          lines.push(`  - console ${el.url ? `${inlineCode(el.url)} ` : ""}— ${el.explanation}`);
+        if (where === "" && (el.explanation || el.url)) {
+          // A node-less entry: a console / network message (errors-in-console)
+          // or a flagged resource / reason (caching, compression, bf-cache —
+          // #667). Its message and URL name the cause. The URL is code too.
+          const kind = problem.auditId === "errors-in-console" ? "console" : "flagged";
+          lines.push(
+            `  - ${kind} ${el.url ? `${inlineCode(el.url)} ` : ""}${el.explanation ? `— ${el.explanation}` : ""}`.trimEnd(),
+          );
+          continue;
+        }
+        if (where === "" && el.label) {
+          // The truncation marker (or a bare label): print it as is.
+          lines.push(`  - ${el.label}`);
           continue;
         }
         lines.push(`  - element ${where}${el.explanation ? ` — ${el.explanation}` : ""}`);
@@ -152,6 +180,7 @@ export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
     "Read a Lighthouse quality audit of the staged site (Performance, Accessibility, Best Practices, SEO; mobile). " +
     "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores against the page's baseline, every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), Performance signals the noise guard is holding back, and infrastructure errors. " +
     "A problem is a failing audit the editors have not accepted on that page, or a score below the page's baseline. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. " +
+    "A finding marked CAELO PLATFORM (back/forward cache, caching of Caelo's own files, server response, compression, redirects) is decided by Caelo's hosting/build setup, not by the site: report it with bug_report, never edit the site for it, never propose accepting it. " +
     "Typical input: {} or { auditRunId }.",
   opName: "quality_audits.get",
   input: getAuditInput,
