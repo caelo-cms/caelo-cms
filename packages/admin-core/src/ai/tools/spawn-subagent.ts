@@ -414,6 +414,9 @@ async function runOneSubagent(
     const stopChild = (): void => controller.abort(new OperatorStoppedError());
     toolCtx.abortSignal?.addEventListener("abort", stopChild, { once: true });
     subRun?.signal.addEventListener("abort", stopChild, { once: true });
+    // Either may have fired while the registration above was in flight; a
+    // listener added afterwards never hears it.
+    if (toolCtx.abortSignal?.aborted || subRun?.signal.aborted) stopChild();
     const childErrors: string[] = [];
     try {
       // `spawnChildChatTurn` presence was checked at the top of this function.
