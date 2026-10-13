@@ -438,6 +438,10 @@
     // Imports are the one gated domain whose approval starts a
     // BACKGROUND job instead of applying a change — the nudge must
     // say so or the AI announces results that don't exist yet.
+    // Issue #664 — deliberately "auto": after a Stop, approving a proposal
+    // applies it but does not restart the AI (the "please continue" is shown
+    // as a held-back note). Only a message the operator writes restarts it —
+    // the incident this guards against began with an Approve click.
     void sendAutoMessage(
       isImportApproval
         ? `Approved: crawl proposal ${proposalId.slice(0, 8)} — the crawler starts within ~10s and runs in the background. Check the run status and tell me how you'll proceed.`
