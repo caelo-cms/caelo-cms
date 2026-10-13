@@ -30,6 +30,7 @@
   import { cn } from "#lib/utils.js";
   import RunningAgentsBar from "#lib/components/agents/RunningAgentsBar.svelte";
   import {
+    fetchAgentRuns,
     heldBackNote,
     mayStartTurn,
     postAgentAction,
@@ -37,6 +38,13 @@
   import DebugPanel from "./DebugPanel.svelte";
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
   import InlineDiff from "./InlineDiff.svelte";
+  import QualityFixOfferCard from "./QualityFixOfferCard.svelte";
+  import {
+    autoDeliverableNote,
+    externalAgentRefusal,
+    openQualityOffer,
+    workingExternalAgent,
+  } from "./quality-offer.js";
   import {
     postQualityAction,
     qualityStatusFor,
@@ -598,12 +606,15 @@
   });
 
   /**
-   * #553 — quality-gate feedback for THIS chat's Stages. When the audit of
-   * a Stage settles, the panel claims its message exactly once (the server
-   * decides the text and enforces once-only across tabs): a status note is
-   * shown as-is; a fix request is sent as a system-origin turn, which starts
-   * the AI's fix round (capped at 2 by the server-side text). The poller is
-   * shared with the /edit toolbar's Publish gate.
+   * #553 / #685 — quality-gate feedback for THIS chat's Stages. Status notes
+   * (passed / skipped / failed) are claimed exactly once (the server decides
+   * the text and enforces once-only across tabs) and shown as they settle.
+   * Problems never start the AI on their own — whoever staged (the operator,
+   * this chat's AI, another agent): they are an OFFER, shown as a card, and
+   * the fix round runs only when the operator clicks it. That click is the
+   * operator's own action, so it lifts the Stop latch like a typed message
+   * (#672); it is refused while an external agent works in this chat
+   * (#682). The poller is shared with the /edit toolbar's Publish gate.
    */
   const qualityStatus = $derived(qualityStatusFor(session.id));
   $effect(() => {
@@ -611,21 +622,16 @@
     poller.acquire();
     return () => poller.release();
   });
-  let pendingQualityNudge = $state<{ auditRunId: string; text: string } | null>(null);
   let qualityRetryError = $state<string | null>(null);
-  const claimedQualityAudits = new Set<string>();
+  const claimedQualityNotes = new Set<string>();
   $effect(() => {
-    const st = qualityStatus.status;
-    if (!st?.audit || st.notified || !st.feedback) return;
-    const auditRunId = st.audit.id;
-    if (claimedQualityAudits.has(auditRunId)) return;
-    claimedQualityAudits.add(auditRunId);
+    const auditRunId = autoDeliverableNote(qualityStatus.status);
+    if (auditRunId === null || claimedQualityNotes.has(auditRunId)) return;
+    claimedQualityNotes.add(auditRunId);
     void (async () => {
       try {
         const r = await postQualityAction(session.id, csrfToken, { action: "claim", auditRunId });
-        if (r.send) {
-          pendingQualityNudge = { auditRunId, text: r.send };
-        } else if (r.note) {
+        if (r.note) {
           messages = [
             ...messages,
             { id: `quality-${auditRunId}`, role: "user", origin: "system", content: r.note },
@@ -633,32 +639,86 @@
         }
       } catch {
         // Not claimed — the next poll offers it again.
-        claimedQualityAudits.delete(auditRunId);
+        claimedQualityNotes.delete(auditRunId);
       } finally {
         void qualityStatus.refresh();
       }
     })();
   });
+
+  const qualityOffer = $derived(openQualityOffer(qualityStatus.status));
+  /** The audit whose offer the operator is acting on (hides its card meanwhile). */
+  let qualityOfferActing = $state<string | null>(null);
+  let qualityOfferError = $state<string | null>(null);
+  let shownQualityOfferId: string | null = null;
   $effect(() => {
-    // Same flush contract as the import nudge: only while idle and the
-    // operator is not typing.
-    if (streaming) return;
-    if (pendingQualityNudge === null) return;
-    if (composer.trim().length > 0) return;
-    const nudge = pendingQualityNudge;
-    pendingQualityNudge = null;
-    void (async () => {
-      await sendAutoMessage(nudge.text);
-      // Delivered (the stream persisted the turn): mark it so no other tab
-      // sends it again. Without this ack the server lease runs out and the
-      // nudge is offered again — a failed send never silently ends the loop.
-      await postQualityAction(session.id, csrfToken, {
-        action: "ack",
-        auditRunId: nudge.auditRunId,
-      }).catch(() => undefined);
-      claimedQualityAudits.delete(nudge.auditRunId);
-    })();
+    // A new offer starts without the previous one's error.
+    const id = qualityOffer?.auditRunId ?? null;
+    if (id === shownQualityOfferId) return;
+    shownQualityOfferId = id;
+    qualityOfferError = null;
   });
+
+  /** "Fix with AI" — the operator's click starts the fix round (#685). */
+  async function acceptQualityOffer(auditRunId: string): Promise<void> {
+    if (streaming || qualityOfferActing !== null) return;
+    qualityOfferActing = auditRunId;
+    qualityOfferError = null;
+    try {
+      // #682 — one agent per chat: say so here instead of starting a turn
+      // the server would refuse. (The server checks again — this is only
+      // the early, clear answer.)
+      const agent = workingExternalAgent(await fetchAgentRuns(session.id));
+      if (agent) {
+        qualityOfferError = externalAgentRefusal(agent);
+        return;
+      }
+      const r = await postQualityAction(session.id, csrfToken, { action: "claim", auditRunId });
+      if (!r.ok) {
+        qualityOfferError = r.error ?? "Could not start the fix — try again.";
+        return;
+      }
+      if (!r.send) {
+        qualityOfferError = "This fix request is already being handled (another tab?).";
+        return;
+      }
+      const started = await sendAutoMessage(r.send, "operator");
+      // Started: settled for every tab. Not started (refused, failed): give
+      // the claim back so the card can be clicked again right away.
+      await postQualityAction(session.id, csrfToken, {
+        action: started ? "ack" : "release",
+        auditRunId,
+      }).catch(() => undefined);
+    } catch {
+      qualityOfferError = "Could not start the fix — check the connection and try again.";
+    } finally {
+      qualityOfferActing = null;
+      void qualityStatus.refresh();
+    }
+  }
+
+  /** "Not now" — settle the offer with a status note; nothing runs (#685). */
+  async function dismissQualityOffer(auditRunId: string): Promise<void> {
+    if (qualityOfferActing !== null) return;
+    qualityOfferActing = auditRunId;
+    qualityOfferError = null;
+    try {
+      const r = await postQualityAction(session.id, csrfToken, { action: "dismiss", auditRunId });
+      if (!r.ok) {
+        qualityOfferError = r.error ?? "Could not dismiss — try again.";
+      } else if (r.note) {
+        messages = [
+          ...messages,
+          { id: `quality-${auditRunId}`, role: "user", origin: "system", content: r.note },
+        ];
+      }
+    } catch {
+      qualityOfferError = "Could not dismiss — check the connection and try again.";
+    } finally {
+      qualityOfferActing = null;
+      void qualityStatus.refresh();
+    }
+  }
 
   async function retryQualityCheck(): Promise<void> {
     qualityRetryError = null;
@@ -709,17 +769,19 @@
    * the reported requirement — clicking a chip sends it to the AI and leaves
    * the draft in the field (an earlier version routed through the composer and
    * cleared the draft, which was the bug).
+   *
+   * @returns whether a turn started (see sendMessage).
    */
   async function sendAutoMessage(
     text: string,
     // Issue #664 — "operator" for a click the operator made (choice /
     // suggestion chip); "auto" for a nudge the panel sends on its own.
     trigger: "operator" | "auto" = "auto",
-  ): Promise<void> {
-    if (streaming) return;
+  ): Promise<boolean> {
+    if (streaming) return false;
     if (!mayStartTurn(trigger, operatorStopped)) {
       noteHeldBack(text);
-      return;
+      return false;
     }
     // issue #303 — a nudge with nothing to say must not post: an empty
     // system-origin row renders as a bare "Status:" note (and the
@@ -727,13 +789,13 @@
     // console signal instead of a silent junk row.
     if (text.trim().length === 0) {
       console.error("[chat] sendAutoMessage called with empty text — nudge dropped");
-      return;
+      return false;
     }
     // issue #29 — every auto-message is system-driven. The model still sees
     // them as user turns, but they persist + render as muted status notes so
     // the operator isn't misled into thinking they typed them ("das kommt
     // nicht vom nutzer").
-    await sendMessage("system", undefined, text, trigger === "operator");
+    return sendMessage("system", undefined, text, trigger === "operator");
   }
   // Live counter of pending changes during streaming — incremented per
   // AI tool result + reset between turns. Drives the "N edits during
@@ -1429,8 +1491,6 @@
       pendingImportNudge = null;
     }
     for (const text of held) noteHeldBack(text);
-    // The quality nudge is acked + noted by its flush effect, which the
-    // latch now routes to the held-back path.
     streamAbort?.abort();
     stopError = await postAgentAction({ csrfToken, chatSessionId: session.id, action: "cancel" });
   }
@@ -1472,18 +1532,18 @@
     // Issue #664 — a system-origin send the operator clicked (chip): it lifts
     // the Stop latch like a typed message does.
     operatorClicked = false,
-  ): Promise<void> {
-    if (streaming || (uploadingImages && !resume && overrideText === undefined)) return;
+  ): Promise<boolean> {
+    if (streaming || (uploadingImages && !resume && overrideText === undefined)) return false;
     if (
       !resume &&
       overrideText === undefined &&
       composer.trim().length === 0 &&
       pendingAttachments.length === 0
     )
-      return;
+      return false;
     const isOverride = overrideText !== undefined;
     const byOperator = origin !== "system" || operatorClicked || resume !== undefined;
-    if (!mayStartTurn(byOperator ? "operator" : "auto", operatorStopped)) return;
+    if (!mayStartTurn(byOperator ? "operator" : "auto", operatorStopped)) return false;
     if (byOperator) operatorStopped = false;
     // Attachment-only sends get a minimal text body (the op requires
     // non-empty content; the images carry the actual intent).
@@ -1570,7 +1630,7 @@
       if (!(ac.signal.aborted || (e instanceof Error && e.name === "AbortError"))) {
         chatError = `Chat request failed: ${e instanceof Error ? e.message : String(e)}`;
       }
-      return;
+      return false;
     }
     if (!res.ok) {
       streaming = false;
@@ -1583,7 +1643,7 @@
         pendingAttachments = sentAttachments;
         messages = messages.filter(m => m.id !== optimisticMessageId);
       }
-      return;
+      return false;
     }
     if (!res.body) {
       streaming = false;
@@ -1593,8 +1653,13 @@
       // optimistic user message. The fetch reached the server but no body
       // came back; usually means the route returned a non-stream error.
       chatError = `Chat request returned no body (status ${res.status}). The server may be misconfigured — try again or check /security/audit.`;
-      return;
+      return false;
     }
+    // Issue #685 — did the turn start? A turn the server refuses before it
+    // runs (an external agent works here, a Stop it waited behind) answers
+    // only an error or a "turn-dropped" warning and then `done`.
+    let turnStarted = false;
+    let turnRefused = false;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -1774,6 +1839,21 @@
               // figure up so a readout can stay current.
               const spend = ev["spend7dMicrocents"];
               if (typeof spend === "number") onSpendUpdate?.(spend);
+            }
+            if (
+              ev["kind"] === "text-delta" ||
+              ev["kind"] === "thinking-delta" ||
+              ev["kind"] === "tool-start" ||
+              ev["kind"] === "usage" ||
+              ev["kind"] === "assistant-message-saved"
+            ) {
+              turnStarted = true;
+            } else if (
+              !turnStarted &&
+              (ev["kind"] === "error" ||
+                (ev["kind"] === "warning" && ev["code"] === "turn-dropped"))
+            ) {
+              turnRefused = true;
             }
             if (ev["kind"] === "error") {
               chatError = typeof ev["message"] === "string" ? ev["message"] : "Chat failed.";
@@ -1956,6 +2036,7 @@
     streaming = false;
     streamAbort = null;
     currentActivity = null;
+    return !turnRefused;
   }
 
   function lineDiff(before: string, after: string): { kind: "ctx" | "del" | "add"; text: string }[] {
@@ -2402,6 +2483,23 @@
              reading the newest message — "missed it nearly"). Click
              Approve here instead of hunting the original tool-card.
              Drops out as soon as the row flips to applied/rejected. -->
+        <!-- #685 — the quality check found problems: ask before the AI
+             fixes anything. Only the operator's click starts the turn. -->
+        {#if qualityOffer && qualityOffer.auditRunId !== qualityOfferActing}
+          <QualityFixOfferCard
+            text={qualityOffer.text}
+            actionLabel={qualityOffer.actionLabel}
+            busy={qualityOfferActing !== null}
+            aiBusy={streaming}
+            error={qualityOfferError}
+            onFix={() => {
+              if (qualityOffer) void acceptQualityOffer(qualityOffer.auditRunId);
+            }}
+            onDismiss={() => {
+              if (qualityOffer) void dismissQualityOffer(qualityOffer.auditRunId);
+            }}
+          />
+        {/if}
         <!-- #553 — a FAILED quality check keeps Publish live closed; say so
              in the chat, with the retry right here (publishing anyway is a
              toolbar decision or the AI's approval card). -->

@@ -225,12 +225,21 @@ describe("#620 Open changes + multi-chat Stage", () => {
     const audits = await withSql(
       (tx) =>
         tx`
-        SELECT chat_session_id::text AS chat, classification FROM quality_audit_runs
+        SELECT chat_session_id::text AS chat, classification, staged_by FROM quality_audit_runs
         WHERE deploy_run_id = ${staged.value.runId}::uuid
-      ` as Promise<{ chat: string; classification: { reasons: { entityId: string | null }[] } }[]>,
+      ` as Promise<
+          {
+            chat: string;
+            classification: { reasons: { entityId: string | null }[] };
+            staged_by: string | null;
+          }[]
+        >,
     );
     expect(audits).toHaveLength(1);
     expect([a.id, b.id]).toContain(audits[0]?.chat as string);
+    // #685 — the operator's Stage (Open changes) is recorded as theirs, so
+    // a fix request later tells the AI it did not stage this build.
+    expect(audits[0]?.staged_by).toBe("operator");
 
     const live = await withSql(
       (tx) =>

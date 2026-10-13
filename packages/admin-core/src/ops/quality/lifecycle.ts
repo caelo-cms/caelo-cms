@@ -24,6 +24,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { stagedBySchema } from "../../quality/chat-feedback.js";
 import { withInstallRules } from "../../quality/classify.js";
 import { decideGate } from "../../quality/gate.js";
 import { pageMeasurementSchema } from "../../quality/lighthouse-protocol.js";
@@ -138,6 +139,9 @@ export const enqueueAuditOp = defineOperation({
       /** Queued by the automatic redeploy: publish when the audit's gate
        *  is open (quality_audits.settle_auto_publish). Chat-less only. */
       autoPublish: z.boolean().default(false),
+      /** #685 — who staged the build of a chat Stage; the chat's fix
+       *  request tells the AI. Chat Stages only. */
+      stagedBy: stagedBySchema.nullable().default(null),
     })
     .strict()
     .refine((v) => (v.chatSessionId === null) === (v.branch === null), {
@@ -145,6 +149,9 @@ export const enqueueAuditOp = defineOperation({
     })
     .refine((v) => !v.autoPublish || v.chatSessionId === null, {
       message: "autoPublish is for the automatic redeploy, which has no chat",
+    })
+    .refine((v) => v.stagedBy === null || v.chatSessionId !== null, {
+      message: "stagedBy describes a chat Stage — pass it only with a chatSessionId",
     }),
   output: z.object({
     auditRunId: z.string(),
@@ -239,7 +246,7 @@ export const enqueueAuditOp = defineOperation({
     const inserted = (await tx.execute(sql`
       INSERT INTO quality_audit_runs
         (deploy_run_id, chat_session_id, requested_by, status, classification,
-         target_page_ids, performance_runs, finished_at, fix_round, auto_publish)
+         target_page_ids, performance_runs, finished_at, fix_round, auto_publish, staged_by)
       VALUES (
         ${input.deployRunId}::uuid,
         ${input.chatSessionId}::uuid,
@@ -250,7 +257,8 @@ export const enqueueAuditOp = defineOperation({
         ${PERFORMANCE_RUNS},
         ${status === "skipped" ? sql`now()` : sql`NULL`},
         ${fixRound},
-        ${input.autoPublish}
+        ${input.autoPublish},
+        ${input.stagedBy}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];

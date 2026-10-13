@@ -38,9 +38,12 @@ When a page scores higher, its baseline rises with it — quality only ratchets 
 
 ## How it plays out in the chat
 
-1. You Stage. A minute or two later the result appears in the same chat.
-2. If there are problems, the AI reads the findings and fixes what it can — missing alt texts, low contrast, missing labels and headings, meta descriptions, image sizes, render-blocking CSS. Then it asks you to **Stage again**, which re-checks.
-3. The AI gets at most **two automatic fix rounds**. After that it stops changing the site and tells you plainly what is left.
+1. You Stage — or the AI stages its finished work. A minute or two later the result appears in the same chat.
+2. If there are problems, the chat **asks you first**: *"Quality check found 3 issues on 2 pages: / (Low contrast, …); /about (…). Let the AI fix them?"* Nothing changes until you decide. This holds however the Stage happened — your **Stage** button, **Open changes**, the AI's own Stage, or an external agent's. You may have moved on while the check ran, and the AI may not have made every staged change.
+   - **Fix with AI** starts the fix. The AI gets the findings per page, who staged the build, and a reminder that the build can contain changes from other chats or agents, so it checks the page before changing it. It fixes what it can — missing alt texts, low contrast, missing labels and headings, meta descriptions, image sizes, render-blocking CSS — and Stages again, which re-checks.
+   - **Not now** leaves the site as it is. The chat notes your decision, and Publish live stays blocked until the problems are fixed or accepted.
+   - Or just type what you want instead ("only fix the homepage", "leave the contrast").
+3. A fix chain has at most **two fix rounds**. After that the card offers **Summarise with AI** instead: the AI stops changing the site for these findings and tells you plainly what is left.
 4. Accepting a finding is **your** decision. The AI does not recommend acceptances or ask for them on its own. When you tell it to accept something ("leave the brand colour as it is", "ship it anyway"), it puts an approval card in the chat with your reason, and an editor approves it. An acceptance applies to **that page only**; the same finding on another page still blocks. An accepted score becomes that page's new baseline.
 5. Some findings are caused by Caelo itself, not by your site: back/forward cache, cache lifetimes of Caelo's own files, server response time, compression, redirects. The AI does not change your site for them. It reports each one as a Caelo bug and tells you so. Publish live stays blocked until the platform is fixed, or until you decide to accept the finding.
 
