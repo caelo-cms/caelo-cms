@@ -11,14 +11,14 @@
  *     - Bootstrap script runs as a one-shot ECS task post-create.
  *  3. S3 buckets: caelo-media + caelo-static (per env).
  *  4. CloudFront distribution with two origins (S3 static + ALB-fronted ECS).
- *  5. Lambda@Edge function (us-east-1 pinned; viewer-request event) that
- *     reads `routing-manifest.json`, runs the @caelo-cms/edge-router stable-hash
- *     assignment, sets the `caelo_visitor_id` cookie, rewrites the URL.
- *  6. ECS Fargate cluster + four services (admin, gateway, orchestrator, runner).
- *  7. Secrets Manager entries (postgres-password, anthropic-api-key, ...).
- *  8. Route 53 hosted zone + ACM certs per (domain, locale).
- *  9. CloudWatch Logs → Kinesis Firehose → S3 sink for L@E assignment logs.
- * 10. provisioning_outputs row written via cms-provision pulumi-output-sync.
+ *     Static files are served as files — no edge compute on the request
+ *     path (CLAUDE.md §11.B Tier 1).
+ *  5. ECS Fargate cluster + four services (admin, gateway, orchestrator, runner).
+ *  6. Secrets Manager entries (postgres-password, anthropic-api-key, ...).
+ *  7. Route 53 hosted zone + ACM certs per (domain, locale).
+ *  8. CloudFront access logs → CloudWatch log group (the analytics plugin's
+ *     log sink).
+ *  9. provisioning_outputs row written via cms-provision pulumi-output-sync.
  *
  * Per CMS_REQUIREMENTS §15 + the P15 plan, the runtime never knows it's
  * on AWS — every Caelo service consumes plain DATABASE_URL /
@@ -26,7 +26,6 @@
  * is to wire those env vars to AWS-native resources.
  */
 
-import { resolve } from "node:path";
 import * as aws from "@pulumi/aws";
 import * as awsx from "@pulumi/awsx";
 import * as pulumi from "@pulumi/pulumi";
@@ -66,10 +65,9 @@ if (_adminMemoryMiB === null) {
 const env = pulumi.getStack() as "dev" | "staging" | "production";
 const namePrefix = `caelo-${env}`;
 
-// Lambda@Edge functions MUST live in us-east-1 regardless of where
-// CloudFront's origins are — this is a hard AWS constraint, not a
-// preference.
-const lambdaEdgeProvider = new aws.Provider("aws-us-east-1", { region: "us-east-1" });
+// CloudFront only accepts ACM certificates issued in us-east-1, regardless
+// of where its origins are — a hard AWS constraint, not a preference.
+const usEast1Provider = new aws.Provider("aws-us-east-1", { region: "us-east-1" });
 
 // === 1. VPC ===
 const vpc = new awsx.ec2.Vpc(`${namePrefix}-vpc`, {
@@ -224,56 +222,7 @@ const cert = new aws.acm.Certificate(
     subjectAlternativeNames: [`staging.${domain}`, `*.${domain}`],
     validationMethod: "DNS",
   },
-  { provider: lambdaEdgeProvider },
-);
-
-// === 6. Lambda@Edge for A/B split + redirects ===
-//
-// Bundles @caelo-cms/edge-router's pure assignment helper. Real deployments
-// build this via a separate `bun build --target=node --bundle` step
-// then upload the zip; for v1 we inline a small handler that imports
-// the route logic from a sibling module.
-const edgeLambdaRole = new aws.iam.Role(
-  `${namePrefix}-edge-role`,
-  {
-    assumeRolePolicy: JSON.stringify({
-      Version: "2012-10-17",
-      Statement: [
-        {
-          Effect: "Allow",
-          Principal: { Service: ["lambda.amazonaws.com", "edgelambda.amazonaws.com"] },
-          Action: "sts:AssumeRole",
-        },
-      ],
-    }),
-  },
-  { provider: lambdaEdgeProvider },
-);
-new aws.iam.RolePolicyAttachment(
-  `${namePrefix}-edge-role-basic`,
-  {
-    role: edgeLambdaRole.name,
-    policyArn: "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
-  },
-  { provider: lambdaEdgeProvider },
-);
-
-const edgeLambda = new aws.lambda.Function(
-  `${namePrefix}-edge`,
-  {
-    role: edgeLambdaRole.arn,
-    runtime: "nodejs20.x",
-    handler: "index.handler",
-    timeout: 5,
-    publish: true, // L@E requires a published version, not $LATEST
-    code: new pulumi.asset.AssetArchive({
-      // The handler bundle is built by `bun run build:edge-aws` from
-      // packages/provisioning/stacks/aws/edge-handler.ts. Operators run
-      // that command before `pulumi up` — see this stack's README.md.
-      "index.js": new pulumi.asset.FileAsset(resolve(import.meta.dir, "edge-handler-bundle.js")),
-    }),
-  },
-  { provider: lambdaEdgeProvider },
+  { provider: usEast1Provider },
 );
 
 // === 7. CloudFront distribution ===
@@ -303,13 +252,6 @@ const distribution = new aws.cloudfront.Distribution(`${namePrefix}-cdn`, {
     minTtl: 0,
     defaultTtl: 60,
     maxTtl: 86400,
-    lambdaFunctionAssociations: [
-      {
-        eventType: "viewer-request",
-        lambdaArn: edgeLambda.qualifiedArn,
-        includeBody: false,
-      },
-    ],
   },
   orderedCacheBehaviors: [
     {
@@ -334,6 +276,46 @@ const distribution = new aws.cloudfront.Distribution(`${namePrefix}-cdn`, {
     { errorCode: 404, responseCode: 404, responsePagePath: "/404.html", errorCachingMinTtl: 60 },
   ],
 });
+
+// === 7b. Edge-log sink: CloudFront access logs → CloudWatch Logs ===
+//
+// CloudFront delivers its access logs through CloudWatch vended-log
+// delivery, which for CloudFront runs in us-east-1 — so the log group and
+// the delivery resources live there too. The analytics plugin's AWS adapter
+// reads this group (`edgeLogSinkUrl`).
+const edgeLogGroup = new aws.cloudwatch.LogGroup(
+  `${namePrefix}-edge-logs`,
+  {
+    name: `/caelo/${env}/cloudfront`,
+    retentionInDays: env === "production" ? 90 : 30,
+  },
+  { provider: usEast1Provider },
+);
+const edgeLogSource = new aws.cloudwatch.LogDeliverySource(
+  `${namePrefix}-edge-log-source`,
+  {
+    name: `${namePrefix}-cloudfront`,
+    logType: "ACCESS_LOGS",
+    resourceArn: distribution.arn,
+  },
+  { provider: usEast1Provider },
+);
+const edgeLogDestination = new aws.cloudwatch.LogDeliveryDestination(
+  `${namePrefix}-edge-log-destination`,
+  {
+    name: `${namePrefix}-cloudfront-logs`,
+    deliveryDestinationConfiguration: { destinationResourceArn: edgeLogGroup.arn },
+  },
+  { provider: usEast1Provider },
+);
+new aws.cloudwatch.LogDelivery(
+  `${namePrefix}-edge-log-delivery`,
+  {
+    deliverySourceName: edgeLogSource.name,
+    deliveryDestinationArn: edgeLogDestination.arn,
+  },
+  { provider: usEast1Provider },
+);
 
 // === 8. ECS Fargate cluster + services ===
 //
@@ -423,7 +405,7 @@ const out: CloudAdapterOutputs = {
     pulumi.interpolate`https://${domain}/setup?token=${tokenInfo.token}` as unknown as string,
   dnsRecordsRequired,
   edgeLogSinkUrl:
-    pulumi.interpolate`cloudwatch://aws/lambda/${edgeLambda.name}` as unknown as string,
+    pulumi.interpolate`cloudwatch://us-east-1/${edgeLogGroup.name}` as unknown as string,
   provider: "aws",
   environment: env,
 };

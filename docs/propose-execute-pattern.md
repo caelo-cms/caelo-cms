@@ -43,7 +43,7 @@ bypass — `execute_proposal`'s `actorScope` is `["human", "system"]`.
 
 ## Domains using the pattern
 
-14 domains shipped (v0.2.19 → v0.11.0):
+15 domains shipped:
 
 | Domain | Propose ops | Permission to approve |
 |---|---|---|
@@ -52,7 +52,6 @@ bypass — `execute_proposal`'s `actorScope` is `["human", "system"]`.
 | `users` | `propose_create`, `propose_set_roles`, `propose_delete` | `roles.manage` |
 | `roles` | `propose_create`, `propose_update_permissions`, `propose_delete` | `roles.manage` |
 | `snapshots.revert_*` | `propose_revert_site`, `_page`, `_template`, `_module` | `roles.manage` |
-| `experiments` | `propose_activate`, `propose_complete` | `settings.write` |
 | `email_config` | `propose_set` | `settings.write` |
 | `ai_providers` | `propose_set`, `propose_clear_key` | `settings.write` |
 | `mcp_tokens` | `propose_create`, `propose_revoke` | `settings.write` |

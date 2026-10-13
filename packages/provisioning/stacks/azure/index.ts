@@ -8,18 +8,16 @@
  *  2. Azure Database for PostgreSQL flexible server, zone-redundant in
  *     production. Two databases (cms_admin + cms_public) created via
  *     post-create Container Apps job (bootstrap.sh).
- *  3. Storage account + two containers (`media` + `static`); the
- *     `static` container is `$web`-enabled for static-website hosting.
- *  4. Azure Front Door Standard with two origins (static blob + Container
- *     Apps fronting admin/gateway). Rules engine handles A/B split
- *     (matches `pageSlug` from the routing manifest, rewrites to the
- *     variant blob path) and redirects (per-row from the redirects table
- *     emitted via emitRedirectsAzureFrontDoor).
- *  5. Azure Container Apps (admin/gateway/orchestrator/runner + edge-router),
+ *  3. Storage account with a private `media` container and static-website
+ *     hosting (the `$web` container the static generator publishes to).
+ *  4. Azure Front Door Standard serving the static website on the primary
+ *     domain with a managed certificate — files served as files, no compute
+ *     on the request path (CLAUDE.md §11.B Tier 1).
+ *  5. Azure Container Apps (admin/gateway/orchestrator/runner),
  *     mounted with Key Vault secrets via managed identity.
  *  6. Key Vault entries (postgres-password, csrf-secret, cookie-secret,
  *     anthropic-api-key, resend-api-key).
- *  7. Log Analytics workspace receives Front Door + Container Apps logs;
+ *  7. Log Analytics workspace receives Container Apps logs;
  *     P12A analytics plugin's Azure adapter queries via monitor-query.
  *  8. Azure DNS zone for the primary domain (operator may opt out via
  *     config + manage at their existing registrar).
@@ -39,6 +37,7 @@
 import * as azure from "@pulumi/azure-native";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
+import { azureFrontDoorDnsRecords } from "../../dist/azure-front-door.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import { ADMIN_MEMORY_DEFAULT, azureContainerAppResources } from "../../dist/stack-contract.js";
 
@@ -190,12 +189,123 @@ const _mediaContainer = new azure.storage.BlobContainer(`${namePrefix}-media`, {
   publicAccess: "None",
 });
 
-const _staticContainer = new azure.storage.BlobContainer(`${namePrefix}-static`, {
+// The container the static generator publishes to. Managed explicitly (not
+// left to static-website hosting, which would create it implicitly) so a
+// stack created before Front Door keeps owning it — changing the resource
+// type would make Pulumi delete the container and every published page.
+const staticContainer = new azure.storage.BlobContainer(`${namePrefix}-static`, {
   resourceGroupName: rg.name,
   accountName: storage.name,
   containerName: "$web",
   publicAccess: "Blob",
 });
+
+// Static-website hosting serves `$web` on the account's web endpoint, which
+// resolves `/path/` to `/path/index.html` — the URL shape the static
+// generator emits. Front Door fronts that endpoint.
+const staticWebsite = new azure.storage.StorageAccountStaticWebsite(
+  `${namePrefix}-static-website`,
+  {
+    resourceGroupName: rg.name,
+    accountName: storage.name,
+    indexDocument: "index.html",
+    error404Document: "404.html",
+  },
+  { dependsOn: [staticContainer] },
+);
+
+// === 4b. Front Door (static site on the primary domain) ===
+const frontDoor = new azure.cdn.Profile(`${namePrefix}-fd`, {
+  resourceGroupName: rg.name,
+  profileName: `${namePrefix}-fd`,
+  location: "Global",
+  sku: { name: "Standard_AzureFrontDoor" },
+});
+
+const frontDoorEndpoint = new azure.cdn.AFDEndpoint(`${namePrefix}-fd-endpoint`, {
+  resourceGroupName: rg.name,
+  profileName: frontDoor.name,
+  endpointName: `${namePrefix}-site`,
+  location: "Global",
+  enabledState: "Enabled",
+});
+
+const staticOriginGroup = new azure.cdn.AFDOriginGroup(`${namePrefix}-fd-static`, {
+  resourceGroupName: rg.name,
+  profileName: frontDoor.name,
+  originGroupName: "static",
+  loadBalancingSettings: { sampleSize: 4, successfulSamplesRequired: 3 },
+  healthProbeSettings: {
+    probePath: "/",
+    probeProtocol: "Https",
+    probeRequestType: "HEAD",
+    probeIntervalInSeconds: 100,
+  },
+});
+
+// `primaryEndpoints.web` is `https://<account>.z<n>.web.core.windows.net/`;
+// Front Door wants the bare host.
+const staticWebHost = storage.primaryEndpoints.apply((e) => new URL(e.web).host);
+const staticOrigin = new azure.cdn.AFDOrigin(
+  `${namePrefix}-fd-static-origin`,
+  {
+    resourceGroupName: rg.name,
+    profileName: frontDoor.name,
+    originGroupName: staticOriginGroup.name,
+    originName: "static-website",
+    hostName: staticWebHost,
+    originHostHeader: staticWebHost,
+    httpsPort: 443,
+    enabledState: "Enabled",
+  },
+  { dependsOn: [staticWebsite] },
+);
+
+const siteDomain = new azure.cdn.AFDCustomDomain(`${namePrefix}-fd-domain`, {
+  resourceGroupName: rg.name,
+  profileName: frontDoor.name,
+  customDomainName: domain.replace(/\./g, "-"),
+  hostName: domain,
+  tlsSettings: { certificateType: "ManagedCertificate", minimumTlsVersion: "TLS12" },
+});
+
+new azure.cdn.Route(
+  `${namePrefix}-fd-route`,
+  {
+    resourceGroupName: rg.name,
+    profileName: frontDoor.name,
+    endpointName: frontDoorEndpoint.name,
+    routeName: "static",
+    originGroup: { id: staticOriginGroup.id },
+    customDomains: [{ id: siteDomain.id }],
+    patternsToMatch: ["/*"],
+    // Without a cache configuration Front Door does not cache the route at
+    // all; static files are edge-cached per their Cache-Control (§11.B
+    // Tier 1). The generated site has no query-string-dependent content.
+    cacheConfiguration: {
+      queryStringCachingBehavior: "IgnoreQueryString",
+      compressionSettings: {
+        isCompressionEnabled: true,
+        contentTypesToCompress: [
+          "text/html",
+          "text/css",
+          "text/plain",
+          "text/xml",
+          "application/javascript",
+          "application/json",
+          "application/xml",
+          "image/svg+xml",
+        ],
+      },
+    },
+    supportedProtocols: ["Http", "Https"],
+    forwardingProtocol: "HttpsOnly",
+    httpsRedirect: "Enabled",
+    linkToDefaultDomain: "Enabled",
+  },
+  // A route needs an origin in its group before Front Door accepts it.
+  { dependsOn: [staticOrigin] },
+);
 
 // === 5. Log Analytics workspace ===
 const logWorkspace = new azure.operationalinsights.Workspace(`${namePrefix}-logs`, {
@@ -251,7 +361,7 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
     configuration: {
       activeRevisionsMode: "Single",
       ingress: {
-        external: args.serviceName === "edge-router",
+        external: false,
         targetPort: 8080,
         transport: "Auto",
       },
@@ -306,37 +416,19 @@ const _orchestratorApp = containerApp({
   databaseEnv: adminDatabaseEnv,
 });
 const _runnerApp = containerApp({ serviceName: "runner", databaseEnv: adminDatabaseEnv });
-const edgeRouterApp = containerApp({
-  serviceName: "edge-router",
-  // Serves the static site and the A/B routing manifest; no database.
-  databaseEnv: [],
-  extraEnv: [
-    {
-      name: "STATIC_BUCKET_URL",
-      value: pulumi.interpolate`https://${storage.name}.blob.core.windows.net/$web`,
-    },
-    { name: "MANIFEST_OBJECT", value: "ab-routing.json" },
-  ],
-});
-
 // === 7. Bootstrap token ===
 const tokenInfo = generateBootstrapToken();
 
 // === 8. CloudAdapterOutputs ===
-const dnsRecordsRequired: DnsRecord[] = [
-  {
-    hostname: domain,
-    type: "CNAME",
-    // Front Door domain comes from the resource (P15.4 review-pass adds
-    // the actual Front Door + custom-domain bindings; v1 surfaces the
-    // edge-router Container App FQDN as the temporary target).
-    value: edgeRouterApp.configuration.apply(
-      (c) => c?.ingress?.fqdn ?? "<edge-router-fqdn-pending>",
-    ) as unknown as string,
-    purpose:
-      "Primary domain → edge-router Container App (P15.4 review-pass moves this behind Front Door)",
-  },
-];
+const dnsRecordsRequired = pulumi
+  .all([frontDoorEndpoint.hostName, siteDomain.validationProperties])
+  .apply(([endpointHostName, validation]) =>
+    azureFrontDoorDnsRecords({
+      domain,
+      endpointHostName,
+      validationToken: validation.validationToken,
+    }),
+  );
 
 const out: CloudAdapterOutputs = {
   adminDatabaseUrl: adminDatabaseUrl as unknown as string,
@@ -347,7 +439,7 @@ const out: CloudAdapterOutputs = {
   mediaCdnBaseUrl: pulumi.interpolate`https://${domain}/media` as unknown as string,
   bootstrapUrl:
     pulumi.interpolate`https://${domain}/setup?token=${tokenInfo.token}` as unknown as string,
-  dnsRecordsRequired,
+  dnsRecordsRequired: dnsRecordsRequired as unknown as DnsRecord[],
   edgeLogSinkUrl: pulumi.interpolate`loganalytics://${logWorkspace.name}` as unknown as string,
   provider: "azure",
   environment: env,
@@ -366,7 +458,5 @@ export const environmentOut = out.environment;
 export const pgServerFqdnOut = pgServer.fullyQualifiedDomainName;
 export const storageAccountNameOut = storage.name;
 export const adminContainerAppFqdnOut = adminApp.configuration.apply((c) => c?.ingress?.fqdn);
-export const edgeRouterContainerAppFqdnOut = edgeRouterApp.configuration.apply(
-  (c) => c?.ingress?.fqdn,
-);
+export const frontDoorEndpointHostNameOut = frontDoorEndpoint.hostName;
 export const bootstrapTokenExpiresAtOut = tokenInfo.expiresAt;

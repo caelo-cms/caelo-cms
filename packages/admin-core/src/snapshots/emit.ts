@@ -7,7 +7,7 @@
  * One `site_snapshots` row groups N entity-level rows (modules, templates,
  * pages, page layouts). The caller passes one flat `entities` array tagged
  * with `kind`; this collapses what used to be four separate optional arrays
- * into a single shape that future entity kinds (P12A A/B variants) ride on
+ * into a single shape that future entity kinds ride on
  * without expanding the API surface.
  *
  * Returns the new site_snapshots id so the caller can attach it to the

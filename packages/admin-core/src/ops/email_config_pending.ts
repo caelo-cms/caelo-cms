@@ -4,7 +4,7 @@
  * v0.2.25 — email_config.{propose_set, execute_proposal,
  * reject_proposal, list_pending}.
  *
- * Same shape as experiment_pending (v0.2.24). New pattern: the AI's
+ * Same propose/execute shape as the other *_pending ops. New pattern: the AI's
  * proposal NEVER contains transport secrets (smtp password, resend
  * apiKey). The Owner supplies the secret inline via the form action
  * at approve time; execute_proposal merges it into the config and
