@@ -4,6 +4,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  alignedStackSettings,
   assertStackRegion,
   deployedStackRegion,
   pulumiGcpEnv,
@@ -133,8 +134,15 @@ describe("pulumiGcpEnv (#696 — keyless provisioner)", () => {
       GOOGLE_IMPERSONATE_SERVICE_ACCOUNT: "someone-else@x.iam.gserviceaccount.com",
     },
     {
-      installRoot: "/home/op/.caelo-gcp-acme",
-      pulumiPassphrase: "pp",
+      backend: {
+        kind: "local",
+        url: "file:///home/op/.caelo-gcp-acme/state",
+        secretsProvider: "passphrase",
+        envVars: {
+          PULUMI_BACKEND_URL: "file:///home/op/.caelo-gcp-acme/state",
+          PULUMI_CONFIG_PASSPHRASE: "pp",
+        },
+      },
       impersonateServiceAccount: SA,
     },
   );
@@ -156,5 +164,72 @@ describe("pulumiGcpEnv (#696 — keyless provisioner)", () => {
     expect(env.PATH).toBe("/usr/bin");
     expect(env.PULUMI_CONFIG_PASSPHRASE).toBe("pp");
     expect(env.PULUMI_BACKEND_URL).toBe("file:///home/op/.caelo-gcp-acme/state");
+  });
+});
+
+describe("pulumiGcpEnv with the install's ops bucket (#696)", () => {
+  it("passes the bucket backend and no passphrase", () => {
+    const env = pulumiGcpEnv(
+      { PATH: "/usr/bin" },
+      {
+        backend: {
+          kind: "gcs",
+          url: "gs://acme-caelo-ops/pulumi",
+          secretsProvider:
+            "gcpkms://projects/acme/locations/europe-west1/keyRings/caelo/cryptoKeys/pulumi-state",
+          envVars: {
+            PULUMI_BACKEND_URL: "gs://acme-caelo-ops/pulumi",
+            PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER: "true",
+          },
+        },
+        impersonateServiceAccount: "caelo-provisioner@acme.iam.gserviceaccount.com",
+      },
+    );
+    expect(env.PULUMI_BACKEND_URL).toBe("gs://acme-caelo-ops/pulumi");
+    expect(env.PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER).toBe("true");
+    expect(env.PULUMI_CONFIG_PASSPHRASE).toBeUndefined();
+  });
+});
+
+describe("alignedStackSettings (#696 — the package's stale Pulumi.production.yaml)", () => {
+  const KMS =
+    "gcpkms://projects/acme/locations/europe-west1/keyRings/caelo/cryptoKeys/pulumi-state";
+  const gcs = { kind: "gcs" as const, secretsProvider: KMS };
+
+  it("strips another install's passphrase salt and the secure values encrypted under it", () => {
+    const aligned = alignedStackSettings(
+      {
+        encryptionSalt: "v1:abc",
+        config: {
+          "caelo-gcp:domain": "caelo-cms.com",
+          "caelo-gcp:anthropicApiKey": { secure: "v1:cipher" },
+        },
+      },
+      gcs,
+    );
+    expect(aligned).toEqual({ config: { "caelo-gcp:domain": "caelo-cms.com" } });
+  });
+
+  it("replaces a different KMS key's settings", () => {
+    const aligned = alignedStackSettings(
+      { secretsProvider: "gcpkms://projects/other/x", encryptedKey: "ek", config: {} },
+      gcs,
+    );
+    expect(aligned).toEqual({ config: {} });
+  });
+
+  it("leaves a file that already names the install's key alone", () => {
+    expect(
+      alignedStackSettings({ secretsProvider: KMS, encryptedKey: "ek", config: {} }, gcs),
+    ).toBeNull();
+  });
+
+  it("never touches a local install's file", () => {
+    expect(
+      alignedStackSettings(
+        { encryptionSalt: "v1:abc" },
+        { kind: "local", secretsProvider: "passphrase" },
+      ),
+    ).toBeNull();
   });
 });

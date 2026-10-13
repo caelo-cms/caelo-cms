@@ -112,6 +112,18 @@ A leaked laptop, backup or synced folder therefore leaks no lasting access to yo
 
 If a step fails, the upgrade stops before rolling anything and the key file stays where it is, so the next run can still match it. Running it again after it succeeded changes nothing.
 
+## Where the install's state lives
+
+Everything the provisioner needs to manage the install later lives **in the install's own GCP project**, not on your laptop:
+
+- **`gs://<project>-caelo-ops`** — a Cloud Storage bucket in the install region with object versioning (every change to the state can be recovered for 30 days), uniform bucket-level access and public access prevention. `pulumi/` holds Pulumi's state, `install/` holds `install.json` (domain, region, the release the install runs, …) and `progress.json` (the steps the installer finished).
+- **Cloud KMS key `caelo/pulumi-state`** — encrypts the secrets inside Pulumi's state. There is no passphrase to keep safe.
+- **Access** — your gcloud account and `caelo-provisioner` get access to the bucket (`roles/storage.objectAdmin`) and to the key (`roles/cloudkms.cryptoKeyEncrypterDecrypter`); nobody else is granted anything, the bucket's default read access for project Viewers and Editors is removed, and the provisioner refuses a bucket that grants `allUsers` or `allAuthenticatedUsers`. Project Owners can always reach it through their project role.
+
+The installer creates both before the cost confirmation (they cost less than $0.10/mo and are listed in it) and checks them on every re-run. `~/.caelo-<install-id>/` on your machine keeps only a copy of `install.json` and `progress.json`; the bucket is the source of truth, and nothing in either file is a secret — the installer refuses to write one there.
+
+**Installs created before this change** keep their state in `~/.caelo-<install-id>/state/` with the passphrase in `secrets/pulumi-passphrase`; a re-run or `upgrade` never moves it on its own.
+
 ## After the install
 
 The provisioner's summary ends with the next steps:
@@ -224,7 +236,7 @@ An install from before this change converges on its first `upgrade`, without any
 
 #### No secrets in `~/.caelo-<install-id>/`
 
-The install directory on your machine keeps secrets only in `secrets/` (the Anthropic API key and the Pulumi passphrase) and in Pulumi's encrypted state. It holds no service-account key: infrastructure runs [impersonate](#no-service-account-key-on-your-machine) `caelo-provisioner`. `progress.json` (where the installer records the steps it finished, so a re-run resumes) and `install.json` hold no passwords, database URLs with credentials or the Owner setup link; the installer reads those from Secret Manager or the Pulumi stack when it needs them.
+The install directory on your machine keeps secrets only in `secrets/` (the Anthropic API key and, for an install whose [state](#where-the-installs-state-lives) is still on this machine, the Pulumi passphrase) and in Pulumi's encrypted state. It holds no service-account key: infrastructure runs [impersonate](#no-service-account-key-on-your-machine) `caelo-provisioner`. `progress.json` (where the installer records the steps it finished, so a re-run resumes) and `install.json` hold no passwords, database URLs with credentials or the Owner setup link; the installer reads those from Secret Manager or the Pulumi stack when it needs them.
 
 Installers before this change stored the database URLs, with `admin_role`'s and `public_role`'s passwords, and the Owner setup link in `progress.json`. The next `upgrade` (or installer re-run) removes them from the file, keeps every finished step, and tells you which password to rotate, with the exact command, for example `bunx @caelo-cms/provisioning rotate-secret postgres-password --install example.com`. Run the commands it prints: copies of the old file may sit in backups or synced folders. The setup link needs no rotation; it expires after 24 hours and stops working once the Owner account exists.
 

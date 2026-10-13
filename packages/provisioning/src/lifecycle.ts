@@ -29,6 +29,7 @@ import {
   installRoot,
   installStagingHost,
   listInstalls,
+  readMetadata,
   readSecret,
   recordImageDigests,
   scrubInstallProgress,
@@ -71,6 +72,7 @@ import {
   rollService,
   serviceRollArgs,
 } from "./stack-converge.js";
+import { backendShellEnv, type ResolvedBackend, resolveBackend } from "./state-backend.js";
 
 /**
  * The installs a command acts on. `--install <id or domain>` names one
@@ -1247,12 +1249,19 @@ async function recordRolledDigests(
       ),
     );
   }
-  const manual = stackConfigRecovery(installId, provider, digests);
-  const passphrase = readSecret(installId, "pulumi-passphrase");
-  if (!passphrase) {
+  const meta = readMetadata(installId);
+  const manual = stackConfigRecovery(installId, meta ?? {}, provider, digests);
+  let backend: ResolvedBackend;
+  try {
+    if (!meta) throw new Error(`no install.json for '${installId}'`);
+    backend = resolveBackend(meta, {
+      installRoot: installRoot(installId),
+      readPassphrase: () => readSecret(installId, "pulumi-passphrase"),
+    });
+  } catch (e) {
     log.warn(
       yellow(
-        `No Pulumi passphrase in ~/.caelo-${installId}/secrets — stack config not updated. Before any manual \`pulumi up\`, run:\n${manual}`,
+        `Stack config not updated (${reason(e)}). Before any manual \`pulumi up\`, run:\n${manual}`,
       ),
     );
     return;
@@ -1260,8 +1269,7 @@ async function recordRolledDigests(
   try {
     const { writeImageDigestsToStack } = await import("./wizards/gcp-pulumi.js");
     const { removedOverrides } = await writeImageDigestsToStack({
-      installRoot: installRoot(installId),
-      pulumiPassphrase: passphrase,
+      backend,
       provider,
       digests,
     });
@@ -1289,11 +1297,11 @@ async function recordRolledDigests(
  */
 function stackConfigRecovery(
   installId: string,
+  meta: Pick<InstallMetadata, "stateBackend">,
   provider: "gcp" | "gcp-firebase",
   digests: ImageDigests,
 ): string {
-  const root = installRoot(installId);
-  const env = `PULUMI_BACKEND_URL=file://${join(root, "state")} PULUMI_CONFIG_PASSPHRASE="$(cat ${join(root, "secrets", "pulumi-passphrase")})"`;
+  const env = backendShellEnv(meta, installRoot(installId));
   const cwd = `--cwd ${resolvePath(import.meta.dir, "../stacks", provider)} --stack ${GCP_STACK_ENV}`;
   const lines = Object.entries(digests).map(
     ([svc, d]) => `  ${env} pulumi config set ${cwd} caelo-${provider}:image-digest-${svc} ${d}`,
