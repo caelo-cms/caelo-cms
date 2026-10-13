@@ -33,6 +33,7 @@
         previewUrl?: string;
         previewLabel?: string;
         draftPageCount?: number;
+        draftPageTitles?: string[];
         alsoIncludes?: string[];
       };
       // Run #9 R10 — say what is NOT in the staged build. Staging ships
@@ -47,8 +48,13 @@
         parts.push(`Also staged changes from: ${s.alsoIncludes.join(", ")}.`);
       }
       if (typeof s.draftPageCount === "number" && s.draftPageCount > 0) {
+        const titles = Array.isArray(s.draftPageTitles) ? s.draftPageTitles : [];
+        const named =
+          titles.length > 0
+            ? ` (${titles.join(", ")}${s.draftPageCount > titles.length ? ", …" : ""})`
+            : "";
         parts.push(
-          `${s.draftPageCount} draft page(s) are NOT in this build — publish them to stage them.`,
+          `${s.draftPageCount} draft page(s) are NOT in this build${named} — set them to published and Stage again to include them.`,
         );
       }
       toast.success("Staged.", {

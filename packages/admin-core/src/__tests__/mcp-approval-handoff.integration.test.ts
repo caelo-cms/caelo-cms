@@ -384,6 +384,18 @@ describe("decisionFromRow (lifecycle mapping)", () => {
     expect(decisionFromRow({ ...base, domain: "themes", status: "cancelled" }).outcome).toBe(
       "withdrawn",
     );
+    // #678 — owner_settings hands its effect (with the next step) back.
+    expect(
+      decisionFromRow({
+        ...base,
+        domain: "owner_settings",
+        status: "applied",
+        result_summary: "Nothing is served at https://p.example.com/ until the next Stage",
+      }),
+    ).toEqual({
+      outcome: "applied",
+      detail: "Nothing is served at https://p.example.com/ until the next Stage",
+    });
     expect(
       decisionFromRow({ ...base, domain: "tool_approvals", status: "applied", result_ok: false })
         .outcome,

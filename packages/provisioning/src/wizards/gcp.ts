@@ -1438,7 +1438,8 @@ async function stepFinalize(installId: string): Promise<void> {
           bold("Protected staging site:"),
           `  Stage builds render ${cyan(installStagingHost(meta))}; to serve it, run`,
           `  ${dim("bunx @caelo-cms/provisioning staging-domain enable")}`,
-          `  and add the DNS record it prints. Access: admin → Security → Staging access.`,
+          `  It maps the host, turns on password protection and prints the staging login once;`,
+          `  add the DNS record it prints. The host serves pages after the first Stage.`,
         ]
       : [];
 

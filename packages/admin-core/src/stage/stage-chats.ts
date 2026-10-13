@@ -33,6 +33,7 @@ import type { DatabaseAdapter, OperationRegistry, QueryError } from "@caelo-cms/
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { describeError } from "../ai/tools/_describe-error.js";
+import type { DraftPagesSummary } from "../deploy/draft-pages.js";
 import type { AffectedChat } from "../draft.js";
 import { STAGE_CHANGED_PREFIX } from "../ops/chat/publish.js";
 import { kickQualityAuditWorker } from "../quality/audit-worker.js";
@@ -77,6 +78,8 @@ export interface StagedChats {
   }[];
   /** Other chats whose draft changes rode along because they share an entity (issue #620). */
   readonly alsoIncludes: readonly AffectedChat[];
+  /** #678 — main's draft pages, which the build does NOT contain. */
+  readonly draftPages: DraftPagesSummary;
 }
 
 /** One merge of a Stage: the shared draft's chats, or one isolated chat. */
@@ -414,6 +417,7 @@ export async function stageChatSessions(
     pageCount: number;
     fileCount: number;
     previewUrl?: string;
+    draftPages: DraftPagesSummary;
   };
   // The audit's findings go to one chat: the first selected chat whose
   // changes need an audit (else the first chat) — its fix-round counter
@@ -445,6 +449,7 @@ export async function stageChatSessions(
         entityCount: m.entityCount,
       })),
       alsoIncludes: merged.flatMap((m) => m.alsoIncludes),
+      draftPages: summary.draftPages,
     },
   };
 }

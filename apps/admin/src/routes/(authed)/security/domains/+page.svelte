@@ -97,11 +97,19 @@
         <CardDescription>
           The protected staging site's host — every Stage renders it, and the staging gate answers on
           it. Default <code>staging.&lt;domain&gt;</code>; any other host works, also on another domain.
-          After a change, map it with <code>cms-provision staging-domain enable --staging-domain &lt;host&gt;</code>
-          and add the DNS record it prints. Who may open staging: <a class="underline" href="/security/staging">Staging access</a>.
+          <code>cms-provision staging-domain enable --staging-domain &lt;host&gt;</code> sets it here
+          for you, maps it and prints the DNS record; after a change made here, run that command to map
+          the new host. Nothing is served on a new host until the next Stage. Who may open staging:
+          <a class="underline" href="/security/staging">Staging access</a>.
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent class="space-y-3">
+        {#if data.staging.stageNote}
+          <!-- #678 — the next step when the host serves nothing / a stale build. -->
+          <div class="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200" data-testid="staging-host-stage-note">
+            {data.staging.stageNote}
+          </div>
+        {/if}
         <form method="post" action="?/setStagingHost" use:enhance class="flex max-w-xl flex-wrap items-end gap-2">
           <label class="grid flex-1 gap-1 text-sm">
             <span>Host</span>

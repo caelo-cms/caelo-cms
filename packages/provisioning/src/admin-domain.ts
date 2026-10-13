@@ -74,8 +74,8 @@ function logOf(opts: DomainOpts): (message: string) => void {
   return opts.log ?? ((message: string) => console.log(message));
 }
 
-/** The one deployed Cloud Run service of `slug` (Pulumi-suffixed name). */
-async function findService(
+/** The one deployed Cloud Run service of `slug` (Pulumi-suffixed name); also used by staging-admin.ts. */
+export async function findService(
   run: Run,
   scope: string[],
   slug: "admin" | "gateway",

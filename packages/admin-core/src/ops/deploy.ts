@@ -57,6 +57,7 @@ import {
   hostNormaliser,
   parityRefusal,
 } from "../deploy/build-parity.js";
+import { draftPagesSummary, mainDraftPages } from "../deploy/draft-pages.js";
 import { lockLiveReleases } from "../deploy/live-release-lock.js";
 import { stagingSiteUrl } from "../deploy/staging-domain.js";
 import { lockStagingPublication } from "../deploy/staging-publication-lock.js";
@@ -509,6 +510,12 @@ export const triggerDeployOp = defineOperation({
      * when it has one, undefined where the form action builds the URL.
      */
     previewUrl: z.string().optional(),
+    /**
+     * #678 — main's draft pages, which this build does NOT contain (only
+     * status='published' pages are built). Reported so a "successful"
+     * build never hides missing pages.
+     */
+    draftPages: draftPagesSummary,
   }),
   handler: async (ctx, input, tx) => {
     const targetRows = (await tx.execute(
@@ -820,6 +827,7 @@ export const triggerDeployOp = defineOperation({
       durationMs: subprocess.result.durationMs,
       buildId: runId,
       ...(previewUrl ? { previewUrl } : {}),
+      draftPages: await mainDraftPages(tx),
     });
   },
 });
