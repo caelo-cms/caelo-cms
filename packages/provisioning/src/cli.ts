@@ -875,9 +875,6 @@ async function stagingDomain(): Promise<void> {
   await domainMappingCommand("staging");
 }
 
-/** A bare host name, as `staging_access.staging_host` stores it (migration 0251). */
-const STAGING_HOST_SHAPE = /^[a-z0-9.-]{4,253}$/;
-
 async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
   const command = `${kind}-domain`;
   const sub = process.argv[3];
@@ -887,8 +884,14 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     );
     process.exit(2);
   }
-  const { installFlag, installStagingHost, listInstalls, selectInstall, writeMetadata } =
-    await import("./install-state.js");
+  const {
+    installFlag,
+    installStagingHost,
+    listInstalls,
+    recordableStagingHost,
+    selectInstall,
+    writeMetadata,
+  } = await import("./install-state.js");
   const { enableAdminDomain, enableStagingDomain } = await import("./admin-domain.js");
   // Guessing among several installs could map the domain in the wrong project.
   const selected = selectInstall(
@@ -950,12 +953,13 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     if (requested) retry = domainEnableRetryCommand(command, recorded);
     // The host may come from the admin's answer (inspect): only a bare host
     // name — already checked by stagingHostProblem above — reaches
-    // install.json (the same shape the database column enforces).
-    if (!STAGING_HOST_SHAPE.test(recorded)) {
+    // install.json, and only the value the allow-list hands back is written.
+    const stagingDomain = recordableStagingHost(recorded);
+    if (stagingDomain === null) {
       console.error(`${command}: refusing to record staging host ${JSON.stringify(recorded)}.`);
       process.exit(1);
     }
-    meta = { ...meta, stagingDomain: STAGING_HOST_SHAPE.exec(recorded)?.[0] ?? "" };
+    meta = { ...meta, stagingDomain };
     writeMetadata(meta.installId, meta);
   }
   if (!meta.projectId) process.exit(1);

@@ -47,7 +47,12 @@ export async function execute(
   options: ExecuteOptions = {},
 ): Promise<Result<unknown, QueryError>> {
   const opLookup = registry.lookup(name);
-  if (isErr(opLookup)) return opLookup;
+  // Re-wrap the error instead of returning `opLookup` itself: static analysis
+  // does not narrow the union, so passing the lookup Result through made the
+  // registered op *definition* (e.g. `changePasswordOp`) look like part of
+  // every op's output, which flagged every log of any op result as clear-text
+  // password logging (docs/dev/codeql.md).
+  if (isErr(opLookup)) return err(opLookup.error);
   const op = opLookup.value;
 
   if (!op.actorScope.includes(ctx.actorKind)) {

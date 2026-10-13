@@ -8,6 +8,7 @@ import {
   type InstallMetadata,
   installFlag,
   installStagingHost,
+  recordableStagingHost,
   recordedImageDigests,
   resumedMetadata,
   selectInstall,
@@ -158,5 +159,44 @@ describe("installStagingHost (#650)", () => {
     expect(installStagingHost({ domain: "acme.com", stagingDomain: "preview.other.de" })).toBe(
       "preview.other.de",
     );
+  });
+});
+
+describe("recordableStagingHost", () => {
+  it("passes a bare lower-case host name through unchanged", () => {
+    for (const host of ["staging.acme.com", "stg.acme.co.uk", "a-b.c1.example.de", "x.io"]) {
+      expect(recordableStagingHost(host)).toBe(host);
+    }
+  });
+
+  it("refuses anything that is not a bare host name", () => {
+    for (const host of [
+      "",
+      "localhost",
+      "https://staging.acme.com",
+      "staging.acme.com/",
+      "staging.acme.com:8443",
+      "Staging.Acme.com",
+      " staging.acme.com",
+      "staging.acme.com\n",
+      "staging..acme.com",
+      ".acme.com",
+      "staging.acme.com.",
+      "-staging.acme.com",
+      "staging-.acme.com",
+      "staging.acme.123",
+      "user@staging.acme.com",
+      "staging.acme.com?x=1",
+      `${"a".repeat(64)}.acme.com`,
+    ]) {
+      expect(recordableStagingHost(host)).toBeNull();
+    }
+  });
+
+  it("refuses a host longer than DNS allows", () => {
+    const label = "a".repeat(63);
+    const long = `${label}.${label}.${label}.${label}.com`;
+    expect(long.length).toBeGreaterThan(253);
+    expect(recordableStagingHost(long)).toBeNull();
   });
 });
