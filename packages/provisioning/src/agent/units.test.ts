@@ -80,6 +80,7 @@ describe("agent units", () => {
     const timer = agentTimerUnit(SPEC);
     expect(timer).toContain("OnUnitInactiveSec=60s");
     expect(timer).toContain("OnBootSec=2min");
+    expect(timer).toContain("OnActiveSec=1min");
     expect(timer).toContain("Unit=caelo-agent-example-com.service");
     expect(timer).toContain("WantedBy=timers.target");
   });

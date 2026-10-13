@@ -46,7 +46,7 @@ export interface AgentCliContext {
   agent(): AgentConfig | undefined;
   /** Persist config.json → agent (undefined removes it). */
   saveAgent(agent: AgentConfig | undefined): void;
-  /** Re-write the Compose file (with the agent's port), Caddyfile and bootstrap.sh. */
+  /** Re-write the Compose file (with the agent's port) and bootstrap.sh. */
   emitConfig(): void;
   /** The role convergence as the superuser, including the agent's login. */
   convergeRoles(): Promise<ConvergeOutcome>;

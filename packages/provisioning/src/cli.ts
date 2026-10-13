@@ -220,14 +220,7 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
     cfg.stagingDomain = defaultStagingHost(cfg.domain);
     saveConfig(cfg);
   }
-  writeFileSync(COMPOSE_PATH, renderCompose(cfg, installImages(cfg)), { mode: 0o600 });
-  // No secrets (it reads the passwords from the container's environment),
-  // and the postgres user inside the container must be able to read it.
-  writeFileSync(
-    BOOTSTRAP_SCRIPT_PATH,
-    selfHostedBootstrapScript({ agent: activeAgent(cfg) !== undefined }),
-    { mode: 0o755 },
-  );
+  emitComposeFiles(cfg);
   // Seed the install with the operator's primary domain plus a staging
   // sibling. Extra domains added via /settings/domains are appended by
   // regenerate-caddy when it queries the live domains table.
@@ -245,6 +238,22 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
     domains: dedupeDomains([...baseDomains, ...extraDomains]),
   });
   writeFileSync(CADDYFILE_PATH, caddy);
+}
+
+/**
+ * The Compose file and the bootstrap script Postgres runs on its first
+ * start — what the agent commands re-write (never the Caddyfile, whose
+ * operator-added domains only `up` / `regenerate-caddy` read back).
+ */
+function emitComposeFiles(cfg: CaeloConfig): void {
+  writeFileSync(COMPOSE_PATH, renderCompose(cfg, installImages(cfg)), { mode: 0o600 });
+  // No secrets (it reads the passwords from the container's environment),
+  // and the postgres user inside the container must be able to read it.
+  writeFileSync(
+    BOOTSTRAP_SCRIPT_PATH,
+    selfHostedBootstrapScript({ agent: activeAgent(cfg) !== undefined }),
+    { mode: 0o755 },
+  );
 }
 
 /** The Compose file for `cfg` running `images` (secrets come from config.json). */
@@ -286,7 +295,7 @@ function agentContext(cfg: CaeloConfig): AgentCliContext {
       else delete cfg.agent;
       saveConfig(cfg);
     },
-    emitConfig: () => emitConfig(cfg),
+    emitConfig: () => emitComposeFiles(cfg),
     convergeRoles: () => {
       if (!cfg.rolePasswords) {
         return Promise.resolve({

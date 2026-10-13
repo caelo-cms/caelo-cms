@@ -123,6 +123,9 @@ export function agentTimerUnit(spec: Pick<AgentUnitSpec, "name" | "domain">): st
     `Description=Poll for Caelo updates for ${spec.domain}`,
     "",
     "[Timer]",
+    // The first poll a minute after the timer starts (install, boot);
+    // then a minute after each run ends.
+    "OnActiveSec=1min",
     "OnBootSec=2min",
     `OnUnitInactiveSec=${PLATFORM_UPDATE_AGENT_POLL_SECONDS}s`,
     "AccuracySec=5s",
