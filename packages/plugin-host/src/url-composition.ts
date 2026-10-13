@@ -214,20 +214,19 @@ export function resolvePageUrl(page: UrlComposePage): ResolvedPageUrl {
   if (slugFmt && slugFmt.contribution.slot === "slug-format") {
     slugPart = slugFmt.contribution.encode(page);
   }
-  // A slug-format contribution may expand the own slug into several
-  // segments — validate each.
-  const slugSegments = slugPart.split("/").filter((s) => s.length > 0);
-  if (slugSegments.length === 0) {
+  // The own slug is exactly ONE segment: nesting belongs to the parent
+  // chain, so decode can split "ancestors / leaf" unambiguously. A
+  // slug-format contribution that expands it into several segments is
+  // refused rather than silently re-read as ancestors.
+  if (slugPart.length === 0) {
     throw new Error(
       `url-composition: page ${page.pageId} composed an empty slug part from slug "${page.slug}"`,
     );
   }
-  for (const seg of slugSegments) {
-    assertSegment(seg, slugFmt ? `${slugFmt.pluginSlug}/slug-format` : "core/slug");
-  }
+  assertSegment(slugPart, slugFmt ? `${slugFmt.pluginSlug}/slug-format` : "core/slug");
 
   return {
-    path: `/${[...prefixSegments, ...page.ancestorSlugs, ...slugSegments].join("/")}`,
+    path: `/${[...prefixSegments, ...page.ancestorSlugs, slugPart].join("/")}`,
     host: hostValue,
   };
 }

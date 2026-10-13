@@ -627,7 +627,8 @@ export type UrlContributionDef =
     }
   | {
       readonly slot: "slug-format";
-      /** Transform the stored slug into its URL form. */
+      /** Transform the stored slug into its URL form — ONE path segment
+       *  (no "/"): nesting comes from the parent-page chain. */
       readonly encode: (page: UrlComposePage) => string;
       /** Inverse: URL slug segment back to the stored slug. */
       readonly decode: (urlSlug: string) => string;
