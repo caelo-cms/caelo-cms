@@ -123,7 +123,7 @@ export function upgraderJobResource(projectId: string, region: string, env: stri
 /**
  * Account id of the upgrader job's own service account: may roll the two
  * Cloud Run services, run the migration job and back up Cloud SQL, never
- * change IAM, service accounts or secrets.
+ * change IAM, service accounts or secrets (upgrader-setup.ts).
  */
 export function upgraderServiceAccountId(env: string): string {
   return `${gcpNamePrefix(env)}-upgrader`;

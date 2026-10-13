@@ -311,12 +311,18 @@ export const platformUpdatesRecordTriggerOp = defineOperation({
   output: z.object({ recorded: z.literal(true) }),
   handler: async (ctx, input, tx) => {
     const op = "platform_updates.record_trigger";
-    const own = (await tx.execute(sql`
-      SELECT status FROM platform_update_requests
-       WHERE id = ${input.requestId}::uuid AND requested_by = ${ctx.actorId}::uuid
-    `)) as unknown as { status: string }[];
-    if (!own[0]) return handlerError(op, "No such update request of yours.");
+    // Only for the requester's own request, and only while it has not
+    // moved on: a retried or late call must not add a contradicting line to
+    // a request the job claimed, finished or the Owner cancelled.
     if (input.outcome.started) {
+      const rows = (await tx.execute(sql`
+        SELECT status FROM platform_update_requests
+         WHERE id = ${input.requestId}::uuid AND requested_by = ${ctx.actorId}::uuid
+           AND status IN ('pending', 'running')
+      `)) as unknown as { status: string }[];
+      if (!rows[0]) {
+        return handlerError(op, "No such update request of yours is waiting or running.");
+      }
       await appendEvent(
         tx,
         input.requestId,
@@ -328,11 +334,16 @@ export const platformUpdatesRecordTriggerOp = defineOperation({
       // The job never ran, so nothing changed; end the request so it does
       // not block the next attempt.
       const reason = `The upgrader could not be started: ${input.outcome.error} ${input.outcome.nextStep}`;
-      await tx.execute(sql`
+      const rows = (await tx.execute(sql`
         UPDATE platform_update_requests
            SET status = 'failed', status_reason = ${reason.slice(0, 4000)}, finished_at = now()
-         WHERE id = ${input.requestId}::uuid AND status = 'pending'
-      `);
+         WHERE id = ${input.requestId}::uuid AND requested_by = ${ctx.actorId}::uuid
+           AND status = 'pending'
+         RETURNING id
+      `)) as unknown as { id: string }[];
+      if (!rows[0]) {
+        return handlerError(op, "No such update request of yours is waiting to start.");
+      }
       await appendEvent(tx, input.requestId, "finish", "error", reason);
     }
     await recordAuditFromCtx(tx, ctx, {

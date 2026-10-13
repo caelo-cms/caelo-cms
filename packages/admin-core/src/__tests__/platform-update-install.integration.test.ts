@@ -105,7 +105,7 @@ async function login(email: string): Promise<string> {
 async function stepUp(
   ctx: ExecutionContext,
   sessionHash: string,
-  opts: { email?: string; authTimeOffsetSec?: number } = {},
+  opts: { email?: string; authTimeOffsetSec?: number; nonce?: string } = {},
 ) {
   const begin = await okValue<{ authorizationUrl: string }>(ctx, "step_up.begin", {
     sessionHash,
@@ -117,7 +117,7 @@ async function stepUp(
   expect(url.searchParams.get("max_age")).toBe("0");
   expect(url.searchParams.get("client_id")).toBe(CLIENT_ID);
   const state = url.searchParams.get("state") as string;
-  const redeemed = await okValue<{ startedAt: string; nonce: string; clientSecret: string }>(
+  const redeemed = await okValue<{ challengeId: string; nonce: string; clientSecret: string }>(
     ctx,
     "step_up.redeem",
     { sessionHash, state },
@@ -126,12 +126,12 @@ async function stepUp(
   expect(redeemed.clientSecret).toBe("test-client-secret-value");
   return run(ctx, "step_up.record", {
     sessionHash,
-    purpose: "platform_update",
+    challengeId: redeemed.challengeId,
     outcome: {
       ok: true,
       email: opts.email ?? OWNER_EMAIL,
       authTime: Math.floor(Date.now() / 1000) + (opts.authTimeOffsetSec ?? 0),
-      startedAt: redeemed.startedAt,
+      nonce: opts.nonce ?? redeemed.nonce,
     },
   });
 }
@@ -253,6 +253,28 @@ describe("platform_updates.request authz", () => {
   it("refuses a Google sign-in older than the step-up itself (Google reused a session)", async () => {
     const r = await stepUp(owner, ownerSession, { authTimeOffsetSec: -3600 });
     expect(message(r)).toContain("not from this confirmation");
+  });
+
+  it("records a step-up only against a redeemed challenge of this session, once, with its nonce", async () => {
+    // No challenge at all: claims alone are worth nothing.
+    const forged = await run(owner, "step_up.record", {
+      sessionHash: ownerSession,
+      challengeId: "00000000-0000-4000-8000-000000000001",
+      outcome: {
+        ok: true,
+        email: OWNER_EMAIL,
+        authTime: Math.floor(Date.now() / 1000),
+        nonce: "n".repeat(43),
+      },
+    });
+    expect(message(forged)).toContain("no completed Google sign-in");
+    // A token whose nonce is not this challenge's.
+    const wrongNonce = await stepUp(owner, ownerSession, { nonce: "x".repeat(43) });
+    expect(message(wrongNonce)).toContain("not from this confirmation");
+    const status = await okValue<{ freshUntil: string | null }>(owner, "step_up.status", {
+      sessionHash: ownerSession,
+    });
+    expect(status.freshUntil).toBeNull();
   });
 
   it("accepts a fresh step-up once, then needs a new one", async () => {

@@ -87,8 +87,29 @@ export function updateKind(from: string, to: string): UpdateKind | null {
   if (ta !== fa) return ta > fa ? "major" : null;
   if (tb !== fb) return tb > fb ? "minor" : null;
   if (tc !== fc) return tc > fc ? "patch" : null;
-  // Same X.Y.Z: only a stable release over its own pre-release is a step.
-  return a[4] !== undefined && b[4] === undefined ? "patch" : null;
+  // Same X.Y.Z: a stable release over its own pre-release, or a later
+  // pre-release (rc.1 → rc.2), is a step.
+  if (a[4] === undefined) return null;
+  if (b[4] === undefined) return "patch";
+  return comparePrerelease(b[4], a[4]) > 0 ? "patch" : null;
+}
+
+/** SemVer §11 precedence of two pre-release identifier lists. */
+function comparePrerelease(x: string, y: string): number {
+  const xs = x.split(".");
+  const ys = y.split(".");
+  for (let i = 0; i < Math.max(xs.length, ys.length); i++) {
+    const p = xs[i];
+    const q = ys[i];
+    if (p === undefined) return -1;
+    if (q === undefined) return 1;
+    const pn = /^\d+$/.test(p);
+    const qn = /^\d+$/.test(q);
+    if (pn && qn && Number(p) !== Number(q)) return Number(p) - Number(q);
+    if (pn !== qn) return pn ? -1 : 1;
+    if (p !== q) return p < q ? -1 : 1;
+  }
+  return 0;
 }
 
 /** The automatic-update modes. */
