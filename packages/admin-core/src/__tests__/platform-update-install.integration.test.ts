@@ -400,6 +400,22 @@ describe("platform_update_policy", () => {
     expect(after).toMatchObject({ mode: "auto", windowStart: "02:00" });
   });
 
+  it("one step-up authorizes one change, even when two race", async () => {
+    await stepUp(owner, ownerSession);
+    const results = await Promise.all(
+      [24, 48].map((soakHours) =>
+        run(owner, "platform_update_policy.set", {
+          policy: { ...policy, soakHours },
+          sessionHash: ownerSession,
+        }),
+      ),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(message(results.find((r) => !r.ok) as (typeof results)[number])).toStartWith(
+      "step_up_required:",
+    );
+  });
+
   it("rejects automatic installs off the stable channel and half-set windows", async () => {
     for (const bad of [
       { ...policy, channel: "rc" },

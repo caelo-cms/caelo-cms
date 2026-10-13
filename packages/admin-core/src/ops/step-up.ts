@@ -134,23 +134,37 @@ export const stepUpSetClientOp = defineOperation({
       }
     }
     const enc = await encryptSecret(input.clientSecret);
-    await tx.execute(sql`
-      INSERT INTO step_up_google_client (
-        id, client_id, client_secret_encrypted, client_secret_iv, client_secret_kek_fp,
-        updated_by, updated_at
-      ) VALUES (
-        1, ${input.clientId}, ${Buffer.from(enc.ciphertext)}, ${Buffer.from(enc.iv)},
-        ${enc.kekFingerprint}, ${ctx.actorId}::uuid, now()
-      )
-      ON CONFLICT (id) DO UPDATE SET
-        client_id = EXCLUDED.client_id,
-        client_secret_encrypted = EXCLUDED.client_secret_encrypted,
-        client_secret_iv = EXCLUDED.client_secret_iv,
-        client_secret_kek_fp = EXCLUDED.client_secret_kek_fp,
-        updated_by = EXCLUDED.updated_by,
-        updated_at = now()
-    `);
-    if (existing) await consumeStepUp(tx, ctx.actorId, input.sessionHash);
+    const ct = Buffer.from(enc.ciphertext);
+    const iv = Buffer.from(enc.iv);
+    if (existing) {
+      await tx.execute(sql`
+        UPDATE step_up_google_client SET
+          client_id = ${input.clientId}, client_secret_encrypted = ${ct},
+          client_secret_iv = ${iv}, client_secret_kek_fp = ${enc.kekFingerprint},
+          updated_by = ${ctx.actorId}::uuid, updated_at = now()
+        WHERE id = 1
+      `);
+      await consumeStepUp(tx, ctx.actorId, input.sessionHash);
+    } else {
+      // First setup: insert-only. If another first setup won the race, this
+      // one must not overwrite it without the step-up a replacement needs.
+      const inserted = (await tx.execute(sql`
+        INSERT INTO step_up_google_client (
+          id, client_id, client_secret_encrypted, client_secret_iv, client_secret_kek_fp,
+          updated_by, updated_at
+        ) VALUES (
+          1, ${input.clientId}, ${ct}, ${iv}, ${enc.kekFingerprint}, ${ctx.actorId}::uuid, now()
+        )
+        ON CONFLICT (id) DO NOTHING
+        RETURNING id
+      `)) as unknown as { id: number }[];
+      if (inserted.length === 0) {
+        return handlerError(
+          op,
+          "Google sign-in was set up a moment ago by someone else. Reload the page; replacing it needs a fresh Google sign-in.",
+        );
+      }
+    }
     await recordAuditFromCtx(tx, ctx, {
       operation: op,
       input: { clientId: input.clientId },
