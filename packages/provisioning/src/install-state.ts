@@ -79,6 +79,15 @@ export interface InstallMetadata {
    */
   imageDigests?: ImageDigests;
   /**
+   * #696 — the Caelo release (`0.11.0`) those digests belong to, recorded
+   * next to them by `upgrade` and the upgrader job. The upgrader job reads
+   * the installed version from here, not from the running admin: a
+   * compromised admin could claim an older version to get a downgrade
+   * past the "newer than installed" check. Absent until the first upgrade
+   * that knew it; the job refuses to run without it.
+   */
+  releaseVersion?: string;
+  /**
    * #650 — the protected staging site's host (wizard / `--staging-domain`,
    * default `staging.<domain>`). Absent on installs that predate it;
    * `upgrade` records the default ({@link installStagingHost}).

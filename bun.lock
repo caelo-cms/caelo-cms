@@ -170,6 +170,17 @@
         "drizzle-kit": "0.31.11",
       },
     },
+    "packages/platform-updater": {
+      "name": "@caelo-cms/platform-updater",
+      "version": "0.10.47",
+      "dependencies": {
+        "@caelo-cms/provisioning": "workspace:*",
+        "@caelo-cms/query-api": "workspace:*",
+        "@caelo-cms/shared": "workspace:*",
+        "drizzle-orm": "0.45.4",
+        "zod": "4.6.5",
+      },
+    },
     "packages/plugin-component-kit": {
       "name": "@caelo-cms/plugin-component-kit",
       "version": "0.10.47",
@@ -448,6 +459,8 @@
     "@caelo-cms/mcp-server": ["@caelo-cms/mcp-server@workspace:packages/mcp-server"],
 
     "@caelo-cms/migrations": ["@caelo-cms/migrations@workspace:packages/migrations"],
+
+    "@caelo-cms/platform-updater": ["@caelo-cms/platform-updater@workspace:packages/platform-updater"],
 
     "@caelo-cms/plugin-auth": ["@caelo-cms/plugin-auth@workspace:packages/plugins/auth"],
 

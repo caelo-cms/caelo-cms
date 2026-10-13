@@ -106,3 +106,11 @@ export function operatorAccessServiceAccountEmail(projectId: string, env: string
 export function operatorAccessScheduleName(env: string): string {
   return `${gcpNamePrefix(env)}-operator-access-hourly`;
 }
+
+/**
+ * Cloud Run job that installs Caelo releases from the admin (epic #696):
+ * the admin may only start it, without overrides (upgrader-setup.ts).
+ */
+export function upgraderJobName(env: string): string {
+  return `${gcpNamePrefix(env)}-upgrader`;
+}

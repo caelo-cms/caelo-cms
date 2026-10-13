@@ -53,6 +53,9 @@
     },
     "packages/provisioning": {
       "entry": ["stacks/*/index.ts"]
+    },
+    "packages/platform-updater": {
+      "entry": ["src/main.ts"]
     }
   }
 }

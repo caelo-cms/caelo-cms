@@ -75,7 +75,7 @@ export function migrationJobEnvArgs(databaseHost: string, env = GCP_STACK_ENV): 
  * Resolve the running admin Cloud Run service's image + database host +
  * VPC config. Returns null on any failure; caller surfaces the error.
  */
-async function readAdminConfig(
+export async function readAdminConfig(
   opts: MigrationRunnerOpts,
   gcloud: GcloudRunner,
 ): Promise<AdminConfig | null> {

@@ -24,6 +24,7 @@
     { "path": "./packages/plugins/international-site" },
     { "path": "./packages/plugins/consent-manager" },
     { "path": "./packages/provisioning" },
+    { "path": "./packages/platform-updater" },
     { "path": "./packages/migrations" },
     { "path": "./apps/admin" },
     { "path": "./apps/api-gateway" },

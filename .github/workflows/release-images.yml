@@ -165,6 +165,17 @@ jobs:
             pulumi config set caelo-gcp:domain smoke.example --stack smoke --non-interactive
             test -f Pulumi.smoke.yaml
           '
+          # The upgrader entry (#696) loads its whole module graph, then
+          # fails at the metadata server it cannot reach outside Google
+          # Cloud — its own structured error, not a missing module.
+          set +e
+          up="$(docker run --rm caelo-ops:smoke upgrader --ignored-arg 2>&1)"
+          code=$?
+          set -e
+          echo "${up}"
+          test "${code}" -ne 0 || { echo "::error::caelo-ops upgrader succeeded outside Google Cloud"; exit 1; }
+          echo "${up}" | grep -q '"message":"upgrader: ' \
+            || { echo "::error::caelo-ops upgrader did not reach its entry point"; exit 1; }
 
       - name: Log in to GHCR
         if: github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch'

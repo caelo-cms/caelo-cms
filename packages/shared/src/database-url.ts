@@ -81,3 +81,24 @@ export function databaseUrlFromEnv(
   }
   return undefined;
 }
+
+/**
+ * Password-less database URLs for Cloud SQL IAM database authentication —
+ * how the in-cloud jobs (the operator-access sync job, the upgrader job)
+ * connect: the user is the service account email without
+ * `.gserviceaccount.com`, the password a short-lived OAuth access token.
+ *
+ * @example
+ *   cloudSqlIamDatabaseUrls("10.0.0.3", "job@p.iam.gserviceaccount.com", "ya29.x").user
+ *   // → "job@p.iam"
+ */
+export function cloudSqlIamDatabaseUrls(
+  host: string,
+  serviceAccountEmail: string,
+  accessToken: string,
+): { admin: string; public: string; user: string } {
+  const user = serviceAccountEmail.replace(/\.gserviceaccount\.com$/, "");
+  const url = (db: string) =>
+    `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(accessToken)}@${host}:5432/${db}?sslmode=require`;
+  return { admin: url("cms_admin"), public: url("cms_public"), user };
+}

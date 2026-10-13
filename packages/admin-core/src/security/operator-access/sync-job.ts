@@ -27,6 +27,7 @@
  */
 
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import { cloudSqlIamDatabaseUrls } from "@caelo-cms/shared";
 import { SYSTEM_ACTOR_ID } from "../../audit.js";
 import { operatorAccessMembersOp } from "../../ops/user_access.js";
 import { defaultGoogleDeps, type GoogleDeps, reconcileResourceRole } from "./google-iam.js";
@@ -188,22 +189,6 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
   };
 }
 
-/**
- * Password-less database URLs for Cloud SQL IAM database authentication:
- * the user is the service account email without `.gserviceaccount.com`, the
- * password a short-lived OAuth token.
- */
-export function iamDatabaseUrls(
-  host: string,
-  serviceAccountEmail: string,
-  accessToken: string,
-): { admin: string; public: string; user: string } {
-  const user = serviceAccountEmail.replace(/\.gserviceaccount\.com$/, "");
-  const url = (db: string) =>
-    `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(accessToken)}@${host}:5432/${db}?sslmode=require`;
-  return { admin: url("cms_admin"), public: url("cms_public"), user };
-}
-
 async function main(): Promise<void> {
   const log = (entry: LogEntry) => console.log(JSON.stringify(entry));
   let config: SyncJobConfig;
@@ -218,7 +203,7 @@ async function main(): Promise<void> {
   let adapter: DatabaseAdapter | undefined;
   const readEmails = async (): Promise<string[]> => {
     const email = await google.metadata("instance/service-accounts/default/email");
-    const urls = iamDatabaseUrls(config.databaseHost, email, await google.accessToken());
+    const urls = cloudSqlIamDatabaseUrls(config.databaseHost, email, await google.accessToken());
     adapter = new DatabaseAdapter({
       adminDatabaseUrl: urls.admin,
       publicDatabaseUrl: urls.public,
