@@ -22,7 +22,9 @@ import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { registerAdminOps } from "../register.js";
 import { _setKekForTests } from "../security/secret-box.js";
+import { completeGoogleStepUp } from "../security/step-up/complete.js";
 import { sessionHashOf } from "../security/step-up/gate.js";
+import { GOOGLE_TOKEN_ENDPOINT } from "../security/step-up/google-oidc.js";
 import { googleSigner } from "./fixtures/google-id-token.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -548,5 +550,110 @@ describe("platform_updater database role (migration 0267)", () => {
     ]) {
       expect(await asUpdater(forbidden)).toContain("permission denied");
     }
+  });
+});
+
+describe("completeGoogleStepUp (the OAuth callback)", () => {
+  /** Google's token + JWKS endpoints, answering with an ID token for `email`. */
+  function googleEndpoints(email: string, authTimeOffsetSec = 0) {
+    let nonce = "";
+    const fetchFn = async (url: string, init: RequestInit) => {
+      if (url !== GOOGLE_TOKEN_ENDPOINT) return google.fetch(url);
+      const body = new URLSearchParams(String(init.body));
+      expect(body.get("code_verifier")?.length).toBeGreaterThanOrEqual(43);
+      const now = Math.floor(Date.now() / 1000);
+      const idToken = await google.sign({
+        iss: "https://accounts.google.com",
+        aud: body.get("client_id"),
+        exp: now + 3600,
+        nonce,
+        email,
+        email_verified: true,
+        auth_time: now + authTimeOffsetSec,
+      });
+      return new Response(JSON.stringify({ id_token: idToken }), { status: 200 });
+    };
+    return { fetchFn, setNonce: (n: string) => (nonce = n) };
+  }
+
+  async function begin(): Promise<{ state: string; nonce: string }> {
+    const r = await okValue<{ authorizationUrl: string }>(owner, "step_up.begin", {
+      sessionHash: ownerSession,
+      purpose: "platform_update",
+      returnTo: "/settings/updates",
+      redirectUri: "https://admin.example.com/settings/updates/step-up/callback",
+    });
+    const url = new URL(r.authorizationUrl);
+    return {
+      state: url.searchParams.get("state") as string,
+      nonce: url.searchParams.get("nonce") as string,
+    };
+  }
+
+  it("records a fresh sign-in by the owner's account; the install request then passes", async () => {
+    const { state, nonce } = await begin();
+    const g = googleEndpoints(OWNER_EMAIL.toUpperCase());
+    g.setNonce(nonce);
+    const done = await completeGoogleStepUp({
+      registry,
+      adapter,
+      ctx: owner,
+      sessionHash: ownerSession,
+      state,
+      code: "4/abc",
+      error: null,
+      fetch: g.fetchFn,
+    });
+    expect(done).toEqual({ ok: true, returnTo: "/settings/updates", purpose: "platform_update" });
+    expect(
+      (
+        await run(owner, "platform_updates.request", {
+          targetVersion: NEWEST,
+          sessionHash: ownerSession,
+        })
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("refuses a reused Google session and audits the failed attempt", async () => {
+    const { state, nonce } = await begin();
+    const g = googleEndpoints(OWNER_EMAIL, -3600);
+    g.setNonce(nonce);
+    const done = await completeGoogleStepUp({
+      registry,
+      adapter,
+      ctx: owner,
+      sessionHash: ownerSession,
+      state,
+      code: "4/abc",
+      error: null,
+      fetch: g.fetchFn,
+    });
+    expect(done.ok ? "" : done.message).toContain("reused an earlier sign-in");
+    const audit = await admin(
+      (tx) =>
+        tx`SELECT succeeded FROM audit_events WHERE actor_id = ${owner.actorId}::uuid
+             AND operation = 'step_up.record' ORDER BY created_at DESC LIMIT 1`,
+    );
+    expect((audit as unknown as { succeeded: boolean }[])[0]?.succeeded).toBe(false);
+  });
+
+  it("a cancelled Google sign-in leaves no step-up", async () => {
+    const { state } = await begin();
+    const done = await completeGoogleStepUp({
+      registry,
+      adapter,
+      ctx: owner,
+      sessionHash: ownerSession,
+      state,
+      code: null,
+      error: "access_denied",
+      fetch: async () => new Response("unused", { status: 500 }),
+    });
+    expect(done.ok ? "" : done.message).toContain("cancelled");
+    const status = await okValue<{ freshUntil: string | null }>(owner, "step_up.status", {
+      sessionHash: ownerSession,
+    });
+    expect(status.freshUntil).toBeNull();
   });
 });
