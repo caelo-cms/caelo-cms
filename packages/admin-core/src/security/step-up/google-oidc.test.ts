@@ -34,7 +34,7 @@ describe("verifyFreshSignIn", () => {
   it("accepts a fresh sign-in and lower-cases the email", () => {
     expect(verifyFreshSignIn(token(good), expect_)).toEqual({
       ok: true,
-      value: { email: "owner@example.com", authTime: NOW - 5, nonce: "n-1" },
+      value: { email: "owner@example.com", authTime: NOW - 5 },
     });
   });
 
@@ -121,9 +121,14 @@ describe("stepUpProblem", () => {
     userEmail: "owner@example.com",
     stepUpAt: new Date("2026-10-13T11:58:00Z"),
     stepUpEmail: "owner@example.com",
+    stepUpPurpose: "platform_update",
   };
+  it("a sign-in for another action does not count", () => {
+    expect(stepUpProblem(session, now, "update_policy")).toContain("different action");
+    expect(stepUpProblem(session, now, "platform_update")).toBeNull();
+  });
   it("fresh and matching → null", () => {
-    expect(stepUpProblem(session, now)).toBeNull();
+    expect(stepUpProblem(session, now, null)).toBeNull();
   });
   it.each([
     ["no session", null, "not signed in"],
@@ -131,6 +136,6 @@ describe("stepUpProblem", () => {
     ["stale", { ...session, stepUpAt: new Date("2026-10-13T11:40:00Z") }, "20 minutes ago"],
     ["other account", { ...session, stepUpEmail: "x@example.com" }, "is not owner@example.com"],
   ])("%s", (_n, s, why) => {
-    expect(stepUpProblem(s, now)).toContain(why);
+    expect(stepUpProblem(s, now, null)).toContain(why);
   });
 });
