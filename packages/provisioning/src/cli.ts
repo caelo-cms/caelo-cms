@@ -797,6 +797,9 @@ const handlers: Record<string, () => Promise<void>> = {
   truncate: lifecycleTruncate,
   "admin-domain": adminDomain,
   "staging-domain": stagingDomain,
+  // #696 — Pulumi state in the install's own project.
+  state: async () => (await import("./state-command.js")).stateCommand(process.argv),
+  attach: async () => (await import("./state-command.js")).attachCommand(process.argv),
   // Misc
   "pulumi-output-sync": pulumiOutputSync,
   version,
@@ -1153,7 +1156,7 @@ if (route.kind === "handler" || route.kind === "wizard") {
   }
 } else {
   console.log(
-    "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|pulumi-output-sync|version> [options]\n" +
+    "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|state migrate|attach|pulumi-output-sync|version> [options]\n" +
       "With several installs on this machine, pick one with --install <install-id or domain> (status, upgrade and backup also take --install all); in a terminal you are asked otherwise.\n" +
       "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
   );

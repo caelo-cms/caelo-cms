@@ -53,7 +53,12 @@ import {
   rotateRuntimeSecret,
   rotationRefusal,
 } from "./runtime-secrets.js";
-import { backendShellEnv, type ResolvedBackend, resolveBackend } from "./state-backend.js";
+import {
+  backendShellEnv,
+  localStateNotice,
+  type ResolvedBackend,
+  resolveBackend,
+} from "./state-backend.js";
 import {
   type AppRollPlan,
   type ReleaseImage,
@@ -525,6 +530,9 @@ async function upgradeInstall(
       provisionerIdentity: () => upgradeKeylessProvisioner(installId, projectId),
     },
   );
+  // #696 — upgrade never moves Pulumi state; it says how to.
+  const stateNotice = localStateNotice(meta);
+  if (stateNotice) note(stateNotice, "Pulumi state is on this machine");
   if (ok && provider === "gcp-firebase") {
     // #650 — staging builds now render the staging host; the gateway
     // serves it once it is mapped. The command is idempotent, so this

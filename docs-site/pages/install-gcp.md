@@ -122,7 +122,35 @@ Everything the provisioner needs to manage the install later lives **in the inst
 
 The cost confirmation lists both (less than $0.10/mo together); the installer creates them right after you confirm and checks them on every re-run. `~/.caelo-<install-id>/` on your machine keeps only a copy of `install.json` and `progress.json`; the bucket is the source of truth, and nothing in either file is a secret — the installer refuses to write one there.
 
-**Installs created before this change** keep their state in `~/.caelo-<install-id>/state/` with the passphrase in `secrets/pulumi-passphrase`; a re-run or `upgrade` never moves it on its own.
+**Installs created before this change** keep their state in `~/.caelo-<install-id>/state/` with the passphrase in `secrets/pulumi-passphrase`; a re-run or `upgrade` never moves it on its own (`upgrade` reminds you). Move it with `state migrate`.
+
+### Moving an existing install's state into its project
+
+```bash
+bunx @caelo-cms/provisioning state migrate --install example.com --dry-run   # what it would do
+bunx @caelo-cms/provisioning state migrate --install example.com
+```
+
+It needs the [Pulumi CLI](https://www.pulumi.com/docs/install/) on the machine (3.254.0 or newer uses `pulumi stack migrate`; older versions use export/import — both work), your gcloud login and Application Default Credentials. Step by step:
+
+1. **Preflight** (read-only): the stack exists, has no pending operations from an interrupted run, and a preview shows **no changes**. A stack with drift can't be proven identical after the move, so it is refused with "Run upgrade first": run `upgrade`, re-run the installer for the install until it reports no changes, then migrate.
+2. **Backup**: `~/.caelo-<install-id>/` is archived to `~/.caelo-backups/<install-id>-<time>.tar.zst` (`.tar.gz` without `zstd`), mode 600 — it contains the passphrase, keep it private.
+3. **Target**: the bucket and KMS key are ensured as for a new install.
+4. **Copy**: the stack is copied into the bucket and its secrets re-encrypted with the KMS key.
+5. **Verify**: a preview of the copy shows no changes and its outputs (secrets included, compared by hash) match the original. If not, the copy is discarded and your local state stays in use — nothing else changed.
+6. **Switch**: `install.json` records the new location (locally and in the bucket); `~/.caelo-<install-id>/state` is renamed to `state.migrated-<time>`, not deleted. Delete it (and the passphrase) once you are confident.
+
+Running it again is safe: an install already in its project is left alone, and a half-finished copy from an interrupted run is replaced. To move the state back onto this machine: `state migrate --install example.com --to local` (same steps, in the other direction; it creates a passphrase if there is none).
+
+### Managing an install from another machine
+
+On a new laptop or in Cloud Shell, after `gcloud auth login` and `gcloud auth application-default login`:
+
+```bash
+bunx @caelo-cms/provisioning attach --project <gcp-project-id>
+```
+
+It reads the install's `install.json` from the bucket and sets up `~/.caelo-<install-id>/` with copies of it and `progress.json`. No secret is copied — none exists outside your Google login. `status`, `upgrade`, `backup` and re-running the installer then work from that machine. `attach` refuses to overwrite a directory that holds an un-migrated install's local state.
 
 ## After the install
 
@@ -199,6 +227,8 @@ It sets the host in the admin for you (no click under Settings → Domains neede
 | Task | How |
 |---|---|
 | Upgrade to a new release | `bunx @caelo-cms/provisioning upgrade` (see below) |
+| Move an older install's state into its project | `bunx @caelo-cms/provisioning state migrate --install <id or domain>` ([details](#moving-an-existing-installs-state-into-its-project)) |
+| Manage the install from another machine | `bunx @caelo-cms/provisioning attach --project <gcp-project-id>` |
 | Give someone admin access | Add them at `/settings/users` (or ask the AI) — IAP follows automatically |
 | Serve the admin at `admin.<domain>` (gcp-firebase) | `bunx @caelo-cms/provisioning admin-domain enable` |
 | Serve the staging host (gcp-firebase) | `bunx @caelo-cms/provisioning staging-domain enable` |
@@ -264,6 +294,12 @@ Installers before this change stored the database URLs, with `admin_role`'s and 
 - **"Could not delete key … of caelo-provisioner@…" or "Could not list the keys …"** — your gcloud account needs `iam.serviceAccountKeys.list` and `iam.serviceAccountKeys.delete` (project Owner, or `roles/iam.serviceAccountKeyAdmin`). Re-run with such an account; the key file stays until its IAM key is gone, so nothing is lost by stopping here.
 - **"… sa-key.json is a key for …, not for caelo-provisioner@…" or "has no service-account key id"** — the file is not the key the installer minted, so nothing was deleted. Check with `gcloud iam service-accounts keys list --iam-account=caelo-provisioner@<project>.iam.gserviceaccount.com --managed-by=user`, delete the key that file held if it is one, remove the file, then re-run.
 - **Cloud Run cold-starts feel slow** — set `--min-instances=1` on the admin service. Costs ~$15/mo extra; eliminates first-request latency.
+- **`state migrate` says "Run upgrade first" (drift or pending operations)** — the stack doesn't match what is deployed, so the copy can't be verified. Run `upgrade`, then the installer for the install (`bunx @caelo-cms/provisioning`, pick it) until it reports no changes, then migrate again. Nothing was changed.
+- **`state migrate`: "Verification failed … The copy was discarded"** — the copy didn't match the original; your local state is still the one in use. Re-run; if it keeps failing, keep the backup from `~/.caelo-backups/` and open an issue with the message (it never contains secrets).
+- **"Could not read gs://<project>-caelo-ops/install/…"** — your gcloud account has no access to the install's ops bucket. Ask a project Owner to run the installer or `state migrate` once with your account signed in, or grant you `roles/storage.objectAdmin` on the bucket and `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key `caelo/pulumi-state`.
+- **"gs://<project>-caelo-ops exists but does not belong to project …"** — bucket names are global and another project holds that name. Delete or rename that bucket if it is yours; otherwise open an issue.
+- **"Project … already has a Caelo install … whose state lives in gs://…"** — you ran the installer for an install that another machine set up. Run `attach --project <id>` instead.
+- **Pulumi says it can't decrypt (`incorrect passphrase`, KMS permission denied)** — for an install in its project, check `gcloud auth application-default login` uses an account with access to the key; for a local install, `secrets/pulumi-passphrase` must be the original file (restore it from `~/.caelo-backups/`).
 
 ## Next
 

@@ -237,3 +237,25 @@ export function chooseInstallBackend(
   }
   return "gcs";
 }
+
+/**
+ * What `upgrade` tells the operator about an install whose Pulumi state is
+ * still on this machine (#696), or null when it lives in the install's own
+ * cloud. `upgrade` never moves state itself: the move has its own
+ * preflight, backup and verification (`state migrate`).
+ */
+export function localStateNotice(meta: {
+  readonly installId: string;
+  readonly provider: string;
+  readonly stateBackend?: StateBackendRecord;
+}): string | null {
+  if (installBackend(meta).kind !== "local") return null;
+  if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") return null;
+  return [
+    `This install's Pulumi state and passphrase live only on this machine (~/.caelo-${meta.installId}/).`,
+    "Lose this machine and the install's infrastructure can no longer be converged from anywhere.",
+    "Move them into the install's own GCP project (versioned bucket + Cloud KMS key, < $0.10/mo):",
+    `  bunx @caelo-cms/provisioning state migrate --install ${meta.installId} --dry-run`,
+    `  bunx @caelo-cms/provisioning state migrate --install ${meta.installId}`,
+  ].join("\n");
+}

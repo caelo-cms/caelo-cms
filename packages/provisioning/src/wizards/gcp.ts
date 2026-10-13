@@ -929,7 +929,7 @@ async function stepStateBackend(
   if (kind === "local") {
     stepPulumiPassphrase(installId);
     log.info(
-      `Pulumi state: ${dim(describeBackend(meta, root))} (this install predates state in project ${projectId}; it stays where it is).`,
+      `Pulumi state: ${dim(describeBackend(meta, root))} (this install predates state in project ${projectId}). Move it there, so any machine you sign in on can manage the install: ${bold(`bunx @caelo-cms/provisioning state migrate --install ${installId}`)}`,
     );
     return resolveBackend(meta, {
       installRoot: root,
@@ -974,7 +974,7 @@ async function stepStateBackend(
     // finishing the move is safe. Anything else is another install.
     if (other && !(other.installId === meta.installId && other.createdAt === meta.createdAt)) {
       cancel(
-        `Project ${projectId} already has a Caelo install (${other.domain ?? "unknown domain"}) whose state lives in gs://${record.bucket}. This run would overwrite that install's record; run the installer from the machine that set it up instead.`,
+        `Project ${projectId} already has a Caelo install (${other.domain ?? "unknown domain"}) whose state lives in gs://${record.bucket}. This run would overwrite that install's record. To manage it from this machine run: bunx @caelo-cms/provisioning attach --project ${projectId}`,
       );
       process.exit(1);
     }

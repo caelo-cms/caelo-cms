@@ -238,6 +238,17 @@ The admin app's notification bell also shows a "vX.Y.Z available"
 entry when running version is stale (24h-cached check against the
 GitHub Releases API).
 
+**Pulumi state location (#696).** New GCP installs keep Pulumi's state,
+`install.json` and `progress.json` in `gs://<project>-caelo-ops` with a
+Cloud KMS key (`caelo/pulumi-state`) as secrets provider. Installs from
+before that keep them in `~/.caelo-<id>/` until the operator runs
+`bunx @caelo-cms/provisioning state migrate --install <id>` (`upgrade`
+prints the reminder). A release must not change the `stateBackend` shape
+in `install.json` or the bucket layout (`pulumi/`, `install/`) without a
+migration in `state migrate`. Maintainer dogfood order for the move:
+caelo-cms.com → viu.one → searchviu (dry run first, each one verified with
+`status` before the next).
+
 ---
 
 ## Lockstep enforcement
