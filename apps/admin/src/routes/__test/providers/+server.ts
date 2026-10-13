@@ -27,10 +27,14 @@ function ensureEnabled(): void {
 
 export const POST: RequestHandler = async ({ request }) => {
   ensureEnabled();
-  const body = (await request.json()) as { name?: string; events?: unknown };
+  const body = (await request.json()) as { name?: string; events?: unknown; stepDelayMs?: unknown };
   if (!body.name || typeof body.name !== "string") throw error(400, "name required");
   if (!Array.isArray(body.events)) throw error(400, "events must be an array");
-  registerTestProvider(body.name, body.events as never);
+  const stepDelayMs = body.stepDelayMs ?? 0;
+  if (typeof stepDelayMs !== "number" || !Number.isInteger(stepDelayMs) || stepDelayMs < 0) {
+    throw error(400, "stepDelayMs must be a non-negative integer");
+  }
+  registerTestProvider(body.name, body.events as never, stepDelayMs);
   return json({ ok: true, name: body.name });
 };
 

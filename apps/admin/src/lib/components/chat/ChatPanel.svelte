@@ -28,6 +28,12 @@
   import { Label } from "#lib/components/ui/label/index.js";
   import { Textarea } from "#lib/components/ui/textarea/index.js";
   import { cn } from "#lib/utils.js";
+  import RunningAgentsBar from "#lib/components/agents/RunningAgentsBar.svelte";
+  import {
+    heldBackNote,
+    mayStartTurn,
+    postAgentAction,
+  } from "#lib/components/agents/agent-runs-client.js";
   import DebugPanel from "./DebugPanel.svelte";
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
   import InlineDiff from "./InlineDiff.svelte";
@@ -170,6 +176,11 @@
   // sees the same abort via `request.signal`, stops the runner, and marks the
   // turn interrupted. Null when no stream is running.
   let streamAbort = $state<AbortController | null>(null);
+  // Issue #664 — set by Stop: no auto-sent message (approval / quality /
+  // import / queued choice nudges) starts the AI again until the operator
+  // acts themselves. The server enforces the same latch per chat.
+  let operatorStopped = $state(false);
+  let stopError = $state<string | null>(null);
 
   // v0.2.45 — autoscroll + jump-to-latest button.
   // followBottom: when true (default), each new message / streaming-text
@@ -427,6 +438,10 @@
     // Imports are the one gated domain whose approval starts a
     // BACKGROUND job instead of applying a change — the nudge must
     // say so or the AI announces results that don't exist yet.
+    // Issue #664 — deliberately "auto": after a Stop, approving a proposal
+    // applies it but does not restart the AI (the "please continue" is shown
+    // as a held-back note). Only a message the operator writes restarts it —
+    // the incident this guards against began with an Approve click.
     void sendAutoMessage(
       isImportApproval
         ? `Approved: crawl proposal ${proposalId.slice(0, 8)} — the crawler starts within ~10s and runs in the background. Check the run status and tell me how you'll proceed.`
@@ -642,8 +657,17 @@
    * the draft in the field (an earlier version routed through the composer and
    * cleared the draft, which was the bug).
    */
-  async function sendAutoMessage(text: string): Promise<void> {
+  async function sendAutoMessage(
+    text: string,
+    // Issue #664 — "operator" for a click the operator made (choice /
+    // suggestion chip); "auto" for a nudge the panel sends on its own.
+    trigger: "operator" | "auto" = "auto",
+  ): Promise<void> {
     if (streaming) return;
+    if (!mayStartTurn(trigger, operatorStopped)) {
+      noteHeldBack(text);
+      return;
+    }
     // issue #303 — a nudge with nothing to say must not post: an empty
     // system-origin row renders as a bare "Status:" note (and the
     // append_message boundary now rejects it server-side too). Loud
@@ -656,7 +680,7 @@
     // them as user turns, but they persist + render as muted status notes so
     // the operator isn't misled into thinking they typed them ("das kommt
     // nicht vom nutzer").
-    await sendMessage("system", undefined, text);
+    await sendMessage("system", undefined, text, trigger === "operator");
   }
   // Live counter of pending changes during streaming — incremented per
   // AI tool result + reset between turns. Drives the "N edits during
@@ -1326,12 +1350,50 @@
   });
 
   /**
-   * Stop the AI's current action, whatever it is. Aborts the streaming fetch;
-   * the server-side runner stops at its next abort check and persists the
-   * in-flight assistant turn as interrupted. Safe to call when idle (no-op).
+   * Issue #664 — Stop the AI in this chat, authoritatively. The server-side
+   * Stop (chat.cancel_agents) is what actually ends the work: the running
+   * turn on whichever instance runs it, the turns queued behind it, its
+   * subagents, external agents working here. Aborting our own fetch only
+   * ends this tab's view of the stream. Every auto message this panel was
+   * holding back is dropped (shown as a note) and the latch keeps new ones
+   * from starting the AI until the operator sends something themselves.
    */
-  function stopStreaming(): void {
+  async function stopStreaming(): Promise<void> {
+    operatorStopped = true;
+    stopError = null;
+    const held: string[] = [];
+    if (pendingApprovalNudges.length > 0) {
+      held.push(
+        `Approved ${pendingApprovalNudges.map((n) => `${n.kind ?? "proposal"}/${n.proposalId.slice(0, 8)}`).join(", ")}`,
+      );
+      pendingApprovalNudges = [];
+    }
+    if (pendingChoiceAnswer !== null) {
+      held.push(pendingChoiceAnswer);
+      pendingChoiceAnswer = null;
+    }
+    if (pendingImportNudge !== null) {
+      held.push(pendingImportNudge);
+      pendingImportNudge = null;
+    }
+    for (const text of held) noteHeldBack(text);
+    // The quality nudge is acked + noted by its flush effect, which the
+    // latch now routes to the held-back path.
     streamAbort?.abort();
+    stopError = await postAgentAction({ csrfToken, chatSessionId: session.id, action: "cancel" });
+  }
+
+  /** Show an auto message Stop held back, instead of sending it. */
+  function noteHeldBack(text: string): void {
+    messages = [
+      ...messages,
+      {
+        id: `held-${crypto.randomUUID()}`,
+        role: "user",
+        origin: "system",
+        content: heldBackNote(text),
+      },
+    ];
   }
 
   async function sendMessage(
@@ -1346,6 +1408,9 @@
     // chips, attachments) stays exactly as-is. Set by sendAutoMessage. This is
     // why clicking a chip sends AND leaves your typed text untouched.
     overrideText?: string,
+    // Issue #664 — a system-origin send the operator clicked (chip): it lifts
+    // the Stop latch like a typed message does.
+    operatorClicked = false,
   ): Promise<void> {
     if (streaming || (uploadingImages && !resume && overrideText === undefined)) return;
     if (
@@ -1356,6 +1421,9 @@
     )
       return;
     const isOverride = overrideText !== undefined;
+    const byOperator = origin !== "system" || operatorClicked || resume !== undefined;
+    if (!mayStartTurn(byOperator ? "operator" : "auto", operatorStopped)) return;
+    if (byOperator) operatorStopped = false;
     // Attachment-only sends get a minimal text body (the op requires
     // non-empty content; the images carry the actual intent).
     const text = overrideText ?? (composer.trim().length > 0 ? composer : "(see attached image)");
@@ -1416,6 +1484,9 @@
                 // issue #29 — provenance so the persisted row + reload keep the
                 // system-origin status treatment durable across refresh.
                 ...(origin ? { origin } : {}),
+                // Issue #664 — a clicked chip is the operator's own action:
+                // the server lets it lift the chat's Stop latch.
+                ...(origin && operatorClicked ? { trigger: "operator" } : {}),
                 ...(sentAttachments.length > 0
                   ? {
                       attachments: sentAttachments.map((a) => ({
@@ -1941,7 +2012,7 @@
                       }
                       // Sends the answer to the AI; the composer draft is left
                       // untouched (sendAutoMessage's overrideText path).
-                      void sendAutoMessage(answer);
+                      void sendAutoMessage(answer, "operator");
                     }}
                   />
                   {#if m.toolName === "edit_module" && typeof m.toolArgs?.moduleId === "string" && typeof m.toolArgs?.html === "string"}
@@ -2248,6 +2319,18 @@
             Crawl failed: {crawlRun.errorMessage ?? "no error message"}
           </div>
         {/if}
+        <!-- Issues #664 / #665 — every agent working in this chat (incl. other
+             tabs, subagents, external MCP agents), each with its own Stop. -->
+        <RunningAgentsBar
+          chatSessionId={session.id}
+          {csrfToken}
+          refreshKey={(streaming ? 1 : 0) + (operatorStopped ? 2 : 0)}
+        />
+        {#if stopError}
+          <p role="alert" class="text-xs text-destructive" data-testid="chat-stop-error">
+            Stop did not reach the server: {stopError}
+          </p>
+        {/if}
                 <!-- v0.2.63 — Pending proposals strip. Pinned directly ABOVE
              THE COMPOSER (operator feedback 2026-07-12: at the top of
              the transcript it sat exactly where the eye is NOT while
@@ -2440,7 +2523,7 @@
                 <button
                   type="button"
                   class="rounded-full border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-primary/10"
-                  onclick={() => void sendAutoMessage(sug.message)}
+                  onclick={() => void sendAutoMessage(sug.message, "operator")}
                 >
                   {sug.label}
                 </button>
@@ -2631,7 +2714,7 @@
                 type="button"
                 size="sm"
                 variant="destructive"
-                onclick={stopStreaming}
+                onclick={() => void stopStreaming()}
                 data-testid="chat-stop"
                 title="Stop the AI's current action"
               >

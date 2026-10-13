@@ -174,6 +174,32 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     kind: "internal",
     reason: "chat-runner turn-lease release at turn end (issue #628)",
   },
+  "chat.register_agent_run": {
+    kind: "internal",
+    reason: "chat-runner / subagent registration in the running-agents table (issues #664, #665)",
+  },
+  "chat.get_agent_stop_epoch": {
+    kind: "internal",
+    reason:
+      "chat request entry reads the chat's Stop count so a pre-Stop message is not run afterwards (issue #664)",
+  },
+  "chat.heartbeat_agent_run": {
+    kind: "internal",
+    reason: "chat-runner heartbeat that also delivers the operator's Stop (issue #664)",
+  },
+  "chat.finish_agent_run": {
+    kind: "internal",
+    reason: "chat-runner running-agents row removal at turn end (issue #664)",
+  },
+  "chat.touch_external_agent": {
+    kind: "internal",
+    reason: "mcp.execute_tool marks the external agent as working in the chat (issue #665)",
+  },
+  "chat.list_agent_runs": {
+    kind: "internal",
+    reason:
+      "backing read of the running-agents bar and header indicator (issues #664, #665); agents learn about another working agent from the refusal message instead",
+  },
   "chat.set_response_messages": {
     kind: "internal",
     reason: "chat-runner persists the SDK response.messages (CLAUDE.md §12)",

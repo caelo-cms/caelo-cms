@@ -27,6 +27,16 @@ import {
   resolveSessionOp,
 } from "./ops/auth.js";
 import { cancelProposalOp } from "./ops/cancel_proposal.js";
+import {
+  allowExternalAgentOp,
+  cancelAgentsOp,
+  finishAgentRunOp,
+  getAgentStopEpochOp,
+  heartbeatAgentRunOp,
+  listAgentRunsOp,
+  registerAgentRunOp,
+  touchExternalAgentOp,
+} from "./ops/chat/agent-runs.js";
 import { discardChatBranchOp } from "./ops/chat/discard.js";
 import {
   checkBranchAccessOp,
@@ -768,6 +778,15 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(acquireChatTurnLeaseOp);
   registry.register(renewChatTurnLeaseOp);
   registry.register(releaseChatTurnLeaseOp);
+  // issues #664 / #665 — running agents per chat + authoritative Stop.
+  registry.register(getAgentStopEpochOp);
+  registry.register(registerAgentRunOp);
+  registry.register(heartbeatAgentRunOp);
+  registry.register(finishAgentRunOp);
+  registry.register(touchExternalAgentOp);
+  registry.register(listAgentRunsOp);
+  registry.register(cancelAgentsOp);
+  registry.register(allowExternalAgentOp);
   registry.register(setResponseMessagesOp);
   registry.register(cacheToolResultOp);
   registry.register(lookupToolResultOp);

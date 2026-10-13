@@ -921,11 +921,51 @@ export class FixtureProvider implements AIProvider {
  */
 export class MultiFixtureProvider extends FixtureProvider {
   readonly #queue: readonly (readonly ProviderEvent[])[];
+  readonly #stepDelayMs: number;
   #idx = 0;
 
-  constructor(queue: readonly (readonly ProviderEvent[])[], model = "claude-opus-4-7") {
+  /**
+   * @param stepDelayMs issue #664 — hold every step this long before it
+   *   streams (abortable), so a browser test has a turn that is still
+   *   running when it presses Stop. 0 = no delay.
+   */
+  constructor(
+    queue: readonly (readonly ProviderEvent[])[],
+    model = "claude-opus-4-7",
+    stepDelayMs = 0,
+  ) {
     super([], model);
     this.#queue = queue;
+    this.#stepDelayMs = stepDelayMs;
+  }
+
+  protected override nextStepStream(options: {
+    abortSignal?: AbortSignal;
+  }): ReadableStream<unknown> | null {
+    if (this.#stepDelayMs <= 0) return null;
+    const parts = scriptedStepToParts(this.nextStepEvents());
+    const delayMs = this.#stepDelayMs;
+    const signal = options.abortSignal;
+    return new ReadableStream<unknown>({
+      start(controller) {
+        return new Promise<void>((resolve) => {
+          const emit = (): void => {
+            signal?.removeEventListener("abort", onAbort);
+            for (const p of parts) controller.enqueue(p);
+            controller.close();
+            resolve();
+          };
+          const onAbort = (): void => {
+            clearTimeout(timer);
+            controller.error(new DOMException("The operation was aborted.", "AbortError"));
+            resolve();
+          };
+          const timer = setTimeout(emit, delayMs);
+          if (signal?.aborted) onAbort();
+          else signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      },
+    });
   }
 
   protected override nextStepEvents(): readonly ProviderEvent[] {
