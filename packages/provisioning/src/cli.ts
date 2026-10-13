@@ -1031,6 +1031,9 @@ async function lifecycleUpgrade(): Promise<void> {
     });
     return;
   }
+  // #696 — `--skip-health-check` rolls without the post-roll deep health
+  //   check (Cloud Run readiness only), e.g. for a release that predates it.
+  const skipHealthCheck = process.argv.includes("--skip-health-check");
   // #607 — optional; must match the install's recorded region (upgrade
   // never moves an install between regions).
   const region = arg("region");
@@ -1040,6 +1043,7 @@ async function lifecycleUpgrade(): Promise<void> {
     ...(version ? { version } : {}),
     ...(channel ? { channel } : {}),
     ...(skipVerify ? { skipVerify: true } : {}),
+    ...(skipHealthCheck ? { skipHealthCheck: true } : {}),
   });
 }
 async function lifecycleBackup(): Promise<void> {

@@ -3,7 +3,9 @@
 /**
  * Thin gcloud shell-out wrapper. The wizard composes high-level
  * "create the project + link billing + enable APIs + create SA +
- * grant roles + mint key" flows on top of these primitives.
+ * grant roles" flows on top of these primitives. No key is ever minted
+ * for the provisioner SA: the operator impersonates it
+ * (provisioner-identity.ts, #696).
  *
  * Why shell out instead of using the GCP SDK directly:
  *   - the user's gcloud auth state IS the auth (no separate
@@ -43,10 +45,17 @@ export function gcloudEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Process
  * Run a gcloud command. Buffered stdout + stderr (max 4 MB each).
  * Throws on spawn failure but NOT on non-zero exit — caller checks `ok`.
  * stdin is always ended (after `opts.stdin`, if given), so nothing can wait on it.
+ * `opts.env` replaces this process's environment as the base (prompts stay off).
  */
-export async function gcloud(args: string[], opts: { stdin?: string } = {}): Promise<GcloudResult> {
+export async function gcloud(
+  args: string[],
+  opts: { stdin?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<GcloudResult> {
   return new Promise((resolveResult, reject) => {
-    const child = spawn("gcloud", args, { stdio: ["pipe", "pipe", "pipe"], env: gcloudEnv() });
+    const child = spawn("gcloud", args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: gcloudEnv(opts.env ?? process.env),
+    });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
@@ -292,21 +301,6 @@ export async function grantProvisionerRoles(
     else failed.push({ role, error: r.stderr.trim() });
   }
   return { granted, failed };
-}
-
-export async function createServiceAccountKey(
-  saEmail: string,
-  outputPath: string,
-): Promise<GcloudResult> {
-  return gcloud([
-    "iam",
-    "service-accounts",
-    "keys",
-    "create",
-    outputPath,
-    "--iam-account",
-    saEmail,
-  ]);
 }
 
 export const REQUIRED_API_LIST = REQUIRED_APIS;

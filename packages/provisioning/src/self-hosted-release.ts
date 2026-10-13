@@ -20,14 +20,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertNoSecrets, writeJsonAtomic } from "./checkpoint-secrets.js";
-import { type ReleaseImages, releaseImageDigest, releaseImageRef } from "./compose.js";
+import { ghcrImageDigest, ghcrImageRef, type ReleaseImages } from "./compose.js";
 import {
   cosignVerifyArgv,
   GHCR_NAMESPACE,
   GHCR_REGISTRY,
   RELEASE_SERVICES,
   resolveRegistryDigest,
-} from "./release-images.js";
+} from "./upgrade/release-images.js";
 
 /** What a host command returned. */
 export interface CommandResult {
@@ -110,8 +110,8 @@ export function readRelease(caeloDir: string): SelfHostedRelease | null {
   const gateway = raw.images?.gateway ?? "";
   if (
     typeof raw.version !== "string" ||
-    !releaseImageDigest("admin", admin) ||
-    !releaseImageDigest("gateway", gateway)
+    !ghcrImageDigest("admin", admin) ||
+    !ghcrImageDigest("gateway", gateway)
   ) {
     throw new Error(
       `${path} is malformed (needs version + digest-pinned ghcr.io/caelo-cms images); fix it or re-run \`cms-provision upgrade --version <x.y.z>\`.`,
@@ -203,7 +203,7 @@ export async function resolveVerifiedRelease(
           "Check the version exists at https://github.com/caelo-cms/caelo-cms/releases and pass it as --version x.y.z.",
       };
     }
-    refs[service] = releaseImageRef(service, r.digest);
+    refs[service] = ghcrImageRef(service, r.digest);
   }
   const images: ReleaseImages = {
     mode: "release",

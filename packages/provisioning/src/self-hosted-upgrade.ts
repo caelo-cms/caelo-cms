@@ -42,7 +42,6 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { MEDIA_DIR, type ReleaseImages } from "./compose.js";
-import { fetchLatestReleaseTag, RELEASE_SERVICES, releaseTag } from "./release-images.js";
 import {
   type HostRunner,
   readRelease,
@@ -51,6 +50,7 @@ import {
   releaseImages,
   resolveVerifiedRelease,
 } from "./self-hosted-release.js";
+import { fetchLatestReleaseTag, RELEASE_SERVICES, releaseTag } from "./upgrade/release-images.js";
 
 /** The Compose service names of the two Caelo services. */
 const COMPOSE_SERVICE = { admin: "caelo-admin", gateway: "caelo-gateway" } as const;

@@ -3,7 +3,12 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { assertStackRegion, deployedStackRegion, resolveSecretReplication } from "./gcp-pulumi.js";
+import {
+  assertStackRegion,
+  deployedStackRegion,
+  pulumiGcpEnv,
+  resolveSecretReplication,
+} from "./gcp-pulumi.js";
 
 const SECRET = "gcp:secretmanager/secret:Secret";
 
@@ -113,5 +118,43 @@ describe("GCP stack DNS + certificates (go-live split)", () => {
     const src = stack("gcp-firebase");
     expect(src).toContain('if (v.requiredAction === "REMOVE") continue;');
     expect(src).toContain("v.domainName ?? desired.domainName ?? domain");
+  });
+});
+
+describe("pulumiGcpEnv (#696 — keyless provisioner)", () => {
+  const SA = "caelo-provisioner@acme.iam.gserviceaccount.com";
+  const env = pulumiGcpEnv(
+    {
+      PATH: "/usr/bin",
+      HOME: "/home/op",
+      GOOGLE_APPLICATION_CREDENTIALS: "/home/op/.caelo-gcp-acme/secrets/sa-key.json",
+      GOOGLE_CREDENTIALS: "{}",
+      GOOGLE_OAUTH_ACCESS_TOKEN: "ya29.static",
+      GOOGLE_IMPERSONATE_SERVICE_ACCOUNT: "someone-else@x.iam.gserviceaccount.com",
+    },
+    {
+      installRoot: "/home/op/.caelo-gcp-acme",
+      pulumiPassphrase: "pp",
+      impersonateServiceAccount: SA,
+    },
+  );
+
+  it("impersonates the provisioner SA", () => {
+    expect(env.GOOGLE_IMPERSONATE_SERVICE_ACCOUNT).toBe(SA);
+  });
+
+  it("blanks every ambient credential (the Automation API merges process.env into the child)", () => {
+    expect(env.GOOGLE_APPLICATION_CREDENTIALS).toBe("");
+    expect(env.GOOGLE_CREDENTIALS).toBe("");
+    expect(env.GOOGLE_CLOUD_KEYFILE_JSON).toBe("");
+    expect(env.GCLOUD_KEYFILE_JSON).toBe("");
+    expect(env.GOOGLE_OAUTH_ACCESS_TOKEN).toBe("");
+    expect(Object.values(env).some((v) => v.includes("sa-key.json"))).toBe(false);
+  });
+
+  it("keeps the rest of the environment and scopes the backend to the install", () => {
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.PULUMI_CONFIG_PASSPHRASE).toBe("pp");
+    expect(env.PULUMI_BACKEND_URL).toBe("file:///home/op/.caelo-gcp-acme/state");
   });
 });

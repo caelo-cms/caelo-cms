@@ -17,8 +17,8 @@
  * {@link DevImages} explicitly (`init --dev`) — never the default.
  */
 
-import { ghcrRepository, isImageDigest, type ReleaseService } from "./release-images.js";
 import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB, publicSiteUrl } from "./stack-contract.js";
+import { ghcrRepository, isImageDigest, type ReleaseService } from "./upgrade/release-images.js";
 
 /** The admin + gateway release images, each `ghcr.io/caelo-cms/<svc>@sha256:…`. */
 export interface ReleaseImages {
@@ -63,7 +63,7 @@ export const COMPOSE_GATEWAY_PORT = 8090;
  * `ghcr.io/caelo-cms/<service>@<digest>` — the only image reference shape a
  * release-mode Compose file accepts.
  */
-export function releaseImageRef(service: ReleaseService, digest: string): string {
+export function ghcrImageRef(service: ReleaseService, digest: string): string {
   if (!isImageDigest(digest)) throw new Error(`not an image digest: ${JSON.stringify(digest)}`);
   return `${ghcrRepository(service)}@${digest}`;
 }
@@ -72,7 +72,7 @@ export function releaseImageRef(service: ReleaseService, digest: string): string
  * The digest of a release image reference, or null when `ref` is not a
  * digest-pinned reference to that service's Caelo repository.
  */
-export function releaseImageDigest(service: ReleaseService, ref: string): string | null {
+export function ghcrImageDigest(service: ReleaseService, ref: string): string | null {
   const prefix = `${ghcrRepository(service)}@`;
   if (!ref.startsWith(prefix)) return null;
   const digest = ref.slice(prefix.length);
@@ -219,14 +219,14 @@ function serviceRuntime(
       ...volumes(["../..:/app", ...mounts]),
     ].join("\n");
   }
-  const digest = releaseImageDigest(service, images[service]);
+  const digest = ghcrImageDigest(service, images[service]);
   if (!digest) {
     throw new Error(
       `${service} image ${JSON.stringify(images[service])} is not ${ghcrRepository(service)}@sha256:<digest>`,
     );
   }
   // The image's own CMD starts the service; no source is mounted.
-  return [`    image: ${releaseImageRef(service, digest)}`, ...volumes(mounts)].join("\n");
+  return [`    image: ${ghcrImageRef(service, digest)}`, ...volumes(mounts)].join("\n");
 }
 
 function adminService(spec: ComposeSpec, adminMemoryMiB: number, env: EnvLine): string {

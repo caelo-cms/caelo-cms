@@ -4,8 +4,8 @@ import { describe, expect, it } from "bun:test";
 import {
   type ComposeSpec,
   generateDockerCompose,
-  releaseImageDigest,
-  releaseImageRef,
+  ghcrImageDigest,
+  ghcrImageRef,
 } from "./compose.js";
 
 const ADMIN = `ghcr.io/caelo-cms/admin@sha256:${"a".repeat(64)}`;
@@ -131,10 +131,10 @@ describe("self-hosted Compose — dev mode", () => {
 describe("release image references", () => {
   it("round-trips a digest", () => {
     const digest = `sha256:${"c".repeat(64)}`;
-    expect(releaseImageDigest("gateway", releaseImageRef("gateway", digest))).toBe(digest);
+    expect(ghcrImageDigest("gateway", ghcrImageRef("gateway", digest))).toBe(digest);
   });
 
   it("refuses to build a reference from a non-digest", () => {
-    expect(() => releaseImageRef("admin", "latest")).toThrow(/not an image digest/);
+    expect(() => ghcrImageRef("admin", "latest")).toThrow(/not an image digest/);
   });
 });
