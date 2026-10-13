@@ -237,6 +237,22 @@ describe("chat-runner SDK approval gate (Plan B, Slice 1)", () => {
       status: "complete",
     });
     if (!paused.ok) throw new Error("paused turn seed failed");
+    // Issue #658 — the runner records the card as it pauses; the resume
+    // claims it.
+    const card = await execute(registry, adapter, HUMAN, "chat.record_turn_approvals", {
+      chatSessionId,
+      source: "live_edit",
+      approvals: [
+        {
+          approvalId: "ap-1",
+          toolCallId: "c1",
+          toolName: "update_layout",
+          preview: "Update the layout",
+          requiredPermissions: [],
+        },
+      ],
+    });
+    if (!card.ok) throw new Error("approval card seed failed");
 
     // A resume turn carries NO content — just the Owner's decision. The
     // provider only needs to produce the continuation text. It CAPTURES its

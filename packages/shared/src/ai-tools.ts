@@ -478,11 +478,23 @@ export const chatSendMessageInput = z
       })
       .strict()
       .optional(),
+    /**
+     * Issue #658 — a caelo_chat turn resuming ITS paused turn once the
+     * operator decided every approval card of it (in the Live Edit chat).
+     * The runner claims the recorded decisions (chat_turn_approvals) and
+     * appends them as SDK tool-approval-responses. Only the external
+     * agent's own call sets this; the Live Edit chat never does.
+     */
+    resumeDecidedApprovals: z.literal(true).optional(),
   })
   .strict()
-  .refine((d) => d.content !== undefined || d.resumeApproval !== undefined, {
-    message: "content or resumeApproval is required",
-  });
+  .refine(
+    (d) =>
+      d.content !== undefined ||
+      d.resumeApproval !== undefined ||
+      d.resumeDecidedApprovals === true,
+    { message: "content, resumeApproval or resumeDecidedApprovals is required" },
+  );
 
 export const chatRenameSessionInput = z
   .object({

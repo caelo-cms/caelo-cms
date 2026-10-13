@@ -90,7 +90,9 @@ A chat with unstaged changes in the shared draft cannot be archived: stage or di
 
 - The answer in progress ends after the step it is on. No further edits, Stage or snapshot follow, and the chat marks where it stopped.
 - Helpers the AI started for the task (subagents) stop too, and so do messages that were waiting their turn.
-- Nothing starts the AI again by itself. Approval follow-ups, quality-check fix rounds and finished-crawl notices are not sent. The chat shows them as notes instead. The AI continues when you write your next message.
+- Nothing starts the AI again by itself. Quality-check fix rounds, finished-crawl notices and follow-ups that were waiting to be sent are not sent. The chat shows them as notes instead. The AI continues when you write your next message.
+- **Answering the AI's own question continues it.** If the AI asked you to approve something (an approval card in the chat, or a proposal in the **Pending your approval** strip), clicking **Approve** or **Reject** after Stop continues that AI's work with your answer. This is the only thing besides your own message that restarts it. The card stays in the chat after a reload.
+- **Approving an external agent's request never starts the AI.** A request marked **Requested by the external agent (MCP)** belongs to an external agent connected over [MCP](/mcp). Your click applies or rejects it and the result goes back to that agent; the chat shows a short note saying so. Caelo's AI in this chat does not start and does not act on the note, whether or not you pressed Stop.
 
 The **Agents running** bar above the message box lists everything working in this chat: Caelo's AI (including a turn started in another tab), its helpers, and an external agent connected over [MCP](/mcp). Each entry has its own **Stop**. Outside Live Edit, the **agents running** indicator in the admin header lists the agents across all your chats.
 

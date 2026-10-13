@@ -78,6 +78,14 @@ import {
 } from "./ops/chat/stage.js";
 import { summarizeChatOp } from "./ops/chat/summarize.js";
 import {
+  claimTurnApprovalsOp,
+  decideTurnApprovalOp,
+  listTurnApprovalsOp,
+  mcpGetChatApprovalStateOp,
+  recordTurnApprovalsOp,
+  supersedeTurnApprovalsOp,
+} from "./ops/chat/turn-approvals.js";
+import {
   acquireChatTurnLeaseOp,
   releaseChatTurnLeaseOp,
   renewChatTurnLeaseOp,
@@ -787,6 +795,13 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listAgentRunsOp);
   registry.register(cancelAgentsOp);
   registry.register(allowExternalAgentOp);
+  // issue #658 — in-chat approvals a turn paused on, and who resumes it.
+  registry.register(recordTurnApprovalsOp);
+  registry.register(supersedeTurnApprovalsOp);
+  registry.register(claimTurnApprovalsOp);
+  registry.register(listTurnApprovalsOp);
+  registry.register(decideTurnApprovalOp);
+  registry.register(mcpGetChatApprovalStateOp);
   registry.register(setResponseMessagesOp);
   registry.register(cacheToolResultOp);
   registry.register(lookupToolResultOp);

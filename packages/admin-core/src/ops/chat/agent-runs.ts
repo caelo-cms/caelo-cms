@@ -90,6 +90,26 @@ async function lockSession(
   return rows[0] ?? null;
 }
 
+/**
+ * Issue #658 — whether the operator decided an approval of this caelo_chat
+ * token's paused turn at or after the chat's Stop, and it still waits for
+ * the turn to pick it up.
+ */
+async function approvalDecidedAfterStop(
+  tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
+  chatSessionId: string,
+  mcpTokenId: string,
+): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT 1 AS hit FROM chat_turn_approvals
+    WHERE chat_session_id = ${chatSessionId}::uuid AND source = 'mcp_chat'
+      AND mcp_token_id = ${mcpTokenId}::uuid AND status IN ('approved', 'rejected')
+      AND decided_at >= (SELECT agents_stopped_at FROM chat_sessions WHERE id = ${chatSessionId}::uuid)
+    LIMIT 1
+  `)) as unknown as { hit: number }[];
+  return rows.length > 0;
+}
+
 // ─── stop epoch (read at request arrival) ─────────────────────────────
 
 export const getAgentStopEpochOp = defineOperation({
@@ -173,8 +193,20 @@ export const registerAgentRunOp = defineOperation({
        * every other turn (auto nudges, caelo_chat) is refused while it holds.
        */
       operatorInitiated: z.boolean(),
+      /**
+       * Issue #658 — a caelo_chat turn resuming its own paused turn with the
+       * operator's decision (chat_turn_approvals, 0258). The operator's
+       * click on that card is their go-ahead for exactly this work, so a
+       * Stop that came BEFORE the click does not refuse it; a Stop after the
+       * click does. It never lifts the chat's Stop latch: the Live Edit AI
+       * stays stopped.
+       */
+      resumesDecidedApprovals: z.boolean().optional(),
     })
     .strict()
+    .refine((v) => !v.resumesDecidedApprovals || v.mcpTokenId !== undefined, {
+      message: "resumesDecidedApprovals is only for a caelo_chat turn (mcpTokenId)",
+    })
     .refine((v) => (v.kind === "subagent") === (v.parentRunId !== undefined), {
       message: "parentRunId is required for a subagent and only for a subagent",
     }),
@@ -244,17 +276,25 @@ export const registerAgentRunOp = defineOperation({
         }
       }
       if (session.agents_stopped_at !== null) {
-        if (!input.operatorInitiated) {
-          return ok({
-            registered: false as const,
-            reason: "stopped" as const,
-            message:
-              "The operator stopped the AI in this chat. Nothing runs here again until they send a message themselves.",
-          });
+        // Issue #658 — the operator answered this external agent's question
+        // after stopping the chat: its turn continues, and the latch stays
+        // for everything else (the Live Edit AI is not restarted).
+        const answeredAfterStop =
+          input.resumesDecidedApprovals === true &&
+          (await approvalDecidedAfterStop(tx, input.chatSessionId, input.mcpTokenId as string));
+        if (!answeredAfterStop) {
+          if (!input.operatorInitiated) {
+            return ok({
+              registered: false as const,
+              reason: "stopped" as const,
+              message:
+                "The operator stopped the AI in this chat. Nothing runs here again until they send a message themselves.",
+            });
+          }
+          await tx.execute(sql`
+            UPDATE chat_sessions SET agents_stopped_at = NULL WHERE id = ${input.chatSessionId}::uuid
+          `);
         }
-        await tx.execute(sql`
-          UPDATE chat_sessions SET agents_stopped_at = NULL WHERE id = ${input.chatSessionId}::uuid
-        `);
       }
       const busy = await workingExternalAgent(tx, input.chatSessionId);
       if (busy) {

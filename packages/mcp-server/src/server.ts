@@ -15,7 +15,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { sendChat } from "./chat-bridge.js";
+import { resolveApprovalWaitMs } from "./approval-wait.js";
+import {
+  describeDecisions,
+  describeSuperseded,
+  describeWaiting,
+  type SendChatResult,
+  type SettleResult,
+  settleChatApprovals,
+} from "./chat-approval.js";
+import { fetchChatApprovalState, resumeChat, sendChat } from "./chat-bridge.js";
 import { UPLOAD_IMAGES_TOOL, uploadedImageSchema, uploadImages } from "./image-upload.js";
 
 export interface StartOpts {
@@ -23,6 +32,8 @@ export interface StartOpts {
   readonly token: string;
   /** Defaults to stdio; tests pass an in-memory transport. */
   readonly transport?: Transport;
+  /** Poll interval while waiting on an approval; tests shorten it. */
+  readonly approvalPollMs?: number;
 }
 
 /**
@@ -34,7 +45,77 @@ export const CHAT_MCP_INSTRUCTIONS = [
   "This server talks to a Caelo CMS site's own AI agent through caelo_chat; describe the outcome you want and the agent decides how to build it.",
   "Pass the chatSessionId from a reply to continue the same conversation; omit it only to start a new one.",
   "Changes land on that chat's preview branch; nothing reaches the live site until the operator publishes in the Caelo admin. Some actions wait for the operator's approval click there.",
+  "When a reply says the turn is waiting for the operator's approval, call caelo_await_approval with the chatSessionId: it waits for the decision and returns your turn's continuation. Never re-send the request; you cannot approve anything yourself.",
 ].join("\n");
+
+const awaitApprovalInput = z.object({ chatSessionId: z.string().uuid() }).strict();
+
+/** Issue #658 — keep waiting on the approval cards a caelo_chat turn paused on. */
+const AWAIT_APPROVAL_TOOL = {
+  name: "caelo_await_approval",
+  description:
+    "Wait for the operator's Approve/Reject on the approval cards your caelo_chat turn paused on, then " +
+    "continue that turn and return its reply (the change applied, or the agent's reaction to a rejection). " +
+    "Use it when a caelo_chat reply says it is still waiting for approval. You cannot approve anything " +
+    "yourself — only the operator can, in the Caelo admin.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      chatSessionId: {
+        type: "string",
+        description: "The chatSessionId from the caelo_chat reply that is waiting.",
+      },
+    },
+    required: ["chatSessionId"],
+  },
+} as const;
+
+/**
+ * The tool result for a caelo_chat exchange: every reply in order (the first
+ * turn, then each resumed one), the decisions in between, and — while cards
+ * still wait — the next step.
+ */
+function chatResult(first: SendChatResult | null, settled: SettleResult, chatSessionId: string) {
+  const turns = first ? [first, ...settled.turns] : [...settled.turns];
+  const last = turns.at(-1);
+  const text = [
+    ...(first ? [first.assistant] : []),
+    ...(settled.decided.length > 0 ? [describeDecisions(settled.decided)] : []),
+    ...settled.turns.map((t) => t.assistant),
+    ...(settled.kind === "pending" ? [describeWaiting(chatSessionId, settled.waiting)] : []),
+    ...(settled.kind === "superseded" ? [describeSuperseded(settled.dropped)] : []),
+  ]
+    .filter((t) => t.trim().length > 0)
+    .join("\n\n");
+  const reply =
+    text.length > 0
+      ? text
+      : "Nothing of yours waits for the operator's approval in this chat; continue with caelo_chat.";
+  return {
+    content: [
+      { type: "text" as const, text: reply },
+      {
+        type: "text" as const,
+        text: JSON.stringify(
+          {
+            chatSessionId,
+            requestId: last?.requestId ?? null,
+            toolCalls: turns.flatMap((t) => t.toolCalls),
+            pendingProposals: last?.pendingProposals ?? 0,
+            costMicrocents: turns.reduce((sum, t) => sum + t.costMicrocents, 0),
+            // Non-empty while the turn waits on the operator.
+            pendingApprovals:
+              settled.kind === "pending"
+                ? settled.waiting.map((a) => ({ approvalId: a.approvalId, toolName: a.toolName }))
+                : [],
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
+}
 
 const caeloChatInputSchema = z
   .object({
@@ -60,6 +141,7 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       UPLOAD_IMAGES_TOOL,
+      AWAIT_APPROVAL_TOOL,
       {
         name: "caelo_chat",
         description:
@@ -94,12 +176,58 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
     ],
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+    // Progress notifications keep progress-aware clients from timing the
+    // call out while it waits on the operator (only when they asked).
+    const progressToken = req.params._meta?.progressToken;
+    const onPending =
+      progressToken === undefined
+        ? undefined
+        : async (elapsedMs: number) => {
+            await extra.sendNotification({
+              method: "notifications/progress",
+              params: {
+                progressToken,
+                progress: Math.round(elapsedMs / 1000),
+                message: "Waiting for the operator to approve or reject in the Caelo admin…",
+              },
+            });
+          };
+    /** Wait for the operator, then continue the paused turn (issue #658). */
+    const settle = (chatSessionId: string, waitMs: number) =>
+      settleChatApprovals({
+        chatSessionId,
+        fetchState: () => fetchChatApprovalState({ ...opts, chatSessionId }),
+        resume: () => resumeChat({ ...opts, chatSessionId }),
+        waitMs,
+        ...(opts.approvalPollMs !== undefined ? { intervalMs: opts.approvalPollMs } : {}),
+        ...(onPending ? { onPending } : {}),
+      });
+
     if (req.params.name === UPLOAD_IMAGES_TOOL.name) {
       try {
         return await uploadImages(opts, req.params.arguments);
       } catch (e) {
         return { isError: true, content: [{ type: "text", text: String(e) }] };
+      }
+    }
+    if (req.params.name === AWAIT_APPROVAL_TOOL.name) {
+      const parsed = awaitApprovalInput.safeParse(req.params.arguments ?? {});
+      if (!parsed.success) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `invalid arguments: ${parsed.error.message}` }],
+        };
+      }
+      try {
+        const settled = await settle(parsed.data.chatSessionId, resolveApprovalWaitMs());
+        return chatResult(null, settled, parsed.data.chatSessionId);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          isError: true,
+          content: [{ type: "text", text: `caelo_await_approval failed: ${msg}` }],
+        };
       }
     }
     if (req.params.name !== "caelo_chat") {
@@ -116,6 +244,7 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
       };
     }
     try {
+      const startedAt = Date.now();
       const result = await sendChat({
         adminUrl: opts.adminUrl,
         token: opts.token,
@@ -124,28 +253,17 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
         ...(parsed.data.chatSessionId ? { chatSessionId: parsed.data.chatSessionId } : {}),
         ...(parsed.data.pageId ? { pageId: parsed.data.pageId } : {}),
       });
-      // Two content blocks: human-readable assistant text + a JSON
-      // structured block the calling agent can parse for the
-      // requestId, tool calls, cost, pending proposals.
-      return {
-        content: [
-          { type: "text", text: result.assistant },
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                chatSessionId: result.chatSessionId,
-                requestId: result.requestId,
-                toolCalls: result.toolCalls,
-                pendingProposals: result.pendingProposals,
-                costMicrocents: result.costMicrocents,
-              },
-              null,
-              2,
-            ),
-          },
-        ],
-      };
+      // Issue #658 — the turn paused on approval cards: wait for the
+      // operator's decision within what is left of the wait bound, then
+      // continue this same turn and return its reply too.
+      const settled: SettleResult =
+        result.pendingApprovals.length === 0
+          ? { kind: "settled", decided: [], turns: [] }
+          : await settle(
+              result.chatSessionId,
+              Math.max(0, resolveApprovalWaitMs() - (Date.now() - startedAt)),
+            );
+      return chatResult(result, settled, result.chatSessionId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return {

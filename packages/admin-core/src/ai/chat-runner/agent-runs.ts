@@ -40,6 +40,8 @@ export interface AgentRunRegistration {
   readonly mcpTokenId?: string;
   /** The operator's own message (or Approve/Reject click) in this chat. */
   readonly operatorInitiated: boolean;
+  /** Issue #658 — a caelo_chat turn resuming with the operator's decisions. */
+  readonly resumesDecidedApprovals?: boolean;
 }
 
 /** Persistence the handle needs — the `chat.*_agent_run` ops, or a test double. */
@@ -88,6 +90,7 @@ export function queryApiAgentRunStore(
           ? { stopEpochAtArrival: reg.stopEpochAtArrival }
           : {}),
         operatorInitiated: reg.operatorInitiated,
+        ...(reg.resumesDecidedApprovals ? { resumesDecidedApprovals: true } : {}),
       });
       if (!r.ok) return { ok: false, message: describe(r.error) };
       const v = r.value as

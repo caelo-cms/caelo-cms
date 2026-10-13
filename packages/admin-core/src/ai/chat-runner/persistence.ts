@@ -15,7 +15,7 @@ import {
   PLUGIN_PREVIEW_REFERENCE_MARKER,
 } from "@caelo-cms/shared";
 
-import type { AccumulatedServerToolCall, AccumulatedToolCall } from "./types.js";
+import type { AccumulatedServerToolCall, AccumulatedToolCall, ChatRunnerOptions } from "./types.js";
 
 /** The session aggregate `chat.get_session` returns. */
 export interface LoadedSession {
@@ -65,6 +65,48 @@ export function buildUserContent(input: ChatSendMessageInput): string {
         ),
       ].join("\n")
     : content;
+}
+
+/** A decision the resume turn appends as an SDK tool-approval-response. */
+export interface ApprovalDecision {
+  approvalId: string;
+  approved: boolean;
+  reason?: string;
+}
+
+/**
+ * Issue #658 — claim the decisions a resume turn applies
+ * (`chat.claim_turn_approvals`). The Live Edit chat resumes only its own
+ * AI's paused turn, with the operator's click; a caelo_chat call resumes
+ * only its own token's paused turn, with the decisions the operator made on
+ * its cards. Each decision is claimed once.
+ */
+export async function claimTurnApprovals(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  humanCtx: ExecutionContext,
+  options: Pick<ChatRunnerOptions, "agentRunSource" | "agentRunMcpTokenId">,
+  input: ChatSendMessageInput,
+): Promise<{ ok: true; value: ApprovalDecision[] } | { ok: false; message: string }> {
+  const fromExternalAgent = options.agentRunSource === "mcp_chat";
+  if (fromExternalAgent !== (input.resumeDecidedApprovals === true)) {
+    return {
+      ok: false,
+      message: fromExternalAgent
+        ? "A caelo_chat turn resumes with the operator's recorded decisions (resumeDecidedApprovals), not a decision of its own."
+        : "Only the external agent's own call resumes with recorded decisions; the chat resumes with the operator's click.",
+    };
+  }
+  const r = await execute(registry, adapter, humanCtx, "chat.claim_turn_approvals", {
+    chatSessionId: input.chatSessionId,
+    ...(fromExternalAgent
+      ? { source: "mcp_chat" as const, mcpTokenId: options.agentRunMcpTokenId }
+      : { source: "live_edit" as const, decision: input.resumeApproval }),
+  });
+  if (!r.ok) {
+    return { ok: false, message: "message" in r.error ? String(r.error.message) : r.error.kind };
+  }
+  return { ok: true, value: (r.value as { decisions: ApprovalDecision[] }).decisions };
 }
 
 /**

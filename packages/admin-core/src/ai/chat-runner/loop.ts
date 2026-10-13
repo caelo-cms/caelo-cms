@@ -842,15 +842,52 @@ export async function* runToolLoop(
       // Everything failed preflight → nothing to ask; resume so the model
       // can correct itself on the next run.
       if (askable.length === 0 && rejected.length > 0) continue;
-      for (const req of askable) {
-        const requiredPermissions = approverPermissionsForGatedCall(tools, registry, req.name);
+      const cards = askable.map((req) => ({
+        req,
+        preview: buildApprovalPreview(req.name, req.arguments),
+        requiredPermissions: approverPermissionsForGatedCall(tools, registry, req.name),
+      }));
+      const autoApprove = process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1";
+      // Issue #658 — record each card with whose turn paused, so the Live
+      // Edit chat shows it after a reload (and for a caelo_chat turn at all)
+      // and the click continues the right agent. Without the record nobody
+      // could resume the turn: fail loudly instead of pausing silently.
+      if (!autoApprove) {
+        const external = args.options.agentRunSource === "mcp_chat";
+        const recorded = await execute(registry, adapter, humanCtx, "chat.record_turn_approvals", {
+          chatSessionId,
+          source: external ? "mcp_chat" : "live_edit",
+          ...(external && args.options.agentRunMcpTokenId
+            ? { mcpTokenId: args.options.agentRunMcpTokenId }
+            : {}),
+          approvals: cards.map(({ req, preview, requiredPermissions }) => ({
+            approvalId: req.approvalId,
+            toolCallId: req.toolCallId,
+            toolName: req.name,
+            preview,
+            requiredPermissions: requiredPermissions ? [...requiredPermissions] : [],
+          })),
+        });
+        if (!recorded.ok) {
+          console.error("[chat-runner] approval cards not recorded");
+          yield {
+            kind: "error",
+            message:
+              "The approval request could not be recorded, so nobody could approve it. Nothing was applied — send the message again.",
+          };
+          stopReason = "error";
+          succeeded = false;
+          break;
+        }
+      }
+      for (const { req, preview, requiredPermissions } of cards) {
         yield {
           kind: "tool-approval-request",
           approvalId: req.approvalId,
           toolCallId: req.toolCallId,
           name: req.name,
           arguments: req.arguments,
-          preview: buildApprovalPreview(req.name, req.arguments),
+          preview,
           ...(requiredPermissions ? { requiredPermissions: [...requiredPermissions] } : {}),
         };
       }
@@ -861,7 +898,7 @@ export async function* runToolLoop(
       // (persistApprovalResponse), so the stored transcript is the one a
       // production resume leaves behind — an e2e-only in-memory approval
       // made an interrupted resume replay differently from production.
-      if (process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1") {
+      if (autoApprove) {
         for (const req of askable) {
           await persistApprovalResponse(registry, adapter, humanCtx, chatSessionId, {
             approvalId: req.approvalId,
