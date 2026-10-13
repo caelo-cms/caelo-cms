@@ -1004,7 +1004,7 @@ export default definePlugin<PluginContextTier1>({
       }
       if (!isLocaleRoot && slug === undefined) {
         throw new Error(
-          `create_variant: this page is not the site home, so the slug IS its URL segment under /${localeCode}/. Pass a localized slug (e.g. "ueber-uns" for "about"). Slugs are unique site-wide — the locale prefix comes from the locale's URL strategy, not from the slug.`,
+          `create_variant: this page is not the site home, so the slug IS its URL segment under /${localeCode}/. Pass a localized slug (e.g. "ueber-uns" for "about"). It must differ from the source page's own slug: the copy is created next to the source before the locale prefix applies.`,
         );
       }
       const newSlug = slug ?? `${sourceSlug}-${localeCode}`;
@@ -1021,9 +1021,9 @@ export default definePlugin<PluginContextTier1>({
         // Re-frame core's slug collision into the decision the caller
         // actually has to make; the raw message reads as "the page
         // already exists", which invites a pointless retry.
-        if (msg.includes("page already exists for slug=")) {
+        if (msg.includes("page already exists at")) {
           throw new Error(
-            `create_variant: slug "${newSlug}" is already taken. Slugs are unique across the WHOLE site, not per locale (#384) — the "/${localeCode}/" prefix comes from the locale's URL strategy, not from the slug. Pick a localized slug that is free (e.g. "${sourceSlug}-${localeCode}").`,
+            `create_variant: the copy's URL is taken — the copy is created next to the source BEFORE the "/${localeCode}/" prefix applies, so slug "${newSlug}" must be free there. Pick a localized slug (e.g. "${sourceSlug}-${localeCode}").`,
           );
         }
         throw e;
@@ -1413,7 +1413,7 @@ export default definePlugin<PluginContextTier1>({
       name: "create_variant",
       description:
         "Create the language counterpart of a page: duplicates the source page as a DRAFT, joins it into the source's variant group, and composes its URL (e.g. /de/<slug>). " +
-        "The slug is freely localizable ('preise' for 'pricing') — linkage is by group, never by slug. Slugs are unique across the WHOLE site, not per locale: the '/de/' prefix comes from the locale's URL strategy, so never reuse the source page's own slug. " +
+        "The slug is freely localizable ('preise' for 'pricing') — linkage is by group, never by slug. The copy is created next to the source before the '/de/' prefix applies, so never reuse the source page's own slug. " +
         "OMIT `slug` when the source is the site's HOME page — its counterpart is the root of its locale ('/de'), carries no URL segment, and gets a derived slug automatically. Passing one there is an error. " +
         "Use when a page has no variant in the target locale yet (check intl_status). The draft still carries the SOURCE language — run the translation flow next, then publish. " +
         "NOT for linking two ALREADY-EXISTING pages — that is link_page_variants.",

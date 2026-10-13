@@ -9,7 +9,7 @@
 
   interface Placement {
     pageId: string;
-    pageSlug: string;
+    pagePath: string;
     pageTitle: string;
     blockName: string;
     position: number;
@@ -30,7 +30,7 @@
       <li class="flex items-center gap-2">
         <a class="underline-offset-4 hover:underline" href={`/edit/${p.pageId}`}>
           <span class="font-medium">{p.pageTitle}</span>
-          <span class="text-muted-foreground">/{p.pageSlug}</span>
+          <span class="text-muted-foreground">{p.pagePath}</span>
         </a>
         <span class="text-muted-foreground">·</span>
         <span class="font-mono text-xs text-muted-foreground">

@@ -470,7 +470,7 @@ describe("create_variant — the slug the caller cannot invent", () => {
     });
     expect(clash.ok).toBe(false);
     if (!clash.ok) {
-      expect(clash.error.message).toContain("unique across the WHOLE site");
+      expect(clash.error.message).toContain("the copy's URL is taken");
       expect(clash.error.message).toContain("t395-lr-about-de");
     }
 

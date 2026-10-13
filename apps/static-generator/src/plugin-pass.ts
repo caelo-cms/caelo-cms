@@ -36,6 +36,7 @@ export interface BakeTarget {
 
 export interface BakedPage {
   html: string;
+  pageId: string;
   pageSlug: string;
   pageTitle: string;
   relPath: string;
@@ -73,6 +74,7 @@ export async function runPluginRenderPass(args: {
   /** #605 — the plugin host rendering the placeholders. */
   plugins: BuildPluginServices;
   pages: BakedPage[];
+  /** Keyed by page id. */
   bakeTargets: ReadonlyMap<string, BakeTarget>;
   /** The target's page URL style, handed to every `staticRender`. */
   pageUrlStyle: PageUrlStyle;
@@ -93,7 +95,7 @@ export async function runPluginRenderPass(args: {
   for (const plugin of activePlugins) {
     const ids: string[] = [];
     for (const page of pages) {
-      const target = bakeTargets.get(page.pageSlug);
+      const target = bakeTargets.get(page.pageId);
       if (target && hasPlaceholder(page.html, plugin.slug, target.pageId)) ids.push(target.pageId);
     }
     placedPages.set(plugin.slug, ids);
@@ -113,7 +115,7 @@ export async function runPluginRenderPass(args: {
   let skippedCount = 0;
 
   for (const page of pages) {
-    const target = bakeTargets.get(page.pageSlug);
+    const target = bakeTargets.get(page.pageId);
     if (!target) continue;
     for (const plugin of activePlugins) {
       if (!(placedPages.get(plugin.slug) ?? []).includes(target.pageId)) continue;

@@ -41,7 +41,8 @@ const openChatSchema = z
     isMine: z.boolean(),
     /** Issue #620 — 'draft' (shared draft), 'experiment' / 'migration' (isolated) or 'legacy'. */
     branchKind: z.enum(["draft", "experiment", "migration", "legacy"]),
-    anchorPageSlug: z.string().nullable(),
+    /** The anchor page's URL path (unique, unlike its slug). */
+    anchorPagePath: z.string().nullable(),
     lastActiveAt: z.string(),
     lastStagedAt: z.string().nullable(),
     /** Distinct entities changed since the last Stage (the pending refs). */
@@ -99,7 +100,7 @@ export const listOpenChangesOp = defineOperation({
       SELECT cs.id::text AS id, cs.title, cs.created_by::text AS created_by,
              cs.chat_branch_id::text AS chat_branch_id, cs.branch_kind,
              cs.last_active_at, cs.last_staged_at,
-             p.slug AS page_slug
+             p.current_path AS page_path
       FROM chat_sessions cs
       LEFT JOIN pages p ON p.id = cs.page_id AND p.deleted_at IS NULL
       WHERE cs.published_at IS NULL AND cs.archived_at IS NULL AND cs.discarded_at IS NULL
@@ -123,7 +124,7 @@ export const listOpenChangesOp = defineOperation({
       branch_kind: BranchKind;
       last_active_at: string | Date;
       last_staged_at: string | Date | null;
-      page_slug: string | null;
+      page_path: string | null;
     }[];
 
     const chats: OpenChatChanges[] = [];
@@ -197,7 +198,7 @@ export const listOpenChangesOp = defineOperation({
         title: s.title,
         isMine: s.created_by === ctx.actorId,
         branchKind: s.branch_kind,
-        anchorPageSlug: s.page_slug,
+        anchorPagePath: s.page_path,
         lastActiveAt: iso(s.last_active_at) ?? "",
         lastStagedAt: iso(s.last_staged_at),
         pendingCount,

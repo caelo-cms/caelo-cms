@@ -40,7 +40,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     };
     placements: {
       pageId: string;
-      pageSlug: string;
+      pagePath: string;
       pageTitle: string;
       blockName: string;
       position: number;

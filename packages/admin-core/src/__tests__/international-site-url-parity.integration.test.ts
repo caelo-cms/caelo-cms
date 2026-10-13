@@ -210,6 +210,7 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
 
       // --- static build --------------------------------------------------
       const built = pages.map((p) => ({
+        pageId: p.id,
         pageSlug: p.slug,
         pageTitle: p.slug,
         html: "<!doctype html><html><head><title>x</title></head><body></body></html>",

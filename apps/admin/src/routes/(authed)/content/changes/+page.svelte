@@ -128,8 +128,8 @@
               {:else if c.branchKind === "legacy"}
                 <Badge variant="outline">older chat · own branch</Badge>
               {/if}
-              {#if c.anchorPageSlug}
-                <Badge variant="outline">/{c.anchorPageSlug}</Badge>
+              {#if c.anchorPagePath}
+                <Badge variant="outline">{c.anchorPagePath}</Badge>
               {/if}
               <Badge variant={c.pendingCount > 0 ? "warning" : "secondary"}>
                 {c.pendingCount} unstaged
