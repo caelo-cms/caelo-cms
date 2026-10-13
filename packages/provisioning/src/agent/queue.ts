@@ -48,8 +48,13 @@ export interface OpenedAgentQueue {
 /** Opens the queue over the agent's login (`@caelo-cms/platform-updater` agent-db). */
 export type OpenAgentQueue = (conn: AgentDbConnection) => Promise<OpenedAgentQueue>;
 
-/** The bundled queue next to the compiled CLI (`dist/agent-db.js`). */
-export const BUNDLED_AGENT_DB = "../agent-db.js";
+/**
+ * Where the bundle is, relative to this module: next to the compiled CLI
+ * (`dist/agent/queue.js` → `dist/agent-db.js`), or — when Bun loads the
+ * published package's `src/` through its `bun` export condition — in the
+ * package's `dist/`.
+ */
+const BUNDLED_AGENT_DB = ["../agent-db.js", "../../dist/agent-db.js"] as const;
 
 /**
  * The workspace package a source checkout loads instead. Held in a variable
@@ -65,8 +70,10 @@ const WORKSPACE_AGENT_DB = "@caelo-cms/platform-updater/agent-db";
  * @throws when neither is present — a build that skipped the bundle
  */
 export async function loadAgentQueueOpener(): Promise<OpenAgentQueue> {
-  const bundled = new URL(BUNDLED_AGENT_DB, import.meta.url);
-  const specifier = existsSync(fileURLToPath(bundled)) ? bundled.href : WORKSPACE_AGENT_DB;
+  const bundled = BUNDLED_AGENT_DB.map((rel) => new URL(rel, import.meta.url)).find((url) =>
+    existsSync(fileURLToPath(url)),
+  );
+  const specifier = bundled?.href ?? WORKSPACE_AGENT_DB;
   let mod: { openAgentQueue?: OpenAgentQueue };
   try {
     mod = (await import(specifier)) as { openAgentQueue?: OpenAgentQueue };
