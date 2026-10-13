@@ -24,6 +24,7 @@
  */
 
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { selfCommand } from "./self-command.js";
 import { DATABASE_ROLE_SECRET, type DatabaseRole } from "./stack-contract.js";
 
 /** One place a JSON value holds secret material. Never carries the secret itself. */
@@ -249,8 +250,7 @@ const ROLE_BY_USER = DATABASE_ROLE_SECRET as Readonly<Record<string, string | un
  * @param installId the install, named in each command so it acts on the right one
  */
 export function rotationHints(removed: readonly SecretFinding[], installId: string): string[] {
-  const rotate = (secret: string) =>
-    `bunx @caelo-cms/provisioning rotate-secret ${secret} --install ${installId}`;
+  const rotate = (secret: string) => selfCommand("rotate-secret", secret, "--install", installId);
   const hints = new Set<string>();
   for (const f of removed) {
     if (f.kind === "credential-url") {

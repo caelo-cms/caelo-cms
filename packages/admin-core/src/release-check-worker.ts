@@ -23,6 +23,8 @@ import type { DatabaseAdapter } from "@caelo-cms/query-api";
 const POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const FETCH_TIMEOUT_MS = 5_000;
 const GITHUB_LATEST_URL = "https://api.github.com/repos/caelo-cms/caelo-cms/releases/latest";
+/** Settings → Updates shows an excerpt; the full notes stay on GitHub. */
+const RELEASE_NOTES_MAX_CHARS = 20_000;
 
 interface ReleaseCheckWorkerOpts {
   readonly adapter: DatabaseAdapter;
@@ -38,6 +40,8 @@ async function pollOnce(opts: ReleaseCheckWorkerOpts): Promise<void> {
   const url = opts.url ?? GITHUB_LATEST_URL;
   let latestVersion: string | null = null;
   let releaseUrl: string | null = null;
+  let releaseNotes: string | null = null;
+  let publishedAt: string | null = null;
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
@@ -47,9 +51,16 @@ async function pollOnce(opts: ReleaseCheckWorkerOpts): Promise<void> {
     });
     clearTimeout(timer);
     if (res.ok) {
-      const json = (await res.json()) as { tag_name?: string; html_url?: string };
+      const json = (await res.json()) as {
+        tag_name?: string;
+        html_url?: string;
+        body?: string | null;
+        published_at?: string | null;
+      };
       latestVersion = json.tag_name?.replace(/^v/, "") ?? null;
       releaseUrl = json.html_url ?? null;
+      releaseNotes = json.body ? json.body.slice(0, RELEASE_NOTES_MAX_CHARS) : null;
+      publishedAt = json.published_at ?? null;
     }
   } catch {
     // Network failure / abort / parse error — write NULL so callers
@@ -63,6 +74,8 @@ async function pollOnce(opts: ReleaseCheckWorkerOpts): Promise<void> {
       UPDATE release_check_cache
          SET latest_version = ${latestVersion},
              release_url    = ${releaseUrl},
+             release_notes  = ${releaseNotes},
+             published_at   = ${publishedAt},
              fetched_at     = now()
        WHERE id = 1
     `;

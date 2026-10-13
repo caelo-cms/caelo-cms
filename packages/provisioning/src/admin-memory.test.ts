@@ -79,6 +79,11 @@ describe("self-hosted compose", () => {
     minioRootPassword: "pw",
     caeloSecretKek: "0".repeat(64),
     diskSize: "20Gi",
+    images: {
+      mode: "release" as const,
+      admin: `ghcr.io/caelo-cms/admin@sha256:${"a".repeat(64)}`,
+      gateway: `ghcr.io/caelo-cms/gateway@sha256:${"b".repeat(64)}`,
+    },
   };
 
   it("reserves the default admin memory, or the configured one", () => {

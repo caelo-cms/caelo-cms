@@ -4,7 +4,7 @@ template: doc-page
 status: published
 seo:
   title: Quickstart — Caelo CMS
-  description: From zero to a working Caelo install in under 10 minutes. Self-hosted via `bunx @caelo-cms/provisioning --provider self-hosted`.
+  description: From zero to a working Caelo install in under 10 minutes. Self-hosted via `bunx @caelo-cms/provisioning@latest --provider self-hosted`.
 ---
 
 # Quickstart
@@ -20,7 +20,7 @@ This is the "get something running in the next 10 minutes" path. For the long-fo
 ## Install
 
 ```bash
-bunx @caelo-cms/provisioning --provider self-hosted \
+bunx @caelo-cms/provisioning@latest --provider self-hosted \
   --domain your-domain.example.com \
   --anthropic-key sk-ant-...
 ```
