@@ -93,6 +93,17 @@ export async function executePageMoves(
   // epic #690 lands; refuse a rename onto a taken slug with the fix.
   const renames = changes.filter((c) => c.newSlug !== undefined);
   if (renames.length > 0) {
+    const seenSlugs = new Set<string>();
+    for (const c of renames) {
+      if (seenSlugs.has(c.newSlug as string)) {
+        return err({
+          kind: "HandlerError",
+          operation: OP,
+          message: `newSlug "${c.newSlug}" is given to more than one page in this call — slugs are still unique site-wide; give each page its own`,
+        });
+      }
+      seenSlugs.add(c.newSlug as string);
+    }
     const tree = await loadPageTree(tx, scope.chatBranchId);
     for (const c of renames) {
       const holder = [...tree.byId.values()].find((n) => n.slug === c.newSlug && n.id !== c.pageId);

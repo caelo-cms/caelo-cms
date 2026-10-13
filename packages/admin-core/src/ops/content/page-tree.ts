@@ -183,3 +183,26 @@ export function subtreeHeight(tree: PageTree, pageId: string): number {
   for (const c of children) max = Math.max(max, subtreeHeight(tree, c));
   return max + 1;
 }
+
+/**
+ * Under a chat scope: the pages whose path the chat's PENDING renames /
+ * moves change — the renamed/moved pages plus everything below them.
+ * Their stored `current_path` predates the pending change (a main row's
+ * live path only moves at publish), so readers must compose these.
+ *
+ * @param tree the chat's view (overlay applied) of the same scope.
+ */
+export async function pendingDriftIds(
+  tx: TransactionRunner,
+  tree: PageTree,
+  chatBranchId: string,
+): Promise<string[]> {
+  const stored = await loadPageTree(tx, chatBranchId, { overlay: false });
+  const changed = [...tree.byId.values()]
+    .filter((n) => {
+      const s = stored.byId.get(n.id);
+      return s !== undefined && (s.slug !== n.slug || s.parentPageId !== n.parentPageId);
+    })
+    .map((n) => n.id);
+  return changed.length === 0 ? [] : [...changed, ...descendantIdsOf(tree, changed)];
+}

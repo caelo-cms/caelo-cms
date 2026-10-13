@@ -52,7 +52,7 @@ import {
 } from "./current-path.js";
 import { planPageMoves } from "./page-move-plan.js";
 import { executePageMoves } from "./page-moves.js";
-import { ancestorIdsOf, descendantIdsOf, loadPageTree } from "./page-tree.js";
+import { ancestorIdsOf, descendantIdsOf, loadPageTree, pendingDriftIds } from "./page-tree.js";
 import { applyPathMoveEffects } from "./path-moves.js";
 
 const pageRowSchema = z.object({
@@ -298,15 +298,8 @@ async function withTreeView(
     // Pages this chat renamed or moved (pending — main pages and its own
     // alike), plus everything below them: their stored path predates the
     // pending change.
-    const stored = await loadPageTree(tx, ctx.chatBranchId, { overlay: false });
-    const changed = [...tree.byId.values()]
-      .filter((n) => {
-        const l = stored.byId.get(n.id);
-        return l !== undefined && (l.slug !== n.slug || l.parentPageId !== n.parentPageId);
-      })
-      .map((n) => n.id);
-    if (changed.length > 0) {
-      const drifted = [...changed, ...descendantIdsOf(tree, changed)];
+    const drifted = await pendingDriftIds(tx, tree, ctx.chatBranchId);
+    if (drifted.length > 0) {
       branchPaths = await composePaths(tx, tree, drifted, renderScopeOf(ctx));
     }
   }
@@ -743,10 +736,10 @@ export const createPageOp = defineOperation({
     `)) as unknown as { home_page_id: string | null }[];
     const homePageId = homeRows[0]?.home_page_id ?? null;
     const candidates = (await tx.execute(sql`
-      SELECT id::text AS id, slug FROM pages
+      SELECT id::text AS id, slug, (parent_page_id IS NOT NULL) AS nested FROM pages
       WHERE deleted_at IS NULL
         AND COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid) = ${pageDupNamespace}::uuid
-    `)) as unknown as { id: string; slug: string }[];
+    `)) as unknown as { id: string; slug: string; nested: boolean }[];
     const branchDeleted = ctx.chatBranchId
       ? await branchDeletedPageIds(
           tx,
@@ -761,13 +754,16 @@ export const createPageOp = defineOperation({
     const newSlugKey = trimSlashes(input.slug);
     const conflict = candidates.find((c) => {
       if (branchDeleted.has(c.id)) return false;
-      const candIsRoot = isRootSlug(c.slug) || (homePageId !== null && c.id === homePageId);
+      // A nested magic slug ("/docs/index") is just a segment, never "/".
+      const candIsRoot =
+        (!c.nested && isRootSlug(c.slug)) || (homePageId !== null && c.id === homePageId);
       if (newIsRoot && candIsRoot) return true;
       return trimSlashes(c.slug) === newSlugKey;
     });
     if (conflict) {
       const conflictIsRoot =
-        isRootSlug(conflict.slug) || (homePageId !== null && conflict.id === homePageId);
+        (!conflict.nested && isRootSlug(conflict.slug)) ||
+        (homePageId !== null && conflict.id === homePageId);
       const bothRoot = newIsRoot && conflictIsRoot;
       await recordAudit(tx, {
         actorId: ctx.actorId,

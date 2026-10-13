@@ -65,9 +65,14 @@ describe("nested page URLs — ancestor chain", () => {
     );
   });
 
-  it("slug-format shapes only the page's own segment", () => {
+  it("slug-format shapes only the page's own segment, and must keep it one segment", () => {
     urlContributionsRegistry.register("dasher", [dashSlugFormat]);
     expect(resolvePageUrl(page("x/y", {}, false, ["parent"])).path).toBe("/parent/x-y");
+    urlContributionsRegistry.reset();
+    urlContributionsRegistry.register("splitter", [
+      { slot: "slug-format", encode: (p) => `section/${p.slug}`, decode: (s) => s },
+    ]);
+    expect(() => resolvePageUrl(page("item"))).toThrow(/invalid path segment/);
   });
 
   it("an invalid ancestor slug fails loudly", () => {

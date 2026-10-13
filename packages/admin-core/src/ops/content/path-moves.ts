@@ -44,15 +44,20 @@ export interface PathMoveEffects {
  * Apply the side effects of already-persisted path moves.
  *
  * @param redirects `"skip"` suppresses the old-URL 301s (operator asked
- *   for the old URLs to 404); chain collapse, reclaim and link rewrites
- *   always run — they keep existing links correct either way.
+ *   for the old URLs to 404); `{ skip }` decides per moved page (a publish
+ *   carrying moves with different requests). Chain collapse, reclaim and
+ *   link rewrites always run over the WHOLE move set in one pass — split
+ *   passes would re-collapse one subset's fresh redirects and rewrite
+ *   links twice.
  */
 export async function applyPathMoveEffects(
   ctx: ExecutionContext,
   tx: TransactionRunner,
   moves: ReadonlyArray<PathMove>,
-  redirects: "auto" | "skip",
+  redirects: "auto" | "skip" | { readonly skip: (pageId: string) => boolean },
 ): Promise<PathMoveEffects> {
+  const skipsRedirect = (pageId: string): boolean =>
+    redirects === "skip" ? true : redirects === "auto" ? false : redirects.skip(pageId);
   const real = moves.filter((m) => m.from !== m.to);
   if (real.length === 0) {
     return {
@@ -80,20 +85,19 @@ export async function applyPathMoveEffects(
     `);
   }
   let redirectsCreated = 0;
-  if (redirects === "auto") {
-    for (const m of real) {
-      // Two pages swapping URLs: the old URL is another page's new home.
-      if (newPaths.has(m.from)) continue;
-      const red = await createRedirectOp.handler(
-        mainCtx,
-        { fromPath: m.from, toPath: m.to, statusCode: 301 },
-        tx,
-      );
-      // Loud: a move whose 301 failed is exactly the state that strands
-      // inbound links, so it aborts the whole transaction.
-      if (!red.ok) throw new Error(`page move aborted — redirect ${m.from} → ${m.to} failed`);
-      redirectsCreated += 1;
-    }
+  for (const m of real) {
+    if (skipsRedirect(m.pageId)) continue;
+    // Two pages swapping URLs: the old URL is another page's new home.
+    if (newPaths.has(m.from)) continue;
+    const red = await createRedirectOp.handler(
+      mainCtx,
+      { fromPath: m.from, toPath: m.to, statusCode: 301 },
+      tx,
+    );
+    // Loud: a move whose 301 failed is exactly the state that strands
+    // inbound links, so it aborts the whole transaction.
+    if (!red.ok) throw new Error(`page move aborted — redirect ${m.from} → ${m.to} failed`);
+    redirectsCreated += 1;
   }
 
   const map = buildPathMoveMap(real);

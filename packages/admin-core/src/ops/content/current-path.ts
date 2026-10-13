@@ -390,17 +390,6 @@ export async function refreshLivePathsAfterMerge(
   const skips = (id: string): boolean =>
     opts.skipRedirectPageIds.has(id) ||
     ancestorIdsOf(tree, id).some((a) => opts.skipRedirectPageIds.has(a));
-  await applyPathMoveEffects(
-    ctx,
-    tx,
-    effective.filter((m) => !skips(m.pageId)),
-    "auto",
-  );
-  await applyPathMoveEffects(
-    ctx,
-    tx,
-    effective.filter((m) => skips(m.pageId)),
-    "skip",
-  );
+  await applyPathMoveEffects(ctx, tx, effective, { skip: skips });
   return moves.map((m) => m.pageId);
 }

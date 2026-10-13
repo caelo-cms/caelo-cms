@@ -18,6 +18,7 @@
 
 import type { RenderScope } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
+import { sql } from "drizzle-orm";
 import { composePathsDetailed, type PathMove } from "./current-path.js";
 import {
   ancestorIdsOf,
@@ -27,6 +28,7 @@ import {
   MAX_PAGE_DEPTH,
   type PageTree,
   type PageTreeNode,
+  pendingDriftIds,
 } from "./page-tree.js";
 
 /** One requested change. `parentPageId: undefined` keeps the parent. */
@@ -54,6 +56,20 @@ export type PageMovePlanResult =
 
 function refuse(message: string): PageMovePlanResult {
   return { ok: false, message };
+}
+
+/** Stored `current_path` of every page visible in the scope. */
+async function loadVisiblePaths(
+  tx: TransactionRunner,
+  chatBranchId: string | null,
+): Promise<Map<string, string>> {
+  const visibility = chatBranchId
+    ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${chatBranchId}::uuid)`
+    : sql`chat_branch_id IS NULL`;
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id, current_path FROM pages WHERE deleted_at IS NULL AND ${visibility}
+  `)) as unknown as { id: string; current_path: string }[];
+  return new Map(rows.map((r) => [r.id, r.current_path]));
 }
 
 function depthIn(tree: PageTree, pageId: string): number {
@@ -88,8 +104,6 @@ export async function planPageMoves(
     }
   }
 
-  const before = await composePathsDetailed(tx, tree, [...tree.byId.keys()], scope);
-
   // Apply the changes to a copy of the tree.
   const whatIf = new Map<string, PageTreeNode>(tree.byId);
   for (const c of changes) {
@@ -102,6 +116,23 @@ export async function planPageMoves(
     });
   }
   const whatIfTree = indexTree(whatIf);
+
+  // Only the pages a change can move are composed — plugin annotation
+  // calls stay bounded, and an unrelated page's plugin data cannot block
+  // this write. Every other page holds its stored path, except (in a
+  // chat) pages whose own pending rename / move makes it stale.
+  const changedRoots = changes.map((c) => c.pageId);
+  const affectedIds = [...changedRoots, ...descendantIdsOf(whatIfTree, changedRoots)];
+  const drifted = scope.chatBranchId ? await pendingDriftIds(tx, tree, scope.chatBranchId) : [];
+  const parentIds = changes
+    .map((c) => (whatIf.get(c.pageId) as PageTreeNode).parentPageId)
+    .filter((id): id is string => id !== null);
+  const before = await composePathsDetailed(
+    tx,
+    tree,
+    [...affectedIds, ...parentIds, ...drifted],
+    scope,
+  );
 
   for (const c of changes) {
     const node = whatIf.get(c.pageId) as PageTreeNode;
@@ -126,8 +157,6 @@ export async function planPageMoves(
     }
   }
 
-  const changedRoots = changes.map((c) => c.pageId);
-  const affectedIds = [...changedRoots, ...descendantIdsOf(whatIfTree, changedRoots)];
   for (const id of affectedIds) {
     const depth = depthIn(whatIfTree, id);
     if (depth > MAX_PAGE_DEPTH) {
@@ -138,13 +167,15 @@ export async function planPageMoves(
     }
   }
 
-  // Compose the what-if paths of every visible page and refuse any path
-  // that an affected page would share with another page.
-  const after = await composePathsDetailed(tx, whatIfTree, [...whatIf.keys()], scope);
+  // Refuse any path an affected page would share with another page.
+  const after = await composePathsDetailed(tx, whatIfTree, [...affectedIds, ...drifted], scope);
   const affected = new Set(affectedIds);
+  const stored = await loadVisiblePaths(tx, scope.chatBranchId);
   const holderOf = new Map<string, string>();
-  for (const [id, c] of after) {
-    if (!affected.has(id)) holderOf.set(c.path, id);
+  for (const id of tree.byId.keys()) {
+    if (affected.has(id)) continue;
+    const path = after.get(id)?.path ?? stored.get(id);
+    if (path !== undefined) holderOf.set(path, id);
   }
   const claimedBy = new Map<string, string>();
   for (const id of affectedIds) {
