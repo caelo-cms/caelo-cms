@@ -135,10 +135,6 @@
         "@caelo-cms/plugin-sdk": "workspace:*",
       },
     },
-    "packages/edge-router": {
-      "name": "@caelo-cms/edge-router",
-      "version": "0.10.41",
-    },
     "packages/font-service": {
       "name": "@caelo-cms/font-service",
       "version": "0.10.41",
@@ -274,7 +270,6 @@
         "cms-provision": "./dist/cli.js",
       },
       "dependencies": {
-        "@caelo-cms/edge-router": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
         "@clack/prompts": "1.8.1",
         "@pulumi/aws": "^7",
@@ -446,8 +441,6 @@
     "@caelo-cms/admin-core": ["@caelo-cms/admin-core@workspace:packages/admin-core"],
 
     "@caelo-cms/api-gateway": ["@caelo-cms/api-gateway@workspace:apps/api-gateway"],
-
-    "@caelo-cms/edge-router": ["@caelo-cms/edge-router@workspace:packages/edge-router"],
 
     "@caelo-cms/font-service": ["@caelo-cms/font-service@workspace:packages/font-service"],
 

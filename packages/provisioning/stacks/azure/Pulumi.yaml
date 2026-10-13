@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MPL-2.0
 #
 # Caelo Azure provider stack. Provisions Azure DB for PostgreSQL flexible
-# server (zone-redundant) + Storage Account (Blob) + Front Door + Container
-# Apps (admin/gateway/orchestrator/runner + edge-router) + Key Vault +
-# Log Analytics → A/B assignment log sink. Implements the shared
+# server (zone-redundant) + Storage Account (Blob static website) + Front
+# Door + Container Apps (admin/gateway/orchestrator/runner) + Key Vault +
+# Log Analytics log sink. Implements the shared
 # CloudAdapterInputs / CloudAdapterOutputs contract from
 # packages/provisioning/src/adapter.ts.
 name: caelo-azure
