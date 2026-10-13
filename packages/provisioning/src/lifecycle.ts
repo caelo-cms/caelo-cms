@@ -21,7 +21,7 @@ import { provisioningUpgradeCommand } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { ensureGatewayRolePassword, planPublicRoleSwitch } from "./gateway-credentials.js";
-import { gcloud } from "./gcloud.js";
+import { activeAccount, gcloud } from "./gcloud.js";
 import { GCP_STACK_ENV, gatewayServiceAccountEmail, runServiceAccountEmail } from "./gcp-names.js";
 import {
   type ImageDigests,
@@ -38,6 +38,10 @@ import {
 } from "./install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "./operator-access.js";
+import {
+  convergeKeylessProvisioner,
+  provisionerServiceAccountEmail,
+} from "./provisioner-identity.js";
 import { assertRegionUnchanged } from "./regions.js";
 import {
   ensureGatewayServiceAccount,
@@ -593,6 +597,61 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   );
 }
 
+/**
+ * `upgrade`'s step of the keyless provisioner migration (#696,
+ * provisioner-identity.ts). Idempotent: on an install that already runs
+ * keyless it only confirms the grant.
+ *
+ * @returns false when the upgrade must stop (the message is printed)
+ */
+async function upgradeKeylessProvisioner(installId: string, projectId: string): Promise<boolean> {
+  const account = await activeAccount();
+  if (!account) {
+    log.error(red("No active gcloud account. Run `gcloud auth login`, then re-run upgrade."));
+    return false;
+  }
+  const s = spinner();
+  s.start("Ensuring the provisioner service account is used without a key...");
+  const r = await convergeKeylessProvisioner({
+    projectId,
+    secretsDir: join(installRoot(installId), "secrets"),
+    operatorAccount: account,
+  });
+  if (!r.ok) {
+    s.stop(red("Could not move the provisioner to impersonation. Aborting upgrade."));
+    log.error(r.error);
+    log.warn("Nothing was rolled and no migrations ran. Fix the above and re-run.");
+    return false;
+  }
+  if (r.grant === "no-provisioner") {
+    s.stop(
+      green(`No ${provisionerServiceAccountEmail(projectId)} in this project — nothing to do`),
+    );
+    return true;
+  }
+  s.stop(
+    green(
+      r.legacyKey === "removed"
+        ? "Provisioner moved to impersonation; its long-lived key is deleted"
+        : `Provisioner keyless ok ${dim(`(${account} may impersonate it)`)}`,
+    ),
+  );
+  if (r.legacyKey === "removed") {
+    note(
+      [
+        `This install no longer keeps a service-account key on your machine (#696).`,
+        ...r.lines.map((l) => `  ${l}`),
+        "",
+        `Infrastructure runs (re-running the installer) now use your own Google login:`,
+        `${account} impersonates ${provisionerServiceAccountEmail(projectId)} with short-lived tokens.`,
+        `They need Application Default Credentials once on this machine: ${bold("gcloud auth application-default login")}`,
+      ].join("\n"),
+      "Service-account key removed",
+    );
+  }
+  return true;
+}
+
 async function upgradeInstall(
   installId: string,
   meta: InstallMetadata,
@@ -619,6 +678,13 @@ async function upgradeInstall(
   // #607 — upgrade never moves an install: a `--region` other than the
   // recorded one is refused before anything rolls.
   const region = installRegion(meta, opts.region);
+
+  // #696 — no long-lived key for the provisioner SA on this machine: make
+  // sure the operator can impersonate it, then delete the key an older
+  // installer minted (locally and in IAM). Before anything rolls, so a
+  // failure leaves the install exactly as it was.
+  if (!(await upgradeKeylessProvisioner(installId, meta.projectId))) return false;
+
   const registryProject = "caelo-website";
   const registryRegion = "europe-west1";
   const registryRepo = "caelo-cms-images";

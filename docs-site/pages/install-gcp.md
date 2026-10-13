@@ -40,13 +40,12 @@ So the provisioner deletes all four, on both `--provider gcp` and `--provider gc
 
 ## Prerequisites
 
-- A GCP project with billing enabled
-- A service account with the roles the adapter needs:
-  - `roles/run.admin`, `roles/cloudsql.admin`, `roles/storage.admin`,
-    `roles/secretmanager.admin`, `roles/iam.serviceAccountUser`,
-    `roles/compute.networkAdmin`, `roles/dns.admin`
-- The `gcloud` CLI authenticated as that service account (or `GOOGLE_APPLICATION_CREDENTIALS` pointing at its JSON key)
+- A Google account that can create a project and link billing (or that is Owner of an existing project with billing enabled)
+- The `gcloud` CLI, signed in as that account (`gcloud auth login`)
+- Application Default Credentials for the same account (`gcloud auth application-default login`). The provisioner checks for them and offers to run the login for you; Cloud Shell has them already.
 - A domain you control
+
+You do not create a service account or download a key. The provisioner creates `caelo-provisioner@<project>.iam.gserviceaccount.com` with the roles the stack needs, and lets your own account [impersonate](#no-service-account-key-on-your-machine) it.
 
 ## Run the provisioner
 
@@ -94,6 +93,24 @@ The provisioner prints the exact records your install needs, in two groups:
 On `--provider gcp`, the admin has its own certificate, so it gets HTTPS as soon as `admin.<your domain>` resolves; the main domain's certificate is issued after the go-live switch (expect 15-60 minutes of HTTPS errors on the main domain right after it). On `gcp-firebase`, Firebase Hosting issues the main domain's certificate itself.
 
 After the install, the records are also listed in the admin at `/settings/domains`, where the AI can check them for you (`verify_dns_records`).
+
+## No service-account key on your machine
+
+The infrastructure (Pulumi) runs as the `caelo-provisioner` service account, but nothing on your machine holds a key for it. Instead:
+
+- your gcloud account gets `roles/iam.serviceAccountTokenCreator` on `caelo-provisioner` — on that one account only, not on the project;
+- each infrastructure run uses your Application Default Credentials to ask Google for a short-lived token of `caelo-provisioner` (impersonation). The token is renewed as it runs out, so a long `pulumi up` does not fail after an hour, and it is never printed or written to disk;
+- other credential variables in your shell (`GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CREDENTIALS`, `GOOGLE_OAUTH_ACCESS_TOKEN`, …) are ignored for these runs, so a stray key file can't take their place.
+
+A leaked laptop, backup or synced folder therefore leaks no lasting access to your project: impersonating needs your Google login, and removing your account's role on `caelo-provisioner` ends it.
+
+**Installs created before this change** kept a JSON key at `~/.caelo-<install-id>/secrets/sa-key.json`. The next `bunx @caelo-cms/provisioning upgrade` (or installer re-run) removes it, before anything else changes:
+
+1. it gives your gcloud account the impersonation role above (or confirms it has it, without a condition) and checks that impersonating actually works — waiting a few minutes for a fresh grant to apply — so the key is never deleted before its replacement works;
+2. it reads the key's id from the file and deletes exactly that key of `caelo-provisioner` in IAM — no other key; if the service account has other user-managed keys, it lists them with the command to delete each one, and leaves them alone;
+3. it deletes the file and prints a "Service-account key removed" summary.
+
+If a step fails, the upgrade stops before rolling anything and the key file stays where it is, so the next run can still match it. Running it again after it succeeded changes nothing.
 
 ## After the install
 
@@ -199,11 +216,12 @@ The AI can tell you which version you run and whether an update is out, but it c
 
 `upgrade` brings an existing install to what a fresh install of the target release looks like, without re-running the full provisioning:
 
-1. Resolves the release images and verifies their signatures.
-2. Ensures the gateway's own service account and the generated runtime secrets (the internal-API and tool-approval keys, and the gateway's two database role passwords) exist, creating them once in Secret Manager. Then ensures the IAM bindings and Cloud CDN settings the release's infrastructure declares — each service account can read exactly the secrets its service uses. It only adds what is missing here (a binding a release retired — the gateway's former access to the admin's database password — is removed only at the very end, once both services run without it). The one other thing it removes is [the default network's pre-populated firewall rules](#default-firewall-rules-removed); a failure there only warns. If a binding the install needs can't be added (usually a missing IAM permission on your gcloud account), it stops here: bindings it already added stay (they are additive and harmless), but no migration has run and no traffic has shifted. Fix the reported binding and re-run; `upgrade` skips what is already in place.
-3. Applies the database migrations.
-4. Rolls the admin and gateway to the new images. The admin's memory is raised to the release's default (2 GiB for the [quality checks](/quality-gate)) if it runs with less; a larger value you set is kept. Configuration the release expects (for example the public site URL your canonical tags and sitemap use, or the media bucket mounted into the admin as a Cloud Storage volume) is applied in the same step, so it lands in the same new revision and rolls back with it. Secrets are Secret Manager references, never plain values: the database URLs carry no password, and the password reaches the services from Secret Manager.
-5. Records the images it rolled to. Re-running the installer later keeps that release instead of switching to the newest one — version changes always go through `upgrade`.
+1. Moves an older install to the [keyless provisioner](#no-service-account-key-on-your-machine): ensures your gcloud account may impersonate `caelo-provisioner` and deletes the long-lived key file and its IAM key. On an install that already runs keyless this only confirms the role.
+2. Resolves the release images and verifies their signatures.
+3. Ensures the gateway's own service account and the generated runtime secrets (the internal-API and tool-approval keys, and the gateway's two database role passwords) exist, creating them once in Secret Manager. Then ensures the IAM bindings and Cloud CDN settings the release's infrastructure declares — each service account can read exactly the secrets its service uses. It only adds what is missing here (a binding a release retired — the gateway's former access to the admin's database password — is removed only at the very end, once both services run without it). The one other thing it removes is [the default network's pre-populated firewall rules](#default-firewall-rules-removed); a failure there only warns. If a binding the install needs can't be added (usually a missing IAM permission on your gcloud account), it stops here: bindings it already added stay (they are additive and harmless), but no migration has run and no traffic has shifted. Fix the reported binding and re-run; `upgrade` skips what is already in place.
+4. Applies the database migrations.
+5. Rolls the admin and gateway to the new images. The admin's memory is raised to the release's default (2 GiB for the [quality checks](/quality-gate)) if it runs with less; a larger value you set is kept. Configuration the release expects (for example the public site URL your canonical tags and sitemap use, or the media bucket mounted into the admin as a Cloud Storage volume) is applied in the same step, so it lands in the same new revision and rolls back with it. Secrets are Secret Manager references, never plain values: the database URLs carry no password, and the password reaches the services from Secret Manager.
+6. Records the images it rolled to. Re-running the installer later keeps that release instead of switching to the newest one — version changes always go through `upgrade`.
 
 **Several installs on one machine.** `upgrade`, `status`, `backup`, `rotate-secret`, `truncate` and `destroy` never guess which install you mean. With more than one install under `~/.caelo-*`, they ask in the terminal which one to act on; `upgrade`, `status` and `backup` also offer "All installs", which runs them one after another and stops at the first that fails. In scripts, name the install with `--install <install-id or domain>`, for example `bunx @caelo-cms/provisioning@0.10.44 upgrade --version 0.10.44 --install example.com`, or `--install all`.
 
@@ -222,7 +240,7 @@ An install from before this change converges on its first `upgrade`, without any
 
 #### No secrets in `~/.caelo-<install-id>/`
 
-The install directory on your machine keeps secrets only in `secrets/` (the Anthropic API key, the Pulumi passphrase and, for local deploys, the service-account key) and in Pulumi's encrypted state. `progress.json` (where the installer records the steps it finished, so a re-run resumes) and `install.json` hold no passwords, database URLs with credentials or the Owner setup link; the installer reads those from Secret Manager or the Pulumi stack when it needs them.
+The install directory on your machine keeps secrets only in `secrets/` (the Anthropic API key and the Pulumi passphrase) and in Pulumi's encrypted state. It holds no service-account key: infrastructure runs [impersonate](#no-service-account-key-on-your-machine) `caelo-provisioner`. `progress.json` (where the installer records the steps it finished, so a re-run resumes) and `install.json` hold no passwords, database URLs with credentials or the Owner setup link; the installer reads those from Secret Manager or the Pulumi stack when it needs them.
 
 Installers before this change stored the database URLs, with `admin_role`'s and `public_role`'s passwords, and the Owner setup link in `progress.json`. The next `upgrade` (or installer re-run) removes them from the file, keeps every finished step, and tells you which password to rotate, with the exact command, for example `bunx @caelo-cms/provisioning@0.10.44 rotate-secret postgres-password --install example.com`. Run the commands it prints: copies of the old file may sit in backups or synced folders. The setup link needs no rotation; it expires after 24 hours and stops working once the Owner account exists.
 
@@ -239,6 +257,11 @@ Installers before this change stored the database URLs, with `admin_role`'s and 
 - **"not removed: firewall rule default-allow-ssh …" (or `default-allow-rdp`, `default-allow-icmp`, `default-allow-internal`)** — a rule with that name exists but is not the one Google created (for example its source range was narrowed to an office IP, or it targets tagged VMs), so the provisioner left it in place; the message shows how it differs. If nothing on the project needs it, delete it with the `gcloud compute firewall-rules delete …` command the message prints. If it is intentional, give it another name (create a copy under the new name, then delete the old one) and the warning stops. If the message says the delete was denied, your gcloud account needs `compute.firewalls.delete` (for example `roles/compute.securityAdmin`); re-run with an account that has it.
 - **`staging-domain enable` says the admin could not be updated** — the domain mapping is done; only the admin step failed, and the message names the fix. "Google IAP refused the request" or "sign an IAP token as caelo-mcp@…": your gcloud account is not (yet) let into the admin, or the install predates the `caelo-mcp` service account — run `cms-provision upgrade`, check that your account is a Caelo user, then re-run. "the admin has no /api/internal/staging/provision yet": the admin runs an older release — `cms-provision upgrade` first. "read the install's internal secret": your account needs `secretmanager.versions.access` on the project. The command is idempotent; re-running it never generates a second password unless you pass `--rotate-staging-password`.
 - **`admin-domain enable` or `staging-domain enable` says the gcloud `beta` component is missing** — Cloud Run domain mappings for `gcp-firebase` are only available through `gcloud beta`. The command installs the `beta` component for you the first time ("Installing the gcloud "beta" component…", about a minute). If your gcloud came from a system package manager (apt/dnf `google-cloud-cli`, snap), gcloud cannot install components itself and the command stops with the package-manager command to run instead, for example `sudo apt-get install google-cloud-cli`; run it, then re-run the command. If the install fails because your Google Cloud CLI directory is not writable, run `gcloud components install beta` yourself (with `sudo` if needed). The provisioner runs gcloud with prompts disabled, so a missing component or any other question gcloud would ask shows up as an error instead of a silent hang.
+- **"Could not let … impersonate caelo-provisioner@…" (installer or `upgrade`)** — your gcloud account may not change that service account's IAM policy. It needs `iam.serviceAccounts.setIamPolicy` on it, for example as project Owner or with `roles/iam.serviceAccountAdmin`. Ask a project Owner to run the `gcloud iam service-accounts add-iam-policy-binding … --role=roles/iam.serviceAccountTokenCreator` command the message prints (it names your account), then re-run. Nothing was changed and the old key file, if any, is still in place.
+- **"No Application Default Credentials on this machine"** — infrastructure runs authenticate with your own Google login. Run `gcloud auth application-default login`, sign in as the account gcloud uses (`gcloud auth list`), then re-run. Interactive runs offer to start the login for you.
+- **"Your Application Default Credentials (…) may not impersonate caelo-provisioner@…"** — if the message says they belong to another account than gcloud, run `gcloud auth application-default login` again as the gcloud account. If the role was granted moments ago, Google can take a few minutes to apply it: wait and re-run (the installer already waits about three minutes after a fresh grant). Otherwise the account lacks `roles/iam.serviceAccountTokenCreator` on `caelo-provisioner`; the message prints the command to grant it.
+- **"Could not delete key … of caelo-provisioner@…" or "Could not list the keys …"** — your gcloud account needs `iam.serviceAccountKeys.list` and `iam.serviceAccountKeys.delete` (project Owner, or `roles/iam.serviceAccountKeyAdmin`). Re-run with such an account; the key file stays until its IAM key is gone, so nothing is lost by stopping here.
+- **"… sa-key.json is a key for …, not for caelo-provisioner@…" or "has no service-account key id"** — the file is not the key the installer minted, so nothing was deleted. Check with `gcloud iam service-accounts keys list --iam-account=caelo-provisioner@<project>.iam.gserviceaccount.com --managed-by=user`, delete the key that file held if it is one, remove the file, then re-run.
 - **Cloud Run cold-starts feel slow** — set `--min-instances=1` on the admin service. Costs ~$15/mo extra; eliminates first-request latency.
 
 ## Next
