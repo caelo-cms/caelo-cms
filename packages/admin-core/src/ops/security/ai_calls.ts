@@ -345,7 +345,7 @@ export const spendWindowOp = defineOperation({
  * checks this on each invocation before dispatching to the provider;
  * if (last 24h sum) ≥ ai_cost_cap_microcents the call fails with a
  * structured error and the plugin's operation surfaces it. The
- * /security/plugins/[slug] page calls this to render the "AI spend
+ * /settings/plugins/[slug] page calls this to render the "AI spend
  * (last 24h)" cell + cap status.
  *
  * Open read — Owner UI consumes; AI may also call to check before a

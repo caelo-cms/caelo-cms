@@ -28,7 +28,7 @@ test("delete on site-default is blocked while templates reference it", async ({ 
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
-  await page.goto("/security/layouts");
+  await page.goto("/settings/layouts");
   await expect(page.getByRole("heading", { name: "Layouts", exact: true })).toBeVisible();
 
   // The site-default row's Delete button is disabled (templates bound).

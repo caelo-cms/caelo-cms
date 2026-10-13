@@ -20,7 +20,7 @@ export type QueryError =
        * v0.5.17 — when the throw originated from a SQL driver (Bun.SQL,
        * drizzle, pg-postgres), the adapter walks `.cause` and lifts the
        * Postgres-specific fields here so downstream consumers (AI tool
-       * `describeError`, /security/audit) can render a structured reason
+       * `describeError`, /settings/audit) can render a structured reason
        * instead of a truncated "Failed query: …" string. Optional —
        * handlers that build their own HandlerError leave it undefined.
        */

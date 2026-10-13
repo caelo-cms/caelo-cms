@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #553 — /security/quality, the Owner's quality view. An accepted
+ * Issue #553 — /settings/quality, the Owner's quality view. An accepted
  * finding is listed with its reason, and the Owner revokes it through the
  * real form action (routing + CSRF + quality_acceptances.revoke), after
  * which the row shows as revoked. The acceptance is seeded straight into
@@ -58,7 +58,7 @@ test("Owner sees the quality gate and revokes an accepted finding", async ({ pag
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
-  await page.goto("/security/quality");
+  await page.goto("/settings/quality");
   await expect(page.getByTestId("quality-gate-card")).toBeVisible();
   const row = page.getByTestId("quality-acceptance-row").filter({ hasText: REASON });
   await expect(row).toBeVisible();

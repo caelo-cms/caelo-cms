@@ -47,7 +47,7 @@ function fixture(): { tools: ToolRegistry; registry: OperationRegistry } {
     gated: {
       proposeOp: "themes.propose_create",
       executeOp: "themes.execute_proposal",
-      pendingQueuePath: "/security/themes/pending",
+      pendingQueuePath: "/settings/themes/pending",
     },
     handler: async () => ({ ok: true, content: "-" }),
   } as never);

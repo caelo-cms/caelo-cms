@@ -345,7 +345,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
    * `import_runs` row at status='crawling' per tick, runs the
    * crawler, writes extracted pages, flips status to
    * 'ready_for_review' (or 'failed' on error). Owner kicks off the
-   * crawl via /security/import → imports.create_run; the AI path is
+   * crawl via /settings/import → imports.create_run; the AI path is
    * imports.propose_run + Owner approve.
    */
   async function importerTick(): Promise<void> {

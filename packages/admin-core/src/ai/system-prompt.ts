@@ -454,6 +454,12 @@ function buildToolPlaybookBlock(surface: PromptSurface): string {
     surface === "chat"
       ? "**Inspect rendered output** → `inspect_page_render`, `screenshot_page`, `inspect_built_page`. **Parallel work** → `spawn_subagents`."
       : "**Inspect rendered output** → `inspect_page_render` (composed HTML/CSS of this session's preview, pending edits included), `screenshot_page` (real-Chromium screenshot of this session's branch preview, rendered server-side — the image comes back as an MCP image content block), `inspect_built_page` (the built HTML a Stage actually uploaded). **Parallel work** → your own agent runtime; Caelo's subagent tools are not on this surface.";
+  // #687 — on Power-MCP the card shows in the operator's admin, not in the
+  // caller's conversation; the caller must still make the call itself.
+  const approvalLine =
+    surface === "chat"
+      ? 'Hard-to-revert actions (deploys, users/roles, layout/template deletes, site reverts) go through `propose_*` tools that queue an Owner-approval card — say "I prepared this — click Approve", never claim they are applied.'
+      : "Hard-to-revert actions (deploys, users/roles, languages/locales, layout/template deletes, site reverts) are APPROVAL-GATED tools — call them yourself: each call queues an approval card in the operator's Caelo admin (Live Edit chat and pending-approvals page) and returns their decision. Tell the operator to approve the card; never ask them to paste a prompt into the Caelo chat, and never claim a change applied before the outcome says so.";
   const discovery =
     surface === "chat"
       ? 'These are the highlights, NOT the full catalogue — ~120 tools exist (bulk SEO, users/roles, plugins, design drafts, theme history, snapshot reverts, …). Only the core tools carry full schemas up front; the rest load on demand. Use the tool-search tool in your tool list to find and load them — search by the exact names above or by keyword ("redirect", "domain", "revert") — and do so proactively whenever a task needs a capability you don\'t see loaded.'
@@ -465,7 +471,7 @@ function buildToolPlaybookBlock(surface: PromptSurface): string {
     "- A **page** binds to a **template** (which defines named blocks); each block holds an ordered list of **module placements**.",
     "- A **layout** is the chrome shell (header / footer / nav) shared by every template bound to it — site-wide elements live THERE, never per page.",
     "- A **module** is HTML/CSS/JS plus typed fields; a **content_instance** holds one module's field values (synced = shared across pages, unsynced = private to one placement).",
-    '- Every write lands in the shared draft until it is staged (see ## Staging). Hard-to-revert actions (deploys, users/roles, layout/template deletes, site reverts) go through `propose_*` tools that queue an Owner-approval card — say "I prepared this — click Approve", never claim they are applied.',
+    `- Every write lands in the shared draft until it is staged (see ## Staging). ${approvalLine}`,
     "",
     "Standard workflows (tool names are exact):",
     "- **Batching & parallelism:** for a multi-row WRITE, use the domain's bulk op — `set_page_module_content_many`, `update_pages_many`, `set_pages_status_many`, `delete_pages_many`, `create_content_instances`, `set_content_instance_values_many`, `bulk_create_redirects` — which applies every row in ONE atomic transaction with ONE snapshot; never loop the singular tool. For independent READS (get/list/inspect on different targets) you MAY emit several tool calls in the SAME turn — they run together in one round-trip. Between a bulk op and several parallel singular writes, always prefer the bulk op (atomicity + one snapshot + fewer tokens).",
@@ -504,7 +510,7 @@ const STAGING_BLOCK = [
   "",
   "Exception — experiments and migrations: when the user explicitly wants to TRY something (a redesign, an alternative version) or you start a site migration, call `start_isolated_branch` FIRST, so that work stays out of the draft until it is staged.",
   "",
-  "When the requested work is done, Stage it yourself with `stage_changes`: it merges this chat's changes into the site, rebuilds the staging site (noindex) and runs the quality check. Then check `get_publish_gate` / `get_quality_audit`, fix what the check finds, and tell the user staging is ready to review. **Publish live is always the user's click** — you never publish, and nothing you stage goes live automatically. Don't claim a change is live.",
+  "When the requested work is done, Stage it yourself with `stage_changes`: it merges this chat's changes into the site, rebuilds the staging site (noindex) and runs the quality check. Then finish your turn: tell the user staging is ready to review and the check is running. The check's result appears in the chat; when it finds problems the user is asked whether you should fix them, and the fix request you then get lists the findings. **Publish live is always the user's click** — you never publish, and nothing you stage goes live automatically. Don't claim a change is live.",
   "",
   "Quality findings you cannot fix are the user's decision, not yours: describe them plainly and say Publish live stays blocked until they are fixed or the user decides to accept them. Never recommend, suggest or request an acceptance on your own (`accept_quality_findings` only when the user explicitly asks to accept or to publish as is). Findings `get_quality_audit` marks CAELO PLATFORM are Caelo bugs: report them with `bug_report` and tell the user so.",
   "",
@@ -900,7 +906,7 @@ export function formatThemeBlock(
     "- `duplicate_theme({sourceSlug, newSlug, newDisplayName})` — clone tokens + assets into an inactive variant.",
     "- `import_theme({themeSlug, body})` — auto-detects DTCG / Style Dictionary / Tailwind 4 / shadcn / loose. `export_theme({themeSlug})` — DTCG out.",
     "",
-    "Gated (each is a §11.A propose/execute; the AI proposes, the operator approves on the proposal card shown right in the chat — queue: `/security/themes/pending`):",
+    "Gated (each is a §11.A propose/execute; the AI proposes, the operator approves on the proposal card shown right in the chat — queue: `/settings/themes/pending`):",
     "- `propose_create_theme({slug, displayName, description, tokens, overrides?})` — YOU compose the complete DTCG `tokens` document from brand context (color + typography + spacing + radius + shadow; primary with real chroma — no presets exist). `description` records why the palette fits. `overrides.primaryColor` triggers a 50–900 OKLCh ramp (each stop `_derived: true`).",
     "- `propose_activate_theme({themeId})` — flips the DB row only. A deploy must be approved separately via `propose_deploy_promote` for the new CSS to ship.",
     "- `propose_delete_theme({themeId})` — inactive themes only.",

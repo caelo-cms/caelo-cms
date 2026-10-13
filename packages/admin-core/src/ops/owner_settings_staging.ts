@@ -107,7 +107,7 @@ export const proposeSetStagingAccessOp = defineOperation({
         changes,
         summary,
         effect:
-          "Changes who can open staging.<domain> — the unpublished site. A newly enabled crawler credential is generated on approval; the Owner reads it under Security → Staging access.",
+          "Changes who can open staging.<domain> — the unpublished site. A newly enabled crawler credential is generated on approval; the Owner reads it under Settings → Staging access.",
       },
       op,
       summary,
@@ -167,7 +167,7 @@ export const proposeRotateStagingCredentialsOp = defineOperation({
       input,
       {
         reason: input.reason,
-        effect: `Replaces ${label}. Every crawler or tool configured with the old value is locked out of staging until it is given the new one (Security → Staging access). The old value cannot be restored.`,
+        effect: `Replaces ${label}. Every crawler or tool configured with the old value is locked out of staging until it is given the new one (Settings → Staging access). The old value cannot be restored.`,
         summary,
       },
       op,
@@ -274,7 +274,7 @@ async function accessNextStep(tx: Tx): Promise<string> {
   const needed = stageNeededFor(host, await readStagedBuildHost(tx), row.origin_run_id !== null);
   const stage = describeStageNeeded(needed, host);
   return (
-    "The gate applies the change within seconds. A new basic-auth password / header value is shown with get_staging_access({includeCredentials: true}) (Owner only, when the operator asks) and under Security → Staging access." +
+    "The gate applies the change within seconds. A new basic-auth password / header value is shown with get_staging_access({includeCredentials: true}) (Owner only, when the operator asks) and under Settings → Staging access." +
     (stage ? ` ${stage}` : "")
   );
 }

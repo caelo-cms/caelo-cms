@@ -215,7 +215,7 @@ interface MakeContextOpts {
  * What the gateway established about the request's captcha before
  * dispatching it (issue #634). A plugin's `ctx.captcha.requireProof` is
  * satisfied when the Owner turned the captcha off (`enforced: false`, the
- * /security/gateway "Off" setting) or when the gateway verified and
+ * /settings/gateway "Off" setting) or when the gateway verified and
  * consumed a proof for this very request (`proofVerified`). There is no
  * token a visitor can send to the plugin that stands in for either.
  */
@@ -428,7 +428,7 @@ export async function runPluginOperation(
       ok: false,
       error: {
         kind: "PluginDisabled",
-        message: `plugin "${opts.pluginSlug}" is disabled — re-enable via /security/plugins`,
+        message: `plugin "${opts.pluginSlug}" is disabled — re-enable via /settings/plugins`,
       },
     };
   }

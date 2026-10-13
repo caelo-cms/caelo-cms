@@ -20,7 +20,7 @@ if (!adminUrl) {
 }
 if (!token) {
   console.error(
-    "CAELO_MCP_TOKEN not set — mint an ADMIN-scoped token at /security/mcp on your admin install",
+    "CAELO_MCP_TOKEN not set — mint an ADMIN-scoped token at /settings/mcp on your admin install",
   );
   process.exit(2);
 }

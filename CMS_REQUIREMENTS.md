@@ -537,7 +537,7 @@ Each ships companion skills as its natural-language entry point.
 
 - **Shipped:** `packages/plugins/<slug>/` — `package.json` (`@caelo-cms/plugin-<slug>`, MPL-2.0, depends on `@caelo-cms/plugin-sdk`), `src/index.ts` (`definePlugin`), a signed `manifest.json`. A Caelo upgrade that changes a shipped plugin produces a new artifact whose grants are re-approved (§14.8).
 - **Runtime-installed:** `plugins.source_code`, submitted via `submit_plugin` (AI) or the Owner panel.
-- **Schema changes** apply transactionally when the new artifact is activated; failure keeps the previous version active and surfaces the error in `/security/plugins`.
+- **Schema changes** apply transactionally when the new artifact is activated; failure keeps the previous version active and surfaces the error in `/settings/plugins`.
 
 ### 14.13 Implementation status
 

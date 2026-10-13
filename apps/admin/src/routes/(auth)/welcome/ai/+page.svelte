@@ -4,7 +4,7 @@
   /**
    * First-run AI wizard: pick a provider, paste a key, land in the
    * chat. Deliberately two fields — everything else (models, output
-   * ceilings, env keys, local models) lives at /security/ai, linked
+   * ceilings, env keys, local models) lives at /settings/ai, linked
    * below for the operators who need it.
    */
 
@@ -135,7 +135,7 @@
     </form>
     <p class="text-center text-xs text-muted-foreground">
       Running a local model or using environment keys?
-      <a href="/security/ai" class="underline underline-offset-2">Advanced setup</a>
+      <a href="/settings/ai" class="underline underline-offset-2">Advanced setup</a>
     </p>
   </CardContent>
 </Card>

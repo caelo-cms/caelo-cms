@@ -5,11 +5,11 @@
  * list_pending} — the §11.A gate in front of `site_defaults.set_seo`.
  *
  * The site SEO settings (public base URL, sitemap toggle, Organization
- * JSON-LD) used to be writable only from the Owner's Security → SEO page,
+ * JSON-LD) used to be writable only from the Owner's Settings → SEO page,
  * yet the static generator refuses to build without a base URL (#551). The
  * agent could see the blocker and had no way to clear it — the operator
  * had to leave the conversation. Now the AI proposes and the Owner approves
- * (in the chat, or for a Power-MCP caller on the Security → SEO page).
+ * (in the chat, or for a Power-MCP caller on the Settings → SEO page).
  *
  * Why every field is gated, not just the base URL: the three settings are
  * one Owner op that writes them together, they change rarely, and each is

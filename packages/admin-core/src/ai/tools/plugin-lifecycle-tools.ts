@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Plugin lifecycle steps the operator could only take at /security/plugins:
+ * Plugin lifecycle steps the operator could only take at /settings/plugins:
  *
  * - `list_plugin_grants` (read) — which capabilities each plugin version
  *   holds; the AI needs it before it can propose revoking one.
@@ -59,7 +59,7 @@ export const listPluginGrantsTool = makeListReadTool<z.infer<typeof listGrantsIn
 export const proposeRevokePluginCapabilityTool = makeProposeTool({
   toolName: "propose_revoke_plugin_capability",
   opName: "plugins.propose_revoke_capability",
-  pendingQueuePath: "/security/pending",
+  pendingQueuePath: "/settings/plugins/pending",
   when:
     "Propose taking one granted capability away from an installed plugin (e.g. its image generation or private file storage). " +
     "Revoking a grant of the RUNNING version (target `running`, the default) DISABLES the plugin — its data is kept, but running it again needs a new Owner approval; target `pending_update` abandons an update that has not started (it must be staged and approved again). " +
@@ -83,7 +83,7 @@ export const listPluginInstallationsTool = makeListReadTool<Record<string, never
   {
     name: "list_plugin_installations",
     description:
-      "List runtime-installed plugin packages by version: each staged artifact's status (pending = waiting for the Owner's review at /security/plugins/installations, approved, active, retired), its origin (AI-authored or an uploaded package) and the plugin's current status. " +
+      "List runtime-installed plugin packages by version: each staged artifact's status (pending = waiting for the Owner's review at /settings/plugins/installations, approved, active, retired), its origin (AI-authored or an uploaded package) and the plugin's current status. " +
       "Use after submit_plugin to tell the operator whether a package or an update to a running plugin still waits for review. Approving it (and choosing its grants) is the Owner's decision; never the agent's.",
     opName: "plugins.list_installations",
     input: z.object({}).strict(),

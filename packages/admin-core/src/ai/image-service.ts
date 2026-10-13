@@ -93,7 +93,7 @@ export async function resolveImageModel(
   if (!chosen) {
     return {
       error:
-        "no image-capable provider configured — needs an active OpenAI or Google provider with an image model. The Owner sets one at /security/ai.",
+        "no image-capable provider configured — needs an active OpenAI or Google provider with an image model. The Owner sets one at /settings/ai.",
     };
   }
   const kind = chosen.name as "openai" | "google";
@@ -102,11 +102,11 @@ export async function resolveImageModel(
   const reserveMicrocents = imageReserveMicrocents(model);
   if (!capabilities || reserveMicrocents === null) {
     return {
-      error: `the configured image model "${model}" is not supported (no capability or pricing profile). Supported: ${SUPPORTED_IMAGE_MODELS.join(", ")}. The Owner changes it at /security/ai.`,
+      error: `the configured image model "${model}" is not supported (no capability or pricing profile). Supported: ${SUPPORTED_IMAGE_MODELS.join(", ")}. The Owner changes it at /settings/ai.`,
     };
   }
   const apiKey = await getImageProviderApiKey(kind);
-  if (!apiKey) return { error: "configure the image provider key at /security/ai" };
+  if (!apiKey) return { error: "configure the image provider key at /settings/ai" };
   return {
     provider: makeImageProvider({
       kind,

@@ -135,7 +135,7 @@
           {:else}
             {#if counts.pendingProposals > 0}
               <a
-                href="/security/pending"
+                href="/settings/pending"
                 class="-mx-1 flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent"
                 onclick={() => (open = false)}
               >
@@ -145,7 +145,7 @@
             {/if}
             {#if counts.failedDeploys > 0}
               <a
-                href="/security/deployments"
+                href="/settings/deployments"
                 class="-mx-1 flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent"
                 onclick={() => (open = false)}
               >

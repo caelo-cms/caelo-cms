@@ -19,7 +19,7 @@ import { makeReadTool } from "./_make-read-tool.js";
 export const proposeSetSiteSeoTool = makeProposeTool({
   toolName: "propose_set_site_seo",
   opName: "site_defaults.propose_set_seo",
-  pendingQueuePath: "/security/seo",
+  pendingQueuePath: "/settings/seo",
   when:
     "Set the site-wide SEO settings: `siteBaseUrl` (the public origin every canonical URL, og:url, hreflang " +
     "target and sitemap entry is built from — publishing FAILS while it is unset), `sitemapEnabled` (emit " +

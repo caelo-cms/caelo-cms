@@ -21,7 +21,7 @@
  * proposal. The proposal row stays the source of truth for the decision;
  * `resolveHandoffs` reads it and mirrors the first observed decision onto
  * the hand-off row — every approve/reject path (Live Edit strip, the
- * /security/<domain>/pending pages, the cross-domain inbox) is therefore
+ * /settings/<domain>/pending pages, the cross-domain inbox) is therefore
  * covered without touching each domain's executor.
  */
 

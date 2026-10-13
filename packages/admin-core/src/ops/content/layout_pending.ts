@@ -6,7 +6,7 @@
  *
  * Same shape as deploy_pending (v0.2.19) — AI proposes the change with
  * a computed preview (affected templates / pages, slug); operator
- * clicks Approve at /security/layouts/pending which calls
+ * clicks Approve at /settings/layouts/pending which calls
  * `layouts.execute_proposal` (human-only) to run the underlying op.
  *
  * Why layouts get the gate: site-wide chrome. Update/delete/set_blocks

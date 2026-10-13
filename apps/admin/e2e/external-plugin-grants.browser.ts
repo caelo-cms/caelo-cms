@@ -48,7 +48,7 @@ test("Owner uploads a package, explicitly grants each capability, and revokes pr
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/edit/, { timeout: 15_000 });
-  await page.goto("/security/plugins/installations");
+  await page.goto("/settings/plugins/installations");
   // Every installation mutation rejects a missing session CSRF token before touching state.
   for (const action of ["stage", "approve", "retry", "revoke"]) {
     const status = await page.evaluate(async (name) => {
@@ -99,14 +99,14 @@ test("Owner uploads a package, explicitly grants each capability, and revokes pr
   await review.getByRole("button", { name: "Approve selected access and activate" }).click();
   await expect(page.getByRole("status")).toContainText("Approved package is running.");
   await expect(review).toContainText("Review: active");
-  await page.goto("/security/skills");
+  await page.goto("/settings/skills");
   await expect(page.getByText(`Guide ${slug}`, { exact: true })).toBeVisible();
-  await page.goto("/security/plugins/installations");
+  await page.goto("/settings/plugins/installations");
   await review.getByRole("button", { name: "Revoke cms_admin_schema", exact: true }).click();
   await expect(page.getByRole("status")).toContainText(
     "Access revoked. The plugin is disabled; its data is preserved.",
   );
   await expect(review).toContainText("Current plugin: disabled");
-  await page.goto("/security/skills");
+  await page.goto("/settings/skills");
   await expect(page.getByText(`Guide ${slug}`, { exact: true })).toHaveCount(0);
 });

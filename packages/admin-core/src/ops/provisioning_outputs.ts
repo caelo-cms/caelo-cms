@@ -6,7 +6,7 @@
  *   provisioning_outputs.set  — system-only; cms-provision's
  *     `pulumi-output-sync` subcommand calls this after every `pulumi
  *     up` with the rendered output JSON.
- *   provisioning_outputs.get  — open read; the admin's /security/dns
+ *   provisioning_outputs.get  — open read; the admin's /settings/dns
  *     page consumes the latest snapshot per (provider, environment).
  */
 

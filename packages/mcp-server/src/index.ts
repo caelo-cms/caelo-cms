@@ -36,7 +36,7 @@ if (!adminUrl) {
   process.exit(2);
 }
 if (!token) {
-  console.error("CAELO_MCP_TOKEN not set — mint one at /security/mcp on your admin install");
+  console.error("CAELO_MCP_TOKEN not set — mint one at /settings/mcp on your admin install");
   process.exit(2);
 }
 

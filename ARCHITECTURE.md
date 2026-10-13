@@ -15,7 +15,7 @@ graph TD
   end
 
   subgraph apps["apps/"]
-    Admin["apps/admin<br/>SvelteKit + adapter-node (on Bun)<br/>authoring UI · /edit · /security · API"]
+    Admin["apps/admin<br/>SvelteKit + adapter-node (on Bun)<br/>authoring UI · /edit · /settings · API"]
     StaticGen["apps/static-generator<br/>subprocess invoked at deploy<br/>emits HTML to output/&lt;env&gt;/"]
     Gateway["apps/api-gateway<br/>P12+ · public plugin writes<br/>public_role + gateway_role, never admin_role"]
   end
@@ -245,7 +245,7 @@ erDiagram
 
 | Path | What lives here |
 |---|---|
-| `apps/admin/` | SvelteKit admin app + every authenticated route (`/edit`, `/content/*`, `/security/*`). |
+| `apps/admin/` | SvelteKit admin app + every authenticated route (`/edit`, `/content/*`, `/settings/*`). |
 | `apps/static-generator/` | Subprocess invoked by `deploy.trigger`; reads composed pages + emits HTML to `output/<env>/`. |
 | `apps/api-gateway/` | Reserved for P12+ — public plugin write endpoints under the `cms_public` role. |
 | `packages/admin-core/` | Ops registry + AI tool dispatch + chat-runner + audit + snapshot emitter. The orchestrator. |

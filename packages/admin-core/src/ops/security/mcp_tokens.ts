@@ -275,7 +275,7 @@ export interface SendChatBridgeOpts {
   /**
    * Resolves an AIProvider on each MCP turn. Returns null when no
    * provider is configured — the handler surfaces a structured error
-   * pointing the operator at /security/ai.
+   * pointing the operator at /settings/ai.
    */
   readonly resolveProvider: () => Promise<AIProvider | null>;
 }
@@ -369,7 +369,7 @@ export const mcpSendChatOp = defineOperation({
         kind: "HandlerError",
         operation: "mcp.send_chat",
         message:
-          "AI provider not configured — visit /security/ai to set up an API key, then retry.",
+          "AI provider not configured — visit /settings/ai to set up an API key, then retry.",
       });
     }
     const resolved = await resolveMcpToken(adapter, input.plaintextToken);
@@ -383,7 +383,7 @@ export const mcpSendChatOp = defineOperation({
     const { actorId, aiCostCapMicrocents, tokenId } = resolved.value;
 
     // Fresh requestId per turn — MCP clients echo it back so the operator
-    // can click through to /security/audit/<id> for the full trail.
+    // can click through to /settings/audit/<id> for the full trail.
     const requestId = crypto.randomUUID();
     const humanCtx = {
       actorId,

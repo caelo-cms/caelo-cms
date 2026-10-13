@@ -50,7 +50,7 @@ export const actions: Actions = {
     return { ok: true, message: "Alt text saved." };
   },
   delete: async ({ request, locals, params }) => {
-    // Owner-proxy via roles.manage — same pattern /security/layouts uses
+    // Owner-proxy via roles.manage — same pattern /settings/layouts uses
     // until the catalogue grows an explicit `media.delete` permission.
     requirePermission(locals, "roles.manage");
     const { adapter, registry } = getQueryContext();

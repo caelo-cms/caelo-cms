@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #553 PR 3 — ops behind the admin quality view (/security/quality):
+ * Issue #553 PR 3 — ops behind the admin quality view (/settings/quality):
  *
  *   quality_baselines.list       the ratchet per page and category.
  *   quality_acceptances.revoke   the Owner takes an acceptance back; the

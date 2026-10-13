@@ -8,7 +8,7 @@
 > below is unchanged and still authoritative — it is now the internal apply +
 > audit engine** a gated tool's `execute` chains after approval (propose →
 > execute_proposal), not an AI-facing choreography. The `<domain>_pending_actions`
-> tables + ops are NOT retired; the `/security/<domain>/pending` queue is
+> tables + ops are NOT retired; the `/settings/<domain>/pending` queue is
 > vestigial for the 25 uniform `makeProposeTool` domains (rows write+apply
 > atomically) but retained for the bespoke gated tools (`propose_skill`,
 > `propose_site_import`, `create_layout`, `tune_rate_limit`,
@@ -38,7 +38,7 @@ pattern abstracts the gate as TWO ops per gated action:
   pending row, dispatches the underlying op (`<domain>.<action>`)
   with the queued payload, flips status to `applied`.
 
-The operator approves at `/security/<domain>/pending`. AI cannot
+The operator approves at `/settings/<domain>/pending`. AI cannot
 bypass — `execute_proposal`'s `actorScope` is `["human", "system"]`.
 
 ## Domains using the pattern
@@ -57,7 +57,7 @@ bypass — `execute_proposal`'s `actorScope` is `["human", "system"]`.
 | `mcp_tokens` | `propose_create`, `propose_revoke` | `settings.write` |
 | `templates` | `propose_update`, `propose_delete` | `content.write` |
 | `domains` | `propose_add`, `propose_remove` | `settings.write` |
-| `site_defaults` (SEO settings; approve on `/security/seo`) | `propose_set_seo` | `roles.manage` |
+| `site_defaults` (SEO settings; approve on `/settings/seo`) | `propose_set_seo` | `roles.manage` |
 | `gateway` | `propose_rate_limit` | `settings.write` |
 | `owner_settings` (0235, 0241, 0244, 0251) | `propose_set_ai_budget`, `propose_set_ai_pricing`, `propose_set_gateway_settings`, `propose_set_translation_model`, `propose_set_plugin_ai_cost_cap`, `propose_rotate_gateway_cookie_secret`, `propose_set_staging_access`, `propose_rotate_staging_credentials`, `propose_set_staging_host` — one table, `kind` discriminator | `settings.write` |
 | `themes` (v0.11.0, #45; create reshaped by #112 — see [themes.md](./themes.md)) | `propose_create`, `propose_activate`, `propose_delete` | `roles.manage` |
@@ -138,11 +138,11 @@ one `propose_<action>` tool per action that wraps the op.
 
 ## Cross-cutting infrastructure
 
-- **Cross-domain inbox** (`/security/pending`, v0.2.36) consumes
+- **Cross-domain inbox** (`/settings/pending`, v0.2.36) consumes
   `pending_proposals.list` (one UNION ALL across all 15 pending
   tables) and renders a unified queue.
 - **Bell badge** (`notifications.aggregate`) sums pending across
-  every table; click drops onto `/security/pending`.
+  every table; click drops onto `/settings/pending`.
 - **AI context block** — chat-runner emits a `## Pending proposals`
   system-prompt section listing the AI's own pending rows so it
   doesn't re-propose what's queued (v0.2.32 + v0.2.38).
@@ -194,12 +194,12 @@ one `propose_<action>` tool per action that wraps the op.
 
 3. **Register** in `register.ts` alongside the existing entries.
 
-4. **Owner UI route**: `apps/admin/src/routes/(authed)/security/<domain>/pending/`
+4. **Owner UI route**: `apps/admin/src/routes/(authed)/settings/<domain>/pending/`
    with `+page.server.ts` (load + approve/reject actions; guard Approve with
    `requireApproverPermission(locals, registry, "<domain>.execute_proposal")`
    so the page checks exactly what the executor declares) and
    `+page.svelte` (per-row card with the preview + action buttons).
-   Map the route in `apps/admin/.../security/pending/+page.svelte`'s
+   Map the route in `apps/admin/.../settings/pending/+page.svelte`'s
    `queueRouteFor` so the unified inbox links correctly.
 
 5. **Cross-domain plumbing**: add a stanza to
@@ -251,7 +251,7 @@ For NEW gated tools where the per-domain `*_pending_actions` table
 adds no value beyond the gate itself, the v0.6.0 W5 `needsApproval`
 shape is simpler. The dispatcher persists to a single generic
 `tool_approval_actions` table; the Owner approves via
-`/security/tool-approvals/pending`; the route handler dispatches the
+`/settings/tool-approvals/pending`; the route handler dispatches the
 tool with the persisted args.
 
 ```ts
@@ -288,7 +288,7 @@ needs to carry.
 The v0.6.0 reference implementation is `delete_pages_many` at
 `packages/admin-core/src/ai/tools/bulk-pages-modules.ts` — gates at
 `pageIds.length >= 5` via `needsApproval`, no per-domain table.
-Approve route at `apps/admin/src/routes/(authed)/security/tool-approvals/pending/+page.server.ts`.
+Approve route at `apps/admin/src/routes/(authed)/settings/tool-approvals/pending/+page.server.ts`.
 
 **Constraints (read before adding `needsApproval` to a new tool):**
 

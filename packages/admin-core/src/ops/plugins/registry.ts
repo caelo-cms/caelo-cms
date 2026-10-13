@@ -951,7 +951,7 @@ export const revalidatePluginOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "plugins.revalidate",
-        message: `"${input.slug}" is ${r.status}; you can only revalidate a submission that never ran (draft, awaiting activation or rejected). Re-filing a ${r.status} plugin is the Owner's call at /security/plugins — tell the operator instead of retrying.`,
+        message: `"${input.slug}" is ${r.status}; you can only revalidate a submission that never ran (draft, awaiting activation or rejected). Re-filing a ${r.status} plugin is the Owner's call at /settings/plugins — tell the operator instead of retrying.`,
       });
     }
     if (r.tier !== 2 || r.source_code === null) {
