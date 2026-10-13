@@ -68,6 +68,9 @@ interface LiveInstance {
 const COMPUTE_DISABLED =
   /SERVICE_DISABLED|accessNotConfigured|has not been used in project|API \[compute\.googleapis\.com\] not enabled|compute\.googleapis\.com.*(?:disabled|not enabled)/i;
 
+/** gcloud's stderr when an aggregated list succeeded for only some zones. */
+const PARTIAL_LIST = /did not succeed|unreachable|did not respond|could not fetch/i;
+
 const empty = (xs: readonly unknown[] | undefined) => (xs ?? []).length === 0;
 
 /** The last path segment of a network URL (`…/global/networks/default` → `default`). */
@@ -168,6 +171,12 @@ async function instancesOnDefaultNetwork(
   if (!r.ok) {
     if (COMPUTE_DISABLED.test(r.stderr)) return { ok: true, instances: [] };
     return { ok: false, error: r.stderr.trim() };
+  }
+  // The list is aggregated across zones and may succeed with some zones
+  // missing (reported only as a stderr warning). An incomplete list cannot
+  // prove there are no VMs, so it counts as a failed check.
+  if (PARTIAL_LIST.test(r.stderr)) {
+    return { ok: false, error: `incomplete instance list: ${r.stderr.trim()}` };
   }
   let parsed: unknown;
   try {

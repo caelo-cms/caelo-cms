@@ -194,6 +194,21 @@ describe("removeDefaultFirewallRules", () => {
     expect(outcomes[3]?.error).toContain("compute.projects.get");
   });
 
+  it("leaves default-allow-internal in place when the instance list is partial", async () => {
+    const { run, calls } = fakeGcloud(ok(JSON.stringify([INTERNAL])), () => ok(), {
+      ok: true,
+      stdout: "[]",
+      stderr:
+        "WARNING: Some requests did not succeed.\n - The resource 'projects/acme/zones/europe-west1-c' is not ready (unreachable)",
+      exitCode: 0,
+    });
+    const outcomes = await removeDefaultFirewallRules("acme", { run });
+    expect(deletes(calls)).toEqual([]);
+    expect(outcomes[3]?.status).toBe("failed");
+    expect(outcomes[3]?.error).toContain("incomplete instance list");
+    expect(outcomes[3]?.error).toContain("left it in place");
+  });
+
   it("deletes default-allow-internal when VMs exist only on other networks", async () => {
     const { run, calls } = fakeGcloud(
       ok(JSON.stringify([INTERNAL])),
