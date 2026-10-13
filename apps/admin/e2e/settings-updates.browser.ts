@@ -88,6 +88,8 @@ test.afterAll(() => {
 });
 
 async function login(page: Page, email: string, password: string): Promise<void> {
+  // Every spec logs in from a fresh context; a long run fills the per-IP bucket.
+  clearLoginRateBucket();
   await page.goto("/login");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(password);
@@ -119,6 +121,8 @@ test("a Reviewer sees the versions but no command", async ({ page }) => {
 
 test("the bell's release notice opens Settings → Caelo updates", async ({ page }) => {
   await login(page, "dev-owner@example.com", "dev owner password");
+  // The bell lives in the AppShell topbar (not on the full-screen /edit).
+  await page.goto("/settings");
   await page.getByRole("button", { name: /^Notifications/ }).click();
   const notice = page.getByTestId("release-notice");
   await expect(notice).toHaveAttribute("href", "/settings/updates");
