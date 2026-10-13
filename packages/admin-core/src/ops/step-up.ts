@@ -240,6 +240,8 @@ export const stepUpBeginOp = defineOperation({
 });
 
 const redeemOutput = z.object({
+  /** The challenge the step-up is recorded against (step_up.record). */
+  challengeId: z.string(),
   clientId: z.string(),
   clientSecret: z.string(),
   codeVerifier: z.string(),
@@ -262,13 +264,16 @@ export const stepUpRedeemOp = defineOperation({
   output: redeemOutput,
   handler: async (ctx, input, tx) => {
     const op = "step_up.redeem";
+    // Single use: a second callback with the same state finds nothing.
     const rows = (await tx.execute(sql`
-      DELETE FROM step_up_challenges
+      UPDATE step_up_challenges SET redeemed_at = now()
        WHERE state_hash = ${await sha256Hex(input.state)}
          AND user_id = ${ctx.actorId}::uuid
-       RETURNING session_hash, nonce, code_verifier, purpose, return_to, redirect_uri,
-                 created_at, expires_at
+         AND redeemed_at IS NULL
+       RETURNING id::text AS id, session_hash, nonce, code_verifier, purpose, return_to,
+                 redirect_uri, created_at, expires_at
     `)) as unknown as {
+      id: string;
       session_hash: string;
       nonce: string;
       code_verifier: string;
@@ -299,6 +304,7 @@ export const stepUpRedeemOp = defineOperation({
       kekFingerprint: client.client_secret_kek_fp,
     });
     return ok({
+      challengeId: c.id,
       clientId: client.client_id,
       clientSecret,
       codeVerifier: c.code_verifier,
@@ -320,14 +326,16 @@ export const stepUpRecordOp = defineOperation({
   input: z
     .object({
       sessionHash: sessionHashSchema,
-      purpose: z.enum(STEP_UP_PURPOSES),
+      /** The challenge step_up.redeem took back for this sign-in. */
+      challengeId: z.string().uuid(),
       outcome: z.discriminatedUnion("ok", [
         z.object({
           ok: z.literal(true),
           email: z.string().email(),
           /** Google's auth_time, seconds since epoch. */
           authTime: z.number().int().positive(),
-          startedAt: z.string().datetime(),
+          /** The ID token's nonce — must be the challenge's. */
+          nonce: z.string().min(32).max(128),
         }),
         z.object({ ok: z.literal(false), reason: z.string().min(1).max(1000) }),
       ]),
@@ -336,10 +344,28 @@ export const stepUpRecordOp = defineOperation({
   output: z.object({ freshUntil: z.string() }),
   handler: async (ctx, input, tx) => {
     const op = "step_up.record";
+    // The step-up exists only against a challenge this user started from
+    // this session and the callback redeemed — and is recorded once. The
+    // sign-in time is judged against the challenge's own start, never a
+    // caller-supplied one.
+    const rows = (await tx.execute(sql`
+      DELETE FROM step_up_challenges
+       WHERE id = ${input.challengeId}::uuid
+         AND user_id = ${ctx.actorId}::uuid
+         AND redeemed_at IS NOT NULL
+       RETURNING session_hash, nonce, purpose, created_at, expires_at
+    `)) as unknown as {
+      session_hash: string;
+      nonce: string;
+      purpose: string;
+      created_at: Date | string;
+      expires_at: Date | string;
+    }[];
+    const c = rows[0];
     const audit = (succeeded: boolean, resultSummary: string) =>
       recordAuditFromCtx(tx, ctx, {
         operation: op,
-        input: { purpose: input.purpose, ok: input.outcome.ok },
+        input: { purpose: c?.purpose ?? "unknown", ok: input.outcome.ok },
         succeeded,
         resultSummary,
       });
@@ -347,10 +373,19 @@ export const stepUpRecordOp = defineOperation({
       await audit(false, message.slice(0, 200));
       return handlerError(op, message);
     };
+    if (!c || c.session_hash !== input.sessionHash) {
+      return refuse(
+        "There is no completed Google sign-in to record. Start the confirmation again.",
+      );
+    }
+    if (new Date(c.expires_at).getTime() < Date.now()) {
+      return refuse("This sign-in took longer than 10 minutes. Start it again.");
+    }
     if (!input.outcome.ok) return refuse(`Google sign-in failed: ${input.outcome.reason}`);
+    const { email, authTime, nonce } = input.outcome;
+    if (nonce !== c.nonce) return refuse("The Google sign-in is not from this confirmation.");
     const session = await readSessionStepUp(tx, ctx.actorId, input.sessionHash);
     if (!session) return refuse("this browser session is not signed in any more");
-    const { email, authTime, startedAt } = input.outcome;
     if (email.toLowerCase() !== session.userEmail.toLowerCase()) {
       return refuse(
         `You signed in to Google as ${email}, but this Caelo account is ${session.userEmail}. Sign in with ${session.userEmail}.`,
@@ -358,7 +393,7 @@ export const stepUpRecordOp = defineOperation({
     }
     const authMs = authTime * 1000;
     // Same checks as verifyFreshSignIn, repeated where the data is stored.
-    if (authMs + 30_000 < new Date(startedAt).getTime() || authMs > Date.now() + 30_000) {
+    if (authMs + 30_000 < new Date(c.created_at).getTime() || authMs > Date.now() + 30_000) {
       return refuse("the Google sign-in is not from this confirmation");
     }
     await tx.execute(sql`
@@ -367,7 +402,7 @@ export const stepUpRecordOp = defineOperation({
        WHERE encode(sha256(convert_to(token, 'UTF8')), 'hex') = ${input.sessionHash}
          AND user_id = ${ctx.actorId}::uuid
     `);
-    await audit(true, `fresh Google sign-in for ${input.purpose}`);
+    await audit(true, `fresh Google sign-in for ${c.purpose}`);
     return ok({ freshUntil: new Date(authMs + STEP_UP_MAX_AGE_SECONDS * 1000).toISOString() });
   },
 });
