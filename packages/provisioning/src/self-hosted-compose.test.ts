@@ -48,6 +48,13 @@ describe("self-hosted Compose — release images (#696)", () => {
     expect(yaml).not.toContain("DEV MODE");
   });
 
+  it("hands the admin only the bootstrap-token dir, never .caelo/ with its secrets", () => {
+    const admin = service(yaml, "caelo-admin");
+    expect(admin).toContain("    volumes:\n      - ./bootstrap:/app/.caelo");
+    expect(yaml).not.toMatch(/- \.\/?:/);
+    expect(service(yaml, "caelo-gateway")).not.toContain("volumes:");
+  });
+
   it("keeps the env + secret wiring of each service", () => {
     const admin = service(yaml, "caelo-admin");
     expect(admin).toContain(
@@ -92,8 +99,15 @@ describe("self-hosted Compose — dev mode", () => {
       const block = service(yaml, name);
       expect(block).toContain("DEV MODE");
       expect(block).toContain("- ../..:/app");
+      expect(block).not.toMatch(/command:.*\n\s+- /);
       expect(block).not.toContain("ghcr.io");
     }
+  });
+
+  it("also mounts the bootstrap-token dir into the admin", () => {
+    expect(service(yaml, "caelo-admin")).toContain(
+      "    volumes:\n      - ../..:/app\n      - ./bootstrap:/app/.caelo",
+    );
   });
 
   it("keeps the same env wiring as release mode", () => {

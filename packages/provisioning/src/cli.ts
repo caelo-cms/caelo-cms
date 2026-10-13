@@ -41,7 +41,12 @@ import { generateBootstrapToken } from "./bootstrap-token.js";
 import { type CaddyDomainSpec, generateCaddyfile } from "./caddy.js";
 import { redactCredentials } from "./checkpoint-secrets.js";
 import { initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
-import { type ComposeImages, generateDockerCompose, type RolePasswords } from "./compose.js";
+import {
+  BOOTSTRAP_DIR,
+  type ComposeImages,
+  generateDockerCompose,
+  type RolePasswords,
+} from "./compose.js";
 import {
   bunHostRunner,
   readRelease,
@@ -114,7 +119,9 @@ const CAELO_DIR = process.env.CAELO_SELF_HOSTED_DIR
 const CONFIG_PATH = resolve(CAELO_DIR, "config.json");
 const COMPOSE_PATH = resolve(CAELO_DIR, "docker-compose.yml");
 const CADDYFILE_PATH = resolve(CAELO_DIR, "Caddyfile");
-const PENDING_TOKEN_PATH = resolve(CAELO_DIR, "pending-token.json");
+// The admin container mounts only `.caelo/bootstrap/` (compose.ts), never the
+// secrets next to it, and consumes the token from there on first boot.
+const PENDING_TOKEN_PATH = resolve(CAELO_DIR, BOOTSTRAP_DIR, "pending-token.json");
 // P15 — `cms-provision init --provider <name>` writes here so subsequent
 // commands route to the right Pulumi stack. Defaults to "self-hosted"
 // when missing (preserves the P14 path).
@@ -372,7 +379,8 @@ async function init(): Promise<void> {
   // first boot, calls owner_bootstrap_tokens.insert, then deletes the
   // staging file.
   const tok = generateBootstrapToken();
-  writeFileSync(PENDING_TOKEN_PATH, JSON.stringify(tok, null, 2));
+  mkdirSync(resolve(CAELO_DIR, BOOTSTRAP_DIR), { recursive: true, mode: 0o700 });
+  writeFileSync(PENDING_TOKEN_PATH, JSON.stringify(tok, null, 2), { mode: 0o600 });
 
   // P15.1 — mint the shared HMAC secret for /api/internal/* endpoints.
   // Same secret is read by:
@@ -814,9 +822,15 @@ async function migrate(): Promise<void> {
   console.log("Migrations applied (cms_admin + cms_public).");
 }
 
-/** Whether `upgrade` targets this machine's self-hosted Compose install. */
+/**
+ * Whether `upgrade` targets this directory's self-hosted Compose install.
+ * `--install <id|domain|all>` always names cloud installs (install.json),
+ * so it goes to the lifecycle selector even where a `.caelo/` exists.
+ */
 function selfHostedInstallPresent(): boolean {
-  return existsSync(CONFIG_PATH) && loadProvider() === "self-hosted";
+  return (
+    arg("install") === undefined && existsSync(CONFIG_PATH) && loadProvider() === "self-hosted"
+  );
 }
 
 /**

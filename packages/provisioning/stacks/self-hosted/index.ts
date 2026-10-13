@@ -44,7 +44,8 @@ const gatewayImage = cfg.require("gatewayImage");
 
 const composePath = resolve(caeloDir, "docker-compose.yml");
 const caddyPath = resolve(caeloDir, "Caddyfile");
-const tokenPath = resolve(caeloDir, "pending-token.json");
+// The admin container mounts only `<caeloDir>/bootstrap/` (compose.ts).
+const tokenPath = resolve(caeloDir, "bootstrap", "pending-token.json");
 
 // Mint secrets at preview time. Pulumi's secret-handling encrypts these
 // in the state file; `pulumi stack output --show-secrets postgresPassword`
@@ -101,7 +102,7 @@ const tokenInfo = generateBootstrapToken();
 // Stage all three files via a single local.Command so a destroy
 // removes them transactionally.
 const writeFiles = new local.Command("caeloConfigFile", {
-  create: pulumi.interpolate`mkdir -p ${caeloDir} && cat > ${composePath} <<'EOF'
+  create: pulumi.interpolate`mkdir -p ${caeloDir}/bootstrap && cat > ${composePath} <<'EOF'
 ${composeYaml}
 EOF
 cat > ${caddyPath} <<'EOF'

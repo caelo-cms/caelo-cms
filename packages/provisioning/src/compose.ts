@@ -40,6 +40,9 @@ export type ComposeImages = ReleaseImages | DevImages;
 
 /** The admin's HTTP port inside the Compose network (the Caddyfile proxies to it). */
 export const COMPOSE_ADMIN_PORT = 5173;
+/** `.caelo/<this>/` holds the pending Owner-bootstrap token the admin consumes. */
+export const BOOTSTRAP_DIR = "bootstrap";
+
 /** The gateway's HTTP port inside the Compose network. */
 export const COMPOSE_GATEWAY_PORT = 8090;
 
@@ -181,20 +184,27 @@ volumes:
 
 type EnvLine = (k: string, v: string | undefined) => string;
 
-/** How a Caelo service's container starts: its image and, in dev mode, the checkout. */
+/**
+ * How a Caelo service's container starts: its image and, in dev mode, the
+ * checkout. `mounts` are extra bind mounts the service needs in both modes.
+ */
 function serviceRuntime(
   images: ComposeImages,
   service: ReleaseService,
   devCommand: string,
+  mounts: readonly string[] = [],
 ): string {
+  const volumes = (list: readonly string[]) =>
+    list.length === 0 ? [] : ["    volumes:", ...list.map((m) => `      - ${m}`)];
   if (images.mode === "dev") {
-    return `    # DEV MODE (cms-provision init --dev): runs the Caelo checkout this
-    # .caelo/ dir lives in. Contributors only — never an end-user install.
-    image: oven/bun:1.4.2
-    working_dir: /app
-    volumes:
-      - ../..:/app
-    command: ${devCommand}`;
+    return [
+      "    # DEV MODE (cms-provision init --dev): runs the Caelo checkout this",
+      "    # .caelo/ dir lives in. Contributors only — never an end-user install.",
+      "    image: oven/bun:1.4.2",
+      "    working_dir: /app",
+      `    command: ${devCommand}`,
+      ...volumes(["../..:/app", ...mounts]),
+    ].join("\n");
   }
   const digest = releaseImageDigest(service, images[service]);
   if (!digest) {
@@ -202,13 +212,23 @@ function serviceRuntime(
       `${service} image ${JSON.stringify(images[service])} is not ${ghcrRepository(service)}@sha256:<digest>`,
     );
   }
-  // The image's own CMD starts the service; nothing is mounted.
-  return `    image: ${releaseImageRef(service, digest)}`;
+  // The image's own CMD starts the service; no source is mounted.
+  return [`    image: ${releaseImageRef(service, digest)}`, ...volumes(mounts)].join("\n");
 }
 
 function adminService(spec: ComposeSpec, adminMemoryMiB: number, env: EnvLine): string {
   return `  caelo-admin:
-${serviceRuntime(spec.images, "admin", `sh -c "cd apps/admin && bunx svelte-kit sync && bun --bun vite dev --host 0.0.0.0 --port ${COMPOSE_ADMIN_PORT}"`)}
+${serviceRuntime(
+  spec.images,
+  "admin",
+  `sh -c "cd apps/admin && bunx svelte-kit sync && bun --bun vite dev --host 0.0.0.0 --port ${COMPOSE_ADMIN_PORT}"`,
+  // The Owner-bootstrap token handoff: `init` writes the token to
+  // `.caelo/bootstrap/pending-token.json`; the admin reads (and deletes) it
+  // from `/app/.caelo/` on first boot (hooks.server.ts). Only that dir is
+  // mounted — never `.caelo/` itself, which holds config.json's superuser
+  // and MinIO passwords. Without the token /setup accepts any first Owner.
+  [`./${BOOTSTRAP_DIR}:/app/.caelo`],
+)}
     container_name: caelo-admin
     restart: unless-stopped
     depends_on:
