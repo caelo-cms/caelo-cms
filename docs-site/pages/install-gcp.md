@@ -135,7 +135,7 @@ It needs the [Pulumi CLI](https://www.pulumi.com/docs/install/) on the machine (
 
 1. **Preflight** (read-only): the stack exists, has no pending operations from an interrupted run, and a preview shows **no changes**. A stack with drift can't be proven identical after the move, so it is refused with "Run upgrade first": run `upgrade`, re-run the installer for the install until it reports no changes, then migrate.
 2. **Backup**: `~/.caelo-<install-id>/` is archived to `~/.caelo-backups/<install-id>-<time>.tar.zst` (`.tar.gz` without `zstd`), mode 600 — it contains the passphrase, keep it private.
-3. **Target**: the bucket and KMS key are ensured as for a new install.
+3. **Target**: after you confirm their cost (< $0.10/mo; `--yes` in scripts), the bucket and KMS key are ensured as for a new install. Only one migration of an install runs at a time (a lock object in the bucket).
 4. **Copy**: the stack is copied into the bucket and its secrets re-encrypted with the KMS key.
 5. **Verify**: a preview of the copy shows no changes and its outputs (secrets included, compared by hash) match the original. If not, the copy is discarded and your local state stays in use — nothing else changed.
 6. **Switch**: `install.json` records the new location (locally and in the bucket); `~/.caelo-<install-id>/state` is renamed to `state.migrated-<time>`, not deleted. Delete it (and the passphrase) once you are confident.

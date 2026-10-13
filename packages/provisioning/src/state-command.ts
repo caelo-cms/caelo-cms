@@ -12,7 +12,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import { log, note } from "@clack/prompts";
+import { confirm, isCancel, log, note } from "@clack/prompts";
 import { bold, red } from "kleur/colors";
 import { activeAccount } from "./gcloud.js";
 import {
@@ -139,7 +139,7 @@ function flagValue(argv: readonly string[], name: string): string | undefined {
 }
 
 const USAGE =
-  "Usage: cms-provision state migrate [--install <install-id or domain>] [--to remote|local] [--dry-run]";
+  "Usage: cms-provision state migrate [--install <install-id or domain>] [--to remote|local] [--dry-run] [--yes]";
 
 /** `cms-provision state migrate …`. */
 export async function stateCommand(argv: readonly string[]): Promise<void> {
@@ -226,6 +226,16 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
           { installId, stateBackend: record },
           { installRoot: root, readPassphrase: () => readSecret(installId, "pulumi-passphrase") },
         ),
+      confirmCost: async (costNote) => {
+        log.info(costNote);
+        if (argv.includes("--yes")) return true;
+        if (!process.stdin.isTTY) {
+          log.error(red("Not a terminal: pass --yes to accept the cost above."));
+          return false;
+        }
+        const yes = await confirm({ message: "Create them and continue?", initialValue: true });
+        return !isCancel(yes) && yes === true;
+      },
       ensureRemote: (dry) =>
         ensureOpsBackend(
           { projectId, region, operatorAccount: operator, provisionerEmail: provisioner },

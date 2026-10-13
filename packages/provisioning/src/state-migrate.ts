@@ -44,6 +44,10 @@ import type { UpgradeReporter } from "./upgrade/reporter.js";
 /** First Pulumi CLI release with `pulumi stack migrate` between DIY backends. */
 export const STACK_MIGRATE_MIN_VERSION = "3.254.0";
 
+/** What the ops bucket + KMS key cost (wizards/gcp-cost.ts carries the same line). */
+export const OPS_BACKEND_COST_NOTE =
+  "Creates (if missing) a versioned Cloud Storage bucket + one Cloud KMS key in the install's project: < $0.10/mo (KMS key version $0.06/mo, a few MB of state).";
+
 /** The Pulumi operations a migration needs, against one backend at a time. */
 export interface StatePulumiOps {
   /** `pulumi version` without the `v`, or null when the CLI is missing. */
@@ -69,6 +73,8 @@ export interface MigrateDeps {
   readonly report: UpgradeReporter;
   /** The install's backend resolved for Pulumi. */
   resolve(record: StateBackendRecord): ResolvedBackend;
+  /** Ask the operator to accept the ops backend's cost; false = cancel. */
+  confirmCost(note: string): Promise<boolean>;
   /** Ensure (or, dry, inspect) the ops bucket + KMS key. */
   ensureRemote(dryRun: boolean): Promise<OpsBackendResult>;
   /** Archive `~/.caelo-<id>/`; returns the archive's path. */
@@ -266,6 +272,10 @@ export async function migrateState(
 
   // --- 3a. Ops bucket + KMS key (remote), then the migration lock ----------
   if (opts.to === "remote") {
+    // CLAUDE.md §11.C — nothing billable without the operator's yes.
+    if (!(await deps.confirmCost(OPS_BACKEND_COST_NOTE))) {
+      return { ok: false, error: "Cancelled at the cost confirmation. Only the backup was taken." };
+    }
     const en = report.step(
       `Ensuring gs://${remoteRecord.bucket} + KMS key ${remoteRecord.kmsKey.split("/").slice(-3).join("/")}`,
     );
@@ -286,10 +296,17 @@ export async function migrateState(
     return { ok: false, error: `${errorText(e)}. Nothing else was changed.` };
   }
   try {
-    if (opts.to === "remote" && deps.remoteRecordedBackend() === "gcs") {
+    const recorded = deps.remoteRecordedBackend();
+    if (opts.to === "remote" && recorded === "gcs") {
       return {
         ok: false,
         error: `Another machine just finished migrating this install into gs://${remoteRecord.bucket}; the local state here is out of date. Nothing else was changed. Use: bunx @caelo-cms/provisioning attach --project ${meta.projectId}`,
+      };
+    }
+    if (opts.to === "local" && recorded !== "gcs") {
+      return {
+        ok: false,
+        error: `gs://${remoteRecord.bucket}/install/install.json no longer names the bucket as this install's state (another machine moved it back to itself). Nothing else was changed; manage the install from that machine.`,
       };
     }
     return await finish();

@@ -120,6 +120,7 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
     ensureRemoteCalls: [] as boolean[],
     /** What the bucket's install.json names. */
     locked: false,
+    acceptCost: true,
     bucketRecord: (initial.kind === "gcs" ? "gcs" : null) as "gcs" | "local" | null,
   };
   const meta = (): MigrateInstall => ({
@@ -139,6 +140,7 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
         { installId: "gcp-firebase-acme", stateBackend: record },
         { installRoot: ROOT, readPassphrase: () => m.passphrase },
       ),
+    confirmCost: async () => m.acceptCost,
     ensureRemote: async (dry) => {
       m.ensureRemoteCalls.push(dry);
       return { ok: true, record: GCS, actions: dry ? ["would create gs://acme-caelo-ops"] : [] };
@@ -294,6 +296,17 @@ describe("migrateState — failures leave the source authoritative", () => {
     expect(t.p.calls).toEqual([]);
   });
 
+  it("--to local refuses when another machine already moved the state off the bucket", async () => {
+    const t = machine(GCS);
+    t.p.stacks.delete(t.localUrl);
+    t.p.stacks.set(t.gcsUrl, { outputs: { a: 1 }, secretsProvider: "kms", pending: 0, drift: 0 });
+    t.m.bucketRecord = "local";
+    const r = await migrateState(t.meta(), { to: "local", dryRun: false }, t.deps);
+    expect(r.ok).toBe(false);
+    expect(t.p.calls).toEqual([]);
+    expect(t.m.backend).toEqual(GCS);
+  });
+
   it("never replaces a bucket copy another machine made authoritative", async () => {
     const t = machine();
     t.m.bucketRecord = "gcs";
@@ -366,6 +379,17 @@ describe("migrateState — one migration at a time", () => {
     expect(r.ok).toBe(false);
     expect(t.p.stacks.get(t.gcsUrl)?.outputs.theirs).toBe(true);
     expect(t.p.calls).toEqual([]);
+  });
+});
+
+describe("migrateState — cost confirmation (CLAUDE.md §11.C)", () => {
+  it("creates nothing billable when the operator declines", async () => {
+    const t = machine();
+    t.m.acceptCost = false;
+    const r = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
+    expect(r.ok).toBe(false);
+    expect(t.m.ensureRemoteCalls).toEqual([]);
+    expect(t.m.backend).toEqual({ kind: "local" });
   });
 });
 
