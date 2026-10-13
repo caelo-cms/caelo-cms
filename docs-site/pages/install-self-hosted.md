@@ -141,7 +141,7 @@ docker compose -f .caelo/docker-compose.yml exec -T postgres pg_restore -U caelo
 
 **`release.json records no release images`** from `up` — the install predates prebuilt images. Run `upgrade` once to move it onto them.
 
-**Settings → Updates says the update agent has not checked in** — run `agent status` on the server. `not installed`: run `agent install`. Installed but no recent run: `agent logs` shows why; the usual causes are the install being stopped (`docker compose … up -d`), lingering being off (the timer stops when you log out — see above), or the login `caelo_agent` missing after a restore (re-run `agent install`, which re-creates it).
+**Settings → Updates says the update agent is not set up, or not running** — run `agent status` on the server. `not installed`: run `agent install`. Installed but no recent run: `agent logs` shows why; the usual causes are the install being stopped (`docker compose … up -d`), lingering being off (the timer stops when you log out — see above), or the login `caelo_agent` missing after a restore (re-run `agent install`, which re-creates it).
 
 **`Docker is not reachable for the agent's user`** on the update timeline — the user the agent runs as cannot reach the Docker daemon. Add it to the `docker` group (`sudo usermod -aG docker <user>`, then log in again) and re-run `agent install`.
 
