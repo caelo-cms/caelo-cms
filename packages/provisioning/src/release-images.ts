@@ -61,6 +61,21 @@ export function isImageDigest(s: string): boolean {
   return DIGEST.test(s);
 }
 
+const HEX_DIGITS = "0123456789abcdef";
+
+/**
+ * `s` rebuilt character by character from a constant alphabet when it is a
+ * well-formed digest, else null. The digest comes from a registry's HTTP
+ * header and ends up in files (release.json, the Compose file); rebuilding
+ * it — rather than passing the checked string on — guarantees that nothing
+ * but `sha256:` and 64 hex digits from our own constants is ever written.
+ */
+export function canonicalDigest(s: string): string | null {
+  if (!isImageDigest(s)) return null;
+  const hex = [...s.slice("sha256:".length)].map((c) => HEX_DIGITS[HEX_DIGITS.indexOf(c)]);
+  return `sha256:${hex.join("")}`;
+}
+
 /**
  * The registry tag for an upgrade request: an explicit version (a leading
  * `v` dropped, as release tags are `vX.Y.Z` but image tags `X.Y.Z`), else
@@ -116,9 +131,10 @@ export async function resolveRegistryDigest(
       });
     }
     if (!res.ok) return { ok: false, reason: `HTTP ${res.status} ${res.statusText}` };
-    const digest = res.headers.get("docker-content-digest");
-    if (!digest || !isImageDigest(digest)) {
-      return { ok: false, reason: `unexpected digest header: ${digest ?? "(missing)"}` };
+    const header = res.headers.get("docker-content-digest");
+    const digest = header ? canonicalDigest(header) : null;
+    if (!digest) {
+      return { ok: false, reason: `unexpected digest header: ${header ?? "(missing)"}` };
     }
     return { ok: true, digest };
   } catch (e) {

@@ -115,12 +115,16 @@ export function legacyComposePath(caeloDir: string): string {
  * every retry — after a stopped run the live file may already name the
  * release images, which would make a rollback a no-op.
  */
-function legacyComposeCheckpoint(caeloDir: string): string {
+function legacyComposeCheckpoint(caeloDir: string, live: string): string {
   const saved = legacyComposePath(caeloDir);
-  if (existsSync(saved)) return readFileSync(saved, "utf8");
-  const original = readFileSync(composePath(caeloDir), "utf8");
-  writeFileSync(saved, original, { mode: 0o600 });
-  return original;
+  try {
+    // `wx`: create only — an existing checkpoint (an earlier run's) wins.
+    writeFileSync(saved, live, { mode: 0o600, flag: "wx" });
+    return live;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    return readFileSync(saved, "utf8");
+  }
 }
 
 /** Where the media of an install from before #696 lives: the checkout's admin cwd. */
@@ -153,6 +157,25 @@ export function adoptLegacyMedia(
   }
 }
 
+/** The file's size in bytes, 0 when it does not exist. */
+function fileSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+/** The file's content, or null when it does not exist. */
+function readIfExists(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
+}
+
 export function composePath(caeloDir: string): string {
   return join(caeloDir, "docker-compose.yml");
 }
@@ -175,7 +198,8 @@ export async function upgradeSelfHosted(
   const now = deps.now ?? (() => new Date());
   const current = readRelease(caeloDir);
   const file = composePath(caeloDir);
-  if (!existsSync(file)) {
+  const live = readIfExists(file);
+  if (live === null) {
     return fail("target", `${file} does not exist — run \`cms-provision init\` first.`, true);
   }
   // The file to restore on failure: the recorded release re-rendered (so a
@@ -184,7 +208,7 @@ export async function upgradeSelfHosted(
   // checkpointed once so a retry after a stopped run still has it.
   const previousCompose = current
     ? deps.renderCompose(releaseImages(current))
-    : legacyComposeCheckpoint(caeloDir);
+    : legacyComposeCheckpoint(caeloDir, live);
 
   // 1. Target release → verified digests.
   const target = await targetVersion(opts, deps.fetchImpl);
@@ -205,7 +229,7 @@ export async function upgradeSelfHosted(
     current &&
     current.images.admin === images.admin &&
     current.images.gateway === images.gateway &&
-    readFileSync(file, "utf8") === previousCompose
+    live === previousCompose
   ) {
     // Recorded, and the Compose file agrees. `up` converges containers a
     // stopped run or a failed rollback may have left on other images (a
@@ -368,7 +392,7 @@ export async function backupDatabases(
     const r = await runner.run(compose(caeloDir, "exec", "-T", "postgres", ...cmd), {
       stdoutPath: out,
     });
-    if (r.exitCode !== 0 || !existsSync(out) || statSync(out).size === 0) {
+    if (r.exitCode !== 0 || fileSize(out) === 0) {
       return {
         ok: false,
         error: `Backup failed (${cmd.join(" ")} → ${out}): ${tail(r.stderr) || "empty dump"}. The upgrade did not start.`,
