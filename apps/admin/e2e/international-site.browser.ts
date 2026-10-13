@@ -478,3 +478,151 @@ test("an English page shows the English footer, its German counterpart the Germa
     cleanupChrome();
   }
 });
+
+test("#690 — a nested page's German variant nests under the German parent, reusing the slug", async ({
+  context,
+  page,
+}) => {
+  const SECTION = `${SRC_SLUG}-sec`;
+  const CHILD = `${SRC_SLUG}-teams`;
+  const DE_SECTION = `${DE_SLUG}-sektion`;
+  const seeded = JSON.parse(
+    runBunInline(
+      `
+      import { SQL } from "bun";
+      const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+      const out = await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const lay = await tx\`INSERT INTO layouts (slug, display_name, html, css)
+          VALUES (\${process.env.SRC + "-nlay"}, 'L',
+                  '<!doctype html><html><head><title>t</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',
+                  '') RETURNING id\`;
+        const tpl = await tx\`INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
+          VALUES (\${process.env.SRC + "-ntpl"}, 'T', 'content',
+                  '<main><caelo-slot name="content">_</caelo-slot></main>', '', \${lay[0].id}) RETURNING id\`;
+        await tx\`INSERT INTO layout_blocks (layout_id, name, display_name, position)
+          VALUES (\${lay[0].id}, 'content', 'Content', 0)\`;
+        await tx\`INSERT INTO template_blocks (template_id, name, display_name, position)
+          VALUES (\${tpl[0].id}, 'content', 'Content', 0)\`;
+        const sec = await tx\`INSERT INTO pages (slug, name, title, template_id, status)
+          VALUES (\${process.env.SECTION}, 'Section', 'Section', \${tpl[0].id}, 'published') RETURNING id::text AS id\`;
+        const child = await tx\`INSERT INTO pages (slug, name, title, template_id, status, parent_page_id)
+          VALUES (\${process.env.CHILD}, 'Teams', 'Teams', \${tpl[0].id}, 'published', \${sec[0].id}::uuid)
+          RETURNING id::text AS id\`;
+        return { sectionId: sec[0].id, childId: child[0].id };
+      });
+      await sql.end();
+      process.stdout.write(JSON.stringify(out));
+      `,
+      { SRC: SRC_SLUG, SECTION, CHILD },
+    ),
+  ) as { sectionId: string; childId: string };
+
+  const tool = (id: string, name: string, args: Record<string, unknown>) => [
+    { kind: "tool-call", id, name, arguments: args },
+    { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+    { kind: "done", stopReason: "tool_use" },
+  ];
+  const say = (text: string) => [
+    { kind: "text-delta", text },
+    { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+    { kind: "done", stopReason: "end_turn" },
+  ];
+  await registerTestProvider(BASE, PROVIDER, [
+    tool("tu_locales_n", "set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    }),
+    say("Locale change approved."),
+    tool("tu_sec", "create_variant", {
+      sourcePageId: seeded.sectionId,
+      localeCode: "de",
+      slug: DE_SECTION,
+    }),
+    tool("tu_child", "create_variant", {
+      sourcePageId: seeded.childId,
+      localeCode: "de",
+      slug: CHILD,
+    }),
+    say("The German section and its teams page are ready."),
+  ] as never);
+  await attachTestProviderHeader(context, PROVIDER);
+
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("dev-owner@example.com");
+  await page.getByLabel("Password").fill("dev owner password");
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
+  await page.goto("/settings/plugins");
+  const activate = page.getByTestId("activate-international-site");
+  if ((await activate.count()) > 0) {
+    await activate.click();
+    await expect(page.getByTestId("activate-international-site")).toHaveCount(0, {
+      timeout: 30_000,
+    });
+  }
+
+  await page.goto("/content/chat");
+  await page.getByRole("button", { name: /\+ new chat/i }).click();
+  await expect(page).toHaveURL(/\/content\/chat\/[0-9a-f-]+$/, { timeout: 15_000 });
+  await page.locator("textarea").fill("add German and translate the teams section");
+  await page.getByRole("button", { name: /^send$/i }).click();
+  await page.getByTestId("chat-approval-approve").click({ timeout: 15_000 });
+  await expect(page.getByText(/Locale change approved/i)).toBeVisible({ timeout: 30_000 });
+  await page.locator("textarea").fill("now create the German pages");
+  await page.getByRole("button", { name: /^send$/i }).click();
+  await expect(page.getByText(/German section and its teams page are ready/i)).toBeVisible({
+    timeout: 30_000,
+  });
+
+  const path = runBunInline(
+    `
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx\`SELECT p.current_path FROM pages p JOIN pages parent ON parent.id = p.parent_page_id
+                 WHERE p.slug = \${process.env.CHILD} AND parent.slug = \${process.env.DE_SECTION}\`;
+    });
+    await sql.end();
+    process.stdout.write(rows[0]?.current_path ?? "<missing>");
+    `,
+    { CHILD, DE_SECTION },
+  ).trim();
+  expect(path).toBe(`/de/${DE_SECTION}/${CHILD}`);
+
+  // Leave no open chat with pending changes behind for the dev owner:
+  // other suites render /edit for the same user.
+  const sessionId = new URL(page.url()).pathname.split("/").at(-1) ?? "";
+  runBunInline(
+    `
+    import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
+    import { registerAdminOps } from "@caelo-cms/admin-core";
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx\`SELECT created_by::text AS owner FROM chat_sessions WHERE id = \${process.env.SESSION_ID}::uuid\`;
+    });
+    await sql.end();
+    const adapter = new DatabaseAdapter({
+      adminDatabaseUrl: process.env.ADMIN_DATABASE_URL,
+      publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL,
+    });
+    const registry = new OperationRegistry();
+    registerAdminOps(registry);
+    const r = await execute(
+      registry,
+      adapter,
+      { actorId: rows[0].owner, actorKind: "human", requestId: "e2e690-cleanup" },
+      "chat.discard_branch",
+      { chatSessionId: process.env.SESSION_ID },
+    );
+    await adapter.close();
+    if (!r.ok) throw new Error("discard: " + JSON.stringify(r.error));
+    `,
+    { SESSION_ID: sessionId },
+  );
+});

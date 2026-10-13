@@ -16,6 +16,7 @@ import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { type RemoveModuleFromToolInput, removeModuleFromToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { resolvePageRef } from "./_page-ref.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -33,7 +34,7 @@ interface LayoutDetail {
 export const removeModuleFromTool: ToolDefinitionWithHandler<RemoveModuleFromToolInput> = {
   name: "remove_module_from",
   description:
-    "Remove a module from a page or a layout — `target` = 'page' | 'layout', `targetRef` = that page/layout's slug OR uuid. " +
+    "Remove a module from a page or a layout — `target` = 'page' | 'layout', `targetRef` = the page's id or URL path, or the layout's slug or id. " +
     "The module row itself is NOT deleted, only the reference — it stays available for reuse. " +
     "target='page' drops the page-level reference (from whatever block it's in). " +
     "target='layout' detaches site-wide chrome from every block on the layout ('remove the footer from every page'). " +
@@ -48,8 +49,8 @@ export const removeModuleFromTool: ToolDefinitionWithHandler<RemoveModuleFromToo
       targetRef: {
         type: "string",
         minLength: 1,
-        maxLength: 200,
-        description: "Slug or uuid of the page / layout. Both resolve.",
+        maxLength: 500,
+        description: "Page: its id or URL path (e.g. '/docs/setup'). Layout: slug or id.",
       },
       moduleId: { type: "string", format: "uuid" },
     },
@@ -66,8 +67,9 @@ async function removeFromPage(
   toolCtx: ToolContext,
   input: RemoveModuleFromToolInput,
 ): Promise<ToolResult> {
-  const pageId = await resolvePageId(ctx, toolCtx, input.targetRef);
-  if (pageId === null) return refNotFound("page", input.targetRef);
+  const pageRef = await resolvePageRef(ctx, toolCtx, input.targetRef);
+  if (!pageRef.ok) return { ok: false, content: pageRef.message };
+  const pageId = pageRef.pageId;
   const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", {
     pageId,
   });
@@ -132,20 +134,6 @@ function refNotFound(target: string, ref: string): ToolResult {
     ok: false,
     content: `no ${target} found for targetRef "${ref}" — pass a valid slug or uuid (list_pages / list_layouts).`,
   };
-}
-
-async function resolvePageId(
-  ctx: ExecutionContext,
-  toolCtx: ToolContext,
-  ref: string,
-): Promise<string | null> {
-  if (UUID_RE.test(ref)) return ref;
-  const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.list", {});
-  if (!listed.ok) return null;
-  return (
-    (listed.value as { pages: { id: string; slug: string }[] }).pages.find((p) => p.slug === ref)
-      ?.id ?? null
-  );
 }
 
 async function resolveLayoutSlug(

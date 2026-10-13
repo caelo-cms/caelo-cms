@@ -18,7 +18,7 @@
     chatSessionId: string;
     title: string;
     anchorPageId: string | null;
-    anchorPageSlug: string | null;
+    anchorPagePath: string | null;
     pendingCount: number;
   }
 
@@ -30,9 +30,8 @@
     return `/edit?page=${c.anchorPageId}&chat=${c.chatSessionId}`;
   }
   function labelFor(c: OtherChat): string {
-    if (!c.anchorPageSlug) return c.title || "global chat";
-    const slug = c.anchorPageSlug;
-    return `/${slug}`;
+    if (!c.anchorPagePath) return c.title || "global chat";
+    return c.anchorPagePath;
   }
 </script>
 

@@ -21,6 +21,7 @@ import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
+import { resolvePageRefs } from "./_page-ref.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 /** URLs a single call may move before an Owner click is required. */
@@ -61,52 +62,35 @@ interface ResolvedMove {
 
 /**
  * Resolve id-or-path references against the caller's view of the site
- * (pages.list — a chat sees its own pending moves). Paths match exactly
- * (trailing slash ignored); an unknown path fails with the fix.
+ * (a chat sees its own pending moves) — one shared resolver
+ * ({@link resolvePageRefs}) for every tool that addresses pages.
  */
 export async function resolveMoveRefs(
   ctx: ExecutionContext,
   toolCtx: ToolContext,
   moves: MoveInput["moves"],
 ): Promise<{ ok: true; moves: ResolvedMove[] } | { ok: false; message: string }> {
-  const needsLookup = moves.some((m) => m.page.startsWith("/") || m.parent?.startsWith("/"));
-  const byPath = new Map<string, string>();
-  if (needsLookup) {
-    const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.list", {});
-    if (!listed.ok)
-      return { ok: false, message: `pages.list failed: ${describeError(listed.error)}` };
-    for (const p of (listed.value as { pages: { id: string; currentPath: string }[] }).pages) {
-      byPath.set(normalize(p.currentPath), p.id);
-    }
-  }
-  const resolve = (ref: string): string | null =>
-    ref.startsWith("/") ? (byPath.get(normalize(ref)) ?? null) : ref;
+  const refs = moves.flatMap((m) => (m.parent === null ? [m.page] : [m.page, m.parent]));
+  const resolved = await resolvePageRefs(ctx, toolCtx, refs);
   const out: ResolvedMove[] = [];
+  let i = 0;
   for (const m of moves) {
-    const pageId = resolve(m.page);
-    if (pageId === null) {
-      return {
-        ok: false,
-        message: `no page lives at ${m.page} — call list_pages for the current paths (or pass the page id)`,
-      };
-    }
+    const page = resolved[i++];
+    if (!page?.ok) return { ok: false, message: page?.message ?? "unresolved page" };
     let parentPageId: string | null = null;
     if (m.parent !== null) {
-      parentPageId = resolve(m.parent);
-      if (parentPageId === null) {
+      const parent = resolved[i++];
+      if (!parent?.ok) {
         return {
           ok: false,
-          message: `no page lives at ${m.parent} (the parent) — call list_pages for the current paths, or pass null to move to the top level`,
+          message: `parent ${m.parent}: ${parent?.message ?? "unresolved"} (or pass null to move to the top level)`,
         };
       }
+      parentPageId = parent.pageId;
     }
-    out.push({ pageId, parentPageId, ...(m.newSlug ? { newSlug: m.newSlug } : {}) });
+    out.push({ pageId: page.pageId, parentPageId, ...(m.newSlug ? { newSlug: m.newSlug } : {}) });
   }
   return { ok: true, moves: out };
-}
-
-function normalize(path: string): string {
-  return path.length > 1 ? path.replace(/\/+$/, "") || "/" : path;
 }
 
 /**

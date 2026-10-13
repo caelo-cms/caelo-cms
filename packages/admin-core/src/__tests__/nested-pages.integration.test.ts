@@ -250,13 +250,14 @@ describe("nested page URLs — pages.move_many", () => {
     expect(taken.ok).toBe(false);
     expect(errMsg(taken)).toMatch(/newSlug/);
 
-    // One unused slug given to two pages in the same call.
+    // One unused slug given to two pages in the same call, same parent:
+    // both would land on one URL.
     const twice = await move([
       { pageId: a, parentPageId: null, newSlug: `${PFX}-same` },
       { pageId: b, parentPageId: null, newSlug: `${PFX}-same` },
     ]);
     expect(twice.ok).toBe(false);
-    expect(errMsg(twice)).toMatch(/more than one page/);
+    expect(errMsg(twice)).toMatch(/URL conflict/);
   });
 
   it("the plan dry run reports every URL a move would change", async () => {

@@ -105,12 +105,10 @@
   const activePage = $derived(data.pages.find((p) => p.id === activePageId) ?? null);
   // The path the iframe is currently showing (covers click-through nav
   // inside the iframe; updated by `caelo:navigated` postMessage). Falls
-  // back to the active page's slug on first load.
-  let displayPath = $state<{ slug: string } | null>(null);
+  // back to the active page's composed path on first load.
+  let displayPath = $state<string | null>(null);
   const urlText = $derived.by(() => {
-    const cur = displayPath ?? (activePage ? { slug: activePage.slug } : null);
-    if (!cur) return "—";
-    return `/${cur.slug}`;
+    return displayPath ?? activePage?.currentPath ?? "—";
   });
 
   const stagedPreviewUrl = $derived(
@@ -245,7 +243,7 @@
           );
         }
       } else if (msg.kind === "caelo:navigated") {
-        displayPath = { slug: msg.slug };
+        displayPath = msg.path || null;
         // Click-through navigation inside the iframe — sync activePageId
         // (and the parent URL) so the chat-branch context follows. We
         // skip if the iframe is just confirming the current page on
@@ -284,7 +282,7 @@
       // Fresh-install "no active page yet" — pick the home (or first)
       // so the iframe gets a src instead of staying blank.
       if (activePageId === "" && data.pages.length > 0) {
-        const home = data.pages.find((p) => p.slug === "home");
+        const home = data.pages.find((p) => p.currentPath === "/");
         const pick = home ?? data.pages[0];
         if (pick) activePageId = pick.id;
       }
@@ -294,10 +292,10 @@
     const newIds = [...currentIds].filter((id) => !seenPageIds.has(id));
     if (newIds.length === 0) return;
     const newPages = data.pages.filter((p) => newIds.includes(p.id));
-    const newHome = newPages.find((p) => p.slug === "home");
+    const newHome = newPages.find((p) => p.currentPath === "/");
     if (newHome) {
       const cur = data.pages.find((p) => p.id === activePageId);
-      if (!cur || cur.slug === "home" || activePageId === "") {
+      if (!cur || cur.currentPath === "/" || activePageId === "") {
         activePageId = newHome.id;
       }
     }

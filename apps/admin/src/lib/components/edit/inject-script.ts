@@ -43,6 +43,7 @@ export const INJECT_SCRIPT = `
           kind: "caelo:navigated",
           pageId: ctx.pageId,
           slug: ctx.slug || "",
+          path: ctx.path || "",
         },
         origin(),
       );
