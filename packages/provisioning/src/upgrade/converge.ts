@@ -39,6 +39,7 @@ import {
   plainGeneratedSecretSeed,
   readSecretReplication,
 } from "../runtime-secrets.js";
+import { selfCommand } from "../self-command.js";
 import { MCP_ENV_VAR, OPERATOR_ACCESS_JOB_ENV_VAR } from "../stack-contract.js";
 import {
   ensureStackInvariants,
@@ -343,14 +344,14 @@ export function startConverge(
         // Until this upgrade the gateway held admin_role's password; anyone
         // who ever compromised it could have kept a copy.
         r.warn(
-          "The gateway no longer holds admin_role's password, but it did until now. Rotate it: bunx @caelo-cms/provisioning rotate-secret postgres-password",
+          `The gateway no longer holds admin_role's password, but it did until now. Rotate it: ${selfCommand("rotate-secret", "postgres-password", "--install", install.domain)}`,
         );
       }
       if (plan.services.some((s) => liveEnvHasInlinePassword(s.liveEnv))) {
         // The services moved their database password to Secret Manager, but
         // every earlier revision still shows it in its env.
         r.warn(
-          "The database password was stored in plain env vars before this upgrade and stays readable in the services' old revisions. Rotate it now: bunx @caelo-cms/provisioning rotate-secret postgres-password",
+          `The database password was stored in plain env vars before this upgrade and stays readable in the services' old revisions. Rotate it now: ${selfCommand("rotate-secret", "postgres-password", "--install", install.domain)}`,
         );
       }
     },
