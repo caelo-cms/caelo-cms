@@ -95,8 +95,6 @@ async function readProposalDecisions(tx: Tx, proposalId: string): Promise<Propos
       FROM role_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'snapshots', status, decided_at, decision_reason, NULL, NULL
       FROM snapshot_revert_pending_actions WHERE id = ${id}
-    UNION ALL SELECT 'experiments', status, decided_at, decision_reason, NULL, NULL
-      FROM experiment_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'email_config', status, decided_at, decision_reason, NULL, NULL
       FROM email_config_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'ai_providers', status, decided_at, decision_reason, NULL, NULL

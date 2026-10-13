@@ -93,8 +93,6 @@ export {
 } from "./gateway-attach.js";
 export {
   commentArchiveListForPageOp,
-  getActiveExperimentOp,
-  recordAssignmentOp,
   registerGatewayOperations,
 } from "./gateway-ops.js";
 export {

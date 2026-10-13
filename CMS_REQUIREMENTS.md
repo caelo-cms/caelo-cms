@@ -577,13 +577,11 @@ bunx cms-provision --provider self-hosted
 
 All services via Docker Compose. Single command, no cloud account required.
 
-### 15.5a Module A/B Testing
+### 15.5a A/B Testing
 
-- Module variants are stored as sibling `module_snapshots` tagged with an experiment id; no new versioning concept — reuses the snapshot system
-- Traffic split configured at deploy time (edge layer performs the split; the static generator emits all variants)
-- Experiment results (per-variant conversion / engagement events) flow via the edge-log analytics plugin (§14.11)
-- Promoting the winning variant is a standard per-module revert to the chosen snapshot — no bespoke promotion flow
-- Experiments are Owner-configurable; AI can propose variants but cannot start or stop an experiment
+- A/B testing is plugin-provided, see epic #676. Core keeps no experiment table, operation, gateway route, AI tool or build step; a release-signed `ab-testing` plugin supplies the feature through generic extension points (plugin dependencies, visitor consent, consent-gated public operations, page alternates).
+- Tests run only with the visitor's analytics consent; no assignment, cookie or impression without it.
+- Starting and ending a test stays approval-gated (§11.A of CLAUDE.md); the AI can draft and measure tests but cannot start or stop one on its own.
 
 ### 15.6 Site Import Wizard (first-run)
 

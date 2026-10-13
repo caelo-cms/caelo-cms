@@ -17,7 +17,7 @@ The `--provider gcp` adapter spins up a managed stack that mirrors the self-host
 |---|---|---|
 | Database | **Cloud SQL Postgres 16** (Regional HA) | Automatic failover, daily snapshots, 7-day PITR |
 | Object storage | **Cloud Storage** | The public site's bucket (CDN-fronted) and a private media bucket. The media bucket is mounted into the admin as a Cloud Storage volume, so uploads survive new revisions and scale-to-zero and every admin instance sees the same files |
-| Edge | **Cloud CDN** + Load Balancer | TLS via Google-managed cert; A/B edge split honoured |
+| Edge | **Cloud CDN** + Load Balancer | TLS via Google-managed cert |
 | Compute (admin + gateway) | **Cloud Run** | Autoscaling, scales to zero idle |
 | Secrets | **Secret Manager** | Bearer tokens, OAuth secrets, AI provider keys |
 | Network | **VPC** + Serverless VPC Access | Cloud Run → Cloud SQL via private IP only |
@@ -184,7 +184,7 @@ After changing the host in the admin (Security → Domains), run it again with `
 
 #### The gateway's own database logins
 
-The public API gateway never holds the admin's database credential. It connects as two roles of its own: `public_role` on `cms_public` and `gateway_role` on `cms_admin` — a login that can read the gateway's settings and the plugin registry, read the variant weights of active A/B experiments and the approved comments a page already shows, append to its own request log, rate limits, captcha challenges, plugin audit and A/B impression counts, and nothing else. Each role has its own password in Secret Manager (`postgres-password` for the admin, `public-role-password` and `gateway-role-password` for the gateway), and the gateway's service account can read only the gateway's two.
+The public API gateway never holds the admin's database credential. It connects as two roles of its own: `public_role` on `cms_public` and `gateway_role` on `cms_admin` — a login that can read the gateway's settings, the plugin registry and the approved comments a page already shows, append to its own request log, rate limits, captcha challenges and plugin audit, and nothing else. Each role has its own password in Secret Manager (`postgres-password` for the admin, `public-role-password` and `gateway-role-password` for the gateway), and the gateway's service account can read only the gateway's two.
 
 An install from before this change converges on its first `upgrade`, without anything for you to do:
 
