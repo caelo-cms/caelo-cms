@@ -31,15 +31,19 @@ export function ghcrRepository(service: ReleaseService): string {
   return `${GHCR_REGISTRY}/${GHCR_NAMESPACE}/${service}`;
 }
 
+/** Where Caelo's release workflows live; every signer identity starts here. */
+export const RELEASE_WORKFLOWS_URL = "https://github.com/caelo-cms/caelo-cms/.github/workflows";
+
 /**
  * The keyless signer cosign must see on every release image: one of the two
  * release workflows of the caelo-cms repo, via GitHub's OIDC issuer. A
  * different identity means a registry compromise, a typosquat, or a fork's
  * image — every caller refuses to run it.
  */
-export const RELEASE_SIGNER_IDENTITY_REGEXP =
-  "https://github.com/caelo-cms/caelo-cms/.github/workflows/(release-images|release).yml@.*";
-export const RELEASE_SIGNER_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
+export const RELEASE_SIGNER_IDENTITY_REGEXP = `${RELEASE_WORKFLOWS_URL}/(release-images|release).yml@.*`;
+
+/** OIDC issuer of every Caelo release signature — images and release manifest (GitHub Actions). */
+export const RELEASE_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 
 /**
  * The `cosign verify` argv for one image reference pinned by digest.
@@ -54,15 +58,16 @@ export function cosignVerifyArgv(imageRef: string): string[] {
     "--certificate-identity-regexp",
     RELEASE_SIGNER_IDENTITY_REGEXP,
     "--certificate-oidc-issuer",
-    RELEASE_SIGNER_OIDC_ISSUER,
+    RELEASE_OIDC_ISSUER,
   ];
 }
 
-const DIGEST = /^sha256:[0-9a-f]{64}$/;
+/** A `sha256:<64 hex>` image / blob digest. */
+export const IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/;
 
 /** Whether `s` is a well-formed `sha256:<64 hex>` digest. */
 export function isImageDigest(s: string): boolean {
-  return DIGEST.test(s);
+  return IMAGE_DIGEST.test(s);
 }
 
 const HEX_DIGITS = "0123456789abcdef";

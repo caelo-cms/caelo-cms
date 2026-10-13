@@ -43,6 +43,28 @@ on:
         required: false
         default: "patch"
         type: string
+      # Release-manifest declaration (epic #696). Signed into the
+      # release manifest; see RELEASING.md ("Security releases").
+      security:
+        description: "Security release — requires every advisory below to be a PUBLISHED GitHub Security Advisory of this repo"
+        required: false
+        default: false
+        type: boolean
+      advisories:
+        description: "GHSA ids this release fixes, comma-separated (required when security is set)"
+        required: false
+        default: ""
+        type: string
+      ack_contract_migrations:
+        description: "Acknowledge destructive (contract) migrations since the previous release — installs must then upgrade manually"
+        required: false
+        default: false
+        type: boolean
+      ack_infra_neutral:
+        description: "Infra-contract files changed but add/remove no IAM, secret or resource (no INFRA_CONTRACT_VERSION bump)"
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
     # Only release commits touch the version constant — this keeps the
@@ -76,6 +98,53 @@ jobs:
           # previous vX.Y.Z tag — needs full history.
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Assemble the release declaration
+        id: decl
+        # Inputs reach the shell through env, never `${{ }}` inside run:
+        # (a free-text input interpolated into the script is injectable).
+        env:
+          SECURITY: ${{ inputs.security }}
+          ADVISORIES: ${{ inputs.advisories }}
+          ACK_CONTRACT: ${{ inputs.ack_contract_migrations }}
+          ACK_INFRA: ${{ inputs.ack_infra_neutral }}
+        run: |
+          set -euo pipefail
+          flags=""
+          [ "${SECURITY}" = "true" ] && flags="${flags} --security"
+          [ "${ACK_CONTRACT}" = "true" ] && flags="${flags} --ack-contract-migrations"
+          [ "${ACK_INFRA}" = "true" ] && flags="${flags} --ack-infra-neutral"
+          if [ -n "${ADVISORIES}" ]; then
+            # GHSA ids and commas only — anything else is refused here,
+            # before it reaches a command line.
+            if ! printf '%s' "${ADVISORIES}" | grep -Eq '^[A-Za-z0-9, -]+$'; then
+              echo "::error::advisories may only contain GHSA ids separated by commas"
+              exit 1
+            fi
+            flags="${flags} --advisories=$(printf '%s' "${ADVISORIES}" | tr -d ' ')"
+          fi
+          echo "flags=${flags}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate the release declaration (before the paid real-AI gate)
+        # security=true is refused unless every advisory is a PUBLISHED
+        # GitHub Security Advisory of this repo; contract migrations and
+        # infra-contract changes since the previous tag need their
+        # acknowledgement inputs. scripts/release-checks.ts has the rules.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION_INPUT: ${{ inputs.version || 'patch' }}
+          FLAGS: ${{ steps.decl.outputs.flags }}
+        run: |
+          # shellcheck disable=SC2086 # FLAGS is a validated word list.
+          bun run scripts/release.ts "${VERSION_INPUT}" ${FLAGS} --checks-only
 
       - name: Gate — real-AI suite green on this main commit
         # Main is not covered per push (e2e-livedit.yml runs on PRs only),
@@ -131,14 +200,6 @@ jobs:
           fi
           echo "::notice::real-AI suite green on $SHA (run $run)."
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.4.2
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
       - name: Guard — Tier-1 signing key must be configured
         # release.ts re-signs the Tier-1 plugin manifests; on a
         # maintainer machine the key comes from `.caelo-dev-key`, in CI
@@ -165,10 +226,15 @@ jobs:
           # maintainer-local `.caelo-dev-key` file.
           CAELO_TIER1_PRIVATE_KEY: ${{ secrets.CAELO_TIER1_PRIVATE_KEY }}
           CAELO_TIER1_PUBLIC_KEY: ${{ vars.CAELO_TIER1_PUBLIC_KEY }}
+          # The advisory lookup re-runs here (release.ts checks before it bumps).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION_INPUT: ${{ inputs.version || 'patch' }}
+          FLAGS: ${{ steps.decl.outputs.flags }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          bun run scripts/release.ts "${{ inputs.version || 'patch' }}"
+          # shellcheck disable=SC2086 # FLAGS is a validated word list.
+          bun run scripts/release.ts "${VERSION_INPUT}" ${FLAGS}
 
       - name: Determine the new version
         id: ver
@@ -195,6 +261,8 @@ jobs:
               "Cut by the release-cut workflow (run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})." \
               "" \
               "**Merging this PR ships v${V}**: the merge commit is tagged automatically and release.yml publishes npm + GHCR + AR + the GitHub Release after its own quality gate passes." \
+              "" \
+              "**Release declaration** (signed into the release manifest): \`$(jq -c . release-meta.json)\`" \
               "" \
               "If the required checks below stay pending (PR was opened with the repo GITHUB_TOKEN), merge with \`gh pr merge --squash --admin\` — release.yml re-runs the full gate on the tagged commit before anything publishes." \
               "" \

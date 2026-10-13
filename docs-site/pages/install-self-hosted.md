@@ -26,7 +26,7 @@ The admin and the gateway run the **prebuilt release images** from `ghcr.io/cael
 Run from the directory that should hold the install (the provisioner creates `./.caelo/` there):
 
 ```bash
-bunx @caelo-cms/provisioning init --provider self-hosted \
+bunx @caelo-cms/provisioning@latest init --provider self-hosted \
   --domain caelo.example.com \
   --owner-email you@example.com
 ```
@@ -41,7 +41,7 @@ Then start it — the provisioner prints these commands with your paths filled i
 
 ```bash
 docker compose -f .caelo/docker-compose.yml up -d postgres
-bunx @caelo-cms/provisioning migrate     # database migrations, from the admin image
+bunx @caelo-cms/provisioning@<version> migrate   # the provisioner prints this with its exact version
 docker compose -f .caelo/docker-compose.yml up -d
 ```
 
@@ -49,10 +49,13 @@ Finally open the Owner-bootstrap URL the provisioner printed (`https://<domain>/
 
 ## Upgrading
 
+Copy the command from **Settings → Caelo updates** in the admin: it names the release, and runs the provisioner of that same release. By hand:
+
 ```bash
-bunx @caelo-cms/provisioning upgrade                    # newest stable release
-bunx @caelo-cms/provisioning upgrade --version 0.11.0   # a specific release
+bunx @caelo-cms/provisioning@<version> upgrade --version <version>
 ```
+
+Without `--version`, `upgrade` installs the newest stable release.
 
 Run it from the directory that holds `.caelo/`. In order, it:
 
@@ -73,7 +76,7 @@ An install created before prebuilt images existed (its Compose file bind-mounts 
 |---|---|
 | Restart the stack | `docker compose -f .caelo/docker-compose.yml restart` |
 | Tail logs | `docker compose -f .caelo/docker-compose.yml logs -f caelo-admin caelo-gateway caddy` |
-| Apply DB migrations by hand | `bunx @caelo-cms/provisioning migrate` |
+| Apply DB migrations by hand | `bunx @caelo-cms/provisioning@<version> migrate` |
 | Which release runs | `.caelo/release.json` (version, image digests, upgrade history) |
 | Restore a pre-upgrade backup | see *Troubleshooting* below |
 | Rotate any secret | `/settings/<area>` in the admin OR see incident-response §G |

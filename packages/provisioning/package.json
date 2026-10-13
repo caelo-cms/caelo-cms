@@ -49,7 +49,8 @@
     "@pulumi/random": "^4.21.2",
     "kleur": "4.1.5",
     "ts-node": "^10",
-    "typescript": "^5"
+    "typescript": "^5",
+    "zod": "4.6.5"
   },
   "publishConfig": {
     "access": "public"

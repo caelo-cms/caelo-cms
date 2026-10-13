@@ -17,6 +17,7 @@
  */
 
 import { join, resolve as resolvePath } from "node:path";
+import { provisioningUpgradeCommand } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { activeAccount, gcloud } from "./gcloud.js";
@@ -51,6 +52,7 @@ import {
   rotateRuntimeSecret,
   rotationRefusal,
 } from "./runtime-secrets.js";
+import { selfCommand } from "./self-command.js";
 import {
   type AppRollPlan,
   type ReleaseImage,
@@ -131,7 +133,7 @@ function exitNoInstall(message: string): never {
   log.error(red(message));
   if (listInstalls().length === 0) {
     log.warn(
-      `Run ${bold("bunx @caelo-cms/provisioning")} first to provision an install, OR copy ${dim("~/.caelo-<install-id>/")} from the provisioning machine.`,
+      `Run ${bold(selfCommand())} first to provision an install, OR copy ${dim("~/.caelo-<install-id>/")} from the provisioning machine.`,
     );
   }
   process.exit(1);
@@ -284,9 +286,11 @@ async function gcpStatus(meta: InstallMetadata): Promise<void> {
   const { CAELO_VERSION } = await import("@caelo-cms/shared");
   const latestTag = await getLatestReleaseTag();
   const latestStable = latestTag?.replace(/^v/, "") ?? null;
+  // #696 — the upgrade runs as the new release's CLI and rolls exactly that
+  // release, on exactly this install (same command Settings → Updates shows).
   const upgradeHint =
     latestStable && latestStable !== CAELO_VERSION
-      ? `${yellow(`v${latestStable} available`)} — run \`bunx @caelo-cms/provisioning upgrade\``
+      ? `${yellow(`v${latestStable} available`)} — run \`${provisioningUpgradeCommand({ version: latestStable, install: meta.domain })}\``
       : latestStable === CAELO_VERSION
         ? green("up to date")
         : dim("(latest unknown)");

@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertNoSecrets, writeJsonAtomic } from "./checkpoint-secrets.js";
 import { ghcrImageDigest, ghcrImageRef, type ReleaseImages } from "./compose.js";
+import { selfCommand } from "./self-command.js";
 import {
   cosignVerifyArgv,
   GHCR_NAMESPACE,
@@ -114,7 +115,7 @@ export function readRelease(caeloDir: string): SelfHostedRelease | null {
     !ghcrImageDigest("gateway", gateway)
   ) {
     throw new Error(
-      `${path} is malformed (needs version + digest-pinned ghcr.io/caelo-cms images); fix it or re-run \`cms-provision upgrade --version <x.y.z>\`.`,
+      `${path} is malformed (needs version + digest-pinned ghcr.io/caelo-cms images); fix it or re-run \`${selfCommand("upgrade", "--version", "<x.y.z>")}\`.`,
     );
   }
   return {

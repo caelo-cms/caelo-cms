@@ -42,6 +42,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { MEDIA_DIR, type ReleaseImages } from "./compose.js";
+import { selfCommand } from "./self-command.js";
 import {
   type HostRunner,
   readRelease,
@@ -200,7 +201,7 @@ export async function upgradeSelfHosted(
   const file = composePath(caeloDir);
   const live = readIfExists(file);
   if (live === null) {
-    return fail("target", `${file} does not exist — run \`cms-provision init\` first.`, true);
+    return fail("target", `${file} does not exist — run \`${selfCommand("init")}\` first.`, true);
   }
   // The file to restore on failure: the recorded release re-rendered (so a
   // run that stopped after writing new digests cannot "restore" those), or —

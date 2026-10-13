@@ -47,6 +47,7 @@ import {
   generateDockerCompose,
   type RolePasswords,
 } from "./compose.js";
+import { selfCommand } from "./self-command.js";
 import {
   bunHostRunner,
   readRelease,
@@ -256,7 +257,7 @@ function installImages(cfg: CaeloConfig): ComposeImages {
   if (!release) {
     throw new Error(
       `${CAELO_DIR}/release.json records no release images. This install predates the prebuilt\n` +
-        "images (it ran the repo bind mount): run `cms-provision upgrade` to move it to the signed\n" +
+        `images (it ran the repo bind mount): run \`${selfCommand("upgrade")}\` to move it to the signed\n` +
         'release images. (A contributor checkout that wants the bind mount sets "imageMode": "dev" in config.json.)',
     );
   }
@@ -405,7 +406,7 @@ async function init(): Promise<void> {
   console.log("");
   console.log("Next steps:");
   console.log(`  docker compose -f ${COMPOSE_PATH} up -d postgres`);
-  console.log("  cms-provision migrate     # applies the database migrations");
+  console.log(`  ${selfCommand("migrate")}     # applies the database migrations`);
   console.log(`  docker compose -f ${COMPOSE_PATH} up -d`);
   console.log("  # Wait ~30s for Caddy + ACME");
   console.log("");
@@ -810,7 +811,7 @@ async function restore(): Promise<void> {
 async function migrate(): Promise<void> {
   requireSelfHosted("migrate");
   if (!existsSync(COMPOSE_PATH)) {
-    console.error("no Compose file — run `cms-provision init` first");
+    console.error(`no Compose file — run \`${selfCommand("init")}\` first`);
     process.exit(2);
   }
   const { runMigrations } = await import("./self-hosted-upgrade.js");
@@ -851,7 +852,7 @@ async function upgradeSelfHostedCommand(opts: {
   if (cfg.imageMode === "dev") {
     console.error(
       "This is a DEV MODE install: the admin + gateway run your Caelo checkout, so there are\n" +
-        "no images to upgrade. Update the checkout (git pull), then `cms-provision migrate` and\n" +
+        "no images to upgrade. Update the checkout (git pull), then `bun packages/provisioning/src/cli.ts migrate` and\n" +
         `\`docker compose -f ${COMPOSE_PATH} restart caelo-admin caelo-gateway\`.`,
     );
     process.exit(2);
