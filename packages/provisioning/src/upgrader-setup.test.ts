@@ -104,13 +104,11 @@ describe("ensureUpgraderJob", () => {
     const role = calls.find((c) => c.slice(0, 3).join(" ") === "iam roles create");
     const perms = (flag(role ?? [], "permissions") ?? "").split(",");
     expect(perms.sort()).toEqual([...UPGRADER_SQL_BACKUP_ROLE.permissions].sort());
-    expect(
-      perms.some(
-        (p) =>
-          /setIamPolicy|restore|update|delete|\.create$/.test(p) &&
-          p !== "cloudsql.backupRuns.create",
-      ),
-    ).toBe(false);
+    // Nothing but the one write it needs: create a backup.
+    const writes = perms.filter((p) =>
+      /\.(setIamPolicy|restoreBackup|update|delete|create)$/.test(p),
+    );
+    expect(writes).toEqual(["cloudsql.backupRuns.create"]);
   });
 
   it("the admin may start the job without overrides and read it — nothing else", async () => {
