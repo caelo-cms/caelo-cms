@@ -261,4 +261,19 @@ describe("createIapHealthProbe", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("roles/iam.serviceAccountTokenCreator");
   });
+
+  it("a transport failure while signing is a failed check, not a throw", async () => {
+    const http: HttpFetch = async () => {
+      throw new Error("ECONNRESET");
+    };
+    const probe = createIapHealthProbe(FIREBASE, {
+      run: gcloudOk,
+      http,
+      sleep: async () => {},
+      attempts: 2,
+    });
+    const r = await probe.deep({ version: null });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("ECONNRESET");
+  });
 });

@@ -329,7 +329,10 @@ export async function executeAppRoll(
   // migrations, and roll a healthy release back.
   if (deps.health) {
     const s = r.step("Checking the health check can reach admin + gateway...");
-    const base = await deps.health.baseline();
+    const base = await deps.health.baseline().catch((e: unknown) => ({
+      ok: false as const,
+      error: e instanceof Error ? e.message : String(e),
+    }));
     if (!base.ok) {
       s.failed(`Health check can't reach the install: ${base.error}`);
       r.warn(
@@ -446,7 +449,12 @@ export async function executeAppRoll(
 
   if (deps.health) {
     const s = r.step("Deep health check (database, migrations, version)...");
-    const deep = await deps.health.deep({ version: input.targetVersion });
+    // A probe that throws is a failed check: roll back, never leave the
+    // new revisions serving unverified.
+    const deep = await deps.health.deep({ version: input.targetVersion }).catch((e: unknown) => ({
+      ok: false as const,
+      error: e instanceof Error ? e.message : String(e),
+    }));
     if (!deep.ok) {
       s.failed(`Deep health check failed: ${deep.error}`);
       await rollBack();

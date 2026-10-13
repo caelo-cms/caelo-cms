@@ -312,6 +312,25 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(calls.some((c) => c.includes("remove-iam-policy-binding"))).toBe(false);
   });
 
+  it("a deep health probe that throws still rolls back", async () => {
+    const events: string[] = [];
+    const { deps, recorded } = upgradeDeps(events);
+    const throwing: HealthProbe = {
+      baseline: async () => ({ ok: true, detail: "" }),
+      deep: async () => {
+        throw new Error("socket hang up");
+      },
+    };
+    expect(
+      await upgradeGcpInstall(TARGET, {
+        ...deps,
+        healthProbe: async () => ({ ok: true, probe: throwing }),
+      }),
+    ).toBe(false);
+    expect(events.filter((e) => e.includes("--to-revisions"))).toHaveLength(2);
+    expect(recorded.digests).toEqual([]);
+  });
+
   it("a health baseline that can't reach the install stops before the migrations", async () => {
     const events: string[] = [];
     const { deps, calls } = upgradeDeps(events);

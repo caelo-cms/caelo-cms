@@ -192,8 +192,23 @@ export function createIapHealthProbe(target: HealthTarget, deps: HealthProbeDeps
   const intervalMs = deps.intervalMs ?? 5_000;
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
 
-  /** A JWT IAP accepts for the admin origin, signed as the MCP service account. */
+  /**
+   * A JWT IAP accepts for the admin origin, signed as the MCP service
+   * account. Never throws: a transport failure is a failed outcome, so the
+   * retries and the app-roll's rollback still run.
+   */
   async function iapToken(): Promise<{ ok: true; jwt: string } | { ok: false; error: string }> {
+    try {
+      return await signIapToken();
+    } catch (e) {
+      return {
+        ok: false,
+        error: `could not sign an IAP credential as ${signer}: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+  }
+
+  async function signIapToken(): Promise<{ ok: true; jwt: string } | { ok: false; error: string }> {
     const token = await deps.run(["auth", "print-access-token"]);
     const bearer = token.ok ? token.stdout.trim() : "";
     if (!bearer) {

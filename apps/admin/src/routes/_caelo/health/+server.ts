@@ -52,11 +52,12 @@ function unhealthy(kind: string, message: string) {
 }
 
 export const GET: RequestHandler = async ({ url }) => {
-  const { adapter, registry } = getQueryContext();
+  let query: ReturnType<typeof getQueryContext>;
   try {
+    query = getQueryContext();
     // The lightest check that proves a working connection AND the expected
     // role on both pools (catches a swapped or misrouted database URL).
-    await adapter.verifyRoles();
+    await query.adapter.verifyRoles();
   } catch (e) {
     console.error(`[health] database check failed: ${(e as Error).message}`);
     return unhealthy("DbUnreachable", "a database pool cannot connect as its expected role");
@@ -79,7 +80,7 @@ export const GET: RequestHandler = async ({ url }) => {
   };
   const migrations: Partial<Record<"admin" | "public", MigrationState>> = {};
   for (const database of ["cms_admin", "cms_public"] as const) {
-    const r = await execute(registry, adapter, ctx, OPS[database], {});
+    const r = await execute(query.registry, query.adapter, ctx, OPS[database], {});
     if (!r.ok) {
       console.error(`[health] ${OPS[database]}: ${JSON.stringify(r.error)}`);
       return unhealthy("MigrationStateUnreadable", `could not read ${database}'s migrations`);
