@@ -507,7 +507,7 @@ describe("Stop is authoritative (issue #664)", () => {
     const started = await startAgentRun({
       store: {
         register: async () => ({ ok: true, registered: true, runId: "local-run-664" }),
-        heartbeat: async () => ({ ok: true, cancelRequested: false }),
+        heartbeat: async () => ({ ok: true, cancelRequested: false, externalAgentRefusal: null }),
         finish: async () => undefined,
       },
       registration: {
@@ -713,6 +713,41 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
       serializer: fastSerializer(),
     });
     expect(p.calls).toBe(1);
+  });
+
+  it("does not run a queued Live Edit turn once an external agent started while it waited (codex review)", async () => {
+    const token = await mintAdminToken();
+    const chatSessionId = await createChat("t664 queued vs mcp");
+    const t = gatedTools();
+    const serializer = fastSerializer();
+    const first = liveEditTurn({
+      chatSessionId,
+      provider: new BuildThenStage(),
+      tools: t.tools,
+      content: "Build it.",
+      operator: true,
+      serializer,
+    });
+    await t.running;
+    const waiting = new AnswerOnly();
+    const queued = liveEditTurn({
+      chatSessionId,
+      provider: waiting,
+      tools: t.tools,
+      content: "Then the footer.",
+      operator: true,
+      serializer,
+    });
+    await waitFor(async () => (await listRuns(chatSessionId)).length === 2);
+    // The external agent starts working while the second turn waits.
+    expect((await mcpCall(token, chatSessionId, "list_pages", {})).ok).toBe(true);
+    t.finish();
+    await first;
+    const events = await queued;
+    const error = events.find((e) => e.kind === "error");
+    expect(error && "message" in error ? error.message : "").toContain("external agent");
+    expect(waiting.calls).toBe(0);
+    expect(await userRows(chatSessionId)).toEqual(["Build it."]);
   });
 
   it("refuses an external write while a Live Edit turn writes; reads still work", async () => {

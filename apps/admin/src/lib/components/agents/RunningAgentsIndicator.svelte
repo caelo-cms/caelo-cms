@@ -39,11 +39,11 @@
     nowMs = Date.now();
   }
 
-  async function stop(run: AgentRunView): Promise<void> {
+  async function act(run: AgentRunView, action: "cancel" | "allow"): Promise<void> {
     actionError = await postAgentAction({
       csrfToken,
       chatSessionId: run.chatSessionId,
-      action: "cancel",
+      action,
       runId: run.id,
     });
     await refresh();
@@ -100,14 +100,29 @@
                     >
                     <div class="text-xs text-muted-foreground">{runStatusText(run, nowMs)}</div>
                   </div>
-                  {#if run.state !== "stopped" && !run.cancelRequested}
+                  {#if run.state === "stopped"}
+                    <!-- The block never expires; whoever may stop it here may
+                         lift it here too (the chat itself may be another
+                         operator's). -->
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      class="h-6 px-2 text-xs"
+                      data-testid="header-agent-allow"
+                      title="Let this external agent work in that chat again"
+                      onclick={() => void act(run, "allow")}
+                    >
+                      Allow again
+                    </Button>
+                  {:else if !run.cancelRequested}
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
                       class="h-6 px-2 text-xs"
                       data-testid="header-agent-stop"
-                      onclick={() => void stop(run)}
+                      onclick={() => void act(run, "cancel")}
                     >
                       <Square class="mr-1 size-3 fill-current" /> Stop
                     </Button>

@@ -55,7 +55,10 @@ export interface AgentRunStore {
   heartbeat(args: {
     runId: string;
     state?: "running";
-  }): Promise<{ ok: true; cancelRequested: boolean } | { ok: false; message: string }>;
+  }): Promise<
+    | { ok: true; cancelRequested: boolean; externalAgentRefusal: string | null }
+    | { ok: false; message: string }
+  >;
   finish(runId: string): Promise<void>;
 }
 
@@ -101,9 +104,11 @@ export function queryApiAgentRunStore(
         ...(args.state ? { state: args.state } : {}),
       });
       if (!r.ok) return { ok: false, message: describe(r.error) };
+      const v = r.value as { cancelRequested: boolean; externalAgentRefusal: string | null };
       return {
         ok: true,
-        cancelRequested: (r.value as { cancelRequested: boolean }).cancelRequested,
+        cancelRequested: v.cancelRequested,
+        externalAgentRefusal: v.externalAgentRefusal,
       };
     },
     async finish(runId) {
@@ -170,8 +175,12 @@ export interface AgentRunHandle {
   readonly runId: string;
   /** Aborts (with {@link OperatorStoppedError}) when the operator pressed Stop. */
   readonly signal: AbortSignal;
-  /** The turn got the chat: queued → running. */
-  markRunning(): Promise<void>;
+  /**
+   * The turn got the chat: queued → running. Returns the refusal text when
+   * an external agent started working in the chat while the turn waited
+   * (the turn must then not run), else null.
+   */
+  markRunning(): Promise<string | null>;
   /** The run ended: stop polling and drop the row. Idempotent. */
   finish(): Promise<void>;
 }
@@ -248,7 +257,9 @@ export async function startAgentRun(args: {
       signal: controller.signal,
       async markRunning() {
         const r = await store.heartbeat({ runId, state: "running" });
-        if (r.ok && r.cancelRequested) stop();
+        if (!r.ok) return null;
+        if (r.cancelRequested) stop();
+        return r.externalAgentRefusal;
       },
       async finish() {
         if (finished) return;

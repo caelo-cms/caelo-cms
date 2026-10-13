@@ -106,6 +106,31 @@ export const getAgentStopEpochOp = defineOperation({
   },
 });
 
+/**
+ * The refusal text when an external agent works in the chat right now, or
+ * null. Checked when a turn registers AND again when it gets the chat (it
+ * may have waited while the agent started).
+ */
+async function workingExternalAgent(
+  tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
+  chatSessionId: string,
+): Promise<string | null> {
+  const rows = (await tx.execute(sql`
+    SELECT label, heartbeat_at FROM chat_agent_runs
+    WHERE chat_session_id = ${chatSessionId}::uuid
+      AND kind = 'mcp' AND state = 'running' AND expires_at > now()
+    ORDER BY heartbeat_at DESC
+    LIMIT 1
+  `)) as unknown as { label: string; heartbeat_at: string | Date }[];
+  const busy = rows[0];
+  if (!busy) return null;
+  return (
+    `An external agent (${busy.label}) is working in this chat right now (last action ${toIso(busy.heartbeat_at)}). ` +
+    "Two agents editing the same pages at once would undo each other's work, so this message was NOT sent. " +
+    "Stop the external agent in the 'Agents running' bar above the chat (or wait until it is done), then send the message again."
+  );
+}
+
 // ─── register ─────────────────────────────────────────────────────────
 
 export const registerAgentRunOp = defineOperation({
@@ -192,22 +217,12 @@ export const registerAgentRunOp = defineOperation({
           UPDATE chat_sessions SET agents_stopped_at = NULL WHERE id = ${input.chatSessionId}::uuid
         `);
       }
-      const external = (await tx.execute(sql`
-        SELECT label, heartbeat_at FROM chat_agent_runs
-        WHERE chat_session_id = ${input.chatSessionId}::uuid
-          AND kind = 'mcp' AND state = 'running' AND expires_at > now()
-        ORDER BY heartbeat_at DESC
-        LIMIT 1
-      `)) as unknown as { label: string; heartbeat_at: string | Date }[];
-      const busy = external[0];
+      const busy = await workingExternalAgent(tx, input.chatSessionId);
       if (busy) {
         return ok({
           registered: false as const,
           reason: "external_agent" as const,
-          message:
-            `An external agent (${busy.label}) is working in this chat right now (last action ${toIso(busy.heartbeat_at)}). ` +
-            "Two agents editing the same pages at once would undo each other's work, so this message was NOT sent. " +
-            "Stop the external agent in the 'Agents running' bar above the chat (or wait until it is done), then send the message again.",
+          message: busy,
         });
       }
     }
@@ -257,6 +272,11 @@ export const heartbeatAgentRunOp = defineOperation({
   output: z.object({
     /** True when Stop was requested — or the row is gone (it then cannot be stopped any more). */
     cancelRequested: z.boolean(),
+    /**
+     * On the queued → running transition of a turn: the refusal text when an
+     * external agent started working in the chat while the turn waited.
+     */
+    externalAgentRefusal: z.string().nullable(),
   }),
   // No audit row: a once-a-second renewal. Register, finish and cancel are
   // the audited transitions (same as the turn lease's renew).
@@ -267,10 +287,19 @@ export const heartbeatAgentRunOp = defineOperation({
           expires_at = now() + ${AGENT_RUN_TTL_MS}::int * interval '1 millisecond',
           state = COALESCE(${input.state ?? null}::text, state)
       WHERE id = ${input.runId}::uuid AND kind <> 'mcp'
-      RETURNING cancel_requested_at
-    `)) as unknown as { cancel_requested_at: string | Date | null }[];
+      RETURNING cancel_requested_at, kind, chat_session_id::text AS chat_session_id
+    `)) as unknown as {
+      cancel_requested_at: string | Date | null;
+      kind: string;
+      chat_session_id: string;
+    }[];
     const row = rows[0];
-    return ok({ cancelRequested: !row || row.cancel_requested_at !== null });
+    if (!row) return ok({ cancelRequested: true, externalAgentRefusal: null });
+    const externalAgentRefusal =
+      input.state === "running" && row.kind === "turn"
+        ? await workingExternalAgent(tx, row.chat_session_id)
+        : null;
+    return ok({ cancelRequested: row.cancel_requested_at !== null, externalAgentRefusal });
   },
 });
 

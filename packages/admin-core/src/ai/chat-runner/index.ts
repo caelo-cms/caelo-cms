@@ -153,7 +153,14 @@ export async function* runChatTurn(
     }
     const { hold } = acquired;
     try {
-      await run?.markRunning();
+      // Issue #665 — an external agent may have started working in the chat
+      // while this turn waited for it: then it does not run either.
+      const refusal = (await run?.markRunning()) ?? null;
+      if (refusal !== null) {
+        yield { kind: "error", message: refusal };
+        yield { kind: "done" };
+        return;
+      }
       // A turn that lost its lease (lapsed and taken over by another turn)
       // stops like an aborted one instead of writing into the other turn.
       const abortSignal = outerSignal ? AbortSignal.any([outerSignal, hold.lost]) : hold.lost;
