@@ -13,6 +13,7 @@ import { describe, expect, it } from "bun:test";
 import type { GcloudResult } from "./gcloud.js";
 import {
   ensureOpsBackend,
+  isOpsLifecycle,
   NONCURRENT_VERSION_DAYS,
   OPS_BUCKET_ROLE,
   OPS_KEY_ROLE,
@@ -34,10 +35,19 @@ function fakeGcp(initial: { bucket?: boolean; ring?: boolean; key?: boolean } = 
           versioning_enabled: true,
           uniform_bucket_level_access: true,
           public_access_prevention: "enforced",
-          lifecycle_config: { rule: [{ condition: { daysSinceNoncurrentTime: 30 } }] },
+          lifecycle_config: {
+            rule: [
+              {
+                action: { type: "Delete" },
+                condition: { daysSinceNoncurrentTime: 30, isLive: false },
+              },
+            ],
+          },
         }
       : null,
     bucketPolicy: [] as Binding[],
+    /** The bucket name exists, but in someone else's project. */
+    foreignBucket: false,
     ring: initial.ring ?? false,
     key: initial.key ?? false,
     keyPolicy: [] as Binding[],
@@ -89,10 +99,18 @@ function fakeGcp(initial: { bucket?: boolean; ring?: boolean; key?: boolean } = 
         state.bucket.public_access_prevention = "enforced";
       if (flag(args, "lifecycle-file")) {
         state.bucket.lifecycle_config = {
-          rule: [{ condition: { daysSinceNoncurrentTime: NONCURRENT_VERSION_DAYS } }],
+          rule: [
+            {
+              action: { type: "Delete" },
+              condition: { daysSinceNoncurrentTime: NONCURRENT_VERSION_DAYS, isLive: false },
+            },
+          ],
         } as never;
       }
       return ok();
+    }
+    if (line.startsWith("storage buckets list")) {
+      return ok(state.bucket && !state.foreignBucket ? "acme-caelo-ops\n" : "acme-media\n");
     }
     if (line.startsWith("storage buckets get-iam-policy")) {
       return ok(JSON.stringify({ bindings: state.bucketPolicy }));
@@ -133,7 +151,7 @@ function fakeGcp(initial: { bucket?: boolean; ring?: boolean; key?: boolean } = 
   };
   const writes = () =>
     calls.filter(
-      (c) => !/ (describe|get-iam-policy) /.test(` ${c} `) && !c.startsWith("services enable"),
+      (c) => !/ (describe|get-iam-policy|list) /.test(` ${c} `) && !c.startsWith("services enable"),
     );
   return { run, calls, state, writes };
 }
@@ -226,6 +244,46 @@ describe("ensureOpsBackend — new install", () => {
     const r = await ensureOpsBackend(TARGET, { run, sleep: noSleep });
     expect(r.ok).toBe(false);
     expect(g.calls.some((c) => c.startsWith("storage buckets create"))).toBe(false);
+  });
+
+  it("refuses a same-named bucket in another project the operator can reach", async () => {
+    const g = fakeGcp({ bucket: true, ring: true, key: true });
+    g.state.foreignBucket = true;
+    const r = await ensureOpsBackend(TARGET, { run: g.run, sleep: noSleep });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("does not belong to project acme");
+    expect(g.writes()).toEqual([]);
+  });
+
+  it("replaces a lifecycle that could cut the recovery window or delete live state", async () => {
+    for (const bad of [
+      {
+        rule: [
+          { action: { type: "Delete" }, condition: { daysSinceNoncurrentTime: 1, isLive: false } },
+        ],
+      },
+      {
+        rule: [
+          {
+            action: { type: "Delete" },
+            condition: { daysSinceNoncurrentTime: 30, isLive: false, matchesPrefix: ["x/"] },
+          },
+        ],
+      },
+      {
+        rule: [
+          { action: { type: "Delete" }, condition: { daysSinceNoncurrentTime: 30, isLive: false } },
+          { action: { type: "Delete" }, condition: { age: 7 } },
+        ],
+      },
+    ]) {
+      expect(isOpsLifecycle(bad)).toBe(false);
+      const g = fakeGcp({ bucket: true, ring: true, key: true });
+      if (g.state.bucket) g.state.bucket.lifecycle_config = bad as never;
+      await ensureOpsBackend(TARGET, { run: g.run, sleep: noSleep });
+      expect(isOpsLifecycle(g.state.bucket?.lifecycle_config)).toBe(true);
+    }
   });
 
   it("dry run lists what it would do and writes nothing", async () => {

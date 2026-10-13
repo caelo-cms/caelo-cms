@@ -94,6 +94,32 @@ function parseJson<T>(text: string, fallback: T): T {
   }
 }
 
+/** The lifecycle rule the ops bucket carries — and no other. */
+const OPS_LIFECYCLE_RULE = {
+  action: { type: "Delete" },
+  condition: { daysSinceNoncurrentTime: NONCURRENT_VERSION_DAYS, isLive: false },
+} as const;
+
+/**
+ * Whether a bucket's lifecycle is exactly {@link OPS_LIFECYCLE_RULE}. Any
+ * other rule — a shorter window, a prefix filter, a rule deleting live
+ * objects — could cut the recovery window or delete the state itself, so
+ * it is replaced, not tolerated.
+ */
+export function isOpsLifecycle(config: unknown): boolean {
+  const rules = (config as { rule?: unknown } | null | undefined)?.rule;
+  if (!Array.isArray(rules) || rules.length !== 1) return false;
+  const r = rules[0] as { action?: Record<string, unknown>; condition?: Record<string, unknown> };
+  const cond = r.condition ?? {};
+  return (
+    r.action?.type === "Delete" &&
+    Object.keys(r.action).length === 1 &&
+    cond.daysSinceNoncurrentTime === NONCURRENT_VERSION_DAYS &&
+    cond.isLive === false &&
+    Object.keys(cond).length === 2
+  );
+}
+
 const hasBinding = (policy: IamPolicy, role: string, member: string): boolean =>
   (policy.bindings ?? []).some(
     (b) =>
@@ -161,6 +187,25 @@ export async function ensureOpsBackend(
       error: `Could not read ${bucketUrl}: ${reason(described.stderr, described.exitCode)}. If the name is taken by a bucket outside project ${projectId}, the install can't use it — tell the maintainers (the name is <project>-caelo-ops).`,
     };
   }
+  if (bucketExists) {
+    // Bucket names are global and `--project` does not scope `describe`: a
+    // bucket of that name in a project the operator can also reach would
+    // otherwise receive this install's state.
+    const owned = await run(["storage", "buckets", "list", project, "--format=value(name)"]);
+    if (!owned.ok) return fail(`Listing the buckets of project ${projectId}`, owned);
+    const names = owned.stdout.split("\n").map((l) =>
+      l
+        .trim()
+        .replace(/^gs:\/\//, "")
+        .replace(/\/$/, ""),
+    );
+    if (!names.includes(bucket)) {
+      return {
+        ok: false,
+        error: `${bucketUrl} exists but does not belong to project ${projectId}. The install's state must live in its own project; delete or rename that bucket, or tell the maintainers (the name is <project>-caelo-ops).`,
+      };
+    }
+  }
   if (!bucketExists) {
     act(`create ${bucketUrl} in ${region}`);
     if (!dryRun) {
@@ -190,9 +235,7 @@ export async function ensureOpsBackend(
   if (described.ok && desc.public_access_prevention !== "enforced") {
     updates.push("--public-access-prevention");
   }
-  const hasLifecycle = JSON.stringify(desc.lifecycle_config ?? "").includes(
-    "daysSinceNoncurrentTime",
-  );
+  const hasLifecycle = isOpsLifecycle(desc.lifecycle_config);
   if (updates.length > 0) {
     act(`set ${updates.map((u) => u.slice(2)).join(", ")} on ${bucketUrl}`);
     if (!dryRun) {
@@ -201,18 +244,15 @@ export async function ensureOpsBackend(
     }
   }
   if (!hasLifecycle) {
-    act(`expire non-current object versions in ${bucketUrl} after ${NONCURRENT_VERSION_DAYS} days`);
+    act(
+      `set the lifecycle of ${bucketUrl} to: delete non-current object versions after ${NONCURRENT_VERSION_DAYS} days (nothing else)`,
+    );
     if (!dryRun) {
       const file = join(tmpdir(), `caelo-ops-lifecycle-${process.pid}.json`);
       writeFileSync(
         file,
         JSON.stringify({
-          rule: [
-            {
-              action: { type: "Delete" },
-              condition: { daysSinceNoncurrentTime: NONCURRENT_VERSION_DAYS, isLive: false },
-            },
-          ],
+          rule: [OPS_LIFECYCLE_RULE],
         }),
       );
       try {
