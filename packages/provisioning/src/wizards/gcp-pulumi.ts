@@ -51,9 +51,11 @@ export interface PulumiUpInputs {
   /**
    * #696 — the service account Pulumi's GCP provider impersonates
    * (`caelo-provisioner@<project>`), with the operator's Application Default
-   * Credentials as the source. No key file.
+   * Credentials as the source. No key file. Null when this process runs AS
+   * the provisioner (the install job, install-job.ts): its ambient
+   * metadata-server credentials are the provisioner's own.
    */
-  impersonateServiceAccount: string;
+  impersonateServiceAccount: string | null;
   /** #696 — where the stack's state lives (state-backend.ts resolveBackend). */
   backend: ResolvedBackend;
   /**
@@ -419,7 +421,7 @@ export function pulumiGcpEnv(
   return {
     ...withoutAmbientGoogleCredentials(base),
     ...Object.fromEntries(AMBIENT_GOOGLE_CREDENTIAL_ENV.map((k) => [k, ""])),
-    GOOGLE_IMPERSONATE_SERVICE_ACCOUNT: inputs.impersonateServiceAccount,
+    GOOGLE_IMPERSONATE_SERVICE_ACCOUNT: inputs.impersonateServiceAccount ?? "",
     ...inputs.backend.envVars,
   };
 }

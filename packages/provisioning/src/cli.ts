@@ -999,6 +999,9 @@ const handlers: Record<string, () => Promise<void>> = {
   // #696 — Pulumi state in the install's own project.
   state: async () => (await import("./state-command.js")).stateCommand(process.argv),
   attach: async () => (await import("./state-command.js")).attachCommand(process.argv),
+  // #696 — the install job's entry point (runs inside the Cloud Run job).
+  "install-job": async () =>
+    (await import("./install-job-runner.js")).installJobCommand(process.argv),
   // Misc
   "pulumi-output-sync": pulumiOutputSync,
   version,
@@ -1331,12 +1334,15 @@ async function waitForDomainMappingCert(target: {
 /**
  * §11.C — interactive wizard. Loaded lazily so the bare-CLI startup
  * cost stays small (clack + kleur are pulled in only when needed).
- * Reads `--provider`, `--domain`, `--owner-email`, `--project-id`, `--region`, and
- * `--non-interactive` from argv when supplied.
+ * Reads `--provider`, `--domain`, `--owner-email`, `--project-id`, `--region`,
+ * `--non-interactive` and the run mode (`--local` / `--install-job`, default:
+ * the install job in Cloud Shell, local elsewhere — run-mode.ts) from argv.
  */
 async function wizardCommand(): Promise<void> {
   const { runWizard } = await import("./wizard.js");
+  const { chooseRunMode } = await import("./run-mode.js");
   await runWizard({
+    runMode: chooseRunMode(process.argv, process.env),
     nonInteractive: process.argv.includes("--non-interactive"),
     provider: arg("provider") as Provider | undefined,
     domain: arg("domain"),
@@ -1363,7 +1369,7 @@ if (route.kind === "handler" || route.kind === "wizard") {
   }
 } else {
   console.log(
-    "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] | <init|up|migrate|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|state migrate|attach|pulumi-output-sync|version> [options]\n" +
+    "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] [--local|--install-job] | <init|up|migrate|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|state migrate|attach|pulumi-output-sync|version> [options]\n" +
       "With several installs on this machine, pick one with --install <install-id or domain> (status, upgrade and backup also take --install all); in a terminal you are asked otherwise.\n" +
       "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
   );

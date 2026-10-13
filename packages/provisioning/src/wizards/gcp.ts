@@ -30,7 +30,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { cancel, confirm, isCancel, log, note, select, spinner, text } from "@clack/prompts";
+import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { checkAdcImpersonation } from "../adc-impersonation.js";
 import { CERT_WAIT_TIMEOUT_MS, lbCertProbe, waitForCert } from "../cert-wait.js";
@@ -64,6 +64,12 @@ import {
 } from "../gcloud.js";
 import { GCP_STACK_ENV } from "../gcp-names.js";
 import {
+  INSTALL_JOB_NAME,
+  INSTALL_JOB_ROLES,
+  INSTALL_SETUP_LINK_SECRET,
+  storeSetupLink,
+} from "../install-job.js";
+import {
   adoptStateBackend,
   ensureInstallDir,
   type ImageDigests,
@@ -92,6 +98,7 @@ import {
   provisionerServiceAccountEmail,
 } from "../provisioner-identity.js";
 import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
+import type { RunMode } from "../run-mode.js";
 import { selfCommand } from "../self-command.js";
 import { ABSENT_DEFAULT_FIREWALL_RULES } from "../stack-contract.js";
 import {
@@ -106,6 +113,7 @@ import {
 } from "../state-backend.js";
 import { acquireStateLock, GcsStateStore } from "../state-store.js";
 import { estimateGcpCost } from "./gcp-cost.js";
+import { promptProjectId } from "./gcp-prompts.js";
 import { GCP_STACK_KNOB_DEFAULTS, pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
 
 export interface GcpWizardOpts {
@@ -123,10 +131,17 @@ export interface GcpWizardOpts {
    * enablement, Search Console verification prompts).
    */
   provider?: "gcp" | "gcp-firebase";
+  /**
+   * #696 — where `pulumi up` and the rest run (run-mode.ts): here, or in the
+   * install job in the project. Default `local`.
+   */
+  runMode?: RunMode;
 }
 
 export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
-  const { installId, domain, ownerEmail } = opts;
+  const { installId } = opts;
+  const provider = opts.provider ?? "gcp";
+  const runMode = opts.runMode ?? "local";
   const { secretsDir } = ensureInstallDir(installId);
 
   // === 1. gcloud auth ===
@@ -155,7 +170,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   await stepBillingLink(installId, projectId, opts.nonInteractive);
 
   // === 5. Enable APIs ===
-  await stepEnableApis(installId, projectId, opts.provider ?? "gcp");
+  await stepEnableApis(installId, projectId, provider);
 
   // === 6. Service account + roles + impersonation (no key, #696) ===
   // v0.3.12 — dropped the firebase-hosting-identity step. The
@@ -170,20 +185,20 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // didn't.
   const saEmail = provisionerServiceAccountEmail(projectId);
   await stepServiceAccount(installId, projectId, saEmail);
-  await stepGrantRoles(installId, projectId, saEmail);
-  await stepKeylessProvisioner(projectId, secretsDir, opts.nonInteractive);
+  await stepGrantRoles(installId, projectId, saEmail, runMode);
+  // Pulumi runs here only in local mode; the install job runs AS the
+  // provisioner, so this terminal needs no Application Default Credentials.
+  await stepKeylessProvisioner(projectId, secretsDir, {
+    nonInteractive: opts.nonInteractive,
+    checkAdc: runMode === "local",
+  });
 
   // === 8. Cost-estimate pre-flight ===
   // v0.3.3 — provider variant threads through so gcp-firebase
   // drops the LB / Cloud CDN / Cloud Armor lines (saves ~$19/mo
   // vs gcp). Default 'gcp' for backwards compatibility with
   // installs that don't set the field.
-  const costInputs = {
-    ...GCP_STACK_KNOB_DEFAULTS,
-    provider: opts.provider ?? ("gcp" as const),
-    region,
-  };
-  const estimate = estimateGcpCost(costInputs);
+  const estimate = estimateGcpCost({ ...GCP_STACK_KNOB_DEFAULTS, provider, region });
   note(
     [
       bold(
@@ -199,6 +214,11 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
       `  ${bold("TOTAL".padEnd(40))} ${bold(`$${estimate.totalUsd}`.padStart(5))}/mo`,
       "",
       `  ${dim(`Also deletes the default network's pre-populated firewall rules ${ABSENT_DEFAULT_FIREWALL_RULES.map((r) => r.name).join(" + ")} (Caelo runs no VMs and does not use that network).`)}`,
+      ...(runMode === "job"
+        ? [
+            `  ${dim(`The install itself runs as a one-off Cloud Run job (${INSTALL_JOB_NAME}) in the project: about ${INSTALL_JOB_COST_NOTE} for one install run, nothing while idle.`)}`,
+          ]
+        : []),
     ].join("\n"),
     "Pre-flight",
   );
@@ -217,7 +237,75 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // A new install: the ops bucket + KMS key in its own project — after the
   // cost confirmation, which lists them (CLAUDE.md §11.C: nothing billable
   // before the y/N). An older install keeps its local state + passphrase.
-  const backend = await stepStateBackend(installId, projectId, region, saEmail);
+  const backend = await stepStateBackend(installId, projectId, region, saEmail, runMode);
+
+  // === 9. The rest runs where the run mode says (run-mode.ts) ===
+  if (runMode === "job") {
+    const { launchInstallJob } = await import("./gcp-install-job.js");
+    await launchInstallJob({
+      installId,
+      projectId,
+      region,
+      provisionerEmail: saEmail,
+      nonInteractive: opts.nonInteractive,
+    });
+    return;
+  }
+  await runGcpConverge({
+    installId,
+    projectId,
+    region,
+    provider,
+    impersonateServiceAccount: saEmail,
+    backend,
+    nonInteractive: opts.nonInteractive,
+    setupLink: "print",
+  });
+}
+
+/** One-off cost of an install-job run (2 vCPU + 4 GiB for up to ~2 h). */
+const INSTALL_JOB_COST_NOTE = "$0.20-0.40";
+
+/** Inputs of {@link runGcpConverge}. */
+export interface GcpConvergeOpts {
+  readonly installId: string;
+  readonly projectId: string;
+  readonly region: string;
+  readonly provider: "gcp" | "gcp-firebase";
+  /**
+   * The service account Pulumi's GCP provider impersonates (the operator's
+   * terminal), or null when this process already runs AS the provisioner
+   * (the install job, whose runtime service account it is).
+   */
+  readonly impersonateServiceAccount: string | null;
+  readonly backend: ResolvedBackend;
+  /** No prompts: the DNS step polls without asking (the install job). */
+  readonly nonInteractive: boolean;
+  /**
+   * `print`: show the Owner setup link (the operator's terminal).
+   * `secret`: store it in Secret Manager for the operator's terminal to
+   * read — the install job, whose output lands in Cloud Logging (#656).
+   */
+  readonly setupLink: "print" | "secret";
+  /** Called as each step starts — the install job records it in the bucket. */
+  readonly onPhase?: (phase: string, detail?: string) => void;
+}
+
+/**
+ * The half of an install that needs no operator identity: image digests,
+ * `pulumi up`, DNS + certificate waits, migrations, database logins, the
+ * operator-access job, the placeholder page and the summary. Runs in the
+ * operator's terminal (local mode) or in the install job (install-job.ts).
+ * Every step is idempotent or checkpointed in progress.json, so a re-run —
+ * or a new job execution — resumes where the last one stopped.
+ */
+export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
+  const { installId, projectId, region, provider, backend } = opts;
+  const phase = opts.onPhase ?? (() => {});
+  const meta = readMetadata(installId);
+  if (!meta) throw new Error(`No install.json for install '${installId}'.`);
+  const { domain, ownerEmail } = meta;
+  const costInputs = { ...GCP_STACK_KNOB_DEFAULTS, provider, region };
 
   // === 9. Image digests to deploy ===
   // An install that already runs a recorded release (from an earlier
@@ -229,7 +317,10 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // An install provisioned before the record existed keeps what its
   // services run. A new install resolves the floating `:latest` tag to a
   // fixed sha256 digest: Cloud Run keys revisions by image reference, so a
-  // tag would never trigger a new revision.
+  // tag would never trigger a new revision. (The install job's launcher
+  // records the digests of its signed release first, so a job install never
+  // reaches `:latest`.)
+  phase("Choosing the release images");
   const deployed = isStepDone(installId, `pulumi-up-${projectId}`);
   if (deployed) {
     // The kept release must be able to use the env the stack deploys.
@@ -240,7 +331,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     }
   }
   const choice = await chooseImageDigests({
-    recorded: meta ? recordedImageDigests(meta) : null,
+    recorded: recordedImageDigests(meta),
     deployed,
     readLive: () => readDeployedImageDigests({ projectId, region }),
     resolveLatest: resolveImageDigests,
@@ -270,17 +361,15 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // Pre-built signed images live at the Caelo-team public AR repo
   // (caelo-website/caelo-cms-images by default). Cloud Run reads them
   // directly with no operator-side IAM binding — anonymous public pull.
+  phase("Provisioning the infrastructure (pulumi up, 8-15 min)");
   await stepPulumiUp(installId, {
     projectId,
     domain,
     // #650 — the wizard recorded it (or the install predates the setting).
-    stagingDomain: installStagingHost({
-      domain,
-      stagingDomain: readMetadata(installId)?.stagingDomain,
-    }),
+    stagingDomain: installStagingHost({ domain, stagingDomain: meta.stagingDomain }),
     ownerEmail,
     region,
-    impersonateServiceAccount: saEmail,
+    impersonateServiceAccount: opts.impersonateServiceAccount,
     backend,
     cloudSqlTier: costInputs.cloudSqlTier,
     cloudSqlHa: costInputs.cloudSqlHa,
@@ -293,7 +382,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     imageDigests,
     // v0.3.1 — route pulumi up at the right stack folder + use the
     // matching config namespace.
-    provider: opts.provider ?? "gcp",
+    provider,
   });
   recordImageDigests(installId, imageDigests);
 
@@ -318,8 +407,9 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // The DNS records come first: the certificate only validates once the
   // admin host resolves to the load balancer. Only the "set now" records
   // are applied here — the main domain moves at go-live (dns/groups.ts).
-  if ((opts.provider ?? "gcp") === "gcp") {
-    await stepGcpDnsRecords(installId);
+  if (provider === "gcp") {
+    await stepGcpDnsRecords(installId, { nonInteractive: opts.nonInteractive, onPhase: phase });
+    phase(`Waiting for the TLS certificate of admin.${domain} (15-60 min)`);
     await stepWaitForCertActive(projectId, `admin.${domain}`);
   }
 
@@ -332,6 +422,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // P21 ship 3 — shared with `cms-provision upgrade`. Aborts the
   // wizard with a clear error if migrations fail (vs. silently
   // continuing with a half-migrated DB).
+  phase("Applying database migrations");
   {
     const { runMigrationsViaCloudRunJob } = await import("../migration-runner.js");
     const r = await runMigrationsViaCloudRunJob({ projectId, region });
@@ -346,10 +437,11 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // gateway-role-password secret's value here. The gateway (deployed by
   // Pulumi before migrations) retries its database on every request, so it
   // starts serving /api/* as soon as this lands — no restart.
+  phase("Finishing: database logins, operator access, welcome page");
   await stepGatewayRolePassword(projectId);
 
   // === 11.5. Operator access: IAP follows the Caelo user list ===
-  await stepOperatorAccessSync(projectId, region, opts.provider ?? "gcp", ownerEmail);
+  await stepOperatorAccessSync(projectId, region, provider, ownerEmail);
 
   // === 12. Upload the fresh-install placeholder to the static bucket ===
   // Without this, https://<domain>/ returns the raw GCS NoSuchKey XML
@@ -361,18 +453,14 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // Hosting, not a GCS bucket; the static-publisher's first deploy
   // creates the initial Firebase Hosting version. Skip the GCS
   // placeholder upload on that provider.
-  if ((opts.provider ?? "gcp") === "gcp") {
+  if (provider === "gcp") {
     await stepUploadStaticPlaceholder(installId, projectId, domain);
   }
 
   // === 12. DNS records + bootstrap URL ===
   // IAP is enabled directly on the LB BackendService (Pulumi-managed);
   // no post-up gcloud step needed.
-  await stepFinalize(installId);
-
-  // Reference unused params to silence the linter.
-  void domain;
-  void ownerEmail;
+  await stepFinalize(installId, opts.setupLink);
 }
 
 /**
@@ -455,25 +543,7 @@ async function stepProjectId(opts: GcpWizardOpts): Promise<string> {
     return opts.projectId;
   }
   const guess = opts.domain.split(".")[0]?.replace(/[^a-z0-9-]/g, "-") ?? "caelo";
-  const value = await text({
-    message: "GCP project id (will be created if absent)",
-    placeholder: guess,
-    defaultValue: guess,
-    validate: (v) => {
-      if (!v || v.length < 6 || v.length > 30) {
-        return "GCP project id must be 6–30 chars";
-      }
-      if (!/^[a-z][a-z0-9-]*[a-z0-9]$/.test(v)) {
-        return "GCP project id: lowercase letters, digits, hyphens; start with letter; no trailing hyphen";
-      }
-      return undefined;
-    },
-  });
-  if (isCancel(value)) {
-    cancel("Cancelled.");
-    process.exit(0);
-  }
-  return value as string;
+  return promptProjectId(guess);
 }
 
 /**
@@ -713,6 +783,46 @@ async function stepGrantRoles(
   installId: string,
   projectId: string,
   saEmail: string,
+  runMode: RunMode,
+): Promise<void> {
+  await stepGrantBaseRoles(installId, projectId, saEmail);
+  if (runMode === "job") await stepGrantInstallJobRoles(installId, projectId, saEmail);
+}
+
+/**
+ * #696 — the roles the provisioner needs when it runs the install job
+ * itself (install-job.ts INSTALL_JOB_ROLES). Only for installs that use it.
+ */
+async function stepGrantInstallJobRoles(
+  installId: string,
+  projectId: string,
+  saEmail: string,
+): Promise<void> {
+  const stepName = `grant-install-job-roles-${projectId}`;
+  if (isStepDone(installId, stepName)) {
+    log.success(`Install-job roles granted ${dim("(checkpointed)")}`);
+    return;
+  }
+  const s = spinner();
+  s.start(
+    `Granting the provisioner ${INSTALL_JOB_ROLES.length} more roles to run the install job...`,
+  );
+  const { granted, failed } = await grantProvisionerRoles(projectId, saEmail, {
+    roles: INSTALL_JOB_ROLES,
+  });
+  if (failed.length > 0) {
+    s.stop(red(`Failed: ${failed.map((f) => `${f.role}: ${f.error}`).join("; ")}`));
+    cancel("Aborted — re-run the installer (idempotent).");
+    process.exit(1);
+  }
+  s.stop(green(`${granted} install-job roles granted`));
+  markStepDone(installId, stepName, { granted });
+}
+
+async function stepGrantBaseRoles(
+  installId: string,
+  projectId: string,
+  saEmail: string,
 ): Promise<void> {
   const stepName = `grant-roles-${projectId}`;
   if (isStepDone(installId, stepName)) {
@@ -829,7 +939,7 @@ async function stepRemoveDefaultFirewallRules(projectId: string): Promise<void> 
 async function stepKeylessProvisioner(
   projectId: string,
   secretsDir: string,
-  nonInteractive: boolean,
+  opts: { nonInteractive: boolean; checkAdc: boolean },
 ): Promise<void> {
   const sa = provisionerServiceAccountEmail(projectId);
   const account = await activeAccount();
@@ -870,6 +980,7 @@ async function stepKeylessProvisioner(
     );
     for (const line of converged.lines) log.info(`  ${line}`);
   }
+  if (!opts.checkAdc) return;
 
   const check = async () =>
     checkAdcImpersonation({
@@ -880,7 +991,7 @@ async function stepKeylessProvisioner(
   const sAdc = spinner();
   sAdc.start("Checking that your Application Default Credentials can impersonate it...");
   let adc = await check();
-  if (!adc.ok && adc.reason === "no-adc" && !nonInteractive) {
+  if (!adc.ok && adc.reason === "no-adc" && !opts.nonInteractive) {
     sAdc.stop(yellow("No Application Default Credentials yet"));
     const login = await confirm({
       message: `Run ${bold("gcloud auth application-default login")} now (opens your browser; sign in as ${account})?`,
@@ -921,6 +1032,7 @@ async function stepStateBackend(
   projectId: string,
   region: string,
   provisionerEmail: string,
+  runMode: RunMode,
 ): Promise<ResolvedBackend> {
   const root = installRoot(installId);
   const meta = readMetadata(installId);
@@ -930,6 +1042,14 @@ async function stepStateBackend(
     hasLocalPulumiState(root),
     isStepDone(installId, `pulumi-up-${projectId}`),
   );
+  if (kind === "local" && runMode === "job") {
+    // The job reads the state from the project; a passphrase-encrypted
+    // state on this machine is out of its reach.
+    cancel(
+      `This install's Pulumi state is on this machine (${describeBackend(meta, root)}), so the install job can't run it. Move it into project ${projectId} first — ${selfCommand("state", "migrate", "--install", installId)} — or re-run with --local.`,
+    );
+    process.exit(1);
+  }
   if (kind === "local") {
     stepPulumiPassphrase(installId);
     log.info(
@@ -1013,8 +1133,8 @@ interface PulumiUpOpts {
   stagingDomain: string;
   ownerEmail: string;
   region: string;
-  /** #696 — the provisioner SA Pulumi impersonates (no key file). */
-  impersonateServiceAccount: string;
+  /** #696 — the provisioner SA Pulumi impersonates (no key file); null in the install job. */
+  impersonateServiceAccount: string | null;
   /** #696 — the install's state backend (state-backend.ts). */
   backend: ResolvedBackend;
   cloudSqlTier: string;
@@ -1548,11 +1668,15 @@ const ADAPTER_RECORD_TYPES = new Set<string>(["A", "AAAA", "CNAME", "TXT"]);
  * live site are never applied here — the summary lists them for go-live.
  * Idempotent: a finished step is skipped on re-runs.
  */
-async function stepGcpDnsRecords(installId: string): Promise<void> {
+async function stepGcpDnsRecords(
+  installId: string,
+  opts: { nonInteractive: boolean; onPhase: (phase: string, detail?: string) => void },
+): Promise<void> {
   const meta = readMetadata(installId);
   if (!meta?.projectId) return;
   const stepName = `dns-${meta.projectId}`;
   if (isStepDone(installId, stepName)) return;
+  opts.onPhase("Setting up DNS");
   const records = stackDnsRecords(await recordedStackOutputs(installId, meta.projectId));
   if (records.length === 0) {
     cancel(
@@ -1571,8 +1695,15 @@ async function stepGcpDnsRecords(installId: string): Promise<void> {
   const toApply = setNow.filter((r): r is InstallDnsRecord & { type: DnsRecord["type"] } =>
     ADAPTER_RECORD_TYPES.has(r.type),
   );
-  const adapter = await pickDnsAdapter({ domain: meta.domain });
+  const adapter = await pickDnsAdapter({
+    domain: meta.domain,
+    nonInteractive: opts.nonInteractive,
+  });
   log.info(`DNS adapter: ${bold(adapter.name)}`);
+  opts.onPhase(
+    "Waiting for DNS",
+    `Set at your registrar: ${toApply.map((r) => `${r.type} ${r.hostname} → ${r.value}`).join("; ")}`,
+  );
   try {
     await adapter.applyRecords(
       toApply.map((r) => ({ hostname: r.hostname, type: r.type, value: r.value })),
@@ -1588,7 +1719,7 @@ async function stepGcpDnsRecords(installId: string): Promise<void> {
   }
 }
 
-async function stepFinalize(installId: string): Promise<void> {
+async function stepFinalize(installId: string, setupLink: "print" | "secret"): Promise<void> {
   const meta = readMetadata(installId);
   if (!meta?.projectId) return;
   const outputs = await recordedStackOutputs(installId, meta.projectId);
@@ -1611,6 +1742,24 @@ async function stepFinalize(installId: string): Promise<void> {
     provider === "gcp-firebase" && adminCloudRunUrl.length > 0
       ? `${adminCloudRunUrl}/setup?token=${bootstrapToken}`
       : stackBootstrapUrl;
+  // #696 — the install job's output lands in Cloud Logging: the link goes to
+  // Secret Manager, where the operator's terminal reads it (install-job.ts).
+  if (setupLink === "secret") {
+    if (!meta.region) throw new Error(`install.json of ${installId} records no region.`);
+    const stored = await storeSetupLink(
+      gcloud,
+      { projectId: meta.projectId, region: meta.region },
+      bootstrapUrl,
+    );
+    if (!stored.ok) {
+      cancel(`Could not store the Owner setup link: ${stored.error}`);
+      process.exit(1);
+    }
+  }
+  const setupLinkLine =
+    setupLink === "print"
+      ? `     ${cyan(String(bootstrapUrl))}`
+      : `     ${dim(`(shown in your Cloud Shell terminal; or: gcloud secrets versions access latest --secret=${INSTALL_SETUP_LINK_SECRET} --project=${meta.projectId})`)}`;
 
   // Both providers report their records in `dnsRecordsRequiredOut`; the
   // summary lists them in two groups so the main-domain records that take a
@@ -1657,7 +1806,7 @@ async function stepFinalize(installId: string): Promise<void> {
       "",
       bold("Next steps:"),
       `  1. Owner setup — open in your browser (sign in with ${meta.ownerEmail}):`,
-      `     ${cyan(String(bootstrapUrl))}`,
+      setupLinkLine,
       `  2. AI provider — visit ${cyan(`${adminBase}/settings/ai`)} and paste your Anthropic API key`,
       `     (encrypted under the project KEK and stored in the database, no env vars).`,
       `  3. Optional: connect Claude Code or another MCP client — at ${cyan(`${adminBase}/settings/mcp`)}`,

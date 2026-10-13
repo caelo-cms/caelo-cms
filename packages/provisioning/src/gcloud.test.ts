@@ -25,6 +25,14 @@ function fakeGcloud(responses: Record<string, GcloudResult[]>) {
 const noSleep = async () => {};
 
 describe("grantProvisionerRoles", () => {
+  it("binds only the given roles when asked (#696 install-job extras)", async () => {
+    const { run, calls } = fakeGcloud({});
+    const roles = ["roles/iam.roleAdmin", "roles/cloudscheduler.admin"];
+    const result = await grantProvisionerRoles("p", "sa@p", { run, sleep: noSleep, roles });
+    expect(result).toEqual({ granted: 2, failed: [] });
+    expect(calls).toEqual(roles);
+  });
+
   it("retries a freshly created SA that IAM does not see yet (regression: first role failed right after SA create)", async () => {
     const first = PROVISIONER_ROLE_LIST[0] as string;
     const { run, calls } = fakeGcloud({
