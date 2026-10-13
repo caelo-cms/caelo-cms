@@ -78,6 +78,11 @@ describe("azure stack — static site behind Front Door", () => {
     );
   });
 
+  it("keeps owning the published $web container and edge-caches the route", () => {
+    expect(src).toMatch(/new azure\.storage\.BlobContainer\([\s\S]*?containerName: "\$web"/);
+    expect(src).toMatch(/new azure\.cdn\.Route\([\s\S]*?cacheConfiguration: \{/);
+  });
+
   it("exposes no Container App to the public internet", () => {
     expect(src).toContain("external: false");
     expect(src).not.toMatch(/external:\s*(true|args\.)/);

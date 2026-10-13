@@ -189,15 +189,30 @@ const _mediaContainer = new azure.storage.BlobContainer(`${namePrefix}-media`, {
   publicAccess: "None",
 });
 
-// Static-website hosting creates the `$web` container and serves it on the
-// account's web endpoint, which resolves `/path/` to `/path/index.html` —
-// the URL shape the static generator emits. Front Door fronts that endpoint.
-const staticWebsite = new azure.storage.StorageAccountStaticWebsite(`${namePrefix}-static`, {
+// The container the static generator publishes to. Managed explicitly (not
+// left to static-website hosting, which would create it implicitly) so a
+// stack created before Front Door keeps owning it — changing the resource
+// type would make Pulumi delete the container and every published page.
+const staticContainer = new azure.storage.BlobContainer(`${namePrefix}-static`, {
   resourceGroupName: rg.name,
   accountName: storage.name,
-  indexDocument: "index.html",
-  error404Document: "404.html",
+  containerName: "$web",
+  publicAccess: "Blob",
 });
+
+// Static-website hosting serves `$web` on the account's web endpoint, which
+// resolves `/path/` to `/path/index.html` — the URL shape the static
+// generator emits. Front Door fronts that endpoint.
+const staticWebsite = new azure.storage.StorageAccountStaticWebsite(
+  `${namePrefix}-static-website`,
+  {
+    resourceGroupName: rg.name,
+    accountName: storage.name,
+    indexDocument: "index.html",
+    error404Document: "404.html",
+  },
+  { dependsOn: [staticContainer] },
+);
 
 // === 4b. Front Door (static site on the primary domain) ===
 const frontDoor = new azure.cdn.Profile(`${namePrefix}-fd`, {
@@ -264,6 +279,25 @@ new azure.cdn.Route(
     originGroup: { id: staticOriginGroup.id },
     customDomains: [{ id: siteDomain.id }],
     patternsToMatch: ["/*"],
+    // Without a cache configuration Front Door does not cache the route at
+    // all; static files are edge-cached per their Cache-Control (§11.B
+    // Tier 1). The generated site has no query-string-dependent content.
+    cacheConfiguration: {
+      queryStringCachingBehavior: "IgnoreQueryString",
+      compressionSettings: {
+        isCompressionEnabled: true,
+        contentTypesToCompress: [
+          "text/html",
+          "text/css",
+          "text/plain",
+          "text/xml",
+          "application/javascript",
+          "application/json",
+          "application/xml",
+          "image/svg+xml",
+        ],
+      },
+    },
     supportedProtocols: ["Http", "Https"],
     forwardingProtocol: "HttpsOnly",
     httpsRedirect: "Enabled",
