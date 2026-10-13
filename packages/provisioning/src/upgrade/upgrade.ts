@@ -76,6 +76,11 @@ export interface GcpUpgradeDeps {
     | { readonly ok: false; readonly error: string }
   >;
   readonly recordDigests: (digests: ImageDigests) => Promise<void>;
+  /**
+   * The release's caelo-ops image (`…/ops@sha256:…`) for the upgrader job
+   * the converge sets up (#696), or null when the tag has none.
+   */
+  readonly resolveOpsImage: (tag: string) => Promise<string | null>;
   readonly recordInfraContractVersion: (version: number) => void;
   /** The operator-identity converge step (keyless provisioner); see ConvergeDeps. */
   readonly provisionerIdentity?: () => Promise<boolean>;
@@ -144,7 +149,14 @@ export async function upgradeGcpInstall(
   sBak.done(`Pre-upgrade backup ${backup.backup.backupId} of ${backup.backup.instance} taken`);
 
   // 4. Converge, the part before the roll.
+  const opsImageRef = await deps.resolveOpsImage(target.targetTag);
+  if (!opsImageRef) {
+    r.warn(
+      `The release ${target.targetTag} has no caelo-ops image in the registry, so the upgrader job (in-product updates) cannot be set up this time.`,
+    );
+  }
   const converge = startConverge(plan, target.ownerEmail, {
+    opsImageRef,
     run,
     reporter: r,
     ...(deps.sleep ? { sleep: deps.sleep } : {}),

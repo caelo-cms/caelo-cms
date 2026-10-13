@@ -243,6 +243,41 @@ export function releaseImageRef(slug: string, digest: string): string {
 }
 
 /**
+ * The release version (`0.11.0`) whose image `slug` has `digest` in the
+ * public mirror, from its tags (`gcloud artifacts docker tags list`, which
+ * needs a signed-in gcloud). Null when no exact-version tag points at it
+ * (a `:main` dev image, a pruned tag) — the caller then records none.
+ */
+export async function releaseVersionForDigest(
+  run: (args: string[]) => Promise<{ ok: boolean; stdout: string }>,
+  slug: string,
+  digest: string,
+): Promise<string | null> {
+  const r = RELEASE_REGISTRY;
+  const list = await run([
+    "artifacts",
+    "docker",
+    "tags",
+    "list",
+    `${r.region}-docker.pkg.dev/${r.project}/${r.repo}/${slug}`,
+    "--format=value(tag,version)",
+  ]);
+  if (!list.ok) return null;
+  for (const line of list.stdout.split("\n")) {
+    const [tag, version] = line.trim().split(/\s+/);
+    const name = tag?.split("/").pop() ?? "";
+    if (version === digest && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(name)) return name;
+  }
+  return null;
+}
+
+/** The digest-pinned caelo-ops image of release tag `tag`, or null when it has none. */
+export async function resolveOpsImageRef(tag: string): Promise<string | null> {
+  const res = await resolveTagDigest("ops", tag);
+  return res.ok ? releaseImageRef("ops", res.digest) : null;
+}
+
+/**
  * Resolve a tag (e.g. `0.2.6` or `latest`) to its digest in the public
  * Artifact Registry mirror, anonymously through the Registry V2 API
  * ({@link resolveRegistryDigest}) — the caller's gcloud session needs no IAM

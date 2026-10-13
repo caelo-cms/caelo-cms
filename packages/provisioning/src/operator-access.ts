@@ -37,6 +37,7 @@
  * the one `upgrade` creates on older installs.
  */
 
+import { ensureCloudSqlIamUser } from "./cloudsql-iam-user.js";
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import {
@@ -106,7 +107,7 @@ export function iapWebPath(resource: IapResource): string {
 }
 
 /** Create the custom role, or bring an existing / soft-deleted one to spec. */
-async function ensureCustomRole(
+export async function ensureCustomRole(
   run: Run,
   projectId: string,
   role: CustomRoleSpec,
@@ -159,17 +160,6 @@ function policyHas(policyJson: string, role: string, member: string): boolean {
   return (policy.bindings ?? []).some((b) => b.role === role && (b.members ?? []).includes(member));
 }
 
-/** The flags of a Cloud SQL instance with `cloudsql.iam_authentication` on. */
-export function withIamAuthFlag(
-  flags: readonly { name: string; value: string }[],
-): { name: string; value: string }[] | null {
-  if (flags.some((f) => f.name === "cloudsql.iam_authentication" && f.value === "on")) return null;
-  return [
-    ...flags.filter((f) => f.name !== "cloudsql.iam_authentication"),
-    { name: "cloudsql.iam_authentication", value: "on" },
-  ];
-}
-
 export interface OperatorAccessSyncTarget {
   readonly projectId: string;
   readonly region: string;
@@ -184,7 +174,17 @@ export interface OperatorAccessSyncTarget {
   readonly network: string;
   readonly subnet: string;
   readonly databaseHost: string;
+  /**
+   * Service accounts (besides the Caelo users) that keep
+   * `roles/iam.serviceAccountTokenCreator` on caelo-mcp: the upgrader job
+   * signs its health-check credential as caelo-mcp (upgrader-setup.ts).
+   * The job reconciles that binding, so anyone missing here loses it.
+   */
+  readonly mcpSigners?: readonly string[];
 }
+
+/** Env var of the sync job listing {@link OperatorAccessSyncTarget.mcpSigners}. */
+export const MCP_SIGNERS_ENV = "CAELO_OPERATOR_ACCESS_MCP_SIGNERS";
 
 export type OperatorAccessSyncResult =
   | { readonly ok: true; readonly done: string[] }
@@ -338,100 +338,14 @@ export async function ensureOperatorAccessSync(
   }
 
   // 5. Cloud SQL IAM database authentication for the job.
-  const instances = await run([
-    "sql",
-    "instances",
-    "list",
-    project,
-    `--filter=name~^${gcpNamePrefix(env)}-pg`,
-    "--format=value(name)",
-  ]);
-  if (!instances.ok) return fail("list Cloud SQL instances", instances);
-  const names = instances.stdout
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (names.length !== 1) {
-    return {
-      ok: false,
-      done,
-      error: `expected exactly one ${gcpNamePrefix(env)}-pg* Cloud SQL instance, found ${names.length} (${names.join(", ")})`,
-    };
-  }
-  const instance = names[0] as string;
-  const flagsJson = await run([
-    "sql",
-    "instances",
-    "describe",
-    instance,
-    project,
-    "--format=json(settings.databaseFlags)",
-  ]);
-  if (!flagsJson.ok) return fail(`read the flags of ${instance}`, flagsJson);
-  const flags =
-    (
-      JSON.parse(flagsJson.stdout) as {
-        settings?: { databaseFlags?: { name: string; value: string }[] };
-      }
-    ).settings?.databaseFlags ?? [];
-  const nextFlags = withIamAuthFlag(flags);
-  if (nextFlags) {
-    // `--database-flags` replaces the whole list, so every existing flag is
-    // passed again. cloudsql.iam_authentication needs no restart.
-    const patch = await run([
-      "sql",
-      "instances",
-      "patch",
-      instance,
-      project,
-      `--database-flags=${nextFlags.map((f) => `${f.name}=${f.value}`).join(",")}`,
-      "--quiet",
-    ]);
-    if (!patch.ok) return fail(`enable IAM database authentication on ${instance}`, patch);
-    done.push(`${instance}: cloudsql.iam_authentication=on`);
-  }
-  const dbUser = jobSa.replace(/\.gserviceaccount\.com$/, "");
-  const users = await run([
-    "sql",
-    "users",
-    "list",
-    `--instance=${instance}`,
-    project,
-    "--format=value(name)",
-  ]);
-  if (!users.ok) return fail(`list database users of ${instance}`, users);
-  if (
-    !users.stdout
-      .split("\n")
-      .map((s) => s.trim())
-      .includes(dbUser)
-  ) {
-    const create = await run([
-      "sql",
-      "users",
-      "create",
-      dbUser,
-      `--instance=${instance}`,
-      "--type=cloud_iam_service_account",
-      project,
-      "--quiet",
-    ]);
-    if (!create.ok) return fail(`create database user ${dbUser}`, create);
-  }
-  const assign = await run([
-    "sql",
-    "users",
-    "assign-roles",
-    dbUser,
-    `--instance=${instance}`,
-    "--type=cloud_iam_service_account",
-    `--database-roles=${OPERATOR_ACCESS_DB_ROLE}`,
-    project,
-    "--quiet",
-  ]);
-  if (!assign.ok)
-    return fail(`give ${dbUser} the ${OPERATOR_ACCESS_DB_ROLE} database role`, assign);
-  done.push(`database user ${dbUser} (${OPERATOR_ACCESS_DB_ROLE})`);
+  const sqlUser = await ensureCloudSqlIamUser(run, {
+    projectId,
+    env,
+    serviceAccountEmail: jobSa,
+    databaseRole: OPERATOR_ACCESS_DB_ROLE,
+  });
+  done.push(...sqlUser.done);
+  if (!sqlUser.ok) return { ok: false, done, error: sqlUser.error };
 
   // 6. The job: the admin image with another entry point, the job's own SA,
   //    and its whole input as env the admin cannot override.
@@ -440,6 +354,9 @@ export async function ensureOperatorAccessSync(
     `CAELO_MCP_IAP_SERVICE_ACCOUNT=${mcpSa}`,
     `CAELO_OPERATOR_ACCESS_STATIC_MEMBERS=${installIapAllowlist(target.ownerEmail).join(",")}`,
     `CAELO_OPERATOR_ACCESS_DB_HOST=${target.databaseHost}`,
+    ...(target.mcpSigners && target.mcpSigners.length > 0
+      ? [`${MCP_SIGNERS_ENV}=${target.mcpSigners.join(",")}`]
+      : []),
   ];
   const deploy = await run([
     "run",

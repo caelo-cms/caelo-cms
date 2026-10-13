@@ -74,6 +74,7 @@ describe("adminEnvContract", () => {
       CAELO_MCP_IAP_SERVICE_ACCOUNT: "caelo-mcp@acme.iam.gserviceaccount.com",
       CAELO_OPERATOR_ACCESS_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
+      CAELO_UPGRADER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
       CAELO_STATIC_BUCKET: "acme-caelo-production-static",
       CAELO_STAGING_BUCKET: "acme-caelo-production-staging",
       ...ADMIN_SECRETS,
@@ -103,6 +104,7 @@ describe("adminEnvContract", () => {
       CAELO_MCP_IAP_SERVICE_ACCOUNT: "caelo-mcp@acme.iam.gserviceaccount.com",
       CAELO_OPERATOR_ACCESS_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
+      CAELO_UPGRADER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
       CAELO_FIREBASE_SITE: "caelo-production-site-abc123",
       CAELO_GATEWAY_SERVICE: "caelo-production-gateway-1a2b3c4",
       CAELO_GATEWAY_REGION: "europe-west1",

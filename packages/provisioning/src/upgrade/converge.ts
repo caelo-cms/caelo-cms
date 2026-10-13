@@ -29,6 +29,7 @@ import {
   planPublicRoleSwitch,
 } from "../gateway-credentials.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
+import { upgraderServiceAccountEmail } from "../gcp-names.js";
 import type { InstallMetadata } from "../install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "../mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "../operator-access.js";
@@ -40,12 +41,17 @@ import {
   readSecretReplication,
 } from "../runtime-secrets.js";
 import { selfCommand } from "../self-command.js";
-import { MCP_ENV_VAR, OPERATOR_ACCESS_JOB_ENV_VAR } from "../stack-contract.js";
+import {
+  MCP_ENV_VAR,
+  OPERATOR_ACCESS_JOB_ENV_VAR,
+  UPGRADER_JOB_ENV_VAR,
+} from "../stack-contract.js";
 import {
   ensureStackInvariants,
   liveEnvHasInlinePassword,
   removeRetiredIamBindings,
 } from "../stack-converge.js";
+import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import type { AppRollHooks, AppRollPlan, RollPlan, RollSlug } from "./app-roll.js";
 import type { UpgradeReporter } from "./reporter.js";
 
@@ -74,6 +80,12 @@ export interface ConvergeDeps {
    * needs the operator's gcloud account and local install dir. False aborts.
    */
   readonly provisionerIdentity?: () => Promise<boolean>;
+  /**
+   * The release's caelo-ops image, digest-pinned — what the upgrader job
+   * runs (upgrader-setup.ts). Null when it could not be resolved: the step
+   * then fails and the converge stays incomplete.
+   */
+  readonly opsImageRef?: string | null;
 }
 
 export interface ConvergeSession {
@@ -260,6 +272,42 @@ export function startConverge(
     return true;
   }
 
+  let upgraderReady = false;
+
+  async function upgraderJob(): Promise<void> {
+    // #696 — the job "Install update" starts. After migrations: its
+    // database user gets the role migration 0267 creates. Before the
+    // operator-access step, which must keep its caelo-mcp signing grant.
+    // A failure only costs in-product updates, so it warns.
+    const s = r.step("Ensuring the upgrader job (Settings → Updates → Install update)...");
+    const resolved = deps.opsImageRef
+      ? await resolveUpgraderTarget(
+          {
+            projectId: install.projectId,
+            region: install.region,
+            env: install.env,
+            opsImageRef: deps.opsImageRef,
+          },
+          { run },
+        )
+      : { ok: false as const, error: "the release's caelo-ops image could not be resolved" };
+    const up = resolved.ok
+      ? await ensureUpgraderJob(resolved.target, runDeps)
+      : { ok: false as const, done: [], error: resolved.error };
+    for (const step of up.done) r.info(`  ${step}`);
+    if (up.ok) {
+      upgraderReady = true;
+      s.done("Upgrader job ready (the Owner can install updates from the admin)");
+      return;
+    }
+    s.warned(`Upgrader job not set up: ${up.error}`);
+    r.warn(
+      "The upgrade continues; Settings → Updates keeps showing the command to run instead of an Install button until this succeeds.",
+    );
+    incomplete = true;
+    leaveUntouched.push(UPGRADER_JOB_ENV_VAR);
+  }
+
   async function operatorAccess(): Promise<void> {
     // The job that keeps IAP in step with the user list (operator-access.ts).
     // After migrations: its database user gets the role migration 0239
@@ -277,7 +325,19 @@ export function startConverge(
       { run },
     );
     const oa = resolved.ok
-      ? await ensureOperatorAccessSync(resolved.target, runDeps)
+      ? await ensureOperatorAccessSync(
+          {
+            ...resolved.target,
+            ...(upgraderReady
+              ? {
+                  mcpSigners: [
+                    `serviceAccount:${upgraderServiceAccountEmail(install.projectId, install.env)}`,
+                  ],
+                }
+              : {}),
+          },
+          runDeps,
+        )
       : { ok: false as const, done: [], error: resolved.error };
     for (const step of oa.done) r.info(`  ${step}`);
     if (oa.ok) {
@@ -304,6 +364,7 @@ export function startConverge(
     hooks: {
       async afterMigrations() {
         if (!(await databaseLogins())) return { ok: false };
+        await upgraderJob();
         await operatorAccess();
         return { ok: true, leaveUntouched: [...leaveUntouched] };
       },

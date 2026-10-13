@@ -183,12 +183,21 @@ export function resumedMetadata(
 }
 
 /** Record the image digests an install now runs (see {@link InstallMetadata.imageDigests}). */
-export function recordImageDigests(installId: string, digests: ImageDigests): void {
+export function recordImageDigests(
+  installId: string,
+  digests: ImageDigests,
+  releaseVersion?: string | null,
+): void {
   const meta = readMetadata(installId);
   if (!meta) throw new Error(`No install.json for install '${installId}'.`);
+  // A version is recorded together with its digests, never one without the
+  // other: when it is unknown, a stale one would be worse than none (the
+  // upgrader job refuses on none and judges downgrades by it).
+  const { releaseVersion: _stale, ...rest } = meta;
   writeMetadata(installId, {
-    ...meta,
+    ...rest,
     imageDigests: { admin: digests.admin, gateway: digests.gateway },
+    ...(releaseVersion ? { releaseVersion } : {}),
   });
 }
 
