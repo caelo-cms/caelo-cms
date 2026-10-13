@@ -23,11 +23,12 @@
  * update re-pins it to the release it installed.
  */
 
+import { createHash } from "node:crypto";
 import { PLATFORM_UPDATE_AGENT_POLL_SECONDS } from "@caelo-cms/shared";
 
 /** Everything the units name; all paths absolute. */
 export interface AgentUnitSpec {
-  /** Unit base name (`caelo-agent-<domain>`), see {@link agentUnitName}. */
+  /** Unit base name (`caelo-agent-<domain>-<hash>`), see {@link agentUnitName}. */
   readonly name: string;
   readonly domain: string;
   /** The provisioning release the service runs. */
@@ -47,15 +48,21 @@ export interface AgentUnitSpec {
 /** The longest a single run (one full upgrade) may take before systemd stops it. */
 export const AGENT_RUN_TIMEOUT_MINUTES = 80;
 
-/** `caelo-agent-<domain>`: one agent per install, several installs per host possible. */
-export function agentUnitName(domain: string): string {
+/**
+ * `caelo-agent-<domain>-<hash>`: one agent per install, several installs
+ * per host possible. The slug is for people; the hash of the install's
+ * `.caelo/` path keeps two installs apart even when their slugs collide
+ * (`a.b.example.com` vs `a-b.example.com`).
+ */
+export function agentUnitName(domain: string, caeloDir: string): string {
   const slug = domain
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
   if (!slug) throw new Error(`cannot name the agent unit after domain ${JSON.stringify(domain)}`);
-  return `caelo-agent-${slug}`;
+  const hash = createHash("sha256").update(caeloDir).digest("hex").slice(0, 8);
+  return `caelo-agent-${slug}-${hash}`;
 }
 
 /** The package the service runs, pinned. */

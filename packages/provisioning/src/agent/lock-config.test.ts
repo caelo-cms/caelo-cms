@@ -3,7 +3,7 @@
 /** The install's upgrade lock (agent/lock.ts) and the agent's settings (agent/config.ts). */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_DB_PORT_DEFAULT, agentConfigFor, agentDbConnection } from "./config.js";
@@ -36,9 +36,17 @@ describe("acquireUpgradeLock", () => {
     expect(typeof release).toBe("function");
   });
 
-  it("treats an unreadable lock file as abandoned", () => {
+  it("treats an unreadable lock file as held until it is older than any run", () => {
     writeFileSync(upgradeLockPath(dir), "{not json");
+    expect(() => acquireUpgradeLock(dir, "the update agent")).toThrow(/unreadable/);
+    const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    utimesSync(upgradeLockPath(dir), old, old);
     expect(() => acquireUpgradeLock(dir, "the update agent")()).not.toThrow();
+  });
+
+  it("leaves no temp files behind", () => {
+    acquireUpgradeLock(dir, "the update agent")();
+    expect(readdirSync(dir)).toEqual([]);
   });
 });
 

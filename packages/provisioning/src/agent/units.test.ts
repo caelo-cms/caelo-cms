@@ -39,10 +39,17 @@ const SPEC: AgentUnitSpec = {
 };
 
 describe("agent units", () => {
-  it("names one agent per install after its domain", () => {
-    expect(agentUnitName("Example.com")).toBe("caelo-agent-example-com");
-    expect(agentUnitName("blog.my-site.co.uk")).toBe("caelo-agent-blog-my-site-co-uk");
-    expect(() => agentUnitName("...")).toThrow();
+  it("names one agent per install after its domain, kept apart by the install's folder", () => {
+    expect(agentUnitName("Example.com", "/srv/a/.caelo")).toMatch(
+      /^caelo-agent-example-com-[0-9a-f]{8}$/,
+    );
+    expect(agentUnitName("a.b.example.com", "/srv/one/.caelo")).not.toBe(
+      agentUnitName("a-b.example.com", "/srv/two/.caelo"),
+    );
+    expect(agentUnitName("example.com", "/srv/a/.caelo")).toBe(
+      agentUnitName("example.com", "/srv/a/.caelo"),
+    );
+    expect(() => agentUnitName("...", "/srv/a/.caelo")).toThrow();
   });
 
   it("runs the pinned CLI as a oneshot, as the user, never as root", () => {

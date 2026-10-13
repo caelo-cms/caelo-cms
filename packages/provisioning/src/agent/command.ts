@@ -72,7 +72,7 @@ function flag(argv: readonly string[], name: string): string | undefined {
 /** The unit spec for this install, pinned to `version`. */
 function unitSpec(ctx: AgentCliContext, version: string): AgentUnitSpec {
   return {
-    name: agentUnitName(ctx.domain),
+    name: agentUnitName(ctx.domain, ctx.caeloDir),
     domain: ctx.domain,
     version,
     bunPath: process.execPath,
@@ -196,7 +196,7 @@ export async function setUpAgent(
       );
     }
   }
-  const name = agentUnitName(ctx.domain);
+  const name = agentUnitName(ctx.domain, ctx.caeloDir);
   const pinned = installedAgentVersion(host, name);
   const version = pinned && compareSemver(pinned, CAELO_VERSION) > 0 ? pinned : CAELO_VERSION;
   const units = await installAgentUnits(unitSpec(ctx, version), host);
@@ -261,7 +261,7 @@ async function agentInstall(argv: readonly string[], ctx: AgentCliContext): Prom
 
 async function agentStatus(ctx: AgentCliContext): Promise<number> {
   const host = currentAgentHost(bunHostRunner);
-  const name = agentUnitName(ctx.domain);
+  const name = agentUnitName(ctx.domain, ctx.caeloDir);
   const agent = ctx.agent();
   const version = installedAgentVersion(host, name);
   say(`Install:      ${ctx.domain} (${ctx.caeloDir})`);
@@ -281,7 +281,7 @@ async function agentStatus(ctx: AgentCliContext): Promise<number> {
 async function agentLogs(argv: readonly string[], ctx: AgentCliContext): Promise<number> {
   const lines = Number(flag(argv, "lines") ?? "200");
   const proc = Bun.spawn(
-    agentLogsArgv(agentUnitName(ctx.domain), {
+    agentLogsArgv(agentUnitName(ctx.domain, ctx.caeloDir), {
       lines: Number.isInteger(lines) && lines > 0 ? lines : 200,
       follow: argv.includes("--follow") || argv.includes("-f"),
     }),
@@ -293,7 +293,7 @@ async function agentLogs(argv: readonly string[], ctx: AgentCliContext): Promise
 async function agentUninstall(ctx: AgentCliContext): Promise<number> {
   const runner = bunHostRunner;
   const host = currentAgentHost(runner);
-  const result = await uninstallAgentUnits(host, agentUnitName(ctx.domain));
+  const result = await uninstallAgentUnits(host, agentUnitName(ctx.domain, ctx.caeloDir));
   for (const w of result.ok ? result.warnings : []) console.warn(`  ! ${w}`);
   const agent = ctx.agent();
   if (agent) {

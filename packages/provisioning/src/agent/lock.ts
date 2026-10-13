@@ -8,9 +8,14 @@
  *
  * The file holds the holder's pid; a lock whose process is gone (a crash, a
  * reboot) is taken over rather than blocking updates forever.
+ *
+ * The record is written to a private temp file first and then hard-linked
+ * into place, so the lock file never exists half-written: a reader that
+ * finds it can always trust its pid. (An unreadable file is only taken over
+ * once it is older than any run could be.)
  */
 
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** `.caelo/upgrade.lock`. */
@@ -22,6 +27,18 @@ interface LockRecord {
   readonly pid: number;
   readonly holder: string;
   readonly at: string;
+}
+
+/** An unreadable lock file younger than this still counts as held (longer than any run). */
+const UNREADABLE_LOCK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+/** The lock file's modification time (0 when it vanished meanwhile). */
+function lockMtime(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
 /** Whether process `pid` exists (signal 0 checks without signalling). */
@@ -53,30 +70,41 @@ export function acquireUpgradeLock(
     holder,
     at: new Date().toISOString(),
   };
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      writeFileSync(path, JSON.stringify(record), { mode: 0o600, flag: "wx" });
-      let released = false;
-      return () => {
-        if (released) return;
-        released = true;
-        rmSync(path, { force: true });
-      };
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  const temp = `${path}.${record.pid}.${crypto.randomUUID()}`;
+  writeFileSync(temp, JSON.stringify(record), { mode: 0o600, flag: "wx" });
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        // Atomic: fails with EEXIST when someone holds the lock.
+        linkSync(temp, path);
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          rmSync(path, { force: true });
+        };
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      }
+      let held: Partial<LockRecord> | null = null;
+      try {
+        held = JSON.parse(readFileSync(path, "utf8")) as Partial<LockRecord>;
+      } catch {
+        // Corrupt (never half-written, see above): take it over only when old.
+      }
+      if (held === null) {
+        if (Date.now() - lockMtime(path) < UNREADABLE_LOCK_MAX_AGE_MS) {
+          throw new Error(`another upgrade holds ${path} (its record is unreadable).`);
+        }
+      } else if (typeof held.pid === "number" && alive(held.pid)) {
+        throw new Error(
+          `${held.holder ?? "another upgrade"} is running on this install (pid ${held.pid}, since ${held.at ?? "?"}).`,
+        );
+      }
+      rmSync(path, { force: true });
     }
-    let held: Partial<LockRecord> = {};
-    try {
-      held = JSON.parse(readFileSync(path, "utf8")) as Partial<LockRecord>;
-    } catch {
-      // Unreadable or half-written: treat as abandoned.
-    }
-    if (typeof held.pid === "number" && alive(held.pid)) {
-      throw new Error(
-        `${held.holder ?? "another upgrade"} is running on this install (pid ${held.pid}, since ${held.at ?? "?"}).`,
-      );
-    }
-    rmSync(path, { force: true });
+  } finally {
+    rmSync(temp, { force: true });
   }
   throw new Error(`could not take ${path}; another process keeps creating it.`);
 }

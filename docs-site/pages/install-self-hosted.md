@@ -76,7 +76,7 @@ An install created before prebuilt images existed (its Compose file bind-mounts 
 
 Settings → Updates in the admin can install a new Caelo release with one click (Owner only, confirmed with a fresh Google sign-in). On a self-hosted install the click does not install anything itself: it writes an update request into the database, and the **update agent** on your server carries it out.
 
-The agent is a systemd timer (`caelo-agent-<your-domain>.timer`) that runs the provisioning CLI **as your user** — the one that ran `init` — once a minute:
+The agent is a systemd timer (`caelo-agent-<your-domain>-<hash>.timer`; `agent status` names it) that runs the provisioning CLI **as your user** — the one that ran `init` — once a minute:
 
 1. it checks in with the database (the admin shows "Install update" only while the agent has checked in within the last five minutes, and shows what it found wrong on the server, such as a missing `cosign`);
 2. it picks up the oldest pending request;

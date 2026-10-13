@@ -2,7 +2,7 @@
 
 /**
  * One poll of the self-hosted host agent (#696 Phase 4c) — what the
- * `caelo-agent-<domain>` timer runs every minute:
+ * `caelo-agent-<domain>-<hash>` timer runs every minute:
  *
  *   1. preflight (Docker reachable, cosign present, a recorded release) and
  *      a heartbeat with the result, so Settings → Updates knows the agent is
