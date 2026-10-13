@@ -21,7 +21,7 @@ Behind that loop sits a small, opinionated kernel: two isolated Postgres roles w
 ## Install in one line
 
 ```bash
-bunx @caelo-cms/provisioning --provider self-hosted
+bunx @caelo-cms/provisioning@latest --provider self-hosted
 ```
 
 That stands up Postgres + pgBackRest + Caddy (with auto-SSL) + the admin app + the API gateway as a Docker Compose stack. It works on any Linux box with Docker + Bun.
@@ -29,7 +29,7 @@ That stands up Postgres + pgBackRest + Caddy (with auto-SSL) + the admin app + t
 For cloud:
 
 ```bash
-bunx @caelo-cms/provisioning --provider gcp     # or aws, or azure
+bunx @caelo-cms/provisioning@latest --provider gcp     # or aws, or azure
 ```
 
 Cloud paths use Pulumi to spin up Cloud SQL HA + managed object storage + the platform's CDN + Secret Manager + Cloud Run / Lambda / Container Apps. You get staging + production as separate stacks; staging is `noindex` by default.

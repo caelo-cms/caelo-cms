@@ -9,7 +9,9 @@
  *   5. Links billing
  *   6. Enables 13 APIs in one call
  *   7. Creates the provisioner SA + grants 15 IAM roles
- *   8. Mints a JSON SA key into `~/.caelo-<install-id>/secrets/sa-key.json`
+ *   8. Lets the operator's gcloud account impersonate that SA (#696): no
+ *      key is ever minted; an older install's `sa-key.json` is deleted,
+ *      locally and in IAM (provisioner-identity.ts)
  *   9. Generates Pulumi passphrase if absent → secrets/pulumi-passphrase
  *  10. Pre-flight cost-estimate table; single y/N confirm
  *  11. Pulumi up via the Automation SDK; streams progress, then deletes
@@ -27,6 +29,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
+import { checkAdcImpersonation } from "../adc-impersonation.js";
 import { CERT_WAIT_TIMEOUT_MS, lbCertProbe, waitForCert } from "../cert-wait.js";
 import { redactCredentials } from "../checkpoint-secrets.js";
 import { removeDefaultFirewallRules } from "../default-firewall.js";
@@ -45,7 +48,6 @@ import {
   type BillingAccount,
   createProject,
   createServiceAccount,
-  createServiceAccountKey,
   enableApis,
   gcloud,
   gcloudEnv,
@@ -78,12 +80,16 @@ import {
   installIapAllowlist,
   resolveOperatorAccessTarget,
 } from "../operator-access.js";
+import {
+  convergeKeylessProvisioner,
+  PROVISIONER_ACCOUNT_ID,
+  provisionerServiceAccountEmail,
+} from "../provisioner-identity.js";
 import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
+import { selfCommand } from "../self-command.js";
 import { ABSENT_DEFAULT_FIREWALL_RULES, ADMIN_MEMORY_DEFAULT } from "../stack-contract.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
-
-const SA_ACCOUNT_ID = "caelo-provisioner";
 
 export interface GcpWizardOpts {
   installId: string;
@@ -134,7 +140,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // === 5. Enable APIs ===
   await stepEnableApis(installId, projectId, opts.provider ?? "gcp");
 
-  // === 6. Service account + roles + key ===
+  // === 6. Service account + roles + impersonation (no key, #696) ===
   // v0.3.12 — dropped the firebase-hosting-identity step. The
   // Service Usage GenerateServiceIdentity API doesn't support
   // `firebasehosting.googleapis.com` (returns
@@ -145,10 +151,10 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // PROJECT level (vs the Cloud Run service level) — project IAM
   // accepts deferred google-managed principals; v1 Cloud Run IAM
   // didn't.
-  const saEmail = `${SA_ACCOUNT_ID}@${projectId}.iam.gserviceaccount.com`;
+  const saEmail = provisionerServiceAccountEmail(projectId);
   await stepServiceAccount(installId, projectId, saEmail);
   await stepGrantRoles(installId, projectId, saEmail);
-  const keyPath = await stepMintKey(installId, projectId, saEmail, secretsDir);
+  await stepKeylessProvisioner(projectId, secretsDir, opts.nonInteractive);
 
   // === 7. Pulumi passphrase ===
   // v0.3.2 — removed the legacy `stepAnthropicKey` prompt. The
@@ -265,7 +271,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     }),
     ownerEmail,
     region,
-    saKeyPath: keyPath,
+    impersonateServiceAccount: saEmail,
     pulumiPassphrase,
     cloudSqlTier: costInputs.cloudSqlTier,
     cloudSqlHa: costInputs.cloudSqlHa,
@@ -425,7 +431,7 @@ async function stepActiveGcloud(): Promise<void> {
   if (!account) {
     log.error(red("No active gcloud account."));
     log.warn(
-      `Run ${bold("gcloud auth login")} in another terminal, then re-run ${bold("bunx @caelo-cms/provisioning")}.`,
+      `Run ${bold("gcloud auth login")} in another terminal, then re-run ${bold(selfCommand())}.`,
     );
     cancel("Aborted — no gcloud auth.");
     process.exit(2);
@@ -588,7 +594,7 @@ async function stepBillingLink(
   if (open.length === 0) {
     log.error(red("No open billing accounts found."));
     log.warn(
-      `Open one at https://console.cloud.google.com/billing then re-run ${bold("bunx @caelo-cms/provisioning")}.`,
+      `Open one at https://console.cloud.google.com/billing then re-run ${bold(selfCommand())}.`,
     );
     cancel("Aborted.");
     process.exit(1);
@@ -672,7 +678,7 @@ async function stepServiceAccount(
   projectId: string,
   saEmail: string,
 ): Promise<void> {
-  const stepName = `service-account-${SA_ACCOUNT_ID}`;
+  const stepName = `service-account-${PROVISIONER_ACCOUNT_ID}`;
   if (isStepDone(installId, stepName)) {
     log.success(`Provisioner SA ${dim("(already created)")}`);
     return;
@@ -684,7 +690,7 @@ async function stepServiceAccount(
   }
   const s = spinner();
   s.start(`Creating provisioner service account...`);
-  const r = await createServiceAccount(projectId, SA_ACCOUNT_ID, "Caelo provisioner");
+  const r = await createServiceAccount(projectId, PROVISIONER_ACCOUNT_ID, "Caelo provisioner");
   if (!r.ok) {
     s.stop(red(`Failed: ${r.stderr.trim()}`));
     cancel("Aborted.");
@@ -804,29 +810,90 @@ async function stepRemoveDefaultFirewallRules(projectId: string): Promise<void> 
     log.warn(yellow(`  not removed: ${o.id} — ${o.why}\n    ${o.error ?? ""}`));
 }
 
-async function stepMintKey(
-  installId: string,
+/**
+ * #696 — make the provisioner SA usable without a key: the operator's gcloud
+ * account gets TokenCreator on it, an older install's `sa-key.json` is
+ * deleted (locally and in IAM), and the credential chain Pulumi will use —
+ * Application Default Credentials impersonating the SA — is verified before
+ * anything billable runs. Idempotent; runs on every wizard pass.
+ */
+async function stepKeylessProvisioner(
   projectId: string,
-  saEmail: string,
   secretsDir: string,
-): Promise<string> {
-  const stepName = `mint-key-${projectId}`;
-  const keyPath = join(secretsDir, "sa-key.json");
-  if (isStepDone(installId, stepName) && existsSync(keyPath)) {
-    log.success(`SA key ${dim("(already minted, kept)")}`);
-    return keyPath;
+  nonInteractive: boolean,
+): Promise<void> {
+  const sa = provisionerServiceAccountEmail(projectId);
+  const account = await activeAccount();
+  if (!account) {
+    cancel("No active gcloud account. Run `gcloud auth login`, then re-run.");
+    process.exit(2);
   }
   const s = spinner();
-  s.start(`Minting SA key → ${dim(keyPath)}`);
-  const r = await createServiceAccountKey(saEmail, keyPath);
-  if (!r.ok) {
-    s.stop(red(`Failed: ${r.stderr.trim()}`));
+  s.start(`Letting ${account} impersonate ${sa} (no key file)...`);
+  const converged = await convergeKeylessProvisioner({
+    projectId,
+    secretsDir,
+    operatorAccount: account,
+    justCreated: true,
+  });
+  if (!converged.ok) {
+    s.stop(red("Could not set up impersonation of the provisioner"));
+    log.error(converged.error);
     cancel("Aborted.");
     process.exit(1);
   }
-  s.stop(green(`SA key minted (mode 600)`));
-  markStepDone(installId, stepName, { path: keyPath });
-  return keyPath;
+  if (converged.grant === "no-provisioner") {
+    // stepServiceAccount ensured it and the lookup waited out propagation.
+    s.stop(red(`${sa} does not exist`));
+    cancel("Aborted — re-run the installer.");
+    process.exit(1);
+  }
+  s.stop(
+    green(
+      converged.grant === "granted"
+        ? `${account} may now impersonate ${sa}`
+        : `${account} may impersonate ${sa} ${dim("(already)")}`,
+    ),
+  );
+  if (converged.legacyKey === "removed") {
+    log.warn(
+      yellow("Removed the provisioner's long-lived key; this install now uses impersonation."),
+    );
+    for (const line of converged.lines) log.info(`  ${line}`);
+  }
+
+  const check = async () =>
+    checkAdcImpersonation({
+      projectId,
+      operatorAccount: account,
+      freshGrant: converged.grant === "granted",
+    });
+  const sAdc = spinner();
+  sAdc.start("Checking that your Application Default Credentials can impersonate it...");
+  let adc = await check();
+  if (!adc.ok && adc.reason === "no-adc" && !nonInteractive) {
+    sAdc.stop(yellow("No Application Default Credentials yet"));
+    const login = await confirm({
+      message: `Run ${bold("gcloud auth application-default login")} now (opens your browser; sign in as ${account})?`,
+      initialValue: true,
+    });
+    if (isCancel(login) || !login) {
+      log.error(adc.error);
+      cancel("Aborted.");
+      process.exit(1);
+    }
+    const { spawnSync } = await import("node:child_process");
+    spawnSync("gcloud", ["auth", "application-default", "login"], { stdio: "inherit" });
+    sAdc.start("Checking again...");
+    adc = await check();
+  }
+  if (!adc.ok) {
+    sAdc.stop(red("Infrastructure credentials not ready"));
+    log.error(adc.error);
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  sAdc.stop(green(`Pulumi will run as ${sa} via impersonation`));
 }
 
 function stepPulumiPassphrase(installId: string): string {
@@ -850,7 +917,8 @@ interface PulumiUpOpts {
   stagingDomain: string;
   ownerEmail: string;
   region: string;
-  saKeyPath: string;
+  /** #696 — the provisioner SA Pulumi impersonates (no key file). */
+  impersonateServiceAccount: string;
   pulumiPassphrase: string;
   cloudSqlTier: string;
   cloudSqlHa: boolean;
@@ -1371,9 +1439,7 @@ async function stepGcpDnsRecords(installId: string): Promise<void> {
     log.warn(
       yellow(`DNS records not confirmed yet: ${e instanceof Error ? e.message : String(e)}`),
     );
-    log.warn(
-      `Set them at your registrar, then re-run ${bold("bunx @caelo-cms/provisioning")} to resume.`,
-    );
+    log.warn(`Set them at your registrar, then re-run ${bold(selfCommand())} to resume.`);
     cancel("Stopped at the DNS step.");
     process.exit(1);
   }
@@ -1432,12 +1498,12 @@ async function stepFinalize(installId: string): Promise<void> {
           bold("Admin custom domain (admin.<domain>):"),
           `  Not configured — using the Cloud Run URL above.`,
           `  To bind ${cyan(`admin.${meta.domain}`)}, run`,
-          `  ${dim("bunx @caelo-cms/provisioning admin-domain enable")}`,
+          `  ${dim(selfCommand("admin-domain", "enable"))}`,
           `  (it walks you through the one-time Search Console verification, prints the DNS record and waits for the certificate).`,
           "",
           bold("Protected staging site:"),
           `  Stage builds render ${cyan(installStagingHost(meta))}; to serve it, run`,
-          `  ${dim("bunx @caelo-cms/provisioning staging-domain enable")}`,
+          `  ${dim(selfCommand("staging-domain", "enable"))}`,
           `  It maps the host, turns on password protection and prints the staging login once;`,
           `  add the DNS record it prints. The host serves pages after the first Stage.`,
         ]
@@ -1461,9 +1527,9 @@ async function stepFinalize(installId: string): Promise<void> {
       ...adminNote,
       "",
       bold("Lifecycle commands:"),
-      `  ${dim("bunx @caelo-cms/provisioning status")}     — health check + monthly cost`,
-      `  ${dim("bunx @caelo-cms/provisioning upgrade")}    — pull latest images + roll Cloud Run`,
-      `  ${dim("bunx @caelo-cms/provisioning destroy")}    — tear everything down (irreversible)`,
+      `  ${dim(selfCommand("status"))}   — health check, and the exact upgrade command once a new release is out`,
+      `  ${dim(selfCommand("destroy"))}  — tear everything down (irreversible)`,
+      `  New releases: ${cyan(`${adminBase}/settings/updates`)} shows the exact upgrade command for this install.`,
     ].join("\n"),
     "Done",
   );

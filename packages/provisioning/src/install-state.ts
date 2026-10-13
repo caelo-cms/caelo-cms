@@ -7,9 +7,11 @@
  *   secrets/                — mode-700 dir for the install's secrets
  *     anthropic-api-key       (mode 600) — Anthropic API key (one-time prompt)
  *     pulumi-passphrase       (mode 600) — Pulumi local-backend passphrase
- *     sa-key.json             (mode 600) — GCP SA key (when local-deploy; absent
- *                                          when Workload Identity Federation
- *                                          deploys from CI)
+ *     (no service-account key: GCP installs impersonate `caelo-provisioner`
+ *      with the operator's own Google login, CLAUDE.md §11.C. An
+ *      `sa-key.json` minted by installers before #696 is deleted —
+ *      locally and in IAM — on the next `upgrade` or installer run;
+ *      provisioner-identity.ts)
  *   state/                  — Pulumi local backend state (per-install isolated)
  *   progress.json           — wizard checkpoint so re-runs resume cleanly
  *   install.json            — install metadata (provider, project id, region,
@@ -68,6 +70,13 @@ export interface InstallMetadata {
    * `upgrade` records the default ({@link installStagingHost}).
    */
   stagingDomain?: string;
+  /**
+   * #696 — the infrastructure contract version (infra-contract.ts) the last
+   * successful converge brought this install to. Absent until the first
+   * `upgrade` that converged completely; an app-roll-only upgrade refuses to
+   * run while it is lower than the release's (upgrade/converge.ts).
+   */
+  infraContractVersion?: number;
 }
 
 /** The install's staging host: its recorded setting, else the default. */
@@ -155,10 +164,20 @@ export function recordImageDigests(installId: string, digests: ImageDigests): vo
   });
 }
 
+/**
+ * Record the infrastructure contract version a converge just brought the
+ * install to (see {@link InstallMetadata.infraContractVersion}).
+ */
+export function recordInfraContractVersion(installId: string, version: number): void {
+  const meta = readMetadata(installId);
+  if (!meta) throw new Error(`No install.json for install '${installId}'.`);
+  writeMetadata(installId, { ...meta, infraContractVersion: version });
+}
+
 export interface ProgressCheckpoint {
   /** Last completed wizard step. Used for resume-after-failure. */
   lastCompletedStep: string | null;
-  /** Per-step state (e.g. createdProjectId, mintedSaKeyAt, etc.). */
+  /** Per-step state (e.g. createdProjectId, billingAccountId, etc.). */
   steps: Record<string, unknown>;
   /** ISO timestamp of last successful update. */
   updatedAt: string;

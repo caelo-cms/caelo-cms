@@ -33,6 +33,7 @@ import {
   GCP_SERVICES,
   type RegionOption,
 } from "./region-data.js";
+import { selfCommand } from "./self-command.js";
 
 /** Providers whose stack is placed in a cloud region (self-hosted is not). */
 export type RegionalProvider = "gcp" | "gcp-firebase" | "aws" | "azure";
@@ -347,7 +348,7 @@ export function requireInstallRegion(meta: {
 }): string {
   if (!meta.region) {
     throw new Error(
-      `install ${meta.installId} has no region recorded in install.json. Re-run the installer (\`bunx @caelo-cms/provisioning\`, pick "Resume wizard"): it reads the region from the deployed services and records it.`,
+      `install ${meta.installId} has no region recorded in install.json. Re-run the installer (\`${selfCommand()}\`, pick "Resume wizard"): it reads the region from the deployed services and records it.`,
     );
   }
   return meta.region;

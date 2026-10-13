@@ -7,6 +7,7 @@
  *   POST /api/plugin/<slug>/<operation>     JSON body → JSON response
  *   GET  /api/captcha/challenge             PoW challenge envelope
  *   GET  /healthz                           liveness probe
+ *   GET  /api/_caelo/health[?deep=1]        upgrade health check (health.ts)
  *   *    (Host: staging.<domain>)           #650 staging gate + proxy to the
  *                                           staged build (staging-proxy.ts)
  *
@@ -58,6 +59,7 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
 ) => SQLType;
 
 import { GATEWAY_DATABASE_ROLES, gatewayDatabaseUrls } from "./database-env.js";
+import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
 import {
   type CaptchaConfig,
@@ -439,7 +441,12 @@ export async function handleRequest(req: Request): Promise<Response> {
   // staging.<domain>): the access gate + proxy to the staged build. Nothing
   // below (plugin dispatch, captcha) serves it.
   const stagingGate = stagingGateFromEnv(process.env);
-  if (stagingGate && cachedAdapter && url.pathname !== "/healthz") {
+  if (
+    stagingGate &&
+    cachedAdapter &&
+    url.pathname !== "/healthz" &&
+    url.pathname !== GATEWAY_HEALTH_PATH
+  ) {
     let state: StagingState | null = null;
     try {
       state = await loadStagingState(cachedAdapter);
@@ -459,6 +466,9 @@ export async function handleRequest(req: Request): Promise<Response> {
 
   if (url.pathname === "/healthz") {
     return jsonResponse({ ok: true });
+  }
+  if (req.method === "GET" && url.pathname === GATEWAY_HEALTH_PATH) {
+    return gatewayHealth(url, cachedAdapter);
   }
 
   if (!cachedAdapter) {

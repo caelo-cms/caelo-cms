@@ -107,6 +107,12 @@ describe("Caddy cache policy for content-hashed assets", () => {
   });
 });
 
+const RELEASE_IMAGES = {
+  mode: "release",
+  admin: `ghcr.io/caelo-cms/admin@sha256:${"a".repeat(64)}`,
+  gateway: `ghcr.io/caelo-cms/gateway@sha256:${"b".repeat(64)}`,
+} as const;
+
 describe("docker-compose generator", () => {
   it("emits postgres + caddy + caelo services with the supplied secrets", () => {
     const out = generateDockerCompose({
@@ -118,6 +124,7 @@ describe("docker-compose generator", () => {
       caeloSecretKek: "0".repeat(64),
       anthropicApiKey: "sk-ant-…",
       diskSize: "20Gi",
+      images: RELEASE_IMAGES,
     });
     expect(out).toContain("caelo-postgres");
     expect(out).toContain("caelo-caddy");
@@ -138,6 +145,7 @@ describe("docker-compose generator", () => {
       minioRootPassword: "miniopass",
       caeloSecretKek: "0".repeat(64),
       diskSize: "20Gi",
+      images: RELEASE_IMAGES,
     });
     const gateway = out.slice(out.indexOf("caelo-gateway:"), out.indexOf("\nvolumes:"));
     expect(gateway).toContain(
@@ -160,6 +168,7 @@ describe("docker-compose generator", () => {
       minioRootPassword: "x",
       caeloSecretKek: "0".repeat(64),
       diskSize: "1Gi",
+      images: RELEASE_IMAGES,
     });
     expect(out).toContain('pa\\"ss');
   });

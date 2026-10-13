@@ -37,6 +37,7 @@ interface DockerfileCase {
 const CASES: readonly DockerfileCase[] = [
   { path: "apps/admin/Dockerfile", label: "admin" },
   { path: "apps/api-gateway/Dockerfile", label: "gateway" },
+  { path: "packages/provisioning/Dockerfile.ops", label: "ops" },
 ];
 
 function copyBunfigBeforeInstall(src: string): boolean {

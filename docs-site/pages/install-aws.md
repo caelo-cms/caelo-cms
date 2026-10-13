@@ -24,7 +24,7 @@ The `--provider aws` adapter mirrors the GCP shape on AWS-equivalent services.
 ## Quickstart
 
 ```bash
-bunx @caelo-cms/provisioning --provider aws \
+bunx @caelo-cms/provisioning@latest --provider aws \
   --account 123456789012 \
   --region eu-central-1 \
   --domain caelo.example.com \
@@ -43,7 +43,7 @@ The AWS stack requires `caelo-aws:region`; there is no default, so it never land
 - **Media storage is not wired yet** — the stack creates a media bucket but does not mount persistent storage into the admin, so the admin refuses to start rather than lose uploads on the next redeploy ([#618](https://github.com/caelo-cms/caelo-cms/issues/618)).
 - **Cold-start sensitivity** — Lambda is cheaper than Fargate but cold-starts are 1–2s for the admin's first request after idle. For low-traffic installs this is fine; busy installs should switch to Fargate via `--compute fargate`.
 - **CloudFront cache behaviour** — the static-generated pages cache aggressively (24h default); the admin + gateway routes are pass-through with `Cache-Control: no-store`. The provisioner configures both.
-- **Secrets rotation** — the admin reads Secrets Manager via env vars at boot; rotating a secret requires a Lambda redeploy (~30s). The provisioner handles this for you on `bunx @caelo-cms/provisioning rotate-secret <name>`.
+- **Secrets rotation** — the admin reads Secrets Manager via env vars at boot; rotating a secret requires a Lambda redeploy (~30s). The provisioner handles this for you on `bunx @caelo-cms/provisioning@<version> rotate-secret <name>`, where `<version>` is the Caelo release the install runs (shown under **Settings → Caelo updates**).
 
 ## Cost (rough)
 
