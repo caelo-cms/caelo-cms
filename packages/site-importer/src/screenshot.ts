@@ -216,6 +216,40 @@ export type BundledChromiumLaunch =
     };
 
 /**
+ * Playwright launch options for the bundled Chromium. Pure (exported for
+ * the regression test).
+ *
+ * With a DevTools port the browser is the #553 Lighthouse audit browser,
+ * which must behave like a visitor's Chrome: Playwright's default switches
+ * include `--disable-back-forward-cache` (so `page.goBack()` always hits
+ * the network in tests), and with it Lighthouse's `bf-cache` audit failed
+ * on every page of every site ("Back/forward cache is disabled by flags /
+ * by the command line", #667). The audit browser drops that one default;
+ * the screenshotter keeps Playwright's defaults untouched.
+ */
+export function bundledChromiumLaunchOptions(remoteDebuggingPort?: number): {
+  readonly headless: true;
+  readonly channel: "chromium";
+  readonly args?: readonly string[];
+  readonly ignoreDefaultArgs?: readonly string[];
+} {
+  // `channel: "chromium"` runs the full Chromium build in headless mode
+  // rather than the stripped chromium-headless-shell: the image installs
+  // only the full build (#428), which also speaks the complete DevTools
+  // protocol the Lighthouse audit needs (#553).
+  if (remoteDebuggingPort === undefined) return { headless: true, channel: "chromium" };
+  return {
+    headless: true,
+    channel: "chromium",
+    args: [
+      `--remote-debugging-port=${remoteDebuggingPort}`,
+      "--remote-debugging-address=127.0.0.1",
+    ],
+    ignoreDefaultArgs: ["--disable-back-forward-cache"],
+  };
+}
+
+/**
  * The ONE place Caelo launches Chromium: the full build the admin image
  * bundles (#428), through the repo-pinned Playwright. Screenshots, the
  * importer and the #553 Lighthouse audit all start their browser here, so
@@ -223,7 +257,9 @@ export type BundledChromiumLaunch =
  *
  * `remoteDebuggingPort` additionally opens the Chrome DevTools Protocol on
  * 127.0.0.1 at that port (loopback only), which Lighthouse drives the
- * browser through. Playwright itself keeps talking over its pipe.
+ * browser through, and keeps the back/forward cache enabled (see
+ * `bundledChromiumLaunchOptions`). Playwright itself keeps talking over
+ * its pipe.
  */
 export async function launchBundledChromium(opts?: {
   readonly remoteDebuggingPort?: number;
@@ -251,17 +287,7 @@ export async function launchBundledChromium(opts?: {
   }
   const port = opts?.remoteDebuggingPort;
   try {
-    // `channel: "chromium"` runs the full Chromium build in headless mode
-    // rather than the stripped chromium-headless-shell: the image installs
-    // only the full build (#428), which also speaks the complete DevTools
-    // protocol the Lighthouse audit needs (#553).
-    const browser = await pw.chromium.launch({
-      headless: true,
-      channel: "chromium",
-      ...(port !== undefined
-        ? { args: [`--remote-debugging-port=${port}`, "--remote-debugging-address=127.0.0.1"] }
-        : {}),
-    });
+    const browser = await pw.chromium.launch(bundledChromiumLaunchOptions(port));
     return { ok: true, browser, ...(port !== undefined ? { remoteDebuggingPort: port } : {}) };
   } catch (e) {
     return {

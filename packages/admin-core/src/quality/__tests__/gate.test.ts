@@ -55,6 +55,10 @@ describe("decideGate", () => {
     expect(d.openProblems).toHaveLength(2);
     expect(d.message).toContain("/about: color-contrast");
     expect(d.message).toContain("accept_quality_findings");
+    // #667 — acceptance is the editor's call, never the AI's suggestion.
+    expect(d.message).toContain("only on the editor's explicit request");
+    expect(d.message).not.toContain("have an editor accept");
+    expect(d.message).toContain("bug_report");
   });
 
   it("acceptances on the page clear their problems; partially accepted still blocks", () => {
@@ -155,5 +159,33 @@ describe("chatFeedbackFor", () => {
     expect(at(0)?.text).not.toContain("ask me to Stage");
     expect(at(MAX_AUTO_FIX_ROUNDS)?.text).toContain("Do not change the site further");
     expect(at(MAX_AUTO_FIX_ROUNDS)?.text).toContain("accept_quality_findings");
+  });
+
+  it("never asks the AI to push for acceptances; platform findings become bug reports (#667)", () => {
+    for (const fixRound of [0, 1, MAX_AUTO_FIX_ROUNDS]) {
+      const text =
+        chatFeedbackFor({
+          ...base,
+          status: "problems",
+          fixRound,
+          problemCount: 4,
+          problemPagePaths: ["/"],
+        })?.text ?? "";
+      expect(text).not.toMatch(/ask me (to accept|whether to accept)/);
+      expect(text).toContain("only when I explicitly ask");
+      expect(text).toContain("bug_report");
+    }
+    const capped =
+      chatFeedbackFor({
+        ...base,
+        status: "problems",
+        fixRound: MAX_AUTO_FIX_ROUNDS,
+        problemCount: 4,
+        problemPagePaths: ["/"],
+      })?.text ?? "";
+    expect(capped).toContain("without recommending to accept anything");
+    expect(capped).toContain(
+      "Publish live stays blocked until they are fixed or I decide to accept them",
+    );
   });
 });

@@ -65,4 +65,42 @@ describe("get_quality_audit page formatting", () => {
     );
     expect(lines).toContain("  - element `header > a.cta` — contrast of 2.9");
   });
+
+  it("marks Caelo platform findings so the AI reports them instead of accepting them (#667)", () => {
+    const lines = formatPage(
+      page([
+        {
+          kind: "failing_audit",
+          auditId: "bf-cache",
+          title: "Page prevented back/forward cache restoration",
+          score: 0,
+          categories: ["performance"],
+        },
+        {
+          kind: "failing_audit",
+          auditId: "cache-insight",
+          title: "Use efficient cache lifetimes",
+          score: 0,
+          categories: ["performance"],
+        },
+        {
+          kind: "failing_audit",
+          auditId: "image-alt",
+          title: "Image elements do not have [alt] attributes",
+          score: 0,
+          categories: ["accessibility"],
+        },
+      ]),
+    );
+    const bf = lines.find((l) => l.includes("`bf-cache`")) ?? "";
+    expect(bf).toContain("CAELO PLATFORM");
+    expect(bf).toContain("bug_report");
+    expect(bf).toContain("do not propose accepting it");
+    const cache = lines.find((l) => l.includes("`cache-insight`")) ?? "";
+    expect(cache).toContain("check the flagged URLs");
+    expect(cache).toContain("bug_report");
+    const alt = lines.find((l) => l.includes("`image-alt`")) ?? "";
+    expect(alt).not.toContain("CAELO PLATFORM");
+    expect(alt).not.toContain("bug_report");
+  });
 });

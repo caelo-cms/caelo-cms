@@ -8,9 +8,8 @@
  * The rule: only a URL whose bytes can never change may be cached
  * forever. That holds exactly when the URL itself changes whenever the
  * content does, i.e. the file name carries a content hash. Everything
- * else (pages, robots.txt, sitemap.xml, manifests, media served by its
- * stable slug under `_assets/<slug>…`) must stay short-lived or
- * revalidating so a publish shows up promptly.
+ * else (pages, robots.txt, sitemap.xml, manifests) must stay short-lived
+ * or revalidating so a publish shows up promptly.
  *
  * Content-hashed paths the static generator emits today:
  *
@@ -26,10 +25,17 @@
  *     (`plugin-host/src/client-assets.ts`).
  *   - `_app/immutable/**` — Vite's hashed-output convention, kept for
  *     builds that ship SvelteKit-style bundles.
+ *   - `_assets/<slug>.<16 hex>.<ext>` and
+ *     `_assets/<slug-or-id>/<variant>.<16 hex>.<ext>` — published media
+ *     (#667), named by the sha256 of the published bytes
+ *     (`apps/static-generator/src/media-asset-path.ts`). Before #667 media
+ *     shipped under its bare slug, which the operator can re-point at new
+ *     bytes, so it could only get a 1-hour lifetime and Lighthouse flagged
+ *     every logo and image ("Use efficient cache lifetimes").
  *
- * NOT content-hashed (deliberately excluded): media under
- * `_assets/<slug>.<ext>` / `_assets/<slug>/<variant>.<ext>` — the slug is
- * stable while the operator can replace the bytes behind it.
+ * NOT content-hashed (deliberately excluded): pages, robots.txt,
+ * sitemap.xml, the manifests, the pinned-font `.license.txt` files (named
+ * by font id) and media under the pre-#667 bare-slug names.
  */
 
 /** Long-lived policy for content-addressed files. */
@@ -46,7 +52,10 @@ export const HTML_CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=86
  * matcher and Caddy's `path_regexp` (both RE2) and to `RegExp` here.
  */
 export const CONTENT_HASHED_PATH_PATTERN =
-  "^/(?:_app/immutable/.+|_assets/fonts/[^/]+/[0-9a-f]{16,64}\\.(?:woff2|woff|ttf|otf)|_caelo/plugin/[^/]+/[^/]+\\.[0-9a-f]{12}\\.(?:js|css))$";
+  "^/(?:_app/immutable/.+|_assets/fonts/[^/]+/[0-9a-f]{16,64}\\.(?:woff2|woff|ttf|otf)|_assets/[a-z0-9][a-z0-9-]*(?:/[a-z][a-z0-9-]*)?\\.[0-9a-f]{16}\\.[a-z0-9]{2,5}|_caelo/plugin/[^/]+/[^/]+\\.[0-9a-f]{12}\\.(?:js|css))$";
+
+/** Hex length of the content hash in published media names (#667). */
+export const MEDIA_CONTENT_HASH_HEX_LENGTH = 16;
 
 const CONTENT_HASHED_PATH_RE = new RegExp(CONTENT_HASHED_PATH_PATTERN);
 

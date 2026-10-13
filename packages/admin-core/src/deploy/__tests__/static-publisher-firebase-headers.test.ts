@@ -102,8 +102,12 @@ function cacheControlsFor(path: string): string[] {
 }
 
 describe("VERSION_CONFIG_HEADERS — Cache-Control per path class", () => {
-  it("content-hashed fonts + plugin bundles are immutable for a year (Lighthouse uses-long-cache-ttl)", () => {
+  it("content-hashed fonts, plugin bundles and media are immutable for a year (Lighthouse uses-long-cache-ttl)", () => {
     for (const p of [
+      // #667 — published media, named by the hash of its bytes.
+      "/_assets/searchviu-logo.0123456789abcdef.png",
+      "/_assets/hero/webp-800.0123456789abcdef.webp",
+      "/_assets/brand-favicon.0123456789abcdef.ico",
       "/_assets/fonts/inter/29ede7bd4be32ab0.woff2",
       "/_assets/fonts/manrope/f3a06e9b32049b82.woff2",
       `/_assets/fonts/pinned/${"c".repeat(64)}.woff2`,
@@ -132,7 +136,7 @@ describe("VERSION_CONFIG_HEADERS — Cache-Control per path class", () => {
     }
   });
 
-  it("slug-addressed media and the /api gateway rewrite match no rule (never immutable)", () => {
+  it("bare-slug (pre-#667) media and the /api gateway rewrite match no rule (never immutable)", () => {
     for (const p of [
       "/_assets/searchviu-logo.png",
       "/_assets/hero/w800.webp",

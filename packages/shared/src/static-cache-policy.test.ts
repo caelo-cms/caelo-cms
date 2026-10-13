@@ -13,6 +13,11 @@ const HASHED_PATHS = [
   "/_caelo/plugin/consent-manager/runtime.0123456789ab.js",
   "/_caelo/plugin/consent-manager/banner.abcdef012345.css",
   "/_app/immutable/chunks/abc.js",
+  // #667 — published media, named by the hash of its bytes.
+  "/_assets/searchviu-logo.0123456789abcdef.png",
+  "/_assets/hero/webp-800.0123456789abcdef.webp",
+  "/_assets/0b1f6c2e-9d7a-4c1e-8f3a-2b6d9e0c1a4f/orig.fedcba9876543210.jpg",
+  "/_assets/brand-font.0123456789abcdef.woff2",
 ];
 
 /** Build outputs served under a stable name — must stay short-lived. */
@@ -27,7 +32,7 @@ const STABLE_PATHS = [
   "/routing-manifest.json",
   "/cdn_manifest.json",
   "/_content-types.json",
-  // Media addressed by slug: bytes can change behind the same URL.
+  // Pre-#667 media addressed by bare slug: bytes can change behind the same URL.
   "/_assets/searchviu-logo.png",
   "/_assets/hero/w800.webp",
   "/_assets/0b1f6c2e-9d7a-4c1e-8f3a-2b6d9e0c1a4f/orig.jpg",
@@ -40,6 +45,10 @@ const STABLE_PATHS = [
   "/_caelo/plugin/consent-manager/runtime.js",
   "/blog/_assets/fonts/inter/29ede7bd4be32ab0.woff2",
   "/api/forms/submit",
+  "/_assets/searchviu-logo.0123456789ABCDEF.png",
+  "/_assets/searchviu-logo.0123456789abcde.png",
+  "/_assets/a/b/c.0123456789abcdef.png",
+  "/blog/_assets/searchviu-logo.0123456789abcdef.png",
 ];
 
 describe("isContentHashedPath", () => {

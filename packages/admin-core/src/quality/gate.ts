@@ -15,6 +15,17 @@
  *   unreachable, …) blocks by default; an editor may publish anyway with
  *   an explicit, recorded click. Never the AI on its own;
  * - a staged build without any audit, or one still running, blocks.
+ *
+ * #667 — findings caused by Caelo itself (platform-audits.ts: back/forward
+ * cache, caching of Caelo's own files, compression, …) block like any
+ * other finding, including a Performance drop they cause. Exempting them
+ * was considered and rejected: the exemption would be a silent fallback
+ * (CLAUDE.md §2) that hides real regressions of the serving stack — exactly
+ * the bugs #667 fixed went unnoticed while they were "not the site's
+ * fault" — and a Performance score has no per-audit attribution to
+ * subtract them honestly. They are reported as Caelo bugs instead, the
+ * root causes are fixed in the platform, and until then only an editor's
+ * explicit acceptance lets the build through. The AI never recommends one.
  */
 
 import type { QualityCategory, QualityProblem } from "./ratchet.js";
@@ -190,7 +201,7 @@ export function decideGate(audit: GateAudit | null, acceptances: GateAcceptances
         auditRunId: audit.id,
         openProblems,
         canPublishAnyway: false,
-        message: `Publish live is blocked by ${openProblems.length} quality problem(s): ${shown}${more}. Fix them and Stage again (get_quality_audit has the details), or have an editor accept the ones that are intended (accept_quality_findings).`,
+        message: `Publish live is blocked by ${openProblems.length} quality problem(s): ${shown}${more}. Fix them and Stage again (get_quality_audit has the details; findings it marks CAELO PLATFORM are Caelo bugs — report them with bug_report). What cannot be fixed stays blocking until an editor decides to accept it — accept_quality_findings only on the editor's explicit request, never as the AI's recommendation.`,
       };
     }
   }

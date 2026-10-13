@@ -56,6 +56,20 @@ describe("composeSystemPrompt", () => {
     expect(out).toContain("Every turn that changed the site ends with `stage_changes`");
     expect(out).toContain("Never leave the Stage to the user");
   });
+
+  // Issue #667 — the AI staged on its own (fine) and then argued for
+  // accepting the remaining findings ("I'd accept all four"), two of them
+  // Caelo bugs. Accepting is the user's decision; platform findings are
+  // reported. The rule is static (CLAUDE.md §11: no dynamic prompt blocks).
+  it("leaves quality acceptances to the user and routes platform findings to bug_report", () => {
+    const out = composeSystemPrompt([]);
+    expect(out).toContain("Never recommend, suggest or request an acceptance on your own");
+    expect(out).toContain(
+      "`accept_quality_findings` only when the user explicitly asks to accept or to publish as is",
+    );
+    expect(out).toContain("CAELO PLATFORM are Caelo bugs: report them with `bug_report`");
+    expect(composeSystemPrompt([])).toBe(out);
+  });
 });
 
 it("keeps typographic intent in the active theme context", () => {

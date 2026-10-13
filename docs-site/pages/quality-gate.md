@@ -32,14 +32,17 @@ Each page keeps a **baseline** per category, starting at 100. A Stage is blocked
 - a Lighthouse audit fails that nobody accepted on that page, or
 - a category score falls below the page's baseline. Performance jitters, so a performance drop only counts when two consecutive checks show it.
 
+Findings caused by the platform block too, including a Performance drop they cause. Caelo does not quietly leave them out: that would also hide real regressions in how sites are served. They are reported as Caelo bugs and fixed in Caelo.
+
 When a page scores higher, its baseline rises with it — quality only ratchets up.
 
 ## How it plays out in the chat
 
 1. You Stage. A minute or two later the result appears in the same chat.
 2. If there are problems, the AI reads the findings and fixes what it can — missing alt texts, low contrast, missing labels and headings, meta descriptions, image sizes, render-blocking CSS. Then it asks you to **Stage again**, which re-checks.
-3. The AI gets at most **two automatic fix rounds**. After that it stops changing the site and asks you about what is left.
-4. Anything intended — a brand colour, a third-party embed — the AI asks you to **accept** on a card in the chat: "Accept this finding on /pricing?" with a reason. Any editor may accept. An acceptance applies to **that page only**; the same finding on another page still blocks. An accepted score becomes that page's new baseline.
+3. The AI gets at most **two automatic fix rounds**. After that it stops changing the site and tells you plainly what is left.
+4. Accepting a finding is **your** decision. The AI does not recommend acceptances or ask for them on its own. When you tell it to accept something ("leave the brand colour as it is", "ship it anyway"), it puts an approval card in the chat with your reason, and an editor approves it. An acceptance applies to **that page only**; the same finding on another page still blocks. An accepted score becomes that page's new baseline.
+5. Some findings are caused by Caelo itself, not by your site: back/forward cache, cache lifetimes of Caelo's own files, server response time, compression, redirects. The AI does not change your site for them. It reports each one as a Caelo bug and tells you so. Publish live stays blocked until the platform is fixed, or until you decide to accept the finding.
 
 The toolbar always says why Publish live is blocked and offers the next step: *Retry check*, *Stage again*, or *Publish anyway* (see below).
 

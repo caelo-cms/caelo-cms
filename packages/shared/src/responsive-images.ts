@@ -19,6 +19,28 @@
 export interface ImageVariantInfo {
   readonly variant: string;
   readonly format: string;
+  /** Pixel width of the stored file, when known (`media_variants.width`).
+   *  Needed for the `orig` entry so an orig embed's srcset can offer the
+   *  original at its real width (#667). */
+  readonly width?: number | null;
+}
+
+/** Original formats the WebP ladder can stand in for. SVG/ICO are not
+ *  raster sources and GIFs may be animated (the ladder is a still frame). */
+const LADDER_REPLACEABLE_ORIG_FORMATS: ReadonlySet<string> = new Set([
+  "png",
+  "jpeg",
+  "jpg",
+  "webp",
+  "avif",
+]);
+
+/** The `width` attribute of an `<img>` tag when it is a plain pixel count. */
+function declaredPixelWidth(tag: string): number | null {
+  const m = tag.match(/\swidth=("|')?(\d{1,5})(?:px)?\1(?=[\s/>])/i);
+  if (!m?.[2]) return null;
+  const n = Number.parseInt(m[2], 10);
+  return n > 0 ? n : null;
 }
 
 /** Extract `webp-800` → 800; `square-400` → 400; `orig` → null. */
@@ -126,6 +148,27 @@ export function enrichResponsiveImages(
       out = out.replace(srcMatch[0], `src="${options.urlFor(assetId, variant, requestedFormat)}"`);
     }
 
+    // #667 — an `orig` embed (the default `/_caelo/media/<slug>` form,
+    // typical for logos) shipped the full original as PNG/JPEG even when
+    // the pipeline had a WebP ladder for it: Lighthouse's image-delivery
+    // insight flagged the format and the oversize on every such image.
+    // With a declared pixel width the display size is known, so offer the
+    // WebP ladder plus the original at its real width and let the browser
+    // pick the smallest file that covers `width × devicePixelRatio`. Without
+    // a width there is no honest `sizes` value, so the tag stays as is.
+    const origLadder =
+      variant === "orig" && !/\bsrcset=/i.test(out)
+        ? origSrcset(variants, assetId, declaredPixelWidth(out), options)
+        : null;
+    if (origLadder) {
+      out = out.replace(
+        /<img\b/,
+        /\bsizes=/i.test(out)
+          ? `<img srcset="${origLadder.srcset}"`
+          : `<img srcset="${origLadder.srcset}" sizes="${origLadder.sizes}"`,
+      );
+    }
+
     if (familyVariants.length >= 2 && !/\bsrcset=/i.test(out)) {
       const srcset = familyVariants
         .map((v) => `${options.urlFor(assetId, v.variant, "webp")} ${v.width}w`)
@@ -149,4 +192,41 @@ export function enrichResponsiveImages(
     }
     return out;
   });
+}
+
+/**
+ * The srcset/sizes pair for an `orig` embed with a declared pixel width,
+ * or null when it would not help: no raster original, no WebP breakpoint
+ * the source could fill, or an original whose width is unknown (without
+ * it the browser could be offered only candidates narrower than the image
+ * it needs, and upscale them).
+ */
+function origSrcset(
+  variants: readonly ImageVariantInfo[],
+  assetId: string,
+  displayWidth: number | null,
+  options: EnrichResponsiveImagesOptions,
+): { srcset: string; sizes: string } | null {
+  if (displayWidth === null) return null;
+  const orig = variants.find((v) => v.variant === "orig");
+  if (!orig || !LADDER_REPLACEABLE_ORIG_FORMATS.has(orig.format)) return null;
+  const origWidth = orig.width ?? null;
+  if (origWidth === null) return null;
+  const ladder = variants
+    .filter((v) => variantFamily(v.variant) === "webp" && v.format === "webp")
+    .map((v) => ({ variant: v.variant, width: parseVariantWidth(v.variant) }))
+    .filter(
+      (v): v is { variant: string; width: number } => v.width !== null && v.width <= origWidth,
+    )
+    .sort((a, b) => a.width - b.width);
+  const widest = ladder.at(-1);
+  if (!widest) return null;
+  const entries = ladder.map((v) => `${options.urlFor(assetId, v.variant, "webp")} ${v.width}w`);
+  // The original is only a candidate when it is wider than every WebP
+  // (a source wider than the largest breakpoint); otherwise the WebP of
+  // the same width replaces it.
+  if (origWidth > widest.width) {
+    entries.push(`${options.urlFor(assetId, "orig", orig.format)} ${origWidth}w`);
+  }
+  return { srcset: entries.join(", "), sizes: `${displayWidth}px` };
 }

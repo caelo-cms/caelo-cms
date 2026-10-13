@@ -102,3 +102,103 @@ describe("pickAiImageVariant", () => {
     expect(pickAiImageVariant(["orig", "square-800", "webp-400"])).toBe("webp-400");
   });
 });
+
+describe("enrichResponsiveImages — orig embeds (#667 image delivery)", () => {
+  const SLUG = "searchviu-logo";
+  const logoVariants: ImageVariantInfo[] = [
+    { variant: "orig", format: "png", width: 960 },
+    { variant: "webp-400", format: "webp", width: 400 },
+    { variant: "webp-800", format: "webp", width: 800 },
+  ];
+  const map = new Map([[SLUG, logoVariants]]);
+  const urlFor = (ref: string, v: string, f: string) =>
+    v === "orig" ? `/_assets/${ref}.${f}` : `/_assets/${ref}/${v}.${f}`;
+
+  it("offers the WebP ladder plus the original, sized by the declared width", () => {
+    const out = enrichResponsiveImages(
+      `<img src="/_caelo/media/${SLUG}" width="160" height="40" alt="searchVIU">`,
+      map,
+      { rewriteSrc: true, urlFor, formatFor: (_r, v) => (v === "orig" ? "png" : "webp") },
+    );
+    expect(out).toContain(`src="/_assets/${SLUG}.png"`);
+    expect(out).toContain(
+      `srcset="/_assets/${SLUG}/webp-400.webp 400w, /_assets/${SLUG}/webp-800.webp 800w, /_assets/${SLUG}.png 960w"`,
+    );
+    expect(out).toContain('sizes="160px"');
+  });
+
+  it("drops the original when a WebP of its width exists", () => {
+    const exact = new Map([
+      [
+        SLUG,
+        [
+          { variant: "orig", format: "jpeg", width: 400 },
+          { variant: "webp-400", format: "webp", width: 400 },
+        ],
+      ],
+    ]);
+    const out = enrichResponsiveImages(`<img src="/_caelo/media/${SLUG}" width="120">`, exact, {
+      rewriteSrc: false,
+      urlFor,
+    });
+    expect(out).toContain(`srcset="/_assets/${SLUG}/webp-400.webp 400w"`);
+    expect(out).toContain('sizes="120px"');
+  });
+
+  it("leaves the tag alone without a pixel width, for SVG/GIF originals, or with an author srcset", () => {
+    const opts = { rewriteSrc: false, urlFor };
+    expect(
+      enrichResponsiveImages(`<img src="/_caelo/media/${SLUG}" alt="no width">`, map, opts),
+    ).not.toContain("srcset=");
+    expect(
+      enrichResponsiveImages(
+        `<img src="/_caelo/media/${SLUG}" style="width:50%" data-width="160">`,
+        map,
+        opts,
+      ),
+    ).not.toContain("srcset=");
+    const authored = enrichResponsiveImages(
+      `<img src="/_caelo/media/${SLUG}" width="160" srcset="a.png 1x">`,
+      map,
+      opts,
+    );
+    expect(authored.match(/srcset=/g)).toHaveLength(1);
+    const gif = new Map([
+      [
+        SLUG,
+        [
+          { variant: "orig", format: "gif", width: 960 },
+          { variant: "webp-400", format: "webp", width: 400 },
+        ],
+      ],
+    ]);
+    expect(
+      enrichResponsiveImages(`<img src="/_caelo/media/${SLUG}" width="160">`, gif, opts),
+    ).not.toContain("srcset=");
+  });
+
+  it("keeps an author's sizes and does not offer a ladder when the original's width is unknown", () => {
+    const out = enrichResponsiveImages(
+      `<img src="/_caelo/media/${SLUG}" width="160" sizes="10vw">`,
+      map,
+      { rewriteSrc: false, urlFor },
+    );
+    expect(out).toContain('sizes="10vw"');
+    expect(out.match(/sizes=/g)).toHaveLength(1);
+    const unknown = new Map([
+      [
+        SLUG,
+        [
+          { variant: "orig", format: "png" },
+          { variant: "webp-400", format: "webp" },
+        ],
+      ],
+    ]);
+    expect(
+      enrichResponsiveImages(`<img src="/_caelo/media/${SLUG}" width="160">`, unknown, {
+        rewriteSrc: false,
+        urlFor,
+      }),
+    ).not.toContain("srcset=");
+  });
+});

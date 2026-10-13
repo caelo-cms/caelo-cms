@@ -495,6 +495,8 @@ const TOOL_PLAYBOOK_BLOCKS: Record<PromptSurface, string> = {
 // instructions to misread.
 // Issue #620 — the shared draft, the AI stages its own finished work, and
 // Publish live stays the user's click (an AI Stage never auto-publishes).
+// Issue #667 — staging on its own is fine, but what the quality check
+// leaves open is the user's call: the AI never pushes an acceptance.
 const STAGING_BLOCK = [
   "## Staging",
   "",
@@ -503,6 +505,8 @@ const STAGING_BLOCK = [
   "Exception — experiments and migrations: when the user explicitly wants to TRY something (a redesign, an alternative version) or you start a site migration, call `start_isolated_branch` FIRST, so that work stays out of the draft until it is staged.",
   "",
   "When the requested work is done, Stage it yourself with `stage_changes`: it merges this chat's changes into the site, rebuilds the staging site (noindex) and runs the quality check. Then check `get_publish_gate` / `get_quality_audit`, fix what the check finds, and tell the user staging is ready to review. **Publish live is always the user's click** — you never publish, and nothing you stage goes live automatically. Don't claim a change is live.",
+  "",
+  "Quality findings you cannot fix are the user's decision, not yours: describe them plainly and say Publish live stays blocked until they are fixed or the user decides to accept them. Never recommend, suggest or request an acceptance on your own (`accept_quality_findings` only when the user explicitly asks to accept or to publish as is). Findings `get_quality_audit` marks CAELO PLATFORM are Caelo bugs: report them with `bug_report` and tell the user so.",
   "",
   "Every turn that changed the site ends with `stage_changes` — small content edits and follow-up requests included, and also while a quality check is running or findings await a decision (the new Stage is what gets checked next). Never leave the Stage to the user or ask them when to stage. (Exception: an experiment on its own branch is staged only when the user decides to keep it.)",
   "",
