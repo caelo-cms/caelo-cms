@@ -39,6 +39,13 @@ import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "./operator-access.js";
 import { assertRegionUnchanged } from "./regions.js";
 import {
+  cosignVerifyArgv,
+  type DigestResult,
+  fetchLatestReleaseTag,
+  releaseTag,
+  resolveRegistryDigest,
+} from "./release-images.js";
+import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
   plainGeneratedSecretSeed,
@@ -281,22 +288,10 @@ async function getLatestReleaseTag(): Promise<string | null> {
   if (releaseCheckCache && now - releaseCheckCache.fetchedAt < 10 * 60 * 1000) {
     return releaseCheckCache.latest;
   }
-  try {
-    const res = await fetch("https://api.github.com/repos/caelo-cms/caelo-cms/releases/latest", {
-      headers: { Accept: "application/vnd.github+json" },
-    });
-    if (!res.ok) {
-      releaseCheckCache = { fetchedAt: now, latest: null };
-      return null;
-    }
-    const json = (await res.json()) as { tag_name?: string };
-    const latest = json.tag_name ?? null;
-    releaseCheckCache = { fetchedAt: now, latest };
-    return latest;
-  } catch {
-    releaseCheckCache = { fetchedAt: now, latest: null };
-    return null;
-  }
+  const r = await fetchLatestReleaseTag();
+  const latest = r.ok ? r.tag : null;
+  releaseCheckCache = { fetchedAt: now, latest };
+  return latest;
 }
 
 async function gcpStatus(meta: InstallMetadata): Promise<void> {
@@ -421,43 +416,19 @@ interface RollPlan extends ServicePlan {
 }
 
 /**
- * Resolve a tag (e.g. `0.2.6` or `latest`) to the underlying sha256
- * digest via the Docker Registry V2 API directly, without needing the
- * caller's gcloud session to have IAM access to the registry's
- * project. Used for the upgrade pre-flight resolve — the registry is
- * public so an anonymous HEAD on the manifest endpoint suffices.
+ * Resolve a tag (e.g. `0.2.6` or `latest`) to its sha256 digest in the
+ * public Artifact Registry mirror, anonymously through the Registry V2 API
+ * (release-images.ts), without needing the caller's gcloud session to have
+ * IAM access to the registry's project.
  */
-async function resolveTagDigest(
+function resolveTagDigest(
   region: string,
   project: string,
   repo: string,
   image: string,
   tag: string,
-): Promise<{ ok: true; digest: string } | { ok: false; reason: string }> {
-  const url = `https://${region}-docker.pkg.dev/v2/${project}/${repo}/${image}/manifests/${tag}`;
-  // Accept both Docker v2 + OCI manifest types so the registry returns
-  // the resource we asked about (single-arch + multi-arch index both
-  // surface a Docker-Content-Digest header that names the manifest
-  // we'd pull on a `docker pull <image>:<tag>`).
-  const accept = [
-    "application/vnd.docker.distribution.manifest.v2+json",
-    "application/vnd.oci.image.manifest.v1+json",
-    "application/vnd.docker.distribution.manifest.list.v2+json",
-    "application/vnd.oci.image.index.v1+json",
-  ].join(",");
-  try {
-    const res = await fetch(url, { method: "HEAD", headers: { Accept: accept } });
-    if (!res.ok) {
-      return { ok: false, reason: `HTTP ${res.status} ${res.statusText}` };
-    }
-    const digest = res.headers.get("docker-content-digest");
-    if (!digest || !/^sha256:[0-9a-f]{64}$/.test(digest)) {
-      return { ok: false, reason: `unexpected digest header: ${digest ?? "(missing)"}` };
-    }
-    return { ok: true, digest };
-  } catch (e) {
-    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
-  }
+): Promise<DigestResult> {
+  return resolveRegistryDigest(`${region}-docker.pkg.dev`, `${project}/${repo}/${image}`, tag);
 }
 
 /** The deployed service as `gcloud run services describe --format=json` returns it. */
@@ -619,12 +590,7 @@ async function upgradeInstall(
   const registryRegion = "europe-west1";
   const registryRepo = "caelo-cms-images";
 
-  const targetTag = (() => {
-    if (opts.version) return opts.version.startsWith("v") ? opts.version.slice(1) : opts.version;
-    if (opts.channel === "rc") return "rc";
-    if (opts.channel === "beta") return "beta";
-    return "latest";
-  })();
+  const targetTag = releaseTag(opts);
   log.info(`Upgrading admin + gateway to ${bold(targetTag)}`);
 
   // ────────────────────────────────────────────────────────────────
@@ -1332,21 +1298,7 @@ async function verifyCosignAll(
     const s = spinner();
     s.start(`Verifying cosign signature for ${plan.slug}@${plan.digest.slice(0, 19)}...`);
     const fullRef = `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${plan.slug}@${plan.digest}`;
-    const verify = Bun.spawnSync(
-      [
-        "cosign",
-        "verify",
-        fullRef,
-        "--certificate-identity-regexp",
-        // Both release-images.yml and release.yml dispatch images;
-        // accept either workflow as the signer identity. The repo
-        // path is fixed; only the workflow filename varies.
-        "https://github.com/caelo-cms/caelo-cms/.github/workflows/(release-images|release).yml@.*",
-        "--certificate-oidc-issuer",
-        "https://token.actions.githubusercontent.com",
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
+    const verify = Bun.spawnSync(cosignVerifyArgv(fullRef), { stdout: "pipe", stderr: "pipe" });
     if (verify.exitCode !== 0) {
       const stderr = new TextDecoder().decode(verify.stderr);
       s.stop(red(`cosign verify FAILED for ${plan.slug}`));

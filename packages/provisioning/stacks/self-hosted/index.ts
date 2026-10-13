@@ -35,6 +35,12 @@ const ownerEmail = cfg.require("ownerEmail");
 const caeloDir = cfg.get("caeloDir") ?? "./.caelo";
 // #553 — same knob as every adapter; undefined = stack-contract default.
 const adminMemory = cfg.get("adminMemory");
+// #696 — the prebuilt, cosign-verified release images, pinned by digest
+// (`ghcr.io/caelo-cms/<svc>@sha256:…`; the generator refuses anything else).
+// `cms-provision init` resolves + verifies them and records them in
+// .caelo/release.json; copy those values here.
+const adminImage = cfg.require("adminImage");
+const gatewayImage = cfg.require("gatewayImage");
 
 const composePath = resolve(caeloDir, "docker-compose.yml");
 const caddyPath = resolve(caeloDir, "Caddyfile");
@@ -71,6 +77,7 @@ const composeYaml = pulumi
       resendApiKey: process.env.RESEND_API_KEY,
       diskSize: "20Gi",
       ...(adminMemory ? { adminMemory } : {}),
+      images: { mode: "release", admin: adminImage, gateway: gatewayImage },
     }),
   );
 

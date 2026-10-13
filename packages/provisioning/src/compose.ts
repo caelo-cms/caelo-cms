@@ -4,13 +4,64 @@
  * P14 — production docker-compose.yml generator.
  *
  * Emits the production stack: Postgres + pgBackRest sidecar + Caddy +
- * MinIO + four Caelo services (admin, gateway, orchestrator, runner).
- * Idempotent: same input → byte-identical output. The CLI's `up`
- * sub-command writes this to `<repo>/.caelo/docker-compose.yml` and
- * runs `docker compose up -d`.
+ * MinIO + the two Caelo services (admin, gateway). Idempotent: same input →
+ * byte-identical output. The CLI's `init` / `up` / `upgrade` sub-commands
+ * write this to `.caelo/docker-compose.yml`.
+ *
+ * #696 — the admin and gateway run the PREBUILT, cosign-verified release
+ * images, pinned by digest (CLAUDE.md §11.C: "a PR that requires the user to
+ * run docker build is a regression"). Nothing of a Caelo source checkout is
+ * mounted. The digest pin is what `upgrade` moves; a tag would let a
+ * `docker compose pull` change the running release behind the operator's
+ * back. Contributors who want their working tree in the containers ask for
+ * {@link DevImages} explicitly (`init --dev`) — never the default.
  */
 
+import { ghcrRepository, isImageDigest, type ReleaseService } from "./release-images.js";
 import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB, publicSiteUrl } from "./stack-contract.js";
+
+/** The admin + gateway release images, each `ghcr.io/caelo-cms/<svc>@sha256:…`. */
+export interface ReleaseImages {
+  readonly mode: "release";
+  readonly admin: string;
+  readonly gateway: string;
+}
+
+/**
+ * Contributor-only: run the admin + gateway from the Caelo checkout the
+ * `.caelo/` dir lives in (bind mount on `oven/bun`). Never for an end-user
+ * install — it needs the repo and builds nothing reproducible.
+ */
+export interface DevImages {
+  readonly mode: "dev";
+}
+
+export type ComposeImages = ReleaseImages | DevImages;
+
+/** The admin's HTTP port inside the Compose network (the Caddyfile proxies to it). */
+export const COMPOSE_ADMIN_PORT = 5173;
+/** The gateway's HTTP port inside the Compose network. */
+export const COMPOSE_GATEWAY_PORT = 8090;
+
+/**
+ * `ghcr.io/caelo-cms/<service>@<digest>` — the only image reference shape a
+ * release-mode Compose file accepts.
+ */
+export function releaseImageRef(service: ReleaseService, digest: string): string {
+  if (!isImageDigest(digest)) throw new Error(`not an image digest: ${JSON.stringify(digest)}`);
+  return `${ghcrRepository(service)}@${digest}`;
+}
+
+/**
+ * The digest of a release image reference, or null when `ref` is not a
+ * digest-pinned reference to that service's Caelo repository.
+ */
+export function releaseImageDigest(service: ReleaseService, ref: string): string | null {
+  const prefix = `${ghcrRepository(service)}@`;
+  if (!ref.startsWith(prefix)) return null;
+  const digest = ref.slice(prefix.length);
+  return isImageDigest(digest) ? digest : null;
+}
 
 /**
  * The application roles' passwords (bootstrap.sh creates the roles with
@@ -47,6 +98,8 @@ export interface ComposeSpec {
    * busy host never OOM-kills the admin at the limit.
    */
   readonly adminMemory?: string;
+  /** Which admin + gateway images run (see {@link ComposeImages}). */
+  readonly images: ComposeImages;
 }
 
 export function generateDockerCompose(spec: ComposeSpec): string {
@@ -113,42 +166,9 @@ services:
       - caelo-caddy-config:/config
       - ./output:/srv/caelo:ro
 
-  caelo-admin:
-    image: oven/bun:1.3
-    container_name: caelo-admin
-    restart: unless-stopped
-    depends_on:
-      postgres: { condition: service_healthy }
-    working_dir: /app
-    volumes:
-      - ../..:/app
-    command: bun run --filter @caelo-cms/admin start
-    mem_reservation: ${adminMemoryMiB}m
-    environment:
-      ADMIN_DATABASE_URL: "${dbUrl("admin_role", spec.rolePasswords.admin, "cms_admin")}"
-      PUBLIC_ADMIN_DATABASE_URL: "${dbUrl("admin_role", spec.rolePasswords.admin, "cms_public")}"
-      CAELO_SECRET_KEK: "${escapeYaml(spec.caeloSecretKek)}"
-      CAELO_SITE_URL: "${escapeYaml(publicSiteUrl(spec.domain))}"
-      NODE_ENV: production
-${env("ANTHROPIC_API_KEY", spec.anthropicApiKey)}
-${env("RESEND_API_KEY", spec.resendApiKey)}
+${adminService(spec, adminMemoryMiB, env)}
 
-  caelo-gateway:
-    image: oven/bun:1.3
-    container_name: caelo-gateway
-    restart: unless-stopped
-    depends_on:
-      postgres: { condition: service_healthy }
-    working_dir: /app
-    volumes:
-      - ../..:/app
-    command: bun run apps/api-gateway/src/server.ts
-    environment:
-      # Its own two logins only — no authoring credential (#613, CLAUDE.md §2).
-      GATEWAY_DATABASE_URL: "${dbUrl("gateway_role", spec.rolePasswords.gateway, "cms_admin")}"
-      PUBLIC_DATABASE_URL: "${dbUrl("public_role", spec.rolePasswords.public, "cms_public")}"
-      GATEWAY_PORT: "8090"
-      NODE_ENV: production
+${gatewayService(spec)}
 
 volumes:
   caelo-pg:
@@ -157,6 +177,67 @@ volumes:
   caelo-caddy-data:
   caelo-caddy-config:
 `;
+}
+
+type EnvLine = (k: string, v: string | undefined) => string;
+
+/** How a Caelo service's container starts: its image and, in dev mode, the checkout. */
+function serviceRuntime(
+  images: ComposeImages,
+  service: ReleaseService,
+  devCommand: string,
+): string {
+  if (images.mode === "dev") {
+    return `    # DEV MODE (cms-provision init --dev): runs the Caelo checkout this
+    # .caelo/ dir lives in. Contributors only — never an end-user install.
+    image: oven/bun:1.4.2
+    working_dir: /app
+    volumes:
+      - ../..:/app
+    command: ${devCommand}`;
+  }
+  const digest = releaseImageDigest(service, images[service]);
+  if (!digest) {
+    throw new Error(
+      `${service} image ${JSON.stringify(images[service])} is not ${ghcrRepository(service)}@sha256:<digest>`,
+    );
+  }
+  // The image's own CMD starts the service; nothing is mounted.
+  return `    image: ${releaseImageRef(service, digest)}`;
+}
+
+function adminService(spec: ComposeSpec, adminMemoryMiB: number, env: EnvLine): string {
+  return `  caelo-admin:
+${serviceRuntime(spec.images, "admin", `sh -c "cd apps/admin && bunx svelte-kit sync && bun --bun vite dev --host 0.0.0.0 --port ${COMPOSE_ADMIN_PORT}"`)}
+    container_name: caelo-admin
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_reservation: ${adminMemoryMiB}m
+    environment:
+      ADMIN_DATABASE_URL: "${dbUrl("admin_role", spec.rolePasswords.admin, "cms_admin")}"
+      PUBLIC_ADMIN_DATABASE_URL: "${dbUrl("admin_role", spec.rolePasswords.admin, "cms_public")}"
+      CAELO_SECRET_KEK: "${escapeYaml(spec.caeloSecretKek)}"
+      CAELO_SITE_URL: "${escapeYaml(publicSiteUrl(spec.domain))}"
+      PORT: "${COMPOSE_ADMIN_PORT}"
+      NODE_ENV: production
+${env("ANTHROPIC_API_KEY", spec.anthropicApiKey)}
+${env("RESEND_API_KEY", spec.resendApiKey)}`;
+}
+
+function gatewayService(spec: ComposeSpec): string {
+  return `  caelo-gateway:
+${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts")}
+    container_name: caelo-gateway
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      # Its own two logins only — no authoring credential (#613, CLAUDE.md §2).
+      GATEWAY_DATABASE_URL: "${dbUrl("gateway_role", spec.rolePasswords.gateway, "cms_admin")}"
+      PUBLIC_DATABASE_URL: "${dbUrl("public_role", spec.rolePasswords.public, "cms_public")}"
+      GATEWAY_PORT: "${COMPOSE_GATEWAY_PORT}"
+      NODE_ENV: production`;
 }
 
 /** A compose-network database URL, password URL-encoded and YAML-escaped. */
