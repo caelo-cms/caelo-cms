@@ -36,6 +36,7 @@ let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let templateId = "";
 let baseBefore: string | null = null;
+let languageBefore: string | null = null;
 
 async function asSystem<T>(query: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL as string);
@@ -65,10 +66,16 @@ beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
-  const row = await asSystem((tx) => tx`SELECT site_base_url FROM site_defaults WHERE id = 1`);
-  baseBefore = (row[0] as { site_base_url: string | null }).site_base_url;
+  const row = await asSystem(
+    (tx) => tx`SELECT site_base_url, site_language FROM site_defaults WHERE id = 1`,
+  );
+  const settings = row[0] as { site_base_url: string | null; site_language: string | null };
+  baseBefore = settings.site_base_url;
+  languageBefore = settings.site_language;
+  // A build needs both (canonical origin, <html lang>); restored after.
   await asSystem(
-    (tx) => tx`UPDATE site_defaults SET site_base_url = 'https://nested.example' WHERE id = 1`,
+    (tx) =>
+      tx`UPDATE site_defaults SET site_base_url = 'https://nested.example', site_language = 'en' WHERE id = 1`,
   );
   const tpl = await execute(registry, adapter, SYSTEM, "templates.create", {
     slug: `${PFX}-tpl`,
@@ -85,7 +92,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await wipe();
-  await asSystem((tx) => tx`UPDATE site_defaults SET site_base_url = ${baseBefore} WHERE id = 1`);
+  await asSystem(
+    (tx) =>
+      tx`UPDATE site_defaults SET site_base_url = ${baseBefore}, site_language = ${languageBefore} WHERE id = 1`,
+  );
   await adapter.close();
 });
 
