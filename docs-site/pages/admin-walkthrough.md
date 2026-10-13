@@ -53,6 +53,7 @@ Tiles:
 - **Skills** — `/settings/skills` — AI behaviour bodies, AI-proposed queue
 - **Subagents** — `/settings/subagents` — observability for spawn_subagent runs
 - **Deployments** — `/settings/deployments` — Ops view with promote / rollback
+- **Caelo updates** — `/settings/updates` — the Caelo version you run, the newest release with its notes, and (for the Owner) the exact upgrade command for this install with a copy button. The bell links here when a release is out. The AI can tell you the version and whether an update is available (`get_caelo_version`), but only you install it.
 - **DNS** — `/settings/dns` — records the active Pulumi stack expects
 - **SEO** — `/settings/seo` — public site URL, sitemap toggle, Organization JSON-LD and site language. Publishing stops until the site URL and language are set; you can enter them here or tell the AI (it proposes the site URL with `propose_set_site_seo` and you approve, here or in the chat)
 

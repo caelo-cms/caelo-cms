@@ -31,6 +31,7 @@ import {
 import { installIapAllowlist } from "./operator-access.js";
 import { ensureOpsBackend } from "./ops-backend.js";
 import { provisionerServiceAccountEmail } from "./provisioner-identity.js";
+import { selfCommand } from "./self-command.js";
 import { attachInstall } from "./state-attach.js";
 import {
   gcsBackendRecord,
@@ -178,7 +179,7 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
   if (!imageDigests) {
     log.error(
       red(
-        `install.json of ${installId} records no image digests. Run ${bold(`bunx @caelo-cms/provisioning upgrade --install ${installId}`)} first, then migrate.`,
+        `install.json of ${installId} records no image digests. Run ${bold(selfCommand("upgrade", "--install", installId))} first, then migrate.`,
       ),
     );
     process.exit(1);

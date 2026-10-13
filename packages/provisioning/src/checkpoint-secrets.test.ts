@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { CAELO_VERSION } from "@caelo-cms/shared";
 import {
   assertNoCheckpointSecrets,
   assertNoSecrets,
@@ -300,9 +301,9 @@ describe("rotationHints", () => {
       "gcp-acme",
     );
     expect(hints).toEqual([
-      "admin_role's password was stored in progress.json. Rotate it: bunx @caelo-cms/provisioning rotate-secret postgres-password --install gcp-acme",
-      "public_role's password was stored in progress.json. Rotate it: bunx @caelo-cms/provisioning rotate-secret public-role-password --install gcp-acme",
-      "gateway_role's password was stored in progress.json. Rotate it: bunx @caelo-cms/provisioning rotate-secret gateway-role-password --install gcp-acme",
+      `admin_role's password was stored in progress.json. Rotate it: bunx @caelo-cms/provisioning@${CAELO_VERSION} rotate-secret postgres-password --install gcp-acme`,
+      `public_role's password was stored in progress.json. Rotate it: bunx @caelo-cms/provisioning@${CAELO_VERSION} rotate-secret public-role-password --install gcp-acme`,
+      `gateway_role's password was stored in progress.json. Rotate it: bunx @caelo-cms/provisioning@${CAELO_VERSION} rotate-secret gateway-role-password --install gcp-acme`,
     ]);
   });
 

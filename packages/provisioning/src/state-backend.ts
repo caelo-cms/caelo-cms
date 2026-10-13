@@ -26,6 +26,7 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { selfCommand } from "./self-command.js";
 
 /** Name of the Cloud KMS key ring holding Caelo's keys in the install project. */
 export const OPS_KEY_RING = "caelo";
@@ -255,7 +256,7 @@ export function localStateNotice(meta: {
     `This install's Pulumi state and passphrase live only on this machine (~/.caelo-${meta.installId}/).`,
     "Lose this machine and the install's infrastructure can no longer be converged from anywhere.",
     "Move them into the install's own GCP project (versioned bucket + Cloud KMS key, < $0.10/mo):",
-    `  bunx @caelo-cms/provisioning state migrate --install ${meta.installId} --dry-run`,
-    `  bunx @caelo-cms/provisioning state migrate --install ${meta.installId}`,
+    `  ${selfCommand("state", "migrate", "--install", meta.installId, "--dry-run")}`,
+    `  ${selfCommand("state", "migrate", "--install", meta.installId)}`,
   ].join("\n");
 }

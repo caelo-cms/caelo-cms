@@ -31,6 +31,7 @@
  */
 
 import type { OpsBackendResult } from "./ops-backend.js";
+import { selfCommand } from "./self-command.js";
 import {
   describeBackend,
   type GcsBackendRecord,
@@ -158,6 +159,7 @@ export async function migrateState(
       error: `install.json of ${meta.installId} has no projectId/region; re-run the installer first.`,
     };
   }
+  const projectId = meta.projectId;
   const current = installBackend(meta);
   const wantKind = opts.to === "remote" ? "gcs" : "local";
   if (current.kind === wantKind) {
@@ -181,7 +183,7 @@ export async function migrateState(
     if (recorded === "gcs") {
       return {
         ok: false,
-        error: `gs://${remoteRecord.bucket}/install/install.json says this install's state already lives in the bucket — another machine migrated it, so the local state here is out of date. Nothing was changed. Use the bucket instead: bunx @caelo-cms/provisioning attach --project ${meta.projectId} (after moving ~/.caelo-${meta.installId} aside).`,
+        error: `gs://${remoteRecord.bucket}/install/install.json says this install's state already lives in the bucket — another machine migrated it, so the local state here is out of date. Nothing was changed. Use the bucket instead: ${selfCommand("attach", "--project", projectId)} (after moving ~/.caelo-${meta.installId} aside).`,
       };
     }
   }
@@ -212,7 +214,7 @@ export async function migrateState(
       pre.failed(`${pending} pending operation(s) from an interrupted run`);
       return {
         ok: false,
-        error: `The stack records ${pending} pending operation(s) from an interrupted Pulumi run. Run upgrade first, then re-run the installer (bunx @caelo-cms/provisioning, pick this install) so the stack is refreshed, and migrate after that. Nothing was changed.`,
+        error: `The stack records ${pending} pending operation(s) from an interrupted Pulumi run. Run upgrade first, then re-run the installer (${selfCommand()}, pick this install) so the stack is refreshed, and migrate after that. Nothing was changed.`,
       };
     }
     const drift = await pulumi.previewChanges(from);
@@ -220,7 +222,7 @@ export async function migrateState(
       pre.failed(`A preview shows ${drift} change(s)`);
       return {
         ok: false,
-        error: `The stack is not converged (a preview shows ${drift} change(s)), so a copy can't be proven identical. Run upgrade first, then re-run the installer (bunx @caelo-cms/provisioning, pick this install) until it reports no changes, and migrate after that. Nothing was changed.`,
+        error: `The stack is not converged (a preview shows ${drift} change(s)), so a copy can't be proven identical. Run upgrade first, then re-run the installer (${selfCommand()}, pick this install) until it reports no changes, and migrate after that. Nothing was changed.`,
       };
     }
     sourceDigest = await pulumi.outputsDigest(from);
@@ -300,7 +302,7 @@ export async function migrateState(
     if (opts.to === "remote" && recorded === "gcs") {
       return {
         ok: false,
-        error: `Another machine just finished migrating this install into gs://${remoteRecord.bucket}; the local state here is out of date. Nothing else was changed. Use: bunx @caelo-cms/provisioning attach --project ${meta.projectId}`,
+        error: `Another machine just finished migrating this install into gs://${remoteRecord.bucket}; the local state here is out of date. Nothing else was changed. Use: ${selfCommand("attach", "--project", projectId)}`,
       };
     }
     if (opts.to === "local" && recorded !== "gcs") {
@@ -395,7 +397,7 @@ export async function migrateState(
           `Old local state kept at ${moved} (not used any more; delete it once you are confident)`,
         );
       report.success(
-        `Done. Pulumi state + install metadata now live in gs://${remoteRecord.bucket}; secrets are encrypted with Cloud KMS. Other machines: bunx @caelo-cms/provisioning attach --project ${meta.projectId}`,
+        `Done. Pulumi state + install metadata now live in gs://${remoteRecord.bucket}; secrets are encrypted with Cloud KMS. Other machines: ${selfCommand("attach", "--project", projectId)}`,
       );
     } else {
       report.success(

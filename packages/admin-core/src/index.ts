@@ -99,6 +99,8 @@ export {
   formatMicrocentsAsMoney,
   microcentsToMajorUnits,
 } from "./ops/imports-cost.js";
+// #696 — installed vs newest release; Settings → Updates reads it.
+export { type PlatformUpdateStatus, UPDATES_PATH } from "./ops/platform-updates.js";
 export {
   configurePluginUninstallFinalizer,
   type PluginUninstallFinalizer,

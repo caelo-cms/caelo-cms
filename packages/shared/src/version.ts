@@ -64,3 +64,33 @@ export function parseVersion(raw: string = CAELO_VERSION): CaeloVersion {
     raw,
   };
 }
+
+/**
+ * True when release `latest` is newer than `current` (both SemVer
+ * `X.Y.Z[-pre]`; a leading `v` is ignored). A pre-release sorts before the
+ * same X.Y.Z stable; two pre-releases of one X.Y.Z compare as strings.
+ * Mirrors the ordering in scripts/release.ts so the "update available"
+ * notice agrees with the release pipeline. A string that is not a version
+ * is never newer.
+ *
+ * @example isNewerVersion("0.10.44", "0.10.43") // → true
+ */
+export function isNewerVersion(latest: string, current: string): boolean {
+  const parse = (v: string): CaeloVersion | null => {
+    try {
+      return parseVersion(v.replace(/^v/, ""));
+    } catch {
+      return null;
+    }
+  };
+  const a = parse(latest);
+  const b = parse(current);
+  if (!a || !b) return false;
+  for (const k of ["major", "minor", "patch"] as const) {
+    if (a[k] !== b[k]) return a[k] > b[k];
+  }
+  if (a.preRelease && !b.preRelease) return false;
+  if (!a.preRelease && b.preRelease) return true;
+  if (a.preRelease && b.preRelease) return a.preRelease > b.preRelease;
+  return false;
+}

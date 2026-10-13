@@ -39,6 +39,7 @@ export {
   selfHostedCdnCopy,
 } from "./cdn-copy.js";
 export { type ComposeSpec, generateDockerCompose, type RolePasswords } from "./compose.js";
+export { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
 export {
   type CloudFrontRedirectArtifact,
   emitRedirectsAzureFrontDoor,
@@ -48,3 +49,36 @@ export {
   type RedirectRow,
   type RedirectStatusCode,
 } from "./redirects-emit.js";
+export {
+  INFRA_CONTRACT_PATHS,
+  isInfraContractPath,
+  RELEASE_MIN_FROM_VERSION,
+} from "./release-contract.js";
+export {
+  assessAutoInstall,
+  channelForVersion,
+  compareImageDigests,
+  compareSemver,
+  type DigestMismatch,
+  fetchVerifiedReleaseManifest,
+  type InstallAssessment,
+  type InstalledRelease,
+  type InstallMode,
+  RELEASE_CHANNELS,
+  RELEASE_IMAGES,
+  RELEASE_MANIFEST_ARTIFACT_TYPE,
+  RELEASE_MANIFEST_MEDIA_TYPE,
+  RELEASE_MANIFEST_REGISTRY,
+  RELEASE_MANIFEST_REPOSITORY,
+  RELEASE_OIDC_ISSUER,
+  type ReleaseChannel,
+  type ReleaseImage,
+  type ReleaseManifest,
+  type ReleaseManifestDeps,
+  type ReleaseManifestError,
+  type ReleaseManifestErrorCode,
+  type ReleaseManifestResult,
+  ReleaseManifestSchema,
+  releaseManifestSignerIdentity,
+  SIGSTORE_BUNDLE_MEDIA_TYPE,
+} from "./release-manifest.js";

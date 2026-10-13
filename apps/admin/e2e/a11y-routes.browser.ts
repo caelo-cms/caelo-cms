@@ -34,6 +34,7 @@ const BASELINE_ROUTES = [
   "/settings/domains",
   "/settings/costs",
   "/settings/ai",
+  "/settings/updates",
 ];
 
 test.beforeAll(() => {

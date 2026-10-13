@@ -13,6 +13,7 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
+import { selfCommand } from "./self-command.js";
 import { opsBucketName, parseStateBackend } from "./state-backend.js";
 import { GcsStateStore, LocalStateStore, type SyncGcloud } from "./state-store.js";
 
@@ -54,7 +55,7 @@ export function attachInstall(
   if (text === null) {
     return {
       ok: false,
-      error: `gs://${bucket} holds no install.json. If this install's state is still on the machine that installed it, run \`bunx @caelo-cms/provisioning state migrate\` there first.`,
+      error: `gs://${bucket} holds no install.json. If this install's state is still on the machine that installed it, run \`${selfCommand("state", "migrate")}\` there first.`,
     };
   }
   let remote: {
@@ -101,7 +102,7 @@ export function attachInstall(
   if (deps.hasLocalState(root)) {
     return {
       ok: false,
-      error: `${root} holds a local Pulumi state of this install. Attaching would hide it; run \`bunx @caelo-cms/provisioning state migrate --install ${installId}\` instead, or move ${root} aside if that state is stale.`,
+      error: `${root} holds a local Pulumi state of this install. Attaching would hide it; run \`${selfCommand("state", "migrate", "--install", installId)}\` instead, or move ${root} aside if that state is stale.`,
     };
   }
   let status: "attached" | "refreshed" = "attached";

@@ -39,6 +39,7 @@ export * from "./plugin-preview.js";
 export * from "./preview-compose.js";
 export * from "./preview-scanner.js";
 export * from "./proposal-status.js";
+export * from "./provisioning-command.js";
 export * from "./redirect-target.js";
 export * from "./responsive-images.js";
 export * from "./result.js";
@@ -65,4 +66,10 @@ export * from "./theme-render.js";
 export * from "./themes.js";
 export * from "./themes-errors.js";
 export * from "./url.js";
-export { CAELO_VERSION, CALEO_VERSION, type CaeloVersion, parseVersion } from "./version.js";
+export {
+  CAELO_VERSION,
+  CALEO_VERSION,
+  type CaeloVersion,
+  isNewerVersion,
+  parseVersion,
+} from "./version.js";
