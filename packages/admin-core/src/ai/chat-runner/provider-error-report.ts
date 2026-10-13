@@ -9,7 +9,7 @@
  * this: a replayed history carrying a `tool_use` with no paired `tool_result`,
  * which Anthropic 400s (`messages.N: tool_use ids were found without
  * tool_result blocks …`). It surfaced only as a transient SSE `error` event +
- * a stderr line, never on the operator's `/security/bugs` surface.
+ * a stderr line, never on the operator's `/settings/bugs` surface.
  *
  * This module files those into `ai_bug_reports` with `source:'auto'` +
  * `severity:'blocking'` and, crucially, a serialized digest of the offending

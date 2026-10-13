@@ -142,7 +142,7 @@ describe("list-mode site import (#229)", () => {
     // returns an UNPRICED estimate (aiCostUsd null — #298 prices it in
     // the propose tool, which this DB-boundary test bypasses), so the
     // #297 cost gate refuses to derive a ceiling and the approval must
-    // carry an explicit budget, exactly like the /security/import/pending
+    // carry an explicit budget, exactly like the /settings/import/pending
     // form does.
     const approved = await execute(registry, adapter, systemCtx, "imports.execute_proposal", {
       runId,

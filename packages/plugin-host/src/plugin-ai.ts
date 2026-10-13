@@ -109,7 +109,7 @@ async function assertWithinPluginCap(plugin: LoadedPlugin, infra: PluginHostInfr
         const capUsd = v.capMicrocents !== null ? (v.capMicrocents / 1e8).toFixed(2) : "0";
         const spentUsd = (v.last24hMicrocents / 1e8).toFixed(2);
         throw new Error(
-          `PluginAiCapExceeded: plugin '${plugin.slug}' has spent $${spentUsd} of $${capUsd} cap in the last 24h. Owner can raise the cap at /security/plugins/${plugin.slug}.`,
+          `PluginAiCapExceeded: plugin '${plugin.slug}' has spent $${spentUsd} of $${capUsd} cap in the last 24h. Owner can raise the cap at /settings/plugins/${plugin.slug}.`,
         );
       }
     } else if (recordCapLookupFailure(capKey)) {
@@ -124,7 +124,7 @@ async function assertWithinPluginCap(plugin: LoadedPlugin, infra: PluginHostInfr
 
 function capLookupUnavailable(slug: string): Error {
   return new Error(
-    `PluginAiCapLookupUnavailable: cap-lookup for plugin '${slug}' has failed repeatedly; failing closed to protect the daily budget. Investigate /security/costs.`,
+    `PluginAiCapLookupUnavailable: cap-lookup for plugin '${slug}' has failed repeatedly; failing closed to protect the daily budget. Investigate /settings/costs.`,
   );
 }
 

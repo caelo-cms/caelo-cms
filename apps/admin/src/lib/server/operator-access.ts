@@ -2,7 +2,7 @@
 
 /**
  * Panel-side counterpart of the gated user tools' `afterApply`: once a user
- * change from /security/users (or a role deletion from /security/roles)
+ * change from /settings/users (or a role deletion from /settings/roles)
  * committed, start the operator-access sync job that brings Google IAP in
  * line (a no-op on installs without IAP), and turn the outcome into a
  * form-action result the layout toasts — `error` when the gate could not be

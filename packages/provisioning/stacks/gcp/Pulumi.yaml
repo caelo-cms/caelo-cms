@@ -25,7 +25,7 @@ config:
     type: string
     description: GCP project id.
   # v0.3.2 — anthropicApiKey config dropped. Runtime path is
-  # /security/ai → ai_providers (KEK-encrypted). Pre-v0.3.2 the
+  # /settings/ai → ai_providers (KEK-encrypted). Pre-v0.3.2 the
   # wizard captured a key + Pulumi provisioned a Secret +
   # SecretVersion, but the Cloud Run service never read it — dead
   # config removed.

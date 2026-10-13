@@ -11,7 +11,7 @@
  *   5. Pushes — GitHub Actions takes over for the publish step.
  *
  * Read by:
- *   - admin's /security index page (header badge + about-modal),
+ *   - admin's /settings index page (header badge + about-modal),
  *   - cms-provision CLI's `version` subcommand,
  *   - User-Agent header on plugin-host's outbound HTTP calls,
  *   - Tier-1 manifest signing (the version is hashed into the
@@ -22,7 +22,7 @@
  * follow standard SemVer.
  */
 
-export const CAELO_VERSION = "0.10.43";
+export const CAELO_VERSION = "0.10.44";
 
 /**
  * Deprecated alias for back-compat — early P17 work spelled this

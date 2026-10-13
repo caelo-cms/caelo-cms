@@ -172,14 +172,14 @@ const kekBytes = new random.RandomBytes(`${namePrefix}-secret-kek-bytes`, { leng
 const postgresPassword = pulumi.secret(pgPasswordBytes.hex);
 const caeloSecretKek = pulumi.secret(kekBytes.hex);
 // v0.3.2 — anthropic-api-key Secret + Pulumi config dropped. The
-// runtime AI provider configuration lives at /security/ai (key
+// runtime AI provider configuration lives at /settings/ai (key
 // encrypted under the project KEK + stored in ai_providers).
 // Pre-v0.3.2 the wizard prompted for a key + Pulumi provisioned a
 // Secret + SecretVersion, but the Cloud Run service never read it
 // (no env-var mount existed). Dead code path removed.
 // v0.6.6 — resend-api-key secret + IAM binding removed. The Resend
 // API key now lives in the email_config DB row (set via the Owner UI
-// /security/email/pending flow per email_config_pending.ts), not in
+// /settings/email/pending flow per email_config_pending.ts), not in
 // Secret Manager. The Pulumi-managed secret + binding were scaffolded
 // in v0.3.0 but never wired to runtime (transport.ts reads from
 // cfg.config.apiKey, never from Secret Manager). Drop to reduce

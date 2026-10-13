@@ -35,7 +35,7 @@ import ChoiceCard from "./ChoiceCard.svelte";
     /**
      * v0.2.62 — passed through to ProposeCard so Approve / Reject can
      * fetch the queue's `?/approve` form action without sending the
-     * operator off to /security/<domain>/pending. Omit when the card
+     * operator off to /settings/<domain>/pending. Omit when the card
      * is rendered outside a chat (none today, but contract is clean).
      */
     csrfToken?: string;

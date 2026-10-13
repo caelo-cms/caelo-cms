@@ -528,7 +528,7 @@ describe("owner_settings — chat gated execute (the in-chat Approve path)", () 
     expect(tool?.gated).toEqual({
       proposeOp: "owner_settings.propose_set_ai_budget",
       executeOp: "owner_settings.execute_proposal",
-      pendingQueuePath: "/security/owner-settings/pending",
+      pendingQueuePath: "/settings/owner-settings/pending",
     });
     if (!tool) throw new Error("propose_set_ai_budget not registered");
     const gated = attachGatedExecute(tool, registry, adapter, AI, OWNER);
@@ -552,7 +552,7 @@ describe("owner_settings — chat gated execute (the in-chat Approve path)", () 
 describe("Owner panel writes (regressions fixed alongside the gate)", () => {
   it("ai_budgets.set and ai_pricing.set succeed for a human actor (0235 RLS fix)", async () => {
     // Before 0235 both tables' WITH CHECK admitted only actor_kind=system,
-    // so the /security/ai/budgets and /security/ai/pricing forms (human
+    // so the /settings/ai/budgets and /settings/ai/pricing forms (human
     // actor) were RLS-denied on every save.
     value(
       await execute(registry, adapter, OWNER, "ai_budgets.set", {

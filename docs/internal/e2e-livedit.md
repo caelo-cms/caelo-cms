@@ -137,7 +137,7 @@ The metric surfaces three ways:
 `cost_estimate_microcents = 0` despite token work — the signature of
 #297, where a missing `ai_pricing` row zeroed an otherwise real cost.
 When it is non-zero the reported total **understates** real spend; the
-PR comment renders a bold warning pointing at `/security/ai` to add
+PR comment renders a bold warning pointing at `/settings/ai` to add
 rates, and the step emits a `::warning`.
 
 If `ai-cost.json` is absent or the capture fell back to `{}` (a failed
@@ -254,7 +254,7 @@ the block and inject free markdown into the comment.
 The pure logic lives in exported `parseBugReports` / `formatBugSection` in
 `build-stats.ts`, unit-tested in `build-stats.test.ts`.
 
-Operators can browse the same rows against a live DB at `/security/bugs`,
+Operators can browse the same rows against a live DB at `/settings/bugs`,
 which also exports them as Markdown for pasting into a GitHub issue.
 
 ## The 10× determinism recipe (post-merge gate, AC #15)
@@ -297,7 +297,7 @@ reset it:
   `./fixtures.js`) disables, after each test — pass or fail — every
   plugin the test activated. It cannot be a SQL reset: the running
   plugin host keeps its own disabled flag, which only the admin's
-  Disable action flips, so the guard drives `/security/plugins`
+  Disable action flips, so the guard drives `/settings/plugins`
   (`deactivatePluginAsOwner`). `activatePluginAsOwner` re-enables a
   plugin a previous attempt left `disabled`.
 
@@ -378,7 +378,7 @@ content-shape rather than literal strings the AI wrote.
 | Active theme is non-seed, described, and `color.primary` is chromatic — hex RGB-spread > 24 or oklch chroma > 0.03, never a seed grayscale value (`scenario-homepage`) | issue #112 / §1A: "preset-menu grayscale ship" — PR #107 run 26767610953 published a fully grayscale site because the AI satisfied the cold-start gate by minting the `shadcn-default` preset and stopping. With presets removed, the AI must compose a brand-derived `ThemeDocument` itself; this row fails if the gate criterion (origin + description) or the compose guidance regresses. Scenario-safe: the prompt names a SaaS/dev-tools brand AND states the design intent explicitly ("fitting color scheme", "nice background for the header") — run 27357551606 proved intent-free prompts let the AI clear the gate while leaving the seed grayscale primary untouched, so a chromatic primary is the only correct outcome here. |
 | Composed palette carries at least two DISTINCT chromatic colors; gradient / surface-alt / web-font presence logged as `[design-report]` warnings (`scenario-homepage`) | issue #161 / epic #149: flat single-hue documents were the post-#112 ceiling — #153's palette-pair hints + DEPTH_AND_SURFACE_HINTS instruct primary + accent. The two-chromatic floor is deterministic under those primers; the richer checks (gradient, surface-alt, non-system typography) start as non-blocking warnings and get promoted to hard assertions once 10x determinism runs show they hold. |
 | Genesis: a brief-rich prompt saves >=2 drafts with distinct directions AND non-identical skeletons; /design/genesis lists them in sandboxed iframes; one click yields exactly one `selected` row (`scenario-genesis`, OPT-IN via `CAELO_LIVEDIT_GENESIS=1`) | issue #163 / epic #149 AC #1: the design-time flow must DIVERGE (parallel freeform drafts), not emit palette-swapped clones of one skeleton, and the operator's selection is the single design contract downstream (#164 parity gate). Opt-in because a Genesis turn spawns three parallel full-page generations — nightly/on-demand cost, not per-PR (CLAUDE.md 6: live tests are gated, opt-in). |
-| Onboarding: a fresh install shows the three-entry-point welcome in /edit BEFORE any input; a domain-shaped first message triggers `inspect_external_page` and lands EXACTLY ONE `import_runs` row at `status='proposed'` carrying the #193 estimate; the transcript points at /security/import/pending (`scenario-onboarding`, OPT-IN via `CAELO_LIVEDIT_ONBOARDING=1`) | epic #186: the welcome seed (#187) silently not firing, routing text drifting out of the cold-start prompt (domain message → from-memory rebuild instead of migration), or the AI claiming the Owner-gated crawl ran (§11.A violation — the run must never move past 'proposed' without the click). |
+| Onboarding: a fresh install shows the three-entry-point welcome in /edit BEFORE any input; a domain-shaped first message triggers `inspect_external_page` and lands EXACTLY ONE `import_runs` row at `status='proposed'` carrying the #193 estimate; the transcript points at /settings/import/pending (`scenario-onboarding`, OPT-IN via `CAELO_LIVEDIT_ONBOARDING=1`) | epic #186: the welcome seed (#187) silently not firing, routing text drifting out of the cold-start prompt (domain message → from-memory rebuild instead of migration), or the AI claiming the Owner-gated crawl ran (§11.A violation — the run must never move past 'proposed' without the click). |
 | Migration: after ONE Approve click the crawl reaches `ready_for_review` with the sitemap-only page found (#192); the build yields ≥5 pages bound to ≥2 DISTINCT templates (#194/#195), ≥1 `.html` path 301s to its new page (#196), and the seeded typo/dead link surfaces in notes or the closing report (#197) (`scenario-migrate`, OPT-IN via `CAELO_LIVEDIT_MIGRATE=1`) | epic #186 keep-design contract end to end: one-template collapse, silent under-crawl of unlinked pages, lost URL continuity, and a migration that copies without adding value are each individually fatal to "übernehmt meine Website". The fixture site (fixtures/migrate-site.ts) is served on 127.0.0.1 with the SSRF guard exempting it via CAELO_IMPORTER_ALLOWED_HOSTS in the TEST admin only. |
 | International-site: a German "übersetze die Startseite" prompt registers the locale ONLY through the gated `set_locales` path (auto-approve stands in for the click), mints the `/de/` counterpart with a localized slug, and lands translated VALUES on the variant while the source page's content bytes are untouched (`scenario-international-site`) | epic #380 #400: the AI asking the operator an implementation question ("should I create a locale first?", §1A), the translation writing through to shared module HTML (leaking German into the source page — the exact layer-confusion #397's values-model exists to prevent), or the gated tool applying without the approval flow. |
 

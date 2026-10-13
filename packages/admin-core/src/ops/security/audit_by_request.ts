@@ -2,7 +2,7 @@
 
 /**
  * P16 hardening — list every audit_events + ai_calls row for one
- * request_id. The Owner can land on /security/audit/<requestId> from
+ * request_id. The Owner can land on /settings/audit/<requestId> from
  * a structured-log line or an X-Caelo-Request-Id response header and
  * see the full trail of writes that one HTTP request produced.
  */

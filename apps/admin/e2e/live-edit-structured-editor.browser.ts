@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.7.7 — Owner-only `/security/structured` UI flow:
+ * P6.7.7 — Owner-only `/settings/structured` UI flow:
  *   1. Land on the index → see kind groups (nav-menus, tags, taxonomies,
  *      link lists, theme tokens).
  *   2. Click "+ New" on tags → fill the form → submit → returns to
@@ -36,7 +36,7 @@ test.afterAll(() => {
   );
 });
 
-test("Owner creates a tags set via /security/structured then opens its editor", async ({
+test("Owner creates a tags set via /settings/structured then opens its editor", async ({
   page,
 }) => {
   await page.goto("/login");
@@ -45,7 +45,7 @@ test("Owner creates a tags set via /security/structured then opens its editor", 
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
-  await page.goto("/security/structured");
+  await page.goto("/settings/structured");
   await expect(page.getByRole("heading", { name: "Structured data", exact: true })).toBeVisible();
   // Kind groups render. Headings, not getByText: the loose text match
   // ALSO hits the "No nav menus yet …" empty-state paragraph whenever
@@ -60,7 +60,7 @@ test("Owner creates a tags set via /security/structured then opens its editor", 
   const tagsHeading = page.getByRole("heading", { name: "Tags", exact: true });
   const tagsCard = tagsHeading.locator("xpath=ancestor::*[.//a[contains(@href, 'tags/new')]][1]");
   await tagsCard.getByRole("link", { name: /\+ New/i }).click();
-  await expect(page).toHaveURL(/\/security\/structured\/tags\/new$/);
+  await expect(page).toHaveURL(/\/settings\/structured\/tags\/new$/);
 
   await page.getByLabel("Slug").fill(NEW_SET_SLUG);
   await page.getByLabel("Display name").fill("E2E Tags");
@@ -70,13 +70,13 @@ test("Owner creates a tags set via /security/structured then opens its editor", 
   await page.getByRole("button", { name: "Create set" }).click();
 
   // Redirected back to the index; the new row is visible.
-  await expect(page).toHaveURL(/\/security\/structured$/);
+  await expect(page).toHaveURL(/\/settings\/structured$/);
   await expect(page.getByText(NEW_SET_SLUG, { exact: false }).first()).toBeVisible();
 
   // Open the row's editor and confirm the JSON items round-tripped.
   const newRow = page.locator("li").filter({ hasText: NEW_SET_SLUG });
   await newRow.getByRole("link", { name: "Edit" }).click();
-  await expect(page).toHaveURL(new RegExp(`/security/structured/tags/${NEW_SET_SLUG}$`));
+  await expect(page).toHaveURL(new RegExp(`/settings/structured/tags/${NEW_SET_SLUG}$`));
   const itemsTextarea = page.getByLabel("items");
   const value = await itemsTextarea.inputValue();
   expect(value).toContain('"sample"');

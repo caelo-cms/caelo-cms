@@ -14,7 +14,7 @@ test("Owner saves separate Google chat and image models without re-entering the 
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/edit/);
-  await page.goto("/security/ai");
+  await page.goto("/settings/ai");
   const form = page
     .locator('form[action="?/set"]')
     .filter({ has: page.locator('input[name="name"][value="google"]') });

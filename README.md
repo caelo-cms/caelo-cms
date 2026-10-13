@@ -42,7 +42,7 @@ claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \
   --env CAELO_MCP_TOKEN=$(your minted bearer)
 ```
 
-Mint the bearer at `/security/mcp` on your install.
+Mint the bearer at `/settings/mcp` on your install.
 
 ## Documentation
 

@@ -157,7 +157,7 @@ describe("Power-MCP token scope", () => {
       if (r.ok) continue;
       const msg = "message" in r.error ? String(r.error.message) : "";
       expect(msg).toMatch(/^auth_error: token scope 'chat'/);
-      expect(msg).toContain("/security/mcp");
+      expect(msg).toContain("/settings/mcp");
     }
     const exec = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
       plaintextToken: chatToken,

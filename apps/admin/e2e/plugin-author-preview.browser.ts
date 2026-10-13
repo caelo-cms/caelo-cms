@@ -41,7 +41,7 @@ test("plugin preview is authenticated, read-only and inert even when opened dire
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/edit/);
-  await page.goto("/security/plugins/installations");
+  await page.goto("/settings/plugins/installations");
   await page.getByLabel("Plugin package (.json, .json.gz or .json.br)").setInputFiles({
     name: "preview.json",
     mimeType: "application/json",
@@ -79,7 +79,7 @@ test("plugin preview is authenticated, read-only and inert even when opened dire
   await expect(page.getByText("Private story", { exact: true })).toBeVisible();
   await expect(page.locator("a,script")).toHaveCount(0);
   await expect(page.locator("img[src]")).toHaveCount(0);
-  await page.goto("/security/plugins/installations");
+  await page.goto("/settings/plugins/installations");
   await review.getByRole("button", { name: "Revoke cms_admin_schema", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Access revoked.");
   expect((await page.goto(previewPath))?.status()).toBe(404);

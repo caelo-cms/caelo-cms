@@ -13,7 +13,7 @@ export const DEFAULT_OUTPUT_COST_PER_M = 75;
  * post-tool summary) on every modern Claude / GPT-4o / Gemini 2.5 model.
  * The pre-v0.2.53 4096 default was Sonnet-3 era and routinely truncated
  * tool_use blocks mid-stream on Opus 4.7 / Sonnet 4.6. Operators can
- * tune higher (up to 200k) per provider via /security/ai.
+ * tune higher (up to 200k) per provider via /settings/ai.
  */
 export const MAX_OUTPUT_TOKENS_DEFAULT = 16384;
 
@@ -41,7 +41,7 @@ const ADAPTIVE_THINKING_MODEL = /sonnet-5|opus-4-6|opus-4-7|opus-4-8|sonnet-4-6|
  * operator-configured `ai_providers.config.maxOutputTokens` (threaded via
  * `ChatRunnerOptions.maxOutputTokens`) always wins over this default;
  * `CAELO_MAX_OUTPUT_TOKENS_DEFAULT` overrides the built-in defaults for
- * deployments that need a different floor without a /security/ai visit.
+ * deployments that need a different floor without a /settings/ai visit.
  */
 export function resolveMaxOutputTokensDefault(model: string): number {
   const envRaw = process.env.CAELO_MAX_OUTPUT_TOKENS_DEFAULT;

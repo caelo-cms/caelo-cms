@@ -48,7 +48,7 @@ DB transaction by `deliverPasswordResetEmail`.
 
 ### No mail transport configured? (dev)
 
-When no email transport is set up (`/security/email`, default `none` in dev), the
+When no email transport is set up (`/settings/email`, default `none` in dev), the
 reset link is **logged to stderr** instead of emailed:
 
 ```
@@ -56,12 +56,12 @@ reset link is **logged to stderr** instead of emailed:
 ```
 
 so the flow is fully exercisable locally. Configure a real transport (Resend) at
-`/security/email` for production delivery.
+`/settings/email` for production delivery.
 
 ## Owner reset (no email needed)
 
 An owner (permission `users.manage`) can set another user's password directly from
-**Security → Users** (`/security/users`) — the recovery path for a locked-out
+**Settings → Users** (`/settings/users`) — the recovery path for a locked-out
 teammate on an install with no mail transport. It also revokes that user's
 sessions so they must sign in with the new password.
 

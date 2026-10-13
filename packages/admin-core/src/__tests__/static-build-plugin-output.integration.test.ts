@@ -363,7 +363,7 @@ describe("#605 — the published site carries every plugin's output", () => {
   });
 
   it("an Owner's hot disable: the plugin's list is dormant, the build names it", async () => {
-    // The real UI path (/security/plugins → plugins.disable): the plugin
+    // The real UI path (/settings/plugins → plugins.disable): the plugin
     // stays loaded until a restart, but nothing may call it any more —
     // the build must not die on "PluginDisabled", it must say which
     // pages still iterate the switched-off plugin's list.

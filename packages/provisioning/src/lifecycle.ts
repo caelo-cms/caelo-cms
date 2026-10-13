@@ -465,7 +465,7 @@ async function upgradeInstall(
     // serves it once it is mapped. The command is idempotent, so this
     // reminder is safe to repeat on every upgrade.
     log.info(
-      `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve the staging host (it maps the host the admin uses — ${bold(stagingHost)} unless changed there —, turns on password protection, prints the login and the DNS record). Host and access: admin → Security → Domains / Staging access.`,
+      `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve the staging host (it maps the host the admin uses — ${bold(stagingHost)} unless changed there —, turns on password protection, prints the login and the DNS record). Host and access: admin → Settings → Domains / Staging access.`,
     );
   }
   return ok;

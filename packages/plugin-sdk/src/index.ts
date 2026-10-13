@@ -730,7 +730,7 @@ export interface PluginCaptcha {
 
 /**
  * Tier-1 only — outbound email. Configurable transport (SMTP / Resend /
- * SES / no-op stub). The host's /security/email page configures which
+ * SES / no-op stub). The host's /settings/email page configures which
  * transport is live; ctx.email.send dispatches to it. Plugins that
  * declare requestedCapabilities: ['email'] get this handle; others throw.
  */
@@ -752,7 +752,7 @@ export interface PluginCms {
 
 /**
  * What a `ctx.ai.complete` call is for. The host maps a purpose to the
- * model the Owner chose for it at /security/ai (e.g. a cheaper translation
+ * model the Owner chose for it at /settings/ai (e.g. a cheaper translation
  * model); with no choice stored, or no purpose given, the call runs on the
  * chat model. Plugins never name a model or hold a key.
  */

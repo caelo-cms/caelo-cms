@@ -273,7 +273,7 @@ export const setTranslationModelOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: op,
-        message: `provider ${input.name} is not configured — save it at /security/ai first.`,
+        message: `provider ${input.name} is not configured — save it at /settings/ai first.`,
       });
     }
     await tx.execute(sql`SELECT pg_notify('caelo_ai_providers', ${input.name})`);

@@ -385,7 +385,7 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     // The mounted media bucket (adminMediaVolume). Explicit so the admin's
     // boot check and the static generator name the same path.
     { name: "MEDIA_ROOT_DIR", value: MEDIA_MOUNT_PATH },
-    // Issue #37 — shown in the /security/mcp `claude mcp add` command.
+    // Issue #37 — shown in the /settings/mcp `claude mcp add` command.
     { name: MCP_ENV_VAR, value: mcpIapServiceAccountEmail(projectId) },
     // The operator-access sync job the admin starts after user/role changes
     // (admin-core security/operator-access/gcp-job-trigger.ts).
@@ -410,7 +410,7 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
       { name: "CAELO_GATEWAY_REGION", value: inputs.region },
       // #650 — seeds the admin's staging host setting (staging builds render
       // it, the gateway's gate answers on it); the admin DB is the truth
-      // afterwards, changed under Security → Domains.
+      // afterwards, changed under Settings → Domains.
       { name: STAGING_HOST_ENV, value: inputs.stagingHost },
     );
   }

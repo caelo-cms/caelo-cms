@@ -206,7 +206,7 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
     // has no write access to site_settings (#613), so it cannot mint one.
     throw new GatewayNotReadyError(
       row
-        ? "site_settings.gateway_cookie_secret is not set; run the database migrations (0248 seeds it) or rotate it from /security/gateway"
+        ? "site_settings.gateway_cookie_secret is not set; run the database migrations (0248 seeds it) or rotate it from /settings/gateway"
         : "site_settings has no row; run the database migrations",
     );
   }

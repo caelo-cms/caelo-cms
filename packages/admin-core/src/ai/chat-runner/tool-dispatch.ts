@@ -55,7 +55,7 @@ export async function autoApproveChatProposals(
   if (!listed.ok) return null;
   // A needsApproval card (domain `tool_approvals`) has no
   // `<domain>.execute_proposal`: its Approve re-dispatches the tool through
-  // the tool registry (the /security/tool-approvals route), which this
+  // the tool registry (the /settings/tool-approvals route), which this
   // op-level helper cannot do.
   const rows = (
     listed.value as {

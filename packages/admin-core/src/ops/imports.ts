@@ -8,7 +8,7 @@
  *  imports.create_run              — Owner-direct; queues at status='crawling'.
  *  imports.propose_run             — AI propose (§11.A); queues at status='proposed'.
  *  imports.execute_proposal        — Owner approves an AI proposal → 'crawling'.
- *  imports.list_pending_proposals  — list status='proposed' for /security/import/pending.
+ *  imports.list_pending_proposals  — list status='proposed' for /settings/import/pending.
  *  imports.reject_proposal         — Owner rejects an AI-proposed run.
  *  imports.accept_page             — Owner clicks Accept on a per-page row.
  *  imports.cleanup_run             — Owner-only; drops staging rows.
@@ -779,7 +779,7 @@ const executeImportProposalOpDefinition = defineOperation({
         return err({
           kind: "HandlerError",
           operation: "imports.execute_proposal",
-          message: `cannot arm a cost ceiling from this proposal's estimate: ${derived.reason}. Approve with an explicit budget instead (pass \`ceiling\` in major units + optional \`currency\`; the /security/import/pending form has the input).`,
+          message: `cannot arm a cost ceiling from this proposal's estimate: ${derived.reason}. Approve with an explicit budget instead (pass \`ceiling\` in major units + optional \`currency\`; the /settings/import/pending form has the input).`,
         });
       }
       ceilingMicrocents = derived.ceilingMicrocents;

@@ -31,7 +31,7 @@ pulumi config set aws:region eu-central-1
 pulumi up
 
 # Sync outputs into cms_admin.provisioning_outputs so the admin's
-# /security/dns page shows the required DNS records.
+# /settings/dns page shows the required DNS records.
 ADMIN_DATABASE_URL=$(pulumi stack output adminDatabaseUrlOut --show-secrets) \
   bunx cms-provision pulumi-output-sync --environment production
 ```

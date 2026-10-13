@@ -7,7 +7,7 @@
  * true the dispatcher persists a row here, returns the canonical
  * "Queued proposal <uuid>:" content so ChatPanel renders the inline
  * Approve / Reject card, and the route handler at
- * /security/tool-approvals/pending dispatches the tool when the
+ * /settings/tool-approvals/pending dispatches the tool when the
  * Owner clicks Approve.
  *
  * Two-op execute: the route handler can't dispatch a tool from

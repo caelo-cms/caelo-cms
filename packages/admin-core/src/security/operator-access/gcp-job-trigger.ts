@@ -68,7 +68,7 @@ export const UPGRADE_HINT =
  * is saved; the job always recomputes everyone, so any later run repairs it.
  */
 export const RESYNC_HINT =
-  'Then open /security/users and click "Re-sync Google IAP access" (the job also re-runs every hour on its own) — the user change itself is already saved.';
+  'Then open /settings/users and click "Re-sync Google IAP access" (the job also re-runs every hour on its own) — the user change itself is already saved.';
 
 const JOB_NAME = /^projects\/([^/]+)\/locations\/([^/]+)\/jobs\/([^/]+)$/;
 

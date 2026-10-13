@@ -304,7 +304,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
       }
     } catch (e) {
       failed.push({ slug: slugStr, reason: (e as Error).message });
-      // Best-effort: write a `failed` row so /security/plugins shows the error.
+      // Best-effort: write a `failed` row so /settings/plugins shows the error.
       await markPluginFailed({
         infra: opts.infra,
         slug: slugStr,
@@ -939,7 +939,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // never see the difference blurred: an inactive plugin's tools are
   // absent from the catalogue, not merely filtered out of it.
   //
-  // The operator reaches an inactive plugin through /security/plugins,
+  // The operator reaches an inactive plugin through /settings/plugins,
   // or through the chat — the short installed-plugins prompt block and
   // `list_plugins` let the AI notice one and offer to activate it.
   if (persistedStatus !== "active") {

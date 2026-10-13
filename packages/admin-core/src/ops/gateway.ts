@@ -2,7 +2,7 @@
 
 /**
  * P13 — gateway admin ops.
- *   - gateway.list_recent_requests — request log surface for /security/gateway.
+ *   - gateway.list_recent_requests — request log surface for /settings/gateway.
  *   - gateway.rotate_cookie_secret  — Owner-only HMAC secret rotation.
  *   - gateway.set_settings           — body cap + auto-redeploy + captcha provider knobs.
  *   - gateway.get_settings           — read singleton.
@@ -132,7 +132,7 @@ export const gatewaySettingsInput = z
 
 export const setGatewaySettingsOp = defineOperation({
   name: "gateway.set_settings",
-  // Why human-only: the direct write is the Owner's /security/gateway form.
+  // Why human-only: the direct write is the Owner's /settings/gateway form.
   // Captcha + body cap are the public write surface's abuse defences and
   // auto-redeploy decides when live changes ship — a wrong value is felt by
   // visitors before anyone notices. The AI reaches it only through the
@@ -421,7 +421,7 @@ export const listGatewayAnalyticsOp = defineOperation({
 
 export const setRateLimitOverrideOp = defineOperation({
   name: "gateway.set_rate_limit_override",
-  // Why human-only: the Owner's direct /security/gateway form. The AI path to
+  // Why human-only: the Owner's direct /settings/gateway form. The AI path to
   // the same write is tune_rate_limit → gateway.propose_rate_limit, applied
   // by gateway.execute_rate_limit_proposal after the Owner's click.
   actorScope: ["human", "system"],
@@ -464,7 +464,7 @@ export const setRateLimitOverrideOp = defineOperation({
 /**
  * §11.A propose half. AI calls this to suggest a per-(plugin, op) rate
  * limit; row lands at status='pending'; Owner approves at
- * /security/gateway/pending. AI cannot bypass this gate (executor op
+ * /settings/gateway/pending. AI cannot bypass this gate (executor op
  * is human+system only).
  */
 export const proposeRateLimitOp = defineOperation({

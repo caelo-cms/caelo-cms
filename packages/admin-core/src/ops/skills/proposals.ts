@@ -106,7 +106,7 @@ function rowToOut(r: ProposalDb): z.infer<typeof proposalRow> {
 export const proposeSkillOp = defineOperation({
   name: "skills.propose",
   // CLAUDE.md §11.A pattern (similar to ai_memory.propose): AI proposes
-  // a body; Owner clicks Accept/Reject in /security/skills/proposals.
+  // a body; Owner clicks Accept/Reject in /settings/skills/proposals.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

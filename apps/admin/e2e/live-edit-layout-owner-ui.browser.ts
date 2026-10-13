@@ -2,7 +2,7 @@
 
 /**
  * P6.7.6 review pass — Owner end-to-end UI flow:
- *   1. /security/layouts lists the seeded layouts.
+ *   1. /settings/layouts lists the seeded layouts.
  *   2. New-layout form creates `e2e-campaign-<ts>` with header /
  *      content / footer blocks.
  *   3. The new layout appears in the list.
@@ -40,21 +40,21 @@ test.afterAll(() => {
   );
 });
 
-test("Owner creates a layout via /security/layouts/new then deletes it", async ({ page }) => {
+test("Owner creates a layout via /settings/layouts/new then deletes it", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
-  await page.goto("/security/layouts");
+  await page.goto("/settings/layouts");
   await expect(page.getByRole("heading", { name: "Layouts", exact: true })).toBeVisible();
   // Three seeded layouts visible.
   await expect(page.getByText("site-default", { exact: false }).first()).toBeVisible();
 
   // Open the new-layout form.
   await page.getByRole("link", { name: "New layout" }).click();
-  await expect(page).toHaveURL(/\/security\/layouts\/new$/);
+  await expect(page).toHaveURL(/\/settings\/layouts\/new$/);
 
   await page.getByLabel("Slug").fill(NEW_SLUG);
   await page.getByLabel("Display name").fill("E2E Campaign Layout");
@@ -67,7 +67,7 @@ test("Owner creates a layout via /security/layouts/new then deletes it", async (
   await page.getByRole("button", { name: "Create layout" }).click();
 
   // Redirected back to the list, the new layout is visible.
-  await expect(page).toHaveURL(/\/security\/layouts$/);
+  await expect(page).toHaveURL(/\/settings\/layouts$/);
   await expect(page.getByText(NEW_SLUG, { exact: false }).first()).toBeVisible();
 
   // Delete it (no templates reference it, so the button is enabled).

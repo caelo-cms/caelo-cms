@@ -20,7 +20,7 @@
 const LOOKUP_FAIL_THRESHOLD = 3;
 const counters = new Map<string, number>();
 
-/** Total fail-closed trips since process start — surfaced in /security/costs. */
+/** Total fail-closed trips since process start — surfaced in /settings/costs. */
 let totalTrips = 0;
 
 export function recordCapLookupSuccess(key: string): void {

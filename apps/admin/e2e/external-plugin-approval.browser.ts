@@ -35,7 +35,7 @@ test("Owner reviews exact external source; stale approval is rejected", async ({
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/edit/, { timeout: 15_000 });
-  await page.goto("/security/plugins");
+  await page.goto("/settings/plugins");
   const row = page.getByRole("row").filter({ hasText: slug });
   await row.getByText("Review package").click();
   await expect(row.locator("pre").last()).toHaveText(source);
