@@ -22,6 +22,10 @@ import {
   withoutAmbientGoogleCredentials,
 } from "./provisioner-identity.js";
 
+/** A user-managed service account's email, as IAM reports it. */
+const SERVICE_ACCOUNT_EMAIL =
+  /^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9.:-]*[a-z0-9]\.iam\.gserviceaccount\.com$/;
+
 export type AdcCheck =
   | { readonly ok: true }
   | {
@@ -63,13 +67,37 @@ export async function checkAdcImpersonation(
     };
   }
 
+  // The account to impersonate is the one IAM reports, not a string
+  // assembled from install.json: what goes into the request is an email
+  // Google confirmed exists in the project (CodeQL js/file-access-to-http:
+  // local file data never reaches the network unchecked).
+  const described = await run(
+    [
+      "iam",
+      "service-accounts",
+      "describe",
+      sa,
+      `--project=${target.projectId}`,
+      "--format=value(email)",
+    ],
+    { env },
+  );
+  const confirmed = described.ok ? described.stdout.trim().toLowerCase() : "";
+  if (!SERVICE_ACCOUNT_EMAIL.test(confirmed) || confirmed !== sa.toLowerCase()) {
+    return {
+      ok: false,
+      reason: "error",
+      error: `Could not find ${sa} in project ${target.projectId}${described.ok ? "" : `: ${described.stderr.trim().split("\n").slice(-1)[0] ?? ""}`}. Re-run the installer so it creates the provisioner service account.`,
+    };
+  }
+
   const delays = target.freshGrant ? PROPAGATION_DELAYS_MS : [];
   let status = 0;
   let detail = "";
   for (let attempt = 0; ; attempt++) {
     try {
       const res = await doFetch(
-        `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(sa)}:generateAccessToken`,
+        `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(confirmed)}:generateAccessToken`,
         {
           method: "POST",
           headers: {

@@ -370,7 +370,10 @@ describe("checkAdcImpersonation", () => {
   });
 
   it("succeeds when ADC may mint a token for the provisioner, and keeps no token", async () => {
-    const g = fakeGcloud({ "auth application-default print-access-token": [ok(`${SOURCE}\n`)] });
+    const g = fakeGcloud({
+      "auth application-default print-access-token": [ok(`${SOURCE}\n`)],
+      "iam service-accounts describe": [ok(`${SA}\n`)],
+    });
     const f = fakeFetch([response(200, { accessToken: MINTED, expireTime: "x" })]);
     const r = await checkAdcImpersonation(
       { projectId: PROJECT, operatorAccount: OPERATOR, freshGrant: false },
@@ -380,8 +383,26 @@ describe("checkAdcImpersonation", () => {
     expect(f.urls[0]).toContain(`serviceAccounts/${encodeURIComponent(SA)}:generateAccessToken`);
   });
 
+  it("never calls the IAM Credentials API for an account IAM doesn't confirm", async () => {
+    const g = fakeGcloud({
+      "auth application-default print-access-token": [ok(SOURCE)],
+      "iam service-accounts describe": [fail("NOT_FOUND: Unknown service account")],
+    });
+    const f = fakeFetch([]);
+    const r = await checkAdcImpersonation(
+      { projectId: PROJECT, operatorAccount: OPERATOR, freshGrant: false },
+      { run: g.run, sleep: noSleep, fetch: f.impl },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain(`Could not find ${SA}`);
+    expect(f.urls).toEqual([]);
+  });
+
   it("waits out IAM propagation after a fresh grant", async () => {
-    const g = fakeGcloud({ "auth application-default print-access-token": [ok(SOURCE)] });
+    const g = fakeGcloud({
+      "auth application-default print-access-token": [ok(SOURCE)],
+      "iam service-accounts describe": [ok(`${SA}\n`)],
+    });
     const denied = () =>
       response(403, {
         error: { message: "Permission 'iam.serviceAccounts.getAccessToken' denied" },
@@ -397,7 +418,10 @@ describe("checkAdcImpersonation", () => {
   });
 
   it("a denial names the ADC account when it differs from gcloud's, without leaking a token", async () => {
-    const g = fakeGcloud({ "auth application-default print-access-token": [ok(SOURCE)] });
+    const g = fakeGcloud({
+      "auth application-default print-access-token": [ok(SOURCE)],
+      "iam service-accounts describe": [ok(`${SA}\n`)],
+    });
     const f = fakeFetch(
       [
         response(403, {
