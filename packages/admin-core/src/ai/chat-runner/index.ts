@@ -55,7 +55,6 @@ import {
   loadMemory,
   loadSession,
   markInterrupted,
-  persistApprovalResponse,
   persistUserMessage,
   recordAiCall,
 } from "./persistence.js";
@@ -248,29 +247,16 @@ async function* runSerializedChatTurn(
   // 1. Persist the turn's opening row. A resume turn (Plan B) records the
   // Owner's in-chat approval decision(s) as tool-approval-response rows
   // instead of an operator message; the paused gated turn then resumes from
-  // history. Issue #658 — the decisions are claimed first (inside the turn
-  // lease): only the paused turn's own side may resume it, and only once.
+  // history. Issue #658 — claiming the decisions (inside the turn lease)
+  // appends those rows in the same transaction: only the paused turn's own
+  // side may resume it, and only once.
   const isResume = input.resumeApproval !== undefined || input.resumeDecidedApprovals === true;
   if (isResume) {
-    const decisions = await claimTurnApprovals(registry, adapter, humanCtx, options, input);
-    if (!decisions.ok) {
-      yield { kind: "error", message: decisions.message };
+    const claimed = await claimTurnApprovals(registry, adapter, humanCtx, options, input);
+    if (!claimed.ok) {
+      yield { kind: "error", message: claimed.message };
       yield { kind: "done" };
       return;
-    }
-    for (const decision of decisions.value) {
-      const ok = await persistApprovalResponse(
-        registry,
-        adapter,
-        humanCtx,
-        input.chatSessionId,
-        decision,
-      );
-      if (!ok) {
-        yield { kind: "error", message: "failed to persist approval response" };
-        yield { kind: "done" };
-        return;
-      }
     }
   } else {
     // A new message moves the chat past every open approval card: from now

@@ -76,10 +76,11 @@ export interface ApprovalDecision {
 
 /**
  * Issue #658 — claim the decisions a resume turn applies
- * (`chat.claim_turn_approvals`). The Live Edit chat resumes only its own
- * AI's paused turn, with the operator's click; a caelo_chat call resumes
- * only its own token's paused turn, with the decisions the operator made on
- * its cards. Each decision is claimed once.
+ * (`chat.claim_turn_approvals`), which appends them to the transcript as
+ * tool-approval-response rows in the same transaction. The Live Edit chat
+ * resumes only its own AI's paused turn, with the operator's click; a
+ * caelo_chat call resumes only its own token's paused turn, with the
+ * decisions the operator made on its cards. Each decision is claimed once.
  */
 export async function claimTurnApprovals(
   registry: OperationRegistry,

@@ -311,8 +311,8 @@
     requestedVia: RequestedVia;
   }
   let sdkApprovals = $state<SdkApproval[]>([]);
-  // Cards decided in this tab: a pending-list refresh racing the decision
-  // must not bring them back.
+  // Cards whose decision is on its way from this tab: a pending-list
+  // refresh racing it must not bring them back meanwhile.
   const decidedApprovalIds = new Set<string>();
   let approvalDeciding = $state<Record<string, boolean>>({});
 
@@ -334,9 +334,17 @@
    */
   async function resolveSdkApproval(a: SdkApproval, approved: boolean): Promise<void> {
     if (sdkApprovalRoute(a.requestedVia) === "resume-turn") {
+      // Hidden only while the resume is on its way: once it ended, the
+      // server's list is the truth again — a resume that failed before it
+      // claimed the card (network, refused) brings the card back to retry.
       decidedApprovalIds.add(a.approvalId);
       sdkApprovals = sdkApprovals.filter((x) => x.approvalId !== a.approvalId);
-      await sendMessage(undefined, { approvalId: a.approvalId, approved });
+      try {
+        await sendMessage(undefined, { approvalId: a.approvalId, approved });
+      } finally {
+        decidedApprovalIds.delete(a.approvalId);
+        void loadPendingProposals();
+      }
       return;
     }
     approvalDeciding = { ...approvalDeciding, [a.approvalId]: true };

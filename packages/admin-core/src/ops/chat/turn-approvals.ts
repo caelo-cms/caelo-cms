@@ -238,6 +238,41 @@ export const supersedeTurnApprovalsOp = defineOperation({
   },
 });
 
+/**
+ * Plan B — the operator's decision as the transcript's role='tool' row
+ * carrying the SDK tool-approval-response ModelMessage (`response_messages`).
+ * The resume turn's history replays it verbatim after the paused assistant
+ * turn, so the SDK runs the gated tool (approved) or lets the model react
+ * (rejected). Same row shape as the runner's `persistApprovalResponse`.
+ */
+async function insertApprovalResponseRow(
+  tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
+  chatSessionId: string,
+  d: TurnApprovalDecision,
+): Promise<void> {
+  const responseMessages = [
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-approval-response",
+          approvalId: d.approvalId,
+          approved: d.approved,
+          ...(d.reason ? { reason: d.reason } : {}),
+        },
+      ],
+    },
+  ];
+  await tx.execute(sql`
+    INSERT INTO chat_messages (chat_session_id, role, content, status, response_messages)
+    VALUES (${chatSessionId}::uuid, 'tool', ${`[approval ${d.approved ? "granted" : "denied"}]`},
+            'complete', ${jsonbParam(responseMessages)})
+  `);
+  await tx.execute(sql`
+    UPDATE chat_sessions SET last_active_at = now() WHERE id = ${chatSessionId}::uuid
+  `);
+}
+
 // ─── claim (the resume turn, inside the chat's turn lease) ────────────
 
 const NOT_OPEN =
@@ -271,6 +306,7 @@ export const claimTurnApprovalsOp = defineOperation({
           "a live_edit resume carries the operator's decision; an mcp_chat resume carries its token",
       },
     ),
+  /** The claimed decisions, already appended to the transcript. */
   output: z.object({ decisions: z.array(turnApprovalDecision) }),
   handler: async (ctx, input, tx) => {
     let decisions: TurnApprovalDecision[];
@@ -345,6 +381,11 @@ export const claimTurnApprovalsOp = defineOperation({
         ...(r.reason ? { reason: r.reason } : {}),
       }));
     }
+    // The transcript rows the resumed turn replays, in the SAME transaction
+    // as the claim (codex review): a claim without its response would leave
+    // a card "resumed" whose decision never reached the turn, and a retry
+    // could not recover it.
+    for (const d of decisions) await insertApprovalResponseRow(tx, input.chatSessionId, d);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

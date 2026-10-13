@@ -567,6 +567,49 @@ describe("case 3 — a caelo_chat turn's approval goes back to the external agen
     ]);
   });
 
+  it("claiming a decision appends its transcript response in the same step, once", async () => {
+    // codex review — a claim committed without its response row would mark
+    // the card resumed while the turn never sees the decision.
+    const token = await chatToken("t658-chat-g");
+    const { chatSessionId, pendingApprovals } = await pausedChat(
+      token,
+      "t658-chat-atomic",
+      "call-mcp-8",
+    );
+    const approvalId = (pendingApprovals[0] as { approvalId: string }).approvalId;
+    await execute(registry, adapter, OWNER, "chat.decide_turn_approval", {
+      chatSessionId,
+      approvalId,
+      approved: true,
+    });
+    const tokenId = await withSql(async (tx) => {
+      const rows =
+        await tx`SELECT id::text AS id FROM mcp_tokens WHERE display_name = 't658-chat-g'`;
+      return (rows[0] as { id: string }).id;
+    });
+    const responses = () =>
+      withSql(async (tx) => {
+        const rows = await tx`SELECT count(*)::int AS c FROM chat_messages
+          WHERE chat_session_id = ${chatSessionId}::uuid AND role = 'tool'
+            AND response_messages::text LIKE ${`%"approvalId": "${approvalId}"%`}
+            AND response_messages::text LIKE '%tool-approval-response%'`;
+        return (rows[0] as { c: number }).c;
+      });
+    expect(await responses()).toBe(0);
+    const claim = () =>
+      execute(registry, adapter, OWNER, "chat.claim_turn_approvals", {
+        chatSessionId,
+        source: "mcp_chat",
+        mcpTokenId: tokenId,
+      });
+    const first = await claim();
+    expect(first.ok).toBe(true);
+    expect(await responses()).toBe(1);
+    const again = await claim();
+    expect(again.ok).toBe(false);
+    expect(await responses()).toBe(1);
+  });
+
   it("an operator message in the chat supersedes the waiting card; the agent learns so", async () => {
     const token = await chatToken("t658-chat-f");
     const { chatSessionId } = await pausedChat(token, "t658-chat-moved-on", "call-mcp-6");
