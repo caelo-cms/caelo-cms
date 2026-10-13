@@ -875,6 +875,9 @@ async function stagingDomain(): Promise<void> {
   await domainMappingCommand("staging");
 }
 
+/** A bare host name, as `staging_access.staging_host` stores it (migration 0251). */
+const STAGING_HOST_SHAPE = /^[a-z0-9.-]{4,253}$/;
+
 async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
   const command = `${kind}-domain`;
   const sub = process.argv[3];
@@ -943,8 +946,16 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
       );
       process.exit(1);
     }
-    meta = { ...meta, stagingDomain: normalizeStagingHost(host) };
-    if (requested) retry = domainEnableRetryCommand(command, normalizeStagingHost(host));
+    const recorded = normalizeStagingHost(host);
+    if (requested) retry = domainEnableRetryCommand(command, recorded);
+    // The host may come from the admin's answer (inspect): only a bare host
+    // name — already checked by stagingHostProblem above — reaches
+    // install.json (the same shape the database column enforces).
+    if (!STAGING_HOST_SHAPE.test(recorded)) {
+      console.error(`${command}: refusing to record staging host ${JSON.stringify(recorded)}.`);
+      process.exit(1);
+    }
+    meta = { ...meta, stagingDomain: STAGING_HOST_SHAPE.exec(recorded)?.[0] ?? "" };
     writeMetadata(meta.installId, meta);
   }
   if (!meta.projectId) process.exit(1);
@@ -1007,6 +1018,8 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
       );
       process.exit(5);
     }
+    // Prints the staging basic-auth password ON PURPOSE (#678): the operator
+    // asked for it to be shown once; it is never written to disk or logs.
     console.log(describeStagingApply(applied.value).join("\n"));
   }
   if (r.records.length === 0) {
