@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { cloudShellInstallUrl } from "@caelo-cms/shared";
 import { cloudShellUpgrade, releaseNotesExcerpt, resolveUpgradePath } from "./upgrade-path.js";
 
 const gcp = {
@@ -88,19 +89,21 @@ describe("cloudShellUpgrade", () => {
       },
       "0.11.0",
     );
-    expect(c?.consoleUrl).toBe(
-      "https://console.cloud.google.com/home/dashboard?project=acme-prod&cloudshell=true",
-    );
+    expect(c?.consoleUrl).toBe(cloudShellInstallUrl("0.11.0", "gcp"));
     expect(c?.commands.slice(1)).toEqual([
       "bunx @caelo-cms/provisioning@0.11.0 attach --project acme-prod",
       "bunx @caelo-cms/provisioning@0.11.0 upgrade --version 0.11.0 --install example.com",
     ]);
   });
 
-  it("without the job's project: plain Cloud Shell and no attach step", () => {
+  it("without the job's project: no attach step", () => {
     const c = cloudShellUpgrade(gcp, "0.11.0");
     expect(c?.projectId).toBeNull();
     expect(c?.commands).toHaveLength(2);
+  });
+
+  it("a pre-release has no Cloud Shell link, only the commands", () => {
+    expect(cloudShellUpgrade(gcp, "0.11.0-rc.1")?.consoleUrl).toBeNull();
   });
 
   it("is null where the CLI cannot upgrade", () => {

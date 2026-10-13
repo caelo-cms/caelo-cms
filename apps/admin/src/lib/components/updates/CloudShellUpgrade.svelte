@@ -25,7 +25,7 @@
     reason,
     consoleUrl,
     commands,
-  }: { version: string; reason: string | null; consoleUrl: string; commands: readonly string[] } =
+  }: { version: string; reason: string | null; consoleUrl: string | null; commands: readonly string[] } =
     $props();
 </script>
 
@@ -53,9 +53,9 @@
       <ol class="list-decimal space-y-1 pl-5 text-muted-foreground">
         <li>
           Cloud Shell opens: a terminal in your browser, provided by Google and already signed in as
-          you. Nothing is installed on your computer.
+          you, with Caelo's step-by-step walkthrough. Nothing is installed on your computer.
         </li>
-        <li>You paste the commands below, one after the other.</li>
+        <li>You follow the walkthrough (or paste the commands below, one after the other).</li>
         <li>
           They check the release is genuine, back up your database, apply the cloud changes, then
           switch your site to v{version} and test it — and go back automatically if the test fails.
@@ -69,17 +69,23 @@
         release adds to your Google Cloud bill is named in its release notes.
       </p>
     </div>
-    <a
-      href={consoleUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      class={buttonVariants({ variant: "default" })}
-      data-testid="open-cloud-shell"
-    >
-      Open Cloud Shell <ExternalLink class="size-4" aria-hidden="true" />
-    </a>
+    {#if consoleUrl}
+      <a
+        href={consoleUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        class={buttonVariants({ variant: "default" })}
+        data-testid="open-cloud-shell"
+      >
+        Open Cloud Shell <ExternalLink class="size-4" aria-hidden="true" />
+      </a>
+      <p class="text-xs text-muted-foreground">
+        Cloud Shell opens Caelo's walkthrough for v{version}; it checks the release is genuine before
+        it runs anything. If you prefer, paste the commands below instead.
+      </p>
+    {/if}
     <div class="space-y-2">
-      <p class="font-medium">Then paste these, in order</p>
+      <p class="font-medium">{consoleUrl ? "Or paste these, in order" : "Paste these, in order"}</p>
       {#each commands as command, i (command)}
         <CopyLine value={command} label={`Command ${i + 1}`} testid="cloud-shell-command" />
       {/each}

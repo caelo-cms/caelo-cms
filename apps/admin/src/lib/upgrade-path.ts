@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import {
+  cloudShellInstallUrl,
   installHintFromSiteUrl,
   provisioningCommand,
   provisioningUpgradeCommand,
@@ -159,9 +160,11 @@ const BUN_INSTALL =
  * signed in as the Owner — because only the Owner's own identity may change
  * the project's permissions; the admin's upgrader may not.
  *
- * Until the one-click Cloud Shell flow exists (#696 Phase 3) these are the
- * pinned commands to paste there: Bun, then fetch the install's records from
- * its own project, then the same upgrade the CLI runs anywhere.
+ * The "Open Cloud Shell" link is the release-pinned one every Caelo surface
+ * shows (`cloudShellInstallUrl`, the caelo-cms/install walkthrough on the
+ * release's branch). The pinned commands are the copyable fallback: Bun,
+ * then fetch the install's records from its own project, then the same
+ * upgrade the CLI runs anywhere.
  *
  * @returns null when the CLI path itself is unavailable (see resolveUpgradePath)
  */
@@ -169,7 +172,8 @@ export function cloudShellUpgrade(
   env: UpgradePathEnv,
   version: string,
 ): {
-  readonly consoleUrl: string;
+  /** null for a pre-release, which has no pinned Cloud Shell branch. */
+  readonly consoleUrl: string | null;
   readonly projectId: string | null;
   readonly commands: readonly string[];
 } | null {
@@ -179,11 +183,11 @@ export function cloudShellUpgrade(
   const commands = [BUN_INSTALL];
   if (projectId) commands.push(provisioningCommand(version, ["attach", "--project", projectId]));
   commands.push(path.command);
-  return {
-    consoleUrl: projectId
-      ? `https://console.cloud.google.com/home/dashboard?project=${projectId}&cloudshell=true`
-      : "https://shell.cloud.google.com/?show=terminal",
-    projectId,
-    commands,
-  };
+  let consoleUrl: string | null = null;
+  try {
+    consoleUrl = cloudShellInstallUrl(version, path.provider);
+  } catch {
+    // Pre-releases get no release branch in caelo-cms/install: commands only.
+  }
+  return { consoleUrl, projectId, commands };
 }
