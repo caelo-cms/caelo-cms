@@ -440,8 +440,10 @@ describe("app-roll and converge stay on their side", () => {
     expect((await session.hooks.beforeRoll?.("gateway"))?.ok).toBe(true);
     await session.afterAppRoll();
     expect(calls.filter((c) => APP_ROLL_WRITE.test(c))).toEqual([]);
-    // It did converge something: the stack's IAM bindings.
+    // It did converge something: the stack's IAM bindings, and the API the
+    // health check signs its IAP credential through.
     expect(calls.some((c) => CONVERGE_WRITE.test(c))).toBe(true);
+    expect(calls).toContain("services enable iamcredentials.googleapis.com --project=acme");
   });
 
   it("a failed gateway roll goes back to the prior admin revision and undoes the gateway hook", async () => {

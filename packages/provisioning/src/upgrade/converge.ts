@@ -187,10 +187,23 @@ export function startConverge(
     // Also what the deep health check signs its IAP credential as. A failure
     // costs MCP access, so it warns and the admin keeps its current value.
     const s = r.step("Ensuring MCP access through IAP...");
-    const resource = await adminIapResource();
-    const mcp = resource
-      ? await ensureMcpIapAccess({ projectId: install.projectId, resource, ...runDeps })
-      : { ok: false as const, error: "admin IAP backend service not found" };
+    // Signing as the MCP account goes through the IAM Credentials API, which
+    // installs from before #678 may not have enabled.
+    const api = await run([
+      "services",
+      "enable",
+      "iamcredentials.googleapis.com",
+      `--project=${install.projectId}`,
+    ]);
+    const resource = api.ok ? await adminIapResource() : null;
+    const mcp = !api.ok
+      ? {
+          ok: false as const,
+          error: `enable the IAM Credentials API (iamcredentials.googleapis.com): ${api.stderr.trim()}`,
+        }
+      : resource
+        ? await ensureMcpIapAccess({ projectId: install.projectId, resource, ...runDeps })
+        : { ok: false as const, error: "admin IAP backend service not found" };
     if (mcp.ok) {
       s.done(`MCP access ready (${mcp.serviceAccount}; ${mcp.operators.length} operator(s))`);
       return;
