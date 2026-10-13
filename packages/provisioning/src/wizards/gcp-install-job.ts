@@ -18,6 +18,7 @@ import { activeAccount, gcloud } from "../gcloud.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import { realSleep } from "../gcloud-retry.js";
 import {
+  acquireLaunchLock,
   claimInstallJobStatus,
   decideInstallJob,
   describeExecution,
@@ -32,7 +33,6 @@ import {
 } from "../install-job.js";
 import {
   currentMetadata,
-  getStepPayload,
   type InstallMetadata,
   installRoot,
   isStepDone,
@@ -218,9 +218,19 @@ async function showResult(meta: InstallMetadata): Promise<void> {
   const adminBase = new URL(link).origin;
   // The records from the stack's outputs, as the pulumi-up step recorded
   // them — not from the log, which a re-run after the install no longer shows.
-  const outputs =
-    getStepPayload<{ outputs?: Record<string, unknown> }>(meta.installId, `pulumi-up-${projectId}`)
-      ?.outputs ?? {};
+  // Uncached: this process may hold progress.json from before the job ran.
+  const progressText = new GcsStateStore(
+    opsBucketName(projectId),
+    installRoot(meta.installId),
+    realSyncGcloud,
+  ).peek("progress.json");
+  const progress = progressText
+    ? (JSON.parse(progressText) as { steps?: Record<string, unknown> })
+    : {};
+  const pulumiUp = progress.steps?.[`pulumi-up-${projectId}`] as
+    | { outputs?: Record<string, unknown> }
+    | undefined;
+  const outputs = pulumiUp?.outputs ?? {};
   const records = Array.isArray(outputs.dnsRecordsRequiredOut)
     ? (outputs.dnsRecordsRequiredOut as InstallDnsRecord[])
     : [];
@@ -304,35 +314,61 @@ export async function launchInstallJob(opts: {
     recordImageDigests(installId, { admin: digests.admin, gateway: digests.gateway });
   }
 
-  const started = await startInstallJob(gcloud, {
-    projectId,
-    region,
-    serviceAccount: opts.provisionerEmail,
-    image: opsImageRef(digests.ops),
-  });
-  if (!started.ok) {
-    cancel(`Could not start the install job: ${started.error}`);
+  // One launcher at a time decides and starts: two terminals resuming the
+  // same install would otherwise both start an execution before either
+  // recorded it. Under the lock the decision is taken again.
+  const bucket = opsBucketName(projectId);
+  let release: () => void;
+  try {
+    release = acquireLaunchLock(bucket, realSyncGcloud);
+  } catch (e) {
+    cancel(e instanceof Error ? e.message : String(e));
     process.exit(1);
   }
-  const now = new Date().toISOString();
-  // The execution is already running and writes its own status; this one
-  // only lands if it hasn't yet, so a re-run started meanwhile attaches
-  // instead of starting a second execution (install-job.ts claimInstallJobStatus).
-  claimInstallJobStatus(
-    opsBucketName(projectId),
-    {
-      statusVersion: 1,
-      installId,
-      execution: started.execution,
-      state: "running",
-      phase: "Starting the install job",
-      caeloVersion: CAELO_VERSION,
-      startedAt: now,
-      updatedAt: now,
-    },
-    realSyncGcloud,
-  );
-  await followToTheEnd(meta, started.execution);
+  let execution: string;
+  try {
+    const now = await decide(gcloud, realSyncGcloud, { projectId, region });
+    if (now.kind !== "start") {
+      release();
+      if (now.kind === "attach") await followToTheEnd(meta, now.status.execution);
+      else await showResult(meta);
+      return;
+    }
+    const started = await startInstallJob(gcloud, {
+      projectId,
+      region,
+      serviceAccount: opts.provisionerEmail,
+      image: opsImageRef(digests.ops),
+    });
+    if (!started.ok) {
+      release();
+      cancel(`Could not start the install job: ${started.error}`);
+      process.exit(1);
+    }
+    execution = started.execution;
+    const at = new Date().toISOString();
+    // The execution is already running and writes its own status; this
+    // record only lands if it hasn't yet (claimInstallJobStatus).
+    claimInstallJobStatus(
+      bucket,
+      {
+        statusVersion: 1,
+        installId,
+        execution,
+        state: "running",
+        phase: "Starting the install job",
+        caeloVersion: CAELO_VERSION,
+        startedAt: at,
+        updatedAt: at,
+      },
+      realSyncGcloud,
+    );
+  } catch (e) {
+    release();
+    throw e;
+  }
+  release();
+  await followToTheEnd(meta, execution);
 }
 
 /** What {@link prepareJobModeInstall} found for the project. */

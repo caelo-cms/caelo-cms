@@ -10,6 +10,7 @@ import { describe, expect, it } from "bun:test";
 import type { GcloudResult } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import {
+  acquireLaunchLock,
   claimInstallJobStatus,
   decideInstallJob,
   describeExecution,
@@ -176,6 +177,26 @@ describe("claimInstallJobStatus", () => {
     };
     expect(claimInstallJobStatus(BUCKET, { ...STATUS, execution: "launcher" }, run)).toBe(false);
     expect(readInstallJobStatus(BUCKET, inner)?.phase).toBe("Choosing the release images");
+  });
+});
+
+describe("acquireLaunchLock", () => {
+  it("lets one launcher in at a time and releases", () => {
+    const objects = new Map<string, string>();
+    const generations = new Map<string, number>();
+    const bucket = fakeBucket(objects, generations);
+    const run: SyncGcloud = (args, input) => {
+      if (args[1] === "rm") {
+        objects.delete(args[2] ?? "");
+        generations.delete(args[2] ?? "");
+        return ok();
+      }
+      return bucket(args, input);
+    };
+    const release = acquireLaunchLock(BUCKET, run);
+    expect(() => acquireLaunchLock(BUCKET, run)).toThrow(/Another terminal is starting/);
+    release();
+    expect(() => acquireLaunchLock(BUCKET, run)()).not.toThrow();
   });
 });
 
