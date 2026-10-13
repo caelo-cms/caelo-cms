@@ -246,7 +246,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     const digests = indexOf(events, /^record digests/);
 
     // Nothing writes before the backup.
-    for (const e of events.slice(0, backup)) expect(e).not.toMatch(/^migrate|record/);
+    for (const e of events.slice(0, backup)) expect(e).not.toMatch(/^(migrate|record)/);
     for (const e of events.slice(0, backup).filter((e) => e.startsWith("gcloud "))) {
       expect(e.slice("gcloud ".length)).not.toMatch(ANY_WRITE);
     }
@@ -277,7 +277,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(writes).toEqual([
       expect.stringMatching(/^sql backups create --instance caelo-production-pg-abc/),
     ]);
-    expect(events.some((e) => /^migrate|^health|^record/.test(e))).toBe(false);
+    expect(events.some((e) => /^(migrate|health|record)/.test(e))).toBe(false);
     expect(recorded.digests).toEqual([]);
     expect(
       lines.some((l) => l.startsWith("failed: Pre-upgrade backup failed") && l.includes("409")),
