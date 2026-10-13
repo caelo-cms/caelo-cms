@@ -437,7 +437,9 @@ describe("no service-account key is minted anywhere in provisioning (#696)", () 
     const offenders = files.filter((f) => {
       const src = readFileSync(f, "utf8");
       return (
-        /keys["'`\s,]+create/.test(src) ||
+        // `gcloud kms keys create` (the state key, ops-backend.ts) makes a
+        // Cloud KMS key, not a service-account key.
+        /(?<!kms["'`\s,]+)keys["'`\s,]+create/.test(src) ||
         /createServiceAccountKey|serviceAccounts\.keys\.create|ServiceAccountKey\(/.test(src)
       );
     });

@@ -1098,6 +1098,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
   const {
     installFlag,
     installStagingHost,
+    currentMetadata,
     listInstalls,
     recordableStagingHost,
     selectInstall,
@@ -1113,7 +1114,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     console.error(selected.message);
     process.exit(1);
   }
-  let meta = selected.meta;
+  let meta = currentMetadata(selected.meta);
   // The command to re-run after a stop before the admin was updated: an
   // explicitly requested host must survive it, or the retry would map the
   // admin's old host (codex review on #681).

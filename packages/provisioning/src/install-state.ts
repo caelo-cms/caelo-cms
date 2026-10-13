@@ -12,10 +12,18 @@
  *      `sa-key.json` minted by installers before #696 is deleted —
  *      locally and in IAM — on the next `upgrade` or installer run;
  *      provisioner-identity.ts)
- *   state/                  — Pulumi local backend state (per-install isolated)
+ *   state/                  — Pulumi local backend state (per-install isolated);
+ *                             absent once the install's state lives in its
+ *                             own cloud (#696, state-backend.ts)
  *   progress.json           — wizard checkpoint so re-runs resume cleanly
  *   install.json            — install metadata (provider, project id, region,
- *                             domain, owner email, install id, created_at)
+ *                             domain, owner email, install id, created_at,
+ *                             where the state lives)
+ *
+ * #696 — for an install whose `stateBackend` is `gcs`, install.json and
+ * progress.json live in the install's ops bucket; the copies here are a
+ * mirror (state-store.ts). Every read/write below goes through
+ * {@link stateStoreFor}.
  *
  * Only `secrets/` (and Pulumi's encrypted state) hold secrets. progress.json
  * and install.json are read by tooling, backups and agents, so writes to
@@ -36,14 +44,20 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  assertNoCheckpointSecrets,
   assertNoSecrets,
   rotationHints,
   type ScrubReport,
   scrubProgressFile,
-  writeJsonAtomic,
 } from "./checkpoint-secrets.js";
 import { defaultStagingHost } from "./stack-contract.js";
+import { parseStateBackend, type StateBackendRecord } from "./state-backend.js";
+import {
+  GcsStateStore,
+  LocalStateStore,
+  realSyncGcloud,
+  type StateStore,
+  type SyncGcloud,
+} from "./state-store.js";
 
 export type Provider = "self-hosted" | "gcp" | "gcp-firebase" | "aws" | "azure";
 
@@ -70,6 +84,11 @@ export interface InstallMetadata {
    * `upgrade` records the default ({@link installStagingHost}).
    */
   stagingDomain?: string;
+  /**
+   * #696 — where Pulumi's state and this metadata live (state-backend.ts).
+   * Absent on installs that predate it: those are `local`.
+   */
+  stateBackend?: StateBackendRecord;
   /**
    * #696 — the infrastructure contract version (infra-contract.ts) the last
    * successful converge brought this install to. Absent until the first
@@ -218,18 +237,22 @@ export function ensureInstallDir(installId: string): {
 
   if (!existsSync(root)) mkdirSync(root, { recursive: true, mode: 0o700 });
   if (!existsSync(secretsDir)) mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
-  if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  // An install whose state lives in its ops bucket gets no local state dir:
+  // an empty one would read as "the state is here".
+  const remote = readLocalMetadata(installId)?.stateBackend?.kind === "gcs";
+  if (!remote && !existsSync(stateDir)) mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 
   // chmod every time in case the dirs existed with looser perms.
   chmodSync(root, 0o700);
   chmodSync(secretsDir, 0o700);
-  chmodSync(stateDir, 0o700);
+  if (existsSync(stateDir)) chmodSync(stateDir, 0o700);
 
   return { root, secretsDir, stateDir };
 }
 
 /**
- * Scan `~/.caelo-*` for every install with a readable `install.json`.
+ * Scan `~/.caelo-*` for every install with a readable `install.json` (the
+ * local copy; see {@link currentMetadata}).
  * Used by the wizard to offer "resume X" before prompting for the
  * domain / owner / project again. Silently skips dirs that fail to
  * parse — partial / orphaned dirs don't block the new-install flow.
@@ -246,7 +269,10 @@ export function listInstalls(): InstallMetadata[] {
   for (const entry of entries) {
     if (!entry.startsWith(ROOT_PREFIX)) continue;
     const installId = entry.slice(ROOT_PREFIX.length);
-    const meta = readMetadata(installId);
+    // The local copy, so one unreachable bucket (a revoked grant, a deleted
+    // project) can't block commands for every other install. A command
+    // re-reads the install it picked with {@link currentMetadata}.
+    const meta = readLocalMetadata(installId);
     if (meta) out.push(meta);
   }
   out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
@@ -329,29 +355,125 @@ export function selectInstall(
   };
 }
 
+let syncGcloud: SyncGcloud = realSyncGcloud;
+const gcsStores = new Map<string, GcsStateStore>();
+
+/**
+ * Replace the gcloud runner bucket-backed stores use. Test seam only: the
+ * CLI always uses the real `gcloud`.
+ */
+export function setStateStoreGcloud(run: SyncGcloud): void {
+  syncGcloud = run;
+  gcsStores.clear();
+}
+
+function parseMetadata(text: string, where: string): InstallMetadata {
+  const meta = JSON.parse(text) as InstallMetadata;
+  if (typeof meta !== "object" || meta === null || typeof meta.installId !== "string") {
+    throw new Error(`${where} is not an install.json (no installId).`);
+  }
+  const stateBackend = parseStateBackend(meta.stateBackend);
+  return stateBackend ? { ...meta, stateBackend } : meta;
+}
+
+/**
+ * The install.json copy in `~/.caelo-<id>/`, without consulting the bucket.
+ * For listing installs and for deciding which store to use.
+ */
+export function readLocalMetadata(installId: string): InstallMetadata | null {
+  const text = new LocalStateStore(installRoot(installId)).read("install.json");
+  return text === null ? null : parseMetadata(text, `~/.caelo-${installId}/install.json`);
+}
+
+/**
+ * The store holding the install's metadata: its ops bucket when the local
+ * install.json says the install's state lives there, else `~/.caelo-<id>/`.
+ * One bucket store per install and process, so a run reads each document
+ * from the bucket once.
+ */
+export function stateStoreFor(installId: string): StateStore {
+  const root = installRoot(installId);
+  const backend = readLocalMetadata(installId)?.stateBackend;
+  if (backend?.kind !== "gcs") return new LocalStateStore(root);
+  const key = `${installId}\0${backend.bucket}`;
+  let store = gcsStores.get(key);
+  if (!store) {
+    store = new GcsStateStore(backend.bucket, root, syncGcloud);
+    gcsStores.set(key, store);
+  }
+  return store;
+}
+
+/**
+ * The authoritative metadata of an install picked from {@link listInstalls}:
+ * for an install whose state lives in its ops bucket, the bucket's copy
+ * (another machine may have upgraded it since). Throws when that copy can't
+ * be read — acting on a stale mirror could roll an install back.
+ */
+export function currentMetadata(meta: InstallMetadata): InstallMetadata {
+  if (meta.stateBackend?.kind !== "gcs") return meta;
+  const fresh = readMetadata(meta.installId);
+  if (!fresh) {
+    throw new Error(
+      `gs://${meta.stateBackend.bucket} has no install.json for ${meta.installId}; the install may have been destroyed.`,
+    );
+  }
+  return fresh;
+}
+
 export function readMetadata(installId: string): InstallMetadata | null {
-  const path = join(installRoot(installId), "install.json");
-  if (!existsSync(path)) return null;
-  return JSON.parse(readFileSync(path, "utf8")) as InstallMetadata;
+  const store = stateStoreFor(installId);
+  const text = store.read("install.json");
+  return text === null ? null : parseMetadata(text, `${store.kind} install.json of ${installId}`);
 }
 
 export function writeMetadata(installId: string, meta: InstallMetadata): void {
-  assertNoSecrets(meta, "install.json");
-  const path = join(installRoot(installId), "install.json");
-  writeFileSync(path, `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o600 });
+  stateStoreFor(installId).write("install.json", meta);
+}
+
+/**
+ * Move the install's metadata to `backend`'s store and record the backend
+ * in install.json (#696). progress.json is written first and install.json
+ * last: install.json naming the new backend is the commit point, so an
+ * interrupted switch leaves the install on its old store. When the install
+ * leaves the bucket, the bucket's install.json is updated too, so a machine
+ * that attaches later learns where the state went.
+ *
+ * @returns the metadata as now recorded
+ */
+export function adoptStateBackend(installId: string, backend: StateBackendRecord): InstallMetadata {
+  const current = readMetadata(installId);
+  if (!current) throw new Error(`No install.json for install '${installId}'.`);
+  const progress = readProgress(installId);
+  const next: InstallMetadata = { ...current, stateBackend: backend };
+  const root = installRoot(installId);
+  const previous = current.stateBackend;
+  gcsStores.clear();
+  if (backend.kind === "gcs") {
+    const gcs = new GcsStateStore(backend.bucket, root, syncGcloud);
+    gcs.write("progress.json", progress);
+    gcs.write("install.json", next);
+  } else {
+    if (previous?.kind === "gcs") {
+      new GcsStateStore(previous.bucket, root, syncGcloud).write("install.json", next);
+    }
+    const local = new LocalStateStore(root);
+    local.write("progress.json", progress);
+    local.write("install.json", next);
+  }
+  return next;
 }
 
 export function readProgress(installId: string): ProgressCheckpoint {
-  const path = join(installRoot(installId), "progress.json");
-  if (!existsSync(path)) {
+  const text = stateStoreFor(installId).read("progress.json");
+  if (text === null) {
     return { lastCompletedStep: null, steps: {}, updatedAt: new Date().toISOString() };
   }
-  return JSON.parse(readFileSync(path, "utf8")) as ProgressCheckpoint;
+  return JSON.parse(text) as ProgressCheckpoint;
 }
 
 export function writeProgress(installId: string, checkpoint: ProgressCheckpoint): void {
-  assertNoCheckpointSecrets(checkpoint, "progress.json");
-  writeJsonAtomic(join(installRoot(installId), "progress.json"), {
+  stateStoreFor(installId).write("progress.json", {
     ...checkpoint,
     updatedAt: new Date().toISOString(),
   });
