@@ -119,6 +119,7 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
     retired: [] as string[],
     ensureRemoteCalls: [] as boolean[],
     /** What the bucket's install.json names. */
+    locked: false,
     bucketRecord: (initial.kind === "gcs" ? "gcs" : null) as "gcs" | "local" | null,
   };
   const meta = (): MigrateInstall => ({
@@ -151,6 +152,13 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
       m.passphrase ??= "new-pp";
     },
     remoteRecordedBackend: () => m.bucketRecord,
+    lock: async () => {
+      if (m.locked) throw new Error("Another state migration of this install is running");
+      m.locked = true;
+      return async () => {
+        m.locked = false;
+      };
+    },
     adopt: (record) => {
       m.backend = record;
       m.bucketRecord = record.kind;
@@ -325,6 +333,39 @@ describe("migrateState — interrupted --to local resumes", () => {
     expect(t.m.retired).toEqual([`${ROOT}/state.migrated-x`]);
     expect(t.m.backend).toEqual({ kind: "local" });
     expect(t.p.stacks.get(t.localUrl)?.secretsProvider).toBe("passphrase");
+  });
+});
+
+describe("migrateState — one migration at a time", () => {
+  it("refuses while another migration holds the lock, and releases its own", async () => {
+    const t = machine();
+    t.m.locked = true;
+    const r = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
+    expect(r.ok).toBe(false);
+    expect(t.m.backend).toEqual({ kind: "local" });
+    expect(t.p.calls).toEqual([]);
+    t.m.locked = false;
+    expect((await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps)).ok).toBe(true);
+    expect(t.m.locked).toBe(false);
+  });
+
+  it("re-checks authority under the lock: a run that lost the race removes nothing", async () => {
+    const t = machine();
+    // The other machine finishes between this run's preflight and its lock.
+    t.deps.lock = async () => {
+      t.m.bucketRecord = "gcs";
+      t.p.stacks.set(t.gcsUrl, {
+        outputs: { theirs: true },
+        secretsProvider: "kms",
+        pending: 0,
+        drift: 0,
+      });
+      return async () => {};
+    };
+    const r = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
+    expect(r.ok).toBe(false);
+    expect(t.p.stacks.get(t.gcsUrl)?.outputs.theirs).toBe(true);
+    expect(t.p.calls).toEqual([]);
   });
 });
 

@@ -20,7 +20,7 @@ import { join } from "node:path";
 import type { GcloudResult } from "./gcloud.js";
 import { attachInstall } from "./state-attach.js";
 import { gcsBackendRecord, hasLocalPulumiState } from "./state-backend.js";
-import { backupInstallDir } from "./state-command.js";
+import { backupInstallDir, migrationLock } from "./state-command.js";
 import type { SyncGcloud } from "./state-store.js";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
@@ -158,4 +158,34 @@ describe("backupInstallDir", () => {
       expect(existsSync(out.replace(/\.zst$/, ""))).toBe(!hasZstd);
     });
   }
+});
+
+describe("migrationLock", () => {
+  it("creates the lock only if absent and releases it", async () => {
+    const objects = new Map<string, string>();
+    const run: SyncGcloud = (args, input) => {
+      const url = args[2] === "-" ? (args[3] ?? "") : (args[2] ?? "");
+      if (args[1] === "cp") {
+        if (args.includes("--if-generation-match=0") && objects.has(url)) {
+          return fail(
+            "HTTPError 412: At least one of the pre-conditions you specified did not hold.",
+          );
+        }
+        objects.set(url, input ?? "");
+        return ok();
+      }
+      if (args[1] === "cat")
+        return objects.has(url) ? ok(objects.get(url)) : fail("matched no objects");
+      if (args[1] === "rm") return objects.delete(url) ? ok() : fail("matched no objects");
+      return fail("unexpected");
+    };
+    const release = migrationLock("acme-site-caelo-ops", run);
+    expect(() => migrationLock("acme-site-caelo-ops", run)).toThrow(
+      /gcloud storage rm gs:\/\/acme-site-caelo-ops\/install\/migrate.lock/,
+    );
+    await release();
+    const again = migrationLock("acme-site-caelo-ops", run);
+    await again();
+    expect(objects.size).toBe(0);
+  });
 });

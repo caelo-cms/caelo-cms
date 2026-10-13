@@ -86,6 +86,12 @@ export interface MigrateDeps {
   remoteRecordedBackend(): StateBackendRecord["kind"] | null;
   /** Record the new backend (install-state.ts adoptStateBackend). */
   adopt(record: StateBackendRecord): void;
+  /**
+   * Take the install's migration lock (an object in the ops bucket created
+   * only if absent); throws when another migration holds it. Returns the
+   * release function.
+   */
+  lock(): Promise<() => Promise<void>>;
   /** Rename the local state dir out of the way; returns where it went. */
   retireLocalState(): string | null;
 }
@@ -258,100 +264,127 @@ export async function migrateState(
     return { ok: false, error: `${errorText(e)}. Nothing was changed.` };
   }
 
-  // --- 3. Target -----------------------------------------------------------
-  const tg = report.step(
-    opts.to === "remote"
-      ? `Ensuring gs://${remoteRecord.bucket} + KMS key ${remoteRecord.kmsKey.split("/").slice(-3).join("/")}`
-      : "Preparing the local state dir",
-  );
-  let to: ResolvedBackend;
-  try {
-    if (opts.to === "remote") {
-      const r = await deps.ensureRemote(false);
-      if (!r.ok) {
-        tg.failed("Could not ensure the ops bucket + KMS key");
-        return { ok: false, error: `${r.error} Nothing else was changed.` };
-      }
-    } else if (!deps.localStateEmpty()) {
-      // install.json names the bucket, so a stack here is not in use: the
-      // leftover of an interrupted `--to local`. Kept, never deleted.
-      const moved = deps.retireLocalState();
-      report.info(`Moved an unused local stack (interrupted migration?) aside to ${moved}`);
-    }
-    if (opts.to === "local") deps.prepareLocalTarget();
-    to = deps.resolve(targetRecord);
-    // A remote stack here is not authoritative (checked in the preflight:
-    // the bucket's install.json doesn't name it), so it is the leftover of
-    // an interrupted migration or of an earlier `--to local`.
-    if (await pulumi.stackExists(to)) {
-      report.info(
-        `Replacing an unused copy in ${to.url} (left by an earlier or interrupted migration)`,
-      );
-      await pulumi.removeStack(to);
-    }
-    tg.done(`Target ready: ${to.url}`);
-  } catch (e) {
-    tg.failed("Could not prepare the target");
-    return { ok: false, error: `${errorText(e)}. The source is unchanged and still in use.` };
-  }
-
-  // --- 4 + 5. Copy and verify ----------------------------------------------
-  const cp = report.step(`Copying the stack to ${to.url} and verifying it`);
-  const abandon = async (why: string): Promise<MigrateResult> => {
-    cp.failed(why);
-    try {
-      await pulumi.removeStack(to);
-    } catch (e) {
-      report.warn(`Could not remove the partial copy in ${to.url}: ${errorText(e)}`);
-    }
-    return {
-      ok: false,
-      error: `${why}. The copy was discarded; install.json still names ${from.url}, which stays authoritative.`,
-    };
-  };
-  try {
-    if (mode === "stack-migrate") await pulumi.stackMigrate(from, to);
-    else await pulumi.exportImport(from, to);
-  } catch (e) {
-    return abandon(`Copy failed: ${errorText(e)}`);
-  }
-  try {
-    const changes = await pulumi.previewChanges(to);
-    if (changes > 0)
-      return abandon(`Verification failed: a preview of the copy shows ${changes} change(s)`);
-    if ((await pulumi.outputsDigest(to)) !== sourceDigest) {
-      return abandon("Verification failed: the copy's outputs differ from the source's");
-    }
-  } catch (e) {
-    return abandon(`Verification failed: ${errorText(e)}`);
-  }
-  cp.done("Copied; preview shows no changes and the outputs match");
-
-  // --- 6. Flip ---------------------------------------------------------------
-  const fl = report.step("Recording the new backend in install.json");
-  try {
-    deps.adopt(targetRecord);
-  } catch (e) {
-    fl.failed("Could not record the new backend");
-    return {
-      ok: false,
-      error: `${errorText(e)}. The copy in ${to.url} is complete, but install.json still names ${from.url}; re-run state migrate to finish.`,
-    };
-  }
-  fl.done(`install.json: stateBackend=${targetRecord.kind}`);
+  // --- 3a. Ops bucket + KMS key (remote), then the migration lock ----------
   if (opts.to === "remote") {
-    const moved = deps.retireLocalState();
-    if (moved)
-      report.info(
-        `Old local state kept at ${moved} (not used any more; delete it once you are confident)`,
-      );
-    report.success(
-      `Done. Pulumi state + install metadata now live in gs://${remoteRecord.bucket}; secrets are encrypted with Cloud KMS. Other machines: bunx @caelo-cms/provisioning attach --project ${meta.projectId}`,
+    const en = report.step(
+      `Ensuring gs://${remoteRecord.bucket} + KMS key ${remoteRecord.kmsKey.split("/").slice(-3).join("/")}`,
     );
-  } else {
-    report.success(
-      `Done. Pulumi state is back in ~/.caelo-${meta.installId}/state (passphrase in secrets/). The copy in gs://${remoteRecord.bucket}/pulumi is no longer used; the bucket's install.json now says so.`,
-    );
+    const r = await deps.ensureRemote(false);
+    if (!r.ok) {
+      en.failed("Could not ensure the ops bucket + KMS key");
+      return { ok: false, error: `${r.error} Nothing else was changed.` };
+    }
+    en.done(`gs://${remoteRecord.bucket} + KMS key ready`);
   }
-  return { ok: true, changed: true };
+  // One migration of an install at a time, across machines: held from the
+  // authority check through the flip, so a concurrent run can't take a copy
+  // the other just made authoritative for a leftover and remove it.
+  let release: () => Promise<void>;
+  try {
+    release = await deps.lock();
+  } catch (e) {
+    return { ok: false, error: `${errorText(e)}. Nothing else was changed.` };
+  }
+  try {
+    if (opts.to === "remote" && deps.remoteRecordedBackend() === "gcs") {
+      return {
+        ok: false,
+        error: `Another machine just finished migrating this install into gs://${remoteRecord.bucket}; the local state here is out of date. Nothing else was changed. Use: bunx @caelo-cms/provisioning attach --project ${meta.projectId}`,
+      };
+    }
+    return await finish();
+  } finally {
+    await release().catch((e: unknown) => report.warn(errorText(e)));
+  }
+
+  async function finish(): Promise<MigrateResult> {
+    // --- 3. Target -----------------------------------------------------------
+    const tg = report.step(
+      opts.to === "remote" ? "Preparing the bucket target" : "Preparing the local state dir",
+    );
+    let to: ResolvedBackend;
+    try {
+      if (opts.to === "local" && !deps.localStateEmpty()) {
+        // install.json names the bucket, so a stack here is not in use: the
+        // leftover of an interrupted `--to local`. Kept, never deleted.
+        const moved = deps.retireLocalState();
+        report.info(`Moved an unused local stack (interrupted migration?) aside to ${moved}`);
+      }
+      if (opts.to === "local") deps.prepareLocalTarget();
+      to = deps.resolve(targetRecord);
+      // A remote stack here is not authoritative (checked in the preflight:
+      // the bucket's install.json doesn't name it), so it is the leftover of
+      // an interrupted migration or of an earlier `--to local`.
+      if (await pulumi.stackExists(to)) {
+        report.info(
+          `Replacing an unused copy in ${to.url} (left by an earlier or interrupted migration)`,
+        );
+        await pulumi.removeStack(to);
+      }
+      tg.done(`Target ready: ${to.url}`);
+    } catch (e) {
+      tg.failed("Could not prepare the target");
+      return { ok: false, error: `${errorText(e)}. The source is unchanged and still in use.` };
+    }
+
+    // --- 4 + 5. Copy and verify ----------------------------------------------
+    const cp = report.step(`Copying the stack to ${to.url} and verifying it`);
+    const abandon = async (why: string): Promise<MigrateResult> => {
+      cp.failed(why);
+      try {
+        await pulumi.removeStack(to);
+      } catch (e) {
+        report.warn(`Could not remove the partial copy in ${to.url}: ${errorText(e)}`);
+      }
+      return {
+        ok: false,
+        error: `${why}. The copy was discarded; install.json still names ${from.url}, which stays authoritative.`,
+      };
+    };
+    try {
+      if (mode === "stack-migrate") await pulumi.stackMigrate(from, to);
+      else await pulumi.exportImport(from, to);
+    } catch (e) {
+      return abandon(`Copy failed: ${errorText(e)}`);
+    }
+    try {
+      const changes = await pulumi.previewChanges(to);
+      if (changes > 0)
+        return abandon(`Verification failed: a preview of the copy shows ${changes} change(s)`);
+      if ((await pulumi.outputsDigest(to)) !== sourceDigest) {
+        return abandon("Verification failed: the copy's outputs differ from the source's");
+      }
+    } catch (e) {
+      return abandon(`Verification failed: ${errorText(e)}`);
+    }
+    cp.done("Copied; preview shows no changes and the outputs match");
+
+    // --- 6. Flip ---------------------------------------------------------------
+    const fl = report.step("Recording the new backend in install.json");
+    try {
+      deps.adopt(targetRecord);
+    } catch (e) {
+      fl.failed("Could not record the new backend");
+      return {
+        ok: false,
+        error: `${errorText(e)}. The copy in ${to.url} is complete, but install.json still names ${from.url}; re-run state migrate to finish.`,
+      };
+    }
+    fl.done(`install.json: stateBackend=${targetRecord.kind}`);
+    if (opts.to === "remote") {
+      const moved = deps.retireLocalState();
+      if (moved)
+        report.info(
+          `Old local state kept at ${moved} (not used any more; delete it once you are confident)`,
+        );
+      report.success(
+        `Done. Pulumi state + install metadata now live in gs://${remoteRecord.bucket}; secrets are encrypted with Cloud KMS. Other machines: bunx @caelo-cms/provisioning attach --project ${meta.projectId}`,
+      );
+    } else {
+      report.success(
+        `Done. Pulumi state is back in ~/.caelo-${meta.installId}/state (passphrase in secrets/). The copy in gs://${remoteRecord.bucket}/pulumi is no longer used; the bucket's install.json now says so.`,
+      );
+    }
+    return { ok: true, changed: true };
+  }
 }
