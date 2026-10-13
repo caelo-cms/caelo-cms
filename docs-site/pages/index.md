@@ -33,6 +33,10 @@ bunx @caelo-cms/provisioning@latest --provider self-hosted
 
 Self-hosted = Docker Compose with Postgres + pgBackRest + Caddy (auto-SSL) + the admin + the API gateway. Cloud = `--provider gcp` / `aws` / `azure` — Pulumi spins up Cloud SQL HA + managed object storage + the platform's CDN + Secret Manager.
 
+### Or one click on Google Cloud
+
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.47&cloudshell_tutorial=gcp.md) — install into your own Google Cloud project from the browser, no laptop needed ([Firebase Hosting variant](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.47&cloudshell_tutorial=gcp-firebase.md), [how it works](/install-gcp#one-click-install-from-cloud-shell)).
+
 ### Drive your install from your IDE
 
 ```bash
