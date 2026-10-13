@@ -27,7 +27,7 @@
  * else ensured. Nothing here ever deletes a bucket, an object or a key.
  */
 
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gcloud as defaultGcloud } from "./gcloud.js";
@@ -260,14 +260,12 @@ export async function ensureOpsBackend(
       `set the lifecycle of ${bucketUrl} to: delete non-current object versions after ${NONCURRENT_VERSION_DAYS} days (nothing else)`,
     );
     if (!dryRun) {
-      const file = join(tmpdir(), `caelo-ops-lifecycle-${process.pid}.json`);
-      writeFileSync(
-        file,
-        JSON.stringify({
-          rule: [OPS_LIFECYCLE_RULE],
-        }),
-      );
+      // A private directory (mkdtemp, mode 700): no other local user can
+      // swap the file between write and read.
+      const dir = mkdtempSync(join(tmpdir(), "caelo-ops-"));
+      const file = join(dir, "lifecycle.json");
       try {
+        writeFileSync(file, JSON.stringify({ rule: [OPS_LIFECYCLE_RULE] }), { mode: 0o600 });
         const r = await run([
           "storage",
           "buckets",
@@ -278,7 +276,7 @@ export async function ensureOpsBackend(
         ]);
         if (!r.ok) return fail(`Setting the lifecycle rule on ${bucketUrl}`, r);
       } finally {
-        rmSync(file, { force: true });
+        rmSync(dir, { recursive: true, force: true });
       }
     }
   }
