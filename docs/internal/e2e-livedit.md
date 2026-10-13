@@ -446,6 +446,31 @@ just stays dormant until the secret arrives. Once configured, every
 subsequent PR + push:main + workflow_dispatch run executes the full
 real-AI flow without code changes.
 
+### Provider preflight (fail fast)
+
+The first step of the suite job, `AI provider preflight (fail fast)`,
+runs `scripts/ai-provider-preflight.ts`: one `max_tokens: 1` call on the
+cheapest catalog model (the Anthropic `fast` slot in
+`model-catalog.json`) with the CI key, before install, compose and build.
+
+- **Refused** (spending/usage limit, credit balance, invalid key,
+  permission, unknown model) → the job fails at once. The provider's
+  message lands in the step summary, an `::error::` annotation and the
+  PR comment; no scenario runs.
+- **Overloaded / 5xx / 429 / network** → retried after 5 s, 15 s and
+  30 s, then the job fails with "AI provider unavailable".
+
+It lives inside the suite job on purpose: a failing gate job would skip
+the suite job, and a skipped required check counts as passing. The key is
+passed through env only and redacted from any message. A spending-limit
+failure is an account problem: raise the limit and re-run the job.
+
+Inside the scenarios, `sendChatPromptAndWait` checks for
+`AI turn failed: provider error` reports (top-level chats only) after
+every turn, and fails right there with the provider's message
+(`lib/turn-failure.ts`). A turn that dies mid-run therefore no longer
+shows up as a downstream "module is null" or a 6-minute Stage timeout.
+
 ## Suggested next scenarios (v0.13.1+)
 
 - **Scenario 2** — `/hosting` page + nav-menu update. Covers v0.10.20

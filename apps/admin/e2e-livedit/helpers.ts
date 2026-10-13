@@ -13,6 +13,11 @@ import { resolve } from "node:path";
 import type { Page, Response } from "@playwright/test";
 import { expect } from "@playwright/test";
 import { ADMIN_LOG_DIR, ADMIN_LOG_PATH } from "./global-setup.js";
+import {
+  TURN_FAILURE_TITLE,
+  type TurnFailureReport,
+  turnFailureError,
+} from "./lib/turn-failure.js";
 import { fetchVisionVerdict, type VisionVerdict } from "./lib/vision-verdict.js";
 
 // Re-export for spec convenience (parallel to apps/admin/e2e/helpers.ts).
@@ -414,6 +419,7 @@ export async function sendChatPromptAndWait(
   // Wait for the composer to be ready first (rules out a still-streaming
   // prior turn from previous scenario state).
   await waitForChatTurnIdle(page);
+  const sinceIso = new Date().toISOString();
   await page.getByTestId("chat-composer").fill(prompt);
   // Wait for the streaming state to actually flip before believing
   // the turn has started; otherwise a fast first-event arrival can
@@ -424,7 +430,46 @@ export async function sendChatPromptAndWait(
     }),
     page.getByTestId("chat-send").click(),
   ]);
-  await waitForChatTurnIdle(page, timeoutMs);
+  try {
+    await waitForChatTurnIdle(page, timeoutMs);
+  } catch (e) {
+    throw turnFailureError(turnFailuresSince(sinceIso), prompt) ?? e;
+  }
+  // A turn that died on the provider ends idle like a finished one; fail
+  // here with the provider's message, not on a downstream assertion.
+  const failure = turnFailureError(turnFailuresSince(sinceIso), prompt);
+  if (failure) throw failure;
+}
+
+/**
+ * Turn-fatal error reports (see `lib/turn-failure.ts`) filed since
+ * `sinceIso` for top-level chats — a subagent's failure is reported to its
+ * parent turn, which may recover, so it does not fail the scenario here.
+ */
+function turnFailuresSince(sinceIso: string): TurnFailureReport[] {
+  const out = runBunInline(
+    `
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    let rows = [];
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      rows = await tx\`
+        SELECT r.created_at::text AS "createdAt", r.what_happened AS "whatHappened"
+        FROM ai_bug_reports r
+        LEFT JOIN chat_sessions cs ON cs.id = r.chat_session_id
+        WHERE r.source = 'auto' AND r.title = \${process.env.TITLE}
+          AND r.created_at > \${process.env.SINCE}::timestamptz
+          AND cs.subagent_role IS NULL
+        ORDER BY r.created_at
+      \`;
+    });
+    await sql.end();
+    console.log(JSON.stringify(rows));
+    `,
+    { SINCE: sinceIso, TITLE: TURN_FAILURE_TITLE },
+  );
+  return JSON.parse(out) as TurnFailureReport[];
 }
 
 /** Capture the URL of the most recent chat SSE stream this page initiated. */
