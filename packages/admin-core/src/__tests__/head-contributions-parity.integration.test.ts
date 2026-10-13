@@ -211,11 +211,13 @@ describe("#391 — generator/preview parity + sitemap contributions", () => {
 
   it("seo-pass injects the SAME block and the sitemap carries alternates", async () => {
     const page = {
+      pageId,
       pageSlug: "t391p-page",
       html: "<html><head><title>x</title></head><body>b</body></html>",
     };
     // A layout-authored lang is replaced by the resolved one.
     const plainPage = {
+      pageId: plainPageId,
       pageSlug: "t391p-plain",
       html: '<!doctype html><html lang="xx"><head><title>x</title></head><body>b</body></html>',
     };

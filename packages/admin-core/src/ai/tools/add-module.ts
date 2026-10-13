@@ -47,6 +47,7 @@ import {
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
 import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
+import { resolvePageRef } from "./_page-ref.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -258,7 +259,7 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
   description:
     "Add ONE module to a page, a layout (site-wide chrome on every page), or a template (fans out to every page of that page-type). " +
     "**Prefer `build_page` when a PAGE needs more than one module** — it places the whole ordered list WITH content in one transaction. " +
-    "`target` = 'page' | 'layout' | 'template'. `targetRef` is the slug OR uuid of that page/layout/template (both resolve). " +
+    "`target` = 'page' | 'layout' | 'template'. `targetRef` is that page's id or URL path ('/docs/setup'), or the layout's / template's slug or id. A bare page slug works only while it names one page — nested pages can share a slug. " +
     "Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `## Modules` to place/fan-out a SHARED module without minting a duplicate — a later edit_module then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` is placement-only: if you also pass authoring fields (a different label, new html, …) the call still succeeds but those fields are NOT applied and the result says so — to actually change a shared module, place it by `moduleId` and then call edit_module. " +
     "**The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; edit_module changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. " +
     "`blockName` must be a real block on the target; the handler returns the available block set if it isn't. " +
@@ -280,8 +281,9 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
       targetRef: {
         type: "string",
         minLength: 1,
-        maxLength: 200,
-        description: "Slug or uuid of the page / layout / template. Both forms resolve.",
+        maxLength: 500,
+        description:
+          "Page: its id or URL path (e.g. '/docs/setup'). Layout / template: slug or id.",
       },
       blockName: { type: "string", minLength: 1, maxLength: 80 },
       position: {
@@ -365,8 +367,9 @@ async function placeOnPage(
   suffix: string,
   label: string,
 ): Promise<ToolResult> {
-  const pageId = await resolvePageId(ctx, toolCtx, input.targetRef);
-  if (pageId === null) return refNotFound("page", input.targetRef);
+  const pageRef = await resolvePageRef(ctx, toolCtx, input.targetRef);
+  if (!pageRef.ok) return { ok: false, content: pageRef.message };
+  const pageId = pageRef.pageId;
   const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", {
     pageId,
   });
@@ -635,17 +638,6 @@ function refNotFound(target: string, ref: string): ToolResult {
     ok: false,
     content: `no ${target} found for targetRef "${ref}" — pass a valid slug or uuid (list_pages / list_layouts / list_templates).`,
   };
-}
-
-async function resolvePageId(
-  ctx: ExecutionContext,
-  toolCtx: ToolContext,
-  ref: string,
-): Promise<string | null> {
-  if (UUID_RE.test(ref)) return ref;
-  const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.list", {});
-  if (!listed.ok) return null;
-  return (listed.value as { pages: PageRow[] }).pages.find((p) => p.slug === ref)?.id ?? null;
 }
 
 async function resolveLayoutSlug(

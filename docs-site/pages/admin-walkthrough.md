@@ -33,6 +33,26 @@ The structured surfaces for when the chat isn't the right tool:
 - `/content/chat` — chat history (separate from `/edit`'s session list)
 - `/content/snapshots` — Advanced History; per-module / per-site revert
 
+### Page structure and URLs
+
+Pages can sit under other pages. A page's URL is its parent's URL plus its own slug, so an
+"Alerts" page under "SEO Monitoring" lives at `/seo-monitoring/alerts` (and a language plugin
+adds its prefix on top, e.g. `/de/seo-monitoring/alerts`). Pages nest up to six levels; the
+homepage stays at `/` and has no parent or child pages.
+
+- In chat, just say where a page belongs — *"put Alerts under SEO Monitoring"*, *"make the
+  pricing page top-level again"*. Moves of ten or more URLs at once ask for one click of
+  approval in the chat first.
+- In `/content/pages` the list shows the tree; a page's **Location** card moves it under
+  another page (optionally with a new slug).
+- Moving or renaming a page moves every page below it. Each old URL gets a permanent
+  redirect, and links in menus, modules and content are updated to the new URLs.
+- Two pages can share a slug as long as their URLs differ (`/monitoring/alerts` and
+  `/rankings/alerts`). A move onto a URL that is already taken is refused — pick a new slug
+  in the same step.
+- A page with child pages cannot be deleted until you decide what happens to them: move them
+  first, move them up to the deleted page's parent, or delete the whole section.
+
 ## Settings (`/settings/...`) — Owner only
 
 The Owner-only controls. This is where you configure the AI provider, set budgets, manage plugins, mint MCP tokens, configure auth, manage users + roles + custom permissions, and run deployments.

@@ -33,7 +33,7 @@ interface OpenChat {
   title: string;
   isMine: boolean;
   branchKind: "draft" | "experiment" | "migration" | "legacy";
-  anchorPageSlug: string | null;
+  anchorPagePath: string | null;
   lastActiveAt: string;
   lastStagedAt: string | null;
   pendingCount: number;
