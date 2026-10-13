@@ -97,7 +97,7 @@ function asArrayBuffer(u8: Uint8Array): ArrayBuffer {
  *
  * The host loader treats `ok: false` as fatal for that plugin — it
  * refuses to load the plugin and inserts a `plugins` row with
- * status='failed' so the Owner sees the error in /security/plugins.
+ * status='failed' so the Owner sees the error in /settings/plugins.
  */
 export async function verifyManifestSignature(opts: {
   manifest: PluginManifest;

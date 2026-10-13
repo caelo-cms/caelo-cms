@@ -284,12 +284,12 @@ export const getStagingAccessOp = defineOperation({
     };
     // No gate on this provider (yet): there are no crawler credentials to
     // show, and the gate key is not provisioned — answering the settings
-    // keeps Security → Staging access usable instead of failing on it.
+    // keeps Settings → Staging access usable instead of failing on it.
     if (!input.includeCredentials || !supported) return ok(base);
     if (ctx.actorKind !== "human" || !(await actorHasPermission(tx, ctx, "settings.write"))) {
       return handlerError(
         op,
-        "the staging credentials are shown only to an operator holding settings.write (the Owner) — ask them to open Security → Staging access, or to read them here themselves.",
+        "the staging credentials are shown only to an operator holding settings.write (the Owner) — ask them to open Settings → Staging access, or to read them here themselves.",
       );
     }
     let secret: string;
@@ -324,7 +324,7 @@ export const getStagingAccessOp = defineOperation({
 
 export const setStagingAccessOp = defineOperation({
   name: "staging_access.set",
-  // Why human-only: the Owner's Security → Staging access form. Opening the
+  // Why human-only: the Owner's Settings → Staging access form. Opening the
   // gate (an IP range, a new mode) exposes unpublished work to whoever it
   // admits; the AI reaches this only through the §11.A gate
   // (owner_settings.propose_set_staging_access → the operator's Approve).
@@ -452,7 +452,7 @@ export const issueStagingOpenLinkOp = defineOperation({
     if (!row.cookie_enabled) {
       return handlerError(
         op,
-        '"Open staging" is switched off for this install (Security → Staging access → admin cookie). Turn it on, or reach staging with the crawler credentials.',
+        '"Open staging" is switched off for this install (Settings → Staging access → admin cookie). Turn it on, or reach staging with the crawler credentials.',
       );
     }
     const expiresAt = Math.floor(Date.now() / 1000) + STAGING_OPEN_TOKEN_TTL_SECONDS;
@@ -548,7 +548,7 @@ export const seedStagingHostOp = defineOperation({
 
 export const setStagingHostOp = defineOperation({
   name: "staging_access.set_host",
-  // Why human-only: the Owner's Security → Domains form. A new staging host
+  // Why human-only: the Owner's Settings → Domains form. A new staging host
   // needs its own DNS record and domain mapping before anyone can open it,
   // and every Stage renders it; the AI reaches it only through the §11.A
   // gate (owner_settings.propose_set_staging_host → the operator's Approve).
@@ -615,7 +615,7 @@ export const provisionBasicAuthStatus = z.enum([
   "unchanged-enabled",
   /**
    * A credential exists but the Owner switched basic auth off — kept off:
-   * turning it back on is their decision (Security → Staging access).
+   * turning it back on is their decision (Settings → Staging access).
    */
   "unchanged-disabled",
 ]);

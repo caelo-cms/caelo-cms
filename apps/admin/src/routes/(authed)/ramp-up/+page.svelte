@@ -89,7 +89,7 @@
           </a>
         {/if}
         <a class={buttonVariants({ variant: "outline" })} href="/content/pages">All pages</a>
-        <a class={buttonVariants({ variant: "outline" })} href="/security/structured/theme/site">
+        <a class={buttonVariants({ variant: "outline" })} href="/settings/structured/theme/site">
           Tweak theme tokens
         </a>
       </CardContent>
@@ -104,7 +104,7 @@
         <CardTitle>Step 0 · Tell Caelo about your site</CardTitle>
         <CardDescription>
           Optional. Whatever you fill in becomes part of the AI's context for every chat. Skip if
-          you'd rather set this up later via <code>/security/memory</code>.
+          you'd rather set this up later via <code>/settings/memory</code>.
         </CardDescription>
       </CardHeader>
       <CardContent>

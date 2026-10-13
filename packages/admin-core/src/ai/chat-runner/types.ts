@@ -235,7 +235,7 @@ export interface ChatRunnerOptions {
   /**
    * v0.2.53 — Per-turn output ceiling. SSE handler reads this from
    * `getActiveProvider().maxOutputTokens` (set on `ai_providers.config`
-   * at /security/ai). Falls back to `resolveMaxOutputTokensDefault(model)`
+   * at /settings/ai). Falls back to `resolveMaxOutputTokensDefault(model)`
    * (32768 for adaptive-thinking models, 16384 otherwise — run #8 R1)
    * when the operator hasn't tuned it.
    */

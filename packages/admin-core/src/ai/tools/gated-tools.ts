@@ -5,7 +5,7 @@
  *
  * A gated tool (any tool whose registry definition carries `gated`, set by
  * `makeProposeTool`) is the SDK-native replacement for the old
- * `propose_*` + `/security/pending` Approve dance: the AI calls the action
+ * `propose_*` + `/settings/pending` Approve dance: the AI calls the action
  * directly, but the SDK PAUSES on a `tool-approval-request` before running the
  * tool's `execute`. The Owner approves in-chat; the SDK then runs `execute`,
  * which chains the existing per-domain machinery:
@@ -13,7 +13,7 @@
  *   1. `<domain>.propose_<action>` (AI ctx) — writes the pending row, computes
  *      the preview jsonb, records audit;
  *   2. `<domain>.execute_proposal({proposalId})` (Owner live ctx) — applies the
- *      real mutation, exactly as the /security/pending Approve did.
+ *      real mutation, exactly as the /settings/pending Approve did.
  *
  * Reusing propose/execute keeps every domain's apply logic correct (including
  * multi-op fan-outs like a layout's html+blocks) with ZERO reimplementation —

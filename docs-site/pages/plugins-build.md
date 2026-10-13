@@ -13,7 +13,7 @@ Every Caelo plugin is the same kind of thing — whether it ships with a Caelo r
 
 ## Two ways a plugin arrives
 
-- **Installed at runtime (the usual path).** Ask the chat on `/edit`: "build a plugin called `event-rsvp` that lets visitors sign up for events; schema needs name, email, eventId; component renders a form." The AI calls `submit_plugin`; the validator runs; the plugin lands at `/security/plugins` awaiting your approval. Its source is stored in the database.
+- **Installed at runtime (the usual path).** Ask the chat on `/edit`: "build a plugin called `event-rsvp` that lets visitors sign up for events; schema needs name, email, eventId; component renders a form." The AI calls `submit_plugin`; the validator runs; the plugin lands at `/settings/plugins` awaiting your approval. Its source is stored in the database.
 - **Shipped with a release.** Plugins under `packages/plugins/<slug>/` in the source repository change like any other code — through a reviewed pull request and a Caelo release. Their manifest is signed, which proves the installed artifact is the released one. The signature is shown to you at approval; it unlocks nothing by itself.
 
 ## The shape
@@ -77,7 +77,7 @@ The static generator bakes the initial render at deploy; the component fetches d
 
 ## Activation
 
-Nothing of a plugin runs until an Owner activates it at `/security/plugins` — shipped plugins included. The AI can submit a plugin and propose its activation; only a human Owner activates it and approves its grants.
+Nothing of a plugin runs until an Owner activates it at `/settings/plugins` — shipped plugins included. The AI can submit a plugin and propose its activation; only a human Owner activates it and approves its grants.
 
 ## Conditional writes
 

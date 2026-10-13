@@ -5,10 +5,10 @@
  * Owner panel:
  *
  *   - `verify_domains`      → `domains.verify` per registered domain
- *     (/security/domains: "does this hostname resolve yet?", refreshes the
+ *     (/settings/domains: "does this hostname resolve yet?", refreshes the
  *     domain's last-verified stamp + provisional TLS status).
  *   - `verify_dns_records`  → `dns.verify_record` per required record
- *     (/security/dns: "is the exact record the provisioner asked for —
+ *     (/settings/dns: "is the exact record the provisioner asked for —
  *     CNAME / TXT / A — published at the registrar?"). Defaults to the
  *     records stored in `provisioning_outputs`, so the AI checks the right
  *     values without the operator reading them out.

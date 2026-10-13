@@ -92,7 +92,7 @@ describe("describeEstimate", () => {
     // The agent can fix this itself (§11.A proposal) — it must not be sent
     // to an Owner page it cannot reach.
     expect(s).toContain("propose_set_ai_pricing");
-    expect(s).not.toContain("/security/ai/pricing");
+    expect(s).not.toContain("/settings/ai/pricing");
   });
 
   it("renders a failed estimate as an explicit unknown", () => {
@@ -131,7 +131,7 @@ describe("propose_site_import (#193/#298)", () => {
     // The chat-visible sentence carries the numbers the operator needs.
     expect(r.content).toContain("sitemap lists 800 URLs");
     expect(r.content).toContain("AI rebuild ≈ $");
-    expect(r.content).toContain("/security/import/pending");
+    expect(r.content).toContain("/settings/import/pending");
 
     const runId = /Queued proposal ([0-9a-f-]{36})/.exec(r.content)?.[1];
     if (!runId) throw new Error(`no runId in: ${r.content}`);

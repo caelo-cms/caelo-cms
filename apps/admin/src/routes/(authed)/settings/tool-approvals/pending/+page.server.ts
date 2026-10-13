@@ -1,0 +1,266 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * v0.6.0 W5 — Owner queue for AI tool calls gated by the
+ * `needsApproval` predicate on `ToolDefinitionWithHandler`. The
+ * dispatcher writes a row to `tool_approval_actions` whenever a
+ * gated tool fires; this route surfaces those rows + lets the Owner
+ * approve/reject. Approve runs the persisted tool with the persisted
+ * args via the same ToolRegistry the chat-runner uses.
+ *
+ * Mirrors the shape of /settings/snapshots/pending +page.server.ts —
+ * the approve flow swaps the per-domain `*.execute_proposal` op for
+ * a two-step claim-then-dispatch:
+ *   1. `tool_approvals.read_for_execute` — atomic pending → applied
+ *      transition + returns the persisted args.
+ *   2. ToolRegistry.dispatch — runs the tool's handler with the
+ *      operator's session ctx (NOT the AI ctx that originally
+ *      proposed) so the audit log credits the human approver.
+ *   3. `tool_approvals.mark_result` — captures the dispatch outcome
+ *      so the queue page shows "applied — succeeded" / "applied —
+ *      failed: <reason>".
+ *
+ * DESIGN CONTRACTS:
+ *
+ * (a) Live-commit semantics. The dispatch carries `chatSessionId` (so
+ *     the audit log links the action back to the chat origin) but
+ *     deliberately OMITS `chatBranchId`. Once the Owner approves, the
+ *     action commits directly to main — it does NOT branch-write into
+ *     the proposing chat. Rationale: gated tools are by definition
+ *     hard-to-revert; making them branch-only would mean an Approve
+ *     click is a no-op on main until the chat publishes, which is
+ *     surprising for destructive ops. If you ship a future gated tool
+ *     where branch-write IS the desired semantic, store branchId in
+ *     the persisted row and read it here.
+ *
+ * (b) Plugin tools fold in (#388, #687). `approveQueuedToolCall`
+ *     resolves the tool against `pluginToolsRegistry` first and runs
+ *     plugin tools through the plugin host the way the in-chat gate
+ *     does (approver's invocation, the tool's requiredPermission,
+ *     live only for an approver who may publish); built-ins fall
+ *     through to the built-in registry. Approval-declared plugin tools
+ *     an external agent called over the Power-MCP land here.
+ *
+ * (c) Owner-ctx dispatch + actor-scope mismatch (v0.6.0 alpha.4 Fix R).
+ *     The dispatched tool runs with `locals.ctx` (actorKind: "human")
+ *     so the audit log credits the Owner who approved. But the
+ *     ORIGINAL propose-time dispatch ran with the AI's ctx
+ *     (actorKind: "ai"). Tools whose actorScope EXCLUDES "human"
+ *     (e.g., the rare `["ai", "system"]` shape) would queue at
+ *     propose-time but fail at approve-time with `ActorScopeRejected`.
+ *     Every currently-shipped tool with `needsApproval`
+ *     (delete_pages_many) has `["human", "ai", "system"]` scope so
+ *     this is not a live bug — but a future ai-only gated tool would
+ *     need either: (i) the tool widens its actorScope to include
+ *     human, OR (ii) the route here passes through the proposer's
+ *     ctx with an Owner attribution layered on top.
+ */
+
+import { approveQueuedToolCall, createDefaultToolRegistry } from "@caelo-cms/admin-core";
+import { pluginToolsRegistry } from "@caelo-cms/plugin-host";
+import { execute } from "@caelo-cms/query-api";
+import { fail } from "@sveltejs/kit";
+import { assertCsrfToken } from "#lib/server/csrf.js";
+import { requirePermission } from "#lib/server/guards.js";
+import { getQueryContext } from "#lib/server/query.js";
+import type { Actions, PageServerLoad } from "./$types";
+
+interface Proposal {
+  id: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  preview: Record<string, unknown>;
+  chatSessionId: string | null;
+  proposedBy: string;
+  status: "pending" | "applied" | "rejected" | "superseded";
+  createdAt: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  decisionReason: string | null;
+  resultOk: boolean | null;
+  resultSummary: string | null;
+}
+
+/** Issue #658 — did an external agent (Power-MCP) queue this proposal? */
+async function requestedByExternalAgent(
+  proposalId: string,
+  ctx: App.Locals["ctx"],
+): Promise<boolean> {
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, ctx, "mcp_approval_handoffs.list", {
+    proposalIds: [proposalId],
+    withinHours: 24 * 30,
+  });
+  // The chat message is best-effort anyway; when the origin cannot be read,
+  // skip it (loudly) rather than risk instructing the Live Edit AI.
+  if (!r.ok) {
+    console.error("[tool-approvals.approve] hand-off lookup failed — chat message skipped", {
+      proposalId,
+      error: r.error,
+    });
+    return true;
+  }
+  return (r.value as { handoffs: unknown[] }).handoffs.length > 0;
+}
+
+/**
+ * The pending row's tool and who may decide it. #687 — a plugin tool's card
+ * (an external agent queues these over the Power-MCP) is decided like the
+ * in-chat card: by whoever holds the tool's `requiredPermission`, so the
+ * operator an external plugin's approval is bound to is never locked out.
+ * Built-in tools, and plugin tools that declare no permission, keep the
+ * Owner-equivalent floor (roles.manage) of the other propose/* queues.
+ */
+async function queuedToolFor(
+  locals: App.Locals,
+  proposalId: string,
+): Promise<
+  | { ok: true; toolName: string; pluginTool: ReturnType<typeof pluginToolsRegistry.resolve> }
+  | { ok: false; status: 404 | 500; error: string }
+> {
+  const { adapter, registry } = getQueryContext();
+  const queued = await execute(registry, adapter, locals.ctx, "tool_approvals.list_pending", {
+    proposalId,
+  });
+  if (!queued.ok) return { ok: false, status: 500, error: "could not read the approval queue" };
+  const toolName = (queued.value as { proposals: Proposal[] }).proposals.find(
+    (p) => p.id === proposalId,
+  )?.toolName;
+  const pluginTool = toolName ? pluginToolsRegistry.resolve(toolName) : null;
+  const permission = pluginTool?.spec.requiredPermission;
+  requirePermission(locals, permission ?? "roles.manage");
+  if (!toolName) return { ok: false, status: 404, error: "That proposal is no longer pending." };
+  return { ok: true, toolName, pluginTool };
+}
+
+export const load: PageServerLoad = async ({ locals }) => {
+  // Same permission proxy as the other propose/* queues — the
+  // Owner-equivalent role.
+  requirePermission(locals, "roles.manage");
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, locals.ctx, "tool_approvals.list_pending", {});
+  const proposals = r.ok ? (r.value as { proposals: Proposal[] }).proposals : [];
+  return { proposals };
+};
+
+export const actions: Actions = {
+  approve: async ({ request, locals }) => {
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const proposalId = String(form.get("proposalId") ?? "");
+    const { adapter, registry } = getQueryContext();
+
+    // #589 — the approver must hold the permission the queued tool
+    // declares, checked BEFORE the claim so a refused click leaves the row
+    // pending for someone who holds it. A built-in tool that declares none
+    // cannot be approved at all (fail closed); a plugin tool's own
+    // `requiredPermission` (and an external plugin's bound operator) is
+    // checked by approveQueuedToolCall before its claim.
+    const queued = await queuedToolFor(locals, proposalId);
+    if (!queued.ok) return fail(queued.status, { error: queued.error });
+    if (!queued.pluginTool) {
+      const declared = createDefaultToolRegistry().get(queued.toolName)?.approverPermissions;
+      if (!declared) {
+        return fail(500, {
+          error: `${queued.toolName} declares no approver permission; refusing.`,
+        });
+      }
+      for (const permission of declared) requirePermission(locals, permission);
+    }
+
+    // Claim (atomic pending → applied, so a double click applies once),
+    // dispatch with the persisted args, record the result on the row —
+    // shared with the Power-MCP integration tests (#687). Plugin tools run
+    // through the plugin host as the approver, like the in-chat gate.
+    const approved = await approveQueuedToolCall({
+      registry,
+      adapter,
+      approverCtx: locals.ctx,
+      proposalId,
+    });
+    if (!approved.ok) return fail(400, { error: approved.error });
+    const { toolName, chatSessionId } = approved.value;
+    const dispatchResult = { ok: approved.value.ok, content: approved.value.content };
+
+    // v0.6.0 alpha.4 Fix T — propagate the REAL dispatch result back
+    // into the chat session so the AI sees the actual outcome on its
+    // next turn (was: only saw a generic "proposal applied"
+    // client-side notification). For delete_pages_many specifically:
+    // the AI now sees how many pages actually deleted, what was
+    // already-deleted, what was not-found — enough to give the user a
+    // meaningful follow-up.
+    //
+    // Run #10 D1 — this MUST be a user-role message, never role "tool".
+    // The original tool_use already received its tool_result at
+    // propose time ("Queued proposal …" from the dispatcher), so a
+    // second tool_result cannot pair with it, and a synthetic id like
+    // `approval-<proposalId>` has no tool_use at all. Either shape
+    // makes Anthropic reject EVERY subsequent provider call with
+    // "unexpected `tool_use_id` found in `tool_result` blocks" — the
+    // session wedges permanently (run #10's killer). A plain user
+    // message carries the same information and is what the flow
+    // semantically is: the human Owner reporting their action.
+    //
+    // Best-effort: skip when chatSessionId is missing (out-of-chat
+    // approval, currently theoretical) and on append failure (the
+    // dispatch already succeeded; the chat-side message is the bonus).
+    //
+    // Issue #658 — NOT for a call an external agent queued over MCP: the
+    // session is shared with the operator's Live Edit chat, whose AI would
+    // read this user-role message as an instruction on its next turn. The
+    // MCP agent gets the result through mcp.get_approval_outcome instead
+    // (tool_approval_actions.result_summary, written above).
+    if (chatSessionId && !(await requestedByExternalAgent(proposalId, locals.ctx))) {
+      try {
+        await execute(registry, adapter, locals.ctx, "chat.append_message", {
+          chatSessionId,
+          role: "user",
+          content:
+            `[Owner approved proposal ${proposalId} and the tool was dispatched] ${toolName}: ${dispatchResult.content}`.slice(
+              0,
+              8000,
+            ),
+          // issue #303 — producer hint for the empty-content rejection.
+          source: "tool-approvals approve action",
+        });
+      } catch (err) {
+        console.error("[tool-approvals.approve] chat.append_message failed", {
+          proposalId,
+          toolName,
+          chatSessionId,
+          error: err,
+        });
+      }
+    }
+
+    if (!dispatchResult.ok) {
+      return fail(400, { error: `Approved but tool returned failure: ${dispatchResult.content}` });
+    }
+    return {
+      ok: true,
+      message: `Approved + dispatched: ${toolName}. Result: ${dispatchResult.content.slice(0, 240)}`,
+    };
+  },
+
+  reject: async ({ request, locals }) => {
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const proposalId = String(form.get("proposalId") ?? "");
+    const reason = form.get("reason") ? String(form.get("reason")) : undefined;
+    const queued = await queuedToolFor(locals, proposalId);
+    if (!queued.ok) return fail(queued.status, { error: queued.error });
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "tool_approvals.reject_proposal", {
+      proposalId,
+      ...(reason ? { reason } : {}),
+    });
+    if (!r.ok) {
+      const message =
+        typeof r.error === "object" && r.error && "message" in r.error
+          ? String((r.error as { message: unknown }).message)
+          : "reject failed";
+      return fail(400, { error: message });
+    }
+    return { ok: true, message: "Proposal rejected." };
+  },
+};

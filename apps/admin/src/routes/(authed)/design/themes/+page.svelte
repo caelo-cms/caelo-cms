@@ -63,7 +63,7 @@
       <p class="text-sm text-muted-foreground">
         Design tokens shipped to the public site as CSS variables. The active theme's tokens become
         a <code>:root</code> block on every page. Create / Activate / Delete actions queue for
-        Owner approval at <a href="/security/themes/pending" class="underline">/security/themes/pending</a>.
+        Owner approval at <a href="/settings/themes/pending" class="underline">/settings/themes/pending</a>.
         {#if data.pendingCount > 0}
           <Badge variant="secondary" class="ml-2">
             {data.pendingCount} pending
@@ -181,7 +181,7 @@
         The new variant starts from the active theme's tokens. Optionally set a brand primary color
         — the server derives a 50–900 OKLCh lightness ramp from it so you get a full palette out of
         the box. For a fully new palette, ask the AI in chat instead. Approval happens at
-        <code>/security/themes/pending</code>.
+        <code>/settings/themes/pending</code>.
       </DialogDescription>
     </DialogHeader>
     <form method="post" action="?/create" class="grid gap-3 py-2">

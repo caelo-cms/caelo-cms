@@ -66,7 +66,7 @@ function makeUnimplementedTransport(name: string): EmailTransport {
   return {
     send: async () => {
       throw new Error(
-        `email transport "${name}" is not yet implemented; configure 'resend' or 'none' under /security/email`,
+        `email transport "${name}" is not yet implemented; configure 'resend' or 'none' under /settings/email`,
       );
     },
   };

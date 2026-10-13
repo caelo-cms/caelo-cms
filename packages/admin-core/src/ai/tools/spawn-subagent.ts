@@ -346,7 +346,7 @@ async function runOneSubagent(
       task: spec.task,
       // issue #306 — Owner observability: which tier this run was
       // dispatched at and which concrete model served it. This is an
-      // Owner surface (security panel) — the editor-facing summarize()
+      // Owner surface (Settings panel) — the editor-facing summarize()
       // path never carries these strings.
       modelTier: specTier,
       model: tierProvider?.model ?? toolCtx.provider?.model ?? null,
@@ -796,7 +796,7 @@ async function resolveTierProviders(specs: readonly SpawnSubagentToolInput[]): P
         content:
           `model tier "${tier}" is mapped but the active AI provider could not be resolved ` +
           "(no active provider row / no usable API key). The Owner checks the provider at " +
-          "/security/ai. Do not claim the subagents ran.",
+          "/settings/ai. Do not claim the subagents ran.",
       };
     }
     providers.set(tier, resolved.provider);
@@ -808,7 +808,7 @@ async function resolveTierProviders(specs: readonly SpawnSubagentToolInput[]): P
  * Editor-facing roll-up of a batch's results (this string is what the
  * parent — and through it the operator — reads). BRAND RULE (issue #306 /
  * CLAUDE.md §2): no model ids and no tier labels in here; tier/model
- * detail lives on Owner surfaces (subagent security panel, cost
+ * detail lives on Owner surfaces (subagent Settings panel, cost
  * dashboard). Exported for the brand-rule unit test.
  */
 export function summarize(results: SubagentInvocationResult[]): string {

@@ -71,7 +71,7 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPage
     messages,
     modules,
     // v0.2.46 — debug panel exposes engaged-skills + tool args, so it
-    // needs the same permission as the rest of /security/* views.
+    // needs the same permission as the rest of /settings/* views.
     canDebug: locals.user?.permissions.has("settings.read") ?? false,
     previewDefault,
   };

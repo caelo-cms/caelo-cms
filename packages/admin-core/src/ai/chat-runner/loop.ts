@@ -670,7 +670,7 @@ export async function* runToolLoop(
       }
       // Theme A — file the turn-fatal provider error (the generic 400 class,
       // incl. tool_use/tool_result pairing rejections, and the unrecovered
-      // context-overflow) so it lands on /security/bugs with the offending
+      // context-overflow) so it lands on /settings/bugs with the offending
       // replayed history, not just a transient banner.
       await fileTurnFatalProviderReport({
         registry,

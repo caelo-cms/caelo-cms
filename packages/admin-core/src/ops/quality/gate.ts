@@ -8,8 +8,12 @@
  *   quality_audits.retry                     re-run a failed (or missing)
  *                                            audit of the staged build.
  *   quality_audits.chat_status               the newest audit of a chat plus
- *                                            the message the chat should get.
+ *                                            the message the chat should get
+ *                                            (#685: problems are an offer the
+ *                                            operator must click).
  *   quality_audits.claim_chat_notification   claim that message exactly once.
+ *   quality_audits.release_chat_notification give back a claimed fix request
+ *                                            that started no turn (#685).
  *   quality_audits.publish_anyway            an editor's recorded decision to
  *                                            publish over a FAILED audit.
  */
@@ -19,7 +23,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { chatFeedbackFor } from "../../quality/chat-feedback.js";
+import { chatFeedbackFor, problemLabel } from "../../quality/chat-feedback.js";
 import type { QualityProblem } from "../../quality/ratchet.js";
 import { appendChatMessageOp } from "../chat/messages.js";
 import { promoteDeployOp } from "../deploy.js";
@@ -125,6 +129,7 @@ export const retryAuditOp = defineOperation({
           branch: null,
           pageIds: recent.map((p) => p.id),
           autoPublish: false,
+          stagedBy: null,
         },
         tx,
       );
@@ -144,9 +149,9 @@ export const retryAuditOp = defineOperation({
     const inserted = (await tx.execute(sql`
       INSERT INTO quality_audit_runs
         (deploy_run_id, chat_session_id, requested_by, status, classification,
-         target_page_ids, performance_runs, fix_round, retry_of)
+         target_page_ids, performance_runs, fix_round, staged_by, retry_of)
       SELECT deploy_run_id, chat_session_id, ${ctx.actorId}::uuid, 'queued', classification,
-             target_page_ids, performance_runs, fix_round, id
+             target_page_ids, performance_runs, fix_round, staged_by, id
       FROM quality_audit_runs WHERE id = ${prev.id}::uuid
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -171,7 +176,18 @@ export const retryAuditOp = defineOperation({
   },
 });
 
-const feedbackSchema = z.object({ kind: z.enum(["note", "ai-turn"]), text: z.string() }).nullable();
+const feedbackSchema = z
+  .discriminatedUnion("kind", [
+    z.object({ kind: z.literal("note"), text: z.string() }),
+    // #685 — shown as a card; `prompt` is sent only on the operator's click.
+    z.object({
+      kind: z.literal("offer"),
+      text: z.string(),
+      actionLabel: z.string(),
+      prompt: z.string(),
+    }),
+  ])
+  .nullable();
 
 export const chatStatusOp = defineOperation({
   name: "quality_audits.chat_status",
@@ -206,23 +222,30 @@ export const chatStatusOp = defineOperation({
       WHERE qp.audit_run_id = ${audit.id}::uuid AND qp.status = 'problems'
       ORDER BY (p.current_path = '/') DESC, p.current_path
     `)) as unknown as { current_path: string; problems: unknown }[];
+    const problemPages = pageRows.map((r) => ({
+      path: r.current_path,
+      findings: json<QualityProblem[]>(r.problems).map(problemLabel),
+    }));
     const feedback = chatFeedbackFor({
       status: audit.status,
       fixRound: audit.fixRound,
-      problemCount: pageRows.reduce((n, r) => n + json<QualityProblem[]>(r.problems).length, 0),
-      problemPagePaths: pageRows.map((r) => r.current_path),
+      problemCount: problemPages.reduce((n, p) => n + p.findings.length, 0),
+      problemPages,
+      stagedBy: audit.stagedBy,
       errorCode: audit.errorCode,
       errorMessage: audit.errorMessage,
       skippedBecause: audit.classification.skipped,
     });
     // Only the audit of the build staging serves NOW may drive the chat: a
-    // chat whose Stage another chat has since replaced must not start an
-    // obsolete fix round (or claim Publish is available).
+    // chat whose Stage another chat has since replaced must not offer an
+    // obsolete fix round (or claim Publish is available). Nor is a fix
+    // offered once an editor accepted every finding: the gate is open.
     const current = gate.deployRunId === null || gate.deployRunId === audit.deployRunId;
+    const settledByAcceptance = feedback?.kind === "offer" && current && gate.gate?.open === true;
     return ok({
       audit,
       notified: row.chat_notified_at !== null,
-      feedback: current ? feedback : null,
+      feedback: current && !settledByAcceptance ? feedback : null,
       ...gate,
     });
   },
@@ -247,16 +270,28 @@ export const claimChatNotificationOp = defineOperation({
         .object({ chatSessionId: z.string().uuid(), text: z.string().min(1).max(2000) })
         .strict()
         .optional(),
+      /** #685 — the operator clicked "Fix with AI": record the requested
+       *  fix round now, BEFORE the turn runs — the AI re-stages inside that
+       *  turn, and the next audit's fix round is decided at that Stage. */
+      fixRequested: z.boolean().default(false),
     })
-    .strict(),
+    .strict()
+    .refine((v) => !(v.fixRequested && v.note), {
+      message: "a fix request starts a turn; a note settles the offer — pass one, not both",
+    }),
   output: z.object({ claimed: z.boolean() }),
   handler: async (ctx, input, tx) => {
-    // A lease, not a final mark: an AI-turn nudge is delivered by the
-    // browser after this call; only its acknowledgement
-    // (ack_chat_notification) marks the audit notified. A tab that closes
-    // or a send that fails lets the lease run out and the next poll retries.
+    // Any other claim (a note, "Not now") clears a fix request an earlier
+    // click left behind when its tab closed before the turn ran.
+    // A lease, not a final mark: a fix request (#685: sent only on the
+    // operator's "Fix with AI") is delivered by the browser after this
+    // call; only its acknowledgement (ack_chat_notification) marks the
+    // audit notified. A tab that closes or a send that fails lets the
+    // lease run out and the card offers the fix again.
     const rows = (await tx.execute(sql`
-      UPDATE quality_audit_runs SET chat_notify_claimed_at = now()
+      UPDATE quality_audit_runs
+         SET chat_notify_claimed_at = now(),
+             fix_requested_at = CASE WHEN ${input.fixRequested} THEN now() ELSE NULL END
       WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
         AND status IN ('passed', 'problems', 'errored', 'skipped')
         AND (chat_notify_claimed_at IS NULL
@@ -287,8 +322,8 @@ export const claimChatNotificationOp = defineOperation({
 
 export const ackChatNotificationOp = defineOperation({
   name: "quality_audits.ack_chat_notification",
-  // Why human-only: the chat panel acknowledges the AI-turn nudge it has
-  // just sent (persisted by the chat stream) — see claim_chat_notification.
+  // Why human-only: the chat panel acknowledges the fix request the
+  // operator's click has just sent (persisted by the chat stream) — see claim_chat_notification.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ auditRunId: z.string().uuid() }).strict(),
@@ -296,6 +331,25 @@ export const ackChatNotificationOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     await tx.execute(sql`
       UPDATE quality_audit_runs SET chat_notified_at = now()
+      WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
+    `);
+    return ok({});
+  },
+});
+
+export const releaseChatNotificationOp = defineOperation({
+  name: "quality_audits.release_chat_notification",
+  // Why human-only: the chat panel gives back the claim of a fix request
+  // the operator clicked that did NOT start a turn (an external agent works
+  // in the chat, #682, or the send failed), so the card can be clicked again
+  // at once instead of after the lease ran out — and no fix round counts.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ auditRunId: z.string().uuid() }).strict(),
+  output: z.object({}),
+  handler: async (_ctx, input, tx) => {
+    await tx.execute(sql`
+      UPDATE quality_audit_runs SET chat_notify_claimed_at = NULL, fix_requested_at = NULL
       WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
     `);
     return ok({});

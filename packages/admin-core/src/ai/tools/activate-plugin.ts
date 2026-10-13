@@ -29,7 +29,7 @@ export const activatePluginTool = makeProposeTool<ActivatePluginInput>({
   opName: "plugins.propose_activation",
   executeOpOverride: "plugins.execute_activation",
   afterApply: "load-activated-plugin",
-  pendingQueuePath: "/security/plugins",
+  pendingQueuePath: "/settings/plugins/pending",
   when:
     "Activate an installed-but-inactive plugin so its tools and skills become usable. " +
     "Use when the operator asks for something you have no tool for AND list_plugins (or the installed-plugins note) shows a plugin that provides it — say what it will enable and propose the activation in the same turn, rather than telling the operator to go find a settings screen. " +

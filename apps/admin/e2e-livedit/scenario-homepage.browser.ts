@@ -328,7 +328,7 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     const leftover = activePluginSlugs().filter((s) => SCENARIO_PLUGINS.includes(s));
     expect(
       leftover,
-      `plugins left active by an earlier scenario (or an aborted local run — disable them at /security/plugins): ${leftover.join(", ")}`,
+      `plugins left active by an earlier scenario (or an aborted local run — disable them at /settings/plugins): ${leftover.join(", ")}`,
     ).toEqual([]);
   });
 

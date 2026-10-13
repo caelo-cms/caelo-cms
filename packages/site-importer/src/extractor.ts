@@ -8,7 +8,7 @@
  *     fonts/colors sampled from `:root` declarations in inline
  *     <style> blocks (best-effort — we don't run a full CSS engine)
  *
- * Heuristic + best-effort. Owner reviews + edits in /security/import.
+ * Heuristic + best-effort. Owner reviews + edits in /settings/import.
  */
 
 import { Parser } from "htmlparser2";
@@ -124,7 +124,7 @@ export function extractModulesFromHtml(html: string): ModuleExtraction {
 /**
  * Sample theme tokens from inline <style> blocks. Looks for
  * :root { --name: value; ... } declarations. Cheap; doesn't run a
- * full CSS parser. The Owner refines tokens via /security/structured.
+ * full CSS parser. The Owner refines tokens via /settings/structured.
  */
 export function extractThemeTokens(html: string): Record<string, string> {
   const tokens: Record<string, string> = {};

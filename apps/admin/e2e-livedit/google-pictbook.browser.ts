@@ -14,7 +14,7 @@ test("Google accepts the full tool catalogue and answers the Pictbook entry", as
   await page.getByLabel("Password").fill(process.env.CAELO_E2E_PASSWORD ?? "dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/edit/);
-  await page.goto("/security/ai");
+  await page.goto("/settings/ai");
   const google = page
     .locator('form[action="?/set"]')
     .filter({ has: page.locator('input[name="name"][value="google"]') });

@@ -95,7 +95,7 @@ function gatedToolRegistry(): ToolRegistry {
     gated: {
       proposeOp: "layouts_test.propose_update",
       executeOp: "layouts_test.execute_proposal",
-      pendingQueuePath: "/security/layouts/pending",
+      pendingQueuePath: "/settings/layouts/pending",
     },
     handler: async () => ({ ok: true, content: "unused (SDK-gated)" }),
   });

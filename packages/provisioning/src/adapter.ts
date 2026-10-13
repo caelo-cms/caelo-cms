@@ -36,7 +36,7 @@ export interface CloudAdapterInputs {
 
 /**
  * DNS records the operator must create at their registrar to make the
- * install reachable. Surfaced in the admin's /security/dns page with
+ * install reachable. Surfaced in the admin's /settings/dns page with
  * live resolver status badges.
  */
 export interface DnsRecord {

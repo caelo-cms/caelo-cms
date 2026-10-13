@@ -242,7 +242,7 @@ export function formatCostSection(cost: AiCost | null): string[] {
   }
   if (cost.unpricedCalls > 0) {
     lines.push(
-      `**⚠️ ${cost.unpricedCalls} call(s) unpriced (missing \`ai_pricing\` row) — real cost is HIGHER than shown; add rates at \`/security/ai\`.**`,
+      `**⚠️ ${cost.unpricedCalls} call(s) unpriced (missing \`ai_pricing\` row) — real cost is HIGHER than shown; add rates at \`/settings/ai\`.**`,
     );
     lines.push("");
   }

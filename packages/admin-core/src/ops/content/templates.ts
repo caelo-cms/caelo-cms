@@ -221,7 +221,7 @@ export const createTemplateOp = defineOperation({
           kind: "HandlerError",
           operation: "templates.create",
           message:
-            "no layoutId provided and site_defaults is empty — seed site_defaults via /security/site-defaults or pass an explicit layoutId",
+            "no layoutId provided and site_defaults is empty — seed site_defaults via /settings/site-defaults or pass an explicit layoutId",
           nextAction: {
             tool: "list_layouts",
             reason:

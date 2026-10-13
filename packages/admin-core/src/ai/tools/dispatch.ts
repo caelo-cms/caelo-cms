@@ -264,7 +264,7 @@ export type ToolInputSchema = Record<string, unknown>;
 export interface GatedToolSpec {
   readonly proposeOp: string;
   readonly executeOp: string;
-  /** The `/security/...` queue where a pending proposal can be approved. */
+  /** The `/settings/...` queue where a pending proposal can be approved. */
   readonly pendingQueuePath: string;
   /**
    * A step that must run AFTER the apply transaction commits.
@@ -316,7 +316,7 @@ export interface ToolDefinitionWithHandler<I> {
   /**
    * #589 — the permission(s) the human approving a `needsApproval` call
    * must hold (all of them). Required whenever `needsApproval` is set (the
-   * CI guard enforces it); the /security/tool-approvals Approve action
+   * CI guard enforces it); the /settings/tool-approvals Approve action
    * refuses an approver without them. Use the permission the equivalent
    * panel action requires.
    */
@@ -709,7 +709,7 @@ export class ToolRegistry {
     // op) and returns the canonical "Queued proposal <uuid>:" string
     // so ChatPanel's existing ProposeCard renderer parses + renders
     // the inline Approve / Reject buttons. The Approve action at
-    // /security/tool-approvals/pending atomically claims the row and
+    // /settings/tool-approvals/pending atomically claims the row and
     // dispatches the tool with the persisted args.
     //
     // The gate applies to AI actors only. The approve action re-dispatches
@@ -791,7 +791,7 @@ export class ToolRegistry {
               ok: true,
               content:
                 `Queued proposal ${proposalId}: ${name} — needs Owner approval (${previewSummary}). ` +
-                `Approve it on the proposal card in this chat (queue: /security/tool-approvals/pending).`,
+                `Approve it on the proposal card in this chat (queue: /settings/tool-approvals/pending).`,
             };
           }
           // Queue insert failed — emit a non-canonical fallback so the

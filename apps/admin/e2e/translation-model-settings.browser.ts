@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #593 — /security/ai "Translation model": defaults to "Same as chat
+ * #593 — /settings/ai "Translation model": defaults to "Same as chat
  * model", the Owner picks a catalogue model, it persists across a reload,
  * and choosing "Same as chat model" again stores NULL. The chat-model form
  * is untouched by it.
@@ -18,7 +18,7 @@ test("Owner sets and clears the translation model", async ({ page }) => {
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/edit/);
-  await page.goto("/security/ai");
+  await page.goto("/settings/ai");
 
   const providerForm = page
     .locator('form[action="?/set"]')

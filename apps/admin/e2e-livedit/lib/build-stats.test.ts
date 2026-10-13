@@ -121,7 +121,7 @@ describe("formatCostSection", () => {
   it("renders a bold WARNING when unpricedCalls > 0", () => {
     const md = formatCostSection(parseAiCost(UNPRICED)).join("\n");
     expect(md).toContain("⚠️ 2 call(s) unpriced");
-    expect(md).toContain("/security/ai");
+    expect(md).toContain("/settings/ai");
     expect(md).toContain("real cost is HIGHER");
   });
 });
