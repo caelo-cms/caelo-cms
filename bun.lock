@@ -172,7 +172,7 @@
     },
     "packages/platform-updater": {
       "name": "@caelo-cms/platform-updater",
-      "version": "0.10.45",
+      "version": "0.10.47",
       "dependencies": {
         "@caelo-cms/provisioning": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
