@@ -963,7 +963,7 @@ async function stepStateBackend(
 
   if (meta.stateBackend?.kind !== "gcs") {
     const record = gcsBackendRecord(projectId, region);
-    const existing = new GcsStateStore(record.bucket, root).read("install.json");
+    const existing = new GcsStateStore(record.bucket, root).peek("install.json");
     if (existing !== null) {
       const other = JSON.parse(existing) as Partial<InstallMetadata>;
       cancel(

@@ -234,7 +234,8 @@ export function ensureInstallDir(installId: string): {
 }
 
 /**
- * Scan `~/.caelo-*` for every install with a readable `install.json`.
+ * Scan `~/.caelo-*` for every install with a readable `install.json` (for
+ * an install whose state is in its ops bucket, the bucket's copy).
  * Used by the wizard to offer "resume X" before prompting for the
  * domain / owner / project again. Silently skips dirs that fail to
  * parse — partial / orphaned dirs don't block the new-install flow.
@@ -251,9 +252,14 @@ export function listInstalls(): InstallMetadata[] {
   for (const entry of entries) {
     if (!entry.startsWith(ROOT_PREFIX)) continue;
     const installId = entry.slice(ROOT_PREFIX.length);
-    // The local copy: listing must not touch the network. Commands re-read
-    // through the store (readMetadata) before they write.
-    const meta = readLocalMetadata(installId);
+    // Through the store: for an install whose state lives in its ops bucket
+    // the bucket copy is the truth, and every lifecycle command picks its
+    // install (and often writes metadata back) from this list. A bucket
+    // that can't be read stops the command rather than acting on a stale
+    // mirror.
+    const local = readLocalMetadata(installId);
+    if (!local) continue;
+    const meta = local.stateBackend?.kind === "gcs" ? readMetadata(installId) : local;
     if (meta) out.push(meta);
   }
   out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));

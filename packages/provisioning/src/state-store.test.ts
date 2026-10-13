@@ -88,6 +88,15 @@ describe("GcsStateStore", () => {
     expect(b.calls.filter((c) => c.startsWith("storage cat")).length).toBe(1);
   });
 
+  it("peek reads the bucket without caching or touching the local mirror", () => {
+    const b = fakeBucket();
+    b.objects.set("gs://acme-caelo-ops/install/install.json", '{"installId":"someone-else"}\n');
+    writeFileSync(join(root, "install.json"), '{"installId":"mine"}\n');
+    const s = new GcsStateStore("acme-caelo-ops", root, b.run);
+    expect(s.peek("install.json")).toContain("someone-else");
+    expect(readFileSync(join(root, "install.json"), "utf8")).toContain("mine");
+  });
+
   it("a missing object is null; any other bucket error throws (no silent local fallback)", () => {
     const b = fakeBucket();
     const s = new GcsStateStore("acme-caelo-ops", root, b.run);

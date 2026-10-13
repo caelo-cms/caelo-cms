@@ -123,17 +123,23 @@ export class GcsStateStore implements StateStore {
     return `gs://${this.bucket}/${OPS_INSTALL_PREFIX}/${file}`;
   }
 
+  /**
+   * The document as the bucket holds it right now, without caching it or
+   * touching the local mirror — for looking at a bucket this machine may
+   * not own (the wizard's "is this project already an install?" check).
+   */
+  peek(file: StateFile): string | null {
+    const r = this.run(["storage", "cat", this.objectUrl(file)]);
+    if (r.ok) return r.stdout;
+    if (NOT_FOUND.test(r.stderr)) return null;
+    throw new Error(
+      `Could not read ${this.objectUrl(file)}: ${r.stderr.trim() || `gcloud exited ${r.exitCode}`}. Check that you are signed in (gcloud auth login) as an account with access to the install's ops bucket.`,
+    );
+  }
+
   read(file: StateFile): string | null {
     if (this.cache.has(file)) return this.cache.get(file) ?? null;
-    const r = this.run(["storage", "cat", this.objectUrl(file)]);
-    let text: string | null;
-    if (r.ok) text = r.stdout;
-    else if (NOT_FOUND.test(r.stderr)) text = null;
-    else {
-      throw new Error(
-        `Could not read ${this.objectUrl(file)}: ${r.stderr.trim() || `gcloud exited ${r.exitCode}`}. Check that you are signed in (gcloud auth login) as an account with access to the install's ops bucket.`,
-      );
-    }
+    const text = this.peek(file);
     this.cache.set(file, text);
     if (text !== null) writeTextAtomic(join(this.root, file), text);
     return text;
