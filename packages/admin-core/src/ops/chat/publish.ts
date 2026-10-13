@@ -974,6 +974,11 @@ export async function mergeWindowToMain(
     await refreshLivePathsAfterMerge(ctx, tx, window.branchId, {
       pluginRowsMerged: pluginRowRows.length > 0,
       replayedPageIds: pageRows.map((r) => r.entity_id),
+      skipRedirectPageIds: new Set(
+        entities
+          .filter((e) => e.kind === "page" && e.state.pendingRedirects === "skip")
+          .map((e) => e.entityId),
+      ),
       newlyLivePageIds,
     });
   }

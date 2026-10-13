@@ -7,7 +7,12 @@
  * "no raw HTML on pages" invariant in code.
  */
 
-import { defineOperation, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
+import {
+  defineOperation,
+  OperationAbortError,
+  type QueryError,
+  type TransactionRunner,
+} from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
   err,
@@ -290,19 +295,18 @@ async function withTreeView(
   }
   let branchPaths = new Map<string, string>();
   if (ctx.chatBranchId) {
-    // Main pages this chat renamed or moved (pending), plus everything
-    // below them: their stored path is the live one, not the chat's.
-    const live = await loadPageTree(tx, null);
+    // Pages this chat renamed or moved (pending — main pages and its own
+    // alike), plus everything below them: their stored path predates the
+    // pending change.
+    const stored = await loadPageTree(tx, ctx.chatBranchId, { overlay: false });
     const changed = [...tree.byId.values()]
       .filter((n) => {
-        const l = live.byId.get(n.id);
+        const l = stored.byId.get(n.id);
         return l !== undefined && (l.slug !== n.slug || l.parentPageId !== n.parentPageId);
       })
       .map((n) => n.id);
     if (changed.length > 0) {
-      const drifted = [...changed, ...descendantIdsOf(tree, changed)].filter(
-        (id) => tree.byId.get(id)?.chatBranchId === null,
-      );
+      const drifted = [...changed, ...descendantIdsOf(tree, changed)];
       branchPaths = await composePaths(tx, tree, drifted, renderScopeOf(ctx));
     }
   }
@@ -1039,8 +1043,18 @@ export const updatePageOp = defineOperation({
           message: "page not found while building branched state",
         });
       }
+      // A pending rename remembers "no 301s" for the publish that makes
+      // it live; any other edit keeps whatever the last rename asked.
+      const { pendingRedirects: prevRedirects, ...baseState } = base;
+      const pendingRedirects =
+        input.slug !== undefined && input.slug !== base.slug
+          ? input.redirectFromOld === "skip"
+            ? "skip"
+            : undefined
+          : prevRedirects;
       state = {
-        ...base,
+        ...baseState,
+        ...(pendingRedirects ? { pendingRedirects } : {}),
         slug: input.slug ?? base.slug,
         title: input.title ?? base.title,
         templateId: input.templateId ?? base.templateId,
@@ -1680,7 +1694,9 @@ async function deletePageHandler(
           },
           tx,
         );
-        if (!r.ok) return r;
+        // Earlier siblings may already be deleted on this tx: a plain
+        // err would commit that partial subtree delete. Abort it whole.
+        if (!r.ok) throw new OperationAbortError(r.error);
       }
     }
   }

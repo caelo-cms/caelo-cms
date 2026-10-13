@@ -83,6 +83,7 @@ const pageStateV1 = z.preprocess(
       // 0263 — absent on snapshots written before nested pages existed;
       // see PageState.parentPageId for how writers treat that.
       parentPageId: z.string().uuid().nullable().optional(),
+      pendingRedirects: z.literal("skip").optional(),
     })
     .strict(),
 );

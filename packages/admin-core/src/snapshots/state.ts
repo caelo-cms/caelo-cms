@@ -72,6 +72,12 @@ export interface PageState {
    * instead of inventing a value.
    */
   readonly parentPageId?: string | null;
+  /**
+   * Only on a chat's PENDING rename / move whose caller asked for no
+   * 301s from the old URLs (`redirectFromOld: "skip"`): the publish that
+   * makes the move live honours it. Never set on live-state snapshots.
+   */
+  readonly pendingRedirects?: "skip";
 }
 
 /**

@@ -29,6 +29,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import {
+  ancestorIdsOf,
   ancestorSlugsOf,
   descendantIdsOf,
   loadPageTree,
@@ -354,6 +355,9 @@ export async function refreshLivePathsAfterMerge(
     readonly pluginRowsMerged: boolean;
     readonly replayedPageIds: readonly string[];
     readonly newlyLivePageIds: ReadonlySet<string>;
+    /** Replayed pages whose pending rename / move asked for no 301s;
+     *  their subtrees' moves honour it too. */
+    readonly skipRedirectPageIds: ReadonlySet<string>;
   },
 ): Promise<string[]> {
   const tree = await loadPageTree(tx, null);
@@ -382,11 +386,21 @@ export async function refreshLivePathsAfterMerge(
     tx,
     moves.map((m) => ({ id: m.pageId, path: m.to })),
   );
+  const effective = moves.filter((m) => !opts.newlyLivePageIds.has(m.pageId));
+  const skips = (id: string): boolean =>
+    opts.skipRedirectPageIds.has(id) ||
+    ancestorIdsOf(tree, id).some((a) => opts.skipRedirectPageIds.has(a));
   await applyPathMoveEffects(
     ctx,
     tx,
-    moves.filter((m) => !opts.newlyLivePageIds.has(m.pageId)),
+    effective.filter((m) => !skips(m.pageId)),
     "auto",
+  );
+  await applyPathMoveEffects(
+    ctx,
+    tx,
+    effective.filter((m) => skips(m.pageId)),
+    "skip",
   );
   return moves.map((m) => m.pageId);
 }

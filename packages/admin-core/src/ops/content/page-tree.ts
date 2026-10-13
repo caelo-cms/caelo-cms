@@ -61,6 +61,11 @@ interface RawNodeRow {
 export async function loadPageTree(
   tx: TransactionRunner,
   chatBranchId: string | null,
+  opts: {
+    /** false = the stored rows only, without the branch's pending edits
+     *  (what `current_path` was last composed from). */
+    readonly overlay?: boolean;
+  } = {},
 ): Promise<PageTree> {
   const visibility = chatBranchId
     ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${chatBranchId}::uuid)`
@@ -77,7 +82,7 @@ export async function loadPageTree(
       { id: r.id, slug: r.slug, parentPageId: r.parent_page_id, chatBranchId: r.chat_branch_id },
     ]),
   );
-  if (chatBranchId) {
+  if (chatBranchId && opts.overlay !== false) {
     const overlay = (await tx.execute(sql`
       SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
         FROM page_snapshots ps

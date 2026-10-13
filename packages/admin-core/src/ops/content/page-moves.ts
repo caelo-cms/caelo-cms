@@ -121,11 +121,13 @@ export async function executePageMoves(
       if (!base) {
         return err({ kind: "HandlerError", operation: OP, message: `page ${c.pageId} not found` });
       }
+      const { pendingRedirects: _prev, ...rest } = base;
       entities.push({
         kind: "page",
         entityId: c.pageId,
         state: {
-          ...base,
+          ...rest,
+          ...(redirects === "skip" ? { pendingRedirects: "skip" as const } : {}),
           slug: c.newSlug ?? base.slug,
           parentPageId: c.parentPageId === undefined ? (base.parentPageId ?? null) : c.parentPageId,
           version: base.version + 1,

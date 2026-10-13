@@ -367,4 +367,42 @@ describe("nested page URLs — chat branch + publish + revert", () => {
     expect(rev.ok).toBe(true);
     expect(await pathOf(page)).toBe(`/${PFX}-br`);
   });
+
+  it("a chat's own new page moved in the chat lists at its pending path; 'skip' survives publish", async () => {
+    const target = await makePage("br2-t");
+    const live = await makePage("br2-live");
+    const session = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+      isolation: "experiment",
+      title: `${PFX}-chat2`,
+    });
+    if (!session.ok) throw new Error("session");
+    const { chatSessionId, chatBranchId } = session.value as {
+      chatSessionId: string;
+      chatBranchId: string;
+    };
+    const chatCtx: ExecutionContext = { ...SYSTEM, chatBranchId, chatTaskId: chatSessionId };
+    const fresh = await makePage("br2-new", undefined, chatCtx);
+    const r = await execute(registry, adapter, chatCtx, "pages.move_many", {
+      moves: [
+        { pageId: fresh, parentPageId: target },
+        { pageId: live, parentPageId: target },
+      ],
+      redirectFromOld: "skip",
+    });
+    expect(r.ok).toBe(true);
+    const listed = await execute(registry, adapter, chatCtx, "pages.list", {});
+    if (!listed.ok) throw new Error("list");
+    const rows = (listed.value as { pages: { id: string; currentPath: string }[] }).pages;
+    expect(rows.find((p) => p.id === fresh)?.currentPath).toBe(`/${PFX}-br2-t/${PFX}-br2-new`);
+
+    const merged = await execute(registry, adapter, SYSTEM, "chat.merge_to_main", {
+      chatSessionId,
+    });
+    expect(merged.ok).toBe(true);
+    expect(await pathOf(live)).toBe(`/${PFX}-br2-t/${PFX}-br2-live`);
+    expect(await pathOf(fresh)).toBe(`/${PFX}-br2-t/${PFX}-br2-new`);
+    // The operator asked for no 301s; a page that was never live gets none.
+    expect(await redirectTo(`/${PFX}-br2-live`)).toBeNull();
+    expect(await redirectTo(`/${PFX}-br2-new`)).toBeNull();
+  });
 });
