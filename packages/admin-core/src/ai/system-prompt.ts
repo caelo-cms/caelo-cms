@@ -454,6 +454,12 @@ function buildToolPlaybookBlock(surface: PromptSurface): string {
     surface === "chat"
       ? "**Inspect rendered output** → `inspect_page_render`, `screenshot_page`, `inspect_built_page`. **Parallel work** → `spawn_subagents`."
       : "**Inspect rendered output** → `inspect_page_render` (composed HTML/CSS of this session's preview, pending edits included), `screenshot_page` (real-Chromium screenshot of this session's branch preview, rendered server-side — the image comes back as an MCP image content block), `inspect_built_page` (the built HTML a Stage actually uploaded). **Parallel work** → your own agent runtime; Caelo's subagent tools are not on this surface.";
+  // #687 — on Power-MCP the card shows in the operator's admin, not in the
+  // caller's conversation; the caller must still make the call itself.
+  const approvalLine =
+    surface === "chat"
+      ? 'Hard-to-revert actions (deploys, users/roles, layout/template deletes, site reverts) go through `propose_*` tools that queue an Owner-approval card — say "I prepared this — click Approve", never claim they are applied.'
+      : "Hard-to-revert actions (deploys, users/roles, languages/locales, layout/template deletes, site reverts) are APPROVAL-GATED tools — call them yourself: each call queues an approval card in the operator's Caelo admin (Live Edit chat and pending-approvals page) and returns their decision. Tell the operator to approve the card; never ask them to paste a prompt into the Caelo chat, and never claim a change applied before the outcome says so.";
   const discovery =
     surface === "chat"
       ? 'These are the highlights, NOT the full catalogue — ~120 tools exist (bulk SEO, users/roles, plugins, design drafts, theme history, snapshot reverts, …). Only the core tools carry full schemas up front; the rest load on demand. Use the tool-search tool in your tool list to find and load them — search by the exact names above or by keyword ("redirect", "domain", "revert") — and do so proactively whenever a task needs a capability you don\'t see loaded.'
@@ -465,7 +471,7 @@ function buildToolPlaybookBlock(surface: PromptSurface): string {
     "- A **page** binds to a **template** (which defines named blocks); each block holds an ordered list of **module placements**.",
     "- A **layout** is the chrome shell (header / footer / nav) shared by every template bound to it — site-wide elements live THERE, never per page.",
     "- A **module** is HTML/CSS/JS plus typed fields; a **content_instance** holds one module's field values (synced = shared across pages, unsynced = private to one placement).",
-    '- Every write lands in the shared draft until it is staged (see ## Staging). Hard-to-revert actions (deploys, users/roles, layout/template deletes, site reverts) go through `propose_*` tools that queue an Owner-approval card — say "I prepared this — click Approve", never claim they are applied.',
+    `- Every write lands in the shared draft until it is staged (see ## Staging). ${approvalLine}`,
     "",
     "Standard workflows (tool names are exact):",
     "- **Batching & parallelism:** for a multi-row WRITE, use the domain's bulk op — `set_page_module_content_many`, `update_pages_many`, `set_pages_status_many`, `delete_pages_many`, `create_content_instances`, `set_content_instance_values_many`, `bulk_create_redirects` — which applies every row in ONE atomic transaction with ONE snapshot; never loop the singular tool. For independent READS (get/list/inspect on different targets) you MAY emit several tool calls in the SAME turn — they run together in one round-trip. Between a bulk op and several parallel singular writes, always prefer the bulk op (atomicity + one snapshot + fewer tokens).",
