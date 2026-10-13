@@ -10,10 +10,6 @@
  * precisely the columns and rows these handlers touch — the registry and
  * the database agree on the surface, and the database is the bound:
  *
- *   experiments.get_active         /api/variant/assign — one active
- *                                  experiment's variant weights by slug
- *   experiments.record_assignment  /api/variant/assign — the per-visitor
- *                                  impression counter
  *   comment_archive.list_for_page  the comments plugin's `list_approved`
  *                                  (via `ctx.cms.call`) — approved comments
  *                                  only, enforced by a gateway_role policy
@@ -28,73 +24,6 @@ import { defineOperation, type OperationRegistry } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-
-const assignmentVariant = z.object({ label: z.string(), weight: z.number() });
-
-/**
- * One active experiment by slug, reduced to what variant assignment needs.
- * Deliberately narrower than `experiments.list` (no page, timestamps,
- * winner or drafts) so the gateway's grant can be just as narrow.
- */
-export const getActiveExperimentOp = defineOperation({
-  name: "experiments.get_active",
-  // Why system-only: the gateway's /api/variant/assign lookup. Authoring
-  // surfaces read experiments through experiments.list.
-  actorScope: ["system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      slug: z
-        .string()
-        .min(1)
-        .max(120)
-        .regex(/^[a-z][a-z0-9-]*$/),
-    })
-    .strict(),
-  output: z.object({
-    experiment: z.object({ id: z.string(), variants: z.array(assignmentVariant) }).nullable(),
-  }),
-  handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
-      SELECT id::text AS id, variants
-      FROM experiments
-      WHERE slug = ${input.slug} AND status = 'active'
-      LIMIT 1
-    `)) as unknown as Array<{ id: string; variants: Array<{ label: string; weight: number }> }>;
-    const row = rows[0];
-    return ok({
-      experiment: row
-        ? { id: row.id, variants: row.variants.map((v) => ({ label: v.label, weight: v.weight })) }
-        : null,
-    });
-  },
-});
-
-export const recordAssignmentOp = defineOperation({
-  name: "experiments.record_assignment",
-  // Why system-only: the gateway's /api/variant/assign endpoint records visitor assignments —
-  // traffic data, not an authoring action.
-  actorScope: ["system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      experimentId: z.string().uuid(),
-      variantLabel: z.string().min(1).max(120),
-      visitorIdHash: z.string().min(1).max(64),
-    })
-    .strict(),
-  output: z.object({}),
-  handler: async (_ctx, input, tx) => {
-    await tx.execute(sql`
-      INSERT INTO experiment_assignments (experiment_id, variant_label, visitor_id_hash, impressions, first_seen_at, last_seen_at)
-      VALUES (${input.experimentId}::uuid, ${input.variantLabel}, ${input.visitorIdHash}, 1, now(), now())
-      ON CONFLICT (experiment_id, variant_label, visitor_id_hash) DO UPDATE SET
-        impressions  = experiment_assignments.impressions + 1,
-        last_seen_at = now()
-    `);
-    return ok({});
-  },
-});
 
 const listForPageInput = z
   .object({
@@ -182,10 +111,8 @@ export const commentArchiveListForPageOp = defineOperation({
  * Register the gateway's whole core-operation surface on its registry.
  * Nothing else belongs there: an operation missing here answers
  * `UnknownOperation` to the gateway's plugins, and one added here needs a
- * matching `gateway_role` grant (migration 0252).
+ * matching `gateway_role` grant (migrations 0252, 0259).
  */
 export function registerGatewayOperations(registry: OperationRegistry): void {
-  registry.register(getActiveExperimentOp);
-  registry.register(recordAssignmentOp);
   registry.register(commentArchiveListForPageOp);
 }

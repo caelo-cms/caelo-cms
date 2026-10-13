@@ -27,11 +27,6 @@ import { deleteModulesManyTool } from "../delete-modules-many.js";
 import { deployStagingTool } from "../deploy-staging.js";
 import { type ToolContext, ToolRegistry, type ToolResult } from "../dispatch.js";
 import { verifyDnsRecordsTool, verifyDomainsTool } from "../dns-verification.js";
-import {
-  createExperimentTool,
-  getExperimentResultsTool,
-  listExperimentsTool,
-} from "../experiments.js";
 import { acceptImportPagesTool, cleanupImportRunTool } from "../import-run-actions.js";
 import { sendTestEmailTool } from "../send-test-email.js";
 
@@ -147,89 +142,6 @@ describe("deploy_staging", () => {
     const r = await run(deployStagingTool, { repoRoot: "/etc" }, h.toolCtx);
     expect(r.ok).toBe(false);
     expect(h.calls).toHaveLength(0);
-  });
-});
-
-describe("experiments tools", () => {
-  const variants = [
-    { label: "control", weight: 0.5 },
-    { label: "b", weight: 0.5, htmlPatches: [{ find: "Sign up", replace: "Try it" }] },
-  ];
-
-  it("create_experiment validates the op's own schema at the tool boundary", async () => {
-    const h = harness({ "experiments.create": () => ({ experimentId: U3 }) });
-    const bad = await run(
-      createExperimentTool,
-      { slug: "Bad Slug", pageId: U1, variants },
-      h.toolCtx,
-    );
-    expect(bad.ok).toBe(false);
-    const one = await run(
-      createExperimentTool,
-      { slug: "hero-cta", pageId: U1, variants: [variants[0]] },
-      h.toolCtx,
-    );
-    expect(one.ok).toBe(false);
-    // A label is a build/URL path segment — traversal never reaches the op.
-    for (const label of ["x/../../../../target", "..", "a b", ".hidden"]) {
-      const traversal = await run(
-        createExperimentTool,
-        { slug: "hero-cta", pageId: U1, variants: [variants[0], { label, weight: 0.5 }] },
-        h.toolCtx,
-      );
-      expect(traversal.ok).toBe(false);
-    }
-    expect(h.calls).toHaveLength(0);
-  });
-
-  it("create_experiment returns the draft id and points at the gated activation", async () => {
-    const h = harness({ "experiments.create": () => ({ experimentId: U3 }) });
-    const r = await run(
-      createExperimentTool,
-      { slug: "hero-cta", pageId: U1, variants },
-      h.toolCtx,
-    );
-    expect(r.ok).toBe(true);
-    expect(r.content).toContain(U3);
-    expect(r.content).toContain("propose_activate_experiment");
-  });
-
-  it("list_experiments forwards the status filter only", async () => {
-    const h = harness({
-      "experiments.list": () => ({
-        experiments: [
-          {
-            id: U3,
-            slug: "hero-cta",
-            pageId: U1,
-            status: "draft",
-            variants,
-            startedAt: null,
-            completedAt: null,
-            winningVariant: null,
-            createdAt: "2026-10-07T00:00:00.000Z",
-          },
-        ],
-      }),
-    });
-    const r = await run(listExperimentsTool, { status: "draft", limit: 5 }, h.toolCtx);
-    expect(r.ok).toBe(true);
-    expect(h.calls[0]?.input).toEqual({ status: "draft" });
-    expect(r.content).toContain("hero-cta");
-    expect(r.content).toContain("control:0.5|b:0.5");
-  });
-
-  it("get_experiment_results renders per-variant counts and an empty state", async () => {
-    const h = harness({
-      "experiments.get_results": () => ({
-        counts: [{ variantLabel: "b", uniqueVisitors: 3, totalImpressions: 7 }],
-      }),
-    });
-    const r = await run(getExperimentResultsTool, { experimentId: U3 }, h.toolCtx);
-    expect(r.content).toContain("b: 3 unique visitor(s), 7 impression(s)");
-    const empty = harness({ "experiments.get_results": () => ({ counts: [] }) });
-    const r2 = await run(getExperimentResultsTool, { experimentId: U3 }, empty.toolCtx);
-    expect(r2.content).toContain("No visitors assigned yet");
   });
 });
 

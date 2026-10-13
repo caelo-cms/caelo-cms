@@ -1,6 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { Activity, ArrowRightLeft, Bot, Coins, Database, Download, FlaskConical, Gauge, Globe, Image as ImageIcon, Inbox, Key, Layout, Lock, Mail, MessageSquare, Puzzle, Rocket, Search, Settings, Shield, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-svelte";
+  import { Activity, ArrowRightLeft, Bot, Coins, Database, Download, Gauge, Globe, Image as ImageIcon, Inbox, Key, Layout, Lock, Mail, MessageSquare, Puzzle, Rocket, Search, Settings, Shield, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-svelte";
   import {
     Card,
     CardDescription,
@@ -27,7 +27,6 @@
     { href: "/security/email", label: "Email transport", desc: "Resend / SMTP / SES selection for plugin email sends", icon: Mail },
     { href: "/security/gateway", label: "Gateway", desc: "Public-write hardening: rate-limits, captcha, body cap, request log", icon: Shield },
     { href: "/security/gateway/live", label: "Gateway live", desc: "Real-time rolling analytics — p95, errors, throttled, top ops", icon: Activity },
-    { href: "/security/experiments", label: "A/B experiments", desc: "Variant routing per page; client-side stable hash; impressions log", icon: FlaskConical },
     { href: "/security/import", label: "Site import", desc: "Crawl an existing site; stage as draft pages; Owner reviews per page", icon: Download },
     { href: "/security/import/pending", label: "Import proposals", desc: "AI-proposed crawls awaiting Owner approval", icon: Inbox },
     { href: "/security/gateway/pending", label: "Rate-limit proposals", desc: "AI-proposed per-(plugin, op) rate-limit changes — Owner approves", icon: Inbox },

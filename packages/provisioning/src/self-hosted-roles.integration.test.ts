@@ -108,10 +108,9 @@ describe("self-hosted role convergence against Postgres (#613 review)", () => {
       }[];
       expect(policies.map((p) => p.p)).toEqual([
         "audit_events_gateway_plugin_only",
-        // #634 (migration 0252): the visitor paths' row limits.
+        // #634 (migration 0252): the visitor paths' row limits. The A/B
+        // ones went with the experiment tables (#676, migration 0259).
         "comment_archive_gateway_approved_only",
-        "experiment_assignments_gateway_active_only",
-        "experiments_gateway_active_only",
         "rate_limit_buckets_gateway_keys",
       ]);
     } finally {

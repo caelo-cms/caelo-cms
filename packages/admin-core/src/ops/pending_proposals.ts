@@ -122,11 +122,6 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                chat_session_id::text
           FROM snapshot_revert_pending_actions WHERE status = 'pending'
         UNION ALL
-        SELECT 'experiments', kind, id::text, proposed_by::text, created_at,
-               COALESCE(preview->>'experimentSlug', 'experiment'),
-               chat_session_id::text
-          FROM experiment_pending_actions WHERE status = 'pending'
-        UNION ALL
         SELECT 'email_config', 'set', id::text, proposed_by::text, created_at,
                COALESCE(preview->>'transport', 'email'),
                chat_session_id::text
@@ -247,7 +242,6 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         UNION ALL SELECT 'users' FROM user_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'roles' FROM role_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'snapshots' FROM snapshot_revert_pending_actions WHERE status = 'pending'
-        UNION ALL SELECT 'experiments' FROM experiment_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'email_config' FROM email_config_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'ai_providers' FROM ai_providers_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'mcp_tokens' FROM mcp_token_pending_actions WHERE status = 'pending'

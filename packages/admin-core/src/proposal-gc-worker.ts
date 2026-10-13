@@ -38,7 +38,6 @@ const PENDING_TABLES = [
   "user_pending_actions",
   "role_pending_actions",
   "snapshot_revert_pending_actions",
-  "experiment_pending_actions",
   "email_config_pending_actions",
   "ai_providers_pending_actions",
   "mcp_token_pending_actions",

@@ -186,9 +186,6 @@ describe("agent-tool parity: the Power-MCP surface", () => {
     const served = new Set(powerToolCatalogue(tools).map((t) => t.name));
     for (const t of [
       "deploy_staging",
-      "create_experiment",
-      "list_experiments",
-      "get_experiment_results",
       "verify_domains",
       "verify_dns_records",
       "delete_media_many",

@@ -8,9 +8,8 @@ Operator playbook for triaging + recovering from production incidents. Keep this
 2. **Deploy stuck / partial** → §B.
 3. **AI calls failing or budget hit** → §C.
 4. **Plugin sandbox crashed the host** → §D.
-5. **Edge router serving wrong variant / 404** → §E.
-6. **Database connection errors** → §F.
-7. **Secret leak (committed key, exposed token)** → §G.
+5. **Database connection errors** → §F.
+6. **Secret leak (committed key, exposed token)** → §G.
 
 If unsure, start with §A: tail the admin's structured logs and follow the `request_id` of the most-recent failure.
 
@@ -85,25 +84,6 @@ UPDATE plugins SET status='disabled' WHERE slug='<slug>';
 ```
 
 Restart the admin (the plugin host re-bootstraps). A plugin should never crash the host (Deno sandbox); if one did, file a security issue, disable the plugin and revoke its grants.
-
-## §E — Edge router serving wrong variant / 404
-
-1. Confirm the routing manifest is fresh:
-
-   ```bash
-   # AWS
-   aws s3 cp s3://caelo-prod-static/ab-routing.json - | jq .
-
-   # GCP
-   gcloud storage cat gs://<project>-caelo-prod-static/ab-routing.json | jq .
-
-   # Self-hosted
-   cat output/production/current/ab-routing.json | jq .
-   ```
-
-2. Variants the manifest references must exist as files (`output/.../_variants/<exp-slug>__<label>/<page-slug>/index.html`). If missing → static-gen didn't run after the last experiment activation. Re-run.
-
-3. If GCP edge-router has cached an old manifest, restart the Cloud Run service (manifest cache TTL is 30s but redeploys clear it).
 
 ## §F — Database connection errors
 

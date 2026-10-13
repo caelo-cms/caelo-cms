@@ -50,11 +50,6 @@ import { duplicateThemeTool } from "./duplicate-theme.js";
 import { editContentTool } from "./edit-content.js";
 import { editImageTool } from "./edit-image.js";
 import { editModuleTool } from "./edit-module.js";
-import {
-  createExperimentTool,
-  getExperimentResultsTool,
-  listExperimentsTool,
-} from "./experiments.js";
 import { exportThemeTool } from "./export-theme.js";
 import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
@@ -150,8 +145,6 @@ import {
   proposeDomainReconnectTool,
   proposeDomainRemoveTool,
   proposeEmailConfigSetTool,
-  proposeExperimentActivateTool,
-  proposeExperimentCompleteTool,
   proposeLayoutDeleteTool,
   proposeLayoutUpdateTool,
   proposeMcpTokenCreateTool,
@@ -505,8 +498,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeRevertPageTool);
   registry.register(proposeRevertTemplateTool);
   registry.register(proposeRevertModuleTool);
-  registry.register(proposeExperimentActivateTool);
-  registry.register(proposeExperimentCompleteTool);
   registry.register(proposeEmailConfigSetTool);
   registry.register(proposeAiProvidersSetTool);
   registry.register(proposeAiProvidersClearKeyTool);
@@ -564,9 +555,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // AI could not press; src/__tests__/agent-tool-parity.test.ts keeps the
   // op ↔ tool parity from regressing.
   registry.register(deployStagingTool);
-  registry.register(createExperimentTool);
-  registry.register(listExperimentsTool);
-  registry.register(getExperimentResultsTool);
   registry.register(verifyDomainsTool);
   registry.register(verifyDnsRecordsTool);
   registry.register(deleteMediaManyTool);

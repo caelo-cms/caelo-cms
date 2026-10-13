@@ -32,7 +32,6 @@ const PENDING_TABLES = [
   "user_pending_actions",
   "role_pending_actions",
   "snapshot_revert_pending_actions",
-  "experiment_pending_actions",
   "email_config_pending_actions",
   "ai_providers_pending_actions",
   "mcp_token_pending_actions",
@@ -147,13 +146,6 @@ async function runCancelOnTable(
     case "snapshot_revert_pending_actions":
       return (await tx.execute(sql`
         UPDATE snapshot_revert_pending_actions SET status='cancelled', decided_at=now(),
-          decided_by=${actorId}::uuid, decision_reason=${reason}
-        WHERE id=${proposalId}::uuid AND status='pending' AND proposed_by=${actorId}::uuid
-        RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
-    case "experiment_pending_actions":
-      return (await tx.execute(sql`
-        UPDATE experiment_pending_actions SET status='cancelled', decided_at=now(),
           decided_by=${actorId}::uuid, decision_reason=${reason}
         WHERE id=${proposalId}::uuid AND status='pending' AND proposed_by=${actorId}::uuid
         RETURNING id::text AS id

@@ -57,7 +57,6 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
   url: string,
 ) => SQLType;
 
-import { handleVariantAssign, VARIANT_SCRIPT } from "./ab-router.js";
 import { GATEWAY_DATABASE_ROLES, gatewayDatabaseUrls } from "./database-env.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
 import {
@@ -384,12 +383,8 @@ interface RequestLogRow {
 }
 
 let cachedAdapter: DatabaseAdapter | null = null;
-let cachedRegistry: OperationRegistry | null = null;
 export function setGatewayAdapter(adapter: DatabaseAdapter): void {
   cachedAdapter = adapter;
-}
-export function setGatewayRegistry(registry: OperationRegistry): void {
-  cachedRegistry = registry;
 }
 
 async function recordRequest(row: RequestLogRow): Promise<void> {
@@ -466,17 +461,6 @@ export async function handleRequest(req: Request): Promise<Response> {
     return jsonResponse({ ok: true });
   }
 
-  // ---- A/B variant inline script ----
-  if (req.method === "GET" && url.pathname === "/api/variant.js") {
-    return new Response(VARIANT_SCRIPT, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/javascript; charset=utf-8",
-        "Cache-Control": "public, max-age=300",
-      },
-    });
-  }
-
   if (!cachedAdapter) {
     return jsonResponse(
       { ok: false, error: { kind: "ServiceUnavailable", message: "gateway not bootstrapped" } },
@@ -521,46 +505,6 @@ export async function handleRequest(req: Request): Promise<Response> {
       cookies.push(visitorCookieHeader(signed));
     }
     return jsonResponse({ ok: true, data: challenge }, { setCookies: cookies });
-  }
-
-  // ---- A/B variant assignment ----
-  if (req.method === "POST" && url.pathname === "/api/variant/assign") {
-    if (!cachedRegistry) {
-      return jsonResponse({ ok: false, error: { kind: "ServiceUnavailable" } }, { status: 503 });
-    }
-    const expSlug = url.searchParams.get("exp") ?? "";
-    if (!expSlug) {
-      return jsonResponse(
-        { ok: false, error: { kind: "BadRequest", message: "exp required" } },
-        { status: 400 },
-      );
-    }
-    // Bucket on the gateway-verified cookie, never on a client-sent id:
-    // the cookie is HttpOnly, so page script cannot read it (#649).
-    const visitor = await resolveVisitor(req, settings.cookieSecret);
-    const r = await handleVariantAssign({
-      adapter: cachedAdapter,
-      registry: cachedRegistry,
-      expSlug,
-      visitor,
-    });
-    if (!r.ok) {
-      return jsonResponse(
-        { ok: false, error: { kind: "BadRequest", message: r.reason } },
-        { status: 400 },
-      );
-    }
-    // A first-time visitor keeps the id they were bucketed on, so the
-    // next page load lands in the same variant.
-    const cookies: string[] = [];
-    if (visitor.isFresh) {
-      const signed = await signCookieValue({
-        value: visitor.visitorId,
-        secret: settings.cookieSecret,
-      });
-      cookies.push(visitorCookieHeader(signed));
-    }
-    return jsonResponse({ ok: true, data: { variant: r.variant } }, { setCookies: cookies });
   }
 
   // ---- Plugin dispatch ----
@@ -829,7 +773,6 @@ if (import.meta.main) {
   const registry = new OperationRegistry();
   registerGatewayOperations(registry);
   setGatewayAdapter(adapter);
-  setGatewayRegistry(registry);
   // P13 audit re-pass — dedicated long-lived LISTEN connection.
   // Pooled handles return to the pool after each query, dropping any
   // pg_notify subscriptions; so we open a SEPARATE Bun.SQL client that

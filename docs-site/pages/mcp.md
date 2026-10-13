@@ -123,7 +123,6 @@ A handful of tools only make sense inside Caelo's own loop and are filtered out 
 The rule is that an operator never has to do by hand what the agent cannot do. Routine, undoable actions run directly; hard-to-revert ones become an Owner approval. Some examples:
 
 - **Staging deploys:** `deploy_staging` rebuilds staging from the published content. Production is never deployed directly. The agent calls `propose_deploy_promote` and the Owner approves.
-- **Experiments:** `create_experiment` creates a draft A/B test, and `list_experiments` and `get_experiment_results` read experiments back. Activating or completing a test is a `propose_*` approval.
 - **DNS checks:** `verify_domains` and `verify_dns_records` check the records the installer asked for.
 - **Clean-up:** `delete_media_many` and `delete_modules_many` delete only assets and modules that nothing uses any more. Anything still in use is reported back instead of deleted.
 - **Imports:** `accept_import_pages` takes crawled pages over as drafts. `cleanup_import_run` queues an approval card, and the crawl data is only deleted once the Owner approves.

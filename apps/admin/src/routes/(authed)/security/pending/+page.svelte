@@ -20,7 +20,6 @@
     users: "/security/users/pending",
     roles: "/security/roles/pending",
     snapshots: "/security/snapshots/pending",
-    experiments: "/security/experiments/pending",
     email_config: "/security/email/pending",
     ai_providers: "/security/ai/pending",
     mcp_tokens: "/security/mcp/pending",
