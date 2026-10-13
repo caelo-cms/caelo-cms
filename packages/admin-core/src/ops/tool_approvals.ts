@@ -33,6 +33,12 @@ const toolApprovalQueueInput = z
     args: z.record(z.string(), z.unknown()),
     preview: z.record(z.string(), z.unknown()),
     chatSessionId: z.string().uuid().optional(),
+    /**
+     * #687 — a caller-chosen id, for a queued call whose companion record
+     * must exist BEFORE the card is visible (an external plugin's
+     * installation binding is keyed by it). Omit to have one generated.
+     */
+    proposalId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -48,12 +54,16 @@ export const queueToolApprovalOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       INSERT INTO tool_approval_actions
-        (tool_name, args, preview, chat_session_id, proposed_by)
+        (id, tool_name, args, preview, chat_session_id, chat_branch_id, proposed_by)
       VALUES
-        (${input.toolName},
+        (${input.proposalId === undefined ? sql`gen_random_uuid()` : sql`${input.proposalId}::uuid`},
+         ${input.toolName},
          ${jsonbParam(input.args)},
          ${jsonbParam(input.preview)},
          ${input.chatSessionId === undefined ? null : sql`${input.chatSessionId}::uuid`},
+         -- #687 — the branch the call was proposed on (0262), fixed at
+         -- queue time: a later session move must not retarget the call.
+         ${ctx.chatBranchId === undefined ? null : sql`${ctx.chatBranchId}::uuid`},
          ${ctx.actorId}::uuid)
       RETURNING id::text AS id
     `)) as unknown as Array<{ id: string }>;
@@ -92,6 +102,12 @@ export const readToolApprovalForExecuteOp = defineOperation({
     toolName: z.string(),
     args: z.record(z.string(), z.unknown()),
     chatSessionId: z.string().nullable(),
+    /**
+     * The branch the call was proposed on (#687, recorded at queue time) —
+     * an approved plugin call stays on it when the approver cannot publish,
+     * and an external plugin's installation binding is keyed by it.
+     */
+    chatBranchId: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
     // Atomic claim: only transitions if currently 'pending', so
@@ -105,11 +121,13 @@ export const readToolApprovalForExecuteOp = defineOperation({
       WHERE id = ${input.proposalId}::uuid AND status = 'pending'
       RETURNING tool_name AS tool_name,
                 args AS args,
-                chat_session_id::text AS chat_session_id
+                chat_session_id::text AS chat_session_id,
+                chat_branch_id::text AS chat_branch_id
     `)) as unknown as Array<{
       tool_name: string;
       args: unknown;
       chat_session_id: string | null;
+      chat_branch_id: string | null;
     }>;
     const row = rows[0];
     if (!row) {
@@ -132,6 +150,7 @@ export const readToolApprovalForExecuteOp = defineOperation({
       toolName: row.tool_name,
       args,
       chatSessionId: row.chat_session_id,
+      chatBranchId: row.chat_branch_id,
     });
   },
 });
@@ -236,6 +255,8 @@ export const listPendingToolApprovalsOp = defineOperation({
       limit: z.number().int().min(1).max(200).optional(),
       includeDecided: z.boolean().optional(),
       chatSessionId: z.string().uuid().optional(),
+      /** #687 — just this row (an Approve/Reject checks who may decide it). */
+      proposalId: z.string().uuid().optional(),
     })
     .strict(),
   output: z.object({ proposals: z.array(toolApprovalRowSchema) }),
@@ -245,6 +266,7 @@ export const listPendingToolApprovalsOp = defineOperation({
     const chatFilter = input.chatSessionId
       ? sql`AND chat_session_id = ${input.chatSessionId}::uuid`
       : sql``;
+    const idFilter = input.proposalId ? sql`AND id = ${input.proposalId}::uuid` : sql``;
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, tool_name, args, preview,
              chat_session_id::text AS chat_session_id,
@@ -253,7 +275,7 @@ export const listPendingToolApprovalsOp = defineOperation({
              decided_at, decided_by::text AS decided_by,
              decision_reason, result_ok, result_summary
       FROM tool_approval_actions
-      WHERE 1=1 ${statusFilter} ${chatFilter}
+      WHERE 1=1 ${statusFilter} ${chatFilter} ${idFilter}
       ORDER BY created_at DESC
       LIMIT ${limit}
     `)) as unknown as Array<{

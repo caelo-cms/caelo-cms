@@ -45,6 +45,10 @@ export {
 } from "./ai/provider-resolver.js";
 export * from "./ai/providers/index.js";
 export {
+  type ApprovedToolCallResult,
+  approveQueuedToolCall,
+} from "./ai/queued-tool-approval.js";
+export {
   awaitScreenshot,
   clearPendingScreenshots,
   deliverScreenshot,

@@ -177,7 +177,8 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         -- cleanup_import_run): the dispatcher queues the tool call itself;
         -- the kind is the gated tool's name.
         SELECT 'tool_approvals', tool_name, id::text, proposed_by::text, created_at,
-               tool_name,
+               -- #687 — a queued plugin tool names what it would do.
+               COALESCE(preview->>'summary', tool_name),
                chat_session_id::text
           FROM tool_approval_actions WHERE status = 'pending'
         -- Older proposal tables (varying shape; aliased into common columns).

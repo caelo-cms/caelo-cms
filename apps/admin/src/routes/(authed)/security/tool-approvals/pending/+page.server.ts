@@ -33,12 +33,13 @@
  *     where branch-write IS the desired semantic, store branchId in
  *     the persisted row and read it here.
  *
- * (b) Plugin tools fold in (#388). The dispatch first resolves the
- *     tool against `pluginToolsRegistry` (mirroring the chat-runner's
- *     dispatcher) and routes plugin tools through
- *     `runPluginOperation`; built-ins fall through to the built-in
- *     registry. A queued plugin tool's Approve therefore dispatches
- *     instead of 400ing with "unknown tool".
+ * (b) Plugin tools fold in (#388, #687). `approveQueuedToolCall`
+ *     resolves the tool against `pluginToolsRegistry` first and runs
+ *     plugin tools through the plugin host the way the in-chat gate
+ *     does (approver's invocation, the tool's requiredPermission,
+ *     live only for an approver who may publish); built-ins fall
+ *     through to the built-in registry. Approval-declared plugin tools
+ *     an external agent called over the Power-MCP land here.
  *
  * (c) Owner-ctx dispatch + actor-scope mismatch (v0.6.0 alpha.4 Fix R).
  *     The dispatched tool runs with `locals.ctx` (actorKind: "human")
@@ -55,8 +56,8 @@
  *     ctx with an Owner attribution layered on top.
  */
 
-import { createDefaultToolRegistry } from "@caelo-cms/admin-core";
-import { loadedPlugins, pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";
+import { approveQueuedToolCall, createDefaultToolRegistry } from "@caelo-cms/admin-core";
+import { pluginToolsRegistry } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -102,6 +103,36 @@ async function requestedByExternalAgent(
   return (r.value as { handoffs: unknown[] }).handoffs.length > 0;
 }
 
+/**
+ * The pending row's tool and who may decide it. #687 — a plugin tool's card
+ * (an external agent queues these over the Power-MCP) is decided like the
+ * in-chat card: by whoever holds the tool's `requiredPermission`, so the
+ * operator an external plugin's approval is bound to is never locked out.
+ * Built-in tools, and plugin tools that declare no permission, keep the
+ * Owner-equivalent floor (roles.manage) of the other propose/* queues.
+ */
+async function queuedToolFor(
+  locals: App.Locals,
+  proposalId: string,
+): Promise<
+  | { ok: true; toolName: string; pluginTool: ReturnType<typeof pluginToolsRegistry.resolve> }
+  | { ok: false; status: 404 | 500; error: string }
+> {
+  const { adapter, registry } = getQueryContext();
+  const queued = await execute(registry, adapter, locals.ctx, "tool_approvals.list_pending", {
+    proposalId,
+  });
+  if (!queued.ok) return { ok: false, status: 500, error: "could not read the approval queue" };
+  const toolName = (queued.value as { proposals: Proposal[] }).proposals.find(
+    (p) => p.id === proposalId,
+  )?.toolName;
+  const pluginTool = toolName ? pluginToolsRegistry.resolve(toolName) : null;
+  const permission = pluginTool?.spec.requiredPermission;
+  requirePermission(locals, permission ?? "roles.manage");
+  if (!toolName) return { ok: false, status: 404, error: "That proposal is no longer pending." };
+  return { ok: true, toolName, pluginTool };
+}
+
 export const load: PageServerLoad = async ({ locals }) => {
   // Same permission proxy as the other propose/* queues — the
   // Owner-equivalent role.
@@ -114,7 +145,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 export const actions: Actions = {
   approve: async ({ request, locals }) => {
-    requirePermission(locals, "roles.manage");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const proposalId = String(form.get("proposalId") ?? "");
@@ -123,87 +153,34 @@ export const actions: Actions = {
     // #589 — the approver must hold the permission the queued tool
     // declares, checked BEFORE the claim so a refused click leaves the row
     // pending for someone who holds it. A built-in tool that declares none
-    // cannot be approved at all (fail closed); plugin tools are checked by
-    // the plugin host against their own `requiredPermission` at dispatch.
-    const queued = await execute(registry, adapter, locals.ctx, "tool_approvals.list_pending", {
-      limit: 200,
-    });
-    if (!queued.ok) return fail(500, { error: "could not read the approval queue" });
-    const queuedTool = (queued.value as { proposals: Proposal[] }).proposals.find(
-      (p) => p.id === proposalId,
-    )?.toolName;
-    if (!queuedTool) return fail(404, { error: "That proposal is no longer pending." });
-    if (!pluginToolsRegistry.resolve(queuedTool)) {
-      const declared = createDefaultToolRegistry().get(queuedTool)?.approverPermissions;
+    // cannot be approved at all (fail closed); a plugin tool's own
+    // `requiredPermission` (and an external plugin's bound operator) is
+    // checked by approveQueuedToolCall before its claim.
+    const queued = await queuedToolFor(locals, proposalId);
+    if (!queued.ok) return fail(queued.status, { error: queued.error });
+    if (!queued.pluginTool) {
+      const declared = createDefaultToolRegistry().get(queued.toolName)?.approverPermissions;
       if (!declared) {
-        return fail(500, { error: `${queuedTool} declares no approver permission; refusing.` });
+        return fail(500, {
+          error: `${queued.toolName} declares no approver permission; refusing.`,
+        });
       }
       for (const permission of declared) requirePermission(locals, permission);
     }
 
-    // Step 1: atomic claim — transitions pending → applied + returns
-    // the persisted toolName + args. Re-clicking the Approve button
-    // (race condition) returns "proposal already applied".
-    const claim = await execute(registry, adapter, locals.ctx, "tool_approvals.read_for_execute", {
+    // Claim (atomic pending → applied, so a double click applies once),
+    // dispatch with the persisted args, record the result on the row —
+    // shared with the Power-MCP integration tests (#687). Plugin tools run
+    // through the plugin host as the approver, like the in-chat gate.
+    const approved = await approveQueuedToolCall({
+      registry,
+      adapter,
+      approverCtx: locals.ctx,
       proposalId,
     });
-    if (!claim.ok) {
-      const message =
-        typeof claim.error === "object" && claim.error && "message" in claim.error
-          ? String((claim.error as { message: unknown }).message)
-          : "approve failed";
-      return fail(400, { error: message });
-    }
-    const { toolName, args, chatSessionId } = claim.value as {
-      toolName: string;
-      args: Record<string, unknown>;
-      chatSessionId: string | null;
-    };
-
-    // Step 2: dispatch through the same tool registry the chat-runner
-    // uses. ctx is the Owner's session ctx, not the AI ctx — audit
-    // shows the human approver as the actor that ran the tool.
-    let dispatchResult: { ok: boolean; content: string };
-    try {
-      // #388 — plugin tools resolve first (mirrors tool-dispatch.ts);
-      // built-ins fall through to the built-in registry.
-      const pluginTool = pluginToolsRegistry.resolve(toolName);
-      if (pluginTool) {
-        if (loadedPlugins.bySlug(pluginTool.pluginSlug)?.externalApproval)
-          throw new Error(
-            "This legacy proposal has no installation binding. Request a fresh external plugin call in the Caelo chat.",
-          );
-        const r = await runPluginOperation({
-          invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
-          approvedToolName: toolName,
-          pluginSlug: pluginTool.pluginSlug,
-          operationName: pluginTool.spec.operationName,
-          args,
-        });
-        dispatchResult = r.ok
-          ? { ok: true, content: JSON.stringify(r.value) }
-          : { ok: false, content: `${r.error.kind}: ${r.error.message}` };
-      } else {
-        const tools = createDefaultToolRegistry();
-        dispatchResult = await tools.dispatch(toolName, args, locals.ctx, {
-          adapter,
-          registry,
-          ...(chatSessionId ? { chatSessionId } : {}),
-        });
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      dispatchResult = { ok: false, content: `dispatch threw: ${errMsg}` };
-    }
-
-    // Step 3: capture the dispatch outcome so the queue page shows
-    // result-aware status without an extra round-trip. Best-effort —
-    // failure here doesn't undo the Step 1 'applied' transition.
-    await execute(registry, adapter, locals.ctx, "tool_approvals.mark_result", {
-      proposalId,
-      ok: dispatchResult.ok,
-      summary: dispatchResult.content.slice(0, 2000),
-    });
+    if (!approved.ok) return fail(400, { error: approved.error });
+    const { toolName, chatSessionId } = approved.value;
+    const dispatchResult = { ok: approved.value.ok, content: approved.value.content };
 
     // v0.6.0 alpha.4 Fix T — propagate the REAL dispatch result back
     // into the chat session so the AI sees the actual outcome on its
@@ -266,11 +243,12 @@ export const actions: Actions = {
   },
 
   reject: async ({ request, locals }) => {
-    requirePermission(locals, "roles.manage");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const proposalId = String(form.get("proposalId") ?? "");
     const reason = form.get("reason") ? String(form.get("reason")) : undefined;
+    const queued = await queuedToolFor(locals, proposalId);
+    if (!queued.ok) return fail(queued.status, { error: queued.error });
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "tool_approvals.reject_proposal", {
       proposalId,
