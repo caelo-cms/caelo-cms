@@ -24,10 +24,15 @@ const output = z.object({
 });
 
 async function appliedMigrations(tx: TransactionRunner): Promise<string[]> {
-  const rows = (await tx.execute(
-    sql`SELECT hash FROM __drizzle_migrations ORDER BY hash`,
-  )) as unknown as Array<{ hash: string }>;
-  return rows.map((r) => r.hash);
+  const rows = (await tx.execute(sql`SELECT hash FROM __drizzle_migrations`)) as unknown as Array<{
+    hash: string;
+  }>;
+  // Sorted here, not by ORDER BY: Postgres sorts by the database's
+  // collation, and a locale collation (en_US) puts "0198_plugin_…" before
+  // "0198_p_mcp_…" where the C collation does not — the v0.10.45 release
+  // gate failed on exactly that. Callers compare against file names sorted
+  // by code-unit order, so the order must not depend on the database.
+  return rows.map((r) => r.hash).sort();
 }
 
 export const appliedAdminMigrationsOp = defineOperation({

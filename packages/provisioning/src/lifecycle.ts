@@ -55,6 +55,7 @@ import {
   rotationRefusal,
 } from "./runtime-secrets.js";
 import { selfCommand } from "./self-command.js";
+import { backendShellEnv, type ResolvedBackend, resolveBackend } from "./state-backend.js";
 import {
   backendShellEnv,
   localStateNotice,
