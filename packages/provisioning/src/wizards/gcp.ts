@@ -79,6 +79,7 @@ import {
   resolveOperatorAccessTarget,
 } from "../operator-access.js";
 import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
+import { selfCommand } from "../self-command.js";
 import { ABSENT_DEFAULT_FIREWALL_RULES, ADMIN_MEMORY_DEFAULT } from "../stack-contract.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
@@ -425,7 +426,7 @@ async function stepActiveGcloud(): Promise<void> {
   if (!account) {
     log.error(red("No active gcloud account."));
     log.warn(
-      `Run ${bold("gcloud auth login")} in another terminal, then re-run ${bold("bunx @caelo-cms/provisioning")}.`,
+      `Run ${bold("gcloud auth login")} in another terminal, then re-run ${bold(selfCommand())}.`,
     );
     cancel("Aborted — no gcloud auth.");
     process.exit(2);
@@ -588,7 +589,7 @@ async function stepBillingLink(
   if (open.length === 0) {
     log.error(red("No open billing accounts found."));
     log.warn(
-      `Open one at https://console.cloud.google.com/billing then re-run ${bold("bunx @caelo-cms/provisioning")}.`,
+      `Open one at https://console.cloud.google.com/billing then re-run ${bold(selfCommand())}.`,
     );
     cancel("Aborted.");
     process.exit(1);
@@ -1371,9 +1372,7 @@ async function stepGcpDnsRecords(installId: string): Promise<void> {
     log.warn(
       yellow(`DNS records not confirmed yet: ${e instanceof Error ? e.message : String(e)}`),
     );
-    log.warn(
-      `Set them at your registrar, then re-run ${bold("bunx @caelo-cms/provisioning")} to resume.`,
-    );
+    log.warn(`Set them at your registrar, then re-run ${bold(selfCommand())} to resume.`);
     cancel("Stopped at the DNS step.");
     process.exit(1);
   }
@@ -1432,12 +1431,12 @@ async function stepFinalize(installId: string): Promise<void> {
           bold("Admin custom domain (admin.<domain>):"),
           `  Not configured — using the Cloud Run URL above.`,
           `  To bind ${cyan(`admin.${meta.domain}`)}, run`,
-          `  ${dim("bunx @caelo-cms/provisioning admin-domain enable")}`,
+          `  ${dim(selfCommand("admin-domain", "enable"))}`,
           `  (it walks you through the one-time Search Console verification, prints the DNS record and waits for the certificate).`,
           "",
           bold("Protected staging site:"),
           `  Stage builds render ${cyan(installStagingHost(meta))}; to serve it, run`,
-          `  ${dim("bunx @caelo-cms/provisioning staging-domain enable")}`,
+          `  ${dim(selfCommand("staging-domain", "enable"))}`,
           `  It maps the host, turns on password protection and prints the staging login once;`,
           `  add the DNS record it prints. The host serves pages after the first Stage.`,
         ]
@@ -1461,9 +1460,9 @@ async function stepFinalize(installId: string): Promise<void> {
       ...adminNote,
       "",
       bold("Lifecycle commands:"),
-      `  ${dim("bunx @caelo-cms/provisioning status")}     — health check + monthly cost`,
-      `  ${dim("bunx @caelo-cms/provisioning upgrade")}    — pull latest images + roll Cloud Run`,
-      `  ${dim("bunx @caelo-cms/provisioning destroy")}    — tear everything down (irreversible)`,
+      `  ${dim(selfCommand("status"))}   — health check, and the exact upgrade command once a new release is out`,
+      `  ${dim(selfCommand("destroy"))}  — tear everything down (irreversible)`,
+      `  New releases: ${cyan(`${adminBase}/settings/updates`)} shows the exact upgrade command for this install.`,
     ].join("\n"),
     "Done",
   );

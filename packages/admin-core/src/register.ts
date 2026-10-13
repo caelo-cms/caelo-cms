@@ -344,6 +344,7 @@ import {
 } from "./ops/owner-bootstrap-tokens.js";
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
+import { platformUpdateStatusOp } from "./ops/platform-updates.js";
 import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
   listPluginCapabilityGrantsOp,
@@ -1101,6 +1102,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setRateLimitProfileOp);
   // P6.6b — UX polish surface.
   registry.register(aggregateNotificationsOp);
+  // #696 — installed vs newest release (Settings → Updates, get_caelo_version).
+  registry.register(platformUpdateStatusOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the
   // chat-runner's `## Pending proposals` system-prompt block (so the
   // AI doesn't re-propose what's already queued) and by the AppShell

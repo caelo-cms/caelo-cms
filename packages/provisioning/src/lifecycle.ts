@@ -17,6 +17,7 @@
  */
 
 import { join, resolve as resolvePath } from "node:path";
+import { provisioningUpgradeCommand } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { ensureGatewayRolePassword, planPublicRoleSwitch } from "./gateway-credentials.js";
@@ -49,6 +50,7 @@ import {
   rotateRuntimeSecret,
   rotationRefusal,
 } from "./runtime-secrets.js";
+import { selfCommand } from "./self-command.js";
 import { adminMediaVolume, MCP_ENV_VAR, OPERATOR_ACCESS_JOB_ENV_VAR } from "./stack-contract.js";
 import {
   type DeployedService,
@@ -128,7 +130,7 @@ function exitNoInstall(message: string): never {
   log.error(red(message));
   if (listInstalls().length === 0) {
     log.warn(
-      `Run ${bold("bunx @caelo-cms/provisioning")} first to provision an install, OR copy ${dim("~/.caelo-<install-id>/")} from the provisioning machine.`,
+      `Run ${bold(selfCommand())} first to provision an install, OR copy ${dim("~/.caelo-<install-id>/")} from the provisioning machine.`,
     );
   }
   process.exit(1);
@@ -348,9 +350,11 @@ async function gcpStatus(meta: InstallMetadata): Promise<void> {
   const { CAELO_VERSION } = await import("@caelo-cms/shared");
   const latestTag = await getLatestReleaseTag();
   const latestStable = latestTag?.replace(/^v/, "") ?? null;
+  // #696 — the upgrade runs as the new release's CLI and rolls exactly that
+  // release, on exactly this install (same command Settings → Updates shows).
   const upgradeHint =
     latestStable && latestStable !== CAELO_VERSION
-      ? `${yellow(`v${latestStable} available`)} — run \`bunx @caelo-cms/provisioning upgrade\``
+      ? `${yellow(`v${latestStable} available`)} — run \`${provisioningUpgradeCommand({ version: latestStable, install: meta.domain })}\``
       : latestStable === CAELO_VERSION
         ? green("up to date")
         : dim("(latest unknown)");
@@ -1133,7 +1137,7 @@ async function upgradeInstall(
     // ever compromised it could have kept a copy.
     log.warn(
       yellow(
-        `The gateway no longer holds admin_role's password, but it did until now. Rotate it: ${bold("bunx @caelo-cms/provisioning rotate-secret postgres-password")}`,
+        `The gateway no longer holds admin_role's password, but it did until now. Rotate it: ${bold(selfCommand("rotate-secret", "postgres-password", "--install", installId))}`,
       ),
     );
   }
@@ -1142,7 +1146,7 @@ async function upgradeInstall(
     // but every earlier revision still shows it in its env.
     log.warn(
       yellow(
-        `The database password was stored in plain env vars before this upgrade and stays readable in the services' old revisions. Rotate it now: ${bold("bunx @caelo-cms/provisioning rotate-secret postgres-password")}`,
+        `The database password was stored in plain env vars before this upgrade and stays readable in the services' old revisions. Rotate it now: ${bold(selfCommand("rotate-secret", "postgres-password", "--install", installId))}`,
       ),
     );
   }

@@ -71,7 +71,7 @@ The automatic redeploy (Settings → Gateway) works the same way. When only cont
 
 ## Server sizing
 
-The check runs on the admin server itself, using the Chromium build that ships in the admin image. Lighthouse runs in a separate process that gets no database credentials or secrets. Every provider exposes the same `adminMemory` setting, defaulting to `2Gi`, and `bunx @caelo-cms/provisioning upgrade` raises existing GCP installs to it. It never lowers a larger value.
+The check runs on the admin server itself, using the Chromium build that ships in the admin image. Lighthouse runs in a separate process that gets no database credentials or secrets. Every provider exposes the same `adminMemory` setting, defaulting to `2Gi`, and [`upgrade`](/install-gcp#upgrading) raises existing GCP installs to it. It never lowers a larger value.
 
 | Provider | Setting |
 |---|---|

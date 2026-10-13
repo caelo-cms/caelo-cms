@@ -366,6 +366,11 @@ let releaseCheckBootstrapped = false;
 function bootstrapReleaseCheck(): void {
   if (releaseCheckBootstrapped) return;
   releaseCheckBootstrapped = true;
+  // #696 — `off` for test runs: the Playwright suite seeds
+  // release_check_cache itself, and a poll racing it would overwrite the
+  // seeded release with whatever GitHub says (and spend the CI runner's
+  // unauthenticated GitHub API quota).
+  if (process.env.CAELO_RELEASE_CHECK === "off") return;
   const { adapter } = getQueryContext();
   startReleaseCheckWorker({ adapter });
 }

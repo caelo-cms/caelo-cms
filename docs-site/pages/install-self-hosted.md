@@ -23,7 +23,7 @@ For local development without a public domain, Caddy uses an internal CA + self-
 ## Run the provisioner
 
 ```bash
-bunx @caelo-cms/provisioning --provider self-hosted \
+bunx @caelo-cms/provisioning@latest --provider self-hosted \
   --domain caelo.example.com \
   --owner-email you@example.com \
   --anthropic-key sk-ant-...
@@ -52,7 +52,6 @@ What happens:
 |---|---|
 | Restart the stack | `cd ~/.caelo/<install-id> && docker compose restart` |
 | Tail logs | `docker compose logs -f admin gateway caddy` |
-| Apply DB migrations on a new release | `bunx @caelo-cms/provisioning migrate` |
 | Take a manual base backup | `docker compose exec postgres pgbackrest --stanza=main backup` |
 | Restore from backup | See [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
 | Rotate any secret | `/settings/<area>` in the admin OR see incident-response §G |
@@ -60,11 +59,7 @@ What happens:
 
 ## Upgrading
 
-```bash
-bunx @caelo-cms/provisioning upgrade
-```
-
-Pulls the latest image tags, runs migrations transactionally, restarts services. Failed migrations roll back; staging-first is recommended for any release that touches schema.
+There is no upgrade command for self-hosted installs yet: the provisioning CLI's `upgrade` covers Google Cloud installs so far, and the self-hosted path (prebuilt, signed images and an updater on the host) is being built in [#696](https://github.com/caelo-cms/caelo-cms/issues/696). The admin's **Settings → Caelo updates** page shows the version you run and when a new release is out, with its release notes.
 
 ## Single-host limits + when to move to cloud
 

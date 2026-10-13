@@ -33,6 +33,7 @@ export type SettingsIcon =
   | "arrow-right-left"
   | "bot"
   | "bug"
+  | "circle-arrow-up"
   | "coins"
   | "database"
   | "download"
@@ -254,6 +255,15 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
             permission: "content.write",
           },
         ],
+      },
+      {
+        href: "/settings/updates",
+        label: "Caelo updates",
+        description:
+          "The Caelo version you run, what's new, and how to install the newest release.",
+        permission: "settings.read",
+        icon: "circle-arrow-up",
+        keywords: ["upgrade", "version", "release", "release notes", "new version"],
       },
     ],
   },
