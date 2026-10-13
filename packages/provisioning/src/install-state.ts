@@ -190,14 +190,18 @@ export function recordImageDigests(
 ): void {
   const meta = readMetadata(installId);
   if (!meta) throw new Error(`No install.json for install '${installId}'.`);
-  // A version is recorded together with its digests, never one without the
-  // other: when it is unknown, a stale one would be worse than none (the
-  // upgrader job refuses on none and judges downgrades by it).
-  const { releaseVersion: _stale, ...rest } = meta;
+  // A version belongs to its digests: unchanged digests keep the recorded
+  // version unless a new one is given; new digests without a known version
+  // drop it — a stale one would be worse than none (the upgrader job
+  // refuses on none and judges downgrades by it).
+  const same =
+    meta.imageDigests?.admin === digests.admin && meta.imageDigests?.gateway === digests.gateway;
+  const { releaseVersion: previous, ...rest } = meta;
+  const version = releaseVersion ?? (same ? previous : undefined);
   writeMetadata(installId, {
     ...rest,
     imageDigests: { admin: digests.admin, gateway: digests.gateway },
-    ...(releaseVersion ? { releaseVersion } : {}),
+    ...(version ? { releaseVersion: version } : {}),
   });
 }
 
