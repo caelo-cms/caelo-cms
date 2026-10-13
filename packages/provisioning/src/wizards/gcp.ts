@@ -921,7 +921,11 @@ async function stepStateBackend(
   const root = installRoot(installId);
   const meta = readMetadata(installId);
   if (!meta) throw new Error(`No install.json for install '${installId}'.`);
-  const kind = chooseInstallBackend(meta, hasLocalPulumiState(root));
+  const kind = chooseInstallBackend(
+    meta,
+    hasLocalPulumiState(root),
+    isStepDone(installId, `pulumi-up-${projectId}`),
+  );
   if (kind === "local") {
     stepPulumiPassphrase(installId);
     log.info(

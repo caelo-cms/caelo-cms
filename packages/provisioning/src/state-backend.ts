@@ -202,11 +202,10 @@ export function describeBackend(
  */
 export function hasLocalPulumiState(installRoot: string): boolean {
   const stacks = join(localStateDir(installRoot), ".pulumi", "stacks");
-  try {
-    return existsSync(stacks) && readdirSync(stacks).length > 0;
-  } catch {
-    return false;
-  }
+  if (!existsSync(stacks)) return false;
+  // An unreadable dir throws: guessing "no state" would move a deployed
+  // install onto an empty backend.
+  return readdirSync(stacks).length > 0;
 }
 
 /**
@@ -218,10 +217,23 @@ export function hasLocalPulumiState(installRoot: string): boolean {
  * and Azure stay local until their adapters have an equivalent.
  */
 export function chooseInstallBackend(
-  meta: { readonly provider: string; readonly stateBackend?: StateBackendRecord },
+  meta: {
+    readonly installId?: string;
+    readonly provider: string;
+    readonly stateBackend?: StateBackendRecord;
+  },
   localStateExists: boolean,
+  deployed = false,
 ): StateBackendRecord["kind"] {
   if (meta.stateBackend) return meta.stateBackend.kind;
   if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") return "local";
-  return localStateExists ? "local" : "gcs";
+  if (localStateExists) return "local";
+  if (deployed) {
+    // Deployed, yet no state anywhere: a fresh backend would make Pulumi
+    // recreate (and collide with) every resource.
+    throw new Error(
+      `Install ${meta.installId ?? ""} was deployed, but its Pulumi state is neither recorded in install.json nor in ~/.caelo-${meta.installId ?? "<install-id>"}/state. Restore that directory from your backup and re-run.`,
+    );
+  }
+  return "gcs";
 }

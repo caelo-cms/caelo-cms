@@ -112,6 +112,12 @@ describe("chooseInstallBackend", () => {
     expect(chooseInstallBackend({ provider: "gcp-firebase" }, true)).toBe("local");
   });
 
+  it("a deployed install with no state anywhere stops instead of starting an empty stack", () => {
+    expect(() =>
+      chooseInstallBackend({ installId: "gcp-acme", provider: "gcp" }, false, true),
+    ).toThrow(/neither recorded/);
+  });
+
   it("a recorded backend wins; self-hosted stays local", () => {
     expect(chooseInstallBackend({ provider: "gcp", stateBackend: GCS }, true)).toBe("gcs");
     expect(chooseInstallBackend({ provider: "gcp", stateBackend: { kind: "local" } }, false)).toBe(
