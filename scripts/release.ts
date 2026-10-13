@@ -47,6 +47,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { CLOUD_SHELL_LINK_FILES, pinCloudShellLinks } from "./cloud-shell-links.ts";
 import {
   parseAdvisoryList,
   RELEASE_META_PATH,
@@ -183,6 +184,24 @@ function bumpVersionFile(newVersion: string, dryRun: boolean): void {
     throw new Error("version.ts CAELO_VERSION line did not match — refusing to write");
   }
   if (!dryRun) writeFileSync(VERSION_FILE, next);
+}
+
+/**
+ * #696 — move the "Open in Cloud Shell" install links in README + docs to
+ * the new release (scripts/cloud-shell-links.ts; a pre-release keeps the
+ * last stable links). Returns how many files changed.
+ */
+function bumpCloudShellLinks(newVersion: string, dryRun: boolean): number {
+  let changed = 0;
+  for (const file of CLOUD_SHELL_LINK_FILES) {
+    const path = resolve(REPO_ROOT, file);
+    const src = readFileSync(path, "utf8");
+    const next = pinCloudShellLinks(src, newVersion);
+    if (next === src) continue;
+    changed++;
+    if (!dryRun) writeFileSync(path, next);
+  }
+  return changed;
 }
 
 async function resignManifests(dryRun: boolean): Promise<number> {
@@ -425,6 +444,9 @@ async function main(): Promise<void> {
 
   bumpVersionFile(newVersion, dryRun);
   console.log(`✓ packages/shared/src/version.ts updated`);
+
+  const pinned = bumpCloudShellLinks(newVersion, dryRun);
+  console.log(`✓ Cloud Shell install links pinned in ${pinned} file(s)`);
 
   const changed = bumpJsonVersions(newVersion, dryRun);
   console.log(`✓ ${changed.length} package.json files updated`);
