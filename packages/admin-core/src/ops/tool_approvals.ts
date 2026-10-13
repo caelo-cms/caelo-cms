@@ -33,6 +33,12 @@ const toolApprovalQueueInput = z
     args: z.record(z.string(), z.unknown()),
     preview: z.record(z.string(), z.unknown()),
     chatSessionId: z.string().uuid().optional(),
+    /**
+     * #687 — a caller-chosen id, for a queued call whose companion record
+     * must exist BEFORE the card is visible (an external plugin's
+     * installation binding is keyed by it). Omit to have one generated.
+     */
+    proposalId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -48,9 +54,10 @@ export const queueToolApprovalOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       INSERT INTO tool_approval_actions
-        (tool_name, args, preview, chat_session_id, chat_branch_id, proposed_by)
+        (id, tool_name, args, preview, chat_session_id, chat_branch_id, proposed_by)
       VALUES
-        (${input.toolName},
+        (${input.proposalId === undefined ? sql`gen_random_uuid()` : sql`${input.proposalId}::uuid`},
+         ${input.toolName},
          ${jsonbParam(input.args)},
          ${jsonbParam(input.preview)},
          ${input.chatSessionId === undefined ? null : sql`${input.chatSessionId}::uuid`},

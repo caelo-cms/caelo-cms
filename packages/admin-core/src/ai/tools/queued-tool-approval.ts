@@ -81,27 +81,10 @@ export async function queuePluginToolApproval(input: {
       content: `${problem}\nNothing was queued and no approval was requested — fix the arguments and call ${spec.name} again.`,
     };
   }
-  const queued = await execute(input.registry, input.adapter, input.aiCtx, "tool_approvals.queue", {
-    toolName: spec.name,
-    args: input.args,
-    preview: {
-      // The card's one-line summary (pending_proposals.list shows it).
-      summary: `${spec.name} ${JSON.stringify(input.args)}`.slice(0, 240),
-      tool: spec.name,
-      plugin: pluginSlug,
-      args: input.args,
-      ...(spec.requiredPermission ? { approverNeeds: spec.requiredPermission } : {}),
-    },
-    chatSessionId: input.chatSessionId,
-  });
-  if (!queued.ok) {
-    return {
-      ok: false,
-      content: `${spec.name} needs the operator's approval, but the approval card could not be queued (${describeError(queued.error)}). Nothing was applied; retry the call.`,
-    };
-  }
-  const proposalId = (queued.value as { proposalId: string }).proposalId;
-
+  // The id is chosen here so an external plugin's installation binding can
+  // be recorded under it BEFORE the card becomes visible — an Approve in
+  // between would otherwise find no binding and consume the proposal.
+  const proposalId = crypto.randomUUID();
   const plugin = loadedPlugins.bySlug(pluginSlug);
   if (plugin?.externalApproval) {
     try {
@@ -115,20 +98,32 @@ export async function queuePluginToolApproval(input: {
         operationName: spec.operationName,
       });
     } catch (e) {
-      // Without the binding the approve would be refused; withdraw the card
-      // instead of showing the operator one that cannot apply.
-      await execute(
-        input.registry,
-        input.adapter,
-        { ...input.aiCtx, actorKind: "system" },
-        "tool_approvals.reject_proposal",
-        { proposalId, reason: `installation binding failed: ${errorText(e)}`.slice(0, 500) },
-      );
       return {
         ok: false,
-        content: `${spec.name} could not be queued for approval: ${errorText(e)}. Nothing was applied.`,
+        content: `${spec.name} could not be queued for approval: ${errorText(e)}. Nothing was queued or applied.`,
       };
     }
+  }
+  const queued = await execute(input.registry, input.adapter, input.aiCtx, "tool_approvals.queue", {
+    proposalId,
+    toolName: spec.name,
+    args: input.args,
+    preview: {
+      // The card's one-line summary (pending_proposals.list shows it).
+      summary: `${spec.name} ${JSON.stringify(input.args)}`.slice(0, 240),
+      tool: spec.name,
+      plugin: pluginSlug,
+      args: input.args,
+      ...(spec.requiredPermission ? { approverNeeds: spec.requiredPermission } : {}),
+    },
+    chatSessionId: input.chatSessionId,
+  });
+  if (!queued.ok) {
+    // An already-recorded binding without its card simply expires (7 days).
+    return {
+      ok: false,
+      content: `${spec.name} needs the operator's approval, but the approval card could not be queued (${describeError(queued.error)}). Nothing was applied; retry the call.`,
+    };
   }
 
   return {

@@ -103,6 +103,38 @@ async function requestedByExternalAgent(
   return (r.value as { handoffs: unknown[] }).handoffs.length > 0;
 }
 
+/**
+ * The pending row's tool and who may decide it. #687 — a plugin tool's card
+ * (an external agent queues these over the Power-MCP) is decided like the
+ * in-chat card: by whoever holds the tool's `requiredPermission`, so the
+ * operator an external plugin's approval is bound to is never locked out.
+ * Built-in tools, and plugin tools that declare no permission, keep the
+ * Owner-equivalent floor (roles.manage) of the other propose/* queues.
+ */
+async function queuedToolFor(
+  locals: App.Locals,
+  proposalId: string,
+): Promise<
+  | { ok: true; toolName: string; pluginTool: ReturnType<typeof pluginToolsRegistry.resolve> }
+  | { ok: false; failure: ReturnType<typeof fail> }
+> {
+  const { adapter, registry } = getQueryContext();
+  const queued = await execute(registry, adapter, locals.ctx, "tool_approvals.list_pending", {
+    limit: 200,
+  });
+  if (!queued.ok)
+    return { ok: false, failure: fail(500, { error: "could not read the approval queue" }) };
+  const toolName = (queued.value as { proposals: Proposal[] }).proposals.find(
+    (p) => p.id === proposalId,
+  )?.toolName;
+  const pluginTool = toolName ? pluginToolsRegistry.resolve(toolName) : null;
+  const permission = pluginTool?.spec.requiredPermission;
+  requirePermission(locals, permission ?? "roles.manage");
+  if (!toolName)
+    return { ok: false, failure: fail(404, { error: "That proposal is no longer pending." }) };
+  return { ok: true, toolName, pluginTool };
+}
+
 export const load: PageServerLoad = async ({ locals }) => {
   // Same permission proxy as the other propose/* queues — the
   // Owner-equivalent role.
@@ -115,7 +147,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 export const actions: Actions = {
   approve: async ({ request, locals }) => {
-    requirePermission(locals, "roles.manage");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const proposalId = String(form.get("proposalId") ?? "");
@@ -124,20 +155,17 @@ export const actions: Actions = {
     // #589 — the approver must hold the permission the queued tool
     // declares, checked BEFORE the claim so a refused click leaves the row
     // pending for someone who holds it. A built-in tool that declares none
-    // cannot be approved at all (fail closed); plugin tools are checked by
-    // the plugin host against their own `requiredPermission` at dispatch.
-    const queued = await execute(registry, adapter, locals.ctx, "tool_approvals.list_pending", {
-      limit: 200,
-    });
-    if (!queued.ok) return fail(500, { error: "could not read the approval queue" });
-    const queuedTool = (queued.value as { proposals: Proposal[] }).proposals.find(
-      (p) => p.id === proposalId,
-    )?.toolName;
-    if (!queuedTool) return fail(404, { error: "That proposal is no longer pending." });
-    if (!pluginToolsRegistry.resolve(queuedTool)) {
-      const declared = createDefaultToolRegistry().get(queuedTool)?.approverPermissions;
+    // cannot be approved at all (fail closed); a plugin tool's own
+    // `requiredPermission` (and an external plugin's bound operator) is
+    // checked by approveQueuedToolCall before its claim.
+    const queued = await queuedToolFor(locals, proposalId);
+    if (!queued.ok) return queued.failure;
+    if (!queued.pluginTool) {
+      const declared = createDefaultToolRegistry().get(queued.toolName)?.approverPermissions;
       if (!declared) {
-        return fail(500, { error: `${queuedTool} declares no approver permission; refusing.` });
+        return fail(500, {
+          error: `${queued.toolName} declares no approver permission; refusing.`,
+        });
       }
       for (const permission of declared) requirePermission(locals, permission);
     }
@@ -217,11 +245,12 @@ export const actions: Actions = {
   },
 
   reject: async ({ request, locals }) => {
-    requirePermission(locals, "roles.manage");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const proposalId = String(form.get("proposalId") ?? "");
     const reason = form.get("reason") ? String(form.get("reason")) : undefined;
+    const queued = await queuedToolFor(locals, proposalId);
+    if (!queued.ok) return queued.failure;
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "tool_approvals.reject_proposal", {
       proposalId,
