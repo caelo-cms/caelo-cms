@@ -128,6 +128,16 @@ describe("attachInstall", () => {
   });
 });
 
+describe("attachInstall — local state without install.json", () => {
+  it("still refuses to hide it", () => {
+    const root = join(home, `.caelo-${META.installId}`);
+    mkdirSync(join(root, "state", ".pulumi", "stacks", "caelo-gcp-firebase"), { recursive: true });
+    const r = attachInstall("acme-site", deps({ [url("install.json")]: JSON.stringify(META) }));
+    expect(r.ok).toBe(false);
+    expect(existsSync(join(root, "install.json"))).toBe(false);
+  });
+});
+
 describe("backupInstallDir", () => {
   for (const hasZstd of [true, false]) {
     it(`archives the install dir privately (${hasZstd ? "tar.zst" : "tar.gz fallback"})`, () => {

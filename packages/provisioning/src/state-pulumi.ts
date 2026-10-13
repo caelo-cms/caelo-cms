@@ -13,7 +13,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as automation from "@pulumi/pulumi/automation";
 import { redactCredentials } from "./checkpoint-secrets.js";
@@ -92,6 +92,21 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
     return { stdout, stderr };
   };
 
+  // The read-only steps (preflight, verification) align the package's
+  // stack settings file and may set config to run a preview; the file is
+  // put back exactly as it was afterwards, so a refused migration or a dry
+  // run leaves it untouched.
+  const settingsFile = join(workDir, `Pulumi.${GCP_STACK_ENV}.yaml`);
+  const preserved = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const before = existsSync(settingsFile) ? readFileSync(settingsFile) : null;
+    try {
+      return await fn();
+    } finally {
+      if (before === null) rmSync(settingsFile, { force: true });
+      else writeFileSync(settingsFile, before);
+    }
+  };
+
   const exportDeployment = async (b: ResolvedBackend): Promise<Deployment> => {
     await alignStackSettingsFile(b, inputs.provider);
     const { stdout } = await cli(["stack", "export", "--stack", GCP_STACK_ENV], stateOnlyEnv(b));
@@ -104,7 +119,7 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
     ...stateOnlyEnv(to),
   });
 
-  return {
+  const ops: StatePulumiOps = {
     async cliVersion() {
       const p = Bun.spawnSync(["pulumi", "version"], { stdout: "pipe", stderr: "pipe" });
       if (p.exitCode !== 0) return null;
@@ -221,5 +236,11 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
         stateOnlyEnv(b),
       );
     },
+  };
+  return {
+    ...ops,
+    pendingOperations: (b) => preserved(() => ops.pendingOperations(b)),
+    previewChanges: (b) => preserved(() => ops.previewChanges(b)),
+    outputsDigest: (b) => preserved(() => ops.outputsDigest(b)),
   };
 }

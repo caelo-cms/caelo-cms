@@ -96,17 +96,20 @@ export function attachInstall(
 
   const root = deps.rootFor(installId);
   const localText = new LocalStateStore(root).read("install.json");
+  // Local Pulumi state blocks the attach whether or not an install.json
+  // sits next to it: attaching would hide it.
+  if (deps.hasLocalState(root)) {
+    return {
+      ok: false,
+      error: `${root} holds a local Pulumi state of this install. Attaching would hide it; run \`bunx @caelo-cms/provisioning state migrate --install ${installId}\` instead, or move ${root} aside if that state is stale.`,
+    };
+  }
   let status: "attached" | "refreshed" = "attached";
   if (localText !== null) {
     const local = JSON.parse(localText) as { stateBackend?: unknown };
     const localBackend = parseStateBackend(local.stateBackend);
     if (localBackend?.kind === "gcs" && localBackend.bucket === bucket) {
       status = "refreshed";
-    } else if (deps.hasLocalState(root)) {
-      return {
-        ok: false,
-        error: `${root} holds this install's local Pulumi state. Attaching would hide it; run \`bunx @caelo-cms/provisioning state migrate --install ${installId}\` instead.`,
-      };
     } else {
       return {
         ok: false,
