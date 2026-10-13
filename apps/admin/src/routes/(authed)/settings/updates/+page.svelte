@@ -208,6 +208,12 @@
         </AlertDescription>
       </Alert>
     {:else if inProduct && data.stepUp && !data.stepUp.configured}
+      {#if form?.error}
+        <Alert variant="destructive" data-testid="step-up-setup-error">
+          <AlertTitle>Google sign-in was not saved</AlertTitle>
+          <AlertDescription>{form.error}</AlertDescription>
+        </Alert>
+      {/if}
       <StepUpSetup
         csrfToken={data.csrfToken}
         redirectUri={data.redirectUri}

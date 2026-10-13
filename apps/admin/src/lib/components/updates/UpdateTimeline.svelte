@@ -12,6 +12,7 @@
   import type { PlatformUpdateEvent, PlatformUpdateRequest } from "@caelo-cms/admin-core";
   import { CircleAlert, CircleCheck, LoaderCircle, TriangleAlert } from "lucide-svelte";
   import { untrack } from "svelte";
+  import { invalidateAll } from "$app/navigation";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { isActive, PHASE_LABELS, STATUS_DISPLAY } from "#lib/updates-display.js";
 
@@ -39,8 +40,12 @@
         };
         if (stopped || !body.request) return;
         reconnecting = false;
+        const ended = !isActive(body.request.status);
         request = body.request;
         events = body.events;
+        // The rest of the page (install controls, the Cloud Shell step,
+        // history) follows the request's end state.
+        if (ended) await invalidateAll();
       } catch {
         // The admin restarts during a roll; keep trying.
         reconnecting = true;

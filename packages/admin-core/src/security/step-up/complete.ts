@@ -51,10 +51,11 @@ export async function completeGoogleStepUp(args: {
     return { ok: false, returnTo: DEFAULT_RETURN, message: messageOf(redeemed.error) };
   }
   const c = redeemed.value as StepUpRedeemed;
+  // Recorded against the challenge just redeemed — never on claims alone.
   const record = async (outcome: unknown) =>
     execute(registry, adapter, ctx, "step_up.record", {
       sessionHash,
-      purpose: c.purpose,
+      challengeId: c.challengeId,
       outcome,
     });
   const failWith = async (reason: string): Promise<StepUpCompletion> => {
@@ -93,7 +94,7 @@ export async function completeGoogleStepUp(args: {
     ok: true,
     email: verified.value.email,
     authTime: verified.value.authTime,
-    startedAt: c.startedAt,
+    nonce: verified.value.nonce,
   });
   if (!recorded.ok) {
     return { ok: false, returnTo: c.returnTo, message: messageOf(recorded.error) };
