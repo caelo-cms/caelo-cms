@@ -30,7 +30,7 @@ describe("parseProposalContent", () => {
   // /security/…; their cards must keep Approve / Reject (no HTTP request is
   // made to parse them, so the 308 redirect cannot help), posting to the
   // moved route.
-  it("parses a pre-rename /security queue URL and points it at /settings", () => {
+  it("parses a pre-rename queue URL (old Security prefix) and points it at /settings", () => {
     const old = ["", "security", "layouts", "pending"].join("/");
     const content = `Queued proposal ${UUID}: layout-create slug=default. Approve it on the proposal card in this chat (queue: ${old}).`;
     const result = parseProposalContent(content);
