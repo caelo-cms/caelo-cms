@@ -555,7 +555,7 @@ test("#690 — a nested page's German variant nests under the German parent, reu
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
-  await page.goto("/security/plugins");
+  await page.goto("/settings/plugins");
   const activate = page.getByTestId("activate-international-site");
   if ((await activate.count()) > 0) {
     await activate.click();
