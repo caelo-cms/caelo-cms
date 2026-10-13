@@ -661,7 +661,8 @@ export const rewriteModuleLinksOp = defineOperation({
       const next = rewritePathLinksInJson(values, map);
       if (next === values) continue;
       await tx.execute(sql`
-        UPDATE content_instances SET "values" = ${jsonbParam(next)}, updated_at = now()
+        UPDATE content_instances
+        SET "values" = ${jsonbParam(next)}, version = version + 1, updated_at = now()
         WHERE id = ${r.id}::uuid
       `);
       rewrittenContentInstanceIds.push(r.id);
