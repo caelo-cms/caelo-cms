@@ -69,6 +69,7 @@ describe("settleChatApprovals", () => {
         return reply("Token minted.");
       },
       waitMs: 60_000,
+      resumeReserveMs: 30_000,
       sleep: async () => {},
     });
     expect(r.kind).toBe("settled");
@@ -87,6 +88,7 @@ describe("settleChatApprovals", () => {
         return reply("x");
       },
       waitMs: 9_000,
+      resumeReserveMs: 0,
       intervalMs: 3_000,
       now: () => t,
       sleep: async (ms) => {
@@ -97,12 +99,71 @@ describe("settleChatApprovals", () => {
     expect(resumes).toBe(0);
   });
 
+  it("does not start a resume that would outlive the call's budget (codex review)", async () => {
+    let t = 0;
+    let resumes = 0;
+    const r = await settleChatApprovals({
+      chatSessionId: CHAT,
+      fetchState: async () => state("decided", true),
+      // The first resume takes 25 s and pauses again; a second 30 s resume
+      // would no longer fit in the 50 s call.
+      resume: async () => {
+        resumes++;
+        t += 25_000;
+        return reply("paused again", true);
+      },
+      waitMs: 50_000,
+      resumeReserveMs: 30_000,
+      now: () => t,
+      sleep: async (ms) => {
+        t += ms;
+      },
+    });
+    expect(r.kind).toBe("ready");
+    expect(resumes).toBe(1);
+  });
+
+  it("stops waiting for a decision while a resume still fits", async () => {
+    let t = 0;
+    const r = await settleChatApprovals({
+      chatSessionId: CHAT,
+      fetchState: async () => state("pending"),
+      resume: async () => reply("never"),
+      waitMs: 50_000,
+      resumeReserveMs: 30_000,
+      intervalMs: 3_000,
+      now: () => t,
+      sleep: async (ms) => {
+        t += ms;
+      },
+    });
+    expect(r.kind).toBe("pending");
+    expect(t).toBe(20_000);
+  });
+
+  it("resumes at once when the decision is already there on the first read", async () => {
+    let resumes = 0;
+    const r = await settleChatApprovals({
+      chatSessionId: CHAT,
+      fetchState: async () => state("decided", false),
+      resume: async () => {
+        resumes++;
+        return reply("ok");
+      },
+      waitMs: 1_000,
+      resumeReserveMs: 30_000,
+    });
+    expect(r.kind).toBe("settled");
+    expect(resumes).toBe(1);
+  });
+
   it("reports a card a newer message dropped", async () => {
     const r = await settleChatApprovals({
       chatSessionId: CHAT,
       fetchState: async () => state("superseded"),
       resume: async () => reply("never"),
       waitMs: 1_000,
+      resumeReserveMs: 0,
     });
     expect(r.kind).toBe("superseded");
   });
@@ -121,8 +182,11 @@ describe("caelo_chat over the chat MCP server", () => {
   let statePolls = 0;
   let resumeBodies: unknown[] = [];
   const prevWait = process.env.CAELO_MCP_APPROVAL_WAIT_MS;
+  const prevTimeout = process.env.CAELO_MCP_TIMEOUT_MS;
 
   beforeAll(() => {
+    // A short HTTP timeout keeps the resume reserve inside the 5 s waits below.
+    process.env.CAELO_MCP_TIMEOUT_MS = "1000";
     stub = Bun.serve({
       port: 0,
       fetch: async (req) => {
@@ -150,6 +214,8 @@ describe("caelo_chat over the chat MCP server", () => {
 
   afterAll(() => {
     stub.stop(true);
+    if (prevTimeout === undefined) delete process.env.CAELO_MCP_TIMEOUT_MS;
+    else process.env.CAELO_MCP_TIMEOUT_MS = prevTimeout;
   });
   afterEach(() => {
     if (prevWait === undefined) delete process.env.CAELO_MCP_APPROVAL_WAIT_MS;

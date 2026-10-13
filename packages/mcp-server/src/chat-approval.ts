@@ -61,7 +61,16 @@ export interface SettleDeps {
   readonly fetchState: () => Promise<ChatApprovalState>;
   /** Resume the agent's paused turn with the operator's decisions. */
   readonly resume: () => Promise<SendChatResult>;
+  /** The whole call's budget: waiting AND the resumed turn must fit in it. */
   readonly waitMs: number;
+  /**
+   * Time kept back for the resumed turn (its HTTP timeout). A decision seen
+   * later than `waitMs - resumeReserveMs` is not resumed in this call — the
+   * result says to continue with caelo_await_approval — so the call never
+   * outlives the MCP client's request timeout while approved work runs on
+   * without a reader (codex review).
+   */
+  readonly resumeReserveMs: number;
   readonly intervalMs?: number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
@@ -84,6 +93,12 @@ export type SettleResult =
       readonly waiting: readonly ChatApprovalView[];
     }
   | {
+      /** Every card is decided, but too little budget is left to resume now. */
+      readonly kind: "ready";
+      readonly decided: readonly ChatApprovalView[];
+      readonly turns: readonly SendChatResult[];
+    }
+  | {
       /** A newer message moved the chat past the paused turn. */
       readonly kind: "superseded";
       readonly decided: readonly ChatApprovalView[];
@@ -98,14 +113,21 @@ export type SettleResult =
 export async function settleChatApprovals(deps: SettleDeps): Promise<SettleResult> {
   const now = deps.now ?? Date.now;
   const deadline = now() + deps.waitMs;
+  // Decisions are waited for only while a resume still fits after them.
+  const pollDeadline = deadline - deps.resumeReserveMs;
   const decided: ChatApprovalView[] = [];
   const turns: SendChatResult[] = [];
+  let fetches = 0;
+  const fetchState = async (): Promise<ChatApprovalState> => {
+    fetches += 1;
+    return deps.fetchState();
+  };
   for (;;) {
     const start = now();
     const state = await pollUntil({
-      fetch: deps.fetchState,
+      fetch: fetchState,
       done: (s) => s.state !== "pending",
-      waitMs: Math.max(0, deadline - start),
+      waitMs: Math.max(0, pollDeadline - start),
       ...(deps.intervalMs !== undefined ? { intervalMs: deps.intervalMs } : {}),
       ...(deps.sleep ? { sleep: deps.sleep } : {}),
       now,
@@ -118,6 +140,11 @@ export async function settleChatApprovals(deps: SettleDeps): Promise<SettleResul
       return { kind: "superseded", decided, turns, dropped: state.approvals };
     }
     if (state.state === "none") return { kind: "settled", decided, turns };
+    // Decided on this call's very first read: nothing was spent waiting, so
+    // the resume always fits. Otherwise only while its reserve is left.
+    if (fetches > 1 && deadline - now() < deps.resumeReserveMs) {
+      return { kind: "ready", decided, turns };
+    }
     decided.push(...state.approvals);
     const resumed = await deps.resume();
     turns.push(resumed);
@@ -145,6 +172,14 @@ export function describeWaiting(
     `Waiting for the operator to approve or reject ${waiting.map((a) => a.toolName).join(", ")} in the Caelo admin. ` +
     `Nothing of it is applied yet. Call caelo_await_approval with chatSessionId "${chatSessionId}" to keep waiting ` +
     "(your turn continues with the decision), or tell your user. Do not send the request again."
+  );
+}
+
+/** The note when the operator decided but this call has no time left to continue. */
+export function describeReady(chatSessionId: string): string {
+  return (
+    "The operator has decided. Call caelo_await_approval with chatSessionId " +
+    `"${chatSessionId}" now to continue your turn with the decision; nothing of it is applied until then.`
   );
 }
 

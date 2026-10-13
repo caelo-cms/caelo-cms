@@ -18,6 +18,7 @@ import { z } from "zod";
 import { resolveApprovalWaitMs } from "./approval-wait.js";
 import {
   describeDecisions,
+  describeReady,
   describeSuperseded,
   describeWaiting,
   type SendChatResult,
@@ -25,6 +26,7 @@ import {
   settleChatApprovals,
 } from "./chat-approval.js";
 import { fetchChatApprovalState, resumeChat, sendChat } from "./chat-bridge.js";
+import { resolveTimeoutMs } from "./http.js";
 import { UPLOAD_IMAGES_TOOL, uploadedImageSchema, uploadImages } from "./image-upload.js";
 
 export interface StartOpts {
@@ -84,6 +86,7 @@ function chatResult(first: SendChatResult | null, settled: SettleResult, chatSes
     ...settled.turns.map((t) => t.assistant),
     ...(settled.kind === "pending" ? [describeWaiting(chatSessionId, settled.waiting)] : []),
     ...(settled.kind === "superseded" ? [describeSuperseded(settled.dropped)] : []),
+    ...(settled.kind === "ready" ? [describeReady(chatSessionId)] : []),
   ]
     .filter((t) => t.trim().length > 0)
     .join("\n\n");
@@ -200,6 +203,8 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
         fetchState: () => fetchChatApprovalState({ ...opts, chatSessionId }),
         resume: () => resumeChat({ ...opts, chatSessionId }),
         waitMs,
+        // The resume POST's own timeout: keep it inside the call's budget.
+        resumeReserveMs: Math.min(waitMs, resolveTimeoutMs(30_000)),
         ...(opts.approvalPollMs !== undefined ? { intervalMs: opts.approvalPollMs } : {}),
         ...(onPending ? { onPending } : {}),
       });
