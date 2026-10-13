@@ -60,6 +60,28 @@ bunx @caelo-cms/provisioning@latest --provider gcp \
 
 Wall-clock: about 10 minutes (mostly Cloud SQL HA setup).
 
+### Where the install runs: your terminal or an install job
+
+The installer has two halves. The first needs **your** Google login: creating or picking the project, linking billing, enabling APIs, creating `caelo-provisioner`, the [state bucket + KMS key](#where-the-installs-state-lives), and the cost table you confirm. That half always runs in your terminal. The second half — `pulumi up`, the DNS and certificate waits, migrations, the Owner setup link — can run in one of two places:
+
+| Mode | Where the second half runs | Default |
+|---|---|---|
+| **Install job** (`--install-job`) | A Cloud Run job `caelo-install` in your project, running as `caelo-provisioner` from the signed `caelo-ops` image of the same release (pinned by the digest in the release's [signed manifest](https://github.com/caelo-cms/caelo-cms/blob/main/packages/provisioning/src/release-manifest.ts)). Your terminal follows its log. | In Google Cloud Shell |
+| **Local** (`--local`) | Your terminal, impersonating `caelo-provisioner` with your Application Default Credentials. | Everywhere else (laptop, CI) |
+
+With the install job, **closing the terminal does not stop the install** — not Ctrl-C, not a closed Cloud Shell tab, not Cloud Shell's 40-minute idle timeout. Run the installer again (or click the Cloud Shell button again) and pick the same project: it attaches to the running job, shows the result of a finished one, or — if the last run stopped — starts a new run that resumes where that one stopped. `status` shows the same progress.
+
+How it works:
+
+- The job's definition holds no key, password or token. Its only argument is the project; it reads everything else from the install's ops bucket, which only you and `caelo-provisioner` can write.
+- It records its progress in `gs://<project>-caelo-ops/install/install-job.json` (which run, which step, why it stopped) next to `progress.json`, where every finished step is checkpointed.
+- The Owner setup link is a secret: the job never prints it to its logs. It stores it in the Secret Manager secret `caelo-install-setup-link`, and your terminal reads it from there when the install is done (`gcloud secrets versions access latest --secret=caelo-install-setup-link --project=<project>`) If that secret is deleted later, re-running the installer runs the job once more to store it again.
+- `caelo-provisioner` gets three more roles to run the job on its own: `roles/iam.roleAdmin` and `roles/cloudscheduler.admin` for the [IAP sync job](#who-can-open-the-admin-google-iap) (in local mode your own account creates those), and `roles/logging.logWriter` so its log reaches your terminal. It already holds `roles/resourcemanager.projectIamAdmin`, so this widens nothing. Installs in local mode don't get them.
+- DNS: with `CLOUDFLARE_API_TOKEN` set in your shell, the installer stores the token in Secret Manager (`caelo-install-cloudflare-token`) and the job reads it from there to set the records itself; delete that secret after the install if you don't want it kept. Without it, the job can't ask you to confirm, so it prints the records (your terminal shows them) and waits up to two hours for them to resolve.
+- Cost: one run is about $0.20-0.40 (2 vCPU, 4 GiB, for as long as the install takes); nothing while idle. The job stays in the project after the install, so `status` and a re-run can find it; delete it with `gcloud run jobs delete caelo-install --region=<region>` if you like.
+- An install whose Pulumi state is still on your machine (created before [state in the project](#where-the-installs-state-lives)) can't use the job: run `state migrate` first, or `--local`.
+- On a laptop, `--install-job` needs [`cosign`](https://docs.sigstore.dev/cosign/system_config/installation/) to verify the release before it starts the job.
+
 ## Choosing the region
 
 The region decides where your database, uploads, secrets and services live: that matters for data residency (GDPR) and for latency to your editors. The provisioner asks for it before it creates anything that costs money:
@@ -315,6 +337,10 @@ Installers before this change stored the database URLs, with `admin_role`'s and 
 - **"Could not read gs://<project>-caelo-ops/install/…"** — your gcloud account has no access to the install's ops bucket. Ask a project Owner to run the installer or `state migrate` once with your account signed in, or grant you `roles/storage.objectAdmin` on the bucket and `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key `caelo/pulumi-state`.
 - **"gs://<project>-caelo-ops exists but does not belong to project …"** — bucket names are global and another project holds that name. Delete or rename that bucket if it is yours; otherwise open an issue.
 - **"Project … already has a Caelo install … whose state lives in gs://…"** — you ran the installer for an install that another machine set up. Run `attach --project <id>` instead.
+- **"The install job failed: …"** — the message is the job's last output; the full log is under Cloud Run → Jobs → `caelo-install` in the console (or `gcloud run jobs executions list --job=caelo-install --region=<region>`). Fix the cause and run the installer again for the same project: the new run resumes at the step that failed. A run that ended without a result ("ended (failed) without recording a result") was stopped from outside — out of memory, its 6-hour limit, or cancelled; re-running resumes too.
+- **The install job stops at "Waiting for DNS"** — it waits up to two hours for the records it printed to resolve. Set them at your registrar and run the installer again; it resumes at the DNS step.
+- **"Could not verify release v…" before the install job starts** — the installer checks the release's signed manifest with `cosign` before it pins the job's image. Install `cosign` (Cloud Shell: the install script does it), check the machine can reach `europe-west1-docker.pkg.dev`, and re-run. A signature error means the release on the registry is not the one Caelo's release workflow signed: do not proceed, open an issue.
+- **"This install's Pulumi state is on this machine … the install job can't run it"** — move the state into the project with `state migrate`, or re-run with `--local`.
 - **Pulumi says it can't decrypt (`incorrect passphrase`, KMS permission denied)** — for an install in its project, check `gcloud auth application-default login` uses an account with access to the key; for a local install, `secrets/pulumi-passphrase` must be the original file (restore it from `~/.caelo-backups/`).
 
 ## Next

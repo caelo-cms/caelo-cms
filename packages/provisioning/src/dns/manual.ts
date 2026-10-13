@@ -19,8 +19,20 @@ import type { DnsAdapter, DnsRecord } from "./types.js";
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000; // 30 min — managed certs need ~15 min to issue after DNS
+/**
+ * Without a prompt nobody confirms the records were set, so the install job
+ * (#696) waits longer for the operator to reach their registrar; a timeout
+ * ends the run and the next one resumes at this step.
+ */
+const NON_INTERACTIVE_POLL_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
-export function makeManualAdapter(opts: { domain: string }): DnsAdapter {
+/**
+ * @param opts.nonInteractive print the records and poll without asking for
+ *   confirmation first (the install job has no terminal)
+ */
+export function makeManualAdapter(opts: { domain: string; nonInteractive?: boolean }): DnsAdapter {
+  const timeoutMs = opts.nonInteractive ? NON_INTERACTIVE_POLL_TIMEOUT_MS : POLL_TIMEOUT_MS;
+  const timeoutLabel = `${Math.round(timeoutMs / 60_000)} min`;
   return {
     name: `Manual (paste at your registrar for ${opts.domain})`,
     async applyRecords(records: DnsRecord[]): Promise<void> {
@@ -32,30 +44,36 @@ export function makeManualAdapter(opts: { domain: string }): DnsAdapter {
             (r) => `  ${dim(r.type.padEnd(6))} ${r.hostname.padEnd(35)} → ${bold(r.value)}`,
           ),
           "",
-          dim("After pasting, press Enter to verify resolution."),
+          dim(
+            opts.nonInteractive
+              ? "Waiting until they resolve — the install continues on its own."
+              : "After pasting, press Enter to verify resolution.",
+          ),
         ].join("\n"),
         "DNS records",
       );
 
-      const ack = await confirm({
-        message: "Records pasted at your registrar?",
-        initialValue: true,
-      });
-      if (isCancel(ack) || !ack) {
-        log.error(red("Aborted at DNS step."));
-        throw new Error("DNS records not pasted; aborted by operator.");
+      if (!opts.nonInteractive) {
+        const ack = await confirm({
+          message: "Records pasted at your registrar?",
+          initialValue: true,
+        });
+        if (isCancel(ack) || !ack) {
+          log.error(red("Aborted at DNS step."));
+          throw new Error("DNS records not pasted; aborted by operator.");
+        }
       }
 
       const s = spinner();
-      s.start(`Polling DNS — up to 30 min while propagation + records settle...`);
+      s.start(`Polling DNS — up to ${timeoutLabel} while propagation + records settle...`);
       const start = Date.now();
       const remaining = new Set(records.map((r) => recordKey(r)));
 
       while (remaining.size > 0) {
-        if (Date.now() - start > POLL_TIMEOUT_MS) {
-          s.stop(red("DNS verify timeout (30 min)."));
+        if (Date.now() - start > timeoutMs) {
+          s.stop(red(`DNS verify timeout (${timeoutLabel}).`));
           throw new Error(
-            `Records still unresolved after 30 min: ${[...remaining].join(", ")}. Re-run after fixing.`,
+            `Records still unresolved after ${timeoutLabel}: ${[...remaining].join(", ")}. Re-run after fixing.`,
           );
         }
         for (const key of [...remaining]) {

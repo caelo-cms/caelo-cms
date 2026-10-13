@@ -275,6 +275,8 @@ export async function grantProvisionerRoles(
     run?: typeof gcloud;
     sleep?: (ms: number) => Promise<void>;
     retryDelaysMs?: readonly number[];
+    /** Roles to bind instead of the provisioner's base set (the install job's extras). */
+    roles?: readonly string[];
   } = {},
 ): Promise<{ granted: number; failed: RoleGrantFailure[] }> {
   const run = opts.run ?? gcloud;
@@ -282,7 +284,7 @@ export async function grantProvisionerRoles(
   const retryDelaysMs = opts.retryDelaysMs ?? GRANT_RETRY_DELAYS_MS;
   let granted = 0;
   const failed: RoleGrantFailure[] = [];
-  for (const role of PROVISIONER_ROLES) {
+  for (const role of opts.roles ?? PROVISIONER_ROLES) {
     const args = [
       "projects",
       "add-iam-policy-binding",

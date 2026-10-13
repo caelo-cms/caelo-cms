@@ -219,6 +219,16 @@ async function statusOf(installId: string, meta: InstallMetadata): Promise<boole
   log.info(`Domain:  ${bold(meta.domain)}`);
   log.info(`Project: ${bold(meta.projectId ?? "<self-hosted>")}`);
 
+  // #696 — an install made (or resumed) through the install job: how that
+  // job stands, from the same record the installer attaches with.
+  if (
+    (meta.provider === "gcp" || meta.provider === "gcp-firebase") &&
+    meta.stateBackend?.kind === "gcs"
+  ) {
+    const { installJobStatusLines } = await import("./wizards/gcp-install-job.js");
+    for (const line of await installJobStatusLines(meta)) log.info(line);
+  }
+
   if (meta.provider === "gcp") {
     await gcpStatus(meta);
   } else {
