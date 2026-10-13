@@ -20,6 +20,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { deletePagesManyTool } from "../ai/tools/bulk-pages-modules.js";
+import { applyPathMoveEffects } from "../ops/content/path-moves.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -94,6 +96,7 @@ async function wipe(): Promise<void> {
   await q(async (tx) => {
     await tx`DELETE FROM redirects WHERE from_path LIKE ${`%${PFX}-%`} OR to_path LIKE ${`%${PFX}-%`}`;
     await tx`DELETE FROM structured_sets WHERE slug LIKE ${`${PFX}-%`}`;
+    await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE ${`${PFX}-%`})`;
     await tx`DELETE FROM modules WHERE slug LIKE ${`${PFX}-%`}`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}-%`})`;
     await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}-%`}`;
@@ -413,5 +416,79 @@ describe("nested page URLs — chat branch + publish + revert", () => {
     // The operator asked for no 301s; a page that was never live gets none.
     expect(await redirectTo(`/${PFX}-br2-live`)).toBeNull();
     expect(await redirectTo(`/${PFX}-br2-new`)).toBeNull();
+  });
+});
+
+describe("nested page URLs — move effects + approval sizing", () => {
+  it("collapses redirect chains against the original targets in one pass", async () => {
+    await q(
+      (tx) => tx`INSERT INTO redirects (from_path, to_path, status_code, created_by)
+      VALUES (${`/${PFX}-legacy-a`}, ${`/${PFX}-ca`}, 301, ${SYSTEM.actorId}::uuid),
+             (${`/${PFX}-legacy-b`}, ${`/${PFX}-cb`}, 301, ${SYSTEM.actorId}::uuid)`,
+    );
+    // Chained: the page at /ca moves to /cb while the page at /cb moves on to /cc.
+    await adapter.withAdminTransaction(SYSTEM, (tx) =>
+      applyPathMoveEffects(
+        SYSTEM,
+        tx,
+        [
+          { pageId: "00000000-0000-4000-8000-0000000000a1", from: `/${PFX}-ca`, to: `/${PFX}-cb` },
+          { pageId: "00000000-0000-4000-8000-0000000000a2", from: `/${PFX}-cb`, to: `/${PFX}-cc` },
+        ],
+        "skip",
+      ),
+    );
+    expect(await redirectTo(`/${PFX}-legacy-a`)).toBe(`/${PFX}-cb`);
+    expect(await redirectTo(`/${PFX}-legacy-b`)).toBe(`/${PFX}-cc`);
+  });
+
+  it("a content link rewrite bumps the content instance version", async () => {
+    const page = await makePage("civ");
+    const mod = await execute(registry, adapter, SYSTEM, "modules.create", {
+      slug: `${PFX}-civ-mod`,
+      displayName: "CI link",
+      html: "<a href='{{cta_href}}'>x</a>",
+      fields: [{ name: "cta_href", kind: "text", label: "Link" } as never],
+    });
+    if (!mod.ok) throw new Error("module seed");
+    const moduleId = (mod.value as { moduleId: string }).moduleId;
+    const rows = (await q(
+      (tx) => tx`INSERT INTO content_instances (module_id, "values")
+        VALUES (${moduleId}::uuid, ${JSON.stringify({ cta_href: `/${PFX}-civ` })}::text::jsonb)
+        RETURNING id::text AS id, version`,
+    )) as unknown as { id: string; version: number | string }[];
+    const ci = rows[0];
+    if (!ci) throw new Error("ci seed");
+    const target = await makePage("civ-t");
+    const r = await move([{ pageId: page, parentPageId: target }]);
+    expect(r.ok).toBe(true);
+    const after = (await q(
+      (tx) => tx`SELECT "values", version FROM content_instances WHERE id = ${ci.id}::uuid`,
+    )) as unknown as { values: { cta_href: string }; version: number | string }[];
+    expect(after[0]?.values.cta_href).toBe(`/${PFX}-civ-t/${PFX}-civ`);
+    expect(Number(after[0]?.version)).toBe(Number(ci.version) + 1);
+  });
+
+  it("delete approval counts a cascaded subtree", async () => {
+    const root = await makePage("gate");
+    let parent = root;
+    for (let i = 0; i < 4; i++) parent = await makePage(`gate-${i}`, parent);
+    const toolCtx = { registry, adapter } as Parameters<
+      NonNullable<typeof deletePagesManyTool.needsApproval>
+    >[2];
+    const aiCtx = { ...SYSTEM, actorKind: "ai" as const };
+    const gate = deletePagesManyTool.needsApproval as NonNullable<
+      typeof deletePagesManyTool.needsApproval
+    >;
+    expect(await gate({ deletions: [{ pageId: root, disposition: "404" }] }, aiCtx, toolCtx)).toBe(
+      false,
+    );
+    expect(
+      await gate(
+        { deletions: [{ pageId: root, disposition: "404", children: "delete" }] },
+        aiCtx,
+        toolCtx,
+      ),
+    ).toBe(true);
   });
 });

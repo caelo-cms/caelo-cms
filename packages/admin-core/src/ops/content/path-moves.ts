@@ -79,11 +79,17 @@ export async function applyPathMoveEffects(
     await tx.execute(sql`DELETE FROM redirects WHERE from_path = ${m.to}`);
   }
   // Collapse chains: X → old becomes X → new, so a visitor hops once.
-  for (const m of real) {
-    await tx.execute(sql`
-      UPDATE redirects SET to_path = ${m.to} WHERE to_path = ${m.from}
-    `);
-  }
+  // ONE statement against the original targets: with chained or swapped
+  // moves (/a → /b, /b → /c) sequential updates would carry "/legacy →
+  // /a" on to /c, i.e. to the wrong page.
+  await tx.execute(sql`
+    UPDATE redirects r SET to_path = m.new_path
+    FROM (VALUES ${sql.join(
+      real.map((m) => sql`(${m.from}, ${m.to})`),
+      sql`, `,
+    )}) AS m(old_path, new_path)
+    WHERE r.to_path = m.old_path
+  `);
   let redirectsCreated = 0;
   for (const m of real) {
     if (skipsRedirect(m.pageId)) continue;

@@ -178,7 +178,9 @@ export function hasHostContribution(): boolean {
  */
 export function resolvePageUrl(page: UrlComposePage): ResolvedPageUrl {
   const full = urlContributionsRegistry.bySlot("full-path");
-  const hostValue = resolvePageHost(page);
+  // The host slot never sees the tree (SDK contract): render-time host
+  // resolution only has the materialized path, so both must agree.
+  const hostValue = resolvePageHost({ ...page, ancestorSlugs: [] });
 
   if (full && full.contribution.slot === "full-path") {
     const path = full.contribution.encode(page);
