@@ -146,6 +146,28 @@ export interface ChatRunnerOptions {
    */
   readonly turnSerializer?: ChatTurnSerializer;
   /**
+   * Issues #664 / #665 — who started this top-level turn. Set by the Live
+   * Edit SSE route ("live_edit") and the caelo_chat bridge ("mcp_chat"): the
+   * turn is then listed in the chat's running agents, Stop reaches it on any
+   * instance, a stopped chat refuses it unless it is the operator's own
+   * message, and it does not start while an external agent works in the
+   * chat. Unset for subagent child turns (their spawn handler registers
+   * them) and for tests that drive the runner directly.
+   */
+  readonly agentRunSource?: "live_edit" | "mcp_chat";
+  /**
+   * Issue #664 — the operator's own action started this turn (a typed
+   * message, a chip they clicked, an in-chat Approve/Reject), as opposed to
+   * a nudge the panel sent by itself. Only such a turn lifts the chat's
+   * Stop latch; every other turn is refused while it holds.
+   */
+  readonly operatorInitiated?: boolean;
+  /**
+   * The running-agents row of THIS turn — set by `runChatTurn` itself after
+   * registration, read by the spawn handler to parent its subagents.
+   */
+  readonly agentRunId?: string;
+  /**
    * issue #106 (redesign) — override the narrate-then-stop completeness judge.
    * Tests inject a stub so the RECOVER layer can be driven without an AI
    * provider; production leaves it unset and the loop uses the real judge.

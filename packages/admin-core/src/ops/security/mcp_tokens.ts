@@ -200,7 +200,14 @@ export async function resolveMcpToken(
   plaintextToken: string,
 ): Promise<
   Result<
-    { actorId: string; tokenId: string; scope: McpTokenScope; aiCostCapMicrocents: number | null },
+    {
+      actorId: string;
+      tokenId: string;
+      /** The Owner's label for the token — names the external agent in the UI. */
+      displayName: string;
+      scope: McpTokenScope;
+      aiCostCapMicrocents: number | null;
+    },
     "not_found" | "expired" | "revoked"
   >
 > {
@@ -216,13 +223,14 @@ export async function resolveMcpToken(
     },
     async (tx) => {
       const rows = (await tx.execute(sql`
-        SELECT id::text AS id, actor_id::text AS actor_id, scope,
+        SELECT id::text AS id, actor_id::text AS actor_id, scope, display_name,
                ai_cost_cap_microcents, expires_at, revoked_at
         FROM mcp_tokens
         WHERE token_hash = ${tokenHash}
       `)) as unknown as Array<{
         id: string;
         actor_id: string;
+        display_name: string;
         scope: McpTokenScope;
         ai_cost_cap_microcents: bigint | string | number | null;
         expires_at: string | Date;
@@ -244,7 +252,13 @@ export async function resolveMcpToken(
             : typeof r.ai_cost_cap_microcents === "string"
               ? Number.parseInt(r.ai_cost_cap_microcents, 10)
               : r.ai_cost_cap_microcents;
-      return ok({ actorId: r.actor_id, tokenId: r.id, scope: r.scope, aiCostCapMicrocents: cap });
+      return ok({
+        actorId: r.actor_id,
+        tokenId: r.id,
+        displayName: r.display_name,
+        scope: r.scope,
+        aiCostCapMicrocents: cap,
+      });
     },
   );
 }
@@ -401,6 +415,9 @@ export const mcpSendChatOp = defineOperation({
         aiCtx,
         humanCtx: turnHumanCtx,
         ...(aiCostCapMicrocents !== null ? { costCapMicrocents: aiCostCapMicrocents } : {}),
+        // Issue #664 — listed in the chat's running agents; the operator's
+        // Stop reaches it, and a stopped chat refuses it.
+        agentRunSource: "mcp_chat",
       },
       {
         chatSessionId,
@@ -431,6 +448,22 @@ export const mcpSendChatOp = defineOperation({
           kind: "HandlerError",
           operation: "mcp.send_chat",
           message: `chat_error: ${ev.message}`,
+        });
+      } else if (
+        ev.kind === "warning" &&
+        (ev.code === "chat-stopped" || ev.code === "turn-dropped")
+      ) {
+        return err({
+          kind: "HandlerError",
+          operation: "mcp.send_chat",
+          message: `stopped_by_operator: ${ev.message} Stop and tell your user; do not resend.`,
+        });
+      } else if (ev.kind === "interrupted") {
+        return err({
+          kind: "HandlerError",
+          operation: "mcp.send_chat",
+          message:
+            "turn_interrupted: the turn ended before it finished — the operator pressed Stop in the Caelo chat, or another turn took the chat over. Tell your user; do not resend without asking.",
         });
       }
     }

@@ -35,6 +35,7 @@ import { buildSkillsContext } from "../../ai/chat-runner/context/skills.js";
 import { buildStatusLine } from "../../ai/chat-runner/context-blocks.js";
 import { loadMemory } from "../../ai/chat-runner/persistence.js";
 import { withTakeoverNotices } from "../../ai/chat-runner/tool-dispatch.js";
+import { isReadOrMetaTool } from "../../ai/chat-runner/write-tools.js";
 import { chatPluginInvocation } from "../../ai/plugin-invocation.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
@@ -146,6 +147,8 @@ async function resolveAdminScopedToken(
   | {
       ok: true;
       actorId: string;
+      tokenId: string;
+      displayName: string;
       scope: McpTokenScope;
       aiCostCapMicrocents: number | null;
     }
@@ -166,6 +169,8 @@ async function resolveAdminScopedToken(
   return {
     ok: true,
     actorId: resolved.value.actorId,
+    tokenId: resolved.value.tokenId,
+    displayName: resolved.value.displayName,
     scope: resolved.value.scope,
     aiCostCapMicrocents: resolved.value.aiCostCapMicrocents,
   };
@@ -504,124 +509,231 @@ export const mcpExecuteToolOp = defineOperation({
       chatBranchId,
       chatTaskId: input.chatSessionId,
     };
-    const provider = await resolveProvider();
-    const tools = createDefaultToolRegistry();
-
-    // Tier-1 plugin tools route through the plugin host, exactly like the
-    // chat-runner's dispatcher does (tool-dispatch.ts).
-    //
-    // #388 — approval-declared plugin tools are refused here: the SDK's
-    // in-chat Approve card cannot render on the MCP surface, and running
-    // the operation without it would reopen the approvals bypass this
-    // gate exists to close. The AI is told to use the chat surface.
-    const pluginTool = pluginToolsRegistry.resolve(input.toolName);
-    if (pluginTool?.spec.approvalMode) {
+    // Issues #664 / #665 — one agent works in a chat at a time, and the
+    // operator can stop this one. Every call marks the external agent as
+    // working in the session (the Live Edit chat then does not start a turn
+    // of its own AI, and lists this agent with a Stop button); a call after
+    // the operator stopped it is refused until they allow it again.
+    const presence = await execute(
+      registry,
+      adapter,
+      humanCtxWithBranch,
+      "chat.touch_external_agent",
+      {
+        chatSessionId: input.chatSessionId,
+        mcpTokenId: auth.tokenId,
+        label: `External agent "${auth.displayName}" (MCP)`.slice(0, 200),
+      },
+    );
+    if (!presence.ok) {
+      const detail = "message" in presence.error ? presence.error.message : presence.error.kind;
+      return err({
+        kind: "HandlerError",
+        operation: "mcp.execute_tool",
+        message: `presence_failed: ${detail} — nothing was executed; retry the call`,
+      });
+    }
+    if ((presence.value as { stopped: boolean }).stopped) {
       return ok({
         ok: false,
-        content:
-          `Tool "${input.toolName}" requires the Owner's in-chat approval and cannot run on the MCP surface. ` +
-          `Ask the operator to run this in the Caelo chat, where an Approve card is shown.`,
+        content: EXTERNAL_AGENT_STOPPED_TEXT,
         requestId,
         toolCallId,
         cached: false,
         image: null,
       });
     }
-    const rawResult: ToolResult = pluginTool
-      ? await runPluginOperation({
-          pluginSlug: pluginTool.pluginSlug,
-          operationName: pluginTool.spec.operationName,
-          args: input.args ?? {},
-          invocation: chatPluginInvocation(aiCtx, auth.actorId),
-        }).then(
-          (r): ToolResult =>
-            r.ok
-              ? { ok: true, content: JSON.stringify(r.value) }
-              : { ok: false, content: `${r.error.kind}: ${r.error.message}` },
-        )
-      : await tools.dispatch(input.toolName, input.args ?? {}, aiCtx, {
-          adapter,
-          registry,
+    // A write holds the chat's turn lease (0247) for the duration of the
+    // call: it never runs while a Live Edit turn writes, and a Live Edit
+    // turn waits the seconds this call takes. Reads need no exclusivity.
+    const leaseHolderId = isReadOrMetaTool(input.toolName) ? null : `power-mcp:${requestId}`;
+    if (leaseHolderId) {
+      const lease = await execute(
+        registry,
+        adapter,
+        humanCtxWithBranch,
+        "chat.acquire_turn_lease",
+        {
           chatSessionId: input.chatSessionId,
-          chatBranchId,
-          toolCallId,
-          tools,
-          humanCtx: humanCtxWithBranch,
-          ...(provider ? { provider } : {}),
-          // No spawnChildChatTurn / requestScreenshot / pushClientEvent:
-          // the tools that need them are in POWER_MCP_EXCLUDED_TOOLS.
-          // screenshot_page works WITHOUT them since issue #412 — with no
-          // pushClientEvent it renders the branch preview server-side and
-          // returns the image, which flows to the MCP client as an image
-          // content block.
+          holderId: leaseHolderId,
+          ttlMs: POWER_MCP_CALL_LEASE_TTL_MS,
+        },
+      );
+      if (!lease.ok) {
+        const detail = "message" in lease.error ? lease.error.message : lease.error.kind;
+        return err({
+          kind: "HandlerError",
+          operation: "mcp.execute_tool",
+          message: `lease_failed: ${detail} — nothing was executed; retry the call`,
         });
+      }
+      const claim = lease.value as { acquired: boolean; heldBy: { acquiredAt: string } | null };
+      if (!claim.acquired) {
+        return ok({
+          ok: false,
+          content: chatBusyText(input.toolName, claim.heldBy?.acquiredAt ?? null),
+          requestId,
+          toolCallId,
+          cached: false,
+          image: null,
+        });
+      }
+    }
+    const dispatchAndRecord = async () => {
+      const provider = await resolveProvider();
+      const tools = createDefaultToolRegistry();
 
-    // issue #413 — tool-result prose is also authored for the chat surface
-    // (e.g. inspect_page_render's summary hint says to call an excluded
-    // screenshot tool next). Annotate at the same boundary as the catalogue
-    // descriptions, BEFORE caching, so replays serve the same honest copy.
-    // issue #620 — a write that took over another chat's lock (or lost one)
-    // says so in this result, same as in the browser chat.
-    const result: ToolResult = await withTakeoverNotices(
-      registry,
-      adapter,
-      humanCtxWithBranch,
-      input.chatSessionId,
-      {
-        ...rawResult,
-        content: annotateExcludedToolMentions(rawResult.content, POWER_MCP_EXCLUDED_TOOLS),
-      },
-    );
+      // Tier-1 plugin tools route through the plugin host, exactly like the
+      // chat-runner's dispatcher does (tool-dispatch.ts).
+      //
+      // #388 — approval-declared plugin tools are refused here: the SDK's
+      // in-chat Approve card cannot render on the MCP surface, and running
+      // the operation without it would reopen the approvals bypass this
+      // gate exists to close. The AI is told to use the chat surface.
+      const pluginTool = pluginToolsRegistry.resolve(input.toolName);
+      if (pluginTool?.spec.approvalMode) {
+        return ok({
+          ok: false,
+          content:
+            `Tool "${input.toolName}" requires the Owner's in-chat approval and cannot run on the MCP surface. ` +
+            `Ask the operator to run this in the Caelo chat, where an Approve card is shown.`,
+          requestId,
+          toolCallId,
+          cached: false,
+          image: null,
+        });
+      }
+      const rawResult: ToolResult = pluginTool
+        ? await runPluginOperation({
+            pluginSlug: pluginTool.pluginSlug,
+            operationName: pluginTool.spec.operationName,
+            args: input.args ?? {},
+            invocation: chatPluginInvocation(aiCtx, auth.actorId),
+          }).then(
+            (r): ToolResult =>
+              r.ok
+                ? { ok: true, content: JSON.stringify(r.value) }
+                : { ok: false, content: `${r.error.kind}: ${r.error.message}` },
+          )
+        : await tools.dispatch(input.toolName, input.args ?? {}, aiCtx, {
+            adapter,
+            registry,
+            chatSessionId: input.chatSessionId,
+            chatBranchId,
+            toolCallId,
+            tools,
+            humanCtx: humanCtxWithBranch,
+            ...(provider ? { provider } : {}),
+            // No spawnChildChatTurn / requestScreenshot / pushClientEvent:
+            // the tools that need them are in POWER_MCP_EXCLUDED_TOOLS.
+            // screenshot_page works WITHOUT them since issue #412 — with no
+            // pushClientEvent it renders the branch preview server-side and
+            // returns the image, which flows to the MCP client as an image
+            // content block.
+          });
 
-    // Issue #620 — MCP work is activity in this session: without the bump
-    // a later reconnect could resume a browser chat that merely looked
-    // more recently active.
-    if (result.ok) {
-      await tx.execute(sql`
+      // issue #413 — tool-result prose is also authored for the chat surface
+      // (e.g. inspect_page_render's summary hint says to call an excluded
+      // screenshot tool next). Annotate at the same boundary as the catalogue
+      // descriptions, BEFORE caching, so replays serve the same honest copy.
+      // issue #620 — a write that took over another chat's lock (or lost one)
+      // says so in this result, same as in the browser chat.
+      const result: ToolResult = await withTakeoverNotices(
+        registry,
+        adapter,
+        humanCtxWithBranch,
+        input.chatSessionId,
+        {
+          ...rawResult,
+          content: annotateExcludedToolMentions(rawResult.content, POWER_MCP_EXCLUDED_TOOLS),
+        },
+      );
+
+      // Issue #620 — MCP work is activity in this session: without the bump
+      // a later reconnect could resume a browser chat that merely looked
+      // more recently active.
+      if (result.ok) {
+        await tx.execute(sql`
         UPDATE chat_sessions SET last_active_at = now() WHERE id = ${input.chatSessionId}::uuid
       `);
-    }
+      }
 
-    if (input.toolCallId) {
-      await execute(registry, adapter, humanCtxWithBranch, "chat.cache_tool_result", {
-        chatSessionId: input.chatSessionId,
-        toolCallId,
-        toolName: input.toolName,
+      if (input.toolCallId) {
+        await execute(registry, adapter, humanCtxWithBranch, "chat.cache_tool_result", {
+          chatSessionId: input.chatSessionId,
+          toolCallId,
+          toolName: input.toolName,
+          ok: result.ok,
+          content: result.content,
+        });
+      }
+
+      // NB: no chat.append_message here. MCP-originated tool calls are
+      // deliberately NOT written into the session transcript — the browser
+      // chat replays persisted history through the SDK's response-messages
+      // passthrough (CLAUDE.md §12), and orphan tool rows without their
+      // assistant tool_use turn would corrupt that replay. The review
+      // surface for MCP work is chat.list_pending_changes + snapshots,
+      // which capture every write regardless.
+
+      const approval = await handOffQueuedProposal(tx, {
         ok: result.ok,
         content: result.content,
+        ...(result.queuedProposalId ? { queuedProposalId: result.queuedProposalId } : {}),
+        chatSessionId: input.chatSessionId,
+        requestedBy: auth.actorId,
+        toolName: input.toolName,
+        toolCallId,
       });
+
+      return ok({
+        ok: result.ok,
+        content: result.content,
+        requestId,
+        toolCallId,
+        cached: false,
+        image: result.image ?? null,
+        ...(result.nextAction !== undefined ? { nextAction: result.nextAction } : {}),
+        approval,
+      });
+    };
+    try {
+      return await dispatchAndRecord();
+    } finally {
+      if (leaseHolderId) {
+        const released = await execute(
+          registry,
+          adapter,
+          humanCtxWithBranch,
+          "chat.release_turn_lease",
+          { chatSessionId: input.chatSessionId, holderId: leaseHolderId },
+        );
+        // The lease lapses after its TTL; the next turn then takes it over.
+        if (!released.ok) console.error("[mcp.execute_tool] turn lease release failed");
+      }
     }
-
-    // NB: no chat.append_message here. MCP-originated tool calls are
-    // deliberately NOT written into the session transcript — the browser
-    // chat replays persisted history through the SDK's response-messages
-    // passthrough (CLAUDE.md §12), and orphan tool rows without their
-    // assistant tool_use turn would corrupt that replay. The review
-    // surface for MCP work is chat.list_pending_changes + snapshots,
-    // which capture every write regardless.
-
-    const approval = await handOffQueuedProposal(tx, {
-      ok: result.ok,
-      content: result.content,
-      ...(result.queuedProposalId ? { queuedProposalId: result.queuedProposalId } : {}),
-      chatSessionId: input.chatSessionId,
-      requestedBy: auth.actorId,
-      toolName: input.toolName,
-      toolCallId,
-    });
-
-    return ok({
-      ok: result.ok,
-      content: result.content,
-      requestId,
-      toolCallId,
-      cached: false,
-      image: result.image ?? null,
-      ...(result.nextAction !== undefined ? { nextAction: result.nextAction } : {}),
-      approval,
-    });
   },
 });
+
+/** How long a Power-MCP write may hold the chat's turn lease (its call duration). */
+const POWER_MCP_CALL_LEASE_TTL_MS = 10 * 60_000;
+
+/** Issue #664 — what a stopped external agent is told on every call in that chat. */
+const EXTERNAL_AGENT_STOPPED_TEXT =
+  "stopped_by_operator: the operator pressed Stop for you in this Caelo chat. Nothing was executed. " +
+  "Stop working on this site now and tell your user that Caelo's operator stopped you. " +
+  "Do not retry and do not open a new session to continue — the operator lifts the stop " +
+  'with "Allow again" in the chat\'s running-agents bar when they want you back.';
+
+/** Issue #665 — what an external agent is told while the Live Edit AI works in the chat. */
+function chatBusyText(toolName: string, since: string | null): string {
+  return (
+    `chat_busy: the operator's Live Edit AI is working in this chat right now${since ? ` (since ${since})` : ""}, ` +
+    `so '${toolName}' was NOT executed — two agents editing the same pages at once would undo each other's work. ` +
+    "Read tools (list_*, get_*, inspect_* …) still work. Wait until the Live Edit turn ends " +
+    "(retry in about a minute), or ask your user whether you should take over."
+  );
+}
 
 /**
  * The canonical shape gated tools' queued results start with (enforced by

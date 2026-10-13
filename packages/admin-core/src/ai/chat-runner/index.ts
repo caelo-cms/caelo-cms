@@ -25,6 +25,12 @@ import { chatPluginInvocation } from "../plugin-invocation.js";
 import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
 import { attachGatedExecute, attachPluginGatedExecute } from "../tools/gated-tools.js";
+import {
+  type AgentRunHandle,
+  queryApiAgentRunStore,
+  startAgentRun,
+  stoppedByOperator,
+} from "./agent-runs.js";
 import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
 import {
   resolveCompactionRecentTokens,
@@ -57,6 +63,7 @@ import { buildToolCatalogue, resolveExcludedToolNames } from "./tool-catalogue.j
 import { defaultChatTurnSerializer, queryApiChatTurnLeaseStore } from "./turn-serializer.js";
 import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
+export { abortLocalAgentRuns } from "./agent-runs.js";
 // Public surface re-exports — the `../chat-runner.ts` shim does `export *`
 // from here, so these keep the pre-split import paths working.
 export type { ChatRunnerOptions, ClientEvent } from "./types.js";
@@ -72,37 +79,92 @@ export async function* runChatTurn(
   options: ChatRunnerOptions,
   input: ChatSendMessageInput,
 ): AsyncIterable<ClientEvent> {
-  const serializer = options.turnSerializer ?? defaultChatTurnSerializer;
-  const acquired = await serializer.acquire({
-    chatSessionId: input.chatSessionId,
-    store: queryApiChatTurnLeaseStore(options.registry, options.adapter, options.humanCtx),
-    ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
-  });
-  if (acquired.kind === "aborted") {
-    yield { kind: "done" };
-    return;
+  // Issue #664 / #665 — a top-level turn (Live Edit, caelo_chat) is listed
+  // in the chat's running agents from the moment it arrives, and the
+  // operator's Stop reaches it through the run handle on any instance.
+  // Subagent child turns are registered by their spawn handler instead.
+  let run: AgentRunHandle | null = null;
+  if (options.agentRunSource) {
+    const started = await startAgentRun({
+      store: queryApiAgentRunStore(options.registry, options.adapter, options.humanCtx),
+      registration: {
+        chatSessionId: input.chatSessionId,
+        kind: "turn",
+        source: options.agentRunSource,
+        label:
+          options.agentRunSource === "live_edit" ? "Live Edit AI" : "External agent (caelo_chat)",
+        // Only the operator's own action lifts a Stop; auto-sent nudges and
+        // external callers never do.
+        operatorInitiated: options.operatorInitiated === true,
+      },
+    });
+    if (started.kind === "refused") {
+      // A stopped chat refuses quietly (an auto nudge raced the Stop);
+      // everything else is an error the sender has to act on.
+      yield started.reason === "stopped"
+        ? { kind: "warning", code: "chat-stopped", message: started.message }
+        : { kind: "error", message: started.message };
+      yield { kind: "done" };
+      return;
+    }
+    if (started.kind === "failed") {
+      console.error("[chat-runner] agent run not registered");
+      yield { kind: "error", message: started.message };
+      yield { kind: "done" };
+      return;
+    }
+    run = started.handle;
   }
-  if (acquired.kind !== "held") {
-    // A constant line on purpose: the acquire result flows from execute(),
-    // which CodeQL's clear-text-logging query flags (docs/dev/codeql.md,
-    // known false-positive class). The operator sees the reason in the chat.
-    console.error("[chat-runner] turn not started");
-    yield { kind: "error", message: acquired.message };
-    yield { kind: "done" };
-    return;
-  }
-  const { hold } = acquired;
   try {
-    // A turn that lost its lease (lapsed and taken over by another turn)
-    // stops like an aborted one instead of writing into the other turn.
-    const abortSignal = options.abortSignal
-      ? AbortSignal.any([options.abortSignal, hold.lost])
-      : hold.lost;
-    // The stop persists the usual interrupted marker, so the operator sees
-    // where the answer ended; turn-serializer.ts logs the lease loss.
-    yield* runSerializedChatTurn({ ...options, abortSignal }, input);
+    const stopSignals = [options.abortSignal, run?.signal].filter(
+      (s): s is AbortSignal => s !== undefined,
+    );
+    const outerSignal = stopSignals.length > 0 ? AbortSignal.any(stopSignals) : undefined;
+    const serializer = options.turnSerializer ?? defaultChatTurnSerializer;
+    const acquired = await serializer.acquire({
+      chatSessionId: input.chatSessionId,
+      store: queryApiChatTurnLeaseStore(options.registry, options.adapter, options.humanCtx),
+      ...(outerSignal ? { abortSignal: outerSignal } : {}),
+    });
+    if (acquired.kind === "aborted") {
+      if (stoppedByOperator(run?.signal)) {
+        // A turn queued behind the one the operator stopped: dropped before
+        // it persisted anything.
+        yield {
+          kind: "warning",
+          code: "turn-dropped",
+          message: "Not sent: the operator stopped the AI in this chat while this message waited.",
+        };
+      }
+      yield { kind: "done" };
+      return;
+    }
+    if (acquired.kind !== "held") {
+      // A constant line on purpose: the acquire result flows from execute(),
+      // which CodeQL's clear-text-logging query flags (docs/dev/codeql.md,
+      // known false-positive class). The operator sees the reason in the chat.
+      console.error("[chat-runner] turn not started");
+      yield { kind: "error", message: acquired.message };
+      yield { kind: "done" };
+      return;
+    }
+    const { hold } = acquired;
+    try {
+      await run?.markRunning();
+      // A turn that lost its lease (lapsed and taken over by another turn)
+      // stops like an aborted one instead of writing into the other turn.
+      const abortSignal = outerSignal ? AbortSignal.any([outerSignal, hold.lost]) : hold.lost;
+      // The stop persists the usual interrupted marker, so the operator sees
+      // where the answer ended; turn-serializer.ts logs the lease loss.
+      yield* runSerializedChatTurn(
+        { ...options, abortSignal, ...(run ? { agentRunId: run.runId } : {}) },
+        input,
+      );
+    } finally {
+      await hold.release();
+    }
   } finally {
-    await hold.release();
+    await run?.finish();
   }
 }
 
