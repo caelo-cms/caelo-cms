@@ -27,6 +27,14 @@ on that commit and waits for it (about 15 minutes, ~$4.50 of API spend);
 a green run from an earlier attempt on the same commit is reused. A red
 run stops the cut; fix main and re-run release-cut.
 
+The same form carries the **release declaration** that gets signed into
+the release manifest (see ["Release manifest"](#release-manifest)):
+`security` + `advisories` for a security release,
+`ack_contract_migrations` when the release carries destructive
+migrations, `ack_infra_neutral` when infra-contract files changed
+without an IAM/secret/resource change. These are checked first, before
+the paid real-AI gate, so a refused declaration costs nothing.
+
 One-time setup: CI needs the shipped-plugin manifest signing key
 (release.ts re-signs the plugin manifests; the `TIER1` in the secret
 and script names predates the single plugin model and is historical). The pair stored here IS the release
@@ -70,9 +78,18 @@ before the first tag.
 | Surface | Tags emitted |
 |---|---|
 | **npm** (`@caelo-cms/shared`, `@caelo-cms/mcp-server`, `@caelo-cms/provisioning`) | `0.2.1` published with the right [dist-tag](https://docs.npmjs.com/cli/dist-tag) — `latest` for stable, `rc` / `beta` for pre-releases. Auth via [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC) — no `NPM_TOKEN` secret, no 2FA bypass, short-lived credential exchanged from GitHub's OIDC token at publish time. Provenance attestation via the same OIDC. |
-| **GHCR** (`ghcr.io/caelo-cms/{admin,gateway}`) | `:0.2.1`, `:0.2`, `:latest` — pre-releases get the version-specific tag only (no `:latest`). Each image is signed with cosign (keyless / OIDC) for verifiable provenance. |
-| **GCP Artifact Registry** (`europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/{admin,gateway}`) | Same tags as GHCR, mirrored from GHCR by `release-images.yml`. Cloud Run pulls from here (Cloud Run rejects `ghcr.io` directly). |
-| **GitHub Release** | `v0.2.1` with the `## v0.2.1` stanza from `CHANGELOG.md` as the body. Marked `prerelease: true` when the version contains a hyphen. |
+| **GHCR** (`ghcr.io/caelo-cms/{admin,gateway,ops}`) | `:0.2.1`, `:0.2`, `:latest` — pre-releases get the version-specific tag only (no `:latest`). Each image is signed with cosign (keyless / OIDC) for verifiable provenance. |
+| **GCP Artifact Registry** (`europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/{admin,gateway,ops}`) | Same tags as GHCR, mirrored from GHCR by `release-images.yml`. Cloud Run pulls from here (Cloud Run rejects `ghcr.io` directly). |
+| **GitHub Release** | `v0.2.1` with the `## v0.2.1` stanza from `CHANGELOG.md` as the body. Marked `prerelease: true` when the version contains a hyphen. Carries `release-manifest.json` + its Sigstore bundle. |
+| **Release manifest** (`ghcr.io/caelo-cms/release-manifest:0.2.1`, mirrored to the AR repo above) | OCI artifact: the signed manifest + its Sigstore bundle as two layers. See ["Release manifest"](#release-manifest). |
+
+`ops` is the `caelo-ops` image (`packages/provisioning/Dockerfile.ops`):
+the provisioning CLI with pinned Bun, Node, Pulumi, gcloud (+ beta) and
+cosign, multi-arch (amd64 + arm64), non-root, entry point `caelo-ops`.
+It is what Cloud Shell installs and the in-cloud upgrader job run
+(epic #696); every tool download is checksum-verified at build time.
+To bump a tool, change its version ARG and both per-arch sha256 values
+in the same commit, citing the vendor checksum file in the PR.
 
 All four happen in parallel from the single `git push --follow-tags`
 that lands the release commit.
@@ -124,7 +141,14 @@ Before the first tag:
    `CAELO_TIER1_PRIVATE_KEY=<hex>` from your team secrets manager
    instead — the script picks that up over the local file.
 
-3. **Configure GCP Artifact Registry workload identity** (already done
+3. **Make new GHCR packages public** (once per package). The first
+   push of `ops` and `release-manifest` creates them as *private*
+   GHCR packages; anonymous pulls (Cloud Shell, the upgrader, Compose)
+   then fail. Open each under the org's Packages → Package settings →
+   *Change visibility → Public*, and link it to this repository so the
+   workflow token keeps package-admin on it (registry-retention.yml).
+
+4. **Configure GCP Artifact Registry workload identity** (already done
    on `caelo-cms`; document here for fork operators):
    - In the GCP project `caelo-website`, set
      `GCP_PUBLIC_REGISTRY_WIF_PROVIDER`,
@@ -158,11 +182,21 @@ bun scripts/release.ts major       # 0.2.0 → 1.0.0
 bun scripts/release.ts 0.5.3       # explicit version
 bun scripts/release.ts 0.6.0-rc.1  # pre-release
 bun scripts/release.ts patch --dry-run   # preview without writing
+
+# Release declaration (signed into the release manifest):
+bun scripts/release.ts patch --security --advisories GHSA-xxxx-xxxx-xxxx
+bun scripts/release.ts minor --ack-contract-migrations
+bun scripts/release.ts patch --ack-infra-neutral
+bun scripts/release.ts patch --checks-only   # run the release checks, change nothing
 ```
 
 What the script does, in order:
 1. Validates the new version is strictly greater than the current
-   `CAELO_VERSION` (from `packages/shared/src/version.ts`).
+   `CAELO_VERSION` (from `packages/shared/src/version.ts`), then runs
+   the release-cut checks (security advisories, migration lint, infra
+   contract — see ["Release manifest"](#release-manifest)) and writes
+   the declaration to `release-meta.json`. A failed check stops here,
+   before anything is bumped.
 2. Updates the `CAELO_VERSION` constant.
 3. Walks every workspace `package.json` and bumps `"version"` to match.
 4. Re-signs every shipped plugin manifest under
@@ -186,8 +220,10 @@ This fires two parallel workflows:
 - **`release.yml`** — re-runs lint + typecheck + test + lockstep
   check; npm-publishes every non-private `@caelo-cms/*` package with
   provenance; creates the GitHub Release with the changelog stanza.
-- **`release-images.yml`** — builds admin + gateway images, tags them,
-  signs with cosign, mirrors GHCR → GCP Artifact Registry.
+- **`release-images.yml`** — builds the admin, gateway and ops images,
+  tags them, signs with cosign, mirrors GHCR → GCP Artifact Registry.
+- **`release-manifest`** (job in `release.yml`) — builds, signs and
+  publishes the release manifest once the images exist.
 
 Both bind their artifacts to the same git SHA — the release is
 atomic.
@@ -200,6 +236,126 @@ npm view @caelo-cms/provisioning version    # → X.Y.Z
 docker pull ghcr.io/caelo-cms/admin:X.Y.Z   # → succeeds
 gh release view vX.Y.Z                      # → shows the changelog
 ```
+
+---
+
+## Release manifest
+
+Every release ships one signed `release-manifest.json` (epic #696):
+
+```json
+{
+  "manifestVersion": 1,
+  "version": "0.11.0",
+  "channel": "stable",
+  "digests": { "admin": "sha256:…", "gateway": "sha256:…", "ops": "sha256:…" },
+  "minFromVersion": "0.10.0",
+  "infraContractVersion": 1,
+  "migrations": { "contract": false, "head": "0262_tool_approval_branch", "lastContractVersion": "0.10.42" },
+  "security": false,
+  "advisories": []
+}
+```
+
+`release.yml`'s `release-manifest` job builds it after the images are
+pushed (digests resolved from the version tags), re-runs every
+release-cut check against `release-meta.json`, signs it with
+`cosign sign-blob` (keyless, identity
+`https://github.com/caelo-cms/caelo-cms/.github/workflows/release.yml@refs/tags/vX.Y.Z`),
+pushes it as an OCI artifact to GHCR, mirrors it to the AR, and
+verifies the mirror copy through the same library the upgrader uses
+(`packages/provisioning/src/release-manifest.ts`). npm publishing and
+the GitHub Release wait for it. Because the identity names the tag,
+**release.yml must run on the tag ref**: a manual dispatch uses
+`gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z` (the job
+refuses any other ref).
+
+Verify one by hand:
+
+```bash
+gh release download vX.Y.Z -p 'release-manifest.json*'
+cosign verify-blob --bundle release-manifest.json.sigstore.json \
+  --certificate-identity https://github.com/caelo-cms/caelo-cms/.github/workflows/release.yml@refs/tags/vX.Y.Z \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  release-manifest.json
+```
+
+### Security releases
+
+`security: true` is the only thing that lets an Owner's "auto-install
+security fixes" policy apply a release unattended, so it is hard to set:
+
+- It comes **only** from the release-cut input `security` (or
+  `release.ts --security`), together with `advisories` — a comma list
+  of GHSA ids.
+- The cut (and again `release.yml`, before signing) refuses unless every
+  id resolves to a **published** GitHub Security Advisory of this repo
+  (`GET /repos/caelo-cms/caelo-cms/security-advisories/<id>`, state
+  `published`). Drafts do not count. CVE ids are not accepted — the
+  GHSA carries the CVE.
+- Advisories without `security`, or `security` without advisories, are
+  refused.
+- The manifest is signed by the release workflow, so a compromised
+  admin or registry mirror cannot turn a normal release into a
+  "security" one.
+
+A security release must also be expand-only and keep the infra
+contract. If it carries contract migrations or raises
+`infraContractVersion`, the cut still succeeds (with a warning) and the
+manifest still says `security: true` — but the upgrader treats it as
+**manual**: it is never auto-installed, and the admin offers "Run in
+Cloud Shell" with the reason (`assessAutoInstall` in
+`release-manifest.ts`). The infra comparison is against the *installed*
+contract version, so a bump in any skipped release counts too.
+
+### Contract migrations
+
+Migrations are expand-only: the previous release's image must run on
+the new schema. `scripts/migration-lint.ts` scans the SQL migrations
+**added** since the previous stable tag for DROP TABLE / COLUMN /
+SCHEMA / TYPE / VIEW / DOMAIN / SEQUENCE / FUNCTION, ALTER TYPE, RENAME
+and ALTER COLUMN … TYPE (DROP POLICY / CONSTRAINT / INDEX / TRIGGER are
+routine recreate patterns and not flagged). SQL inside `DO $$ … $$` /
+function bodies is linted including its string literals, so
+`EXECUTE 'DROP TABLE …'` counts. Any finding sets
+`migrations.contract: true`, and the cut is refused unless
+`ack_contract_migrations` (`--ack-contract-migrations`) acknowledges
+it. Such a release is never auto-installed. Prefer shipping the
+destructive step one release after the code stopped using the object.
+
+`migrations.lastContractVersion` carries the newest contract release
+forward (the release itself when it has contract migrations, else the
+previous release's value, recorded in `release-meta.json` by
+`release.ts` and re-derived by `release.yml`). An install below it that
+would jump straight to a later release is also **manual**: skipping the
+contract release does not make its destructive migrations safe.
+
+```bash
+bun scripts/migration-lint.ts               # since the previous stable tag
+bun scripts/migration-lint.ts --since v0.10.30
+```
+
+### Infra contract
+
+`INFRA_CONTRACT_VERSION` in `packages/provisioning/src/infra-contract.ts`
+(the same number the upgrade's `needsConverge` checks) says which IAM bindings, secrets, service accounts and cloud resources
+the release's images need. The upgrader job can only roll images, so an
+install whose recorded value is lower must upgrade with the operator's
+own identity (Cloud Shell / CLI).
+
+**Bump it by one** in any release whose stacks or upgrade-time converge
+add, remove or change IAM, secrets, service accounts or resources. The
+release checks diff the files in `INFRA_CONTRACT_PATHS` (the stacks,
+`stack-contract.ts`, `stack-converge.ts`, `runtime-secrets.ts`,
+`operator-access.ts`, `gcp-names.ts`, and the upgrade-time mutators
+`upgrade/converge.ts`, `mcp-iap.ts`, `default-firewall.ts`; listed in
+`release-contract.ts`; tests and READMEs excluded) against the previous stable tag: if any changed and the number did
+not, the cut is refused. When the change is infra-neutral (a comment, a
+refactor, a log line), re-cut with `ack_infra_neutral`
+(`--ack-infra-neutral`) instead. The number never goes down.
+
+`minFromVersion` comes from `RELEASE_MIN_FROM_VERSION` in `release-contract.ts`;
+raise it when a release needs an intermediate stop.
 
 ---
 
