@@ -402,6 +402,9 @@ interface LogEntry {
  * terminal.
  */
 const LOG_LOOKBACK_MS = 2 * 60 * 1000;
+/** Entries per `gcloud logging read` page, and pages per poll. */
+const LOG_PAGE_SIZE = 1000;
+const LOG_MAX_PAGES = 20;
 
 /**
  * The execution's log lines not printed yet, oldest first, looking back
@@ -415,34 +418,44 @@ export async function readExecutionLogs(
   since: string | null,
   seen: Set<string>,
 ): Promise<{ lines: string[]; cursor: string | null }> {
-  const filter = [
-    'resource.type="cloud_run_job"',
-    `resource.labels.job_name="${INSTALL_JOB_NAME}"`,
-    `labels."run.googleapis.com/execution_name"="${target.execution}"`,
-    ...(since ? [`timestamp>="${lookback(since)}"`] : []),
-  ].join(" AND ");
-  const r = await run([
-    "logging",
-    "read",
-    filter,
-    `--project=${target.projectId}`,
-    "--order=asc",
-    "--limit=1000",
-    "--freshness=1d",
-    "--format=json",
-  ]);
-  if (!r.ok) return { lines: [], cursor: since };
-  const entries = JSON.parse(r.stdout || "[]") as LogEntry[];
   const lines: string[] = [];
   let cursor = since;
-  for (const e of entries) {
-    const id = e.insertId ?? `${e.timestamp}:${e.textPayload}`;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    if (e.timestamp && (cursor === null || Date.parse(e.timestamp) > Date.parse(cursor))) {
-      cursor = e.timestamp;
+  // A page that comes back full may hide newer entries behind it (a chatty
+  // two-minute window): read on from its last timestamp, page by page.
+  let from: string | null = since ? lookback(since) : null;
+  for (let page = 0; page < LOG_MAX_PAGES; page++) {
+    const filter = [
+      'resource.type="cloud_run_job"',
+      `resource.labels.job_name="${INSTALL_JOB_NAME}"`,
+      `labels."run.googleapis.com/execution_name"="${target.execution}"`,
+      ...(from ? [`timestamp>="${from}"`] : []),
+    ].join(" AND ");
+    const r = await run([
+      "logging",
+      "read",
+      filter,
+      `--project=${target.projectId}`,
+      "--order=asc",
+      `--limit=${LOG_PAGE_SIZE}`,
+      "--freshness=1d",
+      "--format=json",
+    ]);
+    if (!r.ok) break;
+    const entries = JSON.parse(r.stdout || "[]") as LogEntry[];
+    for (const e of entries) {
+      const id = e.insertId ?? `${e.timestamp}:${e.textPayload}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (e.timestamp && (cursor === null || Date.parse(e.timestamp) > Date.parse(cursor))) {
+        cursor = e.timestamp;
+      }
+      if (e.textPayload !== undefined) lines.push(e.textPayload.replace(/\n$/, ""));
     }
-    if (e.textPayload !== undefined) lines.push(e.textPayload.replace(/\n$/, ""));
+    const last = entries.at(-1)?.timestamp ?? null;
+    // Not full: nothing newer is hidden. Full but one timestamp throughout:
+    // the next page would be the same one.
+    if (entries.length < LOG_PAGE_SIZE || last === null || last === from) break;
+    from = last;
   }
   return { lines, cursor };
 }
