@@ -30,9 +30,18 @@
  * Postgres container itself) is the backup that actually works here.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
-import type { ReleaseImages } from "./compose.js";
+import { MEDIA_DIR, type ReleaseImages } from "./compose.js";
 import { fetchLatestReleaseTag, RELEASE_SERVICES, releaseTag } from "./release-images.js";
 import {
   type HostRunner,
@@ -95,6 +104,55 @@ type UpgradeStage =
   | "roll-admin"
   | "roll-gateway";
 
+/** Where an install from before #696 keeps its original Compose file during the move. */
+export function legacyComposePath(caeloDir: string): string {
+  return join(caeloDir, "docker-compose.pre-release.yml");
+}
+
+/**
+ * The legacy (repo-mounted) Compose file, saved to
+ * {@link legacyComposePath} on the first upgrade and read from there on
+ * every retry — after a stopped run the live file may already name the
+ * release images, which would make a rollback a no-op.
+ */
+function legacyComposeCheckpoint(caeloDir: string): string {
+  const saved = legacyComposePath(caeloDir);
+  if (existsSync(saved)) return readFileSync(saved, "utf8");
+  const original = readFileSync(composePath(caeloDir), "utf8");
+  writeFileSync(saved, original, { mode: 0o600 });
+  return original;
+}
+
+/** Where the media of an install from before #696 lives: the checkout's admin cwd. */
+export function legacyMediaDir(caeloDir: string): string {
+  return join(caeloDir, "..", "apps", "admin", "data", "media");
+}
+
+/**
+ * Copy (never move) a legacy install's uploads from the checkout
+ * (`apps/admin/data/media`, the admin's cwd under the repo bind mount) into
+ * `.caelo/media/`, which the release-mode admin mounts as MEDIA_ROOT_DIR.
+ * Skipped when there is nothing to copy or `.caelo/media/` already has
+ * content (a previous run copied it).
+ */
+export function adoptLegacyMedia(
+  caeloDir: string,
+): { ok: true; copied: string | null } | { ok: false; error: string } {
+  const from = legacyMediaDir(caeloDir);
+  const to = join(caeloDir, MEDIA_DIR);
+  if (!existsSync(from)) return { ok: true, copied: null };
+  if (existsSync(to) && readdirSync(to).length > 0) return { ok: true, copied: null };
+  try {
+    cpSync(from, to, { recursive: true, preserveTimestamps: true });
+    return { ok: true, copied: to };
+  } catch (e) {
+    return {
+      ok: false,
+      error: `Could not copy the uploaded media from ${from} to ${to} (${e instanceof Error ? e.message : String(e)}). The upgrade did not start.`,
+    };
+  }
+}
+
 export function composePath(caeloDir: string): string {
   return join(caeloDir, "docker-compose.yml");
 }
@@ -122,10 +180,11 @@ export async function upgradeSelfHosted(
   }
   // The file to restore on failure: the recorded release re-rendered (so a
   // run that stopped after writing new digests cannot "restore" those), or —
-  // for an install from before #696 with no record — the file as it is.
+  // for an install from before #696 with no record — the legacy file,
+  // checkpointed once so a retry after a stopped run still has it.
   const previousCompose = current
     ? deps.renderCompose(releaseImages(current))
-    : readFileSync(file, "utf8");
+    : legacyComposeCheckpoint(caeloDir);
 
   // 1. Target release → verified digests.
   const target = await targetVersion(opts, deps.fetchImpl);
@@ -177,6 +236,11 @@ export async function upgradeSelfHosted(
   const backup = await backupDatabases(caeloDir, runner, now());
   if (!backup.ok) return fail("backup", backup.error, true);
   log.info(`Backup written to ${backup.dir}`);
+  if (!current) {
+    const media = adoptLegacyMedia(caeloDir);
+    if (!media.ok) return fail("backup", media.error, true);
+    if (media.copied) log.info(`Copied the uploaded media into ${media.copied}`);
+  }
 
   // 3. New digests into the Compose file; pull them.
   writeFileSync(file, nextCompose, { mode: 0o600 });

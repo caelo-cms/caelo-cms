@@ -51,6 +51,11 @@ export const BOOTSTRAP_DIR = "bootstrap";
  */
 export const SITE_OUTPUT_ROOT = "/srv/caelo";
 
+/** `.caelo/<this>/` holds the uploaded media (the admin's local media adapter root). */
+export const MEDIA_DIR = "media";
+/** Where {@link MEDIA_DIR} appears in the admin container (its `MEDIA_ROOT_DIR`). */
+export const MEDIA_ROOT = "/data/media";
+
 /** The gateway's HTTP port inside the Compose network. */
 export const COMPOSE_GATEWAY_PORT = 8090;
 
@@ -238,7 +243,12 @@ ${serviceRuntime(
   // The static site: the admin builds into it (CAELO_OUTPUT_ROOT below),
   // Caddy serves it read-only from the same host dir. On the host, so a
   // recreated admin (upgrade) keeps the published site.
-  [`./${BOOTSTRAP_DIR}:/app/.caelo`, `./output:${SITE_OUTPUT_ROOT}`],
+  // Uploaded media (MEDIA_ROOT_DIR below) likewise lives on the host.
+  [
+    `./${BOOTSTRAP_DIR}:/app/.caelo`,
+    `./output:${SITE_OUTPUT_ROOT}`,
+    `./${MEDIA_DIR}:${MEDIA_ROOT}`,
+  ],
 )}
     container_name: caelo-admin
     restart: unless-stopped
@@ -252,6 +262,7 @@ ${serviceRuntime(
       CAELO_SITE_URL: "${escapeYaml(publicSiteUrl(spec.domain))}"
       PORT: "${COMPOSE_ADMIN_PORT}"
       CAELO_OUTPUT_ROOT: "${SITE_OUTPUT_ROOT}"
+      MEDIA_ROOT_DIR: "${MEDIA_ROOT}"
       NODE_ENV: production
 ${env("ANTHROPIC_API_KEY", spec.anthropicApiKey)}
 ${env("RESEND_API_KEY", spec.resendApiKey)}`;

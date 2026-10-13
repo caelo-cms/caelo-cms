@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReleaseImages } from "./compose.js";
@@ -11,7 +19,12 @@ import {
   readRelease,
   recordRelease,
 } from "./self-hosted-release.js";
-import { composePath, type UpgradeLog, upgradeSelfHosted } from "./self-hosted-upgrade.js";
+import {
+  composePath,
+  legacyComposePath,
+  type UpgradeLog,
+  upgradeSelfHosted,
+} from "./self-hosted-upgrade.js";
 
 const OLD_DIGEST = { admin: `sha256:${"1".repeat(64)}`, gateway: `sha256:${"2".repeat(64)}` };
 const OLD: ReleaseImages = {
@@ -307,5 +320,38 @@ describe("upgradeSelfHosted", () => {
     const r = await upgradeSelfHosted({ version: "0.11.0" }, deps(fakeRunner()));
     expect(r).toEqual({ ok: true, status: "upgraded", version: "0.11.0" });
     expect(readRelease(dir)?.history.at(-1)).toMatchObject({ from: null, to: "0.11.0" });
+  });
+
+  it("keeps the legacy Compose file for rollback across a stopped first upgrade", async () => {
+    rmSync(join(dir, "release.json"));
+    const legacy = "legacy: true\n";
+    writeFileSync(composePath(dir), legacy);
+    // A first run that stopped after writing the release images into the file.
+    const stopped = fakeRunner([(c) => (c.includes(" pull ") ? { exitCode: 1 } : undefined)]);
+    await upgradeSelfHosted({ version: "0.11.0" }, deps(stopped));
+    expect(readFileSync(legacyComposePath(dir), "utf8")).toBe(legacy);
+    writeFileSync(composePath(dir), render(NEW));
+
+    const failing = fakeRunner([(c) => (c.includes("/healthz") ? { exitCode: 1 } : undefined)]);
+    await upgradeSelfHosted({ version: "0.11.0" }, deps(failing));
+    expect(readFileSync(composePath(dir), "utf8")).toBe(legacy);
+  });
+
+  it("copies a legacy install's media from the checkout into .caelo/media", async () => {
+    const root = mkdtempSync(join(tmpdir(), "caelo-sh-repo-"));
+    try {
+      const caeloDir = join(root, ".caelo");
+      mkdirSync(join(root, "apps", "admin", "data", "media", "a"), { recursive: true });
+      writeFileSync(join(root, "apps", "admin", "data", "media", "a", "logo.png"), "PNG");
+      mkdirSync(caeloDir);
+      writeFileSync(composePath(caeloDir), "legacy: true\n");
+      const r = await upgradeSelfHosted({ version: "0.11.0" }, { ...deps(fakeRunner()), caeloDir });
+      expect(r.ok).toBe(true);
+      expect(readFileSync(join(caeloDir, "media", "a", "logo.png"), "utf8")).toBe("PNG");
+      // The originals stay where they were.
+      expect(existsSync(join(root, "apps", "admin", "data", "media", "a", "logo.png"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
