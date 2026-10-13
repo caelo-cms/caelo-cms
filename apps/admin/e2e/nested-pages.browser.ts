@@ -60,7 +60,7 @@ test.beforeAll(() => {
     };
     const create = (slug, parentPageId) =>
       run("pages.create", {
-        slug, title: slug, templateId: seeded.templateId, status: "published",
+        slug, title: slug, templateId: seeded.templateId, status: "draft",
         ...(parentPageId ? { parentPageId } : {}),
       });
     const section = await create(tag + "-section");
