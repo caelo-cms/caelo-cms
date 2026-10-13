@@ -464,9 +464,15 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
       return handlerError(op, `unknown proposal kind ${String(row.kind)}`);
     }
 
+    // #678 — the next step computed at apply time (e.g. "nothing is staged
+    // yet — Stage") rides on the row, so an external agent polling the
+    // decision (mcp_approval_handoffs) gets it too, not only this caller.
     await tx.execute(sql`
       UPDATE owner_settings_pending_actions
-      SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid
+      SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid,
+          preview = CASE WHEN ${nextStep ?? null}::text IS NULL THEN preview
+                         ELSE preview || jsonb_build_object('appliedNextStep', ${nextStep ?? null}::text)
+                    END
       WHERE id = ${input.proposalId}::uuid
     `);
     const summary = String(parsePayload<{ summary?: unknown }>(row.preview).summary ?? row.kind);

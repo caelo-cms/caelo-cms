@@ -802,6 +802,23 @@ describe("cms-provision staging-domain enable → staging_access.provision (#678
     });
     expect(applied.nextStep).toContain("stage_changes");
     expect(applied.nextStep).toContain("Nothing is served at https://review.example.org/");
+
+    // An access change while the served build has another host: the apply
+    // result says so, and the row keeps it for an external agent's poll
+    // (mcp_approval_handoffs reads preview.appliedNextStep).
+    const access = await ok<{ proposalId: string }>("owner_settings.propose_set_staging_access", {
+      headerEnabled: true,
+    });
+    const accessApplied = await ok<{ nextStep?: string }>("owner_settings.execute_proposal", {
+      proposalId: access.proposalId,
+    });
+    expect(accessApplied.nextStep).toContain("get_staging_access");
+    expect(accessApplied.nextStep).toContain("stage_changes");
+    const [stored] = (await withSql(
+      (tx) => tx`SELECT preview->>'appliedNextStep' AS next FROM owner_settings_pending_actions
+                 WHERE id = ${access.proposalId}::uuid`,
+    )) as { next: string | null }[];
+    expect(stored?.next).toBe(accessApplied.nextStep ?? null);
   });
 
   it("Stage reports the draft pages it left out", async () => {

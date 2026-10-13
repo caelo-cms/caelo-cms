@@ -111,10 +111,11 @@ async function readProposalDecisions(tx: Tx, proposalId: string): Promise<Propos
       FROM theme_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'site_defaults', status, decided_at, decision_reason, NULL, NULL
       FROM site_defaults_pending_actions WHERE id = ${id}
-    -- #678: the proposal's effect (incl. its next step, e.g. "Stage so the
-    -- new staging host serves something") rides back with 'applied'.
+    -- #678: the next step computed when it was applied (e.g. "nothing is
+    -- staged yet — Stage"), else the proposal's effect, rides back with
+    -- 'applied'.
     UNION ALL SELECT 'owner_settings', status, decided_at, decision_reason, NULL,
-                     preview->>'effect'
+                     COALESCE(preview->>'appliedNextStep', preview->>'effect')
       FROM owner_settings_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'quality', status, decided_at, decision_reason, NULL, NULL
       FROM quality_pending_actions WHERE id = ${id}

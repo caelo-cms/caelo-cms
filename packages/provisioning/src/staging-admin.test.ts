@@ -30,6 +30,7 @@ function fakeGcloud(overrides: Record<string, GcloudResult> = {}) {
     "run services describe": ok(`${ADMIN}\n`),
     "secrets versions access": ok(SECRET),
     "auth print-access-token": ok("ya29.operator\n"),
+    "services enable iamcredentials.googleapis.com": ok(),
     ...overrides,
   };
   const calls: string[][] = [];
@@ -105,6 +106,12 @@ describe("applyStagingAdmin", () => {
     expect(Buffer.from(message ?? "", "base64url").toString()).toEndWith(
       `:${STAGING_PROVISION_SCOPE}`,
     );
+    expect(calls).toContainEqual([
+      "services",
+      "enable",
+      "iamcredentials.googleapis.com",
+      "--project=proj",
+    ]);
     expect(calls).toContainEqual([
       "secrets",
       "versions",

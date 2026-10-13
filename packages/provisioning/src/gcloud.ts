@@ -135,6 +135,9 @@ const REQUIRED_APIS: readonly string[] = [
   "serviceusage.googleapis.com",
   // Hourly run of the operator-access sync job (operator-access.ts).
   "cloudscheduler.googleapis.com",
+  // signJwt as caelo-mcp: how `staging-domain enable` passes the admin's
+  // IAP (staging-admin.ts, #678) — the same path the MCP shim takes.
+  "iamcredentials.googleapis.com",
 ];
 
 // v0.3.1 — gcp-firebase provider needs the Firebase Management +

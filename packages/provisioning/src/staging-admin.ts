@@ -146,6 +146,20 @@ async function callStagingAdmin<T>(
     };
   }
 
+  // Installs from before #678 may not have the IAM Credentials API on;
+  // enabling an enabled API is a no-op (codex review on #681).
+  const api = await run([
+    "services",
+    "enable",
+    "iamcredentials.googleapis.com",
+    `--project=${target.projectId}`,
+  ]);
+  if (!api.ok) {
+    return {
+      ok: false,
+      error: `enable the IAM Credentials API (iamcredentials.googleapis.com), needed to pass the admin's IAP: ${api.stderr.trim()}`,
+    };
+  }
   const iap = await signIapJwt(run, doFetch, target.projectId, adminUrl, deps.now);
   if (!iap.ok) return iap;
 
