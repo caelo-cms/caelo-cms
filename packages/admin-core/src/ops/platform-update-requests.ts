@@ -36,6 +36,8 @@ import {
   ok,
   PLATFORM_UPDATE_EVENT_LEVELS,
   PLATFORM_UPDATE_PHASES,
+  PLATFORM_UPDATE_STALE_MINUTES,
+  PLATFORM_UPDATE_STALE_REASON,
   PLATFORM_UPDATE_STATUSES,
   PLATFORM_UPDATE_TRIGGERS,
   releaseVersionSchema,
@@ -191,6 +193,7 @@ export const platformUpdatesRequestOp = defineOperation({
       operation: "install a Caelo update",
       permission: "platform.update",
       sessionHash: input.sessionHash,
+      purpose: "platform_update",
     });
     if (refusal) return refuse(refusal);
 
@@ -215,6 +218,19 @@ export const platformUpdatesRequestOp = defineOperation({
       return refuse(
         `This install already runs ${CAELO_VERSION}; ${input.targetVersion} is not newer.`,
       );
+    }
+    // A run that died (Cloud Run timeout, crash) never reports back; end it
+    // here too, not only on the next job run, so it cannot block updates.
+    const stale = (await tx.execute(sql`
+      UPDATE platform_update_requests
+         SET status = 'failed', finished_at = now(), status_reason = ${PLATFORM_UPDATE_STALE_REASON},
+             refusal_codes = ARRAY['stale']
+       WHERE status = 'running'
+         AND started_at < now() - make_interval(mins => ${PLATFORM_UPDATE_STALE_MINUTES})
+       RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    for (const s of stale) {
+      await appendEvent(tx, s.id, "finish", "error", PLATFORM_UPDATE_STALE_REASON);
     }
     const active = await readRequests(tx, sql`r.status IN ('pending', 'running')`, 1);
     if (active[0]) {
@@ -262,6 +278,7 @@ export const platformUpdatesCancelOp = defineOperation({
       operation: "cancel a Caelo update",
       permission: "platform.update",
       sessionHash: input.sessionHash,
+      purpose: "platform_update",
     });
     if (refusal) return handlerError(op, refusal);
     const rows = (await tx.execute(sql`

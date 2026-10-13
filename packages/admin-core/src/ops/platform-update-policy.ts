@@ -127,6 +127,7 @@ export const platformUpdatePolicySetOp = defineOperation({
       operation: "change the update policy",
       permission: "platform.update",
       sessionHash: input.sessionHash,
+      purpose: "update_policy",
     });
     if (refusal) return err({ kind: "HandlerError", operation: op, message: refusal });
     const p = input.policy;

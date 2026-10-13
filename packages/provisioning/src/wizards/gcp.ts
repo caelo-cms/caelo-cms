@@ -358,7 +358,9 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
 
   // === 11.4. The upgrader job: Settings → Updates → Install update (#696) ===
   // Before operator access, which keeps the upgrader's caelo-mcp grant.
-  const upgraderReady = await stepUpgraderJob(projectId, region);
+  const releaseVersion = await releaseVersionForDigest(gcloud, "admin", imageDigests.admin);
+  const upgraderReady = await stepUpgraderJob(projectId, region, releaseVersion);
+  const keepSigner = upgraderReady || (await upgraderExists(projectId));
 
   // === 11.5. Operator access: IAP follows the Caelo user list ===
   await stepOperatorAccessSync(
@@ -366,9 +368,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     region,
     opts.provider ?? "gcp",
     ownerEmail,
-    upgraderReady
-      ? [`serviceAccount:${upgraderServiceAccountEmail(projectId, GCP_STACK_ENV)}`]
-      : [],
+    keepSigner ? [`serviceAccount:${upgraderServiceAccountEmail(projectId, GCP_STACK_ENV)}`] : [],
   );
 
   // A fresh install ran every converge step above, so it is at this CLI's
@@ -376,7 +376,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // (the last step a contract bump added). With the release version, the
   // admin can install the next update itself.
   if (upgraderReady) {
-    const version = await releaseVersionForDigest(gcloud, "admin", imageDigests.admin);
+    const version = releaseVersion;
     recordImageDigests(installId, imageDigests, version);
     recordInfraContractVersion(installId, INFRA_CONTRACT_VERSION);
     if (!version) {
@@ -808,8 +808,14 @@ async function stepGatewayRolePassword(projectId: string): Promise<void> {
  *
  * @returns whether the job is ready
  */
-async function stepUpgraderJob(projectId: string, region: string): Promise<boolean> {
-  const opsImageRef = await resolveOpsImageRef("latest");
+async function stepUpgraderJob(
+  projectId: string,
+  region: string,
+  releaseVersion: string | null,
+): Promise<boolean> {
+  // The upgrader of the release the install runs (a re-run keeps an older
+  // release — a newer upgrader would meet a schema it does not know yet).
+  const opsImageRef = releaseVersion ? await resolveOpsImageRef(releaseVersion) : null;
   const digest = opsImageRef ? /@(sha256:[0-9a-f]{64})$/.exec(opsImageRef)?.[1] : undefined;
   // The job runs with rights over the whole app: only a verified image.
   if (digest && !(await verifyCosignAll([{ slug: "ops", digest }]))) {
@@ -822,7 +828,12 @@ async function stepUpgraderJob(projectId: string, region: string): Promise<boole
   s.start("Setting up the upgrader job (install updates from the admin)...");
   const resolved = opsImageRef
     ? await resolveUpgraderTarget({ projectId, region, env: GCP_STACK_ENV, opsImageRef })
-    : { ok: false as const, error: "the newest release has no caelo-ops image in the registry" };
+    : {
+        ok: false as const,
+        error: releaseVersion
+          ? `release ${releaseVersion} has no caelo-ops image in the registry`
+          : "the release this install runs could not be told from its images",
+      };
   const r = resolved.ok
     ? await ensureUpgraderJob(resolved.target)
     : { ok: false as const, done: [], error: resolved.error };
@@ -835,6 +846,23 @@ async function stepUpgraderJob(projectId: string, region: string): Promise<boole
   }
   s.stop(green(`Upgrader job ready (${r.done.length} steps)`));
   return true;
+}
+
+/**
+ * Whether an upgrader set up by an earlier run exists, so a failed setup
+ * this time still keeps its caelo-mcp signing grant (the operator-access
+ * job would otherwise remove it, breaking its health check).
+ */
+async function upgraderExists(projectId: string): Promise<boolean> {
+  const r = await gcloud([
+    "iam",
+    "service-accounts",
+    "describe",
+    upgraderServiceAccountEmail(projectId, GCP_STACK_ENV),
+    `--project=${projectId}`,
+    "--format=value(email)",
+  ]);
+  return r.ok;
 }
 
 /**

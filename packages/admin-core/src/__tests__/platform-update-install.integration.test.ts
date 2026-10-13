@@ -24,6 +24,7 @@ import { registerAdminOps } from "../register.js";
 import { _setKekForTests } from "../security/secret-box.js";
 import { completeGoogleStepUp } from "../security/step-up/complete.js";
 import { sessionHashOf } from "../security/step-up/gate.js";
+import { googleSigner } from "./fixtures/google-id-token.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -52,6 +53,7 @@ let owner: ExecutionContext;
 let editor: ExecutionContext;
 let ownerSession: string;
 let editorSession: string;
+let google: Awaited<ReturnType<typeof googleSigner>>;
 
 async function admin<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const db = new SQL(ADMIN_URL as string);
@@ -105,11 +107,17 @@ async function login(email: string): Promise<string> {
 async function stepUp(
   ctx: ExecutionContext,
   sessionHash: string,
-  opts: { email?: string; authTimeOffsetSec?: number; nonce?: string } = {},
+  opts: {
+    email?: string;
+    authTimeOffsetSec?: number;
+    nonce?: string;
+    purpose?: "platform_update" | "update_policy";
+    signer?: Awaited<ReturnType<typeof googleSigner>>;
+  } = {},
 ) {
   const begin = await okValue<{ authorizationUrl: string }>(ctx, "step_up.begin", {
     sessionHash,
-    purpose: "platform_update",
+    purpose: opts.purpose ?? "platform_update",
     returnTo: "/settings/updates",
     redirectUri: "https://admin.example.com/settings/updates/step-up/callback",
   });
@@ -124,15 +132,20 @@ async function stepUp(
   );
   expect(redeemed.nonce).toBe(url.searchParams.get("nonce") as string);
   expect(redeemed.clientSecret).toBe("test-client-secret-value");
+  const now = Math.floor(Date.now() / 1000);
+  const claims = {
+    iss: "https://accounts.google.com",
+    aud: CLIENT_ID,
+    exp: now + 3600,
+    nonce: opts.nonce ?? redeemed.nonce,
+    email: opts.email ?? OWNER_EMAIL,
+    email_verified: true,
+    auth_time: now + (opts.authTimeOffsetSec ?? 0),
+  };
   return run(ctx, "step_up.record", {
     sessionHash,
     challengeId: redeemed.challengeId,
-    outcome: {
-      ok: true,
-      email: opts.email ?? OWNER_EMAIL,
-      authTime: Math.floor(Date.now() / 1000) + (opts.authTimeOffsetSec ?? 0),
-      nonce: opts.nonce ?? redeemed.nonce,
-    },
+    outcome: { ok: true, idToken: await (opts.signer ?? google).sign(claims) },
   });
 }
 
@@ -159,6 +172,8 @@ async function wipe(): Promise<void> {
 
 beforeAll(async () => {
   _setKekForTests(new Uint8Array(32).fill(7));
+  google = await googleSigner();
+  await google.install();
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
@@ -252,7 +267,7 @@ describe("platform_updates.request authz", () => {
 
   it("refuses a Google sign-in older than the step-up itself (Google reused a session)", async () => {
     const r = await stepUp(owner, ownerSession, { authTimeOffsetSec: -3600 });
-    expect(message(r)).toContain("not from this confirmation");
+    expect(message(r)).toContain("reused an earlier sign-in");
   });
 
   it("records a step-up only against a redeemed challenge of this session, once, with its nonce", async () => {
@@ -260,21 +275,29 @@ describe("platform_updates.request authz", () => {
     const forged = await run(owner, "step_up.record", {
       sessionHash: ownerSession,
       challengeId: "00000000-0000-4000-8000-000000000001",
-      outcome: {
-        ok: true,
-        email: OWNER_EMAIL,
-        authTime: Math.floor(Date.now() / 1000),
-        nonce: "n".repeat(43),
-      },
+      outcome: { ok: true, idToken: await google.sign({ email: OWNER_EMAIL }) },
     });
     expect(message(forged)).toContain("no completed Google sign-in");
     // A token whose nonce is not this challenge's.
     const wrongNonce = await stepUp(owner, ownerSession, { nonce: "x".repeat(43) });
-    expect(message(wrongNonce)).toContain("not from this confirmation");
+    expect(message(wrongNonce)).toContain("nonce mismatch");
+    // A well-formed token Google never signed.
+    const impostor = await googleSigner();
+    const unsigned = await stepUp(owner, ownerSession, { signer: impostor });
+    expect(message(unsigned)).toContain("not signed by Google");
     const status = await okValue<{ freshUntil: string | null }>(owner, "step_up.status", {
       sessionHash: ownerSession,
     });
     expect(status.freshUntil).toBeNull();
+  });
+
+  it("a sign-in begun for another action does not authorize the install", async () => {
+    expect((await stepUp(owner, ownerSession, { purpose: "update_policy" })).ok).toBe(true);
+    const r = await run(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+    });
+    expect(message(r)).toContain("for a different action");
   });
 
   it("accepts a fresh step-up once, then needs a new one", async () => {
@@ -414,7 +437,7 @@ describe("platform_update_policy", () => {
       sessionHash: editorSession,
     });
     expect(message(editorTry)).toContain("platform.update");
-    await stepUp(owner, ownerSession);
+    await stepUp(owner, ownerSession, { purpose: "update_policy" });
     const after = await okValue<{ mode: string; windowStart: string }>(
       owner,
       "platform_update_policy.set",
@@ -424,7 +447,7 @@ describe("platform_update_policy", () => {
   });
 
   it("one step-up authorizes one change, even when two race", async () => {
-    await stepUp(owner, ownerSession);
+    await stepUp(owner, ownerSession, { purpose: "update_policy" });
     const results = await Promise.all(
       [24, 48].map((soakHours) =>
         run(owner, "platform_update_policy.set", {

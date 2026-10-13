@@ -59,6 +59,17 @@ export type PlatformUpdateEventLevel = (typeof PLATFORM_UPDATE_EVENT_LEVELS)[num
 export const PLATFORM_UPDATE_TRIGGERS = ["manual", "auto"] as const;
 export type PlatformUpdateTrigger = (typeof PLATFORM_UPDATE_TRIGGERS)[number];
 
+/**
+ * A run still `running` this long after it started died (the upgrader job's
+ * task timeout is 60 minutes). The next job run, and the next install
+ * request, end it as failed — so a crashed run never blocks updates.
+ */
+export const PLATFORM_UPDATE_STALE_MINUTES = 90;
+
+/** Why a stale run was ended (shown on its timeline). */
+export const PLATFORM_UPDATE_STALE_REASON =
+  "The upgrader stopped before it finished (its run timed out or crashed). The previous release may still serve, or the new one may be partly rolled out: open the site, and if it misbehaves run the upgrade once with Cloud Shell.";
+
 /** Longest an event message may be (DB CHECK). */
 export const PLATFORM_UPDATE_EVENT_MAX = 4000;
 
