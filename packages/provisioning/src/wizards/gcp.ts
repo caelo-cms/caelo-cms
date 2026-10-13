@@ -1054,15 +1054,22 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
     cancel(e instanceof Error ? e.message : String(e));
     process.exit(1);
   }
-  const nowText =
-    opts.backend.kind === "gcs"
-      ? new GcsStateStore(opsBucket, root).peek("install.json")
-      : JSON.stringify(readLocalMetadata(installId));
-  const now = nowText ? (JSON.parse(nowText) as InstallMetadata | null) : null;
-  if (
-    !now ||
-    installBackend({ stateBackend: parseStateBackend(now.stateBackend) }).kind !== opts.backend.kind
-  ) {
+  let moved: boolean;
+  try {
+    const nowText =
+      opts.backend.kind === "gcs"
+        ? new GcsStateStore(opsBucket, root).peek("install.json")
+        : JSON.stringify(readLocalMetadata(installId));
+    const now = nowText ? (JSON.parse(nowText) as InstallMetadata | null) : null;
+    moved =
+      !now ||
+      installBackend({ stateBackend: parseStateBackend(now.stateBackend) }).kind !==
+        opts.backend.kind;
+  } catch (e) {
+    releaseLock();
+    throw e;
+  }
+  if (moved) {
     releaseLock();
     cancel(
       "The install's Pulumi state has moved (state migrate) since this run started. Re-run the installer.",

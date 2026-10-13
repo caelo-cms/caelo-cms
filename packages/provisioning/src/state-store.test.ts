@@ -169,6 +169,9 @@ describe("install-state through the stores (child process, own HOME)", () => {
         const bucketMeta = JSON.parse(fs.readFileSync(obj("gs://acme-caelo-ops/install/install.json"), "utf8"));
         let refused = "";
         try { m.markStepDone(id, "bad", { url: ${JSON.stringify(PASSWORD_URL)} }); } catch (e) { refused = e.message; }
+        // A caller holding pre-migration metadata can't switch the backend back.
+        m.writeMetadata(id, { ...m.readMetadata(id), stateBackend: { kind: "local" } });
+        const keptBackend = JSON.parse(fs.readFileSync(obj("gs://acme-caelo-ops/install/install.json"), "utf8")).stateBackend.kind;
         const stateDirAfterAdopt = fs.existsSync(path.join(home, ".caelo-" + id, "state"));
         m.adoptStateBackend(id, { kind: "local" });
         const bucketAfterLeave = JSON.parse(fs.readFileSync(obj("gs://acme-caelo-ops/install/install.json"), "utf8"));
@@ -176,7 +179,7 @@ describe("install-state through the stores (child process, own HOME)", () => {
         m.markStepDone(id, "after-leave", { x: 1 });
         console.log(JSON.stringify({
           localCalls, bucketSteps: Object.keys(bucketProgress.steps), bucketBackend: bucketMeta.stateBackend.kind,
-          refused, stateDirAfterAdopt, bucketAfterLeave: bucketAfterLeave.stateBackend.kind,
+          refused, stateDirAfterAdopt, keptBackend, bucketAfterLeave: bucketAfterLeave.stateBackend.kind,
           callsAfterLeave: calls.length - callsBefore, done: m.isStepDone(id, "after-leave"),
           listed: m.listInstalls().map((i) => i.installId),
         }));
@@ -191,6 +194,7 @@ describe("install-state through the stores (child process, own HOME)", () => {
       expect(r.localCalls).toBe(0);
       expect(r.bucketSteps).toEqual(["project-acme", "pulumi-up-acme"]);
       expect(r.bucketBackend).toBe("gcs");
+      expect(r.keptBackend).toBe("gcs");
       expect(r.refused).toContain("credential-url");
       expect(r.bucketAfterLeave).toBe("local");
       expect(r.callsAfterLeave).toBe(0);
