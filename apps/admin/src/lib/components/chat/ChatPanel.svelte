@@ -684,13 +684,22 @@
         qualityOfferError = "This fix request is already being handled (another tab?).";
         return;
       }
-      const started = await sendAutoMessage(r.send, "operator");
-      // Started: settled for every tab. Not started (refused, failed): give
-      // the claim back so the card can be clicked again right away.
-      await postQualityAction(session.id, csrfToken, {
-        action: started ? "ack" : "release",
-        auditRunId,
-      }).catch(() => undefined);
+      // Settled for every tab the moment the turn starts — not when it
+      // ends: a long fix turn would outlive the claim's lease, and another
+      // tab could then offer (or dismiss) the fix while it runs.
+      const started = await sendAutoMessage(r.send, "operator", () => {
+        void postQualityAction(session.id, csrfToken, { action: "ack", auditRunId })
+          .catch(() => undefined)
+          .finally(() => void qualityStatus.refresh());
+      });
+      // Not started (refused, stopped, failed): give the claim back so the
+      // card can be clicked again right away.
+      if (!started) {
+        await postQualityAction(session.id, csrfToken, {
+          action: "release",
+          auditRunId,
+        }).catch(() => undefined);
+      }
     } catch {
       qualityOfferError = "Could not start the fix — check the connection and try again.";
     } finally {
@@ -779,6 +788,7 @@
     // Issue #664 — "operator" for a click the operator made (choice /
     // suggestion chip); "auto" for a nudge the panel sends on its own.
     trigger: "operator" | "auto" = "auto",
+    onStarted?: () => void,
   ): Promise<boolean> {
     if (streaming) return false;
     if (!mayStartTurn(trigger, operatorStopped)) {
@@ -797,7 +807,7 @@
     // them as user turns, but they persist + render as muted status notes so
     // the operator isn't misled into thinking they typed them ("das kommt
     // nicht vom nutzer").
-    return sendMessage("system", undefined, text, trigger === "operator");
+    return sendMessage("system", undefined, text, trigger === "operator", onStarted);
   }
   // Live counter of pending changes during streaming — incremented per
   // AI tool result + reset between turns. Drives the "N edits during
@@ -1534,6 +1544,9 @@
     // Issue #664 — a system-origin send the operator clicked (chip): it lifts
     // the Stop latch like a typed message does.
     operatorClicked = false,
+    // Issue #685 — called once, as soon as the turn has demonstrably started
+    // (not when it ends: a fix turn runs for minutes).
+    onStarted?: () => void,
   ): Promise<boolean> {
     if (streaming || (uploadingImages && !resume && overrideText === undefined)) return false;
     if (
@@ -1850,7 +1863,10 @@
               ev["kind"] === "usage" ||
               ev["kind"] === "assistant-message-saved"
             ) {
-              turnStarted = true;
+              if (!turnStarted) {
+                turnStarted = true;
+                onStarted?.();
+              }
             }
             if (ev["kind"] === "error") {
               chatError = typeof ev["message"] === "string" ? ev["message"] : "Chat failed.";
