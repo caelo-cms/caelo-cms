@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.10.41
+
+### Fixes
+- 6bb3c29c authoritative Stop + one agent per chat, with a running-agents view (#672)
+- fbe88902 root-cause platform Lighthouse findings; the AI no longer pushes acceptances (#667) (#671)
+
 ## v0.10.40
 
 ### Fixes
