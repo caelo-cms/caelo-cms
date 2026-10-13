@@ -24,6 +24,7 @@ import { removeDefaultFirewallRules } from "./default-firewall.js";
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import { gcpBucketName, gcpSecretId } from "./gcp-names.js";
+import { selfCommand } from "./self-command.js";
 import {
   ADMIN_MEMORY_DEFAULT,
   type AdminEnvInputs,
@@ -487,7 +488,7 @@ async function ensureIam(
       status: "failed",
       // upgrade only adds bindings; it never creates the resource itself.
       error: RESOURCE_MISSING.test(error)
-        ? `${error}\n    The ${targetLabel(inv.target)} or the account it grants to does not exist on this install (the install predates it). Re-run the installer (bunx @caelo-cms/provisioning) to create it — it keeps the release this install runs — then re-run upgrade.`
+        ? `${error}\n    The ${targetLabel(inv.target)} or the account it grants to does not exist on this install (the install predates it). Re-run the installer (${selfCommand()}) to create it — it keeps the release this install runs — then re-run upgrade.`
         : error,
     });
   }

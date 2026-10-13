@@ -100,7 +100,14 @@ describe("e2e-livedit.yml — main runs once per release, gated in release-cut",
   it("N2: release-cut gates on the AI job before the release script runs", () => {
     const steps = cut.jobs.cut?.steps ?? [];
     const gate = steps.findIndex((s) => (s.run ?? "").includes('gh workflow run "$WORKFLOW_FILE"'));
-    const release = steps.findIndex((s) => (s.run ?? "").includes("scripts/release.ts"));
+    // The bump itself; the earlier `--checks-only` run only validates the
+    // release declaration (cheap) before the paid gate and changes nothing.
+    const release = steps.findIndex(
+      (s) =>
+        (s.run ?? "").includes("scripts/release.ts") && !(s.run ?? "").includes("--checks-only"),
+    );
+    const checksOnly = steps.findIndex((s) => (s.run ?? "").includes("--checks-only"));
+    expect(checksOnly).toBeLessThan(gate);
     expect(gate).toBeGreaterThanOrEqual(0);
     expect(gate).toBeLessThan(release);
     const step = steps[gate];

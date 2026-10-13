@@ -11,7 +11,8 @@
  *                        days old, no published_at, no archived_at.
  *
  * P20 ship 4 + P21 ship 5 — also surfaces the "newer release available"
- * hint (`upgradeAvailable` + `latestVersion`). The GitHub fetch USED to
+ * hint (`upgradeAvailable` + `latestVersion`; #696: `updatesPath` is where
+ * the Owner installs it, `platform_updates.status` the full detail). The GitHub fetch USED to
  * happen inline in the op handler (a transaction-scoped network call,
  * which held a Postgres connection open for up to 5s on a slow GitHub).
  * That created a connection-pool exhaustion vector under load.
@@ -26,9 +27,10 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { CAELO_VERSION, ok } from "@caelo-cms/shared";
+import { CAELO_VERSION, isNewerVersion, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { UPDATES_PATH } from "./platform-updates.js";
 
 const notificationsRow = z.object({
   pendingProposals: z.number().int().nonnegative(),
@@ -37,36 +39,10 @@ const notificationsRow = z.object({
   upgradeAvailable: z.boolean(),
   latestVersion: z.string().nullable(),
   releaseUrl: z.string().nullable(),
+  /** Where the Owner installs the update (#696) — the release notice links here. */
+  updatesPath: z.literal(UPDATES_PATH),
   total: z.number().int().nonnegative(),
 });
-
-/**
- * Compare two semver strings; returns true when `latest` > `current`.
- * Treats pre-release tags as < the same X.Y.Z stable. Mirrors the
- * comparison in scripts/release.ts so the upgrade hint matches the
- * release pipeline's own ordering.
- */
-function isNewerVersion(latest: string, current: string): boolean {
-  const parse = (v: string): { mmp: [number, number, number]; pre: string | null } => {
-    const m = /^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/.exec(v);
-    if (!m) return { mmp: [0, 0, 0], pre: null };
-    return {
-      mmp: [Number(m[1]), Number(m[2]), Number(m[3])],
-      pre: m[4] ?? null,
-    };
-  };
-  const a = parse(latest);
-  const b = parse(current);
-  for (let i = 0; i < 3; i++) {
-    if ((a.mmp[i] ?? 0) > (b.mmp[i] ?? 0)) return true;
-    if ((a.mmp[i] ?? 0) < (b.mmp[i] ?? 0)) return false;
-  }
-  // Same X.Y.Z → pre-release < stable < higher pre-release-string.
-  if (a.pre && !b.pre) return false;
-  if (!a.pre && b.pre) return true;
-  if (a.pre && b.pre) return a.pre > b.pre;
-  return false;
-}
 
 export const aggregateNotificationsOp = defineOperation({
   name: "notifications.aggregate",
@@ -145,6 +121,7 @@ export const aggregateNotificationsOp = defineOperation({
       upgradeAvailable,
       latestVersion,
       releaseUrl,
+      updatesPath: UPDATES_PATH,
       // Bell badge count includes "1" for the upgrade tile so the
       // operator notices a new release the same way they notice a
       // pending proposal.

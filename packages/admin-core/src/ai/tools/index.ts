@@ -62,6 +62,7 @@ import {
 } from "./fonts.js";
 import { forkPlacementContentTool } from "./fork-placement-content.js";
 import { generateImageTool } from "./generate-image.js";
+import { getCaeloVersionTool } from "./get-caelo-version.js";
 import { getContentInstanceTool } from "./get-content-instance.js";
 import { getImageCapabilitiesTool } from "./get-image-capabilities.js";
 import { getImportPageTool } from "./get-import-page.js";
@@ -342,6 +343,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listRolesTool);
   registry.register(listAiProvidersTool);
   registry.register(listDomainsTool);
+  // #696 — installed vs newest Caelo release; the AI informs, the Owner
+  // installs at /settings/updates.
+  registry.register(getCaeloVersionTool);
   // audit #2 — ONE module-placement tool routed by `target`
   // (page/layout/template). Replaces add_module_to_{page,layout,template};
   // adds reuse-by-moduleId on the layout target (the old asymmetry).

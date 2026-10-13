@@ -23,6 +23,8 @@
     upgradeAvailable: boolean;
     latestVersion: string | null;
     releaseUrl: string | null;
+    /** #696 — where the Owner installs the update (Settings → Updates). */
+    updatesPath: string;
     total: number;
   }
 
@@ -33,6 +35,7 @@
     upgradeAvailable: false,
     latestVersion: null,
     releaseUrl: null,
+    updatesPath: "/settings/updates",
     total: 0,
   });
   let loaded = $state(false);
@@ -164,16 +167,31 @@
               </a>
             {/if}
             {#if counts.upgradeAvailable && counts.latestVersion}
-              <a
-                href={counts.releaseUrl ?? "https://github.com/caelo-cms/caelo-cms/releases"}
-                target="_blank"
-                rel="noopener noreferrer"
-                class="-mx-1 flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent"
-                onclick={() => (open = false)}
-              >
-                <Badge>v{counts.latestVersion}</Badge>
-                <span>New Caelo release available — release notes →</span>
-              </a>
+              <!-- #696 — the notice opens Settings → Updates (versions,
+                   notes and the install command); the release notes stay
+                   one click away beside it. -->
+              <div class="-mx-1 flex items-center gap-1 rounded-md hover:bg-accent">
+                <a
+                  href={counts.updatesPath}
+                  class="flex min-w-0 flex-1 items-center gap-2 px-2 py-2"
+                  data-testid="release-notice"
+                  onclick={() => (open = false)}
+                >
+                  <Badge>v{counts.latestVersion}</Badge>
+                  <span>New Caelo release available</span>
+                </a>
+                {#if counts.releaseUrl}
+                  <a
+                    href={counts.releaseUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="shrink-0 px-2 py-2 text-xs text-muted-foreground underline underline-offset-4"
+                    onclick={() => (open = false)}
+                  >
+                    Notes
+                  </a>
+                {/if}
+              </div>
             {/if}
           {/if}
         </CardContent>

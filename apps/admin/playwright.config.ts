@@ -73,6 +73,13 @@ export default defineConfig({
       // the real image API (no key, no cost). Test-only, same non-production
       // gate as the AI test-registry above.
       CAELO_FAKE_IMAGE_PROVIDER: "1",
+      // #696 — settings-updates.browser.ts seeds the release check's
+      // result; the live GitHub poll would race (and overwrite) it.
+      CAELO_RELEASE_CHECK: "off",
+      // #696 — Settings → Updates shows the upgrade command for Google
+      // Cloud installs only; the suite runs without a cloud provider.
+      // Test-only, ignored when NODE_ENV=production (lib/upgrade-path.ts).
+      CAELO_E2E_UPDATES_PROVIDER: "gcp",
     },
   },
 });

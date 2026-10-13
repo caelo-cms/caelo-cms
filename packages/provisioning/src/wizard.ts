@@ -44,6 +44,7 @@ import {
   scrubInstallProgress,
   writeMetadata,
 } from "./install-state.js";
+import { selfCommand } from "./self-command.js";
 import { runGcpWizard } from "./wizards/gcp.js";
 import { runGcpFirebaseWizard } from "./wizards/gcp-firebase.js";
 
@@ -179,7 +180,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
       break;
     case "self-hosted":
       cancel(
-        "Self-hosted wizard is the existing `cms-provision init` flow. Run `bunx @caelo-cms/provisioning init --domain ... --owner-email ...` for now; wizard polish lands in a follow-up commit.",
+        `Self-hosted wizard is the existing \`cms-provision init\` flow. Run \`${selfCommand("init", "--domain", "...", "--owner-email", "...")}\` for now; wizard polish lands in a follow-up commit.`,
       );
       process.exit(0);
       break;
