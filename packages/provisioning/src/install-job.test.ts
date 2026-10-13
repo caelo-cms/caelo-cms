@@ -14,6 +14,7 @@ import {
   claimInstallJobStatus,
   decideInstallJob,
   describeExecution,
+  INSTALL_CLOUDFLARE_TOKEN_SECRET,
   INSTALL_JOB_NAME,
   INSTALL_SETUP_LINK_SECRET,
   type InstallJobStatus,
@@ -25,6 +26,7 @@ import {
   readInstallJobStatus,
   readSetupLink,
   startInstallJob,
+  storeInstallSecretValue,
   storeSetupLink,
   writeInstallJobStatus,
 } from "./install-job.js";
@@ -108,6 +110,7 @@ describe("the job definition", () => {
       region: "europe-west3",
       serviceAccount: "caelo-provisioner@acme-site.iam.gserviceaccount.com",
       image: opsImageRef(DIGEST),
+      cloudflareToken: false,
     });
     expect(args.slice(0, 4)).toEqual(["run", "jobs", "deploy", INSTALL_JOB_NAME]);
     expect(args).toContain("--service-account=caelo-provisioner@acme-site.iam.gserviceaccount.com");
@@ -115,7 +118,24 @@ describe("the job definition", () => {
     expect(args).toContain("--max-retries=0");
     expect(args).toContain(`--image=${OPS_IMAGE_REPOSITORY}@${DIGEST}`);
     // No key, no secret, no credential of any kind in the definition.
-    expect(args.join(" ")).not.toMatch(/key|secret|password|token/i);
+    expect(args).toContain("--clear-secrets");
+    expect(args.filter((a) => a !== "--clear-secrets").join(" ")).not.toMatch(
+      /key|secret|password|token/i,
+    );
+  });
+
+  it("mounts the Cloudflare token from Secret Manager when the operator has one", () => {
+    const args = installJobDeployArgs({
+      projectId: "acme-site",
+      region: "europe-west3",
+      serviceAccount: "caelo-provisioner@acme-site.iam.gserviceaccount.com",
+      image: opsImageRef(DIGEST),
+      cloudflareToken: true,
+    });
+    expect(args).toContain(
+      `--set-secrets=CLOUDFLARE_API_TOKEN=${INSTALL_CLOUDFLARE_TOKEN_SECRET}:latest`,
+    );
+    expect(args).not.toContain("--clear-secrets");
   });
 });
 
@@ -253,6 +273,7 @@ describe("startInstallJob", () => {
     region: "europe-west3",
     serviceAccount: "caelo-provisioner@acme-site.iam.gserviceaccount.com",
     image: opsImageRef(DIGEST),
+    cloudflareToken: false,
   };
   it("deploys the job, then executes it asynchronously", async () => {
     const { run, calls } = fakeRun((args) =>
@@ -340,6 +361,40 @@ describe("the setup-link secret", () => {
       "https://x/setup?token=1",
     );
     expect(await readSetupLink(fakeRun(() => fail("NOT_FOUND")).run, "p")).toBeNull();
+    expect(
+      await readSetupLink(
+        fakeRun(() => fail("FAILED_PRECONDITION: version is in DISABLED state")).run,
+        "p",
+      ),
+    ).toBeNull();
+  });
+
+  it("says what access is missing instead of treating a denial as 'no link'", async () => {
+    await expect(
+      readSetupLink(
+        fakeRun(() => fail("PERMISSION_DENIED: secretmanager.versions.access")).run,
+        "p",
+      ),
+    ).rejects.toThrow(/secretmanager.versions.access/);
+  });
+
+  it("creates a secret regionally before the stack's secrets exist", async () => {
+    const { run, calls } = fakeRun((args) => {
+      if (args[1] === "describe") return fail("NOT_FOUND: Secret not found");
+      if (args[1] === "versions" && args[2] === "add") return ok("projects/1/secrets/x/versions/1");
+      return ok();
+    });
+    const r = await storeInstallSecretValue(
+      run,
+      { projectId: "acme-site", region: "europe-west3" },
+      INSTALL_CLOUDFLARE_TOKEN_SECRET,
+      "cf-token-value",
+    );
+    expect(r).toEqual({ ok: true });
+    const create = calls.find((c) => c.args[1] === "create");
+    expect(create?.args).toContain("--replication-policy=user-managed");
+    expect(create?.args).toContain("--locations=europe-west3");
+    expect(calls.some((c) => c.args.join(" ").includes("cf-token-value"))).toBe(false);
   });
 });
 

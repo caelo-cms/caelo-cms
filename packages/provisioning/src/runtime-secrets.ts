@@ -182,7 +182,8 @@ function replicationArgs(replication: SecretReplication): string[] {
 
 /**
  * Create an empty secret `secretId` with the install's replication (that of
- * its `postgres-password`, {@link readSecretReplication}); regional in
+ * its `postgres-password`, {@link readSecretReplication}, or — before the
+ * stack created that — regional, as a new stack's are); regional in
  * `region` when an org policy refuses automatic replication. Used for the
  * install job's Owner setup link (#696, install-job.ts). An existing secret
  * counts as created.
@@ -197,7 +198,21 @@ export async function createInstallSecret(
   deps: RuntimeDeps = {},
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const run = deps.run ?? defaultGcloud;
-  const read = await readSecretReplication(install, { run });
+  // Before the first `pulumi up` (the launcher storing a DNS token) there is
+  // no postgres-password yet; a new stack's secrets are regional in the
+  // install region (gcp-pulumi.ts resolveSecretReplication), so that is the
+  // install's replication.
+  const pg = await run([
+    "secrets",
+    "describe",
+    gcpSecretId(install.env, "postgres-password"),
+    `--project=${install.projectId}`,
+    "--format=value(name)",
+  ]);
+  const read: { ok: true; replication: SecretReplication } | { ok: false; error: string } =
+    !pg.ok && NOT_FOUND.test(pg.stderr)
+      ? { ok: true, replication: { kind: "user-managed", locations: [install.region] } }
+      : await readSecretReplication(install, { run });
   if (!read.ok) return read;
   const createWith = (replication: SecretReplication) =>
     run([
