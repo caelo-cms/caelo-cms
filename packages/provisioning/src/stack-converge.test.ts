@@ -506,33 +506,58 @@ describe("ensureStackInvariants", () => {
     expect(calls.some((c) => c.includes("add-iam-policy-binding"))).toBe(false);
   });
 
-  it("upgrade deletes GCP's default SSH/RDP-from-anywhere firewall rules without aborting", async () => {
-    const stock = (name: string, port: string) => ({
+  it("upgrade deletes GCP's pre-populated default-network firewall rules without aborting", async () => {
+    const stock = (
+      name: string,
+      allowed: { IPProtocol: string; ports?: string[] }[],
+      sourceRanges = ["0.0.0.0/0"],
+    ) => ({
       name,
       network: "https://www.googleapis.com/compute/v1/projects/acme/global/networks/default",
       direction: "INGRESS",
       priority: 65534,
-      sourceRanges: ["0.0.0.0/0"],
-      allowed: [{ IPProtocol: "tcp", ports: [port] }],
+      sourceRanges,
+      allowed,
     });
     const answers = {
       ...fullFirebase(),
       "compute firewall-rules list": [
-        ok(JSON.stringify([stock("default-allow-ssh", "22"), stock("default-allow-rdp", "3389")])),
+        ok(
+          JSON.stringify([
+            stock("default-allow-ssh", [{ IPProtocol: "tcp", ports: ["22"] }]),
+            stock("default-allow-rdp", [{ IPProtocol: "tcp", ports: ["3389"] }]),
+            stock("default-allow-icmp", [{ IPProtocol: "icmp" }]),
+            stock(
+              "default-allow-internal",
+              [
+                { IPProtocol: "tcp", ports: ["0-65535"] },
+                { IPProtocol: "udp", ports: ["0-65535"] },
+                { IPProtocol: "icmp" },
+              ],
+              ["10.128.0.0/9"],
+            ),
+          ]),
+        ),
       ],
+      "compute instances list": [ok("[]")],
+      "compute project-info describe": [ok("UNSPECIFIED_XPN_PROJECT_STATUS")],
     };
     const { run, calls } = fakeGcloud(answers);
     const report = await ensureStackInvariants(firebase, { run, sleep: async () => {} });
     expect(report.mustAbort).toBe(false);
-    expect(calls).toContain(
-      "compute firewall-rules delete default-allow-ssh --project=acme --quiet",
-    );
-    expect(calls).toContain(
-      "compute firewall-rules delete default-allow-rdp --project=acme --quiet",
-    );
+    for (const name of [
+      "default-allow-ssh",
+      "default-allow-rdp",
+      "default-allow-icmp",
+      "default-allow-internal",
+    ]) {
+      expect(calls).toContain(`compute firewall-rules delete ${name} --project=acme --quiet`);
+    }
     expect(report.outcomes.filter((o) => o.status === "applied").map((o) => o.id)).toEqual([
       "firewall rule default-allow-ssh (tcp:22 from 0.0.0.0/0)",
       "firewall rule default-allow-rdp (tcp:3389 from 0.0.0.0/0)",
+      "firewall rule default-allow-icmp (icmp from 0.0.0.0/0)",
+      "firewall rule default-allow-internal (tcp:0-65535 udp:0-65535 icmp from 10.128.0.0/9)",
     ]);
   });
 
