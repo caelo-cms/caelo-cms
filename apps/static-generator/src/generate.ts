@@ -937,9 +937,10 @@ export async function generateSite(args: {
 
   // P7 — media pass. Mutates each composedPages[i].html in place to
   // swap /_caelo/media/... URLs for /_assets/...; copies variant bytes
-  // into the slug-based `_assets/` layout (`_assets/<slug>.<ext>` for orig,
-  // `_assets/<slug>/<variant>.<ext>` for named variants; legacy id refs keep
-  // `_assets/<id>/<variant>.<ext>`); emits the CDN manifest (always, even
+  // into the slug-based `_assets/` layout under content-hashed names
+  // (`_assets/<slug>.<hash>.<ext>` for orig, `_assets/<slug>/<variant>.<hash>.<ext>`
+  // for named variants, legacy id refs `_assets/<id>/<variant>.<hash>.<ext>`,
+  // #667 — see media-asset-path.ts); emits the CDN manifest (always, even
   // when CDN copy is off — manifest is empty then). No-op when the build
   // references no media at all.
   // issue #150 — copy the resolved woff2 files into the build so the
@@ -976,6 +977,7 @@ export async function generateSite(args: {
     tx,
     plugins: args.plugins,
     buildDir,
+    mediaRoot,
     pages: composedPages,
     settings: seoSettings,
     pageUrlStyle,

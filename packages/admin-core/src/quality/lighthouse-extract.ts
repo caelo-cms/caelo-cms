@@ -56,6 +56,12 @@ export interface LhrLike {
 
 /** Flagged elements reported per finding (enough to locate the module). */
 const MAX_FLAGGED_ELEMENTS = 5;
+
+/** Label prefix of the marker appended when an audit flagged more items
+ *  than are kept (#667). */
+export const TRUNCATED_ELEMENTS_PREFIX = "+";
+/** Label suffix of that marker. */
+export const TRUNCATED_ELEMENTS_SUFFIX = " more flagged item(s) not shown";
 const MAX_ELEMENT_TEXT = 300;
 
 function nonEmpty(v: unknown): string | undefined {
@@ -81,17 +87,40 @@ function consoleEntry(item: Record<string, unknown>): FlaggedElement | null {
   };
 }
 
+/**
+ * #667 — a flagged resource or reason without a DOM node: the URL a
+ * caching / compression audit names, or the reason a back/forward-cache
+ * restore failed. Without them the AI could not tell Caelo's own files and
+ * hosting from a module's third-party embed or script, and guessed.
+ */
+function resourceEntry(item: Record<string, unknown>): FlaggedElement | null {
+  const url = nonEmpty(item.url);
+  const reason = nonEmpty(item.reason);
+  if (!url && !reason) return null;
+  return { ...(reason ? { explanation: reason } : {}), ...(url ? { url } : {}) };
+}
+
 /** The elements (or console entries) an audit flagged, read from its details. */
 function flaggedElements(
   details: { readonly items?: readonly unknown[] } | undefined,
 ): FlaggedElement[] {
   const out: FlaggedElement[] = [];
-  for (const item of details?.items ?? []) {
-    if (out.length >= MAX_FLAGGED_ELEMENTS) break;
+  const items = details?.items ?? [];
+  for (const [index, item] of items.entries()) {
+    if (out.length >= MAX_FLAGGED_ELEMENTS) {
+      // #667 — say the list is a sample: ownership (platform vs site) must
+      // never be decided from the first few items alone.
+      out.push({
+        label: `${TRUNCATED_ELEMENTS_PREFIX}${items.length - index}${TRUNCATED_ELEMENTS_SUFFIX}`,
+      });
+      break;
+    }
     if (item === null || typeof item !== "object") continue;
     const node = (item as { node?: unknown }).node;
     if (node === null || typeof node !== "object") {
-      const entry = consoleEntry(item as Record<string, unknown>);
+      const entry =
+        consoleEntry(item as Record<string, unknown>) ??
+        resourceEntry(item as Record<string, unknown>);
       if (entry) out.push(entry);
       continue;
     }

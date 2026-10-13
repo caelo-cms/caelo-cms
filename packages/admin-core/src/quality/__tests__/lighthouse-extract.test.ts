@@ -132,7 +132,9 @@ describe("flagged elements", () => {
       },
     };
     const [finding] = failingAudits(lhr({ performance: 100, audits: [contrast] }));
-    expect(finding?.elements).toHaveLength(5);
+    // Five kept, then a marker that the list is a sample (#667).
+    expect(finding?.elements).toHaveLength(6);
+    expect(finding?.elements?.[5]).toEqual({ label: "+2 more flagged item(s) not shown" });
     expect(finding?.elements?.[0]).toEqual({
       selector: "header > a.cta-0",
       snippet: '<a class="cta-0">',
@@ -169,6 +171,36 @@ describe("flagged elements", () => {
         url: "http://localhost:8081/favicon.ico",
       },
       { explanation: "exception: TypeError: x is undefined" },
+    ]);
+  });
+
+  it("carry the URLs and reasons of resource / bf-cache audits (#667)", () => {
+    // Without them the AI could not tell Caelo's own files from a module's
+    // third-party embed, guessed "hosting", and argued for acceptance.
+    // (Ids the fixture's categories reference; the extraction is per item shape.)
+    const cache: Audit = {
+      ...audit("unused-javascript", 0),
+      details: {
+        items: [{ url: "http://localhost:8081/_assets/logo.png", cacheLifetimeMs: 3600000 }],
+      },
+    };
+    const bf: Audit = {
+      ...audit("render-blocking-insight", 0),
+      details: {
+        items: [
+          {
+            reason: "The page has an unload handler in the main frame.",
+            failureType: "Actionable",
+          },
+        ],
+      },
+    };
+    const found = failingAudits(lhr({ performance: 100, audits: [cache, bf] }));
+    const c = found.find((f) => f.id === "unused-javascript");
+    const b = found.find((f) => f.id === "render-blocking-insight");
+    expect(c?.elements).toEqual([{ url: "http://localhost:8081/_assets/logo.png" }]);
+    expect(b?.elements).toEqual([
+      { explanation: "The page has an unload handler in the main frame." },
     ]);
   });
 

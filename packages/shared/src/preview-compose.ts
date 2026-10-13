@@ -240,7 +240,7 @@ export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | nul
  * composer emits it from the theme binding instead of relying on a
  * module to carry the tag. The href is the media URL as composed
  * (`/_caelo/media/<slug>`); the static generator's media pass rewrites
- * it to the published `/_assets/<slug>.<ext>` and copies the bytes, the
+ * it to the published `/_assets/<slug>.<hash>.<ext>` and copies the bytes, the
  * same as any other media reference. Returns null when no theme is
  * threaded or no favicon is bound (nothing to declare; browsers fall
  * back to their own `/favicon.ico` probe exactly as before).

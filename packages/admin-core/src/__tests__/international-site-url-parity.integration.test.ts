@@ -219,6 +219,8 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
           tx,
           plugins: localBuildPluginServices,
           buildDir,
+          // No og:image in these fixtures, so no media file is read.
+          mediaRoot: buildDir,
           pages: built,
           settings: {
             siteBaseUrl: BASE,

@@ -213,7 +213,23 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
                 pageId: job.pages[0]!.pageId,
                 url: job.pages[0]!.url,
                 finalUrl: job.pages[0]!.url,
-                measurement: {} as never,
+                // #667 — flagged resource URLs move with the page URL, so a
+                // same-site asset never reads as third-party in the report.
+                measurement: {
+                  scores: { performance: 93, accessibility: 100, "best-practices": 100, seo: 100 },
+                  failingAudits: [
+                    {
+                      id: "cache-insight",
+                      title: "Use efficient cache lifetimes",
+                      score: 0.5,
+                      categories: ["performance"],
+                      elements: [
+                        { url: "https://site--ch.web.app/_assets/logo.png" },
+                        { url: "https://cdn.example.net/widget.js" },
+                      ],
+                    },
+                  ],
+                },
                 performanceRuns: [],
               },
             ],
@@ -234,5 +250,7 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
     const text = JSON.stringify(recorded);
     expect(text).not.toContain("web.app");
     expect(text).toContain("https://staging.example.com/");
+    expect(text).toContain("https://staging.example.com/_assets/logo.png");
+    expect(text).toContain("https://cdn.example.net/widget.js");
   });
 });

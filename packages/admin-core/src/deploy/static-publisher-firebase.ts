@@ -141,8 +141,9 @@ export const FIREBASE_SHORT_CACHE_PATH_PATTERN =
  * matching entry and does not document which one wins when two set
  * the same header, so no path may match both.
  *
- *   1. Content-hashed build outputs (fonts, plugin bundles — see
- *      `@caelo-cms/shared` static-cache-policy.ts) → immutable, 1 year.
+ *   1. Content-hashed build outputs (fonts, plugin bundles, media since
+ *      #667 — see `@caelo-cms/shared` static-cache-policy.ts) →
+ *      immutable, 1 year.
  *      All of them live under a `/_…` top-level directory.
  *   2. Every path whose first segment does NOT start with `_` and is
  *      not `api` → short + stale-while-revalidate: pages (`/`,
@@ -151,9 +152,10 @@ export const FIREBASE_SHORT_CACHE_PATH_PATTERN =
  *      (Firebase purges its CDN) and visitors pick it up within 60s.
  *
  * Paths matching neither keep Firebase's default (`max-age=3600`):
- * slug-addressed media under `/_assets/<slug>…` (stable URL, bytes
- * replaceable — must not be immutable) and the `/api/**` rewrite to
- * the gateway (its own headers stay authoritative).
+ * pre-#667 media under a bare slug (`/_assets/<slug>.<ext>` — stable URL,
+ * bytes replaceable, must not be immutable), the pinned-font license files
+ * and the `/api/**` rewrite to the gateway (its own headers stay
+ * authoritative).
  *
  * A third entry pins `Content-Type: image/x-icon` on `.ico` files (theme
  * favicons): the one icon MIME the media library stores and the

@@ -152,6 +152,7 @@ export {
 } from "./safe-fetch.js";
 export {
   type BundledChromiumLaunch,
+  bundledChromiumLaunchOptions,
   createPlaywrightScreenshotter,
   launchBundledChromium,
   type RenderedHtml,

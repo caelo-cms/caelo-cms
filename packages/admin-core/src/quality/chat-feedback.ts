@@ -9,8 +9,10 @@
  *
  * The 2-round cap (#553): the AI is asked to fix automatically while the
  * audit's `fixRound` is below MAX_AUTO_FIX_ROUNDS. After that it may only
- * summarise and ask for acceptances — no further changes for these
- * findings, so a stubborn finding cannot loop Stages and cost.
+ * summarise what is left — no further changes for these findings, so a
+ * stubborn finding cannot loop Stages and cost. It never recommends an
+ * acceptance (#667): that decision is the operator's, and platform
+ * findings are reported as Caelo bugs instead.
  */
 
 /** Automatic fix rounds per Stage chain (#553). */
@@ -79,14 +81,16 @@ export function chatFeedbackFor(audit: ChatAuditSummary): ChatFeedback | null {
           text:
             `Quality check of the staged build found ${audit.problemCount} problem(s) on ${where}. Publish live is blocked until they are fixed or accepted. ` +
             `Fix round ${audit.fixRound + 1} of ${MAX_AUTO_FIX_ROUNDS}: call get_quality_audit for the findings, fix what you can, then Stage again yourself (stage_changes) so the fixes are re-checked. ` +
-            "For anything you cannot fix, or that looks intended, ask me to accept it (accept_quality_findings) instead of changing the site.",
+            "Findings marked CAELO PLATFORM are Caelo bugs: report them with bug_report and do not change the site for them. For anything else you cannot fix, or that looks intended, tell me plainly what it is. " +
+            "Do not propose or recommend accepting findings — accepting is my decision; use accept_quality_findings only when I explicitly ask for it.",
         };
       }
       return {
         kind: "ai-turn",
         text:
           `Quality check still found ${audit.problemCount} problem(s) on ${where} after ${MAX_AUTO_FIX_ROUNDS} automatic fix rounds. ` +
-          "Do not change the site further for these findings. Call get_quality_audit, summarise what is left in plain words, and ask me whether to accept each one (accept_quality_findings) or leave Publish blocked.",
+          "Do not change the site further for these findings. Call get_quality_audit and summarise what is left in plain words — without recommending to accept anything. Report findings marked CAELO PLATFORM with bug_report and tell me they are Caelo issues you reported. " +
+          "Tell me Publish live stays blocked until they are fixed or I decide to accept them; use accept_quality_findings only when I explicitly ask for it.",
       };
     }
   }

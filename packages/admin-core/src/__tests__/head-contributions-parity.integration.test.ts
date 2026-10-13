@@ -224,6 +224,8 @@ describe("#391 — generator/preview parity + sitemap contributions", () => {
         tx,
         plugins: localBuildPluginServices,
         buildDir,
+        // No og:image in these fixtures, so no media file is read.
+        mediaRoot: buildDir,
         pages: [page, plainPage],
         settings: {
           siteBaseUrl: "https://example.com",

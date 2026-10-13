@@ -40,6 +40,7 @@ import {
   err,
   extractMediaRefs,
   fontUnresolvableMarker,
+  type ImageVariantInfo,
   injectSeoIntoHead,
   listThemeCssVarNames,
   type ModuleFieldKind,
@@ -1134,17 +1135,22 @@ export const renderPagePreviewOp = defineOperation({
       if (assetIds.length > 0) {
         const idFrags = assetIds.map((id) => sql`${id}::uuid`);
         const variantRows = (await tx.execute(sql`
-          SELECT asset_id::text AS asset_id, variant, format
+          SELECT asset_id::text AS asset_id, variant, format, width
           FROM media_variants
           WHERE asset_id IN (${sql.join(idFrags, sql`, `)})
-        `)) as unknown as { asset_id: string; variant: string; format: string }[];
-        const variantsById = new Map<string, { variant: string; format: string }[]>();
+        `)) as unknown as {
+          asset_id: string;
+          variant: string;
+          format: string;
+          width: number | null;
+        }[];
+        const variantsById = new Map<string, ImageVariantInfo[]>();
         for (const r of variantRows) {
           const list = variantsById.get(r.asset_id) ?? [];
-          list.push({ variant: r.variant, format: r.format });
+          list.push({ variant: r.variant, format: r.format, width: r.width });
           variantsById.set(r.asset_id, list);
         }
-        const variantsByRef = new Map<string, { variant: string; format: string }[]>();
+        const variantsByRef = new Map<string, ImageVariantInfo[]>();
         for (const [slug, id] of slugToId) variantsByRef.set(slug, variantsById.get(id) ?? []);
         for (const id of legacyIdRefs) variantsByRef.set(id, variantsById.get(id) ?? []);
         html = enrichResponsiveImages(html, variantsByRef, {
