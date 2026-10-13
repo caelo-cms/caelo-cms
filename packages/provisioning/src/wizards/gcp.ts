@@ -104,7 +104,7 @@ import {
   type ResolvedBackend,
   resolveBackend,
 } from "../state-backend.js";
-import { GcsStateStore, migrationLockHolder } from "../state-store.js";
+import { acquireStateLock, GcsStateStore } from "../state-store.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { GCP_STACK_KNOB_DEFAULTS, pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
 
@@ -923,15 +923,6 @@ async function stepStateBackend(
   provisionerEmail: string,
 ): Promise<ResolvedBackend> {
   const root = installRoot(installId);
-  // `state migrate` switches the backend under a lock in the ops bucket; a
-  // run now would write the stack it is copying.
-  const holder = migrationLockHolder(gcsBackendRecord(projectId, region).bucket);
-  if (holder) {
-    cancel(
-      `A state migration of this install is running (${holder}). Re-run once it has finished.`,
-    );
-    process.exit(1);
-  }
   const meta = readMetadata(installId);
   if (!meta) throw new Error(`No install.json for install '${installId}'.`);
   const kind = chooseInstallBackend(
@@ -1046,55 +1037,71 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
   }
   const { secretsDir } = ensureInstallDir(installId);
   const root = installRoot(installId);
-  // #696 — `state migrate` may have moved the state since this run resolved
-  // its backend (or be moving it now): never write a retired backend.
-  // Uncached: the bucket's install.json for a bucket-backed install (another
-  // machine may have moved it back), the file on disk for a local one.
+  // #696 — hold the install's state lock through `pulumi up` (`state
+  // migrate` takes the same one), then re-check, uncached, that the state
+  // still lives where this run resolved it: the bucket's install.json for a
+  // bucket-backed install (another machine may have moved it back), the
+  // file on disk for a local one.
   const opsBucket = gcsBackendRecord(opts.projectId, opts.region).bucket;
+  let releaseLock: () => void;
+  try {
+    releaseLock = acquireStateLock(
+      opts.backend.kind === "gcs" ? { kind: "gcs", bucket: opsBucket } : { kind: "local" },
+      root,
+      "installer pulumi up",
+    );
+  } catch (e) {
+    cancel(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  }
   const nowText =
     opts.backend.kind === "gcs"
       ? new GcsStateStore(opsBucket, root).peek("install.json")
       : JSON.stringify(readLocalMetadata(installId));
   const now = nowText ? (JSON.parse(nowText) as InstallMetadata | null) : null;
-  const holder = migrationLockHolder(opsBucket);
   if (
-    holder ||
     !now ||
     installBackend({ stateBackend: parseStateBackend(now.stateBackend) }).kind !== opts.backend.kind
   ) {
+    releaseLock();
     cancel(
-      `The install's Pulumi state is being moved or has moved (state migrate) since this run started. Re-run the installer.`,
+      "The install's Pulumi state has moved (state migrate) since this run started. Re-run the installer.",
     );
     process.exit(1);
   }
   log.info(`Pulumi up — wall-clock 8–15 min (Cloud SQL is the long pole). Streaming progress...`);
 
   let resourceCount = 0;
-  const result = await pulumiUpGcp(
-    {
-      installId,
-      installRoot: root,
-      secretsDir,
-      ...opts,
-      // A deployed install's stack must exist: a missing one means the
-      // state is elsewhere, and a fresh stack would try to recreate it all.
-      stackMustExist: deployed,
-      provider: opts.provider ?? "gcp",
-    },
-    (kind, message) => {
-      if (kind === "resource") {
-        resourceCount++;
-        if (resourceCount % 5 === 0) {
-          process.stdout.write(`\r${dim(`  ${resourceCount} resources updated`)}`);
+  let result: Awaited<ReturnType<typeof pulumiUpGcp>>;
+  try {
+    result = await pulumiUpGcp(
+      {
+        installId,
+        installRoot: root,
+        secretsDir,
+        ...opts,
+        // A deployed install's stack must exist: a missing one means the
+        // state is elsewhere, and a fresh stack would try to recreate it all.
+        stackMustExist: deployed,
+        provider: opts.provider ?? "gcp",
+      },
+      (kind, message) => {
+        if (kind === "resource") {
+          resourceCount++;
+          if (resourceCount % 5 === 0) {
+            process.stdout.write(`\r${dim(`  ${resourceCount} resources updated`)}`);
+          }
+        } else if (kind === "error") {
+          process.stdout.write("\n");
+          log.error(red(redactCredentials(message)));
         }
-      } else if (kind === "error") {
-        process.stdout.write("\n");
-        log.error(red(redactCredentials(message)));
-      }
-      // logs: silent — too noisy for a live progress UI; pulumi
-      // diagnostics will print on failure via the SDK's onOutput.
-    },
-  );
+        // logs: silent — too noisy for a live progress UI; pulumi
+        // diagnostics will print on failure via the SDK's onOutput.
+      },
+    );
+  } finally {
+    releaseLock();
+  }
   process.stdout.write("\n");
   log.success(
     green(

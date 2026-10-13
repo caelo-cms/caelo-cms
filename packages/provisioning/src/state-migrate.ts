@@ -98,9 +98,10 @@ export interface MigrateDeps {
   /** Record the new backend (install-state.ts adoptStateBackend). */
   adopt(record: StateBackendRecord): void;
   /**
-   * Take the install's migration lock (an object in the ops bucket created
-   * only if absent); throws when another migration holds it. Returns the
-   * release function.
+   * Take the install's state lock (state-store.ts acquireStateLock: the
+   * source's, plus the bucket's when it is the target), which installer
+   * runs hold through `pulumi up` too; throws when another run holds it.
+   * Returns the release function.
    */
   lock(): Promise<() => Promise<void>>;
   /** Rename the local state dir out of the way; returns where it went. */
@@ -303,9 +304,10 @@ export async function migrateState(
     }
     en.done(`gs://${remoteRecord.bucket} + KMS key ready`);
   }
-  // One migration of an install at a time, across machines: held from the
-  // authority check through the flip, so a concurrent run can't take a copy
-  // the other just made authoritative for a leftover and remove it.
+  // The install's state lock, shared with installer runs (`pulumi up`) and
+  // other migrations: held from the authority check through the flip, so
+  // nobody writes the source after it was copied, and no concurrent
+  // migration takes a copy the other just made authoritative for a leftover.
   let release: () => Promise<void>;
   try {
     release = await deps.lock();

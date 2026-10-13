@@ -10,7 +10,7 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { confirm, isCancel, log, note } from "@clack/prompts";
 import { bold, red } from "kleur/colors";
@@ -43,7 +43,7 @@ import {
 } from "./state-backend.js";
 import { migrateState } from "./state-migrate.js";
 import { realStatePulumiOps } from "./state-pulumi.js";
-import { GcsStateStore, migrationLockUrl, realSyncGcloud, type SyncGcloud } from "./state-store.js";
+import { acquireStateLock, GcsStateStore, realSyncGcloud } from "./state-store.js";
 import { clackReporter } from "./upgrade/reporter.js";
 import { GCP_STACK_KNOB_DEFAULTS } from "./wizards/gcp-pulumi.js";
 
@@ -96,37 +96,6 @@ export function backupInstallDir(
   run("tar", ["-czf", out, ...source]);
   chmodSync(out, 0o600);
   return out;
-}
-
-/**
- * Take `gs://<bucket>/install/migrate.lock`, created only if absent
- * (`--if-generation-match=0`), so two machines can't migrate one install at
- * once. A lock left by a crashed run is reported with the command to remove
- * it — never broken automatically.
- *
- * @returns the release function
- */
-export function migrationLock(bucket: string, run: SyncGcloud): () => Promise<void> {
-  const url = migrationLockUrl(bucket);
-  const body = JSON.stringify({
-    host: hostname(),
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-  });
-  const r = run(["storage", "cp", "-", url, "--if-generation-match=0"], body);
-  if (!r.ok) {
-    if (/PreconditionFailed|412|At least one of the pre-conditions/i.test(r.stderr)) {
-      const held = run(["storage", "cat", url]);
-      throw new Error(
-        `Another state migration of this install is running (${held.ok ? held.stdout.trim() : url}). If none is, remove the stale lock: gcloud storage rm ${url}`,
-      );
-    }
-    throw new Error(`Could not take the migration lock ${url}: ${r.stderr.trim()}`);
-  }
-  return async () => {
-    const rm = run(["storage", "rm", url]);
-    if (!rm.ok) throw new Error(`Could not release ${url}; remove it: gcloud storage rm ${url}`);
-  };
 }
 
 /** The value of `--<name> <v>` / `--<name>=<v>` on argv. */
@@ -250,7 +219,26 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
           writeSecret(installId, "pulumi-passphrase", randomBytes(32).toString("hex"));
         }
       },
-      lock: async () => migrationLock(gcsBackendRecord(projectId, region).bucket, realSyncGcloud),
+      lock: async () => {
+        // The source's lock (local file or bucket object) keeps installer
+        // runs out; the bucket's also keeps out a migration started on
+        // another machine when the bucket is the target.
+        const source = meta.stateBackend ?? { kind: "local" as const };
+        const releases = [acquireStateLock(source, root, "state migrate")];
+        if (source.kind === "local" && to === "remote") {
+          try {
+            releases.push(
+              acquireStateLock(gcsBackendRecord(projectId, region), root, "state migrate"),
+            );
+          } catch (e) {
+            for (const r of releases) r();
+            throw e;
+          }
+        }
+        return async () => {
+          for (const r of releases.reverse()) r();
+        };
+      },
       remoteRecordedBackend: () => {
         const text = new GcsStateStore(gcsBackendRecord(projectId, region).bucket, root).peek(
           "install.json",

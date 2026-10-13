@@ -20,8 +20,8 @@ import { join } from "node:path";
 import type { GcloudResult } from "./gcloud.js";
 import { attachInstall } from "./state-attach.js";
 import { gcsBackendRecord, hasLocalPulumiState } from "./state-backend.js";
-import { backupInstallDir, migrationLock } from "./state-command.js";
-import type { SyncGcloud } from "./state-store.js";
+import { backupInstallDir } from "./state-command.js";
+import { acquireBucketStateLock, acquireLocalStateLock, type SyncGcloud } from "./state-store.js";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
@@ -170,8 +170,8 @@ describe("backupInstallDir", () => {
   }
 });
 
-describe("migrationLock", () => {
-  it("creates the lock only if absent and releases it", async () => {
+describe("state locks", () => {
+  it("bucket lock: created only if absent, released by deleting it", () => {
     const objects = new Map<string, string>();
     const run: SyncGcloud = (args, input) => {
       const url = args[2] === "-" ? (args[3] ?? "") : (args[2] ?? "");
@@ -189,13 +189,23 @@ describe("migrationLock", () => {
       if (args[1] === "rm") return objects.delete(url) ? ok() : fail("matched no objects");
       return fail("unexpected");
     };
-    const release = migrationLock("acme-site-caelo-ops", run);
-    expect(() => migrationLock("acme-site-caelo-ops", run)).toThrow(
-      /gcloud storage rm gs:\/\/acme-site-caelo-ops\/install\/migrate.lock/,
+    const release = acquireBucketStateLock("acme-site-caelo-ops", "state migrate", run);
+    expect(() => acquireBucketStateLock("acme-site-caelo-ops", "installer pulumi up", run)).toThrow(
+      /gcloud storage rm gs:\/\/acme-site-caelo-ops\/install\/state.lock/,
     );
-    await release();
-    const again = migrationLock("acme-site-caelo-ops", run);
-    await again();
+    release();
+    acquireBucketStateLock("acme-site-caelo-ops", "installer pulumi up", run)();
     expect(objects.size).toBe(0);
+  });
+
+  it("local lock: exclusive file next to the state, mode 600", () => {
+    const root = join(home, ".caelo-gcp-acme");
+    mkdirSync(root, { recursive: true });
+    const release = acquireLocalStateLock(root, "installer pulumi up");
+    expect(statSync(join(root, "state.lock")).mode & 0o777).toBe(0o600);
+    expect(() => acquireLocalStateLock(root, "state migrate")).toThrow(/installer pulumi up/);
+    release();
+    acquireLocalStateLock(root, "state migrate")();
+    expect(existsSync(join(root, "state.lock"))).toBe(false);
   });
 });
