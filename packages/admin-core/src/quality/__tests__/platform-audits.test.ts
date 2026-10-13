@@ -49,6 +49,14 @@ describe("findingOwner (#667)", () => {
       ),
     ).toBe("site");
     expect(findingOwner("bf-cache", [], PAGE)).toBe("check");
+    // A browser limitation is neither the site's nor Caelo's: never "fix the module".
+    expect(
+      findingOwner(
+        "bf-cache",
+        [{ explanation: "Back/forward cache is disabled due to insufficient memory." }],
+        PAGE,
+      ),
+    ).toBe("check");
   });
 
   it("has no opinion on ordinary site findings", () => {

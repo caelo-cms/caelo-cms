@@ -63,11 +63,17 @@ function isSameSite(url: string, pageUrl: string): boolean {
   }
 }
 
+/** Back/forward-cache blockers raised by page script (what a module's JS
+ *  does), recognised positively — an unknown reason (e.g. a browser memory
+ *  limit) is neither the site's nor Caelo's to fix and stays "check". */
+const SITE_BFCACHE_REASON =
+  /unload|websocket|webrtc|broadcastchannel|indexeddb|keepalive|web ?lock|worker|outstanding (network|fetch|xhr)|in-?flight|window\.opener|webtransport|webhid|webusb|serial|bluetooth/i;
+
 /** Collapse per-item verdicts: all one way decides, anything else needs a look. */
-function verdict(items: readonly boolean[]): FindingOwner | null {
+function verdict(items: readonly ("platform" | "site" | "unknown")[]): FindingOwner | null {
   if (items.length === 0) return null;
-  if (items.every((platform) => platform)) return "platform";
-  if (items.every((platform) => !platform)) return "site";
+  if (items.every((v) => v === "platform")) return "platform";
+  if (items.every((v) => v === "site")) return "site";
   return "check";
 }
 
@@ -86,11 +92,21 @@ export function findingOwner(
   if (DOCUMENT_DELIVERY_AUDITS.has(auditId)) return "platform";
   if (RESOURCE_SERVING_AUDITS.has(auditId)) {
     const urls = elements.flatMap((e) => (e.url ? [e.url] : []));
-    return verdict(urls.map((u) => isSameSite(u, pageUrl))) ?? "check";
+    return verdict(urls.map((u) => (isSameSite(u, pageUrl) ? "platform" : "site"))) ?? "check";
   }
   if (auditId === "bf-cache") {
     const reasons = elements.flatMap((e) => (e.explanation ? [e.explanation] : []));
-    return verdict(reasons.map((r) => PLATFORM_BFCACHE_REASON.test(r))) ?? "check";
+    return (
+      verdict(
+        reasons.map((r) =>
+          PLATFORM_BFCACHE_REASON.test(r)
+            ? "platform"
+            : SITE_BFCACHE_REASON.test(r)
+              ? "site"
+              : "unknown",
+        ),
+      ) ?? "check"
+    );
   }
   return null;
 }

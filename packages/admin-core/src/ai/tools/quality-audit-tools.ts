@@ -93,7 +93,7 @@ function ownerNote(owner: ReturnType<typeof findingOwner>): string {
     case "site":
       return " — caused by this site: the flagged URLs/reasons point at a module's script or third-party embed; fix that module.";
     case "check":
-      return " — read the flagged items: same-site files (/_assets/…, /_caelo/…, pages) and browser-flag or response-header reasons are a CAELO PLATFORM issue (report with bug_report, do not propose accepting it); third-party URLs and script reasons (e.g. an unload handler) are fixed in the module.";
+      return " — read the flagged items: same-site files (/_assets/…, /_caelo/…, pages) and browser-flag or response-header reasons are a CAELO PLATFORM issue (report with bug_report, do not propose accepting it); third-party URLs and script reasons (e.g. an unload handler) are fixed in the module; any other browser reason (e.g. memory) is neither — describe it, don't change the site for it.";
     case null:
       return "";
   }
