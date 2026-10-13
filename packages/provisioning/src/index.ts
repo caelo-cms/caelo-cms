@@ -82,3 +82,25 @@ export {
   releaseManifestSignerIdentity,
   SIGSTORE_BUNDLE_MEDIA_TYPE,
 } from "./release-manifest.js";
+export {
+  assessUpgradeRequest,
+  type InstalledState,
+  type RefusalCode,
+  type RequestDecision,
+} from "./upgrader-assess.js";
+export {
+  gcpUpgraderDeps,
+  type UpgraderPlacement,
+  upgraderDatabaseHost,
+} from "./upgrader-gcp.js";
+export {
+  type ClaimedUpdate,
+  runUpgraderJob,
+  type UpdateEnd,
+  type UpdateEndStatus,
+  type UpdateFacts,
+  type UpdateQueue,
+  type UpgraderJobDeps,
+  type UpgraderRunResult,
+} from "./upgrader-job.js";
+export type { JobLog } from "./upgrader-reporter.js";

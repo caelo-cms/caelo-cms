@@ -106,3 +106,30 @@ export function operatorAccessServiceAccountEmail(projectId: string, env: string
 export function operatorAccessScheduleName(env: string): string {
   return `${gcpNamePrefix(env)}-operator-access-hourly`;
 }
+
+/**
+ * Cloud Run job that installs Caelo releases from the admin (epic #696):
+ * the admin may only start it, without overrides (upgrader-setup.ts).
+ */
+export function upgraderJobName(env: string): string {
+  return `${gcpNamePrefix(env)}-upgrader`;
+}
+
+/** Full resource name of the upgrader job, as the admin's env carries it. */
+export function upgraderJobResource(projectId: string, region: string, env: string): string {
+  return `projects/${projectId}/locations/${region}/jobs/${upgraderJobName(env)}`;
+}
+
+/**
+ * Account id of the upgrader job's own service account: may roll the two
+ * Cloud Run services, run the migration job and back up Cloud SQL, never
+ * change IAM, service accounts or secrets.
+ */
+export function upgraderServiceAccountId(env: string): string {
+  return `${gcpNamePrefix(env)}-upgrader`;
+}
+
+/** Email of the upgrader job's service account. */
+export function upgraderServiceAccountEmail(projectId: string, env: string): string {
+  return `${upgraderServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+}

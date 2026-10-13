@@ -57,12 +57,12 @@ COPY . .
 # Build: the provisioning closure + the root workspace (tsc and the bun
 # type definitions are root devDependencies). `tsc -b` on provisioning
 # builds @caelo-cms/shared through its project reference.
-RUN bun install --frozen-lockfile --filter @caelo-cms/provisioning --filter caelo-cms && \
+RUN bun install --frozen-lockfile --filter @caelo-cms/provisioning --filter @caelo-cms/platform-updater --filter caelo-cms && \
     bun run --filter @caelo-cms/provisioning build
 
 # Runtime closure: drop devDependencies and the root workspace's tooling.
 RUN rm -rf node_modules packages/*/node_modules && \
-    bun install --frozen-lockfile --production --filter @caelo-cms/provisioning && \
+    bun install --frozen-lockfile --production --filter @caelo-cms/provisioning --filter @caelo-cms/platform-updater && \
     if find node_modules -name '*.node' -print -quit | grep -q .; then \
       echo "native addon in the provisioning closure — the cross-arch copy below is no longer valid" >&2; \
       exit 1; \
@@ -73,13 +73,22 @@ RUN rm -rf node_modules packages/*/node_modules && \
 # resolves stacks relative to its own dist/. @caelo-cms/shared needs its
 # src/ too: its `bun` export condition points at src/index.ts, and Bun
 # picks that condition over dist/.
-RUN mkdir -p /opt/caelo-ops/packages/shared /opt/caelo-ops/packages/provisioning && \
+#
+# The upgrader job (`caelo-ops upgrader`, epic #696) is the private
+# @caelo-cms/platform-updater package: provisioning's runUpgraderJob wired
+# to the database through @caelo-cms/query-api. Both run from src/ (they
+# are not published, so they have no dist/), as does provisioning's `bun`
+# export condition the updater imports through.
+RUN mkdir -p /opt/caelo-ops/packages/shared /opt/caelo-ops/packages/provisioning \
+             /opt/caelo-ops/packages/query-api /opt/caelo-ops/packages/platform-updater && \
     cp package.json /opt/caelo-ops/ && \
     cp -a node_modules /opt/caelo-ops/ && \
     cp -a packages/shared/package.json packages/shared/dist packages/shared/src /opt/caelo-ops/packages/shared/ && \
-    cp -a packages/provisioning/package.json packages/provisioning/dist \
+    cp -a packages/provisioning/package.json packages/provisioning/dist packages/provisioning/src \
           packages/provisioning/stacks packages/provisioning/caddy \
           packages/provisioning/static /opt/caelo-ops/packages/provisioning/ && \
+    cp -a packages/query-api/package.json packages/query-api/src /opt/caelo-ops/packages/query-api/ && \
+    cp -a packages/platform-updater/package.json packages/platform-updater/src /opt/caelo-ops/packages/platform-updater/ && \
     find /opt/caelo-ops/packages -name '*.test.ts' -delete
 
 # ---------------------------------------------------------------------------
@@ -146,7 +155,11 @@ COPY --from=builder /opt/caelo-ops /opt/caelo-ops
 # A wrapper, not a symlink: the CLI derives its repo root and stack paths
 # from its own file location (import.meta.dir), which a symlink in
 # /usr/local/bin would point at the wrong directory.
-RUN printf '#!/bin/sh\nexec bun /opt/caelo-ops/packages/provisioning/dist/cli.js "$@"\n' \
+#
+# `caelo-ops upgrader` runs the upgrader job and passes it NOTHING: the
+# job reads its input from the database only (platform-updater/src/main.ts),
+# so extra arguments are dropped here, not interpreted.
+RUN printf '#!/bin/sh\nif [ "${1:-}" = upgrader ]; then exec bun /opt/caelo-ops/packages/platform-updater/src/main.ts; fi\nexec bun /opt/caelo-ops/packages/provisioning/dist/cli.js "$@"\n' \
       > /usr/local/bin/caelo-ops && \
     chmod 0755 /usr/local/bin/caelo-ops && \
     ln -s caelo-ops /usr/local/bin/cms-provision && \

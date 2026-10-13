@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { databasePasswordVar, databaseUrlFromEnv, withDatabasePassword } from "./database-url.js";
+import {
+  cloudSqlIamDatabaseUrls,
+  databasePasswordVar,
+  databaseUrlFromEnv,
+  withDatabasePassword,
+} from "./database-url.js";
 
 describe("databasePasswordVar", () => {
   it("pairs each URL var with its _PASSWORD var", () => {
@@ -112,5 +117,15 @@ describe("databaseUrlFromEnv", () => {
     expect(() => databaseUrlFromEnv(["ADMIN_DATABASE_URL"], env)).toThrow(
       /ADMIN_DATABASE_URL \(with ADMIN_DATABASE_PASSWORD\) already carries a password/,
     );
+  });
+});
+
+describe("cloudSqlIamDatabaseUrls", () => {
+  it("logs in as the service account's IAM database user with the token as password", () => {
+    expect(cloudSqlIamDatabaseUrls("10.0.0.3", "job@p.iam.gserviceaccount.com", "ya29/x")).toEqual({
+      user: "job@p.iam",
+      admin: "postgresql://job%40p.iam:ya29%2Fx@10.0.0.3:5432/cms_admin?sslmode=require",
+      public: "postgresql://job%40p.iam:ya29%2Fx@10.0.0.3:5432/cms_public?sslmode=require",
+    });
   });
 });

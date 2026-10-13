@@ -5,7 +5,6 @@ import type { GoogleDeps } from "./google-iam.js";
 import {
   configFromEnv,
   IAP_ACCESSOR_ROLE,
-  iamDatabaseUrls,
   type LogEntry,
   runSync,
   type SyncJobConfig,
@@ -160,15 +159,5 @@ describe("configFromEnv", () => {
     expect(() => configFromEnv({ CAELO_MCP_IAP_SERVICE_ACCOUNT: "x" })).toThrow(
       "missing env CAELO_OPERATOR_ACCESS_IAP_WEB, CAELO_OPERATOR_ACCESS_STATIC_MEMBERS, CAELO_OPERATOR_ACCESS_DB_HOST",
     );
-  });
-});
-
-describe("iamDatabaseUrls", () => {
-  it("logs in as the service account's IAM database user with the token as password", () => {
-    expect(iamDatabaseUrls("10.0.0.3", "job@p.iam.gserviceaccount.com", "ya29/x")).toEqual({
-      user: "job@p.iam",
-      admin: "postgresql://job%40p.iam:ya29%2Fx@10.0.0.3:5432/cms_admin?sslmode=require",
-      public: "postgresql://job%40p.iam:ya29%2Fx@10.0.0.3:5432/cms_public?sslmode=require",
-    });
   });
 });
