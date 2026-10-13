@@ -35,10 +35,10 @@ export function makePluginImageProvider(
       const reserve = model ? imageReserveMicrocents(model) : null;
       if (!model || !capabilities || reserve === null || capabilities.imageSizes.length === 0)
         throw new Error(
-          `Configure a supported Google image model at /security/ai (${SUPPORTED_IMAGE_MODELS.filter((m) => m.startsWith("gemini-")).join(", ")})`,
+          `Configure a supported Google image model at /settings/ai (${SUPPORTED_IMAGE_MODELS.filter((m) => m.startsWith("gemini-")).join(", ")})`,
         );
       if (!(await getImageProviderApiKey("google")))
-        throw new Error("Configure the Google key at /security/ai");
+        throw new Error("Configure the Google key at /settings/ai");
       return {
         model,
         maxCostMicrocents: reserve,

@@ -179,7 +179,7 @@ export const mediaUploadOp = defineOperation({
     `)) as unknown as { id: string; slug: string }[];
     if (existing[0]) {
       // Re-uploads of the same content still need an audit trail entry
-      // so /security/audit shows who attempted the upload, even though
+      // so /settings/audit shows who attempted the upload, even though
       // no new row landed in media_assets.
       await recordAudit(tx, {
         actorId: ctx.actorId,

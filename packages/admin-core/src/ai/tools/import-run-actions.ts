@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The two operator buttons on a site-import run (/security/import/<runId>)
+ * The two operator buttons on a site-import run (/settings/import/<runId>)
  * as AI tools:
  *
  *   - `accept_import_pages` → `imports.accept_pages`: promote crawled pages
@@ -82,7 +82,7 @@ export const cleanupImportRunTool: ToolDefinitionWithHandler<CleanupImportRunInp
     "Use it only when the operator says the migration is done and the leftover crawl can go ('clean up the import', 'discard the rest of the crawl'). It cannot be undone: afterwards `get_import_page` / `list_import_pages` no longer see the dropped pages and a re-crawl costs time and money — if pages still need building, build them first. " +
     "This is a TWO-STEP flow: your call queues it, the operator clicks Approve on the card in the chat, and only then is the data deleted. Do not claim the run was cleaned up before that.",
   needsApproval: () => true,
-  // #589 — the same permission the /security/import panels require.
+  // #589 — the same permission the /settings/import panels require.
   approverPermissions: ["settings.write"],
   buildApprovalPreview: (input) => ({
     op: "cleanup_import_run",

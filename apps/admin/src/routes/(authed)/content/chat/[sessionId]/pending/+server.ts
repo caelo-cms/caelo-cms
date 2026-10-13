@@ -27,7 +27,7 @@
  * decided external-agent cards join `handoffs`.
  *
  * Scope: GET only. Approve / Reject continue to go through the
- * existing /security/<domain>/pending form actions (the same path
+ * existing /settings/<domain>/pending form actions (the same path
  * ProposeCard uses) so we don't fork the action contract.
  */
 

@@ -2,7 +2,7 @@
 
 **Status: OFF by default. No outbound calls without explicit opt-in.**
 
-Caelo phones home for nothing on a fresh install. Operators who want to opt in to telemetry can do so per-category at `/security/telemetry`. The settings live in `cms_admin.telemetry_settings` (single row, `install_ping_enabled` / `error_reporting_enabled` start as `false`).
+Caelo phones home for nothing on a fresh install. Operators who want to opt in to telemetry can do so per-category at `/settings/telemetry`. The settings live in `cms_admin.telemetry_settings` (single row, `install_ping_enabled` / `error_reporting_enabled` start as `false`).
 
 This doc is part of the OSS-launch checklist; reviewers explicitly check the "off by default" claim against the code (the migration 0048 seed asserts both columns default false; the Owner UI is the only path to enable).
 
@@ -59,7 +59,7 @@ These are off-limits even with both telemetry toggles enabled. Code paths that t
 
 ## Owner UI
 
-`/security/telemetry` shows:
+`/settings/telemetry` shows:
 - Two toggles (install ping / error reporting), both `false` on fresh install.
 - Live counter: `events_sent_count` + `last_sent_at` from `telemetry_settings`.
 - A **"Test send"** button that prints the exact payload that WOULD be sent locally without making an outbound HTTP call. Operators can verify the redaction + hash before enabling.

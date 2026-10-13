@@ -7,7 +7,7 @@
  * (`<domain>.propose_*` + `<domain>.execute_proposal`) the chat-runner chains
  * after the Owner's in-chat Approve. This replaces the old
  * "emit a Queued-proposal string → ProposeCard content-regex → click at
- * /security/pending" choreography.
+ * /settings/pending" choreography.
  *
  * This test locks the gated contract: the markers are present, the executeOp is
  * derived correctly, and each description tells the model NOT to claim the

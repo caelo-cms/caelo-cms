@@ -58,10 +58,11 @@ const CATEGORY_LABEL: Record<string, string> = {
  * What to do while a check runs. Polling it costs a full model call per
  * read (the PR #624 homepage turn re-read a running audit 19 times and
  * blew its token ceiling) while the result is delivered anyway: the
- * operator's open chat posts it as a message when the check settles.
+ * operator's open chat shows it when the check settles, and asks the
+ * operator before a fix round starts (#685).
  */
 export const AUDIT_PENDING_NEXT_STEP =
-  "Do not re-read it now: when the operator's chat is open, the result arrives in this chat as a message (with the next step) — finish your turn with your summary. Only without an open chat (Power-MCP) read it again after a couple of minutes.";
+  "Do not re-read it now: when the operator's chat is open, the result appears in this chat, and when it finds problems the operator is asked whether you should fix them — finish your turn with your summary. Only without an open chat (Power-MCP) read it again after a couple of minutes.";
 
 function statusLine(run: AuditRun): string {
   switch (run.status) {

@@ -9,7 +9,7 @@
  * in-chat card: the gated tool falls back to propose-only and the row
  * waits for the Owner. Until now nothing listed or decided those rows —
  * an MCP-proposed uninstall or activation could never be approved. These
- * two ops back `/security/plugins/pending`; approve there dispatches to
+ * two ops back `/settings/plugins/pending`; approve there dispatches to
  * the row's executor (`plugins.execute_activation` / `plugins.execute_proposal`).
  */
 

@@ -178,7 +178,7 @@ test("gated set_locales pauses for the in-chat click; create_variant lands /de/;
   // `set_locales` call below would have nothing to dispatch to. This
   // click is the same one a real install makes, and it exercises
   // activate → loader → tool registration for real.
-  await page.goto("/security/plugins");
+  await page.goto("/settings/plugins");
   const activate = page.getByTestId("activate-international-site");
   if ((await activate.count()) > 0) {
     await activate.click();
@@ -448,7 +448,7 @@ test("an English page shows the English footer, its German counterpart the Germa
 
   // The plugin only resolves chrome while it runs — same Owner click a
   // real install makes.
-  await page.goto("/security/plugins");
+  await page.goto("/settings/plugins");
   const activate = page.getByTestId("activate-international-site");
   if ((await activate.count()) > 0) {
     await activate.click();

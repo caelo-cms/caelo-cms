@@ -25,7 +25,7 @@ import type { stagingAccessOutput } from "../../ops/staging_access.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 import { makeReadTool } from "./_make-read-tool.js";
 
-const PENDING_QUEUE = "/security/owner-settings/pending";
+const PENDING_QUEUE = "/settings/owner-settings/pending";
 
 type StagingAccessValue = z.infer<typeof stagingAccessOutput>;
 

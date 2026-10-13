@@ -16,7 +16,7 @@ export const proposeSkillTool: ToolDefinitionWithHandler<ProposeSkillToolInput> 
   name: "propose_skill",
   description:
     "Draft a new AI skill (instructional body that augments your future system prompt) and queue it for Owner review. " +
-    "TWO-STEP: this only QUEUES the proposal — an Owner reviews it at /security/skills/proposals and either accepts (creating a 'awaiting_activation' skill) or rejects. After acceptance the Owner separately activates the skill site-wide. " +
+    "TWO-STEP: this only QUEUES the proposal — an Owner reviews it at /settings/skills/proposals and either accepts (creating a 'awaiting_activation' skill) or rejects. After acceptance the Owner separately activates the skill site-wide. " +
     "Do NOT claim the skill is active. Use this when the user explicitly asks you to learn a new behaviour, codify a workflow, or persist a habit. " +
     "Inputs: slug (lowercase-with-hyphens), displayName, description, body (the skill instructions), rationale (why this skill helps), allowlistedTools (optional list of AI TOOL names — e.g. edit_module, list_pages — this skill's workflow leans on; they are PRELOAD HINTS (kept loaded up front so the model reaches them without a tool-search round-trip), NOT a restriction — every other tool stays reachable via tool search, so list a tool AND its bulk pair, e.g. edit_module + update_modules_many; Query-API op names like pages.list are rejected), hints (optional auto-engagement matcher hints).",
   schema: proposeSkillToolInput,
@@ -58,7 +58,7 @@ export const proposeSkillTool: ToolDefinitionWithHandler<ProposeSkillToolInput> 
       ok: true,
       content:
         `Queued skill proposal ${proposalId} (slug=${input.slug}). ` +
-        `An Owner must accept it at /security/skills/proposals; after acceptance, the Owner activates the skill separately. The skill is NOT active yet.`,
+        `An Owner must accept it at /settings/skills/proposals; after acceptance, the Owner activates the skill separately. The skill is NOT active yet.`,
       queuedProposalId: proposalId,
     };
   },

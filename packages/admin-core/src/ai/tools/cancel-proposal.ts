@@ -36,7 +36,7 @@ export const cancelProposalTool: ToolDefinitionWithHandler<Input> = {
     "ONLY works on proposals you queued — you cannot cancel proposals from the operator's own work or other AI sessions. " +
     "If the proposal was already approved/rejected, the tool returns an error explaining that. " +
     "Provide an optional `reason` (≤500 chars) for the audit log. " +
-    "After cancelling, tell the user the proposal is withdrawn — it will no longer appear in /security/pending.",
+    "After cancelling, tell the user the proposal is withdrawn — it will no longer appear in /settings/pending.",
   schema: inputSchema,
   inputSchema: {
     type: "object",

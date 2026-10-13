@@ -119,7 +119,7 @@ test.describe("e2e-livedit migration — keep-design end to end", () => {
       expect(proposed[0]?.status).toBe("proposed");
 
       // Owner click — the ONLY manual step the epic allows.
-      await page.goto("/security/import/pending");
+      await page.goto("/settings/import/pending");
       await page.getByRole("button", { name: "Approve crawl" }).first().click();
       const crawlStatus = await waitForCrawlDone(180_000);
       expect(crawlStatus, "crawl must reach ready_for_review after the Approve click").toBe(

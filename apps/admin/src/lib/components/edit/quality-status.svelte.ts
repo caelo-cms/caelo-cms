@@ -2,7 +2,8 @@
 
 /**
  * Issue #553 — one shared poller of a chat's quality-gate status, used by
- * the chat panel (fix-loop nudges) and the /edit toolbar (Publish gate). A
+ * the chat panel (status notes, the fix offer card) and the /edit toolbar
+ * (Publish gate). A
  * module-level registry keyed by chat id keeps it to ONE request stream per
  * chat however many components read it.
  *
@@ -28,10 +29,21 @@ export interface QualityGate {
   readonly openProblemCount: number;
 }
 
+/** What the chat is told about a settled audit (#553). An `offer` (#685)
+ *  is a card: its `prompt` is sent only on the operator's click. */
+export type QualityFeedback =
+  | { readonly kind: "note"; readonly text: string }
+  | {
+      readonly kind: "offer";
+      readonly text: string;
+      readonly actionLabel: string;
+      readonly prompt: string;
+    };
+
 export interface QualityStatus {
   readonly audit: { readonly id: string; readonly status: string } | null;
   readonly notified: boolean;
-  readonly feedback: { readonly kind: "note" | "ai-turn"; readonly text: string } | null;
+  readonly feedback: QualityFeedback | null;
   readonly deployRunId: string | null;
   readonly gate: QualityGate | null;
 }
@@ -109,8 +121,16 @@ export async function postQualityAction(
   body:
     | { action: "claim"; auditRunId: string }
     | { action: "ack"; auditRunId: string }
+    | { action: "release"; auditRunId: string }
+    | { action: "dismiss"; auditRunId: string }
     | { action: "retry" },
-): Promise<{ ok: boolean; send?: string | null; note?: string; error?: string }> {
+): Promise<{
+  ok: boolean;
+  send?: string | null;
+  note?: string;
+  dismissed?: boolean;
+  error?: string;
+}> {
   const res = await fetch(`/content/chat/${chatSessionId}/quality-audit`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
@@ -120,6 +140,7 @@ export async function postQualityAction(
     ok?: boolean;
     send?: string | null;
     note?: string;
+    dismissed?: boolean;
     error?: string;
   };
   return { ok: res.ok && data.ok !== false, ...data };

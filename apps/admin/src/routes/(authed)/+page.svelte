@@ -1,6 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { FileText, Layers, Layout, MessageSquare, Rocket, Sailboat, ShieldCheck } from "lucide-svelte";
+  import { FileText, Layers, Layout, MessageSquare, Rocket, Sailboat, Settings } from "lucide-svelte";
+  import { hasAnySettingsAccess } from "#lib/settings-nav.js";
   import {
     Card,
     CardContent,
@@ -18,8 +19,8 @@
       { href: "/content/modules", label: "Modules", desc: "HTML / CSS / JS building blocks", icon: Layers, show: has("content.read") },
       { href: "/content/templates", label: "Templates", desc: "Page skeletons with named slots", icon: Layout, show: has("content.read") },
       { href: "/content/chat", label: "Chats", desc: "Edit by talking to the AI", icon: MessageSquare, show: has("content.write") },
-      { href: "/security/deployments", label: "Deployments", desc: "Stage / promote / rollback", icon: Rocket, show: has("ops.view") },
-      { href: "/security", label: "Security", desc: "Users, roles, AI provider, costs", icon: ShieldCheck, show: has("settings.read") },
+      { href: "/settings/deployments", label: "Deployments", desc: "Stage / promote / rollback", icon: Rocket, show: has("ops.view") },
+      { href: "/settings", label: "Settings", desc: "Site, domains, AI, plugins, people and approvals", icon: Settings, show: hasAnySettingsAccess(data.user.permissions) },
     ].filter((t) => t.show),
   );
 

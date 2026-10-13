@@ -502,7 +502,7 @@ async function* runSerializedChatTurn(
   // attach its `execute`, which after the Owner's in-chat Approve chains the
   // existing per-domain `propose` (AI ctx — writes the pending row + preview +
   // audit) then `execute_proposal` (Owner live ctx — applies the real
-  // mutation, exactly as the old /security/pending Approve did). Reusing that
+  // mutation, exactly as the old /settings/pending Approve did). Reusing that
   // machinery keeps every domain's apply logic correct with zero
   // reimplementation. Subagent turns strip gated tools outright — a child
   // never fronts an Owner approval.

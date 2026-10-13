@@ -3,9 +3,9 @@
 /**
  * Site memory proposal end-to-end:
  *   - AI proposes a memory addition mid-chat (tool call site_memory_propose)
- *   - Owner sees the queue at /security/ai/memory-proposals
+ *   - Owner sees the queue at /settings/ai/memory-proposals
  *   - Owner accepts → memory body updates
- *   - The accepted body shows up at /security/ai/memory
+ *   - The accepted body shows up at /settings/ai/memory
  */
 
 import { expect, test } from "@playwright/test";
@@ -79,7 +79,7 @@ test("AI proposes memory → Owner accepts → memory updates", async ({ context
   await page.getByRole("button", { name: /^send$/i }).click();
   await expect(page.getByText(/Queued a memory proposal/i)).toBeVisible({ timeout: 15_000 });
 
-  await page.goto("/security/ai/memory-proposals");
+  await page.goto("/settings/ai/memory-proposals");
   await expect(page.getByText(PROPOSAL_BODY)).toBeVisible();
   await expect(page.getByText(PROPOSAL_RATIONALE)).toBeVisible();
 
@@ -92,7 +92,7 @@ test("AI proposes memory → Owner accepts → memory updates", async ({ context
   await acceptForm.getByRole("button", { name: /accept/i }).click();
   await expect(page.getByText(/Decision recorded/i)).toBeVisible();
 
-  await page.goto("/security/ai/memory");
+  await page.goto("/settings/ai/memory");
   const instructionsTextarea = page
     .locator("form")
     .filter({ has: page.locator('input[name="slot"][value="instructions"]') })

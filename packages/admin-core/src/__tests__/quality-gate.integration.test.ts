@@ -149,6 +149,7 @@ async function stage(chatSessionId: string): Promise<{ runId: string; status: st
     deployRunId: built.runId,
     chatSessionId,
     branch,
+    stagedBy: "operator",
   });
   return { runId: built.runId, status: q.status };
 }
@@ -331,7 +332,7 @@ describe("block → fix → publish", () => {
     expect(p.message).toContain("until the quality check of the staged build finishes");
   });
 
-  it("problems block Publish live and ask the AI to fix (round 1 of 2)", async () => {
+  it("problems block Publish live and OFFER the operator an AI fix (round 1 of 2)", async () => {
     const fetched: string[] = [];
     await audit(
       fakeLighthouse((path) => (path.includes("about") ? { failing: [imageAlt] } : {}), fetched),
@@ -345,19 +346,50 @@ describe("block → fix → publish", () => {
     expect(p.message).toContain("Stage again");
 
     const st = await op<{
-      feedback: { kind: string; text: string };
-      audit: { id: string; fixRound: number };
+      feedback: { kind: string; text: string; actionLabel: string; prompt: string };
+      audit: { id: string; fixRound: number; stagedBy: string | null };
     }>(HUMAN, "quality_audits.chat_status", { chatSessionId });
     expect(st.audit.fixRound).toBe(0);
-    expect(st.feedback.kind).toBe("ai-turn");
-    expect(st.feedback.text).toContain("Fix round 1 of 2");
+    // #685 — problems are an offer the operator answers, never a turn the
+    // panel sends by itself; the prompt carries the findings and who staged.
+    expect(st.audit.stagedBy).toBe("operator");
+    expect(st.feedback.kind).toBe("offer");
+    expect(st.feedback.actionLabel).toBe("Fix with AI");
+    expect(st.feedback.text).toContain(`on 1 page(s): /${PFX}about (Image elements`);
+    expect(st.feedback.text).toContain("Staged by you.");
+    expect(st.feedback.text).toContain("Let the AI fix them?");
+    expect(st.feedback.prompt).toContain("Fix round 1 of 2");
+    expect(st.feedback.prompt).toContain(`- /${PFX}about: `);
+    expect(st.feedback.prompt).toContain("I staged this build myself");
     // The chat is told exactly once: one tab holds the delivery lease; the
-    // ack (after the panel sent the turn) marks it delivered.
+    // ack (after the operator's click sent the turn) marks it delivered.
     const auditRunId = st.audit.id;
     const claim = () =>
-      op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", { auditRunId });
+      op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", {
+        auditRunId,
+        fixRequested: true,
+      });
+    const fixRequested = () =>
+      withSql(
+        async (tx) =>
+          (
+            (await tx`SELECT fix_requested_at IS NOT NULL AS r FROM quality_audit_runs
+                      WHERE id = ${auditRunId}::uuid`) as unknown as { r: boolean }[]
+          )[0]?.r,
+      );
+    expect(await fixRequested()).toBe(false);
     expect((await claim()).claimed).toBe(true);
     expect((await claim()).claimed).toBe(false);
+    // A click whose turn did not start (an external agent works in the
+    // chat) gives the claim back: the card can be clicked again at once.
+    expect(await fixRequested()).toBe(true);
+    await op(HUMAN, "quality_audits.release_chat_notification", { auditRunId });
+    expect(await fixRequested()).toBe(false);
+    expect((await claim()).claimed).toBe(true);
+    expect(await fixRequested()).toBe(true);
+    expect(await opErr(AI, "quality_audits.release_chat_notification", { auditRunId })).toContain(
+      "ActorScopeRejected",
+    );
     // A delivery that never acknowledged (tab closed) is offered again once
     // the lease ran out.
     await withSql(async (tx) => {
@@ -433,6 +465,12 @@ describe("acceptances in the chat", () => {
     );
     auditRunId = (await gate()).auditRunId as string;
     expect((await gate()).state).toBe("problems");
+    const offered = await op<{ feedback: { kind: string } | null }>(
+      HUMAN,
+      "quality_audits.chat_status",
+      { chatSessionId },
+    );
+    expect(offered.feedback?.kind).toBe("offer");
 
     // A finding that is not a problem of the audit is refused with the list.
     expect(
@@ -477,6 +515,11 @@ describe("acceptances in the chat", () => {
       }),
     ).toMatchObject({ kind: "accept", accepted: 2 });
     expect(await gate()).toMatchObject({ open: true, state: "accepted" });
+    // #685 — nothing left to fix: the offer is withdrawn.
+    const settled = await op<{ feedback: unknown }>(HUMAN, "quality_audits.chat_status", {
+      chatSessionId,
+    });
+    expect(settled.feedback).toBeNull();
 
     const acc = await op<{ acceptances: { kind: string; acceptedScore: number | null }[] }>(
       AI,
@@ -687,7 +730,7 @@ describe("a failed quality check", () => {
 });
 
 describe("2-round fix cap", () => {
-  it("after two fix rounds the AI is told to stop changing the site", async () => {
+  it("after two fix rounds the offer only asks the AI to summarise", async () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
       HUMAN,
       "chat.create_session",
@@ -698,23 +741,77 @@ describe("2-round fix cap", () => {
     );
     const branch = { ...HUMAN, chatBranchId: s.chatBranchId };
     const stubborn = fakeLighthouse(() => ({ failing: [imageAlt] }));
-    const texts: string[] = [];
+    const prompts: string[] = [];
+    const labels: string[] = [];
     for (let round = 0; round < 3; round += 1) {
       await editModule(branch, `<p>try ${round}</p>`);
       await stage(s.chatSessionId);
       await audit(stubborn);
-      const st = await op<{ audit: { fixRound: number }; feedback: { text: string } }>(
-        HUMAN,
-        "quality_audits.chat_status",
-        { chatSessionId: s.chatSessionId },
-      );
+      const st = await op<{
+        audit: { id: string; fixRound: number };
+        feedback: { kind: string; prompt: string; actionLabel: string };
+      }>(HUMAN, "quality_audits.chat_status", { chatSessionId: s.chatSessionId });
       expect(st.audit.fixRound).toBe(round);
-      texts.push(st.feedback.text);
+      expect(st.feedback.kind).toBe("offer");
+      prompts.push(st.feedback.prompt);
+      labels.push(st.feedback.actionLabel);
+      // The operator clicks the offer: the panel claims it as a fix request
+      // BEFORE the turn runs (the AI re-stages inside that turn, so the ack
+      // at its end would come too late), then sends the prompt.
+      const auditRunId = st.audit.id;
+      await op(HUMAN, "quality_audits.claim_chat_notification", {
+        auditRunId,
+        fixRequested: true,
+      });
     }
-    expect(texts[0]).toContain("Fix round 1 of 2");
-    expect(texts[1]).toContain("Fix round 2 of 2");
-    expect(texts[2]).toContain("after 2 automatic fix rounds");
-    expect(texts[2]).toContain("Do not change the site further");
+    expect(prompts[0]).toContain("Fix round 1 of 2");
+    expect(prompts[1]).toContain("Fix round 2 of 2");
+    expect(prompts[2]).toContain("left after 2 fix rounds");
+    expect(prompts[2]).toContain("Do not change the site further");
+    expect(labels).toEqual(["Fix with AI", "Fix with AI", "Summarise with AI"]);
+  });
+
+  it("a Stage after 'Not now' uses up no fix round (#685)", async () => {
+    const s = await op<{ chatSessionId: string; chatBranchId: string }>(
+      HUMAN,
+      "chat.create_session",
+      { isolation: "experiment", title: `${PFX}not-now` },
+    );
+    const branch = { ...HUMAN, chatBranchId: s.chatBranchId };
+    const stubborn = fakeLighthouse(() => ({ failing: [imageAlt] }));
+    for (let i = 0; i < 3; i += 1) {
+      await editModule(branch, `<p>operator edit ${i}</p>`);
+      await stage(s.chatSessionId);
+      await audit(stubborn);
+      const st = await op<{
+        audit: { id: string; fixRound: number };
+        feedback: { kind: string; actionLabel: string };
+      }>(HUMAN, "quality_audits.chat_status", { chatSessionId: s.chatSessionId });
+      expect(st.audit.fixRound).toBe(0);
+      expect(st.feedback).toMatchObject({ kind: "offer", actionLabel: "Fix with AI" });
+      if (i === 1) {
+        // A click whose tab closed before the turn ran: the claim (with its
+        // fix request) is left behind and its lease runs out.
+        await op(HUMAN, "quality_audits.claim_chat_notification", {
+          auditRunId: st.audit.id,
+          fixRequested: true,
+        });
+        await withSql(async (tx) => {
+          await tx`UPDATE quality_audit_runs SET chat_notify_claimed_at = now() - interval '5 minutes'
+                   WHERE id = ${st.audit.id}::uuid`;
+        });
+      }
+      // "Not now": the endpoint settles the offer with a status note (and
+      // drops any abandoned fix request).
+      expect(
+        (
+          await op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", {
+            auditRunId: st.audit.id,
+            note: { chatSessionId: s.chatSessionId, text: "Not now" },
+          })
+        ).claimed,
+      ).toBe(true);
+    }
   });
 });
 

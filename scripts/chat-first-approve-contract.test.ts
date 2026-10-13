@@ -7,7 +7,7 @@
  * The §11.A click happens on the proposal CARD in the chat. Two
  * mechanical invariants keep the whole class of flow-breaks out:
  *
- *  C1 — every /security/<domain>/pending approve/reject form action
+ *  C1 — every /settings/<domain>/pending approve/reject form action
  *       must accept the field name the chat's ProposeCard posts
  *       (`proposalId`). Queues with a native field (imports' `runId`)
  *       alias it. The import domain shipped WITHOUT this and the
@@ -15,7 +15,7 @@
  *       detour — exactly the break this test pins shut.
  *
  *  C2 — no AI-facing tool source (description, prompt, OR result
- *       content) may instruct "click Approve at /security/…/pending".
+ *       content) may instruct "click Approve at /settings/…/pending".
  *       The queue path stays mentioned as an aside ("(queue: …)")
  *       because proposal-parser.ts needs the URL in result content —
  *       but the instruction the model relays to the operator points
@@ -27,7 +27,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const REPO_ROOT = join(import.meta.dir, "..");
-const SECURITY_ROUTES = join(REPO_ROOT, "apps/admin/src/routes/(authed)/security");
+const SECURITY_ROUTES = join(REPO_ROOT, "apps/admin/src/routes/(authed)/settings");
 const AI_TOOLS = join(REPO_ROOT, "packages/admin-core/src/ai/tools");
 
 function pendingActionFiles(): string[] {
@@ -65,10 +65,10 @@ describe("C1 — pending queues accept the chat card's field name", () => {
 });
 
 describe("C2 — tool descriptions point at the card, not an admin page", () => {
-  // "Approve at /security/x/pending" as an INSTRUCTION is the smell;
-  // "(queue: /security/x/pending)" as an aside is fine, and result
+  // "Approve at /settings/x/pending" as an INSTRUCTION is the smell;
+  // "(queue: /settings/x/pending)" as an aside is fine, and result
   // CONTENT strings must keep the canonical URL for the parser.
-  const forbidden = /(click|clicks)\s+Approve\s+at\s+\/security\/[a-z-]+\/pending/i;
+  const forbidden = /(click|clicks)\s+Approve\s+at\s+\/settings\/[a-z-]+\/pending/i;
 
   for (const entry of readdirSync(AI_TOOLS)) {
     if (!entry.endsWith(".ts") || entry.endsWith(".test.ts")) continue;

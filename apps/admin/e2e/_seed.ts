@@ -111,7 +111,7 @@ export const SETUP_SCRIPT = `
 
     // Seed an active AI provider so the post-login first-run gate at
     // /(authed)/+layout.server.ts (which calls ai_providers.any_configured)
-    // doesn't redirect every test off / to /security/ai?firstRun=1. The
+    // doesn't redirect every test off / to /settings/ai?firstRun=1. The
     // encryption triplet is dummy bytea/text — the e2e suite uses the
     // in-memory test provider registered via POST /__test/providers, so
     // these bytes are never actually decrypted. All three encryption

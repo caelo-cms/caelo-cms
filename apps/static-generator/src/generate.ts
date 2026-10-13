@@ -344,7 +344,7 @@ export function assertNoPluginMarkers(
   if (found.length > 0) {
     throw new Error(
       `static-generator: ${found.length} page(s) would ship raw plugin data-list markers — ${found.join("; ")}. ` +
-        "The plugin that offers the list is not running for this build. Activate it again at /security/plugins, or remove the module that iterates the list, then publish again.",
+        "The plugin that offers the list is not running for this build. Activate it again at /settings/plugins, or remove the module that iterates the list, then publish again.",
     );
   }
 }

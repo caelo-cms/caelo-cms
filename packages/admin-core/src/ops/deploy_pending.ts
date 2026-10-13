@@ -8,9 +8,9 @@
  *   AI says "publish staging to production"
  *   → AI tool → deploy.propose_promote (AI-callable)
  *     → row at status='pending' in deploy_pending_actions
- *     → AI replies "I prepared a proposal — click Approve at /security/deployments/pending"
+ *     → AI replies "I prepared a proposal — click Approve at /settings/deployments/pending"
  *   Operator clicks Approve
- *   → /security/deployments/pending form action → deploy.execute_proposal (human-only)
+ *   → /settings/deployments/pending form action → deploy.execute_proposal (human-only)
  *     → reads the row, dispatches the underlying op (deploy.promote / .rollback)
  *     → marks row status='applied'
  *

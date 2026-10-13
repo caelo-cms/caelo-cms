@@ -11,7 +11,7 @@
 - Single AI provider: Anthropic Claude (`claude-opus-4-7`), wired via `packages/admin-core/src/ai/provider.ts`'s `AIProvider` interface. Streaming + tool-use + token usage all flow through `runChatTurn` → `recordAiCall` → `ai_calls` rows.
 - `ai_calls` carries `provider`, `model`, `input_tokens`, `output_tokens`, `cached_tokens`, `cost_estimate_microcents`, `duration_ms`, `succeeded`, `chat_session_id`, `actor_id`, **and** (post-P11.6) `plugin_id`. Cost-microcents are computed at insert time from a hardcoded per-(provider,model) pricing table inside `recordAiCall`.
 - Per-chat-session cost cap (`chat_sessions.cost_cap_microcents`) enforced in `runChatTurn` BEFORE the next provider call. Per-plugin cap (`plugins.ai_cost_cap_microcents`) op exists but the plugin-host's `ctx.ai.complete()` does NOT yet check it — that's the small implementation-finishing item P11.6 left for P16.
-- `/security/costs` route exists as a stub (P2.1 placeholder); shows nothing.
+- `/settings/costs` route exists as a stub (P2.1 placeholder); shows nothing.
 - Audit logging covers every Query API op (`audit_events` table) + every AI call (`ai_calls`). What's missing: **structured cross-service request tracing** (request_id correlation), **per-provider configuration UI** (currently single Anthropic key in Owner panel), **operation-type budgets** (text vs image), **incident-response runbook**, **telemetry/opt-out policy**.
 
 **P16 ships the things that turn Caelo from "single-provider, basic-spend-cap, blind-on-incident" into a real production-multi-provider observable system.**
@@ -112,7 +112,7 @@ Same streaming protocol as OpenAI — the OpenAI SDK already supports `baseURL` 
 -- 0048_p16_ai_providers_observability.sql
 
 -- Per-(provider, model, operation_type) pricing. Operators update via
--- /security/ai/pricing without a redeploy when providers bump rates.
+-- /settings/ai/pricing without a redeploy when providers bump rates.
 CREATE TABLE IF NOT EXISTS ai_pricing (
   provider             text NOT NULL,
   model                text NOT NULL,
@@ -215,7 +215,7 @@ Seeded `ai_pricing` rows for all three new providers (Anthropic already-seeded e
 
 Tool actorScope `human + ai`. Per-image cost lands in `ai_calls.cost_estimate_microcents` with `operation_type='image'` + `image_count=1`.
 
-### 4. Cost dashboard at `/security/costs` (real, not stub)
+### 4. Cost dashboard at `/settings/costs` (real, not stub)
 
 Five panels:
 
@@ -223,23 +223,23 @@ Five panels:
 2. **Spend over time** — stacked area chart (uses chart-svelte or a hand-rolled SVG; adds zero new deps if we extend an existing chart component). Series: text-by-provider + image-by-provider. 60-day window default; selectable 7d/30d/90d/all.
 3. **Per-provider breakdown** — table (provider, model, calls, input tok, output tok, cached tok, cost USD, % of total).
 4. **Per-actor breakdown** — table (actor display name + kind: ai/human/plugin, calls, cost USD, % of total). Click an actor row → drill-down to per-session list (re-uses the chat history surface).
-5. **Per-plugin breakdown** — table (plugin slug, calls, cost USD, cap %, last 24h, all-time). Click a plugin row → `/security/plugins/<slug>`.
+5. **Per-plugin breakdown** — table (plugin slug, calls, cost USD, cap %, last 24h, all-time). Click a plugin row → `/settings/plugins/<slug>`.
 
 Plus an **operator-action strip** at the top:
-- "Provider configurations" → `/security/ai/providers`
-- "Pricing" → `/security/ai/pricing`
-- "Budgets" → `/security/ai/budgets`
+- "Provider configurations" → `/settings/ai/providers`
+- "Pricing" → `/settings/ai/pricing`
+- "Budgets" → `/settings/ai/budgets`
 - "Export CSV" → downloads the last-90-days `ai_calls` rows as CSV (operator records).
 
-### 5. Provider configuration UI (`/security/ai/providers`)
+### 5. Provider configuration UI (`/settings/ai/providers`)
 
 Table of configured providers with: kind, display name, model, image model (if any), is_primary, last-call timestamp, last-24h spend. Actions: add (modal with provider-kind picker → form), edit, delete, set-primary. Editing the API key shows masked (`sk-…last4`) + a "rotate" affordance that prompts for the new key.
 
-### 6. Pricing UI (`/security/ai/pricing`)
+### 6. Pricing UI (`/settings/ai/pricing`)
 
 Table of (provider, model, operation_type) → microcents columns. Owner edits inline; new (provider, model, op-type) row insert form below. Effective-from defaults to `now()`; historical rows kept so cost calculations on old `ai_calls` rows stay accurate when pricing changes.
 
-### 7. Budgets UI (`/security/ai/budgets`)
+### 7. Budgets UI (`/settings/ai/budgets`)
 
 Form with the six budget rows (3 scopes × 2 op-types) — operator sets cap (USD, converted to microcents) + warn-at-pct. Below each row: current spend + percent (live, polled every 5s while page is open).
 
@@ -300,10 +300,10 @@ Lives in `docs/` so OSS contributors can submit additional entries via PR.
 Short doc, pre-launch decision:
 
 - **Default state: completely off.** Caelo phones home for nothing.
-- **Opt-in install ping** (Owner-toggleable in `/security/telemetry`): one POST per install per week with `{caelo_version, provider, anonymized_install_id}`. Used for "how widely is Caelo deployed?" stats only. No PII, no AI usage data, no error reports.
+- **Opt-in install ping** (Owner-toggleable in `/settings/telemetry`): one POST per install per week with `{caelo_version, provider, anonymized_install_id}`. Used for "how widely is Caelo deployed?" stats only. No PII, no AI usage data, no error reports.
 - **Opt-in error reporting** (separate toggle): structured-log `error`-level entries only, no payloads, no headers, no SQL. Sent to a public-facing GitHub Issues sink (operator can review the mapping at `docs/TELEMETRY.md#error-categories` before opting in).
 - **Never collected**: chat content, AI prompts, plugin data, visitor PII, any DB row.
-- **Owner UI** (`/security/telemetry`): shows what's currently sent, a toggle per category, a "test send" that prints the payload locally without actually sending.
+- **Owner UI** (`/settings/telemetry`): shows what's currently sent, a toggle per category, a "test send" that prints the payload locally without actually sending.
 - **MPL-2.0 community trust**: this doc is part of the OSS launch checklist; reviewers explicitly check the "off by default" claim against the code.
 
 ### 11. Per-plugin AI cost cap enforcement (P11.6 finishing item)
@@ -317,7 +317,7 @@ return {
 };
 ```
 
-Plugin's operation surfaces the error; Owner sees it in `/security/plugins/<slug>` + chat surface. AI tool descriptions document the failure mode.
+Plugin's operation surfaces the error; Owner sees it in `/settings/plugins/<slug>` + chat surface. AI tool descriptions document the failure mode.
 
 ### 12. Audit log enrichment
 
@@ -367,12 +367,12 @@ The dashboard's CSV export pulls from `audit_events` joined with `ai_calls` for 
 - `packages/shared/src/logger.ts` — `makeLogger`, `LogContext`, redaction pass.
 
 **New (admin UI):**
-- `apps/admin/src/routes/(authed)/security/costs/+page.{svelte,server}.ts` — five-panel dashboard (replaces stub).
-- `apps/admin/src/routes/(authed)/security/ai/providers/+page.{svelte,server}.ts` — provider list + add/edit/delete/set-primary.
-- `apps/admin/src/routes/(authed)/security/ai/pricing/+page.{svelte,server}.ts` — pricing table.
-- `apps/admin/src/routes/(authed)/security/ai/budgets/+page.{svelte,server}.ts` — budgets form + live spend.
-- `apps/admin/src/routes/(authed)/security/telemetry/+page.{svelte,server}.ts` — opt-in toggles + payload preview.
-- `apps/admin/src/routes/(authed)/security/+page.svelte` — add tiles for AI providers / pricing / budgets / telemetry.
+- `apps/admin/src/routes/(authed)/settings/costs/+page.{svelte,server}.ts` — five-panel dashboard (replaces stub).
+- `apps/admin/src/routes/(authed)/settings/ai/providers/+page.{svelte,server}.ts` — provider list + add/edit/delete/set-primary.
+- `apps/admin/src/routes/(authed)/settings/ai/pricing/+page.{svelte,server}.ts` — pricing table.
+- `apps/admin/src/routes/(authed)/settings/ai/budgets/+page.{svelte,server}.ts` — budgets form + live spend.
+- `apps/admin/src/routes/(authed)/settings/telemetry/+page.{svelte,server}.ts` — opt-in toggles + payload preview.
+- `apps/admin/src/routes/(authed)/settings/+page.svelte` — add tiles for AI providers / pricing / budgets / telemetry.
 
 **New (docs):**
 - `docs/incident-response.md` — operator runbook.
@@ -398,17 +398,17 @@ The dashboard's CSV export pulls from `audit_events` joined with `ai_calls` for 
 End-to-end after the PR lands:
 
 1. **`bun run typecheck && bun test && bun run lint && bun run license:check`** — clean. New deps `openai`, `@google/generative-ai` confirmed Apache-2.0/MIT.
-2. **Provider-switch round-trip**: Owner adds OpenAI provider config in `/security/ai/providers`, sets primary, asks the editor chat to "make the hero blue" → AI uses OpenAI under the hood; provider brand never surfaces in editor chat (CLAUDE.md §2 invariant); `ai_calls` row carries `provider='openai'`, `model='gpt-4o'`.
+2. **Provider-switch round-trip**: Owner adds OpenAI provider config in `/settings/ai/providers`, sets primary, asks the editor chat to "make the hero blue" → AI uses OpenAI under the hood; provider brand never surfaces in editor chat (CLAUDE.md §2 invariant); `ai_calls` row carries `provider='openai'`, `model='gpt-4o'`.
 3. **Three new providers all stream + tool-use**: smoke-test with each (Anthropic / OpenAI / Gemini / OpenAI-compatible against local Ollama). Each round-trips a one-tool conversation (`set_page_title`) end-to-end.
 4. **Image generation end-to-end**: AI calls `generate_image({prompt: "blueprint of a sunset"})` → DALL·E returns a URL → media.upload_object pulls bytes → returns mediaId → AI uses in `add_module_to_page`. `ai_calls` row has `operation_type='image'`, `image_count=1`, cost matches pricing table.
 5. **Budgets enforce independently**: set image cap to $0.05/day → run two `generate_image` calls → second one returns structured `ImageBudgetExceeded` error → text generation continues working in the SAME chat session.
 6. **Per-plugin cap enforces (P11.6 finish)**: set translation plugin's `ai_cost_cap_microcents = 100`, run a Mode-1 translation that would exceed it → second invocation returns `PluginAiCapExceeded` error visible in the translation dashboard.
-7. **Cost dashboard accuracy**: trigger 5 chat sessions across 3 providers + 1 image gen; `/security/costs` totals match SUM(`cost_estimate_microcents`) per group; CSV export has every row.
+7. **Cost dashboard accuracy**: trigger 5 chat sessions across 3 providers + 1 image gen; `/settings/costs` totals match SUM(`cost_estimate_microcents`) per group; CSV export has every row.
 8. **Pricing change doesn't backdate**: bump anthropic claude-opus-4-7 input price → existing `ai_calls` rows unchanged in cost; new call uses new pricing.
 9. **Structured logs correlate**: tail admin + gateway + orchestrator stderr; trigger one editor chat that AI-edits a module + triggers a deploy; grep stderr by request_id → see the whole chain (admin login + chat-runner + provider call + recordAuditEvent + plugin tool dispatch + redeploy orchestrator tick that fires deploy.trigger). Same request_id lands in `audit_events.request_id` for the same rows.
 10. **Logger redaction**: write a log entry with `{password: "secret123"}` extra → output replaces value with `***`. Test asserts.
 11. **Incident-response runbook smoke**: an operator follows `docs/incident-response.md` triage tree for a fake "admin returns 500" incident; queries surface the right rows in <2 min.
-12. **Telemetry off-by-default**: fresh install → `/security/telemetry` shows all toggles off + a "0 events sent" counter; toggling install-ping on + clicking "test send" prints the payload locally without an outbound HTTP call (real send only when toggled on AND in production).
+12. **Telemetry off-by-default**: fresh install → `/settings/telemetry` shows all toggles off + a "0 events sent" counter; toggling install-ping on + clicking "test send" prints the payload locally without an outbound HTTP call (real send only when toggled on AND in production).
 
 ---
 
@@ -463,7 +463,7 @@ End-to-end after the PR lands:
 2. `request_id` propagation in admin / gateway / orchestrator / plugin-host / static-gen (~2 hr).
 3. `audit_events` + `ai_calls` schema extension for request_id + AI provenance (already in 0048).
 4. `docs/incident-response.md` + `docs/TELEMETRY.md` (~1.5 hr).
-5. Telemetry UI at `/security/telemetry` with toggles + test-send (~30 min).
+5. Telemetry UI at `/settings/telemetry` with toggles + test-send (~30 min).
 
 ---
 

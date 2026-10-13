@@ -37,6 +37,7 @@ import type { DraftPagesSummary } from "../deploy/draft-pages.js";
 import type { AffectedChat } from "../draft.js";
 import { STAGE_CHANGED_PREFIX } from "../ops/chat/publish.js";
 import { kickQualityAuditWorker } from "../quality/audit-worker.js";
+import type { StagedBy } from "../quality/chat-feedback.js";
 
 /** Registry + adapter the flow executes ops through. */
 export interface StageFlowDeps {
@@ -144,6 +145,8 @@ export async function enqueueStagingAudit(
     readonly branch: ChatStageClassification | null;
     /** Pages staged on purpose outside a chat (audited after the homepage). */
     readonly pageIds?: readonly string[];
+    /** #685 — who staged a chat's build; omitted outside a chat. */
+    readonly stagedBy?: StagedBy;
   },
 ): Promise<void> {
   const { adapter, registry } = deps;
@@ -162,6 +165,7 @@ export async function enqueueStagingAudit(
       chatSessionId: args.chatSessionId,
       branch: args.branch,
       pageIds: args.pageIds ?? [],
+      stagedBy: args.chatSessionId !== null ? (args.stagedBy ?? null) : null,
     });
     if (!r.ok) {
       console.error("[quality-audit] enqueue failed — this staging run has no audit", {
@@ -209,13 +213,16 @@ export async function stageChatSessions(
   chatSessionIds: readonly string[],
   options: {
     /**
-     * The AI initiated this Stage (stage_changes runs it with the
-     * operator's context): the merges open the production hold.
+     * Who started this Stage (#685; default: the operator). Anything but
+     * "operator" is an AI's stage_changes (run with the operator's
+     * context): the merges open the production hold, and the audit's
+     * fix request tells the AI who staged.
      */
-    readonly aiInitiated?: boolean;
+    readonly stagedBy?: StagedBy;
   } = {},
 ): Promise<{ ok: true; value: StagedChats } | { ok: false; error: StageFailure }> {
   const { adapter, registry } = deps;
+  const stagedBy = options.stagedBy ?? "operator";
   const ids = [...new Set(chatSessionIds)];
   if (ids.length === 0) {
     throw new Error("stageChatSessions: no chat selected — the caller must pass at least one");
@@ -302,7 +309,7 @@ export async function stageChatSessions(
     const { unit } = entry;
     let attempt = 1;
     for (;;) {
-      const aiFlag = options.aiInitiated ? { aiInitiated: true } : {};
+      const aiFlag = stagedBy !== "operator" ? { aiInitiated: true } : {};
       const r = unit.draft
         ? await execute(registry, adapter, ctx, "chat.merge_draft_to_main", {
             chatSessionIds: unit.chatSessionIds,
@@ -431,6 +438,7 @@ export async function stageChatSessions(
     targetName: summary.targetName,
     chatSessionId: feedbackChat,
     branch: combineStageClassifications(classified.map((c) => c.value)),
+    stagedBy,
   });
 
   return {

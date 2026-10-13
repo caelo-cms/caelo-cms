@@ -50,7 +50,7 @@ done
 pulumi up
 
 # Sync outputs into cms_admin.provisioning_outputs so the admin's
-# /security/dns page surfaces the required DNS records.
+# /settings/dns page surfaces the required DNS records.
 CAELO_INTERNAL_SECRET=$(gcloud secrets versions access latest \
     --secret=caelo-production-internal-secret --project=$PROJECT) \
   CAELO_ADMIN_URL=https://admin.example.com \

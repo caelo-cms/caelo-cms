@@ -8,7 +8,7 @@
  *  - actorScope: ["human", "ai", "system"] but the handler restricts
  *    AI callers to rows where proposed_by = ctx.actorId. Human callers
  *    can cancel any of their own proposals. (Reject-on-behalf-of-others
- *    is the operator's existing /security/<domain>/pending Reject button.)
+ *    is the operator's existing /settings/<domain>/pending Reject button.)
  *  - Sets status='cancelled' (added to the CHECK in v0.2.35) on the
  *    matching row in whichever *_pending_actions table holds the id.
  *  - Idempotent: cancelling an already-applied/rejected/cancelled row

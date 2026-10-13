@@ -76,7 +76,7 @@ type AcceptInput = z.infer<typeof proposeAcceptInput>;
 export const acceptQualityFindingsTool = makeProposeTool<AcceptInput>({
   toolName: "accept_quality_findings",
   opName: "quality_audits.propose_accept",
-  pendingQueuePath: "/security/pending",
+  pendingQueuePath: "/settings/quality/pending",
   // #667 — mirrors publish_despite_failed_audit: the operator's explicit
   // wish, never the AI's recommendation. The dogfood run that started #667
   // had the AI argue "I'd accept all four" (two of them Caelo bugs) and
@@ -98,7 +98,7 @@ type PublishAnywayInput = z.infer<typeof proposePublishAnywayInput>;
 export const publishDespiteFailedAuditTool = makeProposeTool<PublishAnywayInput>({
   toolName: "publish_despite_failed_audit",
   opName: "quality_audits.propose_publish_anyway",
-  pendingQueuePath: "/security/pending",
+  pendingQueuePath: "/settings/quality/pending",
   when:
     "Only when the editor explicitly wants to publish although the quality check FAILED to run (no result — not when it found problems): publishes the staged build live and records the editor's reason. " +
     "Try retry_quality_audit first. Take auditRunId from get_publish_gate.",

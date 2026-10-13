@@ -7,7 +7,7 @@
  *  1. AI calls `<domain>.propose_<action>(input)` — returns a
  *     `{proposalId, preview}` result.
  *  2. Tool tells the AI: "Queued — the operator approves on the chat's
- *     /security/<domain>/pending."
+ *     /settings/<domain>/pending."
  *
  * Each per-domain tool wrapper used to be ~50 LOC of boilerplate; this
  * factory collapses it to ~10 LOC. The factory enforces:

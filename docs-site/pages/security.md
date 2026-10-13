@@ -46,7 +46,7 @@ Out of scope (please report upstream):
 - Issues that require physical access to the host or shell access to the database
 - Issues that depend on already-compromised credentials ("if I have your `ANTHROPIC_API_KEY`, I can…")
 - Self-XSS in the Owner's own browser context — the Owner is trusted; raw HTML in modules is by design
-- DoS via expensive AI prompts — use the per-token + per-budget caps at `/security/ai/budgets`
+- DoS via expensive AI prompts — use the per-token + per-budget caps at `/settings/ai/budgets`
 
 ## What we promise reporters
 
@@ -61,7 +61,7 @@ Three places. Issues with any of them are critical-severity:
 
 - **Shipped-plugin manifest signatures** — Ed25519 over the manifest JSON, proving the installed artifact is the released one (evidence shown at approval; it grants no capability). Public key embedded in the host build; rotated on major version bumps.
 - **Internal API tokens + cookie/CSRF/HMAC secrets** — minted at install via `bunx @caelo-cms/provisioning`; stored in the platform's secrets manager.
-- **MCP token bearer hashes** — sha256 at rest; the plaintext bearer is shown ONCE at mint time on `/security/mcp`.
+- **MCP token bearer hashes** — sha256 at rest; the plaintext bearer is shown ONCE at mint time on `/settings/mcp`.
 
 Implementation: `packages/plugin-sandbox/src/manifest.ts`, `apps/admin/src/lib/server/csrf.ts`, `packages/admin-core/src/ops/security/mcp_tokens.ts`.
 
@@ -70,7 +70,7 @@ Implementation: `packages/plugin-sandbox/src/manifest.ts`, `apps/admin/src/lib/s
 The incident-response runbook is in [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md). Read **§G secret-leak playbook** before you need it. The 5-step rotation flow:
 
 1. Rotate at the source FIRST (provider key / OAuth secret / DB password / etc.)
-2. Audit access during the leak window via `/security/audit/[requestId]`
+2. Audit access during the leak window via `/settings/audit/[requestId]`
 3. Scrub from git history if committed (use `git-filter-repo`, not the deprecated `filter-branch`)
 4. Document in postmortem (template at the bottom of `incident-response.md`)
 5. Add a detection rule (e.g. `gitleaks` pre-commit hook)

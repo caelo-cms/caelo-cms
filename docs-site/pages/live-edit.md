@@ -90,13 +90,14 @@ A chat with unstaged changes in the shared draft cannot be archived: stage or di
 
 - The answer in progress ends after the step it is on. No further edits, Stage or snapshot follow, and the chat marks where it stopped.
 - Helpers the AI started for the task (subagents) stop too, and so do messages that were waiting their turn.
-- Nothing starts the AI again by itself. Quality-check fix rounds, finished-crawl notices and follow-ups that were waiting to be sent are not sent. The chat shows them as notes instead. The AI continues when you write your next message.
+- Nothing starts the AI again by itself. Finished-crawl notices and follow-ups that were waiting to be sent are not sent. The chat shows them as notes instead. The AI continues when you write your next message.
+- **Quality-check problems always ask first** — with or without Stop. After a Stage, problems appear as a card: *Let the AI fix them?* Only **Fix with AI** starts the AI (it counts as your own message, so it also works after Stop); **Not now** leaves everything as it is. See [Quality gate](/quality-gate).
 - **Answering the AI's own question continues it.** If the AI asked you to approve something (an approval card in the chat, or a proposal in the **Pending your approval** strip), clicking **Approve** or **Reject** after Stop continues that AI's work with your answer. This is the only thing besides your own message that restarts it. The card stays in the chat after a reload.
 - **Approving an external agent's request never starts the AI.** A request marked **Requested by the external agent (MCP)** belongs to an external agent connected over [MCP](/mcp). Your click applies or rejects it and the result goes back to that agent; the chat shows a short note saying so. Caelo's AI in this chat does not start and does not act on the note, whether or not you pressed Stop.
 
 The **Agents running** bar above the message box lists everything working in this chat: Caelo's AI (including a turn started in another tab), its helpers, and an external agent connected over [MCP](/mcp). Each entry has its own **Stop**. Outside Live Edit, the **agents running** indicator in the admin header lists the agents across all your chats.
 
-One agent works in a chat at a time. While an external agent is working in the chat, a message you send is not passed to Caelo's AI. The chat says why, and you can stop the external agent in the bar. A stopped external agent stays blocked in this chat until you click **Allow again**.
+One agent works in a chat at a time. While an external agent is working in the chat, a message you send — or a click on **Fix with AI** — is not passed to Caelo's AI. The chat says why, and you can stop the external agent in the bar. A stopped external agent stays blocked in this chat until you click **Allow again**.
 
 To undo what an agent already changed before you stopped it, ask the AI to undo this chat (see *Undo a chat* below), or discard the chat's unstaged changes under **Content → Open changes**. Changes an external agent made in this chat belong to this chat, so both cover them too.
 
@@ -108,7 +109,7 @@ The same chat-runner is reachable via [MCP](/mcp). `caelo_chat` from your IDE dr
 
 - **The AI loses context across "+ New chat"** — start a fresh chat for a fresh task; the page-context block re-populates
 - **The undo button is the chat history** — click any prior message to revert to that snapshot
-- **Site memory shapes the AI's voice** — `/security/ai/memory` carries Owner-curated brand voice, banned phrases, recurring instructions. The AI reads these on every turn.
+- **Site memory shapes the AI's voice** — `/settings/ai/memory` carries Owner-curated brand voice, banned phrases, recurring instructions. The AI reads these on every turn.
 - **Skills steer behaviour per-task** — engaged skills are listed in the overlay's bottom strip; click to disengage one for the current chat. The matcher restores defaults on a new chat.
 
 ## Next

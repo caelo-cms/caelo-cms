@@ -38,7 +38,7 @@ const NO_CHAT =
  * the operator (`created_by`), and the session/stage/undo ops are scoped to
  * the chat's owner — under the AI actor they would find no chat at all
  * (the browser chat's AI actor is not the chat's creator). The Stage still
- * counts as the AI's: stage_changes passes `aiInitiated`, which opens the
+ * counts as the AI's: stage_changes passes `stagedBy` (an AI origin), which opens the
  * production hold.
  */
 function operatorCtx(
@@ -98,7 +98,10 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
       { registry: toolCtx.registry, adapter: toolCtx.adapter },
       opCtx,
       ids,
-      { aiInitiated: true },
+      // #685 — the chat's fix request says who staged: the Live Edit AI
+      // (an operator browser consumes this turn) or another agent (an
+      // external MCP agent, or a subagent, which never gets that flag).
+      { stagedBy: toolCtx.operatorBrowserAttached === true ? "live_edit_ai" : "other_agent" },
     );
     if (!staged.ok)
       return { ok: false, content: `Stage failed (${staged.error.step}): ${staged.error.message}` };
@@ -130,7 +133,7 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
       content:
         `Staged ${v.mergedEntityCount} change(s) to staging (run ${v.runId}, ${v.pageCount} page(s)).${preview}${also}${links}${drafts} ` +
         (toolCtx.operatorBrowserAttached === true
-          ? "The quality check now runs on staging (1–2 minutes); its result arrives in this chat as a message with the next step — do NOT poll get_quality_audit / get_publish_gate, finish your turn with your summary. "
+          ? "The quality check now runs on staging (1–2 minutes); its result appears in this chat, and when it finds problems the operator is asked whether you should fix them — do NOT poll get_quality_audit / get_publish_gate, finish your turn with your summary. "
           : "The quality check now runs on staging (1–2 minutes); read it with get_quality_audit after a couple of minutes. ") +
         "Publish live is the operator's click (it never happens automatically after a Stage you made); do not say the change is live.",
       value: v,

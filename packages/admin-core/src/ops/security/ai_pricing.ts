@@ -174,7 +174,7 @@ function keepUnlessGiven(value: unknown, existing: SQL, incoming: SQL): SQL {
 
 export const setAiPricingOp = defineOperation({
   name: "ai_pricing.set",
-  // Why human-only: the direct write is the Owner's /security/ai/pricing
+  // Why human-only: the direct write is the Owner's /settings/ai/pricing
   // form. A rate decides what every AI call is billed at and whether the
   // budget gates trip, so the AI reaches it only through the §11.A gate
   // (`owner_settings.propose_set_ai_pricing` → the operator's Approve →

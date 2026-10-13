@@ -337,7 +337,7 @@ export async function handleStagingRequest(
     return gatePage(
       403,
       "This is a protected staging site",
-      "It shows unpublished changes. Open it from the Caelo admin (Open staging); crawlers and tools use the access configured under Security → Staging access.",
+      "It shows unpublished changes. Open it from the Caelo admin (Open staging); crawlers and tools use the access configured under Settings → Staging access.",
     );
   }
   if (state.originUrl === null) {

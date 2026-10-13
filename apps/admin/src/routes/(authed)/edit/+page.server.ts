@@ -202,7 +202,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     // v0.2.56 — was a silent 303 redirect to /content/chat (matching
     // the user's "clicking on live edit gets me to chat" report).
     // Replaced with a 500 that names the symptom + points the
-    // operator at /security/audit. Cloud Run stderr now has a
+    // operator at /settings/audit. Cloud Run stderr now has a
     // breadcrumb naming the failing op above.
     console.error("[edit] no active chat available — could not load OR create one", {
       sessionsLoaded: sessionsR.ok,
@@ -212,7 +212,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     });
     throw error(
       500,
-      "Could not start a live-edit session — the chat ops returned no usable row. Check Cloud Run logs for `[edit]` stderr lines, or visit /security/audit.",
+      "Could not start a live-edit session — the chat ops returned no usable row. Check Cloud Run logs for `[edit]` stderr lines, or visit /settings/audit.",
     );
   }
 

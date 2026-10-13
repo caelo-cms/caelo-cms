@@ -24,6 +24,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { stagedBySchema } from "../../quality/chat-feedback.js";
 import { withInstallRules } from "../../quality/classify.js";
 import { decideGate } from "../../quality/gate.js";
 import { pageMeasurementSchema } from "../../quality/lighthouse-protocol.js";
@@ -84,25 +85,29 @@ async function previousStagingAudit(
 
 /**
  * The fix round of a chat's next audit (#553 2-round cap): one more than
- * the chat's previous audit when that one left problems open (the Stage
- * being audited is the AI's fix attempt), carried over unchanged across
- * failed or superseded audits (nothing was measured), and 0 after a clean
- * one — including problems an editor has since accepted in full. Stages
- * outside a chat have no fix loop: always 0.
+ * the chat's previous audit when that one left problems open AND the
+ * operator asked the AI to fix them (#685: "Fix with AI" — the Stage being
+ * audited is the AI's fix attempt); unchanged when they did not (a Stage
+ * after "Not now" uses up no round), carried over unchanged across failed
+ * or superseded audits (nothing was measured), and 0 after a clean one —
+ * including problems an editor has since accepted in full. Stages outside
+ * a chat have no fix loop: always 0.
  */
 async function nextFixRound(tx: Tx, chatSessionId: string | null): Promise<number> {
   if (chatSessionId === null) return 0;
   const rows = (await tx.execute(sql`
-    SELECT id::text AS id, status, fix_round FROM quality_audit_runs
+    SELECT id::text AS id, status, fix_round, fix_requested_at IS NOT NULL AS fix_requested
+    FROM quality_audit_runs
     WHERE chat_session_id = ${chatSessionId}::uuid
     ORDER BY created_at DESC LIMIT 1
-  `)) as unknown as { id: string; status: string; fix_round: number }[];
+  `)) as unknown as { id: string; status: string; fix_round: number; fix_requested: boolean }[];
   const prev = rows[0];
   if (!prev) return 0;
   if (prev.status === "problems") {
     const audit = await loadGateAuditById(tx, prev.id);
     const acceptances = await loadAcceptances(tx, audit?.pages.map((p) => p.pageId) ?? []);
-    return decideGate(audit, acceptances).open ? 0 : prev.fix_round + 1;
+    if (decideGate(audit, acceptances).open) return 0;
+    return prev.fix_requested ? prev.fix_round + 1 : prev.fix_round;
   }
   if (prev.status === "passed" || prev.status === "skipped") return 0;
   return prev.fix_round;
@@ -138,6 +143,9 @@ export const enqueueAuditOp = defineOperation({
       /** Queued by the automatic redeploy: publish when the audit's gate
        *  is open (quality_audits.settle_auto_publish). Chat-less only. */
       autoPublish: z.boolean().default(false),
+      /** #685 — who staged the build of a chat Stage; the chat's fix
+       *  request tells the AI. Chat Stages only. */
+      stagedBy: stagedBySchema.nullable().default(null),
     })
     .strict()
     .refine((v) => (v.chatSessionId === null) === (v.branch === null), {
@@ -145,6 +153,9 @@ export const enqueueAuditOp = defineOperation({
     })
     .refine((v) => !v.autoPublish || v.chatSessionId === null, {
       message: "autoPublish is for the automatic redeploy, which has no chat",
+    })
+    .refine((v) => v.stagedBy === null || v.chatSessionId !== null, {
+      message: "stagedBy describes a chat Stage — pass it only with a chatSessionId",
     }),
   output: z.object({
     auditRunId: z.string(),
@@ -239,7 +250,7 @@ export const enqueueAuditOp = defineOperation({
     const inserted = (await tx.execute(sql`
       INSERT INTO quality_audit_runs
         (deploy_run_id, chat_session_id, requested_by, status, classification,
-         target_page_ids, performance_runs, finished_at, fix_round, auto_publish)
+         target_page_ids, performance_runs, finished_at, fix_round, auto_publish, staged_by)
       VALUES (
         ${input.deployRunId}::uuid,
         ${input.chatSessionId}::uuid,
@@ -250,7 +261,8 @@ export const enqueueAuditOp = defineOperation({
         ${PERFORMANCE_RUNS},
         ${status === "skipped" ? sql`now()` : sql`NULL`},
         ${fixRound},
-        ${input.autoPublish}
+        ${input.autoPublish},
+        ${input.stagedBy}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];

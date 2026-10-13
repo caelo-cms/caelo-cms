@@ -15,7 +15,7 @@
  *  11. Pulumi up via the Automation SDK; streams progress, then deletes
  *      the firewall rules GCP pre-populates on the default network
  *  12. Prints DNS records + bootstrap URL + a note pointing the
- *      operator at /security/ai for AI provider key configuration
+ *      operator at /settings/ai for AI provider key configuration
  *      (the runtime path; pre-v0.3.2 there was a wizard prompt for
  *      the Anthropic key but it landed in Secret Manager + never
  *      reached the running admin — dead code, dropped).
@@ -152,7 +152,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
 
   // === 7. Pulumi passphrase ===
   // v0.3.2 — removed the legacy `stepAnthropicKey` prompt. The
-  // runtime AI provider configuration lives at /security/ai (the
+  // runtime AI provider configuration lives at /settings/ai (the
   // key is encrypted under the project KEK and stored in
   // ai_providers). Pre-v0.3.2 the wizard captured a key + stored
   // it in Secret Manager but the Cloud Run service never read it,
@@ -1451,9 +1451,9 @@ async function stepFinalize(installId: string): Promise<void> {
       bold("Next steps:"),
       `  1. Owner setup — open in your browser (sign in with ${meta.ownerEmail}):`,
       `     ${cyan(String(bootstrapUrl))}`,
-      `  2. AI provider — visit ${cyan(`${adminBase}/security/ai`)} and paste your Anthropic API key`,
+      `  2. AI provider — visit ${cyan(`${adminBase}/settings/ai`)} and paste your Anthropic API key`,
       `     (encrypted under the project KEK and stored in the database, no env vars).`,
-      `  3. Optional: connect Claude Code or another MCP client — at ${cyan(`${adminBase}/security/mcp`)}`,
+      `  3. Optional: connect Claude Code or another MCP client — at ${cyan(`${adminBase}/settings/mcp`)}`,
       `     click ${bold("New token")} (scope ${bold("chat")}: Caelo's AI does the work; ${bold("admin")}: your agent drives Caelo's tools),`,
       "     copy the bearer (shown once) and run the `claude mcp add` command the page shows.",
       "     The admin is behind Google IAP, so run `gcloud auth application-default login` once on that machine.",

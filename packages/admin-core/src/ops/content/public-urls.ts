@@ -64,7 +64,7 @@ export const resolvePublicUrlsOp = defineOperation({
           "The site base URL is not configured, so page URLs (canonical, hreflang, language " +
           "links) cannot be built. Next step: the AI sets it with propose_set_site_seo(" +
           '{siteBaseUrl: "https://<public domain>"}) (Owner-approved), or a human sets it ' +
-          "under Security → SEO in the admin.",
+          "under Settings → SEO in the admin.",
       });
     }
     const idList = sql.join(

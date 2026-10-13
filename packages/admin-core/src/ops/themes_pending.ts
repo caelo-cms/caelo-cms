@@ -368,7 +368,7 @@ const executeThemeProposalOpDefinition = defineOperation({
           operation: "themes.execute_proposal",
           message:
             "this create proposal predates the AI-composed theme contract (issue #112) — it has no " +
-            "tokens document and/or no description. Reject it at /security/themes/pending and " +
+            "tokens document and/or no description. Reject it at /settings/themes/pending and " +
             "re-propose via themes.propose_create.",
         });
       }

@@ -14,7 +14,7 @@
  * read-only database role and makes the two IAM bindings hold exactly that
  * (gcp-job-trigger.ts explains the trust boundary). The admin only starts
  * the job — {@link syncOperatorAccess}, called after an approved user or role
- * change (gated-tool `afterApply`, the /security/users and /security/roles
+ * change (gated-tool `afterApply`, the /settings/users and /settings/roles
  * form actions) and by the "Re-sync" button — and records the outcome in the
  * audit log. A cloud schedule also runs it hourly, so a missed or failed run
  * heals on its own.
@@ -218,7 +218,7 @@ export async function syncOperatorAccess(
 
 /**
  * The latest run of the sync job (the hourly schedule's or the admin's), for
- * the /security/users status line; `null` on installs without IAP.
+ * the /settings/users status line; `null` on installs without IAP.
  */
 export async function latestOperatorAccessRun(): Promise<
   | { status: "ok"; target: string; run: Awaited<ReturnType<OperatorAccessTrigger["latest"]>> }
@@ -241,7 +241,7 @@ export async function latestOperatorAccessRun(): Promise<
 /**
  * One operator-facing sentence for a sync result, or `null` when there is
  * nothing to say (not applicable). Shared by the chat tool result and the
- * /security/users form actions so both read the same.
+ * /settings/users form actions so both read the same.
  */
 export function describeOperatorAccessSync(sync: OperatorAccessSync): string | null {
   switch (sync.status) {
@@ -250,7 +250,7 @@ export function describeOperatorAccessSync(sync: OperatorAccessSync): string | n
     case "synced":
       return `${sync.target}: up to date with the user list.`;
     case "running":
-      return `${sync.target}: the sync is still running (execution ${sync.execution}); it finishes on its own — /security/users shows the result.`;
+      return `${sync.target}: the sync is still running (execution ${sync.execution}); it finishes on its own — /settings/users shows the result.`;
     case "failed":
       return `The user change was saved, but ${sync.target} could NOT be updated: ${sync.error} Next step: ${sync.nextStep}`;
   }

@@ -140,7 +140,7 @@ export async function resolveStagingOrigin(
       return {
         ok: false,
         code: "staging-unresolvable",
-        message: `staged build ${run.deployRunId} recorded no staging host, so the audit cannot name the staging site it checked — set the staging host under Security → Domains (or run \`cms-provision upgrade\`) and Stage again`,
+        message: `staged build ${run.deployRunId} recorded no staging host, so the audit cannot name the staging site it checked — set the staging host under Settings → Domains (or run \`cms-provision upgrade\`) and Stage again`,
       };
     }
     return { ok: true, baseUrl: run.previewUrl, displayBaseUrl: run.siteUrl };

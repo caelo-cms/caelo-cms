@@ -174,7 +174,7 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
   });
   writeFileSync(COMPOSE_PATH, compose);
   // Seed the install with the operator's primary domain plus a staging
-  // sibling. Extra domains added via /security/domains are appended by
+  // sibling. Extra domains added via /settings/domains are appended by
   // regenerate-caddy when it queries the live domains table.
   const baseDomains: CaddyDomainSpec[] = [
     { hostname: cfg.domain, kind: "admin", env: "production" },
@@ -488,7 +488,7 @@ async function status(): Promise<void> {
   if (provider !== "self-hosted") {
     console.log(`Stack dir:        packages/provisioning/stacks/${provider}`);
     console.log(`State + outputs:  pulumi stack output (run from the stack dir)`);
-    console.log(`Cert + DNS:       visit /security/dns in the admin`);
+    console.log(`Cert + DNS:       visit /settings/dns in the admin`);
     return;
   }
   const cfg = loadConfig();
@@ -500,7 +500,7 @@ async function status(): Promise<void> {
   console.log(`Owner email:   ${cfg.ownerEmail}`);
   console.log(`Config path:   ${CONFIG_PATH}`);
   console.log("Container health: run `docker compose -f .caelo/docker-compose.yml ps`");
-  console.log("Cert status:      visit /security/domains in the admin");
+  console.log("Cert status:      visit /settings/domains in the admin");
 }
 
 async function backup(): Promise<void> {
@@ -692,7 +692,7 @@ const cmd = process.argv[2];
  * P15 — `pulumi-output-sync`. Reads `pulumi stack output --json` from
  * the active stack (cwd or --stack-dir), writes the rendered outputs
  * into cms_admin.provisioning_outputs via the local `psql` shell-out.
- * Run after every `pulumi up` so the admin's /security/dns page picks
+ * Run after every `pulumi up` so the admin's /settings/dns page picks
  * up the latest snapshot.
  *
  * Self-hosted installs auto-skip — there's nothing useful to sync since
@@ -875,9 +875,6 @@ async function stagingDomain(): Promise<void> {
   await domainMappingCommand("staging");
 }
 
-/** A bare host name, as `staging_access.staging_host` stores it (migration 0251). */
-const STAGING_HOST_SHAPE = /^[a-z0-9.-]{4,253}$/;
-
 async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
   const command = `${kind}-domain`;
   const sub = process.argv[3];
@@ -887,8 +884,14 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     );
     process.exit(2);
   }
-  const { installFlag, installStagingHost, listInstalls, selectInstall, writeMetadata } =
-    await import("./install-state.js");
+  const {
+    installFlag,
+    installStagingHost,
+    listInstalls,
+    recordableStagingHost,
+    selectInstall,
+    writeMetadata,
+  } = await import("./install-state.js");
   const { enableAdminDomain, enableStagingDomain } = await import("./admin-domain.js");
   // Guessing among several installs could map the domain in the wrong project.
   const selected = selectInstall(
@@ -911,7 +914,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     // #678 — the admin's stored host is the truth; `--staging-domain` is the
     // operator's explicit change of it. Without the flag a gcp-firebase
     // install maps the host the admin actually renders (and records it in
-    // install.json), so a host changed under Security → Domains is never
+    // install.json), so a host changed under Settings → Domains is never
     // undone here. Validated either way: the recorded/default host may
     // predate a check (e.g. a long default a Cloud Run mapping refuses).
     const requested = arg("staging-domain");
@@ -950,12 +953,13 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     if (requested) retry = domainEnableRetryCommand(command, recorded);
     // The host may come from the admin's answer (inspect): only a bare host
     // name — already checked by stagingHostProblem above — reaches
-    // install.json (the same shape the database column enforces).
-    if (!STAGING_HOST_SHAPE.test(recorded)) {
+    // install.json, and only the value the allow-list hands back is written.
+    const stagingDomain = recordableStagingHost(recorded);
+    if (stagingDomain === null) {
       console.error(`${command}: refusing to record staging host ${JSON.stringify(recorded)}.`);
       process.exit(1);
     }
-    meta = { ...meta, stagingDomain: STAGING_HOST_SHAPE.exec(recorded)?.[0] ?? "" };
+    meta = { ...meta, stagingDomain };
     writeMetadata(meta.installId, meta);
   }
   if (!meta.projectId) process.exit(1);

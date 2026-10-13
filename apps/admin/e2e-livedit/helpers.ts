@@ -310,7 +310,7 @@ export async function loginAsDevOwner(page: Page): Promise<void> {
  */
 /**
  * Activate a shipped plugin as the Owner would, through the real
- * /security/plugins screen.
+ * /settings/plugins screen.
  *
  * A discovered plugin is recorded but NOT loaded — no tools, no skills,
  * no ops — until this click. Driving the actual UI rather than poking
@@ -319,7 +319,7 @@ export async function loginAsDevOwner(page: Page): Promise<void> {
  * the path that has to keep working.
  */
 export async function activatePluginAsOwner(page: Page, slug: string): Promise<void> {
-  await page.goto("/security/plugins");
+  await page.goto("/settings/plugins");
   // The suite's plugin guard (fixtures.ts) disables what a scenario
   // activated, so a retry — or a warm local DB — finds the plugin
   // `disabled`, which takes the Re-enable button, not Activate.
@@ -349,17 +349,17 @@ export async function activatePluginAsOwner(page: Page, slug: string): Promise<v
 
 /**
  * Switch a plugin off the way an Owner does (the Disable button on
- * /security/plugins). Goes through the admin on purpose: the `plugins.disable`
+ * /settings/plugins). Goes through the admin on purpose: the `plugins.disable`
  * op also flips the running plugin host's flag, so its tools, skills, head
  * injection and module deferrals stop at once — a DB-only status update
  * would leave the live host injecting the plugin into every render.
  * Logs in first when the page's session is gone.
  */
 export async function deactivatePluginAsOwner(page: Page, slug: string): Promise<void> {
-  await page.goto("/security/plugins");
+  await page.goto("/settings/plugins");
   if (new URL(page.url()).pathname.startsWith("/login")) {
     await loginAsDevOwner(page);
-    await page.goto("/security/plugins");
+    await page.goto("/settings/plugins");
   }
   const disable = page.getByTestId(`disable-${slug}`);
   const found = await disable.count();
@@ -367,7 +367,7 @@ export async function deactivatePluginAsOwner(page: Page, slug: string): Promise
     // Never wait out the fixture budget on a button that is not there: a
     // plugin left active poisons every later scenario, so say exactly why.
     throw new Error(
-      `deactivatePluginAsOwner: expected one [data-testid="disable-${slug}"] on /security/plugins, found ${found} — "${slug}" stays ACTIVE and leaks into the next scenario. Every Disable button (Tier 1 and Tier 2 tables) must carry that test id.`,
+      `deactivatePluginAsOwner: expected one [data-testid="disable-${slug}"] on /settings/plugins, found ${found} — "${slug}" stays ACTIVE and leaks into the next scenario. Every Disable button (Tier 1 and Tier 2 tables) must carry that test id.`,
     );
   }
   await disable.click();
@@ -633,6 +633,7 @@ export async function awaitPublishComplete(page: Page): Promise<void> {
 interface QualityChatStatus {
   audit: { id: string; status: string; fixRound: number } | null;
   notified: boolean;
+  feedback: { kind: "note" | "offer" } | null;
   gate: { open: boolean; state: string; message: string } | null;
 }
 
@@ -646,8 +647,9 @@ const QUALITY_ACCEPT_REMAINING_PROMPT =
  * the block → fix → publish loop as the operator lives it.
  *
  * The admin's worker audits the staged build (real Lighthouse, real
- * bundled Chromium). When it finds problems the chat panel posts the fix
- * request to the AI by itself; this helper only waits for that turn. The
+ * bundled Chromium). When it finds problems the chat asks first (#685:
+ * "Let the AI fix them?"); the helper clicks "Fix with AI" like an operator
+ * who wants it fixed, and waits for that turn. The
  * AI re-stages its fix itself (issue #620); only when it did not does the
  * helper Stage again (the operator's click), up to the 2 automatic fix rounds.
  * When findings remain after those rounds the AI asks the operator whether
@@ -685,8 +687,8 @@ export async function awaitQualityGateOpen(
     const settled = await read();
     return settled.gate?.open ? { restages, state: settled.gate.state } : null;
   };
-  // The panel posts the AI's fix request on its own once the chat is idle;
-  // wait for that turn to start (bounded) and then to end, instead of
+  // The operator's "Fix with AI" click starts the AI's fix turn; wait for
+  // that turn to start (bounded) and then to end, instead of
   // guessing with a fixed sleep — a turn that had not started yet read as
   // "idle" and the helper moved on mid-fix.
   const letTheAiTurnRun = async () => {
@@ -707,15 +709,20 @@ export async function awaitQualityGateOpen(
       continue;
     }
     const running = !st.audit || st.audit.status === "queued" || st.audit.status === "running";
-    if (running || !st.notified) {
+    const offerOpen = !st.notified && st.feedback?.kind === "offer";
+    if (running || (!st.notified && !offerOpen)) {
       await page.waitForTimeout(5_000);
       continue;
     }
     if (st.gate?.state === "errored" || st.gate?.state === "missing") {
       throw new Error(`awaitQualityGateOpen: the quality check failed — ${st.gate.message}`);
     }
-    // Problems, and the chat has been told: the panel sends the AI its fix
-    // request as soon as it is idle. Let that turn run to the end.
+    // Problems: the chat asks before the AI fixes anything (#685). Answer
+    // like an operator who wants them fixed, then let that turn run to the end.
+    if (offerOpen) {
+      await waitForChatTurnIdle(page);
+      await page.getByTestId("quality-fix-offer-fix").click({ timeout: 60_000 });
+    }
     await letTheAiTurnRun();
     const after = await read();
     if (after.gate?.open) {
