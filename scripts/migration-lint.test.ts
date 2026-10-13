@@ -52,6 +52,17 @@ describe("lintMigrationSql", () => {
     expect(rules(sql)).toEqual([]);
   });
 
+  it("keeps string and comment boundaries apart (`--` inside a string, quote inside a comment)", () => {
+    expect(
+      rules(
+        "INSERT INTO t VALUES ('-- label');\nDROP TABLE users;\nINSERT INTO t VALUES ('other');",
+      ),
+    ).toEqual(["drop-object"]);
+    expect(rules("-- it's fine\nDROP TABLE users;\nSELECT 'x';")).toEqual(["drop-object"]);
+    expect(rules("/* don't */ ALTER TABLE t RENAME TO u;")).toEqual(["rename"]);
+    expect(rules('ALTER TABLE "we--ird" DROP COLUMN c;')).toEqual(["drop-column"]);
+  });
+
   it("reports one finding per statement across breakpoints", () => {
     const sql =
       "CREATE TABLE a (id int);\n--> statement-breakpoint\nDROP TABLE b;\n--> statement-breakpoint\nALTER TABLE c RENAME TO d;";

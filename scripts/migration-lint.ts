@@ -60,26 +60,57 @@ const RULES: readonly { id: string; pattern: RegExp }[] = [
   },
 ];
 
+/** Index of the quote closing the literal opened at `open` (`''`/`""` escapes). */
+function closingQuote(sql: string, open: number, quote: "'" | '"'): number {
+  let j = open + 1;
+  while (j < sql.length) {
+    if (sql[j] === quote) {
+      if (sql[j + 1] !== quote) return j;
+      j += 2;
+    } else j++;
+  }
+  return sql.length - 1;
+}
+
 /**
- * Strip SQL comments, and string literals OUTSIDE dollar-quoted bodies, so
- * a word inside a comment or a seeded text value is not flagged. Inside a
- * `$$ … $$` body (DO blocks, functions) strings are kept: there they are
- * usually SQL run by `EXECUTE 'DROP TABLE …'` — conservative by design.
+ * One left-to-right scan that drops comments and blanks string literals
+ * OUTSIDE dollar-quoted bodies, so a word inside a comment or a seeded
+ * text value is not flagged. Comments and strings are tokenized together:
+ * a `--` inside a string is not a comment, a quote inside a comment opens
+ * no string. Inside a `$$ … $$` body (DO blocks, functions) strings are
+ * KEPT: there they are usually SQL run by `EXECUTE 'DROP TABLE …'` —
+ * conservative by design.
  */
-function stripCommentsAndStrings(sql: string): string {
-  const noComments = sql
-    .replace(/--> statement-breakpoint/g, ";")
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/--[^\n]*/g, " ");
+function stripCommentsAndStrings(input: string): string {
+  const sql = input.replace(/--> statement-breakpoint/g, ";");
   let out = "";
-  let openTag: string | null = null;
-  for (const part of noComments.split(/(\$[A-Za-z_0-9]*\$)/)) {
-    if (/^\$[A-Za-z_0-9]*\$$/.test(part)) {
-      if (openTag === null) openTag = part;
-      else if (part === openTag) openTag = null;
+  let body: string | null = null;
+  let i = 0;
+  while (i < sql.length) {
+    const c = sql[i];
+    const rest = sql.slice(i, i + 64);
+    const tag = c === "$" ? /^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/.exec(rest)?.[0] : undefined;
+    if (tag !== undefined) {
+      if (body === null) body = tag;
+      else if (tag === body) body = null;
       out += " ";
+      i += tag.length;
+    } else if (rest.startsWith("--")) {
+      const nl = sql.indexOf("\n", i);
+      i = nl === -1 ? sql.length : nl;
+      out += " ";
+    } else if (rest.startsWith("/*")) {
+      const close = sql.indexOf("*/", i + 2);
+      i = close === -1 ? sql.length : close + 2;
+      out += " ";
+    } else if (c === "'" || c === '"') {
+      const close = closingQuote(sql, i, c);
+      // Identifiers ("…") are always kept; literals only inside bodies.
+      out += c === '"' || body !== null ? sql.slice(i, close + 1) : "''";
+      i = close + 1;
     } else {
-      out += openTag === null ? part.replace(/'(?:[^']|'')*'/g, "''") : part;
+      out += c;
+      i++;
     }
   }
   return out;
