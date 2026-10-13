@@ -151,6 +151,11 @@ export function formatPage(p: AuditPage): string[] {
           );
           continue;
         }
+        if (where === "" && el.label) {
+          // The truncation marker (or a bare label): print it as is.
+          lines.push(`  - ${el.label}`);
+          continue;
+        }
         lines.push(`  - element ${where}${el.explanation ? ` — ${el.explanation}` : ""}`);
       }
     } else {

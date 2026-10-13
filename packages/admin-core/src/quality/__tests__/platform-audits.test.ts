@@ -35,7 +35,7 @@ describe("findingOwner (#667)", () => {
         [
           {
             explanation:
-              "Pages with cache-control:no-store header cannot enter back/forward cache.",
+              "Pages whose main resource has cache-control:no-store cannot enter back/forward cache.",
           },
         ],
         PAGE,
@@ -54,6 +54,41 @@ describe("findingOwner (#667)", () => {
       findingOwner(
         "bf-cache",
         [{ explanation: "Back/forward cache is disabled due to insufficient memory." }],
+        PAGE,
+      ),
+    ).toBe("check");
+  });
+
+  it("never decides from a truncated sample or a subresource no-store", () => {
+    const same = { url: "https://staging.example.com/_assets/logo.png" };
+    expect(
+      findingOwner(
+        "cache-insight",
+        [same, same, same, same, same, { label: "+3 more flagged item(s) not shown" }],
+        PAGE,
+      ),
+    ).toBe("check");
+    expect(
+      findingOwner(
+        "bf-cache",
+        [
+          {
+            explanation:
+              "Pages whose main resource has cache-control:no-store cannot enter back/forward cache.",
+          },
+        ],
+        PAGE,
+      ),
+    ).toBe("platform");
+    expect(
+      findingOwner(
+        "bf-cache",
+        [
+          {
+            explanation:
+              "Some JavaScript network request received resource with Cache-Control: no-store header.",
+          },
+        ],
         PAGE,
       ),
     ).toBe("check");

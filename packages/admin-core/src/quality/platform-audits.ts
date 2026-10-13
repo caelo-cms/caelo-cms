@@ -23,6 +23,7 @@
  * do NOT change what blocks Publish live (see gate.ts).
  */
 
+import { TRUNCATED_ELEMENTS_PREFIX, TRUNCATED_ELEMENTS_SUFFIX } from "./lighthouse-extract.js";
 import type { FlaggedElement } from "./ratchet.js";
 
 /** Who can fix a failing Lighthouse audit. */
@@ -50,9 +51,11 @@ const RESOURCE_SERVING_AUDITS: ReadonlySet<string> = new Set([
 ]);
 
 /** Back/forward-cache blockers that come from the browser setup or the
- *  response headers, not from page script. */
+ *  main document's response headers, not from page script. A subresource
+ *  answered with `no-store` (a script's fetch) may be a module's embed or
+ *  our gateway, so it stays "check". */
 const PLATFORM_BFCACHE_REASON =
-  /disabled by (flags|the command line)|cache-control: ?no-store|main resource has cache-control/i;
+  /disabled by (flags|the command line)|main resource has cache-control/i;
 
 /** Same origin as the audited page (a relative or unparsable URL counts as same-site). */
 function isSameSite(url: string, pageUrl: string): boolean {
@@ -90,6 +93,15 @@ export function findingOwner(
   pageUrl: string,
 ): FindingOwner | null {
   if (DOCUMENT_DELIVERY_AUDITS.has(auditId)) return "platform";
+  // Only part of the evidence was kept: never decide from a sample.
+  const truncated = elements.some(
+    (e) =>
+      e.label?.startsWith(TRUNCATED_ELEMENTS_PREFIX) === true &&
+      e.label.endsWith(TRUNCATED_ELEMENTS_SUFFIX),
+  );
+  if ((RESOURCE_SERVING_AUDITS.has(auditId) || auditId === "bf-cache") && truncated) {
+    return "check";
+  }
   if (RESOURCE_SERVING_AUDITS.has(auditId)) {
     const urls = elements.flatMap((e) => (e.url ? [e.url] : []));
     return verdict(urls.map((u) => (isSameSite(u, pageUrl) ? "platform" : "site"))) ?? "check";

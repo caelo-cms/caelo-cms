@@ -56,6 +56,12 @@ export interface LhrLike {
 
 /** Flagged elements reported per finding (enough to locate the module). */
 const MAX_FLAGGED_ELEMENTS = 5;
+
+/** Label prefix of the marker appended when an audit flagged more items
+ *  than are kept (#667). */
+export const TRUNCATED_ELEMENTS_PREFIX = "+";
+/** Label suffix of that marker. */
+export const TRUNCATED_ELEMENTS_SUFFIX = " more flagged item(s) not shown";
 const MAX_ELEMENT_TEXT = 300;
 
 function nonEmpty(v: unknown): string | undefined {
@@ -99,8 +105,16 @@ function flaggedElements(
   details: { readonly items?: readonly unknown[] } | undefined,
 ): FlaggedElement[] {
   const out: FlaggedElement[] = [];
-  for (const item of details?.items ?? []) {
-    if (out.length >= MAX_FLAGGED_ELEMENTS) break;
+  const items = details?.items ?? [];
+  for (const [index, item] of items.entries()) {
+    if (out.length >= MAX_FLAGGED_ELEMENTS) {
+      // #667 — say the list is a sample: ownership (platform vs site) must
+      // never be decided from the first few items alone.
+      out.push({
+        label: `${TRUNCATED_ELEMENTS_PREFIX}${items.length - index}${TRUNCATED_ELEMENTS_SUFFIX}`,
+      });
+      break;
+    }
     if (item === null || typeof item !== "object") continue;
     const node = (item as { node?: unknown }).node;
     if (node === null || typeof node !== "object") {

@@ -132,7 +132,9 @@ describe("flagged elements", () => {
       },
     };
     const [finding] = failingAudits(lhr({ performance: 100, audits: [contrast] }));
-    expect(finding?.elements).toHaveLength(5);
+    // Five kept, then a marker that the list is a sample (#667).
+    expect(finding?.elements).toHaveLength(6);
+    expect(finding?.elements?.[5]).toEqual({ label: "+2 more flagged item(s) not shown" });
     expect(finding?.elements?.[0]).toEqual({
       selector: "header > a.cta-0",
       snippet: '<a class="cta-0">',
