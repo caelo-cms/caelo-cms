@@ -116,22 +116,20 @@ async function queuedToolFor(
   proposalId: string,
 ): Promise<
   | { ok: true; toolName: string; pluginTool: ReturnType<typeof pluginToolsRegistry.resolve> }
-  | { ok: false; failure: ReturnType<typeof fail> }
+  | { ok: false; status: 404 | 500; error: string }
 > {
   const { adapter, registry } = getQueryContext();
   const queued = await execute(registry, adapter, locals.ctx, "tool_approvals.list_pending", {
-    limit: 200,
+    proposalId,
   });
-  if (!queued.ok)
-    return { ok: false, failure: fail(500, { error: "could not read the approval queue" }) };
+  if (!queued.ok) return { ok: false, status: 500, error: "could not read the approval queue" };
   const toolName = (queued.value as { proposals: Proposal[] }).proposals.find(
     (p) => p.id === proposalId,
   )?.toolName;
   const pluginTool = toolName ? pluginToolsRegistry.resolve(toolName) : null;
   const permission = pluginTool?.spec.requiredPermission;
   requirePermission(locals, permission ?? "roles.manage");
-  if (!toolName)
-    return { ok: false, failure: fail(404, { error: "That proposal is no longer pending." }) };
+  if (!toolName) return { ok: false, status: 404, error: "That proposal is no longer pending." };
   return { ok: true, toolName, pluginTool };
 }
 
@@ -159,7 +157,7 @@ export const actions: Actions = {
     // `requiredPermission` (and an external plugin's bound operator) is
     // checked by approveQueuedToolCall before its claim.
     const queued = await queuedToolFor(locals, proposalId);
-    if (!queued.ok) return queued.failure;
+    if (!queued.ok) return fail(queued.status, { error: queued.error });
     if (!queued.pluginTool) {
       const declared = createDefaultToolRegistry().get(queued.toolName)?.approverPermissions;
       if (!declared) {
@@ -250,7 +248,7 @@ export const actions: Actions = {
     const proposalId = String(form.get("proposalId") ?? "");
     const reason = form.get("reason") ? String(form.get("reason")) : undefined;
     const queued = await queuedToolFor(locals, proposalId);
-    if (!queued.ok) return queued.failure;
+    if (!queued.ok) return fail(queued.status, { error: queued.error });
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "tool_approvals.reject_proposal", {
       proposalId,

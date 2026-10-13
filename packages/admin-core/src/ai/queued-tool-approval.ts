@@ -43,10 +43,10 @@ import {
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { approvedPluginInvocation, chatPluginInvocation } from "../plugin-invocation.js";
-import { describeError } from "./_describe-error.js";
-import type { ToolResult } from "./dispatch.js";
-import { createDefaultToolRegistry } from "./index.js";
+import { approvedPluginInvocation, chatPluginInvocation } from "./plugin-invocation.js";
+import { describeError } from "./tools/_describe-error.js";
+import type { ToolResult } from "./tools/dispatch.js";
+import { createDefaultToolRegistry } from "./tools/index.js";
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -227,7 +227,7 @@ async function pluginApproverRefusal(
   proposalId: string,
 ): Promise<string | null> {
   const pending = await execute(registry, adapter, approverCtx, "tool_approvals.list_pending", {
-    limit: 200,
+    proposalId,
   });
   if (!pending.ok) return `could not read the approval queue (${describeError(pending.error)})`;
   const row = (

@@ -255,6 +255,8 @@ export const listPendingToolApprovalsOp = defineOperation({
       limit: z.number().int().min(1).max(200).optional(),
       includeDecided: z.boolean().optional(),
       chatSessionId: z.string().uuid().optional(),
+      /** #687 — just this row (an Approve/Reject checks who may decide it). */
+      proposalId: z.string().uuid().optional(),
     })
     .strict(),
   output: z.object({ proposals: z.array(toolApprovalRowSchema) }),
@@ -264,6 +266,7 @@ export const listPendingToolApprovalsOp = defineOperation({
     const chatFilter = input.chatSessionId
       ? sql`AND chat_session_id = ${input.chatSessionId}::uuid`
       : sql``;
+    const idFilter = input.proposalId ? sql`AND id = ${input.proposalId}::uuid` : sql``;
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, tool_name, args, preview,
              chat_session_id::text AS chat_session_id,
@@ -272,7 +275,7 @@ export const listPendingToolApprovalsOp = defineOperation({
              decided_at, decided_by::text AS decided_by,
              decision_reason, result_ok, result_summary
       FROM tool_approval_actions
-      WHERE 1=1 ${statusFilter} ${chatFilter}
+      WHERE 1=1 ${statusFilter} ${chatFilter} ${idFilter}
       ORDER BY created_at DESC
       LIMIT ${limit}
     `)) as unknown as Array<{

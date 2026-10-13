@@ -16,11 +16,8 @@ import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { privateStorageRefusal } from "../../../plugin-host/src/private-storage.js";
+import { approveQueuedToolCall, queuePluginToolApproval } from "../ai/queued-tool-approval.js";
 import { attachPluginGatedExecute } from "../ai/tools/gated-tools.js";
-import {
-  approveQueuedToolCall,
-  queuePluginToolApproval,
-} from "../ai/tools/queued-tool-approval.js";
 import { submitPluginTool } from "../ai/tools/submit-plugin.js";
 import { lockPluginRow } from "../locks.js";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";

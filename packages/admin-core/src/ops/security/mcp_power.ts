@@ -40,10 +40,10 @@ import { loadMemory } from "../../ai/chat-runner/persistence.js";
 import { withTakeoverNotices } from "../../ai/chat-runner/tool-dispatch.js";
 import { isReadOrMetaTool } from "../../ai/chat-runner/write-tools.js";
 import { chatPluginInvocation } from "../../ai/plugin-invocation.js";
+import { queuePluginToolApproval } from "../../ai/queued-tool-approval.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
-import { queuePluginToolApproval } from "../../ai/tools/queued-tool-approval.js";
 import {
   approvalOutcome,
   findMcpHandoffByToolCall,
