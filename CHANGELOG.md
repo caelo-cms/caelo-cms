@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.10.45
+
+### Features
+- efd62229 Settings → Caelo updates with the pinned upgrade command (#696 Phase 0) (#705)
+- 7cfa9b04 caelo-ops image + signed release manifest (#696) (#702)
+- 67452354 keyless provisioner — impersonate caelo-provisioner instead of a JSON key (#700)
+
+### Refactors
+- 12189a50 split upgrade into converge + app-roll, pre-upgrade backup, deep health check (#703)
+
+## v0.10.44
+
+### Features
+- 8c4aaf40 rename Security to Settings, list every page, group by intent (#688)
+
+### Fixes
+- f5453e28 approval-gated plugin tools (set_locales, …) work over the Power-MCP (#693)
+- 0345d752 close the open CodeQL clear-text-logging and http-to-file-access alerts (#691)
+- 3b1b2c92 ask before the AI fixes quality findings after a Stage (#685) (#692)
+
 ## v0.10.43
 
 ### Fixes

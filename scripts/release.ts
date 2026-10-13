@@ -18,6 +18,18 @@
  *      the last `vX.Y.Z` git tag (delegates to scripts/release-notes.ts).
  *   6. Commits the changes (`chore(release): vX.Y.Z`).
  *   7. Tags `vX.Y.Z`.
+ *
+ * Release-manifest declaration (epic #696) — checked BEFORE anything is
+ * bumped, then written to release-meta.json in the release commit so the
+ * tag pipeline signs exactly this:
+ *   --security                     security release (needs --advisories)
+ *   --advisories GHSA-…,GHSA-…     published GitHub Security Advisories
+ *   --ack-contract-migrations      accept destructive migrations since the
+ *                                  previous stable tag (manual-install release)
+ *   --ack-infra-neutral            infra-contract files changed but nothing
+ *                                  IAM/secret/resource-relevant (no bump)
+ *   --checks-only                  run those checks and exit, changing nothing
+ * See scripts/release-checks.ts for the rules.
  *   8. Prints next-steps for the operator (`git push --follow-tags`,
  *      then GitHub Actions takes over for `bunx cms-provision --version`
  *      compatibility).
@@ -35,6 +47,14 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  parseAdvisoryList,
+  RELEASE_META_PATH,
+  type ReleaseMeta,
+  readReleaseMeta,
+  runReleaseChecks,
+  writeReleaseMeta,
+} from "./release-checks.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const VERSION_FILE = resolve(REPO_ROOT, "packages/shared/src/version.ts");
@@ -42,6 +62,46 @@ const ROOT_PKG = resolve(REPO_ROOT, "package.json");
 
 function arg(name: string): boolean {
   return process.argv.includes(`--${name}`);
+}
+
+/** Value of `--name <v>` or `--name=<v>`. */
+function argValue(name: string): string | undefined {
+  const eq = process.argv.find((a) => a.startsWith(`--${name}=`));
+  if (eq) return eq.slice(name.length + 3);
+  const i = process.argv.indexOf(`--${name}`);
+  return i >= 0 ? process.argv[i + 1] : undefined;
+}
+
+/**
+ * Build the release-manifest declaration from the flags and run every
+ * release-cut check against HEAD. Exits before anything is written when a
+ * rule fails, so a refused cut leaves the tree untouched.
+ */
+async function declareRelease(newVersion: string): Promise<ReleaseMeta> {
+  const meta: ReleaseMeta = {
+    version: newVersion,
+    security: arg("security"),
+    advisories: parseAdvisoryList(argValue("advisories") ?? ""),
+    acknowledgeContractMigrations: arg("ack-contract-migrations"),
+    acknowledgeInfraNeutral: arg("ack-infra-neutral"),
+    // Derived by the checks below (carry-forward), never a flag.
+    lastContractVersion: null,
+  };
+  const checks = await runReleaseChecks(meta, {
+    repoRoot: REPO_ROOT,
+    repo: process.env.GITHUB_REPOSITORY ?? "caelo-cms/caelo-cms",
+    token: process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN,
+  });
+  for (const w of checks.warnings) console.warn(`! ${w}`);
+  if (checks.errors.length > 0) {
+    console.error(`release refused (compared against ${checks.previousTag ?? "no previous tag"}):`);
+    for (const e of checks.errors) console.error(`  ✗ ${e}`);
+    process.exit(2);
+  }
+  console.log(
+    `✓ release checks passed (security=${meta.security}, contract migrations=${checks.contractMigrations})`,
+  );
+  return { ...meta, lastContractVersion: checks.lastContractVersion };
 }
 
 function getCurrent(): string {
@@ -193,6 +253,13 @@ function maybeGitCommitTag(newVersion: string, dryRun: boolean): void {
     return;
   }
   Bun.spawnSync(["git", "add", "-u"], { cwd: REPO_ROOT, stdout: "inherit", stderr: "inherit" });
+  // release-meta.json is tracked, but add it by name too so the very
+  // first declaration (or a restored deletion) lands in the commit.
+  Bun.spawnSync(["git", "add", RELEASE_META_PATH], {
+    cwd: REPO_ROOT,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
   const commit = Bun.spawnSync(["git", "commit", "-m", `chore(release): v${newVersion}`], {
     cwd: REPO_ROOT,
     stdout: "inherit",
@@ -313,6 +380,8 @@ async function main(): Promise<void> {
     console.error(
       "Usage:\n" +
         "  bun run scripts/release.ts <patch|minor|major|x.y.z> [--dry-run]\n" +
+        "      [--security --advisories GHSA-…,…] [--ack-contract-migrations] [--ack-infra-neutral]\n" +
+        "      [--checks-only]   # run the release-cut checks, change nothing\n" +
         "  bun run scripts/release.ts --check     # verify lockstep, no bump",
     );
     process.exit(2);
@@ -320,6 +389,14 @@ async function main(): Promise<void> {
   if (arg0 === "--check") {
     const target = getCurrent();
     const result = checkLockstep(target);
+    // The tag pipeline signs release-meta.json's declaration; one left
+    // over from another version means the commit did not come from this
+    // script.
+    const metaVersion = readReleaseMeta(REPO_ROOT).version;
+    if (metaVersion !== target) {
+      console.error(`✗ ${RELEASE_META_PATH} declares v${metaVersion}, expected v${target}`);
+      process.exit(1);
+    }
     if (result.ok) {
       console.log(`✓ all packages at v${target}`);
       process.exit(0);
@@ -338,6 +415,13 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   console.log(`Caelo release: ${current} → ${newVersion}${dryRun ? " (dry-run)" : ""}`);
+
+  const meta = await declareRelease(newVersion);
+  // release-cut.yml validates the declaration before its (slow, paid)
+  // real-AI gate; nothing is written in this mode.
+  if (arg("checks-only")) return;
+  if (dryRun) console.log(`[dry-run] ${RELEASE_META_PATH} would be: ${JSON.stringify(meta)}`);
+  else writeReleaseMeta(REPO_ROOT, meta);
 
   bumpVersionFile(newVersion, dryRun);
   console.log(`✓ packages/shared/src/version.ts updated`);
