@@ -297,6 +297,41 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     ).toBe(false);
   });
 
+  it("verifies the ops image's signature before the upgrader runs it; unverified = not set up", async () => {
+    const events: string[] = [];
+    const { deps } = upgradeDeps(events);
+    const verified: string[] = [];
+    expect(
+      await upgradeGcpInstall(TARGET, {
+        ...deps,
+        verifyImages: async (images) => {
+          verified.push(...images.map((i) => i.slug));
+          return !images.some((i) => i.slug === "ops");
+        },
+      }),
+    ).toBe(true);
+    expect(verified).toContain("ops");
+    expect(events.some((e) => /jobs deploy caelo-production-upgrader/.test(e))).toBe(false);
+  });
+
+  it("a failed upgrader setup keeps an existing upgrader's caelo-mcp signing grant", async () => {
+    const events: string[] = [];
+    const { deps } = upgradeDeps(events, {
+      overrides: [
+        [/^run jobs deploy caelo-production-upgrader/, fail("transient")],
+        [/^iam service-accounts describe caelo-production-upgrader@/, ok("x\n")],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const opAccess = indexOf(
+      events,
+      /^gcloud run jobs deploy caelo-production-operator-access-sync /,
+    );
+    expect(events[opAccess]).toContain(
+      "CAELO_OPERATOR_ACCESS_MCP_SIGNERS=serviceAccount:caelo-production-upgrader@",
+    );
+  });
+
   it("a failed backup stops the upgrade before any change", async () => {
     const events: string[] = [];
     const { deps, calls, lines, recorded } = upgradeDeps(events, {

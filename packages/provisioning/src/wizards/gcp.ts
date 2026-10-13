@@ -104,7 +104,11 @@ import {
   resolveBackend,
 } from "../state-backend.js";
 import { GcsStateStore } from "../state-store.js";
-import { releaseVersionForDigest, resolveOpsImageRef } from "../upgrade/release-images.js";
+import {
+  releaseVersionForDigest,
+  resolveOpsImageRef,
+  verifyCosignAll,
+} from "../upgrade/release-images.js";
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { GCP_STACK_KNOB_DEFAULTS, pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
@@ -802,9 +806,17 @@ async function stepGatewayRolePassword(projectId: string): Promise<void> {
  * @returns whether the job is ready
  */
 async function stepUpgraderJob(projectId: string, region: string): Promise<boolean> {
+  const opsImageRef = await resolveOpsImageRef("latest");
+  const digest = opsImageRef ? /@(sha256:[0-9a-f]{64})$/.exec(opsImageRef)?.[1] : undefined;
+  // The job runs with rights over the whole app: only a verified image.
+  if (digest && !(await verifyCosignAll([{ slug: "ops", digest }]))) {
+    log.warn(
+      `The upgrader is not set up: its image's signature did not verify. The install works; ${bold(selfCommand("upgrade"))} sets it up later.`,
+    );
+    return false;
+  }
   const s = spinner();
   s.start("Setting up the upgrader job (install updates from the admin)...");
-  const opsImageRef = await resolveOpsImageRef("latest");
   const resolved = opsImageRef
     ? await resolveUpgraderTarget({ projectId, region, env: GCP_STACK_ENV, opsImageRef })
     : { ok: false as const, error: "the newest release has no caelo-ops image in the registry" };

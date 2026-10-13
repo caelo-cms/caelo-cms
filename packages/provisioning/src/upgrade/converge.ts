@@ -273,6 +273,8 @@ export function startConverge(
   }
 
   let upgraderReady = false;
+  /** The upgrader's SA exists from an earlier run though this one failed. */
+  let upgraderSignerExists = false;
 
   async function upgraderJob(): Promise<void> {
     // #696 — the job "Install update" starts. After migrations: its
@@ -300,6 +302,19 @@ export function startConverge(
       s.done("Upgrader job ready (the Owner can install updates from the admin)");
       return;
     }
+    // An upgrader set up by an earlier run keeps its caelo-mcp grant, or
+    // the next sync would take away its health check (a failure here is
+    // often transient; its job and the admin's env stay as they were too).
+    const sa = upgraderServiceAccountEmail(install.projectId, install.env);
+    const exists = await run([
+      "iam",
+      "service-accounts",
+      "describe",
+      sa,
+      `--project=${install.projectId}`,
+      "--format=value(email)",
+    ]);
+    upgraderSignerExists = exists.ok;
     s.warned(`Upgrader job not set up: ${up.error}`);
     r.warn(
       "The upgrade continues; Settings → Updates keeps showing the command to run instead of an Install button until this succeeds.",
@@ -328,7 +343,7 @@ export function startConverge(
       ? await ensureOperatorAccessSync(
           {
             ...resolved.target,
-            ...(upgraderReady
+            ...(upgraderReady || upgraderSignerExists
               ? {
                   mcpSigners: [
                     `serviceAccount:${upgraderServiceAccountEmail(install.projectId, install.env)}`,
