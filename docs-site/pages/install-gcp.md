@@ -120,7 +120,7 @@ Everything the provisioner needs to manage the install later lives **in the inst
 - **Cloud KMS key `caelo/pulumi-state`** — encrypts the secrets inside Pulumi's state. There is no passphrase to keep safe.
 - **Access** — your gcloud account and `caelo-provisioner` get access to the bucket (`roles/storage.objectAdmin`) and to the key (`roles/cloudkms.cryptoKeyEncrypterDecrypter`); nobody else is granted anything, the bucket's default read access for project Viewers and Editors is removed, and the provisioner refuses a bucket that grants `allUsers` or `allAuthenticatedUsers`. Project Owners can always reach it through their project role.
 
-The installer creates both before the cost confirmation (they cost less than $0.10/mo and are listed in it) and checks them on every re-run. `~/.caelo-<install-id>/` on your machine keeps only a copy of `install.json` and `progress.json`; the bucket is the source of truth, and nothing in either file is a secret — the installer refuses to write one there.
+The cost confirmation lists both (less than $0.10/mo together); the installer creates them right after you confirm and checks them on every re-run. `~/.caelo-<install-id>/` on your machine keeps only a copy of `install.json` and `progress.json`; the bucket is the source of truth, and nothing in either file is a secret — the installer refuses to write one there.
 
 **Installs created before this change** keep their state in `~/.caelo-<install-id>/state/` with the passphrase in `secrets/pulumi-passphrase`; a re-run or `upgrade` never moves it on its own.
 

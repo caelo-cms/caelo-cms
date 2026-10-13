@@ -34,6 +34,7 @@ import {
 } from "@clack/prompts";
 import { bold, cyan, dim, yellow } from "kleur/colors";
 import {
+  currentMetadata,
   deriveInstallId,
   ensureInstallDir,
   type InstallMetadata,
@@ -90,10 +91,13 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   let installId: string;
 
   const existing = opts.nonInteractive ? [] : listInstalls();
-  const resumeChoice =
+  const picked =
     existing.length > 0 && !opts.provider && !opts.domain && !opts.ownerEmail
       ? await pickInstallToResume(existing)
       : null;
+  // #696 — the bucket's copy for an install whose state lives there: another
+  // machine may have changed its domain or owner since this mirror was written.
+  const resumeChoice = picked ? currentMetadata(picked) : null;
 
   if (resumeChoice) {
     provider = resumeChoice.provider;

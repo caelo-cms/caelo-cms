@@ -12,12 +12,11 @@
  *   8. Lets the operator's gcloud account impersonate that SA (#696): no
  *      key is ever minted; an older install's `sa-key.json` is deleted,
  *      locally and in IAM (provisioner-identity.ts)
- *   9. Ensures the install's ops bucket + KMS key in its own project and
+ *   9. Pre-flight cost-estimate table; single y/N confirm
+ *  10. Ensures the install's ops bucket + KMS key in its own project and
  *      keeps Pulumi's state + install.json there (#696, ops-backend.ts).
  *      An older install whose state is on this machine keeps it there
- *      and its passphrase in
- *      secrets/pulumi-passphrase
- *  10. Pre-flight cost-estimate table; single y/N confirm
+ *      and its passphrase in secrets/pulumi-passphrase
  *  11. Pulumi up via the Automation SDK; streams progress, then deletes
  *      the firewall rules GCP pre-populates on the default network
  *  12. Prints DNS records + bootstrap URL + a note pointing the
@@ -170,12 +169,6 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   await stepGrantRoles(installId, projectId, saEmail);
   await stepKeylessProvisioner(projectId, secretsDir, opts.nonInteractive);
 
-  // === 7. Where Pulumi's state lives (#696) ===
-  // A new install: the ops bucket + KMS key in its own project, ensured
-  // here — before the cost confirmation, since both are near-free and
-  // listed in it. An older install keeps its local state + passphrase.
-  const backend = await stepStateBackend(installId, projectId, region, saEmail);
-
   // === 8. Cost-estimate pre-flight ===
   // v0.3.3 — provider variant threads through so gcp-firebase
   // drops the LB / Cloud CDN / Cloud Armor lines (saves ~$19/mo
@@ -215,6 +208,12 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
       process.exit(0);
     }
   }
+
+  // === 8.5. Where Pulumi's state lives (#696) ===
+  // A new install: the ops bucket + KMS key in its own project — after the
+  // cost confirmation, which lists them (CLAUDE.md §11.C: nothing billable
+  // before the y/N). An older install keeps its local state + passphrase.
+  const backend = await stepStateBackend(installId, projectId, region, saEmail);
 
   // === 9. Image digests to deploy ===
   // An install that already runs a recorded release (from an earlier
@@ -950,7 +949,7 @@ async function stepStateBackend(
   if (!r.ok) {
     s.stop(red("Could not set up where the install's state lives"));
     log.error(r.error);
-    cancel("Aborted. Nothing billable was created; fix the above and re-run.");
+    cancel("Aborted before anything else was provisioned; fix the above and re-run.");
     process.exit(1);
   }
   s.stop(
