@@ -259,7 +259,7 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
       const pg = await tx\`
         INSERT INTO pages (slug, name, title, template_id, status)
         VALUES ('home', 'Home', 'Home', \${templateId}::uuid, 'draft')
-        ON CONFLICT (slug, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
+        ON CONFLICT (current_path, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
           WHERE deleted_at IS NULL
           DO UPDATE SET
             name = EXCLUDED.name,

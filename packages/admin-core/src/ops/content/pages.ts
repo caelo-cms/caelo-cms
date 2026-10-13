@@ -825,9 +825,14 @@ export const createPageOp = defineOperation({
     // URL-conflict check as a move (depth, homepage-as-parent, path
     // taken), planned in the caller's branch view before the INSERT.
     const parentPageId = input.parentPageId ?? null;
+    // The planned composed path goes into the INSERT: the trigger's
+    // plugin-free default could transiently collide with a page that
+    // shares the slug elsewhere (a prefixed or nested sibling).
+    let plannedPath: string | null = null;
     if (!newIsRoot) {
+      const tempId = crypto.randomUUID();
       const plan = await planPageMoves(tx, renderScopeOf(ctx), [
-        { pageId: crypto.randomUUID(), isNew: true, parentPageId, newSlug: input.slug },
+        { pageId: tempId, isNew: true, parentPageId, newSlug: input.slug },
       ]);
       if (!plan.ok) {
         await recordAudit(tx, {
@@ -840,6 +845,7 @@ export const createPageOp = defineOperation({
         });
         return err({ kind: "HandlerError", operation: "pages.create", message: plan.message });
       }
+      plannedPath = plan.plan.pathsAfter.get(tempId) ?? null;
     }
     let resolvedStatus = input.status;
     if (resolvedStatus === undefined) {
@@ -852,7 +858,7 @@ export const createPageOp = defineOperation({
       resolvedStatus = pub[0]?.has_published ? "draft" : "published";
     }
     const rows = (await tx.execute(sql`
-      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id)
+      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id, current_path)
       VALUES (
         ${input.slug},
         ${input.name ?? input.title},
@@ -860,7 +866,8 @@ export const createPageOp = defineOperation({
         ${templateId}::uuid,
         ${resolvedStatus},
         ${ctx.chatBranchId ?? null}::uuid,
-        ${parentPageId}::uuid
+        ${parentPageId}::uuid,
+        ${plannedPath}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -1850,23 +1857,26 @@ export const duplicatePageOp = defineOperation({
       input.newParentPageId !== undefined
         ? input.newParentPageId
         : (dupTree.byId.get(input.sourcePageId)?.parentPageId ?? null);
+    const dupTempId = crypto.randomUUID();
     const dupPlan = await planPageMoves(tx, renderScopeOf(ctx), [
-      { pageId: crypto.randomUUID(), isNew: true, parentPageId: dupParent, newSlug: input.newSlug },
+      { pageId: dupTempId, isNew: true, parentPageId: dupParent, newSlug: input.newSlug },
     ]);
     if (!dupPlan.ok) {
       return err({ kind: "HandlerError", operation: "pages.duplicate", message: dupPlan.message });
     }
+    const dupPath = dupPlan.plan.pathsAfter.get(dupTempId) ?? null;
     const title = input.newTitle ?? source.title;
     const name = input.newName ?? title;
     // Branched like pages.create: a copy made in a chat is that chat's
     // page until publish, not a live draft other chats and the site see.
     const inserted = (await tx.execute(sql`
-      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id)
+      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id, current_path)
       VALUES (
         ${input.newSlug}, ${name}, ${title},
         ${targetTemplateId}::uuid, 'draft',
         ${ctx.chatBranchId ?? null}::uuid,
-        ${dupParent}::uuid
+        ${dupParent}::uuid,
+        ${dupPath}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];

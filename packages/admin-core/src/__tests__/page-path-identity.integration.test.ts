@@ -116,6 +116,9 @@ describe("page identity is the id; the URL path is unique", () => {
     xb = await makePage("x", b);
     expect(await pathOf(xa)).toBe(`/${PFX}-a/${PFX}-x`);
     expect(await pathOf(xb)).toBe(`/${PFX}-b/${PFX}-x`);
+    // …and next to a top-level page of the same slug.
+    const top = await makePage("x");
+    expect(await pathOf(top)).toBe(`/${PFX}-x`);
   });
 
   it("a move onto a taken path is refused naming the clash; newSlug moves + renames in one call", async () => {
