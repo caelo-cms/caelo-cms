@@ -474,6 +474,11 @@ describe("create_variant — the slug the caller cannot invent", () => {
       tx.unsafe(`SELECT slug, current_path FROM pages WHERE id = '${sameId}'`),
     )) as { slug: string; current_path: string }[];
     expect(rows[0]).toEqual({ slug: "t395-lr-about", current_path: "/de/t395-lr-about" });
+    // The provisional URL was never public: nothing redirects from it.
+    const redirects = (await sqlSystem((tx) =>
+      tx.unsafe(`SELECT from_path FROM redirects WHERE to_path LIKE '/de/t395-lr-about%'`),
+    )) as { from_path: string }[];
+    expect(redirects).toEqual([]);
   });
 
   it("places a nested page's variant under the parent's same-locale counterpart (#690)", async () => {

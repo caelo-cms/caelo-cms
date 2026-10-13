@@ -527,10 +527,11 @@ async function counterpartInLocale(
   return rows[0]?.page_id ?? null;
 }
 
-/** A slug that cannot collide with the requested one while the copy
- *  has no locale prefix yet (see create_variant). */
+/** A throwaway slug for the copy while it has no locale prefix yet (see
+ *  create_variant): random, so it never collides with a real page. */
 function provisionalSlug(slug: string, localeCode: string): string {
-  return `${slug.slice(0, 40)}-${localeCode.toLowerCase()}-draft`.replace(/[^a-z0-9-]/g, "-");
+  const nonce = crypto.randomUUID().replace(/-/g, "").slice(0, 10);
+  return `${slug.slice(0, 40)}-${localeCode.toLowerCase()}-${nonce}`.replace(/[^a-z0-9-]/g, "-");
 }
 
 /** Shared by link_page_variants and create_variant: join `pageId` into
@@ -538,7 +539,14 @@ function provisionalSlug(slug: string, localeCode: string): string {
  *  source when none exists), then refresh the composed path. */
 async function linkPageIntoGroup(
   ctx: unknown,
-  args: { groupPageId: string; pageId: string; localeCode: string },
+  args: {
+    groupPageId: string;
+    pageId: string;
+    localeCode: string;
+    /** "skip" for a page whose pre-link URL was never public (a
+     *  provisional copy) — its old URL must not get a redirect. */
+    redirectFromOld?: "auto" | "skip";
+  },
 ): Promise<{ groupId: string; path: string; pathMoved: boolean }> {
   const { groupPageId, pageId, localeCode } = args;
   const q = adminQueryOf(ctx);
@@ -583,6 +591,7 @@ async function linkPageIntoGroup(
   // The locale annotation changed → the composed path may move.
   const refreshed = await cms.call<{ path: string; moved: boolean }>("pages.refresh_current_path", {
     pageId,
+    redirectFromOld: args.redirectFromOld ?? "auto",
   });
   return { groupId, path: refreshed.path, pathMoved: refreshed.moved };
 }
@@ -1068,6 +1077,7 @@ export default definePlugin<PluginContextTier1>({
       // provisional URL gets no redirect.
       let duplicated: { pageId: string };
       let provisional = false;
+      let provisionalSlugUsed = "";
       try {
         duplicated = await cms.call<{ pageId: string }>("pages.duplicate", {
           sourcePageId,
@@ -1078,9 +1088,10 @@ export default definePlugin<PluginContextTier1>({
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (!msg.includes("page already exists at")) throw e;
+        provisionalSlugUsed = provisionalSlug(newSlug, localeCode);
         duplicated = await cms.call<{ pageId: string }>("pages.duplicate", {
           sourcePageId,
-          newSlug: provisionalSlug(newSlug, localeCode),
+          newSlug: provisionalSlugUsed,
           ...placement,
           ...(title ? { newTitle: title } : {}),
         });
@@ -1091,6 +1102,7 @@ export default definePlugin<PluginContextTier1>({
         groupPageId: sourcePageId,
         pageId: duplicated.pageId,
         localeCode,
+        ...(provisional ? { redirectFromOld: "skip" as const } : {}),
       });
       if (provisional) {
         try {
@@ -1102,7 +1114,7 @@ export default definePlugin<PluginContextTier1>({
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           throw new Error(
-            `create_variant: the ${localeCode} variant was created (page ${duplicated.pageId}) under the provisional slug "${provisionalSlug(newSlug, localeCode)}", but slug "${newSlug}" is taken in that locale: ${msg}. Rename it with update_pages_many to a free slug.`,
+            `create_variant: the ${localeCode} variant was created (page ${duplicated.pageId}) under the provisional slug "${provisionalSlugUsed}", but slug "${newSlug}" is taken in that locale: ${msg}. Rename it with update_pages_many to a free slug.`,
           );
         }
         const path = await cms.call<{ path: string }>("pages.refresh_current_path", {
