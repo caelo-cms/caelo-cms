@@ -45,6 +45,7 @@ import {
   scrubInstallProgress,
   writeMetadata,
 } from "./install-state.js";
+import type { RunMode } from "./run-mode.js";
 import { selfCommand } from "./self-command.js";
 import { runGcpWizard } from "./wizards/gcp.js";
 import { runGcpFirebaseWizard } from "./wizards/gcp-firebase.js";
@@ -71,6 +72,11 @@ export interface WizardOptions {
    * install a different value is refused.
    */
   region?: string;
+  /**
+   * #696 — where `pulumi up` and the rest of a GCP install run
+   * (run-mode.ts): `job` (default in Cloud Shell) or `local`.
+   */
+  runMode?: RunMode;
 }
 
 export async function runWizard(opts: WizardOptions = {}): Promise<void> {
@@ -91,14 +97,45 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   let projectIdHint: string | null;
   let installId: string;
 
-  const existing = opts.nonInteractive ? [] : listInstalls();
+  // #696 — job mode (Cloud Shell): the project comes first and is the
+  // source of truth; this machine's ~/.caelo-* is not consulted.
+  const runMode = opts.runMode ?? "local";
+  let jobModeProjectId: string | null = null;
+  let jobModeExisting: InstallMetadata | null = null;
+  let jobModeProvider: Provider | null = null;
+  if (runMode === "job") {
+    jobModeProvider = opts.provider ?? (await pickProvider());
+    if (jobModeProvider !== "gcp" && jobModeProvider !== "gcp-firebase") {
+      cancel(
+        `The install job runs gcp and gcp-firebase installs; for ${jobModeProvider} run the installer with --local.`,
+      );
+      process.exit(1);
+    }
+    const { prepareJobModeInstall } = await import("./wizards/gcp-install-job.js");
+    const prep = await prepareJobModeInstall(opts.projectId ? { projectId: opts.projectId } : {});
+    if (prep.kind === "handled") {
+      outro(bold("Done."));
+      return;
+    }
+    if (prep.kind === "existing") jobModeExisting = prep.meta;
+    else jobModeProjectId = prep.projectId;
+  }
+
+  const existing = opts.nonInteractive || runMode === "job" ? [] : listInstalls();
   const picked =
     existing.length > 0 && !opts.provider && !opts.domain && !opts.ownerEmail
       ? await pickInstallToResume(existing)
       : null;
   // #696 — the bucket's copy for an install whose state lives there: another
   // machine may have changed its domain or owner since this mirror was written.
-  const resumeChoice = picked ? currentMetadata(picked) : null;
+  const resumeChoice = jobModeExisting ?? (picked ? currentMetadata(picked) : null);
+  if (jobModeExisting && jobModeProvider && jobModeExisting.provider !== jobModeProvider) {
+    log.warn(
+      yellow(
+        `This project's install is ${jobModeExisting.provider}, not ${jobModeProvider}; continuing it as ${jobModeExisting.provider}.`,
+      ),
+    );
+  }
 
   if (resumeChoice) {
     provider = resumeChoice.provider;
@@ -108,11 +145,11 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
     installId = resumeChoice.installId;
     ensureInstallDir(installId);
   } else {
-    provider = opts.provider ?? (await pickProvider());
+    provider = jobModeProvider ?? opts.provider ?? (await pickProvider());
     domain = opts.domain ?? (await promptDomain());
     const stagingDomain = await resolveStagingDomain(domain, provider, opts);
     ownerEmail = opts.ownerEmail ?? (await promptOwnerEmail());
-    projectIdHint = opts.projectId ?? null;
+    projectIdHint = jobModeProjectId ?? opts.projectId ?? null;
     installId = deriveInstallId(provider, projectIdHint ?? domain);
     ensureInstallDir(installId);
 
@@ -170,6 +207,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         projectId: projectIdHint,
         nonInteractive: opts.nonInteractive ?? false,
         ...(opts.region ? { region: opts.region } : {}),
+        runMode,
       });
       break;
     case "gcp-firebase":
@@ -180,6 +218,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         projectId: projectIdHint,
         nonInteractive: opts.nonInteractive ?? false,
         ...(opts.region ? { region: opts.region } : {}),
+        runMode,
       });
       break;
     case "self-hosted":
