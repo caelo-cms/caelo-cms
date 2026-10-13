@@ -62,7 +62,8 @@ import {
   REQUIRED_API_LIST,
   serviceAccountExists,
 } from "../gcloud.js";
-import { GCP_STACK_ENV } from "../gcp-names.js";
+import { GCP_STACK_ENV, upgraderServiceAccountEmail } from "../gcp-names.js";
+import { INFRA_CONTRACT_VERSION } from "../infra-contract.js";
 import {
   INSTALL_JOB_NAME,
   INSTALL_JOB_ROLES,
@@ -83,6 +84,7 @@ import {
   readSecret,
   recordedImageDigests,
   recordImageDigests,
+  recordInfraContractVersion,
   writeMetadata,
   writeSecret,
 } from "../install-state.js";
@@ -112,6 +114,12 @@ import {
   resolveBackend,
 } from "../state-backend.js";
 import { acquireStateLock, GcsStateStore } from "../state-store.js";
+import {
+  releaseVersionForDigest,
+  resolveOpsImageRef,
+  verifyCosignAll,
+} from "../upgrade/release-images.js";
+import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { promptProjectId } from "./gcp-prompts.js";
 import { GCP_STACK_KNOB_DEFAULTS, pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
@@ -440,8 +448,37 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   phase("Finishing: database logins, operator access, welcome page");
   await stepGatewayRolePassword(projectId);
 
+  // === 11.4. The upgrader job: Settings → Updates → Install update (#696) ===
+  // Before operator access, which keeps the upgrader's caelo-mcp grant.
+  const releaseVersion = await releaseVersionForDigest(gcloud, "admin", imageDigests.admin);
+  const upgraderReady = await stepUpgraderJob(projectId, region, releaseVersion);
+  const keepSigner = upgraderReady || (await upgraderExists(projectId));
+
   // === 11.5. Operator access: IAP follows the Caelo user list ===
-  await stepOperatorAccessSync(projectId, region, provider, ownerEmail);
+  await stepOperatorAccessSync(
+    projectId,
+    region,
+    provider,
+    ownerEmail,
+    keepSigner ? [`serviceAccount:${upgraderServiceAccountEmail(projectId, GCP_STACK_ENV)}`] : [],
+  );
+
+  // A fresh install ran every converge step above, so it is at this CLI's
+  // infrastructure contract — recorded only when the upgrader is in place
+  // (the last step a contract bump added). With the release version, the
+  // admin can install the next update itself.
+  if (upgraderReady) {
+    const version = releaseVersion;
+    recordImageDigests(installId, imageDigests, version);
+    recordInfraContractVersion(installId, INFRA_CONTRACT_VERSION);
+    if (!version) {
+      log.warn(
+        yellow(
+          "Could not tell which Caelo release the admin runs, so in-product updates stay off until the first `upgrade`.",
+        ),
+      );
+    }
+  }
 
   // === 12. Upload the fresh-install placeholder to the static bucket ===
   // Without this, https://<domain>/ returns the raw GCS NoSuchKey XML
@@ -873,6 +910,72 @@ async function stepGatewayRolePassword(projectId: string): Promise<void> {
 }
 
 /**
+ * Set up the upgrader job (upgrader-setup.ts, #696): what the admin's
+ * "Install update" starts. After migrations, because the job's database
+ * user gets the role migration 0267 creates. A failure does not stop the
+ * install — the site works; updates then go through the CLI until a later
+ * `upgrade` sets the job up — so it only warns. Idempotent.
+ *
+ * @returns whether the job is ready
+ */
+async function stepUpgraderJob(
+  projectId: string,
+  region: string,
+  releaseVersion: string | null,
+): Promise<boolean> {
+  // The upgrader of the release the install runs (a re-run keeps an older
+  // release — a newer upgrader would meet a schema it does not know yet).
+  const opsImageRef = releaseVersion ? await resolveOpsImageRef(releaseVersion) : null;
+  const digest = opsImageRef ? /@(sha256:[0-9a-f]{64})$/.exec(opsImageRef)?.[1] : undefined;
+  // The job runs with rights over the whole app: only a verified image.
+  if (digest && !(await verifyCosignAll([{ slug: "ops", digest }]))) {
+    log.warn(
+      `The upgrader is not set up: its image's signature did not verify. The install works; ${bold(selfCommand("upgrade"))} sets it up later.`,
+    );
+    return false;
+  }
+  const s = spinner();
+  s.start("Setting up the upgrader job (install updates from the admin)...");
+  const resolved = opsImageRef
+    ? await resolveUpgraderTarget({ projectId, region, env: GCP_STACK_ENV, opsImageRef })
+    : {
+        ok: false as const,
+        error: releaseVersion
+          ? `release ${releaseVersion} has no caelo-ops image in the registry`
+          : "the release this install runs could not be told from its images",
+      };
+  const r = resolved.ok
+    ? await ensureUpgraderJob(resolved.target)
+    : { ok: false as const, done: [], error: resolved.error };
+  if (!r.ok) {
+    s.stop(yellow(`Upgrader job not set up: ${r.error}`));
+    log.warn(
+      `The install works; Settings → Updates shows the upgrade command instead of an Install button until ${bold(selfCommand("upgrade"))} sets the job up.`,
+    );
+    return false;
+  }
+  s.stop(green(`Upgrader job ready (${r.done.length} steps)`));
+  return true;
+}
+
+/**
+ * Whether an upgrader set up by an earlier run exists, so a failed setup
+ * this time still keeps its caelo-mcp signing grant (the operator-access
+ * job would otherwise remove it, breaking its health check).
+ */
+async function upgraderExists(projectId: string): Promise<boolean> {
+  const r = await gcloud([
+    "iam",
+    "service-accounts",
+    "describe",
+    upgraderServiceAccountEmail(projectId, GCP_STACK_ENV),
+    `--project=${projectId}`,
+    "--format=value(email)",
+  ]);
+  return r.ok;
+}
+
+/**
  * Set up the operator-access sync job (operator-access.ts): the only
  * principal that may change who passes IAP, run as the operator's gcloud
  * identity. After migrations, because the job's database user gets the role
@@ -883,6 +986,7 @@ async function stepOperatorAccessSync(
   region: string,
   provider: "gcp" | "gcp-firebase",
   ownerEmail: string,
+  mcpSigners: readonly string[],
 ): Promise<void> {
   const s = spinner();
   s.start("Setting up the operator-access sync job (Google IAP follows the user list)...");
@@ -894,7 +998,7 @@ async function stepOperatorAccessSync(
     ownerEmail,
   });
   const r = resolved.ok
-    ? await ensureOperatorAccessSync(resolved.target)
+    ? await ensureOperatorAccessSync({ ...resolved.target, mcpSigners })
     : { ok: false as const, done: [], error: resolved.error };
   if (!r.ok) {
     s.stop(red(`Failed: ${r.error}`));

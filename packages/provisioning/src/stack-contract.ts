@@ -43,6 +43,7 @@ import {
   operatorAccessJobResource,
   runServiceAccountEmail,
   staticPublisherServiceAccountId,
+  upgraderJobResource,
 } from "./gcp-names.js";
 
 export type GcpProvider = "gcp" | "gcp-firebase";
@@ -162,6 +163,13 @@ export const MCP_ENV_VAR = "CAELO_MCP_IAP_SERVICE_ACCOUNT";
  * untouched when it could not set the job up.
  */
 export const OPERATOR_ACCESS_JOB_ENV_VAR = "CAELO_OPERATOR_ACCESS_JOB";
+
+/**
+ * The admin env var naming the upgrader job (#696) — what Settings →
+ * Updates' "Install update" starts. `upgrade` leaves it untouched when it
+ * could not set the job up.
+ */
+export const UPGRADER_JOB_ENV_VAR = "CAELO_UPGRADER_JOB";
 
 /** Where the admin image ships the static-generator CLI. */
 const GENERATOR_CLI = "/app/apps/static-generator/src/cli.ts";
@@ -393,6 +401,9 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
       name: OPERATOR_ACCESS_JOB_ENV_VAR,
       value: operatorAccessJobResource(projectId, inputs.region, env),
     },
+    // #696 — the job "Install update" starts (upgrader-setup.ts); the admin
+    // may only run it, never override it.
+    { name: UPGRADER_JOB_ENV_VAR, value: upgraderJobResource(projectId, inputs.region, env) },
   ];
   if (inputs.provider === "gcp") {
     // v0.2.78 — the GCS StaticPublisher: Stage uploads to staging,

@@ -26,6 +26,7 @@ const config: SyncJobConfig = {
   mcpServiceAccount: "caelo-mcp@p.iam.gserviceaccount.com",
   staticMembers: "user:owner@x.com",
   databaseHost: "10.0.0.3",
+  mcpSigners: "",
 };
 
 /** Fake IAP + IAM policy endpoints holding real state. */
@@ -97,6 +98,22 @@ describe("runSync", () => {
     // Every removal is logged loudly.
     const removed = logs.filter((l) => l.severity === "WARNING").map((l) => l.member);
     expect(removed).toEqual(["allUsers", "domain:x.com", "user:gone@x.com", "group:g@x.com"]);
+  });
+
+  it("keeps the upgrader's token-creator on caelo-mcp, and only there", async () => {
+    const UPGRADER = "serviceAccount:caelo-production-upgrader@p.iam.gserviceaccount.com";
+    const { deps, policies } = fakeGoogle({
+      [IAP]: { bindings: [{ role: IAP_ACCESSOR_ROLE, members: ["user:owner@x.com", MCP] }] },
+      [SA]: { bindings: [{ role: TOKEN_CREATOR_ROLE, members: ["user:owner@x.com", UPGRADER] }] },
+    });
+    const { log } = collect();
+    const r = await runSync(
+      { ...config, mcpSigners: UPGRADER },
+      { google: deps, readEmails: async () => [], log },
+    );
+    expect(r.ok).toBe(true);
+    expect(membersOf(policies[SA], TOKEN_CREATOR_ROLE)).toEqual(["user:owner@x.com", UPGRADER]);
+    expect(membersOf(policies[IAP], IAP_ACCESSOR_ROLE)).not.toContain(UPGRADER);
   });
 
   it("writes nothing when the policies already match (self-healing run on a clean install)", async () => {

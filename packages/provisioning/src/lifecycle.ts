@@ -71,10 +71,13 @@ import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
 import { findServiceUrl, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe, type HealthProbe } from "./upgrade/health.js";
 import {
+  canonicalReleaseTag,
   fetchLatestReleaseTag,
   RELEASE_REGISTRY,
   releaseImageRef,
   releaseTag,
+  releaseVersionForDigest,
+  resolveOpsImageRef,
   resolveTagDigest,
   verifyCosignAll,
 } from "./upgrade/release-images.js";
@@ -521,7 +524,16 @@ async function upgradeInstall(
       migrate: (imageRef) =>
         runMigrationsViaCloudRunJob({ projectId, region, imageOverride: imageRef }, { run }),
       healthProbe: (plan) => gcpHealthProbe(run, http, plan),
-      recordDigests: (digests) => recordRolledDigests(installId, provider, digests),
+      recordDigests: async (digests) =>
+        recordRolledDigests(
+          installId,
+          provider,
+          digests,
+          // #696 — the version the upgrader job judges later updates by.
+          canonicalReleaseTag(targetTag)?.replace(/^v/, "") ??
+            (await releaseVersionForDigest(run, "admin", digests.admin)),
+        ),
+      resolveOpsImage: resolveOpsImageRef,
       recordInfraContractVersion: (version) => recordInfraContractVersion(installId, version),
       provisionerIdentity: () => upgradeKeylessProvisioner(installId, projectId),
     },
@@ -584,10 +596,18 @@ async function recordRolledDigests(
   installId: string,
   provider: "gcp" | "gcp-firebase",
   digests: ImageDigests,
+  releaseVersion: string | null,
 ): Promise<void> {
   const reason = (e: unknown) => (e instanceof Error ? e.message.split("\n")[0] : String(e));
+  if (!releaseVersion) {
+    log.warn(
+      yellow(
+        "Could not tell which Caelo release these images are (no version tag points at them), so install.json records none; in-product updates stay unavailable until an upgrade to a released version.",
+      ),
+    );
+  }
   try {
-    recordImageDigests(installId, digests);
+    recordImageDigests(installId, digests, releaseVersion);
   } catch (e) {
     log.warn(
       yellow(

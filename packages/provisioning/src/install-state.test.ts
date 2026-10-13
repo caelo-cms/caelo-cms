@@ -96,6 +96,43 @@ describe("recordImageDigests (regression C4)", () => {
   }, 30_000);
 });
 
+describe("recordImageDigests and the release version (#696)", () => {
+  it("keeps the version for unchanged digests, drops it for unknown new ones, sets a given one", () => {
+    const home = mkdtempSync(join(tmpdir(), "caelo-install-state-"));
+    try {
+      const dir = join(home, `.caelo-${meta.installId}`);
+      mkdirSync(dir, { recursive: true });
+      const start = { ...meta, imageDigests: { admin: A, gateway: B }, releaseVersion: "0.10.45" };
+      writeFileSync(join(dir, "install.json"), JSON.stringify(start));
+      const module = resolve(import.meta.dir, "install-state.ts");
+      const C = `sha256:${"c".repeat(64)}`;
+      const script = `
+        const m = await import(${JSON.stringify(module)});
+        const id = ${JSON.stringify(meta.installId)};
+        const out = [];
+        m.recordImageDigests(id, { admin: ${JSON.stringify(A)}, gateway: ${JSON.stringify(B)} });
+        out.push(m.readMetadata(id).releaseVersion ?? null);
+        m.recordImageDigests(id, { admin: ${JSON.stringify(C)}, gateway: ${JSON.stringify(B)} });
+        out.push(m.readMetadata(id).releaseVersion ?? null);
+        m.recordImageDigests(id, { admin: ${JSON.stringify(C)}, gateway: ${JSON.stringify(B)} }, "0.11.0");
+        out.push(m.readMetadata(id).releaseVersion ?? null);
+        console.log(JSON.stringify(out));`;
+      const child = Bun.spawnSync([process.execPath, "-e", script], {
+        env: { ...process.env, HOME: home },
+        stderr: "pipe",
+      });
+      expect(new TextDecoder().decode(child.stderr)).toBe("");
+      expect(JSON.parse(new TextDecoder().decode(child.stdout))).toEqual([
+        "0.10.45",
+        null,
+        "0.11.0",
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
 describe("selectInstall", () => {
   const a = { ...meta, installId: "gcp-firebase-caelo-cms-com", domain: "caelo-cms.com" };
   const b = { ...meta, installId: "gcp-firebase-searchviu-com", domain: "searchviu.com" };

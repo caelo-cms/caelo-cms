@@ -22,4 +22,11 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 1;
+export const INFRA_CONTRACT_VERSION = 2;
+
+// History (why each bump happened — an install below a number needs the
+// converge that introduced it):
+//   1 — epic #696 split: converge vs app-roll.
+//   2 — the upgrader job (#696 Phase 2): its service account + scoped
+//       grants, the Cloud SQL backup role, its IAM database user, the job,
+//       the admin's run-only grant and CAELO_UPGRADER_JOB on the admin.

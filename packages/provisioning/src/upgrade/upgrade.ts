@@ -76,6 +76,11 @@ export interface GcpUpgradeDeps {
     | { readonly ok: false; readonly error: string }
   >;
   readonly recordDigests: (digests: ImageDigests) => Promise<void>;
+  /**
+   * The release's caelo-ops image (`…/ops@sha256:…`) for the upgrader job
+   * the converge sets up (#696), or null when the tag has none.
+   */
+  readonly resolveOpsImage: (tag: string) => Promise<string | null>;
   readonly recordInfraContractVersion: (version: number) => void;
   /** The operator-identity converge step (keyless provisioner); see ConvergeDeps. */
   readonly provisionerIdentity?: () => Promise<boolean>;
@@ -143,8 +148,12 @@ export async function upgradeGcpInstall(
   }
   sBak.done(`Pre-upgrade backup ${backup.backup.backupId} of ${backup.backup.instance} taken`);
 
-  // 4. Converge, the part before the roll.
+  // 4. Converge, the part before the roll. The upgrader job runs the ops
+  //    image with rights over the whole app, so it is deployed only when its
+  //    signature checks out (an unverified image is never set up).
+  const opsImageRef = await verifiedOpsImage(target, deps);
   const converge = startConverge(plan, target.ownerEmail, {
+    opsImageRef,
     run,
     reporter: r,
     ...(deps.sleep ? { sleep: deps.sleep } : {}),
@@ -204,4 +213,37 @@ export async function upgradeGcpInstall(
     );
   }
   return true;
+}
+
+/**
+ * The release's caelo-ops image for the upgrader job, signature-verified
+ * like the admin and gateway images; null (with the reason printed) when
+ * there is none, it does not verify, or verification was skipped.
+ */
+async function verifiedOpsImage(
+  target: GcpUpgradeTarget,
+  deps: GcpUpgradeDeps,
+): Promise<string | null> {
+  const r = deps.reporter;
+  const ref = await deps.resolveOpsImage(target.targetTag);
+  const digest = ref ? /@(sha256:[0-9a-f]{64})$/.exec(ref)?.[1] : undefined;
+  if (!ref || !digest) {
+    r.warn(
+      `The release ${target.targetTag} has no caelo-ops image in the registry, so the upgrader job (in-product updates) cannot be set up this time.`,
+    );
+    return null;
+  }
+  if (target.skipVerify) {
+    r.warn(
+      "--skip-verify set — the upgrader job is not set up or updated without a verified image.",
+    );
+    return null;
+  }
+  if (!(await deps.verifyImages([{ slug: "ops", digest }]))) {
+    r.warn(
+      "The caelo-ops image's signature did not verify, so the upgrader job is not set up or updated.",
+    );
+    return null;
+  }
+  return ref;
 }
