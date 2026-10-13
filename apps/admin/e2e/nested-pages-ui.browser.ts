@@ -54,7 +54,7 @@ test.beforeAll(() => {
     const ctx = { actorId: seeded.actorId, actorKind: "human", requestId: tag };
     const create = async (slug, parentPageId) => {
       const r = await execute(registry, adapter, ctx, "pages.create", {
-        slug, title: slug, templateId: seeded.templateId,
+        slug, title: slug, templateId: seeded.templateId, status: "draft",
         ...(parentPageId ? { parentPageId } : {}),
       });
       if (!r.ok) throw new Error("pages.create: " + JSON.stringify(r.error));
