@@ -4,7 +4,7 @@
  * v0.5.11 — wording-lock for propose-style tool output. Every tool
  * that queues a proposal must emit the canonical
  *
- *   "Queued proposal <uuid>: <summary>. ... /security/<domain>/pending ..."
+ *   "Queued proposal <uuid>: <summary>. ... /settings/<domain>/pending ..."
  *
  * shape. ChatPanel's ToolCardRouter routes tools to the inline-Approve
  * ProposeCard via that shape; a non-canonical prefix (e.g. "Queued
@@ -26,10 +26,10 @@ const TOOLS_DIR = new URL(".", import.meta.url).pathname;
 
 // Tools whose handlers call a propose op (queue + Owner-approve) that
 // routes through ProposeCard's inline Approve/Reject UI. Each must
-// emit "Queued proposal <uuid>: <summary>. …/security/<domain>/pending …"
+// emit "Queued proposal <uuid>: <summary>. …/settings/<domain>/pending …"
 //
 // Excluded from this lock (different flows):
-// - propose-skill.ts — routes to /security/skills/proposals (different
+// - propose-skill.ts — routes to /settings/skills/proposals (different
 //   queue URL shape; ProposeCard's regex wouldn't match anyway)
 // - submit-plugin.ts — "Submitted plugin …" surface, not "Queued …"
 const PROPOSE_TOOL_FILES = [

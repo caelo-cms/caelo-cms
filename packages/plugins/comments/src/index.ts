@@ -519,7 +519,7 @@ export default definePlugin<PluginContextTier1>({
           return;
         }
         try {
-          // P13 — solve PoW captcha (if enabled by /security/gateway).
+          // P13 — solve PoW captcha (if enabled by /settings/gateway).
           const captcha = await attachCaptchaProof().catch(() => null);
           const json = await postPluginJson("comments", "submit", {
             pageId,

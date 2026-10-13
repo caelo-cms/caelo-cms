@@ -83,7 +83,7 @@ function harness(declarePermission: boolean) {
     gated: {
       proposeOp: "widgets.propose_update",
       executeOp: "widgets.execute_proposal",
-      pendingQueuePath: "/security/widgets/pending",
+      pendingQueuePath: "/settings/widgets/pending",
     },
   } as FilteredTool;
   const run = (approver: ExecutionContext) =>
@@ -110,7 +110,7 @@ describe("attachGatedExecute — approver permission (#589)", () => {
     expect(r.ok).toBe(false);
     expect(r.error).toContain("roles.manage");
     expect(r.error).toContain(PROPOSAL_ID);
-    expect(r.error).toContain("/security/widgets/pending");
+    expect(r.error).toContain("/settings/widgets/pending");
     // Proposed (so an Owner can approve it from the queue), never executed.
     expect(calls.map((c) => c.op)).toEqual(["widgets.propose_update"]);
   });

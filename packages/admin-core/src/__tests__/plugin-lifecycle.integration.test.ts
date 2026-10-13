@@ -231,7 +231,7 @@ describe("#393 — lifecycle completion", () => {
     expect(skillAfter[0]?.status).toBe("active");
 
     // Re-enable without a restart. Two steps, exactly as the
-    // /security/plugins route does it: the op flips the row, then the
+    // /settings/plugins route does it: the op flips the row, then the
     // host loads the plugin. The load CANNOT run inside the op — the
     // loader opens its own transaction and takes the same row.
     const reenabled = await execute(registry, adapter, HUMAN_CTX, "plugins.activate", {

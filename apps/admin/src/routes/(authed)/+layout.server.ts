@@ -23,15 +23,15 @@ import type { LayoutServerLoad } from "./$types";
  * anywhere (DB-stored OR env-fallback), redirect to the /welcome/ai
  * wizard (pick provider → paste key → land in chat) instead of
  * hitting "AI provider not configured" the first time they open
- * chat. The full management surface stays at /security/ai; the
+ * chat. The full management surface stays at /settings/ai; the
  * wizard links to it. Once any provider is configured, this check
  * is a one-query no-op per request.
  */
 
 const AI_REDIRECT_ALLOWED_PREFIXES = [
   "/design/fonts", // Core font management and previews work before AI/provider setup.
-  "/security/ai", // landing page itself + sub-routes
-  "/security", // other Owner-only setup screens (deployments etc.)
+  "/settings/ai", // landing page itself + sub-routes
+  "/settings", // other Owner-only setup screens (deployments etc.)
   "/logout",
   "/api/", // any internal endpoints
 ];
@@ -43,9 +43,9 @@ function pathExempt(pathname: string): boolean {
 export const load: LayoutServerLoad = async ({ locals, url }) => {
   if (!locals.user) throw redirect(303, "/login");
 
-  // P18 — block all non-/security routes until an AI provider exists.
+  // P18 — block all non-/settings routes until an AI provider exists.
   // Skip the check on routes the Owner needs to reach to fix the
-  // problem (anything under /security) so we don't loop.
+  // problem (anything under /settings) so we don't loop.
   if (!pathExempt(url.pathname)) {
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "ai_providers.any_configured", {});

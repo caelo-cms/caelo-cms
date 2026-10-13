@@ -3,7 +3,7 @@
 /**
  * AI tool: site_memory_propose. Queues a proposal in
  * `site_memory_proposals`; never writes to `site_ai_memory` directly.
- * Owners review the queue at /security/ai/memory-proposals.
+ * Owners review the queue at /settings/ai/memory-proposals.
  */
 
 import { execute } from "@caelo-cms/query-api";

@@ -13,7 +13,7 @@
    *
    * `icon` is typed loosely (`any`) — lucide-svelte 5's icon type
    * doesn't satisfy svelte's narrow `Component` interface. Same
-   * pattern as `/security/+page.svelte`'s tile rendering.
+   * pattern as `/settings/+page.svelte`'s tile rendering.
    */
 
   import { Card, CardContent } from "#lib/components/ui/card/index.js";

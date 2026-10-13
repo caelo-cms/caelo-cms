@@ -108,7 +108,7 @@ export const imageRequestsReserveOp = defineOperation({
         operation: op,
         message:
           why.kind === "budget"
-            ? `ImageBudgetExceeded (${why.scope}): the ${why.scope} image budget would be exceeded. The Owner can raise it at /security/ai/budgets; otherwise wait for the 24-hour window or continue without a new image.`
+            ? `ImageBudgetExceeded (${why.scope}): the ${why.scope} image budget would be exceeded. The Owner can raise it at /settings/ai/budgets; otherwise wait for the 24-hour window or continue without a new image.`
             : why.kind === "conflict"
               ? "ImageRequestConflict: this tool call already requested a different image."
               : why.kind === "session-required"

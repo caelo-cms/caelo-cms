@@ -44,7 +44,7 @@ describe("owner-settings tools — registration + gate", () => {
       expect(t?.gated).toEqual({
         proposeOp,
         executeOp: "owner_settings.execute_proposal",
-        pendingQueuePath: "/security/owner-settings/pending",
+        pendingQueuePath: "/settings/owner-settings/pending",
       });
     });
   }

@@ -66,7 +66,7 @@ export function generateCaddyfile(spec: CaddyfileSpec): string {
   // `cms-provision` produces a working Caddyfile even pre-DNS).
   if (spec.domains.length === 0) {
     blocks.push(`# No domains configured yet — cms-provision regenerate-caddy
-# will overwrite this file when you add one at /security/domains.
+# will overwrite this file when you add one at /settings/domains.
 :8081 {
   reverse_proxy localhost:${spec.adminPort}
 }

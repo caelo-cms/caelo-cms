@@ -14,15 +14,15 @@ This phase is heavier than P3/P4 because it crosses three new sub-systems (provi
 
 ## End-to-end verification
 
-1. Owner enters an Anthropic API key in `/security/ai`; provider stub disappears.
+1. Owner enters an Anthropic API key in `/settings/ai`; provider stub disappears.
 2. Owner edits site-AI-memory ("brand voice: terse, no exclamation marks; banned phrase: 'cutting-edge'").
 3. Editor opens `/content/chat`, clicks **New chat**.
 4. Editor types: *"Make the hero headline blue and add a subheading."* → AI streams a response, calls `edit_module(...)` with HTML/CSS deltas → preview pane auto-applies → red/green visual diff overlay appears → Publish-changes pill shows `1 pending change`.
 5. Editor clicks **Publish** → pill commits via the existing `pages.set_modules` / `modules.update` ops → P4 snapshot lands → /content/history shows the new entry attributed to the AI actor with the chat session id linked.
 6. Editor opens a second chat in another tab and edits a different module → the two chats do not see each other's in-progress changes (ephemeral chat branches).
 7. Editor clicks the inline pencil on three rendered elements → three chips accumulate in the composer → editor sends *"make them all green"* → AI uses the chip references to update three modules in one turn.
-8. AI proposes a site-memory addition mid-conversation: *"You frequently ask for the CTA to be in title case — should I add 'CTA buttons in title case' to site memory?"* → Owner sees it in the review queue at `/security/ai/memory-proposals`; nothing auto-applies.
-9. The cost dashboard at `/security/costs` (still a stub from P2.1) now shows `ai_calls` rows with input/output/cached token counts and an estimated cost.
+8. AI proposes a site-memory addition mid-conversation: *"You frequently ask for the CTA to be in title case — should I add 'CTA buttons in title case' to site memory?"* → Owner sees it in the review queue at `/settings/ai/memory-proposals`; nothing auto-applies.
+9. The cost dashboard at `/settings/costs` (still a stub from P2.1) now shows `ai_calls` rows with input/output/cached token counts and an estimated cost.
 10. Switch the provider to Claude Opus 4.7 (already default), verify the chat keeps streaming. The provider brand label is absent from the editor chat UI; it appears only in the Owner security panel and the cost dashboard.
 
 Each step has a Bun integration test where it can run against the recorded provider fixture; the editor flow has a Playwright spec.
@@ -34,12 +34,12 @@ Each step has a Bun integration test where it can run against the recorded provi
 - **`actorScope` widens to `"ai"`** on `modules.update` (and only `modules.update`) for P5. AI cannot reach `pages.*`, `templates.*`, or `template_blocks.set` yet — those land per-tool as later phases need them. This is the literal "module-only" surface the requirements call for at this stage.
 - **Ephemeral chat branch = a `chat_branch_id` UUID** on `site_snapshots` (already reserved in P4). Each chat session creates one. All AI-emitted snapshots in the chat carry it. The `pages.list_with_branch` / `modules.get_with_branch` reads in P5 prefer chat-branch snapshots over main when a `chat_branch_id` is set. Publish = re-emit the latest chat-branch snapshots as main snapshots (no `chat_branch_id`) and clear the chat's branch pointer. **This is one of the heavier pieces of the phase; the simpler alternative below is the fallback.**
   - **Fallback if branch reads prove too invasive:** ship "publish-on-every-tool-call" instead, with the Publish pill becoming a UI nicety over the existing live-write semantics. Two parallel editors then race exactly like P3 — last write wins. Decision in week 1; flagged at the end-of-phase risks section.
-- **Token accounting is a write-side log only.** No real-time budget enforcement here. The `ai_calls` table records every call; P16 wires per-actor / per-op-type budgets and the dashboard. Until then `/security/costs` shows aggregates from `ai_calls` directly.
+- **Token accounting is a write-side log only.** No real-time budget enforcement here. The `ai_calls` table records every call; P16 wires per-actor / per-op-type budgets and the dashboard. Until then `/settings/costs` shows aggregates from `ai_calls` directly.
 - **Skills system stays in P10A.** P5 ships `chat_sessions.engaged_skills` as a JSON column with empty default; P10A populates it. The chat works without any skill engagement — system prompt is just `site_ai_memory` + tool definitions.
-- **Provider brand absent from editor chat UI.** Hard rule. The brand string `"Claude"` only appears in `/security/ai/*` and `/security/costs`. The chat label is just "AI". Tested by a Playwright assertion that the chat HTML never contains the provider name.
+- **Provider brand absent from editor chat UI.** Hard rule. The brand string `"Claude"` only appears in `/settings/ai/*` and `/settings/costs`. The chat label is just "AI". Tested by a Playwright assertion that the chat HTML never contains the provider name.
 - **Visual diff overlay reuses the P3 preview composer.** It re-runs `composePagePreview` against the *proposed* snapshot state, gets the second HTML, and DOM-diffs the two. No headless browser thumbnailer in P5 — the requirement says "visual content diff" and we interpret that as DOM-tree red/green at the element level. Real screenshot diffs land in P6 with the static generator.
 - **Click-to-chat affordance lives in the preview iframe.** Each rendered element gets a `data-caelo-target="${moduleId}|${selector}"` attribute injected by the preview composer at render time. The iframe posts a `caelo:edit-element` message to the parent on click; the parent appends a chip to the composer. No iframe-cross-origin pain because the iframe loads from the same origin.
-- **Site memory is a proposal queue, not direct writes.** AI calls a `site_memory.propose` tool whose handler writes to a queue table; Owners review at `/security/ai/memory-proposals` and accept/reject. Direct site memory writes go through the existing `/security/ai` Owner-only form.
+- **Site memory is a proposal queue, not direct writes.** AI calls a `site_memory.propose` tool whose handler writes to a queue table; Owners review at `/settings/ai/memory-proposals` and accept/reject. Direct site memory writes go through the existing `/settings/ai` Owner-only form.
 - **Streaming SSE, not WebSocket.** SvelteKit endpoint streams tool-call deltas via SSE. WebSocket is overkill for one-direction streams and adds connection-state complexity that P5 doesn't need.
 - **Secrets via env var in dev, secrets manager in production.** P5 reads `ANTHROPIC_API_KEY` from `process.env`. P14 will land the real secrets-manager abstraction; P5 plugs into it transparently because the provider takes the key as a constructor argument, not a global.
 
@@ -233,10 +233,10 @@ Owner-curated body + a tools-as-JSON catalogue. Cached by Anthropic's prompt-cac
 ```
 /content/chat                            → New chat + sessions list (left), pinned active session
 /content/chat/[sessionId]                → Active chat: composer + transcript + preview pane + publish pill
-/security/ai                             → provider config (existing stub fills here): API key + model
-/security/ai/memory                      → site_ai_memory editor (Owner-only)
-/security/ai/memory-proposals            → review queue
-/security/costs                          → fills with ai_calls aggregates (existing stub)
+/settings/ai                             → provider config (existing stub fills here): API key + model
+/settings/ai/memory                      → site_ai_memory editor (Owner-only)
+/settings/ai/memory-proposals            → review queue
+/settings/costs                          → fills with ai_calls aggregates (existing stub)
 ```
 
 Composer features:
@@ -265,7 +265,7 @@ Composer features:
 **Playwright E2E:**
 - `chat-edit-module.browser.ts`: dev owner logs in, sets API key (or test bypasses with a fake provider that replays a fixture), opens `/content/chat`, types prompt, watches stream, sees pill, clicks Publish, sees /content/history entry attributed to AI actor.
 - `chat-element-chips.browser.ts`: clicks 3 elements → 3 chips → sends prompt → 3 modules updated in one turn.
-- `chat-no-provider-brand.browser.ts`: scans the chat HTML and asserts no provider-brand strings present; checks `/security/ai` does have them.
+- `chat-no-provider-brand.browser.ts`: scans the chat HTML and asserts no provider-brand strings present; checks `/settings/ai` does have them.
 - `chat-branch-isolation.browser.ts`: two browser contexts (two editors) edit the same module via two chats → neither sees the other's pending edit until either publishes.
 - `site-memory-proposal.browser.ts`: AI proposes → Owner sees the queue → accepts → memory applies on the next chat.
 
@@ -363,7 +363,7 @@ Tools called by AI:
 4. Tool dispatch + `edit_module` tool + `site_memory.propose` tool. `actorScope` widens on `modules.update`.
 5. Chat session ops (`sessions`, `messages`, `publish`). Integration tests against fixture provider.
 6. Site AI memory ops + system-prompt composer.
-7. Admin routes: `/content/chat/**`, `/security/ai/**`, `/security/costs`. SSE streaming endpoint.
+7. Admin routes: `/content/chat/**`, `/settings/ai/**`, `/settings/costs`. SSE streaming endpoint.
 8. Click-to-chat preview-iframe injection (preview composer change). Visual diff overlay.
 9. Cost dashboard reads from `ai_calls`.
 10. Playwright flows. Full e2e green.

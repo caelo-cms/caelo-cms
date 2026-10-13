@@ -103,7 +103,7 @@ export default definePlugin<PluginContextTier1>({
     /**
      * P12 review-pass #4 — real §11.A propose/execute split.
      * AI submits a proposal here; an Owner reviews + applies via
-     * /security/auth/pending. The auth_config singleton is only
+     * /settings/auth/pending. The auth_config singleton is only
      * mutated by `apply_auth_config` (Owner-direct) or
      * `execute_proposal` (Owner-approves-AI).
      */
@@ -287,7 +287,7 @@ export default definePlugin<PluginContextTier1>({
     /**
      * §11.A propose-style configuration. AI calls this to suggest
      * config changes; an Owner approves separately. v1 ships only the
-     * propose half — Owner reviews queued rows in /security/auth/pending.
+     * propose half — Owner reviews queued rows in /settings/auth/pending.
      */
     /**
      * `get_auth_config` — read the singleton auth_config row. Returns
@@ -339,7 +339,7 @@ export default definePlugin<PluginContextTier1>({
     /**
      * P12 review-pass #4 — true §11.A propose op. AI calls this; the
      * row lands at status='pending' in `auth_config_proposals`. The
-     * operator approves on the chat's proposal card (queue: /security/auth/pending); the
+     * operator approves on the chat's proposal card (queue: /settings/auth/pending); the
      * admin then calls `execute_proposal` which is Owner-gated. AI
      * calling `execute_proposal` directly hits ActorScopeRejected at
      * the registry layer (not enforced here at the plugin level — see
@@ -358,7 +358,7 @@ export default definePlugin<PluginContextTier1>({
       return {
         proposalId: r.id,
         status: "pending" as const,
-        message: "Owner reviews queued proposals at /security/auth/pending.",
+        message: "Owner reviews queued proposals at /settings/auth/pending.",
       };
     },
 
@@ -465,7 +465,7 @@ export default definePlugin<PluginContextTier1>({
       name: "propose_auth_config",
       description:
         "TWO-STEP: propose changes to the auth plugin's config (signupOpen, passwordMinLength). " +
-        "This only QUEUES the proposal — the operator approves it on the chat's proposal card (queue: /security/auth/pending). " +
+        "This only QUEUES the proposal — the operator approves it on the chat's proposal card (queue: /settings/auth/pending). " +
         "DO NOT claim the change is live; tell the user to review the queue.",
       operationName: "propose_auth_config",
       inputJsonSchema: {

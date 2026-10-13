@@ -31,7 +31,7 @@ import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
-  // roles.manage matches the existing /security/themes/pending permission
+  // roles.manage matches the existing /settings/themes/pending permission
   // (theme edits affect every page on the site).
   requirePermission(locals, "roles.manage");
   const { adapter, registry } = getQueryContext();
@@ -49,7 +49,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 export const actions: Actions = {
   /**
    * Mint a new theme variant. Calls themes.propose_create — the Owner
-   * approves at /security/themes/pending to actually create the row.
+   * approves at /settings/themes/pending to actually create the row.
    */
   create: async ({ request, locals }) => {
     requirePermission(locals, "roles.manage");
@@ -99,8 +99,8 @@ export const actions: Actions = {
     const v = r.value as { proposalId: string };
     return {
       ok: true,
-      message: `Proposal queued — click Approve at /security/themes/pending to create theme "${displayName}". Proposal ${v.proposalId.slice(0, 8)}…`,
-      pendingPath: "/security/themes/pending",
+      message: `Proposal queued — click Approve at /settings/themes/pending to create theme "${displayName}". Proposal ${v.proposalId.slice(0, 8)}…`,
+      pendingPath: "/settings/themes/pending",
     };
   },
 
@@ -122,8 +122,8 @@ export const actions: Actions = {
     }
     return {
       ok: true,
-      message: "Activation proposal queued. Approve at /security/themes/pending to apply.",
-      pendingPath: "/security/themes/pending",
+      message: "Activation proposal queued. Approve at /settings/themes/pending to apply.",
+      pendingPath: "/settings/themes/pending",
     };
   },
 
@@ -156,7 +156,7 @@ export const actions: Actions = {
 
   /**
    * Propose deleting an inactive theme. Owner approves at
-   * /security/themes/pending; active themes are rejected by the op.
+   * /settings/themes/pending; active themes are rejected by the op.
    */
   delete: async ({ request, locals }) => {
     requirePermission(locals, "roles.manage");
@@ -172,8 +172,8 @@ export const actions: Actions = {
     }
     return {
       ok: true,
-      message: "Delete proposal queued. Approve at /security/themes/pending to apply.",
-      pendingPath: "/security/themes/pending",
+      message: "Delete proposal queued. Approve at /settings/themes/pending to apply.",
+      pendingPath: "/settings/themes/pending",
     };
   },
 };

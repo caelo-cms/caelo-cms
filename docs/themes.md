@@ -149,7 +149,7 @@ instruction, not a recompose.
 ## Propose / execute (CLAUDE.md §11.A)
 
 Theme create / activate / delete are gated: the AI (or the panel) proposes,
-a human Owner approves at `/security/themes/pending`. See
+a human Owner approves at `/settings/themes/pending`. See
 [propose-execute-pattern.md](./propose-execute-pattern.md) for the shared
 mechanics. Theme-specific notes:
 

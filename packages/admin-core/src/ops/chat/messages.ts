@@ -375,7 +375,7 @@ export const recordAiCallOp = defineOperation({
           operationType: input.operationType,
           inputTokens: input.inputTokens,
           outputTokens: input.outputTokens,
-          fix: "add the model at /security/ai/pricing, or have the AI propose it (propose_set_ai_pricing)",
+          fix: "add the model at /settings/ai/pricing, or have the AI propose it (propose_set_ai_pricing)",
         });
       }
     }

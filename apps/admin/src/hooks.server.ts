@@ -58,6 +58,7 @@ import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
 import { type ExecutionContext, redirectTargetIssue } from "@caelo-cms/shared";
 import type { Handle, ServerInit } from "@sveltejs/kit/hooks";
+import { legacySecurityRedirect } from "#lib/legacy-security-redirect.js";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
 import { getQueryContext, mediaStorageSetup } from "#lib/server/query.js";
 
@@ -204,7 +205,7 @@ async function bootstrapPlugins(): Promise<void> {
   // rather than by reading the plugins table.
   if (report.inactive.length > 0) {
     console.log(
-      `[hooks] plugin host: ${report.inactive.length} installed, awaiting Owner activation at /security/plugins (${report.inactive
+      `[hooks] plugin host: ${report.inactive.length} installed, awaiting Owner activation at /settings/plugins (${report.inactive
         .map((p) => `${p.slug}:${p.status}`)
         .join(", ")})`,
     );
@@ -221,7 +222,7 @@ async function bootstrapPlugins(): Promise<void> {
       .filter((p) => p.definition.requestedCapabilities?.includes("email"));
     if (emailUsers.length > 0) {
       console.warn(
-        `[hooks] email transport NOT configured — ${emailUsers.map((p) => p.slug).join(", ")} will log sends to stderr only. Configure at /security/email.`,
+        `[hooks] email transport NOT configured — ${emailUsers.map((p) => p.slug).join(", ")} will log sends to stderr only. Configure at /settings/email.`,
       );
     }
   }
@@ -266,7 +267,7 @@ async function consumePendingBootstrapToken(): Promise<void> {
 // provisioning sets from the install's staging host setting (the wizard's
 // answer, default staging.<domain>; `upgrade` defaults installs that
 // predate it). Fills an unset value only, so an Owner's later change in
-// Security → Domains is never overwritten. Same memoised shape as the
+// Settings → Domains is never overwritten. Same memoised shape as the
 // site base URL seed below.
 let stagingHostSeed: Promise<void> | null = null;
 function seedStagingHost(): Promise<void> {
@@ -346,7 +347,7 @@ function bootstrapQualityAudits(): void {
 // P13 — debounced auto-redeploy + gateway log GC. Polls audit_events
 // for "publishable" op kinds (driven by site_settings.auto_redeploy_*)
 // and fires deploy.trigger after `auto_redeploy_debounce_ms` of quiet.
-// Off by default; Owner toggles at /security/gateway.
+// Off by default; Owner toggles at /settings/gateway.
 let redeployBootstrapped = false;
 function bootstrapRedeploy(): void {
   if (redeployBootstrapped) return;
@@ -401,7 +402,7 @@ function bootstrapChatImageGc(): void {
 // external `bunx @caelo-cms/mcp-server` callers can drive the
 // chat-runner. resolveProvider returns null when no key is wired
 // anywhere; mcp.send_chat surfaces a structured error pointing at
-// /security/ai instead of crashing.
+// /settings/ai instead of crashing.
 let mcpBridgeBootstrapped = false;
 function bootstrapMcpBridge(): void {
   if (mcpBridgeBootstrapped) return;
@@ -444,6 +445,11 @@ export const init: ServerInit = async () => {
 };
 
 export const handle: Handle = async ({ event, resolve }) => {
+  // #684 — the Settings section moved from /security; keep every old link,
+  // bookmark and in-flight Approve POST working. Answered before session
+  // resolution: the target page runs its own auth guard.
+  const moved = legacySecurityRedirect(event.url);
+  if (moved) return new Response(null, { status: 308, headers: { Location: moved } });
   ensureProviderResolverConfigured();
   // v0.5.9 — fire-and-forget bootstraps had `void` prefixes that
   // swallowed their rejections. Replace with .catch() so background

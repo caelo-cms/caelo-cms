@@ -19,7 +19,7 @@ export const createLayoutTool: ToolDefinitionWithHandler<
 > = {
   name: "create_layout",
   description:
-    "Propose a new layout (site shell). TWO-STEP: this only QUEUES the proposal — approved on the chat's proposal card (queue: /security/layouts/pending); " +
+    "Propose a new layout (site shell). TWO-STEP: this only QUEUES the proposal — approved on the chat's proposal card (queue: /settings/layouts/pending); " +
     "an Owner must click Approve to actually create the layout. DO NOT claim the layout exists. " +
     'Use when the user wants a chrome variant that none of the existing layouts cover (e.g. "a campaign layout ' +
     'with a banner and no footer"). After Approve, you can bind templates to it via `set_template_layout` or ' +
@@ -72,7 +72,7 @@ export const createLayoutTool: ToolDefinitionWithHandler<
       ok: true,
       content:
         `Queued proposal ${v.proposalId}: layout-create slug=${input.slug} (${v.preview.blockCount} blocks). ` +
-        `Approve it on the proposal card in this chat (queue: /security/layouts/pending).`,
+        `Approve it on the proposal card in this chat (queue: /settings/layouts/pending).`,
     };
   },
 };

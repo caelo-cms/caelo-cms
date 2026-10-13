@@ -23,7 +23,7 @@ model (work sessions, preview branches, approval gates).
 
 In your Caelo install:
 
-1. Visit `/security/mcp` as an Owner.
+1. Visit `/settings/mcp` as an Owner.
 2. Click **New token**, give it a name (`claude-code`, `laptop`, `ci`,
    etc.), optionally set an AI-spend cap (microcents), and copy the
    bearer that's shown ONCE.
@@ -41,8 +41,8 @@ with these env vars set:
 | Variable | Required | Notes |
 |---|---|---|
 | `CAELO_ADMIN_URL` | yes | `https://admin.example.com` — point at your install. |
-| `CAELO_MCP_TOKEN` | yes | Bearer minted at `/security/mcp`. |
-| `CAELO_IAP_SERVICE_ACCOUNT` | on GCP installs | The admin's MCP service account. `/security/mcp` includes it in the `claude mcp add` command when the admin is behind Google IAP. |
+| `CAELO_MCP_TOKEN` | yes | Bearer minted at `/settings/mcp`. |
+| `CAELO_IAP_SERVICE_ACCOUNT` | on GCP installs | The admin's MCP service account. `/settings/mcp` includes it in the `claude mcp add` command when the admin is behind Google IAP. |
 
 ### Installs behind Google IAP (GCP)
 
@@ -67,7 +67,7 @@ The provisioner creates the service account (`caelo-mcp@<project>`), allowlists 
 
 Output: assistant reply text + a JSON block with `chatSessionId` (for
 the next call), `requestId` (click through to
-`/security/audit/<requestId>` for the full audit trail), the structured
+`/settings/audit/<requestId>` for the full audit trail), the structured
 tool-call summaries the agent dispatched, the per-turn cost in
 microcents, and a `pendingProposals` count so the agent can surface
 "you have N things waiting for Owner approval".

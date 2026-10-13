@@ -48,7 +48,7 @@ That loop — talk → preview → publish — is the whole product.
 
 If you use Claude Code (or any MCP-aware client):
 
-1. As Owner, navigate to `/security/mcp` on your install
+1. As Owner, navigate to `/settings/mcp` on your install
 2. Click **New token**, name it (`claude-code`, `laptop`, etc.), copy the bearer
 3. The page renders the exact `claude mcp add` snippet — copy and run it in your terminal
 4. Now `caelo_chat` is available as a tool inside Claude Code; talk to your install from anywhere

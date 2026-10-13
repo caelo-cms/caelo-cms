@@ -160,7 +160,7 @@ export function budgetTripText(gate: BudgetGateState, liveSpentMicrocents: numbe
     `of the ${money(gate.ceilingMicrocents)} budget.${overshootLine} ${estimateLine} Nothing is lost: finished ` +
     `work is saved and the run resumes where it stopped. To continue, set a new ceiling ` +
     `(tell the AI a new amount — it records it with set_migration_budget — or use ` +
-    `/security/import) and then say "continue". To stop here, ask for the run report ` +
+    `/settings/import) and then say "continue". To stop here, ask for the run report ` +
     `instead.${unpricedSuffix(gate)}`
   );
 }

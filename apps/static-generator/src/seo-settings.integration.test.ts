@@ -112,7 +112,7 @@ describe("#551 site base URL in the static generator", () => {
     await expect(read).rejects.toThrow("Site base URL is not configured");
     await expect(
       adapter.withAdminTransaction(systemCtx, (tx) => readSeoSettings(tx)),
-    ).rejects.toThrow("Security → SEO");
+    ).rejects.toThrow("Settings → SEO");
     // The agent reads this error too: it names the tool that clears it.
     await expect(
       adapter.withAdminTransaction(systemCtx, (tx) => readSeoSettings(tx)),
@@ -146,7 +146,7 @@ describe("migration 0232 site language in the static generator", () => {
       expect(s.siteBaseUrl).toBe("https://site-551.example");
       expect(() => requireSiteLanguage(s)).toThrow("Site language is not configured");
       expect(() => requireSiteLanguage(s)).toThrow("set_site_identity");
-      expect(() => requireSiteLanguage(s)).toThrow("Security → SEO");
+      expect(() => requireSiteLanguage(s)).toThrow("Settings → SEO");
     } finally {
       await setLanguage("en");
     }

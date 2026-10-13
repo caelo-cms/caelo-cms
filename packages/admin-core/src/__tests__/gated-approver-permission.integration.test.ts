@@ -166,7 +166,7 @@ describe("#589 — chat path: a reviewer cannot approve a role-permission change
     const refused = await approvedBy(users.reviewer);
     expect(refused.ok).toBe(false);
     expect(refused.error).toContain("roles.manage");
-    expect(refused.error).toContain("/security/roles/pending");
+    expect(refused.error).toContain("/settings/roles/pending");
     const rolePerms = async () =>
       (
         (await asSystem((tx) =>

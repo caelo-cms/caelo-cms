@@ -600,7 +600,7 @@ export const createPageOp = defineOperation({
           kind: "HandlerError",
           operation: "pages.create",
           message:
-            "no templateId provided and site_defaults is empty — seed site_defaults via /security/site-defaults or pass an explicit templateId",
+            "no templateId provided and site_defaults is empty — seed site_defaults via /settings/site-defaults or pass an explicit templateId",
           nextAction: {
             tool: "list_templates",
             reason:

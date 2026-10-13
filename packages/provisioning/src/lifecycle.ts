@@ -947,7 +947,7 @@ async function upgradeInstall(
         "The upgrade continues; external MCP clients stay blocked by IAP until this succeeds.",
       );
       // Don't hand the admin an MCP service account that may not exist or
-      // lacks its bindings: /security/mcp would print a `claude mcp add`
+      // lacks its bindings: /settings/mcp would print a `claude mcp add`
       // command that can't work. Leave the var as the service has it.
       leaveUntouched.push(MCP_ENV_VAR);
     }
@@ -1100,7 +1100,7 @@ async function upgradeInstall(
     // serves it once it is mapped. The command is idempotent, so this
     // reminder is safe to repeat on every upgrade.
     log.info(
-      `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve the staging host (it maps the host the admin uses — ${bold(installStagingHost(meta))} unless changed there —, turns on password protection, prints the login and the DNS record). Host and access: admin → Security → Domains / Staging access.`,
+      `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve the staging host (it maps the host the admin uses — ${bold(installStagingHost(meta))} unless changed there —, turns on password protection, prints the login and the DNS record). Host and access: admin → Settings → Domains / Staging access.`,
     );
   }
 

@@ -290,7 +290,7 @@
   // THIS chat so the operator can Approve / Reject without scrolling
   // up to find the original tool-card. Refreshed on mount + after
   // every successful tool-result. The endpoint is read-only; Approve
-  // / Reject post to the existing /security/<domain>/pending form
+  // / Reject post to the existing /settings/<domain>/pending form
   // actions (same path ProposeCard uses).
   interface PendingProposal {
     proposalId: string;
@@ -1667,7 +1667,7 @@
       // v0.2.45 — surface a clear error instead of silently dropping the
       // optimistic user message. The fetch reached the server but no body
       // came back; usually means the route returned a non-stream error.
-      chatError = `Chat request returned no body (status ${res.status}). The server may be misconfigured — try again or check /security/audit.`;
+      chatError = `Chat request returned no body (status ${res.status}). The server may be misconfigured — try again, or look the request up under Settings (/settings → Look up a request).`;
       return false;
     }
     // Issue #685 — did the turn start? Only positive evidence counts: model

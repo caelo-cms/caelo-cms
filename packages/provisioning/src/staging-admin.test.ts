@@ -188,7 +188,7 @@ describe("describeStagingApply", () => {
     expect(text).toContain("now uses preview.searchviu.com");
     expect(text).toContain("user:     searchviu");
     expect(text).toContain("password: pw-123");
-    expect(text).toContain("Security → Staging access");
+    expect(text).toContain("Settings → Staging access");
     expect(text).toContain("until the next Stage");
     expect(text).toContain("2 page(s) are draft");
     expect(text).toContain("Pricing (/pricing/)");
