@@ -7,10 +7,9 @@ Pulumi stack provisioning Caelo on Azure managed services. Implements the shared
 | Concern | Azure resource |
 |---|---|
 | Managed Postgres | Azure DB for PostgreSQL flexible server (zone-redundant in production) + automated backups (geo-redundant in production) |
-| Blob storage | Storage Account + two containers (`media` private, `$web` static-website-enabled) |
-| CDN / Edge | Azure Container Apps `edge-router` instance (Front Door + custom-domain bindings land in P15.4 review-pass) |
-| Edge compute (A/B + redirects) | Container App `edge-router` running `edge-handler.ts` with `@caelo-cms/edge-router` |
-| Container runtime | Five Container Apps (admin / gateway / orchestrator / runner / edge-router) in one managed environment |
+| Blob storage | Storage Account with a private `media` container and static-website hosting (`$web`) |
+| CDN / Edge | Azure Front Door Standard: the primary domain serves the static website as files, with a Front Door managed certificate; no edge compute on the request path |
+| Container runtime | Four Container Apps (admin / gateway / orchestrator / runner) in one managed environment |
 | Secret store | Key Vault (postgres-password, public-role-password, gateway-role-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key). The gateway container gets `GATEWAY_DATABASE_URL` + `PUBLIC_DATABASE_URL`, never an admin credential (#613). |
 | Edge-log sink | Log Analytics workspace receives Container Apps logs (queryable by P12A analytics plugin via Azure Monitor) |
 
@@ -31,7 +30,7 @@ az login
 az acr login --name <your-acr>
 docker build -t <your-acr>.azurecr.io/admin:latest apps/admin
 docker push <your-acr>.azurecr.io/admin:latest
-# Repeat for gateway, orchestrator, runner, edge-router.
+# Repeat for gateway, orchestrator, runner.
 
 # Bring the stack up.
 pulumi up
@@ -50,15 +49,12 @@ pulumi stack output bootstrapUrlOut
 # → https://example.com/setup?token=<64-hex>
 ```
 
+`dnsRecordsRequiredOut` lists the two records the primary domain needs: a CNAME to the Front Door endpoint (`frontDoorEndpointHostNameOut`) and the `_dnsauth.<domain>` TXT record that validates the domain for Front Door's managed certificate. An apex domain needs a registrar that supports CNAME flattening / ALIAS records, or Azure DNS.
+
 ## v1 limitations (P15.4 review-pass items)
 
-- **Front Door + custom-domain SSL** not auto-provisioned. v1 surfaces the edge-router Container App's FQDN as the temporary CNAME target; P15.4 wires Front Door + ManagedIdentity-based cert binding.
 - **Container image build pipeline** — operators push via `az acr build` for v1.
-- **Per-locale custom-domain SSL** — operator wires per-locale subdomains via Front Door custom-domain bindings; auto-provisioning lands alongside the Front Door wiring.
-
-## Edge-router byte-identity
-
-The byte-identity test in `packages/edge-router/src/index.test.ts` asserts a fixed corpus of (visitorId, manifestVersion, experimentId) tuples produces identical variant labels across every runtime — a visitor sees the same variant whether they hit self-hosted Caddy in dev, AWS CloudFront in staging, or Azure Container Apps in production.
+- **Per-locale custom-domain SSL** — operator wires per-locale subdomains via additional Front Door custom-domain bindings.
 
 ## Destroy
 

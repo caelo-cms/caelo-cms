@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 #
 # Caelo AWS provider stack. Provisions RDS Postgres + S3 (media + static
-# output) + CloudFront + Lambda@Edge (A/B split + redirects) + ECS
+# output) + CloudFront + ECS
 # Fargate (admin / gateway / orchestrator / runner) + Secrets Manager.
 # Implements the shared CloudAdapterInputs/CloudAdapterOutputs contract
 # from packages/provisioning/src/adapter.ts so the cms-provision CLI's
@@ -13,7 +13,7 @@ runtime:
   options:
     typescript: true
     packagemanager: bun
-description: Caelo AWS stack — RDS Multi-AZ + S3 + CloudFront + Lambda@Edge + ECS Fargate.
+description: Caelo AWS stack — RDS Multi-AZ + S3 + CloudFront + ECS Fargate.
 config:
   caelo-aws:domain:
     type: string
@@ -23,7 +23,7 @@ config:
     description: Operator email used for ACM cert validation + Pulumi notifications.
   caelo-aws:region:
     type: string
-    description: Primary AWS region (RDS, S3, ECS). Required, no default; must equal aws:region. Fixed after install (#607). Lambda@Edge always pinned to us-east-1 regardless.
+    description: Primary AWS region (RDS, S3, ECS). Required, no default; must equal aws:region. Fixed after install (#607). The CloudFront certificate is always issued in us-east-1 regardless.
   caelo-aws:rdsInstanceClass:
     type: string
     default: db.t4g.small

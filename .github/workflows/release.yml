@@ -173,14 +173,13 @@ jobs:
       # files at job start. Hardcoded keeps the job idempotent.)
       matrix:
         package:
-          # `shared` + `edge-router` ship first so `provisioning`'s
+          # `shared` ships first so `provisioning`'s
           # runtime deps resolve on the registry by the time `bunx
           # @caelo-cms/provisioning` fetches it. Matrix jobs run
           # in parallel by default, but the sequence here is
           # documentation — registry-side ordering is
           # eventually-consistent within a single workflow run.
           - shared
-          - edge-router
           - mcp-server
           - provisioning
 
@@ -308,7 +307,7 @@ jobs:
 
       - name: Verify npm packages are installable
         run: |
-          for pkg in shared edge-router mcp-server provisioning; do
+          for pkg in shared mcp-server provisioning; do
             INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
             echo "Inspecting ${INSTALL}..."
             # Same registry-propagation window as the install step below:
@@ -336,7 +335,7 @@ jobs:
           TMPDIR=$(mktemp -d)
           cd "$TMPDIR"
           npm init -y >/dev/null
-          for pkg in shared edge-router mcp-server provisioning; do
+          for pkg in shared mcp-server provisioning; do
             INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
             echo "::group::install ${INSTALL}"
             # Retry with backoff: right after publish, npm's CDN can
