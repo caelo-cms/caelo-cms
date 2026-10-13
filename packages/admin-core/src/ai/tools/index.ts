@@ -15,6 +15,11 @@ import {
   updateModulesManyTool,
   updatePagesManyTool,
 } from "./bulk-pages-modules.js";
+import {
+  getCaeloUpdatePolicyTool,
+  getCaeloUpdateTool,
+  listCaeloUpdatesTool,
+} from "./caelo-updates.js";
 import { cancelProposalTool } from "./cancel-proposal.js";
 import {
   getPageSeoTool,
@@ -345,6 +350,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // #696 — installed vs newest Caelo release; the AI informs, the Owner
   // installs at /settings/updates.
   registry.register(getCaeloVersionTool);
+  // #696 Phase 2 — update history, one run's timeline, the auto-update
+  // policy. Read-only: the Owner installs + changes the policy (step-up).
+  registry.register(listCaeloUpdatesTool);
+  registry.register(getCaeloUpdateTool);
+  registry.register(getCaeloUpdatePolicyTool);
   // audit #2 — ONE module-placement tool routed by `target`
   // (page/layout/template). Replaces add_module_to_{page,layout,template};
   // adds reuse-by-moduleId on the layout target (the old asymmetry).

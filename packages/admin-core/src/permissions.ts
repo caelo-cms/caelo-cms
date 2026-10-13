@@ -22,6 +22,9 @@ export const PERMISSIONS = [
   "settings.write",
   // Issue #569: see other editors' isolated chat branches (migration 0249).
   "drafts.view_all",
+  // #696: install Caelo updates + change the update policy (migration 0267);
+  // every use additionally needs a fresh Google sign-in (step-up).
+  "platform.update",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];

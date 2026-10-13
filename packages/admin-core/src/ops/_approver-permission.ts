@@ -46,7 +46,7 @@ export type ApprovalOperationDefinition<I, O> = OperationDefinition<I, O> & {
  * The permissions in `required` the human `actorId` does NOT hold through
  * any of their roles. A deleted or unknown user holds none.
  */
-async function missingPermissions(
+export async function missingPermissions(
   tx: TransactionRunner,
   actorId: string,
   required: readonly Permission[],

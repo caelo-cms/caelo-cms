@@ -52,6 +52,14 @@ exists_role operator_access_reader \
   || $PSQL -c "CREATE ROLE operator_access_reader NOLOGIN;"
 $PSQL -c "GRANT operator_access_reader TO admin_role;"
 
+# The upgrader job's role (migration 0267 grants it exactly the update
+# request/event/policy columns it may touch). Same reason as above: created
+# here because the local admin_role has no CREATEROLE; admin_role may SET
+# ROLE to it so the integration tests can prove its limits.
+exists_role platform_updater \
+  || $PSQL -c "CREATE ROLE platform_updater NOLOGIN;"
+$PSQL -c "GRANT platform_updater TO admin_role;"
+
 exists_db cms_admin  || $PSQL -c "CREATE DATABASE cms_admin OWNER admin_role;"
 exists_db cms_public || $PSQL -c "CREATE DATABASE cms_public OWNER admin_role;"
 
