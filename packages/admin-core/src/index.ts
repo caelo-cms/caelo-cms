@@ -99,9 +99,10 @@ export {
   formatMicrocentsAsMoney,
   microcentsToMajorUnits,
 } from "./ops/imports-cost.js";
-export type {
-  PlatformUpdateEvent,
-  PlatformUpdateRequest,
+export {
+  type PlatformUpdateEvent,
+  type PlatformUpdateRequest,
+  startUpgraderFor,
 } from "./ops/platform-update-requests.js";
 // #696 — installed vs newest release; Settings → Updates reads it.
 export { type PlatformUpdateStatus, UPDATES_PATH } from "./ops/platform-updates.js";
@@ -139,15 +140,19 @@ export {
   generateKekHex,
   kekFingerprint,
 } from "./security/secret-box.js";
+export { completeGoogleStepUp, type StepUpCompletion } from "./security/step-up/complete.js";
 export {
   STEP_UP_REQUIRED,
   sessionHashOf,
 } from "./security/step-up/gate.js";
+export { GOOGLE_TOKEN_ENDPOINT, STEP_UP_CALLBACK_PATH } from "./security/step-up/google-oidc.js";
 export {
-  exchangeCode,
-  STEP_UP_CALLBACK_PATH,
-  verifyFreshSignIn,
-} from "./security/step-up/google-oidc.js";
+  UPGRADER_SETUP_HINT,
+  type UpgraderExecution,
+  type UpgraderTrigger,
+  UpgraderTriggerError,
+  upgraderTriggerFromEnv,
+} from "./security/upgrader/job-trigger.js";
 export { emitSnapshot } from "./snapshots/emit.js";
 // issue #620 — the advisory lock that orders AI merges against automatic
 // production publishes (the serialization regression tests take it).

@@ -21,9 +21,16 @@
  * browser session (security/step-up/gate.ts), consumed by the action.
  */
 
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import {
+  type DatabaseAdapter,
+  defineOperation,
+  execute,
+  type OperationRegistry,
+  type TransactionRunner,
+} from "@caelo-cms/query-api";
 import {
   CAELO_VERSION,
+  type ExecutionContext,
   err,
   isNewerVersion,
   ok,
@@ -41,6 +48,7 @@ import {
   guardedActionRefusal,
   sessionHashSchema,
 } from "../security/step-up/gate.js";
+import { type UpgraderTrigger, UpgraderTriggerError } from "../security/upgrader/job-trigger.js";
 
 const handlerError = (operation: string, message: string) =>
   err({ kind: "HandlerError" as const, operation, message });
@@ -401,3 +409,40 @@ export const platformUpdatesGetOp = defineOperation({
     });
   },
 });
+
+/**
+ * Start the upgrader job for a request the Owner just made, and record on
+ * the request whether that worked (`platform_updates.record_trigger`). A job
+ * that could not be started ends the request, with the next step, so it
+ * never blocks the next attempt. Never throws for a trigger failure.
+ */
+export async function startUpgraderFor(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ctx: ExecutionContext,
+  requestId: string,
+  trigger: UpgraderTrigger,
+): Promise<{ ok: true; execution: string } | { ok: false; error: string; nextStep: string }> {
+  let outcome: { ok: true; execution: string } | { ok: false; error: string; nextStep: string };
+  try {
+    outcome = { ok: true, execution: await trigger.start() };
+  } catch (e) {
+    outcome = {
+      ok: false,
+      error: (e instanceof Error ? e.message : String(e)).slice(0, 1500),
+      nextStep:
+        e instanceof UpgraderTriggerError ? e.nextStep.slice(0, 1500) : "Try again in a moment.",
+    };
+  }
+  const recorded = await execute(registry, adapter, ctx, "platform_updates.record_trigger", {
+    requestId,
+    outcome: outcome.ok
+      ? { started: true, execution: outcome.execution }
+      : { started: false, error: outcome.error, nextStep: outcome.nextStep },
+  });
+  if (!recorded.ok) {
+    // The job may run regardless; the timeline shows it. Say what is missing.
+    console.error("[platform_updates] could not record the upgrader start", recorded.error);
+  }
+  return outcome;
+}

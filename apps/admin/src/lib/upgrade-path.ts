@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { installHintFromSiteUrl, provisioningUpgradeCommand } from "@caelo-cms/shared";
+import {
+  installHintFromSiteUrl,
+  provisioningCommand,
+  provisioningUpgradeCommand,
+} from "@caelo-cms/shared";
 
 /**
  * How the Owner upgrades THIS install (issue #696 Phase 0), as Settings →
@@ -54,6 +58,8 @@ export interface UpgradePathEnv {
    * CAELO_FAKE_IMAGE_PROVIDER.
    */
   readonly CAELO_E2E_UPDATES_PROVIDER?: string;
+  /** `projects/<id>/locations/<region>/jobs/<job>` — names the install's project. */
+  readonly CAELO_UPGRADER_JOB?: string;
 }
 
 function isCliProvider(p: string): p is CliUpgradeProvider {
@@ -130,4 +136,54 @@ export function releaseNotesExcerpt(
   // A first paragraph longer than the budget is cut at a word instead.
   const end = cut > 0 ? cut : trimmed.lastIndexOf(" ", maxChars);
   return { text: `${trimmed.slice(0, end > 0 ? end : maxChars).trimEnd()}\n…`, truncated: true };
+}
+
+/**
+ * The install's Google Cloud project, from the upgrader job's resource name
+ * (`projects/<id>/…`); null when the admin has no upgrader job.
+ */
+export function installProjectId(env: Pick<UpgradePathEnv, "CAELO_UPGRADER_JOB">): string | null {
+  return (
+    /^projects\/([a-z][a-z0-9-]{4,28}[a-z0-9])\//.exec(env.CAELO_UPGRADER_JOB?.trim() ?? "")?.[1] ??
+    null
+  );
+}
+
+/** Bun's official installer — Cloud Shell has Node but not Bun. */
+const BUN_INSTALL =
+  'curl -fsSL https://bun.sh/install | bash && export PATH="$HOME/.bun/bin:$PATH"';
+
+/**
+ * How to install a release that changes the install's cloud setup (#696,
+ * maintainer decision 1): in Google Cloud Shell — a terminal in the browser,
+ * signed in as the Owner — because only the Owner's own identity may change
+ * the project's permissions; the admin's upgrader may not.
+ *
+ * Until the one-click Cloud Shell flow exists (#696 Phase 3) these are the
+ * pinned commands to paste there: Bun, then fetch the install's records from
+ * its own project, then the same upgrade the CLI runs anywhere.
+ *
+ * @returns null when the CLI path itself is unavailable (see resolveUpgradePath)
+ */
+export function cloudShellUpgrade(
+  env: UpgradePathEnv,
+  version: string,
+): {
+  readonly consoleUrl: string;
+  readonly projectId: string | null;
+  readonly commands: readonly string[];
+} | null {
+  const path = resolveUpgradePath(env, version);
+  if (path.kind !== "cli") return null;
+  const projectId = installProjectId(env);
+  const commands = [BUN_INSTALL];
+  if (projectId) commands.push(provisioningCommand(version, ["attach", "--project", projectId]));
+  commands.push(path.command);
+  return {
+    consoleUrl: projectId
+      ? `https://console.cloud.google.com/home/dashboard?project=${projectId}&cloudshell=true`
+      : "https://shell.cloud.google.com/?show=terminal",
+    projectId,
+    commands,
+  };
 }
