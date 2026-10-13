@@ -1,6 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { Badge } from "#lib/components/ui/badge/index.js";
+  import { proposalQueueRoute } from "#lib/proposal-queue-route.js";
   import { buttonVariants } from "#lib/components/ui/button/button-variants.js";
   import {
     Card,
@@ -11,30 +12,9 @@
 
   let { data } = $props();
 
-  // Map each domain → its dedicated /settings/<domain>/pending route.
-  // Per-domain pages handle the action shapes (secret-supply for
-  // email/ai_providers, password reveal for users/mcp_tokens, etc.).
-  const queueRouteFor: Record<string, string> = {
-    deploy: "/settings/deployments/pending",
-    layouts: "/settings/layouts/pending",
-    users: "/settings/users/pending",
-    roles: "/settings/roles/pending",
-    snapshots: "/settings/snapshots/pending",
-    email_config: "/settings/email/pending",
-    ai_providers: "/settings/ai/pending",
-    mcp_tokens: "/settings/mcp/pending",
-    templates: "/settings/templates/pending",
-    domains: "/settings/domains/pending",
-    themes: "/settings/themes/pending",
-    site_defaults: "/settings/seo",
-    plugins: "/settings/plugins/pending",
-    owner_settings: "/settings/owner-settings/pending",
-    quality: "/settings/quality/pending",
-    gateway: "/settings/gateway",
-    site_memory: "/settings/ai/memory-proposals",
-    skills: "/settings/skills",
-    tool_approvals: "/settings/tool-approvals/pending",
-  };
+  // #684 — one domain → queue map for the inbox, the chat's pending strip
+  // and the proposal cards; this page used to keep its own copy, which had
+  // drifted (url_migrations had no entry and linked to "#").
 </script>
 
 <div class="space-y-6">
@@ -63,7 +43,7 @@
       <CardContent>
         <div class="flex flex-wrap gap-2">
           {#each Object.entries(data.byDomain) as [domain, count] (domain)}
-            <a href={queueRouteFor[domain] ?? "#"} class="contents">
+            <a href={proposalQueueRoute(domain)} class="contents">
               <Badge variant="secondary">{domain}: {count}</Badge>
             </a>
           {/each}
@@ -73,7 +53,7 @@
 
     <div class="space-y-2">
       {#each data.items as item (item.proposalId)}
-        {@const route = queueRouteFor[item.domain] ?? "#"}
+        {@const route = proposalQueueRoute(item.domain)}
         <Card>
           <CardContent class="flex items-start gap-3 py-3 text-sm">
             <Badge variant="outline" class="shrink-0">{item.domain}.{item.kind}</Badge>

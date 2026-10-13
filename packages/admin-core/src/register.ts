@@ -176,7 +176,12 @@ import {
   setTemplateLayoutOp,
   updateTemplateOp,
 } from "./ops/content/templates.js";
-import { executeUrlMigrationOp, proposeUrlMigrationOp } from "./ops/content/url_migrations.js";
+import {
+  executeUrlMigrationOp,
+  listUrlMigrationPendingOp,
+  proposeUrlMigrationOp,
+  rejectUrlMigrationOp,
+} from "./ops/content/url_migrations.js";
 import {
   listDeployRunsOp,
   listDeployTargetsOp,
@@ -673,6 +678,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(resolvePublicUrlsOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
+  registry.register(listUrlMigrationPendingOp);
+  registry.register(rejectUrlMigrationOp);
   registry.register(proposeUninstallPluginOp);
   // §11.A — revoking a plugin grant (plugins.execute_proposal applies it).
   registry.register(proposeRevokePluginCapabilityOp);

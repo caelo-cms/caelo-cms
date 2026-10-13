@@ -33,6 +33,7 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
+  parsePayload,
   resolveChatSessionId,
 } from "../_propose-helpers.js";
 import { createRedirectOp } from "../redirects.js";
@@ -251,3 +252,90 @@ export const executeUrlMigrationOp = requiresApproverPermission(
   ["roles.manage"],
   executeUrlMigrationOpDefinition,
 );
+
+const pendingRow = z.object({
+  id: z.string(),
+  kind: z.literal("migrate"),
+  proposedBy: z.string(),
+  preview: z.record(z.string(), z.unknown()),
+  createdAt: z.string(),
+});
+
+/**
+ * #684 — the pending URL migrations, for `/settings/url_migrations/pending`.
+ * In the chat the gated tool proposes and applies in one approved step; a
+ * proposal queued over the Power-MCP (no in-chat card) or one whose card
+ * the operator skipped waits here. Before this op nothing listed those
+ * rows, so the chat's pending strip posted Approve to a page that did not
+ * exist.
+ */
+export const listUrlMigrationPendingOp = defineOperation({
+  name: "url_migrations.list_pending",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ limit: z.number().int().min(1).max(200).optional() }).strict(),
+  output: z.object({ proposals: z.array(pendingRow) }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id, proposed_by::text AS proposed_by, preview, created_at
+      FROM url_migration_pending_actions
+      WHERE status = 'pending'
+      ORDER BY created_at DESC
+      LIMIT ${input.limit ?? 50}
+    `)) as unknown as Array<{
+      id: string;
+      proposed_by: string;
+      preview: unknown;
+      created_at: string | Date;
+    }>;
+    return ok({
+      proposals: rows.map((r) => ({
+        id: r.id,
+        kind: "migrate" as const,
+        proposedBy: r.proposed_by,
+        preview: parsePayload<Record<string, unknown>>(r.preview),
+        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+      })),
+    });
+  },
+});
+
+export const rejectUrlMigrationOp = defineOperation({
+  name: "url_migrations.reject_proposal",
+  // Why human-only (+system): §11.A — the operator's Reject.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      proposalId: z.string().uuid(),
+      reason: z.string().min(1).max(500).optional(),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE url_migration_pending_actions
+         SET status = 'rejected', decided_at = now(), decided_by = ${ctx.actorId}::uuid,
+             decision_reason = ${input.reason ?? null}
+       WHERE id = ${input.proposalId}::uuid AND status = 'pending'
+       RETURNING id
+    `)) as unknown as { id: string }[];
+    if (rows.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "url_migrations.reject_proposal",
+        message: "proposal not found or already decided — reload the queue",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "url_migrations.reject_proposal",
+      input,
+      succeeded: true,
+      entityId: input.proposalId,
+      resultSummary: input.reason ?? "(no reason)",
+    });
+    return ok({});
+  },
+});

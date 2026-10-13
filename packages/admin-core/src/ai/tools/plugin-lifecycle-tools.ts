@@ -59,7 +59,7 @@ export const listPluginGrantsTool = makeListReadTool<z.infer<typeof listGrantsIn
 export const proposeRevokePluginCapabilityTool = makeProposeTool({
   toolName: "propose_revoke_plugin_capability",
   opName: "plugins.propose_revoke_capability",
-  pendingQueuePath: "/settings/pending",
+  pendingQueuePath: "/settings/plugins/pending",
   when:
     "Propose taking one granted capability away from an installed plugin (e.g. its image generation or private file storage). " +
     "Revoking a grant of the RUNNING version (target `running`, the default) DISABLES the plugin — its data is kept, but running it again needs a new Owner approval; target `pending_update` abandons an update that has not started (it must be staged and approved again). " +

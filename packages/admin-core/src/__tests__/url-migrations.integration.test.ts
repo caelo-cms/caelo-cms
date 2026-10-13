@@ -252,4 +252,61 @@ describe("#390 — URL-diff engine", () => {
       expect(JSON.stringify(applied.error)).toContain("stale proposal");
     }
   });
+
+  // #684 — the Owner queue at /settings/url_migrations/pending lists and
+  // rejects; before these ops a queued migration could only ever wait.
+  it("list_pending shows the queued migration; reject closes it; the AI cannot reject", async () => {
+    resetPluginHost();
+    localeByPage.clear();
+    await sqlSystem((tx) => tx.unsafe("DELETE FROM url_migration_pending_actions"));
+    const pageD = await seedPage("t390-delta");
+    // A stored path that no longer matches the (plugin-free) resolution.
+    await sqlSystem(async (tx) => {
+      await tx.unsafe(`UPDATE pages SET current_path = '/de/t390-delta' WHERE id = '${pageD}'`);
+    });
+    const proposed = await execute(registry, adapter, SYS_CTX, "url_migrations.propose_migrate", {
+      reason: "queue check",
+    });
+    if (!proposed.ok) throw new Error(JSON.stringify(proposed.error));
+    const { proposalId } = proposed.value as { proposalId: string };
+
+    const listed = await execute(registry, adapter, SYS_CTX, "url_migrations.list_pending", {});
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const rows = (listed.value as { proposals: { id: string; preview: { pagesMoved: number } }[] })
+      .proposals;
+    expect(rows.map((r) => r.id)).toEqual([proposalId]);
+    expect(rows[0]?.preview.pagesMoved).toBe(1);
+
+    const aiReject = await execute(
+      registry,
+      adapter,
+      { ...SYS_CTX, actorKind: "ai" },
+      "url_migrations.reject_proposal",
+      { proposalId },
+    );
+    expect(aiReject.ok).toBe(false);
+
+    const rejected = await execute(registry, adapter, SYS_CTX, "url_migrations.reject_proposal", {
+      proposalId,
+      reason: "not now",
+    });
+    expect(rejected.ok).toBe(true);
+    const after = await execute(registry, adapter, SYS_CTX, "url_migrations.list_pending", {});
+    expect(after.ok && (after.value as { proposals: unknown[] }).proposals).toEqual([]);
+
+    const twice = await execute(registry, adapter, SYS_CTX, "url_migrations.reject_proposal", {
+      proposalId,
+    });
+    expect(twice.ok).toBe(false);
+    if (!twice.ok) expect(JSON.stringify(twice.error)).toContain("already decided");
+
+    // Rejecting moved nothing.
+    const path = await sqlSystem(
+      (tx) =>
+        tx.unsafe(`SELECT current_path FROM pages WHERE id = '${pageD}'`) as Promise<
+          { current_path: string }[]
+        >,
+    );
+    expect(path[0]?.current_path).toBe("/de/t390-delta");
+  });
 });

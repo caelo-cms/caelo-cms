@@ -81,30 +81,36 @@ export const actions: Actions = {
     return { ok: true, message: `Skill '${slug}' is now ${status}.` };
   },
 
-  reviewProposal: async ({ request, locals }) => {
-    requirePermission(locals, "settings.write");
-    const form = await request.formData();
-    await assertCsrfToken(form, locals);
-    const proposalId = String(form.get("proposalId") ?? "");
-    const decision = String(form.get("decision") ?? "");
-    if (!proposalId || (decision !== "accept" && decision !== "reject")) {
-      return fail(400, { error: "proposalId + accept/reject required" });
-    }
-    const note = form.get("note") ? String(form.get("note")) : undefined;
-    const { adapter, registry } = getQueryContext();
-    const r = await execute(registry, adapter, locals.ctx, "skills.review_proposal", {
-      proposalId,
-      decision: decision as "accept" | "reject",
-      decisionNote: note,
-    });
-    if (!r.ok) return fail(400, { error: "review failed" });
-    const v = r.value as { resultingSkillId: string | null };
-    return {
-      ok: true,
-      message:
-        decision === "accept"
-          ? `Accepted. Skill landed at status='awaiting_activation'${v.resultingSkillId ? ` (id ${v.resultingSkillId.slice(0, 8)})` : ""}. Activate it from the skills list.`
-          : "Proposal rejected.",
-    };
-  },
+  reviewProposal: ({ request, locals }) => reviewProposal(request, locals),
+  // #684 — the chat's pending strip posts `?/approve` / `?/reject` to
+  // `proposalQueueRoute("skills")`; same decision, fixed by the action.
+  approve: ({ request, locals }) => reviewProposal(request, locals, "accept"),
+  reject: ({ request, locals }) => reviewProposal(request, locals, "reject"),
 };
+
+async function reviewProposal(request: Request, locals: App.Locals, fixed?: "accept" | "reject") {
+  requirePermission(locals, "settings.write");
+  const form = await request.formData();
+  await assertCsrfToken(form, locals);
+  const proposalId = String(form.get("proposalId") ?? "");
+  const decision = fixed ?? String(form.get("decision") ?? "");
+  if (!proposalId || (decision !== "accept" && decision !== "reject")) {
+    return fail(400, { error: "proposalId + accept/reject required" });
+  }
+  const note = form.get("note") ? String(form.get("note")) : undefined;
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, locals.ctx, "skills.review_proposal", {
+    proposalId,
+    decision: decision as "accept" | "reject",
+    decisionNote: note,
+  });
+  if (!r.ok) return fail(400, { error: "review failed" });
+  const v = r.value as { resultingSkillId: string | null };
+  return {
+    ok: true,
+    message:
+      decision === "accept"
+        ? `Accepted. Skill landed at status='awaiting_activation'${v.resultingSkillId ? ` (id ${v.resultingSkillId.slice(0, 8)})` : ""}. Activate it from the skills list.`
+        : "Proposal rejected.",
+  };
+}

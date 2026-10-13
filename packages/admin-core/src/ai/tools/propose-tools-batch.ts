@@ -148,7 +148,7 @@ export const proposeLayoutDeleteTool = makeProposeTool({
 export const proposeUninstallPluginTool = makeProposeTool({
   toolName: "propose_uninstall_plugin",
   opName: "plugins.propose_uninstall",
-  pendingQueuePath: "/settings/pending",
+  pendingQueuePath: "/settings/plugins/pending",
   when:
     "Propose PERMANENTLY uninstalling a plugin: its cms_public AND cms_admin schemas are dropped (all plugin data deleted), its tools/workers/skills are removed, and pages whose URLs it reshaped move back with 301 redirects. " +
     "This is a TWO-STEP flow: you propose, the Owner approves the in-chat card. Do NOT claim the plugin was uninstalled after proposing. " +
@@ -174,7 +174,7 @@ export const proposeUninstallPluginTool = makeProposeTool({
 export const proposeUrlMigrationTool = makeProposeTool({
   toolName: "propose_url_migration",
   opName: "url_migrations.propose_migrate",
-  pendingQueuePath: "/settings/pending",
+  pendingQueuePath: "/settings/url_migrations/pending",
   when:
     "Propose migrating every page whose public URL no longer matches the active URL-contribution set (after a URL plugin was activated, deactivated, or reconfigured). " +
     "Computes the full old→new path diff + redirect fan-out as the preview; the Owner approves in-chat. " +

@@ -20,6 +20,14 @@ const QUEUE_ROUTE_OVERRIDES: Readonly<Record<string, string>> = {
   site_defaults: "/settings/seo",
   // needsApproval tool calls (pending_proposals.list domain `tool_approvals`).
   tool_approvals: "/settings/tool-approvals/pending",
+  // #684 — these two decide on their feature page, which exposes
+  // `?/approve` + `?/reject` for the chat's pending strip.
+  site_memory: "/settings/ai/memory-proposals",
+  skills: "/settings/skills",
+  // Executor op domains whose queue page sits under another segment
+  // (`imports.execute_proposal`, `quality_audits.execute_proposal`).
+  imports: "/settings/import/pending",
+  quality_audits: "/settings/quality/pending",
 };
 
 /** The pending-queue page for a `pending_proposals.list` domain. */

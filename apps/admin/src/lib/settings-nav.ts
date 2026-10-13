@@ -532,6 +532,12 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
             description: "Theme changes the AI prepared.",
             permission: "roles.manage",
           },
+          {
+            href: "/settings/url_migrations/pending",
+            label: "URL change proposals",
+            description: "Page address moves (with redirects) the AI prepared.",
+            permission: "roles.manage",
+          },
         ],
       },
       {
