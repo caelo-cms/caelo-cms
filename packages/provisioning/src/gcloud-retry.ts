@@ -9,10 +9,13 @@
 
 import type { GcloudResult } from "./gcloud.js";
 
-/** Runs one gcloud command; `stdin` feeds secret payloads (`--data-file=-`). */
+/**
+ * Runs one gcloud command; `stdin` feeds secret payloads (`--data-file=-`),
+ * `env` replaces the base environment (default: this process's).
+ */
 export type GcloudRunner = (
   args: string[],
-  opts?: { readonly stdin?: string },
+  opts?: { readonly stdin?: string; readonly env?: NodeJS.ProcessEnv },
 ) => Promise<GcloudResult>;
 export type Sleep = (ms: number) => Promise<void>;
 
