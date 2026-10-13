@@ -531,7 +531,15 @@ async function counterpartInLocale(
  *  create_variant): random, so it never collides with a real page. */
 function provisionalSlug(slug: string, localeCode: string): string {
   const nonce = crypto.randomUUID().replace(/-/g, "").slice(0, 10);
-  return `${slug.slice(0, 40)}-${localeCode.toLowerCase()}-${nonce}`.replace(/[^a-z0-9-]/g, "-");
+  // Core slugs are at most 64 chars: slug ≤ 40 + "-" + locale ≤ 12 +
+  // "-" + 10-char nonce = 64. A trailing hyphen never results (the
+  // nonce ends it).
+  const locale = localeCode
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .slice(0, 12);
+  const base = slug.slice(0, 40).replace(/-+$/, "");
+  return `${base}-${locale}-${nonce}`;
 }
 
 /** Shared by link_page_variants and create_variant: join `pageId` into
@@ -556,6 +564,31 @@ async function linkPageIntoGroup(
     throw new Error(
       `locale "${localeCode}" is not registered — call set_locales first (list current codes via intl_status)`,
     );
+  }
+  // #690 — joining the HOME page's group makes the page its locale's
+  // root ("/de"). A root has no parent and no child pages: a nested page
+  // would keep its parent chain, and children under a root would stop
+  // extending their parent's URL. Refuse before writing anything.
+  const defaults = await cms.call<{ defaults: { homePageId: string | null } | null }>(
+    "site_defaults.get",
+    {},
+  );
+  if (defaults.defaults?.homePageId === groupPageId) {
+    const listed = await cms.call<{
+      pages: { id: string; currentPath: string; parentPageId: string | null }[];
+    }>("pages.list", {});
+    const target = listed.pages.find((p) => p.id === pageId);
+    const children = listed.pages.filter((p) => p.parentPageId === pageId);
+    if (target?.parentPageId) {
+      throw new Error(
+        `page ${target.currentPath} sits under another page, but the home page's ${localeCode} counterpart is that locale's root — move it to the top level first (move_pages with parent null), then link it`,
+      );
+    }
+    if (children.length > 0) {
+      throw new Error(
+        `page ${target?.currentPath ?? pageId} has ${children.length} child page(s), but the home page's ${localeCode} counterpart is that locale's root and cannot have child pages — move them first (move_pages), then link it`,
+      );
+    }
   }
   const anchor = (await q.list("page_variants", {
     page_id: groupPageId,

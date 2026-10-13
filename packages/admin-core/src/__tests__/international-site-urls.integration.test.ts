@@ -502,6 +502,21 @@ describe("create_variant — the slug the caller cannot invent", () => {
         args,
       });
 
+    // A nested page cannot become a locale's home (the root has no parent).
+    const homeRow = (await sqlSystem((tx) =>
+      tx.unsafe("SELECT home_page_id::text AS id FROM site_defaults WHERE id = 1"),
+    )) as { id: string | null }[];
+    const homeId = homeRow[0]?.id;
+    if (!homeId) throw new Error("the first test designates a home page");
+    const asLocaleHome = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "international-site",
+      operationName: "link_page_variants",
+      args: { groupPageId: homeId, pageId: childId, localeCode: "de" },
+    });
+    expect(asLocaleHome.ok).toBe(false);
+    if (!asLocaleHome.ok) expect(asLocaleHome.error.message).toContain("top level");
+
     const tooEarly = await op({ sourcePageId: childId, localeCode: "de", slug: "t395-lr-teams" });
     expect(tooEarly.ok).toBe(false);
     if (!tooEarly.ok) {
