@@ -12,6 +12,7 @@ import { mintInternalToken } from "./internal-token.js";
 import {
   applyStagingAdmin,
   describeStagingApply,
+  domainEnableRetryCommand,
   inspectStagingAdmin,
   STAGING_PROVISION_SCOPE,
   type StagingApply,
@@ -223,5 +224,16 @@ describe("mintInternalToken", () => {
         new TextEncoder().encode(`1000:301000:staging.provision`),
       ),
     ).toBe(true);
+  });
+});
+
+describe("domainEnableRetryCommand", () => {
+  it("keeps an explicitly requested host, so a retry after verification maps it", () => {
+    expect(domainEnableRetryCommand("staging-domain", "preview.example.org")).toBe(
+      "cms-provision staging-domain enable --staging-domain preview.example.org",
+    );
+    expect(domainEnableRetryCommand("admin-domain", null)).toBe(
+      "cms-provision admin-domain enable",
+    );
   });
 });

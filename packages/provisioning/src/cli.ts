@@ -897,6 +897,11 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     process.exit(1);
   }
   let meta = selected.meta;
+  // The command to re-run after a stop before the admin was updated: an
+  // explicitly requested host must survive it, or the retry would map the
+  // admin's old host (codex review on #681).
+  const { domainEnableRetryCommand } = await import("./staging-admin.js");
+  let retry = domainEnableRetryCommand(command, null);
   const rotatePassword = process.argv.includes("--rotate-staging-password");
   const showPassword = process.argv.includes("--show-staging-password");
   if (kind === "staging") {
@@ -939,6 +944,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
       process.exit(1);
     }
     meta = { ...meta, stagingDomain: normalizeStagingHost(host) };
+    if (requested) retry = domainEnableRetryCommand(command, normalizeStagingHost(host));
     writeMetadata(meta.installId, meta);
   }
   if (!meta.projectId) process.exit(1);
@@ -973,7 +979,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     console.log(
       `Google only maps ${r.hostname} for a verified owner of ${r.verifyDomain}.\n` +
         "Search Console was opened for you: add the TXT record it shows at your registrar,\n" +
-        `click Verify, then run \`cms-provision ${command} enable\` again.`,
+        `click Verify, then run \`${retry}\` again.`,
     );
     process.exit(3);
   }
@@ -997,7 +1003,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     if (!applied.ok) {
       console.error(
         `${command}: ${r.hostname} is mapped, but the admin could not be updated: ${applied.error}\n` +
-          `Run \`cms-provision ${command} enable\` again once that is fixed (it is idempotent).`,
+          `Run \`${retry}\` again once that is fixed (it is idempotent).`,
       );
       process.exit(5);
     }

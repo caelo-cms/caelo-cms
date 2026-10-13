@@ -298,3 +298,13 @@ export function describeStagingApply(r: StagingApply): string[] {
   }
   return lines;
 }
+
+/**
+ * The command to re-run after `<kind>-domain enable` stopped before the
+ * admin was updated (domain verification, an admin error). An explicitly
+ * requested staging host is part of it: without it the retry would map the
+ * admin's previous host instead (codex review on #681).
+ */
+export function domainEnableRetryCommand(command: string, requestedHost: string | null): string {
+  return `cms-provision ${command} enable${requestedHost ? ` --staging-domain ${requestedHost}` : ""}`;
+}
