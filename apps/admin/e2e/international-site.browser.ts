@@ -592,4 +592,37 @@ test("#690 — a nested page's German variant nests under the German parent, reu
     { CHILD, DE_SECTION },
   ).trim();
   expect(path).toBe(`/de/${DE_SECTION}/${CHILD}`);
+
+  // Leave no open chat with pending changes behind for the dev owner:
+  // other suites render /edit for the same user.
+  const sessionId = new URL(page.url()).pathname.split("/").at(-1) ?? "";
+  runBunInline(
+    `
+    import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
+    import { registerAdminOps } from "@caelo-cms/admin-core";
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx\`SELECT created_by::text AS owner FROM chat_sessions WHERE id = \${process.env.SESSION_ID}::uuid\`;
+    });
+    await sql.end();
+    const adapter = new DatabaseAdapter({
+      adminDatabaseUrl: process.env.ADMIN_DATABASE_URL,
+      publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL,
+    });
+    const registry = new OperationRegistry();
+    registerAdminOps(registry);
+    const r = await execute(
+      registry,
+      adapter,
+      { actorId: rows[0].owner, actorKind: "human", requestId: "e2e690-cleanup" },
+      "chat.discard_branch",
+      { chatSessionId: process.env.SESSION_ID },
+    );
+    await adapter.close();
+    if (!r.ok) throw new Error("discard: " + JSON.stringify(r.error));
+    `,
+    { SESSION_ID: sessionId },
+  );
 });
