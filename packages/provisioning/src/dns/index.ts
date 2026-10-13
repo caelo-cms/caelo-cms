@@ -30,9 +30,12 @@ export type { DnsAdapter } from "./types.js";
 export async function pickDnsAdapter(opts: {
   domain: string;
   forceManual?: boolean;
+  /** No prompts: the manual adapter prints the records and polls (the install job). */
+  nonInteractive?: boolean;
 }): Promise<DnsAdapter> {
+  const manual = { domain: opts.domain, nonInteractive: opts.nonInteractive ?? false };
   if (opts.forceManual) {
-    return makeManualAdapter({ domain: opts.domain });
+    return makeManualAdapter(manual);
   }
 
   // Cloudflare — needs CLOUDFLARE_API_TOKEN (read-only zone scope is
@@ -49,5 +52,5 @@ export async function pickDnsAdapter(opts: {
   // implemented; falls through to manual. The interface + adapter
   // skeleton land here so the future PR is one file.
 
-  return makeManualAdapter({ domain: opts.domain });
+  return makeManualAdapter(manual);
 }

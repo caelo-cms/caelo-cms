@@ -181,6 +181,46 @@ function replicationArgs(replication: SecretReplication): string[] {
 }
 
 /**
+ * Create an empty secret `secretId` with the install's replication (that of
+ * its `postgres-password`, {@link readSecretReplication}); regional in
+ * `region` when an org policy refuses automatic replication. Used for the
+ * install job's Owner setup link (#696, install-job.ts). An existing secret
+ * counts as created.
+ */
+export async function createInstallSecret(
+  install: {
+    readonly projectId: string;
+    readonly env: string;
+    readonly region: string;
+    readonly secretId: string;
+  },
+  deps: RuntimeDeps = {},
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const run = deps.run ?? defaultGcloud;
+  const read = await readSecretReplication(install, { run });
+  if (!read.ok) return read;
+  const createWith = (replication: SecretReplication) =>
+    run([
+      "secrets",
+      "create",
+      install.secretId,
+      `--project=${install.projectId}`,
+      ...replicationArgs(replication),
+      "--quiet",
+    ]);
+  let create = await createWith(read.replication);
+  if (
+    !create.ok &&
+    read.replication.kind === "automatic" &&
+    RESOURCE_LOCATIONS_VIOLATION.test(create.stderr)
+  ) {
+    create = await createWith({ kind: "user-managed", locations: [install.region] });
+  }
+  if (create.ok || ALREADY_EXISTS.test(create.stderr)) return { ok: true };
+  return { ok: false, error: `create ${install.secretId}: ${create.stderr.trim()}` };
+}
+
+/**
  * Create each secret in `CLI_GENERATED_SECRETS` that is missing, and give
  * one that exists without an enabled version a first version. A secret that
  * already has an enabled version is never touched, so re-runs keep values.
