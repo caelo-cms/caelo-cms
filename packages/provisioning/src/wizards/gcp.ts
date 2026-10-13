@@ -12,8 +12,11 @@
  *   8. Lets the operator's gcloud account impersonate that SA (#696): no
  *      key is ever minted; an older install's `sa-key.json` is deleted,
  *      locally and in IAM (provisioner-identity.ts)
- *   9. Generates Pulumi passphrase if absent → secrets/pulumi-passphrase
- *  10. Pre-flight cost-estimate table; single y/N confirm
+ *   9. Pre-flight cost-estimate table; single y/N confirm
+ *  10. Ensures the install's ops bucket + KMS key in its own project and
+ *      keeps Pulumi's state + install.json there (#696, ops-backend.ts).
+ *      An older install whose state is on this machine keeps it there
+ *      and its passphrase in secrets/pulumi-passphrase
  *  11. Pulumi up via the Automation SDK; streams progress, then deletes
  *      the firewall rules GCP pre-populates on the default network
  *  12. Prints DNS records + bootstrap URL + a note pointing the
@@ -61,6 +64,7 @@ import {
 } from "../gcloud.js";
 import { GCP_STACK_ENV } from "../gcp-names.js";
 import {
+  adoptStateBackend,
   ensureInstallDir,
   type ImageDigests,
   type InstallMetadata,
@@ -80,6 +84,7 @@ import {
   installIapAllowlist,
   resolveOperatorAccessTarget,
 } from "../operator-access.js";
+import { ensureOpsBackend } from "../ops-backend.js";
 import {
   convergeKeylessProvisioner,
   PROVISIONER_ACCOUNT_ID,
@@ -87,9 +92,18 @@ import {
 } from "../provisioner-identity.js";
 import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
 import { selfCommand } from "../self-command.js";
-import { ABSENT_DEFAULT_FIREWALL_RULES, ADMIN_MEMORY_DEFAULT } from "../stack-contract.js";
+import { ABSENT_DEFAULT_FIREWALL_RULES } from "../stack-contract.js";
+import {
+  chooseInstallBackend,
+  describeBackend,
+  gcsBackendRecord,
+  hasLocalPulumiState,
+  type ResolvedBackend,
+  resolveBackend,
+} from "../state-backend.js";
+import { GcsStateStore } from "../state-store.js";
 import { estimateGcpCost } from "./gcp-cost.js";
-import { pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
+import { GCP_STACK_KNOB_DEFAULTS, pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
 
 export interface GcpWizardOpts {
   installId: string;
@@ -156,27 +170,13 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   await stepGrantRoles(installId, projectId, saEmail);
   await stepKeylessProvisioner(projectId, secretsDir, opts.nonInteractive);
 
-  // === 7. Pulumi passphrase ===
-  // v0.3.2 — removed the legacy `stepAnthropicKey` prompt. The
-  // runtime AI provider configuration lives at /settings/ai (the
-  // key is encrypted under the project KEK and stored in
-  // ai_providers). Pre-v0.3.2 the wizard captured a key + stored
-  // it in Secret Manager but the Cloud Run service never read it,
-  // so the prompt was dead UX cost.
-  const pulumiPassphrase = stepPulumiPassphrase(installId);
-
   // === 8. Cost-estimate pre-flight ===
   // v0.3.3 — provider variant threads through so gcp-firebase
   // drops the LB / Cloud CDN / Cloud Armor lines (saves ~$19/mo
   // vs gcp). Default 'gcp' for backwards compatibility with
   // installs that don't set the field.
   const costInputs = {
-    cloudSqlTier: "db-f1-micro",
-    cloudSqlHa: false,
-    adminMinInstances: 0,
-    adminMemory: ADMIN_MEMORY_DEFAULT,
-    gatewayMinInstances: 0,
-    wafAdaptiveProtection: false,
+    ...GCP_STACK_KNOB_DEFAULTS,
     provider: opts.provider ?? ("gcp" as const),
     region,
   };
@@ -209,6 +209,12 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
       process.exit(0);
     }
   }
+
+  // === 8.5. Where Pulumi's state lives (#696) ===
+  // A new install: the ops bucket + KMS key in its own project — after the
+  // cost confirmation, which lists them (CLAUDE.md §11.C: nothing billable
+  // before the y/N). An older install keeps its local state + passphrase.
+  const backend = await stepStateBackend(installId, projectId, region, saEmail);
 
   // === 9. Image digests to deploy ===
   // An install that already runs a recorded release (from an earlier
@@ -272,7 +278,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     ownerEmail,
     region,
     impersonateServiceAccount: saEmail,
-    pulumiPassphrase,
+    backend,
     cloudSqlTier: costInputs.cloudSqlTier,
     cloudSqlHa: costInputs.cloudSqlHa,
     adminMinInstances: costInputs.adminMinInstances,
@@ -896,6 +902,93 @@ async function stepKeylessProvisioner(
   sAdc.stop(green(`Pulumi will run as ${sa} via impersonation`));
 }
 
+/**
+ * Decide and prepare where the install's Pulumi state lives (#696,
+ * state-backend.ts chooseInstallBackend) and resolve it for Pulumi.
+ *
+ * For the ops bucket: ensures bucket + KMS key + IAM (idempotent, every
+ * run), then records the backend in install.json and moves install.json +
+ * progress.json into the bucket. A project whose bucket already holds
+ * another install's install.json is refused — this machine would overwrite
+ * that install's record; this install's own copy from an interrupted run is
+ * taken over.
+ */
+async function stepStateBackend(
+  installId: string,
+  projectId: string,
+  region: string,
+  provisionerEmail: string,
+): Promise<ResolvedBackend> {
+  const root = installRoot(installId);
+  const meta = readMetadata(installId);
+  if (!meta) throw new Error(`No install.json for install '${installId}'.`);
+  const kind = chooseInstallBackend(
+    meta,
+    hasLocalPulumiState(root),
+    isStepDone(installId, `pulumi-up-${projectId}`),
+  );
+  if (kind === "local") {
+    stepPulumiPassphrase(installId);
+    log.info(
+      `Pulumi state: ${dim(describeBackend(meta, root))} (this install predates state in project ${projectId}; it stays where it is).`,
+    );
+    return resolveBackend(meta, {
+      installRoot: root,
+      readPassphrase: () => readSecret(installId, "pulumi-passphrase"),
+    });
+  }
+
+  const account = await activeAccount();
+  if (!account) {
+    cancel("No active gcloud account. Run `gcloud auth login`, then re-run.");
+    process.exit(1);
+  }
+  const s = spinner();
+  s.start(`Ensuring the install's state bucket + KMS key in ${projectId}...`);
+  const r = await ensureOpsBackend({
+    projectId,
+    region,
+    operatorAccount: account,
+    provisionerEmail,
+  });
+  if (!r.ok) {
+    s.stop(red("Could not set up where the install's state lives"));
+    log.error(r.error);
+    cancel("Aborted before anything else was provisioned; fix the above and re-run.");
+    process.exit(1);
+  }
+  s.stop(
+    green(
+      r.actions.length > 0
+        ? `State bucket + KMS key ready ${dim(`(${r.actions.length} change(s))`)}`
+        : `State bucket + KMS key ok ${dim("(already in place)")}`,
+    ),
+  );
+  for (const a of r.actions) log.info(dim(`  ${a}`));
+
+  if (meta.stateBackend?.kind !== "gcs") {
+    const record = gcsBackendRecord(projectId, region);
+    const existing = new GcsStateStore(record.bucket, root).peek("install.json");
+    const other = existing === null ? null : (JSON.parse(existing) as Partial<InstallMetadata>);
+    // The same install (id + creation time) is this machine's own earlier
+    // run, interrupted between writing the bucket and the local copy:
+    // finishing the move is safe. Anything else is another install.
+    if (other && !(other.installId === meta.installId && other.createdAt === meta.createdAt)) {
+      cancel(
+        `Project ${projectId} already has a Caelo install (${other.domain ?? "unknown domain"}) whose state lives in gs://${record.bucket}. This run would overwrite that install's record; run the installer from the machine that set it up instead.`,
+      );
+      process.exit(1);
+    }
+    adoptStateBackend(installId, record);
+    log.success(
+      `Pulumi state + install metadata live in ${bold(describeBackend({ stateBackend: record }, root))}`,
+    );
+  }
+  const current = readMetadata(installId);
+  if (!current) throw new Error(`install.json for '${installId}' vanished from its store.`);
+  return resolveBackend(current, { installRoot: root, readPassphrase: () => null });
+}
+
 function stepPulumiPassphrase(installId: string): string {
   const existing = readSecret(installId, "pulumi-passphrase");
   if (existing) {
@@ -919,7 +1012,8 @@ interface PulumiUpOpts {
   region: string;
   /** #696 — the provisioner SA Pulumi impersonates (no key file). */
   impersonateServiceAccount: string;
-  pulumiPassphrase: string;
+  /** #696 — the install's state backend (state-backend.ts). */
+  backend: ResolvedBackend;
   cloudSqlTier: string;
   cloudSqlHa: boolean;
   adminMinInstances: number;
@@ -1358,15 +1452,13 @@ async function stepUploadStaticPlaceholder(
  * re-run picks it up.
  */
 async function readBootstrapUrl(installId: string, provider: string): Promise<string> {
-  const passphrase = readSecret(installId, "pulumi-passphrase");
-  if (!passphrase) {
-    throw new Error(
-      `~/.caelo-${installId}/secrets/pulumi-passphrase is missing; the Owner setup link can't be read from the stack.`,
-    );
-  }
+  const meta = readMetadata(installId);
+  if (!meta) throw new Error(`No install.json for install '${installId}'.`);
   const value = await readStackOutput({
-    installRoot: installRoot(installId),
-    pulumiPassphrase: passphrase,
+    backend: resolveBackend(meta, {
+      installRoot: installRoot(installId),
+      readPassphrase: () => readSecret(installId, "pulumi-passphrase"),
+    }),
     provider: provider === "gcp-firebase" ? "gcp-firebase" : "gcp",
     name: "bootstrapUrlOut",
   });
@@ -1447,8 +1539,6 @@ async function stepGcpDnsRecords(installId: string): Promise<void> {
 
 async function stepFinalize(installId: string): Promise<void> {
   const meta = readMetadata(installId);
-  const progress = readSecret(installId, "pulumi-passphrase"); // touch to verify state still present
-  void progress;
   if (!meta?.projectId) return;
   const outputs = await recordedStackOutputs(installId, meta.projectId);
   const provider = String(outputs.providerOut ?? "gcp");

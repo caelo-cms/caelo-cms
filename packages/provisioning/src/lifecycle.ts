@@ -25,12 +25,14 @@ import { type GcloudRunner, realSleep } from "./gcloud-retry.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
 import { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
 import {
+  currentMetadata,
   type ImageDigests,
   type InstallMetadata,
   installFlag,
   installRoot,
   installStagingHost,
   listInstalls,
+  readMetadata,
   readSecret,
   recordImageDigests,
   recordInfraContractVersion,
@@ -53,6 +55,7 @@ import {
   rotationRefusal,
 } from "./runtime-secrets.js";
 import { selfCommand } from "./self-command.js";
+import { backendShellEnv, type ResolvedBackend, resolveBackend } from "./state-backend.js";
 import {
   type AppRollPlan,
   type ReleaseImage,
@@ -101,7 +104,7 @@ async function chooseInstalls(opts: {
       process.exit(2);
     }
     if (installs.length === 0) return exitNoInstall("No Caelo install found on this machine.");
-    return installs;
+    return installs.map(currentMetadata);
   }
   if (wanted === undefined && installs.length > 1 && process.stdin.isTTY) {
     const choice = await select<string>({
@@ -121,12 +124,12 @@ async function chooseInstalls(opts: {
       cancel("Aborted.");
       process.exit(1);
     }
-    if (choice === "all") return installs;
+    if (choice === "all") return installs.map(currentMetadata);
     wanted = choice;
   }
   const selected = selectInstall(installs, wanted);
   if (!selected.ok) return exitNoInstall(selected.message);
-  return [selected.meta];
+  return [currentMetadata(selected.meta)];
 }
 
 function exitNoInstall(message: string): never {
@@ -345,7 +348,8 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   if (opts.installId) {
     const selected = selectInstall(listInstalls(), opts.installId);
     if (!selected.ok) return exitNoInstall(selected.message);
-    if (!(await upgradeInstall(selected.meta.installId, selected.meta, opts))) process.exitCode = 1;
+    const meta = currentMetadata(selected.meta);
+    if (!(await upgradeInstall(meta.installId, meta, opts))) process.exitCode = 1;
     return;
   }
   await forEachInstall(
@@ -569,16 +573,23 @@ async function recordRolledDigests(
   } catch (e) {
     log.warn(
       yellow(
-        `Could not record the rolled digests in ${installRoot(installId)}/install.json (${reason(e)}). Add this before re-running the installer, or it deploys the newest release instead:\n  "imageDigests": ${JSON.stringify(digests)}`,
+        `Could not record the rolled digests in the install.json of ${installId} (${reason(e)}). Add this before re-running the installer, or it deploys the newest release instead:\n  "imageDigests": ${JSON.stringify(digests)}`,
       ),
     );
   }
-  const manual = stackConfigRecovery(installId, provider, digests);
-  const passphrase = readSecret(installId, "pulumi-passphrase");
-  if (!passphrase) {
+  const meta = readMetadata(installId);
+  const manual = stackConfigRecovery(installId, meta ?? {}, provider, digests);
+  let backend: ResolvedBackend;
+  try {
+    if (!meta) throw new Error(`no install.json for '${installId}'`);
+    backend = resolveBackend(meta, {
+      installRoot: installRoot(installId),
+      readPassphrase: () => readSecret(installId, "pulumi-passphrase"),
+    });
+  } catch (e) {
     log.warn(
       yellow(
-        `No Pulumi passphrase in ~/.caelo-${installId}/secrets — stack config not updated. Before any manual \`pulumi up\`, run:\n${manual}`,
+        `Stack config not updated (${reason(e)}). Before any manual \`pulumi up\`, run:\n${manual}`,
       ),
     );
     return;
@@ -586,8 +597,7 @@ async function recordRolledDigests(
   try {
     const { writeImageDigestsToStack } = await import("./wizards/gcp-pulumi.js");
     const { removedOverrides } = await writeImageDigestsToStack({
-      installRoot: installRoot(installId),
-      pulumiPassphrase: passphrase,
+      backend,
       provider,
       digests,
     });
@@ -615,11 +625,11 @@ async function recordRolledDigests(
  */
 function stackConfigRecovery(
   installId: string,
+  meta: Pick<InstallMetadata, "stateBackend">,
   provider: "gcp" | "gcp-firebase",
   digests: ImageDigests,
 ): string {
-  const root = installRoot(installId);
-  const env = `PULUMI_BACKEND_URL=file://${join(root, "state")} PULUMI_CONFIG_PASSPHRASE="$(cat ${join(root, "secrets", "pulumi-passphrase")})"`;
+  const env = backendShellEnv(meta, installRoot(installId));
   const cwd = `--cwd ${resolvePath(import.meta.dir, "../stacks", provider)} --stack ${GCP_STACK_ENV}`;
   const lines = Object.entries(digests).map(
     ([svc, d]) => `  ${env} pulumi config set ${cwd} caelo-${provider}:image-digest-${svc} ${d}`,

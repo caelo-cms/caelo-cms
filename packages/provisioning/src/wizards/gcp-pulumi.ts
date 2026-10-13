@@ -6,11 +6,12 @@
  * streams progress events into the wizard's UI.
  *
  * Per CLAUDE.md §11.C: end-users never see `pulumi` directly. The
- * wizard handles passphrase + state location + config + up; failures
- * surface inline with provider errors.
+ * wizard handles the state backend (state-backend.ts: the install's ops
+ * bucket + KMS key, or the local dir + passphrase of an older install),
+ * config and up; failures surface inline with provider errors.
  */
 
-import { join, resolve as resolvePath } from "node:path";
+import { resolve as resolvePath } from "node:path";
 import * as pulumi from "@pulumi/pulumi/automation";
 import { checkpointableOutputs } from "../checkpoint-secrets.js";
 import { GCP_STACK_ENV } from "../gcp-names.js";
@@ -20,6 +21,22 @@ import {
   withoutAmbientGoogleCredentials,
 } from "../provisioner-identity.js";
 import { ensureGeneratedSecrets, stackSecretReplication } from "../runtime-secrets.js";
+import { ADMIN_MEMORY_DEFAULT } from "../stack-contract.js";
+import type { ResolvedBackend } from "../state-backend.js";
+
+/**
+ * The §11.B knobs every wizard run sets (and the cost table prices). One
+ * place, so `state migrate`'s verification previews set the same config the
+ * wizard does.
+ */
+export const GCP_STACK_KNOB_DEFAULTS = {
+  cloudSqlTier: "db-f1-micro",
+  cloudSqlHa: false,
+  adminMinInstances: 0,
+  adminMemory: ADMIN_MEMORY_DEFAULT,
+  gatewayMinInstances: 0,
+  wafAdaptiveProtection: false,
+} as const;
 
 export interface PulumiUpInputs {
   installId: string;
@@ -37,7 +54,8 @@ export interface PulumiUpInputs {
    * Credentials as the source. No key file.
    */
   impersonateServiceAccount: string;
-  pulumiPassphrase: string;
+  /** #696 — where the stack's state lives (state-backend.ts resolveBackend). */
+  backend: ResolvedBackend;
   cloudSqlTier: string;
   cloudSqlHa: boolean;
   adminMinInstances: number;
@@ -74,7 +92,7 @@ export interface PulumiUpResult {
  * Works whether the CLI runs from source (apps/admin/scripts/...)
  * or from the published npm tarball (node_modules/@caelo-cms/...).
  */
-function gcpStackWorkDir(provider: "gcp" | "gcp-firebase" = "gcp"): string {
+export function gcpStackWorkDir(provider: "gcp" | "gcp-firebase" = "gcp"): string {
   // The Pulumi.yaml + stacks/<provider>/index.ts ship in the npm
   // tarball under `stacks/<provider>/`. From this file's location at
   // runtime (dist/wizards/gcp-pulumi.js), the stack dir is two
@@ -112,20 +130,11 @@ export function imageDigestConfig(
  * @returns the override keys it removed.
  */
 export async function writeImageDigestsToStack(inputs: {
-  installRoot: string;
-  pulumiPassphrase: string;
+  backend: ResolvedBackend;
   provider: "gcp" | "gcp-firebase";
   digests: ImageDigests;
 }): Promise<{ removedOverrides: string[] }> {
-  const stack = await pulumi.LocalWorkspace.selectStack(
-    { stackName: GCP_STACK_ENV, workDir: gcpStackWorkDir(inputs.provider) },
-    {
-      envVars: {
-        PULUMI_CONFIG_PASSPHRASE: inputs.pulumiPassphrase,
-        PULUMI_BACKEND_URL: `file://${join(inputs.installRoot, "state")}`,
-      },
-    },
-  );
+  const stack = await selectInstallStack(inputs.backend, inputs.provider);
   await stack.setAllConfig(imageDigestConfig(inputs.provider, inputs.digests));
   const config = await stack.getAllConfig();
   const removedOverrides = imageOverrideKeys(inputs.provider).filter((k) => k in config);
@@ -141,22 +150,102 @@ export async function writeImageDigestsToStack(inputs: {
  * @returns the output's value, or undefined when the stack has no such output
  */
 export async function readStackOutput(inputs: {
-  installRoot: string;
-  pulumiPassphrase: string;
+  backend: ResolvedBackend;
   provider: "gcp" | "gcp-firebase";
   name: string;
 }): Promise<unknown> {
-  const stack = await pulumi.LocalWorkspace.selectStack(
-    { stackName: GCP_STACK_ENV, workDir: gcpStackWorkDir(inputs.provider) },
-    {
-      envVars: {
-        PULUMI_CONFIG_PASSPHRASE: inputs.pulumiPassphrase,
-        PULUMI_BACKEND_URL: `file://${join(inputs.installRoot, "state")}`,
-      },
-    },
-  );
+  const stack = await selectInstallStack(inputs.backend, inputs.provider);
   const outputs = await stack.outputs();
   return outputs[inputs.name]?.value;
+}
+
+/**
+ * The stack's settings file in the package's stack dir with secrets
+ * settings that can't contradict the install's state, or null when it is
+ * already fine (#696).
+ *
+ * That file (`Pulumi.production.yaml`) lives in the package, not with the
+ * state: every `bunx` version unpacks its own, and installs of the same
+ * provider on one machine share it, so it can name another install's
+ * passphrase salt or KMS key. A file naming anything but the install's own
+ * KMS key loses its secrets-provider fields and the `secure:` values
+ * encrypted under them (no stack config the CLI sets is secret);
+ * `PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER` (resolveBackend) then makes
+ * Pulumi take the provider — KMS key or passphrase salt — from the
+ * install's own state. A local install's salt can't be checked without
+ * reading its state, so any secrets settings in the file are dropped and
+ * re-read from the state on every run.
+ */
+export function alignedStackSettings(
+  settings: pulumi.StackSettings,
+  backend: Pick<ResolvedBackend, "kind" | "secretsProvider">,
+): pulumi.StackSettings | null {
+  const hasSecretsSettings =
+    settings.secretsProvider !== undefined ||
+    settings.encryptedKey !== undefined ||
+    settings.encryptionSalt !== undefined;
+  const fine =
+    backend.kind === "gcs"
+      ? settings.secretsProvider === backend.secretsProvider &&
+        settings.encryptionSalt === undefined
+      : !hasSecretsSettings;
+  if (fine) return null;
+  const { secretsProvider: _p, encryptedKey: _k, encryptionSalt: _s, config, ...rest } = settings;
+  const kept = Object.fromEntries(
+    Object.entries(config ?? {}).filter(
+      ([, v]) => !(v !== null && typeof v === "object" && "secure" in (v as object)),
+    ),
+  );
+  return { ...rest, config: kept };
+}
+
+/**
+ * Bring the package's stack settings file in line with the install's backend
+ * ({@link alignedStackSettings}) before Pulumi reads it.
+ */
+export async function alignStackSettingsFile(
+  backend: ResolvedBackend,
+  provider: "gcp" | "gcp-firebase",
+): Promise<void> {
+  const ws = await pulumi.LocalWorkspace.create({
+    workDir: gcpStackWorkDir(provider),
+    envVars: stateOnlyEnv(backend),
+  });
+  let settings: pulumi.StackSettings;
+  try {
+    settings = await ws.stackSettings(GCP_STACK_ENV);
+  } catch (e) {
+    if (/failed to find stack settings file/.test(String(e))) return;
+    throw e;
+  }
+  const aligned = alignedStackSettings(settings, backend);
+  if (aligned) await ws.saveStackSettings(GCP_STACK_ENV, aligned);
+}
+
+/**
+ * The environment for a Pulumi call that only touches the stack's state
+ * (select, config, outputs): the backend's variables, with ambient Google
+ * credentials blanked as in {@link pulumiGcpEnv} — reaching the ops bucket
+ * and KMS key must use the operator's ADC, the same as provisioning did,
+ * not a stray key file in the shell.
+ */
+export function stateOnlyEnv(backend: Pick<ResolvedBackend, "envVars">): Record<string, string> {
+  return {
+    ...Object.fromEntries(AMBIENT_GOOGLE_CREDENTIAL_ENV.map((k) => [k, ""])),
+    ...backend.envVars,
+  };
+}
+
+/** The install's existing stack, on its backend. */
+export async function selectInstallStack(
+  backend: ResolvedBackend,
+  provider: "gcp" | "gcp-firebase",
+): Promise<pulumi.Stack> {
+  await alignStackSettingsFile(backend, provider);
+  return pulumi.LocalWorkspace.selectStack(
+    { stackName: GCP_STACK_ENV, workDir: gcpStackWorkDir(provider) },
+    { envVars: stateOnlyEnv(backend) },
+  );
 }
 
 /**
@@ -190,7 +279,7 @@ export function resolveSecretReplication(
 }
 
 /** A resource as `pulumi stack export` lists it. */
-interface StateResource {
+export interface StateResource {
   type?: string;
   inputs?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
@@ -229,6 +318,76 @@ export function assertStackRegion(deployed: string | null, requested: string): v
   }
 }
 
+/** The inputs {@link applyStackConfig} sets as stack config. */
+export type StackConfigInputs = Pick<
+  PulumiUpInputs,
+  | "projectId"
+  | "domain"
+  | "stagingDomain"
+  | "ownerEmail"
+  | "region"
+  | "cloudSqlTier"
+  | "cloudSqlHa"
+  | "adminMinInstances"
+  | "adminMemory"
+  | "gatewayMinInstances"
+  | "wafAdaptiveProtection"
+  | "iapAllowlist"
+  | "imageDigests"
+> & { provider: "gcp" | "gcp-firebase" };
+
+/**
+ * Set every config value the stack reads, then its `secretReplication`
+ * ({@link resolveSecretReplication}). The config file lives in the package's
+ * stack dir, so every run sets all of it — the wizard before `up`, and
+ * `state migrate` before the previews that prove a migration changed
+ * nothing (#696).
+ *
+ * @returns the secret replication now configured
+ */
+export async function applyStackConfig(
+  stack: pulumi.Stack,
+  inputs: StackConfigInputs,
+  stateResources: ReadonlyArray<StateResource>,
+): Promise<"auto" | "regional"> {
+  const { provider } = inputs;
+  const ns = `caelo-${provider}`;
+  // wafAdaptiveProtection is gcp-only; the gcp-firebase stack has no
+  // Cloud Armor + ignores the key.
+  await stack.setAllConfig({
+    [`${ns}:project`]: { value: inputs.projectId },
+    [`${ns}:domain`]: { value: inputs.domain },
+    [`${ns}:stagingDomain`]: { value: inputs.stagingDomain },
+    [`${ns}:ownerEmail`]: { value: inputs.ownerEmail },
+    [`${ns}:region`]: { value: inputs.region },
+    [`${ns}:cloudSqlTier`]: { value: inputs.cloudSqlTier },
+    [`${ns}:cloudSqlHa`]: { value: String(inputs.cloudSqlHa) },
+    [`${ns}:adminMinInstances`]: { value: String(inputs.adminMinInstances) },
+    [`${ns}:adminMemory`]: { value: inputs.adminMemory },
+    [`${ns}:gatewayMinInstances`]: { value: String(inputs.gatewayMinInstances) },
+    ...(provider === "gcp"
+      ? { [`${ns}:wafAdaptiveProtection`]: { value: String(inputs.wafAdaptiveProtection) } }
+      : {}),
+    [`${ns}:iapAllowlist`]: { value: inputs.iapAllowlist.join(",") },
+    // v0.3.2 — anthropicApiKey config dropped. Runtime path is
+    // /settings/ai → ai_providers (KEK-encrypted).
+    ...imageDigestConfig(provider, inputs.imageDigests),
+  });
+
+  // Read back only after the required keys are set: `pulumi config` refuses to
+  // list a stack that lacks them, which is every fresh stack.
+  const configuredReplication = await stack.getConfig(`${ns}:secretReplication`).then(
+    (v) => v.value,
+    (e: unknown) => {
+      if (/not found/i.test(String(e))) return undefined;
+      throw e;
+    },
+  );
+  const secretReplication = resolveSecretReplication(configuredReplication, stateResources);
+  await stack.setConfig(`${ns}:secretReplication`, { value: secretReplication });
+  return secretReplication;
+}
+
 /**
  * The environment `pulumi refresh` / `pulumi up` run with (#696).
  *
@@ -243,19 +402,20 @@ export function assertStackRegion(deployed: string | null, requested: string): v
  * after an hour can take the place of that chain. They are set to "" rather
  * than left out: the Automation API (execa) merges this process's environment
  * into the child's, and Google's libraries treat an empty value as unset. The
- * passphrase and backend are scoped to the child process only.
+ * backend (and, for a local install, its passphrase) are scoped to the child
+ * process only. Pulumi's CLI reaches an ops-bucket backend and its KMS key
+ * with the operator's ADC itself — the impersonation variable is read by the
+ * GCP provider plugin, not by the backend.
  */
 export function pulumiGcpEnv(
   base: NodeJS.ProcessEnv,
-  inputs: Pick<PulumiUpInputs, "installRoot" | "pulumiPassphrase" | "impersonateServiceAccount">,
+  inputs: Pick<PulumiUpInputs, "backend" | "impersonateServiceAccount">,
 ): Record<string, string> {
   return {
     ...withoutAmbientGoogleCredentials(base),
     ...Object.fromEntries(AMBIENT_GOOGLE_CREDENTIAL_ENV.map((k) => [k, ""])),
-    PULUMI_CONFIG_PASSPHRASE: inputs.pulumiPassphrase,
     GOOGLE_IMPERSONATE_SERVICE_ACCOUNT: inputs.impersonateServiceAccount,
-    // Pulumi local-backend state lives under the install's state dir.
-    PULUMI_BACKEND_URL: `file://${join(inputs.installRoot, "state")}`,
+    ...inputs.backend.envVars,
   };
 }
 
@@ -273,10 +433,8 @@ export async function pulumiUpGcp(
   const provider = inputs.provider ?? "gcp";
   const stackName = GCP_STACK_ENV;
   const workDir = gcpStackWorkDir(provider);
-  // Pulumi config namespace mirrors the stack's `name:` field in
-  // Pulumi.yaml (caelo-gcp vs caelo-gcp-firebase).
-  const ns = `caelo-${provider}`;
 
+  await alignStackSettingsFile(inputs.backend, provider);
   const stack = await pulumi.LocalWorkspace.createOrSelectStack(
     {
       stackName,
@@ -284,6 +442,9 @@ export async function pulumiUpGcp(
     },
     {
       envVars: env,
+      // Used when the stack is created: a new install's secrets are
+      // encrypted with its own KMS key (or a local install's passphrase).
+      secretsProvider: inputs.backend.secretsProvider,
     },
   );
 
@@ -291,43 +452,7 @@ export async function pulumiUpGcp(
     []) as StateResource[];
   assertStackRegion(deployedStackRegion(stateResources), inputs.region);
 
-  // Set every config value the stack reads. Secrets via setConfig with
-  // {value, secret: true}; Pulumi encrypts them in state.
-  // wafAdaptiveProtection is gcp-only; the gcp-firebase stack has no
-  // Cloud Armor + ignores the key, but setting it does no harm.
-  await stack.setAllConfig({
-    [`${ns}:project`]: { value: inputs.projectId },
-    [`${ns}:domain`]: { value: inputs.domain },
-    [`${ns}:stagingDomain`]: { value: inputs.stagingDomain },
-    [`${ns}:ownerEmail`]: { value: inputs.ownerEmail },
-    [`${ns}:region`]: { value: inputs.region },
-    [`${ns}:cloudSqlTier`]: { value: inputs.cloudSqlTier },
-    [`${ns}:cloudSqlHa`]: { value: String(inputs.cloudSqlHa) },
-    [`${ns}:adminMinInstances`]: { value: String(inputs.adminMinInstances) },
-    [`${ns}:adminMemory`]: { value: inputs.adminMemory },
-    [`${ns}:gatewayMinInstances`]: { value: String(inputs.gatewayMinInstances) },
-    ...(provider === "gcp"
-      ? { [`${ns}:wafAdaptiveProtection`]: { value: String(inputs.wafAdaptiveProtection) } }
-      : {}),
-    [`${ns}:iapAllowlist`]: { value: inputs.iapAllowlist.join(",") },
-    // v0.3.2 — anthropicApiKey config dropped. Runtime path is
-    // /settings/ai → ai_providers (KEK-encrypted). The pre-v0.3.2
-    // Secret + SecretVersion in Secret Manager were never mounted
-    // on Cloud Run, so the config was dead.
-    ...imageDigestConfig(provider, inputs.imageDigests),
-  });
-
-  // Read back only after the required keys are set: `pulumi config` refuses to
-  // list a stack that lacks them, which is every fresh stack.
-  const configuredReplication = await stack.getConfig(`${ns}:secretReplication`).then(
-    (v) => v.value,
-    (e: unknown) => {
-      if (/not found/i.test(String(e))) return undefined;
-      throw e;
-    },
-  );
-  const secretReplication = resolveSecretReplication(configuredReplication, stateResources);
-  await stack.setConfig(`${ns}:secretReplication`, { value: secretReplication });
+  const secretReplication = await applyStackConfig(stack, { ...inputs, provider }, stateResources);
 
   // The stack references the CLI-generated runtime secrets (stack-contract.ts
   // CLI_GENERATED_SECRETS) by id, so they must exist before `up`.
