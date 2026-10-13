@@ -186,7 +186,9 @@ async function main(): Promise<void> {
       // Docs pages are top-level: match the URL, not the slug (slugs
       // repeat across parents once pages nest).
       const v = pages.value as { pages: Array<{ id: string; currentPath: string }> };
-      const found = v.pages.find((x) => x.currentPath === `/${p.slug}`);
+      // The manifest's home ("home") lives at the site root, not "/home".
+      const wantPath = ["", "home", "index"].includes(p.slug) ? "/" : `/${p.slug}`;
+      const found = v.pages.find((x) => x.currentPath === wantPath);
       pageId = found?.id;
     }
     if (!pageId) {

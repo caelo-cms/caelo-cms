@@ -49,7 +49,7 @@ export const removeModuleFromTool: ToolDefinitionWithHandler<RemoveModuleFromToo
       targetRef: {
         type: "string",
         minLength: 1,
-        maxLength: 200,
+        maxLength: 500,
         description: "Page: its id or URL path (e.g. '/docs/setup'). Layout: slug or id.",
       },
       moduleId: { type: "string", format: "uuid" },
