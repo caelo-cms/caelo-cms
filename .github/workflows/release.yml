@@ -151,6 +151,156 @@ jobs:
       id-token: write
 
   # ──────────────────────────────────────────────────────────────────
+  # Signed release manifest (epic #696). One JSON document naming the
+  # exact admin/gateway/ops digests plus what an upgrader must know
+  # before installing unattended: minFromVersion, infraContractVersion,
+  # contract migrations, security flag + advisories. The declaration
+  # half comes from release-meta.json (written by scripts/release.ts at
+  # release cut) and is re-checked here — a release PR edited after the
+  # cut still cannot sign `security: true` without a published GHSA.
+  #
+  # Signed with `cosign sign-blob` under THIS workflow's identity on the
+  # tag (release.yml@refs/tags/vX.Y.Z — the exact identity
+  # packages/provisioning/src/release-manifest.ts pins), then pushed as
+  # an OCI artifact (manifest + Sigstore bundle as layers) next to the
+  # images and attached to the GitHub Release. Blocks npm + the GitHub
+  # Release: a release without a verifiable manifest does not ship.
+  # ──────────────────────────────────────────────────────────────────
+  release-manifest:
+    name: sign + publish release manifest
+    needs: [gate, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    env:
+      MANIFEST_IMAGE: ghcr.io/caelo-cms/release-manifest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The migration lint + infra-contract check diff against the
+          # previous stable tag.
+          fetch-depth: 0
+
+      - name: Resolve version + guard the signing identity
+        id: ver
+        env:
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          V="${REF#v}"
+          echo "version=${V}" >> "${GITHUB_OUTPUT}"
+          # Upgraders accept only release.yml@refs/tags/v<version>. A run
+          # dispatched from a branch with a `tag` input would sign under
+          # the branch identity and every install would refuse it.
+          if [ "${GITHUB_REF}" != "refs/tags/v${V}" ]; then
+            echo "::error::release.yml must run ON the tag (ref ${GITHUB_REF}, expected refs/tags/v${V}). Dispatch with --ref v${V}."
+            exit 1
+          fi
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install oras
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Resolve the released image digests
+        id: digests
+        env:
+          V: ${{ steps.ver.outputs.version }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          flags=""
+          for svc in admin gateway ops; do
+            digest="$(oras resolve "ghcr.io/caelo-cms/${svc}:${V}")"
+            echo "${svc}: ${digest}"
+            flags="${flags} --digest ${svc}=${digest}"
+          done
+          echo "flags=${flags}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate release-manifest.json (re-runs the release-cut checks)
+        env:
+          V: ${{ steps.ver.outputs.version }}
+          FLAGS: ${{ steps.digests.outputs.flags }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # shellcheck disable=SC2086 # FLAGS is `--digest svc=sha256:…` words.
+          bun scripts/release-manifest.ts generate --version "${V}" ${FLAGS} --out release-manifest.json
+
+      - name: Sign the manifest (keyless) + verify against the pinned identity
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes --bundle release-manifest.json.sigstore.json release-manifest.json
+          cosign verify-blob --bundle release-manifest.json.sigstore.json \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/v${V}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            release-manifest.json
+
+      - name: Push the manifest as an OCI artifact (GHCR)
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          # The bundle travels as a LAYER of the artifact, not as an OCI
+          # referrer, so any registry copy keeps the signature.
+          oras push "${MANIFEST_IMAGE}:${V}" \
+            --artifact-type application/vnd.caelo.release-manifest.v1 \
+            release-manifest.json:application/vnd.caelo.release-manifest.v1+json \
+            release-manifest.json.sigstore.json:application/vnd.dev.sigstore.bundle.v0.3+json
+
+      - name: Authenticate to GCP via Workload Identity Federation
+        if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PUBLIC_REGISTRY_SA_EMAIL }}
+
+      - name: Mirror the manifest to the GCP public AR + verify it like an upgrader
+        # The upgrader reads manifests from the AR mirror (the registry
+        # Cloud Run pulls from). Verify through the SAME library it uses:
+        # fetch, Sigstore bundle against the exact tag identity, schema,
+        # digests. A release whose mirror copy would be refused fails here.
+        if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        env:
+          V: ${{ steps.ver.outputs.version }}
+          FLAGS: ${{ steps.digests.outputs.flags }}
+          AR_REGION: ${{ vars.GCP_PUBLIC_REGISTRY_REGION || 'europe-west1' }}
+          AR_PROJECT: ${{ vars.GCP_PUBLIC_REGISTRY_PROJECT || 'caelo-website' }}
+          AR_REPO: ${{ vars.GCP_PUBLIC_REGISTRY_REPO || 'caelo-cms-images' }}
+        run: |
+          set -euo pipefail
+          gcloud auth print-access-token \
+            | oras login "${AR_REGION}-docker.pkg.dev" -u oauth2accesstoken --password-stdin
+          oras copy -r "${MANIFEST_IMAGE}:${V}" \
+            "${AR_REGION}-docker.pkg.dev/${AR_PROJECT}/${AR_REPO}/release-manifest:${V}"
+          # shellcheck disable=SC2086 # FLAGS is `--digest svc=sha256:…` words.
+          bun scripts/release-manifest.ts verify --version "${V}" \
+            --registry "${AR_REGION}-docker.pkg.dev" \
+            --repository "${AR_PROJECT}/${AR_REPO}/release-manifest" ${FLAGS}
+
+      - name: Hand the manifest to the GitHub Release job
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-manifest
+          path: |
+            release-manifest.json
+            release-manifest.json.sigstore.json
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────────
   # Publish each non-private @caelo-cms/* package to npm with
   # provenance attestation. Provenance proves the artifact came from
   # this exact workflow + commit + tag — operators (and `npm audit`)
@@ -162,7 +312,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────
   publish-npm:
     name: publish ${{ matrix.package }} to npm
-    needs: [gate, docker]
+    needs: [gate, docker, release-manifest]
     runs-on: ubuntu-latest
 
     strategy:
@@ -299,7 +449,7 @@ jobs:
 
       - name: Verify GHCR images are pullable
         run: |
-          for service in admin gateway; do
+          for service in admin gateway ops; do
             IMAGE="ghcr.io/caelo-cms/${service}:${{ steps.ver.outputs.version }}"
             echo "Pulling ${IMAGE}..."
             docker pull "${IMAGE}" || { echo "::error::failed to pull ${IMAGE}"; exit 1; }
@@ -374,13 +524,18 @@ jobs:
   # ──────────────────────────────────────────────────────────────────
   github-release:
     name: create GitHub Release
-    needs: [gate, publish-npm, verify-published]
+    needs: [gate, publish-npm, verify-published, release-manifest]
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # need full history for the changelog query
+
+      - name: Fetch the signed release manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: release-manifest
 
       - name: Extract changelog stanza for this version
         id: changelog
@@ -422,4 +577,9 @@ jobs:
           body_path: ${{ steps.changelog.outputs.release-notes-path }}
           prerelease: ${{ steps.prerelease.outputs.prerelease }}
           generate_release_notes: false
-          fail_on_unmatched_files: false
+          # The manifest + its Sigstore bundle; verifiable offline with
+          # `cosign verify-blob` (RELEASING.md, "Release manifest").
+          files: |
+            release-manifest.json
+            release-manifest.json.sigstore.json
+          fail_on_unmatched_files: true

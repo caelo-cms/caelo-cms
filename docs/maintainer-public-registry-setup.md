@@ -1,6 +1,6 @@
 # Maintainer one-time setup — public image registry mirrors
 
-The release-images workflow publishes `admin` + `gateway` containers to:
+The release-images workflow publishes the `admin`, `gateway` and `ops` containers (and release.yml the signed `release-manifest` artifact, epic #696) to:
 1. `ghcr.io/caelo-cms/<service>` — canonical, used by Compose installs.
 2. `<region>-docker.pkg.dev/<project>/caelo-cms-images/<service>` — required because Cloud Run rejects ghcr.io directly.
 3. *(P15)* `public.ecr.aws/caelo-cms/<service>` — for AWS adapter.
