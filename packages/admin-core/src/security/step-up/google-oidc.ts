@@ -172,6 +172,8 @@ export interface FreshSignIn {
   readonly email: string;
   /** Seconds since epoch (Google's `auth_time`). */
   readonly authTime: number;
+  /** The token's nonce, which step_up.record matches against its challenge. */
+  readonly nonce: string;
 }
 
 /**
@@ -227,5 +229,8 @@ export function verifyFreshSignIn(
   if (c.auth_time > expect.nowSec + SKEW_SEC) {
     return { ok: false, reason: "the sign-in time Google reported lies in the future" };
   }
-  return { ok: true, value: { email: c.email.toLowerCase(), authTime: c.auth_time } };
+  return {
+    ok: true,
+    value: { email: c.email.toLowerCase(), authTime: c.auth_time, nonce: expect.nonce },
+  };
 }
