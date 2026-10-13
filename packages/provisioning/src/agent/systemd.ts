@@ -12,7 +12,16 @@
  * command an administrator runs.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  ftruncateSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HostRunner } from "../self-hosted-release.js";
@@ -118,8 +127,12 @@ async function ensureLinger(host: AgentHost): Promise<string | null> {
 /** The release the installed service runs, or null when it is not installed. */
 export function installedAgentVersion(host: AgentHost, name: string): string | null {
   const { service } = agentUnitPaths(host, name);
-  if (!existsSync(service)) return null;
-  return pinnedAgentVersion(readFileSync(service, "utf8"));
+  try {
+    return pinnedAgentVersion(readFileSync(service, "utf8"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
 }
 
 /**
@@ -131,10 +144,20 @@ export async function repinAgentUnits(
   host: AgentHost,
 ): Promise<AgentUnitsResult & { readonly installed?: boolean }> {
   const { service } = agentUnitPaths(host, spec.name);
-  if (!existsSync(service)) return { ok: true, warnings: [], installed: false };
   try {
-    writeFileSync(service, agentServiceUnit(spec), { mode: 0o644 });
+    // "r+" opens only an existing file (ENOENT otherwise), so the check and
+    // the rewrite are one step — no window for the file to change between.
+    const fd = openSync(service, "r+");
+    try {
+      ftruncateSync(fd, 0);
+      writeSync(fd, agentServiceUnit(spec), 0, "utf8");
+    } finally {
+      closeSync(fd);
+    }
   } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      return { ok: true, warnings: [], installed: false };
+    }
     return { ok: false, error: `could not rewrite ${service}: ${(e as Error).message}` };
   }
   const error = await systemctl(host, "daemon-reload");

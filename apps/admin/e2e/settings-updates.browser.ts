@@ -269,15 +269,13 @@ test("a release that changes the cloud setup explains the Cloud Shell step", asy
 
 /** Show this browser a self-hosted install (test-only cookie, lib/server/upgrader.ts). */
 async function asSelfHosted(page: Page, baseURL: string | undefined): Promise<void> {
-  await page
-    .context()
-    .addCookies([
-      {
-        name: "caelo_e2e_updates_provider",
-        value: "self-hosted",
-        url: baseURL ?? "http://localhost:4173",
-      },
-    ]);
+  await page.context().addCookies([
+    {
+      name: "caelo_e2e_updates_provider",
+      value: "self-hosted",
+      url: baseURL ?? "http://localhost:4173",
+    },
+  ]);
 }
 
 const SELF_HOSTED_COMMAND = `bunx @caelo-cms/provisioning@${LATEST} upgrade --version ${LATEST}`;
