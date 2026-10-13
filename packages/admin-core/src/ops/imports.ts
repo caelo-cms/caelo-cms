@@ -1195,6 +1195,8 @@ async function resolveImportPageRef(
             -- Imports build top-level pages: the proposed slug's URL is
             -- the identity (slugs repeat across parents, epic #690).
             p.current_path = '/' || ip.proposed_slug
+            -- An undesignated "home" page serves at the root, not /home.
+            OR (ip.proposed_slug = 'home' AND p.current_path = '/')
             OR (ip.proposed_slug = 'home'
                 AND EXISTS (SELECT 1 FROM site_defaults sd WHERE sd.home_page_id = p.id))
           )
@@ -1211,6 +1213,7 @@ async function resolveImportPageRef(
     FROM pages p
     JOIN import_pages ip
       ON p.current_path = '/' || ip.proposed_slug
+      OR (ip.proposed_slug = 'home' AND p.current_path = '/')
       OR (ip.proposed_slug = 'home'
           AND EXISTS (SELECT 1 FROM site_defaults sd WHERE sd.home_page_id = p.id))
     WHERE p.id = ${inputId}::uuid AND p.deleted_at IS NULL
@@ -3616,16 +3619,24 @@ export const composeFromImportRunOp = defineOperation({
       for (const r of members) {
         const proposedModules = parseModules(r.proposed_modules);
         const pageInsert = (await tx.execute(sql`
-          INSERT INTO pages (slug, title, name, status, template_id, version)
+          INSERT INTO pages (slug, title, name, status, template_id, version, current_path)
           VALUES (
             ${r.proposed_slug},
             ${r.proposed_title || r.proposed_slug},
             ${r.proposed_title || r.proposed_slug},
-            'draft', ${templateIdForCluster}::uuid, 1
+            'draft', ${templateIdForCluster}::uuid, 1,
+            -- An earlier run's imported "home" now serves at the root
+            -- (designated): target "/" so the re-run updates it instead
+            -- of minting a second page at "/home". Otherwise NULL lets
+            -- the INSERT default compose the top-level path.
+            CASE WHEN ${r.proposed_slug} = 'home' AND EXISTS (
+              SELECT 1 FROM pages
+              WHERE current_path = '/' AND slug = 'home' AND deleted_at IS NULL
+                AND chat_branch_id IS NULL
+            ) THEN '/' END
           )
           -- A re-run updates the page already at this URL (the composed
-          -- path is the unique key since 0264; the INSERT default gives a
-          -- top-level page "/<slug>").
+          -- path is the unique key since 0264).
           ON CONFLICT (current_path, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
             WHERE deleted_at IS NULL
             DO UPDATE SET title = EXCLUDED.title, name = EXCLUDED.name,
