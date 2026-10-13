@@ -134,7 +134,7 @@ export async function loadPendingChanges(
     SELECT
       l.entity_id,
       COALESCE(p.title, p.slug) AS label,
-      (p.slug || ' · ' || l.block_name || '#' || l.position) AS detail,
+      (p.current_path || ' · ' || l.block_name || '#' || l.position) AS detail,
       COALESCE(m.stage_state, 'pending') AS stage_state
     FROM latest l
     LEFT JOIN pages p ON p.id::text = l.page_id
@@ -156,7 +156,7 @@ export async function loadPendingChanges(
     SELECT
       l.entity_id,
       COALESCE(p.title, p.slug) AS label,
-      ('/' || p.slug) AS detail,
+      p.current_path AS detail,
       COALESCE(m.stage_state, 'pending') AS stage_state
     FROM latest l
     LEFT JOIN pages p ON p.id::text = l.entity_id
@@ -178,7 +178,7 @@ export async function loadPendingChanges(
     SELECT
       l.entity_id,
       COALESCE(p.title, p.slug) AS label,
-      ('/' || p.slug || ' · placements') AS detail,
+      (p.current_path || ' · placements') AS detail,
       COALESCE(m.stage_state, 'pending') AS stage_state
     FROM latest l
     LEFT JOIN pages p ON p.id::text = l.entity_id

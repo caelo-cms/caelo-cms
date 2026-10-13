@@ -58,10 +58,10 @@ export const getContentInstanceTool: ToolDefinitionWithHandler<
         values: Record<string, unknown>;
         version: number;
       };
-      placements: { pageSlug: string; blockName: string; position: number; syncMode: string }[];
+      placements: { pagePath: string; blockName: string; position: number; syncMode: string }[];
     };
     const placementLines = placements
-      .map((p) => `  - ${p.pageSlug} · ${p.blockName}#${p.position} (${p.syncMode})`)
+      .map((p) => `  - ${p.pagePath} · ${p.blockName}#${p.position} (${p.syncMode})`)
       .join("\n");
     return {
       ok: true,

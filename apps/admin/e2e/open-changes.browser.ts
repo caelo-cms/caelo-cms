@@ -18,8 +18,48 @@ import { expect, test } from "@playwright/test";
 import { clearLoginRateBucket, runBunInline } from "./helpers.js";
 
 test.beforeAll(clearLoginRateBucket);
+// One seed shared by both tests: a second worker would re-run it with a
+// colliding tag (two workers can load this file in the same millisecond).
+test.describe.configure({ mode: "serial" });
 
 const TAG = `e2e-oc-${Date.now()}`;
+
+// Leave no open chats behind: other suites render /edit for the same
+// owner, and a stack of foreign open chats changes that page's chrome.
+test.afterAll(() => {
+  runBunInline(
+    `
+    import { SQL } from "bun";
+    import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
+    import { registerAdminOps } from "@caelo-cms/admin-core";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    const open = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx\`SELECT id::text AS id, created_by::text AS owner FROM chat_sessions
+                 WHERE title LIKE \${process.env.OC_TAG + "%"}
+                   AND discarded_at IS NULL AND published_at IS NULL\`;
+    });
+    await sql.end();
+    const adapter = new DatabaseAdapter({
+      adminDatabaseUrl: process.env.ADMIN_DATABASE_URL,
+      publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL,
+    });
+    const registry = new OperationRegistry();
+    registerAdminOps(registry);
+    for (const s of open) {
+      await execute(
+        registry,
+        adapter,
+        { actorId: s.owner, actorKind: "human", requestId: "e2e-oc-cleanup" },
+        "chat.discard_branch",
+        { chatSessionId: s.id },
+      );
+    }
+    await adapter.close();
+    `,
+    { OC_TAG: TAG },
+  );
+});
 let chats: { a: string; b: string; c: string; d: string; e: string; other: string };
 
 test.beforeAll(() => {

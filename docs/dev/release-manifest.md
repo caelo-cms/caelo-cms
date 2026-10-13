@@ -77,7 +77,7 @@ from:
 | not newer than installed | `refused` |
 | installed below `minFromVersion` | `refused` |
 | `infraContractVersion` above the installed one | `manual` (Cloud Shell) |
-| `migrations.contract` | `manual` |
+| `migrations.contract` (any migration-lint finding, incl. a dropped UNIQUE index/constraint or a `-- caelo:contract <reason>` header marker — see RELEASING.md "Contract migrations") | `manual` |
 | installed below `migrations.lastContractVersion` (skips a contract release) | `manual` |
 | otherwise | `auto`, `kind: "security"` only when `security: true` |
 

@@ -18,6 +18,17 @@
  * migrations drop and recreate those routinely, and none of them removes
  * data or a name the previous image reads.
  *
+ * Except a UNIQUE one (`drop-unique`): dropping an index or constraint
+ * named like a uniqueness guarantee (`*_uidx`, `*_unique`, `*_uniq`,
+ * `*_key`) that the same migration does not recreate under that name
+ * relaxes a rule the previous image relies on — its `ON CONFLICT`
+ * targets stop matching and its lookups stop being unique.
+ *
+ * And anything a migration declares itself (`marked-contract`): a
+ * comment line `-- caelo:contract <reason>` in the migration's leading
+ * comment header forces it to count as contract, for semantic breaks no
+ * pattern can see. The reason is required and lands in the finding.
+ *
  *   bun scripts/migration-lint.ts [--since <tag>]   # default: previous stable tag
  *
  * Exit 0 always prints the findings; `--fail-on-contract` exits 1 when any
@@ -124,15 +135,70 @@ function stripCommentsAndStrings(input: string): string {
  */
 export function lintMigrationSql(file: string, sql: string): ContractFinding[] {
   const findings: ContractFinding[] = [];
+  const marker = contractMarker(file, sql);
+  if (marker) findings.push(marker);
   const statements = stripCommentsAndStrings(sql)
     .split(";")
     .map((s) => s.replace(/\s+/g, " ").trim())
     .filter((s) => s.length > 0);
+  const recreated = recreatedNames(statements);
   for (const statement of statements) {
     const rule = RULES.find((r) => r.pattern.test(statement));
-    if (rule) findings.push({ file, rule: rule.id, statement: statement.slice(0, 200) });
+    if (rule) {
+      findings.push({ file, rule: rule.id, statement: statement.slice(0, 200) });
+      continue;
+    }
+    const unique = DROP_UNIQUE.exec(statement);
+    if (unique?.[1] && !recreated.has(bareName(unique[1]))) {
+      findings.push({ file, rule: "drop-unique", statement: statement.slice(0, 200) });
+    }
   }
   return findings;
+}
+
+/** `DROP INDEX|CONSTRAINT [IF EXISTS] <name>` where the name says UNIQUE. */
+const DROP_UNIQUE =
+  /\bDROP\s+(?:INDEX|CONSTRAINT)\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?([\w."]*(?:_uidx|_unique|_uniq|_key)"?)(?=[\s,;]|$)/i;
+
+/** Lower-case name without schema qualifier or quotes. */
+function bareName(name: string): string {
+  return name.replace(/"/g, "").split(".").at(-1)?.toLowerCase() ?? "";
+}
+
+/** Index / constraint names the migration (re)creates — a drop-and-recreate keeps the guarantee. */
+function recreatedNames(statements: readonly string[]): Set<string> {
+  const names = new Set<string>();
+  const re =
+    /\b(?:CREATE\s+UNIQUE\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?|ADD\s+CONSTRAINT\s+)([\w."]+)/gi;
+  for (const st of statements) {
+    for (const m of st.matchAll(re)) if (m[1]) names.add(bareName(m[1]));
+  }
+  return names;
+}
+
+const MARKER_RE = /^--\s*caelo:contract\b(.*)$/;
+
+/**
+ * The `-- caelo:contract <reason>` declaration, read from the leading
+ * comment header only (lines before the first statement), so a stray
+ * mention deeper in the file cannot flip the classification. A marker
+ * without a reason is an error: the reason is what the release
+ * acknowledgement shows.
+ */
+function contractMarker(file: string, sql: string): ContractFinding | null {
+  for (const raw of sql.split("\n")) {
+    const line = raw.trim();
+    if (line === "") continue;
+    if (!line.startsWith("--")) return null;
+    const m = MARKER_RE.exec(line);
+    if (!m) continue;
+    const reason = (m[1] ?? "").trim();
+    if (reason === "") {
+      throw new Error(`${file}: "-- caelo:contract" needs a reason (-- caelo:contract <why>)`);
+    }
+    return { file, rule: "marked-contract", statement: reason.slice(0, 200) };
+  }
+  return null;
 }
 
 /** Whether a repo-relative path is a forward SQL migration the linter covers. */

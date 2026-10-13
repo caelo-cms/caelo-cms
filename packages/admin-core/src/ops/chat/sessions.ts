@@ -949,7 +949,7 @@ export const listOpenChatsWithPendingOp = defineOperation({
           chatSessionId: z.string(),
           title: z.string(),
           anchorPageId: z.string().nullable(),
-          anchorPageSlug: z.string().nullable(),
+          anchorPagePath: z.string().nullable(),
           pendingCount: z.number().int().nonnegative(),
         })
         .strict(),
@@ -963,7 +963,7 @@ export const listOpenChatsWithPendingOp = defineOperation({
           cs.id::text  AS chat_session_id,
           cs.title     AS title,
           cs.page_id::text AS page_id,
-          p.slug       AS page_slug,
+          p.current_path AS page_path,
           (
             -- issue #620: each chat's pending snapshots (on the shared
             -- draft, only the ones it wrote) — the same definition as
@@ -999,7 +999,7 @@ export const listOpenChatsWithPendingOp = defineOperation({
           AND cs.subagent_role IS NULL
           AND (${exclude}::uuid IS NULL OR cs.id <> ${exclude}::uuid)
       )
-      SELECT chat_session_id, title, page_id, page_slug, pending_count
+      SELECT chat_session_id, title, page_id, page_path, pending_count
       FROM counts
       WHERE pending_count > 0
       ORDER BY pending_count DESC, title ASC
@@ -1007,7 +1007,7 @@ export const listOpenChatsWithPendingOp = defineOperation({
       chat_session_id: string;
       title: string;
       page_id: string | null;
-      page_slug: string | null;
+      page_path: string | null;
       pending_count: number;
     }[];
     return ok({
@@ -1015,7 +1015,7 @@ export const listOpenChatsWithPendingOp = defineOperation({
         chatSessionId: r.chat_session_id,
         title: r.title,
         anchorPageId: r.page_id,
-        anchorPageSlug: r.page_slug,
+        anchorPagePath: r.page_path,
         pendingCount: r.pending_count,
       })),
     });

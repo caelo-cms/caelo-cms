@@ -98,7 +98,7 @@ afterAll(async () => {
 describe("P8 slug-change link rewriter", () => {
   it("lookup_links_in_modules surfaces only modules with leading-slash hrefs", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.lookup_links_in_modules", {
-      oldSlug: OLD_SLUG,
+      path: `/${OLD_SLUG}`,
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;

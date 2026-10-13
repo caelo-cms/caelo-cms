@@ -57,11 +57,8 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPage
   // v0.3.21 — pick the default preview page (mirrors /edit's logic).
   // Prefer the composed root, fall back to the first page, null when
   // none exist.
-  const allPages = pagesR.ok
-    ? (pagesR.value as { pages: { slug: string; currentPath: string }[] }).pages
-    : [];
-  const home =
-    allPages.find((p) => p.currentPath === "/") ?? allPages.find((p) => p.slug === "home");
+  const allPages = pagesR.ok ? (pagesR.value as { pages: { currentPath: string }[] }).pages : [];
+  const home = allPages.find((p) => p.currentPath === "/");
   const firstPage = allPages[0];
   const previewDefault = home
     ? { path: home.currentPath }

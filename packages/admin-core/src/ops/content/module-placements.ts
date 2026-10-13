@@ -42,8 +42,9 @@ import type { PageLayoutState, PageState } from "../../snapshots/state.js";
 import { findContentInstancesContaining } from "./content-instance-refs.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 
-/** Pages + layouts that still place one module (slugs, sorted, deduped). */
+/** Pages + layouts that still place one module (sorted, deduped). */
 export interface ModulePlacements {
+  /** Page URL paths — unique per page, unlike slugs (epic #690). */
   readonly pages: readonly string[];
   readonly layouts: readonly string[];
   /** Slugs of modules whose content instances nest this module. */
@@ -112,16 +113,17 @@ export async function findModulePlacements(
     ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
     : sql`p.chat_branch_id IS NULL`;
   const liveRows = (await tx.execute(sql`
-    SELECT DISTINCT pm.module_id::text AS module_id, p.id::text AS page_id, p.slug
+    SELECT DISTINCT pm.module_id::text AS module_id, p.id::text AS page_id,
+           p.current_path AS path
       FROM page_modules pm
       JOIN pages p ON p.id = pm.page_id
      WHERE pm.module_id IN (${idList(moduleIds)})
        AND p.deleted_at IS NULL AND ${visible}
-  `)) as unknown as { module_id: string; page_id: string; slug: string }[];
+  `)) as unknown as { module_id: string; page_id: string; path: string }[];
   for (const r of liveRows) {
     // A branched layout for this page supersedes its live rows.
     if (branchedLayouts.has(r.page_id) || branchedDeletedPages.has(r.page_id)) continue;
-    pagesByModule.get(r.module_id)?.add(r.slug);
+    pagesByModule.get(r.module_id)?.add(r.path);
   }
 
   // Branched layouts that (still) place a requested module.
@@ -137,14 +139,14 @@ export async function findModulePlacements(
   }
   if (branchedHits.length > 0) {
     const pageIds = [...new Set(branchedHits.map((h) => h.pageId))];
-    const slugRows = (await tx.execute(sql`
-      SELECT id::text AS id, slug FROM pages
+    const pathRows = (await tx.execute(sql`
+      SELECT id::text AS id, current_path AS path FROM pages
        WHERE id IN (${idList(pageIds)}) AND deleted_at IS NULL
-    `)) as unknown as { id: string; slug: string }[];
-    const slugById = new Map(slugRows.map((r) => [r.id, r.slug]));
+    `)) as unknown as { id: string; path: string }[];
+    const pathById = new Map(pathRows.map((r) => [r.id, r.path]));
     for (const h of branchedHits) {
-      const slug = slugById.get(h.pageId);
-      if (slug !== undefined) pagesByModule.get(h.moduleId)?.add(slug);
+      const path = pathById.get(h.pageId);
+      if (path !== undefined) pagesByModule.get(h.moduleId)?.add(path);
     }
   }
 
@@ -205,7 +207,7 @@ export function isPlaced(p: ModulePlacements | undefined): boolean {
   return p !== undefined && (p.pages.length > 0 || p.layouts.length > 0 || p.nestedIn.length > 0);
 }
 
-/** "3 page(s) (about, home, pricing) and layout(s) site-default" — for error copy. */
+/** "3 page(s) (/, /about, /docs/setup) and layout(s) site-default" — for error copy. */
 export function describePlacements(p: ModulePlacements): string {
   const parts: string[] = [];
   if (p.pages.length > 0) {

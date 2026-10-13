@@ -5,6 +5,7 @@
   import { FileText } from "lucide-svelte";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
   import { bindZodForm } from "#lib/forms/zod-bind.svelte.js";
+  import { orderAsTree, parentCandidates } from "#lib/page-tree.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -39,6 +40,12 @@
   // staging/production; a migration's 30-150 draft pages need one
   // action, not one click per row.
   const draftCount = $derived(data.pages.filter((p) => p.status === "draft").length);
+  // Epic #690 — pages nest: list them as a tree (children under their
+  // parent, indented) and let a new page start under any section.
+  const treeRows = $derived(orderAsTree(data.pages));
+  const parentOptions = $derived(
+    parentCandidates(data.pages, null).sort((a, b) => a.currentPath.localeCompare(b.currentPath)),
+  );
   let bulkPublishing = $state(false);
 </script>
 
@@ -122,7 +129,7 @@
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Slug</TableHead>
+              <TableHead>Page</TableHead>
               <TableHead>Title</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Updated</TableHead>
@@ -130,12 +137,20 @@
             </TableRow>
           </TableHeader>
           <TableBody>
-            {#each data.pages as p (p.id)}
-              <TableRow>
+            {#each treeRows as { row: p, depth } (p.id)}
+              <TableRow data-testid="page-row" data-depth={depth}>
                 <TableCell>
-                  <a class="font-medium underline-offset-4 hover:underline" href={`/content/pages/${p.id}`}>
-                    {p.slug}
-                  </a>
+                  <!-- Indented under its parent; the full URL path is the
+                       page's address (parent chain + slug). -->
+                  <div class="flex flex-col" style={`padding-left: ${depth * 1.25}rem`}>
+                    <a
+                      class="font-medium underline-offset-4 hover:underline"
+                      href={`/content/pages/${p.id}`}
+                    >
+                      {depth > 0 ? "↳ " : ""}{p.slug}
+                    </a>
+                    <span class="text-xs text-muted-foreground">{p.currentPath}</span>
+                  </div>
                 </TableCell>
                 <TableCell>{p.title}</TableCell>
                 <TableCell>
@@ -215,6 +230,15 @@
             {#if createForm.errors.title}
               <p id="title-err" class="text-xs text-destructive">{createForm.errors.title}</p>
             {/if}
+          </div>
+          <div class="space-y-2">
+            <Label for="parentPageId">Parent page</Label>
+            <Select id="parentPageId" name="parentPageId">
+              <option value="">(top level)</option>
+              {#each parentOptions as p (p.id)}
+                <option value={p.id}>{p.currentPath} — {p.title}</option>
+              {/each}
+            </Select>
           </div>
           <div class="space-y-2">
             <Label for="templateId">Template</Label>

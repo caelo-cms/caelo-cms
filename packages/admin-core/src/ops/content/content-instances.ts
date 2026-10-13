@@ -57,6 +57,8 @@ import { findContentInstancesContaining } from "./content-instance-refs.js";
 const contentInstancePlacementSchema = z.object({
   pageId: z.string(),
   pageSlug: z.string(),
+  /** The page's URL path — unique, unlike its slug (epic #690). */
+  pagePath: z.string(),
   pageTitle: z.string(),
   blockName: z.string(),
   position: z.number().int(),
@@ -538,6 +540,7 @@ export const getContentInstanceOp = defineOperation({
       SELECT
         pm.page_id::text AS page_id,
         p.slug AS page_slug,
+        p.current_path AS page_path,
         p.title AS page_title,
         pm.block_name,
         pm.position,
@@ -546,10 +549,11 @@ export const getContentInstanceOp = defineOperation({
       JOIN pages p ON p.id = pm.page_id
       WHERE pm.content_instance_id = ${input.id}::uuid
         AND p.deleted_at IS NULL
-      ORDER BY p.slug ASC, pm.block_name ASC, pm.position ASC
+      ORDER BY p.current_path ASC, pm.block_name ASC, pm.position ASC
     `)) as unknown as {
       page_id: string;
       page_slug: string;
+      page_path: string;
       page_title: string;
       block_name: string;
       position: number;
@@ -560,6 +564,7 @@ export const getContentInstanceOp = defineOperation({
       placements: placements.map((p) => ({
         pageId: p.page_id,
         pageSlug: p.page_slug,
+        pagePath: p.page_path,
         pageTitle: p.page_title,
         blockName: p.block_name,
         position: p.position,
@@ -774,15 +779,17 @@ async function listAffectedPagesForCi(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   contentInstanceId: string,
   limit: number,
-): Promise<{ slug: string; title: string }[]> {
+): Promise<{ path: string; title: string }[]> {
+  // Deduped on the page id and labelled by its URL path: slugs repeat
+  // across parents once pages nest (epic #690).
   const rows = (await tx.execute(sql`
-    SELECT DISTINCT p.slug, p.title
+    SELECT DISTINCT p.id, p.current_path AS path, p.title
     FROM page_modules pm
     JOIN pages p ON p.id = pm.page_id
     WHERE pm.content_instance_id = ${contentInstanceId}::uuid
-    ORDER BY p.slug ASC
+    ORDER BY p.current_path ASC
     LIMIT ${limit}
-  `)) as unknown as { slug: string; title: string }[];
+  `)) as unknown as { path: string; title: string }[];
   return rows;
 }
 
@@ -1034,7 +1041,7 @@ export const deleteContentInstanceOp = defineOperation({
       // get_content_instance call (CLAUDE.md §11 "failure surfaces are
       // AI-actionable").
       const affectedPages = await listAffectedPagesForCi(tx, input.id, 3);
-      const samples = affectedPages.map((p) => `/${p.slug}`).join(", ");
+      const samples = affectedPages.map((p) => p.path).join(", ");
       const moreSuffix = placementCount > affectedPages.length ? `, …` : "";
       await recordAudit(tx, {
         actorId: ctx.actorId,
