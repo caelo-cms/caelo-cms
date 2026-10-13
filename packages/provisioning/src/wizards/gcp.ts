@@ -909,8 +909,9 @@ async function stepKeylessProvisioner(
  * For the ops bucket: ensures bucket + KMS key + IAM (idempotent, every
  * run), then records the backend in install.json and moves install.json +
  * progress.json into the bucket. A project whose bucket already holds
- * another machine's install.json is refused — this machine would overwrite
- * that install's record.
+ * another install's install.json is refused — this machine would overwrite
+ * that install's record; this install's own copy from an interrupted run is
+ * taken over.
  */
 async function stepStateBackend(
   installId: string,
@@ -964,8 +965,11 @@ async function stepStateBackend(
   if (meta.stateBackend?.kind !== "gcs") {
     const record = gcsBackendRecord(projectId, region);
     const existing = new GcsStateStore(record.bucket, root).peek("install.json");
-    if (existing !== null) {
-      const other = JSON.parse(existing) as Partial<InstallMetadata>;
+    const other = existing === null ? null : (JSON.parse(existing) as Partial<InstallMetadata>);
+    // The same install (id + creation time) is this machine's own earlier
+    // run, interrupted between writing the bucket and the local copy:
+    // finishing the move is safe. Anything else is another install.
+    if (other && !(other.installId === meta.installId && other.createdAt === meta.createdAt)) {
       cancel(
         `Project ${projectId} already has a Caelo install (${other.domain ?? "unknown domain"}) whose state lives in gs://${record.bucket}. This run would overwrite that install's record; run the installer from the machine that set it up instead.`,
       );

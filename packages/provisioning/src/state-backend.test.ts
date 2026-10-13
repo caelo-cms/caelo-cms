@@ -31,7 +31,11 @@ describe("resolveBackend", () => {
       kind: "local",
       url: `file://${ROOT}/state`,
       secretsProvider: "passphrase",
-      envVars: { PULUMI_BACKEND_URL: `file://${ROOT}/state`, PULUMI_CONFIG_PASSPHRASE: "pp" },
+      envVars: {
+        PULUMI_BACKEND_URL: `file://${ROOT}/state`,
+        PULUMI_CONFIG_PASSPHRASE: "pp",
+        PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER: "true",
+      },
     });
   });
 

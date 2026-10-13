@@ -124,10 +124,10 @@ export function localStateDir(installRoot: string): string {
  * `local` needs the passphrase and fails loudly without it — Pulumi would
  * otherwise prompt for it on a terminal nobody sees. `gcs` needs no secret:
  * Pulumi reaches the bucket and the KMS key with the operator's Application
- * Default Credentials. `PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER` makes
- * Pulumi take the secrets provider from the state when the stack's config
- * file in the package's stack dir does not name one (a newer `bunx` version
- * unpacks a fresh stack dir without it).
+ * Default Credentials. Both set `PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER`:
+ * Pulumi then takes the secrets provider (KMS key or passphrase salt) from
+ * the install's own state when the stack's config file in the package's
+ * stack dir names none (wizards/gcp-pulumi.ts alignedStackSettings).
  *
  * @param meta the install (its `stateBackend`, absent = local)
  * @param opts.installRoot `~/.caelo-<id>`
@@ -164,6 +164,7 @@ export function resolveBackend(
     envVars: {
       PULUMI_BACKEND_URL: url,
       PULUMI_CONFIG_PASSPHRASE: passphrase,
+      PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER: "true",
     },
   };
 }
@@ -181,7 +182,7 @@ export function backendShellEnv(
   if (record.kind === "gcs") {
     return `PULUMI_BACKEND_URL=gs://${record.bucket}/${OPS_PULUMI_PREFIX} PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER=true`;
   }
-  return `PULUMI_BACKEND_URL=file://${localStateDir(installRoot)} PULUMI_CONFIG_PASSPHRASE="$(cat ${join(installRoot, "secrets", "pulumi-passphrase")})"`;
+  return `PULUMI_BACKEND_URL=file://${localStateDir(installRoot)} PULUMI_CONFIG_PASSPHRASE="$(cat ${join(installRoot, "secrets", "pulumi-passphrase")})" PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER=true`;
 }
 
 /** Human-readable location of the install's state, for status and progress output. */

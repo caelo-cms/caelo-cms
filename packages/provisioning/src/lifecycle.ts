@@ -23,6 +23,7 @@ import { ensureGatewayRolePassword, planPublicRoleSwitch } from "./gateway-crede
 import { activeAccount, gcloud } from "./gcloud.js";
 import { GCP_STACK_ENV, gatewayServiceAccountEmail, runServiceAccountEmail } from "./gcp-names.js";
 import {
+  currentMetadata,
   type ImageDigests,
   type InstallMetadata,
   installFlag,
@@ -102,7 +103,7 @@ async function chooseInstalls(opts: {
       process.exit(2);
     }
     if (installs.length === 0) return exitNoInstall("No Caelo install found on this machine.");
-    return installs;
+    return installs.map(currentMetadata);
   }
   if (wanted === undefined && installs.length > 1 && process.stdin.isTTY) {
     const choice = await select<string>({
@@ -122,12 +123,12 @@ async function chooseInstalls(opts: {
       cancel("Aborted.");
       process.exit(1);
     }
-    if (choice === "all") return installs;
+    if (choice === "all") return installs.map(currentMetadata);
     wanted = choice;
   }
   const selected = selectInstall(installs, wanted);
   if (!selected.ok) return exitNoInstall(selected.message);
-  return [selected.meta];
+  return [currentMetadata(selected.meta)];
 }
 
 function exitNoInstall(message: string): never {
@@ -580,7 +581,8 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   if (opts.installId) {
     const selected = selectInstall(listInstalls(), opts.installId);
     if (!selected.ok) return exitNoInstall(selected.message);
-    if (!(await upgradeInstall(selected.meta.installId, selected.meta, opts))) process.exitCode = 1;
+    const meta = currentMetadata(selected.meta);
+    if (!(await upgradeInstall(meta.installId, meta, opts))) process.exitCode = 1;
     return;
   }
   await forEachInstall(

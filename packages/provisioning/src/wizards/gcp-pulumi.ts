@@ -160,27 +160,36 @@ export async function readStackOutput(inputs: {
 }
 
 /**
- * The stack's settings file in the package's stack dir with a secrets
- * provider that matches `backend`, or null when it already does (#696).
+ * The stack's settings file in the package's stack dir with secrets
+ * settings that can't contradict the install's state, or null when it is
+ * already fine (#696).
  *
  * That file (`Pulumi.production.yaml`) lives in the package, not with the
- * state: every `bunx` version unpacks its own, and a stale one can name
- * another install's passphrase salt or KMS key. For an install whose state
- * is in its ops bucket, a file naming any other secrets provider loses its
- * secrets-provider fields and the `secure:` values encrypted under them (no
- * stack config the CLI sets is secret); `PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER`
- * (resolveBackend) then makes Pulumi take the provider from the state.
- * A local install's file is left alone — its passphrase salt is correct for
- * the only machine that runs it.
+ * state: every `bunx` version unpacks its own, and installs of the same
+ * provider on one machine share it, so it can name another install's
+ * passphrase salt or KMS key. A file naming anything but the install's own
+ * KMS key loses its secrets-provider fields and the `secure:` values
+ * encrypted under them (no stack config the CLI sets is secret);
+ * `PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER` (resolveBackend) then makes
+ * Pulumi take the provider — KMS key or passphrase salt — from the
+ * install's own state. A local install's salt can't be checked without
+ * reading its state, so any secrets settings in the file are dropped and
+ * re-read from the state on every run.
  */
 export function alignedStackSettings(
   settings: pulumi.StackSettings,
   backend: Pick<ResolvedBackend, "kind" | "secretsProvider">,
 ): pulumi.StackSettings | null {
-  if (backend.kind !== "gcs") return null;
-  const stale =
-    settings.secretsProvider !== backend.secretsProvider || settings.encryptionSalt !== undefined;
-  if (!stale) return null;
+  const hasSecretsSettings =
+    settings.secretsProvider !== undefined ||
+    settings.encryptedKey !== undefined ||
+    settings.encryptionSalt !== undefined;
+  const fine =
+    backend.kind === "gcs"
+      ? settings.secretsProvider === backend.secretsProvider &&
+        settings.encryptionSalt === undefined
+      : !hasSecretsSettings;
+  if (fine) return null;
   const { secretsProvider: _p, encryptedKey: _k, encryptionSalt: _s, config, ...rest } = settings;
   const kept = Object.fromEntries(
     Object.entries(config ?? {}).filter(
@@ -198,7 +207,6 @@ export async function alignStackSettingsFile(
   backend: ResolvedBackend,
   provider: "gcp" | "gcp-firebase",
 ): Promise<void> {
-  if (backend.kind !== "gcs") return;
   const ws = await pulumi.LocalWorkspace.create({
     workDir: gcpStackWorkDir(provider),
     envVars: { ...backend.envVars },

@@ -224,12 +224,12 @@ describe("alignedStackSettings (#696 — the package's stale Pulumi.production.y
     ).toBeNull();
   });
 
-  it("never touches a local install's file", () => {
+  it("a local install's file loses another install's KMS key (its own salt comes from its state)", () => {
+    const local = { kind: "local" as const, secretsProvider: "passphrase" };
     expect(
-      alignedStackSettings(
-        { encryptionSalt: "v1:abc" },
-        { kind: "local", secretsProvider: "passphrase" },
-      ),
-    ).toBeNull();
+      alignedStackSettings({ secretsProvider: KMS, encryptedKey: "ek", config: { a: "1" } }, local),
+    ).toEqual({ config: { a: "1" } });
+    expect(alignedStackSettings({ encryptionSalt: "v1:other" }, local)).toEqual({ config: {} });
+    expect(alignedStackSettings({ config: { a: "1" } }, local)).toBeNull();
   });
 });
