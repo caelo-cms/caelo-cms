@@ -22,7 +22,9 @@ import {
   claimInstallJobStatus,
   decideInstallJob,
   describeExecution,
+  INSTALL_CLOUDFLARE_TOKEN_SECRET,
   INSTALL_JOB_NAME,
+  INSTALL_SETUP_LINK_SECRET,
   type InstallJobDecision,
   type InstallJobStatus,
   opsImageRef,
@@ -30,6 +32,7 @@ import {
   readInstallJobStatus,
   readSetupLink,
   startInstallJob,
+  storeInstallSecretValue,
 } from "../install-job.js";
 import {
   currentMetadata,
@@ -77,7 +80,17 @@ async function decide(
     status && status.state === "running"
       ? await describeExecution(run, { ...target, execution: status.execution })
       : null;
-  return decideInstallJob(status, live);
+  const decision = decideInstallJob(status, live);
+  // A finished install whose setup link is gone from Secret Manager (deleted
+  // or disabled since) runs again: the job's last step stores it anew.
+  if (decision.kind === "done" && (await readSetupLink(run, target.projectId)) === null) {
+    return {
+      kind: "start",
+      previous: decision.status,
+      why: `the install finished, but its Owner setup link is no longer in Secret Manager (${INSTALL_SETUP_LINK_SECRET}); a new run stores it again`,
+    };
+  }
+  return decision;
 }
 
 /** At most this many polls after the job finished, to catch late log lines. */
@@ -210,8 +223,10 @@ async function showResult(meta: InstallMetadata): Promise<void> {
   const projectId = meta.projectId ?? "";
   const link = await readSetupLink(gcloud, projectId);
   if (!link) {
+    // decide() starts a new run when the link is missing; getting here means
+    // it vanished in between.
     cancel(
-      `The install finished, but its Owner setup link is not readable in project ${projectId} (Secret Manager). Run the installer again to store it.`,
+      `The Owner setup link disappeared from Secret Manager (${INSTALL_SETUP_LINK_SECRET} in ${projectId}) just now. Run the installer again; it runs the job once more to store it.`,
     );
     process.exit(1);
   }
@@ -334,11 +349,32 @@ export async function launchInstallJob(opts: {
       else await showResult(meta);
       return;
     }
+    // Automatic DNS in the job (dns/cloudflare.ts) when this shell has a
+    // Cloudflare token: it goes to Secret Manager and is mounted into the
+    // job as CLOUDFLARE_API_TOKEN — never into the job definition or args.
+    const cloudflareToken = process.env.CLOUDFLARE_API_TOKEN ?? "";
+    if (cloudflareToken !== "") {
+      const stored = await storeInstallSecretValue(
+        gcloud,
+        { projectId, region },
+        INSTALL_CLOUDFLARE_TOKEN_SECRET,
+        cloudflareToken,
+      );
+      if (!stored.ok) {
+        release();
+        cancel(`Could not hand CLOUDFLARE_API_TOKEN to the install job: ${stored.error}`);
+        process.exit(1);
+      }
+      log.info(
+        `DNS: the job sets the records through Cloudflare (token stored in Secret Manager as ${INSTALL_CLOUDFLARE_TOKEN_SECRET}).`,
+      );
+    }
     const started = await startInstallJob(gcloud, {
       projectId,
       region,
       serviceAccount: opts.provisionerEmail,
       image: opsImageRef(digests.ops),
+      cloudflareToken: cloudflareToken !== "",
     });
     if (!started.ok) {
       release();

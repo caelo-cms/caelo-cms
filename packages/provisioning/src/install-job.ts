@@ -46,6 +46,14 @@ export const INSTALL_JOB_NAME = "caelo-install";
 export const INSTALL_SETUP_LINK_SECRET = "caelo-install-setup-link";
 
 /**
+ * Secret Manager secret holding the operator's `CLOUDFLARE_API_TOKEN` for
+ * the job's automatic DNS (dns/cloudflare.ts). Written by the launcher only
+ * when the operator's shell has the token; the job reads it as an env var
+ * mounted from the secret, so it never appears in the job definition.
+ */
+export const INSTALL_CLOUDFLARE_TOKEN_SECRET = "caelo-install-cloudflare-token";
+
+/**
  * Repository of the `caelo-ops` image on the public Artifact Registry
  * mirror. Cloud Run pulls from Artifact Registry, not from GHCR; the mirror
  * carries the same digests and signatures (release-images.yml, `oras copy -r`).
@@ -301,6 +309,12 @@ export interface InstallJobSpec {
   readonly serviceAccount: string;
   /** {@link opsImageRef} of the release's signed ops image. */
   readonly image: string;
+  /**
+   * Mount {@link INSTALL_CLOUDFLARE_TOKEN_SECRET} as `CLOUDFLARE_API_TOKEN`
+   * (the launcher stored the operator's token there); without it the job's
+   * DNS step prints the records and polls.
+   */
+  readonly cloudflareToken: boolean;
 }
 
 /**
@@ -326,6 +340,9 @@ export function installJobDeployArgs(spec: InstallJobSpec): string[] {
     `--memory=${JOB_MEMORY}`,
     // Plain log lines: no colour codes, no spinner frames.
     "--set-env-vars=NO_COLOR=1,CI=true",
+    spec.cloudflareToken
+      ? `--set-secrets=CLOUDFLARE_API_TOKEN=${INSTALL_CLOUDFLARE_TOKEN_SECRET}:latest`
+      : "--clear-secrets",
     "--labels=caelo-role=install",
     "--quiet",
   ];
@@ -413,51 +430,34 @@ export async function readExecutionLogs(
 }
 
 /**
- * Store the Owner setup link in {@link INSTALL_SETUP_LINK_SECRET} (created
- * with the install's secret replication if missing) and disable the versions before it, so
- * one link — the newest — is readable.
+ * Store `value` as the newest version of the install secret `secretId`
+ * (created with the install's secret replication if missing) and disable
+ * the versions before it, so exactly one value is readable. The value goes
+ * to gcloud on stdin, never on a command line.
  */
-export async function storeSetupLink(
+export async function storeInstallSecretValue(
   run: GcloudRunner,
   target: { projectId: string; region: string },
-  link: string,
+  secretId: string,
+  value: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const project = `--project=${target.projectId}`;
-  const exists = await run([
-    "secrets",
-    "describe",
-    INSTALL_SETUP_LINK_SECRET,
-    project,
-    "--format=value(name)",
-  ]);
+  const exists = await run(["secrets", "describe", secretId, project, "--format=value(name)"]);
   if (!exists.ok) {
-    const created = await createInstallSecret(
-      { ...target, env: GCP_STACK_ENV, secretId: INSTALL_SETUP_LINK_SECRET },
-      { run },
-    );
+    const created = await createInstallSecret({ ...target, env: GCP_STACK_ENV, secretId }, { run });
     if (!created.ok) return created;
   }
   const add = await run(
-    [
-      "secrets",
-      "versions",
-      "add",
-      INSTALL_SETUP_LINK_SECRET,
-      project,
-      "--data-file=-",
-      "--format=value(name)",
-    ],
-    { stdin: link },
+    ["secrets", "versions", "add", secretId, project, "--data-file=-", "--format=value(name)"],
+    { stdin: value },
   );
-  if (!add.ok) {
-    return { ok: false, error: `store the setup link: ${add.stderr.trim()}` };
-  }
+  if (!add.ok) return { ok: false, error: `store ${secretId}: ${add.stderr.trim()}` };
   const newest = add.stdout.trim().split("/").pop() ?? "";
   const enabled = await run([
     "secrets",
     "versions",
     "list",
-    INSTALL_SETUP_LINK_SECRET,
+    secretId,
     project,
     "--filter=state:enabled",
     "--format=value(name)",
@@ -470,7 +470,7 @@ export async function storeSetupLink(
       "versions",
       "disable",
       version,
-      `--secret=${INSTALL_SETUP_LINK_SECRET}`,
+      `--secret=${secretId}`,
       project,
       "--quiet",
     ]);
@@ -478,7 +478,22 @@ export async function storeSetupLink(
   return { ok: true };
 }
 
-/** The Owner setup link the job stored, or null when there is none yet. */
+/** Store the Owner setup link in {@link INSTALL_SETUP_LINK_SECRET}. */
+export function storeSetupLink(
+  run: GcloudRunner,
+  target: { projectId: string; region: string },
+  link: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  return storeInstallSecretValue(run, target, INSTALL_SETUP_LINK_SECRET, link);
+}
+
+/**
+ * The Owner setup link the job stored, or null when there is none (the
+ * secret or an enabled version is missing).
+ *
+ * @throws when it can't be read for any other reason (no permission), with
+ *   what the operator's account needs
+ */
 export async function readSetupLink(run: GcloudRunner, projectId: string): Promise<string | null> {
   const r = await run([
     "secrets",
@@ -488,5 +503,9 @@ export async function readSetupLink(run: GcloudRunner, projectId: string): Promi
     `--secret=${INSTALL_SETUP_LINK_SECRET}`,
     `--project=${projectId}`,
   ]);
-  return r.ok && r.stdout.trim() !== "" ? r.stdout.trim() : null;
+  if (r.ok) return r.stdout.trim() === "" ? null : r.stdout.trim();
+  if (/NOT_FOUND|not found|DISABLED|DESTROYED|FAILED_PRECONDITION/i.test(r.stderr)) return null;
+  throw new Error(
+    `Could not read the Owner setup link (secret ${INSTALL_SETUP_LINK_SECRET} in ${projectId}): ${r.stderr.trim()}. Your gcloud account needs secretmanager.versions.access on the project (e.g. roles/secretmanager.secretAccessor or project Owner).`,
+  );
 }
