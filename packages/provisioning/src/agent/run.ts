@@ -29,7 +29,7 @@
  * `upgrade` and the agent never roll at the same time.
  */
 
-import type { PlatformUpdateTrigger } from "@caelo-cms/shared";
+import { PLATFORM_UPDATE_AGENT_POLL_SECONDS, type PlatformUpdateTrigger } from "@caelo-cms/shared";
 import type { ReleaseManifest, ReleaseManifestResult } from "../release-manifest.js";
 import type { SelfHostedRelease } from "../self-hosted-release.js";
 import { assessUpgradeRequest } from "../upgrader-assess.js";
@@ -72,6 +72,12 @@ export interface AgentRunDeps {
   readonly now: () => Date;
   readonly log: JobLog;
   readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * How often the agent keeps checking in while the target's CLI runs (an
+   * update takes minutes; the admin would otherwise think the agent gone).
+   * Default: every poll interval.
+   */
+  readonly heartbeatEveryMs?: number;
 }
 
 /** What one poll did. */
@@ -192,12 +198,27 @@ export async function runAgentOnce(deps: AgentRunDeps): Promise<AgentRunResult> 
     );
     await r.flush();
 
-    const outcome = await deps.applyTarget({
-      requestId: request.id,
-      targetVersion: m.version,
-      trigger: request.trigger,
-      digests: { admin: m.digests.admin, gateway: m.digests.gateway },
-    });
+    const beat = setInterval(
+      () => {
+        queue
+          .heartbeat({ agentVersion: deps.agentVersion, host: deps.host, problem: null })
+          .catch((e: unknown) => {
+            log({ severity: "WARNING", message: `could not check in: ${errorText(e)}` });
+          });
+      },
+      deps.heartbeatEveryMs ?? PLATFORM_UPDATE_AGENT_POLL_SECONDS * 1000,
+    );
+    let outcome: AgentApplyOutcome;
+    try {
+      outcome = await deps.applyTarget({
+        requestId: request.id,
+        targetVersion: m.version,
+        trigger: request.trigger,
+        digests: { admin: m.digests.admin, gateway: m.digests.gateway },
+      });
+    } finally {
+      clearInterval(beat);
+    }
     unlock();
     if (outcome.exitCode === 0) return { exitCode: 0, requestId: request.id, status: null };
     // The target's CLI ends the request itself; only if it could not (it

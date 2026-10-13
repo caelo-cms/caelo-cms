@@ -306,7 +306,7 @@
           <AlertDescription>{data.upgrader.problem}</AlertDescription>
         </Alert>
       {/if}
-      {#if data.agent && !data.upgrader.available}
+      {#if data.agent && !data.upgrader.available && !busy}
         <AgentSetup
           agent={data.agent.status}
           problem={data.agent.problem}

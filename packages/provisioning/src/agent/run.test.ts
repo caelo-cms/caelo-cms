@@ -325,6 +325,23 @@ describe("runAgentOnce", () => {
     expect(q.events.some((e) => e.phase === "finish")).toBe(false);
   });
 
+  it("keeps checking in while the target's CLI runs", async () => {
+    const { deps, q } = setup();
+    const slow: AgentRunDeps = {
+      ...deps,
+      heartbeatEveryMs: 5,
+      applyTarget: async (req) => {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        return deps.applyTarget(req);
+      },
+    };
+    await runAgentOnce(slow);
+    const during = q.beats.length;
+    expect(during).toBeGreaterThan(2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(q.beats.length).toBe(during);
+  });
+
   it("pauses automatic installs when an automatic run fails", async () => {
     const { deps, q } = setup(
       { preflight: async () => "cosign is missing." },
