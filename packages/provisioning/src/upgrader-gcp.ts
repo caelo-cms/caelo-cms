@@ -24,7 +24,7 @@ import { readAdminConfig, runMigrationsViaCloudRunJob } from "./migration-runner
 import { fetchVerifiedReleaseManifest } from "./release-manifest.js";
 import type { HttpFetch } from "./runtime-secrets.js";
 import { opsBucketName } from "./state-backend.js";
-import { GcsStateStore } from "./state-store.js";
+import { acquireBucketStateLock, GcsStateStore } from "./state-store.js";
 import type { AppRollPlan } from "./upgrade/app-roll.js";
 import { findServiceUrl } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe } from "./upgrade/health.js";
@@ -104,6 +104,8 @@ export function gcpUpgraderDeps(
     execution: placement.execution,
     // The default deps: the fixed registry and signer, never overridden.
     fetchManifest: (version) => fetchVerifiedReleaseManifest(version),
+    lockState: () =>
+      acquireBucketStateLock(opsBucketName(placement.projectId), "caelo upgrader job"),
     readInstall: () => {
       const text = store.read("install.json");
       return text === null ? null : (JSON.parse(text) as InstallMetadata);

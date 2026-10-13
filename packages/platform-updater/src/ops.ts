@@ -16,20 +16,13 @@ import {
   PLATFORM_UPDATE_EVENT_LEVELS,
   PLATFORM_UPDATE_EVENT_MAX,
   PLATFORM_UPDATE_PHASES,
+  PLATFORM_UPDATE_STALE_MINUTES,
+  PLATFORM_UPDATE_STALE_REASON,
   PLATFORM_UPDATE_TRIGGERS,
   type StoredUpdatePolicy,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-
-/**
- * A run still `running` this long after it started died (the job's task
- * timeout is 60 minutes); the next run ends it before claiming.
- */
-export const STALE_RUN_MINUTES = 90;
-
-const STALE_REASON =
-  "The upgrader stopped before it finished (its run timed out or crashed). The previous release may still serve, or the new one may be partly rolled out: open the site, and if it misbehaves run the upgrade once with Cloud Shell.";
 
 const policySchema = z.object({
   mode: z.enum(["off", "notify", "auto"]),
@@ -71,16 +64,27 @@ export const jobClaimOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const stale = (await tx.execute(sql`
       UPDATE platform_update_requests
-         SET status = 'failed', finished_at = now(), status_reason = ${STALE_REASON},
-             refusal_codes = ARRAY['stale']
+         SET status = 'failed', finished_at = now(),
+             status_reason = ${PLATFORM_UPDATE_STALE_REASON}, refusal_codes = ARRAY['stale']
        WHERE status = 'running'
-         AND started_at < now() - make_interval(mins => ${STALE_RUN_MINUTES})
-       RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
+         AND started_at < now() - make_interval(mins => ${PLATFORM_UPDATE_STALE_MINUTES})
+       RETURNING id::text AS id, trigger, target_version
+    `)) as unknown as { id: string; trigger: string; target_version: string }[];
     for (const s of stale) {
       await tx.execute(sql`
         INSERT INTO platform_update_events (request_id, phase, level, message)
-        VALUES (${s.id}::uuid, 'finish', 'error', ${STALE_REASON})
+        VALUES (${s.id}::uuid, 'finish', 'error', ${PLATFORM_UPDATE_STALE_REASON})
+      `);
+    }
+    // A dead automatic install may have left the site half-rolled: no
+    // further unattended installs until the Owner looked (like a failed one).
+    const deadAuto = stale.find((s) => s.trigger === "auto");
+    if (deadAuto) {
+      await tx.execute(sql`
+        UPDATE platform_update_policy
+           SET paused = true, paused_at = now(),
+               paused_reason = ${`The automatic install of ${deadAuto.target_version} stopped before it finished.`}
+         WHERE id = 1
       `);
     }
     const claimed = (await tx.execute(sql`

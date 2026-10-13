@@ -157,6 +157,7 @@ function setup(
     gcloud?: [RegExp, Answer][];
     deep?: HealthOutcome;
     migrate?: { ok: boolean; error?: string };
+    locked?: boolean;
   } = {},
 ) {
   const order: string[] = [];
@@ -180,6 +181,11 @@ function setup(
     fetchManifest: async (v) => {
       order.push(`manifest ${v}`);
       return opts.manifest ?? { ok: true, manifest: MANIFEST };
+    },
+    lockState: () => {
+      order.push("lock");
+      if (opts.locked) throw new Error("held by caelo installer");
+      return () => order.push("unlock");
     },
     readInstall: () => (opts.meta === undefined ? META : opts.meta),
     writeInstall: (m) => {
@@ -259,6 +265,47 @@ describe("runUpgraderJob", () => {
       "self-update",
       "finish",
     ]);
+  });
+
+  it("holds the install's state lock for the whole run, and stops when another run holds it", async () => {
+    const ok = setup();
+    await runUpgraderJob(ok.deps);
+    expect(ok.order[0]).toBe("lock");
+    expect(ok.order.indexOf("unlock")).toBeGreaterThan(
+      step(ok.order, /jobs update caelo-production-upgrader/),
+    );
+
+    const busy = setup({ locked: true });
+    const r = await runUpgraderJob(busy.deps);
+    expect(r.status).toBe("failed");
+    expect(busy.q.end()?.codes).toEqual(["state-locked"]);
+    expect(busy.order.some((l) => l.startsWith("manifest") || l.startsWith("gcloud"))).toBe(false);
+  });
+
+  it("retries recording the end, and fails the run when it cannot", async () => {
+    const { deps, q } = setup();
+    let calls = 0;
+    const flaky: UpdateQueue = {
+      ...q.queue,
+      finish: async (id, end) => {
+        calls += 1;
+        if (calls < 3) throw new Error("connection reset");
+        await q.queue.finish(id, end);
+      },
+    };
+    expect(await runUpgraderJob({ ...deps, queue: flaky })).toMatchObject({
+      exitCode: 0,
+      status: "succeeded",
+    });
+    expect(calls).toBe(3);
+
+    const dead: UpdateQueue = {
+      ...q.queue,
+      finish: async () => {
+        throw new Error("database gone");
+      },
+    };
+    expect((await runUpgraderJob({ ...deps, queue: dead })).exitCode).toBe(1);
   });
 
   it("an infrastructure change goes to Cloud Shell before anything changes", async () => {
