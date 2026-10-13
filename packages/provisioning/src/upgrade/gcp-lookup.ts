@@ -101,6 +101,35 @@ export async function findCurrentRevision(
   return r.stdout.trim().split("\n")[0]?.trim() || null;
 }
 
+/**
+ * The image digest the revision serving traffic runs (not the service
+ * template's: after a rollback the template names the failed image while
+ * traffic stays on the previous revision).
+ */
+export async function findServingImageDigest(
+  run: GcloudRunner,
+  projectId: string,
+  region: string,
+  serviceName: string,
+): Promise<string | null> {
+  const revision = await findCurrentRevision(run, projectId, region, serviceName);
+  if (!revision) return null;
+  const r = await run([
+    "run",
+    "revisions",
+    "describe",
+    revision,
+    "--region",
+    region,
+    "--project",
+    projectId,
+    "--format=value(status.imageDigest)",
+  ]);
+  if (!r.ok) return null;
+  const m = /@(sha256:[0-9a-f]{64})\s*$/.exec(r.stdout.trim());
+  return m?.[1] ?? null;
+}
+
 /** The service's own `run.app` URL. */
 export async function findServiceUrl(
   run: GcloudRunner,

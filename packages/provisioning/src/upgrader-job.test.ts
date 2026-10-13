@@ -99,6 +99,10 @@ function fakeGcloud(events: string[], overrides: [RegExp, Answer][] = []) {
     [new RegExp(`describe ${ADMIN} .*--format=json`), ok(ADMIN_JSON)],
     [new RegExp(`describe ${GATEWAY} .*--format=json`), ok(GATEWAY_JSON)],
     [/describe (\S+) .*status\.url/, (l) => ok(`https://${l.split(" ")[3]}-xyz.a.run.app\n`)],
+    [
+      /^run revisions describe (\S+)/,
+      (l) => ok(`registry/x@${l.includes("-admin-") ? D("1") : D("2")}\n`),
+    ],
     [/^sql instances list/, ok("caelo-production-pg-abc\n")],
     [/^sql backups list/, ok("1760000000000\n")],
   ];
@@ -272,13 +276,35 @@ describe("runUpgraderJob", () => {
     });
     expect((await runUpgraderJob(deps)).status).toBe("refused");
     expect(q.end()?.codes).toEqual(["signature"]);
-    expect(order.filter((l) => l.startsWith("gcloud"))).toEqual([]);
+    // Only read-only lookups ran.
+    expect(order.filter((l) => l.startsWith("gcloud") && !/ (list|describe) /.test(l))).toEqual([]);
   });
 
   it("install state outside the install's own cloud needs Cloud Shell", async () => {
     const { deps, q } = setup({ meta: null });
     expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
     expect(q.end()?.codes).toEqual(["install-state"]);
+  });
+
+  it("refuses when the serving release is not the recorded one (a lost install.json write)", async () => {
+    const { deps, order, q } = setup({
+      meta: { ...META, imageDigests: { admin: D("9"), gateway: D("2") } },
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    expect(q.end()?.codes).toEqual(["install-state-drift"]);
+    expect(order.some((l) => l.startsWith("manifest"))).toBe(false);
+  });
+
+  it("a failed install.json write still ends succeeded, and the next run catches the drift", async () => {
+    const { deps, q } = setup();
+    const r = await runUpgraderJob({
+      ...deps,
+      writeInstall: () => {
+        throw new Error("403 on the ops bucket");
+      },
+    });
+    expect(r.status).toBe("succeeded");
+    expect(q.events.some((e) => e.phase === "record" && e.level === "warn")).toBe(true);
   });
 
   it("a failed backup stops before migrations", async () => {
