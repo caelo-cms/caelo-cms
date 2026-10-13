@@ -436,7 +436,11 @@ describe("tailInstallJob", () => {
         if (poll > 5) return ok("[]");
         return ok(
           JSON.stringify([
-            { insertId: `i${poll}`, timestamp: `2026-10-13T10:00:0${poll}Z`, textPayload: `line ${poll}` },
+            {
+              insertId: `i${poll}`,
+              timestamp: `2026-10-13T10:00:0${poll}Z`,
+              textPayload: `line ${poll}`,
+            },
           ]),
         );
       }
