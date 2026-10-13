@@ -78,7 +78,7 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
       : null;
 
   const upgrader = upgraderTrigger();
-  const stepUp = canInstall ? await requireStepUp(locals, cookies) : null;
+  const stepUp = canInstall ? await requireStepUp(locals, cookies, "platform_update") : null;
   // A run that died (out of memory, timeout) never writes its end; Cloud
   // Run knows. Say so instead of showing "Installing" until the next run
   // ends it.
@@ -181,7 +181,7 @@ export const actions: Actions = {
         error: "This install has no upgrader yet; run the upgrade command shown on this page.",
       });
     }
-    const check = await requireStepUp(locals, cookies);
+    const check = await requireStepUp(locals, cookies, "platform_update");
     if (!check.fresh) {
       return fail(403, {
         error: "Confirm with a fresh Google sign-in first.",
@@ -215,7 +215,7 @@ export const actions: Actions = {
     requirePermission(locals, "platform.update");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const check = await requireStepUp(locals, cookies);
+    const check = await requireStepUp(locals, cookies, "platform_update");
     if (!check.fresh) {
       return fail(403, {
         error: "Confirm with a fresh Google sign-in first.",
@@ -236,7 +236,7 @@ export const actions: Actions = {
     requirePermission(locals, "platform.update");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const check = await requireStepUp(locals, cookies);
+    const check = await requireStepUp(locals, cookies, "step_up_client");
     if (!check.sessionHash) return fail(401, { error: "Sign in again first." });
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "step_up.set_client", {

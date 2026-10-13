@@ -17,6 +17,7 @@
  */
 
 import {
+  GOOGLE_JWKS_URL,
   GOOGLE_TOKEN_ENDPOINT,
   STEP_UP_CALLBACK_PATH,
   type StepUpStatus,
@@ -46,12 +47,13 @@ export type StepUpCheck =
     };
 
 /**
- * Whether this session carries a Google sign-in from the last `maxAgeSec`
- * seconds that still authorizes one guarded action.
+ * Whether this session carries a Google sign-in for `purpose` from the
+ * last `maxAgeSec` seconds that still authorizes one guarded action.
  */
 export async function requireStepUp(
   locals: App.Locals,
   cookies: Cookies,
+  purpose: StepUpPurpose,
   maxAgeSec: number = STEP_UP_MAX_AGE_SECONDS,
 ): Promise<StepUpCheck> {
   const sessionHash = await sessionHashFrom(cookies);
@@ -59,7 +61,10 @@ export async function requireStepUp(
     return { fresh: false, sessionHash: null, configured: false, problem: "not signed in" };
   }
   const { adapter, registry } = getQueryContext();
-  const r = await execute(registry, adapter, locals.ctx, "step_up.status", { sessionHash });
+  const r = await execute(registry, adapter, locals.ctx, "step_up.status", {
+    sessionHash,
+    purpose,
+  });
   if (!r.ok) {
     return {
       fresh: false,
@@ -123,14 +128,50 @@ export async function beginStepUp(
   return { ok: true, location: back.toString() };
 }
 
-function b64url(value: unknown): string {
-  return btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+function b64url(bytes: Uint8Array): string {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/** The fetch the callback exchanges the code with: Google, or the test stand-in. */
+const jsonPart = (value: unknown) => b64url(new TextEncoder().encode(JSON.stringify(value)));
+
+/** The stand-in's signing key, made on first use (test runs only). */
+let fakeKey: Promise<{ pair: CryptoKeyPair; jwk: JsonWebKey }> | null = null;
+function fakeGoogleKey() {
+  fakeKey ??= (async () => {
+    const pair = (await crypto.subtle.generateKey(
+      {
+        name: "RSASSA-PKCS1-v1_5",
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
+      },
+      true,
+      ["sign", "verify"],
+    )) as CryptoKeyPair;
+    return { pair, jwk: await crypto.subtle.exportKey("jwk", pair.publicKey) };
+  })();
+  return fakeKey;
+}
+
+const FAKE_KID = "caelo-e2e-google";
+
+/**
+ * The fetch the callback reaches Google with: the real one, or the test
+ * stand-in, which answers the token endpoint with an RS256 ID token for the
+ * signed-in user and the JWKS URL with its public key — so the op's real
+ * signature check runs against it.
+ */
 export function googleTokenFetch(): (url: string, init: RequestInit) => Promise<Response> {
   if (!fakeGoogleSignIn()) return (url, init) => fetch(url, init);
   return async (url, init) => {
+    const { pair, jwk } = await fakeGoogleKey();
+    if (url === GOOGLE_JWKS_URL) {
+      return new Response(JSON.stringify({ keys: [{ ...jwk, kid: FAKE_KID, alg: "RS256" }] }), {
+        status: 200,
+      });
+    }
     if (url !== GOOGLE_TOKEN_ENDPOINT) return new Response("unexpected URL", { status: 400 });
     const body = new URLSearchParams(String(init.body));
     const code = body.get("code") ?? "";
@@ -139,7 +180,7 @@ export function googleTokenFetch(): (url: string, init: RequestInit) => Promise<
       email: string;
     };
     const now = Math.floor(Date.now() / 1000);
-    const idToken = `${b64url({ alg: "none" })}.${b64url({
+    const signingInput = `${jsonPart({ alg: "RS256", kid: FAKE_KID })}.${jsonPart({
       iss: "https://accounts.google.com",
       aud: body.get("client_id"),
       exp: now + 3600,
@@ -148,8 +189,16 @@ export function googleTokenFetch(): (url: string, init: RequestInit) => Promise<
       nonce,
       email,
       email_verified: true,
-    })}.e2e`;
-    return new Response(JSON.stringify({ id_token: idToken }), { status: 200 });
+    })}`;
+    const sig = await crypto.subtle.sign(
+      "RSASSA-PKCS1-v1_5",
+      pair.privateKey,
+      new TextEncoder().encode(signingInput),
+    );
+    return new Response(
+      JSON.stringify({ id_token: `${signingInput}.${b64url(new Uint8Array(sig))}` }),
+      { status: 200 },
+    );
   };
 }
 

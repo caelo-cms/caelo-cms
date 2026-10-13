@@ -24,6 +24,7 @@ import { registerAdminOps } from "../register.js";
 import { _setKekForTests } from "../security/secret-box.js";
 import { completeGoogleStepUp } from "../security/step-up/complete.js";
 import { sessionHashOf } from "../security/step-up/gate.js";
+import { GOOGLE_TOKEN_ENDPOINT } from "../security/step-up/google-oidc.js";
 import { googleSigner } from "./fixtures/google-id-token.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -553,17 +554,15 @@ describe("platform_updater database role (migration 0267)", () => {
 });
 
 describe("completeGoogleStepUp (the OAuth callback)", () => {
-  const b64 = (o: unknown) =>
-    btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-
-  /** Google's token endpoint, answering with an ID token for `email`. */
-  function google(email: string, authTimeOffsetSec = 0) {
+  /** Google's token + JWKS endpoints, answering with an ID token for `email`. */
+  function googleEndpoints(email: string, authTimeOffsetSec = 0) {
     let nonce = "";
-    const fetchFn = async (_url: string, init: RequestInit) => {
+    const fetchFn = async (url: string, init: RequestInit) => {
+      if (url !== GOOGLE_TOKEN_ENDPOINT) return google.fetch(url);
       const body = new URLSearchParams(String(init.body));
       expect(body.get("code_verifier")?.length).toBeGreaterThanOrEqual(43);
       const now = Math.floor(Date.now() / 1000);
-      const idToken = `${b64({ alg: "RS256" })}.${b64({
+      const idToken = await google.sign({
         iss: "https://accounts.google.com",
         aud: body.get("client_id"),
         exp: now + 3600,
@@ -571,7 +570,7 @@ describe("completeGoogleStepUp (the OAuth callback)", () => {
         email,
         email_verified: true,
         auth_time: now + authTimeOffsetSec,
-      })}.sig`;
+      });
       return new Response(JSON.stringify({ id_token: idToken }), { status: 200 });
     };
     return { fetchFn, setNonce: (n: string) => (nonce = n) };
@@ -593,7 +592,7 @@ describe("completeGoogleStepUp (the OAuth callback)", () => {
 
   it("records a fresh sign-in by the owner's account; the install request then passes", async () => {
     const { state, nonce } = await begin();
-    const g = google(OWNER_EMAIL.toUpperCase());
+    const g = googleEndpoints(OWNER_EMAIL.toUpperCase());
     g.setNonce(nonce);
     const done = await completeGoogleStepUp({
       registry,
@@ -618,7 +617,7 @@ describe("completeGoogleStepUp (the OAuth callback)", () => {
 
   it("refuses a reused Google session and audits the failed attempt", async () => {
     const { state, nonce } = await begin();
-    const g = google(OWNER_EMAIL, -3600);
+    const g = googleEndpoints(OWNER_EMAIL, -3600);
     g.setNonce(nonce);
     const done = await completeGoogleStepUp({
       registry,

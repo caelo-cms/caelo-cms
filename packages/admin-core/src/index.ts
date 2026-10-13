@@ -145,6 +145,7 @@ export {
   STEP_UP_REQUIRED,
   sessionHashOf,
 } from "./security/step-up/gate.js";
+export { GOOGLE_JWKS_URL } from "./security/step-up/google-keys.js";
 export { GOOGLE_TOKEN_ENDPOINT, STEP_UP_CALLBACK_PATH } from "./security/step-up/google-oidc.js";
 export {
   UPGRADER_SETUP_HINT,

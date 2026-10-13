@@ -13,7 +13,8 @@
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext, StepUpPurpose } from "@caelo-cms/shared";
 import type { StepUpRedeemed } from "../../ops/step-up.js";
-import { exchangeCode, verifyFreshSignIn } from "./google-oidc.js";
+import { idTokenKeyId, loadGoogleKeys } from "./google-keys.js";
+import { exchangeCode } from "./google-oidc.js";
 
 export type StepUpCompletion =
   | { readonly ok: true; readonly returnTo: string; readonly purpose: StepUpPurpose }
@@ -36,8 +37,8 @@ export async function completeGoogleStepUp(args: {
   readonly code: string | null;
   /** Google's `error` parameter (`access_denied` when the user cancelled). */
   readonly error: string | null;
+  /** Google's token + JWKS endpoints (a stand-in in tests). */
   readonly fetch: (url: string, init: RequestInit) => Promise<Response>;
-  readonly now?: () => Date;
 }): Promise<StepUpCompletion> {
   const { registry, adapter, ctx, sessionHash } = args;
   if (!args.state) {
@@ -82,20 +83,13 @@ export async function completeGoogleStepUp(args: {
     redirectUri: c.redirectUri,
   });
   if (!token.ok) return failWith(token.reason);
-  const now = args.now?.() ?? new Date();
-  const verified = verifyFreshSignIn(token.value, {
-    clientId: c.clientId,
-    nonce: c.nonce,
-    startedAtSec: Math.floor(new Date(c.startedAt).getTime() / 1000),
-    nowSec: Math.floor(now.getTime() / 1000),
-  });
-  if (!verified.ok) return failWith(verified.reason);
-  const recorded = await record({
-    ok: true,
-    email: verified.value.email,
-    authTime: verified.value.authTime,
-    nonce: verified.value.nonce,
-  });
+  // Google's signing keys, fetched here — outside any transaction — for the
+  // op, which checks the token's signature against them itself.
+  const keysProblem = await loadGoogleKeys(args.fetch, idTokenKeyId(token.value) ?? undefined);
+  if (keysProblem) return failWith(keysProblem);
+  // step_up.record verifies the token (signature, client, nonce, freshness,
+  // the user's address); nothing about the sign-in is asserted here.
+  const recorded = await record({ ok: true, idToken: token.value });
   if (!recorded.ok) {
     return { ok: false, returnTo: c.returnTo, message: messageOf(recorded.error) };
   }
