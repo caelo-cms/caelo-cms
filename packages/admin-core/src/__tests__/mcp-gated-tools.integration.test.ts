@@ -290,6 +290,37 @@ describe("#687 — approval-declared plugin tools over the Power-MCP", () => {
     expect(await localeCodes()).toEqual(before);
   });
 
+  it("an approver without the tool's permission is refused and the card stays pending", async () => {
+    const editorCtx: ExecutionContext = {
+      actorId: crypto.randomUUID(),
+      actorKind: "human",
+      requestId: "mcp-gated-test-editor",
+    };
+    await withSystemTx(async (tx) => {
+      await tx`INSERT INTO actors (id, kind, display_name)
+               VALUES (${editorCtx.actorId}::uuid, 'human', 'mcp-gated editor')`;
+      await tx`INSERT INTO users (id, email, password_hash)
+               VALUES (${editorCtx.actorId}::uuid, ${`editor-${editorCtx.actorId.slice(0, 8)}@mcp-gated.test`}, 'test-only')`;
+      await tx`INSERT INTO user_roles (user_id, role_id)
+               SELECT ${editorCtx.actorId}::uuid, id FROM roles WHERE name = 'editor'`;
+    });
+    const r = await callOverMcp("set_locales", { locales: EN_DE });
+    const proposalId = r.approval?.proposalId ?? "";
+    const refused = await approveQueuedToolCall({
+      registry,
+      adapter,
+      approverCtx: editorCtx,
+      proposalId,
+    });
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error).toContain("settings.write");
+    // Not consumed: the Owner can still approve it.
+    expect((await outcome(proposalId)).outcome).toBe("pending");
+    const approved = await approveQueuedToolCall({ registry, adapter, approverCtx, proposalId });
+    expect(approved.ok).toBe(true);
+    expect((await outcome(proposalId)).outcome).toBe("applied");
+  });
+
   it("arguments that cannot apply are refused before any card is shown", async () => {
     const r = await callOverMcp("set_locales", { locales: [{ code: "en" }] });
     expect(r.ok).toBe(false);

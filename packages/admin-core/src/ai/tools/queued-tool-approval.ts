@@ -157,8 +157,9 @@ export interface ApprovedToolCallResult {
  * through the chat-runner's registry as the approving human.
  *
  * Returns an error string when the row could not be claimed (unknown, or
- * already decided). The caller checks the approver's permission for
- * built-in tools first (#589); plugin tools are checked by the host.
+ * already decided) or the approver cannot redeem a plugin call — that row
+ * stays pending for someone who can. The caller checks the approver's
+ * permission for built-in tools first (#589).
  */
 export async function approveQueuedToolCall(input: {
   readonly registry: OperationRegistry;
@@ -167,6 +168,11 @@ export async function approveQueuedToolCall(input: {
   readonly proposalId: string;
 }): Promise<{ ok: true; value: ApprovedToolCallResult } | { ok: false; error: string }> {
   const { registry, adapter, approverCtx, proposalId } = input;
+  // A plugin call the approver cannot redeem must be refused BEFORE the
+  // claim, or the click would consume the proposal for nothing and lock
+  // out the person who can approve it.
+  const refusal = await pluginApproverRefusal(registry, adapter, approverCtx, proposalId);
+  if (refusal) return { ok: false, error: refusal };
   const claim = await execute(registry, adapter, approverCtx, "tool_approvals.read_for_execute", {
     proposalId,
   });
@@ -212,6 +218,50 @@ export async function approveQueuedToolCall(input: {
     });
   }
   return { ok: true, value: { toolName, chatSessionId, ok: result.ok, content: result.content } };
+}
+
+/**
+ * Why `approverCtx` cannot approve this queued plugin call, or null. Built-in
+ * tools and rows that are no longer pending return null (the route checks
+ * built-ins; the claim reports a decided row).
+ */
+async function pluginApproverRefusal(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  approverCtx: ExecutionContext,
+  proposalId: string,
+): Promise<string | null> {
+  const pending = await execute(registry, adapter, approverCtx, "tool_approvals.list_pending", {
+    limit: 200,
+  });
+  if (!pending.ok) return `could not read the approval queue (${describeError(pending.error)})`;
+  const row = (
+    pending.value as { proposals: Array<{ id: string; toolName: string; proposedBy: string }> }
+  ).proposals.find((p) => p.id === proposalId);
+  const pluginTool = row ? pluginToolsRegistry.resolve(row.toolName) : null;
+  if (!row || !pluginTool) return null;
+  const plugin = loadedPlugins.bySlug(pluginTool.pluginSlug);
+  // The installation binding names the operator the agent works for (the
+  // queuing actor), and only they can redeem it — as with the in-chat card.
+  if (plugin?.externalApproval && row.proposedBy !== approverCtx.actorId) {
+    return (
+      `Only the person the requesting agent works for can approve this ${pluginTool.spec.name} call ` +
+      "(the plugin's approval is bound to them). It stays pending for them."
+    );
+  }
+  const permission = pluginTool.spec.requiredPermission;
+  if (
+    permission &&
+    !(await operatorHasPermission(
+      hostInfra(),
+      hostSystemActorId(),
+      approverCtx.actorId,
+      permission,
+    ))
+  ) {
+    return `Approving ${pluginTool.spec.name} needs the ${permission} permission. It stays pending for someone who holds it.`;
+  }
+  return null;
 }
 
 async function runApprovedPluginTool(
