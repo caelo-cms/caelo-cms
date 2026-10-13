@@ -789,7 +789,20 @@ describe("2-round fix cap", () => {
       }>(HUMAN, "quality_audits.chat_status", { chatSessionId: s.chatSessionId });
       expect(st.audit.fixRound).toBe(0);
       expect(st.feedback).toMatchObject({ kind: "offer", actionLabel: "Fix with AI" });
-      // "Not now": the endpoint settles the offer with a status note.
+      if (i === 1) {
+        // A click whose tab closed before the turn ran: the claim (with its
+        // fix request) is left behind and its lease runs out.
+        await op(HUMAN, "quality_audits.claim_chat_notification", {
+          auditRunId: st.audit.id,
+          fixRequested: true,
+        });
+        await withSql(async (tx) => {
+          await tx`UPDATE quality_audit_runs SET chat_notify_claimed_at = now() - interval '5 minutes'
+                   WHERE id = ${st.audit.id}::uuid`;
+        });
+      }
+      // "Not now": the endpoint settles the offer with a status note (and
+      // drops any abandoned fix request).
       expect(
         (
           await op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", {

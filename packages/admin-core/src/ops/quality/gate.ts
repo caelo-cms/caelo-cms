@@ -281,6 +281,8 @@ export const claimChatNotificationOp = defineOperation({
     }),
   output: z.object({ claimed: z.boolean() }),
   handler: async (ctx, input, tx) => {
+    // Any other claim (a note, "Not now") clears a fix request an earlier
+    // click left behind when its tab closed before the turn ran.
     // A lease, not a final mark: a fix request (#685: sent only on the
     // operator's "Fix with AI") is delivered by the browser after this
     // call; only its acknowledgement (ack_chat_notification) marks the
@@ -289,7 +291,7 @@ export const claimChatNotificationOp = defineOperation({
     const rows = (await tx.execute(sql`
       UPDATE quality_audit_runs
          SET chat_notify_claimed_at = now(),
-             fix_requested_at = CASE WHEN ${input.fixRequested} THEN now() ELSE fix_requested_at END
+             fix_requested_at = CASE WHEN ${input.fixRequested} THEN now() ELSE NULL END
       WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
         AND status IN ('passed', 'problems', 'errored', 'skipped')
         AND (chat_notify_claimed_at IS NULL
