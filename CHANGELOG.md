@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.10.42
+
+### Features
+- 288ae418 also remove GCP's default-allow-icmp and default-allow-internal rules (#675)
+
+### Fixes
+- 991f1007 staging-domain enable configures the admin, password on by default, 'stage once' hints (#681)
+
+### Refactors
+- 45e30893 cut A/B testing out of core (#676 PR-B) (#680)
+
+### Chores
+- 835b3f9e remove the A/B edge routers (#676 PR-A) (#679)
+- a4e1ed0f bump node from 24.21.0-bookworm-slim to 26.11.1-bookworm-slim in /apps/admin (#668)
+- bb61fa55 bump @pulumi/gcp from 9.37.0 to 10.1.0 (#670)
+- a382716d bump the minor-and-patch group across 1 directory with 21 updates (#669)
+
 ## v0.10.41
 
 ### Fixes
