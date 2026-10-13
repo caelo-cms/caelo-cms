@@ -7,10 +7,16 @@
  *
  * Sub-commands:
  *   init [--domain D --owner-email E]  — first-time setup; generates
- *                                         secrets, writes .caelo/, runs
- *                                         `docker compose up -d`, prints
- *                                         the bootstrap token URL.
+ *                                         secrets, resolves + cosign-verifies
+ *                                         the release images, writes .caelo/,
+ *                                         prints the start steps + the
+ *                                         bootstrap token URL. `--dev` runs a
+ *                                         Caelo checkout instead (contributors).
  *   up                                  — re-runs against existing config.
+ *   migrate                             — applies DB migrations with the
+ *                                         admin image the install runs.
+ *   upgrade [--version X]               — verified, backed-up, health-checked
+ *                                         image roll with rollback.
  *   regenerate-caddy                    — re-emits Caddyfile from the
  *                                         domains table; runs `caddy reload`.
  *   backup --to <path>                  — pgBackRest full + MinIO mirror →
@@ -25,12 +31,30 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { defaultStagingHost, normalizeStagingHost, stagingHostProblem } from "@caelo-cms/shared";
+import {
+  CAELO_VERSION,
+  defaultStagingHost,
+  normalizeStagingHost,
+  stagingHostProblem,
+} from "@caelo-cms/shared";
 import { generateBootstrapToken } from "./bootstrap-token.js";
 import { type CaddyDomainSpec, generateCaddyfile } from "./caddy.js";
 import { redactCredentials } from "./checkpoint-secrets.js";
 import { initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
-import { generateDockerCompose, type RolePasswords } from "./compose.js";
+import {
+  BOOTSTRAP_DIR,
+  type ComposeImages,
+  generateDockerCompose,
+  type RolePasswords,
+} from "./compose.js";
+import { selfCommand } from "./self-command.js";
+import {
+  bunHostRunner,
+  readRelease,
+  recordRelease,
+  releaseImages,
+  resolveVerifiedRelease,
+} from "./self-hosted-release.js";
 import { convergeSelfHostedRoles, decideUp } from "./self-hosted-roles.js";
 
 interface CaeloConfig {
@@ -67,14 +91,38 @@ interface CaeloConfig {
   rolesConverged?: boolean;
   anthropicApiKey?: string;
   resendApiKey?: string;
+  /**
+   * #696 — `dev` only for a contributor install made with `init --dev` (the
+   * admin + gateway run the Caelo checkout, bind-mounted). Absent/`release`:
+   * the prebuilt images recorded in `.caelo/release.json`.
+   */
+  imageMode?: "release" | "dev";
 }
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
-const CAELO_DIR = resolve(REPO_ROOT, ".caelo");
+/**
+ * Whether this CLI runs from a Caelo source checkout (contributor) rather
+ * than from an installed package (`bunx @caelo-cms/provisioning` puts it in
+ * a package cache, where `../../..` is a `node_modules` dir).
+ */
+const IN_REPO_CHECKOUT =
+  existsSync(resolve(REPO_ROOT, "packages/provisioning/package.json")) &&
+  existsSync(resolve(REPO_ROOT, "bun.lock"));
+/**
+ * The install's `.caelo/` dir: `$CAELO_SELF_HOSTED_DIR` when set; in a
+ * checkout the repo's own `.caelo/` (dev mode bind-mounts `../..` from it);
+ * otherwise `./.caelo` in the working directory — never inside a package
+ * cache, which `bunx` may wipe.
+ */
+const CAELO_DIR = process.env.CAELO_SELF_HOSTED_DIR
+  ? resolve(process.env.CAELO_SELF_HOSTED_DIR)
+  : resolve(IN_REPO_CHECKOUT ? REPO_ROOT : process.cwd(), ".caelo");
 const CONFIG_PATH = resolve(CAELO_DIR, "config.json");
 const COMPOSE_PATH = resolve(CAELO_DIR, "docker-compose.yml");
 const CADDYFILE_PATH = resolve(CAELO_DIR, "Caddyfile");
-const PENDING_TOKEN_PATH = resolve(CAELO_DIR, "pending-token.json");
+// The admin container mounts only `.caelo/bootstrap/` (compose.ts), never the
+// secrets next to it, and consumes the token from there on first boot.
+const PENDING_TOKEN_PATH = resolve(CAELO_DIR, BOOTSTRAP_DIR, "pending-token.json");
 // P15 — `cms-provision init --provider <name>` writes here so subsequent
 // commands route to the right Pulumi stack. Defaults to "self-hosted"
 // when missing (preserves the P14 path).
@@ -156,23 +204,7 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
     cfg.stagingDomain = defaultStagingHost(cfg.domain);
     saveConfig(cfg);
   }
-  if (!cfg.rolePasswords) {
-    // `init` sets them and `up` back-fills + applies them before calling here.
-    throw new Error("config has no rolePasswords — run `cms-provision up`");
-  }
-  // Generate compose + Caddyfile from the canonical config.
-  const compose = generateDockerCompose({
-    domain: cfg.domain,
-    postgresPassword: cfg.postgresPassword,
-    rolePasswords: cfg.rolePasswords,
-    minioRootUser: cfg.minioRootUser,
-    minioRootPassword: cfg.minioRootPassword,
-    caeloSecretKek: cfg.caeloSecretKek,
-    anthropicApiKey: cfg.anthropicApiKey,
-    resendApiKey: cfg.resendApiKey,
-    diskSize: "20Gi",
-  });
-  writeFileSync(COMPOSE_PATH, compose);
+  writeFileSync(COMPOSE_PATH, renderCompose(cfg, installImages(cfg)), { mode: 0o600 });
   // Seed the install with the operator's primary domain plus a staging
   // sibling. Extra domains added via /settings/domains are appended by
   // regenerate-caddy when it queries the live domains table.
@@ -190,6 +222,46 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
     domains: dedupeDomains([...baseDomains, ...extraDomains]),
   });
   writeFileSync(CADDYFILE_PATH, caddy);
+}
+
+/** The Compose file for `cfg` running `images` (secrets come from config.json). */
+function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
+  if (!cfg.rolePasswords) {
+    // `init` sets them and `up` back-fills + applies them before calling here.
+    throw new Error("config has no rolePasswords — run `cms-provision up`");
+  }
+  if (!cfg.caeloSecretKek) throw new Error("config has no caeloSecretKek — run `cms-provision up`");
+  return generateDockerCompose({
+    domain: cfg.domain,
+    postgresPassword: cfg.postgresPassword,
+    rolePasswords: cfg.rolePasswords,
+    minioRootUser: cfg.minioRootUser,
+    minioRootPassword: cfg.minioRootPassword,
+    caeloSecretKek: cfg.caeloSecretKek,
+    anthropicApiKey: cfg.anthropicApiKey,
+    resendApiKey: cfg.resendApiKey,
+    diskSize: "20Gi",
+    images,
+  });
+}
+
+/**
+ * The admin + gateway images the install runs: the checkout in dev mode,
+ * else the digests recorded in release.json. An install with neither (made
+ * before #696, still running the repo bind mount) is moved to the prebuilt
+ * images by `upgrade` — no silent fallback to the bind mount.
+ */
+function installImages(cfg: CaeloConfig): ComposeImages {
+  if (cfg.imageMode === "dev") return { mode: "dev" };
+  const release = readRelease(CAELO_DIR);
+  if (!release) {
+    throw new Error(
+      `${CAELO_DIR}/release.json records no release images. This install predates the prebuilt\n` +
+        `images (it ran the repo bind mount): run \`${selfCommand("upgrade")}\` to move it to the signed\n` +
+        'release images. (A contributor checkout that wants the bind mount sets "imageMode": "dev" in config.json.)',
+    );
+  }
+  return releaseImages(release);
 }
 
 function dedupeDomains(list: CaddyDomainSpec[]): CaddyDomainSpec[] {
@@ -228,7 +300,7 @@ async function init(): Promise<void> {
   }
   if (!domain || !ownerEmail) {
     console.error(
-      "Usage: cms-provision init [--provider self-hosted] --domain example.com [--staging-domain staging.example.com] --owner-email me@example.com\n" +
+      "Usage: cms-provision init [--provider self-hosted] --domain example.com [--staging-domain staging.example.com] --owner-email me@example.com [--version x.y.z] [--skip-verify] [--dev]\n" +
         "Cloud providers (gcp | gcp-firebase | aws | azure) run the wizard: cms-provision --provider <name>",
     );
     process.exit(2);
@@ -248,6 +320,34 @@ async function init(): Promise<void> {
     console.error(`--staging-domain: ${stagingProblem}`);
     process.exit(2);
   }
+  // #696 — the prebuilt release images, resolved to digests and
+  // cosign-verified BEFORE anything is written, so a failed check leaves no
+  // half-made install. `--dev` (contributors only) runs this checkout instead.
+  const dev = process.argv.includes("--dev");
+  if (dev && !IN_REPO_CHECKOUT) {
+    console.error(
+      "--dev runs the admin + gateway from a Caelo source checkout and only works from one\n" +
+        "(bun packages/provisioning/src/cli.ts init --dev …). End-user installs omit it.",
+    );
+    process.exit(2);
+  }
+  const version = (arg("version") ?? CAELO_VERSION).replace(/^v/, "");
+  const skipVerify = process.argv.includes("--skip-verify");
+  let images: ComposeImages = { mode: "dev" };
+  if (!dev) {
+    console.log(`Resolving + verifying the Caelo ${version} release images …`);
+    const resolved = await resolveVerifiedRelease(version, {
+      runner: bunHostRunner,
+      skipVerify,
+      onProgress: (m) => console.log(`  ${m}`),
+    });
+    if (!resolved.ok) {
+      console.error(resolved.error);
+      process.exit(1);
+    }
+    if (skipVerify) console.warn("--skip-verify set — image signatures NOT verified.");
+    images = resolved.images;
+  }
   saveProvider(providerArg);
   const cfg: CaeloConfig = {
     domain,
@@ -262,8 +362,16 @@ async function init(): Promise<void> {
     caeloSecretKek: randomSecret(32),
     anthropicApiKey: process.env.ANTHROPIC_API_KEY,
     resendApiKey: process.env.RESEND_API_KEY,
+    imageMode: dev ? "dev" : "release",
   };
   saveConfig(cfg);
+  if (images.mode === "release") {
+    recordRelease(
+      CAELO_DIR,
+      { version, images },
+      { from: null, to: version, outcome: "installed" },
+    );
+  }
   emitConfig(cfg);
 
   // Mint the bootstrap token and stage it for hooks.server.ts to insert
@@ -272,7 +380,8 @@ async function init(): Promise<void> {
   // first boot, calls owner_bootstrap_tokens.insert, then deletes the
   // staging file.
   const tok = generateBootstrapToken();
-  writeFileSync(PENDING_TOKEN_PATH, JSON.stringify(tok, null, 2));
+  mkdirSync(resolve(CAELO_DIR, BOOTSTRAP_DIR), { recursive: true, mode: 0o700 });
+  writeFileSync(PENDING_TOKEN_PATH, JSON.stringify(tok, null, 2), { mode: 0o600 });
 
   // P15.1 — mint the shared HMAC secret for /api/internal/* endpoints.
   // Same secret is read by:
@@ -289,10 +398,17 @@ async function init(): Promise<void> {
   console.log(`Wrote ${CADDYFILE_PATH}`);
   console.log(`Wrote ${PENDING_TOKEN_PATH} (admin will insert on first boot)`);
   console.log("");
+  console.log(
+    images.mode === "release"
+      ? `Images: Caelo ${version}, pinned by digest (${images.admin.split("@")[1]?.slice(0, 19)}…)`
+      : "Images: DEV MODE — admin + gateway run this checkout (contributors only).",
+  );
+  console.log("");
   console.log("Next steps:");
-  console.log(`  cd ${CAELO_DIR}`);
-  console.log("  docker compose up -d");
-  console.log("  # Wait ~30s for Postgres + Caddy + ACME");
+  console.log(`  docker compose -f ${COMPOSE_PATH} up -d postgres`);
+  console.log(`  ${selfCommand("migrate")}     # applies the database migrations`);
+  console.log(`  docker compose -f ${COMPOSE_PATH} up -d`);
+  console.log("  # Wait ~30s for Caddy + ACME");
   console.log("");
   console.log("Then visit:");
   console.log(`  https://${domain}/setup?token=${tok.token}`);
@@ -687,6 +803,88 @@ async function restore(): Promise<void> {
   console.log("Restore complete.");
 }
 
+/**
+ * #696 — `migrate`: apply the database migrations with the admin image the
+ * install runs (a one-off `docker compose run` of its migration entrypoint,
+ * as the GCP migrate job does). Postgres must be up; idempotent.
+ */
+async function migrate(): Promise<void> {
+  requireSelfHosted("migrate");
+  if (!existsSync(COMPOSE_PATH)) {
+    console.error(`no Compose file — run \`${selfCommand("init")}\` first`);
+    process.exit(2);
+  }
+  const { runMigrations } = await import("./self-hosted-upgrade.js");
+  const r = await runMigrations(CAELO_DIR, bunHostRunner);
+  if (!r.ok) {
+    console.error(r.error);
+    process.exit(1);
+  }
+  console.log("Migrations applied (cms_admin + cms_public).");
+}
+
+/**
+ * Whether `upgrade` targets this directory's self-hosted Compose install.
+ * `--install <id|domain|all>` always names cloud installs (install.json),
+ * so it goes to the lifecycle selector even where a `.caelo/` exists.
+ */
+function selfHostedInstallPresent(): boolean {
+  return (
+    arg("install") === undefined && existsSync(CONFIG_PATH) && loadProvider() === "self-hosted"
+  );
+}
+
+/**
+ * #696 — `upgrade` for a self-hosted install: verified digests, pg_dump
+ * backup, pull, migrations, admin-then-gateway roll with health checks and
+ * rollback (self-hosted-upgrade.ts).
+ */
+async function upgradeSelfHostedCommand(opts: {
+  version?: string;
+  channel?: "stable" | "rc" | "beta";
+  skipVerify?: boolean;
+}): Promise<void> {
+  const cfg = loadConfig();
+  if (!cfg) {
+    console.error("no config — run `cms-provision init` first");
+    process.exit(2);
+  }
+  if (cfg.imageMode === "dev") {
+    console.error(
+      "This is a DEV MODE install: the admin + gateway run your Caelo checkout, so there are\n" +
+        "no images to upgrade. Update the checkout (git pull), then `bun packages/provisioning/src/cli.ts migrate` and\n" +
+        `\`docker compose -f ${COMPOSE_PATH} restart caelo-admin caelo-gateway\`.`,
+    );
+    process.exit(2);
+  }
+  const { upgradeSelfHosted } = await import("./self-hosted-upgrade.js");
+  const result = await upgradeSelfHosted(opts, {
+    caeloDir: CAELO_DIR,
+    runner: bunHostRunner,
+    renderCompose: (images) => renderCompose(cfg, images),
+    log: {
+      step: (m) => console.log(`\n==> ${m}`),
+      info: (m) => console.log(`    ${m}`),
+      warn: (m) => console.warn(`    ! ${m}`),
+      error: (m) => console.error(`    x ${m}`),
+    },
+  });
+  if (result.ok) {
+    if (result.status === "upgraded" && cfg.imageMode !== "release") {
+      cfg.imageMode = "release";
+      saveConfig(cfg);
+    }
+    return;
+  }
+  console.error(`\nUpgrade failed at "${result.stage}":\n${result.error}`);
+  console.error(
+    result.previousRunning
+      ? "The previous release is still the one running."
+      : "The install may be degraded — see above.",
+  );
+  process.exit(1);
+}
+
 const cmd = process.argv[2];
 /**
  * P15 — `pulumi-output-sync`. Reads `pulumi stack output --json` from
@@ -783,6 +981,7 @@ const handlers: Record<string, () => Promise<void>> = {
   init,
   up,
   "regenerate-caddy": regenerateCaddy,
+  migrate,
   // §11.C lifecycle dispatchers route by provider via install metadata.
   // Self-hosted bodies remain reachable as `<command>-self-hosted` for
   // back-compat scripts that bypassed the dispatcher.
@@ -812,7 +1011,6 @@ async function lifecycleStatus(): Promise<void> {
   await statusCommand();
 }
 async function lifecycleUpgrade(): Promise<void> {
-  const { upgradeCommand } = await import("./lifecycle.js");
   // P20 — version + channel flags. Default = latest stable.
   //   bunx @caelo-cms/provisioning upgrade
   //   bunx @caelo-cms/provisioning upgrade --version 0.5.3
@@ -826,12 +1024,21 @@ async function lifecycleUpgrade(): Promise<void> {
       ? channelArg
       : undefined;
   const skipVerify = process.argv.includes("--skip-verify");
+  if (selfHostedInstallPresent()) {
+    await upgradeSelfHostedCommand({
+      ...(version ? { version } : {}),
+      ...(channel ? { channel } : {}),
+      ...(skipVerify ? { skipVerify: true } : {}),
+    });
+    return;
+  }
   // #696 — `--skip-health-check` rolls without the post-roll deep health
   //   check (Cloud Run readiness only), e.g. for a release that predates it.
   const skipHealthCheck = process.argv.includes("--skip-health-check");
   // #607 — optional; must match the install's recorded region (upgrade
   // never moves an install between regions).
   const region = arg("region");
+  const { upgradeCommand } = await import("./lifecycle.js");
   await upgradeCommand({
     ...(region ? { region } : {}),
     ...(version ? { version } : {}),
@@ -1153,7 +1360,7 @@ if (route.kind === "handler" || route.kind === "wizard") {
   }
 } else {
   console.log(
-    "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|pulumi-output-sync|version> [options]\n" +
+    "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] | <init|up|migrate|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|pulumi-output-sync|version> [options]\n" +
       "With several installs on this machine, pick one with --install <install-id or domain> (status, upgrade and backup also take --install all); in a terminal you are asked otherwise.\n" +
       "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
   );

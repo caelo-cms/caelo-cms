@@ -16,6 +16,10 @@ cd packages/provisioning/stacks/self-hosted
 pulumi stack init prod
 pulumi config set caelo-self-hosted:domain example.com
 pulumi config set caelo-self-hosted:ownerEmail me@example.com
+# The signed release images, pinned by digest — the values `cms-provision init`
+# verified and recorded in .caelo/release.json:
+pulumi config set caelo-self-hosted:adminImage ghcr.io/caelo-cms/admin@sha256:<digest>
+pulumi config set caelo-self-hosted:gatewayImage ghcr.io/caelo-cms/gateway@sha256:<digest>
 pulumi up
 ```
 
