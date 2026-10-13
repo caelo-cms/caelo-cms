@@ -253,7 +253,7 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   "pages.lookup_links_in_modules": {
     kind: "internal",
     reason:
-      "runs inside slug changes (link rewriter) + the dashboard incoming-links panel; the AI searches bodies with grep_content",
+      "incoming-links lookup by page path (dashboard panel); the AI searches bodies with grep_content",
   },
   "page_module_content.get": {
     kind: "internal",

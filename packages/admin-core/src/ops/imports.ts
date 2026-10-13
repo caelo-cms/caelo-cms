@@ -1192,7 +1192,9 @@ async function resolveImportPageRef(
         JOIN import_pages ip ON ip.id = ${direct[0].id}::uuid
         WHERE p.deleted_at IS NULL
           AND (
-            p.slug = ip.proposed_slug
+            -- Imports build top-level pages: the proposed slug's URL is
+            -- the identity (slugs repeat across parents, epic #690).
+            p.current_path = '/' || ip.proposed_slug
             OR (ip.proposed_slug = 'home'
                 AND EXISTS (SELECT 1 FROM site_defaults sd WHERE sd.home_page_id = p.id))
           )
@@ -1208,7 +1210,7 @@ async function resolveImportPageRef(
     SELECT ip.id::text AS id, p.id::text AS composed
     FROM pages p
     JOIN import_pages ip
-      ON ip.proposed_slug = p.slug
+      ON p.current_path = '/' || ip.proposed_slug
       OR (ip.proposed_slug = 'home'
           AND EXISTS (SELECT 1 FROM site_defaults sd WHERE sd.home_page_id = p.id))
     WHERE p.id = ${inputId}::uuid AND p.deleted_at IS NULL
@@ -3621,7 +3623,10 @@ export const composeFromImportRunOp = defineOperation({
             ${r.proposed_title || r.proposed_slug},
             'draft', ${templateIdForCluster}::uuid, 1
           )
-          ON CONFLICT (slug, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
+          -- A re-run updates the page already at this URL (the composed
+          -- path is the unique key since 0264; the INSERT default gives a
+          -- top-level page "/<slug>").
+          ON CONFLICT (current_path, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
             WHERE deleted_at IS NULL
             DO UPDATE SET title = EXCLUDED.title, name = EXCLUDED.name,
                           template_id = EXCLUDED.template_id
@@ -3733,7 +3738,7 @@ export const composeFromImportRunOp = defineOperation({
           // not a silent skip or overwrite (no-fallbacks pre-1.0).
           const shadow = (await tx.execute(sql`
             SELECT id::text AS id FROM pages
-            WHERE slug = ${sourcePath.slice(1)}
+            WHERE current_path = ${sourcePath}
               AND deleted_at IS NULL AND id <> ${pageId}::uuid
             LIMIT 1
           `)) as unknown as { id: string }[];
@@ -3744,7 +3749,7 @@ export const composeFromImportRunOp = defineOperation({
             throw new OperationAbortError({
               kind: "HandlerError",
               operation: "imports.compose_from_run",
-              message: `redirect ${sourcePath} → ${caeloPath} would shadow the existing page '${sourcePath.slice(1)}' (${shadow[0].id}). Rename one of them (update_pages_many with a new slug) or exclude this import page, then re-run compose. Nothing from this compose was applied.`,
+              message: `redirect ${sourcePath} → ${caeloPath} would shadow the existing page at ${sourcePath} (${shadow[0].id}). Rename one of them (update_pages_many with a new slug) or exclude this import page, then re-run compose. Nothing from this compose was applied.`,
             });
           }
           // #657 — the same target rule as redirects.create. The path is

@@ -758,12 +758,13 @@ export const createPageOp = defineOperation({
     // row yet, so it can't be the designated home_page_id.
     // A nested page is never the root, whatever its slug ("/docs/index").
     const newIsRoot = !input.parentPageId && isRootSlug(input.slug);
-    const newSlugKey = trimSlashes(input.slug);
+    // The root ("/") stays a one-page slot; every other clash is a URL
+    // clash, checked on composed paths by the planner below (0264: the
+    // same slug may live under different parents / prefixes).
     const conflict = candidates.find((c) => {
       if (branchDeleted.has(c.id)) return false;
       const candIsRoot = isRootSlug(c.slug) || (homePageId !== null && c.id === homePageId);
-      if (newIsRoot && candIsRoot) return true;
-      return trimSlashes(c.slug) === newSlugKey;
+      return newIsRoot && candIsRoot;
     });
     if (conflict) {
       const conflictIsRoot =
@@ -828,7 +829,7 @@ export const createPageOp = defineOperation({
     // URL-conflict check as a move (depth, homepage-as-parent, path
     // taken), planned in the caller's branch view before the INSERT.
     const parentPageId = input.parentPageId ?? null;
-    if (parentPageId !== null) {
+    if (!newIsRoot) {
       const plan = await planPageMoves(tx, renderScopeOf(ctx), [
         { pageId: crypto.randomUUID(), isNew: true, parentPageId, newSlug: input.slug },
       ]);
@@ -839,7 +840,7 @@ export const createPageOp = defineOperation({
           operation: "pages.create",
           input,
           succeeded: false,
-          resultSummary: "parent-refused",
+          resultSummary: "plan-refused",
         });
         return err({ kind: "HandlerError", operation: "pages.create", message: plan.message });
       }
@@ -989,42 +990,14 @@ export const updatePageOp = defineOperation({
       }
     }
     if (input.slug !== undefined) {
-      // Slug uniqueness still checked against live, even when branched:
-      // a chat shouldn't claim a slug another live page already owns.
-      // 2b — but a page THIS chat soft-deleted on its own branch (a
-      // branched delete leaves the live row intact, marking the deletion
-      // only in a page_snapshots overlay) no longer occupies its slug, so
-      // the caller may reclaim it.
-      const dupRows = (await tx.execute(sql`
-        SELECT id::text AS id FROM pages
-        WHERE slug = ${input.slug}
-          AND id <> ${input.pageId}::uuid
-          AND deleted_at IS NULL
-      `)) as unknown as { id: string }[];
-      const branchDeleted = ctx.chatBranchId
-        ? await branchDeletedPageIds(
-            tx,
-            ctx.chatBranchId,
-            dupRows.map((r) => r.id),
-          )
-        : new Set<string>();
-      const occupant = dupRows.find((r) => !branchDeleted.has(r.id));
-      if (occupant) {
-        return err({
-          kind: "HandlerError",
-          operation: "pages.update",
-          message: `slug "${input.slug}" already in use`,
-        });
-      }
-      // 0263 — a rename moves the page's whole subtree: refuse a new URL
-      // that any of them would share with another page.
-      if (input.slug !== existing.slug) {
-        const plan = await planPageMoves(tx, renderScopeOf(ctx), [
-          { pageId: input.pageId, newSlug: input.slug },
-        ]);
-        if (!plan.ok) {
-          return err({ kind: "HandlerError", operation: "pages.update", message: plan.message });
-        }
+      // 0264 — a rename moves the page's URL and its whole subtree's:
+      // refuse any new URL another page already has, in the caller's
+      // branch view (a page this chat deleted no longer holds its URL).
+      const plan = await planPageMoves(tx, renderScopeOf(ctx), [
+        { pageId: input.pageId, newSlug: input.slug },
+      ]);
+      if (!plan.ok) {
+        return err({ kind: "HandlerError", operation: "pages.update", message: plan.message });
       }
     }
 
@@ -1831,6 +1804,11 @@ export const duplicatePageOp = defineOperation({
       newName: z.string().min(1).max(256).optional(),
       newTitle: z.string().min(1).max(256).optional(),
       targetTemplateId: z.string().uuid().optional(),
+      /**
+       * 0264 — where the copy sits: a parent page id, or null for the
+       * top level. Omitted = a sibling of the source (same parent).
+       */
+      newParentPageId: z.string().uuid().nullable().optional(),
     })
     .strict(),
   output: z.object({ pageId: z.string() }),
@@ -1868,23 +1846,22 @@ export const duplicatePageOp = defineOperation({
         });
       }
     }
-    const dup = (await tx.execute(sql`
-      SELECT 1 FROM pages
-      WHERE slug = ${input.newSlug} AND deleted_at IS NULL LIMIT 1
-    `)) as unknown as { exists: number }[];
-    if (dup.length > 0) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages.duplicate",
-        message: `page already exists for slug=${input.newSlug}`,
-      });
+    // 0263/0264 — the copy is a sibling of the source by default (same
+    // parent in the caller's view, so `/docs/a` duplicates to `/docs/b`);
+    // its URL must be free in that view.
+    const dupTree = await loadPageTree(tx, ctx.chatBranchId ?? null);
+    const dupParent =
+      input.newParentPageId !== undefined
+        ? input.newParentPageId
+        : (dupTree.byId.get(input.sourcePageId)?.parentPageId ?? null);
+    const dupPlan = await planPageMoves(tx, renderScopeOf(ctx), [
+      { pageId: crypto.randomUUID(), isNew: true, parentPageId: dupParent, newSlug: input.newSlug },
+    ]);
+    if (!dupPlan.ok) {
+      return err({ kind: "HandlerError", operation: "pages.duplicate", message: dupPlan.message });
     }
     const title = input.newTitle ?? source.title;
     const name = input.newName ?? title;
-    // 0263 — the copy is a sibling: same parent as the source (in the
-    // caller's view of the tree), so `/docs/a` duplicates to `/docs/b`.
-    const dupTree = await loadPageTree(tx, ctx.chatBranchId ?? null);
-    const dupParent = dupTree.byId.get(input.sourcePageId)?.parentPageId ?? null;
     // Branched like pages.create: a copy made in a chat is that chat's
     // page until publish, not a live draft other chats and the site see.
     const inserted = (await tx.execute(sql`

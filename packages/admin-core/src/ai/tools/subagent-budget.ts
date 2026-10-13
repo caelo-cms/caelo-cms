@@ -281,6 +281,9 @@ export function escalateSpecTier(
 
 /** Render an escalation ref for a brief line. */
 function escalationLabel(ref: SubagentEscalationRef): string {
+  // Both when known: the slug reads well, the id is unambiguous (slugs
+  // repeat across parents once pages nest).
+  if (ref.slug && ref.pageId) return `${ref.slug} (${ref.pageId})`;
   return ref.slug ?? ref.pageId ?? "(unidentified page)";
 }
 
@@ -349,6 +352,9 @@ export function classifyChildCompletion(input: {
 
 /** Render a page ref for a task brief / summary line. */
 function pageRefLabel(ref: SubagentPageRef): string {
+  // Both when known: the slug reads well, the id is unambiguous (slugs
+  // repeat across parents once pages nest).
+  if (ref.slug && ref.pageId) return `${ref.slug} (${ref.pageId})`;
   return ref.slug ?? ref.pageId ?? "(unidentified page)";
 }
 
@@ -409,8 +415,9 @@ export function mergeRebuildPages(
       : null;
   const lastPages = Array.isArray(last?.pages) ? (last.pages as Record<string, unknown>[]) : null;
   if (last === null || lastPages === null) return lastResultJson;
+  // Page id first: a slug is one path segment and may name several pages.
   const keyOf = (p: { pageId?: unknown; slug?: unknown }): string =>
-    String(p.slug ?? p.pageId ?? "");
+    String(p.pageId ?? p.slug ?? "");
   const lastKeys = new Set(lastPages.map(keyOf).filter((k) => k !== ""));
   const carried = earlierCompleted
     .filter((p) => !lastKeys.has(keyOf(p)))

@@ -151,6 +151,11 @@ export async function planPageMoves(
     const target = after.get(id)?.path;
     if (target === undefined) continue;
     const clash = holderOf.get(target) ?? claimedBy.get(target);
+    if (clash !== undefined && changes.find((c) => c.pageId === id)?.isNew) {
+      return refuse(
+        `page already exists at ${target} — it is page ${clash}. Edit it (build_page with its pageId) instead of creating a duplicate, or pick another slug or parent for the new page.`,
+      );
+    }
     if (clash !== undefined) {
       const mover = before.get(id)?.path ?? "the new page";
       const changed = changes.find((c) => c.pageId === id);

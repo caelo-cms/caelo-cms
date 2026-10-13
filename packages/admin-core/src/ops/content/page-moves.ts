@@ -38,7 +38,6 @@ import {
 } from "../../snapshots/index.js";
 import { recomputeCurrentPathsWithMoves, renderScopeOf } from "./current-path.js";
 import { planPageMoves, type TreeChange } from "./page-move-plan.js";
-import { loadPageTree } from "./page-tree.js";
 import { applyPathMoveEffects, type PathMoveEffects } from "./path-moves.js";
 
 const OP = "pages.move_many";
@@ -89,23 +88,6 @@ export async function executePageMoves(
   }
 
   const scope = renderScopeOf(ctx);
-  // Slugs are still unique site-wide until the path-identity change of
-  // epic #690 lands; refuse a rename onto a taken slug with the fix.
-  const renames = changes.filter((c) => c.newSlug !== undefined);
-  if (renames.length > 0) {
-    const tree = await loadPageTree(tx, scope.chatBranchId);
-    for (const c of renames) {
-      const holder = [...tree.byId.values()].find((n) => n.slug === c.newSlug && n.id !== c.pageId);
-      if (holder) {
-        return err({
-          kind: "HandlerError",
-          operation: OP,
-          message: `slug "${c.newSlug}" is already used by page ${holder.id} — pick another newSlug for page ${c.pageId}`,
-        });
-      }
-    }
-  }
-
   const planned = await planPageMoves(tx, scope, changes);
   if (!planned.ok) {
     return err({ kind: "HandlerError", operation: OP, message: planned.message });

@@ -14,13 +14,21 @@
 import { expect, type Page, test } from "@playwright/test";
 import { clearLoginRateBucket, runBunInline } from "./helpers.js";
 
+// One seed shared by both tests: run them in one worker.
+test.describe.configure({ mode: "serial" });
 test.beforeAll(clearLoginRateBucket);
 
 const TAG = `e2e690-${Date.now()}`;
 const PASSWORD = "nested pages dev password";
 const EMAIL = `${TAG}@example.com`;
 
-let seed: { section: string; child: string; moved: string; redirectTo: string | null };
+let seed: {
+  section: string;
+  section2: string;
+  child: string;
+  moved: string;
+  redirectTo: string | null;
+};
 
 test.beforeAll(() => {
   const out = runBunInline(
@@ -65,6 +73,9 @@ test.beforeAll(() => {
       });
     const section = await create(tag + "-section");
     await create(tag + "-child", section.pageId);
+    // Path identity (#690 part 2): the same slug under a second section.
+    const section2 = await create(tag + "-section2");
+    await create(tag + "-child", section2.pageId);
     const moved = await create(tag + "-moved");
     await run("pages.move_many", { moves: [{ pageId: moved.pageId, parentPageId: section.pageId }] });
     await adapter.close();
@@ -74,7 +85,7 @@ test.beforeAll(() => {
     });
     await db.end();
     process.stdout.write(JSON.stringify({
-      section: tag + "-section", child: tag + "-child", moved: tag + "-moved",
+      section: tag + "-section", section2: tag + "-section2", child: tag + "-child", moved: tag + "-moved",
       redirectTo: red[0]?.to_path ?? null,
     }));
     `,
@@ -108,4 +119,13 @@ test("nested pages preview at their parent-chain URLs; a moved page leaves its o
     maxRedirects: 0,
   });
   expect(oldUrl.status()).toBe(404);
+});
+
+test("two nested pages may share a slug — each previews at its own path", async ({ page }) => {
+  await signIn(page);
+  const first = await page.request.get(`/edit/preview-by-path/${seed.section}/${seed.child}`);
+  const second = await page.request.get(`/edit/preview-by-path/${seed.section2}/${seed.child}`);
+  expect(first.status()).toBe(200);
+  expect(second.status()).toBe(200);
+  expect(await second.text()).toContain(`"path":"/${seed.section2}/${seed.child}"`);
 });

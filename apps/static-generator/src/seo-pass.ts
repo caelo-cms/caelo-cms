@@ -59,6 +59,7 @@ interface PageSeoBundle {
 }
 
 export interface SeoPagesContext {
+  pageId: string;
   pageSlug: string;
   pageTitle: string;
   html: string;
@@ -82,11 +83,11 @@ export async function runSeoPass(args: {
     return { sitemapEmitted: false };
   }
 
-  // Resolve every page's slug to its sidecar SEO row.
-  const slugs = args.pages.map((p) => p.pageSlug);
+  // Resolve every page to its sidecar SEO row — by id: slugs repeat
+  // across parents once pages nest (epic #690).
   // Per-id query — same Bun-SQL constraint as media.list.
   const seoBundles: PageSeoBundle[] = [];
-  for (const slug of slugs) {
+  for (const pageId of args.pages.map((p) => p.pageId)) {
     const rows = (await args.tx.execute(sql`
       SELECT
         p.id::text AS page_id, p.slug, p.current_path, p.title,
@@ -99,7 +100,7 @@ export async function runSeoPass(args: {
         p.updated_at
       FROM pages p
       LEFT JOIN pages_seo s ON s.page_id = p.id
-      WHERE p.slug = ${slug} AND p.deleted_at IS NULL
+      WHERE p.id = ${pageId}::uuid AND p.deleted_at IS NULL
       LIMIT 1
     `)) as unknown as {
       page_id: string;
@@ -226,9 +227,9 @@ export async function runSeoPass(args: {
   // #390 — canonical follows the MATERIALIZED composed path; home
   // designation, prefixes, and slug formats are already baked into
   // pages.current_path by the write ops.
-  const bundleBySlug = new Map<string, PageSeoBundle>(seoBundles.map((b) => [b.slug, b]));
+  const bundleById = new Map<string, PageSeoBundle>(seoBundles.map((b) => [b.pageId, b]));
   for (const p of args.pages) {
-    const bundle = bundleBySlug.get(p.pageSlug);
+    const bundle = bundleById.get(p.pageId);
     if (!bundle) continue;
     const canonical = publicUrlOf(bundle);
     const ogImageUrl = bundle.ogImageAssetId

@@ -545,42 +545,41 @@ export const siteDefaultsSeedSiteBaseUrlOp = defineOperation({
 });
 
 // ---------------------------------------------------------------------
-// pages.lookup_links_in_modules — given an old slug, find every module
-// whose HTML body has an <a href> pointing at it. Used by the slug-
-// change rewriter and the dashboard "incoming links" panel.
+// pages.lookup_links_in_modules — given a page URL PATH, find every
+// module whose HTML body has an <a href> pointing at exactly that page
+// (trailing slash / ?query / #fragment tolerated). A path, not a slug:
+// slugs repeat across parents once pages nest (epic #690).
 // ---------------------------------------------------------------------
 
 export const lookupLinksInModulesOp = defineOperation({
   name: "pages.lookup_links_in_modules",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ oldSlug: z.string().min(1).max(120) }).strict(),
+  input: z
+    .object({
+      path: z
+        .string()
+        .min(2)
+        .max(500)
+        .regex(/^\/[^/]/, "a page path like '/about'"),
+    })
+    .strict(),
   output: z.object({
     modules: z.array(z.object({ id: z.string(), slug: z.string(), displayName: z.string() })),
   }),
   handler: async (_ctx, input, tx) => {
-    // Cheap pre-filter: substring match on the slug. The op is a
-    // search surface for the dashboard; the tx-level rewriter does
-    // proper href parsing on the matching subset.
-    const needles = [
-      `href="/${input.oldSlug}"`,
-      `href="/${input.oldSlug}/`,
-      `href='/${input.oldSlug}'`,
-      `href='/${input.oldSlug}/`,
-    ];
+    // Cheap pre-filter on the quoted path; exact href parsing below.
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, display_name FROM modules
+      SELECT id::text AS id, slug, display_name, html FROM modules
       WHERE deleted_at IS NULL
-        AND (
-          html LIKE ${`%${needles[0]}%`}
-          OR html LIKE ${`%${needles[1]}%`}
-          OR html LIKE ${`%${needles[2]}%`}
-          OR html LIKE ${`%${needles[3]}%`}
-        )
+        AND html LIKE ANY (string_to_array(${moveNeedles([input.path])}, ${"\u001f"}))
       ORDER BY slug
-    `)) as unknown as { id: string; slug: string; display_name: string }[];
+    `)) as unknown as { id: string; slug: string; display_name: string; html: string }[];
+    const probe = buildPathMoveMap([{ from: input.path, to: "/__probe__" }]);
     return ok({
-      modules: rows.map((r) => ({ id: r.id, slug: r.slug, displayName: r.display_name })),
+      modules: rows
+        .filter((r) => rewritePathLinksInHtml(r.html, probe) !== r.html)
+        .map((r) => ({ id: r.id, slug: r.slug, displayName: r.display_name })),
     });
   },
 });

@@ -691,11 +691,14 @@ export async function generateSite(args: {
   // copied once even when 50 pages reference it.
   const composedPages: {
     html: string;
+    /** Identity for every per-page pass (slugs repeat across parents). */
+    pageId: string;
     pageSlug: string;
     pageTitle: string;
     relPath: string;
   }[] = [];
-  // P13 — per-slug bake target for the plugin render pass.
+  // P13 — per-page bake target for the plugin render pass, keyed by page
+  // id: slugs are not unique once pages nest (epic #690).
   const bakeTargets = new Map<string, BakeTarget>();
   // Plugin data lists for the whole deploy, resolved in ONE call per
   // contributing plugin rather than per page. Names declared by
@@ -877,6 +880,7 @@ export async function generateSite(args: {
 
     composedPages.push({
       html: composed.html,
+      pageId: page.page_id,
       pageSlug: page.slug,
       pageTitle: page.title,
       relPath: pageOutputPath(page.current_path, target.pageUrlStyle),
@@ -887,7 +891,7 @@ export async function generateSite(args: {
       moduleFailures: composed.moduleFailures,
     });
     // P13 — record per-page bake target for the plugin render pass.
-    bakeTargets.set(page.slug, {
+    bakeTargets.set(page.page_id, {
       pageId: page.page_id,
       slug: page.slug,
     });

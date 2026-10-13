@@ -284,7 +284,7 @@
       // Fresh-install "no active page yet" — pick the home (or first)
       // so the iframe gets a src instead of staying blank.
       if (activePageId === "" && data.pages.length > 0) {
-        const home = data.pages.find((p) => p.slug === "home");
+        const home = data.pages.find((p) => p.currentPath === "/");
         const pick = home ?? data.pages[0];
         if (pick) activePageId = pick.id;
       }
@@ -294,10 +294,10 @@
     const newIds = [...currentIds].filter((id) => !seenPageIds.has(id));
     if (newIds.length === 0) return;
     const newPages = data.pages.filter((p) => newIds.includes(p.id));
-    const newHome = newPages.find((p) => p.slug === "home");
+    const newHome = newPages.find((p) => p.currentPath === "/");
     if (newHome) {
       const cur = data.pages.find((p) => p.id === activePageId);
-      if (!cur || cur.slug === "home" || activePageId === "") {
+      if (!cur || cur.currentPath === "/" || activePageId === "") {
         activePageId = newHome.id;
       }
     }

@@ -174,7 +174,7 @@ export type LoadSkillToolInput = z.infer<typeof loadSkillToolInput>;
 export const addModuleToolInput = z
   .object({
     target: z.enum(["page", "layout", "template"]),
-    /** Slug or uuid of the page / layout / template. Resolved server-side. */
+    /** Page: id or URL path. Layout / template: slug or id. Resolved server-side. */
     targetRef: z.string().min(1).max(200),
     blockName: z.string().min(1).max(80),
     position: positionInputSchema,
@@ -713,6 +713,9 @@ export const duplicatePageToolInput = z
     newName: z.string().min(1).max(256).optional(),
     newTitle: z.string().min(1).max(256).optional(),
     targetTemplateId: z.string().uuid().optional(),
+    /** Where the copy sits: a parent page id, or null for the top level.
+     *  Omitted = next to the source (same parent). */
+    newParentPageId: z.string().uuid().nullable().optional(),
   })
   .strict();
 

@@ -95,11 +95,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   let pages = pagesR.ok ? (pagesR.value as { pages: PageRow[] }).pages : [];
 
   // Pick the page to render in the iframe. URL param wins; otherwise
-  // prefer the seeded `home` slug; otherwise the first page in the list.
+  // prefer the site root ("/"); otherwise the first page in the list.
   const queryPage = url.searchParams.get("page");
   let activePage =
     pages.find((p) => p.id === queryPage) ??
-    pages.find((p) => p.slug === "home") ??
+    pages.find((p) => p.currentPath === "/") ??
     pages[0] ??
     null;
   let activePageId = activePage?.id ?? null;
@@ -239,7 +239,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     pages = (branchPagesR.value as { pages: PageRow[] }).pages;
     activePage =
       pages.find((p) => p.id === queryPage) ??
-      pages.find((p) => p.slug === "home") ??
+      pages.find((p) => p.currentPath === "/") ??
       pages[0] ??
       null;
     activePageId = activePage?.id ?? null;
@@ -364,7 +364,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     chatSessionId: string;
     title: string;
     anchorPageId: string | null;
-    anchorPageSlug: string | null;
+    anchorPagePath: string | null;
     anchorPageLocale: string | null;
     pendingCount: number;
   };

@@ -65,13 +65,16 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
   // Primary: composed-path match. Legacy slug match keeps pre-#390
   // bookmarks working when no URL plugin has reshaped anything (then
   // currentPath === "/<slug>" and both branches agree). Top-level pages
-  // only: a nested page's URL is its parent chain + slug, so "/<slug>"
-  // is NOT its address (after a move it is a 301 to the new one).
+  // only — a nested page's URL is its parent chain + slug, so "/<slug>"
+  // is NOT its address — and only while exactly one page matches: slugs
+  // repeat across URL prefixes (epic #690), and a guess would open the
+  // wrong page.
+  const legacy = pages.filter(
+    (p) => p.parentPageId === null && p.slug === (trimmed.length === 0 ? "home" : trimmed),
+  );
   const page =
     pages.find((p) => p.currentPath === lookupPath) ??
-    pages.find(
-      (p) => p.parentPageId === null && p.slug === (trimmed.length === 0 ? "home" : trimmed),
-    );
+    (legacy.length === 1 ? legacy[0] : undefined);
   if (!page) throw error(404, `No page at ${lookupPath}`);
 
   // P6.6b — `?exclude=<moduleId>,<moduleId>` lets the chat-side diff

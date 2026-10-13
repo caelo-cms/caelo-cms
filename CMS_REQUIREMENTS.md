@@ -211,9 +211,15 @@ Auto-redeploy is optional — configurable toggle in admin settings.
 
 Core is locale-agnostic. It ships exactly the primitives an i18n plugin composes:
 
-- **Global-slug page identity.** A page is identified by its slug alone (unique per
-  branch); core has no locale column. Language variants of a page are plugin data — the
-  plugin groups pages into variant sets in its own schema (§14).
+- **Page identity is the page id; the URL path is unique.** A page's composed path
+  (parent chain + slug, plus plugin URL contributions) is unique per branch; its slug is
+  one path segment and may repeat under different parents or prefixes (`/a/alerts` next to
+  `/b/alerts`, `/about` next to `/de/about`). Core has no locale column. Every surface that
+  addresses a page takes its id or path; a bare slug is accepted only while it names
+  exactly one page and fails loudly, naming the candidates' paths, when it is ambiguous.
+  A move or rename that would land on a taken path is refused with the clash named (pass a
+  new slug in the same call). Language variants of a page are plugin data — the plugin
+  groups pages into variant sets in its own schema (§14).
 - **Nested page URLs (epic #690).** A page may sit under a parent page (`pages.parent_page_id`,
   at most 6 levels); its path is the ancestor slugs plus its own slug, composed by the
   single core resolver before plugin contributions apply (`/de/seo-monitoring/alerts`).
