@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.43
+
+### Fixes
+- dc6e8879 approvals continue whoever asked — Live Edit AI after Stop; caelo_chat approvals surfaced and handed back (#658) (#682)
+
 ## v0.10.42
 
 ### Features

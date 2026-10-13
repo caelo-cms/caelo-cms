@@ -9,9 +9,10 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { error, redirect } from "@sveltejs/kit";
+import { error } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
+import { stagingOpenRedirect } from "#lib/server/staging-link.js";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ locals, url }) => {
@@ -25,5 +26,5 @@ export const GET: RequestHandler = async ({ locals, url }) => {
       "message" in r.error ? String((r.error as { message: unknown }).message) : r.error.kind;
     throw error(409, message);
   }
-  throw redirect(303, (r.value as { url: string }).url);
+  return stagingOpenRedirect((r.value as { url: string }).url);
 };
