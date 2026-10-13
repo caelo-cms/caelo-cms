@@ -60,7 +60,8 @@
         Staged {form.staged.chatCount} chat(s): {form.staged.mergedEntityCount} change(s) are on the
         staging site — <a class="underline" href={form.staged.previewUrl}>open the preview</a>.
         {#if form.staged.draftPageCount > 0}
-          {form.staged.draftPageCount} draft page(s) are not in this build.
+          {form.staged.draftPageCount} draft page(s) are not in this build{form.staged.draftPageTitles.length > 0 ? ` (${form.staged.draftPageTitles.join(", ")}${form.staged.draftPageCount > form.staged.draftPageTitles.length ? ", …" : ""})` : ""} —
+          only published pages are staged; set them to published and Stage again to include them.
         {/if}
         {#if form.staged.alsoIncludes.length > 0}
           Also staged, because they changed the same things: {form.staged.alsoIncludes.join(", ")}.

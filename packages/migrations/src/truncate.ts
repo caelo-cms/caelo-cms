@@ -120,7 +120,6 @@ const ADMIN_TABLES = [
   "ai_providers_pending",
   "domain_pending",
   "email_config_pending",
-  "experiment_pending",
   "import_pending",
   "layout_pending",
   "locale_pending",
@@ -133,9 +132,7 @@ const ADMIN_TABLES = [
   "template_pending",
   "user_pending",
 
-  // i18n + experiments
-  "experiments",
-  "experiment_assignments",
+  // Site imports
   "imports",
 ];
 

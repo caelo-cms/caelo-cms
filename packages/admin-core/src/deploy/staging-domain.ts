@@ -21,7 +21,10 @@
  * (default `staging.<domain>`), provisioning hands it to the admin as
  * `CAELO_STAGING_HOST`, the admin seeds `staging_access.staging_host` from
  * it once, and from then on the database row is the truth — the Owner (or
- * the AI through the §11.A gate) changes it with `staging_access.set_host`.
+ * the AI through the §11.A gate) changes it with `staging_access.set_host`,
+ * and `cms-provision staging-domain enable --staging-domain <host>` sets it
+ * explicitly through `staging_access.provision` (#678). The seed never
+ * overwrites a stored value, so an upgrade never undoes either.
  * On a provider with a staging domain an unset host fails loudly
  * (CLAUDE.md §2) instead of building staging with the live host.
  */
@@ -52,6 +55,58 @@ export async function readStagingHost(tx: Tx): Promise<string | null> {
     sql`SELECT staging_host FROM staging_access WHERE id = 1`,
   )) as unknown as { staging_host: string | null }[];
   return rows[0]?.staging_host ?? null;
+}
+
+/**
+ * Issue #678 — why the staging host shows nothing (or the wrong host) yet:
+ * nothing is staged, or the served build was rendered for another host
+ * (the host changed after the last Stage). Null when the served build
+ * matches the current host.
+ */
+export type StageNeeded = "nothing-staged" | "host-changed" | null;
+
+/**
+ * The host the currently served staging build rendered (its run's
+ * `deploy_runs.site_url`), or null when nothing is staged.
+ */
+export async function readStagedBuildHost(tx: Tx): Promise<string | null> {
+  const rows = (await tx.execute(sql`
+    SELECT r.site_url
+    FROM staging_access s JOIN deploy_runs r ON r.id = s.origin_run_id
+    WHERE s.id = 1
+  `)) as unknown as { site_url: string | null }[];
+  const url = rows[0]?.site_url;
+  if (!url) return null;
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
+
+/** {@link StageNeeded} for the current host and the served build's host. */
+export function stageNeededFor(
+  currentHost: string | null,
+  stagedHost: string | null,
+  hasStagedBuild: boolean,
+): StageNeeded {
+  if (!hasStagedBuild) return "nothing-staged";
+  if (currentHost !== null && stagedHost !== null && stagedHost !== currentHost) {
+    return "host-changed";
+  }
+  return null;
+}
+
+/** The operator/AI-facing sentence for a {@link StageNeeded}, or null. */
+export function describeStageNeeded(needed: StageNeeded, host: string | null): string | null {
+  const where = host ? `https://${host}/` : "the staging host";
+  if (needed === "nothing-staged") {
+    return `Nothing is served at ${where} until the next Stage — Stage once (AI: stage_changes; admin: Stage in the editor or Open changes) to put the current published pages there.`;
+  }
+  if (needed === "host-changed") {
+    return `The served staging build was rendered for another host — Stage again (AI: stage_changes) so ${where} serves a build with its own canonicals, sitemap and robots.txt.`;
+  }
+  return null;
 }
 
 /**

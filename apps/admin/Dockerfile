@@ -13,7 +13,7 @@
 
 FROM denoland/deno:bin-2.9.7 AS deno
 
-FROM node:24.21.0-bookworm-slim AS node
+FROM node:26.11.1-bookworm-slim AS node
 
 FROM oven/bun:1.4.2 AS builder
 
@@ -25,9 +25,16 @@ FROM oven/bun:1.4.2 AS builder
 #   fix up the rollup install — Bun stays the workspace package manager.
 # - `bun x vite build` below runs Vite under this Node, and SvelteKit 3
 #   requires Node >= 22.17 (Promise.withResolvers et al.).
+# Only the node binary is copied, not its shared-library closure. Since
+# Node 26 the official binary links against libatomic.so.1, which the
+# node image carries but oven/bun does not, so install it here (apt picks
+# the right architecture for each platform of the multi-arch build).
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
-RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libatomic1 && \
+    rm -rf /var/lib/apt/lists/* && \
+    ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
     node --version && npm --version
 
@@ -56,7 +63,6 @@ COPY packages/plugin-sandbox/package.json packages/plugin-sandbox/
 COPY packages/plugin-host/package.json packages/plugin-host/
 COPY packages/redeploy-orchestrator/package.json packages/redeploy-orchestrator/
 COPY packages/site-importer/package.json packages/site-importer/
-COPY packages/edge-router/package.json packages/edge-router/
 COPY packages/migrations/package.json packages/migrations/
 COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/provisioning/package.json packages/provisioning/
@@ -185,7 +191,7 @@ COPY --from=deno /deno /usr/local/bin/deno
 # channel "chromium"), not the stripped headless shell — the full build
 # also serves a later Lighthouse-style staging audit (#553).
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-# playwright@1.63.0 carries its matching playwright-core nested (the root
+# The pinned playwright carries its matching playwright-core nested (the root
 # playwright-core is a different version pulled in by @playwright/mcp).
 COPY --from=builder /repo/node_modules/playwright /tmp/pw/node_modules/playwright
 RUN bun /tmp/pw/node_modules/playwright/cli.js install --with-deps --no-shell chromium && \

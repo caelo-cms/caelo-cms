@@ -8,7 +8,7 @@ import {
   resolveFontOp,
 } from "@caelo-cms/font-service";
 // The gateway runs these too, so they live in plugin-host (gateway-ops.ts, #634).
-import { commentArchiveListForPageOp, recordAssignmentOp } from "@caelo-cms/plugin-host";
+import { commentArchiveListForPageOp } from "@caelo-cms/plugin-host";
 import type { OperationRegistry } from "@caelo-cms/query-api";
 import { createBugReportOp, listBugReportsOp } from "./ops/ai/bug-reports.js";
 import { logModuleizeAttemptOp } from "./ops/ai/moduleize_log.js";
@@ -215,20 +215,6 @@ import {
   proposeEmailConfigSetOp,
   rejectEmailConfigProposalOp,
 } from "./ops/email_config_pending.js";
-import {
-  executeExperimentProposalOp,
-  listPendingExperimentProposalsOp,
-  proposeExperimentActivateOp,
-  proposeExperimentCompleteOp,
-  rejectExperimentProposalOp,
-} from "./ops/experiment_pending.js";
-import {
-  activateExperimentOp,
-  completeExperimentOp,
-  createExperimentOp,
-  getExperimentResultsOp,
-  listExperimentsOp,
-} from "./ops/experiments.js";
 import {
   executeRateLimitProposalOp,
   getGatewaySettingsOp,
@@ -515,6 +501,7 @@ import { revertTemplateOp } from "./ops/snapshots/revert_template.js";
 import {
   getStagingAccessOp,
   issueStagingOpenLinkOp,
+  provisionStagingOp,
   rotateStagingCredentialsOp,
   seedStagingHostOp,
   setStagingAccessOp,
@@ -1088,6 +1075,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(issueStagingOpenLinkOp);
   registry.register(seedStagingHostOp);
   registry.register(setStagingHostOp);
+  registry.register(provisionStagingOp);
   // P13 — gateway hardening surface.
   registry.register(getGatewaySettingsOp);
   registry.register(setGatewaySettingsOp);
@@ -1102,23 +1090,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P13 ideas-pass — rate-limit profiles.
   registry.register(listRateLimitProfilesOp);
   registry.register(setRateLimitProfileOp);
-  // P13 — A/B experiments.
-  registry.register(createExperimentOp);
-  registry.register(activateExperimentOp);
-  registry.register(completeExperimentOp);
-  registry.register(listExperimentsOp);
-  registry.register(getExperimentResultsOp);
-  registry.register(recordAssignmentOp);
-  // v0.2.24 — experiments propose/execute pairs for the live-traffic
-  // transitions (activate / complete). create stays AI-direct since it
-  // only mints a draft; activate flips production traffic on, and
-  // complete records the winner — both Owner-gated through the queue
-  // at /security/experiments/pending.
-  registry.register(proposeExperimentActivateOp);
-  registry.register(proposeExperimentCompleteOp);
-  registry.register(executeExperimentProposalOp);
-  registry.register(rejectExperimentProposalOp);
-  registry.register(listPendingExperimentProposalsOp);
   // P6.6b — UX polish surface.
   registry.register(aggregateNotificationsOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the

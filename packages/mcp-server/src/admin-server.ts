@@ -48,6 +48,38 @@ export interface StartAdminOpts {
   readonly transport?: Transport;
   /** Poll interval while waiting on an approval; tests shorten it. */
   readonly approvalPollMs?: number;
+  /**
+   * #678 — how often the live catalogue is re-read so a changed admin
+   * (an upgrade, an activated plugin) reaches the client through
+   * `notifications/tools/list_changed`. Default
+   * `CAELO_MCP_CATALOGUE_REFRESH_MS` or 5 minutes; 0 disables the timer
+   * (an unknown tool name still triggers a refresh).
+   */
+  readonly catalogueRefreshMs?: number;
+}
+
+const DEFAULT_CATALOGUE_REFRESH_MS = 5 * 60_000;
+
+/** The refresh interval: the option, else the env var, else 5 minutes. */
+export function resolveCatalogueRefreshMs(
+  option: number | undefined,
+  env: string | undefined = process.env.CAELO_MCP_CATALOGUE_REFRESH_MS,
+): number {
+  if (option !== undefined) return option;
+  const n = env === undefined ? Number.NaN : Number(env);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_CATALOGUE_REFRESH_MS;
+}
+
+/**
+ * What a client sees of the catalogue; when it changes, the tool list
+ * changed. Order-independent so a re-sorted catalogue is not a change.
+ */
+export function catalogueSignature(tools: readonly RemoteTool[]): string {
+  return JSON.stringify(
+    [...tools]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((t) => [t.name, t.description, t.inputSchema, t.gated === true]),
+  );
 }
 
 /**
@@ -169,23 +201,65 @@ const GET_CONTEXT_TOOL = {
 } as const;
 
 export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
+  const fetchCatalogue = () =>
+    postAdmin<{ tools: RemoteTool[] }>({
+      adminUrl: opts.adminUrl,
+      token: opts.token,
+      path: "/api/mcp/tools",
+      body: {},
+      timeoutMs: resolveTimeoutMs(60_000),
+    });
   // Fetch the live catalogue up front — a bad URL or a chat-scoped token
   // should fail loudly at startup, not on the first tool call.
-  const catalogue = await postAdmin<{ tools: RemoteTool[] }>({
-    adminUrl: opts.adminUrl,
-    token: opts.token,
-    path: "/api/mcp/tools",
-    body: {},
-    timeoutMs: resolveTimeoutMs(60_000),
-  });
-  const remoteByName = new Map(catalogue.tools.map((t) => [t.name, t]));
+  let catalogue = await fetchCatalogue();
+  let remoteByName = new Map(catalogue.tools.map((t) => [t.name, t]));
+  let signature = catalogueSignature(catalogue.tools);
 
   let currentSession: OpenSessionResponse | null = null;
 
+  // #678 — the catalogue is the ADMIN's: an upgrade or an activated plugin
+  // changes it while this process runs. `listChanged` tells the client to
+  // re-list when we say so, instead of the operator reconnecting (/mcp).
   const server = new Server(
     { name: "caelo-admin-mcp", version: "0.1.0" },
-    { capabilities: { tools: {} }, instructions: ADMIN_MCP_INSTRUCTIONS },
+    { capabilities: { tools: { listChanged: true } }, instructions: ADMIN_MCP_INSTRUCTIONS },
   );
+
+  let connected = false;
+  let refreshing: Promise<boolean> | null = null;
+  /** Re-read the catalogue; true (and a list_changed to the client) when it changed. */
+  const refreshCatalogue = (): Promise<boolean> => {
+    refreshing ??= (async () => {
+      const next = await fetchCatalogue();
+      const nextSignature = catalogueSignature(next.tools);
+      if (nextSignature === signature) return false;
+      catalogue = next;
+      remoteByName = new Map(next.tools.map((t) => [t.name, t]));
+      signature = nextSignature;
+      if (connected) await server.sendToolListChanged();
+      return true;
+    })().finally(() => {
+      refreshing = null;
+    });
+    return refreshing;
+  };
+  const refreshMs = resolveCatalogueRefreshMs(opts.catalogueRefreshMs);
+  const timer =
+    refreshMs > 0
+      ? setInterval(() => {
+          refreshCatalogue().catch((e: unknown) => {
+            // stderr: stdout is the stdio transport. A failed refresh keeps
+            // the last catalogue; the next tick (or an unknown tool) retries.
+            console.error(
+              `[caelo-admin-mcp] tool catalogue refresh failed: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          });
+        }, refreshMs)
+      : null;
+  timer?.unref?.();
+  server.onclose = () => {
+    if (timer) clearInterval(timer);
+  };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -295,7 +369,12 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
         };
       }
 
-      const remote = remoteByName.get(name);
+      let remote = remoteByName.get(name);
+      if (!remote) {
+        // The admin may have gained the tool since we last listed (#678).
+        await refreshCatalogue();
+        remote = remoteByName.get(name);
+      }
       if (!remote) {
         return errorResult(`unknown tool: ${name}`);
       }
@@ -368,6 +447,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
   });
 
   await server.connect(opts.transport ?? new StdioServerTransport());
+  connected = true;
 }
 
 /** An outcome as an MCP tool result; a failed apply is an error result. */

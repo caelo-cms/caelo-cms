@@ -36,14 +36,13 @@ Required: AWS credentials with the IAM permissions the adapter declares (visible
 
 ## Region
 
-The AWS stack requires `caelo-aws:region`; there is no default, so it never lands in a region nobody chose. It also refuses to run when `aws:region` (the region the AWS provider actually deploys to) differs. Pick the region with care: like on GCP, it is fixed after install, because moving means migrating the database, buckets and secrets. The guided region picker and the immutability checks that the [GCP install](/install-gcp#choosing-the-region) has will come with the AWS provisioner flow. Lambda@Edge always lives in `us-east-1`, as CloudFront requires.
+The AWS stack requires `caelo-aws:region`; there is no default, so it never lands in a region nobody chose. It also refuses to run when `aws:region` (the region the AWS provider actually deploys to) differs. Pick the region with care: like on GCP, it is fixed after install, because moving means migrating the database, buckets and secrets. The guided region picker and the immutability checks that the [GCP install](/install-gcp#choosing-the-region) has will come with the AWS provisioner flow. The CloudFront certificate is always issued in `us-east-1`, as CloudFront requires.
 
 ## Notes specific to AWS
 
 - **Media storage is not wired yet** — the stack creates a media bucket but does not mount persistent storage into the admin, so the admin refuses to start rather than lose uploads on the next redeploy ([#618](https://github.com/caelo-cms/caelo-cms/issues/618)).
 - **Cold-start sensitivity** — Lambda is cheaper than Fargate but cold-starts are 1–2s for the admin's first request after idle. For low-traffic installs this is fine; busy installs should switch to Fargate via `--compute fargate`.
 - **CloudFront cache behaviour** — the static-generated pages cache aggressively (24h default); the admin + gateway routes are pass-through with `Cache-Control: no-store`. The provisioner configures both.
-- **A/B edge split** — the gateway uses a Lambda@Edge function to compute the FNV-1a hash and route to the right variant; assignment logs land in CloudWatch and feed the analytics plugin.
 - **Secrets rotation** — the admin reads Secrets Manager via env vars at boot; rotating a secret requires a Lambda redeploy (~30s). The provisioner handles this for you on `bunx @caelo-cms/provisioning rotate-secret <name>`.
 
 ## Cost (rough)

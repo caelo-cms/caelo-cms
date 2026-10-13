@@ -62,7 +62,6 @@ For contributors: read **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** and **[`CLAUDE
 - **One plugin model** — shipped or AI-built at runtime, every plugin gets the same small base (its own tables) and everything else only as an Owner-approved grant for that exact version; core data only through named Query API operations, never a direct write to live.
 - **Five core plugins** — forms, comments, newsletter, ratings, visitor auth (email/password + OAuth via Arctic).
 - **API gateway** with rate-limiting + CAPTCHA / PoW + honeypot + debounced auto-redeploy.
-- **A/B experiments at the edge** — stable per-visitor hash + analytics-plugin attribution.
 - **Multi-provider AI** — Anthropic / OpenAI / Google / local OpenAI-compat behind a provider abstraction; per-(scope × operation_type) budgets enforced independently.
 - **Pulumi provisioning** — self-hosted + GCP + AWS + Azure adapters; one-line bootstrap to TLS-served staging + production.
 - **MCP server** — drive your install from any MCP-aware client; same agent the live-edit chat uses.

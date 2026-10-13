@@ -12,7 +12,7 @@
  * complete propose-tool catalogue.
  *
  * Domains covered:
- *   layouts, users, roles, snapshots.revert_*, experiments,
+ *   layouts, users, roles, snapshots.revert_*,
  *   email_config, ai_providers, mcp_tokens, templates, domains.
  *
  * Pre-existing propose tools NOT in this file (their per-domain files
@@ -403,53 +403,6 @@ export const proposeRevertModuleTool = makeProposeTool({
     },
   },
   summarize: (_input, preview) => `revert module "${preview.moduleSlug ?? "?"}"`,
-});
-
-// ─── experiments ─────────────────────────────────────────────────────
-
-export const proposeExperimentActivateTool = makeProposeTool({
-  toolName: "propose_activate_experiment",
-  opName: "experiments.propose_activate",
-  pendingQueuePath: "/security/experiments/pending",
-  when:
-    "Propose activating a draft A/B experiment so it starts assigning real visitor traffic. " +
-    "Use AFTER `create_experiment` returned the draft's experimentId (`list_experiments` finds existing drafts).",
-  schema: z.object({ experimentId: uuid }).strict(),
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["experimentId"],
-    properties: { experimentId: { type: "string", format: "uuid" } },
-  },
-  summarize: (_input, preview) =>
-    `activate experiment "${preview.experimentSlug ?? "?"}" on ${preview.pageSlug ?? "?"}`,
-});
-
-export const proposeExperimentCompleteTool = makeProposeTool({
-  toolName: "propose_complete_experiment",
-  opName: "experiments.propose_complete",
-  pendingQueuePath: "/security/experiments/pending",
-  when:
-    "Propose completing an active experiment. Pass winningVariant when there's a clear winner — " +
-    "the propose handler validates the label against actual variants and surfaces per-variant assignment counts in the preview.",
-  schema: z
-    .object({
-      experimentId: uuid,
-      winningVariant: z.string().min(1).max(120).optional(),
-    })
-    .strict(),
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["experimentId"],
-    properties: {
-      experimentId: { type: "string", format: "uuid" },
-      winningVariant: { type: "string", minLength: 1, maxLength: 120 },
-    },
-  },
-  summarize: (input, preview) =>
-    `complete experiment "${preview.experimentSlug ?? "?"}"` +
-    (input.winningVariant ? ` (winner: ${input.winningVariant})` : ""),
 });
 
 // ─── email_config ────────────────────────────────────────────────────

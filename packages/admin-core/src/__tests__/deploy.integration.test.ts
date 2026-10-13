@@ -221,7 +221,7 @@ describe("P6 deploy.trigger", () => {
     const manifest = JSON.parse(manifestRaw);
     expect(manifest.target).toBe("production");
     expect(manifest.pageCount).toBeGreaterThanOrEqual(1);
-    expect(manifest.variants).toEqual([]);
+    expect(manifest).not.toHaveProperty("variants");
     expect(manifest.runId).toBe(out.buildId);
   });
 

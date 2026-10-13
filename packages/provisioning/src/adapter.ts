@@ -72,9 +72,9 @@ export interface CloudAdapterOutputs {
   /** DNS records consumed by the admin's DNS-guidance page. */
   readonly dnsRecordsRequired: ReadonlyArray<DnsRecord>;
   /**
-   * Where edge-A/B assignment logs land — read by the P12A analytics plugin's
-   * provider-specific log adapter. Provider-native sink URL (BigQuery dataset,
-   * Athena database, Log Analytics workspace).
+   * Where the install's request logs land — read by the P12A analytics
+   * plugin's provider-specific log adapter. Provider-native sink URL (BigQuery
+   * dataset, CloudWatch log group, Log Analytics workspace).
    */
   readonly edgeLogSinkUrl: string;
   /** Which provider produced these outputs — drives the analytics plugin's adapter dispatch. */

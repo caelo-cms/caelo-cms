@@ -46,7 +46,7 @@
       <CardDescription>
         {#if access.stagingUrl}
           <span class="font-mono">{access.stagingUrl}/</span> —
-          {access.hasStagedBuild ? "serving the latest staged build" : "nothing staged right now (the last Stage was published live)"}.
+          {access.hasStagedBuild ? "serving the latest staged build" : "nothing staged right now"}.
           <a class="underline" href="/security/domains">Change the host</a>.
         {:else if access.stagingDomainSupported}
           No staging host is configured yet — set it under
@@ -57,6 +57,27 @@
         {/if}
       </CardDescription>
     </CardHeader>
+    {#if access.stagingUrl && (access.stageNeeded || access.draftPages.count > 0)}
+      <CardContent class="space-y-2">
+        {#if access.stageNeeded}
+          <!-- #678 — a new host (or one changed since the last Stage) serves
+               nothing / a stale build until the next Stage. -->
+          <div class="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200" data-testid="staging-stage-needed">
+            {access.stageNeeded === "nothing-staged"
+              ? `Nothing is served at ${access.stagingUrl}/ until the next Stage.`
+              : `The served build was rendered for ${access.stagedBuildHost} — Stage again so ${access.stagingUrl}/ gets its own canonicals, sitemap and robots.txt.`}
+            Stage from the editor or <a class="underline" href="/content/changes">Open changes</a>.
+          </div>
+        {/if}
+        {#if access.draftPages.count > 0}
+          <div class="rounded border bg-muted/30 p-3 text-sm" data-testid="staging-draft-pages">
+            {access.draftPages.count} page(s) are draft and are not staged:
+            {access.draftPages.pages.map((p) => `${p.title} (${p.path})`).join(", ")}{access.draftPages.count > access.draftPages.pages.length ? ", …" : ""}.
+            Only published pages reach staging — set them to published, then Stage.
+          </div>
+        {/if}
+      </CardContent>
+    {/if}
     {#if access.stagingUrl && s.cookieEnabled}
       <CardContent>
         <a

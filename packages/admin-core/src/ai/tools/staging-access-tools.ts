@@ -15,6 +15,7 @@
  */
 
 import { z } from "zod";
+import { describeDraftPages } from "../../deploy/draft-pages.js";
 import {
   proposeRotateStagingCredentialsInput,
   proposeSetStagingHostInput,
@@ -44,12 +45,12 @@ export function formatStagingAccess(v: StagingAccessValue): string {
     lines.push(
       `Staging URL: ${v.stagingUrl}/ (noindex; serves exactly what Publish live ships, with this host).`,
     );
-    lines.push(
-      v.hasStagedBuild
-        ? "A staged build is being served."
-        : "Nothing is staged right now (the last Stage was published live) — Stage first.",
-    );
+    // #678 — what the host serves right now, and the next step when that
+    // is nothing (or a build rendered for an older host).
+    lines.push(v.stageNote ?? "A staged build for this host is being served.");
   }
+  const drafts = describeDraftPages(v.draftPages);
+  if (drafts) lines.push(drafts);
   lines.push("Access modes (any one lets a request in):");
   lines.push(`- Open staging from the admin (session cookie): ${s.cookieEnabled ? "on" : "off"}`);
   lines.push(
@@ -102,7 +103,8 @@ export const proposeSetStagingAccessTool = makeProposeTool({
   when:
     "Propose who may open the protected staging site (https://staging.<domain>): cookieEnabled (admin 'Open staging'), basicAuthEnabled + basicAuthUser (a crawler logs in; the password is generated on approval), headerEnabled + headerName (a crawler sends a generated secret header), ipAllowlist (CIDRs or addresses let in without credentials, e.g. a crawler's static egress IP). " +
     "Send ONLY the settings that change. For a searchVIU dev crawl: basic auth (dev_auth_type PW) or the crawler's egress IP (dev_auth_type IP). " +
-    "At least one mode must stay on. Read the current settings with get_staging_access first. Never invent an IP address — take it from the operator.",
+    "At least one mode must stay on. Read the current settings with get_staging_access first. Never invent an IP address — take it from the operator. " +
+    "Applies on the gateway within seconds after approval; a newly enabled basic-auth password or header value is read with get_staging_access({includeCredentials: true}) when the operator asks for it. If get_staging_access says nothing is staged, the host serves nothing until stage_changes.",
   schema: proposeStagingAccessInput,
   summarize: (_input, preview) => String(preview.summary ?? "staging access change"),
 });
@@ -125,7 +127,8 @@ export const proposeSetStagingHostTool = makeProposeTool({
   pendingQueuePath: PENDING_QUEUE,
   when:
     "Propose moving the protected staging site to another host (default staging.<domain>; any FQDN the operator names, also on another domain, e.g. preview.example.com). " +
-    "ONLY when the operator asks for a different staging host. Never the live or admin host. After approval the new host needs a DNS record and domain mapping (the result says how) and a fresh Stage. Read the current host with get_staging_access first.",
+    "ONLY when the operator asks for a different staging host. Never the live or admin host. Read the current host with get_staging_access first. " +
+    "After approval: the operator maps the host with `cms-provision staging-domain enable --staging-domain <host>` (DNS record + certificate; that command also sets the host itself, so if the operator runs it you need no proposal), and NOTHING is served at the new host until the next Stage — call stage_changes once the work is ready, and tell the operator both steps.",
   schema: proposeSetStagingHostInput,
   summarize: (_input, preview) => String(preview.summary ?? "staging host change"),
 });

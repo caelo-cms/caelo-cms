@@ -67,7 +67,8 @@ export const actions: Actions = {
       proposalId,
     });
     if (!r.ok) return fail(400, { error: messageOf(r.error, "approve failed") });
-    return { ok: true, message: "Setting applied." };
+    const next = (r.value as { nextStep?: string }).nextStep;
+    return { ok: true, message: next ? `Setting applied. ${next}` : "Setting applied." };
   },
   reject: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");

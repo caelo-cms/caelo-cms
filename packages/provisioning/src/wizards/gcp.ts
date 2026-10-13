@@ -13,7 +13,7 @@
  *   9. Generates Pulumi passphrase if absent → secrets/pulumi-passphrase
  *  10. Pre-flight cost-estimate table; single y/N confirm
  *  11. Pulumi up via the Automation SDK; streams progress, then deletes
- *      the default network's SSH/RDP-from-anywhere firewall rules
+ *      the firewall rules GCP pre-populates on the default network
  *  12. Prints DNS records + bootstrap URL + a note pointing the
  *      operator at /security/ai for AI provider key configuration
  *      (the runtime path; pre-v0.3.2 there was a wizard prompt for
@@ -29,7 +29,7 @@ import { cancel, confirm, isCancel, log, note, select, spinner, text } from "@cl
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { CERT_WAIT_TIMEOUT_MS, lbCertProbe, waitForCert } from "../cert-wait.js";
 import { redactCredentials } from "../checkpoint-secrets.js";
-import { removeDefaultIngressRules } from "../default-firewall.js";
+import { removeDefaultFirewallRules } from "../default-firewall.js";
 import {
   checkDeployedRuntimeEnv,
   chooseImageDigests,
@@ -189,7 +189,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
       "",
       `  ${bold("TOTAL".padEnd(40))} ${bold(`$${estimate.totalUsd}`.padStart(5))}/mo`,
       "",
-      `  ${dim(`Also deletes the default network's internet-open firewall rules ${ABSENT_DEFAULT_FIREWALL_RULES.map((r) => r.name).join(" + ")} (Caelo runs no VMs).`)}`,
+      `  ${dim(`Also deletes the default network's pre-populated firewall rules ${ABSENT_DEFAULT_FIREWALL_RULES.map((r) => r.name).join(" + ")} (Caelo runs no VMs and does not use that network).`)}`,
     ].join("\n"),
     "Pre-flight",
   );
@@ -282,11 +282,11 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   });
   recordImageDigests(installId, imageDigests);
 
-  // === 10.1. Remove the default network's SSH/RDP-from-anywhere rules ===
+  // === 10.1. Remove the default network's pre-populated firewall rules ===
   // GCP creates them when Compute Engine is enabled (step 5). Run after
   // Pulumi rather than right after enabling the API: the default network
   // can appear asynchronously, and by now it has. Idempotent, every pass.
-  await stepRemoveDefaultIngressRules(projectId);
+  await stepRemoveDefaultFirewallRules(projectId);
 
   // === 10. Wait for managed cert to flip from PROVISIONING → ACTIVE ===
   // Pulumi reports the cert "created" the moment GCP queues it; the
@@ -781,21 +781,22 @@ async function stepOperatorAccessSync(
 }
 
 /**
- * Delete the internet-open SSH/RDP firewall rules GCP auto-creates on the
- * `default` network (default-firewall.ts). A customised rule of the same
- * name or a failed delete is reported with the next step but does not stop
+ * Delete the firewall rules GCP pre-populates on the `default` network
+ * (SSH, RDP, ICMP, internal; default-firewall.ts). A customised rule of the
+ * same name, `default-allow-internal` while VMs sit on the default network,
+ * or a failed delete is reported with the next step but does not stop
  * the install: the rules open nothing Caelo runs, and `upgrade` retries.
  */
-async function stepRemoveDefaultIngressRules(projectId: string): Promise<void> {
+async function stepRemoveDefaultFirewallRules(projectId: string): Promise<void> {
   const s = spinner();
-  s.start("Removing the default network's SSH/RDP-from-anywhere firewall rules...");
-  const outcomes = await removeDefaultIngressRules(projectId);
+  s.start("Removing the default network's pre-populated firewall rules...");
+  const outcomes = await removeDefaultFirewallRules(projectId);
   const failed = outcomes.filter((o) => o.status === "failed");
   const deleted = outcomes.filter((o) => o.status === "applied");
   const summary =
     deleted.length > 0
       ? `deleted ${deleted.length} default firewall rule(s)`
-      : "no default SSH/RDP firewall rules present";
+      : "no pre-populated default-network firewall rules present";
   if (failed.length > 0) s.stop(yellow(`Default firewall rules: ${failed.length} not removed`));
   else s.stop(green(`Default firewall rules ok (${summary})`));
   for (const o of deleted) log.info(`  deleted: ${o.id} ${dim(`(${o.why})`)}`);
@@ -1437,7 +1438,8 @@ async function stepFinalize(installId: string): Promise<void> {
           bold("Protected staging site:"),
           `  Stage builds render ${cyan(installStagingHost(meta))}; to serve it, run`,
           `  ${dim("bunx @caelo-cms/provisioning staging-domain enable")}`,
-          `  and add the DNS record it prints. Access: admin → Security → Staging access.`,
+          `  It maps the host, turns on password protection and prints the staging login once;`,
+          `  add the DNS record it prints. The host serves pages after the first Stage.`,
         ]
       : [];
 

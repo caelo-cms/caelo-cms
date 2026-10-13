@@ -393,9 +393,15 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
-  output: z.object({ kind: ownerSettingsKind, summary: z.string() }),
+  output: z.object({
+    kind: ownerSettingsKind,
+    summary: z.string(),
+    /** #678 — what to do next (e.g. "Stage so the new staging host serves something"). */
+    nextStep: z.string().optional(),
+  }),
   handler: async (ctx, input, tx) => {
     const op = "owner_settings.execute_proposal";
+    let nextStep: string | undefined;
     const rows = (await tx.execute(sql`
       SELECT kind, payload, preview, status
       FROM owner_settings_pending_actions
@@ -420,8 +426,9 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
       );
       if (problem) return handlerError(op, problem);
     } else if (OWNER_STAGING_KINDS.has(row.kind)) {
-      const problem = await applyOwnerStagingProposal(ctx, tx, row.kind, parsePayload(row.payload));
-      if (problem) return handlerError(op, problem);
+      const applied = await applyOwnerStagingProposal(ctx, tx, row.kind, parsePayload(row.payload));
+      if ("error" in applied) return handlerError(op, applied.error);
+      nextStep = applied.nextStep;
     } else if (row.kind === "set_ai_budget") {
       const payload = proposeAiBudgetInput.parse(parsePayload(row.payload));
       for (const cell of payload.budgets) {
@@ -457,9 +464,15 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
       return handlerError(op, `unknown proposal kind ${String(row.kind)}`);
     }
 
+    // #678 — the next step computed at apply time (e.g. "nothing is staged
+    // yet — Stage") rides on the row, so an external agent polling the
+    // decision (mcp_approval_handoffs) gets it too, not only this caller.
     await tx.execute(sql`
       UPDATE owner_settings_pending_actions
-      SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid
+      SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid,
+          preview = CASE WHEN ${nextStep ?? null}::text IS NULL THEN preview
+                         ELSE preview || jsonb_build_object('appliedNextStep', ${nextStep ?? null}::text)
+                    END
       WHERE id = ${input.proposalId}::uuid
     `);
     const summary = String(parsePayload<{ summary?: unknown }>(row.preview).summary ?? row.kind);
@@ -472,7 +485,7 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
       entityId: input.proposalId,
       resultSummary: `${row.kind}: ${summary}`.slice(0, 500),
     });
-    return ok({ kind: row.kind, summary });
+    return ok({ kind: row.kind, summary, ...(nextStep ? { nextStep } : {}) });
   },
 });
 

@@ -56,7 +56,11 @@ export const load: PageServerLoad = async ({ locals }) => {
   // #650 — the staging host setting (default staging.<domain>).
   const st = await execute(registry, adapter, locals.ctx, "staging_access.get", {});
   const staging = st.ok
-    ? (st.value as { stagingHost: string | null; stagingDomainSupported: boolean })
+    ? (st.value as {
+        stagingHost: string | null;
+        stagingDomainSupported: boolean;
+        stageNote: string | null;
+      })
     : null;
   return { domains, hosting, staging, error: r.ok ? null : r.error.kind };
 };

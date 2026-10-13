@@ -57,7 +57,6 @@ async function sqlAdmin<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
 async function wipe(): Promise<void> {
   await sqlAdmin(async (tx) => {
     await tx`DELETE FROM chat_sessions WHERE title LIKE ${`${P}%`}`;
-    await tx`DELETE FROM experiments WHERE slug LIKE ${`${P}%`}`;
     await tx`DELETE FROM import_runs WHERE source_url LIKE ${`https://${P}%`}`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${P}%`})`;
     await tx`DELETE FROM pages WHERE slug LIKE ${`${P}%`}`;
@@ -506,52 +505,6 @@ describe("accept_import_pages — branch-scoped, snapshotted verbatim import", (
       (tx) => tx`SELECT count(*)::int AS c FROM import_pages WHERE id = ${importPageId}::uuid`,
     )) as unknown as { c: number }[];
     expect(gone[0]?.c).toBe(0);
-  });
-});
-
-describe("create_experiment / list_experiments / get_experiment_results", () => {
-  it("creates a draft the AI can find and read results for", async () => {
-    const page = await ok<{ pageId: string }>("pages.create", {
-      slug: `${P}-exp`,
-      title: "Experiment page",
-      templateId,
-    });
-    const { ai } = await openChat("exp");
-    const created = await dispatch(
-      "create_experiment",
-      {
-        slug: `${P}-cta`,
-        pageId: page.pageId,
-        variants: [
-          { label: "control", weight: 0.5 },
-          { label: "b", weight: 0.5, htmlPatches: [{ find: "Sign up", replace: "Try it" }] },
-        ],
-      },
-      ai,
-    );
-    expect(created.ok).toBe(true);
-    const experimentId = (created.value as { experimentId: string }).experimentId;
-
-    const listed = await dispatch("list_experiments", { status: "draft" }, ai);
-    expect(listed.content).toContain(`${P}-cta`);
-    const results = await dispatch("get_experiment_results", { experimentId }, ai);
-    expect(results.ok).toBe(true);
-    expect(results.content).toContain("No visitors assigned yet");
-
-    const badWeights = await dispatch(
-      "create_experiment",
-      {
-        slug: `${P}-bad`,
-        pageId: page.pageId,
-        variants: [
-          { label: "a", weight: 0.5 },
-          { label: "b", weight: 0.2 },
-        ],
-      },
-      ai,
-    );
-    expect(badWeights.ok).toBe(false);
-    expect(badWeights.content).toContain("sum to 1");
   });
 });
 

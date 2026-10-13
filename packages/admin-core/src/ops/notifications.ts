@@ -79,7 +79,7 @@ export const aggregateNotificationsOp = defineOperation({
   output: notificationsRow,
   handler: async (_ctx, _input, tx) => {
     // v0.2.32 — `pending_proposals` now sums across every pending
-    // table (deploy / layouts / users / roles / snapshots / experiments
+    // table (deploy / layouts / users / roles / snapshots
     // / email_config / ai_providers / mcp_tokens / templates / domains
     // / locales / gateway / site_memory / skills), not just
     // site_memory_proposals. Each branch is a partial-index scan
@@ -91,7 +91,6 @@ export const aggregateNotificationsOp = defineOperation({
         UNION ALL SELECT 1 FROM user_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM role_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM snapshot_revert_pending_actions WHERE status = 'pending'
-        UNION ALL SELECT 1 FROM experiment_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM email_config_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM ai_providers_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM mcp_token_pending_actions WHERE status = 'pending'

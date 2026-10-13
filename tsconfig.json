@@ -15,7 +15,6 @@
     { "path": "./packages/plugin-host" },
     { "path": "./packages/redeploy-orchestrator" },
     { "path": "./packages/site-importer" },
-    { "path": "./packages/edge-router" },
     { "path": "./packages/mcp-server" },
     { "path": "./packages/plugins/forms" },
     { "path": "./packages/plugins/ratings" },

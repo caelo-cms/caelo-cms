@@ -23,9 +23,19 @@ import { stagingPreviewPath } from "./staging-preview-path.js";
  */
 export async function describeStagedBuild(
   ctx: ExecutionContext,
-  build: { readonly runId: string; readonly previewUrl?: string },
+  build: {
+    readonly runId: string;
+    readonly previewUrl?: string;
+    /** #678 — the draft pages the build left out (deploy.trigger reports them). */
+    readonly draftPages: { readonly count: number; readonly pages: readonly { title: string }[] };
+  },
   pageId: string | null,
-): Promise<{ previewUrl: string; previewLabel: string; draftPageCount: number }> {
+): Promise<{
+  previewUrl: string;
+  previewLabel: string;
+  draftPageCount: number;
+  draftPageTitles: string[];
+}> {
   const { adapter, registry } = getQueryContext();
   let previewUrl: string;
   let previewLabel: string | null = null;
@@ -58,13 +68,12 @@ export async function describeStagedBuild(
   // Migration run #9 R10 (issue #262) — the partial success-lie: staging
   // builds only status='published' pages, so a build can "succeed" while
   // the operator's draft work (e.g. an entire migration) is absent from
-  // it. The count lets the toast say what is NOT in the preview.
-  let draftPageCount = 0;
-  const pages = await execute(registry, adapter, ctx, "pages.list", {});
-  if (pages.ok) {
-    draftPageCount = (pages.value as { pages: { status: string }[] }).pages.filter(
-      (p) => p.status === "draft",
-    ).length;
-  }
-  return { previewUrl, previewLabel: previewLabel ?? previewUrl, draftPageCount };
+  // it. The count and the first titles (#678) let the toast say what is
+  // NOT in the preview.
+  return {
+    previewUrl,
+    previewLabel: previewLabel ?? previewUrl,
+    draftPageCount: build.draftPages.count,
+    draftPageTitles: build.draftPages.pages.map((p) => p.title),
+  };
 }

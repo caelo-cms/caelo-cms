@@ -28,7 +28,9 @@ import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
 import { STAGING_PUBLICATION_LOCK_KEY } from "../deploy/staging-publication-lock.js";
 import { setDeployBridge } from "../ops/deploy.js";
+import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
 import { registerAdminOps } from "../register.js";
+import { ensureRoleUser } from "./fixtures/role-user.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -61,7 +63,11 @@ const SYSTEM: ExecutionContext = {
 const TPL_SLUG = "stg-domain-tpl";
 const MOD_SLUG = "stg-domain-mod";
 const PAGE_SLUG = "stg-domain-about";
-const SLUGS = [PAGE_SLUG, "home"];
+const DRAFT_SLUG = "stg-domain-draft";
+const SLUGS = [PAGE_SLUG, "home", DRAFT_SLUG];
+/** #678 — an Owner and an Editor driving the Power-MCP surface. */
+const OWNER_ID = "00000000-0000-0000-0000-0000000678a1";
+const EDITOR_ID = "00000000-0000-0000-0000-0000000678a2";
 
 /** Just enough Firebase Hosting for Stage, Publish live and pruning. */
 class FakeFirebase {
@@ -169,6 +175,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM quality_audit_runs`;
     await tx`DELETE FROM deploy_runs`;
     await tx`DELETE FROM owner_settings_pending_actions`;
+    await tx`DELETE FROM mcp_tokens WHERE actor_id IN (${OWNER_ID}::uuid, ${EDITOR_ID}::uuid)`;
     await tx`UPDATE staging_access SET cookie_enabled = true, basic_auth_enabled = false,
                basic_auth_user = 'caelo', basic_auth_nonce = NULL, header_enabled = false,
                header_name = 'X-Caelo-Staging-Key', header_nonce = NULL, ip_allowlist = '{}',
@@ -242,7 +249,7 @@ beforeAll(async () => {
       fields: [],
     })
   ).moduleId;
-  for (const slug of SLUGS) {
+  for (const slug of [PAGE_SLUG, "home"]) {
     const { pageId } = await ok<{ pageId: string }>("pages.create", {
       slug,
       title: slug,
@@ -647,5 +654,214 @@ describe("staging access settings", () => {
     await withSql(
       (tx) => tx`DELETE FROM owner_settings_pending_actions WHERE id = ${first.proposalId}::uuid`,
     );
+  });
+});
+
+describe("cms-provision staging-domain enable → staging_access.provision (#678)", () => {
+  const SOURCE = "cms-provision staging-domain enable";
+  const row = async () =>
+    (
+      (await withSql(
+        (tx) => tx`SELECT staging_host, basic_auth_enabled, basic_auth_user, basic_auth_nonce
+                   FROM staging_access WHERE id = 1`,
+      )) as {
+        staging_host: string;
+        basic_auth_enabled: boolean;
+        basic_auth_user: string;
+        basic_auth_nonce: string | null;
+      }[]
+    )[0]!;
+  interface Provisioned {
+    host: string;
+    previousHost: string | null;
+    hostChanged: boolean;
+    basicAuth: { status: string; enabled: boolean; user: string; password: string | null };
+    stageNeeded: string | null;
+    stageNote: string | null;
+    draftPages: { count: number; pages: { title: string; path: string }[] };
+  }
+
+  beforeAll(async () => {
+    // A fresh gate: no basic-auth credential was ever generated.
+    await withSql(
+      (tx) => tx`UPDATE staging_access SET basic_auth_enabled = false, basic_auth_user = 'caelo',
+                 basic_auth_nonce = NULL, staging_host = 'staging.example.com' WHERE id = 1`,
+    );
+    const tpl = (
+      (await withSql(
+        (tx) => tx`SELECT id::text AS id FROM templates WHERE slug = ${TPL_SLUG}`,
+      )) as {
+        id: string;
+      }[]
+    )[0]!;
+    await ok("pages.create", { slug: DRAFT_SLUG, title: "Draft pricing", templateId: tpl.id });
+  });
+
+  it("sets the CLI's host authoritatively, turns on basic auth once and returns the password only then", async () => {
+    const first = await ok<Provisioned>("staging_access.provision", {
+      host: "Preview.Example.org",
+      source: SOURCE,
+    });
+    const r1 = await row();
+    expect(first).toMatchObject({
+      host: "preview.example.org",
+      previousHost: "staging.example.com",
+      hostChanged: true,
+      basicAuth: { status: "generated", enabled: true, user: "example" },
+    });
+    expect(r1.staging_host).toBe("preview.example.org");
+    expect(first.basicAuth.password).toBe(
+      await deriveStagingCredential(GATE_SECRET, "basic-auth", r1.basic_auth_nonce!),
+    );
+    // The new host serves nothing of its own until the next Stage, and the
+    // draft page is named as missing.
+    expect(first.stageNeeded).not.toBeNull();
+    expect(first.stageNote).toContain("Stage");
+    expect(first.draftPages.pages.map((p) => p.title)).toContain("Draft pricing");
+
+    const again = await ok<Provisioned>("staging_access.provision", { source: SOURCE });
+    expect(again).toMatchObject({
+      host: "preview.example.org",
+      hostChanged: false,
+      basicAuth: { status: "unchanged-enabled", enabled: true, password: null },
+    });
+    expect((await row()).basic_auth_nonce).toBe(r1.basic_auth_nonce);
+
+    const audits = (await withSql(
+      (tx) => tx`SELECT operation, result_summary FROM audit_events
+                 WHERE operation IN ('staging_access.provision', 'staging_access.reveal_credentials')
+                 ORDER BY created_at DESC LIMIT 5`,
+    )) as { operation: string; result_summary: string }[];
+    expect(audits.some((a) => a.result_summary.includes(`via ${SOURCE}`))).toBe(true);
+    expect(audits.some((a) => a.operation === "staging_access.reveal_credentials")).toBe(true);
+    expect(JSON.stringify(audits)).not.toContain(first.basicAuth.password!);
+  });
+
+  it("an upgrade's seed never overwrites the host the CLI set", async () => {
+    expect(
+      await ok<{ seeded: boolean }>("staging_access.seed_host", { host: "staging.example.com" }),
+    ).toEqual({ seeded: false });
+    expect((await row()).staging_host).toBe("preview.example.org");
+  });
+
+  it("keeps an Owner's switched-off basic auth off; rotates and reveals only on request", async () => {
+    await ok("staging_access.set", {
+      cookieEnabled: true,
+      basicAuthEnabled: false,
+      basicAuthUser: "example",
+      headerEnabled: false,
+      headerName: "X-Caelo-Staging-Key",
+      ipAllowlist: [],
+    });
+    const off = await ok<Provisioned>("staging_access.provision", { source: SOURCE });
+    expect(off.basicAuth).toMatchObject({ status: "unchanged-disabled", enabled: false });
+    expect((await row()).basic_auth_enabled).toBe(false);
+
+    const before = (await row()).basic_auth_nonce;
+    const rotated = await ok<Provisioned>("staging_access.provision", {
+      rotateBasicAuth: true,
+      source: SOURCE,
+    });
+    const after = await row();
+    expect(rotated.basicAuth.status).toBe("rotated");
+    expect(after.basic_auth_enabled).toBe(true);
+    expect(after.basic_auth_nonce).not.toBe(before);
+    const revealed = await ok<Provisioned>("staging_access.provision", {
+      revealBasicAuth: true,
+      source: SOURCE,
+    });
+    expect(revealed.basicAuth.password).toBe(rotated.basicAuth.password);
+  });
+
+  it("is system-only: the AI reaches the host only through the gated proposal", async () => {
+    const ai = await execute(
+      registry,
+      adapter,
+      { ...SYSTEM, actorKind: "ai", requestId: "staging-provision-ai" },
+      "staging_access.provision",
+      { host: "evil.example.net", source: "ai" },
+    );
+    expect(ai.ok).toBe(false);
+  });
+
+  it("get reports the stage-needed note and draft pages; approving a host change names the next step", async () => {
+    const v = await ok<{
+      stageNeeded: string | null;
+      stageNote: string | null;
+      draftPages: { count: number };
+    }>("staging_access.get", {});
+    expect(v.stageNeeded).not.toBeNull();
+    expect(v.stageNote).toContain("stage_changes");
+    expect(v.draftPages.count).toBeGreaterThan(0);
+
+    const p = await ok<{ proposalId: string }>("owner_settings.propose_set_staging_host", {
+      host: "review.example.org",
+    });
+    const applied = await ok<{ nextStep?: string }>("owner_settings.execute_proposal", {
+      proposalId: p.proposalId,
+    });
+    expect(applied.nextStep).toContain("stage_changes");
+    expect(applied.nextStep).toContain("Nothing is served at https://review.example.org/");
+
+    // An access change while the served build has another host: the apply
+    // result says so, and the row keeps it for an external agent's poll
+    // (mcp_approval_handoffs reads preview.appliedNextStep).
+    const access = await ok<{ proposalId: string }>("owner_settings.propose_set_staging_access", {
+      headerEnabled: true,
+    });
+    const accessApplied = await ok<{ nextStep?: string }>("owner_settings.execute_proposal", {
+      proposalId: access.proposalId,
+    });
+    expect(accessApplied.nextStep).toContain("get_staging_access");
+    expect(accessApplied.nextStep).toContain("stage_changes");
+    const [stored] = (await withSql(
+      (tx) => tx`SELECT preview->>'appliedNextStep' AS next FROM owner_settings_pending_actions
+                 WHERE id = ${access.proposalId}::uuid`,
+    )) as { next: string | null }[];
+    expect(stored?.next).toBe(accessApplied.nextStep ?? null);
+  });
+
+  it("Stage reports the draft pages it left out", async () => {
+    const staged = await ok<{ draftPages: { count: number; pages: { title: string }[] } }>(
+      "deploy.trigger",
+      { targetName: "staging", repoRoot: testRoot },
+    );
+    expect(staged.draftPages.pages.map((p) => p.title)).toContain("Draft pricing");
+    const v = await ok<{ stageNeeded: string | null }>("staging_access.get", {});
+    expect(v.stageNeeded).toBeNull();
+  });
+
+  it("Power-MCP: an Owner's admin token reads the password on explicit request; an Editor's does not", async () => {
+    configureMcpBridge({ adapter, registry, resolveProvider: async () => null });
+    const reveal = async (actorId: string) => {
+      const human: ExecutionContext = { actorId, actorKind: "human", requestId: "mcp-reveal" };
+      const minted = await execute(registry, adapter, human, "mcp_tokens.create", {
+        displayName: `staging-reveal-${actorId.slice(-2)}`,
+        scope: "admin",
+      });
+      if (!minted.ok) throw new Error(JSON.stringify(minted.error));
+      const token = (minted.value as { plaintextToken: string }).plaintextToken;
+      const session = await ok<{ chatSessionId: string }>("mcp.open_session", {
+        plaintextToken: token,
+        title: "staging reveal",
+      });
+      return ok<{ ok: boolean; content: string }>("mcp.execute_tool", {
+        plaintextToken: token,
+        chatSessionId: session.chatSessionId,
+        toolName: "get_staging_access",
+        args: { includeCredentials: true },
+      });
+    };
+    await ensureRoleUser(ADMIN_URL!, OWNER_ID, "owner");
+    await ensureRoleUser(ADMIN_URL!, EDITOR_ID, "editor");
+    const password = (
+      await ok<Provisioned>("staging_access.provision", { revealBasicAuth: true, source: SOURCE })
+    ).basicAuth.password!;
+    const owner = await reveal(OWNER_ID);
+    expect(owner.ok).toBe(true);
+    expect(owner.content).toContain(password);
+    const editor = await reveal(EDITOR_ID);
+    expect(editor.content).not.toContain(password);
+    expect(editor.content).toContain("settings.write");
   });
 });

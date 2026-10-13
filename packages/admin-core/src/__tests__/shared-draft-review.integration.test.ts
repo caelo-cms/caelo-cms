@@ -226,6 +226,12 @@ afterAll(async () => {
 describe("#620 review — the draft tools in the browser chat", () => {
   it("stage_changes, undo_this_chat and start_isolated_branch work with the AI actor plus the operator's context", async () => {
     const m = await seedModule("tool-stage");
+    // #678 — a draft page on main is never built; the result names it.
+    await op(OWNER, "pages.create", {
+      slug: `${PFX}draft-pricing`,
+      title: "Draft pricing 678",
+      templateId,
+    });
     const a = await chat("Stage from the chat");
     await op(a.ai, "modules.update", { moduleId: m, html: "<p>staged by the AI</p>" });
     const holdsBefore = await openHolds();
@@ -236,6 +242,9 @@ describe("#620 review — the draft tools in the browser chat", () => {
     );
     expect(staged.ok).toBe(true);
     expect(staged.content).toContain("Staged 1 change");
+    expect(staged.content).toContain("are draft and NOT included");
+    expect(staged.content).toContain("'Draft pricing 678'");
+    expect(staged.content).toContain("set_pages_status_many");
     // The operator's open chat delivers the check's result; polling it
     // cost the real-AI homepage turn 19 full model calls (PR #624).
     expect(staged.content).toContain("do NOT poll get_quality_audit");

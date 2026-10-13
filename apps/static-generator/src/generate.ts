@@ -101,8 +101,6 @@ export interface GenerateResult {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** Mirrors the experiments.create label rule: one safe path segment. */
-const SAFE_VARIANT_LABEL = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 function uuidArrayLiteral(ids: ReadonlyArray<string>): string {
   for (const id of ids) {
     if (!UUID_RE.test(id)) throw new Error(`uuidArrayLiteral: not a UUID: ${id}`);
@@ -139,8 +137,6 @@ interface ModuleRow {
   content_values: string | null;
   content_instance_id: string;
   sync_mode: "synced" | "unsynced";
-  experiment_id: string | null;
-  variant_label: string | null;
 }
 
 /**
@@ -198,13 +194,6 @@ function parseContentValues(raw: string | null): Record<string, unknown> | undef
   } catch {
     return undefined;
   }
-}
-
-interface VariantManifestEntry {
-  pageSlug: string;
-  experimentId: string;
-  variantLabel: string;
-  outputPath: string;
 }
 
 /** Optional progress callback so the parent process can show pagesDone/total. */
@@ -693,7 +682,6 @@ export async function generateSite(args: {
   }
 
   let fileCount = 0;
-  const variantEntries: VariantManifestEntry[] = [];
   args.onProgress?.({ pagesDone: 0, pagesTotal: pageRows.length });
 
   // Compose pages first (in memory), then run the media pass to
@@ -766,9 +754,7 @@ export async function generateSite(args: {
              m.slug, m.display_name, m.html, m.css, m.js, m.fields::text AS fields,
              ci.values::text AS content_values,
              pm.content_instance_id::text AS content_instance_id,
-             pm.sync_mode,
-             NULL::uuid AS experiment_id,
-             NULL::text AS variant_label
+             pm.sync_mode
       FROM page_modules pm
         JOIN modules m            ON m.id  = pm.module_id
         -- PR #61 follow-up — every placement carries a
@@ -857,7 +843,6 @@ export async function generateSite(args: {
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];
     if (!page) continue;
-    const modRows = modRowsByPage.get(page.page_id) ?? [];
     const composeInput = composeInputsByPage.get(page.page_id);
     if (!composeInput) continue;
     const { blocks, layoutBlocks } = composeInput;
@@ -907,26 +892,6 @@ export async function generateSite(args: {
       slug: page.slug,
     });
 
-    // A/B variant emission hook: when modules carry experiment_id +
-    // variant_label (P4 schema columns, P12A populates), the generator
-    // emits each variant under module/<id>/<label>.html and records it
-    // in the routing manifest so the edge layer (P13/P15) can split.
-    // P6 leaves the columns NULL, so this loop is a no-op for now —
-    // the wiring is in place to be activated without a generator change.
-    for (const m of modRows) {
-      if (m.experiment_id && m.variant_label) {
-        const variantPath = `module/${m.module_id}/${m.variant_label}.html`;
-        await mkdir(join(buildDir, "module", m.module_id), { recursive: true });
-        await writeFile(join(buildDir, variantPath), m.html, "utf8");
-        fileCount += 1;
-        variantEntries.push({
-          pageSlug: page.slug,
-          experimentId: m.experiment_id,
-          variantLabel: m.variant_label,
-          outputPath: variantPath,
-        });
-      }
-    }
     args.onProgress?.({ pagesDone: i + 1, pagesTotal: pageRows.length });
   }
 
@@ -1036,66 +1001,6 @@ export async function generateSite(args: {
     }
   }
 
-  // P13 audit fix #1 — variant file emission for active experiments.
-  // The /api/variant.js script fetches `/_variants/<exp>__<variant><page>`
-  // and replaces <main>. Without this loop those URLs 404 in real use.
-  // For P13 the per-variant body is the same composed page (placeholder
-  // for per-variant module overrides — those land with the typed-content
-  // / kits work in P12A). The file existing means the script's swap
-  // succeeds + analytics impressions accumulate.
-  const experimentRows = (await tx.execute(sql`
-    SELECT id::text AS id, slug, page_id::text AS page_id, variants
-    FROM experiments
-    WHERE status = 'active'
-  `)) as unknown as Array<{
-    id: string;
-    slug: string;
-    page_id: string;
-    variants: Array<{
-      label: string;
-      weight: number;
-      // P13 ideas-pass — optional per-variant string substitutions
-      // applied to the composed page HTML before emission. Empty/absent
-      // = identical body (just file existence for routing).
-      htmlPatches?: Array<{ find: string; replace: string }>;
-    }>;
-  }>;
-  if (experimentRows.length > 0) {
-    // Build a lookup: page_id → composed page (the source of variant HTML).
-    const pageById = new Map<string, (typeof composedPages)[number]>();
-    for (const cp of composedPages) {
-      const t = bakeTargets.get(cp.pageSlug);
-      if (t) pageById.set(t.pageId, cp);
-    }
-    for (const e of experimentRows) {
-      const cp = pageById.get(e.page_id);
-      if (!cp) continue;
-      for (const v of e.variants) {
-        // experiments.create constrains labels to one safe path segment;
-        // a stored row that predates that rule must not write outside
-        // the build dir — fail the build loudly instead (no fallbacks).
-        if (!SAFE_VARIANT_LABEL.test(v.label)) {
-          throw new Error(
-            `experiment "${e.slug}" has variant label ${JSON.stringify(v.label)}, which is not a safe path segment — rename the variant (letters, digits, '-', '_') and redeploy`,
-          );
-        }
-        const variantPath = `_variants/${e.slug}__${v.label}/${cp.relPath}`;
-        const fullPath = join(buildDir, variantPath);
-        await mkdir(join(fullPath, ".."), { recursive: true });
-        // P13 ideas-pass — apply htmlPatches if present so variants
-        // actually differ in content. Each patch is a literal string
-        // replace (no regex; no escaping needed). Order matters when
-        // patches overlap; we apply in array order.
-        let variantHtml = cp.html;
-        for (const p of v.htmlPatches ?? []) {
-          variantHtml = variantHtml.split(p.find).join(p.replace);
-        }
-        await writeFile(fullPath, variantHtml, "utf8");
-        fileCount += 1;
-      }
-    }
-  }
-
   await writeFile(
     join(buildDir, "robots.txt"),
     buildRobotsTxtWithSitemap(
@@ -1118,64 +1023,12 @@ export async function generateSite(args: {
       path: p.current_path,
       outputPath: pageOutputPath(p.current_path, target.pageUrlStyle),
     })),
-    variants: variantEntries,
     // Promote guard — see manifestBakesEnvNoindex.
     envNoindexInHtml: false,
   };
   await writeFile(
     join(buildDir, "routing-manifest.json"),
     JSON.stringify(manifest, null, 2),
-    "utf8",
-  );
-  fileCount += 1;
-
-  // P15 hot-fix #1 — emit a SEPARATE A/B routing manifest for the edge
-  // routers. Filename intentionally distinct from `routing-manifest.json`
-  // (the deploy manifest above) because the two have different shapes
-  // and audiences:
-  //   - routing-manifest.json: deploy provenance (target/env/runId/pages)
-  //     consumed by the deploy ops + admin UI to verify what shipped.
-  //   - ab-routing.json: per-page experiment routing consumed by the
-  //     edge routers (P15 GCP/AWS/Azure stacks + P13 self-hosted Caddy
-  //     gateway). Shape matches @caelo-cms/edge-router's RoutingManifest.
-  // Variants reference the SAME file paths the static-gen wrote above
-  // (the `_variants/<exp-slug>__<label>/<page>` shape) so the edge
-  // routers' rewrite targets actually resolve.
-  const pageSlugById = new Map<string, string>();
-  for (const cp of composedPages) {
-    const t = bakeTargets.get(cp.pageSlug);
-    if (t) pageSlugById.set(t.pageId, cp.pageSlug);
-  }
-  const abExperiments: Array<{
-    pageSlug: string;
-    experimentId: string;
-    variants: Array<{ label: string; weight: number; path: string }>;
-  }> = [];
-  for (const e of experimentRows) {
-    const slug = pageSlugById.get(e.page_id);
-    if (!slug) continue;
-    abExperiments.push({
-      pageSlug: `/${slug}`,
-      experimentId: e.id,
-      variants: e.variants.map((v) => ({
-        label: v.label,
-        weight: v.weight,
-        // Control variant (first one) keeps the original path; non-control
-        // variants point at the per-experiment file the loop above wrote
-        // under `<buildDir>/_variants/<exp-slug>__<label>/<slug>/index.html`.
-        path: v === e.variants[0] ? `/${slug}` : `/_variants/${e.slug}__${v.label}/${slug}`,
-      })),
-    });
-  }
-  const abRoutingManifest = {
-    // Use runId as manifestVersion — bumps every deploy so a fresh
-    // bucketing rolls out atomically when operators want to re-randomize.
-    manifestVersion: runId,
-    experiments: abExperiments,
-  };
-  await writeFile(
-    join(buildDir, "ab-routing.json"),
-    JSON.stringify(abRoutingManifest, null, 2),
     "utf8",
   );
   fileCount += 1;

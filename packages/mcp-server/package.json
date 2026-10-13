@@ -36,8 +36,8 @@
     "prepublishOnly": "tsc -b --force"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.31.0",
-    "google-auth-library": "11.1.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "google-auth-library": "11.2.0",
     "zod": "4.6.5"
   },
   "publishConfig": {
