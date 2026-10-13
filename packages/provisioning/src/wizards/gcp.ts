@@ -72,6 +72,7 @@ import {
   installStagingHost,
   isStepDone,
   markStepDone,
+  readLocalMetadata,
   readMetadata,
   readSecret,
   recordedImageDigests,
@@ -99,6 +100,7 @@ import {
   gcsBackendRecord,
   hasLocalPulumiState,
   installBackend,
+  parseStateBackend,
   type ResolvedBackend,
   resolveBackend,
 } from "../state-backend.js";
@@ -1046,9 +1048,20 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
   const root = installRoot(installId);
   // #696 — `state migrate` may have moved the state since this run resolved
   // its backend (or be moving it now): never write a retired backend.
-  const now = readMetadata(installId);
-  const holder = migrationLockHolder(gcsBackendRecord(opts.projectId, opts.region).bucket);
-  if (holder || !now || installBackend(now).kind !== opts.backend.kind) {
+  // Uncached: the bucket's install.json for a bucket-backed install (another
+  // machine may have moved it back), the file on disk for a local one.
+  const opsBucket = gcsBackendRecord(opts.projectId, opts.region).bucket;
+  const nowText =
+    opts.backend.kind === "gcs"
+      ? new GcsStateStore(opsBucket, root).peek("install.json")
+      : JSON.stringify(readLocalMetadata(installId));
+  const now = nowText ? (JSON.parse(nowText) as InstallMetadata | null) : null;
+  const holder = migrationLockHolder(opsBucket);
+  if (
+    holder ||
+    !now ||
+    installBackend({ stateBackend: parseStateBackend(now.stateBackend) }).kind !== opts.backend.kind
+  ) {
     cancel(
       `The install's Pulumi state is being moved or has moved (state migrate) since this run started. Re-run the installer.`,
     );
