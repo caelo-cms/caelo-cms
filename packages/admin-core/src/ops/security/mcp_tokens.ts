@@ -28,6 +28,7 @@ import { readAgentStopEpoch, runChatTurn } from "../../ai/chat-runner.js";
 import type { AIProvider } from "../../ai/provider.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
+import { isOpenCard, type TurnApprovalStatus } from "../chat/turn-approval-state.js";
 
 /**
  * Issue #376 — token scope. `chat` drives the caelo_chat surface only;
@@ -531,9 +532,14 @@ export const mcpSendChatOp = defineOperation({
           message: "chat_error: the turn paused on an approval, but its state could not be read",
         });
       }
+      // Decided-but-not-resumed cards count too: the operator may have
+      // clicked between the pause and this read, and the turn still needs
+      // the agent's resume to apply the decision.
       const pendingIds = new Set(
-        (open.value as { approvals: { approvalId: string; status: string }[] }).approvals
-          .filter((a) => a.status === "pending")
+        (
+          open.value as { approvals: { approvalId: string; status: TurnApprovalStatus }[] }
+        ).approvals
+          .filter((a) => isOpenCard(a.status))
           .map((a) => a.approvalId),
       );
       awaiting = pendingApprovals.filter((a) => pendingIds.has(a.approvalId));

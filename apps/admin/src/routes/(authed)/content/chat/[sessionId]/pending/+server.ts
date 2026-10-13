@@ -34,7 +34,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { error, json } from "@sveltejs/kit";
 import { proposalQueueRoute } from "#lib/proposal-queue-route.js";
-import { requirePermission } from "#lib/server/guards.js";
+import { assertChatAccess } from "#lib/server/agent-runs.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
@@ -75,8 +75,10 @@ interface TurnApprovalCard {
 }
 
 export const GET: RequestHandler = async ({ params, locals }) => {
-  requirePermission(locals, "content.read");
   if (!locals.user) throw error(401, "Not authenticated");
+  // The strip belongs to the chat's operator (or whoever manages every
+  // chat): its cards carry previews of what the chat's agents asked for.
+  await assertChatAccess(locals, params.sessionId);
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "pending_proposals.list", {
     limit: 200,

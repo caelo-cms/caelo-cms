@@ -42,7 +42,7 @@ const OWNER: ExecutionContext = {
   actorKind: "human",
   requestId: "t658-owner",
 };
-/** A signed-in user without the approver permission. */
+/** An Editor: may chat, but neither approve a token mint nor manage other chats. */
 const VIEWER: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-000000065802",
   actorKind: "human",
@@ -116,9 +116,11 @@ let provider: ScriptedProvider;
 async function wipe(): Promise<void> {
   await withSql(async (tx) => {
     await tx`DELETE FROM mcp_tokens WHERE actor_id IN (${OWNER.actorId}::uuid, ${VIEWER.actorId}::uuid)`;
-    await tx`DELETE FROM chat_messages WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE created_by = ${OWNER.actorId}::uuid)`;
-    await tx`DELETE FROM ai_calls WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE created_by = ${OWNER.actorId}::uuid)`;
-    await tx`DELETE FROM chat_sessions WHERE created_by = ${OWNER.actorId}::uuid`;
+    for (const actor of [OWNER.actorId, VIEWER.actorId]) {
+      await tx`DELETE FROM chat_messages WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE created_by = ${actor}::uuid)`;
+      await tx`DELETE FROM ai_calls WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE created_by = ${actor}::uuid)`;
+      await tx`DELETE FROM chat_sessions WHERE created_by = ${actor}::uuid`;
+    }
   });
 }
 
@@ -141,6 +143,9 @@ beforeAll(async () => {
     await tx`INSERT INTO user_roles (user_id, role_id)
              SELECT ${OWNER.actorId}::uuid, id FROM roles WHERE name = 'owner'
              ON CONFLICT DO NOTHING`;
+    await tx`INSERT INTO user_roles (user_id, role_id)
+             SELECT ${VIEWER.actorId}::uuid, id FROM roles WHERE name = 'editor'
+             ON CONFLICT DO NOTHING`;
   });
   await wipe();
   provider = new ScriptedProvider();
@@ -152,8 +157,8 @@ afterAll(async () => {
   await adapter.close();
 });
 
-async function createChat(title: string): Promise<string> {
-  const r = await execute(registry, adapter, OWNER, "chat.create_session", { title });
+async function createChat(title: string, as: ExecutionContext = OWNER): Promise<string> {
+  const r = await execute(registry, adapter, as, "chat.create_session", { title });
   if (!r.ok) throw new Error(JSON.stringify(r.error));
   return (r.value as { chatSessionId: string }).chatSessionId;
 }
@@ -341,8 +346,8 @@ describe("case 2 — a Power-MCP proposal is handed back, never starting a chat 
 });
 
 describe("case 3 — a caelo_chat turn's approval goes back to the external agent", () => {
-  async function chatToken(name: string): Promise<string> {
-    const r = await execute(registry, adapter, OWNER, "mcp_tokens.create", {
+  async function chatToken(name: string, as: ExecutionContext = OWNER): Promise<string> {
+    const r = await execute(registry, adapter, as, "mcp_tokens.create", {
       displayName: name,
       scope: "chat",
     });
@@ -371,8 +376,13 @@ describe("case 3 — a caelo_chat turn's approval goes back to the external agen
     return (r.value as { state: string }).state;
   }
 
-  async function pausedChat(token: string, displayName: string, callId: string) {
-    const chatSessionId = await createChat(`t658 ${displayName}`);
+  async function pausedChat(
+    token: string,
+    displayName: string,
+    callId: string,
+    as: ExecutionContext = OWNER,
+  ) {
+    const chatSessionId = await createChat(`t658 ${displayName}`, as);
     provider.askToMint(displayName, callId);
     const r = await sendChat(token, { message: "Mint a token for me.", chatSessionId });
     if (!r.ok) throw new Error(JSON.stringify(r.error));
@@ -432,14 +442,20 @@ describe("case 3 — a caelo_chat turn's approval goes back to the external agen
     ]);
   });
 
-  it("only someone holding the approver permission may approve it; the AI may not decide at all", async () => {
+  it("another user can neither list nor decide the chat's cards; the AI may not decide at all", async () => {
     const token = await chatToken("t658-chat-b");
     const { chatSessionId, pendingApprovals } = await pausedChat(
       token,
-      "t658-chat-perm",
+      "t658-chat-foreign",
       "call-mcp-2",
     );
     const approvalId = (pendingApprovals[0] as { approvalId: string }).approvalId;
+    // codex review — the cards carry previews of what the chat's agents
+    // asked for: only the chat's operator (or whoever manages every chat).
+    const listed = await execute(registry, adapter, VIEWER, "chat.list_turn_approvals", {
+      chatSessionId,
+    });
+    expect(listed.ok).toBe(false);
     const byViewer = await execute(registry, adapter, VIEWER, "chat.decide_turn_approval", {
       chatSessionId,
       approvalId,
@@ -453,6 +469,33 @@ describe("case 3 — a caelo_chat turn's approval goes back to the external agen
     });
     expect(byAi.ok).toBe(false);
     expect(await state(token, chatSessionId)).toBe("pending");
+  });
+
+  it("approving needs the approver permission (#589), even in your own chat", async () => {
+    const token = await chatToken("t658-chat-editor", VIEWER);
+    const { chatSessionId, pendingApprovals } = await pausedChat(
+      token,
+      "t658-chat-perm",
+      "call-mcp-7",
+      VIEWER,
+    );
+    const approvalId = (pendingApprovals[0] as { approvalId: string }).approvalId;
+    const byEditor = await execute(registry, adapter, VIEWER, "chat.decide_turn_approval", {
+      chatSessionId,
+      approvalId,
+      approved: true,
+    });
+    expect(byEditor.ok).toBe(false);
+    expect(JSON.stringify(byEditor.ok ? null : byEditor.error)).toContain("settings.write");
+    expect(await state(token, chatSessionId)).toBe("pending");
+    // An Owner (manages every chat, holds the permission) may decide it.
+    const byOwner = await execute(registry, adapter, OWNER, "chat.decide_turn_approval", {
+      chatSessionId,
+      approvalId,
+      approved: false,
+    });
+    expect(byOwner.ok).toBe(true);
+    expect(await state(token, chatSessionId)).toBe("decided");
   });
 
   it("a decision after Stop resumes the agent's turn but keeps the Live Edit AI stopped", async () => {

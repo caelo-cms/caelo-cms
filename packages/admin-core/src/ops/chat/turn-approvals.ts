@@ -27,7 +27,7 @@
  */
 
 import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
@@ -35,12 +35,23 @@ import type { Permission } from "../../permissions.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { approverRefusal } from "../_approver-permission.js";
 import { getMcpBridge, resolveMcpToken } from "../security/mcp_tokens.js";
+import {
+  type ChatApprovalState,
+  chatApprovalStateOf,
+  type TurnApprovalStatus,
+} from "./turn-approval-state.js";
 
 /** Whose turn paused on the approval. */
 export const turnApprovalSource = z.enum(["live_edit", "mcp_chat"]);
 export type TurnApprovalSource = z.infer<typeof turnApprovalSource>;
 
-const turnApprovalStatus = z.enum(["pending", "approved", "rejected", "resumed", "superseded"]);
+const turnApprovalStatus = z.enum([
+  "pending",
+  "approved",
+  "rejected",
+  "resumed",
+  "superseded",
+]) satisfies z.ZodType<TurnApprovalStatus>;
 
 /** One approval as the chat UI and the external agent see it. */
 export const turnApprovalView = z.object({
@@ -107,6 +118,30 @@ function toView(r: Row): TurnApprovalView {
     decidedAt: iso(r.decided_at),
     resumedAt: iso(r.resumed_at),
   };
+}
+
+/**
+ * The chat UI's reads and the operator's decision are scoped to the chat's
+ * own operator, or someone who manages every chat (`settings.write`, as the
+ * running-agents surfaces do). `system` passes (tests, workers). Returns the
+ * refusal message, or null.
+ */
+async function chatAccessRefusal(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  chatSessionId: string,
+): Promise<string | null> {
+  if (ctx.actorKind === "system") return null;
+  const rows = (await tx.execute(sql`
+    SELECT created_by::text AS created_by FROM chat_sessions WHERE id = ${chatSessionId}::uuid
+  `)) as unknown as { created_by: string }[];
+  const owner = rows[0]?.created_by;
+  if (owner === undefined) {
+    return `Chat ${chatSessionId} does not exist (deleted?). Open the chat list and pick another chat.`;
+  }
+  if (owner === ctx.actorId) return null;
+  const manageAll = await approverRefusal(tx, ctx, "chat access", ["settings.write"]);
+  return manageAll === null ? null : `Chat ${chatSessionId} not found among your chats.`;
 }
 
 // ─── record (the runner, as the turn pauses) ──────────────────────────
@@ -340,7 +375,11 @@ export const listTurnApprovalsOp = defineOperation({
     })
     .strict(),
   output: z.object({ approvals: z.array(turnApprovalView) }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    const refused = await chatAccessRefusal(tx as TransactionRunner, ctx, input.chatSessionId);
+    if (refused !== null) {
+      return err({ kind: "HandlerError", operation: "chat.list_turn_approvals", message: refused });
+    }
     const rows = (await tx.execute(sql`
       SELECT ${COLUMNS} FROM chat_turn_approvals
       WHERE chat_session_id = ${input.chatSessionId}::uuid
@@ -371,6 +410,14 @@ export const decideTurnApprovalOp = defineOperation({
     .strict(),
   output: z.object({ approval: turnApprovalView }),
   handler: async (ctx, input, tx) => {
+    const refused = await chatAccessRefusal(tx as TransactionRunner, ctx, input.chatSessionId);
+    if (refused !== null) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.decide_turn_approval",
+        message: refused,
+      });
+    }
     const rows = (await tx.execute(sql`
       SELECT ${COLUMNS} FROM chat_turn_approvals
       WHERE chat_session_id = ${input.chatSessionId}::uuid AND approval_id = ${input.approvalId}
@@ -432,14 +479,8 @@ export const decideTurnApprovalOp = defineOperation({
 
 // ─── the external agent's read (caelo_chat) ───────────────────────────
 
-/**
- * What the caelo_chat caller learns about its paused turn:
- *  - `pending`    — the operator has not decided every card yet;
- *  - `decided`    — every card is decided: resume the turn now;
- *  - `superseded` — a newer message moved the chat past the paused turn;
- *  - `none`       — nothing of this token waits in the chat.
- */
-export const chatApprovalState = z.enum(["pending", "decided", "superseded", "none"]);
+/** See {@link ChatApprovalState}. */
+const chatApprovalState = z.enum(["pending", "decided", "superseded", "none"]);
 
 async function tokenApprovals(
   tx: TransactionRunner,
@@ -453,31 +494,6 @@ async function tokenApprovals(
     ORDER BY created_at DESC
     LIMIT 50
   `)) as unknown as Row[];
-}
-
-/** The state of a token's paused turn, from its approval rows (newest first). */
-export function chatApprovalStateOf(rows: readonly TurnApprovalView[]): {
-  state: z.infer<typeof chatApprovalState>;
-  approvals: TurnApprovalView[];
-} {
-  const open = rows.filter(
-    (r) => r.status === "pending" || r.status === "approved" || r.status === "rejected",
-  );
-  if (open.length > 0) {
-    return {
-      state: open.some((r) => r.status === "pending") ? "pending" : "decided",
-      approvals: open,
-    };
-  }
-  const latest = rows[0];
-  if (latest?.status === "superseded") {
-    const createdAt = latest.createdAt;
-    return {
-      state: "superseded",
-      approvals: rows.filter((r) => r.status === "superseded" && r.createdAt === createdAt),
-    };
-  }
-  return { state: "none", approvals: [] };
 }
 
 export const mcpGetChatApprovalStateOp = defineOperation({
