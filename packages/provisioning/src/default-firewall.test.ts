@@ -62,16 +62,21 @@ const vm = (name: string, network: string) => ({
   networkInterfaces: [{ network }],
 });
 
-/** Fake gcloud answering firewall `list`/`delete` and `instances list`; records every call. */
+/**
+ * Fake gcloud answering firewall `list`/`delete`, `instances list` and
+ * `project-info describe` (Shared VPC status); records every call.
+ */
 function fakeGcloud(
   list: GcloudResult,
   del: (name: string) => GcloudResult = () => ok(),
   instances: GcloudResult = ok("[]"),
+  xpnStatus: GcloudResult = ok("UNSPECIFIED_XPN_PROJECT_STATUS\n"),
 ) {
   const calls: string[] = [];
   const run = async (args: string[]) => {
     calls.push(args.join(" "));
     if (args[1] === "instances" && args[2] === "list") return instances;
+    if (args[1] === "project-info" && args[2] === "describe") return xpnStatus;
     if (args[2] === "list") return list;
     if (args[2] === "delete") return del(args[3] ?? "");
     throw new Error(`unexpected gcloud call: ${args.join(" ")}`);
@@ -128,6 +133,7 @@ describe("removeDefaultFirewallRules", () => {
     const { run, calls } = fakeGcloud(ok(JSON.stringify([SSH, ICMP])));
     await removeDefaultFirewallRules("acme", { run });
     expect(calls).not.toContain(INSTANCES_CALL);
+    expect(calls.some((c) => c.startsWith("compute project-info"))).toBe(false);
   });
 
   it("leaves default-allow-internal in place while VMs sit on the default network", async () => {
@@ -155,6 +161,37 @@ describe("removeDefaultFirewallRules", () => {
     expect(internal?.error).toContain(
       "gcloud compute firewall-rules delete default-allow-internal --project=acme",
     );
+  });
+
+  it("leaves default-allow-internal in place on a Shared VPC host", async () => {
+    const { run, calls } = fakeGcloud(
+      ok(JSON.stringify([INTERNAL])),
+      () => ok(),
+      ok("[]"),
+      ok("HOST\n"),
+    );
+    const outcomes = await removeDefaultFirewallRules("acme", { run });
+    expect(deletes(calls)).toEqual([]);
+    expect(calls).not.toContain(INSTANCES_CALL);
+    expect(outcomes[3]?.status).toBe("failed");
+    expect(outcomes[3]?.onFailure).toBe("warn");
+    expect(outcomes[3]?.error).toContain("Shared VPC host");
+    expect(outcomes[3]?.error).toContain(
+      "gcloud compute shared-vpc list-associated-resources acme",
+    );
+  });
+
+  it("leaves default-allow-internal in place when the Shared VPC status is unknown", async () => {
+    const { run, calls } = fakeGcloud(
+      ok(JSON.stringify([INTERNAL])),
+      () => ok(),
+      ok("[]"),
+      fail("ERROR: PERMISSION_DENIED: compute.projects.get"),
+    );
+    const outcomes = await removeDefaultFirewallRules("acme", { run });
+    expect(deletes(calls)).toEqual([]);
+    expect(outcomes[3]?.status).toBe("failed");
+    expect(outcomes[3]?.error).toContain("compute.projects.get");
   });
 
   it("deletes default-allow-internal when VMs exist only on other networks", async () => {

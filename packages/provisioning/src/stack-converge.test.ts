@@ -540,6 +540,7 @@ describe("ensureStackInvariants", () => {
         ),
       ],
       "compute instances list": [ok("[]")],
+      "compute project-info describe": [ok("UNSPECIFIED_XPN_PROJECT_STATUS")],
     };
     const { run, calls } = fakeGcloud(answers);
     const report = await ensureStackInvariants(firebase, { run, sleep: async () => {} });

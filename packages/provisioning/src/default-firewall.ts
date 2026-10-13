@@ -23,9 +23,10 @@
  * `default-allow-internal` carries traffic between VMs on the `default`
  * network. Caelo puts nothing there (the stacks attach Cloud Run to their own
  * VPC; default-firewall.test.ts pins that), but someone else may run VMs on
- * it. So that rule is only deleted after `gcloud compute instances list`
- * shows no instance on the `default` network; otherwise it is left in place
- * and reported, naming the instances.
+ * it. So that rule is only deleted when the project is not a Shared VPC host
+ * (service projects' VMs could sit on its `default` network without showing
+ * up in this project) and `gcloud compute instances list` shows no instance
+ * on the `default` network; otherwise it is left in place and reported.
  */
 
 import { gcloud as defaultGcloud } from "./gcloud.js";
@@ -130,6 +131,26 @@ function describeRule(live: LiveFirewallRule): string {
 }
 
 /**
+ * Whether the project is a Shared VPC host, from the Compute project's
+ * `xpnProjectStatus`. A host's networks can carry VMs of attached service
+ * projects that this project's instance list does not show.
+ */
+async function isSharedVpcHost(
+  run: GcloudRunner,
+  project: string,
+): Promise<{ ok: true; host: boolean } | { ok: false; error: string }> {
+  const r = await run([
+    "compute",
+    "project-info",
+    "describe",
+    project,
+    "--format=value(xpnProjectStatus)",
+  ]);
+  if (!r.ok) return { ok: false, error: r.stderr.trim() };
+  return { ok: true, host: r.stdout.trim() === "HOST" };
+}
+
+/**
  * The VM instances on the project's `default` network, as `zone/name`, or an
  * error when they could not be listed. Compute Engine disabled means no VMs.
  */
@@ -174,8 +195,8 @@ async function instancesOnDefaultNetwork(
  * One outcome per rule: `present` = the rule is absent (nothing to do, also
  * when Compute Engine is disabled), `applied` = deleted now, `failed` = could
  * not be read or deleted, exists in a customised shape, or (for
- * `default-allow-internal`) VMs on the `default` network still rely on it —
- * and was left in place. Every failure is `warn`: the rules open nothing
+ * `default-allow-internal`) VMs on the `default` network may still rely on
+ * it (VMs found, Shared VPC host, or either unknown) — and was left in place. Every failure is `warn`: the rules open nothing
  * Caelo runs, so they never block an install or upgrade — but the report
  * says what to do.
  *
@@ -253,6 +274,19 @@ export async function removeDefaultFirewallRules(
       continue;
     }
     if (rule.guardsInstanceTraffic) {
+      const xpn = await isSharedVpcHost(run, project);
+      if (!xpn.ok || xpn.host) {
+        outcomes.push({
+          ...base,
+          status: "failed",
+          error: xpn.ok
+            ? `This project is a Shared VPC host: VMs in attached service projects may use its default network and rely on ${rule.name}, so Caelo left it in place.\n` +
+              `    Check the service projects (gcloud compute shared-vpc list-associated-resources ${projectId}). If none of their VMs use the default network: ${deleteCommand(rule)}`
+            : `${xpn.error}\n    Could not check whether this project is a Shared VPC host, so Caelo left ${rule.name} in place.\n` +
+              `    Re-run once the cause is fixed (needs compute.projects.get), or if no VM uses the default network: ${deleteCommand(rule)}`,
+        });
+        continue;
+      }
       const vms = await instancesOnDefaultNetwork(run, project);
       if (!vms.ok) {
         outcomes.push({
