@@ -227,7 +227,9 @@ const executeUrlMigrationOpDefinition = defineOperation({
         message: `proposal is '${row.status}', not pending`,
       });
     }
-    const payload = row.payload as { diff: UrlMigrationDiffEntry[] };
+    // jsonb can come back as a string depending on how the row was bound;
+    // every other executor normalises it the same way.
+    const payload = parsePayload<{ diff: UrlMigrationDiffEntry[] }>(row.payload);
     const { redirectsCreated } = await applyUrlMigrationDiff(ctx, tx, payload.diff);
     await tx.execute(sql`
       UPDATE url_migration_pending_actions

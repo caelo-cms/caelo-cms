@@ -34,11 +34,7 @@ export const load: PageServerLoad = async ({ locals }) => {
  * field, or is fixed by the `approve` / `reject` actions the chat's pending
  * strip posts to (`proposalQueueRoute("site_memory")`, #684).
  */
-async function review(
-  request: Request,
-  locals: App.Locals,
-  fixed?: "accept" | "reject",
-): Promise<ReturnType<typeof fail> | { ok: true }> {
+async function review(request: Request, locals: App.Locals, fixed?: "accept" | "reject") {
   requirePermission(locals, "settings.write");
   const { adapter, registry } = getQueryContext();
   const form = await request.formData();

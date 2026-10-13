@@ -256,9 +256,8 @@ describe("#390 — URL-diff engine", () => {
   // #684 — the Owner queue at /settings/url_migrations/pending lists and
   // rejects; before these ops a queued migration could only ever wait.
   it("list_pending shows the queued migration; reject closes it; the AI cannot reject", async () => {
-    resetPluginHost();
-    localeByPage.clear();
-    await sqlSystem((tx) => tx.unsafe("DELETE FROM url_migration_pending_actions"));
+    // Earlier cases leave stale pages (t390-gamma) behind; start clean.
+    await cleanup();
     const pageD = await seedPage("t390-delta");
     // A stored path that no longer matches the (plugin-free) resolution.
     await sqlSystem(async (tx) => {
