@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { bigint, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, bigint, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { templates } from "./templates.js";
 
 /**
@@ -22,6 +22,10 @@ export const pages = pgTable(
     // prefixes/slug formats included). Backfilled + trigger-defaulted in
     // 0211; unique per branch via pages_current_path_branch_uidx.
     currentPath: text("current_path").notNull(),
+    // 0263 — nested page URLs: the parent page whose path this page's
+    // path extends ("/<parent chain>/<slug>"). NULL = top level. Cycle /
+    // depth / homepage rules are op-level (pages.create, pages.move_many).
+    parentPageId: uuid("parent_page_id").references((): AnyPgColumn => pages.id),
     title: text("title").notNull(),
     templateId: uuid("template_id")
       .notNull()

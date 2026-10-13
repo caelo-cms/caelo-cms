@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.10.46
+
+### Features
+- ca2e8abb self-hosted runs signed prebuilt images + real upgrade (#696 phase 4) (#704)
+
+### Fixes
+- a6741e48 sort applied migrations in code, not by database collation (#710)
+
 ## v0.10.45
 
 ### Features

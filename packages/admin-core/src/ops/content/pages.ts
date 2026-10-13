@@ -7,7 +7,12 @@
  * "no raw HTML on pages" invariant in code.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import {
+  defineOperation,
+  OperationAbortError,
+  type QueryError,
+  type TransactionRunner,
+} from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
   err,
@@ -16,6 +21,7 @@ import {
   pageCreateSchema,
   pageSetModulesSchema,
   pageUpdateSchema,
+  type Result,
   redirectTargetPathSchema,
   slugSchema,
   trimSlashes,
@@ -36,20 +42,28 @@ import {
 } from "../../snapshots/index.js";
 import type { PageState } from "../../snapshots/state.js";
 import { buildPatchSet, buildWhere } from "../../sql-helpers.js";
-// A slug change fans out beyond the pages table (301 + link rewrites). These
-// handlers are composed on the caller's tx so the whole move is atomic; none
-// of these modules import pages.ts back, so there is no import cycle.
 import { createRedirectOp } from "../redirects.js";
-import { rewriteModuleLinksOp } from "../seo.js";
 import { readSiteDefaults } from "../site_defaults.js";
-import { listStructuredSetsOp, setStructuredSetOp } from "../structured_sets.js";
-import { recomputeCurrentPaths, renderScopeOf } from "./current-path.js";
+import {
+  composePaths,
+  recomputeCurrentPaths,
+  recomputeCurrentPathsWithMoves,
+  renderScopeOf,
+} from "./current-path.js";
+import { planPageMoves } from "./page-move-plan.js";
+import { executePageMoves } from "./page-moves.js";
+import { ancestorIdsOf, descendantIdsOf, loadPageTree, pendingDriftIds } from "./page-tree.js";
+import { applyPathMoveEffects } from "./path-moves.js";
 
 const pageRowSchema = z.object({
   id: z.string(),
   slug: z.string(),
-  /** #390 — the composed public path (pages.current_path). */
+  /** #390 — the composed public path (pages.current_path). Under a chat
+   *  branch, pages.list reports the chat's view (its pending renames /
+   *  moves applied). */
   currentPath: z.string(),
+  /** 0263 — the parent page (nested URLs), null at the top level. */
+  parentPageId: z.string().nullable(),
   /** P6.7.5 — internal editor label, distinct from `title` and `slug`. */
   name: z.string(),
   title: z.string(),
@@ -107,6 +121,7 @@ type RawPageRow = {
   id: string;
   slug: string;
   current_path: string;
+  parent_page_id: string | null;
   name: string | null;
   title: string;
   template_id: string;
@@ -145,6 +160,7 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
     id: r.id,
     slug: r.slug,
     currentPath: r.current_path,
+    parentPageId: r.parent_page_id,
     // P6.7.5 — legacy rows + raw INSERTs may leave `name` null. The
     // rest of the codebase treats name as a non-null friendly label,
     // so we fall back to title here so the editor never shows a blank
@@ -161,6 +177,11 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
   };
 }
 
+const pageListRowSchema = pageRowSchema.extend({
+  /** 0263 — nesting level: 1 = top level. */
+  depth: z.number().int().positive(),
+});
+
 export const listPagesOp = defineOperation({
   name: "pages.list",
   // P6.7.3 — AI lists pages from add_module_to_template to fan a new
@@ -172,8 +193,10 @@ export const listPagesOp = defineOperation({
   database: "cms_admin",
   input: z.object({
     includeDeleted: z.boolean().default(false),
+    /** 0263 — only the pages BELOW this page (its whole subtree). */
+    underPageId: z.string().uuid().optional(),
   }),
-  output: z.object({ pages: z.array(pageRowSchema) }),
+  output: z.object({ pages: z.array(pageListRowSchema) }),
   handler: async (ctx, input, tx) => {
     // v0.9.0 — branch-aware: chats see main + their own branched creates.
     // Filters reference `pages` columns; the LEFT JOIN to templates
@@ -188,7 +211,8 @@ export const listPagesOp = defineOperation({
       filters.push(sql`pages.chat_branch_id IS NULL`);
     }
     const rows = (await tx.execute(sql`
-      SELECT pages.id::text AS id, pages.slug, pages.current_path, pages.name, pages.title,
+      SELECT pages.id::text AS id, pages.slug, pages.current_path,
+             pages.parent_page_id::text AS parent_page_id, pages.name, pages.title,
              pages.template_id::text AS template_id,
              templates.kind AS template_kind,
              pages.status, pages.version,
@@ -226,6 +250,7 @@ export const listPagesOp = defineOperation({
           }
           const s = (typeof rawState === "string" ? JSON.parse(rawState) : rawState) as {
             slug?: string;
+            parentPageId?: string | null;
             title?: string;
             status?: "draft" | "published";
             version?: number;
@@ -235,18 +260,55 @@ export const listPagesOp = defineOperation({
           merged.push({
             ...row,
             slug: s.slug ?? row.slug,
+            parent_page_id: s.parentPageId === undefined ? row.parent_page_id : s.parentPageId,
             title: s.title ?? row.title,
             status: s.status ?? row.status,
             version: s.version ?? row.version,
             deleted_at: s.deletedAt ?? row.deleted_at,
           });
         }
-        return ok({ pages: merged.map(rowToPage) });
+        return ok({ pages: await withTreeView(tx, ctx, merged.map(rowToPage), input.underPageId) });
       }
     }
-    return ok({ pages: rows.map(rowToPage) });
+    return ok({ pages: await withTreeView(tx, ctx, rows.map(rowToPage), input.underPageId) });
   },
 });
+
+/**
+ * 0263 — the tree half of pages.list: depth per page, the subtree
+ * filter, and — under a chat branch — the chat's view of every path its
+ * pending renames / moves change (the live `current_path` of a main page
+ * only moves at publish). Deleted rows (includeDeleted) keep depth 1:
+ * they are not part of the live tree.
+ */
+async function withTreeView(
+  tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
+  ctx: ExecutionContext,
+  pages: z.infer<typeof pageRowSchema>[],
+  underPageId: string | undefined,
+): Promise<z.infer<typeof pageListRowSchema>[]> {
+  const tree = await loadPageTree(tx, ctx.chatBranchId ?? null);
+  let visible = pages;
+  if (underPageId !== undefined) {
+    const below = new Set(descendantIdsOf(tree, [underPageId]));
+    visible = pages.filter((p) => below.has(p.id));
+  }
+  let branchPaths = new Map<string, string>();
+  if (ctx.chatBranchId) {
+    // Pages this chat renamed or moved (pending — main pages and its own
+    // alike), plus everything below them: their stored path predates the
+    // pending change.
+    const drifted = await pendingDriftIds(tx, tree, ctx.chatBranchId);
+    if (drifted.length > 0) {
+      branchPaths = await composePaths(tx, tree, drifted, renderScopeOf(ctx));
+    }
+  }
+  return visible.map((p) => ({
+    ...p,
+    currentPath: branchPaths.get(p.id) ?? p.currentPath,
+    depth: tree.byId.has(p.id) ? ancestorIdsOf(tree, p.id).length + 1 : 1,
+  }));
+}
 
 export const getPageOp = defineOperation({
   name: "pages.get",
@@ -261,7 +323,8 @@ export const getPageOp = defineOperation({
     // (re-enables the v0.5.7 workflow that was reverted in v0.5.19).
     const branchFilter = branchVisibilityFilter(ctx);
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, current_path, name, title, template_id::text AS template_id,
+      SELECT id::text AS id, slug, current_path, parent_page_id::text AS parent_page_id,
+             name, title, template_id::text AS template_id,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -291,7 +354,8 @@ export const getPageWithModulesOp = defineOperation({
     // works inside the same chat without waiting for merge.
     const branchFilter = branchVisibilityFilter(ctx);
     const pageRows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, current_path, name, title, template_id::text AS template_id,
+      SELECT id::text AS id, slug, current_path, parent_page_id::text AS parent_page_id,
+             name, title, template_id::text AS template_id,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -672,10 +736,10 @@ export const createPageOp = defineOperation({
     `)) as unknown as { home_page_id: string | null }[];
     const homePageId = homeRows[0]?.home_page_id ?? null;
     const candidates = (await tx.execute(sql`
-      SELECT id::text AS id, slug FROM pages
+      SELECT id::text AS id, slug, (parent_page_id IS NOT NULL) AS nested FROM pages
       WHERE deleted_at IS NULL
         AND COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid) = ${pageDupNamespace}::uuid
-    `)) as unknown as { id: string; slug: string }[];
+    `)) as unknown as { id: string; slug: string; nested: boolean }[];
     const branchDeleted = ctx.chatBranchId
       ? await branchDeletedPageIds(
           tx,
@@ -685,17 +749,21 @@ export const createPageOp = defineOperation({
       : new Set<string>();
     // A NEW page can only be root-equivalent via a magic slug — it has no
     // row yet, so it can't be the designated home_page_id.
-    const newIsRoot = isRootSlug(input.slug);
+    // A nested page is never the root, whatever its slug ("/docs/index").
+    const newIsRoot = !input.parentPageId && isRootSlug(input.slug);
     const newSlugKey = trimSlashes(input.slug);
     const conflict = candidates.find((c) => {
       if (branchDeleted.has(c.id)) return false;
-      const candIsRoot = isRootSlug(c.slug) || (homePageId !== null && c.id === homePageId);
+      // A nested magic slug ("/docs/index") is just a segment, never "/".
+      const candIsRoot =
+        (!c.nested && isRootSlug(c.slug)) || (homePageId !== null && c.id === homePageId);
       if (newIsRoot && candIsRoot) return true;
       return trimSlashes(c.slug) === newSlugKey;
     });
     if (conflict) {
       const conflictIsRoot =
-        isRootSlug(conflict.slug) || (homePageId !== null && conflict.id === homePageId);
+        (!conflict.nested && isRootSlug(conflict.slug)) ||
+        (homePageId !== null && conflict.id === homePageId);
       const bothRoot = newIsRoot && conflictIsRoot;
       await recordAudit(tx, {
         actorId: ctx.actorId,
@@ -752,6 +820,26 @@ export const createPageOp = defineOperation({
     // branch isn't what staging serves, so it doesn't count as bootstrapped
     // yet. No silent read-time fallback — this resolves a stored value at
     // write time (CLAUDE.md §2).
+    // 0263 — a page created under a parent: same structural rules and
+    // URL-conflict check as a move (depth, homepage-as-parent, path
+    // taken), planned in the caller's branch view before the INSERT.
+    const parentPageId = input.parentPageId ?? null;
+    if (parentPageId !== null) {
+      const plan = await planPageMoves(tx, renderScopeOf(ctx), [
+        { pageId: crypto.randomUUID(), isNew: true, parentPageId, newSlug: input.slug },
+      ]);
+      if (!plan.ok) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "pages.create",
+          input,
+          succeeded: false,
+          resultSummary: "parent-refused",
+        });
+        return err({ kind: "HandlerError", operation: "pages.create", message: plan.message });
+      }
+    }
     let resolvedStatus = input.status;
     if (resolvedStatus === undefined) {
       const pub = (await tx.execute(sql`
@@ -763,14 +851,15 @@ export const createPageOp = defineOperation({
       resolvedStatus = pub[0]?.has_published ? "draft" : "published";
     }
     const rows = (await tx.execute(sql`
-      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id)
+      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id)
       VALUES (
         ${input.slug},
         ${input.name ?? input.title},
         ${input.title},
         ${templateId}::uuid,
         ${resolvedStatus},
-        ${ctx.chatBranchId ?? null}::uuid
+        ${ctx.chatBranchId ?? null}::uuid,
+        ${parentPageId}::uuid
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -814,128 +903,6 @@ export const createPageOp = defineOperation({
   },
 });
 
-/**
- * A slug change rewrites a page's public URL, so it is never JUST a field
- * write: the old URL must keep working (301) and every link that pointed at
- * it must follow. This runs those side-effects on the CALLER'S `tx`, so the
- * slug write + redirect + link rewrites commit or roll back together.
- *
- * Why it lives in the op and not the tool: the side-effects used to sit in the
- * `change_page_slug` tool as a chain of separate `execute()` calls. That left
- * two holes — (a) `pages.update_many` (the tool the AI is explicitly steered to
- * for multi-page edits) went straight to the field write and silently produced
- * ZERO redirects, stranding every inbound link, and (b) the chain was not
- * atomic despite claiming to be, so a mid-chain failure left a moved page with
- * no redirect. Both callers now inherit the full semantics for free
- * (CLAUDE.md §11: a cross-domain patch spanning >1 op call belongs inside one op).
- */
-async function applySlugChangeSideEffects(
-  ctx: ExecutionContext,
-  tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
-  args: {
-    oldSlug: string;
-    newSlug: string;
-    /** COMPOSED paths (#390) — the caller reads the row's current_path
-     *  before the write and recomputes after, so redirects + href
-     *  rewrites operate on the real public URLs, prefixes included. */
-    oldPath: string;
-    newPath: string;
-    redirectFromOld: "auto" | "skip";
-  },
-): Promise<{ rewrittenSets: number; rewrittenModules: number }> {
-  const { oldPath, newPath } = args;
-
-  // Rewrite nav-menu / link-list hrefs (recursing into nav-menu children).
-  // Queried per-kind rather than listing everything and filtering here: these
-  // are the only two kinds that carry hrefs, so the other kinds are pure waste.
-  let rewrittenSets = 0;
-  const hrefKinds = ["nav-menu", "link-list"] as const;
-  for (const kind of hrefKinds) {
-    const listed = await listStructuredSetsOp.handler(ctx, { kind }, tx);
-    if (!listed.ok) continue;
-    const sets = (
-      listed.value as {
-        sets: { kind: string; slug: string; displayName: string; items: unknown }[];
-      }
-    ).sets;
-    for (const s of sets) {
-      const next = rewriteHrefs(s.items as unknown[], oldPath, newPath);
-      if (!next.changed) continue;
-      const w = await setStructuredSetOp.handler(
-        ctx,
-        {
-          kind: s.kind as "nav-menu" | "link-list",
-          slug: s.slug,
-          displayName: s.displayName,
-          items: next.items,
-        },
-        tx,
-      );
-      if (w.ok) rewrittenSets += 1;
-    }
-  }
-
-  // The long tail: <a href="/old…"> inside module bodies. System actor so the
-  // writes pass RLS regardless of who initiated the slug change.
-  const moduleRewrite = await rewriteModuleLinksOp.handler(
-    { ...ctx, actorKind: "system" },
-    { oldSlug: args.oldSlug, newSlug: args.newSlug },
-    tx,
-  );
-  const rewrittenModules = moduleRewrite.ok
-    ? (moduleRewrite.value as { rewrittenModuleIds: string[] }).rewrittenModuleIds.length
-    : 0;
-
-  if (args.redirectFromOld !== "skip") {
-    const red = await createRedirectOp.handler(
-      ctx,
-      { fromPath: oldPath, toPath: newPath, statusCode: 301 },
-      tx,
-    );
-    // Loud, not silent: a slug change whose 301 failed to land is exactly the
-    // state that strands inbound links, so it must abort the whole tx.
-    if (!red.ok) throw new Error(`slug change aborted — redirect ${oldPath} → ${newPath} failed`);
-  }
-  return { rewrittenSets, rewrittenModules };
-}
-
-/**
- * Composition-FREE path shape `/<slug>` — the same default the 0211
- * INSERT trigger writes. Only a last-resort shape for rows that predate
- * a current_path read in the same statement; every real consumer reads
- * `pages.current_path` (#390).
- */
-function publicPathFor(slug: string): string {
-  return `/${slug}`;
-}
-
-interface HrefRewriteResult {
-  items: unknown[];
-  changed: boolean;
-}
-/** Swap `oldPath` → `newPath` on every item href, recursing into children. */
-function rewriteHrefs(items: unknown[], oldPath: string, newPath: string): HrefRewriteResult {
-  let changed = false;
-  const next = items.map((it) => {
-    if (!it || typeof it !== "object") return it;
-    const obj = it as Record<string, unknown>;
-    const out: Record<string, unknown> = { ...obj };
-    if (typeof obj.href === "string" && obj.href === oldPath) {
-      out.href = newPath;
-      changed = true;
-    }
-    if (Array.isArray(obj.children)) {
-      const child = rewriteHrefs(obj.children as unknown[], oldPath, newPath);
-      if (child.changed) {
-        out.children = child.items;
-        changed = true;
-      }
-    }
-    return out;
-  });
-  return { items: next, changed };
-}
-
 export const updatePageOp = defineOperation({
   name: "pages.update",
   // #397 — plugin actors update too (the translator writes the
@@ -943,7 +910,7 @@ export const updatePageOp = defineOperation({
   // P6.7.5 — the three identifiers (name / title / slug) are separate optional
   // fields so a caller can never silently substitute one for another. A `slug`
   // change additionally fires the URL side-effects (301 + link rewrites) in
-  // this same transaction — see applySlugChangeSideEffects.
+  // this same transaction — see applyPathMoveEffects (path-moves.ts).
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: pageUpdateSchema,
@@ -1045,6 +1012,16 @@ export const updatePageOp = defineOperation({
           message: `slug "${input.slug}" already in use`,
         });
       }
+      // 0263 — a rename moves the page's whole subtree: refuse a new URL
+      // that any of them would share with another page.
+      if (input.slug !== existing.slug) {
+        const plan = await planPageMoves(tx, renderScopeOf(ctx), [
+          { pageId: input.pageId, newSlug: input.slug },
+        ]);
+        if (!plan.ok) {
+          return err({ kind: "HandlerError", operation: "pages.update", message: plan.message });
+        }
+      }
     }
 
     let state: import("../../snapshots/state.js").PageState | null;
@@ -1062,8 +1039,18 @@ export const updatePageOp = defineOperation({
           message: "page not found while building branched state",
         });
       }
+      // A pending rename remembers "no 301s" for the publish that makes
+      // it live; any other edit keeps whatever the last rename asked.
+      const { pendingRedirects: prevRedirects, ...baseState } = base;
+      const pendingRedirects =
+        input.slug !== undefined && input.slug !== base.slug
+          ? input.redirectFromOld === "skip"
+            ? "skip"
+            : undefined
+          : prevRedirects;
       state = {
-        ...base,
+        ...baseState,
+        ...(pendingRedirects ? { pendingRedirects } : {}),
         slug: input.slug ?? base.slug,
         title: input.title ?? base.title,
         templateId: input.templateId ?? base.templateId,
@@ -1083,31 +1070,17 @@ export const updatePageOp = defineOperation({
       await tx.execute(sql`
         UPDATE pages SET ${sets} WHERE id = ${input.pageId}::uuid
       `);
-      // The URL moved — keep the old one alive and drag every link along, in
-      // THIS transaction. Every caller of pages.update (incl. the update_many
-      // bulk path) inherits this; before, only the change_page_slug tool did.
+      // The URL moved — for this page AND every page below it (a parent's
+      // path prefixes its children's). Keep the old URLs alive and drag
+      // every link along, in THIS transaction; every caller of
+      // pages.update (incl. update_many) inherits it.
       if (input.slug !== undefined && input.slug !== existing.slug) {
-        // #390 — side effects operate on COMPOSED paths: the pre-write
-        // current_path is the URL the world knows; the recompute yields
-        // the new one (plugin prefixes included).
-        const oldPathRows = (await tx.execute(sql`
-          SELECT current_path FROM pages WHERE id = ${input.pageId}::uuid
-        `)) as unknown as { current_path: string }[];
-        const recomputed = await recomputeCurrentPaths(tx, [input.pageId], renderScopeOf(ctx));
-        const newPath = recomputed.get(input.pageId);
-        const oldPath = oldPathRows[0]?.current_path;
-        if (!oldPath || !newPath) {
-          throw new Error(
-            `pages.update: could not resolve current_path for slug change on ${input.pageId}`,
-          );
-        }
-        await applySlugChangeSideEffects(ctx, tx, {
-          oldSlug: existing.slug,
-          newSlug: input.slug,
-          oldPath,
-          newPath,
-          redirectFromOld: input.redirectFromOld ?? "auto",
-        });
+        const recomputed = await recomputeCurrentPathsWithMoves(
+          tx,
+          [input.pageId],
+          renderScopeOf(ctx),
+        );
+        await applyPathMoveEffects(ctx, tx, recomputed.moves, input.redirectFromOld ?? "auto");
       }
       state = await loadPageState(tx, input.pageId);
     }
@@ -1621,6 +1594,199 @@ export const setPageModulesOp = defineOperation({
   },
 });
 
+/**
+ * 0263 — what deleting a page does to its child pages: `refuse` (the
+ * default — the operator decides), `move-up` (they move to the deleted
+ * page's parent, old URLs 301) or `delete` (the whole subtree goes, with
+ * the same disposition).
+ */
+const pageDeleteChildrenSchema = z.enum(["refuse", "move-up", "delete"]);
+
+const deletePageInputSchema = z
+  .object({
+    pageId: z.string().uuid(),
+    disposition: z.enum(["404", "redirect"]).optional(),
+    redirectTo: redirectTargetPathSchema.optional(),
+    children: pageDeleteChildrenSchema.optional(),
+  })
+  .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
+    message: "disposition 'redirect' requires redirectTo",
+  });
+
+/**
+ * pages.delete's body — a named function with an explicit return type so
+ * the `children: "delete"` cascade can recurse into it.
+ */
+async function deletePageHandler(
+  ctx: ExecutionContext,
+  input: z.infer<typeof deletePageInputSchema>,
+  tx: TransactionRunner,
+): Promise<Result<Record<string, never>, QueryError>> {
+  const deleteLock = await checkAndAcquireEntityLock(tx, {
+    kind: "page",
+    entityId: input.pageId,
+    chatBranchId: ctx.chatBranchId,
+    holderKey: ctx.chatTaskId,
+  });
+  if (!deleteLock.permitted) {
+    return err(await entityWriteBlockedError(tx, "pages.delete", "page", input.pageId, deleteLock));
+  }
+  const rows = (await tx.execute(sql`
+    SELECT deleted_at FROM pages WHERE id = ${input.pageId}::uuid
+  `)) as unknown as { deleted_at: Date | null }[];
+  const target = rows[0];
+  if (!target) {
+    return err({
+      kind: "HandlerError",
+      operation: "pages.delete",
+      message: "page not found",
+    });
+  }
+  if (target.deleted_at !== null) {
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "pages.delete",
+      input,
+      succeeded: true,
+      entityId: input.pageId,
+      resultSummary: "already-deleted",
+    });
+    return ok({});
+  }
+  // 0263 — a page with child pages: their URLs hang off this one.
+  // Refuse by default (the operator decides what happens to them), or
+  // move them up / delete them first when the caller said so.
+  const tree = await loadPageTree(tx, ctx.chatBranchId ?? null);
+  const kids = tree.childrenOf.get(input.pageId) ?? [];
+  if (kids.length > 0) {
+    const mode = input.children ?? "refuse";
+    if (mode === "refuse") {
+      const paths = await composePaths(tx, tree, kids.slice(0, 5), renderScopeOf(ctx));
+      return err({
+        kind: "HandlerError",
+        operation: "pages.delete",
+        message: `page ${input.pageId} has ${kids.length} child page(s) (${[...paths.values()].join(", ")}${kids.length > 5 ? ", …" : ""}). Decide what happens to them: move them elsewhere first (move_pages), or delete again with children: "move-up" (they move to this page's parent, old URLs 301) or children: "delete" (the whole subtree is deleted with the same disposition).`,
+      });
+    }
+    if (mode === "move-up") {
+      const parentOfDeleted = tree.byId.get(input.pageId)?.parentPageId ?? null;
+      const moved = await executePageMoves(
+        ctx,
+        tx,
+        kids.map((k) => ({ pageId: k, parentPageId: parentOfDeleted })),
+        "auto",
+      );
+      if (!moved.ok) return err(moved.error);
+    } else {
+      for (const k of kids) {
+        const r = await deletePageHandler(
+          ctx,
+          {
+            pageId: k,
+            disposition: input.disposition,
+            redirectTo: input.redirectTo,
+            children: "delete",
+          },
+          tx,
+        );
+        // Earlier siblings may already be deleted on this tx: a plain
+        // err would commit that partial subtree delete. Abort it whole.
+        if (!r.ok) throw new OperationAbortError(r.error);
+      }
+    }
+  }
+  // v0.5.3 — branched: skip live soft-delete; emit branched snapshot
+  // with deletedAt set so preview hides the page in the caller's chat.
+  const branched = !!ctx.chatBranchId;
+  let state: import("../../snapshots/state.js").PageState | null;
+  if (branched) {
+    const prev = (await tx.execute(sql`
+      SELECT slug, title, template_id::text AS template_id, status, version,
+             chat_branch_id::text AS chat_branch_id
+      FROM pages WHERE id = ${input.pageId}::uuid LIMIT 1
+    `)) as unknown as {
+      slug: string;
+      title: string;
+      template_id: string;
+      status: "draft" | "published";
+      version: number | string;
+      chat_branch_id: string | null;
+    }[];
+    const p = prev[0];
+    // The chat's own pending view of the page (a rename or move it made
+    // earlier) is what gets deleted — not the live row's.
+    const base = await loadPageStateWithBranchOverlay(tx, input.pageId, ctx.chatBranchId);
+    state = base ? { ...base, deletedAt: new Date().toISOString() } : null;
+    // 2b — a page CREATED on THIS branch (its live row is branch-owned:
+    // invisible to other chats + to static-gen) frees its slug/URL
+    // immediately by soft-deleting the live row too. Without this the
+    // (slug, branch) partial UNIQUE INDEX
+    // (`pages_slug_branch_uidx`, migration 0201) — which only
+    // ignores rows WHERE deleted_at IS NULL — keeps counting the still-
+    // live row, so the same chat can't reclaim the slug it just deleted.
+    // A MAIN page (chat_branch_id NULL) deleted on a branch is left
+    // untouched on purpose: that delete stays branch-scoped until
+    // publish, where merge propagates state.deletedAt to the live row.
+    if (p && p.chat_branch_id !== null && p.chat_branch_id === ctx.chatBranchId) {
+      await tx.execute(sql`UPDATE pages SET deleted_at = now() WHERE id = ${input.pageId}::uuid`);
+    }
+  } else {
+    await tx.execute(sql`UPDATE pages SET deleted_at = now() WHERE id = ${input.pageId}::uuid`);
+    state = await loadPageState(tx, input.pageId);
+  }
+  await recordAudit(tx, {
+    actorId: ctx.actorId,
+    requestId: ctx.requestId,
+    operation: "pages.delete",
+    input,
+    succeeded: true,
+    entityId: input.pageId,
+    resultSummary: branched ? "branched soft-delete" : "soft-deleted",
+  });
+  if (state) {
+    await emitSnapshot(tx, {
+      actorId: ctx.actorId,
+      opKind: "pages.delete",
+      description: `pages.delete slug=${state.slug}${branched ? " (branched)" : ""}`,
+      chatTaskId: ctx.chatTaskId ?? null,
+      chatBranchId: ctx.chatBranchId ?? null,
+      entities: [{ kind: "page", entityId: input.pageId, state }],
+    });
+    await emitDomainEvent(tx, {
+      kind: "page.deleted",
+      entityId: input.pageId,
+      payload: {
+        slug: state.slug,
+        ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
+      },
+    });
+  }
+  // Dead-URL redirect, on this tx. `state` carries the page's slug
+  // (delete doesn't change it). A failed 301 aborts the delete rather than
+  // leaving the URL silently unredirected (§2 no-fallbacks).
+  if (input.disposition === "redirect" && state) {
+    // #390 — the composed path (prefixes included) is the URL that
+    // needs the 301, not the bare slug shape.
+    const pathRows = (await tx.execute(sql`
+      SELECT current_path FROM pages WHERE id = ${input.pageId}::uuid
+    `)) as unknown as { current_path: string }[];
+    const oldPath = pathRows[0]?.current_path;
+    if (oldPath === undefined) {
+      throw new Error(`page delete aborted — page ${input.pageId} has no current_path`);
+    }
+    const red = await createRedirectOp.handler(
+      ctx,
+      { fromPath: oldPath, toPath: input.redirectTo as string, statusCode: 301 },
+      tx,
+    );
+    if (!red.ok) {
+      throw new Error(`page delete aborted — redirect ${oldPath} → ${input.redirectTo} failed`);
+    }
+  }
+  return ok({});
+}
+
 export const deletePageOp = defineOperation({
   name: "pages.delete",
   // P6.7.5 — soft-delete. `disposition` decides what the dead URL does:
@@ -1634,145 +1800,9 @@ export const deletePageOp = defineOperation({
   // requires it so the AI can never silently strand a dead URL.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z
-    .object({
-      pageId: z.string().uuid(),
-      disposition: z.enum(["404", "redirect"]).optional(),
-      redirectTo: redirectTargetPathSchema.optional(),
-    })
-    .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
-      message: "disposition 'redirect' requires redirectTo",
-    }),
+  input: deletePageInputSchema,
   output: z.object({}),
-  handler: async (ctx, input, tx) => {
-    const deleteLock = await checkAndAcquireEntityLock(tx, {
-      kind: "page",
-      entityId: input.pageId,
-      chatBranchId: ctx.chatBranchId,
-      holderKey: ctx.chatTaskId,
-    });
-    if (!deleteLock.permitted) {
-      return err(
-        await entityWriteBlockedError(tx, "pages.delete", "page", input.pageId, deleteLock),
-      );
-    }
-    const rows = (await tx.execute(sql`
-      SELECT deleted_at FROM pages WHERE id = ${input.pageId}::uuid
-    `)) as unknown as { deleted_at: Date | null }[];
-    const target = rows[0];
-    if (!target) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages.delete",
-        message: "page not found",
-      });
-    }
-    if (target.deleted_at !== null) {
-      await recordAudit(tx, {
-        actorId: ctx.actorId,
-        requestId: ctx.requestId,
-        operation: "pages.delete",
-        input,
-        succeeded: true,
-        entityId: input.pageId,
-        resultSummary: "already-deleted",
-      });
-      return ok({});
-    }
-    // v0.5.3 — branched: skip live soft-delete; emit branched snapshot
-    // with deletedAt set so preview hides the page in the caller's chat.
-    const branched = !!ctx.chatBranchId;
-    let state: import("../../snapshots/state.js").PageState | null;
-    if (branched) {
-      const prev = (await tx.execute(sql`
-        SELECT slug, title, template_id::text AS template_id, status, version,
-               chat_branch_id::text AS chat_branch_id
-        FROM pages WHERE id = ${input.pageId}::uuid LIMIT 1
-      `)) as unknown as {
-        slug: string;
-        title: string;
-        template_id: string;
-        status: "draft" | "published";
-        version: number | string;
-        chat_branch_id: string | null;
-      }[];
-      const p = prev[0];
-      state = p
-        ? {
-            schemaVersion: 1,
-            slug: p.slug,
-            title: p.title,
-            templateId: p.template_id,
-            status: p.status,
-            version: typeof p.version === "string" ? Number.parseInt(p.version, 10) : p.version,
-            deletedAt: new Date().toISOString(),
-          }
-        : null;
-      // 2b — a page CREATED on THIS branch (its live row is branch-owned:
-      // invisible to other chats + to static-gen) frees its slug/URL
-      // immediately by soft-deleting the live row too. Without this the
-      // (slug, branch) partial UNIQUE INDEX
-      // (`pages_slug_branch_uidx`, migration 0201) — which only
-      // ignores rows WHERE deleted_at IS NULL — keeps counting the still-
-      // live row, so the same chat can't reclaim the slug it just deleted.
-      // A MAIN page (chat_branch_id NULL) deleted on a branch is left
-      // untouched on purpose: that delete stays branch-scoped until
-      // publish, where merge propagates state.deletedAt to the live row.
-      if (p && p.chat_branch_id !== null && p.chat_branch_id === ctx.chatBranchId) {
-        await tx.execute(sql`UPDATE pages SET deleted_at = now() WHERE id = ${input.pageId}::uuid`);
-      }
-    } else {
-      await tx.execute(sql`UPDATE pages SET deleted_at = now() WHERE id = ${input.pageId}::uuid`);
-      state = await loadPageState(tx, input.pageId);
-    }
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "pages.delete",
-      input,
-      succeeded: true,
-      entityId: input.pageId,
-      resultSummary: branched ? "branched soft-delete" : "soft-deleted",
-    });
-    if (state) {
-      await emitSnapshot(tx, {
-        actorId: ctx.actorId,
-        opKind: "pages.delete",
-        description: `pages.delete slug=${state.slug}${branched ? " (branched)" : ""}`,
-        chatTaskId: ctx.chatTaskId ?? null,
-        chatBranchId: ctx.chatBranchId ?? null,
-        entities: [{ kind: "page", entityId: input.pageId, state }],
-      });
-      await emitDomainEvent(tx, {
-        kind: "page.deleted",
-        entityId: input.pageId,
-        payload: {
-          slug: state.slug,
-          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
-        },
-      });
-    }
-    // Dead-URL redirect, on this tx. `state` carries the page's slug
-    // (delete doesn't change it). A failed 301 aborts the delete rather than
-    // leaving the URL silently unredirected (§2 no-fallbacks).
-    if (input.disposition === "redirect" && state) {
-      // #390 — the composed path (prefixes included) is the URL that
-      // needs the 301, not the bare slug shape.
-      const pathRows = (await tx.execute(sql`
-        SELECT current_path FROM pages WHERE id = ${input.pageId}::uuid
-      `)) as unknown as { current_path: string }[];
-      const oldPath = pathRows[0]?.current_path ?? publicPathFor(state.slug);
-      const red = await createRedirectOp.handler(
-        ctx,
-        { fromPath: oldPath, toPath: input.redirectTo as string, statusCode: 301 },
-        tx,
-      );
-      if (!red.ok) {
-        throw new Error(`page delete aborted — redirect ${oldPath} → ${input.redirectTo} failed`);
-      }
-    }
-    return ok({});
-  },
+  handler: (ctx, input, tx) => deletePageHandler(ctx, input, tx),
 });
 
 /**
@@ -1847,14 +1877,19 @@ export const duplicatePageOp = defineOperation({
     }
     const title = input.newTitle ?? source.title;
     const name = input.newName ?? title;
+    // 0263 — the copy is a sibling: same parent as the source (in the
+    // caller's view of the tree), so `/docs/a` duplicates to `/docs/b`.
+    const dupTree = await loadPageTree(tx, ctx.chatBranchId ?? null);
+    const dupParent = dupTree.byId.get(input.sourcePageId)?.parentPageId ?? null;
     // Branched like pages.create: a copy made in a chat is that chat's
     // page until publish, not a live draft other chats and the site see.
     const inserted = (await tx.execute(sql`
-      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id)
+      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id)
       VALUES (
         ${input.newSlug}, ${name}, ${title},
         ${targetTemplateId}::uuid, 'draft',
-        ${ctx.chatBranchId ?? null}::uuid
+        ${ctx.chatBranchId ?? null}::uuid,
+        ${dupParent}::uuid
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -2238,6 +2273,7 @@ export const deletePagesManyOp = defineOperation({
               pageId: z.string().uuid(),
               disposition: z.enum(["404", "redirect"]).optional(),
               redirectTo: redirectTargetPathSchema.optional(),
+              children: pageDeleteChildrenSchema.optional(),
             })
             .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
               message: "disposition 'redirect' requires redirectTo",
@@ -2251,6 +2287,9 @@ export const deletePagesManyOp = defineOperation({
     deleted: z.number().int(),
     alreadyDeleted: z.number().int(),
     notFound: z.number().int(),
+    /** Pages not deleted, with the reason + next step (e.g. it has
+     *  child pages and no `children` decision was given). */
+    refused: z.array(z.object({ pageId: z.string(), reason: z.string() })),
   }),
   handler: async (ctx, input, tx) => {
     // v0.5.7 — delegate to deletePageOp per row so bulk delete picks up
@@ -2261,7 +2300,15 @@ export const deletePagesManyOp = defineOperation({
     let deleted = 0;
     let alreadyDeleted = 0;
     let notFound = 0;
-    for (const item of input.deletions) {
+    const refused: { pageId: string; reason: string }[] = [];
+    // 0263 — deepest pages first, so a batch that deletes a page AND all
+    // its children needs no `children` decision: by the time the parent
+    // comes up, its children are gone.
+    const tree = await loadPageTree(tx, ctx.chatBranchId ?? null);
+    const depthOf = (id: string): number =>
+      tree.byId.has(id) ? ancestorIdsOf(tree, id).length : 0;
+    const ordered = [...input.deletions].sort((a, b) => depthOf(b.pageId) - depthOf(a.pageId));
+    for (const item of ordered) {
       const id = item.pageId;
       const rows = (await tx.execute(sql`
         SELECT deleted_at FROM pages WHERE id = ${id}::uuid
@@ -2277,10 +2324,17 @@ export const deletePagesManyOp = defineOperation({
       }
       const r = await deletePageOp.handler(
         ctx,
-        { pageId: id, disposition: item.disposition, redirectTo: item.redirectTo },
+        {
+          pageId: id,
+          disposition: item.disposition,
+          redirectTo: item.redirectTo,
+          ...(item.children ? { children: item.children } : {}),
+        },
         tx,
       );
       if (r.ok) deleted += 1;
+      else
+        refused.push({ pageId: id, reason: "message" in r.error ? r.error.message : r.error.kind });
       // Any other error (Locked etc) falls through to the bulk caller
       // via the audit row + non-OK return on the next iteration. For
       // delete_many we keep the loop going so a single Locked row
@@ -2292,9 +2346,9 @@ export const deletePagesManyOp = defineOperation({
       operation: "pages.delete_many",
       input,
       succeeded: true,
-      resultSummary: `deleted=${deleted},alreadyDeleted=${alreadyDeleted},notFound=${notFound}`,
+      resultSummary: `deleted=${deleted},alreadyDeleted=${alreadyDeleted},notFound=${notFound},refused=${refused.length}`,
     });
-    return ok({ deleted, alreadyDeleted, notFound });
+    return ok({ deleted, alreadyDeleted, notFound, refused });
   },
 });
 
@@ -2318,15 +2372,20 @@ export const updatePagesManyOp = defineOperation({
     updated: z.number().int(),
     notFound: z.number().int(),
     conflicts: z.array(z.string()),
+    /** Why each refused update was refused — the message names the fix
+     *  (e.g. a URL conflict the rename would cause). */
+    failures: z.array(z.object({ pageId: z.string(), reason: z.string() })),
   }),
   handler: async (ctx, input, tx) => {
     let updated = 0;
     let notFound = 0;
     const conflicts: string[] = [];
+    const failures: { pageId: string; reason: string }[] = [];
     for (const upd of input.updates) {
       const r = await updatePageOp.handler(ctx, upd, tx);
       if (!r.ok) {
         const msg = (r.error as { message?: string }).message ?? "";
+        failures.push({ pageId: upd.pageId, reason: msg || r.error.kind });
         if (msg.includes("not found") || msg.includes("deleted")) notFound += 1;
         else if (msg.includes("Conflict") || msg.includes("conflict")) conflicts.push(upd.pageId);
         else conflicts.push(upd.pageId);
@@ -2342,6 +2401,6 @@ export const updatePagesManyOp = defineOperation({
       succeeded: true,
       resultSummary: `updated=${updated},notFound=${notFound},conflicts=${conflicts.length}`,
     });
-    return ok({ updated, notFound, conflicts });
+    return ok({ updated, notFound, conflicts, failures });
   },
 });

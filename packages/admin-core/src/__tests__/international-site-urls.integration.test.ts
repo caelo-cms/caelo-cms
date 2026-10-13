@@ -260,6 +260,7 @@ describe("#395 — international-site URL contributions on the generic engine", 
     // 5. Decode inverts the prefix (strict: unknown codes pass through).
     expect(decodePagePath("/de/t395-preise")).toEqual({
       slug: "t395-preise",
+      ancestorSlugs: [],
       annotations: { locale: "de" },
     });
     expect(decodePagePath("/fr/t395-x").annotations).toEqual({});
@@ -632,6 +633,7 @@ describe("prefixDefaultLocale — every locale prefixed, default home at '/'", (
     expect(await redirectTo("/de")).toBe("/");
     expect(decodePagePath("/de/t395-px-preise")).toEqual({
       slug: "t395-px-preise",
+      ancestorSlugs: [],
       annotations: { locale: "de" },
     });
 

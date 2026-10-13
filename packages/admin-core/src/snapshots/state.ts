@@ -65,6 +65,19 @@ export interface PageState {
   readonly status: "draft" | "published";
   readonly version: number;
   readonly deletedAt: string | null;
+  /**
+   * 0263 — the parent page (nested URLs), null at top level. `undefined`
+   * only on snapshots written before 0263: they never captured a parent,
+   * so replaying them (merge / revert) leaves the live column untouched
+   * instead of inventing a value.
+   */
+  readonly parentPageId?: string | null;
+  /**
+   * Only on a chat's PENDING rename / move whose caller asked for no
+   * 301s from the old URLs (`redirectFromOld: "skip"`): the publish that
+   * makes the move live honours it. Never set on live-state snapshots.
+   */
+  readonly pendingRedirects?: "skip";
 }
 
 /**

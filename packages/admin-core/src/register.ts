@@ -142,6 +142,7 @@ import {
   setPageModuleContentManyOp,
   setPageModuleContentOp,
 } from "./ops/content/page-module-content.js";
+import { movePagesManyOp, planPageMovesOp } from "./ops/content/page-moves.js";
 import {
   changeTemplateOp,
   createPageOp,
@@ -697,6 +698,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setHomePageOp);
   registry.register(listPageModuleContentOp);
   registry.register(refreshCurrentPathOp);
+  registry.register(movePagesManyOp);
+  registry.register(planPageMovesOp);
   registry.register(listSharedContentOp);
   registry.register(resolvePublicUrlsOp);
   registry.register(proposeUrlMigrationOp);

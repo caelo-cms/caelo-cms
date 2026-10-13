@@ -37,7 +37,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
       type: "object",
       additionalProperties: false,
       description:
-        "EITHER { pageId } to build onto an existing page (modules are appended), OR { slug, title, name?, templateId?, status? } to create the page in the same call. Never both.",
+        "EITHER { pageId } to build onto an existing page (modules are appended), OR { slug, title, name?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
       properties: {
         pageId: { type: "string", format: "uuid" },
         slug: { type: "string", minLength: 1, maxLength: 120 },
@@ -45,6 +45,12 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
         name: { type: "string", minLength: 1, maxLength: 256 },
         templateId: { type: "string", format: "uuid" },
         status: { type: "string", enum: ["draft", "published"] },
+        parentPageId: {
+          type: "string",
+          format: "uuid",
+          description:
+            "Create the page UNDER this page: its URL becomes the parent's URL + '/' + slug (e.g. parent /seo-monitoring + slug 'alerts' → /seo-monitoring/alerts). Omit for a top-level page. Take the id from list_pages. To move an EXISTING page, use move_pages.",
+        },
         importPageId: {
           type: "string",
           format: "uuid",

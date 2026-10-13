@@ -18,6 +18,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { moduleUpdateSchema, redirectTargetPathSchema } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
@@ -26,7 +27,8 @@ import {
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
 import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
+import { countMovedUrls, PAGE_MOVE_APPROVAL_THRESHOLD } from "./move-pages.js";
 
 const uuid = z.string().uuid();
 
@@ -41,6 +43,7 @@ const deletionItem = z
     pageId: uuid,
     disposition: z.enum(["404", "redirect"]),
     redirectTo: redirectTargetPathSchema.optional(),
+    children: z.enum(["refuse", "move-up", "delete"]).optional(),
   })
   .strict()
   .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
@@ -69,6 +72,34 @@ type DeleteInput = z.infer<typeof deleteInput>;
  */
 const DELETE_PAGES_MANY_APPROVAL_THRESHOLD = 5;
 
+/**
+ * Pages a delete_pages_many call removes: the listed pages plus, for
+ * `children: "delete"` items, every page below them (#690).
+ */
+async function countDeletedPages(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  input: DeleteInput,
+): Promise<number> {
+  const cascading = input.deletions.filter((d) => d.children === "delete").map((d) => d.pageId);
+  if (cascading.length === 0) return input.deletions.length;
+  const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.list", {});
+  if (!listed.ok) throw new Error(`pages.list failed: ${describeError(listed.error)}`);
+  const rows = (listed.value as { pages: { id: string; parentPageId: string | null }[] }).pages;
+  const doomed = new Set(input.deletions.map((d) => d.pageId));
+  const queue = [...cascading];
+  while (queue.length > 0) {
+    const id = queue.shift() as string;
+    for (const r of rows) {
+      if (r.parentPageId === id && !doomed.has(r.id)) {
+        doomed.add(r.id);
+        queue.push(r.id);
+      }
+    }
+  }
+  return doomed.size;
+}
+
 export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
   name: "delete_pages_many",
   description:
@@ -78,14 +109,17 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
     "`'404'` = the old URL returns not-found; `'redirect'` = a 301 from the old URL to `redirectTo` (required for that item). " +
     "ALWAYS confirm the disposition with the operator, and when proposing 'redirect' suggest a sensible target (parent section, sibling page, or /). " +
     "Different pages in one call may take different dispositions. Each page emits its own snapshot, so `propose_revert_site` (or individual `revert_page`) restores them. " +
-    "Result: {deleted, alreadyDeleted, notFound}. " +
+    "**Pages with child pages** (nested under them) are refused unless the call also deletes all those children, or the item says what happens to them: `children: 'move-up'` (they move to the deleted page's parent, old URLs 301) or `children: 'delete'` (the whole subtree goes, same disposition). Ask the operator which, when it isn't clear. " +
+    "Result: deleted / alreadyDeleted / notFound counts, plus each refused page with the reason. " +
     `Deleting ${DELETE_PAGES_MANY_APPROVAL_THRESHOLD}+ pages needs one Owner click in chat before the delete runs.`,
-  needsApproval: (input) => input.deletions.length >= DELETE_PAGES_MANY_APPROVAL_THRESHOLD,
+  // A `children: "delete"` item deletes its whole subtree: count it.
+  needsApproval: async (input, ctx, toolCtx) =>
+    (await countDeletedPages(ctx, toolCtx, input)) >= DELETE_PAGES_MANY_APPROVAL_THRESHOLD,
   // #589 — deleting pages in the editor needs content.write.
   approverPermissions: ["content.write"],
-  buildApprovalPreview: (input) => ({
+  buildApprovalPreview: async (input, ctx, toolCtx) => ({
     op: "delete_pages_many",
-    pageCount: input.deletions.length,
+    pageCount: await countDeletedPages(ctx, toolCtx, input),
     samplePageIds: input.deletions.slice(0, 5).map((d) => d.pageId),
   }),
   schema: deleteInput,
@@ -117,6 +151,12 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
               description:
                 "Required when disposition='redirect' — the 301 target: a path on this site starting with a single '/' (e.g. '/blog'). Never a full URL or '//host'; external targets are not supported.",
             },
+            children: {
+              type: "string",
+              enum: ["refuse", "move-up", "delete"],
+              description:
+                "Only for a page that has child pages: 'move-up' moves them to this page's parent (301s), 'delete' deletes the whole subtree. Default 'refuse'.",
+            },
           },
         },
       },
@@ -127,11 +167,20 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
     if (!r.ok) {
       return { ok: false, content: `pages.delete_many failed: ${describeError(r.error)}` };
     }
-    const v = r.value as { deleted: number; alreadyDeleted: number; notFound: number };
+    const v = r.value as {
+      deleted: number;
+      alreadyDeleted: number;
+      notFound: number;
+      refused: { pageId: string; reason: string }[];
+    };
     const redirected = input.deletions.filter((d) => d.disposition === "redirect").length;
+    const refused =
+      v.refused.length > 0
+        ? `\nNot deleted:\n${v.refused.map((f) => `- ${f.pageId}: ${f.reason}`).join("\n")}`
+        : "";
     return {
       ok: true,
-      content: `Deleted ${v.deleted} pages (alreadyDeleted=${v.alreadyDeleted}, notFound=${v.notFound}); ${redirected} got a 301, the rest 404. Use \`propose_revert_site\` to undo if needed.`,
+      content: `Deleted ${v.deleted} pages (alreadyDeleted=${v.alreadyDeleted}, notFound=${v.notFound}); ${redirected} got a 301, the rest 404. Use \`propose_revert_site\` to undo if needed.${refused}`,
     };
   },
 };
@@ -154,6 +203,20 @@ const pageUpdateItem = z
 const updateInput = z.object({ updates: z.array(pageUpdateItem).min(1).max(200) }).strict();
 type UpdateInput = z.infer<typeof updateInput>;
 
+/** URLs the renames in an update_pages_many call move, summed per item. */
+async function countRenamedUrls(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  input: UpdateInput,
+): Promise<number> {
+  let total = 0;
+  for (const u of input.updates) {
+    if (u.slug === undefined) continue;
+    total += (await countMovedUrls(ctx, toolCtx, [{ pageId: u.pageId, newSlug: u.slug }])).count;
+  }
+  return total;
+}
+
 export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
   name: "update_pages_many",
   description:
@@ -163,10 +226,23 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
     "`name` = the internal editor label (page picker / breadcrumbs; not public), " +
     "`title` = the HTML <title> tag (browser tab + search results), " +
     "`slug` = the URL path. If the operator just says 'rename' without saying which, ASK before guessing — 'rename' usually means `name`. " +
-    "**Changing `slug` moves the page's public URL**: a 301 from the old URL is created automatically and every nav-menu / link-list / module link pointing at it is rewritten, in one transaction. " +
+    "**Changing `slug` moves the page's public URL — and the URL of every page nested below it**: a 301 from each old URL is created automatically and every nav-menu / link-list / module / content link pointing at them is rewritten, in one transaction. " +
+    `A rename that moves ${PAGE_MOVE_APPROVAL_THRESHOLD}+ URLs (the page plus its subtree) needs one Owner click in chat before it runs. ` +
+    "To put a page under another page (or back at the top level) use move_pages, not this tool. " +
     "Pass `redirectFromOld: 'skip'` ONLY when the operator explicitly says the old URL should 404 — the default keeps inbound links alive. " +
     "Per-item failures (not-found, version conflict) are reported; the rest of the batch still applies. " +
     "DO NOT use for SEO sidecar (`pages_seo.set_many`) or modules (`update_modules_many`) — those have their own bulk tools.",
+  // §11.A — a rename of a page with a large subtree moves every URL below
+  // it; same gate + threshold as move_pages (see move-pages.ts).
+  // Items apply independently (one refused rename does not stop the
+  // rest), so the blast radius is summed per rename, not planned jointly.
+  needsApproval: async (input, ctx, toolCtx) =>
+    (await countRenamedUrls(ctx, toolCtx, input)) >= PAGE_MOVE_APPROVAL_THRESHOLD,
+  approverPermissions: ["content.write"],
+  buildApprovalPreview: async (input, ctx, toolCtx) => ({
+    op: "update_pages_many",
+    movedUrlCount: await countRenamedUrls(ctx, toolCtx, input),
+  }),
   schema: updateInput,
   inputSchema: {
     type: "object",
@@ -221,11 +297,18 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
     if (!r.ok) {
       return { ok: false, content: `pages.update_many failed: ${describeError(r.error)}` };
     }
-    const v = r.value as { updated: number; notFound: number; conflicts: string[] };
-    const conflictMsg = v.conflicts.length > 0 ? `, conflicts on: ${v.conflicts.join(", ")}` : "";
+    const v = r.value as {
+      updated: number;
+      notFound: number;
+      failures: { pageId: string; reason: string }[];
+    };
+    const failureMsg =
+      v.failures.length > 0
+        ? ` Not applied:\n${v.failures.map((f) => `- ${f.pageId}: ${f.reason}`).join("\n")}`
+        : "";
     return {
       ok: true,
-      content: `Updated ${v.updated} pages (notFound=${v.notFound}${conflictMsg}).`,
+      content: `Updated ${v.updated} pages (notFound=${v.notFound}).${failureMsg}`,
     };
   },
 };
