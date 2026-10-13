@@ -16,8 +16,10 @@
 --                                         Each guarded action consumes it.
 --   step_up_challenges                    one row per started sign-in: the
 --                                         OAuth state (hashed), PKCE
---                                         verifier and nonce; single use,
---                                         10 minutes.
+--                                         verifier and nonce; redeemed once
+--                                         by the callback, then recorded
+--                                         once (the ID token's nonce must
+--                                         match); 10 minutes.
 --   step_up_google_client                 singleton: the Google OAuth
 --                                         client the Owner created for this
 --                                         install; secret encrypted with
@@ -45,7 +47,10 @@ CREATE TABLE step_up_challenges (
   return_to       text NOT NULL CHECK (return_to ~ '^/[A-Za-z0-9/_-]*$' AND char_length(return_to) <= 200),
   redirect_uri    text NOT NULL CHECK (char_length(redirect_uri) <= 500),
   created_at      timestamptz NOT NULL DEFAULT now(),
-  expires_at      timestamptz NOT NULL DEFAULT now() + interval '10 minutes'
+  expires_at      timestamptz NOT NULL DEFAULT now() + interval '10 minutes',
+  -- Set when the callback took the challenge back for the code exchange;
+  -- the step-up can then be recorded once against exactly this row.
+  redeemed_at     timestamptz NULL
 );
 CREATE INDEX step_up_challenges_expiry ON step_up_challenges (expires_at);
 

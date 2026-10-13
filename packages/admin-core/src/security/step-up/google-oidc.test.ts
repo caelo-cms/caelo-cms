@@ -34,7 +34,7 @@ describe("verifyFreshSignIn", () => {
   it("accepts a fresh sign-in and lower-cases the email", () => {
     expect(verifyFreshSignIn(token(good), expect_)).toEqual({
       ok: true,
-      value: { email: "owner@example.com", authTime: NOW - 5 },
+      value: { email: "owner@example.com", authTime: NOW - 5, nonce: "n-1" },
     });
   });
 
