@@ -89,6 +89,13 @@ export interface InstallMetadata {
    * Absent on installs that predate it: those are `local`.
    */
   stateBackend?: StateBackendRecord;
+  /**
+   * #696 — the infrastructure contract version (infra-contract.ts) the last
+   * successful converge brought this install to. Absent until the first
+   * `upgrade` that converged completely; an app-roll-only upgrade refuses to
+   * run while it is lower than the release's (upgrade/converge.ts).
+   */
+  infraContractVersion?: number;
 }
 
 /** The install's staging host: its recorded setting, else the default. */
@@ -174,6 +181,16 @@ export function recordImageDigests(installId: string, digests: ImageDigests): vo
     ...meta,
     imageDigests: { admin: digests.admin, gateway: digests.gateway },
   });
+}
+
+/**
+ * Record the infrastructure contract version a converge just brought the
+ * install to (see {@link InstallMetadata.infraContractVersion}).
+ */
+export function recordInfraContractVersion(installId: string, version: number): void {
+  const meta = readMetadata(installId);
+  if (!meta) throw new Error(`No install.json for install '${installId}'.`);
+  writeMetadata(installId, { ...meta, infraContractVersion: version });
 }
 
 export interface ProgressCheckpoint {
