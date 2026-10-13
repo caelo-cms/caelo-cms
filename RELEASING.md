@@ -251,7 +251,7 @@ Every release ships one signed `release-manifest.json` (epic #696):
   "digests": { "admin": "sha256:…", "gateway": "sha256:…", "ops": "sha256:…" },
   "minFromVersion": "0.10.0",
   "infraContractVersion": 1,
-  "migrations": { "contract": false, "head": "0262_tool_approval_branch" },
+  "migrations": { "contract": false, "head": "0262_tool_approval_branch", "lastContractVersion": "0.10.42" },
   "security": false,
   "advisories": []
 }
@@ -320,6 +320,13 @@ routine recreate patterns and not flagged). Any finding sets
 `ack_contract_migrations` (`--ack-contract-migrations`) acknowledges
 it. Such a release is never auto-installed. Prefer shipping the
 destructive step one release after the code stopped using the object.
+
+`migrations.lastContractVersion` carries the newest contract release
+forward (the release itself when it has contract migrations, else the
+previous release's value, recorded in `release-meta.json` by
+`release.ts` and re-derived by `release.yml`). An install below it that
+would jump straight to a later release is also **manual**: skipping the
+contract release does not make its destructive migrations safe.
 
 ```bash
 bun scripts/migration-lint.ts               # since the previous stable tag

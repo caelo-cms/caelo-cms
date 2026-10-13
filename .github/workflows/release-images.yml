@@ -156,6 +156,14 @@ jobs:
             gcloud version
             gcloud beta --help >/dev/null
             test -f /opt/caelo-ops/packages/provisioning/stacks/gcp/Pulumi.yaml
+            # The CLI writes Pulumi.<stack>.yaml into the stack dir as the
+            # non-root user: exercise exactly that (local backend, no cloud).
+            export PULUMI_BACKEND_URL="file://${HOME}/.pulumi-smoke" PULUMI_CONFIG_PASSPHRASE=smoke
+            mkdir -p "${HOME}/.pulumi-smoke"
+            cd /opt/caelo-ops/packages/provisioning/stacks/gcp
+            pulumi stack init smoke --non-interactive
+            pulumi config set caelo-gcp:domain smoke.example --stack smoke --non-interactive
+            test -f Pulumi.smoke.yaml
           '
 
       - name: Log in to GHCR

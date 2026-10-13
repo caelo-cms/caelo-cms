@@ -61,7 +61,11 @@ export function buildReleaseManifest(input: {
     digests: input.digests,
     minFromVersion: RELEASE_MIN_FROM_VERSION,
     infraContractVersion: INFRA_CONTRACT_VERSION,
-    migrations: { contract: input.contractMigrations, head: input.migrationHead },
+    migrations: {
+      contract: input.contractMigrations,
+      head: input.migrationHead,
+      lastContractVersion: input.meta.lastContractVersion,
+    },
     security: input.meta.security,
     advisories: input.meta.advisories,
   });
@@ -107,9 +111,15 @@ async function generate(argv: readonly string[], repoRoot: string): Promise<void
     repo: process.env.GITHUB_REPOSITORY ?? "caelo-cms/caelo-cms",
     token: process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN,
   });
+  const errors = [...checks.errors];
+  if (meta.lastContractVersion !== checks.lastContractVersion) {
+    errors.push(
+      `release-meta.json declares lastContractVersion ${meta.lastContractVersion ?? "null"}, the release history says ${checks.lastContractVersion ?? "null"} — the release commit must come from scripts/release.ts.`,
+    );
+  }
   for (const w of checks.warnings) console.log(`::warning::${w}`);
-  if (checks.errors.length > 0) {
-    for (const e of checks.errors) console.error(`::error::${e.replace(/\n/g, "%0A")}`);
+  if (errors.length > 0) {
+    for (const e of errors) console.error(`::error::${e.replace(/\n/g, "%0A")}`);
     process.exit(1);
   }
   const manifest = buildReleaseManifest({

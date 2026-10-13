@@ -75,6 +75,7 @@ from:
 | installed below `minFromVersion` | `refused` |
 | `infraContractVersion` above the installed one | `manual` (Cloud Shell) |
 | `migrations.contract` | `manual` |
+| installed below `migrations.lastContractVersion` (skips a contract release) | `manual` |
 | otherwise | `auto`, `kind: "security"` only when `security: true` |
 
 A security release that is `manual` reports `kind: "normal"`, so an

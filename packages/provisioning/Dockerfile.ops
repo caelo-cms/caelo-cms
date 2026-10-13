@@ -70,11 +70,13 @@ RUN rm -rf node_modules packages/*/node_modules && \
 
 # Assemble the install tree in the same shape as the published npm
 # package's workspace: stacks import `../../dist/*.js`, and the CLI
-# resolves stacks relative to its own dist/.
+# resolves stacks relative to its own dist/. @caelo-cms/shared needs its
+# src/ too: its `bun` export condition points at src/index.ts, and Bun
+# picks that condition over dist/.
 RUN mkdir -p /opt/caelo-ops/packages/shared /opt/caelo-ops/packages/provisioning && \
     cp package.json /opt/caelo-ops/ && \
     cp -a node_modules /opt/caelo-ops/ && \
-    cp -a packages/shared/package.json packages/shared/dist /opt/caelo-ops/packages/shared/ && \
+    cp -a packages/shared/package.json packages/shared/dist packages/shared/src /opt/caelo-ops/packages/shared/ && \
     cp -a packages/provisioning/package.json packages/provisioning/dist \
           packages/provisioning/stacks packages/provisioning/caddy \
           packages/provisioning/static /opt/caelo-ops/packages/provisioning/ && \
@@ -148,10 +150,13 @@ RUN printf '#!/bin/sh\nexec bun /opt/caelo-ops/packages/provisioning/dist/cli.js
       > /usr/local/bin/caelo-ops && \
     chmod 0755 /usr/local/bin/caelo-ops && \
     ln -s caelo-ops /usr/local/bin/cms-provision && \
-    useradd --system --uid 10001 --create-home --home-dir /home/caelo --shell /usr/sbin/nologin caelo
+    useradd --system --uid 10001 --create-home --home-dir /home/caelo --shell /usr/sbin/nologin caelo && \
+    chown -R caelo:caelo /opt/caelo-ops/packages/provisioning/stacks
 
 # Non-root. State the CLI writes (~/.caelo-<id>/, ~/.pulumi/, gcloud
-# config) lands under the caelo user's home.
+# config) lands under the caelo user's home. The stacks directory is the
+# one place under /opt it writes: Pulumi keeps `Pulumi.<stack>.yaml` next
+# to `Pulumi.yaml`, so the chown above hands just that tree to caelo.
 USER caelo
 WORKDIR /home/caelo
 ENV HOME=/home/caelo \

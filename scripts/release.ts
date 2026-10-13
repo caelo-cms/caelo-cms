@@ -84,6 +84,8 @@ async function declareRelease(newVersion: string): Promise<ReleaseMeta> {
     advisories: parseAdvisoryList(argValue("advisories") ?? ""),
     acknowledgeContractMigrations: arg("ack-contract-migrations"),
     acknowledgeInfraNeutral: arg("ack-infra-neutral"),
+    // Derived by the checks below (carry-forward), never a flag.
+    lastContractVersion: null,
   };
   const checks = await runReleaseChecks(meta, {
     repoRoot: REPO_ROOT,
@@ -99,7 +101,7 @@ async function declareRelease(newVersion: string): Promise<ReleaseMeta> {
   console.log(
     `✓ release checks passed (security=${meta.security}, contract migrations=${checks.contractMigrations})`,
   );
-  return meta;
+  return { ...meta, lastContractVersion: checks.lastContractVersion };
 }
 
 function getCurrent(): string {

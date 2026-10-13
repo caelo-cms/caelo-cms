@@ -36,6 +36,11 @@ export const ReleaseMetaSchema = z.strictObject({
   acknowledgeContractMigrations: z.boolean(),
   /** Infra-contract files changed but the maintainer confirmed no IAM/secret/resource change. */
   acknowledgeInfraNeutral: z.boolean(),
+  /**
+   * Newest release (up to this one) with contract migrations — carried
+   * forward release to release; see {@link expectedLastContractVersion}.
+   */
+  lastContractVersion: z.string().nullable(),
 });
 export type ReleaseMeta = z.infer<typeof ReleaseMetaSchema>;
 
@@ -167,6 +172,45 @@ export function infraContractVersionAt(ref: string, repoRoot: string): number | 
   return m ? Number(m[1]) : null;
 }
 
+/**
+ * Newest release with contract migrations before release-meta.json
+ * existed: v0.10.42 (0259_drop_core_ab_testing). Used when the previous
+ * tag predates the file, so the carry-forward chain starts correct.
+ */
+export const LAST_CONTRACT_BEFORE_MANIFESTS = "0.10.42";
+
+/**
+ * `lastContractVersion` from `release-meta.json` at `ref`; undefined when
+ * the file or the field did not exist there yet.
+ */
+export function lastContractVersionAt(ref: string, repoRoot: string): string | null | undefined {
+  const show = git(["show", `${ref}:${RELEASE_META_PATH}`], repoRoot);
+  if (!show.ok) return undefined;
+  const parsed = z
+    .object({ lastContractVersion: z.string().nullable().optional() })
+    .safeParse(JSON.parse(show.out));
+  return parsed.success ? parsed.data.lastContractVersion : undefined;
+}
+
+/**
+ * The `lastContractVersion` this release must declare: itself when it
+ * carries contract migrations, else whatever the previous release
+ * declared (carried forward), so an install that skips a contract
+ * release is still caught.
+ *
+ * @param previous - the previous tag's value; undefined = tag predates it.
+ */
+export function expectedLastContractVersion(opts: {
+  version: string;
+  contractMigrations: boolean;
+  previousTag: string | null;
+  previous: string | null | undefined;
+}): string | null {
+  if (opts.contractMigrations) return opts.version;
+  if (opts.previousTag === null) return null;
+  return opts.previous === undefined ? LAST_CONTRACT_BEFORE_MANIFESTS : opts.previous;
+}
+
 /** Outcome of {@link checkInfraContract}. */
 export interface InfraContractCheck {
   readonly ok: boolean;
@@ -243,6 +287,8 @@ export interface ReleaseCheckResult {
   readonly warnings: readonly string[];
   readonly previousTag: string | null;
   readonly contractMigrations: boolean;
+  /** What `meta.lastContractVersion` must be (see {@link expectedLastContractVersion}). */
+  readonly lastContractVersion: string | null;
 }
 
 /**
@@ -288,5 +334,11 @@ export async function runReleaseChecks(
       "security release with contract migrations or an infra contract bump: the manifest says security=true, but upgraders treat it as MANUAL (never auto-installed).",
     );
   }
-  return { errors, warnings, previousTag, contractMigrations };
+  const lastContractVersion = expectedLastContractVersion({
+    version: meta.version,
+    contractMigrations,
+    previousTag,
+    previous: previousTag ? lastContractVersionAt(previousTag, opts.repoRoot) : null,
+  });
+  return { errors, warnings, previousTag, contractMigrations, lastContractVersion };
 }

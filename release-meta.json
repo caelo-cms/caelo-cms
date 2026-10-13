@@ -3,5 +3,6 @@
   "security": false,
   "advisories": [],
   "acknowledgeContractMigrations": false,
-  "acknowledgeInfraNeutral": false
+  "acknowledgeInfraNeutral": false,
+  "lastContractVersion": "0.10.42"
 }

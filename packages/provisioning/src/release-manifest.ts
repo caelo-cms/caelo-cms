@@ -52,6 +52,13 @@ export const ReleaseManifestSchema = z.object({
   migrations: z.object({
     /** True when the release carries destructive (contract) migrations. */
     contract: z.boolean(),
+    /**
+     * Newest release up to and including this one that carried contract
+     * migrations (null: none known). An install below it that jumps
+     * straight here would run those destructive steps while its old image
+     * still serves — so it is manual too, even when `contract` is false.
+     */
+    lastContractVersion: z.string().regex(SEMVER).nullable(),
     /** Newest cms_admin migration in the release, e.g. `0262_tool_approval_branch`. */
     head: z.string().min(1),
   }),
@@ -380,8 +387,8 @@ export interface InstallAssessment {
 /**
  * Decide whether `manifest` can be installed on `installed`, and how.
  *
- * A security release is NOT exempt: if it carries contract migrations or
- * raises the infra contract, it is `manual` like any other release — the
+ * A security release is NOT exempt: if it carries contract migrations
+ * (or skips a release that did) or raises the infra contract, it is `manual` like any other release — the
  * manifest still says `security`, but `kind` drops to `normal` so an
  * "auto-install security fixes" policy never applies it unattended.
  */
@@ -406,8 +413,13 @@ export function assessAutoInstall(
       `the release changes the infrastructure contract (${installed.infraContractVersion} → ${manifest.infraContractVersion}); it must run with the operator's own identity`,
     );
   }
+  const lastContract = manifest.migrations.lastContractVersion;
   if (manifest.migrations.contract) {
     manual.push("the release carries contract (destructive) migrations");
+  } else if (lastContract !== null && compareSemver(installed.version, lastContract) < 0) {
+    manual.push(
+      `the upgrade skips v${lastContract}, whose contract (destructive) migrations would run while v${installed.version}'s image still serves`,
+    );
   }
   if (manual.length > 0) return { mode: "manual", kind: "normal", reasons: manual };
   return { mode: "auto", kind: manifest.security ? "security" : "normal", reasons: [] };

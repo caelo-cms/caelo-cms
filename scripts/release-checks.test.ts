@@ -7,7 +7,10 @@ import { join, resolve } from "node:path";
 import {
   changedPathsSince,
   checkInfraContract,
+  expectedLastContractVersion,
   infraContractVersionAt,
+  LAST_CONTRACT_BEFORE_MANIFESTS,
+  lastContractVersionAt,
   parseAdvisoryList,
   previousStableTag,
   type ReleaseMeta,
@@ -23,6 +26,7 @@ const META: ReleaseMeta = {
   advisories: [],
   acknowledgeContractMigrations: false,
   acknowledgeInfraNeutral: false,
+  lastContractVersion: "0.10.42",
 };
 const GHSA = "GHSA-2c2m-4x8q-wx9f";
 const d = (c: string) => `sha256:${c.repeat(64)}`;
@@ -136,6 +140,26 @@ describe("checkInfraContract", () => {
   });
 });
 
+describe("expectedLastContractVersion", () => {
+  const base = { version: "0.11.0", contractMigrations: false, previousTag: "v0.10.50" };
+  it("is the release itself when it carries contract migrations", () => {
+    expect(
+      expectedLastContractVersion({ ...base, contractMigrations: true, previous: "0.10.42" }),
+    ).toBe("0.11.0");
+  });
+
+  it("carries the previous release's value forward, seeded for pre-manifest tags", () => {
+    expect(expectedLastContractVersion({ ...base, previous: "0.10.48" })).toBe("0.10.48");
+    expect(expectedLastContractVersion({ ...base, previous: null })).toBeNull();
+    expect(expectedLastContractVersion({ ...base, previous: undefined })).toBe(
+      LAST_CONTRACT_BEFORE_MANIFESTS,
+    );
+    expect(
+      expectedLastContractVersion({ ...base, previousTag: null, previous: undefined }),
+    ).toBeNull();
+  });
+});
+
 describe("infra contract against a real previous tag (git)", () => {
   const repo = mkdtempSync(join(tmpdir(), "caelo-infra-contract-"));
   afterAll(() => rmSync(repo, { recursive: true, force: true }));
@@ -182,6 +206,13 @@ describe("infra contract against a real previous tag (git)", () => {
       }).ok,
     ).toBe(true);
     expect(infraContractVersionAt("HEAD~1:does-not-exist", repo)).toBeNull();
+    // No release-meta.json at the tag → undefined (seeded by the caller).
+    expect(lastContractVersionAt("v0.1.0", repo)).toBeUndefined();
+    write("release-meta.json", JSON.stringify({ lastContractVersion: "0.0.9" }));
+    git("add", ".");
+    git("commit", "-qm", "meta");
+    git("tag", "v0.1.1");
+    expect(lastContractVersionAt("v0.1.1", repo)).toBe("0.0.9");
   });
 });
 
@@ -198,7 +229,11 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
     expect(m.channel).toBe("rc");
     expect(m.security).toBe(true);
     expect(m.advisories).toEqual([GHSA]);
-    expect(m.migrations).toEqual({ contract: true, head: "0262_x" });
+    expect(m.migrations).toEqual({
+      contract: true,
+      head: "0262_x",
+      lastContractVersion: "0.10.42",
+    });
     expect(m.manifestVersion).toBe(1);
   });
 

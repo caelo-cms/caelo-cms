@@ -29,7 +29,11 @@ const MANIFEST: ReleaseManifest = {
   digests: { admin: d("a"), gateway: d("b"), ops: d("c") },
   minFromVersion: "0.10.0",
   infraContractVersion: 1,
-  migrations: { contract: false, head: "0262_tool_approval_branch" },
+  migrations: {
+    contract: false,
+    head: "0262_tool_approval_branch",
+    lastContractVersion: "0.10.42",
+  },
   security: false,
   advisories: [],
 };
@@ -213,10 +217,25 @@ describe("assessAutoInstall", () => {
   });
 
   it("downgrades a security release with contract migrations to manual", () => {
-    const m = { ...MANIFEST, security: true, migrations: { contract: true, head: "x" } };
+    const m = {
+      ...MANIFEST,
+      security: true,
+      migrations: { contract: true, head: "x", lastContractVersion: "0.11.0" },
+    };
     const a = assessAutoInstall(m, installed);
     expect(a.mode).toBe("manual");
     expect(a.kind).toBe("normal");
+  });
+
+  it("makes skipping a contract release manual, but not upgrading past it from after it", () => {
+    const m = {
+      ...MANIFEST,
+      migrations: { ...MANIFEST.migrations, lastContractVersion: "0.10.50" },
+    };
+    const skipped = assessAutoInstall(m, installed);
+    expect(skipped.mode).toBe("manual");
+    expect(skipped.reasons[0]).toContain("skips v0.10.50");
+    expect(assessAutoInstall(m, { ...installed, version: "0.10.50" }).mode).toBe("auto");
   });
 
   it("downgrades an infra contract bump to manual, also when skipped releases carried it", () => {
