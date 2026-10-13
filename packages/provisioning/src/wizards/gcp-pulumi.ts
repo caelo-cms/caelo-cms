@@ -15,6 +15,10 @@ import * as pulumi from "@pulumi/pulumi/automation";
 import { checkpointableOutputs } from "../checkpoint-secrets.js";
 import { GCP_STACK_ENV } from "../gcp-names.js";
 import type { ImageDigests } from "../install-state.js";
+import {
+  AMBIENT_GOOGLE_CREDENTIAL_ENV,
+  withoutAmbientGoogleCredentials,
+} from "../provisioner-identity.js";
 import { ensureGeneratedSecrets, stackSecretReplication } from "../runtime-secrets.js";
 
 export interface PulumiUpInputs {
@@ -27,7 +31,12 @@ export interface PulumiUpInputs {
   stagingDomain: string;
   ownerEmail: string;
   region: string;
-  saKeyPath: string;
+  /**
+   * #696 — the service account Pulumi's GCP provider impersonates
+   * (`caelo-provisioner@<project>`), with the operator's Application Default
+   * Credentials as the source. No key file.
+   */
+  impersonateServiceAccount: string;
   pulumiPassphrase: string;
   cloudSqlTier: string;
   cloudSqlHa: boolean;
@@ -221,6 +230,36 @@ export function assertStackRegion(deployed: string | null, requested: string): v
 }
 
 /**
+ * The environment `pulumi refresh` / `pulumi up` run with (#696).
+ *
+ * Pulumi's GCP provider impersonates the provisioner service account
+ * (`GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`, read by the provider plugin itself,
+ * so it also applies to the stacks' explicit `gcp.Provider` and never enters
+ * the stack's state or its provider inputs). The source credential is the
+ * operator's Application Default Credentials — refreshable, so the provider
+ * re-mints the impersonated token whenever it expires and a run longer than
+ * an hour keeps working. Ambient credential variables are dropped so neither
+ * a key file (`GOOGLE_APPLICATION_CREDENTIALS`) nor a static token that dies
+ * after an hour can take the place of that chain. They are set to "" rather
+ * than left out: the Automation API (execa) merges this process's environment
+ * into the child's, and Google's libraries treat an empty value as unset. The
+ * passphrase and backend are scoped to the child process only.
+ */
+export function pulumiGcpEnv(
+  base: NodeJS.ProcessEnv,
+  inputs: Pick<PulumiUpInputs, "installRoot" | "pulumiPassphrase" | "impersonateServiceAccount">,
+): Record<string, string> {
+  return {
+    ...withoutAmbientGoogleCredentials(base),
+    ...Object.fromEntries(AMBIENT_GOOGLE_CREDENTIAL_ENV.map((k) => [k, ""])),
+    PULUMI_CONFIG_PASSPHRASE: inputs.pulumiPassphrase,
+    GOOGLE_IMPERSONATE_SERVICE_ACCOUNT: inputs.impersonateServiceAccount,
+    // Pulumi local-backend state lives under the install's state dir.
+    PULUMI_BACKEND_URL: `file://${join(inputs.installRoot, "state")}`,
+  };
+}
+
+/**
  * Run `pulumi up` against the GCP stack via the Automation SDK.
  * Streams resource-create events to the supplied onEvent callback so
  * the wizard can render a live progress bar.
@@ -229,16 +268,7 @@ export async function pulumiUpGcp(
   inputs: PulumiUpInputs,
   onEvent: (kind: "resource" | "error" | "log", message: string) => void,
 ): Promise<PulumiUpResult> {
-  // Pulumi's local backend reads the passphrase from
-  // PULUMI_CONFIG_PASSPHRASE; we set it for this process scope only.
-  // Same for the GOOGLE_APPLICATION_CREDENTIALS pointing at the SA key.
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    PULUMI_CONFIG_PASSPHRASE: inputs.pulumiPassphrase,
-    GOOGLE_APPLICATION_CREDENTIALS: inputs.saKeyPath,
-    // Pulumi local-backend state lives under the install's state dir.
-    PULUMI_BACKEND_URL: `file://${join(inputs.installRoot, "state")}`,
-  };
+  const env = pulumiGcpEnv(process.env, inputs);
 
   const provider = inputs.provider ?? "gcp";
   const stackName = GCP_STACK_ENV;
