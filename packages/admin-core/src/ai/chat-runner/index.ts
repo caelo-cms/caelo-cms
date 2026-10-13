@@ -161,6 +161,17 @@ export async function* runChatTurn(
         yield { kind: "done" };
         return;
       }
+      if (stoppedByOperator(run?.signal)) {
+        // Stopped while it waited, and the Stop surfaced only as it got the
+        // chat: still dropped before it persists anything.
+        yield {
+          kind: "warning",
+          code: "turn-dropped",
+          message: "Not sent: the operator stopped the AI in this chat while this message waited.",
+        };
+        yield { kind: "done" };
+        return;
+      }
       // A turn that lost its lease (lapsed and taken over by another turn)
       // stops like an aborted one instead of writing into the other turn.
       const abortSignal = outerSignal ? AbortSignal.any([outerSignal, hold.lost]) : hold.lost;

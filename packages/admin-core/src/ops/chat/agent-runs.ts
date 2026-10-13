@@ -74,11 +74,19 @@ const LIVE_ROW = sql`(r.expires_at > now() OR (r.kind = 'mcp' AND r.state = 'sto
 async function lockSession(
   tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
   chatSessionId: string,
-): Promise<{ agents_stopped_at: string | Date | null; agents_stop_epoch: number } | null> {
+): Promise<{
+  agents_stopped_at: string | Date | null;
+  agents_stop_epoch: number;
+  created_by: string;
+} | null> {
   const rows = (await tx.execute(sql`
-    SELECT agents_stopped_at, agents_stop_epoch FROM chat_sessions
+    SELECT agents_stopped_at, agents_stop_epoch, created_by::text AS created_by FROM chat_sessions
     WHERE id = ${chatSessionId}::uuid FOR UPDATE
-  `)) as unknown as { agents_stopped_at: string | Date | null; agents_stop_epoch: number }[];
+  `)) as unknown as {
+    agents_stopped_at: string | Date | null;
+    agents_stop_epoch: number;
+    created_by: string;
+  }[];
   return rows[0] ?? null;
 }
 
@@ -193,6 +201,16 @@ export const registerAgentRunOp = defineOperation({
         });
       }
     } else {
+      // A top-level turn runs as the chat's own operator (Live Edit) or the
+      // owner's MCP token (caelo_chat). Checked before anything here writes:
+      // nobody else may lift this chat's Stop or start its AI.
+      if (session.created_by !== ctx.actorId) {
+        return err({
+          kind: "HandlerError",
+          operation: "chat.register_agent_run",
+          message: `Chat ${input.chatSessionId} not found among your chats. Open one of your own chats.`,
+        });
+      }
       if (
         input.stopEpochAtArrival !== undefined &&
         input.stopEpochAtArrival < session.agents_stop_epoch

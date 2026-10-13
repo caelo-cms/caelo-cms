@@ -606,6 +606,79 @@ describe("Stop is authoritative (issue #664)", () => {
     await execute(registry, adapter, OWNER, "chat.finish_agent_run", { runId });
   });
 
+  it("drops a queued turn whose Stop surfaces only as it gets the chat (codex review)", async () => {
+    const chatSessionId = await createChat("t664 stop at acquire");
+    const t = gatedTools();
+    const serializer = fastSerializer();
+    const first = liveEditTurn({
+      chatSessionId,
+      provider: new BuildThenStage(),
+      tools: t.tools,
+      content: "Build it.",
+      operator: true,
+      serializer,
+    });
+    await t.running;
+    // The queued turn's own cancel poll never fires in this test: only the
+    // queued → running transition can surface the Stop.
+    process.env.CAELO_AGENT_CANCEL_POLL_MS = "600000";
+    const waiting = new AnswerOnly();
+    let queued: Promise<ClientEvent[]>;
+    try {
+      queued = liveEditTurn({
+        chatSessionId,
+        provider: waiting,
+        tools: t.tools,
+        content: "Approve and continue.",
+        operator: true,
+        serializer,
+      });
+      await waitFor(async () => (await listRuns(chatSessionId)).length === 2);
+    } finally {
+      process.env.CAELO_AGENT_CANCEL_POLL_MS = "50";
+    }
+    const queuedRun = (await listRuns(chatSessionId)).find((r) => r.state === "queued");
+    await stopFromOtherInstance(chatSessionId, queuedRun?.id);
+    t.finish();
+    await first;
+    const events = await queued;
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: "warning", code: "turn-dropped" }),
+    );
+    expect(waiting.calls).toBe(0);
+    expect(await userRows(chatSessionId)).toEqual(["Build it."]);
+  });
+
+  it("refuses a turn by anyone but the chat's operator, before touching its Stop (codex review)", async () => {
+    const chatSessionId = await createChat("t664 foreign turn");
+    await stopFromOtherInstance(chatSessionId);
+    const stranger: ExecutionContext = {
+      actorId: "00000000-0000-0000-0000-000000000665",
+      actorKind: "human",
+      requestId: "t664-stranger",
+    };
+    await withSql(async (tx) => {
+      await tx`INSERT INTO actors (id, kind, display_name)
+               VALUES (${stranger.actorId}::uuid, 'human', 't664 stranger') ON CONFLICT (id) DO NOTHING`;
+    });
+    const r = await execute(registry, adapter, stranger, "chat.register_agent_run", {
+      chatSessionId,
+      kind: "turn",
+      source: "live_edit",
+      label: "Live Edit AI",
+      operatorInitiated: true,
+    });
+    expect(r.ok).toBe(false);
+    const latch = await withSql(async (tx) => {
+      const rows =
+        (await tx`SELECT agents_stopped_at FROM chat_sessions WHERE id = ${chatSessionId}::uuid`) as unknown as {
+          agents_stopped_at: Date | null;
+        }[];
+      return rows[0]?.agents_stopped_at ?? null;
+    });
+    expect(latch).not.toBeNull();
+  });
+
   it("only a human may Stop", async () => {
     const chatSessionId = await createChat("t664 authz");
     const r = await execute(registry, adapter, AI, "chat.cancel_agents", { chatSessionId });
