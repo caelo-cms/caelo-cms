@@ -99,6 +99,10 @@ export {
   formatMicrocentsAsMoney,
   microcentsToMajorUnits,
 } from "./ops/imports-cost.js";
+export type {
+  PlatformUpdateEvent,
+  PlatformUpdateRequest,
+} from "./ops/platform-update-requests.js";
 // #696 — installed vs newest release; Settings → Updates reads it.
 export { type PlatformUpdateStatus, UPDATES_PATH } from "./ops/platform-updates.js";
 export {
@@ -108,6 +112,7 @@ export {
 export * from "./ops/roles.js";
 // P17 PR4 — MCP bridge wiring helper.
 export { configureMcpBridge } from "./ops/security/mcp_tokens.js";
+export type { StepUpRedeemed, StepUpStatus } from "./ops/step-up.js";
 // Operator access (Google IAP) follows user changes made in the panel too.
 export {
   describeOperatorAccessSync,
@@ -134,6 +139,15 @@ export {
   generateKekHex,
   kekFingerprint,
 } from "./security/secret-box.js";
+export {
+  STEP_UP_REQUIRED,
+  sessionHashOf,
+} from "./security/step-up/gate.js";
+export {
+  exchangeCode,
+  STEP_UP_CALLBACK_PATH,
+  verifyFreshSignIn,
+} from "./security/step-up/google-oidc.js";
 export { emitSnapshot } from "./snapshots/emit.js";
 // issue #620 — the advisory lock that orders AI merges against automatic
 // production publishes (the serialization regression tests take it).

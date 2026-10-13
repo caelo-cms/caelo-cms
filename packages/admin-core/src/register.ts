@@ -346,6 +346,17 @@ import {
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import { appliedAdminMigrationsOp, appliedPublicMigrationsOp } from "./ops/platform_health.js";
+import {
+  platformUpdatePolicyGetOp,
+  platformUpdatePolicySetOp,
+} from "./ops/platform-update-policy.js";
+import {
+  platformUpdatesCancelOp,
+  platformUpdatesGetOp,
+  platformUpdatesListOp,
+  platformUpdatesRecordTriggerOp,
+  platformUpdatesRequestOp,
+} from "./ops/platform-update-requests.js";
 import { platformUpdateStatusOp } from "./ops/platform-updates.js";
 import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
@@ -516,6 +527,13 @@ import {
   setStagingAccessOp,
   setStagingHostOp,
 } from "./ops/staging_access.js";
+import {
+  stepUpBeginOp,
+  stepUpRecordOp,
+  stepUpRedeemOp,
+  stepUpSetClientOp,
+  stepUpStatusOp,
+} from "./ops/step-up.js";
 import {
   deleteStructuredSetOp,
   getStructuredSetOp,
@@ -1111,6 +1129,20 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(aggregateNotificationsOp);
   // #696 — installed vs newest release (Settings → Updates, get_caelo_version).
   registry.register(platformUpdateStatusOp);
+  // #696 Phase 2 — "Install update": Owner + fresh Google sign-in (step-up);
+  // the upgrader job does the install. list/get/policy.get are AI-readable.
+  registry.register(platformUpdatesRequestOp);
+  registry.register(platformUpdatesCancelOp);
+  registry.register(platformUpdatesRecordTriggerOp);
+  registry.register(platformUpdatesListOp);
+  registry.register(platformUpdatesGetOp);
+  registry.register(platformUpdatePolicyGetOp);
+  registry.register(platformUpdatePolicySetOp);
+  registry.register(stepUpStatusOp);
+  registry.register(stepUpSetClientOp);
+  registry.register(stepUpBeginOp);
+  registry.register(stepUpRedeemOp);
+  registry.register(stepUpRecordOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the
   // chat-runner's `## Pending proposals` system-prompt block (so the
   // AI doesn't re-propose what's already queued) and by the AppShell

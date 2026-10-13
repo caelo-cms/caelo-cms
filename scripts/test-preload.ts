@@ -117,6 +117,10 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   "layout_blocks",
   "layouts",
   "permissions",
+  // Seed-bearing since 0267 (#696): the automatic-update policy singleton.
+  // Tests that change it restore it themselves
+  // (platform-update-install.integration.test.ts).
+  "platform_update_policy",
   "rate_limit_profiles",
   "release_check_cache",
   "role_permissions",
