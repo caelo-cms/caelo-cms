@@ -53,6 +53,19 @@ export function followUpAfterDecision(
 }
 
 /**
+ * Whether a decision on this chat's own request may still continue its AI:
+ * not when the operator pressed Stop after clicking it (the Stop is the
+ * newer action, codex review). A decision clicked after the Stop continues.
+ * Generations count this tab's Stops.
+ */
+export function decisionStillCurrent(
+  stopGenerationAtClick: number,
+  stopGenerationNow: number,
+): boolean {
+  return stopGenerationAtClick === stopGenerationNow;
+}
+
+/**
  * How an in-chat (SDK) approval card is decided: this chat's own AI resumes
  * its paused turn from the chat stream; an external agent's card only
  * records the decision — the agent's own call resumes ITS turn.

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { DecidedProposal } from "./decided-proposal.js";
   // SPDX-License-Identifier: MPL-2.0
 
   /**
@@ -40,13 +41,16 @@
      *  for backwards-compat with any caller that doesn't have one. */
     csrfToken?: string;
     /**
-     * v0.2.75 — Fires after a successful Approve. Lets the parent
-     * (ChatPanel) reload the preview iframe + auto-send a follow-up
-     * to the AI so it knows to continue.
+     * v0.2.75 — Fires after a successful Approve or (issue #658) Reject.
+     * Lets the parent (ChatPanel) reload the preview iframe + continue the
+     * AI with the decision. `ticket` is what `onDecisionStart` returned at
+     * the click, so the parent can tell a Stop pressed meanwhile.
      */
-    onApproved?: (info: { proposalId: string; kind: string }) => void;
+    onDecided?: (info: DecidedProposal) => void;
+    /** Issue #658 — called at the click; its value comes back as `ticket`. */
+    onDecisionStart?: () => number;
   }
-  let { name, content, args, csrfToken, onApproved }: Props = $props();
+  let { name, content, args, csrfToken, onDecided, onDecisionStart }: Props = $props();
 
   // v0.5.13 — uses the shared parseProposalContent helper. Same regex
   // as before; returns null on non-canonical content (and the card
@@ -100,6 +104,7 @@
     }
     outcome = action === "approve" ? "approving" : "rejecting";
     outcomeError = null;
+    const ticket = onDecisionStart?.();
     try {
       const fd = new FormData();
       fd.set("_csrf", csrfToken);
@@ -135,10 +140,15 @@
         // Non-JSON body — assume success.
       }
       outcome = action === "approve" ? "applied" : "rejected";
-      // v0.2.75 — notify parent so the preview iframe reloads + the
-      // AI gets a continue-with-it message.
-      if (action === "approve" && proposalId) {
-        onApproved?.({ proposalId, kind: name.replace(/^propose_/, "") });
+      // v0.2.75 — notify parent so the preview iframe reloads + the AI
+      // continues with the decision (issue #658: Reject too).
+      if (proposalId) {
+        onDecided?.({
+          proposalId,
+          kind: name.replace(/^propose_/, ""),
+          action,
+          ...(ticket !== undefined ? { ticket } : {}),
+        });
       }
     } catch (e) {
       outcomeError = `${action} threw: ${(e as Error).message ?? "unknown"}`;

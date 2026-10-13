@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  decisionStillCurrent,
   EXTERNAL_AGENT_LABEL,
   externalDecisionNote,
   followUpAfterDecision,
@@ -24,6 +25,14 @@ describe("followUpAfterDecision (issue #658)", () => {
     expect(followUpAfterDecision(null, "approve").continueChatAi).toBe(true);
     expect(followUpAfterDecision(null, "reject").continueChatAi).toBe(true);
     expect(followUpAfterDecision(undefined, "reject").continueChatAi).toBe(true);
+  });
+});
+
+describe("decisionStillCurrent (issue #658)", () => {
+  it("a Stop pressed after the click wins; a click after the Stop continues", () => {
+    expect(decisionStillCurrent(0, 0)).toBe(true);
+    expect(decisionStillCurrent(0, 1)).toBe(false);
+    expect(decisionStillCurrent(1, 1)).toBe(true);
   });
 });
 

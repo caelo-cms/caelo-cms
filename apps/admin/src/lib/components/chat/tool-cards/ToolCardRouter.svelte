@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { DecidedProposal } from "./decided-proposal.js";
   // SPDX-License-Identifier: MPL-2.0
 
   /**
@@ -38,8 +39,10 @@ import ChoiceCard from "./ChoiceCard.svelte";
      * is rendered outside a chat (none today, but contract is clean).
      */
     csrfToken?: string;
-    /** v0.2.75 — propagated to ProposeCard's Approve. */
-    onApproved?: (info: { proposalId: string; kind: string }) => void;
+    /** v0.2.75 — propagated to ProposeCard's Approve / Reject. */
+    onDecided?: (info: DecidedProposal) => void;
+    /** Issue #658 — propagated to ProposeCard (see there). */
+    onDecisionStart?: () => number;
     /** offer_choices → the clicked option posts back as the operator's message. */
     onChoose?: (answer: string) => void;
     /**
@@ -49,7 +52,17 @@ import ChoiceCard from "./ChoiceCard.svelte";
      */
     image?: { base64: string; mediaType: string };
   }
-  let { name, content, ok, args = {}, csrfToken, onApproved, onChoose, image }: Props = $props();
+  let {
+    name,
+    content,
+    ok,
+    args = {},
+    csrfToken,
+    onDecided,
+    onDecisionStart,
+    onChoose,
+    image,
+  }: Props = $props();
 
   // Part 2 — the page-capture tools all return an image on their
   // tool-result; route them to ScreenshotCard so the operator can verify
@@ -106,7 +119,7 @@ import ChoiceCard from "./ChoiceCard.svelte";
     <span class="ml-1">{failBody}</span>
   </div>
 {:else if isPropose}
-  <ProposeCard {name} {content} {args} {csrfToken} {onApproved} />
+  <ProposeCard {name} {content} {args} {csrfToken} {onDecided} {onDecisionStart} />
 {:else if name === "offer_choices"}
   <ChoiceCard {content} {onChoose} />
 {:else if name === "present_design_variants"}

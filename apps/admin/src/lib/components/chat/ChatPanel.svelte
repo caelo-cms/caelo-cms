@@ -43,6 +43,7 @@
   } from "#lib/components/edit/quality-status.svelte.js";
   import {
     type DecidedHandoff,
+    decisionStillCurrent,
     EXTERNAL_AGENT_LABEL,
     externalDecisionNote,
     followUpAfterDecision,
@@ -184,6 +185,10 @@
   // import / queued choice nudges) starts the AI again until the operator
   // acts themselves. The server enforces the same latch per chat.
   let operatorStopped = $state(false);
+  // Issue #658 — counts this tab's Stops. A decision clicked before a Stop
+  // whose request returns after it must not continue the AI (the Stop is the
+  // newer operator action); one clicked after the Stop does.
+  let stopGeneration = 0;
   let stopError = $state<string | null>(null);
 
   // v0.2.45 — autoscroll + jump-to-latest button.
@@ -406,6 +411,7 @@
       [proposalId]: action === "approve" ? "approving" : "rejecting",
     };
     const summary = pendingProposals.find((p) => p.proposalId === proposalId)?.summary;
+    const stopGenerationAtClick = stopGeneration;
     try {
       const fd = new FormData();
       fd.set("_csrf", csrfToken);
@@ -435,7 +441,7 @@
         // in the strip shows it), so this chat's AI is not nudged. The
         // preview still reloads — an approved change is on the draft.
         if (followUpAfterDecision(requestedVia, action).continueChatAi) {
-          onProposalDecided(kind, proposalId, action);
+          onProposalDecided(kind, proposalId, action, stopGenerationAtClick);
         } else {
           if (action === "approve") {
             onToolResult?.({
@@ -476,6 +482,7 @@
     kind: string | undefined,
     proposalId: string,
     action: "approve" | "reject",
+    stopGenerationAtClick = stopGeneration,
   ): void {
     if (action === "approve") {
       onToolResult?.({
@@ -488,11 +495,16 @@
       // regardless of streaming).
       if (isImportKind(kind)) startImportPolling(proposalId);
     }
+    const text = ownDecisionMessage({ kind, proposalId, action });
+    if (!decisionStillCurrent(stopGenerationAtClick, stopGeneration)) {
+      noteHeldBack(text);
+      return;
+    }
     if (streaming) {
       pendingApprovalNudges = [...pendingApprovalNudges, { kind, proposalId, action }];
       return;
     }
-    void sendAutoMessage(ownDecisionMessage({ kind, proposalId, action }), "operator");
+    void sendAutoMessage(text, "operator");
   }
 
   // v0.6.4 — queue of approval nudges that landed while the AI was
@@ -1401,6 +1413,7 @@
    */
   async function stopStreaming(): Promise<void> {
     operatorStopped = true;
+    stopGeneration += 1;
     stopError = null;
     const held: string[] = [];
     if (pendingApprovalNudges.length > 0) {
@@ -2052,7 +2065,9 @@
                     args={m.toolArgs ?? {}}
                     image={m.toolCallId ? toolImages.get(m.toolCallId) : undefined}
                     {csrfToken}
-                    onApproved={(info) => onProposalDecided(info.kind, info.proposalId, "approve")}
+                    onDecisionStart={() => stopGeneration}
+                    onDecided={(info) =>
+                      onProposalDecided(info.kind, info.proposalId, info.action, info.ticket)}
                     onChoose={(answer) => {
                       // Streaming-safe: queue like approval nudges
                       // instead of silently dropping the click.
