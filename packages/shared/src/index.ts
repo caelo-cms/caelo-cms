@@ -7,6 +7,7 @@ export * from "./auth-forms.js";
 export * from "./base-css.js";
 export * from "./build-page.js";
 export * from "./cap-failures.js";
+export * from "./cloud-shell-install.js";
 export * from "./content.js";
 export * from "./context.js";
 export * from "./css-gradient-scan.js";
