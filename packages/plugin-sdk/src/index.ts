@@ -586,7 +586,11 @@ export interface UrlComposePage {
    * Slugs of the page's ancestors, root first (`["seo-monitoring"]` for
    * `/seo-monitoring/alerts`); empty for a top-level page. Core places
    * them between the path prefix and the page's own (slug-formatted)
-   * slug; a `full-path` contribution composes them itself.
+   * slug; a `full-path` contribution composes them itself. Not available
+   * to the `host` slot (always empty there): a host is chosen per page
+   * from its annotations, never from its position in the tree — the
+   * host is resolved at render time where only the materialized path
+   * exists.
    */
   readonly ancestorSlugs: ReadonlyArray<string>;
   /** True when this page is the designated site root (site_defaults). */
