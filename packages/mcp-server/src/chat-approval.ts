@@ -107,44 +107,51 @@ export type SettleResult =
     };
 
 /**
- * Wait for the operator's decisions and resume the paused turn — again for
- * every further pause the resumed turn hits — within one shared bound.
+ * Wait for the operator's decisions and resume the paused turn once, within
+ * the call's budget. If the resumed turn pauses again, the call returns that
+ * pause right away (codex review: another read could outlive the client's
+ * timeout); `caelo_await_approval` picks it up.
  */
 export async function settleChatApprovals(deps: SettleDeps): Promise<SettleResult> {
   const now = deps.now ?? Date.now;
   const deadline = now() + deps.waitMs;
   // Decisions are waited for only while a resume still fits after them.
   const pollDeadline = deadline - deps.resumeReserveMs;
-  const decided: ChatApprovalView[] = [];
-  const turns: SendChatResult[] = [];
-  for (;;) {
-    const start = now();
-    const state = await pollUntil({
-      fetch: deps.fetchState,
-      done: (s) => s.state !== "pending",
-      waitMs: Math.max(0, pollDeadline - start),
-      ...(deps.intervalMs !== undefined ? { intervalMs: deps.intervalMs } : {}),
-      ...(deps.sleep ? { sleep: deps.sleep } : {}),
-      now,
-      ...(deps.onPending ? { onPending: deps.onPending } : {}),
-    });
-    if (state.state === "pending") {
-      return { kind: "pending", decided, turns, waiting: state.approvals };
-    }
-    if (state.state === "superseded") {
-      return { kind: "superseded", decided, turns, dropped: state.approvals };
-    }
-    if (state.state === "none") return { kind: "settled", decided, turns };
-    // Checked after every read (reads take time too): start the resume only
-    // while its whole timeout still fits in the call's budget.
-    if (deadline - now() < deps.resumeReserveMs) {
-      return { kind: "ready", decided, turns };
-    }
-    decided.push(...state.approvals);
-    const resumed = await deps.resume();
-    turns.push(resumed);
-    if (resumed.pendingApprovals.length === 0) return { kind: "settled", decided, turns };
+  const state = await pollUntil({
+    fetch: deps.fetchState,
+    done: (s) => s.state !== "pending",
+    waitMs: Math.max(0, pollDeadline - now()),
+    ...(deps.intervalMs !== undefined ? { intervalMs: deps.intervalMs } : {}),
+    ...(deps.sleep ? { sleep: deps.sleep } : {}),
+    now,
+    ...(deps.onPending ? { onPending: deps.onPending } : {}),
+  });
+  if (state.state === "pending") {
+    return { kind: "pending", decided: [], turns: [], waiting: state.approvals };
   }
+  if (state.state === "superseded") {
+    return { kind: "superseded", decided: [], turns: [], dropped: state.approvals };
+  }
+  if (state.state === "none") return { kind: "settled", decided: [], turns: [] };
+  // Reads take time too: start the resume only while its whole timeout still
+  // fits in the call's budget.
+  if (deadline - now() < deps.resumeReserveMs) return { kind: "ready", decided: [], turns: [] };
+  const decided = [...state.approvals];
+  const resumed = await deps.resume();
+  if (resumed.pendingApprovals.length === 0) {
+    return { kind: "settled", decided, turns: [resumed] };
+  }
+  return {
+    kind: "pending",
+    decided,
+    turns: [resumed],
+    waiting: resumed.pendingApprovals.map((a) => ({
+      ...a,
+      status: "pending" as const,
+      approved: null,
+      reason: null,
+    })),
+  };
 }
 
 /** One line per decided card, for the agent. */

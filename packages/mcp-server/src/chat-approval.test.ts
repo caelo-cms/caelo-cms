@@ -99,68 +99,26 @@ describe("settleChatApprovals", () => {
     expect(resumes).toBe(0);
   });
 
-  it("does not start a resume that would outlive the call's budget (codex review)", async () => {
-    let t = 0;
+  it("returns a second pause right after the resume instead of reading again (codex review)", async () => {
+    let reads = 0;
     let resumes = 0;
     const r = await settleChatApprovals({
       chatSessionId: CHAT,
-      fetchState: async () => state("decided", true),
-      // The first resume takes 25 s and pauses again; a second 30 s resume
-      // would no longer fit in the 50 s call.
-      resume: async () => {
-        resumes++;
-        t += 25_000;
-        return reply("paused again", true);
-      },
-      waitMs: 50_000,
-      resumeReserveMs: 30_000,
-      now: () => t,
-      sleep: async (ms) => {
-        t += ms;
-      },
-    });
-    expect(r.kind).toBe("ready");
-    expect(resumes).toBe(1);
-  });
-
-  it("checks the budget on the first read too: a decision read late does not resume", async () => {
-    let t = 0;
-    let resumes = 0;
-    const r = await settleChatApprovals({
-      chatSessionId: CHAT,
-      // The read itself takes 6 s of a 35 s budget: a 30 s resume no longer fits.
       fetchState: async () => {
-        t += 6_000;
+        reads++;
         return state("decided", true);
       },
       resume: async () => {
         resumes++;
-        return reply("x");
+        return reply("paused again", true);
       },
-      waitMs: 35_000,
-      resumeReserveMs: 30_000,
-      now: () => t,
-    });
-    expect(r.kind).toBe("ready");
-    expect(resumes).toBe(0);
-  });
-
-  it("stops waiting for a decision while a resume still fits", async () => {
-    let t = 0;
-    const r = await settleChatApprovals({
-      chatSessionId: CHAT,
-      fetchState: async () => state("pending"),
-      resume: async () => reply("never"),
       waitMs: 50_000,
       resumeReserveMs: 30_000,
-      intervalMs: 3_000,
-      now: () => t,
-      sleep: async (ms) => {
-        t += ms;
-      },
     });
     expect(r.kind).toBe("pending");
-    expect(t).toBe(20_000);
+    expect(reads).toBe(1);
+    expect(resumes).toBe(1);
+    expect(r.turns.map((t) => t.assistant)).toEqual(["paused again"]);
   });
 
   it("resumes at once when the decision is already there on the first read", async () => {
@@ -203,6 +161,7 @@ describe("caelo_chat over the chat MCP server", () => {
   let decision: "pending" | "approved" | "rejected" = "pending";
   let statePolls = 0;
   let resumeBodies: unknown[] = [];
+  let stateBroken = false;
   const prevWait = process.env.CAELO_MCP_APPROVAL_WAIT_MS;
   const prevTimeout = process.env.CAELO_MCP_TIMEOUT_MS;
 
@@ -224,6 +183,7 @@ describe("caelo_chat over the chat MCP server", () => {
           return Response.json(reply("I'll mint that token.", true));
         }
         if (path === "/api/mcp/chat/approval") {
+          if (stateBroken) return new Response("boom", { status: 500 });
           statePolls++;
           // The operator decides after the agent started waiting.
           if (statePolls < 2 || decision === "pending") return Response.json(state("pending"));
@@ -278,6 +238,22 @@ describe("caelo_chat over the chat MCP server", () => {
     expect(JSON.parse(meta ?? "{}").pendingApprovals).toEqual([]);
     expect(resumeBodies).toEqual([{ chatSessionId: CHAT, resumeApprovals: true }]);
     await client.close();
+  });
+
+  it("keeps the session id when checking the decision fails (codex review)", async () => {
+    process.env.CAELO_MCP_APPROVAL_WAIT_MS = "5000";
+    stateBroken = true;
+    try {
+      const client = await connect();
+      const r = await client.callTool({ name: "caelo_chat", arguments: { message: "Mint." } });
+      const all = texts(r).join("\n");
+      expect(all).toContain("I'll mint that token.");
+      expect(all).toContain(CHAT);
+      expect(all).toContain("caelo_await_approval");
+      await client.close();
+    } finally {
+      stateBroken = false;
+    }
   });
 
   it("times out to a waiting result, and caelo_await_approval continues the turn after a Reject", async () => {

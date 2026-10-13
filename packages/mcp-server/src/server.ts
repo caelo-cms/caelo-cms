@@ -271,13 +271,50 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
       // Issue #658 — the turn paused on approval cards: wait for the
       // operator's decision within what is left of the wait bound, then
       // continue this same turn and return its reply too.
-      const settled: SettleResult =
-        result.pendingApprovals.length === 0
-          ? { kind: "settled", decided: [], turns: [] }
-          : await settle(
-              result.chatSessionId,
-              Math.max(0, resolveApprovalWaitMs() - (Date.now() - startedAt)),
-            );
+      if (result.pendingApprovals.length === 0) {
+        return chatResult(
+          result,
+          { kind: "settled", decided: [], turns: [] },
+          result.chatSessionId,
+        );
+      }
+      let settled: SettleResult;
+      try {
+        settled = await settle(
+          result.chatSessionId,
+          Math.max(0, resolveApprovalWaitMs() - (Date.now() - startedAt)),
+        );
+      } catch (e) {
+        // The turn ran and its session exists: keep both in the result so
+        // the agent can continue with caelo_await_approval instead of
+        // retrying into duplicate work (codex review).
+        const msg = e instanceof Error ? e.message : String(e);
+        const waiting = chatResult(
+          result,
+          {
+            kind: "pending",
+            decided: [],
+            turns: [],
+            waiting: result.pendingApprovals.map((a) => ({
+              ...a,
+              status: "pending" as const,
+              approved: null,
+              reason: null,
+            })),
+          },
+          result.chatSessionId,
+        );
+        return {
+          ...waiting,
+          content: [
+            ...waiting.content,
+            {
+              type: "text" as const,
+              text: `Checking the operator's decision failed (${msg}); the request still exists. Call caelo_await_approval with chatSessionId "${result.chatSessionId}".`,
+            },
+          ],
+        };
+      }
       return chatResult(result, settled, result.chatSessionId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
