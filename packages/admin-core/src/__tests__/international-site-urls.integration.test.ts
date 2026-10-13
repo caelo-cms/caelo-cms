@@ -447,7 +447,7 @@ describe("create_variant — the slug the caller cannot invent", () => {
     expect(path[0]?.current_path).toBe("/de");
   });
 
-  it("still requires a localized slug for an ordinary page, and names the clash", async () => {
+  it("requires a slug for an ordinary page; the source's own slug works (#690)", async () => {
     const aboutId = await seedPage("t395-lr-about");
 
     const noSlug = await runPluginOperation({
@@ -459,29 +459,80 @@ describe("create_variant — the slug the caller cannot invent", () => {
     expect(noSlug.ok).toBe(false);
     if (!noSlug.ok) expect(noSlug.error.message).toContain("the slug IS its URL segment");
 
-    // Reusing the source's own slug is the mistake worth explaining:
-    // core answers "page already exists", which reads as "you are done"
-    // and invites a pointless retry instead of a rename.
-    const clash = await runPluginOperation({
+    // URLs must differ, slugs need not: the source's own slug lands at
+    // /de/<slug> (the copy is made provisionally, then renamed once the
+    // prefix applies — the never-live provisional URL gets no redirect).
+    const same = await runPluginOperation({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
       operationName: "create_variant",
       args: { sourcePageId: aboutId, localeCode: "de", slug: "t395-lr-about" },
     });
-    expect(clash.ok).toBe(false);
-    if (!clash.ok) {
-      expect(clash.error.message).toContain("the copy's URL is taken");
-      expect(clash.error.message).toContain("t395-lr-about-de");
-    }
+    if (!same.ok) throw new Error(JSON.stringify(same.error));
+    const sameId = (same.value as { pageId: string }).pageId;
+    const rows = (await sqlSystem((tx) =>
+      tx.unsafe(`SELECT slug, current_path FROM pages WHERE id = '${sameId}'`),
+    )) as { slug: string; current_path: string }[];
+    expect(rows[0]).toEqual({ slug: "t395-lr-about", current_path: "/de/t395-lr-about" });
+    // The provisional URL was never public: nothing redirects from it.
+    const redirects = (await sqlSystem((tx) =>
+      tx.unsafe(`SELECT from_path FROM redirects WHERE to_path LIKE '/de/t395-lr-about%'`),
+    )) as { from_path: string }[];
+    expect(redirects).toEqual([]);
+  });
 
-    const ok = await runPluginOperation({
+  it("places a nested page's variant under the parent's same-locale counterpart (#690)", async () => {
+    const sectionId = await seedPage("t395-lr-sec");
+    const tpl = (await sqlSystem((tx) =>
+      tx.unsafe(`SELECT template_id::text AS id FROM pages WHERE id = '${sectionId}'`),
+    )) as { id: string }[];
+    const child = await execute(registry, adapter, SYS_CTX, "pages.create", {
+      slug: "t395-lr-teams",
+      title: "Teams",
+      templateId: tpl[0]?.id,
+      parentPageId: sectionId,
+    });
+    if (!child.ok) throw new Error(JSON.stringify(child.error));
+    const childId = (child.value as { pageId: string }).pageId;
+    const op = (args: Record<string, unknown>) =>
+      runPluginOperation({
+        invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+        pluginSlug: "international-site",
+        operationName: "create_variant",
+        args,
+      });
+
+    // A nested page cannot become a locale's home (the root has no parent).
+    const homeRow = (await sqlSystem((tx) =>
+      tx.unsafe("SELECT home_page_id::text AS id FROM site_defaults WHERE id = 1"),
+    )) as { id: string | null }[];
+    const homeId = homeRow[0]?.id;
+    if (!homeId) throw new Error("the first test designates a home page");
+    const asLocaleHome = await runPluginOperation({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
-      operationName: "create_variant",
-      args: { sourcePageId: aboutId, localeCode: "de", slug: "t395-lr-ueber-uns" },
+      operationName: "link_page_variants",
+      args: { groupPageId: homeId, pageId: childId, localeCode: "de" },
     });
-    if (!ok.ok) throw new Error(JSON.stringify(ok.error));
-    expect((ok.value as { isLocaleRoot: boolean }).isLocaleRoot).toBe(false);
+    expect(asLocaleHome.ok).toBe(false);
+    if (!asLocaleHome.ok) expect(asLocaleHome.error.message).toContain("top level");
+
+    const tooEarly = await op({ sourcePageId: childId, localeCode: "de", slug: "t395-lr-teams" });
+    expect(tooEarly.ok).toBe(false);
+    if (!tooEarly.ok) {
+      expect(tooEarly.error.message).toContain("no de counterpart yet");
+      expect(tooEarly.error.message).toContain(sectionId);
+    }
+
+    const sec = await op({ sourcePageId: sectionId, localeCode: "de", slug: "t395-lr-sektion" });
+    if (!sec.ok) throw new Error(JSON.stringify(sec.error));
+    const teams = await op({ sourcePageId: childId, localeCode: "de", slug: "t395-lr-teams" });
+    if (!teams.ok) throw new Error(JSON.stringify(teams.error));
+    const teamsId = (teams.value as { pageId: string }).pageId;
+    const rows = (await sqlSystem((tx) =>
+      tx.unsafe(`SELECT current_path FROM pages WHERE id = '${teamsId}'`),
+    )) as { current_path: string }[];
+    expect(rows[0]?.current_path).toBe("/de/t395-lr-sektion/t395-lr-teams");
   });
 });
 

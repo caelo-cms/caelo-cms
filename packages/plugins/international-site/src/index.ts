@@ -504,12 +504,57 @@ async function chromeDepsOf(ctx: unknown): Promise<ChromeDeps> {
   return { q, cms: cmsOf(ctx), locales: localeCache };
 }
 
+/**
+ * #690 — the page in `localeCode` that is `pageId`'s language
+ * counterpart: a member of its variant group, or the page itself when it
+ * is in no group and `localeCode` is the default locale (ungrouped pages
+ * belong to the default locale). Null when no such page exists yet.
+ */
+async function counterpartInLocale(
+  q: PluginAdminQuery,
+  pageId: string,
+  localeCode: string,
+): Promise<string | null> {
+  await refreshLocaleCache(q);
+  const variant = (await loadVariantsByPage(q, [pageId])).get(pageId);
+  if (!variant) return defaultLocale()?.code === localeCode ? pageId : null;
+  if (variant.locale_code === localeCode) return pageId;
+  const rows = (await q.list("page_variants", {
+    group_id: variant.group_id,
+    locale_code: localeCode,
+    limit: 1,
+  })) as unknown as PageVariantRow[];
+  return rows[0]?.page_id ?? null;
+}
+
+/** A throwaway slug for the copy while it has no locale prefix yet (see
+ *  create_variant): random, so it never collides with a real page. */
+function provisionalSlug(slug: string, localeCode: string): string {
+  const nonce = crypto.randomUUID().replace(/-/g, "").slice(0, 10);
+  // Core slugs are at most 64 chars: slug ≤ 40 + "-" + locale ≤ 12 +
+  // "-" + 10-char nonce = 64. A trailing hyphen never results (the
+  // nonce ends it).
+  const locale = localeCode
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .slice(0, 12);
+  const base = slug.slice(0, 40).replace(/-+$/, "");
+  return `${base}-${locale}-${nonce}`;
+}
+
 /** Shared by link_page_variants and create_variant: join `pageId` into
  *  `groupPageId`'s variant group (minting the group with the anchor as
  *  source when none exists), then refresh the composed path. */
 async function linkPageIntoGroup(
   ctx: unknown,
-  args: { groupPageId: string; pageId: string; localeCode: string },
+  args: {
+    groupPageId: string;
+    pageId: string;
+    localeCode: string;
+    /** "skip" for a page whose pre-link URL was never public (a
+     *  provisional copy) — its old URL must not get a redirect. */
+    redirectFromOld?: "auto" | "skip";
+  },
 ): Promise<{ groupId: string; path: string; pathMoved: boolean }> {
   const { groupPageId, pageId, localeCode } = args;
   const q = adminQueryOf(ctx);
@@ -519,6 +564,31 @@ async function linkPageIntoGroup(
     throw new Error(
       `locale "${localeCode}" is not registered — call set_locales first (list current codes via intl_status)`,
     );
+  }
+  // #690 — joining the HOME page's group makes the page its locale's
+  // root ("/de"). A root has no parent and no child pages: a nested page
+  // would keep its parent chain, and children under a root would stop
+  // extending their parent's URL. Refuse before writing anything.
+  const defaults = await cms.call<{ defaults: { homePageId: string | null } | null }>(
+    "site_defaults.get",
+    {},
+  );
+  if (defaults.defaults?.homePageId === groupPageId) {
+    const listed = await cms.call<{
+      pages: { id: string; currentPath: string; parentPageId: string | null }[];
+    }>("pages.list", {});
+    const target = listed.pages.find((p) => p.id === pageId);
+    const children = listed.pages.filter((p) => p.parentPageId === pageId);
+    if (target?.parentPageId) {
+      throw new Error(
+        `page ${target.currentPath} sits under another page, but the home page's ${localeCode} counterpart is that locale's root — move it to the top level first (move_pages with parent null), then link it`,
+      );
+    }
+    if (children.length > 0) {
+      throw new Error(
+        `page ${target?.currentPath ?? pageId} has ${children.length} child page(s), but the home page's ${localeCode} counterpart is that locale's root and cannot have child pages — move them first (move_pages), then link it`,
+      );
+    }
   }
   const anchor = (await q.list("page_variants", {
     page_id: groupPageId,
@@ -554,6 +624,7 @@ async function linkPageIntoGroup(
   // The locale annotation changed → the composed path may move.
   const refreshed = await cms.call<{ path: string; moved: boolean }>("pages.refresh_current_path", {
     pageId,
+    redirectFromOld: args.redirectFromOld ?? "auto",
   });
   return { groupId, path: refreshed.path, pathMoved: refreshed.moved };
 }
@@ -988,10 +1059,32 @@ export default definePlugin<PluginContextTier1>({
       );
       const isLocaleRoot = defaults.defaults?.homePageId === sourcePageId;
 
-      const pages = await cms.call<{ pages: { id: string; slug: string }[] }>("pages.list", {});
-      const sourceSlug = pages.pages.find((p) => p.id === sourcePageId)?.slug;
-      if (!sourceSlug) {
+      const pages = await cms.call<{
+        pages: { id: string; slug: string; currentPath: string; parentPageId: string | null }[];
+      }>("pages.list", {});
+      const source = pages.pages.find((p) => p.id === sourcePageId);
+      const sourceSlug = source?.slug;
+      if (!source || !sourceSlug) {
         throw new Error(`source page ${sourcePageId} not found — check intl_status for page ids`);
+      }
+      // Nested pages (#690): the counterpart sits under the parent's
+      // counterpart in the same locale, so /pricing/teams becomes
+      // /de/preise/teams — never under the source-language parent.
+      let variantParentId: string | null = null;
+      if (source.parentPageId !== null) {
+        variantParentId = await counterpartInLocale(
+          adminQueryOf(ctx),
+          source.parentPageId,
+          localeCode,
+        );
+        if (variantParentId === null) {
+          const parentPath =
+            pages.pages.find((p) => p.id === source.parentPageId)?.currentPath ??
+            source.parentPageId;
+          throw new Error(
+            `create_variant: "${source.currentPath}" sits under ${parentPath}, which has no ${localeCode} counterpart yet. Create that first — create_variant({ sourcePageId: "${source.parentPageId}", localeCode: "${localeCode}" }) — then retry this page; its ${localeCode} version is placed under it.`,
+          );
+        }
       }
 
       // A locale root gets a derived, guaranteed-unique slug; anything
@@ -1004,36 +1097,65 @@ export default definePlugin<PluginContextTier1>({
       }
       if (!isLocaleRoot && slug === undefined) {
         throw new Error(
-          `create_variant: this page is not the site home, so the slug IS its URL segment under /${localeCode}/. Pass a localized slug (e.g. "ueber-uns" for "about"). It must differ from the source page's own slug: the copy is created next to the source before the locale prefix applies.`,
+          `create_variant: this page is not the site home, so the slug IS its URL segment under /${localeCode}/. Pass a slug — localized ("ueber-uns" for "about") or the same as the source's: URLs only need to differ, and the "/${localeCode}/" prefix already makes them differ.`,
         );
       }
       const newSlug = slug ?? `${sourceSlug}-${localeCode}`;
+      const placement = { newParentPageId: variantParentId };
 
+      // The copy exists BEFORE it joins the locale (no prefix yet), so a
+      // slug equal to the source's can collide with the source itself.
+      // Then the copy is made under a provisional slug and renamed once
+      // the locale prefix applies; the draft was never live, so the
+      // provisional URL gets no redirect.
       let duplicated: { pageId: string };
+      let provisional = false;
+      let provisionalSlugUsed = "";
       try {
         duplicated = await cms.call<{ pageId: string }>("pages.duplicate", {
           sourcePageId,
           newSlug,
+          ...placement,
           ...(title ? { newTitle: title } : {}),
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        // Re-frame core's slug collision into the decision the caller
-        // actually has to make; the raw message reads as "the page
-        // already exists", which invites a pointless retry.
-        if (msg.includes("page already exists at")) {
-          throw new Error(
-            `create_variant: the copy's URL is taken — the copy is created next to the source BEFORE the "/${localeCode}/" prefix applies, so slug "${newSlug}" must be free there. Pick a localized slug (e.g. "${sourceSlug}-${localeCode}").`,
-          );
-        }
-        throw e;
+        if (!msg.includes("page already exists at")) throw e;
+        provisionalSlugUsed = provisionalSlug(newSlug, localeCode);
+        duplicated = await cms.call<{ pageId: string }>("pages.duplicate", {
+          sourcePageId,
+          newSlug: provisionalSlugUsed,
+          ...placement,
+          ...(title ? { newTitle: title } : {}),
+        });
+        provisional = true;
       }
 
-      const linked = await linkPageIntoGroup(ctx, {
+      let linked = await linkPageIntoGroup(ctx, {
         groupPageId: sourcePageId,
         pageId: duplicated.pageId,
         localeCode,
+        ...(provisional ? { redirectFromOld: "skip" as const } : {}),
       });
+      if (provisional) {
+        try {
+          await cms.call("pages.update", {
+            pageId: duplicated.pageId,
+            slug: newSlug,
+            redirectFromOld: "skip",
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          throw new Error(
+            `create_variant: the ${localeCode} variant was created (page ${duplicated.pageId}) under the provisional slug "${provisionalSlugUsed}", but slug "${newSlug}" is taken in that locale: ${msg}. Rename it with update_pages_many to a free slug.`,
+          );
+        }
+        const path = await cms.call<{ path: string }>("pages.refresh_current_path", {
+          pageId: duplicated.pageId,
+          redirectFromOld: "skip",
+        });
+        linked = { ...linked, path: path.path };
+      }
       return {
         pageId: duplicated.pageId,
         slug: newSlug,
@@ -1413,7 +1535,8 @@ export default definePlugin<PluginContextTier1>({
       name: "create_variant",
       description:
         "Create the language counterpart of a page: duplicates the source page as a DRAFT, joins it into the source's variant group, and composes its URL (e.g. /de/<slug>). " +
-        "The slug is freely localizable ('preise' for 'pricing') — linkage is by group, never by slug. The copy is created next to the source before the '/de/' prefix applies, so never reuse the source page's own slug. " +
+        "The slug is freely localizable ('preise' for 'pricing') or may equal the source's ('about' → /de/about) — URLs must differ, slugs need not; linkage is by group, never by slug. " +
+        "Nested pages: the variant is placed under the SAME-LOCALE counterpart of the source's parent (/pricing/teams → /de/preise/teams). If that parent has no counterpart yet, the call fails naming it — create_variant the parent first. " +
         "OMIT `slug` when the source is the site's HOME page — its counterpart is the root of its locale ('/de'), carries no URL segment, and gets a derived slug automatically. Passing one there is an error. " +
         "Use when a page has no variant in the target locale yet (check intl_status). The draft still carries the SOURCE language — run the translation flow next, then publish. " +
         "NOT for linking two ALREADY-EXISTING pages — that is link_page_variants.",
