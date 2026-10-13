@@ -248,8 +248,13 @@
         <input type="hidden" name="_csrf" value={data.csrfToken} />
         <input type="hidden" name="parentPageId" value={parentChoice} />
         <div class="space-y-2">
-          <Label>Parent page</Label>
-          <Combobox items={parentItems} bind:value={parentChoice} placeholder="Search pages…" />
+          <Label for="parentPicker">Parent page</Label>
+          <Combobox
+            id="parentPicker"
+            items={parentItems}
+            bind:value={parentChoice}
+            placeholder="Search pages…"
+          />
         </div>
         <div class="space-y-2">
           <Label for="newSlug">New slug (optional)</Label>

@@ -98,7 +98,7 @@ test("the Location card moves the page under another section", async ({ page }) 
   await expect(page.getByTestId("page-path")).toHaveText(`/${seed.sectionA}/${seed.child}`);
   // The parent picker is the Location card's combobox; open its list and
   // type to filter.
-  const picker = page.getByRole("combobox", { name: new RegExp(`/${seed.sectionA} `) });
+  const picker = page.getByLabel("Parent page");
   await page.getByRole("button", { name: "Toggle options" }).click();
   await picker.pressSequentially(`/${seed.sectionB}`);
   await page.getByRole("option", { name: new RegExp(`^/${seed.sectionB} `) }).click();
