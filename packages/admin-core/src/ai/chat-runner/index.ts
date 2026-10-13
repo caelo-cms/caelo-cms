@@ -51,10 +51,10 @@ import {
 import { ABSOLUTE_LOOP_CEILING, runToolLoop } from "./loop.js";
 import { resolveModelCostPerMTok } from "./model-cost.js";
 import {
+  claimTurnApprovals,
   loadMemory,
   loadSession,
   markInterrupted,
-  persistApprovalResponse,
   persistUserMessage,
   recordAiCall,
 } from "./persistence.js";
@@ -96,6 +96,9 @@ export async function* runChatTurn(
         // Only the operator's own action lifts a Stop; auto-sent nudges and
         // external callers never do.
         operatorInitiated: options.operatorInitiated === true,
+        // Issue #658 — a caelo_chat call resuming its own paused turn with the
+        // operator's decision (checked against chat_turn_approvals).
+        ...(input.resumeDecidedApprovals === true ? { resumesDecidedApprovals: true } : {}),
         ...(options.agentRunMcpTokenId ? { mcpTokenId: options.agentRunMcpTokenId } : {}),
         ...(options.stopEpochAtArrival !== undefined
           ? { stopEpochAtArrival: options.stopEpochAtArrival }
@@ -242,25 +245,36 @@ async function* runSerializedChatTurn(
   };
 
   // 1. Persist the turn's opening row. A resume turn (Plan B) records the
-  // Owner's in-chat approval decision as a tool-approval-response row instead
-  // of an operator message; the paused gated turn then resumes from history.
-  if (input.resumeApproval) {
-    const ok = await persistApprovalResponse(
-      registry,
-      adapter,
-      humanCtx,
-      input.chatSessionId,
-      input.resumeApproval,
-    );
-    if (!ok) {
-      yield { kind: "error", message: "failed to persist approval response" };
+  // Owner's in-chat approval decision(s) as tool-approval-response rows
+  // instead of an operator message; the paused gated turn then resumes from
+  // history. Issue #658 — claiming the decisions (inside the turn lease)
+  // appends those rows in the same transaction: only the paused turn's own
+  // side may resume it, and only once.
+  const isResume = input.resumeApproval !== undefined || input.resumeDecidedApprovals === true;
+  if (isResume) {
+    const claimed = await claimTurnApprovals(registry, adapter, humanCtx, options, input);
+    if (!claimed.ok) {
+      yield { kind: "error", message: claimed.message };
       yield { kind: "done" };
       return;
     }
-  } else if (!(await persistUserMessage(registry, adapter, humanCtx, input))) {
-    yield { kind: "error", message: "failed to persist user message" };
-    yield { kind: "done" };
-    return;
+  } else {
+    // A new message moves the chat past every open approval card: from now
+    // on the history repair answers those calls as interrupted, so a later
+    // click on them could not apply anything (issue #658).
+    const superseded = await execute(registry, adapter, humanCtx, "chat.supersede_turn_approvals", {
+      chatSessionId: input.chatSessionId,
+    });
+    if (!superseded.ok) {
+      yield { kind: "error", message: "failed to close the chat's open approval cards" };
+      yield { kind: "done" };
+      return;
+    }
+    if (!(await persistUserMessage(registry, adapter, humanCtx, input))) {
+      yield { kind: "error", message: "failed to persist user message" };
+      yield { kind: "done" };
+      return;
+    }
   }
   markPhase("persistUserMessageMs");
 
@@ -443,7 +457,7 @@ async function* runSerializedChatTurn(
   // UNEXECUTED — the SDK produces no tool_result, and the next provider call
   // 400s ("tool_use without tool_result"). The notes are signature-gated, so
   // they simply re-inject on the next real user turn instead.
-  if (!input.resumeApproval) {
+  if (!isResume) {
     if (ctx.statusLine && ctx.statusLine.trim().length > 0) {
       await injectNote("status", ctx.statusLine, ctx.statusLine);
     }

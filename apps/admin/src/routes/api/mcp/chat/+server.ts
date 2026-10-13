@@ -37,7 +37,10 @@ export const POST: RequestHandler = async ({ request }) => {
 
   const parsed = z
     .object({
-      message: z.string().min(1).max(50_000),
+      message: z.string().min(1).max(50_000).optional(),
+      // Issue #658 — resume the caller's paused turn once the operator
+      // decided its approval cards (see ./approval).
+      resumeApprovals: z.literal(true).optional(),
       chatSessionId: z.string().uuid().optional(),
       pageId: z.string().uuid().optional(),
       attachments: z
@@ -55,7 +58,8 @@ export const POST: RequestHandler = async ({ request }) => {
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, SYSTEM_CTX, "mcp.send_chat", {
     plaintextToken: token,
-    message: body.message,
+    ...(body.message !== undefined ? { message: body.message } : {}),
+    ...(body.resumeApprovals ? { resumeApprovals: true } : {}),
     ...(body.attachments !== undefined ? { attachments: body.attachments } : {}),
     ...(typeof body.chatSessionId === "string" ? { chatSessionId: body.chatSessionId } : {}),
     ...(typeof body.pageId === "string" ? { pageId: body.pageId } : {}),

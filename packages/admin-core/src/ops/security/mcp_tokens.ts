@@ -28,6 +28,7 @@ import { readAgentStopEpoch, runChatTurn } from "../../ai/chat-runner.js";
 import type { AIProvider } from "../../ai/provider.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
+import { isOpenCard, type TurnApprovalStatus } from "../chat/turn-approval-state.js";
 
 /**
  * Issue #376 — token scope. `chat` drives the caelo_chat surface only;
@@ -290,7 +291,14 @@ export function getMcpBridge(): SendChatBridgeOpts | null {
 const sendChatInput = z
   .object({
     plaintextToken: z.string().min(8).max(200),
-    message: z.string().min(1).max(50_000),
+    /** What the external agent says. Absent only on a resume (below). */
+    message: z.string().min(1).max(50_000).optional(),
+    /**
+     * Issue #658 — resume this token's paused turn in `chatSessionId` once
+     * the operator decided its approval cards (mcp.get_chat_approval_state
+     * reads `decided`). The reply is the resumed turn's.
+     */
+    resumeApprovals: z.literal(true).optional(),
     attachments: z
       .array(
         chatAttachmentSchema.refine(
@@ -305,7 +313,24 @@ const sendChatInput = z
     /** When starting fresh, bind the chat to this page so the page-context block populates. */
     pageId: z.string().uuid().optional(),
   })
-  .strict();
+  .strict()
+  .refine((v) => (v.message !== undefined) !== (v.resumeApprovals === true), {
+    message: "send either a message or resumeApprovals: true",
+  })
+  .refine((v) => v.resumeApprovals !== true || v.chatSessionId !== undefined, {
+    message: "resumeApprovals needs the chatSessionId of the paused turn",
+  });
+
+/**
+ * Issue #658 — an approval card the caelo_chat turn paused on. The operator
+ * decides it in the Caelo admin (the Live Edit chat shows it as the external
+ * agent's request); the agent waits for the decision and resumes.
+ */
+const pendingChatApproval = z.object({
+  approvalId: z.string(),
+  toolName: z.string(),
+  preview: z.string(),
+});
 
 export const mcpSendChatOp = defineOperation({
   name: "mcp.send_chat",
@@ -322,6 +347,12 @@ export const mcpSendChatOp = defineOperation({
     toolCalls: z.array(z.object({ name: z.string(), summary: z.string(), succeeded: z.boolean() })),
     pendingProposals: z.number().int().nonnegative(),
     costMicrocents: z.number().int().nonnegative(),
+    /**
+     * Issue #658 — non-empty when the turn paused on approval cards: nothing
+     * of them is applied until the operator decides; then resume with
+     * `resumeApprovals: true` (the MCP server's caelo_await_approval).
+     */
+    pendingApprovals: z.array(pendingChatApproval),
   }),
   handler: async (_ctx, input, _tx) => {
     if (!bridgeOpts) {
@@ -378,7 +409,7 @@ export const mcpSendChatOp = defineOperation({
       chatBranchId = v.session.chatBranchId;
     } else {
       const created = await execute(registry, adapter, humanCtx, "chat.create_session", {
-        title: `MCP · ${input.message.slice(0, 50)}`,
+        title: `MCP · ${(input.message ?? "").slice(0, 50)}`,
         ...(input.pageId ? { pageId: input.pageId } : {}),
       });
       if (!created.ok) {
@@ -424,14 +455,17 @@ export const mcpSendChatOp = defineOperation({
         agentRunMcpTokenId: tokenId,
         ...(stopEpochAtArrival !== undefined ? { stopEpochAtArrival } : {}),
       },
-      {
-        chatSessionId,
-        content: input.message,
-        chips: [],
-        attachments: input.attachments ?? [],
-        ...(input.pageId ? { activePageId: input.pageId } : {}),
-      },
+      input.resumeApprovals === true
+        ? { chatSessionId, resumeDecidedApprovals: true, chips: [], attachments: [] }
+        : {
+            chatSessionId,
+            content: input.message,
+            chips: [],
+            attachments: input.attachments ?? [],
+            ...(input.pageId ? { activePageId: input.pageId } : {}),
+          },
     );
+    const pendingApprovals: z.infer<typeof pendingChatApproval>[] = [];
 
     for await (const ev of stream) {
       if (ev.kind === "text-delta") {
@@ -446,6 +480,12 @@ export const mcpSendChatOp = defineOperation({
         const summary =
           ev.content.length > 400 ? `${ev.content.slice(0, 400)}… (truncated)` : ev.content;
         toolCalls.push({ name, summary, succeeded: ev.ok });
+      } else if (ev.kind === "tool-approval-request") {
+        pendingApprovals.push({
+          approvalId: ev.approvalId,
+          toolName: ev.name,
+          preview: ev.preview,
+        });
       } else if (ev.kind === "usage") {
         costUsd += ev.cost;
       } else if (ev.kind === "error") {
@@ -473,6 +513,38 @@ export const mcpSendChatOp = defineOperation({
       }
     }
 
+    // Issue #658 — the cards this turn actually paused on are the ones the
+    // runner recorded (an e2e auto-approved request yields the event too,
+    // but continues instead of pausing).
+    let awaiting: z.infer<typeof pendingChatApproval>[] = [];
+    if (pendingApprovals.length > 0) {
+      const open = await execute(
+        registry,
+        adapter,
+        { ...humanCtx, requestId: `${requestId}-approvals` },
+        "chat.list_turn_approvals",
+        { chatSessionId },
+      );
+      if (!open.ok) {
+        return err({
+          kind: "HandlerError",
+          operation: "mcp.send_chat",
+          message: "chat_error: the turn paused on an approval, but its state could not be read",
+        });
+      }
+      // Decided-but-not-resumed cards count too: the operator may have
+      // clicked between the pause and this read, and the turn still needs
+      // the agent's resume to apply the decision.
+      const pendingIds = new Set(
+        (
+          open.value as { approvals: { approvalId: string; status: TurnApprovalStatus }[] }
+        ).approvals
+          .filter((a) => isOpenCard(a.status))
+          .map((a) => a.approvalId),
+      );
+      awaiting = pendingApprovals.filter((a) => pendingIds.has(a.approvalId));
+    }
+
     // Pending Owner-action proposals — single integer for the remote
     // agent to surface ("you have N things waiting").
     const pending = await execute(
@@ -493,6 +565,7 @@ export const mcpSendChatOp = defineOperation({
       toolCalls,
       pendingProposals,
       costMicrocents: Math.round(costUsd * 1e8),
+      pendingApprovals: awaiting,
     });
   },
 });

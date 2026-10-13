@@ -68,7 +68,7 @@ async function missingPermissions(
  * other actor kind never — the AI must not approve its own proposal even if
  * an executor's actorScope were ever widened by mistake.
  */
-async function approverRefusal(
+export async function approverRefusal(
   tx: TransactionRunner,
   ctx: ExecutionContext,
   operation: string,

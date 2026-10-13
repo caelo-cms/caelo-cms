@@ -13,25 +13,20 @@
  */
 
 import type { z } from "zod";
+import type { ChatApprovalState, SendChatResult } from "./chat-approval.js";
 import { postAdmin, resolveTimeoutMs } from "./http.js";
 import type { uploadedImageSchema } from "./image-upload.js";
 
-export interface SendChatOpts {
+interface AdminTarget {
   readonly adminUrl: string;
   readonly token: string;
+}
+
+export interface SendChatOpts extends AdminTarget {
   readonly message: string;
   readonly attachments?: z.infer<typeof uploadedImageSchema>[];
   readonly chatSessionId?: string;
   readonly pageId?: string;
-}
-
-export interface SendChatResult {
-  readonly chatSessionId: string;
-  readonly requestId: string;
-  readonly assistant: string;
-  readonly toolCalls: ReadonlyArray<{ name: string; summary: string; succeeded: boolean }>;
-  readonly pendingProposals: number;
-  readonly costMicrocents: number;
 }
 
 export async function sendChat(opts: SendChatOpts): Promise<SendChatResult> {
@@ -45,6 +40,35 @@ export async function sendChat(opts: SendChatOpts): Promise<SendChatResult> {
       chatSessionId: opts.chatSessionId,
       pageId: opts.pageId,
     },
+    timeoutMs: resolveTimeoutMs(30_000),
+  });
+}
+
+/**
+ * Issue #658 — resume this token's paused turn once the operator decided
+ * every approval card of it. The reply is the resumed turn's.
+ */
+export async function resumeChat(
+  opts: AdminTarget & { readonly chatSessionId: string },
+): Promise<SendChatResult> {
+  return postAdmin<SendChatResult>({
+    adminUrl: opts.adminUrl,
+    token: opts.token,
+    path: "/api/mcp/chat",
+    body: { chatSessionId: opts.chatSessionId, resumeApprovals: true },
+    timeoutMs: resolveTimeoutMs(30_000),
+  });
+}
+
+/** Issue #658 — the operator's decisions on this token's paused turn (read-only). */
+export async function fetchChatApprovalState(
+  opts: AdminTarget & { readonly chatSessionId: string },
+): Promise<ChatApprovalState> {
+  return postAdmin<ChatApprovalState>({
+    adminUrl: opts.adminUrl,
+    token: opts.token,
+    path: "/api/mcp/chat/approval",
+    body: { chatSessionId: opts.chatSessionId },
     timeoutMs: resolveTimeoutMs(30_000),
   });
 }

@@ -59,6 +59,17 @@ function buildFixtureQueryApi(): { registry: OperationRegistry; adapter: Databas
       handler: async () => ok({ messageId: "m1" }),
     }),
   );
+  // Issue #658 — the pause records its approval cards.
+  registry.register(
+    defineOperation({
+      name: "chat.record_turn_approvals",
+      actorScope: ["human", "ai", "system"],
+      database: "cms_admin",
+      input: z.looseObject({}),
+      output: z.looseObject({}),
+      handler: async () => ok({ recorded: 1 }),
+    }),
+  );
   registry.register(
     defineOperation({
       name: "chat.lookup_tool_result",

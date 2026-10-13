@@ -43,10 +43,15 @@
   } from "#lib/components/edit/quality-status.svelte.js";
   import {
     type DecidedHandoff,
+    decisionStillCurrent,
     EXTERNAL_AGENT_LABEL,
+    externalDecisionNote,
     followUpAfterDecision,
     handoffStatusText,
+    isImportKind,
+    ownDecisionMessage,
     type RequestedVia,
+    sdkApprovalRoute,
   } from "./approval-origin.js";
   import { parseProposalContent } from "./proposal-parser.js";
   import {
@@ -180,6 +185,10 @@
   // import / queued choice nudges) starts the AI again until the operator
   // acts themselves. The server enforces the same latch per chat.
   let operatorStopped = $state(false);
+  // Issue #658 — counts this tab's Stops. A decision clicked before a Stop
+  // whose request returns after it must not continue the AI (the Stop is the
+  // newer operator action); one clicked after the Stop does.
+  let stopGeneration = 0;
   let stopError = $state<string | null>(null);
 
   // v0.2.45 — autoscroll + jump-to-latest button.
@@ -292,17 +301,25 @@
   let mcpHandoffs = $state<DecidedHandoff[]>([]);
   let pendingActioning = $state<Record<string, "approving" | "rejecting" | null>>({});
 
-  // Plan B (SDK approval gate) — gated tool calls the current turn paused on,
-  // awaiting the Owner's in-chat Approve/Reject. Populated from the
-  // `tool-approval-request` SSE event; cleared when the operator decides.
+  // Plan B (SDK approval gate) — gated tool calls a turn in this chat paused
+  // on, awaiting the Owner's in-chat Approve/Reject. Populated from the
+  // `tool-approval-request` SSE event and (issue #658) from the per-chat
+  // pending endpoint, so a reload keeps the card and a caelo_chat turn's
+  // card shows up at all; cleared when the operator decides.
   interface SdkApproval {
     approvalId: string;
     name: string;
     preview: string;
     /** #589 — permissions the approver needs; the server enforces them. */
     requiredPermissions: string[];
+    /** Issue #658 — "mcp_chat" when an external agent's caelo_chat turn paused on it. */
+    requestedVia: RequestedVia;
   }
   let sdkApprovals = $state<SdkApproval[]>([]);
+  // Cards whose decision is on its way from this tab: a pending-list
+  // refresh racing it must not bring them back meanwhile.
+  const decidedApprovalIds = new Set<string>();
+  let approvalDeciding = $state<Record<string, boolean>>({});
 
   /**
    * #589 — the permissions this operator lacks to approve `a`. Approve is
@@ -314,10 +331,47 @@
     return a.requiredPermissions.filter((p) => !held.has(p));
   }
 
-  /** Approve/Reject a paused gated tool → resume (or deny) the turn. */
-  async function resolveSdkApproval(approvalId: string, approved: boolean): Promise<void> {
-    sdkApprovals = sdkApprovals.filter((a) => a.approvalId !== approvalId);
-    await sendMessage(undefined, { approvalId, approved });
+  /**
+   * Approve/Reject a paused gated tool. Issue #658: this chat's own AI's card
+   * resumes its turn (the operator's answer — also after a Stop); an external
+   * agent's card only records the decision, the agent's own call resumes ITS
+   * turn and receives the result. No AI turn starts here for it.
+   */
+  async function resolveSdkApproval(a: SdkApproval, approved: boolean): Promise<void> {
+    if (sdkApprovalRoute(a.requestedVia) === "resume-turn") {
+      // Hidden only while the resume is on its way: once it ended, the
+      // server's list is the truth again — a resume that failed before it
+      // claimed the card (network, refused) brings the card back to retry.
+      decidedApprovalIds.add(a.approvalId);
+      sdkApprovals = sdkApprovals.filter((x) => x.approvalId !== a.approvalId);
+      try {
+        await sendMessage(undefined, { approvalId: a.approvalId, approved });
+      } finally {
+        decidedApprovalIds.delete(a.approvalId);
+        void loadPendingProposals();
+      }
+      return;
+    }
+    approvalDeciding = { ...approvalDeciding, [a.approvalId]: true };
+    try {
+      const res = await fetch(`/content/chat/${session.id}/approvals`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
+        body: JSON.stringify({ approvalId: a.approvalId, approved }),
+      });
+      if (!res.ok) {
+        chatError = (await res.text()) || `Could not record the decision (${res.status})`;
+        return;
+      }
+      decidedApprovalIds.add(a.approvalId);
+      sdkApprovals = sdkApprovals.filter((x) => x.approvalId !== a.approvalId);
+      noteLocally(externalDecisionNote(approved ? "approve" : "reject", a.preview || a.name));
+      void loadPendingProposals();
+    } catch (e) {
+      chatError = e instanceof Error ? e.message : String(e);
+    } finally {
+      approvalDeciding = { ...approvalDeciding, [a.approvalId]: false };
+    }
   }
 
   async function loadPendingProposals(): Promise<void> {
@@ -329,9 +383,16 @@
       const data = (await res.json()) as {
         items?: PendingProposal[];
         handoffs?: DecidedHandoff[];
+        turnApprovals?: SdkApproval[];
       };
       pendingProposals = data.items ?? [];
       mcpHandoffs = data.handoffs ?? [];
+      // Issue #658 — the server's open in-chat cards are authoritative: a
+      // card a newer message superseded (or another tab decided) goes away,
+      // a caelo_chat turn's card appears.
+      if (data.turnApprovals) {
+        sdkApprovals = data.turnApprovals.filter((a) => !decidedApprovalIds.has(a.approvalId));
+      }
     } catch {
       // Pending strip is best-effort. A network blip leaves the
       // existing list intact rather than wiping it.
@@ -349,6 +410,8 @@
       ...pendingActioning,
       [proposalId]: action === "approve" ? "approving" : "rejecting",
     };
+    const summary = pendingProposals.find((p) => p.proposalId === proposalId)?.summary;
+    const stopGenerationAtClick = stopGeneration;
     try {
       const fd = new FormData();
       fd.set("_csrf", csrfToken);
@@ -378,13 +441,16 @@
         // in the strip shows it), so this chat's AI is not nudged. The
         // preview still reloads — an approved change is on the draft.
         if (followUpAfterDecision(requestedVia, action).continueChatAi) {
-          onProposalApproved(kind, proposalId);
-        } else if (action === "approve") {
-          onToolResult?.({
-            toolCallId: `approval-${proposalId}`,
-            ok: true,
-            content: "proposal applied",
-          });
+          onProposalDecided(kind, proposalId, action, stopGenerationAtClick);
+        } else {
+          if (action === "approve") {
+            onToolResult?.({
+              toolCallId: `approval-${proposalId}`,
+              ok: true,
+              content: "proposal applied",
+            });
+          }
+          noteLocally(externalDecisionNote(action, summary ?? `${kind ?? "proposal"}`));
         }
       } else {
         pendingActioning = { ...pendingActioning, [proposalId]: null };
@@ -395,64 +461,58 @@
   }
 
   /**
-   * v0.2.75 / v0.6.4 — Post-approval signaling. Two effects:
-   *   (a) Fire onToolResult so the /edit overlay's existing
-   *       handler reloads the preview iframe (mirrors the
-   *       iframe-reload that happens after every AI tool result).
-   *   (b) Auto-send a follow-up message to the AI naming the
-   *       approved proposal so it can continue immediately,
-   *       without the operator typing "ok continue".
+   * v0.2.75 / v0.6.4 — follow-up after the operator decided a proposal this
+   * chat's own AI queued. Two effects:
+   *   (a) on Approve, fire onToolResult so the /edit overlay's existing
+   *       handler reloads the preview iframe (mirrors the iframe-reload that
+   *       happens after every AI tool result);
+   *   (b) send the decision to the AI so it continues without the operator
+   *       typing "ok continue" (Reject too, so it can react — issue #658).
    *
-   * v0.6.4 — when the AI is mid-stream at click time, queue the
-   * nudge in `pendingApprovalNudges` instead of dropping it. The
-   * `$effect` below fires the queued nudges (combined into one
-   * message when multiple landed) the moment streaming ends. Pre-
-   * v0.6.4 the nudge was silently dropped, forcing the operator to
-   * type "ok continue" themselves — the exact friction this signal
-   * was supposed to eliminate.
+   * Issue #658 — the decision is the operator's own action: it continues the
+   * AI also after a Stop (the answer to the AI's own question is the
+   * go-ahead for that work). A Stop pressed AFTER the click still drops the
+   * queued message (stopStreaming).
+   *
+   * v0.6.4 — when the AI is mid-stream at click time, queue the message in
+   * `pendingApprovalNudges` instead of dropping it; the `$effect` below sends
+   * the queue (combined into one message) the moment streaming ends.
    */
-  function onProposalApproved(kind: string | undefined, proposalId: string): void {
-    // (a) iframe reload — same shape /edit's onAiToolResult expects.
-    onToolResult?.({
-      toolCallId: `approval-${proposalId}`,
-      ok: true,
-      content: "proposal applied",
-    });
-    // issue #228 — an approved import starts a background crawl; the
-    // panel tracks it from this moment (polling is not a message, so
-    // it starts regardless of streaming). Callers historically passed
-    // either the raw kind ("site_import") or a domain-qualified form
-    // ("import.site_import") — F8, run #4: the qualified form skipped
-    // this branch and the auto-continue never armed. Normalise here.
-    const isImportApproval = kind === "site_import" || kind?.endsWith(".site_import") === true;
-    if (isImportApproval) startImportPolling(proposalId);
-    if (streaming) {
-      // Queue for post-stream flush. The $effect below picks it up
-      // when streaming → false. Multiple approvals during the same
-      // turn batch into one combined nudge so the AI doesn't see N
-      // user messages for N clicks.
-      pendingApprovalNudges = [...pendingApprovalNudges, { kind, proposalId }];
+  function onProposalDecided(
+    kind: string | undefined,
+    proposalId: string,
+    action: "approve" | "reject",
+    stopGenerationAtClick = stopGeneration,
+  ): void {
+    if (action === "approve") {
+      onToolResult?.({
+        toolCallId: `approval-${proposalId}`,
+        ok: true,
+        content: "proposal applied",
+      });
+      // issue #228 — an approved import starts a background crawl; the panel
+      // tracks it from this moment (polling is not a message, so it starts
+      // regardless of streaming).
+      if (isImportKind(kind)) startImportPolling(proposalId);
+    }
+    const text = ownDecisionMessage({ kind, proposalId, action });
+    if (!decisionStillCurrent(stopGenerationAtClick, stopGeneration)) {
+      noteHeldBack(text);
       return;
     }
-    const label = kind ? `${kind} proposal` : "proposal";
-    // Imports are the one gated domain whose approval starts a
-    // BACKGROUND job instead of applying a change — the nudge must
-    // say so or the AI announces results that don't exist yet.
-    // Issue #664 — deliberately "auto": after a Stop, approving a proposal
-    // applies it but does not restart the AI (the "please continue" is shown
-    // as a held-back note). Only a message the operator writes restarts it —
-    // the incident this guards against began with an Approve click.
-    void sendAutoMessage(
-      isImportApproval
-        ? `Approved: crawl proposal ${proposalId.slice(0, 8)} — the crawler starts within ~10s and runs in the background. Check the run status and tell me how you'll proceed.`
-        : `Approved: ${label} ${proposalId.slice(0, 8)} applied to the chat branch. Please continue with what you were doing.`,
-    );
+    if (streaming) {
+      pendingApprovalNudges = [...pendingApprovalNudges, { kind, proposalId, action }];
+      return;
+    }
+    void sendAutoMessage(text, "operator");
   }
 
   // v0.6.4 — queue of approval nudges that landed while the AI was
   // mid-stream. The $effect below flushes them as a single combined
   // message when streaming ends.
-  let pendingApprovalNudges = $state<{ kind: string | undefined; proposalId: string }[]>([]);
+  let pendingApprovalNudges = $state<
+    { kind: string | undefined; proposalId: string; action: "approve" | "reject" }[]
+  >([]);
 
   /**
    * issue #228 — live crawl status. After an approved site_import the
@@ -623,7 +683,7 @@
   $effect(() => {
     // Track `streaming` + `pendingApprovalNudges` reactively. Fires
     // when streaming transitions to false OR a new nudge is enqueued
-    // while NOT streaming (the latter is handled by onProposalApproved's
+    // while NOT streaming (the latter is handled by onProposalDecided's
     // inline path, but the effect is idempotent).
     if (streaming) return;
     if (pendingApprovalNudges.length === 0) return;
@@ -633,17 +693,10 @@
     if (composer.trim().length > 0) return;
     const nudges = pendingApprovalNudges;
     pendingApprovalNudges = [];
-    const text =
-      nudges.length === 1
-        ? (() => {
-            const n = nudges[0]!;
-            const label = n.kind ? `${n.kind} proposal` : "proposal";
-            return `Approved: ${label} ${n.proposalId.slice(0, 8)} applied to the chat branch. Please continue with what you were doing.`;
-          })()
-        : `Approved ${nudges.length} proposals (${nudges
-            .map((n) => `${n.kind ?? "proposal"}/${n.proposalId.slice(0, 8)}`)
-            .join(", ")}) — all applied to the chat branch. Please continue with what you were doing.`;
-    void sendAutoMessage(text);
+    // Issue #658 — the operator's decisions, so "operator": they continue the
+    // AI even if another tab stopped the chat meanwhile (a Stop in THIS tab
+    // empties the queue instead).
+    void sendAutoMessage(nudges.map((n) => ownDecisionMessage(n)).join("\n"), "operator");
   });
 
   /**
@@ -1360,12 +1413,11 @@
    */
   async function stopStreaming(): Promise<void> {
     operatorStopped = true;
+    stopGeneration += 1;
     stopError = null;
     const held: string[] = [];
     if (pendingApprovalNudges.length > 0) {
-      held.push(
-        `Approved ${pendingApprovalNudges.map((n) => `${n.kind ?? "proposal"}/${n.proposalId.slice(0, 8)}`).join(", ")}`,
-      );
+      held.push(pendingApprovalNudges.map((n) => ownDecisionMessage(n)).join(" "));
       pendingApprovalNudges = [];
     }
     if (pendingChoiceAnswer !== null) {
@@ -1385,13 +1437,22 @@
 
   /** Show an auto message Stop held back, instead of sending it. */
   function noteHeldBack(text: string): void {
+    noteLocally(heldBackNote(text));
+  }
+
+  /**
+   * A status note in this tab's transcript only — never sent to the AI nor
+   * persisted, so the chat's AI can never read it as an instruction (issue
+   * #658: decisions on an external agent's requests).
+   */
+  function noteLocally(text: string): void {
     messages = [
       ...messages,
       {
-        id: `held-${crypto.randomUUID()}`,
+        id: `note-${crypto.randomUUID()}`,
         role: "user",
         origin: "system",
-        content: heldBackNote(text),
+        content: text,
       },
     ];
   }
@@ -1630,6 +1691,8 @@
                     requiredPermissions: Array.isArray(ev["requiredPermissions"])
                       ? (ev["requiredPermissions"] as unknown[]).map(String)
                       : [],
+                    // This tab's own stream: the chat's own AI asked.
+                    requestedVia: null,
                   },
                 ];
               }
@@ -2002,7 +2065,9 @@
                     args={m.toolArgs ?? {}}
                     image={m.toolCallId ? toolImages.get(m.toolCallId) : undefined}
                     {csrfToken}
-                    onApproved={(info) => onProposalApproved(info.kind, info.proposalId)}
+                    onDecisionStart={() => stopGeneration}
+                    onDecided={(info) =>
+                      onProposalDecided(info.kind, info.proposalId, info.action, info.ticket)}
                     onChoose={(answer) => {
                       // Streaming-safe: queue like approval nudges
                       // instead of silently dropping the click.
@@ -2364,8 +2429,10 @@
           </div>
         {/if}
         <!-- Plan B (SDK approval gate) — inline Approve/Reject for a gated tool
-             the current turn paused on. The turn resumes (or the model reacts
-             to a denial) as soon as the operator decides. -->
+             a turn in this chat paused on. This chat's own AI resumes (or
+             reacts to a denial) as soon as the operator decides; an external
+             agent's card (issue #658) records the decision and hands it back
+             to that agent — no AI turn starts here. -->
         {#if sdkApprovals.length > 0}
           <div
             class="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs"
@@ -2377,7 +2444,20 @@
             <ul class="space-y-1.5">
               {#each sdkApprovals as a (a.approvalId)}
                 {@const missing = missingApproverPermissions(a)}
-                <li class="rounded border bg-card p-2">
+                {@const external = sdkApprovalRoute(a.requestedVia) === "record"}
+                <li
+                  class="rounded border bg-card p-2"
+                  data-testid="chat-approval-card"
+                  data-requested-via={a.requestedVia ?? "chat"}
+                >
+                  {#if external}
+                    <span
+                      class="mb-1 inline-block rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-700 dark:text-sky-300"
+                      data-testid="chat-approval-external-agent"
+                      title="The decision goes back to the external agent, which continues its own work. This chat's AI does not act on it."
+                      >{EXTERNAL_AGENT_LABEL}</span
+                    >
+                  {/if}
                   <pre class="mb-2 whitespace-pre-wrap font-sans text-[11px]">{a.preview ||
                       a.name}</pre>
                   {#if missing.length > 0}
@@ -2393,15 +2473,17 @@
                     <button
                       type="button"
                       class={buttonVariants({ variant: "default", size: "sm" })}
-                      disabled={streaming || missing.length > 0}
+                      disabled={(external ? approvalDeciding[a.approvalId] === true : streaming) ||
+                        missing.length > 0}
                       data-testid="chat-approval-approve"
-                      onclick={() => resolveSdkApproval(a.approvalId, true)}>Approve</button
+                      onclick={() => resolveSdkApproval(a, true)}>Approve</button
                     >
                     <button
                       type="button"
                       class={buttonVariants({ variant: "outline", size: "sm" })}
-                      disabled={streaming}
-                      onclick={() => resolveSdkApproval(a.approvalId, false)}>Reject</button
+                      disabled={external ? approvalDeciding[a.approvalId] === true : streaming}
+                      data-testid="chat-approval-reject"
+                      onclick={() => resolveSdkApproval(a, false)}>Reject</button
                     >
                   </div>
                 </li>

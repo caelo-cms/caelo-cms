@@ -49,7 +49,18 @@ The admin server reads the install's tool catalogue live: when it changes (a Cae
 | `chatSessionId` | UUID, optional | Continue an existing chat session |
 | `pageId` | UUID, optional | Bind a NEW chat to one page so the agent's page-context block populates |
 
-Output: the assistant's reply text + a JSON block with `chatSessionId`, `requestId`, `toolCalls`, `pendingProposals`, `costMicrocents`. `requestId` is your click-through to `/security/audit/<requestId>` for the full audit trail.
+Output: the assistant's reply text + a JSON block with `chatSessionId`, `requestId`, `toolCalls`, `pendingProposals`, `pendingApprovals`, `costMicrocents`. `requestId` is your click-through to `/security/audit/<requestId>` for the full audit trail.
+
+### When a `caelo_chat` turn needs the operator's approval
+
+Some changes are hard to undo (deleting a layout, minting a token, promoting a deploy, …). When Caelo's agent reaches one during your `caelo_chat` turn, the turn pauses and waits for the operator:
+
+- **The operator sees the request.** It appears as an approval card in the chat in the Caelo admin (the Live Edit chat, when you continue the operator's chat), labelled **Requested by the external agent (MCP)**, and stays there after a reload.
+- **Your call waits for the decision.** One call, including the continued turn, stays within 50 seconds (`CAELO_MCP_APPROVAL_WAIT_MS`, the same limit as the Power-MCP), so it keeps time back for the continued turn (its request timeout, 30 seconds by default) and waits for the decision only for the rest (about 20 seconds by default). Once the operator clicks **Approve** or **Reject**, your turn continues: an approved change is applied, a rejected one is not, and Caelo's agent reacts to the decision. The result contains the first reply, the decision, and the continued reply.
+- **Long waits.** If the operator has not decided in time, the reply says the turn is waiting and `pendingApprovals` lists the requests. If they decided but too little time is left to continue in the same call, the reply says so. Call **`caelo_await_approval`** with the `chatSessionId` to keep waiting; it returns the continued turn once the operator decides. Do not send the request again.
+- **Caelo's own Live Edit AI stays out of it.** The operator's click only records the decision for your agent. It does not start a turn of the Live Edit chat's AI; the chat shows a short note that the result went back to the external agent.
+- **Stop.** If the operator stopped the chat before deciding, their Approve or Reject still continues your turn (it is their answer to your request), but the Live Edit AI stays stopped. If they stop the chat after deciding, your turn does not continue and you get `stopped_by_operator`.
+- **A newer message moves on.** If the operator writes in the chat before deciding, the request is dropped and nothing of it is applied. `caelo_await_approval` then says so; send the request again only if it is still needed.
 
 ## The Power-MCP surface: your agent, Caelo's tools
 
@@ -92,7 +103,7 @@ When your agent calls an approval-gated tool, the proposal appears in the operat
 
 - **The call waits for the decision.** The gated tool call returns only once the operator has clicked **Approve** or **Reject**, and its result tells your agent what happened: `applied` (the change is in the draft), `rejected` (with the operator's reason), `failed` (approved, but applying it failed), `superseded` or `withdrawn`. Your agent continues from there.
 - **Long waits.** Each call waits up to 50 seconds by default. That is shorter than the usual 60-second MCP client timeout, so the call always returns. Set `CAELO_MCP_APPROVAL_WAIT_MS` in the MCP server's environment to change it, for clients configured with longer timeouts (`0` returns at once). If the limit is reached, the result says the proposal is still waiting and gives its id. Your agent then calls **`caelo_await_approval`** with that `proposalId` to keep waiting. It should not propose the same thing again.
-- **Caelo's own AI stays out of it.** If the operator approves the card in Live Edit, the decision goes back to your agent. Caelo's chat AI does not start a turn, and no message is added to the chat. Once your agent has read the decision, the chat shows **"…the external agent (MCP) received the result"** in place of the card. Proposals that Caelo's own chat AI made still continue that AI as before.
+- **Caelo's own AI stays out of it.** If the operator approves the card in Live Edit, the decision goes back to your agent. Caelo's chat AI does not start a turn, and no message is added to the chat. The chat shows a short note that the result went back to the external agent, and once your agent has read the decision, **"…the external agent (MCP) received the result"** in place of the card. The note is shown to the operator only and is never passed to Caelo's AI, so it cannot act on it later. This holds after a Stop too: the click applies the proposal and the chat stays stopped. Proposals that Caelo's own chat AI made still continue that AI as before.
 - **No self-approval.** Your agent can only read the decision on proposals it queued itself. Approving and rejecting remain the operator's clicks.
 
 ### One agent per chat, and the operator's Stop
@@ -102,7 +113,7 @@ Your agent and Caelo's own Live Edit AI never work in the same chat at the same 
 - **While your agent works, the Live Edit AI waits.** Every tool call marks your agent as working in the chat. For two minutes after its last call the chat shows it in the **Agents running** bar, and a message the operator sends there is not passed to Caelo's AI. The operator sees why and can stop your agent with one click.
 - **While the Live Edit AI works, your writes wait.** A write tool called while Caelo's AI is answering in the chat returns `chat_busy: …` and changes nothing. Read tools (`list_*`, `get_*`, `inspect_*` and the like) keep working. Retry after about a minute, or ask your user whether you should take over.
 - **Stop means stop.** If the operator presses **Stop** for your agent (in the chat's bar, in the admin header's **agents running** list, or with the chat's own Stop button), every later call in that chat returns `stopped_by_operator: …` and does nothing. Your agent should stop and tell its user. It should not retry and should not open a new session to carry on. The operator lifts the block with **Allow again**.
-- **`caelo_chat` turns** are listed and stoppable the same way. A turn the operator stops ends early with `turn_interrupted`. After a Stop, the chat does not start any turn until the operator writes in it again, so a `caelo_chat` message sent in the meantime returns `stopped_by_operator`.
+- **`caelo_chat` turns** are listed and stoppable the same way. A turn the operator stops ends early with `turn_interrupted`. After a Stop, the chat does not start any turn until the operator writes in it again, so a `caelo_chat` message sent in the meantime returns `stopped_by_operator`. The one exception is a turn of yours that was waiting for the operator's approval: their decision after the Stop continues it (see [When a `caelo_chat` turn needs the operator's approval](#when-a-caelo_chat-turn-needs-the-operators-approval)).
 
 Set `CAELO_EXTERNAL_AGENT_ACTIVE_MS` on the admin to change the two-minute window.
 

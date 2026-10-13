@@ -94,6 +94,8 @@ test("an external agent's proposal is decided in the chat and handed back to the
   const handoff = page.getByTestId("chat-mcp-handoff").filter({ hasText: "Approved and applied" });
   await expect(handoff).toBeVisible({ timeout: 15_000 });
   await expect(handoff).toContainText("handed back to the external agent");
+  // A transcript note says so — local to the panel, never sent to the AI.
+  await expect(page.getByText(/Approved the external agent's \(MCP\) request/)).toBeVisible();
   expect(await outcome(approveId!)).toBe("applied");
 
   await row(rejectId!).getByRole("button", { name: "Reject" }).click();

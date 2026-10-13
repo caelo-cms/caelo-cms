@@ -56,22 +56,43 @@ export interface WaitDeps {
   readonly onPending?: (elapsedMs: number) => Promise<void> | void;
 }
 
+/** Generic bounded poll: re-fetch every `intervalMs` until `done` or `waitMs` elapsed. */
+export async function pollUntil<T>(deps: {
+  readonly fetch: () => Promise<T>;
+  readonly done: (value: T) => boolean;
+  readonly waitMs: number;
+  readonly intervalMs?: number;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly now?: () => number;
+  readonly onPending?: (elapsedMs: number) => Promise<void> | void;
+}): Promise<T> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const now = deps.now ?? Date.now;
+  const interval = deps.intervalMs ?? APPROVAL_POLL_INTERVAL_MS;
+  const start = now();
+  let value = await deps.fetch();
+  while (!deps.done(value) && now() - start < deps.waitMs) {
+    await deps.onPending?.(now() - start);
+    await sleep(Math.min(interval, Math.max(0, deps.waitMs - (now() - start))));
+    value = await deps.fetch();
+  }
+  return value;
+}
+
 /**
  * Polls until the proposal is decided or `waitMs` elapsed; returns the
  * last outcome read (still `pending` on timeout).
  */
 export async function waitForApproval(deps: WaitDeps): Promise<ApprovalOutcome> {
-  const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  const now = deps.now ?? Date.now;
-  const interval = deps.intervalMs ?? APPROVAL_POLL_INTERVAL_MS;
-  const start = now();
-  let outcome = await deps.fetchOutcome();
-  while (outcome.outcome === "pending" && now() - start < deps.waitMs) {
-    await deps.onPending?.(now() - start);
-    await sleep(Math.min(interval, Math.max(0, deps.waitMs - (now() - start))));
-    outcome = await deps.fetchOutcome();
-  }
-  return outcome;
+  return pollUntil({
+    fetch: deps.fetchOutcome,
+    done: (o) => o.outcome !== "pending",
+    waitMs: deps.waitMs,
+    ...(deps.intervalMs !== undefined ? { intervalMs: deps.intervalMs } : {}),
+    ...(deps.sleep ? { sleep: deps.sleep } : {}),
+    ...(deps.now ? { now: deps.now } : {}),
+    ...(deps.onPending ? { onPending: deps.onPending } : {}),
+  });
 }
 
 /** The text the agent reads for an outcome — always names its next step. */
