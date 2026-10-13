@@ -188,6 +188,36 @@ export function claimInstallJobStatus(
   throw new Error(`Could not write ${url}: ${r.stderr.trim() || `gcloud exited ${r.exitCode}`}`);
 }
 
+/** `gs://<bucket>/install/install-job.lock` — held while a launcher decides and starts. */
+export function installJobLockUrl(bucket: string): string {
+  return `gs://${bucket}/${OPS_INSTALL_PREFIX}/install-job.lock`;
+}
+
+/**
+ * Take the launch lock (created only if absent). A lock left by a crashed
+ * launcher is reported with the command to remove it, never broken
+ * automatically — like the install's state lock (state-store.ts).
+ *
+ * @returns the release function
+ */
+export function acquireLaunchLock(bucket: string, run: SyncGcloud): () => void {
+  const url = installJobLockUrl(bucket);
+  const body = JSON.stringify({ purpose: "start the install job", at: new Date().toISOString() });
+  const r = run(["storage", "cp", "-", url, "--if-generation-match=0"], body);
+  if (!r.ok) {
+    if (/PreconditionFailed|412|pre-conditions/i.test(r.stderr)) {
+      throw new Error(
+        `Another terminal is starting this install's job right now. Re-run in a minute to follow it; if no other run is starting it, remove the stale lock: gcloud storage rm ${url}`,
+      );
+    }
+    throw new Error(`Could not take the launch lock ${url}: ${r.stderr.trim()}`);
+  }
+  return () => {
+    const rm = run(["storage", "rm", url]);
+    if (!rm.ok) throw new Error(`Could not release ${url}; remove it: gcloud storage rm ${url}`);
+  };
+}
+
 /** Where a Cloud Run execution stands. */
 export type ExecutionState = "running" | "succeeded" | "failed" | "missing";
 
