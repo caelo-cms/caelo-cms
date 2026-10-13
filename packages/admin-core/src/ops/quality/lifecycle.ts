@@ -85,25 +85,29 @@ async function previousStagingAudit(
 
 /**
  * The fix round of a chat's next audit (#553 2-round cap): one more than
- * the chat's previous audit when that one left problems open (the Stage
- * being audited is the AI's fix attempt), carried over unchanged across
- * failed or superseded audits (nothing was measured), and 0 after a clean
- * one — including problems an editor has since accepted in full. Stages
- * outside a chat have no fix loop: always 0.
+ * the chat's previous audit when that one left problems open AND the
+ * operator asked the AI to fix them (#685: "Fix with AI" — the Stage being
+ * audited is the AI's fix attempt); unchanged when they did not (a Stage
+ * after "Not now" uses up no round), carried over unchanged across failed
+ * or superseded audits (nothing was measured), and 0 after a clean one —
+ * including problems an editor has since accepted in full. Stages outside
+ * a chat have no fix loop: always 0.
  */
 async function nextFixRound(tx: Tx, chatSessionId: string | null): Promise<number> {
   if (chatSessionId === null) return 0;
   const rows = (await tx.execute(sql`
-    SELECT id::text AS id, status, fix_round FROM quality_audit_runs
+    SELECT id::text AS id, status, fix_round, fix_requested_at IS NOT NULL AS fix_requested
+    FROM quality_audit_runs
     WHERE chat_session_id = ${chatSessionId}::uuid
     ORDER BY created_at DESC LIMIT 1
-  `)) as unknown as { id: string; status: string; fix_round: number }[];
+  `)) as unknown as { id: string; status: string; fix_round: number; fix_requested: boolean }[];
   const prev = rows[0];
   if (!prev) return 0;
   if (prev.status === "problems") {
     const audit = await loadGateAuditById(tx, prev.id);
     const acceptances = await loadAcceptances(tx, audit?.pages.map((p) => p.pageId) ?? []);
-    return decideGate(audit, acceptances).open ? 0 : prev.fix_round + 1;
+    if (decideGate(audit, acceptances).open) return 0;
+    return prev.fix_requested ? prev.fix_round + 1 : prev.fix_round;
   }
   if (prev.status === "passed" || prev.status === "skipped") return 0;
   return prev.fix_round;

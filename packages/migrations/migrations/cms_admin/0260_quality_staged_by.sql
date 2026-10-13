@@ -16,6 +16,11 @@
 --                 working in the chat, or a subagent)
 -- NULL for audits outside a chat (Ops deploy, the pages list, the automatic
 -- redeploy) and for runs from before this migration.
+--
+-- `fix_requested_at` records the operator's "Fix with AI" on the audit's
+-- offer (set when that turn started). The 2-round fix cap (#553) counts
+-- these: a Stage after "Not now" — or after no answer at all — is not an AI
+-- fix attempt and does not use up a round.
 
 BEGIN;
 
@@ -23,6 +28,7 @@ SET LOCAL caelo.actor_kind = 'system';
 
 ALTER TABLE quality_audit_runs
   ADD COLUMN staged_by text NULL
-    CHECK (staged_by IS NULL OR staged_by IN ('operator', 'live_edit_ai', 'other_agent'));
+    CHECK (staged_by IS NULL OR staged_by IN ('operator', 'live_edit_ai', 'other_agent')),
+  ADD COLUMN fix_requested_at timestamptz NULL;
 
 COMMIT;

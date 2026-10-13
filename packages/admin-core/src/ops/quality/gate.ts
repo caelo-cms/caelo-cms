@@ -311,14 +311,15 @@ export const claimChatNotificationOp = defineOperation({
 export const ackChatNotificationOp = defineOperation({
   name: "quality_audits.ack_chat_notification",
   // Why human-only: the chat panel acknowledges the fix request the
-  // operator's click has just sent (persisted by the chat stream) — see claim_chat_notification.
+  // operator's click has just sent — which also records that the operator
+  // asked for this fix round (#685: the 2-round cap counts only these) (persisted by the chat stream) — see claim_chat_notification.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ auditRunId: z.string().uuid() }).strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
     await tx.execute(sql`
-      UPDATE quality_audit_runs SET chat_notified_at = now()
+      UPDATE quality_audit_runs SET chat_notified_at = now(), fix_requested_at = now()
       WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
     `);
     return ok({});

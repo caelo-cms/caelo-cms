@@ -733,19 +733,54 @@ describe("2-round fix cap", () => {
       await stage(s.chatSessionId);
       await audit(stubborn);
       const st = await op<{
-        audit: { fixRound: number };
+        audit: { id: string; fixRound: number };
         feedback: { kind: string; prompt: string; actionLabel: string };
       }>(HUMAN, "quality_audits.chat_status", { chatSessionId: s.chatSessionId });
       expect(st.audit.fixRound).toBe(round);
       expect(st.feedback.kind).toBe("offer");
       prompts.push(st.feedback.prompt);
       labels.push(st.feedback.actionLabel);
+      // The operator clicks the offer: the panel claims it, sends the
+      // prompt, and acknowledges — a requested fix round.
+      const auditRunId = st.audit.id;
+      await op(HUMAN, "quality_audits.claim_chat_notification", { auditRunId });
+      await op(HUMAN, "quality_audits.ack_chat_notification", { auditRunId });
     }
     expect(prompts[0]).toContain("Fix round 1 of 2");
     expect(prompts[1]).toContain("Fix round 2 of 2");
     expect(prompts[2]).toContain("left after 2 fix rounds");
     expect(prompts[2]).toContain("Do not change the site further");
     expect(labels).toEqual(["Fix with AI", "Fix with AI", "Summarise with AI"]);
+  });
+
+  it("a Stage after 'Not now' uses up no fix round (#685)", async () => {
+    const s = await op<{ chatSessionId: string; chatBranchId: string }>(
+      HUMAN,
+      "chat.create_session",
+      { isolation: "experiment", title: `${PFX}not-now` },
+    );
+    const branch = { ...HUMAN, chatBranchId: s.chatBranchId };
+    const stubborn = fakeLighthouse(() => ({ failing: [imageAlt] }));
+    for (let i = 0; i < 3; i += 1) {
+      await editModule(branch, `<p>operator edit ${i}</p>`);
+      await stage(s.chatSessionId);
+      await audit(stubborn);
+      const st = await op<{
+        audit: { id: string; fixRound: number };
+        feedback: { kind: string; actionLabel: string };
+      }>(HUMAN, "quality_audits.chat_status", { chatSessionId: s.chatSessionId });
+      expect(st.audit.fixRound).toBe(0);
+      expect(st.feedback).toMatchObject({ kind: "offer", actionLabel: "Fix with AI" });
+      // "Not now": the endpoint settles the offer with a status note.
+      expect(
+        (
+          await op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", {
+            auditRunId: st.audit.id,
+            note: { chatSessionId: s.chatSessionId, text: "Not now" },
+          })
+        ).claimed,
+      ).toBe(true);
+    }
   });
 });
 
