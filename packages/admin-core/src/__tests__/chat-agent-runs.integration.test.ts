@@ -527,6 +527,85 @@ describe("Stop is authoritative (issue #664)", () => {
     expect(abortLocalAgentRuns(["local-run-664"])).toBe(0);
   });
 
+  it("refuses a message that arrived before the Stop but registers after it (codex review)", async () => {
+    const chatSessionId = await createChat("t664 pre-stop request");
+    const epoch = await execute(registry, adapter, OWNER, "chat.get_agent_stop_epoch", {
+      chatSessionId,
+    });
+    if (!epoch.ok) throw new Error(JSON.stringify(epoch.error));
+    const arrivedAt = (epoch.value as { epoch: number }).epoch;
+    // Stop lands while the request is still resolving its provider.
+    await stopFromOtherInstance(chatSessionId);
+    const late = new AnswerOnly();
+    const events = await drain(
+      runChatTurn(
+        {
+          adapter,
+          registry,
+          provider: late,
+          tools: new ToolRegistry(),
+          aiCtx: AI,
+          humanCtx: OWNER,
+          turnSerializer: fastSerializer(),
+          agentRunSource: "live_edit",
+          operatorInitiated: true,
+          stopEpochAtArrival: arrivedAt,
+        },
+        { chatSessionId, content: "Build the pricing page.", chips: [] },
+      ),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: "warning", code: "chat-stopped" }),
+    );
+    expect(late.calls).toBe(0);
+    expect(await userRows(chatSessionId)).toEqual([]);
+
+    // A message sent after the Stop runs (and lifts the latch).
+    const after = await execute(registry, adapter, OWNER, "chat.get_agent_stop_epoch", {
+      chatSessionId,
+    });
+    if (!after.ok) throw new Error(JSON.stringify(after.error));
+    const fresh = new AnswerOnly();
+    await drain(
+      runChatTurn(
+        {
+          adapter,
+          registry,
+          provider: fresh,
+          tools: new ToolRegistry(),
+          aiCtx: AI,
+          humanCtx: OWNER,
+          turnSerializer: fastSerializer(),
+          agentRunSource: "live_edit",
+          operatorInitiated: true,
+          stopEpochAtArrival: (after.value as { epoch: number }).epoch,
+        },
+        { chatSessionId, content: "Now the hero only.", chips: [] },
+      ),
+    );
+    expect(fresh.calls).toBe(1);
+  });
+
+  it("delivers Stop to a run whose row expired while its runner stalled (codex review)", async () => {
+    const chatSessionId = await createChat("t664 expired run");
+    const reg = await execute(registry, adapter, OWNER, "chat.register_agent_run", {
+      chatSessionId,
+      kind: "turn",
+      source: "live_edit",
+      label: "Live Edit AI",
+      operatorInitiated: true,
+    });
+    if (!reg.ok) throw new Error(JSON.stringify(reg.error));
+    const runId = (reg.value as { runId: string }).runId;
+    await withSql(async (tx) => {
+      await tx`UPDATE chat_agent_runs SET expires_at = now() - interval '1 second' WHERE id = ${runId}::uuid`;
+    });
+    await stopFromOtherInstance(chatSessionId);
+    const beat = await execute(registry, adapter, OWNER, "chat.heartbeat_agent_run", { runId });
+    expect(beat.ok && (beat.value as { cancelRequested: boolean }).cancelRequested).toBe(true);
+    await execute(registry, adapter, OWNER, "chat.finish_agent_run", { runId });
+  });
+
   it("only a human may Stop", async () => {
     const chatSessionId = await createChat("t664 authz");
     const r = await execute(registry, adapter, AI, "chat.cancel_agents", { chatSessionId });

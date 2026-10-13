@@ -163,6 +163,12 @@ export interface ChatRunnerOptions {
    */
   readonly operatorInitiated?: boolean;
   /**
+   * Issue #664 — the chat's Stop count read when the request arrived
+   * (`readAgentStopEpoch`). A Stop between arrival and the turn's
+   * registration refuses the turn — it was sent before the Stop.
+   */
+  readonly stopEpochAtArrival?: number;
+  /**
    * The running-agents row of THIS turn — set by `runChatTurn` itself after
    * registration, read by the spawn handler to parent its subagents.
    */

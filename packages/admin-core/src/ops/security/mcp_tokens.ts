@@ -24,7 +24,7 @@ import {
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { runChatTurn } from "../../ai/chat-runner.js";
+import { readAgentStopEpoch, runChatTurn } from "../../ai/chat-runner.js";
 import type { AIProvider } from "../../ai/provider.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
@@ -393,6 +393,9 @@ export const mcpSendChatOp = defineOperation({
       chatBranchId = c.chatBranchId;
     }
 
+    // Issue #664 — the chat's Stop count at arrival; a Stop before this turn
+    // registers refuses it.
+    const stopEpochAtArrival = await readAgentStopEpoch(registry, adapter, humanCtx, chatSessionId);
     const aiCtx = { actorId, actorKind: "ai" as const, requestId, chatBranchId };
     const turnHumanCtx = { ...humanCtx, chatBranchId };
 
@@ -418,6 +421,7 @@ export const mcpSendChatOp = defineOperation({
         // Issue #664 — listed in the chat's running agents; the operator's
         // Stop reaches it, and a stopped chat refuses it.
         agentRunSource: "mcp_chat",
+        ...(stopEpochAtArrival !== undefined ? { stopEpochAtArrival } : {}),
       },
       {
         chatSessionId,

@@ -19,7 +19,12 @@
  *   3. null → emits SSE error pointing the Owner at /security/ai.
  */
 
-import { getActiveProvider, resolveTestProvider, runChatTurn } from "@caelo-cms/admin-core";
+import {
+  getActiveProvider,
+  readAgentStopEpoch,
+  resolveTestProvider,
+  runChatTurn,
+} from "@caelo-cms/admin-core";
 import { pluginPreviewSelectionSchema } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
@@ -40,6 +45,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   if (!(await verifyCsrfToken(locals.user.csrfSecret, csrf))) {
     throw error(403, "CSRF token mismatch");
   }
+  // Issue #664 — the chat's Stop count as this request ARRIVES, before the
+  // slow parts (provider resolution, history load). A Stop pressed while
+  // this request is still on its way to the runner then refuses it.
+  const stopEpochAtArrival = await readAgentStopEpoch(
+    getQueryContext().registry,
+    getQueryContext().adapter,
+    locals.ctx,
+    params.sessionId,
+  );
 
   const body = (await request.json()) as {
     content?: string;
@@ -217,6 +231,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             // Issue #664 — listed in the chat's running agents; Stop
             // reaches it on any instance.
             agentRunSource: "live_edit",
+            ...(stopEpochAtArrival !== undefined ? { stopEpochAtArrival } : {}),
             // Typed messages, clicked chips and in-chat Approve/Reject are the
             // operator's own; system-origin nudges are not (they never lift
             // a Stop).

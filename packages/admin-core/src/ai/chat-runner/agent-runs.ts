@@ -34,6 +34,8 @@ export interface AgentRunRegistration {
   readonly source: "live_edit" | "mcp_chat" | "subagent";
   readonly label: string;
   readonly parentRunId?: string;
+  /** The chat's Stop count when the request arrived (refused if a Stop came since). */
+  readonly stopEpochAtArrival?: number;
   /** The operator's own message (or Approve/Reject click) in this chat. */
   readonly operatorInitiated: boolean;
 }
@@ -76,6 +78,9 @@ export function queryApiAgentRunStore(
         source: reg.source,
         label: reg.label,
         ...(reg.parentRunId ? { parentRunId: reg.parentRunId } : {}),
+        ...(reg.stopEpochAtArrival !== undefined
+          ? { stopEpochAtArrival: reg.stopEpochAtArrival }
+          : {}),
         operatorInitiated: reg.operatorInitiated,
       });
       if (!r.ok) return { ok: false, message: describe(r.error) };
@@ -109,6 +114,22 @@ export function queryApiAgentRunStore(
       }
     },
   };
+}
+
+/**
+ * The chat's Stop count right now — read when a request ARRIVES, before
+ * anything slow, and handed to the turn's registration (see
+ * `stopEpochAtArrival`).
+ */
+export async function readAgentStopEpoch(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ctx: ExecutionContext,
+  chatSessionId: string,
+): Promise<number | undefined> {
+  const r = await execute(registry, adapter, ctx, "chat.get_agent_stop_epoch", { chatSessionId });
+  // Unknown chat: registration fails loudly with the same reason later.
+  return r.ok ? (r.value as { epoch: number }).epoch : undefined;
 }
 
 /** Error the handle's signal aborts with — lets callers tell Stop from a disconnect. */

@@ -74,12 +74,37 @@ const LIVE_ROW = sql`(r.expires_at > now() OR (r.kind = 'mcp' AND r.state = 'sto
 async function lockSession(
   tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
   chatSessionId: string,
-): Promise<{ agents_stopped_at: string | Date | null } | null> {
+): Promise<{ agents_stopped_at: string | Date | null; agents_stop_epoch: number } | null> {
   const rows = (await tx.execute(sql`
-    SELECT agents_stopped_at FROM chat_sessions WHERE id = ${chatSessionId}::uuid FOR UPDATE
-  `)) as unknown as { agents_stopped_at: string | Date | null }[];
+    SELECT agents_stopped_at, agents_stop_epoch FROM chat_sessions
+    WHERE id = ${chatSessionId}::uuid FOR UPDATE
+  `)) as unknown as { agents_stopped_at: string | Date | null; agents_stop_epoch: number }[];
   return rows[0] ?? null;
 }
+
+// ─── stop epoch (read at request arrival) ─────────────────────────────
+
+export const getAgentStopEpochOp = defineOperation({
+  name: "chat.get_agent_stop_epoch",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ chatSessionId: z.string().uuid() }).strict(),
+  output: z.object({ epoch: z.number().int().nonnegative() }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT agents_stop_epoch FROM chat_sessions WHERE id = ${input.chatSessionId}::uuid
+    `)) as unknown as { agents_stop_epoch: number }[];
+    const row = rows[0];
+    if (!row) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.get_agent_stop_epoch",
+        message: `Chat ${input.chatSessionId} does not exist (deleted?). Open the chat list and pick another chat.`,
+      });
+    }
+    return ok({ epoch: row.agents_stop_epoch });
+  },
+});
 
 // ─── register ─────────────────────────────────────────────────────────
 
@@ -97,6 +122,12 @@ export const registerAgentRunOp = defineOperation({
       label: z.string().min(1).max(200),
       /** Set for a subagent: the turn that spawned it. */
       parentRunId: z.string().uuid().optional(),
+      /**
+       * The chat's Stop count when the request ARRIVED
+       * (chat.get_agent_stop_epoch). A Stop since then refuses the turn: it
+       * was sent before the operator stopped the chat.
+       */
+      stopEpochAtArrival: z.number().int().nonnegative().optional(),
       /**
        * True only for a message the operator sent (or an Approve/Reject they
        * clicked) in the chat itself. Such a turn lifts the chat's Stop latch;
@@ -137,6 +168,17 @@ export const registerAgentRunOp = defineOperation({
         });
       }
     } else {
+      if (
+        input.stopEpochAtArrival !== undefined &&
+        input.stopEpochAtArrival < session.agents_stop_epoch
+      ) {
+        return ok({
+          registered: false as const,
+          reason: "stopped" as const,
+          message:
+            "Not run: this message reached the server before you pressed Stop, so it was stopped with the rest. Send it again if you still want it.",
+        });
+      }
       if (session.agents_stopped_at !== null) {
         if (!input.operatorInitiated) {
           return ok({
@@ -441,7 +483,8 @@ export const cancelAgentsOp = defineOperation({
         SET cancel_requested_at = now(), cancel_requested_by = ${ctx.actorId}::uuid
         WHERE chat_session_id = ${input.chatSessionId}::uuid
           AND kind IN ('turn', 'subagent') AND cancel_requested_at IS NULL
-          AND expires_at > now()
+          -- Expired rows too: a runner that missed heartbeats may still be
+          -- alive, and its next renewal must read the Stop.
         RETURNING id::text AS id
       `)) as unknown as { id: string }[];
     } else if (scope === "turn-only" || scope === "subagent") {
@@ -470,7 +513,9 @@ export const cancelAgentsOp = defineOperation({
     const chatStopped = scope === "chat";
     if (chatStopped) {
       await tx.execute(sql`
-        UPDATE chat_sessions SET agents_stopped_at = now() WHERE id = ${input.chatSessionId}::uuid
+        UPDATE chat_sessions
+        SET agents_stopped_at = now(), agents_stop_epoch = agents_stop_epoch + 1
+        WHERE id = ${input.chatSessionId}::uuid
       `);
     }
     await recordAudit(tx, {

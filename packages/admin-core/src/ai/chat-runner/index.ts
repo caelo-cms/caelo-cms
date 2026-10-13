@@ -63,7 +63,7 @@ import { buildToolCatalogue, resolveExcludedToolNames } from "./tool-catalogue.j
 import { defaultChatTurnSerializer, queryApiChatTurnLeaseStore } from "./turn-serializer.js";
 import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
-export { abortLocalAgentRuns } from "./agent-runs.js";
+export { abortLocalAgentRuns, readAgentStopEpoch } from "./agent-runs.js";
 // Public surface re-exports — the `../chat-runner.ts` shim does `export *`
 // from here, so these keep the pre-split import paths working.
 export type { ChatRunnerOptions, ClientEvent } from "./types.js";
@@ -96,6 +96,9 @@ export async function* runChatTurn(
         // Only the operator's own action lifts a Stop; auto-sent nudges and
         // external callers never do.
         operatorInitiated: options.operatorInitiated === true,
+        ...(options.stopEpochAtArrival !== undefined
+          ? { stopEpochAtArrival: options.stopEpochAtArrival }
+          : {}),
       },
     });
     if (started.kind === "refused") {

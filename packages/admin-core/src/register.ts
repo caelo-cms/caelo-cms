@@ -31,6 +31,7 @@ import {
   allowExternalAgentOp,
   cancelAgentsOp,
   finishAgentRunOp,
+  getAgentStopEpochOp,
   heartbeatAgentRunOp,
   listAgentRunsOp,
   registerAgentRunOp,
@@ -778,6 +779,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(renewChatTurnLeaseOp);
   registry.register(releaseChatTurnLeaseOp);
   // issues #664 / #665 — running agents per chat + authoritative Stop.
+  registry.register(getAgentStopEpochOp);
   registry.register(registerAgentRunOp);
   registry.register(heartbeatAgentRunOp);
   registry.register(finishAgentRunOp);

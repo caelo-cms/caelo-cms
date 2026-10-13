@@ -178,6 +178,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     kind: "internal",
     reason: "chat-runner / subagent registration in the running-agents table (issues #664, #665)",
   },
+  "chat.get_agent_stop_epoch": {
+    kind: "internal",
+    reason:
+      "chat request entry reads the chat's Stop count so a pre-Stop message is not run afterwards (issue #664)",
+  },
   "chat.heartbeat_agent_run": {
     kind: "internal",
     reason: "chat-runner heartbeat that also delivers the operator's Stop (issue #664)",

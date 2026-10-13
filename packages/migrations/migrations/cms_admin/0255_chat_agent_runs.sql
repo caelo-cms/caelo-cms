@@ -30,7 +30,10 @@
 -- `chat_sessions.agents_stopped_at` is the chat-level Stop latch: set by a
 -- Stop, it refuses every turn that is not an operator's own message (auto
 -- nudges from any tab, caelo_chat), and the operator's next message clears
--- it — "nothing restarts the AI until I say so".
+-- it — "nothing restarts the AI until I say so". `agents_stop_epoch` counts
+-- the Stops: a request reads it when it ARRIVES and is refused if a Stop
+-- happened before it registered, so a message sent just before Stop (still
+-- resolving its provider when Stop landed) cannot slip through afterwards.
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
@@ -74,5 +77,6 @@ CREATE POLICY chat_agent_runs_authenticated_scope ON chat_agent_runs
   WITH CHECK (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
 
 ALTER TABLE chat_sessions ADD COLUMN agents_stopped_at timestamptz NULL;
+ALTER TABLE chat_sessions ADD COLUMN agents_stop_epoch integer NOT NULL DEFAULT 0;
 
 COMMIT;
