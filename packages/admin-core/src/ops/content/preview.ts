@@ -221,7 +221,7 @@ export const renderPagePreviewOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "pages.render_preview",
-        message: `layout "${pageRow.layout_slug}" is missing the required \`content\` block — fix via /security/layouts`,
+        message: `layout "${pageRow.layout_slug}" is missing the required \`content\` block — fix via /settings/layouts`,
       });
     }
 

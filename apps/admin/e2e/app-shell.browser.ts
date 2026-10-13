@@ -34,7 +34,7 @@ test("Owner sees AppShell with sidebar nav, can navigate, dark mode persists", a
   await expect(sidebar.getByRole("link", { name: /^Templates$/ })).toBeVisible();
   await expect(sidebar.getByRole("link", { name: /^Chats$/ })).toBeVisible();
   await expect(sidebar.getByRole("link", { name: /^Deployments$/ })).toBeVisible();
-  await expect(sidebar.getByRole("link", { name: /^Security$/ })).toBeVisible();
+  await expect(sidebar.getByRole("link", { name: /^Settings$/ })).toBeVisible();
 
   // Click Pages → URL updates.
   await sidebar.getByRole("link", { name: /^Pages$/ }).click();

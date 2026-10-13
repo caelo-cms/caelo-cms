@@ -26,7 +26,7 @@ The browser chat is one consumer of the chat-runner; `caelo_chat` is another. Th
 
 ### Install
 
-1. As Owner, navigate to `/security/mcp`
+1. As Owner, navigate to `/settings/mcp`
 2. Click **New token**, scope `chat`, give it a name, optionally set an AI-spend cap in microcents (USD × 10⁸), and copy the bearer that's shown ONCE
 3. The page renders the exact `claude mcp add` snippet — copy + run it
 
@@ -37,7 +37,7 @@ claude mcp add caelo \
   -- bunx @caelo-cms/mcp-server@<your Caelo version>
 ```
 
-The snippet pins `@caelo-cms/mcp-server` to your install's release: `bunx` caches an unversioned package indefinitely, so after upgrading Caelo, generate a new command at `/security/mcp` (the shim and the admin ship in lockstep).
+The snippet pins `@caelo-cms/mcp-server` to your install's release: `bunx` caches an unversioned package indefinitely, so after upgrading Caelo, generate a new command at `/settings/mcp` (the shim and the admin ship in lockstep).
 
 The admin server reads the install's tool catalogue live: when it changes (a Caelo upgrade, an activated plugin) it sends `notifications/tools/list_changed`, so clients such as Claude Code pick up new tools without reconnecting. It re-checks every 5 minutes (`CAELO_MCP_CATALOGUE_REFRESH_MS`, `0` turns the timer off) and immediately when the agent calls a tool it does not know yet.
 
@@ -49,7 +49,7 @@ The admin server reads the install's tool catalogue live: when it changes (a Cae
 | `chatSessionId` | UUID, optional | Continue an existing chat session |
 | `pageId` | UUID, optional | Bind a NEW chat to one page so the agent's page-context block populates |
 
-Output: the assistant's reply text + a JSON block with `chatSessionId`, `requestId`, `toolCalls`, `pendingProposals`, `pendingApprovals`, `costMicrocents`. `requestId` is your click-through to `/security/audit/<requestId>` for the full audit trail.
+Output: the assistant's reply text + a JSON block with `chatSessionId`, `requestId`, `toolCalls`, `pendingProposals`, `pendingApprovals`, `costMicrocents`. `requestId` is your click-through to `/settings/audit/<requestId>` for the full audit trail.
 
 ### When a `caelo_chat` turn needs the operator's approval
 
@@ -71,11 +71,11 @@ Because the executing context is identical to a chat turn, **every invariant car
 - **AI actor.** Calls run as an AI actor bound to the token's owner. An external model is an AI actor no matter who runs it — human-only ops stay unreachable, and actor-scope gates apply unchanged.
 - **Preview branch.** Every call runs inside a work session (a chat session). Writes land on its preview branch, invisible to the live site until the operator reviews and publishes in the admin — publishing is not exposed to the agent.
 - **Snapshots + undo.** Every write emits a snapshot grouped under the session, so chat-keyed undo works exactly as if the work had happened in the browser chat.
-- **Approval gates.** `propose_*` tools queue an Owner proposal ("Queued proposal `<uuid>`… the Owner approves it at `<path>`") — usually the per-domain queue at `/security/<domain>/pending` (plugin activations, uninstalls and capability revokes: `/security/plugins/pending`); site SEO settings (`propose_set_site_seo`: site URL, sitemap, Organization JSON-LD) are approved on `/security/seo`. Every waiting proposal is also listed at `/security/pending`. The agent cannot apply a proposal itself; the call waits for the operator's decision and returns it (see [Approvals come back to your agent](#approvals-come-back-to-your-agent)). Plugin tools that declare their own in-chat approval (for example `send_newsletter_campaign`) are refused over MCP and must be run from the Caelo chat.
+- **Approval gates.** `propose_*` tools queue an Owner proposal ("Queued proposal `<uuid>`… the Owner approves it at `<path>`") — usually the per-domain queue at `/settings/<domain>/pending` (plugin activations, uninstalls and capability revokes: `/settings/plugins/pending`); site SEO settings (`propose_set_site_seo`: site URL, sitemap, Organization JSON-LD) are approved on `/settings/seo`. Every waiting proposal is also listed at `/settings/pending`. The agent cannot apply a proposal itself; the call waits for the operator's decision and returns it (see [Approvals come back to your agent](#approvals-come-back-to-your-agent)). Plugin tools that declare their own in-chat approval (for example `send_newsletter_campaign`) are refused over MCP and must be run from the Caelo chat.
 
 ### Install
 
-Mint a token with scope **`admin`** at `/security/mcp`, then:
+Mint a token with scope **`admin`** at `/settings/mcp`, then:
 
 ```bash
 claude mcp add caelo-admin \
@@ -99,7 +99,7 @@ Then work with the catalogue directly. Tool failures come back AI-actionable (na
 
 ### Approvals come back to your agent
 
-When your agent calls an approval-gated tool, the proposal appears in the operator's open chat for that session, usually the Live Edit chat, because `caelo_open_session` resumes it. The card is labelled **Requested by the external agent (MCP)**. It also appears in the per-domain queue and at `/security/pending`.
+When your agent calls an approval-gated tool, the proposal appears in the operator's open chat for that session, usually the Live Edit chat, because `caelo_open_session` resumes it. The card is labelled **Requested by the external agent (MCP)**. It also appears in the per-domain queue and at `/settings/pending`.
 
 - **The call waits for the decision.** The gated tool call returns only once the operator has clicked **Approve** or **Reject**, and its result tells your agent what happened: `applied` (the change is in the draft), `rejected` (with the operator's reason), `failed` (approved, but applying it failed), `superseded` or `withdrawn`. Your agent continues from there.
 - **Long waits.** Each call waits up to 50 seconds by default. That is shorter than the usual 60-second MCP client timeout, so the call always returns. Set `CAELO_MCP_APPROVAL_WAIT_MS` in the MCP server's environment to change it, for clients configured with longer timeouts (`0` returns at once). If the limit is reached, the result says the proposal is still waiting and gives its id. Your agent then calls **`caelo_await_approval`** with that `proposalId` to keep waiting. It should not propose the same thing again.
@@ -145,19 +145,19 @@ The rule is that an operator never has to do by hand what the agent cannot do. R
 - **Owner settings:** a plugin's AI cost cap (`propose_set_plugin_ai_cost_cap`) and rotating the gateway cookie secret (`propose_rotate_gateway_cookie_secret`), and who may open the protected staging site (`propose_set_staging_access`, `propose_rotate_staging_credentials`, `propose_set_staging_host`; read with `get_staging_access`) are proposals the Owner approves, like AI budgets and pricing. The approval result tells the agent the next step (e.g. that a new staging host serves nothing until `stage_changes`). `get_staging_access` with `includeCredentials: true` returns the staging basic-auth password only when the token's user holds settings.write (the Owner) and only on that explicit request; each reveal is audited. `list_plugin_installations` shows which submitted plugin packages still wait for the Owner's review. Approving a package and its grants stays the Owner's decision.
 - **Maintenance:** `list_media_usages`, `get_page_seo`, `list_stale_seo_pages`, `refresh_page_path` (re-derives one page's URL and redirects the old one), `list_import_runs`, `log_import_events`, and `list_skill_pin_defaults` / `set_skill_pin_defaults` (the skills pinned for your new chats).
 
-Approval cards from these tools wait in `/security/tool-approvals/pending` when no chat is open to show them; either way the decision is returned to your agent.
+Approval cards from these tools wait in `/settings/tool-approvals/pending` when no chat is open to show them; either way the decision is returned to your agent.
 
 ## Google Cloud installs (IAP)
 
-On `gcp` and `gcp-firebase` installs the admin sits behind Google Identity-Aware Proxy, so the `claude mcp add` command from `/security/mcp` carries one more variable, `CAELO_IAP_SERVICE_ACCOUNT`, and you run `gcloud auth application-default login` once. The MCP server then signs a short-lived Google credential as the install's `caelo-mcp` service account and sends it next to your Caelo token.
+On `gcp` and `gcp-firebase` installs the admin sits behind Google Identity-Aware Proxy, so the `claude mcp add` command from `/settings/mcp` carries one more variable, `CAELO_IAP_SERVICE_ACCOUNT`, and you run `gcloud auth application-default login` once. The MCP server then signs a short-lived Google credential as the install's `caelo-mcp` service account and sends it next to your Caelo token.
 
-Who may sign it follows the user list: when the Owner adds a user (in `/security/users`, or by approving the AI's `propose_create_user` card) the operator-access sync job lets that person's Google account sign as `caelo-mcp`; deleting the user, or removing their last role, revokes it again. (The job, not the admin, holds that right: see [Who can open the admin](/install-gcp#who-can-open-the-admin-google-iap).) No `gcloud` commands, no re-running the provisioner. The person still needs their own Caelo MCP token — Google's credential only gets the request past IAP.
+Who may sign it follows the user list: when the Owner adds a user (in `/settings/users`, or by approving the AI's `propose_create_user` card) the operator-access sync job lets that person's Google account sign as `caelo-mcp`; deleting the user, or removing their last role, revokes it again. (The job, not the admin, holds that right: see [Who can open the admin](/install-gcp#who-can-open-the-admin-google-iap).) No `gcloud` commands, no re-running the provisioner. The person still needs their own Caelo MCP token — Google's credential only gets the request past IAP.
 
 ## Token scopes, caps, rotation
 
 - **Scopes.** `chat` drives `caelo_chat` and image uploads. `admin` additionally unlocks the Power-MCP endpoints. Existing tokens stay `chat`; using one against the Power-MCP returns a 401 naming the fix.
 - **Cost cap.** `ai_cost_cap_microcents` (set at mint time) bounds a leaked token's wallet impact. On the chat surface the runner checks it during the turn (`cost cap reached: spent ~N µ¢ / cap M µ¢`); on the Power-MCP it gates the tools that make their own provider calls (`generate_image`, `query_page_html`) against the session's accumulated spend. To change a cap, mint a replacement token and revoke the old one.
-- **Rotation.** Tokens TTL out at **90 days** by default. Mint a new one, paste the new snippet, revoke the old at `/security/mcp`. The next call with a revoked bearer returns `auth_error: token revoked`.
+- **Rotation.** Tokens TTL out at **90 days** by default. Mint a new one, paste the new snippet, revoke the old at `/settings/mcp`. The next call with a revoked bearer returns `auth_error: token revoked`.
 
 ## What's NOT exposed
 

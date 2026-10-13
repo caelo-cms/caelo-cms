@@ -733,7 +733,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     const slug = input.layoutSlug ?? "(unknown)";
     throw new ComposeError(
       "layout-missing-content",
-      `layout "${slug}" is missing the required \`<caelo-slot name="content">\` slot — fix via /security/layouts`,
+      `layout "${slug}" is missing the required \`<caelo-slot name="content">\` slot — fix via /settings/layouts`,
       input.layoutSlug,
     );
   }

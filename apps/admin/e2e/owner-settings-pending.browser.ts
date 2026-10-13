@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * /security/owner-settings/pending — the Owner queue for AI-proposed
+ * /settings/owner-settings/pending — the Owner queue for AI-proposed
  * settings changes that wait for a decision (proposals queued over the
  * Power-MCP, where there is no in-chat card).
  *
@@ -96,7 +96,7 @@ test("Owner approves one settings proposal and rejects another", async ({ page }
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
-  await page.goto("/security/owner-settings/pending");
+  await page.goto("/settings/owner-settings/pending");
   const card = (ms: number) =>
     page.getByTestId("owner-settings-proposal").filter({ hasText: `→ ${ms}` });
   await expect(card(APPROVE_MS)).toBeVisible();

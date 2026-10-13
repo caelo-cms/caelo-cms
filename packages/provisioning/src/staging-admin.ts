@@ -277,7 +277,7 @@ export function describeStagingApply(r: StagingApply): string[] {
       `  user:     ${b.user}`,
       `  password: ${b.password}`,
       "Give them to reviewers / crawlers. Change the user, rotate the password or add other access",
-      "modes in the admin: Security → Staging access (or rerun with --rotate-staging-password).",
+      "modes in the admin: Settings → Staging access (or rerun with --rotate-staging-password).",
     );
   } else if (b.password !== null) {
     lines.push(
@@ -289,12 +289,12 @@ export function describeStagingApply(r: StagingApply): string[] {
   } else if (b.status === "unchanged-enabled") {
     lines.push(
       "",
-      `Password protection is on (basic auth, user ${b.user}). Show the password with --show-staging-password, or in the admin under Security → Staging access.`,
+      `Password protection is on (basic auth, user ${b.user}). Show the password with --show-staging-password, or in the admin under Settings → Staging access.`,
     );
   } else {
     lines.push(
       "",
-      "Basic auth was switched off in the admin; it stays off (admins still get in through Open staging). Turn it on under Security → Staging access.",
+      "Basic auth was switched off in the admin; it stays off (admins still get in through Open staging). Turn it on under Settings → Staging access.",
     );
   }
   if (r.stageNote) lines.push("", r.stageNote);

@@ -6,7 +6,7 @@
  *
  *  - a `gated` tool (makeProposeTool): its `executeOp` is a registered op
  *    that declares `approverPermissions` (via `requiresApproverPermission`);
- *  - a `needsApproval` tool (the /security/tool-approvals queue): the tool
+ *  - a `needsApproval` tool (the /settings/tool-approvals queue): the tool
  *    declares `approverPermissions` itself.
  *
  * Plus unit coverage of the wrapper's decision table against a stub
@@ -113,7 +113,7 @@ describe("#589 guard: every gated tool declares its approver permission", () => 
           gated: {
             proposeOp: "widgets.propose",
             executeOp: "widgets.execute_proposal",
-            pendingQueuePath: "/security/widgets/pending",
+            pendingQueuePath: "/settings/widgets/pending",
           },
         },
         { name: "delete_widgets", needsApproval: () => true },

@@ -338,7 +338,7 @@ it("stages AI-authored capability packages through the author tool without activ
     { adapter, registry } as Parameters<typeof submitPluginTool.handler>[2],
   );
   expect(result.ok).toBe(true);
-  expect(result.content).toContain("/security/plugins/installations");
+  expect(result.content).toContain("/settings/plugins/installations");
   const review = (await call("plugins.list_installations", {})) as {
     installations: { slug: string; status: string; origin: string }[];
   };

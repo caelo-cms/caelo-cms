@@ -159,7 +159,7 @@ export async function checkColdStartGate(
         `of the document is still yours to compose. ${DEPTH_AND_SURFACE_HINTS} ${TOKEN_SHAPE_HINTS} ` +
         `${SPACING_RHYTHM_HINTS} ${TOKEN_ROLE_HINTS} ${TYPOGRAPHY_COMPOSITION_HINTS} ` +
         "`description` records WHY the palette fits the brand. " +
-        "Then tell the operator to approve it at /security/themes/pending.",
+        "Then tell the operator to approve it at /settings/themes/pending.",
     );
     steps.push(
       "`propose_activate_theme({themeId: '<id from list_themes>'})` so it becomes the active theme, " +

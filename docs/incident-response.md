@@ -40,7 +40,7 @@ journalctl -u caelo-admin -u caelo-gateway -u caelo-orchestrator -u caelo-runner
 
 Common causes:
 - `psql connection refused` → §F.
-- `provider auth 401` → check `/security/ai/providers`; rotate the affected key.
+- `provider auth 401` → check `/settings/ai/providers`; rotate the affected key.
 - `plugin host bootstrap failed` → §D.
 - `NotFound: page <slug>` after deploy → ran on stale cache; force-clear via `cms-provision regenerate-caddy` (self-hosted) or invalidate CDN paths (cloud).
 
@@ -64,12 +64,12 @@ Then trigger a fresh deploy.
 
 ## §C — AI calls failing or budget hit
 
-`/security/costs` shows live status per (scope × operation_type). If a row is **blocked**:
-- Bump cap at `/security/ai/budgets`, OR
+`/settings/costs` shows live status per (scope × operation_type). If a row is **blocked**:
+- Bump cap at `/settings/ai/budgets`, OR
 - Wait until midnight UTC for `day-*` scopes, OR
-- Disable the offending plugin at `/security/plugins/<slug>` if a single plugin is the source.
+- Disable the offending plugin at `/settings/plugins/<slug>` if a single plugin is the source.
 
-If text + image are both healthy but specific calls fail → check `/security/ai/providers` → primary provider's API key expired or its `model` was deprecated. Fix + re-test via the editor chat.
+If text + image are both healthy but specific calls fail → check `/settings/ai/providers` → primary provider's API key expired or its `model` was deprecated. Fix + re-test via the editor chat.
 
 ## §D — Plugin sandbox crashed the host
 
@@ -106,8 +106,8 @@ If `available` but admin still can't connect: check security-group / VPC peering
 If a Caelo secret (Anthropic key, OAuth client secret, postgres password, internal-API HMAC secret, cookie/CSRF secret) is exposed:
 
 1. **Rotate at the source FIRST.** Before any cleanup, the leaked value must be invalid:
-   - **Anthropic / OpenAI / Gemini key** — rotate in provider dashboard, set new value at `/security/ai/providers` (Owner only). Old key stops working within seconds at the provider.
-   - **OAuth client secret** — rotate at provider (Google / GitHub), update `/security/auth`, hard-fail any in-flight OAuth flows (acceptable; visitors retry).
+   - **Anthropic / OpenAI / Gemini key** — rotate in provider dashboard, set new value at `/settings/ai/providers` (Owner only). Old key stops working within seconds at the provider.
+   - **OAuth client secret** — rotate at provider (Google / GitHub), update `/settings/auth`, hard-fail any in-flight OAuth flows (acceptable; visitors retry).
    - **Postgres passwords** — one per database role. GCP: `bunx @caelo-cms/provisioning rotate-secret postgres-password` (admin_role; rolls the admin), `rotate-secret public-role-password` / `rotate-secret gateway-role-password` (the API gateway's two logins; roll the gateway). Each sets its role's password, stores the new value in Secret Manager and rolls the services that read it. A suspected gateway compromise: rotate the gateway's two — the gateway never held admin_role's password since #613. Self-hosted: `ALTER ROLE … WITH PASSWORD '<new>'`, update `rolePasswords` in `.caelo/config.json`, re-run `cms-provision up`, restart.
    - **`CAELO_INTERNAL_SECRET`** — GCP: `bunx @caelo-cms/provisioning rotate-secret internal-secret`. Self-hosted: generate new 48-byte hex, update env across admin + all internal callers, restart. Any in-flight internal-API tokens become invalid (5-min replay window auto-expires anyway).
    - **`CAELO_COOKIE_SECRET` / `CAELO_CSRF_SECRET`** — rotate in env. Existing sessions invalidated; users re-login.

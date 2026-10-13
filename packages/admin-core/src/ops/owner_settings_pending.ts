@@ -344,7 +344,7 @@ export const proposeSetTranslationModelOp = defineOperation({
     if (!active) {
       return handlerError(
         op,
-        "no active AI provider — the Owner configures one at /security/ai before a translation model can be chosen.",
+        "no active AI provider — the Owner configures one at /settings/ai before a translation model can be chosen.",
       );
     }
     if (input.model !== null) {
@@ -361,7 +361,7 @@ export const proposeSetTranslationModelOp = defineOperation({
     if (chatModel === null) {
       return handlerError(
         op,
-        `the active provider ${active.name} has no chat model stored — the Owner saves it at /security/ai first.`,
+        `the active provider ${active.name} has no chat model stored — the Owner saves it at /settings/ai first.`,
       );
     }
     const describe = async (model: string | null) => ({

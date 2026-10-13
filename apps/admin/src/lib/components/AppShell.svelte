@@ -17,7 +17,7 @@
     Palette,
     Rocket,
     Sailboat,
-    ShieldCheck,
+    Settings,
     Sun,
     UserCog,
     Wand2,
@@ -29,6 +29,7 @@
   import RunningAgentsIndicator from "#lib/components/agents/RunningAgentsIndicator.svelte";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Separator } from "#lib/components/ui/separator/index.js";
+  import { hasAnySettingsAccess, settingsCrumbLabel } from "#lib/settings-nav.js";
   import { cn } from "#lib/utils.js";
 
   interface Props {
@@ -77,7 +78,7 @@
         show: has("content.write"),
       },
       // v0.11.1 (issue #76) — operator-facing theme editor. roles.manage
-      // matches the existing /security/themes/pending permission: theme
+      // matches the existing /settings/themes/pending permission: theme
       // edits affect every page on the site.
       {
         href: "/design/fonts",
@@ -92,27 +93,47 @@
         show: has("roles.manage"),
       },
       {
-        href: "/security/deployments",
+        href: "/settings/deployments",
         label: "Deployments",
         icon: Rocket,
         show: has("ops.view"),
       },
       {
-        href: "/security/quality",
+        href: "/settings/quality",
         label: "Quality",
         icon: Gauge,
         show: has("ops.view"),
       },
       {
-        href: "/security/bugs",
+        href: "/settings/bugs",
         label: "Detected bugs",
         icon: Bug,
         show: has("settings.read"),
       },
-      { href: "/security", label: "Security", icon: ShieldCheck, show: has("settings.read") },
+      {
+        href: "/settings",
+        label: "Settings",
+        icon: Settings,
+        show: hasAnySettingsAccess(permissions),
+      },
       // Personal account (change your own password) — every signed-in user.
       { href: "/account", label: "Account", icon: UserCog, show: true },
     ].filter((i) => i.show),
+  );
+
+  /**
+   * The nav item to highlight: the longest href that matches the URL, so
+   * /settings/deployments lights up "Deployments", not also "Settings".
+   */
+  const activeHref = $derived(
+    navItems
+      .map((i) => i.href)
+      .filter(
+        (href) =>
+          page.url.pathname === href ||
+          (href !== "/" && page.url.pathname.startsWith(`${href}/`)),
+      )
+      .sort((a, b) => b.length - a.length)[0] ?? null,
   );
 
   /**
@@ -132,7 +153,11 @@
         if (part.match(/^[0-9a-f-]{36}$/)) continue; // skip UUIDs
         out.push({
           href: acc,
-          label: part.charAt(0).toUpperCase() + part.slice(1).replace(/-/g, " "),
+          // Settings pages carry their operator-facing name from the nav
+          // model ("AI provider & models", not "Ai").
+          label:
+            settingsCrumbLabel(acc) ??
+            part.charAt(0).toUpperCase() + part.slice(1).replace(/-/g, " "),
         });
       }
       return out;
@@ -155,9 +180,7 @@
     </div>
     <nav aria-label="Main navigation" class="flex-1 space-y-1 px-2 py-4">
       {#each navItems as item (item.href)}
-        {@const Active =
-          page.url.pathname === item.href ||
-          (item.href !== "/" && page.url.pathname.startsWith(`${item.href}/`))}
+        {@const Active = item.href === activeHref}
         <a
           href={item.href}
           class={cn(

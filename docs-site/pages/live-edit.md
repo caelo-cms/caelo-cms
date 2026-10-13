@@ -108,7 +108,7 @@ The same chat-runner is reachable via [MCP](/mcp). `caelo_chat` from your IDE dr
 
 - **The AI loses context across "+ New chat"** — start a fresh chat for a fresh task; the page-context block re-populates
 - **The undo button is the chat history** — click any prior message to revert to that snapshot
-- **Site memory shapes the AI's voice** — `/security/ai/memory` carries Owner-curated brand voice, banned phrases, recurring instructions. The AI reads these on every turn.
+- **Site memory shapes the AI's voice** — `/settings/ai/memory` carries Owner-curated brand voice, banned phrases, recurring instructions. The AI reads these on every turn.
 - **Skills steer behaviour per-task** — engaged skills are listed in the overlay's bottom strip; click to disengage one for the current chat. The matcher restores defaults on a new chat.
 
 ## Next

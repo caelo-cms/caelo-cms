@@ -13,11 +13,11 @@ Every **Stage** builds your site exactly as **Publish live** will ship it and se
 
 ## The staging host
 
-The staging host is a setting, not a fixed name. The install wizard asks for it (default `staging.<your domain>`; any host works, also one on another domain such as `preview.example.org`), non-interactive installs pass `--staging-domain <host>`, and installs from before the setting get `staging.<domain>` on their next `cms-provision upgrade`. The easiest way to change it is the command that also serves it: `cms-provision staging-domain enable --staging-domain <host>` sets the host in the admin for you (your running the command is the decision — it is audited), maps it and prints the DNS record. You can also change it under **Security → Domains** (or ask the AI — `propose_set_staging_host`, which you approve in the chat); then run `cms-provision staging-domain enable` to map it — without `--staging-domain` the command maps whatever host the admin has stored. It must be a bare host name and must not be the live site's or the admin's host.
+The staging host is a setting, not a fixed name. The install wizard asks for it (default `staging.<your domain>`; any host works, also one on another domain such as `preview.example.org`), non-interactive installs pass `--staging-domain <host>`, and installs from before the setting get `staging.<domain>` on their next `cms-provision upgrade`. The easiest way to change it is the command that also serves it: `cms-provision staging-domain enable --staging-domain <host>` sets the host in the admin for you (your running the command is the decision — it is audited), maps it and prints the DNS record. You can also change it under **Settings → Domains** (or ask the AI — `propose_set_staging_host`, which you approve in the chat); then run `cms-provision staging-domain enable` to map it — without `--staging-domain` the command maps whatever host the admin has stored. It must be a bare host name and must not be the live site's or the admin's host.
 
-Which value wins: the host stored in the admin is the truth. `staging-domain enable --staging-domain <host>` and **Security → Domains** change it; `cms-provision upgrade` never overwrites it (it only fills it in on installs that have none yet).
+Which value wins: the host stored in the admin is the truth. `staging-domain enable --staging-domain <host>` and **Settings → Domains** change it; `cms-provision upgrade` never overwrites it (it only fills it in on installs that have none yet).
 
-**A new host serves nothing until the next Stage.** Staging shows the last *staged* build, rendered for the host it was built with. After setting up or changing the host, Stage once (or let the AI call `stage_changes`). The command, Security → Domains / Staging access and the AI's `get_staging_access` all say so when a Stage is missing.
+**A new host serves nothing until the next Stage.** Staging shows the last *staged* build, rendered for the host it was built with. After setting up or changing the host, Stage once (or let the AI call `stage_changes`). The command, Settings → Domains / Staging access and the AI's `get_staging_access` all say so when a Stage is missing.
 
 **Draft pages are never staged.** Only pages with status *published* are built — for staging and for live. Every Stage result (the editor's toast, Open changes, the AI's `stage_changes`) lists the draft pages it left out; set them to published (the editor's status toggle, or the AI's `set_pages_status_many`) and Stage again.
 
@@ -35,7 +35,7 @@ Because staging carries its own host, Publish live does not copy the staged buil
 
 ## Who can open staging
 
-Open **Security → Staging access** in the admin. Any one enabled mode lets a request in:
+Open **Settings → Staging access** in the admin. Any one enabled mode lets a request in:
 
 | Mode | For | How |
 |---|---|---|
@@ -46,7 +46,7 @@ Open **Security → Staging access** in the admin. Any one enabled mode lets a r
 
 A request that passes none of them gets **401** with a basic-auth prompt (when basic auth is on) or **403** with a short page pointing to the admin.
 
-**Password protection is on from the start.** The first `cms-provision staging-domain enable` switches basic auth on with a user named after your site (e.g. `searchviu`) and a generated password, and prints both once — they are not saved anywhere on your machine. Change the user, add other modes or turn it off under Security → Staging access; a basic auth you switched off stays off when you run the command again. `--rotate-staging-password` replaces the password and prints the new one, `--show-staging-password` prints the current one (both audited).
+**Password protection is on from the start.** The first `cms-provision staging-domain enable` switches basic auth on with a user named after your site (e.g. `searchviu`) and a generated password, and prints both once — they are not saved anywhere on your machine. Change the user, add other modes or turn it off under Settings → Staging access; a basic auth you switched off stays off when you run the command again. `--rotate-staging-password` replaces the password and prints the new one, `--show-staging-password` prints the current one (both audited).
 
 The credentials are generated, never stored in readable form, and shown only to the Owner (settings.write). **Rotate** replaces one; everything that used the old value is locked out until it gets the new one. `cms-provision rotate-secret staging-gate-secret` replaces the key everything is derived from — every staging session and both credentials change at once.
 

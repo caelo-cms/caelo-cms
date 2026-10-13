@@ -3,7 +3,7 @@
 /**
  * P16 — opt-in telemetry settings. Off by default; the Owner toggles
  * `install_ping_enabled` and `error_reporting_enabled` from
- * `/security/ai/telemetry`. The first time either flag flips on, the op
+ * `/settings/ai/telemetry`. The first time either flag flips on, the op
  * mints a stable `install_id` UUID — never sent before opt-in.
  *
  * The `telemetry.test_send` op constructs the payload that WOULD be sent
@@ -76,11 +76,11 @@ export const setTelemetryOp = defineOperation({
   // operator's CONSENT to send data from this install to the Caelo
   // project. Consent has to be the human's own act, made on the page that
   // shows exactly what would be transmitted (`telemetry.test_send` on
-  // /security/ai/telemetry). An AI-drafted proposal approved with one click
+  // /settings/ai/telemetry). An AI-drafted proposal approved with one click
   // in the middle of an unrelated chat is not that, and it is the one
   // setting where "the agent can do it for you" is the wrong product. It
   // has no effect on how the site works, so no agent workflow is ever
-  // blocked on it; the AI points the operator to /security/ai/telemetry.
+  // blocked on it; the AI points the operator to /settings/ai/telemetry.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -130,7 +130,7 @@ export const setTelemetryOp = defineOperation({
 /**
  * Print-the-payload helper. Returns the JSON that WOULD be sent to the
  * collector — no outbound HTTP call. Owner uses this from
- * `/security/ai/telemetry` to audit before opting in.
+ * `/settings/ai/telemetry` to audit before opting in.
  */
 export const testSendTelemetryOp = defineOperation({
   name: "telemetry.test_send",

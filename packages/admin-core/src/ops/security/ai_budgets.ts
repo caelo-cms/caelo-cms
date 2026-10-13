@@ -91,7 +91,7 @@ export const aiBudgetCellInput = z
 
 export const setAiBudgetOp = defineOperation({
   name: "ai_budgets.set",
-  // Why human-only: the direct write is the Owner's /security/ai/budgets
+  // Why human-only: the direct write is the Owner's /settings/ai/budgets
   // form. A spend cap is the guard that keeps AI cost bounded; an AI that
   // could raise its own cap defeats it (the set_migration_budget incident,
   // 2026-07-27). The AI reaches it only through the §11.A gate

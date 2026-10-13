@@ -29,7 +29,7 @@ export async function stagingOriginForAdmin(ctx: ExecutionContext): Promise<stri
   if (!url) {
     throw error(
       409,
-      "No staging host is configured. Set it under Security → Domains, or run `cms-provision upgrade`.",
+      "No staging host is configured. Set it under Settings → Domains, or run `cms-provision upgrade`.",
     );
   }
   return url;

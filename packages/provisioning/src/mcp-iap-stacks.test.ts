@@ -39,7 +39,7 @@ describe.each(["gcp", "gcp-firebase"])("%s stack — MCP through IAP", (provider
     );
   });
 
-  it("hands the email to the admin for the /security/mcp command (via the env contract)", () => {
+  it("hands the email to the admin for the /settings/mcp command (via the env contract)", () => {
     // The stack builds the admin env from adminEnvContract (parity test);
     // the contract carries the SA upgrade ensures.
     const env = adminEnvContract({

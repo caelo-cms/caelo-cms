@@ -22,7 +22,7 @@ describe("plugin lifecycle tools", () => {
     expect(t?.gated).toEqual({
       proposeOp: "plugins.propose_revoke_capability",
       executeOp: "plugins.execute_proposal",
-      pendingQueuePath: "/security/pending",
+      pendingQueuePath: "/settings/pending",
     });
   });
 

@@ -7,12 +7,12 @@ const UUID = "d2d5a41a-0ecb-4f70-aab1-73963240e9f1";
 
 describe("parseProposalContent", () => {
   it("parses canonical create_layout output", () => {
-    const content = `Queued proposal ${UUID}: layout-create slug=default (3 blocks). Approve it on the proposal card in this chat (queue: /security/layouts/pending).`;
+    const content = `Queued proposal ${UUID}: layout-create slug=default (3 blocks). Approve it on the proposal card in this chat (queue: /settings/layouts/pending).`;
     const result = parseProposalContent(content);
     expect(result).not.toBeNull();
     expect(result?.proposalId).toBe(UUID);
     expect(result?.summary).toBe("layout-create slug=default (3 blocks)");
-    expect(result?.queueUrl).toBe("/security/layouts/pending");
+    expect(result?.queueUrl).toBe("/settings/layouts/pending");
     expect(result?.domain).toBe("layouts");
   });
 
@@ -20,20 +20,20 @@ describe("parseProposalContent", () => {
   // still lives in persisted chat_messages rows — those must keep
   // rendering ProposeCards after the wording change.
   it("parses the legacy pre-card-first tail (persisted messages)", () => {
-    const content = `Queued proposal ${UUID}: add domain 'shop.example.com'. An Owner must click Approve at /security/domains/pending to apply.`;
+    const content = `Queued proposal ${UUID}: add domain 'shop.example.com'. An Owner must click Approve at /settings/domains/pending to apply.`;
     const result = parseProposalContent(content);
     expect(result?.domain).toBe("domains");
-    expect(result?.queueUrl).toBe("/security/domains/pending");
+    expect(result?.queueUrl).toBe("/settings/domains/pending");
   });
 
   it("parses canonical propose_deploy_promote output", () => {
-    const content = `Queued proposal ${UUID}: promote staging → production (build=abc, pages=10, files=20). Approve it on the proposal card in this chat (queue: /security/deployments/pending).`;
+    const content = `Queued proposal ${UUID}: promote staging → production (build=abc, pages=10, files=20). Approve it on the proposal card in this chat (queue: /settings/deployments/pending).`;
     const result = parseProposalContent(content);
     expect(result?.domain).toBe("deployments");
   });
 
   it("parses canonical tune_rate_limit output", () => {
-    const content = `Queued proposal ${UUID}: rate-limit comments.submit = 5/60s. Approve it on the proposal card in this chat (queue: /security/gateway/pending).`;
+    const content = `Queued proposal ${UUID}: rate-limit comments.submit = 5/60s. Approve it on the proposal card in this chat (queue: /settings/gateway/pending).`;
     const result = parseProposalContent(content);
     expect(result?.domain).toBe("gateway");
     // Summary may truncate at the first period inside the data (e.g.
@@ -44,7 +44,7 @@ describe("parseProposalContent", () => {
   });
 
   it("returns null for pre-v0.5.11 non-canonical 'Queued layout-create proposal' format", () => {
-    const content = `Queued layout-create proposal ${UUID} (slug=default, 3 blocks). An Owner must click Approve at /security/layouts/pending to create the layout.`;
+    const content = `Queued layout-create proposal ${UUID} (slug=default, 3 blocks). An Owner must click Approve at /settings/layouts/pending to create the layout.`;
     expect(parseProposalContent(content)).toBeNull();
   });
 
@@ -54,7 +54,7 @@ describe("parseProposalContent", () => {
 
   it("returns null for content without a uuid", () => {
     expect(
-      parseProposalContent("Queued proposal not-a-uuid: something. /security/x/pending"),
+      parseProposalContent("Queued proposal not-a-uuid: something. /settings/x/pending"),
     ).toBeNull();
   });
 
@@ -66,11 +66,11 @@ describe("parseProposalContent", () => {
     expect(parseProposalContent("")).toBeNull();
   });
 
-  // `/security/locales/pending` was removed in #382; old persisted chat
+  // `/settings/locales/pending` was removed in #382; old persisted chat
   // messages that reference it must degrade to plain markdown rather than
   // rendering an actionable ProposeCard whose Approve/Reject POSTs 404.
   it("returns null for deprecated locales domain (route removed in #382)", () => {
-    const content = `Queued proposal ${UUID}: add locale 'de'. Approve it on the proposal card in this chat (queue: /security/locales/pending).`;
+    const content = `Queued proposal ${UUID}: add locale 'de'. Approve it on the proposal card in this chat (queue: /settings/locales/pending).`;
     expect(parseProposalContent(content)).toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The `claude mcp add` command /security/mcp shows after minting a token.
+ * The `claude mcp add` command /settings/mcp shows after minting a token.
  *
  * `claude mcp add` syntax: options first, the server command after `--`
  * (there is no --command flag in the Claude Code CLI). Admin-scoped tokens

@@ -300,7 +300,7 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
       return {
         ok: false,
         content:
-          "query_page_html(describe): could not resolve a small extraction model (no active AI provider / key). Use `keyword` instead, or the operator configures the provider at /security/ai.",
+          "query_page_html(describe): could not resolve a small extraction model (no active AI provider / key). Use `keyword` instead, or the operator configures the provider at /settings/ai.",
       };
     }
     const cappedHtml =

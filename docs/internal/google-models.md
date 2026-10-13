@@ -3,7 +3,7 @@
 The chat picker and resolver share the pinned default `gemini-3.8-flash`.
 Existing saved IDs remain visible and are not migrated silently. Gemini 3.1 Pro
 is explicitly labelled Preview. Image models are configured separately under
-**Security → AI → Google → Image model** because Gemini image models do not
+**Settings → AI → Google → Image model** because Gemini image models do not
 support the chat's function-calling workflow. Leave the image field empty to
 disable generation; a different supported image model ID may also be entered.
 

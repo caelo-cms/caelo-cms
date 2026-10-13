@@ -16,7 +16,7 @@
  *   2. ProviderResolver (`getActiveProvider()`) — reads the active row
  *      in `ai_providers`, decrypts the stored key, falls back to the
  *      legacy `process.env[envNameFor(name)]` when no DB key is set.
- *   3. null → emits SSE error pointing the Owner at /security/ai.
+ *   3. null → emits SSE error pointing the Owner at /settings/ai.
  */
 
 import {
@@ -141,7 +141,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
       return new Response(
         `data: ${JSON.stringify({
           kind: "error",
-          message: "AI provider not configured — visit /security/ai to set up an API key.",
+          message: "AI provider not configured — visit /settings/ai to set up an API key.",
         })}\n\ndata: ${JSON.stringify({ kind: "done" })}\n\n`,
         { headers: { "content-type": "text/event-stream" } },
       );

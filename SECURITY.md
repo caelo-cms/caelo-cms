@@ -37,7 +37,7 @@ Out of scope (please report upstream):
 - Issues that require physical access to the host or shell access to the database
 - Issues that depend on already-compromised credentials (e.g. "if I have your `ANTHROPIC_API_KEY`, I can…")
 - Self-XSS in the Owner's own browser context (Owner is trusted — they can paste raw HTML into a module if they choose)
-- DoS via expensive AI prompts (use the per-token + per-budget caps surfaced at `/security/ai/budgets`)
+- DoS via expensive AI prompts (use the per-token + per-budget caps surfaced at `/settings/ai/budgets`)
 
 ## What we promise reporters
 

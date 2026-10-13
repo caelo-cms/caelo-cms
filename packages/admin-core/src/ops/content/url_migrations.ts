@@ -199,7 +199,7 @@ const executeUrlMigrationOpDefinition = defineOperation({
   name: "url_migrations.execute_proposal",
   // Why human-only (+system): §11.A — applying a site-wide URL move is
   // the click the gate exists to obtain. The AI proposes; the SDK
-  // approval (or the /security/pending queue) executes.
+  // approval (or the /settings/pending queue) executes.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),

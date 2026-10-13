@@ -237,7 +237,7 @@ const executeUserProposalOpDefinition = defineOperation({
     ) as Record<string, unknown>;
     // The apply writes OTHER users' rows (`actors`, `users`), whose RLS is
     // self-or-system — with the approving Owner's human session it failed
-    // with "RLS denied" (in-chat Approve and /security/users/pending alike).
+    // with "RLS denied" (in-chat Approve and /settings/users/pending alike).
     // See withSystemRls; the Owner's approval is the authorization.
     await tx.execute(sql`SELECT set_config('caelo.actor_kind', 'system', true)`);
     let resultUserId: string | null = row.user_id;

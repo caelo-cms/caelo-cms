@@ -4,8 +4,8 @@ export { GOOGLE_IMAGE_MODELS } from "@caelo-cms/shared";
 
 /**
  * Shared model catalogue for the two AI-credential entry points — the
- * first-run wizard (`(auth)/welcome/ai`) and the Owner security panel
- * (`(authed)/security/ai`). Both import from here so the option list
+ * first-run wizard (`(auth)/welcome/ai`) and the Owner Settings panel
+ * (`(authed)/settings/ai`). Both import from here so the option list
  * and per-provider default live in exactly one place.
  *
  * The ids come from `@caelo-cms/admin-core/model-catalog` (the curated

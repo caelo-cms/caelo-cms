@@ -185,7 +185,7 @@ Three implementations: `s3-cloudfront-prewarm.ts` (issues a CloudFront cache inv
 
 Wired into the redeploy-orchestrator's existing `cdnCopyTick()` (currently a no-op stub for cloud installs); on cloud installs, the orchestrator dispatches to the right adapter based on `process.env.CAELO_PROVIDER`.
 
-### 7. DNS guidance admin page (`apps/admin/src/routes/(authed)/security/dns/+page.svelte`)
+### 7. DNS guidance admin page (`apps/admin/src/routes/(authed)/settings/dns/+page.svelte`)
 
 New Owner-only route. Reads required-DNS records from Pulumi outputs (stored in `cms_admin.provisioning_outputs` table after `pulumi up`; new migration 0046) and renders:
 
@@ -306,8 +306,8 @@ New workspace package. Hosts the three edge implementations (`gcp.ts`, `aws.ts`,
 - `packages/admin-core/src/ops/dns.ts` — `dns.verify_record`.
 
 **New (admin UI):**
-- `apps/admin/src/routes/(authed)/security/dns/+page.svelte` + `+page.server.ts` — Owner DNS guidance.
-- `apps/admin/src/routes/(authed)/security/+page.svelte` — add "DNS records" tile.
+- `apps/admin/src/routes/(authed)/settings/dns/+page.svelte` + `+page.server.ts` — Owner DNS guidance.
+- `apps/admin/src/routes/(authed)/settings/+page.svelte` — add "DNS records" tile.
 
 **New (migration):**
 - `packages/migrations/migrations/cms_admin/0046_p15_provisioning_outputs.sql` — `provisioning_outputs` + `ab_assignment_aggregates`.
@@ -355,7 +355,7 @@ End-to-end after the PR lands:
 
 7. **DNS guidance page correctness:**
    - Pulumi-output-sync writes `provisioning_outputs.outputs_json`.
-   - Admin loads `/security/dns` → table renders correct hostnames + values + status.
+   - Admin loads `/settings/dns` → table renders correct hostnames + values + status.
    - Manually break a DNS record (delete the A record at the registrar) → status flips to `mismatch` within 30s of next page load.
 
 8. **Bootstrap token flow on cloud:**

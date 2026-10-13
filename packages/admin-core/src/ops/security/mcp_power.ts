@@ -163,7 +163,7 @@ async function resolveAdminScopedToken(
       ok: false,
       message:
         `auth_error: token scope '${resolved.value.scope}' — ${operation} needs an admin-scoped token. ` +
-        `Mint one at /security/mcp (scope: admin); 'chat' tokens only drive caelo_chat.`,
+        `Mint one at /settings/mcp (scope: admin); 'chat' tokens only drive caelo_chat.`,
     };
   }
   return {
@@ -494,7 +494,7 @@ export const mcpExecuteToolOp = defineOperation({
           message:
             `cost cap reached: spent ~${spent} µ¢ / cap ${auth.aiCostCapMicrocents} µ¢ on this session — ` +
             `'${input.toolName}' makes its own AI provider calls and is blocked. Non-AI tools still work; ` +
-            `the Owner can mint a higher-cap token at /security/mcp.`,
+            `the Owner can mint a higher-cap token at /settings/mcp.`,
         });
       }
     }

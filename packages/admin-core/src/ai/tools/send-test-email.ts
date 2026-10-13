@@ -2,7 +2,7 @@
 
 /**
  * `send_test_email` — the AI's side of the "Send test" button on
- * Security → Email (`email_config.send_test`). Sends the fixed transport
+ * Settings → Email (`email_config.send_test`). Sends the fixed transport
  * self-test message through the currently stored email config, so the AI
  * can confirm a transport it just proposed (`propose_set_email_config`)
  * actually delivers — without the operator switching to the panel.
@@ -34,7 +34,7 @@ export const sendTestEmailTool: ToolDefinitionWithHandler<SendTestEmailInput> = 
   description:
     "Send the fixed 'Caelo email transport test' message through the site's configured email transport and report whether the provider accepted it. " +
     "Use after an email config change was approved (`propose_set_email_config`), or when password-reset / form emails seem not to arrive. " +
-    "The recipient must be on the sender's own domain (e.g. sender noreply@example.com → you may test to team@example.com); for any other address, tell the operator to send the test from Security → Email. " +
+    "The recipient must be on the sender's own domain (e.g. sender noreply@example.com → you may test to team@example.com); for any other address, tell the operator to send the test from Settings → Email. " +
     "Subject and body are fixed — this cannot send custom mail. A failure names the provider's reason (bad API key, unverified sender domain, transport 'none'); relay it rather than retrying unchanged.",
   schema: sendTestEmailInput,
   handler: async (ctx, input, toolCtx) => {

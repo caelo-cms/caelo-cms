@@ -17,7 +17,7 @@ These rules bind every plugin identically — shipped with a release or installe
 - `ctx.api` — the plugin's own public read surface for its Web Component.
 - `ctx.theme` — read-only theme tokens.
 - `ctx.visitor` — an opaque visitor id, the public user id and an IP hash. **Never** the visitor's session token.
-- `ctx.captcha` — proof verification for public writes. `requireProof()` is true when the API gateway verified the visitor's proof-of-work for this request (or the Owner turned the captcha off at /security/gateway). No token a plugin passes can stand in for a verified proof.
+- `ctx.captcha` — proof verification for public writes. `requireProof()` is true when the API gateway verified the visitor's proof-of-work for this request (or the Owner turned the captcha off at /settings/gateway). No token a plugin passes can stand in for a verified proof.
 - `publicOperations` — the operations a visitor may call through the API gateway. Everything else is refused (default deny).
 
 ## Grants — approved by the Owner, per plugin version
@@ -36,7 +36,7 @@ These rules bind every plugin identically — shipped with a release or installe
 | Client assets | A browser runtime on every page of the site |
 | Contributions | Structured head/sitemap entries, URL slots, data lists, deferred modules |
 
-Grants are bound to the plugin's exact artifact. A new version asks again; a revoked grant stops working before the next call. You can revoke a grant at `/security/plugins/installations`, or ask the AI. It lists the grants (`list_plugin_grants`) and proposes the revoke (`propose_revoke_plugin_capability`), and nothing changes until you click Approve. Revoking a grant of the running version disables the plugin but keeps its data.
+Grants are bound to the plugin's exact artifact. A new version asks again; a revoked grant stops working before the next call. You can revoke a grant at `/settings/plugins/installations`, or ask the AI. It lists the grants (`list_plugin_grants`) and proposes the revoke (`propose_revoke_plugin_capability`), and nothing changes until you click Approve. Revoking a grant of the running version disables the plugin but keeps its data.
 
 ## Rules no grant can lift
 
@@ -50,7 +50,7 @@ Grants are bound to the plugin's exact artifact. A new version asks again; a rev
 
 1. You describe what you want; the AI calls `submit_plugin({ slug, source, manifest })`.
 2. The validator runs. On failure the AI gets structured errors and fixes them in the same turn.
-3. On success the plugin waits at `/security/plugins`. The AI says so and does not claim it is active.
+3. On success the plugin waits at `/settings/plugins`. The AI says so and does not claim it is active.
 4. You review the source, the schema, the requested grants and every tool description, and approve.
 5. Caelo provisions the plugin's tables and loads it. Its tools reach the AI on the next turn.
 
@@ -58,7 +58,7 @@ Disabling a plugin keeps its data. Uninstalling removes it.
 
 ## Approving a plugin that asks for access
 
-A plugin that requests grants is reviewed at **Security → Plugins → Install external packages and review access** (`/security/plugins/installations`). Packages built outside Caelo are uploaded there as a JSON file `{ "manifest": …, "source": "…" }`; plugins the AI builds with extra access land in the same queue. Approving needs the `plugins.install` permission, which only the Owner has by default — the moderation permission `plugins.approve` is not enough.
+A plugin that requests grants is reviewed at **Settings → Plugins → Install external packages and review access** (`/settings/plugins/installations`). Packages built outside Caelo are uploaded there as a JSON file `{ "manifest": …, "source": "…" }`; plugins the AI builds with extra access land in the same queue. Approving needs the `plugins.install` permission, which only the Owner has by default — the moderation permission `plugins.approve` is not enough.
 
 - **Every grant is its own checkbox, none preselected.** Each shows the plugin's stated reason. You see the exact source, the manifest, and every tool name and description the AI will be shown.
 - **Approval issues a receipt per grant**, bound to the package's SHA-256. A manifest that merely lists a grant gets nothing; only receipts count.

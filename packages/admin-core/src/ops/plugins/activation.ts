@@ -6,7 +6,7 @@
  * Activation is a hard state (CLAUDE.md §2): until an Owner says yes, a
  * discovered plugin is recorded and nothing of it runs. That decision
  * used to be reachable only by leaving the conversation for
- * `/security/plugins` — the round-trip §11.A exists to remove. Here the
+ * `/settings/plugins` — the round-trip §11.A exists to remove. Here the
  * AI proposes the activation, the operator approves on the in-chat
  * card, and the plugin loads.
  *
@@ -128,7 +128,7 @@ export const proposePluginActivationOp = defineOperation({
       note:
         (manifest.urlContributions ?? []).length > 0
           ? "This plugin claims URL slots — activating it can change the public paths of existing pages."
-          : "Activating starts this plugin's code. It can be turned off again at /security/plugins.",
+          : "Activating starts this plugin's code. It can be turned off again at /settings/plugins.",
       ...(input.reason ? { reason: input.reason } : {}),
     };
 

@@ -9,7 +9,7 @@
  *   2. Description is required (it is the design rationale the
  *      cold-start gate reads).
  *   3. Submitting queues a §11.A proposal that is visible at
- *      /security/themes/pending — nothing is created without the
+ *      /settings/themes/pending — nothing is created without the
  *      Owner's Approve click.
  */
 
@@ -73,6 +73,6 @@ test("create dialog has no preset picker, requires description, queues a proposa
   // slug appears in BOTH the preview <pre> and the collapsed
   // original-payload <pre>, so anchor on the first match — the intent
   // is "the proposal is visible in the queue", not "exactly one node".
-  await page.goto("/security/themes/pending");
+  await page.goto("/settings/themes/pending");
   await expect(page.getByText(SLUG).first()).toBeVisible({ timeout: 15_000 });
 });

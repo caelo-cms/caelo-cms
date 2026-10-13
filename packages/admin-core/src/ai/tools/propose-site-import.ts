@@ -3,7 +3,7 @@
 /**
  * P14 — `propose_site_import`. AI proposes a crawl; row queues at
  * `import_runs.status='proposed'`. Owner approves at
- * /security/import/pending; only then does the worker pick it up. AI
+ * /settings/import/pending; only then does the worker pick it up. AI
  * cannot start an unauthenticated headless crawl on its own.
  *
  * issue #193 — the tool computes a scope + cost estimate BEFORE
@@ -190,7 +190,7 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
   description:
     "TWO-STEP: propose a crawl of an existing site to import pages into Caelo. " +
     "This QUEUES the proposal; the chat renders it as a card with an APPROVE button — tell the " +
-    "operator to click Approve right there (the /security/import/pending page works too). The " +
+    "operator to click Approve right there (the /settings/import/pending page works too). The " +
     "crawler only runs after that click. DO NOT claim the crawl ran. After approval you receive " +
     "an automatic 'Approved' message; the crawl runs in the BACKGROUND — check `list_import_pages({runId})` for " +
     "status, and if it is still 'crawling', say so and continue when it is ready_for_review (it also " +
@@ -302,7 +302,7 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
       ok: true,
       // v0.5.11 — canonical shape so ProposeCard renders inline approve.
       content:
-        `Queued proposal ${v.runId}: site-import ${input.sourceUrl} (${mode}).${scopeNote} ${describeEstimate(estimate)} Approve it on the proposal card in this chat (queue: /security/import/pending).` +
+        `Queued proposal ${v.runId}: site-import ${input.sourceUrl} (${mode}).${scopeNote} ${describeEstimate(estimate)} Approve it on the proposal card in this chat (queue: /settings/import/pending).` +
         // Issue #620 — the migration builds on its own branch.
         (v.migrationBranch
           ? " This chat now works on its own migration branch: the migration stays out of the shared draft until you stage it."
