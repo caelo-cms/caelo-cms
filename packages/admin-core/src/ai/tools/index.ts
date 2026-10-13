@@ -16,6 +16,7 @@ import {
   updatePagesManyTool,
 } from "./bulk-pages-modules.js";
 import {
+  getCaeloUpdateAgentTool,
   getCaeloUpdatePolicyTool,
   getCaeloUpdateTool,
   listCaeloUpdatesTool,
@@ -356,6 +357,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listCaeloUpdatesTool);
   registry.register(getCaeloUpdateTool);
   registry.register(getCaeloUpdatePolicyTool);
+  // #696 Phase 4c — the self-hosted update agent's check-in (read-only).
+  registry.register(getCaeloUpdateAgentTool);
   // audit #2 — ONE module-placement tool routed by `target`
   // (page/layout/template). Replaces add_module_to_{page,layout,template};
   // adds reuse-by-moduleId on the layout target (the old asymmetry).

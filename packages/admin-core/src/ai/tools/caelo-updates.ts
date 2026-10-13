@@ -9,6 +9,7 @@
  * formatted results say so, so the AI points there instead of trying.
  */
 
+import type { PlatformUpdateAgentStatus } from "@caelo-cms/shared";
 import { z } from "zod";
 import type {
   PlatformUpdateEvent,
@@ -26,7 +27,8 @@ const STATUS_WORDS: Record<PlatformUpdateRequest["status"], string> = {
   rolled_back: "rolled back (the new release was unhealthy; the previous one serves again)",
   failed: "failed",
   refused: "refused",
-  needs_cloud_shell: "needs the Owner to run it in Cloud Shell (it changes the cloud setup)",
+  needs_cloud_shell:
+    "needs the Owner to run the upgrade by hand once (Cloud Shell on Google Cloud, the upgrade command on a self-hosted server)",
   cancelled: "cancelled",
 };
 
@@ -115,4 +117,29 @@ export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
     lines.push(OWNER_ONLY);
     return lines.join("\n");
   },
+});
+
+/** The self-hosted update agent's last check-in, for the AI (#696 Phase 4c). */
+export function formatUpdateAgent(agent: PlatformUpdateAgentStatus | null): string {
+  if (agent === null) {
+    return `No update agent has checked in. On a self-hosted install that means updates cannot be installed from ${UPDATES_PATH} yet: the Owner sets the agent up on the server (the page shows the command). Google Cloud installs use their own upgrader instead and need no agent.`;
+  }
+  const state = !agent.checkedInRecently
+    ? `last checked in ${agent.lastSeenAt} and is not running now`
+    : agent.problem
+      ? `is running but cannot install updates: ${agent.problem}`
+      : "is running and ready to install updates the Owner starts";
+  return `The update agent on ${agent.host} (Caelo ${agent.agentVersion}) ${state}. ${OWNER_ONLY}`;
+}
+
+export const getCaeloUpdateAgentTool = makeReadTool<Record<string, never>>({
+  name: "get_caelo_update_agent",
+  description:
+    "Self-hosted installs only: whether the update agent on the server is running, so the Owner can install Caelo updates from Settings → Updates — or what is wrong on the server (agent not set up, not running, cosign or Docker missing). " +
+    "Use when the operator asks why Install update is missing or why an update did not start on a self-hosted site. Read-only.",
+  opName: "platform_updates.agent_status",
+  input: z.object({}).strict(),
+  format: (value) =>
+    formatUpdateAgent((value as { agent: PlatformUpdateAgentStatus | null }).agent),
+  includeValue: false,
 });
