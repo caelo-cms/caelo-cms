@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.45
+
+### Features
+- efd62229 Settings → Caelo updates with the pinned upgrade command (#696 Phase 0) (#705)
+- 7cfa9b04 caelo-ops image + signed release manifest (#696) (#702)
+- 67452354 keyless provisioner — impersonate caelo-provisioner instead of a JSON key (#700)
+
+### Refactors
+- 12189a50 split upgrade into converge + app-roll, pre-upgrade backup, deep health check (#703)
+
 ## v0.10.44
 
 ### Features
