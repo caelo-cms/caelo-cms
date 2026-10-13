@@ -561,6 +561,32 @@ describe("case 3 — a caelo_chat turn's approval goes back to the external agen
     expect(await tokensNamed("t658-chat-stopafter")).toBe(0);
   });
 
+  it("a card decided after Stop does not revive another approved before it", async () => {
+    // codex review — the whole batch the resume claims must postdate the Stop.
+    const token = await chatToken("t658-chat-i");
+    const chatSessionId = await createChat("t658 multi stop");
+    provider.askToMintMany(["t658-prestop-a", "t658-prestop-b"], "call-prestop");
+    const sent = await sendChat(token, { message: "Mint two tokens.", chatSessionId });
+    if (!sent.ok) throw new Error(JSON.stringify(sent.error));
+    const [a, b] = (sent.value as { pendingApprovals: { approvalId: string }[] })
+      .pendingApprovals as [{ approvalId: string }, { approvalId: string }];
+    await execute(registry, adapter, OWNER, "chat.decide_turn_approval", {
+      chatSessionId,
+      approvalId: a.approvalId,
+      approved: true,
+    });
+    await Bun.sleep(5);
+    await stop(chatSessionId);
+    await execute(registry, adapter, OWNER, "chat.decide_turn_approval", {
+      chatSessionId,
+      approvalId: b.approvalId,
+      approved: false,
+    });
+    const resumed = await sendChat(token, { chatSessionId, resume: true });
+    expect(resumed.ok).toBe(false);
+    expect(await tokensNamed("t658-prestop-a")).toBe(0);
+  });
+
   it("a Rejected card resumes the agent's turn with the rejection; nothing is applied", async () => {
     const token = await chatToken("t658-chat-e");
     const { chatSessionId, pendingApprovals } = await pausedChat(

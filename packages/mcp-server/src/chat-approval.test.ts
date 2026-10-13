@@ -123,6 +123,28 @@ describe("settleChatApprovals", () => {
     expect(resumes).toBe(1);
   });
 
+  it("checks the budget on the first read too: a decision read late does not resume", async () => {
+    let t = 0;
+    let resumes = 0;
+    const r = await settleChatApprovals({
+      chatSessionId: CHAT,
+      // The read itself takes 6 s of a 35 s budget: a 30 s resume no longer fits.
+      fetchState: async () => {
+        t += 6_000;
+        return state("decided", true);
+      },
+      resume: async () => {
+        resumes++;
+        return reply("x");
+      },
+      waitMs: 35_000,
+      resumeReserveMs: 30_000,
+      now: () => t,
+    });
+    expect(r.kind).toBe("ready");
+    expect(resumes).toBe(0);
+  });
+
   it("stops waiting for a decision while a resume still fits", async () => {
     let t = 0;
     const r = await settleChatApprovals({
@@ -150,7 +172,7 @@ describe("settleChatApprovals", () => {
         resumes++;
         return reply("ok");
       },
-      waitMs: 1_000,
+      waitMs: 35_000,
       resumeReserveMs: 30_000,
     });
     expect(r.kind).toBe("settled");

@@ -91,23 +91,30 @@ async function lockSession(
 }
 
 /**
- * Issue #658 — whether the operator decided an approval of this caelo_chat
- * token's paused turn at or after the chat's Stop, and it still waits for
- * the turn to pick it up.
+ * Issue #658 — whether every decided card of this caelo_chat token's paused
+ * turn (still waiting for the turn to pick it up) was decided at or after
+ * the chat's Stop.
  */
 async function approvalDecidedAfterStop(
   tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
   chatSessionId: string,
   mcpTokenId: string,
 ): Promise<boolean> {
+  // The WHOLE batch the resume would claim must postdate the Stop (codex
+  // review): one card decided after it must not revive another the
+  // operator had approved before stopping.
   const rows = (await tx.execute(sql`
-    SELECT 1 AS hit FROM chat_turn_approvals
+    SELECT count(*)::int AS decided,
+           count(*) FILTER (
+             WHERE decided_at < (SELECT agents_stopped_at FROM chat_sessions
+                                 WHERE id = ${chatSessionId}::uuid)
+           )::int AS before_stop
+    FROM chat_turn_approvals
     WHERE chat_session_id = ${chatSessionId}::uuid AND source = 'mcp_chat'
       AND mcp_token_id = ${mcpTokenId}::uuid AND status IN ('approved', 'rejected')
-      AND decided_at >= (SELECT agents_stopped_at FROM chat_sessions WHERE id = ${chatSessionId}::uuid)
-    LIMIT 1
-  `)) as unknown as { hit: number }[];
-  return rows.length > 0;
+  `)) as unknown as { decided: number; before_stop: number }[];
+  const r = rows[0];
+  return r !== undefined && r.decided > 0 && r.before_stop === 0;
 }
 
 // ─── stop epoch (read at request arrival) ─────────────────────────────

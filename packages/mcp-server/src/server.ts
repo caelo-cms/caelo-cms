@@ -52,6 +52,11 @@ export const CHAT_MCP_INSTRUCTIONS = [
 
 const awaitApprovalInput = z.object({ chatSessionId: z.string().uuid() }).strict();
 
+/** The resume request's timeout (`resumeChat`), reserved out of a call's budget. */
+const resumeTimeoutMs = (): number => resolveTimeoutMs(30_000);
+/** Headroom for the state reads around a resume in caelo_await_approval. */
+const RESUME_SLACK_MS = 5_000;
+
 /** Issue #658 — keep waiting on the approval cards a caelo_chat turn paused on. */
 const AWAIT_APPROVAL_TOOL = {
   name: "caelo_await_approval",
@@ -203,8 +208,8 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
         fetchState: () => fetchChatApprovalState({ ...opts, chatSessionId }),
         resume: () => resumeChat({ ...opts, chatSessionId }),
         waitMs,
-        // The resume POST's own timeout: keep it inside the call's budget.
-        resumeReserveMs: Math.min(waitMs, resolveTimeoutMs(30_000)),
+        // The resume POST's whole timeout stays inside the call's budget.
+        resumeReserveMs: resumeTimeoutMs(),
         ...(opts.approvalPollMs !== undefined ? { intervalMs: opts.approvalPollMs } : {}),
         ...(onPending ? { onPending } : {}),
       });
@@ -225,7 +230,12 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
         };
       }
       try {
-        const settled = await settle(parsed.data.chatSessionId, resolveApprovalWaitMs());
+        // Room for at least one resume, even with a short configured wait —
+        // otherwise a decided turn could never continue.
+        const settled = await settle(
+          parsed.data.chatSessionId,
+          Math.max(resolveApprovalWaitMs(), resumeTimeoutMs() + RESUME_SLACK_MS),
+        );
         return chatResult(null, settled, parsed.data.chatSessionId);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

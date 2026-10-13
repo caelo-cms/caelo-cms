@@ -117,15 +117,10 @@ export async function settleChatApprovals(deps: SettleDeps): Promise<SettleResul
   const pollDeadline = deadline - deps.resumeReserveMs;
   const decided: ChatApprovalView[] = [];
   const turns: SendChatResult[] = [];
-  let fetches = 0;
-  const fetchState = async (): Promise<ChatApprovalState> => {
-    fetches += 1;
-    return deps.fetchState();
-  };
   for (;;) {
     const start = now();
     const state = await pollUntil({
-      fetch: fetchState,
+      fetch: deps.fetchState,
       done: (s) => s.state !== "pending",
       waitMs: Math.max(0, pollDeadline - start),
       ...(deps.intervalMs !== undefined ? { intervalMs: deps.intervalMs } : {}),
@@ -140,9 +135,9 @@ export async function settleChatApprovals(deps: SettleDeps): Promise<SettleResul
       return { kind: "superseded", decided, turns, dropped: state.approvals };
     }
     if (state.state === "none") return { kind: "settled", decided, turns };
-    // Decided on this call's very first read: nothing was spent waiting, so
-    // the resume always fits. Otherwise only while its reserve is left.
-    if (fetches > 1 && deadline - now() < deps.resumeReserveMs) {
+    // Checked after every read (reads take time too): start the resume only
+    // while its whole timeout still fits in the call's budget.
+    if (deadline - now() < deps.resumeReserveMs) {
       return { kind: "ready", decided, turns };
     }
     decided.push(...state.approvals);
