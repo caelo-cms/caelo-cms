@@ -294,10 +294,10 @@ describe("media-pass", () => {
     expect(copied.byteLength).toBe(4);
   });
 
-  it("gives an orig embed with a declared width the WebP ladder as srcset (#667 image delivery)", async () => {
+  it("gives an orig embed with declared sizes the WebP ladder, and preloads that exact pair (#667)", async () => {
     const pages = [
       {
-        html: `<img src="/_caelo/media/${heroSlug}" width="320" height="180" alt="hero" />`,
+        html: `<html><head></head><body><img src="/_caelo/media/${heroSlug}" width="320" height="180" sizes="320px" alt="hero" /></body></html>`,
         pageSlug: "orig-hero",
       },
     ];
@@ -316,6 +316,10 @@ describe("media-pass", () => {
       `srcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w, /_assets/${heroSlug}/webp-800.${H}.webp 800w, /_assets/${heroSlug}.${H}.jpg 1600w"`,
     );
     expect(html).toContain('sizes="320px"');
+    // The preload fetches what the image will select, not a fixed ladder.
+    expect(html).toContain(
+      `<link rel="preload" as="image" imagesrcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w, /_assets/${heroSlug}/webp-800.${H}.webp 800w, /_assets/${heroSlug}.${H}.jpg 1600w" imagesizes="320px" />`,
+    );
   });
 
   it("populates cdn_manifest.entries when enabled and asset usage clears the threshold", async () => {

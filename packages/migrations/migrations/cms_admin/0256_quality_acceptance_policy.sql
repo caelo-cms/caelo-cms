@@ -14,8 +14,8 @@
 -- with bug_report; everything else that cannot be fixed is described
 -- plainly; accept_quality_findings only on the operator's explicit request
 -- (the same rule publish_despite_failed_audit already had). Step 3 gains
--- the image-delivery fix the build now honours (a declared pixel width on
--- the <img> gets the WebP ladder).
+-- the image-delivery fix the build now honours (an `orig` <img> that
+-- declares `sizes` gets the WebP ladder as srcset).
 --
 -- Targeted `replace()` guarded by `body LIKE` on the exact old sentence, as
 -- in 0246: idempotent, a no-op on an install whose text has moved on, and it
@@ -42,7 +42,7 @@ UPDATE skills
    SET body = replace(
      body,
      '   - `errors-in-console`: a script in a module throws or a resource 404s — fix the module''s JS or the broken URL.',
-     '   - `image-delivery-insight` on a library image: give the `<img>` its displayed pixel `width` and `height` attributes — the build then serves the right-sized WebP from the image''s variants instead of the full original.
+     '   - `image-delivery-insight` on a library image: give the `<img>` a `sizes` attribute with the width it is displayed at (e.g. `sizes="160px"`, or `sizes="(max-width: 600px) 100vw, 480px"`) plus `width`/`height` — the build then serves the right-sized WebP from the image''s variants instead of the full original.
    - `errors-in-console`: a script in a module throws or a resource 404s — fix the module''s JS or the broken URL.'
    )
  WHERE slug = 'fix-quality-findings'

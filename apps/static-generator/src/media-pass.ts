@@ -409,12 +409,17 @@ function injectLcpPreload(
   // would otherwise win "first image" and suppress the hero's preload.
   // Head `<style>` stays in the scan so a CSS-background hero still counts,
   // and no `<body>` tag is required (layouts need not carry one).
-  const firstAssetMatch = html
-    .replace(/<link\b[^>]*>/gi, "")
-    .match(
-      /\/_assets\/([a-z0-9][a-z0-9-]{0,63})(?:\/([a-z][a-z0-9-]{0,63}))?\.[0-9a-f]{16}\.(?:png|jpe?g|webp|avif|gif)/,
-    );
+  const scanned = html.replace(/<link\b[^>]*>/gi, "");
+  const firstAssetMatch = scanned.match(
+    /\/_assets\/([a-z0-9][a-z0-9-]{0,63})(?:\/([a-z][a-z0-9-]{0,63}))?\.[0-9a-f]{16}\.(?:png|jpe?g|webp|avif|gif)/,
+  );
   if (!firstAssetMatch) return html;
+  // #667 — when the first image is an `<img>` that carries its own
+  // srcset + sizes, preload exactly that pair, so the preload fetches the
+  // file the image will select (a fixed `imagesizes` preloaded an 800px
+  // WebP for a logo whose `sizes="160px"` picks the 400px one).
+  const own = ownResponsivePair(scanned, firstAssetMatch.index ?? 0);
+  if (own) return insertPreload(html, own.srcset, own.sizes);
   const ref = firstAssetMatch[1] as string;
   const variants = variantsByRef.get(ref);
   if (!variants || variants.length === 0) return html;
@@ -436,9 +441,28 @@ function injectLcpPreload(
       return `/${path} ${v.width}w`;
     })
     .join(", ");
-  const tag = `<link rel="preload" as="image" imagesrcset="${imagesrcset}" imagesizes="(max-width: 600px) 400px, (max-width: 1200px) 800px, 1200px" />`;
-  // Insert just before </head>; fall back to prepending the document
-  // if there's no head (very old templates).
+  return insertPreload(
+    html,
+    imagesrcset,
+    "(max-width: 600px) 400px, (max-width: 1200px) 800px, 1200px",
+  );
+}
+
+/** The srcset/sizes of the `<img>` tag containing position `at`, when it has both. */
+function ownResponsivePair(html: string, at: number): { srcset: string; sizes: string } | null {
+  const start = html.lastIndexOf("<", at);
+  if (start === -1 || !/^<img\b/i.test(html.slice(start, start + 5))) return null;
+  const end = html.indexOf(">", at);
+  if (end === -1) return null;
+  const tag = html.slice(start, end + 1);
+  const srcset = tag.match(/\ssrcset="([^"]*)"/i)?.[1];
+  const sizes = tag.match(/\ssizes="([^"]*)"/i)?.[1];
+  return srcset && sizes ? { srcset, sizes } : null;
+}
+
+/** Insert an image preload just before `</head>` (or prepend it without a head). */
+function insertPreload(html: string, imagesrcset: string, imagesizes: string): string {
+  const tag = `<link rel="preload" as="image" imagesrcset="${imagesrcset}" imagesizes="${imagesizes}" />`;
   if (html.includes("</head>")) {
     return html.replace("</head>", `  ${tag}\n  </head>`);
   }

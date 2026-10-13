@@ -113,10 +113,11 @@ describe("enrichResponsiveImages — orig embeds (#667 image delivery)", () => {
   const map = new Map([[SLUG, logoVariants]]);
   const urlFor = (ref: string, v: string, f: string) =>
     v === "orig" ? `/_assets/${ref}.${f}` : `/_assets/${ref}/${v}.${f}`;
+  const opts = { rewriteSrc: false, urlFor };
 
-  it("offers the WebP ladder plus the original, sized by the declared width", () => {
+  it("offers the WebP ladder plus the original when the author declared sizes", () => {
     const out = enrichResponsiveImages(
-      `<img src="/_caelo/media/${SLUG}" width="160" height="40" alt="searchVIU">`,
+      `<img src="/_caelo/media/${SLUG}" width="160" height="40" sizes="160px" alt="searchVIU">`,
       map,
       { rewriteSrc: true, urlFor, formatFor: (_r, v) => (v === "orig" ? "png" : "webp") },
     );
@@ -124,6 +125,7 @@ describe("enrichResponsiveImages — orig embeds (#667 image delivery)", () => {
     expect(out).toContain(
       `srcset="/_assets/${SLUG}/webp-400.webp 400w, /_assets/${SLUG}/webp-800.webp 800w, /_assets/${SLUG}.png 960w"`,
     );
+    expect(out.match(/sizes=/g)).toHaveLength(1);
     expect(out).toContain('sizes="160px"');
   });
 
@@ -137,68 +139,40 @@ describe("enrichResponsiveImages — orig embeds (#667 image delivery)", () => {
         ],
       ],
     ]);
-    const out = enrichResponsiveImages(`<img src="/_caelo/media/${SLUG}" width="120">`, exact, {
-      rewriteSrc: false,
-      urlFor,
-    });
+    const out = enrichResponsiveImages(
+      `<img src="/_caelo/media/${SLUG}" sizes="120px">`,
+      exact,
+      opts,
+    );
     expect(out).toContain(`srcset="/_assets/${SLUG}/webp-400.webp 400w"`);
-    expect(out).toContain('sizes="120px"');
   });
 
-  it("leaves the tag alone without a pixel width, for SVG/GIF originals, or with an author srcset", () => {
-    const opts = { rewriteSrc: false, urlFor };
-    expect(
-      enrichResponsiveImages(`<img src="/_caelo/media/${SLUG}" alt="no width">`, map, opts),
-    ).not.toContain("srcset=");
-    expect(
-      enrichResponsiveImages(
-        `<img src="/_caelo/media/${SLUG}" style="width:50%" data-width="160">`,
-        map,
-        opts,
-      ),
-    ).not.toContain("srcset=");
+  it("keeps the original without an author sizes: a width attribute is not the rendered size", () => {
+    // CSS may stretch a `width="400"` image to 1200px; guessing sizes from
+    // the attribute would make the browser pick (and upscale) a 400px file.
+    for (const tag of [
+      `<img src="/_caelo/media/${SLUG}" width="400" style="width:100%" alt="x">`,
+      `<img src="/_caelo/media/${SLUG}" alt="no width">`,
+    ]) {
+      expect(enrichResponsiveImages(tag, map, opts)).not.toContain("srcset=");
+    }
+  });
+
+  it("leaves author srcset, SVG/GIF originals and unknown original widths alone", () => {
     const authored = enrichResponsiveImages(
-      `<img src="/_caelo/media/${SLUG}" width="160" srcset="a.png 1x">`,
+      `<img src="/_caelo/media/${SLUG}" sizes="160px" srcset="a.png 1x">`,
       map,
       opts,
     );
     expect(authored.match(/srcset=/g)).toHaveLength(1);
-    const gif = new Map([
-      [
-        SLUG,
-        [
-          { variant: "orig", format: "gif", width: 960 },
-          { variant: "webp-400", format: "webp", width: 400 },
-        ],
-      ],
-    ]);
-    expect(
-      enrichResponsiveImages(`<img src="/_caelo/media/${SLUG}" width="160">`, gif, opts),
-    ).not.toContain("srcset=");
-  });
-
-  it("keeps an author's sizes and does not offer a ladder when the original's width is unknown", () => {
-    const out = enrichResponsiveImages(
-      `<img src="/_caelo/media/${SLUG}" width="160" sizes="10vw">`,
-      map,
-      { rewriteSrc: false, urlFor },
-    );
-    expect(out).toContain('sizes="10vw"');
-    expect(out.match(/sizes=/g)).toHaveLength(1);
-    const unknown = new Map([
-      [
-        SLUG,
-        [
-          { variant: "orig", format: "png" },
-          { variant: "webp-400", format: "webp" },
-        ],
-      ],
-    ]);
-    expect(
-      enrichResponsiveImages(`<img src="/_caelo/media/${SLUG}" width="160">`, unknown, {
-        rewriteSrc: false,
-        urlFor,
-      }),
-    ).not.toContain("srcset=");
+    for (const orig of [
+      { variant: "orig", format: "gif", width: 960 },
+      { variant: "orig", format: "png" },
+    ]) {
+      const m = new Map([[SLUG, [orig, { variant: "webp-400", format: "webp", width: 400 }]]]);
+      expect(
+        enrichResponsiveImages(`<img src="/_caelo/media/${SLUG}" sizes="160px">`, m, opts),
+      ).not.toContain("srcset=");
+    }
   });
 });

@@ -35,14 +35,6 @@ const LADDER_REPLACEABLE_ORIG_FORMATS: ReadonlySet<string> = new Set([
   "avif",
 ]);
 
-/** The `width` attribute of an `<img>` tag when it is a plain pixel count. */
-function declaredPixelWidth(tag: string): number | null {
-  const m = tag.match(/\swidth=("|')?(\d{1,5})(?:px)?\1(?=[\s/>])/i);
-  if (!m?.[2]) return null;
-  const n = Number.parseInt(m[2], 10);
-  return n > 0 ? n : null;
-}
-
 /** Extract `webp-800` → 800; `square-400` → 400; `orig` → null. */
 export function parseVariantWidth(variant: string): number | null {
   const m = variant.match(/-(\d+)$/);
@@ -152,21 +144,18 @@ export function enrichResponsiveImages(
     // typical for logos) shipped the full original as PNG/JPEG even when
     // the pipeline had a WebP ladder for it: Lighthouse's image-delivery
     // insight flagged the format and the oversize on every such image.
-    // With a declared pixel width the display size is known, so offer the
-    // WebP ladder plus the original at its real width and let the browser
-    // pick the smallest file that covers `width × devicePixelRatio`. Without
-    // a width there is no honest `sizes` value, so the tag stays as is.
+    // Only the author knows the rendered width (a `width` attribute is often
+    // just the intrinsic size that CSS stretches), so the ladder is offered
+    // only when the tag declares that contract itself with `sizes`: then
+    // the WebP ladder plus the original at its real width go into srcset
+    // and the browser picks the smallest file that covers the declared
+    // size. Without `sizes` the tag keeps shipping the original.
     const origLadder =
-      variant === "orig" && !/\bsrcset=/i.test(out)
-        ? origSrcset(variants, assetId, declaredPixelWidth(out), options)
+      variant === "orig" && /\bsizes=/i.test(out) && !/\bsrcset=/i.test(out)
+        ? origSrcset(variants, assetId, options)
         : null;
     if (origLadder) {
-      out = out.replace(
-        /<img\b/,
-        /\bsizes=/i.test(out)
-          ? `<img srcset="${origLadder.srcset}"`
-          : `<img srcset="${origLadder.srcset}" sizes="${origLadder.sizes}"`,
-      );
+      out = out.replace(/<img\b/, `<img srcset="${origLadder}"`);
     }
 
     if (familyVariants.length >= 2 && !/\bsrcset=/i.test(out)) {
@@ -195,19 +184,17 @@ export function enrichResponsiveImages(
 }
 
 /**
- * The srcset/sizes pair for an `orig` embed with a declared pixel width,
- * or null when it would not help: no raster original, no WebP breakpoint
- * the source could fill, or an original whose width is unknown (without
- * it the browser could be offered only candidates narrower than the image
- * it needs, and upscale them).
+ * The srcset for an `orig` embed whose author declared `sizes`, or null when
+ * it would not help: no raster original, no WebP breakpoint the source could
+ * fill, or an original whose width is unknown (without it the browser could
+ * be offered only candidates narrower than the image it needs, and upscale
+ * them).
  */
 function origSrcset(
   variants: readonly ImageVariantInfo[],
   assetId: string,
-  displayWidth: number | null,
   options: EnrichResponsiveImagesOptions,
-): { srcset: string; sizes: string } | null {
-  if (displayWidth === null) return null;
+): string | null {
   const orig = variants.find((v) => v.variant === "orig");
   if (!orig || !LADDER_REPLACEABLE_ORIG_FORMATS.has(orig.format)) return null;
   const origWidth = orig.width ?? null;
@@ -228,5 +215,5 @@ function origSrcset(
   if (origWidth > widest.width) {
     entries.push(`${options.urlFor(assetId, "orig", orig.format)} ${origWidth}w`);
   }
-  return { srcset: entries.join(", "), sizes: `${displayWidth}px` };
+  return entries.join(", ");
 }
