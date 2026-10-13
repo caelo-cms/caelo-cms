@@ -95,6 +95,22 @@ class ScriptedProvider extends FixtureProvider {
       ]
     );
   }
+  /** Next step: call the gated token-mint tool for each name at once. */
+  askToMintMany(names: readonly string[], callIdPrefix: string): void {
+    this.steps.push([
+      { kind: "text-delta", text: "I'll mint those tokens." },
+      ...names.map(
+        (displayName, i): ProviderEvent => ({
+          kind: "tool-call",
+          id: `${callIdPrefix}-${i}`,
+          name: "propose_create_mcp_token",
+          arguments: { displayName },
+        }),
+      ),
+      { kind: "usage", inputTokens: 5, outputTokens: 4, cachedTokens: 0 },
+      { kind: "done", stopReason: "tool_use" },
+    ]);
+  }
   /** Next step: call the gated token-mint tool (pauses on approval). */
   askToMint(displayName: string, callId: string): void {
     this.steps.push([
@@ -608,6 +624,37 @@ describe("case 3 — a caelo_chat turn's approval goes back to the external agen
     const again = await claim();
     expect(again.ok).toBe(false);
     expect(await responses()).toBe(1);
+  });
+
+  it("a turn paused on several cards applies every decision on resume", async () => {
+    // codex review — the SDK reads approval responses from the last message
+    // only; every decision must ride in it.
+    const token = await chatToken("t658-chat-h");
+    const chatSessionId = await createChat("t658 multi");
+    provider.askToMintMany(["t658-multi-yes", "t658-multi-no"], "call-multi");
+    const sent = await sendChat(token, { message: "Mint two tokens.", chatSessionId });
+    if (!sent.ok) throw new Error(JSON.stringify(sent.error));
+    const pending = (sent.value as { pendingApprovals: { approvalId: string }[] }).pendingApprovals;
+    expect(pending).toHaveLength(2);
+    const [yes, no] = pending as [{ approvalId: string }, { approvalId: string }];
+    for (const [card, approved] of [
+      [yes, true],
+      [no, false],
+    ] as const) {
+      const r = await execute(registry, adapter, OWNER, "chat.decide_turn_approval", {
+        chatSessionId,
+        approvalId: card.approvalId,
+        approved,
+      });
+      expect(r.ok).toBe(true);
+    }
+    const resumed = await sendChat(token, { chatSessionId, resume: true });
+    if (!resumed.ok) throw new Error(JSON.stringify(resumed.error));
+    expect(await tokensNamed("t658-multi-yes")).toBe(1);
+    expect(await tokensNamed("t658-multi-no")).toBe(0);
+    // The chat continues cleanly afterwards (no unanswered call wedges it).
+    const next = await sendChat(token, { message: "Thanks.", chatSessionId });
+    expect(next.ok).toBe(true);
   });
 
   it("an operator message in the chat supersedes the waiting card; the agent learns so", async () => {

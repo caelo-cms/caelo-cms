@@ -239,34 +239,35 @@ export const supersedeTurnApprovalsOp = defineOperation({
 });
 
 /**
- * Plan B — the operator's decision as the transcript's role='tool' row
- * carrying the SDK tool-approval-response ModelMessage (`response_messages`).
- * The resume turn's history replays it verbatim after the paused assistant
- * turn, so the SDK runs the gated tool (approved) or lets the model react
- * (rejected). Same row shape as the runner's `persistApprovalResponse`.
+ * Plan B — the operator's decisions as the transcript's role='tool' row
+ * carrying ONE SDK tool message with a tool-approval-response part per
+ * decision (`response_messages`). The resume turn's history replays it
+ * verbatim after the paused assistant turn, so the SDK runs each approved
+ * gated tool and lets the model react to each rejection. One message for
+ * all of them, because the SDK collects approval responses from the LAST
+ * message only (codex review: separate rows dropped all but the last).
+ * Same row shape as the runner's `persistApprovalResponse` for one decision.
  */
 async function insertApprovalResponseRow(
   tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
   chatSessionId: string,
-  d: TurnApprovalDecision,
+  decisions: readonly TurnApprovalDecision[],
 ): Promise<void> {
   const responseMessages = [
     {
       role: "tool",
-      content: [
-        {
-          type: "tool-approval-response",
-          approvalId: d.approvalId,
-          approved: d.approved,
-          ...(d.reason ? { reason: d.reason } : {}),
-        },
-      ],
+      content: decisions.map((d) => ({
+        type: "tool-approval-response",
+        approvalId: d.approvalId,
+        approved: d.approved,
+        ...(d.reason ? { reason: d.reason } : {}),
+      })),
     },
   ];
+  const content = decisions.map((d) => `[approval ${d.approved ? "granted" : "denied"}]`).join(" ");
   await tx.execute(sql`
     INSERT INTO chat_messages (chat_session_id, role, content, status, response_messages)
-    VALUES (${chatSessionId}::uuid, 'tool', ${`[approval ${d.approved ? "granted" : "denied"}]`},
-            'complete', ${jsonbParam(responseMessages)})
+    VALUES (${chatSessionId}::uuid, 'tool', ${content}, 'complete', ${jsonbParam(responseMessages)})
   `);
   await tx.execute(sql`
     UPDATE chat_sessions SET last_active_at = now() WHERE id = ${chatSessionId}::uuid
@@ -385,7 +386,7 @@ export const claimTurnApprovalsOp = defineOperation({
     // as the claim (codex review): a claim without its response would leave
     // a card "resumed" whose decision never reached the turn, and a retry
     // could not recover it.
-    for (const d of decisions) await insertApprovalResponseRow(tx, input.chatSessionId, d);
+    await insertApprovalResponseRow(tx, input.chatSessionId, decisions);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
