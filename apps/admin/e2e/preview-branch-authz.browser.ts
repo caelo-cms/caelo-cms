@@ -18,7 +18,10 @@ import { clearLoginRateBucket, runBunInline } from "./helpers.js";
 
 test.beforeAll(clearLoginRateBucket);
 
-const TAG = `e2e569-${Date.now()}`;
+// fullyParallel runs this file's tests on different workers, each running
+// the beforeAll seed: a millisecond timestamp alone collided across two
+// workers that loaded the file in the same ms (users_email_unique).
+const TAG = `e2e569-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const PASSWORD = "branch authz dev password";
 const EMAIL_A = `${TAG}-a@example.com`;
 const EMAIL_B = `${TAG}-b@example.com`;

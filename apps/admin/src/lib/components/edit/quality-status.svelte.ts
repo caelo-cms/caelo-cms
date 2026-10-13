@@ -13,6 +13,8 @@
  * hidden.
  */
 
+import { coalescedRefresh } from "./coalesced-refresh.js";
+
 export interface QualityGate {
   readonly open: boolean;
   readonly state:
@@ -52,7 +54,10 @@ class QualityStatusPoller {
   status = $state<QualityStatus | null>(null);
   #timer: ReturnType<typeof setTimeout> | null = null;
   #users = 0;
-  #inFlight = false;
+  // Coalesced, not dropped: a refresh asked for while one is on the wire
+  // runs again after it, so a caller that just changed the state (ack,
+  // dismiss, claim) always gets a fetch that started after its change.
+  readonly #fetchCoalesced = coalescedRefresh(() => this.#fetchOnce());
 
   readonly chatSessionId: string;
 
@@ -73,10 +78,14 @@ class QualityStatusPoller {
     }
   }
 
-  /** Fetch now (e.g. right after a Stage) and reschedule. */
+  /** Fetch now (e.g. right after a Stage) and reschedule. Resolves once a
+   *  fetch that started after this call has landed. */
   async refresh(): Promise<void> {
-    if (this.#inFlight) return;
-    this.#inFlight = true;
+    await this.#fetchCoalesced();
+    this.#schedule();
+  }
+
+  async #fetchOnce(): Promise<void> {
     try {
       if (typeof document === "undefined" || document.visibilityState !== "hidden") {
         const res = await fetch(`/content/chat/${this.chatSessionId}/quality-audit`, {
@@ -86,9 +95,6 @@ class QualityStatusPoller {
       }
     } catch {
       // network blip — the next tick retries
-    } finally {
-      this.#inFlight = false;
-      this.#schedule();
     }
   }
 

@@ -100,3 +100,15 @@ describe("e2e job — issue #36 contract", () => {
     expect(e2e).not.toMatch(/--filter=['"]?@caelo-cms\/shared/);
   });
 });
+
+describe("e2e job — failure traces", () => {
+  it("uploads the Playwright traces when the suite fails", () => {
+    expect(e2e).toContain("- name: Upload Playwright traces on failure");
+    const step = e2e.slice(e2e.indexOf("- name: Upload Playwright traces on failure"));
+    expect(step).toMatch(/^- name: Upload Playwright traces on failure\n\s+if: failure\(\)\n/);
+    expect(step).toContain("path: apps/admin/test-results/");
+    expect(e2e.indexOf("- name: Run Playwright smoke tests")).toBeLessThan(
+      e2e.indexOf("- name: Upload Playwright traces on failure"),
+    );
+  });
+});
