@@ -209,7 +209,7 @@ export async function alignStackSettingsFile(
 ): Promise<void> {
   const ws = await pulumi.LocalWorkspace.create({
     workDir: gcpStackWorkDir(provider),
-    envVars: { ...backend.envVars },
+    envVars: stateOnlyEnv(backend),
   });
   let settings: pulumi.StackSettings;
   try {
@@ -222,16 +222,29 @@ export async function alignStackSettingsFile(
   if (aligned) await ws.saveStackSettings(GCP_STACK_ENV, aligned);
 }
 
+/**
+ * The environment for a Pulumi call that only touches the stack's state
+ * (select, config, outputs): the backend's variables, with ambient Google
+ * credentials blanked as in {@link pulumiGcpEnv} — reaching the ops bucket
+ * and KMS key must use the operator's ADC, the same as provisioning did,
+ * not a stray key file in the shell.
+ */
+export function stateOnlyEnv(backend: Pick<ResolvedBackend, "envVars">): Record<string, string> {
+  return {
+    ...Object.fromEntries(AMBIENT_GOOGLE_CREDENTIAL_ENV.map((k) => [k, ""])),
+    ...backend.envVars,
+  };
+}
+
 /** The install's existing stack, on its backend. */
 export async function selectInstallStack(
   backend: ResolvedBackend,
   provider: "gcp" | "gcp-firebase",
-  extraEnv: Record<string, string> = {},
 ): Promise<pulumi.Stack> {
   await alignStackSettingsFile(backend, provider);
   return pulumi.LocalWorkspace.selectStack(
     { stackName: GCP_STACK_ENV, workDir: gcpStackWorkDir(provider) },
-    { envVars: { ...backend.envVars, ...extraEnv } },
+    { envVars: stateOnlyEnv(backend) },
   );
 }
 

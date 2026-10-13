@@ -9,6 +9,7 @@ import {
   deployedStackRegion,
   pulumiGcpEnv,
   resolveSecretReplication,
+  stateOnlyEnv,
 } from "./gcp-pulumi.js";
 
 const SECRET = "gcp:secretmanager/secret:Secret";
@@ -231,5 +232,15 @@ describe("alignedStackSettings (#696 — the package's stale Pulumi.production.y
     ).toEqual({ config: { a: "1" } });
     expect(alignedStackSettings({ encryptionSalt: "v1:other" }, local)).toEqual({ config: {} });
     expect(alignedStackSettings({ config: { a: "1" } }, local)).toBeNull();
+  });
+});
+
+describe("stateOnlyEnv (#696)", () => {
+  it("blanks ambient Google credentials so the bucket + KMS key are reached with the operator's ADC", () => {
+    const env = stateOnlyEnv({ envVars: { PULUMI_BACKEND_URL: "gs://acme-caelo-ops/pulumi" } });
+    expect(env.GOOGLE_APPLICATION_CREDENTIALS).toBe("");
+    expect(env.GOOGLE_OAUTH_ACCESS_TOKEN).toBe("");
+    expect(env.GOOGLE_IMPERSONATE_SERVICE_ACCOUNT).toBe("");
+    expect(env.PULUMI_BACKEND_URL).toBe("gs://acme-caelo-ops/pulumi");
   });
 });
