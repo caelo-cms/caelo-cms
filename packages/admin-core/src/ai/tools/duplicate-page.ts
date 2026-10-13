@@ -21,6 +21,7 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
   name: "duplicate_page",
   description:
     "Clone an existing page under a new slug. Modules are shared by reference (edits propagate to both pages). " +
+    "The copy sits next to the source (same parent page, so `/docs/a` copies to `/docs/<newSlug>`); pass `newParentPageId` to place it under another page, or null for the top level. " +
     "Use when the user says 'make a copy of this page' or 'duplicate the about page'. " +
     "If cloning to a different page-type via `targetTemplateId`, block names must align — if they don't, modules in " +
     "unmatched blocks orphan immediately. Follow up with `repoint_page_template` to migrate or drop those orphans. " +
@@ -36,6 +37,12 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
       newName: { type: "string", minLength: 1, maxLength: 256 },
       newTitle: { type: "string", minLength: 1, maxLength: 256 },
       targetTemplateId: { type: "string", format: "uuid" },
+      newParentPageId: {
+        type: ["string", "null"],
+        format: "uuid",
+        description:
+          "Parent page for the copy; null = top level. Omit to keep the source's parent.",
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {

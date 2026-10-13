@@ -8,9 +8,10 @@ import { templates } from "./templates.js";
  * page itself never stores raw HTML, enforcing the Page Layer invariant
  * (CMS_REQUIREMENTS §3.1, CLAUDE.md §2).
  *
- * `slug` is the globally unique public identity of a page (epic #380
- * #384 — locale left page identity; variant grouping is explicit
- * plugin data). SEO fields live in the separate `page_seo` table.
+ * Identity is the page `id`. `slug` is one URL segment — unique only
+ * where two pages would otherwise share a path (0264, epic #690): the
+ * composed `current_path` is what is unique per branch. SEO fields live
+ * in the separate `page_seo` table.
  */
 export const pages = pgTable(
   "pages",
@@ -44,8 +45,8 @@ export const pages = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
-  // Global slug uniqueness lives in SQL as the partial, branch-aware
-  // pages_slug_branch_uidx (0201) — not expressible as a drizzle
+  // Path uniqueness lives in SQL as the partial, branch-aware
+  // pages_current_path_branch_uidx (0211) — not expressible as a drizzle
   // `unique()`, so the table callback is empty.
   (_t) => [],
 );

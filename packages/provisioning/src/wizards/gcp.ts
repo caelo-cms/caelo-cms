@@ -73,6 +73,7 @@ import {
   installStagingHost,
   isStepDone,
   markStepDone,
+  readLocalMetadata,
   readMetadata,
   readSecret,
   recordedImageDigests,
@@ -100,10 +101,12 @@ import {
   describeBackend,
   gcsBackendRecord,
   hasLocalPulumiState,
+  installBackend,
+  parseStateBackend,
   type ResolvedBackend,
   resolveBackend,
 } from "../state-backend.js";
-import { GcsStateStore } from "../state-store.js";
+import { acquireStateLock, GcsStateStore } from "../state-store.js";
 import {
   releaseVersionForDigest,
   resolveOpsImageRef,
@@ -1006,7 +1009,7 @@ async function stepStateBackend(
   if (kind === "local") {
     stepPulumiPassphrase(installId);
     log.info(
-      `Pulumi state: ${dim(describeBackend(meta, root))} (this install predates state in project ${projectId}; it stays where it is).`,
+      `Pulumi state: ${dim(describeBackend(meta, root))} (this install predates state in project ${projectId}). Move it there, so any machine you sign in on can manage the install: ${bold(selfCommand("state", "migrate", "--install", installId))}`,
     );
     return resolveBackend(meta, {
       installRoot: root,
@@ -1051,7 +1054,7 @@ async function stepStateBackend(
     // finishing the move is safe. Anything else is another install.
     if (other && !(other.installId === meta.installId && other.createdAt === meta.createdAt)) {
       cancel(
-        `Project ${projectId} already has a Caelo install (${other.domain ?? "unknown domain"}) whose state lives in gs://${record.bucket}. This run would overwrite that install's record; run the installer from the machine that set it up instead.`,
+        `Project ${projectId} already has a Caelo install (${other.domain ?? "unknown domain"}) whose state lives in gs://${record.bucket}. This run would overwrite that install's record. To manage it from this machine run: ${selfCommand("attach", "--project", projectId)}`,
       );
       process.exit(1);
     }
@@ -1104,36 +1107,84 @@ interface PulumiUpOpts {
 
 async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void> {
   const stepName = `pulumi-up-${opts.projectId}`;
-  if (isStepDone(installId, stepName)) {
+  const deployed = isStepDone(installId, stepName);
+  if (deployed) {
     log.success(`Pulumi up ${dim("(checkpointed — re-running for drift refresh)")}`);
   }
   const { secretsDir } = ensureInstallDir(installId);
   const root = installRoot(installId);
+  // #696 — hold the install's state lock through `pulumi up` (`state
+  // migrate` takes the same one), then re-check, uncached, that the state
+  // still lives where this run resolved it: the bucket's install.json for a
+  // bucket-backed install (another machine may have moved it back), the
+  // file on disk for a local one.
+  const opsBucket = gcsBackendRecord(opts.projectId, opts.region).bucket;
+  let releaseLock: () => void;
+  try {
+    releaseLock = acquireStateLock(
+      opts.backend.kind === "gcs" ? { kind: "gcs", bucket: opsBucket } : { kind: "local" },
+      root,
+      "installer pulumi up",
+    );
+  } catch (e) {
+    cancel(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  }
+  let moved: boolean;
+  try {
+    const nowText =
+      opts.backend.kind === "gcs"
+        ? new GcsStateStore(opsBucket, root).peek("install.json")
+        : JSON.stringify(readLocalMetadata(installId));
+    const now = nowText ? (JSON.parse(nowText) as InstallMetadata | null) : null;
+    moved =
+      !now ||
+      installBackend({ stateBackend: parseStateBackend(now.stateBackend) }).kind !==
+        opts.backend.kind;
+  } catch (e) {
+    releaseLock();
+    throw e;
+  }
+  if (moved) {
+    releaseLock();
+    cancel(
+      "The install's Pulumi state has moved (state migrate) since this run started. Re-run the installer.",
+    );
+    process.exit(1);
+  }
   log.info(`Pulumi up — wall-clock 8–15 min (Cloud SQL is the long pole). Streaming progress...`);
 
   let resourceCount = 0;
-  const result = await pulumiUpGcp(
-    {
-      installId,
-      installRoot: root,
-      secretsDir,
-      ...opts,
-      provider: opts.provider ?? "gcp",
-    },
-    (kind, message) => {
-      if (kind === "resource") {
-        resourceCount++;
-        if (resourceCount % 5 === 0) {
-          process.stdout.write(`\r${dim(`  ${resourceCount} resources updated`)}`);
+  let result: Awaited<ReturnType<typeof pulumiUpGcp>>;
+  try {
+    result = await pulumiUpGcp(
+      {
+        installId,
+        installRoot: root,
+        secretsDir,
+        ...opts,
+        // A deployed install's stack must exist: a missing one means the
+        // state is elsewhere, and a fresh stack would try to recreate it all.
+        stackMustExist: deployed,
+        provider: opts.provider ?? "gcp",
+      },
+      (kind, message) => {
+        if (kind === "resource") {
+          resourceCount++;
+          if (resourceCount % 5 === 0) {
+            process.stdout.write(`\r${dim(`  ${resourceCount} resources updated`)}`);
+          }
+        } else if (kind === "error") {
+          process.stdout.write("\n");
+          log.error(red(redactCredentials(message)));
         }
-      } else if (kind === "error") {
-        process.stdout.write("\n");
-        log.error(red(redactCredentials(message)));
-      }
-      // logs: silent — too noisy for a live progress UI; pulumi
-      // diagnostics will print on failure via the SDK's onOutput.
-    },
-  );
+        // logs: silent — too noisy for a live progress UI; pulumi
+        // diagnostics will print on failure via the SDK's onOutput.
+      },
+    );
+  } finally {
+    releaseLock();
+  }
   process.stdout.write("\n");
   log.success(
     green(

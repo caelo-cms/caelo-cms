@@ -315,13 +315,29 @@ the new schema. `scripts/migration-lint.ts` scans the SQL migrations
 **added** since the previous stable tag for DROP TABLE / COLUMN /
 SCHEMA / TYPE / VIEW / DOMAIN / SEQUENCE / FUNCTION, ALTER TYPE, RENAME
 and ALTER COLUMN … TYPE (DROP POLICY / CONSTRAINT / INDEX / TRIGGER are
-routine recreate patterns and not flagged). SQL inside `DO $$ … $$` /
+routine recreate patterns and not flagged — except a **UNIQUE** index or
+constraint, named `*_uidx` / `*_unique` / `*_uniq` / `*_key`, that the
+same migration does not recreate under that name: relaxing uniqueness
+breaks the previous image's `ON CONFLICT` targets and lookups, rule
+`drop-unique`). SQL inside `DO $$ … $$` /
 function bodies is linted including its string literals, so
 `EXECUTE 'DROP TABLE …'` counts. Any finding sets
 `migrations.contract: true`, and the cut is refused unless
 `ack_contract_migrations` (`--ack-contract-migrations`) acknowledges
 it. Such a release is never auto-installed. Prefer shipping the
 destructive step one release after the code stopped using the object.
+
+Some breaks are semantic and no pattern sees them. A migration declares
+itself contract with a line in its leading comment header (before the
+first statement):
+
+```sql
+-- SPDX-License-Identifier: MPL-2.0
+-- caelo:contract <why the previous image cannot run on this schema>
+```
+
+The reason is required (a bare marker fails the lint) and appears as a
+`marked-contract` finding, so the cut's acknowledgement shows it.
 
 `migrations.lastContractVersion` carries the newest contract release
 forward (the release itself when it has contract migrations, else the
@@ -393,6 +409,17 @@ bunx @caelo-cms/provisioning upgrade --channel rc  # opt into pre-releases
 The admin app's notification bell also shows a "vX.Y.Z available"
 entry when running version is stale (24h-cached check against the
 GitHub Releases API).
+
+**Pulumi state location (#696).** New GCP installs keep Pulumi's state,
+`install.json` and `progress.json` in `gs://<project>-caelo-ops` with a
+Cloud KMS key (`caelo/pulumi-state`) as secrets provider. Installs from
+before that keep them in `~/.caelo-<id>/` until the operator runs
+`bunx @caelo-cms/provisioning state migrate --install <id>` (`upgrade`
+prints the reminder). A release must not change the `stateBackend` shape
+in `install.json` or the bucket layout (`pulumi/`, `install/`) without a
+migration in `state migrate`. Maintainer dogfood order for the move:
+caelo-cms.com → viu.one → searchviu (dry run first, each one verified with
+`status` before the next).
 
 ---
 

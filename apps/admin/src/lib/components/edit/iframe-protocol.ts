@@ -25,6 +25,9 @@ export interface NavigatedMessage {
   kind: "caelo:navigated";
   pageId: string;
   slug: string;
+  /** The page's composed URL path — what the URL bar shows (a nested
+   *  page's address is its parent chain + slug, not "/<slug>"). */
+  path: string;
 }
 
 export interface ElementClickedMessage {

@@ -401,8 +401,9 @@ function mergeRebuildResultJson(a: unknown, b: unknown): unknown {
   const bPages = pagesOf(b);
   if (bPages === null) return aPages !== null ? a : (a ?? b);
   if (aPages === null) return b;
+  // Page id first: a slug is one path segment and may name several pages.
   const keyOf = (p: { pageId?: unknown; slug?: unknown }): string =>
-    String(p.slug ?? p.pageId ?? "");
+    String(p.pageId ?? p.slug ?? "");
   const bKeys = new Set(bPages.map(keyOf).filter((k) => k !== ""));
   const carried = aPages.filter((p) => {
     const k = keyOf(p);

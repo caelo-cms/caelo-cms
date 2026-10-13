@@ -183,7 +183,7 @@ async function renderOpenChanges(ctx: ExecutionContext, toolCtx: ToolContext): P
   const blocks = v.chats.map((c) => {
     const head =
       `chat '${c.title}' (${c.chatSessionId})${c.chatSessionId === toolCtx.chatSessionId ? " [this chat]" : ""}` +
-      `${c.isMine ? "" : " [another editor]"}${c.anchorPageSlug ? ` on /${c.anchorPageSlug}` : ""}: ` +
+      `${c.isMine ? "" : " [another editor]"}${c.anchorPagePath ? ` on ${c.anchorPagePath}` : ""}: ` +
       `${c.pendingCount} unstaged change(s), ${c.locks.length} held entit${c.locks.length === 1 ? "y" : "ies"}`;
     return [
       head,
