@@ -4,49 +4,93 @@
  * Issue #667 — which Lighthouse findings come from Caelo itself rather than
  * from the site being built. Pure.
  *
- * On a static Caelo site, some audits are decided entirely by the serving
- * and build stack: HTTP caching headers of Caelo's own files, compression,
- * the protocol, the server's response time, the redirects the hosting
- * answers with, and whether a page can enter the back/forward cache (no
- * module can set response headers). Nothing the AI can edit — modules,
- * theme, content, SEO — changes them. When one of them fails, that is a
- * Caelo bug to report, never a site finding to accept: the dogfood run that
- * started #667 had the AI recommend accepting "back/forward cache" and
- * "cache lifetimes" because it guessed they came "from the hosting", when
- * both were Caelo bugs (the audit browser disabled the cache by flag; media
- * shipped under non-hashed names with a 1-hour lifetime).
+ * On a static Caelo site some audits are decided by the serving and build
+ * stack: the document's response time and redirects, the HTTP caching,
+ * compression and protocol of Caelo's own files, and response headers that
+ * keep a page out of the back/forward cache. Nothing the AI can edit —
+ * modules, theme, content, SEO — changes those. The same audits can also be
+ * failed by the site, though: a module script registering an `unload`
+ * handler blocks the back/forward cache, a third-party file a module embeds
+ * can be uncompressed or short-cached. So ownership is decided from the
+ * evidence the audit reports (flagged URLs and reasons), not from the audit
+ * id alone.
  *
- * The labels are decision support for the AI (CLAUDE.md §1A): they say
- * where the fix belongs. They do NOT change what blocks Publish live — see
- * gate.ts for why platform findings still block until fixed or accepted.
+ * Why it matters: the dogfood run that started #667 had the AI recommend
+ * accepting "back/forward cache" and "cache lifetimes" because it guessed
+ * they came "from the hosting" — both were Caelo bugs (the audit browser
+ * disabled the cache by flag; media shipped under non-hashed names with a
+ * 1-hour lifetime). The labels are decision support (CLAUDE.md §1A); they
+ * do NOT change what blocks Publish live (see gate.ts).
  */
+
+import type { FlaggedElement } from "./ratchet.js";
 
 /** Who can fix a failing Lighthouse audit. */
 export type FindingOwner =
   /** Decided by Caelo's serving/build stack: report it, don't accept it. */
   | "platform"
-  /** Caelo's own files are platform; a third-party URL a module embeds is
-   *  site content. The flagged URLs decide. */
-  | "platform-or-embed"
-  /** Fixed by changing the site (modules, theme, media, content, SEO). */
-  | "site";
+  /** Caused by the site (a module's script or embed): fix the module. */
+  | "site"
+  /** The evidence is mixed or missing: the AI must read the flagged items. */
+  | "check";
 
-/** Audits only Caelo's serving/build stack decides on a static site. */
-const PLATFORM_AUDITS: ReadonlySet<string> = new Set([
-  "bf-cache",
+/** Audits about the main document's delivery: always the serving stack. */
+const DOCUMENT_DELIVERY_AUDITS: ReadonlySet<string> = new Set([
   "document-latency-insight",
   "server-response-time",
   "redirects",
+]);
+
+/** Audits about how files are served: Caelo's files vs a module's embeds. */
+const RESOURCE_SERVING_AUDITS: ReadonlySet<string> = new Set([
+  "cache-insight",
+  "uses-long-cache-ttl",
   "uses-text-compression",
   "uses-http2",
 ]);
 
-/** Caching audits: Caelo's files are platform, third-party embeds are not. */
-const CACHING_AUDITS: ReadonlySet<string> = new Set(["cache-insight", "uses-long-cache-ttl"]);
+/** Back/forward-cache blockers that come from the browser setup or the
+ *  response headers, not from page script. */
+const PLATFORM_BFCACHE_REASON =
+  /disabled by (flags|the command line)|cache-control: ?no-store|main resource has cache-control/i;
 
-/** Who can fix the failing Lighthouse audit `auditId`. */
-export function findingOwner(auditId: string): FindingOwner {
-  if (PLATFORM_AUDITS.has(auditId)) return "platform";
-  if (CACHING_AUDITS.has(auditId)) return "platform-or-embed";
-  return "site";
+/** Same origin as the audited page (a relative or unparsable URL counts as same-site). */
+function isSameSite(url: string, pageUrl: string): boolean {
+  try {
+    return new URL(url, pageUrl).origin === new URL(pageUrl).origin;
+  } catch {
+    return true;
+  }
+}
+
+/** Collapse per-item verdicts: all one way decides, anything else needs a look. */
+function verdict(items: readonly boolean[]): FindingOwner | null {
+  if (items.length === 0) return null;
+  if (items.every((platform) => platform)) return "platform";
+  if (items.every((platform) => !platform)) return "site";
+  return "check";
+}
+
+/**
+ * Who can fix the failing audit `auditId` on the page at `pageUrl`, judged
+ * from the elements / URLs / reasons it flagged.
+ *
+ * @returns null for audits this module has no opinion on (ordinary site
+ *   findings such as `image-alt` or `color-contrast`).
+ */
+export function findingOwner(
+  auditId: string,
+  elements: readonly FlaggedElement[],
+  pageUrl: string,
+): FindingOwner | null {
+  if (DOCUMENT_DELIVERY_AUDITS.has(auditId)) return "platform";
+  if (RESOURCE_SERVING_AUDITS.has(auditId)) {
+    const urls = elements.flatMap((e) => (e.url ? [e.url] : []));
+    return verdict(urls.map((u) => isSameSite(u, pageUrl))) ?? "check";
+  }
+  if (auditId === "bf-cache") {
+    const reasons = elements.flatMap((e) => (e.explanation ? [e.explanation] : []));
+    return verdict(reasons.map((r) => PLATFORM_BFCACHE_REASON.test(r))) ?? "check";
+  }
+  return null;
 }

@@ -86,13 +86,18 @@ function statusLine(run: AuditRun): string {
  * Without it the AI guessed ("this comes from the hosting") and argued for
  * accepting what were Caelo bugs.
  */
-const OWNER_NOTE: Record<ReturnType<typeof findingOwner>, string> = {
-  platform:
-    " — CAELO PLATFORM: decided by Caelo's hosting/build setup, not by this site. Do not edit the site for it and do not propose accepting it: report it with bug_report and tell the operator it is a Caelo issue you reported; Publish live stays blocked unless the operator decides to accept it.",
-  "platform-or-embed":
-    " — check the flagged URLs: same-site files (/_assets/…, /_caelo/…, pages) are a CAELO PLATFORM issue (report with bug_report, do not propose accepting it); a third-party URL a module embeds is fixed in that module (self-host it or drop it).",
-  site: "",
-};
+function ownerNote(owner: ReturnType<typeof findingOwner>): string {
+  switch (owner) {
+    case "platform":
+      return " — CAELO PLATFORM: decided by Caelo's hosting/build setup, not by this site. Do not edit the site for it and do not propose accepting it: report it with bug_report and tell the operator it is a Caelo issue you reported; Publish live stays blocked unless the operator decides to accept it.";
+    case "site":
+      return " — caused by this site: the flagged URLs/reasons point at a module's script or third-party embed; fix that module.";
+    case "check":
+      return " — read the flagged items: same-site files (/_assets/…, /_caelo/…, pages) and browser-flag or response-header reasons are a CAELO PLATFORM issue (report with bug_report, do not propose accepting it); third-party URLs and script reasons (e.g. an unload handler) are fixed in the module.";
+    case null:
+      return "";
+  }
+}
 
 /**
  * One audited page as the AI reads it in `get_quality_audit`: scores vs.
@@ -120,7 +125,7 @@ export function formatPage(p: AuditPage): string[] {
   for (const problem of p.problems) {
     if (problem.kind === "failing_audit") {
       lines.push(
-        `- PROBLEM failing audit \`${problem.auditId}\` — ${problem.title}${problem.displayValue ? ` (${problem.displayValue})` : ""} [${problem.categories.join(", ")}]${OWNER_NOTE[findingOwner(problem.auditId)]}`,
+        `- PROBLEM failing audit \`${problem.auditId}\` — ${problem.title}${problem.displayValue ? ` (${problem.displayValue})` : ""} [${problem.categories.join(", ")}]${ownerNote(findingOwner(problem.auditId, problem.elements ?? [], p.url))}`,
       );
       // The flagged elements locate the fix (which module, which rule):
       // without them a color-contrast finding is guesswork.
@@ -136,10 +141,14 @@ export function formatPage(p: AuditPage): string[] {
         ]
           .filter((x) => x !== null)
           .join(" ");
-        if (where === "" && el.explanation) {
-          // A console / network entry (errors-in-console): its message and
-          // the URL it came from name the cause. The URL is code too.
-          lines.push(`  - console ${el.url ? `${inlineCode(el.url)} ` : ""}— ${el.explanation}`);
+        if (where === "" && (el.explanation || el.url)) {
+          // A node-less entry: a console / network message (errors-in-console)
+          // or a flagged resource / reason (caching, compression, bf-cache —
+          // #667). Its message and URL name the cause. The URL is code too.
+          const kind = problem.auditId === "errors-in-console" ? "console" : "flagged";
+          lines.push(
+            `  - ${kind} ${el.url ? `${inlineCode(el.url)} ` : ""}${el.explanation ? `— ${el.explanation}` : ""}`.trimEnd(),
+          );
           continue;
         }
         lines.push(`  - element ${where}${el.explanation ? ` — ${el.explanation}` : ""}`);

@@ -172,6 +172,36 @@ describe("flagged elements", () => {
     ]);
   });
 
+  it("carry the URLs and reasons of resource / bf-cache audits (#667)", () => {
+    // Without them the AI could not tell Caelo's own files from a module's
+    // third-party embed, guessed "hosting", and argued for acceptance.
+    // (Ids the fixture's categories reference; the extraction is per item shape.)
+    const cache: Audit = {
+      ...audit("unused-javascript", 0),
+      details: {
+        items: [{ url: "http://localhost:8081/_assets/logo.png", cacheLifetimeMs: 3600000 }],
+      },
+    };
+    const bf: Audit = {
+      ...audit("render-blocking-insight", 0),
+      details: {
+        items: [
+          {
+            reason: "The page has an unload handler in the main frame.",
+            failureType: "Actionable",
+          },
+        ],
+      },
+    };
+    const found = failingAudits(lhr({ performance: 100, audits: [cache, bf] }));
+    const c = found.find((f) => f.id === "unused-javascript");
+    const b = found.find((f) => f.id === "render-blocking-insight");
+    expect(c?.elements).toEqual([{ url: "http://localhost:8081/_assets/logo.png" }]);
+    expect(b?.elements).toEqual([
+      { explanation: "The page has an unload handler in the main frame." },
+    ]);
+  });
+
   it("are omitted when the audit names no element", () => {
     const [finding] = failingAudits(lhr({ performance: 100, audits: [audit("image-alt", 0)] }));
     expect(finding && "elements" in finding).toBe(false);

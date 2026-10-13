@@ -81,6 +81,19 @@ function consoleEntry(item: Record<string, unknown>): FlaggedElement | null {
   };
 }
 
+/**
+ * #667 — a flagged resource or reason without a DOM node: the URL a
+ * caching / compression audit names, or the reason a back/forward-cache
+ * restore failed. Without them the AI could not tell Caelo's own files and
+ * hosting from a module's third-party embed or script, and guessed.
+ */
+function resourceEntry(item: Record<string, unknown>): FlaggedElement | null {
+  const url = nonEmpty(item.url);
+  const reason = nonEmpty(item.reason);
+  if (!url && !reason) return null;
+  return { ...(reason ? { explanation: reason } : {}), ...(url ? { url } : {}) };
+}
+
 /** The elements (or console entries) an audit flagged, read from its details. */
 function flaggedElements(
   details: { readonly items?: readonly unknown[] } | undefined,
@@ -91,7 +104,9 @@ function flaggedElements(
     if (item === null || typeof item !== "object") continue;
     const node = (item as { node?: unknown }).node;
     if (node === null || typeof node !== "object") {
-      const entry = consoleEntry(item as Record<string, unknown>);
+      const entry =
+        consoleEntry(item as Record<string, unknown>) ??
+        resourceEntry(item as Record<string, unknown>);
       if (entry) out.push(entry);
       continue;
     }
