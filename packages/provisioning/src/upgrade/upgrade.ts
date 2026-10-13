@@ -8,7 +8,8 @@
  *   2. verify the images' signatures
  *   3. pre-upgrade Cloud SQL backup — the first change; if it fails, the
  *      install is exactly as it was
- *   4. converge, the part before the roll (IAM, secrets, MCP access)
+ *   4. converge, the part before the roll (keyless provisioner, IAM, secrets,
+ *      MCP access)
  *   5. app-roll: health baseline, migrations, the converge steps that must
  *      follow migrations, admin + gateway rolls, deep health check, rollback
  *      on failure, recorded digests
@@ -76,6 +77,8 @@ export interface GcpUpgradeDeps {
   >;
   readonly recordDigests: (digests: ImageDigests) => Promise<void>;
   readonly recordInfraContractVersion: (version: number) => void;
+  /** The operator-identity converge step (keyless provisioner); see ConvergeDeps. */
+  readonly provisionerIdentity?: () => Promise<boolean>;
   /** Today, for the backup's description. */
   readonly now?: () => Date;
 }
@@ -146,6 +149,7 @@ export async function upgradeGcpInstall(
     reporter: r,
     ...(deps.sleep ? { sleep: deps.sleep } : {}),
     ...(deps.http ? { http: deps.http } : {}),
+    ...(deps.provisionerIdentity ? { provisionerIdentity: deps.provisionerIdentity } : {}),
   });
   if (!(await converge.beforeAppRoll())) return false;
 

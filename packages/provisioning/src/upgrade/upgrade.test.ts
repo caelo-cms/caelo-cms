@@ -312,6 +312,24 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(calls.some((c) => c.includes("remove-iam-policy-binding"))).toBe(false);
   });
 
+  it("runs the keyless-provisioner step as the first converge step; its failure stops before migrations", async () => {
+    const events: string[] = [];
+    const { deps, calls } = upgradeDeps(events);
+    const ok = await upgradeGcpInstall(TARGET, {
+      ...deps,
+      provisionerIdentity: async () => {
+        events.push("provisioner identity");
+        return false;
+      },
+    });
+    expect(ok).toBe(false);
+    expect(indexOf(events, /^gcloud sql backups create/)).toBeLessThan(
+      indexOf(events, /^provisioner identity/),
+    );
+    expect(events.some((e) => e.startsWith("migrate"))).toBe(false);
+    expect(calls.filter((c) => CONVERGE_WRITE.test(c) || APP_ROLL_WRITE.test(c))).toEqual([]);
+  });
+
   it("a deep health probe that throws still rolls back", async () => {
     const events: string[] = [];
     const { deps, recorded } = upgradeDeps(events);

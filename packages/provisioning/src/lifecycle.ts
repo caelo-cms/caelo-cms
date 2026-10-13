@@ -19,7 +19,7 @@
 import { join, resolve as resolvePath } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
-import { gcloud } from "./gcloud.js";
+import { activeAccount, gcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep } from "./gcloud-retry.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
 import { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
@@ -38,6 +38,10 @@ import {
   writeMetadata,
 } from "./install-state.js";
 import { runMigrationsViaCloudRunJob } from "./migration-runner.js";
+import {
+  convergeKeylessProvisioner,
+  provisionerServiceAccountEmail,
+} from "./provisioner-identity.js";
 import { assertRegionUnchanged } from "./regions.js";
 import {
   type HttpFetch,
@@ -397,6 +401,62 @@ async function resolveReleaseImages(
 }
 
 /**
+ * `upgrade`'s step of the keyless provisioner migration (#696,
+ * provisioner-identity.ts) — a converge step (upgrade/converge.ts runs it
+ * first). Idempotent: on an install that already runs keyless it only
+ * confirms the grant.
+ *
+ * @returns false when the upgrade must stop (the message is printed)
+ */
+async function upgradeKeylessProvisioner(installId: string, projectId: string): Promise<boolean> {
+  const account = await activeAccount();
+  if (!account) {
+    log.error(red("No active gcloud account. Run `gcloud auth login`, then re-run upgrade."));
+    return false;
+  }
+  const s = spinner();
+  s.start("Ensuring the provisioner service account is used without a key...");
+  const r = await convergeKeylessProvisioner({
+    projectId,
+    secretsDir: join(installRoot(installId), "secrets"),
+    operatorAccount: account,
+  });
+  if (!r.ok) {
+    s.stop(red("Could not move the provisioner to impersonation. Aborting upgrade."));
+    log.error(r.error);
+    log.warn("Nothing was rolled and no migrations ran. Fix the above and re-run.");
+    return false;
+  }
+  if (r.grant === "no-provisioner") {
+    s.stop(
+      green(`No ${provisionerServiceAccountEmail(projectId)} in this project — nothing to do`),
+    );
+    return true;
+  }
+  s.stop(
+    green(
+      r.legacyKey === "removed"
+        ? "Provisioner moved to impersonation; its long-lived key is deleted"
+        : `Provisioner keyless ok ${dim(`(${account} may impersonate it)`)}`,
+    ),
+  );
+  if (r.legacyKey === "removed") {
+    note(
+      [
+        `This install no longer keeps a service-account key on your machine (#696).`,
+        ...r.lines.map((l) => `  ${l}`),
+        "",
+        `Infrastructure runs (re-running the installer) now use your own Google login:`,
+        `${account} impersonates ${provisionerServiceAccountEmail(projectId)} with short-lived tokens.`,
+        `They need Application Default Credentials once on this machine: ${bold("gcloud auth application-default login")}`,
+      ].join("\n"),
+      "Service-account key removed",
+    );
+  }
+  return true;
+}
+
+/**
  * Upgrade one install: converge, then app-roll (upgrade/upgrade.ts holds the
  * sequence; this wires it to gcloud, the registry, cosign and install.json).
  */
@@ -458,6 +518,7 @@ async function upgradeInstall(
       healthProbe: (plan) => gcpHealthProbe(run, http, plan),
       recordDigests: (digests) => recordRolledDigests(installId, provider, digests),
       recordInfraContractVersion: (version) => recordInfraContractVersion(installId, version),
+      provisionerIdentity: () => upgradeKeylessProvisioner(installId, projectId),
     },
   );
   if (ok && provider === "gcp-firebase") {

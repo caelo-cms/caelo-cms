@@ -13,6 +13,10 @@
  * in-cloud upgrader job, which only app-rolls and refuses while
  * {@link needsConverge} says the install is behind.
  *
+ * The keyless-provisioner step (#696, provisioner-identity.ts) is converge
+ * too; it needs the operator's local install dir, so the CLI injects it as
+ * {@link ConvergeDeps.provisionerIdentity}.
+ *
  * Some steps must sit between app-roll steps (a role migration 0248 creates
  * gets its password after migrations, before the gateway rolls onto it), so
  * a converge is a {@link ConvergeSession}: a part before the app-roll, the
@@ -63,6 +67,12 @@ export interface ConvergeDeps {
   /** Cloud SQL Admin API calls (database role passwords). */
   readonly http?: HttpFetch;
   readonly reporter: UpgradeReporter;
+  /**
+   * The operator's own identity step, run first: the CLI moves the
+   * provisioner SA to keyless impersonation (provisioner-identity.ts), which
+   * needs the operator's gcloud account and local install dir. False aborts.
+   */
+  readonly provisionerIdentity?: () => Promise<boolean>;
 }
 
 export interface ConvergeSession {
@@ -270,6 +280,7 @@ export function startConverge(
 
   return {
     async beforeAppRoll() {
+      if (deps.provisionerIdentity && !(await deps.provisionerIdentity())) return false;
       if (!(await runtimeIdentities())) return false;
       if (!(await stackInvariants())) return false;
       await mcpAccess();
