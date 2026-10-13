@@ -38,7 +38,7 @@ If the change moves existing URLs, the AI follows up with a **URL migration prop
 
 Say *"translate the pricing page into German"*. The AI:
 
-1. creates the German counterpart as a **draft** with a localized slug (`/de/preise`, not `/de/pricing` — URLs are freely localizable because language linkage never depends on matching slugs),
+1. creates the German counterpart as a **draft** — with a localized slug (`/de/preise`) or the same one (`/de/pricing`); URLs only have to differ, and language linkage never depends on matching slugs. A page that sits under another page is placed under that page's German counterpart (`/pricing/teams` → `/de/preise/teams`); if the parent has no German version yet, the AI translates the parent first,
 2. translates the **whole page in one pass** — title, meta description (which is also the social-share description) and every content field together, never sentence-by-sentence — so terminology and tone stay coherent across the page. A translation that is already live keeps its meta description when it is re-translated; it is flagged for SEO review instead of being overwritten silently,
 3. leaves it in draft for your review; publish when it reads right.
 
