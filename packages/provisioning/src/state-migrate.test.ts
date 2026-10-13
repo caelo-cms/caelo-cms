@@ -45,6 +45,7 @@ function fakePulumi(version = "3.260.0") {
     copyFails: boolean;
     driftOnTarget: number;
     onStateDigest?: () => void;
+    lockedUrl?: string;
   } = { corruptCopy: false, copyFails: false, driftOnTarget: 0 };
   const ops: StatePulumiOps = {
     async cliVersion() {
@@ -60,6 +61,9 @@ function fakePulumi(version = "3.260.0") {
       const s = stacks.get(b.url);
       if (!s) throw new Error(`no stack in ${b.url}`);
       return s.drift;
+    },
+    async locked(b) {
+      return faults.lockedUrl === b.url;
     },
     async stateDigest(b) {
       const s = stacks.get(b.url);
@@ -282,6 +286,15 @@ describe("migrateState — failures leave the source authoritative", () => {
     if (!r.ok) expect(r.error).toContain("changed during the migration");
     expect(t.m.backend).toEqual({ kind: "local" });
     expect(t.p.stacks.has(t.gcsUrl)).toBe(false);
+  });
+
+  it("refuses while a Pulumi run holds the source stack's lock", async () => {
+    const t = machine();
+    t.p.faults.lockedUrl = t.localUrl;
+    const r = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("updating this stack right now");
+    expect(t.m.backups).toBe(0);
   });
 
   it("a copy whose preview shows changes is discarded", async () => {

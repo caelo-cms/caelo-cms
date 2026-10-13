@@ -56,6 +56,11 @@ export interface PulumiUpInputs {
   impersonateServiceAccount: string;
   /** #696 — where the stack's state lives (state-backend.ts resolveBackend). */
   backend: ResolvedBackend;
+  /**
+   * #696 — the install is deployed, so its stack must already be in
+   * `backend`; never create an empty one in its place.
+   */
+  stackMustExist?: boolean;
   cloudSqlTier: string;
   cloudSqlHa: boolean;
   adminMinInstances: number;
@@ -435,18 +440,21 @@ export async function pulumiUpGcp(
   const workDir = gcpStackWorkDir(provider);
 
   await alignStackSettingsFile(inputs.backend, provider);
-  const stack = await pulumi.LocalWorkspace.createOrSelectStack(
-    {
-      stackName,
-      workDir,
-    },
-    {
-      envVars: env,
-      // Used when the stack is created: a new install's secrets are
-      // encrypted with its own KMS key (or a local install's passphrase).
-      secretsProvider: inputs.backend.secretsProvider,
-    },
-  );
+  const workspaceOpts = {
+    envVars: env,
+    // Used when the stack is created: a new install's secrets are
+    // encrypted with its own KMS key (or a local install's passphrase).
+    secretsProvider: inputs.backend.secretsProvider,
+  };
+  const stack = inputs.stackMustExist
+    ? await pulumi.LocalWorkspace.selectStack({ stackName, workDir }, workspaceOpts).catch(
+        (e: unknown) => {
+          throw new Error(
+            `the install is deployed but its stack is not in ${inputs.backend.url} (${String(e).split("\n")[0]}). Its state may have moved (state migrate) or been lost; nothing was changed.`,
+          );
+        },
+      )
+    : await pulumi.LocalWorkspace.createOrSelectStack({ stackName, workDir }, workspaceOpts);
 
   const stateResources = ((await stack.exportStack()).deployment?.resources ??
     []) as StateResource[];

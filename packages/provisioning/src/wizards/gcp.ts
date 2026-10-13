@@ -98,6 +98,7 @@ import {
   describeBackend,
   gcsBackendRecord,
   hasLocalPulumiState,
+  installBackend,
   type ResolvedBackend,
   resolveBackend,
 } from "../state-backend.js";
@@ -1037,11 +1038,22 @@ interface PulumiUpOpts {
 
 async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void> {
   const stepName = `pulumi-up-${opts.projectId}`;
-  if (isStepDone(installId, stepName)) {
+  const deployed = isStepDone(installId, stepName);
+  if (deployed) {
     log.success(`Pulumi up ${dim("(checkpointed — re-running for drift refresh)")}`);
   }
   const { secretsDir } = ensureInstallDir(installId);
   const root = installRoot(installId);
+  // #696 — `state migrate` may have moved the state since this run resolved
+  // its backend (or be moving it now): never write a retired backend.
+  const now = readMetadata(installId);
+  const holder = migrationLockHolder(gcsBackendRecord(opts.projectId, opts.region).bucket);
+  if (holder || !now || installBackend(now).kind !== opts.backend.kind) {
+    cancel(
+      `The install's Pulumi state is being moved or has moved (state migrate) since this run started. Re-run the installer.`,
+    );
+    process.exit(1);
+  }
   log.info(`Pulumi up — wall-clock 8–15 min (Cloud SQL is the long pole). Streaming progress...`);
 
   let resourceCount = 0;
@@ -1051,6 +1063,9 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
       installRoot: root,
       secretsDir,
       ...opts,
+      // A deployed install's stack must exist: a missing one means the
+      // state is elsewhere, and a fresh stack would try to recreate it all.
+      stackMustExist: deployed,
       provider: opts.provider ?? "gcp",
     },
     (kind, message) => {

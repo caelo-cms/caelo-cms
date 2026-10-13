@@ -13,7 +13,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as automation from "@pulumi/pulumi/automation";
 import { redactCredentials } from "./checkpoint-secrets.js";
@@ -29,6 +29,13 @@ import {
   type StateResource,
   stateOnlyEnv,
 } from "./wizards/gcp-pulumi.js";
+
+/** Every file below `dir`. */
+function listFilesRecursive(dir: string): string[] {
+  return readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((e) => e.isFile())
+    .map((e) => e.name);
+}
 
 /** Canonical JSON (sorted keys) so equal outputs hash equally. */
 export function canonicalJson(value: unknown): string {
@@ -130,6 +137,24 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
       const { stdout } = await cli(["stack", "ls", "--json"], stateOnlyEnv(b));
       const stacks = JSON.parse(stdout || "[]") as { name?: string }[];
       return stacks.some((s) => s.name === GCP_STACK_ENV || s.name?.endsWith(`/${GCP_STACK_ENV}`));
+    },
+
+    async locked(b) {
+      // Pulumi's DIY backends keep one lock file per running operation under
+      // .pulumi/locks/ (file:// and gs:// alike).
+      if (b.url.startsWith("file://")) {
+        const dir = join(b.url.slice("file://".length), ".pulumi", "locks");
+        return existsSync(dir) && listFilesRecursive(dir).length > 0;
+      }
+      const r = Bun.spawnSync(["gcloud", "storage", "ls", `${b.url}/.pulumi/locks/**`], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, CLOUDSDK_CORE_DISABLE_PROMPTS: "1" },
+      });
+      if (r.exitCode === 0) return new TextDecoder().decode(r.stdout).trim().length > 0;
+      const err = new TextDecoder().decode(r.stderr);
+      if (/matched no objects|No URLs matched|NotFound|404/i.test(err)) return false;
+      throw new Error(`Could not check the stack lock in ${b.url}: ${err.trim()}`);
     },
 
     async stateDigest(b) {

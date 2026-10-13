@@ -60,6 +60,8 @@ export interface StatePulumiOps {
   previewChanges(backend: ResolvedBackend): Promise<number>;
   /** sha256 of the stack outputs, secrets included. Never the values. */
   outputsDigest(backend: ResolvedBackend): Promise<string>;
+  /** Whether a Pulumi operation holds the stack's lock in `backend` right now. */
+  locked(backend: ResolvedBackend): Promise<boolean>;
   /** sha256 of the stack's exported checkpoint (ciphertext; never decrypted). */
   stateDigest(backend: ResolvedBackend): Promise<string>;
   /** `pulumi stack migrate <from> --secrets-provider <to's>` into `to`. */
@@ -211,6 +213,14 @@ export async function migrateState(
       return {
         ok: false,
         error: `The install's stack is not in ${from.url}. Nothing was changed.`,
+      };
+    }
+    if (await pulumi.locked(from)) {
+      pre.failed("A Pulumi run holds the stack's lock");
+      return {
+        ok: false,
+        error:
+          "A Pulumi run (installer) is updating this stack right now. Migrate once it has finished. Nothing was changed.",
       };
     }
     const pending = await pulumi.pendingOperations(from);
@@ -381,7 +391,7 @@ export async function migrateState(
       // An installer run elsewhere may have updated the source since the
       // preflight (only migrations take the lock): the copy would then miss
       // that update. Checked last, right before the switch.
-      if ((await pulumi.stateDigest(from)) !== sourceState) {
+      if ((await pulumi.locked(from)) || (await pulumi.stateDigest(from)) !== sourceState) {
         return abandon(
           "The source stack changed during the migration (another run updated it); migrate again once it is idle",
         );
