@@ -365,13 +365,28 @@ describe("block → fix → publish", () => {
     // ack (after the operator's click sent the turn) marks it delivered.
     const auditRunId = st.audit.id;
     const claim = () =>
-      op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", { auditRunId });
+      op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", {
+        auditRunId,
+        fixRequested: true,
+      });
+    const fixRequested = () =>
+      withSql(
+        async (tx) =>
+          (
+            (await tx`SELECT fix_requested_at IS NOT NULL AS r FROM quality_audit_runs
+                      WHERE id = ${auditRunId}::uuid`) as unknown as { r: boolean }[]
+          )[0]?.r,
+      );
+    expect(await fixRequested()).toBe(false);
     expect((await claim()).claimed).toBe(true);
     expect((await claim()).claimed).toBe(false);
     // A click whose turn did not start (an external agent works in the
     // chat) gives the claim back: the card can be clicked again at once.
+    expect(await fixRequested()).toBe(true);
     await op(HUMAN, "quality_audits.release_chat_notification", { auditRunId });
+    expect(await fixRequested()).toBe(false);
     expect((await claim()).claimed).toBe(true);
+    expect(await fixRequested()).toBe(true);
     expect(await opErr(AI, "quality_audits.release_chat_notification", { auditRunId })).toContain(
       "ActorScopeRejected",
     );
@@ -740,11 +755,14 @@ describe("2-round fix cap", () => {
       expect(st.feedback.kind).toBe("offer");
       prompts.push(st.feedback.prompt);
       labels.push(st.feedback.actionLabel);
-      // The operator clicks the offer: the panel claims it, sends the
-      // prompt, and acknowledges — a requested fix round.
+      // The operator clicks the offer: the panel claims it as a fix request
+      // BEFORE the turn runs (the AI re-stages inside that turn, so the ack
+      // at its end would come too late), then sends the prompt.
       const auditRunId = st.audit.id;
-      await op(HUMAN, "quality_audits.claim_chat_notification", { auditRunId });
-      await op(HUMAN, "quality_audits.ack_chat_notification", { auditRunId });
+      await op(HUMAN, "quality_audits.claim_chat_notification", {
+        auditRunId,
+        fixRequested: true,
+      });
     }
     expect(prompts[0]).toContain("Fix round 1 of 2");
     expect(prompts[1]).toContain("Fix round 2 of 2");

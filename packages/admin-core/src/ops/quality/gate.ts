@@ -270,16 +270,26 @@ export const claimChatNotificationOp = defineOperation({
         .object({ chatSessionId: z.string().uuid(), text: z.string().min(1).max(2000) })
         .strict()
         .optional(),
+      /** #685 — the operator clicked "Fix with AI": record the requested
+       *  fix round now, BEFORE the turn runs — the AI re-stages inside that
+       *  turn, and the next audit's fix round is decided at that Stage. */
+      fixRequested: z.boolean().default(false),
     })
-    .strict(),
+    .strict()
+    .refine((v) => !(v.fixRequested && v.note), {
+      message: "a fix request starts a turn; a note settles the offer — pass one, not both",
+    }),
   output: z.object({ claimed: z.boolean() }),
   handler: async (ctx, input, tx) => {
     // A lease, not a final mark: a fix request (#685: sent only on the
-    // operator's "Fix with AI") is delivered by the browser after this call; only its acknowledgement
-    // (ack_chat_notification) marks the audit notified. A tab that closes
-    // or a send that fails lets the lease run out and the next poll retries.
+    // operator's "Fix with AI") is delivered by the browser after this
+    // call; only its acknowledgement (ack_chat_notification) marks the
+    // audit notified. A tab that closes or a send that fails lets the
+    // lease run out and the card offers the fix again.
     const rows = (await tx.execute(sql`
-      UPDATE quality_audit_runs SET chat_notify_claimed_at = now()
+      UPDATE quality_audit_runs
+         SET chat_notify_claimed_at = now(),
+             fix_requested_at = CASE WHEN ${input.fixRequested} THEN now() ELSE fix_requested_at END
       WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
         AND status IN ('passed', 'problems', 'errored', 'skipped')
         AND (chat_notify_claimed_at IS NULL
@@ -311,15 +321,14 @@ export const claimChatNotificationOp = defineOperation({
 export const ackChatNotificationOp = defineOperation({
   name: "quality_audits.ack_chat_notification",
   // Why human-only: the chat panel acknowledges the fix request the
-  // operator's click has just sent — which also records that the operator
-  // asked for this fix round (#685: the 2-round cap counts only these) (persisted by the chat stream) — see claim_chat_notification.
+  // operator's click has just sent (persisted by the chat stream) — see claim_chat_notification.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ auditRunId: z.string().uuid() }).strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
     await tx.execute(sql`
-      UPDATE quality_audit_runs SET chat_notified_at = now(), fix_requested_at = now()
+      UPDATE quality_audit_runs SET chat_notified_at = now()
       WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
     `);
     return ok({});
@@ -331,14 +340,14 @@ export const releaseChatNotificationOp = defineOperation({
   // Why human-only: the chat panel gives back the claim of a fix request
   // the operator clicked that did NOT start a turn (an external agent works
   // in the chat, #682, or the send failed), so the card can be clicked again
-  // at once instead of after the lease ran out.
+  // at once instead of after the lease ran out — and no fix round counts.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ auditRunId: z.string().uuid() }).strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
     await tx.execute(sql`
-      UPDATE quality_audit_runs SET chat_notify_claimed_at = NULL
+      UPDATE quality_audit_runs SET chat_notify_claimed_at = NULL, fix_requested_at = NULL
       WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
     `);
     return ok({});

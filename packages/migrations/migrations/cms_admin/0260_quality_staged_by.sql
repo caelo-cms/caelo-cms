@@ -18,7 +18,9 @@
 -- redeploy) and for runs from before this migration.
 --
 -- `fix_requested_at` records the operator's "Fix with AI" on the audit's
--- offer (set when that turn started). The 2-round fix cap (#553) counts
+-- offer (set by the click's claim, before the turn runs, so the AI's
+-- re-Stage inside that turn already counts it; cleared again when the turn
+-- was refused). The 2-round fix cap (#553) counts
 -- these: a Stage after "Not now" — or after no answer at all — is not an AI
 -- fix attempt and does not use up a round.
 

@@ -32,6 +32,9 @@ import {
 } from "./helpers.js";
 
 test.beforeAll(clearLoginRateBucket);
+// Each test seeds the newest staging build; only the newest one's audit
+// drives a chat, so the tests run one after another.
+test.describe.configure({ mode: "serial" });
 
 const BASE = `http://localhost:${process.env.CAELO_E2E_PORT ?? "4173"}`;
 const PROVIDER = `quality-fix-offer-${Date.now()}`;
@@ -144,8 +147,12 @@ function seedProblemAudit(
       const target = (await tx\`SELECT id FROM deploy_targets WHERE name = 'staging'\`)[0];
       if (!target) throw new Error("quality-fix-offer e2e: no staging deploy target");
       const page = (await tx\`SELECT id::text AS id FROM pages WHERE slug = \${process.env.SLUG}\`)[0];
-      const run = (await tx\`INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, build_id)
-        VALUES (\${target.id}, \${process.env.OWNER_ID}::uuid, 'succeeded', now(), 'e2e-quality-offer')
+      // Dated ahead so a Stage another spec runs meanwhile cannot replace
+      // it as the build Publish would ship (that withdraws the offer). The
+      // afterAll deletes it.
+      const run = (await tx\`INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id)
+        VALUES (\${target.id}, \${process.env.OWNER_ID}::uuid, 'succeeded', now() + interval '1 hour',
+                now() + interval '1 hour', 'e2e-quality-offer')
         RETURNING id::text AS id\`)[0];
       const problems = [{ kind: "failing_audit", auditId: "color-contrast", title: "Low contrast text", score: 0, categories: ["accessibility"] }];
       const audit = (await tx\`INSERT INTO quality_audit_runs

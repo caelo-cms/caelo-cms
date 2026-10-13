@@ -673,6 +673,8 @@
         qualityOfferError = externalAgentRefusal(agent);
         return;
       }
+      // The claim also records the requested fix round — before the turn,
+      // since the AI re-stages inside it.
       const r = await postQualityAction(session.id, csrfToken, { action: "claim", auditRunId });
       if (!r.ok) {
         qualityOfferError = r.error ?? "Could not start the fix — try again.";

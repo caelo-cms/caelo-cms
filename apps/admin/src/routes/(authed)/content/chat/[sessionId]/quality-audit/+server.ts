@@ -151,7 +151,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         auditRunId: body.auditRunId,
         ...(isNote
           ? { note: { chatSessionId: params.sessionId, text: status.feedback.text } }
-          : {}),
+          : { fixRequested: true }),
       },
     );
     if (!claimed.ok) throw error(500, describeError(claimed.error));
