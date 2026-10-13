@@ -156,3 +156,8 @@ export {
   resolvePageUrl,
   urlContributionsRegistry,
 } from "./url-composition.js";
+export {
+  type ResolvedConsentGate,
+  resolveVisitorConsentGate,
+  visitorConsentProviders,
+} from "./visitor-consent.js";

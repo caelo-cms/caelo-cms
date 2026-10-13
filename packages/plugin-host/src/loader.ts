@@ -876,6 +876,19 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     pluginDataListsRegistry.declare(def.slug, def.dataLists);
   }
 
+  // #674 — a consent provider decides whether core tracks visitors at all,
+  // so a declaration that names nothing to ask must not load.
+  if (def.visitorConsent) {
+    if (!def.operations[def.visitorConsent.operation]) {
+      throw new Error(
+        `plugin "${def.slug}" names visitorConsent.operation "${def.visitorConsent.operation}", which is not one of its operations`,
+      );
+    }
+    if (def.visitorConsent.purposes.length === 0) {
+      throw new Error(`plugin "${def.slug}" declares visitorConsent without any purposes`);
+    }
+  }
+
   // Upsert the plugins row + actor row; reuses migration 0036's partial unique index.
   //
   // The status a FRESH row gets is the whole activation model. Discovery

@@ -14,6 +14,8 @@
  * affected by query-string normalisation. See plans/phases/phase_15.)
  */
 
+import type { ConsentGate } from "./consent.js";
+
 export interface ManifestVariant {
   /** Owner-readable label (e.g. "A", "B", "control"). Stable across deploys. */
   readonly label: string;
@@ -40,6 +42,14 @@ export interface RoutingManifest {
   readonly manifestVersion: string;
   /** All active experiments (only `status='active'` rows from cms_admin.experiments). */
   readonly experiments: ReadonlyArray<ManifestExperiment>;
+  /**
+   * #674 — the consent rule for A/B testing, baked from the site's
+   * consent provider at build time. Absent means no provider governed
+   * A/B testing when the manifest was built: the routers then serve
+   * every visitor the control page and set no cookie, because bucketing
+   * without a way to ask is bucketing without consent.
+   */
+  readonly consent?: ConsentGate;
 }
 
 export const EMPTY_MANIFEST: RoutingManifest = {
@@ -72,6 +82,9 @@ export function findExperimentForUrl(
  * tests + the deploy step.
  */
 export function validateManifest(manifest: RoutingManifest): string | null {
+  if (manifest.experiments.length > 0 && !manifest.consent) {
+    return "the manifest carries active experiments but no consent rule — activate a consent provider (the consent manager) and redeploy, or complete the experiments";
+  }
   for (const ex of manifest.experiments) {
     if (!ex.experimentId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
       return `experiment ${ex.experimentId} is not a UUID`;

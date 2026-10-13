@@ -413,6 +413,53 @@ export const contentVariantResolution = z
 
 export type ContentVariantResolution = z.infer<typeof contentVariantResolution>;
 
+/**
+ * #674 — core visitor-tracking features that may run only with the
+ * visitor's consent. A plugin declaring `visitorConsent` governs these
+ * for the site; core never runs one without asking it first.
+ *
+ *   ab_testing  A/B experiments: the `caelo_visitor_id` bucketing cookie
+ *               and the impression count behind it.
+ */
+export const VISITOR_CONSENT_PURPOSES = ["ab_testing"] as const;
+
+export const visitorConsentPurpose = z.enum(VISITOR_CONSENT_PURPOSES);
+
+export type VisitorConsentPurpose = z.infer<typeof visitorConsentPurpose>;
+
+/**
+ * #674 — what a consent provider's `visitorConsent.operation` returns:
+ * where the visitor's decision lives and which of the provider's
+ * categories covers each core purpose.
+ *
+ * The cookie is first-party and its value is URI-encoded JSON
+ * `{ granted: string[], policyVersion: number }`. Core accepts a
+ * decision only when `policyVersion` equals the one returned here and
+ * `granted` contains the purpose's category — the same check
+ * (`@caelo-cms/edge-router` `consentGranted`) in the API gateway and on
+ * every edge router, so the server never trusts the page script alone.
+ */
+export const visitorConsentRule = z
+  .object({
+    cookie: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z0-9_-]+$/, "a plain cookie name"),
+    policyVersion: z.number().int().positive(),
+    purposes: z.partialRecord(
+      visitorConsentPurpose,
+      z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-z][a-z0-9_-]*$/, "a category key"),
+    ),
+  })
+  .strict();
+
+export type VisitorConsentRule = z.infer<typeof visitorConsentRule>;
+
 export const pluginManifest = z
   .object({
     // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
@@ -453,6 +500,10 @@ export const pluginManifest = z
      *  the `content_variants` capability: it changes what every page
      *  renders. */
     hasContentVariants: z.boolean().default(false),
+    /** #674 — see `PluginDefinition.visitorConsent`. The purposes this
+     *  plugin governs consent for; persisted so core can tell, from the
+     *  registry alone, whether anything on the site can ask a visitor. */
+    visitorConsentPurposes: z.array(visitorConsentPurpose).optional(),
     /** Grants this plugin asks for. A request grants nothing: the Owner
      *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
@@ -1208,6 +1259,25 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly contentVariantsOperation?: string;
   /**
+   * #674 — this plugin is the site's consent provider for the listed
+   * core purposes (`VISITOR_CONSENT_PURPOSES`). `operation` is an
+   * operation in `operations` taking `{}` and returning a
+   * `VisitorConsentRule`. Core consults it before any of those purposes
+   * runs: the API gateway on every A/B assignment, the static build for
+   * the edge routers' manifest, and `experiments.activate` refuses to
+   * start a test while no active plugin governs `ab_testing`.
+   *
+   * The plugin's client runtime must also expose
+   * `window.caeloConsent.allows(purpose)` and dispatch a `caelo:consent`
+   * event on `document` whenever the decision changes — core's page
+   * scripts (e.g. `/api/variant.js`) wait on those before sending
+   * anything. At most one plugin per site may declare this.
+   */
+  readonly visitorConsent?: {
+    readonly operation: string;
+    readonly purposes: ReadonlyArray<VisitorConsentPurpose>;
+  };
+  /**
    * The I/O half of `dataLists`: an operation in `operations` taking
    * `{pageIds: string[], pageUrlStyle: PageUrlStyle}` (page links come
    * from `pages.resolve_public_urls`, as for head contributions) and returning
@@ -1254,6 +1324,7 @@ export function manifestFromDefinition(def: {
   readonly buildAssets?: unknown;
   readonly deferralsOperation?: string;
   readonly contentVariantsOperation?: string;
+  readonly visitorConsent?: { readonly purposes: ReadonlyArray<VisitorConsentPurpose> };
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
   readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
@@ -1278,6 +1349,7 @@ export function manifestFromDefinition(def: {
     hasBuildAssets: Boolean(def.buildAssets),
     hasDeferrals: Boolean(def.deferralsOperation),
     hasContentVariants: Boolean(def.contentVariantsOperation),
+    ...(def.visitorConsent ? { visitorConsentPurposes: [...def.visitorConsent.purposes] } : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
     ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),

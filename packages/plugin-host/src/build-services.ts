@@ -26,6 +26,7 @@
  * main-line render (MAIN_RENDER): builds never render a chat branch.
  */
 
+import type { VisitorConsentPurpose } from "@caelo-cms/plugin-sdk";
 import type { PageUrlStyle } from "@caelo-cms/shared";
 import { collectBuildAssets, type PluginClientAsset } from "./client-assets.js";
 import {
@@ -51,6 +52,7 @@ import {
 } from "./dispatch.js";
 import { type CollectedContributions, collectContributions } from "./head-composition.js";
 import { type PublicUrlContext, type PublicUrlPage, resolvePublicPageUrls } from "./public-urls.js";
+import { type ResolvedConsentGate, resolveVisitorConsentGate } from "./visitor-consent.js";
 
 type ContentVariantPages = Parameters<typeof resolveContentVariants>[0];
 type DeferralCandidates = Parameters<typeof resolveModuleDeferrals>[0];
@@ -88,6 +90,8 @@ export interface BuildPluginServices {
   metaSignatureBatch(pluginSlug: string, pageIds: string[]): Promise<ReadonlyMap<string, string>>;
   metaSignature(pluginSlug: string, pageId: string): Promise<string>;
   staticRender(pluginSlug: string, pageId: string, pageUrlStyle: PageUrlStyle): Promise<string>;
+  /** #674 — the consent provider's rule for a purpose, or null without one. */
+  resolveVisitorConsentGate(purpose: VisitorConsentPurpose): Promise<ResolvedConsentGate | null>;
 }
 
 /** The plugin host of THIS process — the admin's, where plugins run. */
@@ -123,6 +127,7 @@ export const localBuildPluginServices: BuildPluginServices = {
       pageId,
       pageUrlStyle,
     })) ?? "",
+  resolveVisitorConsentGate: (purpose) => resolveVisitorConsentGate(purpose, MAIN_RENDER),
 };
 
 /** The method names a build may call — the RPC's whole surface. */
@@ -140,6 +145,7 @@ export const BUILD_PLUGIN_METHODS = [
   "metaSignatureBatch",
   "metaSignature",
   "staticRender",
+  "resolveVisitorConsentGate",
 ] as const satisfies ReadonlyArray<keyof BuildPluginServices>;
 
 export type BuildPluginMethod = (typeof BUILD_PLUGIN_METHODS)[number];

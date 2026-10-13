@@ -20,7 +20,12 @@
  * pushing to ACR) lands in P17.0 release engineering.
  */
 
-import { EMPTY_MANIFEST, type RoutingManifest, routeRequest } from "@caelo-cms/edge-router";
+import {
+  EMPTY_MANIFEST,
+  type RoutingManifest,
+  readCookie,
+  routeRequest,
+} from "@caelo-cms/edge-router";
 
 const STATIC_BUCKET_URL = process.env.STATIC_BUCKET_URL ?? "";
 const MANIFEST_OBJECT = process.env.MANIFEST_OBJECT ?? "ab-routing.json";
@@ -49,26 +54,19 @@ async function fetchManifest(): Promise<RoutingManifest> {
   }
 }
 
-function readCookie(header: string | null, name: string): string | null {
-  if (!header) return null;
-  for (const pair of header.split(/;\s*/)) {
-    const eq = pair.indexOf("=");
-    if (eq < 0) continue;
-    if (pair.slice(0, eq) === name) return decodeURIComponent(pair.slice(eq + 1));
-  }
-  return null;
-}
-
 const port = Number(process.env.PORT ?? 8080);
 Bun.serve({
   port,
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const manifest = await fetchManifest();
-    const visitorIdCookie = readCookie(req.headers.get("cookie"), COOKIE_NAME);
+    const cookieHeader = req.headers.get("cookie");
+    // #674 — bucketing needs the visitor's consent; the manifest names the
+    // consent cookie (absent rule = nobody is bucketed).
     const decision = routeRequest(manifest, {
       pathname: url.pathname,
-      visitorIdCookie,
+      visitorIdCookie: readCookie(cookieHeader, COOKIE_NAME),
+      consentCookie: manifest.consent ? readCookie(cookieHeader, manifest.consent.cookie) : null,
     });
 
     if (decision.logEntry) {
@@ -80,8 +78,20 @@ Bun.serve({
     const headers = new Headers({
       Location: target.toString(),
       "Cache-Control": "no-store, private",
-      "Set-Cookie": `${COOKIE_NAME}=${encodeURIComponent(decision.setVisitorId)}; Path=/; Max-Age=31536000; SameSite=Lax; Secure; HttpOnly`,
     });
+    // Only a consented, bucketed request sets the id; a visitor who
+    // withdrew consent has it expired instead of renewed.
+    if (decision.setVisitorId) {
+      headers.set(
+        "Set-Cookie",
+        `${COOKIE_NAME}=${encodeURIComponent(decision.setVisitorId)}; Path=/; Max-Age=31536000; SameSite=Lax; Secure; HttpOnly`,
+      );
+    } else if (decision.clearVisitorId) {
+      headers.set(
+        "Set-Cookie",
+        `${COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Lax; Secure; HttpOnly`,
+      );
+    }
     return new Response(null, { status: 307, headers });
   },
 });

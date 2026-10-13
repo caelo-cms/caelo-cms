@@ -3,15 +3,19 @@
 /**
  * P13 — client-side A/B variant routing.
  *
- * Two endpoints:
+ * Three endpoints:
  *   GET  /api/variant.js                 — small inline script the static
- *                                           page loads. Asks the gateway
- *                                           for this visitor's variant,
- *                                           then swaps the page's <main>.
- *   POST /api/variant/assign             — picks the variant from the
+ *                                           page loads. Once the visitor
+ *                                           consented, asks the gateway
+ *                                           for their variant, then swaps
+ *                                           the page's <main>.
+ *   POST /api/variant/assign             — checks consent (#674), picks
+ *                                           the variant from the
  *                                           gateway-verified visitor id
  *                                           and records the impression via
  *                                           experiments.record_assignment.
+ *   POST /api/variant/forget             — expires the visitor cookie
+ *                                           when consent is withdrawn.
  *
  * ## The visitor id never reaches the script (#649)
  *
@@ -28,6 +32,12 @@
  * provider-specific edge rules that bypass the client-side hop.
  */
 
+import { type ConsentGate, consentGranted } from "@caelo-cms/edge-router";
+import {
+  MAIN_RENDER,
+  resolveVisitorConsentGate,
+  syncDispatchPlugins,
+} from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 
@@ -65,6 +75,25 @@ export function pickVariant(
  *   <script src="/api/variant.js"
  *           data-experiment="hero-cta-test"
  *           data-page="/blog/spring-launch"></script>
+ *
+ * ## Consent first (#674)
+ *
+ * The script sends nothing until the site's consent provider says the
+ * visitor agreed to A/B testing (`window.caeloConsent.allows("ab_testing")`,
+ * which the consent manager's runtime answers from the visitor's
+ * recorded decision). Until then the visitor sees the page as served —
+ * the control — and no request, cookie or impression exists.
+ *
+ * Consent given on this page starts the test on this same page view
+ * (`caelo:consent` event): the page that prompted the decision is the
+ * one the experiment is about, and waiting for the next view would drop
+ * every visitor who agrees and leaves, skewing the sample towards
+ * visitors who browse on. Withdrawing consent asks the gateway to expire
+ * the visitor cookie and reloads a swapped page back to the control.
+ *
+ * The gateway enforces the same rule on its own (it never trusts this
+ * script): an assignment request without a current consent cookie is
+ * refused and any visitor cookie it carries is expired.
  */
 export const VARIANT_SCRIPT = `
 (() => {
@@ -73,32 +102,137 @@ export const VARIANT_SCRIPT = `
   const exp = tag.getAttribute("data-experiment");
   const page = tag.getAttribute("data-page");
   if (!exp || !page) return;
-  // No body: the gateway reads the visitor from the HttpOnly cookie the
-  // browser attaches (and sets it on a first visit), so the variant is
-  // stable across reloads without the script ever seeing the id.
-  fetch(\`/api/variant/assign?exp=\${encodeURIComponent(exp)}\`, {
-    method: "POST",
-    credentials: "same-origin",
-  })
-    .then((r) => r.json())
-    .then((env) => {
-      if (!env.ok || !env.data || !env.data.variant) return;
-      const variant = env.data.variant;
-      const url = \`/_variants/\${exp}__\${variant}\${page}\`;
-      return fetch(url, { credentials: "same-origin" });
+  const PURPOSE = "ab_testing";
+  let assigned = false;
+  let swapped = false;
+
+  function consentApi() {
+    const api = window.caeloConsent;
+    return api && typeof api.allows === "function" ? api : null;
+  }
+
+  function allowed() {
+    const api = consentApi();
+    return api !== null && api.allows(PURPOSE) === true;
+  }
+
+  function assign() {
+    if (assigned) return;
+    assigned = true;
+    // No body: the gateway reads the visitor from the HttpOnly cookie the
+    // browser attaches (and sets it on a first visit), so the variant is
+    // stable across reloads without the script ever seeing the id.
+    fetch(\`/api/variant/assign?exp=\${encodeURIComponent(exp)}\`, {
+      method: "POST",
+      credentials: "same-origin",
     })
-    .then((res) => (res && res.ok ? res.text() : null))
-    .then((html) => {
-      if (!html) return;
-      // Swap the body's main element only — keep <head> + scripts.
-      const next = new DOMParser().parseFromString(html, "text/html");
-      const oldMain = document.querySelector("main") ?? document.body;
-      const newMain = next.querySelector("main") ?? next.body;
-      if (oldMain && newMain) oldMain.replaceWith(newMain);
-    })
-    .catch(() => undefined);
+      .then((r) => r.json())
+      .then((env) => {
+        if (!env.ok || !env.data || !env.data.variant) return;
+        const variant = env.data.variant;
+        const url = \`/_variants/\${exp}__\${variant}\${page}\`;
+        return fetch(url, { credentials: "same-origin" });
+      })
+      .then((res) => (res && res.ok ? res.text() : null))
+      .then((html) => {
+        if (!html) return;
+        // Swap the body's main element only — keep <head> + scripts.
+        const next = new DOMParser().parseFromString(html, "text/html");
+        const oldMain = document.querySelector("main") ?? document.body;
+        const newMain = next.querySelector("main") ?? next.body;
+        if (oldMain && newMain) {
+          oldMain.replaceWith(newMain);
+          swapped = true;
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  function forget() {
+    assigned = false;
+    // keepalive: the consent runtime may reload the page right after a
+    // withdrawal, and the expiry must still reach the gateway.
+    fetch("/api/variant/forget", { method: "POST", credentials: "same-origin", keepalive: true })
+      .catch(() => undefined);
+    if (swapped) location.reload();
+  }
+
+  function start() {
+    if (consentApi() === null) {
+      console.warn(
+        \`[caelo-ab] experiment "\${exp}" is not running: A/B testing needs the visitor's consent and no consent manager runs on this page. Activate the consent manager plugin and place its banner in the site layout.\`,
+      );
+      return;
+    }
+    let wasAllowed = allowed();
+    if (wasAllowed) assign();
+    document.addEventListener("caelo:consent", () => {
+      const now = allowed();
+      if (now && !wasAllowed) assign();
+      else if (!now && wasAllowed) forget();
+      wasAllowed = now;
+    });
+  }
+
+  // The consent runtime may load after this script (it is linked at the
+  // end of the page), so decide once the document is parsed.
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
 })();
 `.trim();
+
+/** The purpose core asks the consent provider about before bucketing. */
+export const AB_TESTING_PURPOSE = "ab_testing" as const;
+
+const CONSENT_GATE_TTL_MS = 5_000;
+let cachedGate: { gate: ConsentGate | null; loadedAt: number } | null = null;
+
+/** Tests: forget the cached consent rule. */
+export function invalidateAbConsentGate(): void {
+  cachedGate = null;
+}
+
+/**
+ * The consent provider's rule for A/B testing as it stands now, or null
+ * when no running plugin governs it. Cached for as long as the gateway
+ * caches its other settings, so a policy bump or a provider switched off
+ * reaches visitors within seconds.
+ *
+ * @throws when the provider fails or answers ill-formed (plugin-host
+ *   `resolveVisitorConsentGate`) — the caller refuses the request.
+ */
+export async function abTestingConsentGate(): Promise<ConsentGate | null> {
+  if (cachedGate && Date.now() - cachedGate.loadedAt < CONSENT_GATE_TTL_MS) {
+    return cachedGate.gate;
+  }
+  // The provider's activation reaches the gateway through the registry
+  // mirror; refresh it first so a just-activated consent manager counts.
+  await syncDispatchPlugins();
+  const resolved = await resolveVisitorConsentGate(AB_TESTING_PURPOSE, MAIN_RENDER);
+  const gate = resolved
+    ? { cookie: resolved.cookie, policyVersion: resolved.policyVersion, category: resolved.category }
+    : null;
+  cachedGate = { gate, loadedAt: Date.now() };
+  return gate;
+}
+
+/**
+ * Whether this request may be bucketed: `granted` with a current consent
+ * cookie, `declined` without one, `no-provider` when nothing on the site
+ * can ask the visitor.
+ *
+ * @param cookies the request's decoded cookies.
+ */
+export async function abConsentVerdict(
+  cookies: Readonly<Record<string, string>>,
+): Promise<"granted" | "declined" | "no-provider"> {
+  const gate = await abTestingConsentGate();
+  if (!gate) return "no-provider";
+  return consentGranted(gate, cookies[gate.cookie] ?? null) ? "granted" : "declined";
+}
 
 interface AssignmentVariant {
   label: string;

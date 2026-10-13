@@ -28,7 +28,14 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
   requireCapability(Boolean(manifest.workers?.length), "background_workers");
   requireCapability(Boolean(manifest.contributes?.length), "head_contributions");
   requireCapability(Boolean(manifest.urlContributions?.length), "url_slots");
-  requireCapability(manifest.hasBuildAssets || manifest.hasDeferrals, "client_assets");
+  // A consent provider (#674) must run a client runtime on every page to
+  // ask the visitor — the same reach as build assets.
+  requireCapability(
+    manifest.hasBuildAssets ||
+      manifest.hasDeferrals ||
+      Boolean(manifest.visitorConsentPurposes?.length),
+    "client_assets",
+  );
   requireCapability(Boolean(manifest.dataLists?.length), "data_lists");
   requireCapability(manifest.hasContentVariants, "content_variants");
   requireCapability(Boolean(manifest.skills?.length), "companion_skills");

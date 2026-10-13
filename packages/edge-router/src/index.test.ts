@@ -12,6 +12,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { assignVariant, buildAssignmentLog, fnv1a32, mintVisitorId } from "./assignment.js";
+import { consentGranted, readCookie } from "./consent.js";
 import { findExperimentForUrl, validateManifest } from "./manifest.js";
 import { routeRequest } from "./router.js";
 
@@ -140,14 +141,27 @@ describe("validateManifest", () => {
       { label: "B", weight: 50, path: "/_caelo-variant/22222222-3333-4444-5555-666666666666/B/p" },
     ],
   } as const;
+  const consent = { cookie: "caelo_consent", policyVersion: 1, category: "analytics" };
 
   it("accepts a clean manifest", () => {
-    expect(validateManifest({ manifestVersion: "1", experiments: [baseExperiment] })).toBeNull();
+    expect(
+      validateManifest({ manifestVersion: "1", experiments: [baseExperiment], consent }),
+    ).toBeNull();
+  });
+
+  it("rejects experiments without a consent rule (#674)", () => {
+    expect(validateManifest({ manifestVersion: "1", experiments: [baseExperiment] })).toContain(
+      "no consent rule",
+    );
+    // No experiments, nothing to gate.
+    expect(validateManifest({ manifestVersion: "1", experiments: [] })).toBeNull();
   });
 
   it("rejects non-UUID experimentId", () => {
     const bad = { ...baseExperiment, experimentId: "not-a-uuid" };
-    expect(validateManifest({ manifestVersion: "1", experiments: [bad] })).toContain("not a UUID");
+    expect(validateManifest({ manifestVersion: "1", experiments: [bad], consent })).toContain(
+      "not a UUID",
+    );
   });
 
   it("rejects weights that don't sum to 100", () => {
@@ -158,13 +172,17 @@ describe("validateManifest", () => {
         { label: "B", weight: 30, path: "/p-b" },
       ],
     };
-    expect(validateManifest({ manifestVersion: "1", experiments: [bad] })).toContain("sum to 90");
+    expect(validateManifest({ manifestVersion: "1", experiments: [bad], consent })).toContain(
+      "sum to 90",
+    );
   });
 });
 
 describe("routeRequest", () => {
+  const gate = { cookie: "caelo_consent", policyVersion: 2, category: "analytics" };
   const manifest = {
     manifestVersion: "1",
+    consent: gate,
     experiments: [
       {
         pageSlug: "/home",
@@ -180,27 +198,125 @@ describe("routeRequest", () => {
       },
     ],
   };
+  const granted = JSON.stringify({ granted: ["necessary", "analytics"], policyVersion: 2 });
+  const declined = JSON.stringify({ granted: ["necessary"], policyVersion: 2 });
 
-  it("passes-through requests that don't match any experiment", () => {
-    const out = routeRequest(manifest, { pathname: "/about", visitorIdCookie: "v-1" });
-    expect(out.rewritePathname).toBe("/about");
-    expect(out.setVisitorId).toBe("v-1");
-    expect(out.logEntry).toBeNull();
+  it("passes through a request outside any experiment without touching the cookie", () => {
+    for (const consentCookie of [granted, null]) {
+      const out = routeRequest(manifest, {
+        pathname: "/about",
+        visitorIdCookie: "v-1",
+        consentCookie,
+      });
+      expect(out.rewritePathname).toBe("/about");
+      // #674 — no cookie on every request: only a bucketed request sets one.
+      expect(out.setVisitorId).toBeNull();
+      expect(out.clearVisitorId).toBe(false);
+      expect(out.logEntry).toBeNull();
+    }
   });
 
-  it("rewrites + emits log when the request matches", () => {
-    const out = routeRequest(manifest, { pathname: "/home", visitorIdCookie: "v-aaaaaaaa" });
+  it("rewrites + emits log when a consenting visitor requests the page", () => {
+    const out = routeRequest(manifest, {
+      pathname: "/home",
+      visitorIdCookie: "v-aaaaaaaa",
+      consentCookie: granted,
+    });
     expect(["/home", "/_caelo-variant/33333333-4444-5555-6666-777777777777/B/home"]).toContain(
       out.rewritePathname,
     );
-    expect(out.logEntry).not.toBeNull();
+    expect(out.setVisitorId).toBe("v-aaaaaaaa");
     expect(out.logEntry?.kind).toBe("ab_assignment");
     expect(out.logEntry?.experimentId).toBe("33333333-4444-5555-6666-777777777777");
   });
 
-  it("mints a visitor id when the cookie is absent", () => {
-    const out = routeRequest(manifest, { pathname: "/home", visitorIdCookie: null });
+  it("mints a visitor id for a consenting visitor without one", () => {
+    const out = routeRequest(manifest, {
+      pathname: "/home",
+      visitorIdCookie: null,
+      consentCookie: granted,
+    });
     expect(out.setVisitorId).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("serves control, mints nothing and logs nothing without consent (#674)", () => {
+    for (const consentCookie of [null, declined, "not json"]) {
+      const out = routeRequest(manifest, {
+        pathname: "/home",
+        visitorIdCookie: null,
+        consentCookie,
+      });
+      expect(out).toEqual({
+        rewritePathname: "/home",
+        setVisitorId: null,
+        clearVisitorId: false,
+        logEntry: null,
+      });
+    }
+  });
+
+  it("tells the runtime to drop the id of a visitor who withdrew consent", () => {
+    const out = routeRequest(manifest, {
+      pathname: "/home",
+      visitorIdCookie: "v-aaaaaaaa",
+      consentCookie: declined,
+    });
+    expect(out.rewritePathname).toBe("/home");
+    expect(out.setVisitorId).toBeNull();
+    expect(out.clearVisitorId).toBe(true);
+    expect(out.logEntry).toBeNull();
+  });
+
+  it("serves control when the manifest carries no consent rule", () => {
+    const { consent: _drop, ...ungated } = manifest;
+    const out = routeRequest(ungated, {
+      pathname: "/home",
+      visitorIdCookie: null,
+      consentCookie: granted,
+    });
+    expect(out.rewritePathname).toBe("/home");
+    expect(out.setVisitorId).toBeNull();
+    expect(out.logEntry).toBeNull();
+  });
+});
+
+describe("consentGranted (#674)", () => {
+  const gate = { cookie: "caelo_consent", policyVersion: 3, category: "analytics" };
+
+  it("grants only the gate's category under the current policy", () => {
+    expect(consentGranted(gate, JSON.stringify({ granted: ["analytics"], policyVersion: 3 }))).toBe(
+      true,
+    );
+    expect(consentGranted(gate, JSON.stringify({ granted: ["marketing"], policyVersion: 3 }))).toBe(
+      false,
+    );
+  });
+
+  it("treats a stale policy version as no decision", () => {
+    expect(consentGranted(gate, JSON.stringify({ granted: ["analytics"], policyVersion: 2 }))).toBe(
+      false,
+    );
+  });
+
+  it("treats a missing or unreadable cookie as no consent", () => {
+    expect(consentGranted(gate, null)).toBe(false);
+    expect(consentGranted(gate, "")).toBe(false);
+    expect(consentGranted(gate, "{")).toBe(false);
+    expect(consentGranted(gate, "null")).toBe(false);
+    expect(consentGranted(gate, JSON.stringify({ granted: "analytics", policyVersion: 3 }))).toBe(
+      false,
+    );
+  });
+
+  it("reads the consent cookie the runtime writes from a Cookie header", () => {
+    const value = encodeURIComponent(
+      JSON.stringify({ granted: ["necessary", "analytics"], policyVersion: 3, at: "x" }),
+    );
+    const header = `a=1; caelo_consent=${value}; b=2`;
+    expect(consentGranted(gate, readCookie(header, "caelo_consent"))).toBe(true);
+    expect(readCookie(header, "missing")).toBeNull();
+    expect(readCookie("caelo_consent=%E0%A4%A", "caelo_consent")).toBeNull();
+    expect(readCookie(null, "caelo_consent")).toBeNull();
   });
 });
 

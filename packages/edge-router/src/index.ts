@@ -17,6 +17,7 @@ export {
   fnv1a32,
   mintVisitorId,
 } from "./assignment.js";
+export { type ConsentGate, consentGranted, readCookie } from "./consent.js";
 export {
   EMPTY_MANIFEST,
   findExperimentForUrl,

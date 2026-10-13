@@ -17,7 +17,7 @@
  */
 
 import type { RoutingManifest } from "@caelo-cms/edge-router";
-import { routeRequest } from "@caelo-cms/edge-router";
+import { readCookie, routeRequest } from "@caelo-cms/edge-router";
 
 // Bundled at build time. The build script reads the latest
 // routing-manifest.json from the static-output bucket and inlines it.
@@ -42,24 +42,17 @@ interface CloudFrontEvent {
   Records: Array<{ cf: { request: CloudFrontRequest } }>;
 }
 
-function readCookie(req: CloudFrontRequest, name: string): string | null {
-  const raw = req.headers.cookie?.[0]?.value ?? "";
-  for (const pair of raw.split(/;\s*/)) {
-    const eq = pair.indexOf("=");
-    if (eq < 0) continue;
-    if (pair.slice(0, eq) === name) return decodeURIComponent(pair.slice(eq + 1));
-  }
-  return null;
-}
-
 export const handler = async (event: CloudFrontEvent): Promise<CloudFrontRequest> => {
   const req = event.Records[0]?.cf.request;
   if (!req) throw new Error("edge-handler: malformed event");
 
-  const visitorIdCookie = readCookie(req, COOKIE_NAME);
+  const cookieHeader = req.headers.cookie?.[0]?.value ?? null;
+  // #674 — bucketing needs the visitor's consent; the manifest names the
+  // consent cookie (absent rule = nobody is bucketed).
   const decision = routeRequest(MANIFEST, {
     pathname: req.uri,
-    visitorIdCookie,
+    visitorIdCookie: readCookie(cookieHeader, COOKIE_NAME),
+    consentCookie: MANIFEST.consent ? readCookie(cookieHeader, MANIFEST.consent.cookie) : null,
   });
 
   // Path rewrite — Lambda@Edge mutates request.uri in-place.
@@ -73,7 +66,16 @@ export const handler = async (event: CloudFrontEvent): Promise<CloudFrontRequest
   // the static origin's Set-Cookie config picks up. CloudFront's
   // "function" tier supports response-header rewrites without a
   // second Lambda — that's the operator's setup step.
-  req.headers["x-caelo-visitor-id"] = [{ key: "X-Caelo-Visitor-Id", value: decision.setVisitorId }];
+  // Only a consented, bucketed request carries an id; a visitor who
+  // withdrew consent gets the clear marker so the response rule expires
+  // the cookie instead of renewing it.
+  if (decision.setVisitorId) {
+    req.headers["x-caelo-visitor-id"] = [
+      { key: "X-Caelo-Visitor-Id", value: decision.setVisitorId },
+    ];
+  } else if (decision.clearVisitorId) {
+    req.headers["x-caelo-clear-visitor-id"] = [{ key: "X-Caelo-Clear-Visitor-Id", value: "1" }];
+  }
 
   // Emit assignment log via console.log; CloudWatch picks it up,
   // Kinesis Firehose ships to S3, Athena queries it, P12A analytics

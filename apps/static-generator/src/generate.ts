@@ -1167,11 +1167,33 @@ export async function generateSite(args: {
       })),
     });
   }
+  // #674 — the edge routers bucket a visitor only with their consent, so
+  // the manifest carries the consent provider's rule as it stands at
+  // build time (the same policy version the consent runtime of this build
+  // bakes in). Active experiments without a provider would be served to
+  // nobody, or — on an older router — to everybody without asking, so
+  // the build refuses instead of shipping either.
+  const consentGate =
+    experimentRows.length > 0 ? await args.plugins.resolveVisitorConsentGate("ab_testing") : null;
+  if (experimentRows.length > 0 && !consentGate) {
+    throw new Error(
+      `active A/B experiments (${experimentRows.map((e) => e.slug).join(", ")}) need visitor consent, but no consent provider is active. Activate the consent manager plugin (and place its banner in the layout), or complete the experiments, then redeploy.`,
+    );
+  }
   const abRoutingManifest = {
     // Use runId as manifestVersion — bumps every deploy so a fresh
     // bucketing rolls out atomically when operators want to re-randomize.
     manifestVersion: runId,
     experiments: abExperiments,
+    ...(consentGate
+      ? {
+          consent: {
+            cookie: consentGate.cookie,
+            policyVersion: consentGate.policyVersion,
+            category: consentGate.category,
+          },
+        }
+      : {}),
   };
   await writeFile(
     join(buildDir, "ab-routing.json"),
