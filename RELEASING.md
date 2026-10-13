@@ -315,7 +315,9 @@ the new schema. `scripts/migration-lint.ts` scans the SQL migrations
 **added** since the previous stable tag for DROP TABLE / COLUMN /
 SCHEMA / TYPE / VIEW / DOMAIN / SEQUENCE / FUNCTION, ALTER TYPE, RENAME
 and ALTER COLUMN … TYPE (DROP POLICY / CONSTRAINT / INDEX / TRIGGER are
-routine recreate patterns and not flagged). Any finding sets
+routine recreate patterns and not flagged). SQL inside `DO $$ … $$` /
+function bodies is linted including its string literals, so
+`EXECUTE 'DROP TABLE …'` counts. Any finding sets
 `migrations.contract: true`, and the cut is refused unless
 `ack_contract_migrations` (`--ack-contract-migrations`) acknowledges
 it. Such a release is never auto-installed. Prefer shipping the
@@ -345,7 +347,9 @@ own identity (Cloud Shell / CLI).
 add, remove or change IAM, secrets, service accounts or resources. The
 release checks diff the files in `INFRA_CONTRACT_PATHS` (the stacks,
 `stack-contract.ts`, `stack-converge.ts`, `runtime-secrets.ts`,
-`operator-access.ts`, `gcp-names.ts`; tests and READMEs excluded)
+`operator-access.ts`, `gcp-names.ts`, and the upgrade-time mutators
+`lifecycle.ts`, `mcp-iap.ts`, `default-firewall.ts`; tests and READMEs
+excluded)
 against the previous stable tag: if any changed and the number did
 not, the cut is refused. When the change is infra-neutral (a comment, a
 refactor, a log line), re-cut with `ack_infra_neutral`

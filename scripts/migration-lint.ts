@@ -56,21 +56,33 @@ const RULES: readonly { id: string; pattern: RegExp }[] = [
   // (`ALTER COLUMN type SET NOT NULL`) is not mistaken for a type change.
   {
     id: "alter-column-type",
-    pattern: /\bALTER\s+(COLUMN\s+)?\S+\s+(SET\s+DATA\s+)?TYPE\s+(?!SET\b|DROP\b)\w/i,
+    pattern: /\bALTER\s+(COLUMN\s+)?\S+\s+(SET\s+DATA\s+)?TYPE\s+(?!SET\b|DROP\b)["\w]/i,
   },
 ];
 
 /**
- * Strip SQL comments and string literals so a word inside either (a
- * comment explaining an old DROP, a seeded text value) is not flagged.
- * Dollar-quoted bodies are kept: a function body that drops a table is
- * still a drop.
+ * Strip SQL comments, and string literals OUTSIDE dollar-quoted bodies, so
+ * a word inside a comment or a seeded text value is not flagged. Inside a
+ * `$$ … $$` body (DO blocks, functions) strings are kept: there they are
+ * usually SQL run by `EXECUTE 'DROP TABLE …'` — conservative by design.
  */
 function stripCommentsAndStrings(sql: string): string {
-  return sql
+  const noComments = sql
+    .replace(/--> statement-breakpoint/g, ";")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/--[^\n]*/g, " ")
-    .replace(/'(?:[^']|'')*'/g, "''");
+    .replace(/--[^\n]*/g, " ");
+  let out = "";
+  let openTag: string | null = null;
+  for (const part of noComments.split(/(\$[A-Za-z_0-9]*\$)/)) {
+    if (/^\$[A-Za-z_0-9]*\$$/.test(part)) {
+      if (openTag === null) openTag = part;
+      else if (part === openTag) openTag = null;
+      out += " ";
+    } else {
+      out += openTag === null ? part.replace(/'(?:[^']|'')*'/g, "''") : part;
+    }
+  }
+  return out;
 }
 
 /**
@@ -82,7 +94,7 @@ function stripCommentsAndStrings(sql: string): string {
 export function lintMigrationSql(file: string, sql: string): ContractFinding[] {
   const findings: ContractFinding[] = [];
   const statements = stripCommentsAndStrings(sql)
-    .split(/;|--> statement-breakpoint/)
+    .split(";")
     .map((s) => s.replace(/\s+/g, " ").trim())
     .filter((s) => s.length > 0);
   for (const statement of statements) {

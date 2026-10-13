@@ -53,6 +53,12 @@ export const INFRA_CONTRACT_PATHS: readonly string[] = [
   "packages/provisioning/src/runtime-secrets.ts",
   "packages/provisioning/src/operator-access.ts",
   "packages/provisioning/src/gcp-names.ts",
+  // Upgrade-time mutators outside stack-converge: the upgrade flow itself
+  // (it decides which ensure* steps run), the MCP IAP service account +
+  // bindings, the default firewall policy.
+  "packages/provisioning/src/lifecycle.ts",
+  "packages/provisioning/src/mcp-iap.ts",
+  "packages/provisioning/src/default-firewall.ts",
 ];
 
 /**

@@ -24,6 +24,11 @@ describe("lintMigrationSql", () => {
     ["ALTER TABLE pages RENAME TO documents;", "rename"],
     ["ALTER TABLE pages ALTER COLUMN weight TYPE bigint;", "alter-column-type"],
     ["ALTER TABLE pages ALTER COLUMN weight SET DATA TYPE bigint;", "alter-column-type"],
+    ['ALTER TABLE pages ALTER COLUMN slug TYPE "varchar"(50);', "alter-column-type"],
+    ["ALTER TABLE pages ALTER COLUMN slug TYPE public.slug_text;", "alter-column-type"],
+    // Dynamic SQL in a DO block runs; its string is linted, not stripped.
+    ["DO $$ BEGIN EXECUTE 'DROP TABLE pages'; END $$;", "drop-object"],
+    ["DO $body$ BEGIN EXECUTE format('ALTER TABLE %I RENAME TO x', t); END $body$;", "rename"],
   ])("flags %s as %s", (sql, rule) => {
     expect(rules(sql)).toEqual([rule]);
   });
@@ -42,6 +47,7 @@ describe("lintMigrationSql", () => {
     "-- we used to DROP TABLE pages here\nSELECT 1;",
     "/* RENAME later */ SELECT 1;",
     "INSERT INTO notes (body) VALUES ('please DROP TABLE x; and RENAME it');",
+    "DO $$ BEGIN EXECUTE 'DROP POLICY IF EXISTS p ON pages'; END $$;",
   ])("does not flag %s", (sql) => {
     expect(rules(sql)).toEqual([]);
   });
