@@ -61,6 +61,7 @@ let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let adminToken: string;
 let chatSessionId: string;
+let chatBranchId: string;
 
 async function withSystemTx<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL!);
@@ -179,7 +180,10 @@ beforeAll(async () => {
     title: "mcp-gated-test session",
   });
   if (!opened.ok) throw new Error(`open_session failed: ${JSON.stringify(opened.error)}`);
-  chatSessionId = (opened.value as { chatSessionId: string }).chatSessionId;
+  ({ chatSessionId, chatBranchId } = opened.value as {
+    chatSessionId: string;
+    chatBranchId: string;
+  });
 });
 
 afterAll(async () => {
@@ -205,6 +209,14 @@ describe("#687 — approval-declared plugin tools over the Power-MCP", () => {
     const proposalId = r.approval?.proposalId ?? "";
     // Nothing applied before the click.
     expect(await localeCodes()).toEqual(before);
+    // The proposing branch is fixed at queue time (0262) — a later session
+    // move cannot retarget the approved call.
+    const queuedBranch = await withSystemTx(async (tx) => {
+      const rows = await tx`SELECT chat_branch_id::text AS b FROM tool_approval_actions
+                            WHERE id = ${proposalId}::uuid`;
+      return (rows[0] as { b: string | null } | undefined)?.b ?? null;
+    });
+    expect(queuedBranch).toBe(chatBranchId);
 
     // The card the Live Edit strip renders for this session.
     const listed = await execute(registry, adapter, ownerCtx, "pending_proposals.list", {

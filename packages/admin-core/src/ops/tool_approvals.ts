@@ -48,12 +48,15 @@ export const queueToolApprovalOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       INSERT INTO tool_approval_actions
-        (tool_name, args, preview, chat_session_id, proposed_by)
+        (tool_name, args, preview, chat_session_id, chat_branch_id, proposed_by)
       VALUES
         (${input.toolName},
          ${jsonbParam(input.args)},
          ${jsonbParam(input.preview)},
          ${input.chatSessionId === undefined ? null : sql`${input.chatSessionId}::uuid`},
+         -- #687 — the branch the call was proposed on (0262), fixed at
+         -- queue time: a later session move must not retarget the call.
+         ${ctx.chatBranchId === undefined ? null : sql`${ctx.chatBranchId}::uuid`},
          ${ctx.actorId}::uuid)
       RETURNING id::text AS id
     `)) as unknown as Array<{ id: string }>;
@@ -93,9 +96,9 @@ export const readToolApprovalForExecuteOp = defineOperation({
     args: z.record(z.string(), z.unknown()),
     chatSessionId: z.string().nullable(),
     /**
-     * The proposing session's branch (#687) — an approved plugin call stays
-     * on it when the approver cannot publish, and an external plugin's
-     * installation binding is keyed by it.
+     * The branch the call was proposed on (#687, recorded at queue time) —
+     * an approved plugin call stays on it when the approver cannot publish,
+     * and an external plugin's installation binding is keyed by it.
      */
     chatBranchId: z.string().nullable(),
   }),
@@ -112,8 +115,7 @@ export const readToolApprovalForExecuteOp = defineOperation({
       RETURNING tool_name AS tool_name,
                 args AS args,
                 chat_session_id::text AS chat_session_id,
-                (SELECT cs.chat_branch_id::text FROM chat_sessions cs
-                  WHERE cs.id = tool_approval_actions.chat_session_id) AS chat_branch_id
+                chat_branch_id::text AS chat_branch_id
     `)) as unknown as Array<{
       tool_name: string;
       args: unknown;
