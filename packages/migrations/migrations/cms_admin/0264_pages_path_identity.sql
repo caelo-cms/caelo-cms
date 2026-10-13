@@ -1,4 +1,5 @@
 -- SPDX-License-Identifier: MPL-2.0
+-- caelo:contract drops the site-wide page slug index; the previous image upserts imported pages ON CONFLICT (slug, branch) and treats slugs as unique
 --
 -- 0264 — page identity is the page id; the URL PATH is what must be
 -- unique (epic #690, part 2).

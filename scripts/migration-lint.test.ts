@@ -37,8 +37,14 @@ describe("lintMigrationSql", () => {
     "CREATE TABLE pages (id uuid primary key);",
     "ALTER TABLE pages ADD COLUMN weight int;",
     'DROP POLICY IF EXISTS "pages_rw" ON pages;',
-    "ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_slug_key;",
+    "ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_parent_fkey;",
+    "ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_pkey;",
     "DROP INDEX IF EXISTS pages_slug_idx;",
+    // A UNIQUE index / constraint dropped and recreated under the same name
+    // keeps the guarantee.
+    "DROP INDEX IF EXISTS pages_slug_uidx; CREATE UNIQUE INDEX pages_slug_uidx ON pages (slug, x);",
+    "ALTER TABLE t DROP CONSTRAINT t_slug_key; ALTER TABLE t ADD CONSTRAINT t_slug_key UNIQUE (slug, x);",
+    "-- mentions caelo:contract only in a comment deeper in the file\nSELECT 1;",
     "DROP TRIGGER IF EXISTS t ON pages;",
     "ALTER TABLE pages ALTER COLUMN weight DROP DEFAULT;",
     "ALTER TABLE pages ALTER COLUMN weight DROP NOT NULL;",
@@ -50,6 +56,28 @@ describe("lintMigrationSql", () => {
     "DO $$ BEGIN EXECUTE 'DROP POLICY IF EXISTS p ON pages'; END $$;",
   ])("does not flag %s", (sql) => {
     expect(rules(sql)).toEqual([]);
+  });
+
+  it.each([
+    ["DROP INDEX IF EXISTS pages_slug_branch_uidx;"],
+    ["ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_slug_key;"],
+    ["ALTER TABLE pages DROP CONSTRAINT pages_slug_locale_unique;"],
+    ['DROP INDEX CONCURRENTLY IF EXISTS "public"."media_sha_uniq";'],
+  ])("flags a dropped UNIQUE guarantee: %s", (sql) => {
+    expect(rules(sql)).toEqual(["drop-unique"]);
+  });
+
+  it("counts a migration that declares itself contract, with its reason", () => {
+    const sql =
+      "-- SPDX-License-Identifier: MPL-2.0\n-- caelo:contract the old image treats slugs as unique\n--\nCREATE INDEX x ON t (a);";
+    expect(lintMigrationSql("m.sql", sql)).toEqual([
+      { file: "m.sql", rule: "marked-contract", statement: "the old image treats slugs as unique" },
+    ]);
+    // Only the leading comment header counts.
+    expect(rules("SELECT 1;\n-- caelo:contract too late\nSELECT 2;")).toEqual([]);
+    expect(() => lintMigrationSql("m.sql", "-- caelo:contract\nSELECT 1;")).toThrow(
+      /needs a reason/,
+    );
   });
 
   it("keeps string and comment boundaries apart (`--` inside a string, quote inside a comment)", () => {
