@@ -13,12 +13,15 @@
  * Invariants preserved (CLAUDE.md §11.A):
  * - Calls dispatch as an AI actor bound to the token's owner. An external
  *   model is an AI actor no matter who runs it, so human-only ops stay
- *   unreachable and gated `propose_*` tools fall back to their
- *   propose-only handler ("Queued proposal <uuid>: …") — the operator
- *   approves (in the Live Edit chat's card or the pending queue), never
- *   the caller. Issue #658: the proposal is recorded as requested by the
- *   external agent, and the decision is handed back to it through
- *   mcp.get_approval_outcome — it never starts a Live Edit AI turn.
+ *   unreachable and every approval-gated tool queues instead of applying
+ *   ("Queued proposal <uuid>: …"): gated `propose_*` tools fall back to
+ *   their propose-only handler, `needsApproval` tools queue through the
+ *   dispatcher, and approval-declared plugin tools queue through
+ *   `queuePluginToolApproval` (#687). The operator approves (in the Live
+ *   Edit chat's card or the pending queue), never the caller. Issue #658:
+ *   the proposal is recorded as requested by the external agent, and the
+ *   decision is handed back to it through mcp.get_approval_outcome — it
+ *   never starts a Live Edit AI turn.
  * - Every call runs inside a chat session's binding (the site's shared
  *   draft, or an isolated experiment/migration branch). The AI may Stage
  *   (stage_changes, issue #620); Publish live stays the operator's click
@@ -37,6 +40,7 @@ import { loadMemory } from "../../ai/chat-runner/persistence.js";
 import { withTakeoverNotices } from "../../ai/chat-runner/tool-dispatch.js";
 import { isReadOrMetaTool } from "../../ai/chat-runner/write-tools.js";
 import { chatPluginInvocation } from "../../ai/plugin-invocation.js";
+import { queuePluginToolApproval } from "../../ai/queued-tool-approval.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
@@ -94,8 +98,10 @@ const toolCatalogueEntry = z.object({
   name: z.string(),
   description: z.string(),
   inputSchema: z.record(z.string(), z.unknown()),
-  /** Present (true) for approval-gated propose_* tools — the call queues
-   *  an Owner proposal instead of applying (the description says so too). */
+  /** Present (true) for tools that always need the operator's approval
+   *  (gated propose_* tools, approval-declared plugin tools) — the call
+   *  queues an approval card instead of applying (the description says so
+   *  too). */
   gated: z.boolean().optional(),
 });
 
@@ -113,12 +119,20 @@ export function powerToolCatalogue(tools: ToolRegistry): z.infer<typeof toolCata
   const core = tools
     .catalogue()
     .filter((t) => !POWER_MCP_EXCLUDED_TOOLS.has(t.name))
-    .map((t) => ({
-      name: t.name,
-      description: annotateExcludedToolMentions(t.description, POWER_MCP_EXCLUDED_TOOLS),
-      inputSchema: t.inputSchema,
-      ...(t.gated ? { gated: true } : {}),
-    }));
+    .map((t) => {
+      const conditional = !t.gated && tools.get(t.name)?.needsApproval !== undefined;
+      const description = annotateExcludedToolMentions(t.description, POWER_MCP_EXCLUDED_TOOLS);
+      return {
+        name: t.name,
+        description: t.gated
+          ? `${description}${MCP_APPROVAL_NOTE}`
+          : conditional
+            ? `${description}${MCP_CONDITIONAL_APPROVAL_NOTE}`
+            : description,
+        inputSchema: t.inputSchema,
+        ...(t.gated ? { gated: true } : {}),
+      };
+    });
   // Same exclusion filter as core tools (PR #420 review): a plugin tool
   // whose name collides with an excluded one would otherwise be advertised
   // here yet refused by mcp.execute_tool — the exact catalogue↔prose
@@ -126,13 +140,38 @@ export function powerToolCatalogue(tools: ToolRegistry): z.infer<typeof toolCata
   const plugin = pluginToolsRegistry
     .list()
     .filter((p) => !POWER_MCP_EXCLUDED_TOOLS.has(p.spec.name))
-    .map((p) => ({
-      name: p.spec.name,
-      description: annotateExcludedToolMentions(p.spec.description, POWER_MCP_EXCLUDED_TOOLS),
-      inputSchema: p.spec.inputJsonSchema,
-    }));
+    .map((p) => {
+      const description = annotateExcludedToolMentions(
+        p.spec.description,
+        POWER_MCP_EXCLUDED_TOOLS,
+      );
+      return {
+        name: p.spec.name,
+        description: p.spec.approvalMode ? `${description}${MCP_APPROVAL_NOTE}` : description,
+        inputSchema: p.spec.inputJsonSchema,
+        ...(p.spec.approvalMode ? { gated: true } : {}),
+      };
+    });
   return [...core, ...plugin];
 }
+
+/**
+ * #687 — what an approval-gated tool means on THIS surface. Tool
+ * descriptions are written for the Live Edit chat ("the turn pauses on an
+ * in-chat card"); read literally over MCP they made an external agent send
+ * the operator to paste prompts into the admin chat. Appended at this
+ * boundary so every current and future gated tool says it the same way.
+ */
+const MCP_APPROVAL_NOTE =
+  "\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin " +
+  "(their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome " +
+  "(if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they " +
+  "approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.";
+
+const MCP_CONDITIONAL_APPROVAL_NOTE =
+  "\n\nOver MCP: when this call needs the operator's approval, it queues an approval card in their Caelo admin " +
+  "(Live Edit chat and the pending-approvals page) and returns the outcome once they decide — tell them to approve " +
+  "the card; never ask them to paste a prompt into the Caelo chat.";
 
 /**
  * Bearer → actor for the Power-MCP surface. Same resolution as
@@ -163,7 +202,7 @@ async function resolveAdminScopedToken(
       ok: false,
       message:
         `auth_error: token scope '${resolved.value.scope}' — ${operation} needs an admin-scoped token. ` +
-        `Mint one at /security/mcp (scope: admin); 'chat' tokens only drive caelo_chat.`,
+        `Mint one at /settings/mcp (scope: admin); 'chat' tokens only drive caelo_chat.`,
     };
   }
   return {
@@ -494,7 +533,7 @@ export const mcpExecuteToolOp = defineOperation({
           message:
             `cost cap reached: spent ~${spent} µ¢ / cap ${auth.aiCostCapMicrocents} µ¢ on this session — ` +
             `'${input.toolName}' makes its own AI provider calls and is blocked. Non-AI tools still work; ` +
-            `the Owner can mint a higher-cap token at /security/mcp.`,
+            `the Owner can mint a higher-cap token at /settings/mcp.`,
         });
       }
     }
@@ -582,51 +621,51 @@ export const mcpExecuteToolOp = defineOperation({
       // Tier-1 plugin tools route through the plugin host, exactly like the
       // chat-runner's dispatcher does (tool-dispatch.ts).
       //
-      // #388 — approval-declared plugin tools are refused here: the SDK's
-      // in-chat Approve card cannot render on the MCP surface, and running
-      // the operation without it would reopen the approvals bypass this
-      // gate exists to close. The AI is told to use the chat surface.
+      // #687 — an approval-declared plugin tool (set_locales, …) cannot
+      // pause an SDK turn here (the external agent drives its own loop), so
+      // it is queued for the operator instead: the card shows in their Live
+      // Edit chat and the pending queue, Approve runs it through the plugin
+      // host, and the decision is handed back below like any other gated
+      // call. Running it unqueued would reopen the bypass #388 closed.
       const pluginTool = pluginToolsRegistry.resolve(input.toolName);
-      if (pluginTool?.spec.approvalMode) {
-        return ok({
-          ok: false,
-          content:
-            `Tool "${input.toolName}" requires the Owner's in-chat approval and cannot run on the MCP surface. ` +
-            `Ask the operator to run this in the Caelo chat, where an Approve card is shown.`,
-          requestId,
-          toolCallId,
-          cached: false,
-          image: null,
-        });
-      }
-      const rawResult: ToolResult = pluginTool
-        ? await runPluginOperation({
-            pluginSlug: pluginTool.pluginSlug,
-            operationName: pluginTool.spec.operationName,
-            args: input.args ?? {},
-            invocation: chatPluginInvocation(aiCtx, auth.actorId),
-          }).then(
-            (r): ToolResult =>
-              r.ok
-                ? { ok: true, content: JSON.stringify(r.value) }
-                : { ok: false, content: `${r.error.kind}: ${r.error.message}` },
-          )
-        : await tools.dispatch(input.toolName, input.args ?? {}, aiCtx, {
-            adapter,
+      const rawResult: ToolResult = pluginTool?.spec.approvalMode
+        ? await queuePluginToolApproval({
             registry,
+            adapter,
+            aiCtx,
+            operatorActorId: auth.actorId,
             chatSessionId: input.chatSessionId,
-            chatBranchId,
-            toolCallId,
-            tools,
-            humanCtx: humanCtxWithBranch,
-            ...(provider ? { provider } : {}),
-            // No spawnChildChatTurn / requestScreenshot / pushClientEvent:
-            // the tools that need them are in POWER_MCP_EXCLUDED_TOOLS.
-            // screenshot_page works WITHOUT them since issue #412 — with no
-            // pushClientEvent it renders the branch preview server-side and
-            // returns the image, which flows to the MCP client as an image
-            // content block.
-          });
+            pluginTool,
+            args: input.args ?? {},
+          })
+        : pluginTool
+          ? await runPluginOperation({
+              pluginSlug: pluginTool.pluginSlug,
+              operationName: pluginTool.spec.operationName,
+              args: input.args ?? {},
+              invocation: chatPluginInvocation(aiCtx, auth.actorId),
+            }).then(
+              (r): ToolResult =>
+                r.ok
+                  ? { ok: true, content: JSON.stringify(r.value) }
+                  : { ok: false, content: `${r.error.kind}: ${r.error.message}` },
+            )
+          : await tools.dispatch(input.toolName, input.args ?? {}, aiCtx, {
+              adapter,
+              registry,
+              chatSessionId: input.chatSessionId,
+              chatBranchId,
+              toolCallId,
+              tools,
+              humanCtx: humanCtxWithBranch,
+              ...(provider ? { provider } : {}),
+              // No spawnChildChatTurn / requestScreenshot / pushClientEvent:
+              // the tools that need them are in POWER_MCP_EXCLUDED_TOOLS.
+              // screenshot_page works WITHOUT them since issue #412 — with no
+              // pushClientEvent it renders the branch preview server-side and
+              // returns the image, which flows to the MCP client as an image
+              // content block.
+            });
 
       // issue #413 — tool-result prose is also authored for the chat surface
       // (e.g. inspect_page_render's summary hint says to call an excluded

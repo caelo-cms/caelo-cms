@@ -113,7 +113,7 @@ export const CONTENT_TARGETS: Readonly<Record<ContentEntityKind, ContentTarget>>
       op: "templates.propose_update",
       gated: true,
       buildInput: (id, field, body) => ({ templateId: id, [field]: body }),
-      queuePath: "/security/templates/pending",
+      queuePath: "/settings/templates/pending",
     },
   },
 };

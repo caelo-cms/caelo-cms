@@ -7,7 +7,7 @@
  * make it. Every gated action is applied by an executor op
  * (`<domain>.execute_proposal` and friends) run as the human who clicked
  * Approve — in the chat (the SDK tool-approval resume runs it with the
- * clicking operator's context) or on a `/security/<domain>/pending` page.
+ * clicking operator's context) or on a `/settings/<domain>/pending` page.
  * Anyone who can open a chat (`content.read`) sees the in-chat card, so the
  * click alone proves nothing: the executor itself must check that the
  * approver holds the permission the equivalent panel action requires.

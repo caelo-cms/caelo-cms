@@ -22,7 +22,7 @@ export function makePluginTextProvider(): PluginHostAIProvider {
     complete: async (opts) => {
       const resolved = await getActiveProviderForPurpose(opts.purpose);
       if (!resolved) {
-        throw new Error("AI provider not configured — Owner must visit /security/ai");
+        throw new Error("AI provider not configured — Owner must visit /settings/ai");
       }
       let text = "";
       let inputTokens = 0;

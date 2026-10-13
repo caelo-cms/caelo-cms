@@ -18,7 +18,7 @@
  *
  * Every step is an additive IAM binding or a create-if-missing, so re-running
  * is a no-op. The caller puts the returned email into the admin's
- * `CAELO_MCP_IAP_SERVICE_ACCOUNT` env var, which /security/mcp shows in the
+ * `CAELO_MCP_IAP_SERVICE_ACCOUNT` env var, which /settings/mcp shows in the
  * `claude mcp add` command.
  */
 

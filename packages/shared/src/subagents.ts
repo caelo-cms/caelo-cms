@@ -50,7 +50,7 @@ export const EXPECTED_RETURN_SHAPES: readonly ExpectedReturnShape[] = expectedRe
  * The tier VOCABULARY is deliberately abstract — tool results and
  * editor-facing text never name the underlying model (CLAUDE.md §2:
  * provider brand never surfaces in the editor chat UI); concrete model
- * ids appear only on Owner surfaces (security panel, cost dashboard).
+ * ids appear only on Owner surfaces (Settings panel, cost dashboard).
  */
 export const subagentModelTier = z.enum(["inherit", "mid", "small"]);
 export type SubagentModelTier = z.infer<typeof subagentModelTier>;

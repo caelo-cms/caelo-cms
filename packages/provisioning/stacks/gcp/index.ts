@@ -199,7 +199,7 @@ const postgresPassword = pulumi.secret(pgPasswordBytes.hex);
 // via `valueSource.secretKeyRef` below.
 const caeloSecretKek = pulumi.secret(kekBytes.hex);
 // v0.3.2 — anthropic-api-key Secret + Pulumi config dropped. The
-// runtime AI provider configuration lives at /security/ai (key
+// runtime AI provider configuration lives at /settings/ai (key
 // encrypted under the project KEK + stored in ai_providers).
 // Pre-v0.3.2 the wizard prompted for a key + Pulumi provisioned a
 // Secret + SecretVersion, but the Cloud Run service never read it

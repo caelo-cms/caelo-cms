@@ -16,6 +16,7 @@ import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { privateStorageRefusal } from "../../../plugin-host/src/private-storage.js";
+import { approveQueuedToolCall, queuePluginToolApproval } from "../ai/queued-tool-approval.js";
 import { attachPluginGatedExecute } from "../ai/tools/gated-tools.js";
 import { submitPluginTool } from "../ai/tools/submit-plugin.js";
 import { lockPluginRow } from "../locks.js";
@@ -338,7 +339,7 @@ it("stages AI-authored capability packages through the author tool without activ
     { adapter, registry } as Parameters<typeof submitPluginTool.handler>[2],
   );
   expect(result.ok).toBe(true);
-  expect(result.content).toContain("/security/plugins/installations");
+  expect(result.content).toContain("/settings/plugins/installations");
   const review = (await call("plugins.list_installations", {})) as {
     installations: { slug: string; status: string; origin: string }[];
   };
@@ -530,6 +531,62 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
   expect(await bodiesFor({ origin: "owner-panel", actorId: owner.actorId })).not.toContain(
     "editor approved",
   );
+
+  // #687 — the same gated tool called by an external agent over the
+  // Power-MCP: it queues with its binding recorded under the proposal id,
+  // only the operator the agent works for can redeem it (another approver's
+  // click leaves it pending), and it applies once.
+  const mcpSession = await execute(registry, adapter, owner, "chat.create_session", {
+    title: "t687 external plugin over MCP",
+  });
+  if (!mcpSession.ok) throw new Error(JSON.stringify(mcpSession.error));
+  const { chatSessionId: mcpSessionId, chatBranchId: mcpBranchId } = mcpSession.value as {
+    chatSessionId: string;
+    chatBranchId: string;
+  };
+  const queued = await queuePluginToolApproval({
+    registry,
+    adapter,
+    aiCtx: {
+      ...owner,
+      actorKind: "ai",
+      chatBranchId: mcpBranchId,
+      chatTaskId: mcpSessionId,
+    },
+    operatorActorId: owner.actorId,
+    chatSessionId: mcpSessionId,
+    pluginTool: pluginToolsRegistry.resolve("external_private_notes__approved_save")!,
+    args: { body: "approved over MCP" },
+  });
+  expect(queued).toMatchObject({ ok: true });
+  const mcpProposalId = queued.queuedProposalId!;
+  const notBound = await approveQueuedToolCall({
+    registry,
+    adapter,
+    approverCtx: editor,
+    proposalId: mcpProposalId,
+  });
+  expect(notBound.ok).toBe(false);
+  const applied = await approveQueuedToolCall({
+    registry,
+    adapter,
+    approverCtx: owner,
+    proposalId: mcpProposalId,
+  });
+  expect(applied).toMatchObject({ ok: true, value: { ok: true } });
+  expect(await bodiesFor({ origin: "owner-panel", actorId: owner.actorId })).toContain(
+    "approved over MCP",
+  );
+  expect(
+    (
+      await approveQueuedToolCall({
+        registry,
+        adapter,
+        approverCtx: owner,
+        proposalId: mcpProposalId,
+      })
+    ).ok,
+  ).toBe(false);
   await originalTool.prepareApproval!("restart-call", { body: "after restart" });
   await originalTool.prepareApproval!("stale-call", { body: "must never execute" });
   await expect(
@@ -611,6 +668,7 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
   if (afterRestart.ok) {
     expect((afterRestart.value as { body: string }[]).map((n) => n.body).sort()).toEqual([
       "approved",
+      "approved over MCP",
       "unpublished",
     ]);
   }
@@ -669,10 +727,25 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
     plaintextToken: token.plaintextToken,
     chatSessionId: session.chatSessionId,
     toolName: "external_private_notes__approved_save",
-    args: { body: "must ask in chat" },
-  })) as { ok: boolean; content: string };
-  expect(mcpGated.ok).toBe(false);
-  expect(mcpGated.content).toContain("in-chat approval");
+    args: { body: "queued over MCP" },
+  })) as {
+    ok: boolean;
+    content: string;
+    approval: { proposalId: string; domain: string } | null;
+  };
+  // #687 — no longer refused: the call queues an approval card for the
+  // operator (the decision goes back to the agent) and writes nothing yet.
+  expect(mcpGated).toMatchObject({ ok: true, approval: { domain: "tool_approvals" } });
+  expect(mcpGated.content).toMatch(/^Queued proposal [0-9a-f-]{36}:/);
+  const mcpBodies = await runPluginOperation({
+    pluginSlug: slug,
+    operationName: "read",
+    args: {},
+    invocation: { ...chat, chatBranchId: mcpBranch!.b },
+  });
+  expect(mcpBodies.ok && (mcpBodies.value as { body: string }[]).map((n) => n.body)).not.toContain(
+    "queued over MCP",
+  );
   const loaded = loadedPlugins.bySlug(slug)!;
   let releaseWrite!: () => void;
   let enteredWrite!: () => void;

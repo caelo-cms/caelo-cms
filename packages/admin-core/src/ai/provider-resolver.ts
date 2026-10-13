@@ -366,9 +366,9 @@ async function loadApiKey(
     } catch (e) {
       // v0.2.81 — KEK rotation orphaned the stored ciphertext.
       // Treat as "no key" so the chat handler routes the operator
-      // to /security/ai with a clear "re-enter your API key" UX
+      // to /settings/ai with a clear "re-enter your API key" UX
       // instead of crashing the SSE stream with a 500. The
-      // /security/ai page detects the same condition and shows a
+      // /settings/ai page detects the same condition and shows a
       // recovery affordance. Pre-v0.2.81 the Pulumi stack
       // regenerated the KEK on every `pulumi up` (random.RandomBytes
       // resource fixes that going forward); for installs that
@@ -441,7 +441,7 @@ async function resolveProvider(
  * plugin host both surface this as "configure your AI provider."
  */
 /**
- * v0.2.82 — diagnostic probe for the /security/ai UI. Distinguishes
+ * v0.2.82 — diagnostic probe for the /settings/ai UI. Distinguishes
  * the three "key isn't usable" reasons so the page can show a
  * specific banner (vs the generic "Encrypted key set" which was
  * misleading after the v0.2.81 KEK-rotation incident — operators

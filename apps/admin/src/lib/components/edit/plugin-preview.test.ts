@@ -14,7 +14,7 @@ test("only local plugin documents open in the editor, with canonical bounded arg
     "https://other.test/plugins/example/preview",
     "//other.test/plugins/example/preview",
     "javascript:alert(1)",
-    "/security/ai",
+    "/settings/ai",
     "/plugins/example/preview?args=[]",
     "/plugins/example/preview?args=null",
     "/plugins/example/preview?args=" + "x".repeat(3000),

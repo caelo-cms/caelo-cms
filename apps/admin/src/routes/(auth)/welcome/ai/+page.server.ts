@@ -4,9 +4,9 @@
  * First-run AI wizard — the focused "pick a provider, paste a key,
  * start chatting" dialog the (authed) layout redirects to when no AI
  * provider is configured yet. Operator feedback (2026-07-12): landing
- * on the full /security/ai management page right after the first
+ * on the full /settings/ai management page right after the first
  * login is overwhelming; the first run should be a two-field dialog
- * that ends in the chat. /security/ai stays the management surface
+ * that ends in the chat. /settings/ai stays the management surface
  * (env keys, local models, output ceilings, switching providers).
  *
  * Lives in the (auth) route group for the same centered-card layout
@@ -23,7 +23,7 @@ import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 // The wizard offers the three hosted providers. local-openai-compat
-// needs a base URL and model tuning — that's /security/ai territory,
+// needs a base URL and model tuning — that's /settings/ai territory,
 // linked from the wizard footer.
 const WIZARD_PROVIDERS = ["anthropic", "openai", "google"] as const;
 type WizardProvider = (typeof WIZARD_PROVIDERS)[number];

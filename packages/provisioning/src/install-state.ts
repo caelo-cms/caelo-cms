@@ -77,6 +77,33 @@ export function installStagingHost(
   return meta.stagingDomain ?? defaultStagingHost(meta.domain);
 }
 
+/**
+ * A bare, lower-case fully-qualified host name: dot-separated labels of
+ * `a-z0-9-` (no leading/trailing hyphen, at most 63 characters each), a
+ * letter-led top-level label. Deliberately free of `.`-wildcards and
+ * lookaheads so the check reads as a strict allow-list.
+ */
+const RECORDABLE_HOST =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** DNS limit on a full host name. */
+const MAX_HOST_LENGTH = 253;
+
+/**
+ * The staging host exactly as install.json may record it, or null when
+ * `host` is anything but a bare host name. The host can come from the
+ * admin's HTTP answer (`staging-domain enable` reads the stored host), so
+ * only a value that passes this allow-list is written to disk — never a
+ * URL, path, port, whitespace or other payload.
+ *
+ * @example recordableStagingHost("staging.example.com") // → "staging.example.com"
+ * @example recordableStagingHost("https://x.example.com/") // → null
+ */
+export function recordableStagingHost(host: string): string | null {
+  if (host.length > MAX_HOST_LENGTH) return null;
+  return RECORDABLE_HOST.test(host) ? host : null;
+}
+
 /** Release image digest per Cloud Run service. */
 export interface ImageDigests {
   readonly admin: string;

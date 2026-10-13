@@ -3,7 +3,7 @@
  * The agent's path to the site SEO settings (CLAUDE.md §11.A).
  *
  * #551 made the static generator refuse to build without a site base URL,
- * but the only write path was the Owner's Security → SEO form: the agent
+ * but the only write path was the Owner's Settings → SEO form: the agent
  * saw the blocker and could not clear it. `propose_set_site_seo` routes
  * the AI through `site_defaults.propose_set_seo` → the Owner's
  * `site_defaults.execute_proposal`. This file locks:
@@ -313,7 +313,7 @@ describe("propose_set_site_seo — Power-MCP path (no in-chat card)", () => {
     );
     expect(r.ok).toBe(true);
     expect(r.content).toMatch(/^Queued proposal [0-9a-f-]{36}:/);
-    expect(r.content).toContain("/security/seo");
+    expect(r.content).toContain("/settings/seo");
     expect((await readSeo()).siteBaseUrl).toBeNull();
 
     const listed = await execute(registry, adapter, OWNER, "pending_proposals.list", {});

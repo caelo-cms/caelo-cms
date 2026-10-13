@@ -52,7 +52,7 @@ export function parseModelTierMap(raw: unknown): ModelTierResult<ModelTierMap | 
       ok: false,
       error:
         'ai_providers.config.modelTiers is malformed: expected an object like {"mid": "<model-id>", "small": "<model-id>"}, got ' +
-        `${Array.isArray(raw) ? "an array" : typeof raw}. Fix the active provider's config at /security/ai.`,
+        `${Array.isArray(raw) ? "an array" : typeof raw}. Fix the active provider's config at /settings/ai.`,
     };
   }
   const record = raw as Record<string, unknown>;
@@ -64,7 +64,7 @@ export function parseModelTierMap(raw: unknown): ModelTierResult<ModelTierMap | 
         error:
           `ai_providers.config.modelTiers has an unknown tier key ${JSON.stringify(key)} — ` +
           `only ${MAPPABLE_TIERS.map((t) => JSON.stringify(t)).join(" and ")} are mappable ` +
-          '("inherit" is implicit and never mapped). Fix the config at /security/ai.',
+          '("inherit" is implicit and never mapped). Fix the config at /settings/ai.',
       };
     }
     const value = record[key];
@@ -73,7 +73,7 @@ export function parseModelTierMap(raw: unknown): ModelTierResult<ModelTierMap | 
         ok: false,
         error:
           `ai_providers.config.modelTiers.${key} must be a non-empty model-id string, got ` +
-          `${typeof value}. Fix the config at /security/ai.`,
+          `${typeof value}. Fix the config at /settings/ai.`,
       };
     }
     map[key as (typeof MAPPABLE_TIERS)[number]] = value.trim();
@@ -105,7 +105,7 @@ export function resolveTierModel(
         `model tier "${tier}" was requested but this install has no model tiers configured — ` +
         "tiering is opt-in and currently OFF. Recovery: (1) re-issue the same spawn WITHOUT the " +
         "`tier` field to run at this chat's model, or (2) the Owner maps tiers on the active " +
-        "provider at /security/ai (config key `modelTiers`). Do not claim the subagents ran.",
+        "provider at /settings/ai (config key `modelTiers`). Do not claim the subagents ran.",
     };
   }
   const model = tiers[tier];
@@ -117,7 +117,7 @@ export function resolveTierModel(
         `${MAPPABLE_TIERS.filter((t) => tiers[t] !== undefined)
           .map((t) => JSON.stringify(t))
           .join(", ")}). Recovery: (1) re-issue the spawn WITHOUT the \`tier\` field, or use a ` +
-        "configured tier; (2) the Owner adds the mapping at /security/ai (config key " +
+        "configured tier; (2) the Owner adds the mapping at /settings/ai (config key " +
         "`modelTiers`). Do not claim the subagents ran.",
     };
   }

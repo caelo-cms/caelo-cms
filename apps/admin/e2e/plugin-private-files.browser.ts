@@ -35,7 +35,7 @@ test("private raster preview and attachment download require live author and plu
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/edit/);
-  await page.goto("/security/plugins/installations");
+  await page.goto("/settings/plugins/installations");
   await page.getByLabel("Plugin package (.json, .json.gz or .json.br)").setInputFiles({
     name: "files.json",
     mimeType: "application/json",
@@ -112,7 +112,7 @@ test("private raster preview and attachment download require live author and plu
   expect((await page.request.get(`/plugins/${slug}/files/${id}/${"a".repeat(64)}`)).status()).toBe(
     404,
   );
-  await page.goto("/security/plugins/installations");
+  await page.goto("/settings/plugins/installations");
   await review.getByRole("button", { name: "Revoke private_files", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Access revoked.");
   expect((await page.request.get(filePath)).status()).toBe(404);

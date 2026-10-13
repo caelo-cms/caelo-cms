@@ -20,7 +20,7 @@
  * needs — no service-account keys on laptops (CLAUDE.md §11.C).
  *
  * Active only when `CAELO_IAP_SERVICE_ACCOUNT` is set (the admin's
- * /security/mcp page puts it into the `claude mcp add` command on IAP
+ * /settings/mcp page puts it into the `claude mcp add` command on IAP
  * installs); otherwise requests go out exactly as before.
  */
 
@@ -151,6 +151,6 @@ export function describeIapRejection(res: Response, body: string): string | null
   if (res.headers.get("x-goog-iap-generated-response") !== "true") return null;
   const configured = Boolean(process.env.CAELO_IAP_SERVICE_ACCOUNT?.trim());
   return configured
-    ? `HTTP ${res.status} from Google IAP: ${body.trim()} — the service account in CAELO_IAP_SERVICE_ACCOUNT is not allowed on this install's IAP. Run \`cms-provision upgrade\` (it allowlists the MCP service account) or check the value against /security/mcp.`
-    : `HTTP ${res.status} from Google IAP: ${body.trim()} — this admin is protected by Google IAP. Copy the \`claude mcp add\` command from /security/mcp again (it includes CAELO_IAP_SERVICE_ACCOUNT on IAP installs) and run \`gcloud auth application-default login\`.`;
+    ? `HTTP ${res.status} from Google IAP: ${body.trim()} — the service account in CAELO_IAP_SERVICE_ACCOUNT is not allowed on this install's IAP. Run \`cms-provision upgrade\` (it allowlists the MCP service account) or check the value against /settings/mcp.`
+    : `HTTP ${res.status} from Google IAP: ${body.trim()} — this admin is protected by Google IAP. Copy the \`claude mcp add\` command from /settings/mcp again (it includes CAELO_IAP_SERVICE_ACCOUNT on IAP installs) and run \`gcloud auth application-default login\`.`;
 }

@@ -150,7 +150,7 @@ describe("propose_reconnect_domain", () => {
     expect(proposeDomainReconnectTool.gated).toEqual({
       proposeOp: "domains.propose_reconnect",
       executeOp: "domains.execute_proposal",
-      pendingQueuePath: "/security/domains/pending",
+      pendingQueuePath: "/settings/domains/pending",
     });
     expect(proposeDomainReconnectTool.schema.safeParse({ hostname: "example.com" }).success).toBe(
       true,

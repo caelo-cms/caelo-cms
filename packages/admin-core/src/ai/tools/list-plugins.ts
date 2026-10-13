@@ -36,7 +36,7 @@ export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>
     "List the plugins installed on this site with their activation status. " +
     "`active` means the plugin is running and its tools and skills are available to you right now; " +
     "`awaiting_activation` means it is installed and verified but NOTHING of it is loaded — you cannot call its tools and its skills are not in your skills index. " +
-    "Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /security/plugins turns it on. " +
+    "Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. " +
     "Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
   opName: "plugins.list",
   input: listPluginsInput,

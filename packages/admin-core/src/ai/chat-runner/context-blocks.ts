@@ -139,7 +139,7 @@ async function buildInstalledPluginsBlock(
   return [
     "# Installed plugins (not running)",
     `These plugins are installed on this site but NOT active, so none of their tools or skills exist for you right now: ${dormant.join(", ")}.`,
-    "If the operator asks for something one of them would provide, say so and tell them it takes one click at /security/plugins — do NOT improvise the capability with core tools, and do NOT claim the site cannot do it. Call list_plugins if you need their exact status.",
+    "If the operator asks for something one of them would provide, say so and tell them it takes one click at /settings/plugins — do NOT improvise the capability with core tools, and do NOT claim the site cannot do it. Call list_plugins if you need their exact status.",
   ].join("\n");
 }
 

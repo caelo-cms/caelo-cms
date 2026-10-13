@@ -123,7 +123,7 @@ export async function stagingSiteUrl(
   const host = await readStagingHost(tx);
   if (!host) {
     throw new Error(
-      `No staging host is configured. A ${provider} install serves staging at its own host (default staging.<domain>), and every staging build renders it. Next step: run \`cms-provision upgrade\` (it sets ${STAGING_HOST_ENV}, which the admin stores on its next start), or set the host under Security → Domains, then Stage again.`,
+      `No staging host is configured. A ${provider} install serves staging at its own host (default staging.<domain>), and every staging build renders it. Next step: run \`cms-provision upgrade\` (it sets ${STAGING_HOST_ENV}, which the admin stores on its next start), or set the host under Settings → Domains, then Stage again.`,
     );
   }
   return `https://${host}`;

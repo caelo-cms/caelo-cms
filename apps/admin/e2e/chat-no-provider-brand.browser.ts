@@ -7,13 +7,13 @@ test.beforeAll(clearLoginRateBucket);
 
 /**
  * §4 invariant: provider brand never surfaces in the editor chat UI —
- * editors see "AI", brand only on /security/ai. This spec scans the
+ * editors see "AI", brand only on /settings/ai. This spec scans the
  * rendered chat HTML for any provider-brand string and asserts the
- * security panel actually does carry the brand (so the test is
+ * Settings panel actually does carry the brand (so the test is
  * meaningful, not vacuous).
  */
 
-test("chat surface contains no provider-brand strings; /security/ai does", async ({ page }) => {
+test("chat surface contains no provider-brand strings; /settings/ai does", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
@@ -34,8 +34,8 @@ test("chat surface contains no provider-brand strings; /security/ai does", async
   expect(activeHtml).not.toContain("anthropic");
   expect(activeHtml).not.toContain("claude");
 
-  // Security panel SHOULD mention the brand — proves the test is meaningful.
-  await page.goto("/security/ai");
+  // Settings panel SHOULD mention the brand — proves the test is meaningful.
+  await page.goto("/settings/ai");
   const securityHtml = (await page.content()).toLowerCase();
   expect(securityHtml).toContain("anthropic");
 });

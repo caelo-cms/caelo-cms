@@ -9,7 +9,7 @@
  * existing `ai_budgets.set` / `ai_pricing.set` / `gateway.set_settings` /
  * `ai_providers.set_translation_model` handler.
  * Over the Power-MCP the same tools queue the proposal and the Owner
- * approves it at /security/owner-settings/pending.
+ * approves it at /settings/owner-settings/pending.
  *
  * The three read tools below are their companions: the AI reads the
  * current caps / rates / gateway knobs before proposing a change, instead
@@ -36,7 +36,7 @@ import type { listAiPricingOp } from "../../ops/security/ai_pricing.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 import { makeReadTool } from "./_make-read-tool.js";
 
-const PENDING_QUEUE = "/security/owner-settings/pending";
+const PENDING_QUEUE = "/settings/owner-settings/pending";
 
 export const proposeSetAiBudgetTool = makeProposeTool({
   toolName: "propose_set_ai_budget",

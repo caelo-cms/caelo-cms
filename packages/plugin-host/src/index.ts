@@ -80,6 +80,7 @@ export {
   type SnapshotEmitter,
   type SnapshotEmitterInput,
   setPluginDisabled,
+  toolArgsProblem,
   type VisitorDispatchContext,
 } from "./dispatch.js";
 export { operatorHasPermission } from "./external-authorization.js";

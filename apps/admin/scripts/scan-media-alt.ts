@@ -5,7 +5,7 @@
  *
  * Walks `media_assets` for rows with empty / very short alt text and
  * inserts one proposal per asset into `media_alt_proposals` for the
- * Owner to review at /security/media. The proposal text is generated
+ * Owner to review at /settings/media. The proposal text is generated
  * by the active AI provider's vision-capable model when available; if
  * the provider chain doesn't have one configured (or no API key in
  * env), the scanner falls back to a templated "describe the image"
@@ -117,7 +117,7 @@ async function main(): Promise<void> {
     if (r.ok) written += 1;
   }
   await adapter.close();
-  console.log(`Wrote ${written} proposal(s). Review at /security/media.`);
+  console.log(`Wrote ${written} proposal(s). Review at /settings/media.`);
 }
 
 /**

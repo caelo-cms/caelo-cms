@@ -177,7 +177,12 @@ import {
   setTemplateLayoutOp,
   updateTemplateOp,
 } from "./ops/content/templates.js";
-import { executeUrlMigrationOp, proposeUrlMigrationOp } from "./ops/content/url_migrations.js";
+import {
+  executeUrlMigrationOp,
+  listUrlMigrationPendingOp,
+  proposeUrlMigrationOp,
+  rejectUrlMigrationOp,
+} from "./ops/content/url_migrations.js";
 import {
   listDeployRunsOp,
   listDeployTargetsOp,
@@ -381,6 +386,7 @@ import {
   claimChatNotificationOp,
   gateStatusOp,
   publishAnywayOp,
+  releaseChatNotificationOp,
   retryAuditOp,
 } from "./ops/quality/gate.js";
 import { claimNextAuditOp, enqueueAuditOp, recordAuditResultOp } from "./ops/quality/lifecycle.js";
@@ -598,7 +604,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(changePasswordOp);
   registry.register(adminSetPasswordOp);
   // v0.2.21 — users propose/execute pairs. AI proposes via
-  // users.propose_*; Owner approves at /security/users/pending which
+  // users.propose_*; Owner approves at /settings/users/pending which
   // calls users.execute_proposal (human-only) → runs the underlying
   // users.{create,set_roles,delete} op. Passwords on create are
   // server-generated at execute time; AI never handles credentials.
@@ -620,7 +626,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(deleteRoleOp);
   registry.register(updateRolePermissionsOp);
   // v0.2.22 — roles propose/execute pairs. AI proposes via roles.propose_*;
-  // Owner approves at /security/roles/pending which calls
+  // Owner approves at /settings/roles/pending which calls
   // roles.execute_proposal (human-only) → underlying roles.{create,
   // update_permissions, delete} op. Built-in role protection still
   // enforced at the underlying op layer.
@@ -649,7 +655,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // v0.2.28 — templates propose/execute pairs (update / delete).
   // create + set_layout are already AI-direct; this gate covers the
   // higher-blast-radius update (re-renders all bound pages) and
-  // delete (orphans them) paths via /security/templates/pending.
+  // delete (orphans them) paths via /settings/templates/pending.
   registry.register(proposeTemplateUpdateOp);
   registry.register(proposeTemplateDeleteOp);
   registry.register(executeTemplateProposalOp);
@@ -675,6 +681,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(resolvePublicUrlsOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
+  registry.register(listUrlMigrationPendingOp);
+  registry.register(rejectUrlMigrationOp);
   registry.register(proposeUninstallPluginOp);
   // §11.A — revoking a plugin grant (plugins.execute_proposal applies it).
   registry.register(proposeRevokePluginCapabilityOp);
@@ -720,6 +728,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(chatStatusOp);
   registry.register(claimChatNotificationOp);
   registry.register(ackChatNotificationOp);
+  registry.register(releaseChatNotificationOp);
   registry.register(publishAnywayOp);
   registry.register(proposeAcceptOp);
   registry.register(proposePublishAnywayOp);
@@ -742,7 +751,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(archiveOlderThanOp);
   // v0.2.23 — snapshot-revert propose/execute pairs (site / page /
   // template / module). AI proposes via snapshots.propose_revert_*;
-  // Owner approves at /security/snapshots/pending which calls
+  // Owner approves at /settings/snapshots/pending which calls
   // snapshots.execute_proposal (human-only) → underlying revert op.
   // Highest blast-radius surface — site reverts can rewind hundreds
   // of pages, so the preview surfaces affected entity counts.
@@ -826,7 +835,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(anyAiProviderConfiguredOp);
   // v0.2.26 — ai_providers propose/execute pairs (set / clear_key).
   // AI proposes config + isActive; Owner pastes the apiKey inline at
-  // approve time at /security/ai/pending. Reuses the secret-at-approve
+  // approve time at /settings/ai/pending. Reuses the secret-at-approve
   // pattern from email_config (v0.2.25) — the apiKey never lands in
   // the proposal payload.
   registry.register(proposeAiProvidersSetOp);
@@ -875,7 +884,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listMcpApprovalHandoffsOp);
   // v0.2.27 — mcp_tokens propose/execute pairs (create / revoke).
   // AI proposes new tokens by displayName + cap; the Owner approves
-  // at /security/mcp/pending and the plaintext token is generated
+  // at /settings/mcp/pending and the plaintext token is generated
   // server-side and shown ONCE in the response banner. Same shape
   // as users.execute_proposal returning the temp password.
   registry.register(proposeMcpTokenCreateOp);
@@ -891,7 +900,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(rollbackDeployOp);
   registry.register(updateDeployProgressOp);
   // v0.2.19 — propose/execute pair for promote + rollback. AI proposes
-  // (human + ai + system); Owner approves at /security/deployments/pending
+  // (human + ai + system); Owner approves at /settings/deployments/pending
   // which calls execute_proposal (human + system) → runs the underlying op.
   registry.register(proposeDeployPromoteOp);
   registry.register(proposeDeployRollbackOp);
@@ -942,7 +951,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setLayoutBlocksOp);
   registry.register(setLayoutModulesOp);
   // v0.2.20 — layouts propose/execute pairs. AI proposes via
-  // layouts.propose_*; Owner approves at /security/layouts/pending
+  // layouts.propose_*; Owner approves at /settings/layouts/pending
   // which calls layouts.execute_proposal (human-only) → runs the
   // underlying layouts.{create,update,delete,set_blocks} op.
   registry.register(proposeLayoutCreateOp);
@@ -977,7 +986,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // v0.2.25 — email_config propose/execute pair. AI proposes
   // transport+fromAddress+config-without-secrets; Owner supplies the
   // smtp password / resend apiKey / SES key inline at approve time
-  // via /security/email/pending. Introduces the secret-at-approve
+  // via /settings/email/pending. Introduces the secret-at-approve
   // pattern that ai_providers and mcp_tokens reuse later.
   registry.register(proposeEmailConfigSetOp);
   registry.register(executeEmailConfigProposalOp);
@@ -1005,7 +1014,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setDomainTlsStatusOp);
   // v0.2.30 — domains propose/execute pairs (add / remove). AI
   // proposes via domains.propose_*; Owner approves at
-  // /security/domains/pending. domains.verify is widened to AI in the
+  // /settings/domains/pending. domains.verify is widened to AI in the
   // same release (diagnostic, no destructive side effect).
   registry.register(proposeDomainAddOp);
   registry.register(proposeDomainRemoveOp);
@@ -1160,7 +1169,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(siteDefaultsSeedSiteBaseUrlOp);
   registry.register(siteDefaultsSetSeoOp);
   // §11.A gate in front of set_seo: the AI proposes (propose_set_site_seo),
-  // the Owner approves in the chat or on Security → SEO.
+  // the Owner approves in the chat or on Settings → SEO.
   registry.register(proposeSiteSeoSetOp);
   registry.register(executeSiteDefaultsProposalOp);
   registry.register(rejectSiteDefaultsProposalOp);

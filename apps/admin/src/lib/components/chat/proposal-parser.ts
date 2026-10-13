@@ -4,7 +4,7 @@
  * v0.5.13 — shared canonical-shape parser for propose-style tool results.
  *
  * Every propose tool emits the v0.5.11-locked content shape:
- *   "Queued proposal <uuid>: <summary>. ... /security/<domain>/pending ..."
+ *   "Queued proposal <uuid>: <summary>. ... /settings/<domain>/pending ..."
  *
  * Both `ProposeCard` (renders inline Approve / Reject) and
  * `ChatPanel`'s optimistic pending-strip push need to extract the
@@ -18,8 +18,14 @@
 /** v0.5.11 canonical content shape. Anchored at start of string. */
 export const PROPOSAL_CONTENT_PATTERN = /^Queued proposal ([0-9a-f-]{36}):\s*([^.]+)\./;
 
-/** Queue URL embedded in the content, e.g. `/security/layouts/pending`. */
-export const PROPOSAL_QUEUE_URL_PATTERN = /(\/security\/([^\s/.]+)\/pending)/;
+/**
+ * Queue URL embedded in the content, e.g. `/settings/layouts/pending`.
+ * Also matches the pre-#684 `/security/...` prefix: tool results persisted in
+ * chat history before the rename still carry it, and their cards must keep
+ * their inline Approve / Reject. {@link parseProposalContent} normalises the
+ * prefix to `/settings`.
+ */
+export const PROPOSAL_QUEUE_URL_PATTERN = /(\/(?:settings|security)\/([^\s/.]+)\/pending)/;
 
 export interface ParsedProposal {
   readonly proposalId: string;
@@ -29,7 +35,7 @@ export interface ParsedProposal {
 }
 
 /**
- * Domains whose `/security/<domain>/pending` route has been removed.
+ * Domains whose `/settings/<domain>/pending` route has been removed.
  * Legacy persisted chat messages that reference these degrade to plain
  * markdown rather than rendering an actionable ProposeCard whose
  * Approve/Reject POSTs would 404.
@@ -49,7 +55,7 @@ export function parseProposalContent(content: string): ParsedProposal | null {
   if (!proposalMatch || !queueMatch) return null;
   const proposalId = proposalMatch[1];
   const summary = proposalMatch[2]?.trim();
-  const queueUrl = queueMatch[1];
+  const queueUrl = queueMatch[1]?.replace(/^\/security\//, "/settings/");
   const domain = queueMatch[2];
   if (!proposalId || !summary || !queueUrl || !domain) return null;
   if (DEPRECATED_DOMAINS.has(domain)) return null;

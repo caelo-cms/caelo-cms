@@ -31,7 +31,7 @@ type Input = z.infer<typeof inputSchema>;
 export const proposeDeployPromoteTool = makeProposeTool<Input>({
   toolName: "propose_deploy_promote",
   opName: "deploy.propose_promote",
-  pendingQueuePath: "/security/deployments/pending",
+  pendingQueuePath: "/settings/deployments/pending",
   when:
     "Propose promoting one deploy target's latest succeeded build into another target (typically staging → production). " +
     "The preview carries sourceBuildId, pageCount, fileCount — restate them to the operator. " +
@@ -67,7 +67,7 @@ type RollbackInput = z.infer<typeof rollbackInputSchema>;
 export const proposeDeployRollbackTool = makeProposeTool<RollbackInput>({
   toolName: "propose_deploy_rollback",
   opName: "deploy.propose_rollback",
-  pendingQueuePath: "/security/deployments/pending",
+  pendingQueuePath: "/settings/deployments/pending",
   when:
     "Propose rolling back one deploy target to its previous succeeded build. " +
     "Use when the operator says 'roll back', 'revert prod', 'undo last deploy'.",

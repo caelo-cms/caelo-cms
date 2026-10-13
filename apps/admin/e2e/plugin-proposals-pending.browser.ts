@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * /security/plugins/pending — the Owner queue for plugin proposals that wait
+ * /settings/plugins/pending — the Owner queue for plugin proposals that wait
  * for a decision (activate / uninstall / revoke_capability queued over the
  * Power-MCP, where there is no in-chat card).
  *
@@ -67,7 +67,7 @@ test("Owner sees a queued plugin proposal, a failed apply is reported, reject cl
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
-  await page.goto("/security/plugins/pending");
+  await page.goto("/settings/plugins/pending");
   const card = page.getByTestId("plugin-proposal").filter({ hasText: `e2e revoke effect ${SLUG}` });
   await expect(card).toBeVisible();
 
