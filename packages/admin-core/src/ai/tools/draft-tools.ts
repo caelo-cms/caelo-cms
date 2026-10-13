@@ -24,6 +24,7 @@
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
+import { describeDraftPages } from "../../deploy/draft-pages.js";
 import type { AffectedChat } from "../../draft.js";
 import { stageChatSessions } from "../../stage/stage-chats.js";
 import { describeError } from "./_describe-error.js";
@@ -68,6 +69,7 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
     "Stage: merge this chat's unstaged changes into the site and rebuild the STAGING site (noindex, never visitor-facing), then the quality check (Lighthouse) runs on it. " +
     "Use it when the operator's requested change is done and should be reviewed on staging — 'stage it', 'put it on staging', or as the last step of finished work so the operator can review and Publish live. " +
     "Changes another chat made to the SAME module/page ride along (the result names them — tell the operator). scope all_my_chats stages every open chat of the operator at once. " +
+    "Only pages with status 'published' are built — the result lists draft pages it left out; publish them with set_pages_status_many first when they should be on staging. " +
     "It does NOT publish: Publish live is the operator's click after the quality check (get_publish_gate says whether it is open; get_quality_audit reads the findings). Never tell the operator the change is live. " +
     "A failed build returns the generator's error — fix the cause and call again; the changes stay unstaged until a build succeeds.",
   schema: stageInput,
@@ -101,11 +103,15 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
     if (!staged.ok)
       return { ok: false, content: `Stage failed (${staged.error.step}): ${staged.error.message}` };
     const v = staged.value;
+    // #678 — a draft page is never built: name them and the next step, so
+    // a "successful" Stage does not hide pages the operator expects.
+    const draftNote = describeDraftPages(v.draftPages);
+    const drafts = draftNote ? ` ${draftNote}` : "";
     if (v.mergedEntityCount === 0) {
       return {
         ok: true,
         content:
-          `Staging rebuilt (run ${v.runId}), but there were no unstaged changes to merge. ` +
+          `Staging rebuilt (run ${v.runId}, ${v.pageCount} page(s)), but there were no unstaged changes to merge.${drafts} ` +
           "Publish live stays the operator's decision.",
         value: v,
       };
@@ -122,7 +128,7 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
     return {
       ok: true,
       content:
-        `Staged ${v.mergedEntityCount} change(s) to staging (run ${v.runId}, ${v.pageCount} page(s)).${preview}${also}${links} ` +
+        `Staged ${v.mergedEntityCount} change(s) to staging (run ${v.runId}, ${v.pageCount} page(s)).${preview}${also}${links}${drafts} ` +
         (toolCtx.operatorBrowserAttached === true
           ? "The quality check now runs on staging (1–2 minutes); its result arrives in this chat as a message with the next step — do NOT poll get_quality_audit / get_publish_gate, finish your turn with your summary. "
           : "The quality check now runs on staging (1–2 minutes); read it with get_quality_audit after a couple of minutes. ") +

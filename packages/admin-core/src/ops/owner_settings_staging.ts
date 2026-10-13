@@ -24,7 +24,12 @@ import { defineOperation } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { readStagingHost } from "../deploy/staging-domain.js";
+import {
+  describeStageNeeded,
+  readStagedBuildHost,
+  readStagingHost,
+  stageNeededFor,
+} from "../deploy/staging-domain.js";
 import {
   errorMessage,
   handlerError,
@@ -38,6 +43,7 @@ import {
   credentialKind,
   currentStagingAccessInput,
   describeModes,
+  readStagingAccessRow,
   rotateStagingCredentialsOp,
   setStagingAccessOp,
   setStagingHostOp,
@@ -227,30 +233,48 @@ export const OWNER_STAGING_KINDS: ReadonlySet<OwnerSettingsKind> = new Set([
 
 /**
  * Apply one approved {@link OWNER_STAGING_KINDS} proposal inside the
- * approving transaction, through the direct op's handler. Returns an error
- * message, or null when applied.
+ * approving transaction, through the direct op's handler. Returns the
+ * error message, or the next step to report with the applied result
+ * (#678: a new host or access mode serves nothing until a Stage exists).
  */
 export async function applyOwnerStagingProposal(
   ctx: ExecutionContext,
   tx: Tx,
   kind: OwnerSettingsKind,
   payload: unknown,
-): Promise<string | null> {
+): Promise<{ error: string } | { nextStep: string }> {
   if (kind === "set_staging_access") {
     const m = await mergedStagingAccess(tx, proposeStagingAccessInput.parse(payload));
-    if (!m.ok) return m.message;
+    if (!m.ok) return { error: m.message };
     const r = await setStagingAccessOp.handler(ctx, m.merged, tx);
-    return r.ok ? null : `staging_access.set failed: ${errorMessage(r.error)}`;
+    if (!r.ok) return { error: `staging_access.set failed: ${errorMessage(r.error)}` };
+    return { nextStep: await accessNextStep(tx) };
   }
   if (kind === "rotate_staging_credentials") {
     const p = proposeRotateStagingCredentialsInput.parse(payload);
     const r = await rotateStagingCredentialsOp.handler(ctx, { which: p.which }, tx);
-    return r.ok ? null : `staging_access.rotate_credentials failed: ${errorMessage(r.error)}`;
+    if (!r.ok) {
+      return { error: `staging_access.rotate_credentials failed: ${errorMessage(r.error)}` };
+    }
+    return { nextStep: await accessNextStep(tx) };
   }
   if (kind === "set_staging_host") {
     const p = proposeSetStagingHostInput.parse(payload);
     const r = await setStagingHostOp.handler(ctx, p, tx);
-    return r.ok ? null : `staging_access.set_host failed: ${errorMessage(r.error)}`;
+    if (!r.ok) return { error: `staging_access.set_host failed: ${errorMessage(r.error)}` };
+    return { nextStep: r.value.nextSteps };
   }
-  return `kind ${kind} is not a staging-access proposal`;
+  return { error: `kind ${kind} is not a staging-access proposal` };
+}
+
+/** After an access change: where the new credentials are, and whether a Stage is missing. */
+async function accessNextStep(tx: Tx): Promise<string> {
+  const host = await readStagingHost(tx);
+  const row = await readStagingAccessRow(tx);
+  const needed = stageNeededFor(host, await readStagedBuildHost(tx), row.origin_run_id !== null);
+  const stage = describeStageNeeded(needed, host);
+  return (
+    "The gate applies the change within seconds. A new basic-auth password / header value is shown with get_staging_access({includeCredentials: true}) (Owner only, when the operator asks) and under Security → Staging access." +
+    (stage ? ` ${stage}` : "")
+  );
 }

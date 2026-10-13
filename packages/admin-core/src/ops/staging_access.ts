@@ -37,10 +37,14 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { draftPagesSummary, mainDraftPages } from "../deploy/draft-pages.js";
 import {
+  describeStageNeeded,
   providerHasStagingDomain,
+  readStagedBuildHost,
   readStagingHost,
   reservedStagingHosts,
+  stageNeededFor,
   stagingGateSecret,
   stagingSiteUrl,
 } from "../deploy/staging-domain.js";
@@ -218,6 +222,18 @@ export const stagingAccessOutput = z.object({
   settings: settingsOutput,
   /** True while a staged build is being served (gcp-firebase: a preview channel exists). */
   hasStagedBuild: z.boolean(),
+  /** #678 — the host the served build was rendered for; null when nothing is staged. */
+  stagedBuildHost: z.string().nullable(),
+  /**
+   * #678 — why the staging host does not (yet) serve the current host's
+   * build: nothing staged, or the host changed after the last Stage. Null
+   * when it does, or on a provider without a staging domain.
+   */
+  stageNeeded: z.enum(["nothing-staged", "host-changed"]).nullable(),
+  /** The operator/AI-facing sentence for `stageNeeded` (the next step), or null. */
+  stageNote: z.string().nullable(),
+  /** #678 — main's draft pages: never staged until they are published. */
+  draftPages: draftPagesSummary,
   credentials: z
     .object({
       basicAuthUser: z.string(),
@@ -249,13 +265,22 @@ export const getStagingAccessOp = defineOperation({
     const provider = process.env.CAELO_PROVIDER ?? "self-hosted";
     const supported = providerHasStagingDomain(provider);
     const stagingHost = await readStagingHost(tx);
+    const hasStagedBuild = row.origin_run_id !== null;
+    const stagedBuildHost = await readStagedBuildHost(tx);
+    const stageNeeded = supported
+      ? stageNeededFor(stagingHost, stagedBuildHost, hasStagedBuild)
+      : null;
     const base = {
       stagingUrl: supported && stagingHost ? `https://${stagingHost}` : null,
       stagingHost,
       stagingDomainSupported: supported,
       provider,
       settings: toOutput(row),
-      hasStagedBuild: row.origin_run_id !== null,
+      hasStagedBuild,
+      stagedBuildHost,
+      stageNeeded,
+      stageNote: describeStageNeeded(stageNeeded, stagingHost),
+      draftPages: await mainDraftPages(tx),
     };
     // No gate on this provider (yet): there are no crawler credentials to
     // show, and the gate key is not provisioned — answering the settings
@@ -557,5 +582,208 @@ export const setStagingHostOp = defineOperation({
 
 /** What the operator does after the staging host changed. */
 export function stagingHostNextSteps(host: string): string {
-  return `Point ${host} at the gateway: run \`cms-provision staging-domain enable --staging-domain ${host}\` (it records the host for the install, maps it and prints the DNS record to add), then Stage again so the staged build renders the new host.`;
+  return `Point ${host} at the gateway: the operator runs \`cms-provision staging-domain enable --staging-domain ${host}\` (it maps the host, prints the DNS record to add and waits for the certificate). Nothing is served at https://${host}/ until the next Stage — Stage again (AI: stage_changes) so the staged build renders the new host.`;
 }
+
+// ─── provisioning: `cms-provision staging-domain enable` (#678) ──────
+
+/**
+ * The basic-auth user a generated credential gets: the live site's first
+ * host label (`www.searchviu.com` → `searchviu`), so a reviewer can tell
+ * which site a saved login belongs to. Null when no live host is known —
+ * the row's stored user is kept then.
+ */
+export function basicAuthUserForSite(liveHost: string | undefined): string | null {
+  if (!liveHost) return null;
+  const label = liveHost
+    .replace(/:\d+$/, "")
+    .replace(/^www\./, "")
+    .split(".")[0]
+    ?.toLowerCase()
+    .replace(/[^a-z0-9-]/g, "")
+    .slice(0, 64);
+  return label ? label : null;
+}
+
+/** What `staging_access.provision` did with basic auth. */
+export const provisionBasicAuthStatus = z.enum([
+  /** No credential existed: basic auth was switched on with a new one. */
+  "generated",
+  /** A new credential replaced the old one (`rotateBasicAuth`). */
+  "rotated",
+  /** Basic auth was already on; its credential is unchanged. */
+  "unchanged-enabled",
+  /**
+   * A credential exists but the Owner switched basic auth off — kept off:
+   * turning it back on is their decision (Security → Staging access).
+   */
+  "unchanged-disabled",
+]);
+
+export const provisionStagingInput = z
+  .object({
+    host: stagingHostInput
+      .optional()
+      .describe(
+        "Set the staging host to this value (the operator passed --staging-domain). Omit to keep the stored host.",
+      ),
+    ensureBasicAuth: z
+      .boolean()
+      .default(true)
+      .describe(
+        "Switch basic auth on with a generated credential when none was ever generated (password protection by default).",
+      ),
+    rotateBasicAuth: z
+      .boolean()
+      .default(false)
+      .describe("Replace the basic-auth credential (and switch basic auth on)."),
+    revealBasicAuth: z
+      .boolean()
+      .default(false)
+      .describe("Also return an existing basic-auth password (audited)."),
+    source: z
+      .string()
+      .min(1)
+      .max(120)
+      .describe("Who asked, for the audit trail (e.g. 'cms-provision staging-domain enable')."),
+  })
+  .strict();
+
+export const provisionStagingOutput = z.object({
+  host: z.string(),
+  previousHost: z.string().nullable(),
+  hostChanged: z.boolean(),
+  stagingUrl: z.string(),
+  basicAuth: z.object({
+    status: provisionBasicAuthStatus,
+    enabled: z.boolean(),
+    user: z.string(),
+    /** Only when generated / rotated now, or `revealBasicAuth` was asked. */
+    password: z.string().nullable(),
+  }),
+  stageNeeded: z.enum(["nothing-staged", "host-changed"]).nullable(),
+  stageNote: z.string().nullable(),
+  draftPages: draftPagesSummary,
+});
+
+export const provisionStagingOp = defineOperation({
+  name: "staging_access.provision",
+  // Why human-only: system-only. It backs the CLI's
+  // /api/internal/staging/provision endpoint: the operator running
+  // `cms-provision staging-domain enable --staging-domain <host>` with their
+  // own cloud identity IS the Owner's explicit decision, so the host is set
+  // authoritatively (audited with the source) and the first run turns on
+  // password protection. The AI changes the same settings only through the
+  // §11.A gate (propose_set_staging_host / propose_set_staging_access).
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: provisionStagingInput,
+  output: provisionStagingOutput,
+  handler: async (ctx, input, tx) => {
+    const op = "staging_access.provision";
+    const provider = process.env.CAELO_PROVIDER;
+    if (!providerHasStagingDomain(provider)) {
+      return handlerError(
+        op,
+        `this install's provider (${provider ?? "self-hosted"}) has no protected staging domain yet — nothing to provision.`,
+      );
+    }
+    const previousHost = await readStagingHost(tx);
+    let host = previousHost;
+    if (input.host !== undefined) {
+      const checked = await checkStagingHost(tx, input.host);
+      if (!checked.ok) return handlerError(op, checked.message);
+      host = checked.host;
+    }
+    if (host === null) {
+      return handlerError(
+        op,
+        "no staging host is stored yet — pass --staging-domain <host> (default staging.<domain>).",
+      );
+    }
+    const row = await readStagingAccessRow(tx);
+    let status: z.infer<typeof provisionBasicAuthStatus>;
+    let nonce = row.basic_auth_nonce;
+    let user = row.basic_auth_user;
+    if (input.rotateBasicAuth) {
+      status = "rotated";
+      nonce = newStagingCredentialNonce();
+    } else if (input.ensureBasicAuth && row.basic_auth_nonce === null) {
+      status = "generated";
+      nonce = newStagingCredentialNonce();
+      const live = (await reservedStagingHosts(tx)).liveHosts[0];
+      user = basicAuthUserForSite(live) ?? user;
+    } else {
+      status = row.basic_auth_enabled ? "unchanged-enabled" : "unchanged-disabled";
+    }
+    const enabled = status === "generated" || status === "rotated" || row.basic_auth_enabled;
+    const wantsPassword = status === "generated" || status === "rotated" || input.revealBasicAuth;
+    // Resolve the gate key before writing anything: without it the new
+    // credential could not be shown, and the operator would hold a
+    // password nobody can read back.
+    let secret: string | null = null;
+    if (wantsPassword) {
+      try {
+        secret = stagingGateSecret();
+      } catch (e) {
+        return handlerError(op, e instanceof Error ? e.message : String(e));
+      }
+    }
+    await tx.execute(sql`
+      UPDATE staging_access SET
+        staging_host       = ${host},
+        basic_auth_enabled = ${enabled},
+        basic_auth_user    = ${user},
+        basic_auth_nonce   = ${nonce},
+        updated_at         = now()
+      WHERE id = 1
+    `);
+    await notifyGateway(tx);
+    const hostChanged = host !== previousHost;
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: op,
+      input: {
+        host,
+        rotateBasicAuth: input.rotateBasicAuth,
+        revealBasicAuth: input.revealBasicAuth,
+        source: input.source,
+      },
+      succeeded: true,
+      resultSummary:
+        `${hostChanged ? `staging host ${previousHost ?? "(unset)"} → ${host}` : `staging host ${host} (unchanged)`}; ` +
+        `basic auth ${status} (user ${user}); via ${input.source}`,
+    });
+    const password =
+      wantsPassword && secret !== null && nonce !== null
+        ? await deriveStagingCredential(secret, "basic-auth", nonce)
+        : null;
+    if (password !== null) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "staging_access.reveal_credentials",
+        input: { source: input.source },
+        succeeded: true,
+        resultSummary: `staging basic-auth password shown to ${input.source}`,
+      });
+    }
+    const after = await readStagingAccessRow(tx);
+    const stageNeeded = stageNeededFor(
+      host,
+      await readStagedBuildHost(tx),
+      after.origin_run_id !== null,
+    );
+    return ok({
+      host,
+      previousHost,
+      hostChanged,
+      stagingUrl: `https://${host}`,
+      basicAuth: { status, enabled, user, password },
+      stageNeeded,
+      stageNote: describeStageNeeded(stageNeeded, host),
+      draftPages: await mainDraftPages(tx),
+    });
+  },
+});

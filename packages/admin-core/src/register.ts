@@ -507,6 +507,7 @@ import { revertTemplateOp } from "./ops/snapshots/revert_template.js";
 import {
   getStagingAccessOp,
   issueStagingOpenLinkOp,
+  provisionStagingOp,
   rotateStagingCredentialsOp,
   seedStagingHostOp,
   setStagingAccessOp,
@@ -1073,6 +1074,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(issueStagingOpenLinkOp);
   registry.register(seedStagingHostOp);
   registry.register(setStagingHostOp);
+  registry.register(provisionStagingOp);
   // P13 — gateway hardening surface.
   registry.register(getGatewaySettingsOp);
   registry.register(setGatewaySettingsOp);

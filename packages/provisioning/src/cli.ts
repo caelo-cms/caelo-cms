@@ -749,19 +749,8 @@ async function pulumiOutputSync(): Promise<void> {
     );
     process.exit(2);
   }
-  const iat = Date.now();
-  const exp = iat + 5 * 60 * 1000; // 5min replay window
-  const tokenScope = "provisioning-outputs.sync";
-  const tokenMessage = `${iat}:${exp}:${tokenScope}`;
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(internalSecret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(tokenMessage));
-  const token = `${Buffer.from(tokenMessage).toString("base64url")}.${Buffer.from(sigBuf).toString("base64url")}`;
+  const { mintInternalToken } = await import("./internal-token.js");
+  const token = await mintInternalToken(internalSecret, "provisioning-outputs.sync");
 
   // 3. POST to /api/internal/provisioning-outputs/sync.
   console.log(`Posting outputs to ${adminBaseUrl}/api/internal/provisioning-outputs/sync …`);
@@ -874,10 +863,13 @@ async function adminDomain(): Promise<void> {
 
 /**
  * #650 `staging-domain enable [--staging-domain <host>]` — bind the install's
- * staging host (its setting, default staging.<domain>) to the gcp-firebase
- * gateway, which serves the protected staging site. `--staging-domain`
- * records a new host for the install first (after it was changed in the
- * admin under Security → Domains, or to choose one).
+ * staging host to the gcp-firebase gateway, which serves the protected
+ * staging site. #678: the command also configures the admin — without the
+ * flag it maps the host the admin stores; `--staging-domain` sets a new one
+ * there (the operator's explicit decision, audited). The first run turns on
+ * basic auth and prints the generated credentials once;
+ * `--rotate-staging-password` replaces the password, `--show-staging-password`
+ * prints the current one.
  */
 async function stagingDomain(): Promise<void> {
   await domainMappingCommand("staging");
@@ -888,7 +880,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
   const sub = process.argv[3];
   if (sub !== "enable") {
     console.log(
-      `Usage: cms-provision ${command} enable [--install <install-id>]${kind === "staging" ? " [--staging-domain <host>]" : ""}`,
+      `Usage: cms-provision ${command} enable [--install <install-id>]${kind === "staging" ? " [--staging-domain <host>] [--rotate-staging-password] [--show-staging-password]" : ""}`,
     );
     process.exit(2);
   }
@@ -905,13 +897,34 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     process.exit(1);
   }
   let meta = selected.meta;
+  const rotatePassword = process.argv.includes("--rotate-staging-password");
+  const showPassword = process.argv.includes("--show-staging-password");
   if (kind === "staging") {
-    // The install's staging host setting; `--staging-domain` changes it.
-    // Validated either way: the recorded/default host may predate a check
-    // (e.g. a long default staging.<domain> a Cloud Run mapping refuses).
+    // #678 — the admin's stored host is the truth; `--staging-domain` is the
+    // operator's explicit change of it. Without the flag a gcp-firebase
+    // install maps the host the admin actually renders (and records it in
+    // install.json), so a host changed under Security → Domains is never
+    // undone here. Validated either way: the recorded/default host may
+    // predate a check (e.g. a long default a Cloud Run mapping refuses).
     const requested = arg("staging-domain");
     const { normalizeStagingHost, stagingHostProblem } = await import("@caelo-cms/shared");
-    const host = requested ?? installStagingHost(meta);
+    let adminHost: string | null = null;
+    if (!requested && meta.provider === "gcp-firebase" && meta.projectId && meta.region) {
+      const { inspectStagingAdmin } = await import("./staging-admin.js");
+      const inspected = await inspectStagingAdmin({
+        projectId: meta.projectId,
+        region: meta.region,
+      });
+      if (!inspected.ok) {
+        console.error(
+          `${command}: could not read the admin's staging host: ${inspected.error}\n` +
+            "Fix that, or pass --staging-domain <host> to set the host explicitly.",
+        );
+        process.exit(1);
+      }
+      adminHost = inspected.value.stagingHost;
+    }
+    const host = requested ?? adminHost ?? installStagingHost(meta);
     const problem = stagingHostProblem(
       host,
       { liveHosts: [meta.domain, `www.${meta.domain}`], adminHosts: [`admin.${meta.domain}`] },
@@ -969,10 +982,26 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     `${r.hostname} ${r.created ? "is now mapped" : "was already mapped"} to ${mappedTo}.`,
   );
   if (kind === "staging") {
-    console.log(
-      "Staging access (who may open it, crawler credentials): admin → Security → Staging access.\n" +
-        "If you changed the host here, set the same host in the admin (Security → Domains) so Stage renders it.",
+    // #678 — the operator's decision reaches the admin here: the host is
+    // set there, password protection is switched on the first time, and
+    // the password is printed once (never stored by the CLI).
+    const { applyStagingAdmin, describeStagingApply } = await import("./staging-admin.js");
+    const applied = await applyStagingAdmin(
+      { projectId: meta.projectId, region: meta.region },
+      {
+        host: r.hostname,
+        ...(rotatePassword ? { rotateBasicAuth: true } : {}),
+        ...(showPassword ? { revealBasicAuth: true } : {}),
+      },
     );
+    if (!applied.ok) {
+      console.error(
+        `${command}: ${r.hostname} is mapped, but the admin could not be updated: ${applied.error}\n` +
+          `Run \`cms-provision ${command} enable\` again once that is fixed (it is idempotent).`,
+      );
+      process.exit(5);
+    }
+    console.log(describeStagingApply(applied.value).join("\n"));
   }
   if (r.records.length === 0) {
     console.log(

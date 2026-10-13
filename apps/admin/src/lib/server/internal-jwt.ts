@@ -28,6 +28,12 @@
  */
 
 const SECRET_ENV = "CAELO_INTERNAL_SECRET";
+
+/**
+ * Header the internal token may ride in instead of `Authorization` — needed
+ * where `Authorization` already carries the IAP credential (#678).
+ */
+export const INTERNAL_TOKEN_HEADER = "x-caelo-internal-token";
 const REPLAY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const ENCODING: BufferEncoding = "base64url";
 
@@ -152,7 +158,12 @@ export async function requireInternalAuth(
   request: Request,
   expectedScope: string,
 ): Promise<InternalTokenPayload> {
-  const auth = request.headers.get("authorization") ?? "";
+  // #678 — behind Google IAP (gcp / gcp-firebase) `Authorization` carries
+  // the IAP credential the request needed to reach the admin at all, so
+  // the internal token rides in its own header there. Same shape as the
+  // MCP shim's `x-caelo-mcp-token`.
+  const dedicated = request.headers.get(INTERNAL_TOKEN_HEADER)?.trim();
+  const auth = dedicated ? `Bearer ${dedicated}` : (request.headers.get("authorization") ?? "");
   const m = /^Bearer\s+(.+)$/i.exec(auth);
   if (!m) {
     throw new Response(JSON.stringify({ ok: false, error: "missing-bearer" }), {

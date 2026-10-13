@@ -111,7 +111,10 @@ async function readProposalDecisions(tx: Tx, proposalId: string): Promise<Propos
       FROM theme_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'site_defaults', status, decided_at, decision_reason, NULL, NULL
       FROM site_defaults_pending_actions WHERE id = ${id}
-    UNION ALL SELECT 'owner_settings', status, decided_at, decision_reason, NULL, NULL
+    -- #678: the proposal's effect (incl. its next step, e.g. "Stage so the
+    -- new staging host serves something") rides back with 'applied'.
+    UNION ALL SELECT 'owner_settings', status, decided_at, decision_reason, NULL,
+                     preview->>'effect'
       FROM owner_settings_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'quality', status, decided_at, decision_reason, NULL, NULL
       FROM quality_pending_actions WHERE id = ${id}
@@ -168,7 +171,9 @@ export function decisionFromRow(row: ProposalDecisionRow): {
           detail: row.result_summary,
         };
       }
-      return { outcome: "applied", detail: null };
+      // A domain that reports what the change means (owner_settings: the
+      // proposal's effect) passes it on; the others select NULL.
+      return { outcome: "applied", detail: row.result_summary };
     case "rejected":
       return { outcome: "rejected", detail: row.reason };
     case "superseded":

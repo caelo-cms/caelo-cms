@@ -720,7 +720,7 @@ export const actions: Actions = {
     const staged = await stageChatSessions({ adapter, registry }, locals.ctx, [chatSessionId]);
     if (!staged.ok) return fail(500, { error: staged.error.message });
     const summary = staged.value;
-    const { previewUrl, previewLabel, draftPageCount } = await describeStagedBuild(
+    const { previewUrl, previewLabel, draftPageCount, draftPageTitles } = await describeStagedBuild(
       locals.ctx,
       summary,
       pageId || null,
@@ -736,6 +736,7 @@ export const actions: Actions = {
         previewLabel,
         mergedEntityCount: summary.mergedEntityCount,
         draftPageCount,
+        draftPageTitles,
         // Issue #620 — other chats' changes to the same things rode along.
         alsoIncludes: summary.alsoIncludes.map((a) => a.title),
       },

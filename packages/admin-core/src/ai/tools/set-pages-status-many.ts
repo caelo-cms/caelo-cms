@@ -46,9 +46,15 @@ export const setPagesStatusManyTool: ToolDefinitionWithHandler<
       return { ok: false, content: `pages.set_status_many failed: ${describeError(r.error)}` };
     }
     const v = r.value as { updatedCount: number };
+    // #678 — the status only reaches staging with a build: say so, with
+    // the next step, so the AI does not report the pages as on staging.
+    const next =
+      input.status === "published"
+        ? " They reach the staging site only with the next Stage — call stage_changes when the work is ready for review."
+        : " They stay on staging / live until the next Stage / Publish live rebuilds without them.";
     return {
       ok: true,
-      content: `${v.updatedCount} page(s) set to ${input.status}`,
+      content: `${v.updatedCount} page(s) set to ${input.status}.${next}`,
     };
   },
 };

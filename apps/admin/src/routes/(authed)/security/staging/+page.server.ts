@@ -21,6 +21,10 @@ interface StagingAccess {
   stagingDomainSupported: boolean;
   provider: string;
   hasStagedBuild: boolean;
+  stagedBuildHost: string | null;
+  stageNeeded: "nothing-staged" | "host-changed" | null;
+  stageNote: string | null;
+  draftPages: { count: number; pages: { id: string; title: string; path: string }[] };
   settings: {
     cookieEnabled: boolean;
     basicAuthEnabled: boolean;
