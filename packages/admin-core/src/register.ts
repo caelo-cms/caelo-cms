@@ -344,6 +344,7 @@ import {
 } from "./ops/owner-bootstrap-tokens.js";
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
+import { appliedAdminMigrationsOp, appliedPublicMigrationsOp } from "./ops/platform_health.js";
 import { platformUpdateStatusOp } from "./ops/platform-updates.js";
 import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
@@ -597,6 +598,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setProvisioningOutputsOp);
   registry.register(getProvisioningOutputsOp);
   registry.register(verifyDnsRecordOp);
+  // #696 — migration state for the admin's deep health check.
+  registry.register(appliedAdminMigrationsOp);
+  registry.register(appliedPublicMigrationsOp);
   registry.register(listUsersOp);
   registry.register(createUserOp);
   registry.register(setUserRolesOp);

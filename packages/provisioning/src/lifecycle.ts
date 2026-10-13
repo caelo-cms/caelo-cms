@@ -20,9 +20,10 @@ import { join, resolve as resolvePath } from "node:path";
 import { provisioningUpgradeCommand } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
-import { ensureGatewayRolePassword, planPublicRoleSwitch } from "./gateway-credentials.js";
 import { activeAccount, gcloud } from "./gcloud.js";
-import { GCP_STACK_ENV, gatewayServiceAccountEmail, runServiceAccountEmail } from "./gcp-names.js";
+import { type GcloudRunner, realSleep } from "./gcloud-retry.js";
+import { GCP_STACK_ENV } from "./gcp-names.js";
+import { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
 import {
   type ImageDigests,
   type InstallMetadata,
@@ -32,47 +33,43 @@ import {
   listInstalls,
   readSecret,
   recordImageDigests,
+  recordInfraContractVersion,
   scrubInstallProgress,
   selectInstall,
   writeMetadata,
 } from "./install-state.js";
-import { ensureMcpIapAccess, type IapResource } from "./mcp-iap.js";
-import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "./operator-access.js";
+import { runMigrationsViaCloudRunJob } from "./migration-runner.js";
 import {
   convergeKeylessProvisioner,
   provisionerServiceAccountEmail,
 } from "./provisioner-identity.js";
 import { assertRegionUnchanged } from "./regions.js";
 import {
-  ensureGatewayServiceAccount,
-  ensureGeneratedSecrets,
-  plainGeneratedSecretSeed,
+  type HttpFetch,
   ROTATABLE_SECRETS,
   type RotatableSecret,
-  readSecretReplication,
   rolesOfSecret,
   rotateRuntimeSecret,
   rotationRefusal,
 } from "./runtime-secrets.js";
 import { selfCommand } from "./self-command.js";
-import { adminMediaVolume, MCP_ENV_VAR, OPERATOR_ACCESS_JOB_ENV_VAR } from "./stack-contract.js";
 import {
-  type DeployedService,
-  type EnvChange,
-  ensureStackInvariants,
-  type LiveEnvValue,
-  type LiveVolumes,
-  liveContainerEnv,
-  liveContainerMemory,
-  liveEnvHasInlinePassword,
-  liveVolumes,
-  planAdminMemory,
-  planContractEnv,
-  planMediaVolume,
-  removeRetiredIamBindings,
-  rollService,
-  serviceRollArgs,
-} from "./stack-converge.js";
+  type AppRollPlan,
+  type ReleaseImage,
+  ROLL_ORDER,
+  type RollSlug,
+} from "./upgrade/app-roll.js";
+import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
+import { findServiceUrl, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
+import { createIapHealthProbe, type HealthProbe } from "./upgrade/health.js";
+import {
+  RELEASE_REGISTRY,
+  releaseImageRef,
+  resolveTagDigest,
+  verifyCosignAll,
+} from "./upgrade/release-images.js";
+import { clackReporter } from "./upgrade/reporter.js";
+import { upgradeGcpInstall } from "./upgrade/upgrade.js";
 
 /**
  * The installs a command acts on. `--install <id or domain>` names one
@@ -196,63 +193,6 @@ function installRegion(meta: InstallMetadata, requested?: string): string {
   }
 }
 
-/** A Cloud Run lookup is regional; there is no default region to guess. */
-function requiredRegion(region: string | undefined): string {
-  if (!region) throw new Error("a Cloud Run lookup needs the install region (install.json)");
-  return region;
-}
-
-/**
- * Pulumi auto-naming appends a random 7-char suffix to every resource
- * (e.g. `caelo-production-admin-3efcfea`). Lifecycle commands need the
- * actual deployed names; this helper queries gcloud with a prefix
- * filter and returns the single match (or null if missing/ambiguous).
- *
- * Used for Cloud Run services + Cloud SQL instances. We accept a
- * `kind` for routing the gcloud subcommand (services vs sql instances).
- */
-async function resolveGcpResourceName(
-  kind: "run-service" | "sql-instance",
-  prefix: string,
-  projectId: string,
-  region?: string,
-): Promise<string | null> {
-  const args: string[] = [];
-  if (kind === "run-service") {
-    args.push(
-      "run",
-      "services",
-      "list",
-      "--region",
-      requiredRegion(region),
-      "--project",
-      projectId,
-      "--filter",
-      `metadata.name~^${prefix}`,
-      "--format=value(metadata.name)",
-    );
-  } else {
-    args.push(
-      "sql",
-      "instances",
-      "list",
-      "--project",
-      projectId,
-      "--filter",
-      `name~^${prefix}`,
-      "--format=value(name)",
-    );
-  }
-  const r = await gcloud(args);
-  if (!r.ok) return null;
-  const matches = r.stdout
-    .trim()
-    .split("\n")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  return matches[0] ?? null;
-}
-
 // =========================================================================
 // status — health check + monthly cost
 // =========================================================================
@@ -312,12 +252,14 @@ async function gcpStatus(meta: InstallMetadata): Promise<void> {
 
   const region = installRegion(meta);
   const adminName = await resolveGcpResourceName(
+    gcloud,
     "run-service",
     "caelo-production-admin",
     meta.projectId,
     region,
   );
   const sqlName = await resolveGcpResourceName(
+    gcloud,
     "sql-instance",
     "caelo-production-pg",
     meta.projectId,
@@ -376,7 +318,7 @@ async function gcpStatus(meta: InstallMetadata): Promise<void> {
 }
 
 // =========================================================================
-// upgrade — roll Cloud Run to a specific version (or latest)
+// upgrade — converge the infrastructure, then roll Cloud Run to a release
 // =========================================================================
 
 interface UpgradeOpts {
@@ -391,6 +333,12 @@ interface UpgradeOpts {
    */
   readonly skipVerify?: boolean;
   /**
+   * #696 — roll with Cloud Run's readiness check only, without the deep
+   * health check (for installs the probe cannot reach, or a roll to a
+   * release that predates the deep health endpoint).
+   */
+  readonly skipHealthCheck?: boolean;
+  /**
    * #607 — the region the operator expects the install in. Optional; when
    * given it must match install.json, because upgrade never moves regions.
    */
@@ -401,181 +349,6 @@ interface UpgradeOpts {
    * `--install` or the picker (chooseInstalls).
    */
   readonly installId?: string;
-}
-
-interface ServicePlan {
-  readonly slug: "admin" | "gateway";
-  readonly serviceName: string;
-  readonly imageRef: string;
-  readonly digest: string;
-  readonly priorRevision: string;
-  /** Env vars the service runs with now (for the env-contract diff). */
-  readonly liveEnv: ReadonlyMap<string, LiveEnvValue>;
-  /** Container memory limit now (null = Cloud Run's default). */
-  readonly liveMemory: string | null;
-  /** Execution environment, volumes and mounts now. */
-  readonly liveVolumes: LiveVolumes;
-}
-
-/** A service plan plus the env changes its roll applies. */
-interface RollPlan extends ServicePlan {
-  readonly envFlags: readonly string[];
-  readonly envChanges: readonly EnvChange[];
-  /** #553 — e.g. `--memory=2Gi` when the admin runs below the stack default. */
-  readonly resourceFlags: readonly string[];
-  /** The admin's media bucket volume when it is (partly) missing; empty otherwise. */
-  readonly volumeFlags: readonly string[];
-  readonly volumeChanges: readonly string[];
-}
-
-/**
- * Resolve a tag (e.g. `0.2.6` or `latest`) to the underlying sha256
- * digest via the Docker Registry V2 API directly, without needing the
- * caller's gcloud session to have IAM access to the registry's
- * project. Used for the upgrade pre-flight resolve — the registry is
- * public so an anonymous HEAD on the manifest endpoint suffices.
- */
-async function resolveTagDigest(
-  region: string,
-  project: string,
-  repo: string,
-  image: string,
-  tag: string,
-): Promise<{ ok: true; digest: string } | { ok: false; reason: string }> {
-  const url = `https://${region}-docker.pkg.dev/v2/${project}/${repo}/${image}/manifests/${tag}`;
-  // Accept both Docker v2 + OCI manifest types so the registry returns
-  // the resource we asked about (single-arch + multi-arch index both
-  // surface a Docker-Content-Digest header that names the manifest
-  // we'd pull on a `docker pull <image>:<tag>`).
-  const accept = [
-    "application/vnd.docker.distribution.manifest.v2+json",
-    "application/vnd.oci.image.manifest.v1+json",
-    "application/vnd.docker.distribution.manifest.list.v2+json",
-    "application/vnd.oci.image.index.v1+json",
-  ].join(",");
-  try {
-    const res = await fetch(url, { method: "HEAD", headers: { Accept: accept } });
-    if (!res.ok) {
-      return { ok: false, reason: `HTTP ${res.status} ${res.statusText}` };
-    }
-    const digest = res.headers.get("docker-content-digest");
-    if (!digest || !/^sha256:[0-9a-f]{64}$/.test(digest)) {
-      return { ok: false, reason: `unexpected digest header: ${digest ?? "(missing)"}` };
-    }
-    return { ok: true, digest };
-  } catch (e) {
-    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-/** The deployed service as `gcloud run services describe --format=json` returns it. */
-async function describeServiceJson(
-  projectId: string,
-  region: string,
-  serviceName: string,
-): Promise<string | null> {
-  const r = await gcloud([
-    "run",
-    "services",
-    "describe",
-    serviceName,
-    "--region",
-    region,
-    "--project",
-    projectId,
-    "--format=json",
-  ]);
-  return r.ok ? r.stdout : null;
-}
-
-/** Look up the currently-serving Cloud Run revision so we can roll back to it. */
-async function findCurrentRevision(
-  projectId: string,
-  region: string,
-  serviceName: string,
-): Promise<string | null> {
-  const r = await gcloud([
-    "run",
-    "services",
-    "describe",
-    serviceName,
-    "--region",
-    region,
-    "--project",
-    projectId,
-    "--format=value(status.traffic[0].revisionName)",
-  ]);
-  if (!r.ok) return null;
-  const rev = r.stdout.trim().split("\n")[0]?.trim();
-  return rev || null;
-}
-
-/** Cloud Run service URL, used as the health-probe target after a roll. */
-async function findServiceUrl(
-  projectId: string,
-  region: string,
-  serviceName: string,
-): Promise<string | null> {
-  const r = await gcloud([
-    "run",
-    "services",
-    "describe",
-    serviceName,
-    "--region",
-    region,
-    "--project",
-    projectId,
-    "--format=value(status.url)",
-  ]);
-  if (!r.ok) return null;
-  return r.stdout.trim() || null;
-}
-
-async function rollbackTraffic(
-  projectId: string,
-  region: string,
-  serviceName: string,
-  priorRevision: string,
-): Promise<boolean> {
-  const r = await gcloud([
-    "run",
-    "services",
-    "update-traffic",
-    serviceName,
-    "--region",
-    region,
-    "--project",
-    projectId,
-    "--to-revisions",
-    `${priorRevision}=100`,
-    "--quiet",
-  ]);
-  return r.ok;
-}
-
-/**
- * The admin's IAP resource: the Cloud Run service itself on gcp-firebase
- * (native IAP), the LB backend service on gcp (Pulumi-suffixed name).
- */
-async function resolveAdminIapResource(
-  meta: InstallMetadata,
-  region: string,
-  adminServiceName: string,
-): Promise<IapResource | null> {
-  if (meta.provider === "gcp-firebase") {
-    return { kind: "cloud-run", service: adminServiceName, region };
-  }
-  const r = await gcloud([
-    "compute",
-    "backend-services",
-    "list",
-    "--global",
-    `--project=${meta.projectId}`,
-    "--filter=name~^caelo-production-admin-backend",
-    "--format=value(name)",
-  ]);
-  const name = r.ok ? r.stdout.trim().split("\n")[0]?.trim() : "";
-  return name ? { kind: "backend-services", service: name } : null;
 }
 
 export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
@@ -597,10 +370,45 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   );
 }
 
+/** The tag `upgrade` rolls to: `--version` (without a leading `v`), else the channel's tag. */
+function upgradeTargetTag(opts: UpgradeOpts): string {
+  if (opts.version) return opts.version.startsWith("v") ? opts.version.slice(1) : opts.version;
+  if (opts.channel === "rc") return "rc";
+  if (opts.channel === "beta") return "beta";
+  return "latest";
+}
+
+/**
+ * Resolve both release images' digests from the public registry. Via the
+ * registry's anonymous V2 API, not `gcloud artifacts docker tags list`: that
+ * needs IAM read on Caelo's registry project, which operators don't have.
+ */
+async function resolveReleaseImages(
+  tag: string,
+): Promise<{ ok: true; images: Record<RollSlug, ReleaseImage> } | { ok: false; error: string }> {
+  const images: Partial<Record<RollSlug, ReleaseImage>> = {};
+  for (const slug of ROLL_ORDER) {
+    const res = await resolveTagDigest(slug, tag);
+    if (!res.ok) {
+      const r = RELEASE_REGISTRY;
+      return {
+        ok: false,
+        error:
+          `Couldn't resolve image digest for ${slug}:${tag}: the public registry returned ${res.reason}.\n` +
+          `Verify the tag exists at https://${r.region}-docker.pkg.dev/${r.project}/${r.repo}/${slug}:${tag}\n` +
+          "(latest releases live at https://github.com/caelo-cms/caelo-cms/releases — pass --version vX.Y.Z to pin.)",
+      };
+    }
+    images[slug] = { digest: res.digest, imageRef: releaseImageRef(slug, res.digest) };
+  }
+  return { ok: true, images: images as Record<RollSlug, ReleaseImage> };
+}
+
 /**
  * `upgrade`'s step of the keyless provisioner migration (#696,
- * provisioner-identity.ts). Idempotent: on an install that already runs
- * keyless it only confirms the grant.
+ * provisioner-identity.ts) — a converge step (upgrade/converge.ts runs it
+ * first). Idempotent: on an install that already runs keyless it only
+ * confirms the grant.
  *
  * @returns false when the upgrade must stop (the message is printed)
  */
@@ -652,6 +460,10 @@ async function upgradeKeylessProvisioner(installId: string, projectId: string): 
   return true;
 }
 
+/**
+ * Upgrade one install: converge, then app-roll (upgrade/upgrade.ts holds the
+ * sequence; this wires it to gcloud, the registry, cosign and install.json).
+ */
 async function upgradeInstall(
   installId: string,
   meta: InstallMetadata,
@@ -662,571 +474,99 @@ async function upgradeInstall(
   // on every provider and whether or not the roll below succeeds.
   for (const line of scrubInstallProgress(installId)) log.warn(yellow(line));
 
-  // v0.5.15 — extended to cover gcp-firebase too. Both providers share
-  // the identical admin + gateway shape on Cloud Run (Artifact
-  // Registry image, `caelo-production-<slug>` service naming, the same
-  // gcloud commands). The only delta is the static-site layer (Cloud
-  // CDN vs Firebase Hosting) which upgradeCommand doesn't touch. AWS
-  // + Azure still bail with "not yet implemented" until those
-  // provider adapters land.
+  // gcp and gcp-firebase share the admin + gateway shape on Cloud Run; only
+  // the static-site layer differs, which upgrade doesn't touch.
   if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") {
     log.warn(`upgrade for provider ${meta.provider} not yet implemented.`);
     return false;
   }
   if (!meta.projectId) return false;
+  const provider = meta.provider;
+  const projectId = meta.projectId;
 
   // #607 — upgrade never moves an install: a `--region` other than the
   // recorded one is refused before anything rolls.
   const region = installRegion(meta, opts.region);
-
-  // #696 — no long-lived key for the provisioner SA on this machine: make
-  // sure the operator can impersonate it, then delete the key an older
-  // installer minted (locally and in IAM). Before anything rolls, so a
-  // failure leaves the install exactly as it was.
-  if (!(await upgradeKeylessProvisioner(installId, meta.projectId))) return false;
-
-  const registryProject = "caelo-website";
-  const registryRegion = "europe-west1";
-  const registryRepo = "caelo-cms-images";
-
-  const targetTag = (() => {
-    if (opts.version) return opts.version.startsWith("v") ? opts.version.slice(1) : opts.version;
-    if (opts.channel === "rc") return "rc";
-    if (opts.channel === "beta") return "beta";
-    return "latest";
-  })();
+  const targetTag = upgradeTargetTag(opts);
   log.info(`Upgrading admin + gateway to ${bold(targetTag)}`);
-
-  // ────────────────────────────────────────────────────────────────
-  // Phase 1: pre-flight. Resolve both digests + capture both prior
-  // revisions BEFORE rolling anything. If any service is missing or
-  // any digest can't be resolved, abort cleanly with no partial state.
-  // ────────────────────────────────────────────────────────────────
-  const plans: ServicePlan[] = [];
-  const sPre = spinner();
-  sPre.start("Pre-flight: resolving services + image digests + current revisions...");
-  for (const slug of ["admin", "gateway"] as const) {
-    const serviceName = await resolveGcpResourceName(
-      "run-service",
-      `caelo-production-${slug}`,
-      meta.projectId,
-      region,
-    );
-    if (!serviceName) {
-      sPre.stop(red(`Could not find caelo-production-${slug}* Cloud Run service`));
-      return false;
-    }
-    // Resolve the tag via the public Docker Registry V2 API directly,
-    // not `gcloud artifacts docker tags list`. The gcloud path requires
-    // the operator's local credentials to have IAM read on the Caelo
-    // team's caelo-website project — end users don't have that, so
-    // the call fails for them with a misleading "tag doesn't exist"
-    // error. The AR repo is configured public; the V2 HEAD on the
-    // manifest endpoint returns the Docker-Content-Digest header
-    // anonymously. (Same source of truth `gcloud artifacts docker
-    // tags list` is wrapping; we just skip the IAM-gated CLI.)
-    const digestRes = await resolveTagDigest(
-      registryRegion,
-      registryProject,
-      registryRepo,
-      slug,
-      targetTag,
-    );
-    if (!digestRes.ok) {
-      sPre.stop(red(`Couldn't resolve image digest for ${slug}:${targetTag}`));
-      log.error(
-        `Public registry returned ${digestRes.reason}.\n` +
-          `Verify the tag exists at https://${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}:${targetTag}\n` +
-          `(latest releases live at https://github.com/caelo-cms/caelo-cms/releases — pass --version vX.Y.Z to pin.)`,
-      );
-      return false;
-    }
-    const digest = digestRes.digest;
-    const priorRevision = await findCurrentRevision(meta.projectId, region, serviceName);
-    if (!priorRevision) {
-      sPre.stop(red(`Could not capture current revision for ${slug} — refusing to roll`));
-      return false;
-    }
-    const serviceJson = await describeServiceJson(meta.projectId, region, serviceName);
-    if (!serviceJson) {
-      sPre.stop(red(`Could not read the ${slug} service's configuration — refusing to roll`));
-      return false;
-    }
-    plans.push({
-      slug,
-      serviceName,
-      digest,
-      imageRef: `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}@${digest}`,
-      priorRevision,
-      liveEnv: liveContainerEnv(serviceJson),
-      liveMemory: liveContainerMemory(serviceJson),
-      liveVolumes: liveVolumes(serviceJson),
-    });
-  }
   // #650 — an install from before the staging host setting converges to
   // the default (staging.<domain>) without operator action: recorded here,
   // handed to the admin as CAELO_STAGING_HOST, which seeds its setting.
   const stagingHost = installStagingHost(meta);
-  if (!meta.stagingDomain) {
-    writeMetadata(installId, { ...meta, stagingDomain: stagingHost });
-  }
-  const install = {
-    provider: meta.provider,
-    projectId: meta.projectId,
-    env: GCP_STACK_ENV,
-    domain: meta.domain,
-    region,
-    stagingHost,
-  };
-  const deployed = Object.fromEntries(
-    plans.map((p) => [p.slug, { serviceName: p.serviceName, liveEnv: p.liveEnv }]),
-  ) as Record<"admin" | "gateway", DeployedService>;
-  const envPlan = planContractEnv(install, deployed);
-  if (!envPlan.ok) {
-    sPre.stop(red("Pre-flight failed: the install's env contract can't be applied"));
-    log.error(envPlan.error);
-    return false;
-  }
-  // The admin's media lives in the media bucket, mounted as a Cloud Storage
-  // volume. Without it every upload is lost on the next revision or
-  // scale-to-zero, so a volume upgrade cannot add is a pre-flight failure.
-  const adminLive = plans.find((p) => p.slug === "admin");
-  const mediaVolume = adminLive
-    ? planMediaVolume(adminLive.liveVolumes, adminMediaVolume(meta.projectId, GCP_STACK_ENV))
-    : ({ ok: false, error: "no admin service planned" } as const);
-  if (!mediaVolume.ok) {
-    sPre.stop(red("Pre-flight failed: the admin's media volume can't be set up"));
-    log.error(mediaVolume.error);
-    return false;
-  }
-  let rolls: RollPlan[] = plans.map((p) => {
-    // #553 — the admin runs the Lighthouse quality audit; raise it to the
-    // stack's memory default (never lowered; an unparsable value is kept).
-    const memory = p.slug === "admin" ? planAdminMemory(p.liveMemory) : null;
-    if (memory && !memory.ok) log.warn(yellow(`admin memory left as is: ${memory.error}`));
-    return {
-      ...p,
-      envFlags: envPlan.services[p.slug].flags,
-      envChanges: envPlan.services[p.slug].changes,
-      resourceFlags: memory?.ok ? memory.flags : [],
-      volumeFlags: p.slug === "admin" ? mediaVolume.flags : [],
-      volumeChanges: p.slug === "admin" ? mediaVolume.changes : [],
-    };
-  });
-  sPre.stop(green(`Pre-flight ok — ${rolls.length} services planned`));
-  for (const roll of rolls) {
-    for (const c of roll.volumeChanges) log.info(`${roll.slug} ${bold("media")}: ${c}`);
-    for (const f of roll.resourceFlags) {
-      log.info(`${roll.slug} ${bold("resources")}: ${roll.liveMemory ?? dim("(default)")} → ${f}`);
-    }
-    for (const c of roll.envChanges) {
-      log.info(
-        `${roll.slug} env ${bold(c.name)}: ${c.from === undefined ? dim("(unset)") : c.from} → ${c.to === undefined ? dim("(removed)") : c.to}`,
-      );
-    }
-  }
+  if (!meta.stagingDomain) writeMetadata(installId, { ...meta, stagingDomain: stagingHost });
 
-  // ────────────────────────────────────────────────────────────────
-  // P21 ship 4 — cosign verify each resolved digest against the
-  // Caelo release workflow's keyless OIDC identity. Refuses to roll
-  // on signature mismatch (compromised registry, typosquatted repo,
-  // or operator pointed at a fork's image).
-  //
-  // Verification is opt-out via --skip-verify for forks/staging that
-  // intentionally use unsigned images. Cosign-not-installed produces
-  // a clear "install cosign or pass --skip-verify" message rather
-  // than a confusing stack.
-  // ────────────────────────────────────────────────────────────────
-  if (!opts.skipVerify) {
-    const verified = await verifyCosignAll(plans, registryRegion, registryProject, registryRepo);
-    if (!verified) return false;
-  } else {
-    log.warn(yellow("--skip-verify set — image signatures NOT verified."));
-  }
-
-  // ────────────────────────────────────────────────────────────────
-  // Runtime identities + secrets the env contract references: the
-  // gateway's own run SA and the CLI-generated secrets
-  // (runtime-secrets.ts). Created once, never overwritten. Must exist
-  // before the IAM invariants bind them and before the rolls reference
-  // them, so any failure aborts here.
-  // ────────────────────────────────────────────────────────────────
-  const sRt = spinner();
-  sRt.start("Ensuring the gateway service account + generated runtime secrets...");
-  const secretsTarget = { projectId: meta.projectId, env: GCP_STACK_ENV };
-  const replication = await readSecretReplication(secretsTarget);
-  const runtime = [
-    await ensureGatewayServiceAccount(secretsTarget),
-    ...(replication.ok
-      ? await ensureGeneratedSecrets({
-          ...secretsTarget,
-          region,
-          replication: replication.replication,
-          seed: plainGeneratedSecretSeed(deployed.admin.liveEnv),
-        })
-      : [{ id: "secret replication", status: "failed" as const, error: replication.error }]),
-  ];
-  const runtimeFailed = runtime.filter((o) => o.status === "failed");
-  if (runtimeFailed.length > 0) {
-    sRt.stop(red("Runtime identities/secrets could not be ensured. Aborting upgrade."));
-    for (const o of runtimeFailed) log.error(red(`  FAILED: ${o.id}\n    ${o.error ?? ""}`));
-    log.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
-    return false;
-  }
-  sRt.stop(green("Gateway service account + runtime secrets ok"));
-  for (const o of runtime.filter((o) => o.status === "applied")) {
-    log.info(`  created: ${o.id}${o.detail ? ` (${o.detail})` : ""}`);
-  }
-
-  // ────────────────────────────────────────────────────────────────
-  // Converge the infrastructure the stack declares but upgrade can't get
-  // from an image roll: IAM bindings + CDN policy added to the stacks after
-  // this install was provisioned (stack-contract.ts). Additive + idempotent.
-  // A failure the install can't work without aborts here, before
-  // migrations or any traffic shift; the rest warn. Also deletes GCP's
-  // auto-created SSH/RDP-from-anywhere firewall rules (default-firewall.ts).
-  // ────────────────────────────────────────────────────────────────
-  const sInv = spinner();
-  sInv.start(
-    "Ensuring the IAM bindings + CDN settings the stack declares, removing the default network's pre-populated firewall rules...",
-  );
-  const invariants = await ensureStackInvariants({
-    provider: meta.provider,
-    projectId: meta.projectId,
-    region,
-    env: GCP_STACK_ENV,
-    services: Object.fromEntries(rolls.map((r) => [r.slug, r.serviceName])) as Record<
-      "admin" | "gateway",
-      string
-    >,
-  });
-  const applied = invariants.outcomes.filter((o) => o.status === "applied");
-  const failed = invariants.outcomes.filter((o) => o.status === "failed");
-  if (invariants.mustAbort) {
-    sInv.stop(red("Stack invariants could not be ensured. Aborting upgrade."));
-  } else {
-    sInv.stop(
-      green(
-        `Stack invariants ok (${invariants.outcomes.length - failed.length}/${invariants.outcomes.length}, ${applied.length} applied)`,
-      ),
-    );
-  }
-  for (const o of applied) log.info(`  applied: ${o.id} ${dim(`(${o.why})`)}`);
-  for (const o of failed) {
-    const line = `  ${o.onFailure === "abort" ? "FAILED" : "not applied"}: ${o.id} — ${o.why}\n    ${o.error ?? ""}`;
-    if (o.onFailure === "abort") log.error(red(line));
-    else log.warn(yellow(line));
-  }
-  if (invariants.mustAbort) {
-    log.warn("No traffic was shifted and no migrations ran. Fix the bindings above and re-run.");
-    return false;
-  }
-
-  // ────────────────────────────────────────────────────────────────
-  // P21 ship 3 — DB migrations BEFORE traffic shifts. Idempotent
-  // (drizzle bookkeeping table); a failure here aborts the upgrade
-  // before the new image touches traffic, so the admin keeps
-  // serving the old version against the existing schema.
-  // ────────────────────────────────────────────────────────────────
-  const sMig = spinner();
-  sMig.start("Applying DB migrations (idempotent)...");
-  const { runMigrationsViaCloudRunJob } = await import("./migration-runner.js");
-  // v0.9.2 — pass the NEW admin image as imageOverride. Pre-v0.9.2 the
-  // migration runner read the CURRENT admin image (the one being
-  // replaced) which didn't carry the new release's migration files,
-  // so new migrations were silently skipped. Production hit this on
-  // every upgrade that introduced schema changes — the symptom was
-  // post-rollout queries failing with "column does not exist".
-  const adminPlan = rolls.find((p) => p.slug === "admin");
-  const mig = await runMigrationsViaCloudRunJob({
-    projectId: meta.projectId,
-    region,
-    ...(adminPlan ? { imageOverride: adminPlan.imageRef } : {}),
-  });
-  if (!mig.ok) {
-    sMig.stop(red(`Migrations failed (${mig.error ?? "unknown"}). Aborting upgrade.`));
-    log.warn(
-      "No traffic was shifted. Inspect the Cloud Run Job logs:\n" +
-        "  gcloud logging read 'resource.type=cloud_run_job AND " +
-        'resource.labels.job_name=~"caelo-migrate-.*"\' ' +
-        `--project=${meta.projectId} --limit=50`,
-    );
-    return false;
-  }
-  sMig.stop(green("Migrations applied"));
-
-  // ────────────────────────────────────────────────────────────────
-  // #613 — the gateway's own database login. Migration 0248 created
-  // gateway_role without a password; give it the gateway-role-password
-  // secret's value now, before the gateway rolls onto it. Without it the
-  // new gateway could not reach cms_admin, so a failure aborts here.
-  // public_role moves onto its own password right before the gateway's
-  // roll (gateway-credentials.ts), so the old revision keeps working
-  // until then.
-  // ────────────────────────────────────────────────────────────────
-  const sRole = spinner();
-  sRole.start("Ensuring the gateway's database login (gateway_role)...");
-  const sqlInstance = await resolveGcpResourceName(
-    "sql-instance",
-    "caelo-production-pg",
-    meta.projectId,
-  );
-  if (!sqlInstance) {
-    sRole.stop(red("Could not find the Cloud SQL instance. Aborting upgrade."));
-    log.warn("Migrations ran; no traffic was shifted. Re-run upgrade once the instance is found.");
-    return false;
-  }
-  const roleTarget = { projectId: meta.projectId, env: GCP_STACK_ENV, sqlInstance };
-  const gatewayRole = await ensureGatewayRolePassword(roleTarget);
-  if (gatewayRole.status === "failed") {
-    sRole.stop(red("gateway_role could not be given its password. Aborting upgrade."));
-    log.error(red(`  ${gatewayRole.error ?? ""}`));
-    log.warn(
-      "Migrations ran (0248 creates gateway_role); no traffic was shifted. Fix the above and re-run upgrade.",
-    );
-    return false;
-  }
-  sRole.stop(green("gateway_role ready"));
-  const gatewayLive = plans.find((p) => p.slug === "gateway");
-  const publicRole = planPublicRoleSwitch(roleTarget, gatewayLive?.liveEnv ?? new Map());
-
-  // ────────────────────────────────────────────────────────────────
-  // Issue #37 — MCP through IAP. Idempotently ensure the MCP service
-  // account + its IAP/token-creator bindings; the admin learns the SA's
-  // email from CAELO_MCP_IAP_SERVICE_ACCOUNT in the env contract. Installs
-  // provisioned before this existed get it here, with no operator config.
-  // A failure only costs MCP access, so it warns instead of aborting.
-  // ────────────────────────────────────────────────────────────────
-  // Env vars the rolls must leave as the service has them, because the
-  // thing they point at could not be set up.
-  const leaveUntouched: string[] = [];
-  if (adminPlan) {
-    const sMcp = spinner();
-    sMcp.start("Ensuring MCP access through IAP...");
-    const resource = await resolveAdminIapResource(meta, region, adminPlan.serviceName);
-    const mcp = resource
-      ? await ensureMcpIapAccess({ projectId: meta.projectId, resource })
-      : { ok: false as const, error: "admin IAP backend service not found" };
-    if (mcp.ok) {
-      sMcp.stop(
-        green(`MCP access ready (${mcp.serviceAccount}; ${mcp.operators.length} operator(s))`),
-      );
-    } else {
-      sMcp.stop(yellow(`MCP access not configured: ${mcp.error}`));
-      log.warn(
-        "The upgrade continues; external MCP clients stay blocked by IAP until this succeeds.",
-      );
-      // Don't hand the admin an MCP service account that may not exist or
-      // lacks its bindings: /settings/mcp would print a `claude mcp add`
-      // command that can't work. Leave the var as the service has it.
-      leaveUntouched.push(MCP_ENV_VAR);
-    }
-
-    // ──────────────────────────────────────────────────────────────
-    // Operator access: the sync job that keeps Google IAP in step with the
-    // user list (operator-access.ts) — its own SA, the only principal that
-    // may change the IAP binding; the admin may only start it. Also removes
-    // the operator-access rights an earlier revision gave the admin's SA.
-    // After migrations: the job's database user gets the role migration
-    // 0239 creates. A failure only costs IAP following the user list, so it
-    // warns; the admin then reports the sync as not set up, loudly.
-    // ──────────────────────────────────────────────────────────────
-    const sOa = spinner();
-    sOa.start("Ensuring the operator-access sync job...");
-    const resolved = await resolveOperatorAccessTarget({
-      provider: meta.provider,
-      projectId: meta.projectId,
+  const run: GcloudRunner = gcloud;
+  const http = fetch as unknown as HttpFetch;
+  const ok = await upgradeGcpInstall(
+    {
+      provider,
+      projectId,
       region,
       env: GCP_STACK_ENV,
+      domain: meta.domain,
+      stagingHost,
       ownerEmail: meta.ownerEmail,
-      imageRef: adminPlan.imageRef,
-    });
-    const oa = resolved.ok
-      ? await ensureOperatorAccessSync(resolved.target)
-      : { ok: false as const, done: [], error: resolved.error };
-    for (const step of oa.done) log.info(`  ${dim(step)}`);
-    if (oa.ok) {
-      sOa.stop(green("Operator-access sync job ready (IAP follows the user list)"));
-    } else {
-      sOa.stop(yellow(`Operator-access sync job not set up: ${oa.error}`));
-      log.warn(
-        "The upgrade continues; user changes will report that Google IAP could not be updated until this succeeds. Re-run upgrade once the cause is fixed.",
-      );
-      leaveUntouched.push(OPERATOR_ACCESS_JOB_ENV_VAR);
-    }
-  }
-  if (leaveUntouched.length > 0) {
-    const replan = planContractEnv(install, deployed, { leaveUntouched });
-    if (replan.ok) {
-      rolls = rolls.map((r) => ({
-        ...r,
-        envFlags: replan.services[r.slug].flags,
-        envChanges: replan.services[r.slug].changes,
-      }));
-    }
-  }
-
-  // ────────────────────────────────────────────────────────────────
-  // Phase 2: roll each service, probe health, auto-rollback on fail.
-  // If admin succeeds but gateway fails, also roll admin back so the
-  // operator never ends up on a mismatched-version pair. The env
-  // contract's changes ride the same `services update` as the image, so
-  // they land in the new revision (and roll back with it). So does the
-  // service's run SA: the gateway moves to its own SA here.
-  // ────────────────────────────────────────────────────────────────
-  const rolled: ServicePlan[] = [];
-  /** A failed gateway roll goes back to a revision that reads public_role's old password. */
-  const restorePublicRole = async (slug: "admin" | "gateway"): Promise<void> => {
-    if (slug !== "gateway") return;
-    const outcome = await publicRole.afterGatewayRollFailed();
-    if (outcome.startsWith("could NOT")) log.error(red(`  ${outcome}`));
-    else log.info(`  ${outcome}`);
-  };
-  for (const plan of rolls) {
-    const s = spinner();
-    s.start(`Rolling ${plan.slug} → ${plan.digest.slice(0, 19)}...`);
-    if (plan.slug === "gateway") {
-      const moved = await publicRole.beforeGatewayRoll();
-      if (moved.status === "failed") {
-        s.stop(red(`public_role could not be moved onto its own password: ${moved.error ?? ""}`));
-        await rollbackPriorlyRolled(meta.projectId, region, rolled);
-        return false;
-      }
-    }
-    const upd = await rollService(
-      serviceRollArgs({
-        serviceName: plan.serviceName,
-        region,
-        projectId: meta.projectId,
-        imageRef: plan.imageRef,
-        serviceAccount:
-          plan.slug === "admin"
-            ? runServiceAccountEmail(meta.projectId, GCP_STACK_ENV)
-            : gatewayServiceAccountEmail(meta.projectId, GCP_STACK_ENV),
-        envFlags: plan.envFlags,
-        resourceFlags: plan.resourceFlags,
-        volumeFlags: plan.volumeFlags,
-      }),
-    );
-    if (!upd.ok) {
-      s.stop(red(`Failed: ${upd.stderr.trim()}`));
-      await restorePublicRole(plan.slug);
-      await rollbackPriorlyRolled(meta.projectId, region, rolled);
-      return false;
-    }
-    // Force traffic onto the new revision. `update --image` only auto-
-    // flips when the service has no explicit traffic config — but our
-    // own auto-rollback path (rollbackTraffic) pins traffic to the
-    // prior revision, and that pin survives subsequent `update --image`
-    // calls. Without an explicit `update-traffic --to-latest` here, a
-    // prior failed upgrade silently locks every future upgrade off the
-    // serving path: new revisions are created, marked Ready, and never
-    // see traffic. Re-issuing it on every successful image update is
-    // idempotent + fixes already-pinned services.
-    const flip = await gcloud([
-      "run",
-      "services",
-      "update-traffic",
-      plan.serviceName,
-      "--region",
-      region,
-      "--project",
-      meta.projectId,
-      "--to-latest",
-      "--quiet",
-    ]);
-    if (!flip.ok) {
-      s.stop(red(`Traffic flip to latest failed: ${flip.stderr.trim()}`));
-      await restorePublicRole(plan.slug);
-      await rollbackPriorlyRolled(meta.projectId, region, rolled);
-      return false;
-    }
-    if (!(await findServiceUrl(meta.projectId, region, plan.serviceName))) {
-      s.stop(red(`Could not resolve service URL for ${plan.slug} — rolling back`));
-      await rollbackTraffic(meta.projectId, region, plan.serviceName, plan.priorRevision);
-      await restorePublicRole(plan.slug);
-      await rollbackPriorlyRolled(meta.projectId, region, rolled);
-      return false;
-    }
-    // Cloud Run's `update --image` (with default --quiet) returns only
-    // after the new revision passes its container-readiness probe AND
-    // becomes the serving revision. That's the gate we rely on now —
-    // the prior `/_caelo/health` HTTP probe via the run.app URL always
-    // 403'd because the admin Cloud Run service is invoker-restricted
-    // to the IAP service account (the LB+IAP gates user traffic; direct
-    // run.app calls are denied by design). Probing through the LB would
-    // require an IAP-issued OAuth token, which the operator's gcloud
-    // session doesn't carry. Trust Cloud Run's own readiness signal —
-    // a real startup failure surfaces as `gcloud update` returning an
-    // error, which the upd.ok check above already catches and rolls
-    // back. Deeper checks (DB connectivity, schema match) surface on
-    // the first request after upgrade.
-    s.stop(green(`${plan.slug} rolled to ${plan.digest.slice(0, 19)}... ✓`));
-    rolled.push(plan);
-  }
-  log.success(`Upgrade to ${bold(targetTag)} complete (admin + gateway revisions Ready).`);
-  if (meta.provider === "gcp-firebase") {
+      targetTag,
+      infraContractVersion: INFRA_CONTRACT_VERSION,
+      skipVerify: opts.skipVerify === true,
+      skipHealthCheck: opts.skipHealthCheck === true,
+    },
+    {
+      run,
+      http,
+      reporter: clackReporter(),
+      resolveImages: resolveReleaseImages,
+      verifyImages: verifyCosignAll,
+      migrate: (imageRef) =>
+        runMigrationsViaCloudRunJob({ projectId, region, imageOverride: imageRef }, { run }),
+      healthProbe: (plan) => gcpHealthProbe(run, http, plan),
+      recordDigests: (digests) => recordRolledDigests(installId, provider, digests),
+      recordInfraContractVersion: (version) => recordInfraContractVersion(installId, version),
+      provisionerIdentity: () => upgradeKeylessProvisioner(installId, projectId),
+    },
+  );
+  if (ok && provider === "gcp-firebase") {
     // #650 — staging builds now render the staging host; the gateway
     // serves it once it is mapped. The command is idempotent, so this
     // reminder is safe to repeat on every upgrade.
     log.info(
-      `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve the staging host (it maps the host the admin uses — ${bold(installStagingHost(meta))} unless changed there —, turns on password protection, prints the login and the DNS record). Host and access: admin → Settings → Domains / Staging access.`,
+      `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve the staging host (it maps the host the admin uses — ${bold(stagingHost)} unless changed there —, turns on password protection, prints the login and the DNS record). Host and access: admin → Settings → Domains / Staging access.`,
     );
   }
+  return ok;
+}
 
-  // #613 — with both services on their new revisions, drop the bindings
-  // nothing reads through any more: above all the gateway SA's access to
-  // admin_role's password. Loud on failure — until it is gone, a
-  // compromised gateway could still read that password.
-  const retired = await removeRetiredIamBindings({
-    provider: meta.provider,
-    projectId: meta.projectId,
-    region,
-    env: GCP_STACK_ENV,
-    services: Object.fromEntries(rolls.map((r) => [r.slug, r.serviceName])) as Record<
-      "admin" | "gateway",
-      string
-    >,
-  });
-  for (const o of retired) {
-    if (o.status === "removed") log.info(`  removed: ${o.id} ${dim(`(${o.why})`)}`);
-    if (o.status === "failed") {
-      log.error(
-        red(
-          `  NOT removed: ${o.id} — ${o.why}\n    ${o.error ?? ""}\n    Re-run upgrade with an account that may change IAM, or remove the binding by hand.`,
-        ),
-      );
+/** The deep health probe for `plan`'s install, through IAP. */
+async function gcpHealthProbe(
+  run: GcloudRunner,
+  http: HttpFetch,
+  plan: AppRollPlan,
+): Promise<{ ok: true; probe: HealthProbe } | { ok: false; error: string }> {
+  const { install } = plan;
+  const urls: Partial<Record<RollSlug, string>> = {};
+  for (const s of plan.services) {
+    const url = await findServiceUrl(run, install.projectId, install.region, s.serviceName);
+    if (!url) {
+      return {
+        ok: false,
+        error: `Could not read the ${s.slug} service's URL for the health check.`,
+      };
     }
+    urls[s.slug] = url;
   }
-  if (publicRole.moves) {
-    // Until this upgrade the gateway held admin_role's password; anyone who
-    // ever compromised it could have kept a copy.
-    log.warn(
-      yellow(
-        `The gateway no longer holds admin_role's password, but it did until now. Rotate it: ${bold(selfCommand("rotate-secret", "postgres-password", "--install", installId))}`,
-      ),
-    );
-  }
-  if (rolls.some((r) => liveEnvHasInlinePassword(r.liveEnv))) {
-    // The services just moved their database password to Secret Manager,
-    // but every earlier revision still shows it in its env.
-    log.warn(
-      yellow(
-        `The database password was stored in plain env vars before this upgrade and stays readable in the services' old revisions. Rotate it now: ${bold(selfCommand("rotate-secret", "postgres-password", "--install", installId))}`,
-      ),
-    );
-  }
-
-  const digestOf = (slug: "admin" | "gateway"): string => {
-    const roll = rolls.find((r) => r.slug === slug);
-    if (!roll) throw new Error(`upgrade rolled no ${slug} service`);
-    return roll.digest;
+  return {
+    ok: true,
+    probe: createIapHealthProbe(
+      {
+        provider: install.provider,
+        projectId: install.projectId,
+        domain: install.domain,
+        adminServiceUrl: urls.admin as string,
+        gatewayServiceUrl: urls.gateway as string,
+      },
+      { run, http, sleep: realSleep },
+    ),
   };
-  await recordRolledDigests(installId, meta.provider, {
-    admin: digestOf("admin"),
-    gateway: digestOf("gateway"),
-  });
-  return true;
 }
 
 /**
@@ -1311,161 +651,17 @@ function stackConfigRecovery(
   return lines.join("\n");
 }
 
-/**
- * Roll back any services that already passed their probe in this
- * upgrade run. Called when a later service fails its probe so the
- * operator never ends up on an admin-new + gateway-old (or vice versa)
- * mismatched pair.
- */
-/** Returns true if `argv` runs to a zero exit; false on non-zero or ENOENT. */
-function probeBinary(argv: string[]): boolean {
-  try {
-    const r = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
-    return r.exitCode === 0;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Ensure cosign is on PATH. If not — and the operator is on macOS with
- * brew available — offer to `brew install cosign` interactively. Falls
- * back to printing the platform install URL + the --skip-verify
- * escape hatch when auto-install isn't possible.
- *
- * Returns true if cosign is callable after this function returns.
- */
-async function ensureCosignAvailable(): Promise<boolean> {
-  if (probeBinary(["cosign", "version"])) return true;
-
-  log.error(red("cosign not found on PATH — required for image-signature verification."));
-
-  // macOS auto-install offer. Only when `brew` is itself on PATH —
-  // otherwise the operator is on a stripped-down install where
-  // homebrew was never set up, and the manual instructions are more
-  // useful than a failing brew shell-out.
-  if (process.platform === "darwin" && probeBinary(["brew", "--version"])) {
-    const proceed = await confirm({
-      message: "Install cosign via brew now? (one-shot: brew install cosign)",
-      initialValue: true,
-    });
-    if (!isCancel(proceed) && proceed === true) {
-      const s = spinner();
-      s.start("brew install cosign");
-      const installResult = Bun.spawnSync(["brew", "install", "cosign"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      if (installResult.exitCode === 0 && probeBinary(["cosign", "version"])) {
-        s.stop(green("cosign installed ✓"));
-        return true;
-      }
-      const stderr = new TextDecoder().decode(installResult.stderr);
-      s.stop(red("brew install cosign failed"));
-      log.error(stderr.trim().slice(0, 500));
-    }
-  }
-
-  log.warn(
-    "Install cosign:\n" +
-      "  • brew install cosign           (macOS)\n" +
-      "  • https://docs.sigstore.dev/cosign/installation/  (other)\n" +
-      "Or pass --skip-verify to roll without signature checks (NOT recommended for production).",
-  );
-  return false;
-}
-
-/**
- * P21 ship 4 — verify cosign keyless signatures on every planned
- * image digest. Sigstore Fulcio + Rekor; the certificate identity
- * must match the Caelo release-images workflow. A mismatch means
- * either a registry compromise, a typosquat, or the operator pointed
- * at a fork's image. Either way: refuse to roll.
- *
- * Returns true on success (or skips with a clear error and returns
- * false if cosign isn't installed / verification fails).
- */
-async function verifyCosignAll(
-  plans: ServicePlan[],
-  registryRegion: string,
-  registryProject: string,
-  registryRepo: string,
-): Promise<boolean> {
-  // Probe cosign. Bun.spawnSync THROWS ENOENT when the binary is
-  // missing (instead of returning a non-zero exit), so the probe
-  // needs try/catch — relying on `exitCode !== 0` would surface a
-  // confusing stack trace to the operator instead of the actionable
-  // "install cosign" hint.
-  if (!(await ensureCosignAvailable())) return false;
-
-  for (const plan of plans) {
-    const s = spinner();
-    s.start(`Verifying cosign signature for ${plan.slug}@${plan.digest.slice(0, 19)}...`);
-    const fullRef = `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${plan.slug}@${plan.digest}`;
-    const verify = Bun.spawnSync(
-      [
-        "cosign",
-        "verify",
-        fullRef,
-        "--certificate-identity-regexp",
-        // Both release-images.yml and release.yml dispatch images;
-        // accept either workflow as the signer identity. The repo
-        // path is fixed; only the workflow filename varies.
-        "https://github.com/caelo-cms/caelo-cms/.github/workflows/(release-images|release).yml@.*",
-        "--certificate-oidc-issuer",
-        "https://token.actions.githubusercontent.com",
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    if (verify.exitCode !== 0) {
-      const stderr = new TextDecoder().decode(verify.stderr);
-      s.stop(red(`cosign verify FAILED for ${plan.slug}`));
-      log.error(
-        red(
-          `${plan.slug}@${plan.digest.slice(0, 19)} signature does NOT match the Caelo release workflow identity.\n` +
-            "Either:\n" +
-            "  • the registry was compromised, OR\n" +
-            "  • you're targeting a fork's image (verify your install's registry path), OR\n" +
-            "  • cosign / sigstore had a transient outage (retry).\n" +
-            `cosign stderr: ${stderr.trim().slice(0, 500)}`,
-        ),
-      );
-      return false;
-    }
-    s.stop(green(`${plan.slug} signature verified ✓`));
-  }
-  return true;
-}
-
-async function rollbackPriorlyRolled(
-  projectId: string,
-  region: string,
-  rolled: ServicePlan[],
-): Promise<void> {
-  if (rolled.length === 0) return;
-  log.warn(
-    yellow(`Rolling back ${rolled.length} service(s) that succeeded earlier in this run...`),
-  );
-  for (const plan of rolled) {
-    const ok = await rollbackTraffic(projectId, region, plan.serviceName, plan.priorRevision);
-    log.info(
-      ok
-        ? green(`  ${plan.slug} traffic restored to ${plan.priorRevision}`)
-        : red(`  ${plan.slug} rollback FAILED — manual fix required`),
-    );
-  }
-}
-
 // =========================================================================
-// backup — Cloud SQL on-demand backup + bundle Pulumi state
+// backup — Cloud SQL on-demand backup
 // =========================================================================
 
 export async function backupCommand(): Promise<void> {
   await forEachInstall("backup", (_installId, meta) => backupOf(meta));
 }
 
+/** Both GCP providers keep their data in the install's Cloud SQL instance. */
 async function backupOf(meta: InstallMetadata): Promise<boolean> {
-  if (meta.provider !== "gcp") {
+  if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") {
     log.warn(`backup for provider ${meta.provider} not yet implemented.`);
     return false;
   }
@@ -1473,31 +669,17 @@ async function backupOf(meta: InstallMetadata): Promise<boolean> {
 
   const s = spinner();
   s.start("Resolving Cloud SQL instance + triggering on-demand backup...");
-  const sqlName = await resolveGcpResourceName(
-    "sql-instance",
-    "caelo-production-pg",
-    meta.projectId,
+  const r = await takeSqlBackup(
+    gcloud,
+    { projectId: meta.projectId, env: GCP_STACK_ENV },
+    "backup",
   );
-  if (!sqlName) {
-    s.stop(red("Could not find caelo-production-pg* Cloud SQL instance"));
-    return false;
-  }
-  const r = await gcloud([
-    "sql",
-    "backups",
-    "create",
-    "--instance",
-    sqlName,
-    "--project",
-    meta.projectId,
-    "--description",
-    `caelo-cms backup ${new Date().toISOString()}`,
-  ]);
   if (!r.ok) {
-    s.stop(red(`Failed: ${r.stderr.trim()}`));
+    s.stop(red(`Failed: ${r.error}`));
     return false;
   }
-  s.stop(green(`Backup created. List with \`gcloud sql backups list --instance=${sqlName}\`.`));
+  s.stop(green(`Backup ${r.backup.backupId} of ${r.backup.instance} created.`));
+  log.info(`Restore it (overwrites all data written since): ${bold(restoreCommand(r.backup))}`);
   return true;
 }
 
@@ -1530,6 +712,7 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
   const services: Partial<Record<"admin" | "gateway", string>> = {};
   for (const slug of ["admin", "gateway"] as const) {
     const serviceName = await resolveGcpResourceName(
+      gcloud,
       "run-service",
       `caelo-production-${slug}`,
       meta.projectId,
@@ -1543,7 +726,7 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
   }
   const sqlInstance =
     rolesOfSecret(secret).length > 0
-      ? await resolveGcpResourceName("sql-instance", "caelo-production-pg", meta.projectId)
+      ? await resolveGcpResourceName(gcloud, "sql-instance", "caelo-production-pg", meta.projectId)
       : null;
   const report = await rotateRuntimeSecret(
     {

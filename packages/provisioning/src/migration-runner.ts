@@ -21,7 +21,8 @@
 
 import { spinner } from "@clack/prompts";
 import { green, red } from "kleur/colors";
-import { gcloud } from "./gcloud.js";
+import { gcloud as defaultGcloud } from "./gcloud.js";
+import type { GcloudRunner } from "./gcloud-retry.js";
 import { GCP_STACK_ENV, gcpSecretId, runServiceAccountEmail } from "./gcp-names.js";
 import { databaseUrls, SERVICE_SECRET_ENV } from "./stack-contract.js";
 import { liveContainerEnv, liveDatabaseHost } from "./stack-converge.js";
@@ -74,7 +75,10 @@ export function migrationJobEnvArgs(databaseHost: string, env = GCP_STACK_ENV): 
  * Resolve the running admin Cloud Run service's image + database host +
  * VPC config. Returns null on any failure; caller surfaces the error.
  */
-async function readAdminConfig(opts: MigrationRunnerOpts): Promise<AdminConfig | null> {
+async function readAdminConfig(
+  opts: MigrationRunnerOpts,
+  gcloud: GcloudRunner,
+): Promise<AdminConfig | null> {
   // Find the actual deployed service name (Pulumi appends a 7-char
   // suffix; hardcoding the bare name 404s).
   const list = await gcloud([
@@ -178,9 +182,10 @@ export function parseAdminConfig(serviceJson: string): AdminConfig | null {
 export async function truncateViaCloudRunJob(
   opts: MigrationRunnerOpts,
 ): Promise<{ ok: boolean; error?: string }> {
+  const gcloud = defaultGcloud;
   const sAdmin = spinner();
   sAdmin.start("Reading admin Cloud Run config for truncate job...");
-  const cfg = await readAdminConfig(opts);
+  const cfg = await readAdminConfig(opts, gcloud);
   if (!cfg) {
     sAdmin.stop(red("Couldn't resolve admin config — admin may not be deployed yet"));
     return { ok: false, error: "admin-config-unresolved" };
@@ -268,10 +273,12 @@ export async function runMigrationsViaCloudRunJob(
      */
     readonly imageOverride?: string;
   },
+  deps: { readonly run?: GcloudRunner } = {},
 ): Promise<{ ok: boolean; error?: string }> {
+  const gcloud = deps.run ?? defaultGcloud;
   const sAdmin = spinner();
   sAdmin.start("Reading admin Cloud Run config for migration job...");
-  const cfg = await readAdminConfig(opts);
+  const cfg = await readAdminConfig(opts, gcloud);
   if (!cfg) {
     sAdmin.stop(red("Couldn't resolve admin config — admin may not be deployed yet"));
     return { ok: false, error: "admin-config-unresolved" };

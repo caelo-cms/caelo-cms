@@ -170,6 +170,10 @@
                 > installed — the command uses it to check the release is genuine. On a Mac it offers
                 to install it for you.
               </li>
+              <li>
+                Use a Google account that can open this admin: after switching, the command checks
+                the new version by signing in through Google's access gate.
+              </li>
             </ul>
           </div>
 
@@ -178,19 +182,23 @@
             <ol class="list-decimal space-y-1 pl-5 text-muted-foreground">
               <li>Checks that the new release was signed by Caelo's release process. It stops if not.</li>
               <li>
+                Backs up your database and shows the backup's id. If the backup fails, it stops before
+                anything has changed.
+              </li>
+              <li>
                 Adds anything the new release needs in your Google Cloud project (permissions,
                 stored keys). It stops here, before changing your site, if it can't.
               </li>
               <li>Updates your database to the new release's structure.</li>
               <li>
-                Switches the admin and the public form service to the new release. If either fails to
-                start, both go back to the version you have now.
+                Switches the admin and the public form service to the new release and checks that both
+                work. If either check fails, both go back to the version you have now.
               </li>
             </ol>
             <p class="text-muted-foreground">
-              It does <strong>not</strong> take a backup first, and database changes are not undone
-              if it switches back. Google Cloud SQL makes an automatic backup every night (03:00
-              UTC); that is what you would restore from.
+              If it had to go back, it prints the backup id and the exact command that restores it.
+              Database changes stay in place, so you only need that command if the old version no longer
+              works with them; restoring overwrites everything written since the backup.
             </p>
           </div>
 

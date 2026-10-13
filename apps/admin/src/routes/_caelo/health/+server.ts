@@ -1,47 +1,99 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P21 — admin health endpoint. Used by `cms-provision upgrade`'s
- * post-roll probe to verify the new Cloud Run revision is healthy
- * before traffic-shifting (and to roll back automatically if not).
+ * Admin health endpoint.
  *
- * Returns 200 + `{ok: true, version}` when:
- *   - the SvelteKit handler is responsive
- *   - the admin DB pool can answer `SELECT 1`
- *   - CAELO_SECRET_KEK is reachable (or skipped in dev)
+ *   GET /_caelo/health         → `{ ok, version }` once both database pools
+ *                                connect as the expected roles.
+ *   GET /_caelo/health?deep=1  → additionally `migrations: { admin, public }`
+ *                                (`{ head, pending }` each): every migration
+ *                                file this image ships must be recorded as
+ *                                applied, or the answer is 503.
  *
- * Returns 503 + `{ok: false, error}` on any failure. Cloud Run treats
- * 503 as unhealthy if probes are configured; we don't rely on Cloud
- * Run's built-in probe (which only checks port-listen) because a
- * bad-config admin can serve port 5173 fine while every page 500s.
+ * `cms-provision upgrade` (and the in-cloud upgrader job, epic #696) calls
+ * the deep variant right after rolling the admin onto a new image and rolls
+ * traffic back when it fails — Cloud Run's readiness only proves the port
+ * listens, while a revision that cannot reach its database or runs against
+ * an older schema serves 500s on every page.
  *
- * Public path on purpose — no IAP gate, no auth — so the upgrade CLI
- * (running outside the IAP allowlist) can still probe. Returns no
- * sensitive info.
+ * No app-level auth: on GCP the infrastructure gates it (IAP in front of the
+ * admin; the upgrade signs an IAP credential for it). The answer carries no
+ * secrets and no raw database errors — those go to the server log.
  */
 
-import { CAELO_VERSION } from "@caelo-cms/shared";
+import { execute } from "@caelo-cms/query-api";
+import { CAELO_VERSION, type ExecutionContext } from "@caelo-cms/shared";
 import { json } from "@sveltejs/kit";
+import {
+  type MigrationDatabase,
+  type MigrationState,
+  migrationState,
+  shippedMigrations,
+  shippedMigrationsRoot,
+} from "#lib/server/migration-state.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
-export const GET: RequestHandler = async () => {
+/** The fixed system actor the admin's system-dispatched paths use (hooks.server.ts). */
+const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
+
+const OPS: Record<MigrationDatabase, string> = {
+  cms_admin: "platform_health.applied_admin_migrations",
+  cms_public: "platform_health.applied_public_migrations",
+};
+
+const NO_STORE = { "Cache-Control": "no-store" };
+
+function unhealthy(kind: string, message: string) {
+  return json(
+    { ok: false, version: CAELO_VERSION, error: { kind, message } },
+    { status: 503, headers: NO_STORE },
+  );
+}
+
+export const GET: RequestHandler = async ({ url }) => {
+  let query: ReturnType<typeof getQueryContext>;
   try {
-    const { adapter } = getQueryContext();
-    // Smoke the admin pool. verifyRoles is the lightest check that
-    // proves we have a working connection AND we're connected as the
-    // expected role (catches a misconfigured PUBLIC_ADMIN_DATABASE_URL
-    // that would silently fail later).
-    await adapter.verifyRoles();
+    query = getQueryContext();
+    // The lightest check that proves a working connection AND the expected
+    // role on both pools (catches a swapped or misrouted database URL).
+    await query.adapter.verifyRoles();
   } catch (e) {
-    return json(
-      {
-        ok: false,
-        version: CAELO_VERSION,
-        error: { kind: "DbUnreachable", message: (e as Error).message },
-      },
-      { status: 503 },
+    console.error(`[health] database check failed: ${(e as Error).message}`);
+    return unhealthy("DbUnreachable", "a database pool cannot connect as its expected role");
+  }
+  if (url.searchParams.get("deep") !== "1") {
+    return json({ ok: true, version: CAELO_VERSION }, { headers: NO_STORE });
+  }
+
+  let root: string;
+  try {
+    root = shippedMigrationsRoot();
+  } catch (e) {
+    console.error(`[health] ${(e as Error).message}`);
+    return unhealthy("MigrationsUnknown", "this image carries no migration files");
+  }
+  const ctx: ExecutionContext = {
+    actorId: SYSTEM_ACTOR_ID,
+    actorKind: "system",
+    requestId: crypto.randomUUID(),
+  };
+  const migrations: Partial<Record<"admin" | "public", MigrationState>> = {};
+  for (const database of ["cms_admin", "cms_public"] as const) {
+    const r = await execute(query.registry, query.adapter, ctx, OPS[database], {});
+    if (!r.ok) {
+      console.error(`[health] ${OPS[database]}: ${JSON.stringify(r.error)}`);
+      return unhealthy("MigrationStateUnreadable", `could not read ${database}'s migrations`);
+    }
+    const { applied } = r.value as { applied: string[] };
+    migrations[database === "cms_admin" ? "admin" : "public"] = migrationState(
+      shippedMigrations(root, database),
+      applied,
     );
   }
-  return json({ ok: true, version: CAELO_VERSION });
+  const ok = migrations.admin?.pending === 0 && migrations.public?.pending === 0;
+  return json(
+    { ok, version: CAELO_VERSION, migrations },
+    { status: ok ? 200 : 503, headers: NO_STORE },
+  );
 };
