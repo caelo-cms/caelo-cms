@@ -171,7 +171,7 @@ describe("infra contract against a real previous tag (git)", () => {
     mkdirSync(join(repo, rel, ".."), { recursive: true });
     writeFileSync(join(repo, rel), body);
   };
-  const contract = "packages/provisioning/src/release-contract.ts";
+  const contract = "packages/provisioning/src/infra-contract.ts";
   const stack = "packages/provisioning/stacks/gcp/index.ts";
 
   it("detects a stack change since the tag that did not bump the constant", () => {

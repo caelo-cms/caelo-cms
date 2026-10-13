@@ -3,7 +3,8 @@
 import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { INFRA_CONTRACT_VERSION, isInfraContractPath } from "./release-contract.js";
+import { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
+import { isInfraContractPath } from "./release-contract.js";
 import {
   assessAutoInstall,
   channelForVersion,
@@ -275,6 +276,7 @@ describe("release-contract", () => {
   it("watches the stacks and converge sources, not their tests", () => {
     expect(isInfraContractPath("packages/provisioning/stacks/gcp/index.ts")).toBe(true);
     expect(isInfraContractPath("packages/provisioning/src/stack-converge.ts")).toBe(true);
+    expect(isInfraContractPath("packages/provisioning/src/upgrade/converge.ts")).toBe(true);
     expect(isInfraContractPath("packages/provisioning/src/stack-converge.test.ts")).toBe(false);
     expect(isInfraContractPath("packages/provisioning/stacks/gcp/README.md")).toBe(false);
     expect(isInfraContractPath("packages/provisioning/src/cli.ts")).toBe(false);
@@ -283,7 +285,7 @@ describe("release-contract", () => {
   it("keeps INFRA_CONTRACT_VERSION a literal the release scripts can read from a past tag", () => {
     // scripts/release-manifest.ts reads the previous tag's value with a
     // regex over `git show <tag>:<file>`, so it must stay a plain literal.
-    const src = readFileSync(new URL("./release-contract.ts", import.meta.url), "utf8");
+    const src = readFileSync(new URL("./infra-contract.ts", import.meta.url), "utf8");
     expect(src).toMatch(
       new RegExp(`export const INFRA_CONTRACT_VERSION = ${INFRA_CONTRACT_VERSION};`),
     );

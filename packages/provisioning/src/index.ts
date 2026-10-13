@@ -39,6 +39,7 @@ export {
   selfHostedCdnCopy,
 } from "./cdn-copy.js";
 export { type ComposeSpec, generateDockerCompose, type RolePasswords } from "./compose.js";
+export { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
 export {
   type CloudFrontRedirectArtifact,
   emitRedirectsAzureFrontDoor,
@@ -50,7 +51,6 @@ export {
 } from "./redirects-emit.js";
 export {
   INFRA_CONTRACT_PATHS,
-  INFRA_CONTRACT_VERSION,
   isInfraContractPath,
   RELEASE_MIN_FROM_VERSION,
 } from "./release-contract.js";

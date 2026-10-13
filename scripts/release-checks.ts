@@ -15,10 +15,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
-import {
-  INFRA_CONTRACT_VERSION,
-  isInfraContractPath,
-} from "../packages/provisioning/src/release-contract.ts";
+import { INFRA_CONTRACT_VERSION } from "../packages/provisioning/src/infra-contract.ts";
+import { isInfraContractPath } from "../packages/provisioning/src/release-contract.ts";
 import { compareSemver } from "../packages/provisioning/src/release-manifest.ts";
 import { formatFindings, lintMigrationsSince } from "./migration-lint.ts";
 
@@ -164,9 +162,12 @@ export function previousStableTag(
   return last ? `v${last}` : null;
 }
 
+/** Where INFRA_CONTRACT_VERSION lives (shared with the upgrade split's `needsConverge`). */
+export const INFRA_CONTRACT_FILE = "packages/provisioning/src/infra-contract.ts";
+
 /** `INFRA_CONTRACT_VERSION` as committed at `ref`; null when the constant did not exist yet. */
 export function infraContractVersionAt(ref: string, repoRoot: string): number | null {
-  const show = git(["show", `${ref}:packages/provisioning/src/release-contract.ts`], repoRoot);
+  const show = git(["show", `${ref}:${INFRA_CONTRACT_FILE}`], repoRoot);
   if (!show.ok) return null;
   const m = /export const INFRA_CONTRACT_VERSION = (\d+);/.exec(show.out);
   return m ? Number(m[1]) : null;
@@ -268,7 +269,7 @@ export function checkInfraContract(opts: {
     changedPaths,
     message:
       `infra-contract files changed since the previous release without an INFRA_CONTRACT_VERSION bump:\n  ${changedPaths.join("\n  ")}\n` +
-      "If any of them adds/removes/changes IAM, secrets, service accounts or cloud resources, bump INFRA_CONTRACT_VERSION in packages/provisioning/src/release-contract.ts (installs then upgrade via Cloud Shell). " +
+      "If any of them adds/removes/changes IAM, secrets, service accounts or cloud resources, bump INFRA_CONTRACT_VERSION in packages/provisioning/src/infra-contract.ts (installs then upgrade via Cloud Shell). " +
       "If none does, re-cut with the infra-neutral acknowledgement (release-cut input ack_infra_neutral / --ack-infra-neutral).",
   };
 }

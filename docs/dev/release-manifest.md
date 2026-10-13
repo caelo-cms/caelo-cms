@@ -48,8 +48,11 @@ from:
   release cut (`security`, `advisories`, acknowledgements);
 - `scripts/release-checks.ts` — re-runs the advisory, migration-lint and
   infra-contract rules against the previous stable tag;
+- `packages/provisioning/src/infra-contract.ts` — `INFRA_CONTRACT_VERSION`
+  (the same number `needsConverge` in `upgrade/converge.ts` compares
+  against `install.json`);
 - `packages/provisioning/src/release-contract.ts` —
-  `INFRA_CONTRACT_VERSION`, `RELEASE_MIN_FROM_VERSION`.
+  `RELEASE_MIN_FROM_VERSION`, `INFRA_CONTRACT_PATHS`.
 
 ### Trust chain
 

@@ -20,10 +20,8 @@
 
 import { readdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-  INFRA_CONTRACT_VERSION,
-  RELEASE_MIN_FROM_VERSION,
-} from "../packages/provisioning/src/release-contract.ts";
+import { INFRA_CONTRACT_VERSION } from "../packages/provisioning/src/infra-contract.ts";
+import { RELEASE_MIN_FROM_VERSION } from "../packages/provisioning/src/release-contract.ts";
 import {
   channelForVersion,
   compareImageDigests,

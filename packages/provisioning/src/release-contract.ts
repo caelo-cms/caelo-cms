@@ -2,7 +2,9 @@
 
 /**
  * Release-contract constants that every signed release manifest carries
- * (epic #696). They tell an upgrader, without running any code from the
+ * (epic #696). The infrastructure contract number itself lives in
+ * infra-contract.ts (shared with the upgrade split's `needsConverge`);
+ * this module says which files can change it and the min-from version. They tell an upgrader, without running any code from the
  * new release, whether the release can be installed as an app-roll or
  * needs the operator's own identity.
  *
@@ -12,24 +14,6 @@
  * declared here, so the upgrader refuses it and sends the Owner to the
  * "Run in Cloud Shell" path instead of half-applying it.
  */
-
-/**
- * Version of the infrastructure contract — the IAM bindings, secrets and
- * cloud resources an install must have for this release's images to run.
- *
- * BUMP IT (by one) in any release whose stacks or upgrade-time converge
- * add, remove or change an IAM binding, a Secret Manager secret, a
- * service account, or a cloud resource. An install whose recorded value
- * is lower than a release's cannot take that release as an app-roll.
- *
- * The release pipeline enforces this mechanically: when a file matching
- * {@link INFRA_CONTRACT_PATHS} changed since the previous stable tag and
- * this number did not move, `scripts/release.ts` and `release.yml` refuse
- * the release unless the release cut explicitly records the change as
- * infra-neutral (a comment, a refactor, a test-only edit). See
- * RELEASING.md ("Infra contract").
- */
-export const INFRA_CONTRACT_VERSION = 1;
 
 /**
  * Oldest installed version a release can be applied to directly. An
@@ -53,10 +37,10 @@ export const INFRA_CONTRACT_PATHS: readonly string[] = [
   "packages/provisioning/src/runtime-secrets.ts",
   "packages/provisioning/src/operator-access.ts",
   "packages/provisioning/src/gcp-names.ts",
-  // Upgrade-time mutators outside stack-converge: the upgrade flow itself
-  // (it decides which ensure* steps run), the MCP IAP service account +
-  // bindings, the default firewall policy.
-  "packages/provisioning/src/lifecycle.ts",
+  // Upgrade-time mutators outside stack-converge: the converge half of the
+  // upgrade (it decides which ensure* steps run), the MCP IAP service
+  // account + bindings, the default firewall policy.
+  "packages/provisioning/src/upgrade/converge.ts",
   "packages/provisioning/src/mcp-iap.ts",
   "packages/provisioning/src/default-firewall.ts",
 ];

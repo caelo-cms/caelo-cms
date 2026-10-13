@@ -337,8 +337,8 @@ bun scripts/migration-lint.ts --since v0.10.30
 
 ### Infra contract
 
-`INFRA_CONTRACT_VERSION` in `packages/provisioning/src/release-contract.ts`
-says which IAM bindings, secrets, service accounts and cloud resources
+`INFRA_CONTRACT_VERSION` in `packages/provisioning/src/infra-contract.ts`
+(the same number the upgrade's `needsConverge` checks) says which IAM bindings, secrets, service accounts and cloud resources
 the release's images need. The upgrader job can only roll images, so an
 install whose recorded value is lower must upgrade with the operator's
 own identity (Cloud Shell / CLI).
@@ -348,14 +348,13 @@ add, remove or change IAM, secrets, service accounts or resources. The
 release checks diff the files in `INFRA_CONTRACT_PATHS` (the stacks,
 `stack-contract.ts`, `stack-converge.ts`, `runtime-secrets.ts`,
 `operator-access.ts`, `gcp-names.ts`, and the upgrade-time mutators
-`lifecycle.ts`, `mcp-iap.ts`, `default-firewall.ts`; tests and READMEs
-excluded)
-against the previous stable tag: if any changed and the number did
+`upgrade/converge.ts`, `mcp-iap.ts`, `default-firewall.ts`; listed in
+`release-contract.ts`; tests and READMEs excluded) against the previous stable tag: if any changed and the number did
 not, the cut is refused. When the change is infra-neutral (a comment, a
 refactor, a log line), re-cut with `ack_infra_neutral`
 (`--ack-infra-neutral`) instead. The number never goes down.
 
-`minFromVersion` comes from `RELEASE_MIN_FROM_VERSION` in the same file;
+`minFromVersion` comes from `RELEASE_MIN_FROM_VERSION` in `release-contract.ts`;
 raise it when a release needs an intermediate stop.
 
 ---
