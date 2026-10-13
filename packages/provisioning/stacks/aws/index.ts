@@ -16,8 +16,8 @@
  *  5. ECS Fargate cluster + four services (admin, gateway, orchestrator, runner).
  *  6. Secrets Manager entries (postgres-password, anthropic-api-key, ...).
  *  7. Route 53 hosted zone + ACM certs per (domain, locale).
- *  8. CloudWatch log group for the gateway's request logs (the analytics
- *     plugin's log sink).
+ *  8. CloudFront access logs → CloudWatch log group (the analytics plugin's
+ *     log sink).
  *  9. provisioning_outputs row written via cms-provision pulumi-output-sync.
  *
  * Per CMS_REQUIREMENTS §15 + the P15 plan, the runtime never knows it's
@@ -225,15 +225,6 @@ const cert = new aws.acm.Certificate(
   { provider: usEast1Provider },
 );
 
-// === 6. Gateway request-log sink ===
-//
-// The gateway's ECS task logs here through the awslogs driver; the
-// analytics plugin's AWS adapter reads it (`edgeLogSinkUrl`).
-const gatewayLogGroup = new aws.cloudwatch.LogGroup(`${namePrefix}-gateway-logs`, {
-  name: `/caelo/${env}/gateway`,
-  retentionInDays: env === "production" ? 90 : 30,
-});
-
 // === 7. CloudFront distribution ===
 const distribution = new aws.cloudfront.Distribution(`${namePrefix}-cdn`, {
   enabled: true,
@@ -285,6 +276,46 @@ const distribution = new aws.cloudfront.Distribution(`${namePrefix}-cdn`, {
     { errorCode: 404, responseCode: 404, responsePagePath: "/404.html", errorCachingMinTtl: 60 },
   ],
 });
+
+// === 7b. Edge-log sink: CloudFront access logs → CloudWatch Logs ===
+//
+// CloudFront delivers its access logs through CloudWatch vended-log
+// delivery, which for CloudFront runs in us-east-1 — so the log group and
+// the delivery resources live there too. The analytics plugin's AWS adapter
+// reads this group (`edgeLogSinkUrl`).
+const edgeLogGroup = new aws.cloudwatch.LogGroup(
+  `${namePrefix}-edge-logs`,
+  {
+    name: `/caelo/${env}/cloudfront`,
+    retentionInDays: env === "production" ? 90 : 30,
+  },
+  { provider: usEast1Provider },
+);
+const edgeLogSource = new aws.cloudwatch.LogDeliverySource(
+  `${namePrefix}-edge-log-source`,
+  {
+    name: `${namePrefix}-cloudfront`,
+    logType: "ACCESS_LOGS",
+    resourceArn: distribution.arn,
+  },
+  { provider: usEast1Provider },
+);
+const edgeLogDestination = new aws.cloudwatch.LogDeliveryDestination(
+  `${namePrefix}-edge-log-destination`,
+  {
+    name: `${namePrefix}-cloudfront-logs`,
+    deliveryDestinationConfiguration: { destinationResourceArn: edgeLogGroup.arn },
+  },
+  { provider: usEast1Provider },
+);
+new aws.cloudwatch.LogDelivery(
+  `${namePrefix}-edge-log-delivery`,
+  {
+    deliverySourceName: edgeLogSource.name,
+    deliveryDestinationArn: edgeLogDestination.arn,
+  },
+  { provider: usEast1Provider },
+);
 
 // === 8. ECS Fargate cluster + services ===
 //
@@ -373,7 +404,8 @@ const out: CloudAdapterOutputs = {
   bootstrapUrl:
     pulumi.interpolate`https://${domain}/setup?token=${tokenInfo.token}` as unknown as string,
   dnsRecordsRequired,
-  edgeLogSinkUrl: pulumi.interpolate`cloudwatch://${gatewayLogGroup.name}` as unknown as string,
+  edgeLogSinkUrl:
+    pulumi.interpolate`cloudwatch://us-east-1/${edgeLogGroup.name}` as unknown as string,
   provider: "aws",
   environment: env,
 };

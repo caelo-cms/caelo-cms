@@ -89,6 +89,18 @@ describe("azure stack — static site behind Front Door", () => {
   });
 });
 
+describe("aws stack — edge-log sink", () => {
+  const src = stack("aws");
+
+  it("delivers CloudFront access logs to the log group it reports as the sink", () => {
+    expect(src).toMatch(
+      /new aws\.cloudwatch\.LogDeliverySource\([\s\S]*?logType: "ACCESS_LOGS",\s*resourceArn: distribution\.arn/,
+    );
+    expect(src).toContain("destinationResourceArn: edgeLogGroup.arn");
+    expect(src).toMatch(/cloudwatch:\/\/us-east-1\/\$\{edgeLogGroup\.name\}/);
+  });
+});
+
 describe.each(["aws", "azure", "gcp", "gcp-firebase", "self-hosted"])(
   "%s stack — no edge router",
   (provider) => {
