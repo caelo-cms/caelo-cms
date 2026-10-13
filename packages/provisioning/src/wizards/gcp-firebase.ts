@@ -24,6 +24,7 @@
 
 import { log, note } from "@clack/prompts";
 import { bold, cyan } from "kleur/colors";
+import type { RunMode } from "../run-mode.js";
 
 export interface GcpFirebaseWizardOpts {
   installId: string;
@@ -33,6 +34,8 @@ export interface GcpFirebaseWizardOpts {
   nonInteractive: boolean;
   /** #607 — `--region`; see {@link GcpWizardOpts.region}. */
   region?: string;
+  /** #696 — see {@link GcpWizardOpts.runMode}. */
+  runMode?: RunMode;
 }
 
 export async function runGcpFirebaseWizard(opts: GcpFirebaseWizardOpts): Promise<void> {
@@ -63,6 +66,7 @@ export async function runGcpFirebaseWizard(opts: GcpFirebaseWizardOpts): Promise
     projectId: opts.projectId,
     nonInteractive: opts.nonInteractive,
     ...(opts.region ? { region: opts.region } : {}),
+    ...(opts.runMode ? { runMode: opts.runMode } : {}),
     provider: "gcp-firebase",
   });
 }
