@@ -99,7 +99,7 @@ describe("createIngressAuth", () => {
 
 describe("iapAudience", () => {
   it("is the origin with a path wildcard", () => {
-    expect(iapAudience("https://admin.viu.one/security/mcp")).toBe("https://admin.viu.one/*");
+    expect(iapAudience("https://admin.viu.one/settings/mcp")).toBe("https://admin.viu.one/*");
   });
 });
 
@@ -115,7 +115,7 @@ describe("describeIapRejection", () => {
     try {
       const msg = describeIapRejection(iapResponse, "Invalid IAP credentials: empty token");
       expect(msg).toContain("protected by Google IAP");
-      expect(msg).toContain("/security/mcp");
+      expect(msg).toContain("/settings/mcp");
     } finally {
       if (prev !== undefined) process.env.CAELO_IAP_SERVICE_ACCOUNT = prev;
     }

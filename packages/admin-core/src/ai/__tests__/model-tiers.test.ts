@@ -52,7 +52,7 @@ describe("parseModelTierMap (issue #306)", () => {
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error).toContain("modelTiers is malformed");
-    expect(r.error).toContain("/security/ai");
+    expect(r.error).toContain("/settings/ai");
   });
 
   it("fails loudly on an unknown tier key (typo protection)", () => {
@@ -101,7 +101,7 @@ describe("resolveTierModel (issue #306)", () => {
     // instruction not to claim success.
     expect(r.error).toContain('model tier "mid"');
     expect(r.error).toContain("WITHOUT");
-    expect(r.error).toContain("/security/ai");
+    expect(r.error).toContain("/settings/ai");
     expect(r.error).toContain("Do not claim");
   });
 

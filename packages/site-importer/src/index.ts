@@ -6,7 +6,7 @@
  * Crawl an existing public site at a URL, extract per-page modules
  * (heuristic: header / N x sections / footer), pull theme tokens
  * from sampled CSS, and stage the result as draft pages the Owner
- * reviews + accepts in /security/import.
+ * reviews + accepts in /settings/import.
  *
  * Pure ESM, depends only on htmlparser2 (already in the tree). Does
  * not require Playwright — uses Bun's native `fetch` + same-origin

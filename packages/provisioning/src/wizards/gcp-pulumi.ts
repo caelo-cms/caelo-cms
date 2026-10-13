@@ -281,7 +281,7 @@ export async function pulumiUpGcp(
       : {}),
     [`${ns}:iapAllowlist`]: { value: inputs.iapAllowlist.join(",") },
     // v0.3.2 — anthropicApiKey config dropped. Runtime path is
-    // /security/ai → ai_providers (KEK-encrypted). The pre-v0.3.2
+    // /settings/ai → ai_providers (KEK-encrypted). The pre-v0.3.2
     // Secret + SecretVersion in Secret Manager were never mounted
     // on Cloud Run, so the config was dead.
     ...imageDigestConfig(provider, inputs.imageDigests),

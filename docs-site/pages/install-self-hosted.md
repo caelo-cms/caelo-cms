@@ -76,7 +76,7 @@ An install created before prebuilt images existed (its Compose file bind-mounts 
 | Apply DB migrations by hand | `bunx @caelo-cms/provisioning migrate` |
 | Which release runs | `.caelo/release.json` (version, image digests, upgrade history) |
 | Restore a pre-upgrade backup | see *Troubleshooting* below |
-| Rotate any secret | `/security/<area>` in the admin OR see incident-response §G |
+| Rotate any secret | `/settings/<area>` in the admin OR see incident-response §G |
 | Admin memory for the [quality checks](/quality-gate) | `caelo-self-hosted:adminMemory` (default `2Gi`, reserved for the admin container) |
 
 ## Troubleshooting

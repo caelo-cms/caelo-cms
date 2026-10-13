@@ -336,7 +336,7 @@ export const getMediaSettingsTool = makeReadTool({
   name: "get_media_settings",
   description:
     "Read the media CDN settings: whether heavily used images are copied to the CDN and the usage count at which they are. " +
-    "Changing them is an Owner decision (billing/infrastructure) at /security/media.",
+    "Changing them is an Owner decision (billing/infrastructure) at /settings/media.",
   opName: "media.get_settings",
   input: noInput,
   format: (value) => {

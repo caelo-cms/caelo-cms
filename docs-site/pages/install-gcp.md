@@ -21,7 +21,7 @@ The `--provider gcp` adapter spins up a managed stack that mirrors the self-host
 | Compute (admin + gateway) | **Cloud Run** | Autoscaling, scales to zero idle |
 | Secrets | **Secret Manager** | Bearer tokens, OAuth secrets, AI provider keys |
 | Network | **VPC** + Serverless VPC Access | Cloud Run → Cloud SQL via private IP only |
-| DNS | **Cloud DNS** zone (you delegate NS) | Records surfaced at `/security/dns` |
+| DNS | **Cloud DNS** zone (you delegate NS) | Records surfaced at `/settings/dns` |
 
 ### Default firewall rules (removed)
 
@@ -93,21 +93,21 @@ The provisioner prints the exact records your install needs, in two groups:
 
 On `--provider gcp`, the admin has its own certificate, so it gets HTTPS as soon as `admin.<your domain>` resolves; the main domain's certificate is issued after the go-live switch (expect 15-60 minutes of HTTPS errors on the main domain right after it). On `gcp-firebase`, Firebase Hosting issues the main domain's certificate itself.
 
-After the install, the records are also listed in the admin at `/security/domains`, where the AI can check them for you (`verify_dns_records`).
+After the install, the records are also listed in the admin at `/settings/domains`, where the AI can check them for you (`verify_dns_records`).
 
 ## After the install
 
 The provisioner's summary ends with the next steps:
 
 1. **Owner setup** — open the printed setup URL and sign in with the owner email (Google IAP lets only that account through at first).
-2. **AI provider** — at `/security/ai`, paste your Anthropic API key. It is stored encrypted in the database.
-3. **MCP (optional)** — to drive Caelo from Claude Code or another MCP client, open `/security/mcp`, click **New token** (scope `chat` lets Caelo's AI do the work; `admin` lets your own agent use Caelo's tools), copy the token (shown once) and run the `claude mcp add` command the page shows. Because the admin is behind Google IAP, run `gcloud auth application-default login` once on that machine. See [MCP](/mcp).
+2. **AI provider** — at `/settings/ai`, paste your Anthropic API key. It is stored encrypted in the database.
+3. **MCP (optional)** — to drive Caelo from Claude Code or another MCP client, open `/settings/mcp`, click **New token** (scope `chat` lets Caelo's AI do the work; `admin` lets your own agent use Caelo's tools), copy the token (shown once) and run the `claude mcp add` command the page shows. Because the admin is behind Google IAP, run `gcloud auth application-default login` once on that machine. See [MCP](/mcp).
 
 ## Three environments
 
 `bunx @caelo-cms/provisioning --provider gcp --env staging` brings up a parallel staging stack: separate Cloud Run service, separate Cloud SQL instance (or Cloud SQL Smaller-tier — configurable), separate `staging.caelo.example.com` host, `X-Robots-Tag: noindex` header.
 
-Production promotion goes through the **Ops** view in the admin (`/security/deployments` → "Promote staging → production"), not via Pulumi.
+Production promotion goes through the **Ops** view in the admin (`/settings/deployments` → "Promote staging → production"), not via Pulumi.
 
 ## Cost (rough)
 
@@ -119,13 +119,13 @@ A small docs-site-shaped install runs ~$45/mo on GCP:
 - Cloud Storage + Cloud CDN: ~$2 with cache hits
 - Load balancer + IP: ~$10
 
-Heavier installs scale Cloud Run + Cloud SQL tier; the admin's `/security/costs` aggregates AI spend separately.
+Heavier installs scale Cloud Run + Cloud SQL tier; the admin's `/settings/costs` aggregates AI spend separately.
 
 ## Who can open the admin (Google IAP)
 
 The admin sits behind Google Identity-Aware Proxy: Google checks who you are before Caelo's own login page even loads. The provisioner lets the Owner through. Everyone else gets through the moment you add them as a Caelo user:
 
-- **Add a user** at `/security/users`, or ask the AI ("invite anna@example.com as an editor") and click **Approve** on the card. Within a minute that email may pass IAP and sign the MCP credential, so they can use the browser and MCP.
+- **Add a user** at `/settings/users`, or ask the AI ("invite anna@example.com as an editor") and click **Approve** on the card. Within a minute that email may pass IAP and sign the MCP credential, so they can use the browser and MCP.
 - **Delete a user**, or take away their last role (also by deleting a role), and both are removed again.
 - Use the person's **Google account** address (Gmail or Google Workspace). IAP only admits Google identities.
 
@@ -137,11 +137,11 @@ The admin does **not** change IAP itself. Its service account holds no rights ov
 2. makes `roles/iap.httpsResourceAccessor` on the admin and `roles/iam.serviceAccountTokenCreator` on `caelo-mcp` hold **exactly** one `user:` entry per active user with a role, plus the install's allowlist (the Owner) and `caelo-mcp` itself on IAP;
 3. **removes everything else** on those two roles: `allUsers`, `allAuthenticatedUsers`, whole domains, groups, stray users and hand-written conditional bindings. Each removal is logged as a warning in the job's log.
 
-The admin may only **start** the job (`roles/run.jobsExecutor` on that one job, which does not allow overriding its command, arguments or environment) and read how its runs went. It starts the job after every approved user or role change, and when you click **Re-sync Google IAP access** at `/security/users`. Cloud Scheduler also runs it every hour, so a missed run or a hand-edited IAP policy is repaired on its own.
+The admin may only **start** the job (`roles/run.jobsExecutor` on that one job, which does not allow overriding its command, arguments or environment) and read how its runs went. It starts the job after every approved user or role change, and when you click **Re-sync Google IAP access** at `/settings/users`. Cloud Scheduler also runs it every hour, so a missed run or a hand-edited IAP policy is repaired on its own.
 
 So an admin compromise can add users to the database, and through them single email addresses to IAP, but it cannot change the IAP policy directly, make the admin public or grant any other role. The job only ever grants individual user emails.
 
-If a run fails, the approval result and `/security/users` say so, with a link to the run's log. You never find out from a 403. Fix the cause the log names, then click **Re-sync Google IAP access**.
+If a run fails, the approval result and `/settings/users` say so, with a link to the run's log. You never find out from a 403. Fix the cause the log names, then click **Re-sync Google IAP access**.
 
 Installs created before this feature get the job on their next `bunx @caelo-cms/provisioning upgrade`. The upgrade also removes the operator-access rights an earlier pre-release build gave the admin's own service account. Until you upgrade, an approved user change reports that Google IAP could not be updated.
 
@@ -163,19 +163,19 @@ Every Stage is served on the staging host behind an access gate — the same art
 bunx @caelo-cms/provisioning staging-domain enable
 ```
 
-It sets the host in the admin for you (no click under Security → Domains needed), turns on basic-auth password protection the first time and prints the login once (`--rotate-staging-password` for a new one, `--show-staging-password` to see the current one; nothing is written to disk). To move staging to another host, pass `--staging-domain <new host>`; without the flag it maps the host the admin has stored, so a host changed under Security → Domains is picked up. The host serves pages after the next Stage, and only *published* pages are staged — the command says so and lists draft pages. It works like `admin-domain enable` (same Search Console verification, run as your own gcloud account), opens the gateway's ingress for the domain mapping, and prints the DNS record to add (usually `CNAME staging → ghs.googlehosted.com.`). Like `admin-domain enable`, it then waits for the certificate (Ctrl-C safe, re-run to resume). Running it again is safe. Who may open staging is set in the admin under **Security → Staging access**.
+It sets the host in the admin for you (no click under Settings → Domains needed), turns on basic-auth password protection the first time and prints the login once (`--rotate-staging-password` for a new one, `--show-staging-password` to see the current one; nothing is written to disk). To move staging to another host, pass `--staging-domain <new host>`; without the flag it maps the host the admin has stored, so a host changed under Settings → Domains is picked up. The host serves pages after the next Stage, and only *published* pages are staged — the command says so and lists draft pages. It works like `admin-domain enable` (same Search Console verification, run as your own gcloud account), opens the gateway's ingress for the domain mapping, and prints the DNS record to add (usually `CNAME staging → ghs.googlehosted.com.`). Like `admin-domain enable`, it then waits for the certificate (Ctrl-C safe, re-run to resume). Running it again is safe. Who may open staging is set in the admin under **Settings → Staging access**.
 
 ## Day-2 operations
 
 | Task | How |
 |---|---|
 | Upgrade to a new release | `bunx @caelo-cms/provisioning upgrade` (see below) |
-| Give someone admin access | Add them at `/security/users` (or ask the AI) — IAP follows automatically |
+| Give someone admin access | Add them at `/settings/users` (or ask the AI) — IAP follows automatically |
 | Serve the admin at `admin.<domain>` (gcp-firebase) | `bunx @caelo-cms/provisioning admin-domain enable` |
 | Serve the staging host (gcp-firebase) | `bunx @caelo-cms/provisioning staging-domain enable` |
 | Read logs | Cloud Logging — filter by `resource.labels.service_name="caelo-admin-prod"` |
 | Restore from PITR | `gcloud sql backups restore` — see [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
-| Rotate the AI provider key | Owner → `/security/ai` (stored encrypted in the database) |
+| Rotate the AI provider key | Owner → `/settings/ai` (stored encrypted in the database) |
 | Rotate a runtime secret | `bunx @caelo-cms/provisioning rotate-secret <postgres-password\|public-role-password\|gateway-role-password\|internal-secret\|tool-approval-secret\|staging-gate-secret>` — stores a new value in Secret Manager (for a database password also on its role: `postgres-password` is `admin_role`'s, the other two the gateway's `public_role` and `gateway_role`) and rolls the services that read it |
 | Scale Cloud Run | `gcloud run services update caelo-admin-prod --max-instances=20` |
 
@@ -214,9 +214,9 @@ Installers before this change stored the database URLs, with `admin_role`'s and 
 
 - **TLS cert stuck on `provisioning`** — DNS hasn't propagated. `dig +short admin.caelo.example.com` should return the load balancer IP (`gcp`) or `ghs.googlehosted.com.` (`gcp-firebase` admin mapping). Wait 15-60 min; Google-managed certs poll for a valid challenge. The main domain's certificate on `gcp` only validates after its go-live records point at the load balancer.
 - **`Constraint constraints/gcp.resourceLocations violated … in [global]`** — your organization only allows certain locations. New installs keep every secret in the install region, so this does not occur there. Installs created before that keep their existing automatic-replication secrets; when the installer or `upgrade` adds a secret and the policy refuses automatic replication, it creates that secret in the install region instead and says so in its output.
-- **Site shows Firebase's "Site Not Found" although DNS is correct (`gcp-firebase`)** — when the custom domain was created while DNS still pointed at the old host, Firebase can stop re-checking it and leave it at `HOST_MISMATCH` / `OWNERSHIP_PENDING`. The Domains page (`/security/domains`) and the AI's `list_domains` mark such a domain **stuck — reconnect recommended**: click **Reconnect** there, or let the AI propose it and approve in the chat. Caelo deletes and re-creates the custom domain (it is not serving yet, so nothing goes offline), and once it is active re-releases the live version so Firebase's CDN drops the cached 404.
+- **Site shows Firebase's "Site Not Found" although DNS is correct (`gcp-firebase`)** — when the custom domain was created while DNS still pointed at the old host, Firebase can stop re-checking it and leave it at `HOST_MISMATCH` / `OWNERSHIP_PENDING`. The Domains page (`/settings/domains`) and the AI's `list_domains` mark such a domain **stuck — reconnect recommended**: click **Reconnect** there, or let the AI propose it and approve in the chat. Caelo deletes and re-creates the custom domain (it is not serving yet, so nothing goes offline), and once it is active re-releases the live version so Firebase's CDN drops the cached 404.
 - **`Cannot allocate memory` from Cloud SQL** — bump tier from `db-g1-small` to `db-custom-2-7680` via `gcloud sql instances patch`.
-- **A new user gets "You don't have access" from Google** — the approval result says why. Most often their email is not a Google account, or the install predates operator access: run `bunx @caelo-cms/provisioning upgrade` once, then click **Re-sync Google IAP access** at `/security/users`.
+- **A new user gets "You don't have access" from Google** — the approval result says why. Most often their email is not a Google account, or the install predates operator access: run `bunx @caelo-cms/provisioning upgrade` once, then click **Re-sync Google IAP access** at `/settings/users`.
 - **Stage fails with "the stored files of … media asset(s) are missing"** — the install ran a release that kept media on the admin container's own disk, which Cloud Run discards on every new revision and scale-to-zero. Run `bunx @caelo-cms/provisioning upgrade`: it mounts the media bucket into the admin (execution environment gen2, a Cloud Storage volume named `media` of the `<project>-caelo-production-media` bucket at `/app/apps/admin/data/media`). If you already added exactly that volume by hand, upgrade keeps it. Files lost before the upgrade cannot be recovered from Cloud Run; ask the AI to "fix the missing media" — it lists them (`list_missing_media`), re-imports what came from a URL, and tells you which files to re-upload at `/content/media` (re-uploading the same file restores it on every page that uses it).
 - **The admin refuses to start: "media storage is not durable"** — the admin found no persistent volume at its media root. Run `bunx @caelo-cms/provisioning upgrade`, which adds it.
 - **"not removed: firewall rule default-allow-internal …" with "VM instance(s) are on the default network"** — someone runs VMs on the project's `default` network, and deleting the rule would cut the traffic between them, so the provisioner left it in place and lists the VMs. Caelo itself puts nothing there. If the VMs do not need to talk to each other, delete the rule with the `gcloud compute firewall-rules delete …` command the message prints. If they do, replace it with a narrower rule under another name (only the ports and target tags they need), then delete `default-allow-internal`; the warning stops. If the message says the VMs could not be listed, your gcloud account needs `compute.instances.list` (for example `roles/compute.viewer`). If the message says the project is a **Shared VPC host**, VMs in its service projects may use the `default` network; check them with `gcloud compute shared-vpc list-associated-resources <project>` and delete the rule yourself only if none of them do.

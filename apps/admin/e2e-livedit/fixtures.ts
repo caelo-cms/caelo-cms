@@ -44,7 +44,7 @@ export const test = base.extend<{
   _pluginActivationGuard: undefined;
 }>({
   // Declared FIRST so it is set up first and torn down LAST: its teardown
-  // navigates to /security/plugins, which must not land inside the slices
+  // navigates to /settings/plugins, which must not land inside the slices
   // the console / backend-log guards below judge the scenario by.
   _pluginActivationGuard: [
     async ({ page }, use) => {

@@ -74,7 +74,7 @@ export const addPluginToPageTool: ToolDefinitionWithHandler<
     if (!loaded) {
       return {
         ok: false,
-        content: `plugin "${input.pluginSlug}" is not loaded. Check /security/plugins for installed plugins; the slug must match exactly.`,
+        content: `plugin "${input.pluginSlug}" is not loaded. Check /settings/plugins for installed plugins; the slug must match exactly.`,
       };
     }
 

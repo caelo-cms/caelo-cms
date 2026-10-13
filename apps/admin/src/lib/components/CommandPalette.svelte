@@ -26,7 +26,7 @@
     Plus,
     Rocket,
     Search,
-    ShieldCheck,
+    Settings,
     Wand2,
   } from "lucide-svelte";
   import { onDestroy, onMount, tick } from "svelte";
@@ -54,8 +54,8 @@
     { label: "Modules", href: "/content/modules", icon: Layers, shortcut: "g m" },
     { label: "Templates", href: "/content/templates", icon: Layout, shortcut: "g t" },
     { label: "Chats", href: "/content/chat", icon: MessageSquare, shortcut: "g c" },
-    { label: "Deployments", href: "/security/deployments", icon: Rocket, shortcut: "g r" },
-    { label: "Security", href: "/security", icon: ShieldCheck, shortcut: "g s" },
+    { label: "Deployments", href: "/settings/deployments", icon: Rocket, shortcut: "g r" },
+    { label: "Settings", href: "/settings", icon: Settings, shortcut: "g s" },
     {
       label: "New page",
       href: "/content/pages",

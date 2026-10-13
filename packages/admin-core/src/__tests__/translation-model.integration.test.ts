@@ -186,7 +186,7 @@ describe("ai_providers.set_translation_model", () => {
       model: null,
     });
     expect(r.ok).toBe(false);
-    expect(JSON.stringify(r)).toContain("/security/ai");
+    expect(JSON.stringify(r)).toContain("/settings/ai");
   });
 
   it("the AI cannot set it directly", async () => {

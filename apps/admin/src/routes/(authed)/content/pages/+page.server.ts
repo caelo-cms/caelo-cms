@@ -71,7 +71,7 @@ export const actions: Actions = {
   // This honours CMS_REQUIREMENTS §16.5 in spirit — staging is a
   // *gate*, not a stepping stone — while keeping the editor mental
   // model simple. Editors with `ops.view` still get the explicit
-  // multi-target dashboard at /security/deployments.
+  // multi-target dashboard at /settings/deployments.
   stage: async ({ request, locals }) => {
     requirePermission(locals, "deploy.trigger");
     const { adapter, registry } = getQueryContext();

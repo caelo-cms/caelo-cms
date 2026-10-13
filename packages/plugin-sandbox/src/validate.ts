@@ -10,7 +10,7 @@
  * For Tier 2 the validator gates activation (rejection ⇒ status stays
  * `draft`). For Tier 1 the validator runs at host startup as
  * defense-in-depth (rejection ⇒ status='failed' + the plugin refuses
- * to load + a clear error surfaces in /security/plugins).
+ * to load + a clear error surfaces in /settings/plugins).
  *
  * Forbidden patterns (rejected):
  *   - ImportDeclaration of any module outside the audited surface

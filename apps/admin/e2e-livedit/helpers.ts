@@ -310,7 +310,7 @@ export async function loginAsDevOwner(page: Page): Promise<void> {
  */
 /**
  * Activate a shipped plugin as the Owner would, through the real
- * /security/plugins screen.
+ * /settings/plugins screen.
  *
  * A discovered plugin is recorded but NOT loaded — no tools, no skills,
  * no ops — until this click. Driving the actual UI rather than poking
@@ -319,7 +319,7 @@ export async function loginAsDevOwner(page: Page): Promise<void> {
  * the path that has to keep working.
  */
 export async function activatePluginAsOwner(page: Page, slug: string): Promise<void> {
-  await page.goto("/security/plugins");
+  await page.goto("/settings/plugins");
   // The suite's plugin guard (fixtures.ts) disables what a scenario
   // activated, so a retry — or a warm local DB — finds the plugin
   // `disabled`, which takes the Re-enable button, not Activate.
@@ -349,17 +349,17 @@ export async function activatePluginAsOwner(page: Page, slug: string): Promise<v
 
 /**
  * Switch a plugin off the way an Owner does (the Disable button on
- * /security/plugins). Goes through the admin on purpose: the `plugins.disable`
+ * /settings/plugins). Goes through the admin on purpose: the `plugins.disable`
  * op also flips the running plugin host's flag, so its tools, skills, head
  * injection and module deferrals stop at once — a DB-only status update
  * would leave the live host injecting the plugin into every render.
  * Logs in first when the page's session is gone.
  */
 export async function deactivatePluginAsOwner(page: Page, slug: string): Promise<void> {
-  await page.goto("/security/plugins");
+  await page.goto("/settings/plugins");
   if (new URL(page.url()).pathname.startsWith("/login")) {
     await loginAsDevOwner(page);
-    await page.goto("/security/plugins");
+    await page.goto("/settings/plugins");
   }
   const disable = page.getByTestId(`disable-${slug}`);
   const found = await disable.count();
@@ -367,7 +367,7 @@ export async function deactivatePluginAsOwner(page: Page, slug: string): Promise
     // Never wait out the fixture budget on a button that is not there: a
     // plugin left active poisons every later scenario, so say exactly why.
     throw new Error(
-      `deactivatePluginAsOwner: expected one [data-testid="disable-${slug}"] on /security/plugins, found ${found} — "${slug}" stays ACTIVE and leaks into the next scenario. Every Disable button (Tier 1 and Tier 2 tables) must carry that test id.`,
+      `deactivatePluginAsOwner: expected one [data-testid="disable-${slug}"] on /settings/plugins, found ${found} — "${slug}" stays ACTIVE and leaks into the next scenario. Every Disable button (Tier 1 and Tier 2 tables) must carry that test id.`,
     );
   }
   await disable.click();

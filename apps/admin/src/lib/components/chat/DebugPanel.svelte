@@ -4,7 +4,7 @@
   /**
    * v0.2.46 — debug panel for the chat. Surfaces what flowed through
    * the SSE stream during the most recent turn so an Owner can answer
-   * "what did the AI just do?" without opening /security/audit.
+   * "what did the AI just do?" without opening /settings/audit.
    *
    * Surface (this version):
    *   - Tool calls timeline: tool-start + tool-result events as a

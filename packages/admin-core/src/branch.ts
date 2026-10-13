@@ -21,7 +21,7 @@
  *     main-only.
  *
  *   - `mainOnlyFilter` — for paths that must skip branches regardless
- *     of caller (static-generator, admin /security pages by default,
+ *     of caller (static-generator, admin /settings pages by default,
  *     slug-uniqueness checks).
  *
  *   - `requireUsableEntity(tx, ctx, kind, entityId)` — defense-in-depth
@@ -68,7 +68,7 @@ export function branchVisibilityFilter(ctx: ExecutionContext): SQL {
  *   - slug-uniqueness validation on `*.create` — branches have their
  *     own slug namespace (via the partial UNIQUE INDEX in migration
  *     0089), so create-time uniqueness checks only collide on main.
- *   - /security/* admin pages (v0.9.0 first cut — a future toggle
+ *   - /settings/* admin pages (v0.9.0 first cut — a future toggle
  *     adds a "show all branches" mode for operator audit).
  */
 export const mainOnlyFilter: SQL = sql` AND chat_branch_id IS NULL`;
@@ -84,7 +84,7 @@ export const mainOnlyFilter: SQL = sql` AND chat_branch_id IS NULL`;
  * Why this exists when reads already hide cross-branch entities: an
  * AI could plausibly have a stale UUID it cached from a previous turn
  * before chat-1 picked it up, or an operator could paste a UUID from
- * /security/modules' debug view. The validation is defense in depth.
+ * /settings/modules' debug view. The validation is defense in depth.
  *
  * Returned error shape matches the existing `Locked` family so the
  * chat-runner's existing error-translation path (chat-runner.ts:1242)

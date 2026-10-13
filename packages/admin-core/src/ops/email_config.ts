@@ -212,7 +212,7 @@ function emailDomain(address: string): string {
  * `fromAddress` domain): the subject and body are fixed, but an
  * unrestricted AI-triggered send would still let injected instructions use
  * the site's mail reputation against third parties. The Owner can test any
- * recipient from Security → Email.
+ * recipient from Settings → Email.
  */
 export const sendTestEmailOp = defineOperation({
   name: "email_config.send_test",
@@ -240,7 +240,7 @@ export const sendTestEmailOp = defineOperation({
     if (ctx.actorKind === "ai" && emailDomain(input.to) !== emailDomain(row.from_address)) {
       return fail(
         `the AI can only send the test to an address on the sender's domain (@${emailDomain(row.from_address)}). ` +
-          "Pick such an address, or ask the operator to test other recipients from Security → Email.",
+          "Pick such an address, or ask the operator to test other recipients from Settings → Email.",
       );
     }
     const transport = buildEmailTransport({

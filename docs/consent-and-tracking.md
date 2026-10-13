@@ -4,7 +4,7 @@ The `consent-manager` plugin gives a Caelo site a GDPR consent dialog, a
 place to register tracking tags, and automatic handling of modules that
 load something from a third party.
 
-It is a plugin. Activate it at `/security/plugins` and it exists;
+It is a plugin. Activate it at `/settings/plugins` and it exists;
 deactivate it and nothing of it runs.
 
 ---

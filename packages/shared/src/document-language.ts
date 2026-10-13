@@ -16,7 +16,7 @@
  *      contribution point (the `international-site` plugin knows each
  *      page's locale — core does not, since epic #380), else
  *   2. the site's stored language (`site_defaults.site_language`, set
- *      by the AI via `set_site_identity` or by the Owner at /security/seo).
+ *      by the AI via `set_site_identity` or by the Owner at /settings/seo).
  * The stored language has no default (migration 0232, CLAUDE.md §2): NULL
  * means nobody chose one yet. Nothing here substitutes a language for it —
  * the preview renders `<html>` without `lang` and flags
