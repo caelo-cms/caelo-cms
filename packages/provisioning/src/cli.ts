@@ -17,6 +17,9 @@
  *                                         admin image the install runs.
  *   upgrade [--version X]               — verified, backed-up, health-checked
  *                                         image roll with rollback.
+ *   agent install|status|logs|uninstall — the update agent (systemd --user
+ *                                         timer) that installs the updates
+ *                                         the Owner starts in the admin.
  *   regenerate-caddy                    — re-emits Caddyfile from the
  *                                         domains table; runs `caddy reload`.
  *   backup --to <path>                  — pgBackRest full + MinIO mirror →
@@ -37,6 +40,8 @@ import {
   normalizeStagingHost,
   stagingHostProblem,
 } from "@caelo-cms/shared";
+import type { AgentCliContext } from "./agent/command.js";
+import type { AgentConfig } from "./agent/config.js";
 import { generateBootstrapToken } from "./bootstrap-token.js";
 import { type CaddyDomainSpec, generateCaddyfile } from "./caddy.js";
 import { redactCredentials } from "./checkpoint-secrets.js";
@@ -55,7 +60,11 @@ import {
   releaseImages,
   resolveVerifiedRelease,
 } from "./self-hosted-release.js";
-import { convergeSelfHostedRoles, decideUp } from "./self-hosted-roles.js";
+import {
+  convergeSelfHostedRoles,
+  decideUp,
+  selfHostedBootstrapScript,
+} from "./self-hosted-roles.js";
 
 interface CaeloConfig {
   domain: string;
@@ -97,6 +106,11 @@ interface CaeloConfig {
    * the prebuilt images recorded in `.caelo/release.json`.
    */
   imageMode?: "release" | "dev";
+  /**
+   * #696 Phase 4c — the host update agent (`cms-provision agent install`):
+   * its database password and the loopback port Postgres is published on.
+   */
+  agent?: AgentConfig;
 }
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
@@ -120,6 +134,8 @@ const CAELO_DIR = process.env.CAELO_SELF_HOSTED_DIR
 const CONFIG_PATH = resolve(CAELO_DIR, "config.json");
 const COMPOSE_PATH = resolve(CAELO_DIR, "docker-compose.yml");
 const CADDYFILE_PATH = resolve(CAELO_DIR, "Caddyfile");
+// What the Postgres container runs on its first start (compose.ts mounts it).
+const BOOTSTRAP_SCRIPT_PATH = resolve(CAELO_DIR, "bootstrap.sh");
 // The admin container mounts only `.caelo/bootstrap/` (compose.ts), never the
 // secrets next to it, and consumes the token from there on first boot.
 const PENDING_TOKEN_PATH = resolve(CAELO_DIR, BOOTSTRAP_DIR, "pending-token.json");
@@ -205,6 +221,13 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
     saveConfig(cfg);
   }
   writeFileSync(COMPOSE_PATH, renderCompose(cfg, installImages(cfg)), { mode: 0o600 });
+  // No secrets (it reads the passwords from the container's environment),
+  // and the postgres user inside the container must be able to read it.
+  writeFileSync(
+    BOOTSTRAP_SCRIPT_PATH,
+    selfHostedBootstrapScript({ agent: activeAgent(cfg) !== undefined }),
+    { mode: 0o755 },
+  );
   // Seed the install with the operator's primary domain plus a staging
   // sibling. Extra domains added via /settings/domains are appended by
   // regenerate-caddy when it queries the live domains table.
@@ -242,7 +265,57 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
     resendApiKey: cfg.resendApiKey,
     diskSize: "20Gi",
     images,
+    ...(activeAgent(cfg) ? { agent: activeAgent(cfg) } : {}),
   });
+}
+
+/** The agent's settings while it is set up (not after `agent uninstall`). */
+function activeAgent(cfg: CaeloConfig): AgentConfig | undefined {
+  return cfg.agent && !cfg.agent.disabled ? cfg.agent : undefined;
+}
+
+/** What the `agent` commands need from this CLI's config handling. */
+function agentContext(cfg: CaeloConfig): AgentCliContext {
+  return {
+    caeloDir: CAELO_DIR,
+    domain: cfg.domain,
+    imageMode: cfg.imageMode,
+    agent: () => cfg.agent,
+    saveAgent: (agent) => {
+      if (agent) cfg.agent = agent;
+      else delete cfg.agent;
+      saveConfig(cfg);
+    },
+    emitConfig: () => emitConfig(cfg),
+    convergeRoles: () => {
+      if (!cfg.rolePasswords) {
+        return Promise.resolve({
+          ok: false as const,
+          reachable: true,
+          error: "config.json has no role passwords — run `cms-provision up` first",
+        });
+      }
+      return convergeSelfHostedRoles(cfg.rolePasswords, {
+        probe: postgresIsUp,
+        psql: superuserPsql,
+        ...(activeAgent(cfg) ? { agentPassword: activeAgent(cfg)?.dbPassword } : {}),
+      });
+    },
+    renderCompose: (images) => renderCompose(cfg, images),
+    randomSecret: () => randomSecret(32),
+  };
+}
+
+/** `agent <install|status|logs|uninstall|run|apply>` (agent/command.ts). */
+async function agentCli(): Promise<void> {
+  requireSelfHosted("agent");
+  const cfg = loadConfig();
+  if (!cfg) {
+    console.error("no config — run `cms-provision init` first");
+    process.exit(2);
+  }
+  const { agentCommand } = await import("./agent/command.js");
+  process.exitCode = await agentCommand(process.argv, agentContext(cfg));
 }
 
 /**
@@ -394,6 +467,13 @@ async function init(): Promise<void> {
   const internalSecret = randomSecret(48);
   const internalSecretPath = resolve(CAELO_DIR, "internal-secret.json");
   writeFileSync(internalSecretPath, JSON.stringify({ secret: internalSecret }, null, 2));
+  // #696 Phase 4c — the update agent (Linux + systemd): the fresh volume's
+  // bootstrap.sh creates its database login on Postgres's first start.
+  const { reportAgentSetup, setUpAgent } = await import("./agent/command.js");
+  const agentSetup =
+    images.mode === "release"
+      ? await setUpAgent(agentContext(cfg), { database: "fresh", explicit: false })
+      : null;
   console.log(`Wrote ${COMPOSE_PATH}`);
   console.log(`Wrote ${CADDYFILE_PATH}`);
   console.log(`Wrote ${PENDING_TOKEN_PATH} (admin will insert on first boot)`);
@@ -413,6 +493,10 @@ async function init(): Promise<void> {
   console.log("Then visit:");
   console.log(`  https://${domain}/setup?token=${tok.token}`);
   console.log(`  (token expires ${tok.expiresAt})`);
+  if (agentSetup) {
+    console.log("");
+    reportAgentSetup(agentSetup);
+  }
 }
 
 async function up(): Promise<void> {
@@ -433,6 +517,7 @@ async function up(): Promise<void> {
     await convergeSelfHostedRoles(cfg.rolePasswords, {
       probe: postgresIsUp,
       psql: superuserPsql,
+      ...(activeAgent(cfg) ? { agentPassword: activeAgent(cfg)?.dbPassword } : {}),
     }),
   );
   if (decision.kind === "abort") {
@@ -858,22 +943,40 @@ async function upgradeSelfHostedCommand(opts: {
     process.exit(2);
   }
   const { upgradeSelfHosted } = await import("./self-hosted-upgrade.js");
-  const result = await upgradeSelfHosted(opts, {
-    caeloDir: CAELO_DIR,
-    runner: bunHostRunner,
-    renderCompose: (images) => renderCompose(cfg, images),
-    log: {
-      step: (m) => console.log(`\n==> ${m}`),
-      info: (m) => console.log(`    ${m}`),
-      warn: (m) => console.warn(`    ! ${m}`),
-      error: (m) => console.error(`    x ${m}`),
-    },
-  });
+  const { acquireUpgradeLock } = await import("./agent/lock.js");
+  // The update agent rolls through the same lock: never two rolls at once.
+  let unlock: () => void;
+  try {
+    unlock = acquireUpgradeLock(CAELO_DIR, "`cms-provision upgrade`");
+  } catch (e) {
+    console.error(`Nothing was changed: ${(e as Error).message} Wait for it to finish.`);
+    process.exit(1);
+  }
+  let result: Awaited<ReturnType<typeof upgradeSelfHosted>>;
+  try {
+    result = await upgradeSelfHosted(opts, {
+      caeloDir: CAELO_DIR,
+      runner: bunHostRunner,
+      renderCompose: (images) => renderCompose(cfg, images),
+      log: {
+        step: (m) => console.log(`\n==> ${m}`),
+        info: (m) => console.log(`    ${m}`),
+        warn: (m) => console.warn(`    ! ${m}`),
+        error: (m) => console.error(`    x ${m}`),
+      },
+    });
+  } finally {
+    unlock();
+  }
   if (result.ok) {
     if (result.status === "upgraded" && cfg.imageMode !== "release") {
       cfg.imageMode = "release";
       saveConfig(cfg);
     }
+    // #696 Phase 4c — set up the update agent, or re-pin it to this release.
+    const { reportAgentSetup, setUpAgent } = await import("./agent/command.js");
+    console.log("");
+    reportAgentSetup(await setUpAgent(agentContext(cfg), { database: "live", explicit: false }));
     return;
   }
   console.error(`\nUpgrade failed at "${result.stage}":\n${result.error}`);
@@ -999,6 +1102,8 @@ const handlers: Record<string, () => Promise<void>> = {
   // #696 — Pulumi state in the install's own project.
   state: async () => (await import("./state-command.js")).stateCommand(process.argv),
   attach: async () => (await import("./state-command.js")).attachCommand(process.argv),
+  // #696 Phase 4c — the self-hosted update agent.
+  agent: agentCli,
   // #696 — the install job's entry point (runs inside the Cloud Run job).
   "install-job": async () =>
     (await import("./install-job-runner.js")).installJobCommand(process.argv),

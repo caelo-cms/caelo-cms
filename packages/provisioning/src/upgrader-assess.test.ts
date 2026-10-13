@@ -208,3 +208,58 @@ describe("assessUpgradeRequest — refusal matrix", () => {
     expect(d.kind === "stop" && d.manifest?.infraContractVersion).toBe(2);
   });
 });
+
+describe("assessUpgradeRequest — self-hosted (the host agent, #696 Phase 4c)", () => {
+  const SELF_HOSTED: InstalledState = { version: "0.10.45", infraContractVersion: null };
+  const assess = (row: {
+    installed?: InstalledState;
+    manifest?: ReleaseManifestResult;
+    trigger?: "manual" | "auto";
+  }) =>
+    assessUpgradeRequest({
+      request: { targetVersion: "0.11.0", trigger: row.trigger ?? "manual" },
+      manifest: row.manifest ?? verified(),
+      installed: row.installed ?? SELF_HOSTED,
+      policy: POLICY,
+      now: NOW,
+      manualPath: "server",
+    });
+
+  it("never sends a release to Cloud Shell for its infrastructure contract", () => {
+    // The target's own CLI renders the Compose file in the same run.
+    expect(assess({ manifest: verified({ infraContractVersion: 9 }) }).kind).toBe("proceed");
+  });
+
+  it("does not count the infrastructure contract as a reason to keep an automatic run manual", () => {
+    expect(assess({ manifest: verified({ infraContractVersion: 9 }), trigger: "auto" }).kind).toBe(
+      "proceed",
+    );
+  });
+
+  it("names the upgrade command on the server, not Cloud Shell, for a hand-run upgrade", () => {
+    const d = assess({ installed: { version: null, infraContractVersion: null } });
+    expect(d.kind === "stop" ? `${d.status}/${d.codes.join(",")}` : d.kind).toBe(
+      "needs_cloud_shell/install-version-unknown",
+    );
+    const reason = d.kind === "stop" ? d.reason : "";
+    expect(reason).toContain("upgrade command on the server");
+    expect(reason).not.toContain("Cloud Shell");
+  });
+
+  it("keeps every other refusal: downgrade, signature, contract migrations unattended", () => {
+    const code = (d: ReturnType<typeof assess>) =>
+      d.kind === "stop" ? `${d.status}/${d.codes.join(",")}` : d.kind;
+    expect(code(assess({ installed: { version: "0.12.0", infraContractVersion: null } }))).toBe(
+      "refused/not-newer",
+    );
+    expect(code(assess({ manifest: broken("signature") }))).toBe("refused/signature");
+    expect(
+      code(
+        assess({
+          manifest: verified({ migrations: { ...MANIFEST.migrations, contract: true } }),
+          trigger: "auto",
+        }),
+      ),
+    ).toBe("refused/contract-migrations");
+  });
+});

@@ -275,3 +275,29 @@ export const jobFinishOp = defineOperation({
     return ok({ finished: rows.length > 0 });
   },
 });
+
+export const agentHeartbeatOp = defineOperation({
+  name: "platform_updates.agent_heartbeat",
+  // Why system-only: the self-hosted host agent's own check-in (#696 Phase
+  // 4c); the admin only reads it (platform_updates.agent_status).
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      agentVersion: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/),
+      host: z.string().min(1).max(255),
+      problem: z.string().min(1).max(2000).nullable(),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (_ctx, input, tx) => {
+    await tx.execute(sql`
+      INSERT INTO platform_update_agent (id, agent_version, host, last_seen_at, problem)
+      VALUES (1, ${input.agentVersion}, ${input.host}, now(), ${input.problem})
+      ON CONFLICT (id) DO UPDATE
+        SET agent_version = EXCLUDED.agent_version, host = EXCLUDED.host,
+            last_seen_at = EXCLUDED.last_seen_at, problem = EXCLUDED.problem
+    `);
+    return ok({});
+  },
+});

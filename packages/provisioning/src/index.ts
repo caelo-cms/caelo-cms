@@ -24,6 +24,13 @@ export type {
   ProvisioningOutputsJson,
   SupportedProvider,
 } from "./adapter.js";
+export type {
+  AgentDbConnection,
+  AgentHeartbeat,
+  AgentQueue,
+  OpenAgentQueue,
+  OpenedAgentQueue,
+} from "./agent/queue.js";
 export {
   type BootstrapToken,
   generateBootstrapToken,
@@ -82,6 +89,7 @@ export {
   releaseManifestSignerIdentity,
   SIGSTORE_BUNDLE_MEDIA_TYPE,
 } from "./release-manifest.js";
+export { AGENT_DB_ROLE, roleConvergenceScript } from "./self-hosted-roles.js";
 export {
   assessUpgradeRequest,
   type InstalledState,

@@ -7,8 +7,10 @@
  * (`caelo-ops upgrader` in the caelo-ops image).
  */
 
-export { createDbUpdateQueue, upgraderRegistry } from "./db-queue.js";
+export { openAgentQueue } from "./agent-db.js";
+export { createDbAgentQueue, createDbUpdateQueue, upgraderRegistry } from "./db-queue.js";
 export {
+  agentHeartbeatOp,
   jobClaimOp,
   jobEventOp,
   jobFinishOp,

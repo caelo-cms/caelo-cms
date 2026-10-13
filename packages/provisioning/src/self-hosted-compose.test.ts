@@ -138,3 +138,40 @@ describe("release image references", () => {
     expect(() => ghcrImageRef("admin", "latest")).toThrow(/not an image digest/);
   });
 });
+
+describe("self-hosted Compose — the host update agent (#696 Phase 4c)", () => {
+  const images = { mode: "release", admin: ADMIN, gateway: GATEWAY } as const;
+
+  it("publishes no database port without the agent, and tells the admin its provider", () => {
+    const yaml = generateDockerCompose({ ...base, images });
+    expect(service(yaml, "postgres")).not.toContain("ports:");
+    expect(yaml).not.toContain("AGENT_ROLE_PASSWORD");
+    expect(service(yaml, "caelo-admin")).toContain('CAELO_PROVIDER: "self-hosted"');
+  });
+
+  it("publishes Postgres for the agent on the loopback interface only", () => {
+    const yaml = generateDockerCompose({
+      ...base,
+      images,
+      agent: { dbPort: 15432, dbPassword: 'ag"pw' },
+    });
+    const pg = service(yaml, "postgres");
+    expect(pg).toContain('    ports: ["127.0.0.1:15432:5432"]');
+    expect(pg).toContain('AGENT_ROLE_PASSWORD: "ag\\"pw"');
+    // The only published ports: Caddy's, and the agent's loopback one.
+    expect(yaml.match(/ports:/g)?.length).toBe(2);
+    expect(yaml).not.toMatch(/"(0\.0\.0\.0:)?15432:5432"/);
+    // Only Postgres sees the agent's password.
+    expect(service(yaml, "caelo-admin")).not.toContain('ag\\"pw');
+    expect(service(yaml, "caelo-gateway")).not.toContain("AGENT");
+  });
+
+  it("refuses a privileged or invalid port", () => {
+    expect(() =>
+      generateDockerCompose({ ...base, images, agent: { dbPort: 5432.5, dbPassword: "x" } }),
+    ).toThrow();
+    expect(() =>
+      generateDockerCompose({ ...base, images, agent: { dbPort: 443, dbPassword: "x" } }),
+    ).toThrow(/between 1024 and 65535/);
+  });
+});

@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { convergeSelfHostedRoles, decideUp, roleConvergenceScript } from "./self-hosted-roles.js";
+import {
+  convergeSelfHostedRoles,
+  decideUp,
+  roleConvergenceScript,
+  selfHostedBootstrapScript,
+} from "./self-hosted-roles.js";
 
 const PASSWORDS = { admin: "a'pw", public: "p-pw", gateway: "g-pw" };
 
@@ -23,6 +28,45 @@ describe("roleConvergenceScript (#613 review)", () => {
     expect(script.indexOf("\\connect cms_admin")).toBeLessThan(
       script.indexOf("PERFORM caelo_grant_gateway_role()"),
     );
+  });
+});
+
+describe("the host agent's login (#696 Phase 4c)", () => {
+  it("is created only with a password, inherits platform_updater and nothing else", () => {
+    expect(roleConvergenceScript(PASSWORDS)).not.toContain("caelo_agent");
+    const script = roleConvergenceScript(PASSWORDS, "ag'pw");
+    expect(script).toContain(
+      "ALTER ROLE caelo_agent WITH INHERIT LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'ag''pw';",
+    );
+    expect(script).toContain("'GRANT platform_updater TO caelo_agent' WHERE NOT pg_has_role(");
+    // platform_updater exists before the grant, and its table grants are
+    // re-applied in cms_admin (migrations 0267 + 0270).
+    expect(script.indexOf("CREATE ROLE platform_updater NOLOGIN")).toBeLessThan(
+      script.indexOf("GRANT platform_updater TO caelo_agent"),
+    );
+    expect(script.indexOf("\\connect cms_admin")).toBeLessThan(
+      script.indexOf("PERFORM caelo_grant_platform_updater()"),
+    );
+  });
+});
+
+describe("selfHostedBootstrapScript — what Postgres runs on its first start", () => {
+  it("holds no secret: every password comes from the container's environment", () => {
+    const script = selfHostedBootstrapScript({ agent: true });
+    expect(script.startsWith("#!/bin/sh\n")).toBe(true);
+    expect(script).toContain('-v caelo_agent_pw="$AGENT_ROLE_PASSWORD"');
+    expect(script).toContain("ALTER ROLE admin_role WITH LOGIN PASSWORD :'admin_role_pw';");
+    expect(script).toContain(`: "\${AGENT_ROLE_PASSWORD:?must be set in environment}"`);
+    // The SQL heredoc is quoted, so the shell expands nothing inside it.
+    expect(script).toContain("<<'CAELO_SQL'");
+    expect(script.trimEnd().endsWith("CAELO_SQL")).toBe(true);
+  });
+
+  it("leaves the agent out when the install has none", () => {
+    const script = selfHostedBootstrapScript({ agent: false });
+    expect(script).not.toContain("AGENT_ROLE_PASSWORD");
+    expect(script).not.toContain("caelo_agent");
+    expect(script).toContain("CREATE ROLE platform_updater NOLOGIN");
   });
 });
 

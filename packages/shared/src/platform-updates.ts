@@ -268,3 +268,41 @@ export const STEP_UP_MAX_AGE_SECONDS = 600;
 /** What a step-up is for (`step_up_challenges.purpose`). */
 export const STEP_UP_PURPOSES = ["platform_update", "update_policy", "step_up_client"] as const;
 export type StepUpPurpose = (typeof STEP_UP_PURPOSES)[number];
+
+/**
+ * Self-hosted installs (#696 Phase 4c): the host agent (`caelo-agent`, a
+ * systemd timer on the install's host) polls for update requests this
+ * often and writes a heartbeat each time it looks.
+ */
+export const PLATFORM_UPDATE_AGENT_POLL_SECONDS = 60;
+
+/**
+ * The admin offers "Install update" on a self-hosted install only while the
+ * agent's last heartbeat is younger than this (five missed polls): a request
+ * nobody picks up would just sit there.
+ */
+export const PLATFORM_UPDATE_AGENT_FRESH_SECONDS = 300;
+
+/** The host agent's last check-in (`platform_update_agent`), as the admin reads it. */
+export interface PlatformUpdateAgentStatus {
+  /** The Caelo release of the agent's own code. */
+  readonly agentVersion: string;
+  /** The host it runs on (its hostname). */
+  readonly host: string;
+  readonly lastSeenAt: string;
+  /**
+   * What would make an install fail on that host (cosign missing, Docker
+   * not reachable), in plain words; null when its preflight passed.
+   */
+  readonly problem: string | null;
+  /** Whether {@link lastSeenAt} is within {@link PLATFORM_UPDATE_AGENT_FRESH_SECONDS}. */
+  readonly checkedInRecently: boolean;
+}
+
+/** Whether an agent last seen at `lastSeenAt` counts as running at `now`. */
+export function agentCheckedInRecently(lastSeenAt: Date | string, now: Date): boolean {
+  const seen = new Date(lastSeenAt).getTime();
+  return (
+    Number.isFinite(seen) && now.getTime() - seen <= PLATFORM_UPDATE_AGENT_FRESH_SECONDS * 1000
+  );
+}
