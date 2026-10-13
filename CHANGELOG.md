@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.10.47
+
+### Features
+- 42f01856 nested variants under the parent's counterpart; same-slug variants (#690, part 4) (#698)
+- 0a3fe3dc page tree, parent picker and path display for nested pages (#690, part 3) (#697)
+- 6727689a page identity is the id, the URL path is unique (#690, part 2) (#695)
+- f858aef8 `state migrate` + `attach` for existing installs (#696) (#708)
+- 0d82af73 nested page URLs via parent pages — subtree moves (#690, part 1) (#694)
+
+### Fixes
+- cc198c22 impersonate the service account IAM confirms, not one built from install.json (CodeQL #195) (#711)
+
 ## v0.10.46
 
 ### Features
