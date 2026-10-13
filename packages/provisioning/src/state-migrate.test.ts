@@ -118,7 +118,8 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
     backups: 0,
     retired: [] as string[],
     ensureRemoteCalls: [] as boolean[],
-    localStateKeptAside: false,
+    /** What the bucket's install.json names. */
+    bucketRecord: (initial.kind === "gcs" ? "gcs" : null) as "gcs" | "local" | null,
   };
   const meta = (): MigrateInstall => ({
     installId: "gcp-firebase-acme",
@@ -146,11 +147,13 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
       return "/home/op/.caelo-backups/gcp-firebase-acme-x.tar.zst";
     },
     localStateEmpty: () => !p.stacks.has(localUrl),
-    ensurePassphrase: () => {
+    prepareLocalTarget: () => {
       m.passphrase ??= "new-pp";
     },
+    remoteRecordedBackend: () => m.bucketRecord,
     adopt: (record) => {
       m.backend = record;
+      m.bucketRecord = record.kind;
     },
     retireLocalState: () => {
       const s = p.stacks.get(localUrl);
@@ -283,13 +286,21 @@ describe("migrateState — failures leave the source authoritative", () => {
     expect(t.p.calls).toEqual([]);
   });
 
-  it("refuses to migrate back into a local state dir that holds a stack", async () => {
-    const t = machine(GCS);
-    const s = t.p.stacks.get(t.localUrl);
-    if (s) t.p.stacks.set(t.gcsUrl, { ...s });
-    const r = await migrateState(t.meta(), { to: "local", dryRun: false }, t.deps);
+  it("never replaces a bucket copy another machine made authoritative", async () => {
+    const t = machine();
+    t.m.bucketRecord = "gcs";
+    t.p.stacks.set(t.gcsUrl, {
+      outputs: { newer: true },
+      secretsProvider: "kms",
+      pending: 0,
+      drift: 0,
+    });
+    const r = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
     expect(r.ok).toBe(false);
-    expect(t.m.backend).toEqual(GCS);
+    if (!r.ok) expect(r.error).toContain("attach --project acme");
+    expect(t.p.stacks.get(t.gcsUrl)?.outputs.newer).toBe(true);
+    expect(t.p.calls).toEqual([]);
+    expect(t.m.backups).toBe(0);
   });
 
   it("self-hosted has nothing to migrate", async () => {
@@ -300,6 +311,20 @@ describe("migrateState — failures leave the source authoritative", () => {
       t.deps,
     );
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("migrateState — interrupted --to local resumes", () => {
+  it("moves an unused local stack aside (kept) and copies again", async () => {
+    const t = machine(GCS);
+    const s = t.p.stacks.get(t.localUrl);
+    if (s) t.p.stacks.set(t.gcsUrl, { ...s, secretsProvider: "kms" });
+    // The local stack is the leftover of the interrupted run.
+    const r = await migrateState(t.meta(), { to: "local", dryRun: false }, t.deps);
+    expect(r).toEqual({ ok: true, changed: true });
+    expect(t.m.retired).toEqual([`${ROOT}/state.migrated-x`]);
+    expect(t.m.backend).toEqual({ kind: "local" });
+    expect(t.p.stacks.get(t.localUrl)?.secretsProvider).toBe("passphrase");
   });
 });
 

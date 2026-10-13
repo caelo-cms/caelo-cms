@@ -75,8 +75,15 @@ export interface MigrateDeps {
   backup(): Promise<string>;
   /** Whether the local state dir is absent or holds no stack. */
   localStateEmpty(): boolean;
-  /** Make sure `secrets/pulumi-passphrase` exists (generating one if not). */
-  ensurePassphrase(): void;
+  /** Create the local state dir (mode 700) and `secrets/pulumi-passphrase` if missing. */
+  prepareLocalTarget(): void;
+  /**
+   * The backend the bucket's install.json names (`null` when the bucket or
+   * the document doesn't exist). `gcs` there means the bucket copy is
+   * authoritative — some machine finished a migration — and must never be
+   * replaced from this machine's (then stale) local state.
+   */
+  remoteRecordedBackend(): StateBackendRecord["kind"] | null;
   /** Record the new backend (install-state.ts adoptStateBackend). */
   adopt(record: StateBackendRecord): void;
   /** Rename the local state dir out of the way; returns where it went. */
@@ -152,6 +159,20 @@ export async function migrateState(
   const targetRecord: StateBackendRecord = opts.to === "remote" ? remoteRecord : { kind: "local" };
 
   // --- 1. Preflight (read-only) ------------------------------------------
+  if (opts.to === "remote") {
+    let recorded: StateBackendRecord["kind"] | null;
+    try {
+      recorded = deps.remoteRecordedBackend();
+    } catch (e) {
+      return { ok: false, error: `${errorText(e)}. Nothing was changed.` };
+    }
+    if (recorded === "gcs") {
+      return {
+        ok: false,
+        error: `gs://${remoteRecord.bucket}/install/install.json says this install's state already lives in the bucket — another machine migrated it, so the local state here is out of date. Nothing was changed. Use the bucket instead: bunx @caelo-cms/provisioning attach --project ${meta.projectId} (after moving ~/.caelo-${meta.installId} aside).`,
+      };
+    }
+  }
   const pre = report.step("Preflight: Pulumi CLI, source stack, pending operations, drift");
   let from: ResolvedBackend;
   let mode: "stack-migrate" | "export-import";
@@ -208,12 +229,11 @@ export async function migrateState(
       plan.push(...r.actions);
     } else {
       if (!deps.localStateEmpty()) {
-        return {
-          ok: false,
-          error: `~/.caelo-${meta.installId}/state already holds a stack; move it aside before migrating back.`,
-        };
+        plan.push(
+          "would move the unused stack in ~/.caelo-<id>/state aside (state.migrated-<time>, kept) — a leftover of an interrupted migration",
+        );
       }
-      plan.push(`would ensure secrets/pulumi-passphrase`);
+      plan.push("would create ~/.caelo-<id>/state and secrets/pulumi-passphrase if missing");
     }
     plan.push(
       `would copy the stack ${from.url} → ${opts.to === "remote" ? `gs://${remoteRecord.bucket}` : "~/.caelo-<id>/state"} (${mode}), re-encrypting its secrets`,
@@ -252,19 +272,21 @@ export async function migrateState(
         tg.failed("Could not ensure the ops bucket + KMS key");
         return { ok: false, error: `${r.error} Nothing else was changed.` };
       }
-    } else {
-      if (!deps.localStateEmpty()) {
-        tg.failed("The local state dir is not empty");
-        return {
-          ok: false,
-          error: `~/.caelo-${meta.installId}/state already holds a stack; move it aside before migrating back. Nothing was changed.`,
-        };
-      }
-      deps.ensurePassphrase();
+    } else if (!deps.localStateEmpty()) {
+      // install.json names the bucket, so a stack here is not in use: the
+      // leftover of an interrupted `--to local`. Kept, never deleted.
+      const moved = deps.retireLocalState();
+      report.info(`Moved an unused local stack (interrupted migration?) aside to ${moved}`);
     }
+    if (opts.to === "local") deps.prepareLocalTarget();
     to = deps.resolve(targetRecord);
+    // A remote stack here is not authoritative (checked in the preflight:
+    // the bucket's install.json doesn't name it), so it is the leftover of
+    // an interrupted migration or of an earlier `--to local`.
     if (await pulumi.stackExists(to)) {
-      report.info(`Removing an incomplete copy in ${to.url} left by an interrupted migration`);
+      report.info(
+        `Replacing an unused copy in ${to.url} (left by an earlier or interrupted migration)`,
+      );
       await pulumi.removeStack(to);
     }
     tg.done(`Target ready: ${to.url}`);

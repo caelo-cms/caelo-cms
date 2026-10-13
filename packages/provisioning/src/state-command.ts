@@ -35,12 +35,14 @@ import { attachInstall } from "./state-attach.js";
 import {
   gcsBackendRecord,
   hasLocalPulumiState,
+  installBackend,
   localStateDir,
+  parseStateBackend,
   resolveBackend,
 } from "./state-backend.js";
 import { migrateState } from "./state-migrate.js";
 import { realStatePulumiOps } from "./state-pulumi.js";
-import { realSyncGcloud } from "./state-store.js";
+import { GcsStateStore, realSyncGcloud } from "./state-store.js";
 import { clackReporter } from "./upgrade/reporter.js";
 import { GCP_STACK_KNOB_DEFAULTS } from "./wizards/gcp-pulumi.js";
 
@@ -200,10 +202,19 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
         ),
       backup: async () => backupInstallDir(installId),
       localStateEmpty: () => !hasLocalPulumiState(root),
-      ensurePassphrase: () => {
+      prepareLocalTarget: () => {
+        mkdirSync(localStateDir(root), { recursive: true, mode: 0o700 });
         if (!readSecret(installId, "pulumi-passphrase")) {
           writeSecret(installId, "pulumi-passphrase", randomBytes(32).toString("hex"));
         }
+      },
+      remoteRecordedBackend: () => {
+        const text = new GcsStateStore(gcsBackendRecord(projectId, region).bucket, root).peek(
+          "install.json",
+        );
+        if (text === null) return null;
+        return installBackend({ stateBackend: parseStateBackend(JSON.parse(text).stateBackend) })
+          .kind;
       },
       adopt: (record) => {
         adoptStateBackend(installId, record);

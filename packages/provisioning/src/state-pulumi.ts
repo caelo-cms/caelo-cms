@@ -132,9 +132,17 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
           }),
         },
       );
-      const resources = ((await stack.exportStack()).deployment?.resources ??
-        []) as StateResource[];
-      await applyStackConfig(stack, inputs.stackConfig, resources);
+      // The stack's own config wins: an operator may have tuned a knob
+      // (`pulumi config set`), and resetting it would show as drift. Only a
+      // stack dir without the install's config (a fresh `bunx` version)
+      // gets what the wizard sets — as does one holding another install's
+      // config (installs of one provider share the package's stack dir).
+      const config: automation.ConfigMap = await stack.getAllConfig().catch(() => ({}));
+      if (config[`caelo-${inputs.provider}:project`]?.value !== inputs.stackConfig.projectId) {
+        const resources = ((await stack.exportStack()).deployment?.resources ??
+          []) as StateResource[];
+        await applyStackConfig(stack, inputs.stackConfig, resources);
+      }
       const r = await stack.preview({ refresh: true });
       return changeCount(r.changeSummary);
     },
