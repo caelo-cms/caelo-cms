@@ -427,8 +427,31 @@ export function readMetadata(installId: string): InstallMetadata | null {
   return text === null ? null : parseMetadata(text, `${store.kind} install.json of ${installId}`);
 }
 
+/**
+ * Write install.json. Never changes where the state lives — only
+ * {@link adoptStateBackend} (behind `state migrate`'s checks) does: the
+ * recorded `stateBackend` is kept whatever `meta` carries, so a caller
+ * holding metadata read before a migration can't switch it back. For a
+ * bucket-backed install the bucket's current record is checked first
+ * (uncached): if another machine moved the state off the bucket meanwhile,
+ * the write is refused.
+ */
 export function writeMetadata(installId: string, meta: InstallMetadata): void {
-  stateStoreFor(installId).write("install.json", meta);
+  const store = stateStoreFor(installId);
+  const recorded = readLocalMetadata(installId)?.stateBackend;
+  const { stateBackend: _ignored, ...rest } = meta;
+  const next: InstallMetadata = recorded ? { ...rest, stateBackend: recorded } : rest;
+  if (store instanceof GcsStateStore) {
+    const live = store.peek("install.json");
+    const liveBackend =
+      live === null ? undefined : parseStateBackend(JSON.parse(live).stateBackend);
+    if (live !== null && liveBackend?.kind !== "gcs") {
+      throw new Error(
+        `${installId}'s state was moved off its bucket by another machine (state migrate --to local); this run's metadata is out of date. Nothing was written; manage the install from that machine.`,
+      );
+    }
+  }
+  store.write("install.json", next);
 }
 
 /**

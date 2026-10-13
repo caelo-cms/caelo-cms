@@ -23,6 +23,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { assertNoCheckpointSecrets, assertNoSecrets } from "./checkpoint-secrets.js";
 import { type GcloudResult, gcloudEnv } from "./gcloud.js";
@@ -159,4 +160,84 @@ export class GcsStateStore implements StateStore {
     this.cache.set(file, text);
     writeTextAtomic(join(this.root, file), text);
   }
+}
+
+/** `gs://<bucket>/install/state.lock` — see {@link acquireBucketStateLock}. */
+export function bucketStateLockUrl(bucket: string): string {
+  return `gs://${bucket}/${OPS_INSTALL_PREFIX}/state.lock`;
+}
+
+/** Who holds a lock, for the refusal message. */
+function lockBody(purpose: string): string {
+  return JSON.stringify({
+    purpose,
+    host: hostname(),
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * The install's state lock in its ops bucket, created only if absent
+ * (`--if-generation-match=0`). Held by every writer of a bucket-backed
+ * install's state — an installer run's `pulumi up`, `state migrate` — so
+ * none writes a backend another is switching away from. A lock left by a
+ * crashed run is reported with the command to remove it, never broken
+ * automatically.
+ *
+ * @returns the release function
+ */
+export function acquireBucketStateLock(
+  bucket: string,
+  purpose: string,
+  run: SyncGcloud = realSyncGcloud,
+): () => void {
+  const url = bucketStateLockUrl(bucket);
+  const r = run(["storage", "cp", "-", url, "--if-generation-match=0"], lockBody(purpose));
+  if (!r.ok) {
+    if (/PreconditionFailed|412|At least one of the pre-conditions/i.test(r.stderr)) {
+      const held = run(["storage", "cat", url]);
+      throw new Error(
+        `Another run is changing this install's state (${held.ok ? held.stdout.trim() : url}). Re-run once it has finished; if none is running, remove the stale lock: gcloud storage rm ${url}`,
+      );
+    }
+    throw new Error(`Could not take the state lock ${url}: ${r.stderr.trim()}`);
+  }
+  return () => {
+    const rm = run(["storage", "rm", url]);
+    if (!rm.ok) throw new Error(`Could not release ${url}; remove it: gcloud storage rm ${url}`);
+  };
+}
+
+/**
+ * The same lock for an install whose state is on this machine:
+ * `~/.caelo-<id>/state.lock`, created exclusively.
+ *
+ * @returns the release function
+ */
+export function acquireLocalStateLock(root: string, purpose: string): () => void {
+  const path = join(root, "state.lock");
+  try {
+    writeFileSync(path, lockBody(purpose), { flag: "wx", mode: 0o600 });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(
+        `Another run is changing this install's state (${readFileSync(path, "utf8").trim()}). Re-run once it has finished; if none is running, remove the stale lock: rm ${path}`,
+      );
+    }
+    throw e;
+  }
+  return () => rmSync(path, { force: true });
+}
+
+/** The state lock for whichever backend `bucket` (gcs) or `root` (local) names. */
+export function acquireStateLock(
+  backend: { readonly kind: "local" } | { readonly kind: "gcs"; readonly bucket: string },
+  root: string,
+  purpose: string,
+  run: SyncGcloud = realSyncGcloud,
+): () => void {
+  return backend.kind === "gcs"
+    ? acquireBucketStateLock(backend.bucket, purpose, run)
+    : acquireLocalStateLock(root, purpose);
 }
