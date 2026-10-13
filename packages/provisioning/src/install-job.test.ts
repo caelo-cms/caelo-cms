@@ -315,8 +315,30 @@ describe("readExecutionLogs", () => {
     expect(one).toEqual({ lines: ["first", "second"], cursor: "2026-10-13T10:00:01Z" });
     const two = await readExecutionLogs(run, target, one.cursor, seen);
     expect(two.lines).toEqual([]);
-    expect(calls[1]?.args[2]).toContain('timestamp>="2026-10-13T10:00:01Z"');
+    // Looks back two minutes before the newest line seen.
+    expect(calls[1]?.args[2]).toContain('timestamp>="2026-10-13T09:58:01.000Z"');
     expect(calls[0]?.args[2]).toContain(`labels."run.googleapis.com/execution_name"="e1"`);
+  });
+});
+
+describe("readExecutionLogs and late entries", () => {
+  it("still prints an entry ingested after a later-timestamped one, exactly once", async () => {
+    const batches = [
+      [{ insertId: "b", timestamp: "2026-10-13T10:00:05Z", textPayload: "later" }],
+      [
+        { insertId: "a", timestamp: "2026-10-13T10:00:04Z", textPayload: "late error" },
+        { insertId: "b", timestamp: "2026-10-13T10:00:05Z", textPayload: "later" },
+      ],
+    ];
+    let i = 0;
+    const { run } = fakeRun(() => ok(JSON.stringify(batches[i++] ?? [])));
+    const seen = new Set<string>();
+    const target = { projectId: "acme-site", execution: "e1" };
+    const one = await readExecutionLogs(run, target, null, seen);
+    const two = await readExecutionLogs(run, target, one.cursor, seen);
+    expect(one.lines).toEqual(["later"]);
+    expect(two.lines).toEqual(["late error"]);
+    expect(two.cursor).toBe("2026-10-13T10:00:05Z");
   });
 });
 
@@ -414,7 +436,7 @@ describe("tailInstallJob", () => {
         if (poll > 5) return ok("[]");
         return ok(
           JSON.stringify([
-            { insertId: `i${poll}`, timestamp: `t${poll}`, textPayload: `line ${poll}` },
+            { insertId: `i${poll}`, timestamp: `2026-10-13T10:00:0${poll}Z`, textPayload: `line ${poll}` },
           ]),
         );
       }

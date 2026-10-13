@@ -381,6 +381,13 @@ export async function startInstallJob(
   return { ok: true, execution };
 }
 
+/** `since` minus the lookback window, as an RFC 3339 timestamp. */
+function lookback(since: string): string {
+  const t = Date.parse(since);
+  if (Number.isNaN(t)) throw new Error(`not a log timestamp: ${since}`);
+  return new Date(t - LOG_LOOKBACK_MS).toISOString();
+}
+
 /** One log line of the job, as Cloud Logging returns it. */
 interface LogEntry {
   insertId?: string;
@@ -389,9 +396,18 @@ interface LogEntry {
 }
 
 /**
- * The execution's log lines newer than `since` (an RFC 3339 timestamp, or
- * null for all), oldest first. `seen` holds insert ids already printed —
- * entries sharing a timestamp would otherwise repeat or go missing.
+ * How far before the newest line seen each poll looks again. Cloud Logging
+ * can make an entry queryable after a later-timestamped one; the overlap
+ * (deduplicated by insert id) lets such a late entry still reach the
+ * terminal.
+ */
+const LOG_LOOKBACK_MS = 2 * 60 * 1000;
+
+/**
+ * The execution's log lines not printed yet, oldest first, looking back
+ * {@link LOG_LOOKBACK_MS} before `since` (the newest timestamp seen so far,
+ * or null for all). `seen` holds the insert ids already printed — the
+ * overlap and entries sharing a timestamp would otherwise repeat.
  */
 export async function readExecutionLogs(
   run: GcloudRunner,
@@ -403,7 +419,7 @@ export async function readExecutionLogs(
     'resource.type="cloud_run_job"',
     `resource.labels.job_name="${INSTALL_JOB_NAME}"`,
     `labels."run.googleapis.com/execution_name"="${target.execution}"`,
-    ...(since ? [`timestamp>="${since}"`] : []),
+    ...(since ? [`timestamp>="${lookback(since)}"`] : []),
   ].join(" AND ");
   const r = await run([
     "logging",
@@ -423,7 +439,9 @@ export async function readExecutionLogs(
     const id = e.insertId ?? `${e.timestamp}:${e.textPayload}`;
     if (seen.has(id)) continue;
     seen.add(id);
-    if (e.timestamp) cursor = e.timestamp;
+    if (e.timestamp && (cursor === null || Date.parse(e.timestamp) > Date.parse(cursor))) {
+      cursor = e.timestamp;
+    }
     if (e.textPayload !== undefined) lines.push(e.textPayload.replace(/\n$/, ""));
   }
   return { lines, cursor };
