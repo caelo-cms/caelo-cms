@@ -563,6 +563,33 @@ export const pageCreateSchema = z
      * left the first page unpublished.)
      */
     status: pageStatusSchema.optional(),
+    /**
+     * 0263 — nested page URLs: create the page under this parent; its URL
+     * becomes "<parent's path>/<slug>". Omit (or null) for a top-level page.
+     */
+    parentPageId: z.string().uuid().nullable().optional(),
+  })
+  .strict();
+
+/**
+ * 0263 — `pages.move_many`: reparent pages (their whole subtrees move
+ * with them) and optionally rename them in the same step.
+ */
+export const pageMoveSchema = z
+  .object({
+    pageId: z.string().uuid(),
+    /** The new parent page, or null for the top level. */
+    parentPageId: z.string().uuid().nullable(),
+    /** Rename while moving — required when the target URL is taken. */
+    newSlug: slugSchema.optional(),
+  })
+  .strict();
+
+export const pagesMoveManySchema = z
+  .object({
+    moves: z.array(pageMoveSchema).min(1).max(200),
+    /** `'skip'` suppresses the 301s from the old URLs (operator asked for 404s). */
+    redirectFromOld: z.enum(["auto", "skip"]).default("auto"),
   })
   .strict();
 

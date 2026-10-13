@@ -200,6 +200,7 @@ export const buildPageOp = defineOperation({
         ...(input.page.name !== undefined ? { name: input.page.name } : {}),
         ...(input.page.templateId !== undefined ? { templateId: input.page.templateId } : {}),
         ...(input.page.status !== undefined ? { status: input.page.status } : {}),
+        ...(input.page.parentPageId !== undefined ? { parentPageId: input.page.parentPageId } : {}),
       });
       if (!parsed.success) {
         return fail(`page: ${parsed.error.issues[0]?.message ?? "invalid page payload"}`);

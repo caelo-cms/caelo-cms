@@ -14,6 +14,8 @@ import {
   parseSnapshotState,
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
+import { recomputeCurrentPathsWithMoves } from "../content/current-path.js";
+import { applyPathMoveEffects } from "../content/path-moves.js";
 
 /**
  * Restores both the page metadata (from page_snapshots) and the page layout
@@ -71,11 +73,20 @@ export const revertPageOp = defineOperation({
           title = ${target.title},
           template_id = ${target.templateId}::uuid,
           status = ${target.status},
+          ${target.parentPageId === undefined ? sql`` : sql`parent_page_id = ${target.parentPageId}::uuid,`}
           deleted_at = ${target.deletedAt},
           updated_at = now(),
           version = version + 1
         WHERE id = ${input.pageId}::uuid
       `);
+      // A restored slug / parent moves the page's URL and its subtree's.
+      const recomputed = await recomputeCurrentPathsWithMoves(
+        tx,
+        [input.pageId],
+        // Revert writes live rows, so the live (main) tree is what moved.
+        { chatBranchId: null },
+      );
+      await applyPathMoveEffects(ctx, tx, recomputed.moves, "auto");
     }
 
     if (layoutRows[0]) {

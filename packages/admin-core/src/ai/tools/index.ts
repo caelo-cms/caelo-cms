@@ -102,6 +102,7 @@ import { logPageEditTool } from "./log-page-edit.js";
 import { mapExternalPageTypesTool } from "./map-external-page-types.js";
 import { checkRunBudgetTool, setMigrationBudgetTool } from "./migration-budget.js";
 import { moveModuleTool } from "./move-module.js";
+import { movePagesTool } from "./move-pages.js";
 import { offerChoicesTool } from "./offer-choices.js";
 import {
   getAiSpendTool,
@@ -446,6 +447,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // metadata edits across many pages/modules in one tool call.
   registry.register(deletePagesManyTool);
   registry.register(updatePagesManyTool);
+  // 0263 — nested page URLs: reparent pages (subtree + 301s + link rewrites).
+  registry.register(movePagesTool);
   registry.register(updateModulesManyTool);
   // v0.9.13 — singular + bulk status flip. Drafts are LIVE-EDIT ONLY;
   // only `published` pages ship to Stage / Production. Bulk variant

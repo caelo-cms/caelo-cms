@@ -42,6 +42,7 @@ export type SnapshotOpKind =
   | "template_blocks.set"
   | "pages.create"
   | "pages.update"
+  | "pages.move_many"
   | "pages.set_modules"
   | "pages.delete"
   | "snapshots.revert_site"

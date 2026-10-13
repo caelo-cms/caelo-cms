@@ -28,12 +28,15 @@ import { type ExecutionContext, err, isHomeSlug, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { createRedirectOp } from "../redirects.js";
-
-interface PageRowForPath {
-  id: string;
-  slug: string;
-}
+import {
+  ancestorIdsOf,
+  ancestorSlugsOf,
+  descendantIdsOf,
+  loadPageTree,
+  type PageTree,
+  type PageTreeNode,
+} from "./page-tree.js";
+import { applyPathMoveEffects } from "./path-moves.js";
 
 /**
  * Home predicate for PATH COMPOSITION: an explicit designation wins
@@ -42,21 +45,25 @@ interface PageRowForPath {
  * "should this render as the root?" consumers, but composing paths with
  * it would let a magic-slug page and a designated page both claim "/",
  * violating the current_path uniqueness the whole point rests on.)
+ *
+ * A nested page (one with a parent) is never a root: the move ops refuse
+ * to give the homepage a parent, and a magic slug below a parent is just
+ * a segment ("/docs/index").
  */
 function isCompositionHome(
   pageId: string,
   slug: string,
+  hasParent: boolean,
   designatedHomePageId: string | null,
   annotations: Record<string, unknown>,
 ): boolean {
+  if (hasParent) return false;
   // A URL plugin may declare this page the root of its own URL space.
   // The site has ONE designated home, but a multilingual site has one
   // per locale, and core cannot derive the others — it has no locale
   // concept (epic #380). The `international-site` plugin answers it
   // from the variant group; without this the German home composes to
-  // `/de/<slug>` instead of `/de/`, and the only workaround available
-  // to a caller is duplicating the sentinel slug, which the site-wide
-  // slug uniqueness refuses.
+  // `/de/<slug>` instead of `/de/`.
   //
   // Uniqueness still holds: each locale root carries a different path
   // prefix, so `/` and `/de` never collide.
@@ -72,101 +79,179 @@ async function loadDesignatedHomePageId(tx: TransactionRunner): Promise<string |
   return rows[0]?.home_page_id ?? null;
 }
 
-type PathRow = PageRowForPath & { readonly chat_branch_id: string | null };
-
 /** The render scope a write runs in: its chat branch, or main. */
 export function renderScopeOf(ctx: ExecutionContext): RenderScope {
   return { chatBranchId: ctx.chatBranchId ?? null };
 }
 
+/** One composed page: its path, and whether it is a URL-space root. */
+export interface ComposedPath {
+  readonly path: string;
+  /** True for the site home and plugin-declared roots (a locale home):
+   *  such a page serves at its prefix root and can neither have nor be
+   *  a parent. */
+  readonly isRoot: boolean;
+}
+
 /**
- * Recompute `current_path` for the given pages under `scope`, and persist
- * it where that scope owns the row. Plugin URL annotations can live on a
- * chat branch (e.g. a variant link written in a chat), so a branch
- * composes with its own plugin state:
+ * Compose the public path of each given page from `tree` — THE core
+ * path computation (ancestor chain from the tree, plugin contributions
+ * from their annotations, the composition grammar from plugin-host).
+ * Every other path computation in core goes through here.
+ *
+ * @param annotationScope whose plugin state annotates the pages (main or
+ *   a chat branch); independent of the tree's scope so a merge can pair
+ *   the post-replay tree with the branch's plugin view.
+ */
+export async function composePathsDetailed(
+  tx: TransactionRunner,
+  tree: PageTree,
+  pageIds: ReadonlyArray<string>,
+  annotationScope: RenderScope,
+): Promise<Map<string, ComposedPath>> {
+  const out = new Map<string, ComposedPath>();
+  const ids = [...new Set(pageIds)].filter((id) => tree.byId.has(id));
+  if (ids.length === 0) return out;
+  const designated = await loadDesignatedHomePageId(tx);
+  const annotations = await collectUrlAnnotations(ids, annotationScope);
+  for (const id of ids) {
+    const node = tree.byId.get(id) as PageTreeNode;
+    const ann = annotations.get(id) ?? {};
+    const isRoot = isCompositionHome(id, node.slug, node.parentPageId !== null, designated, ann);
+    const resolved = resolvePageUrl({
+      pageId: id,
+      slug: node.slug,
+      ancestorSlugs: ancestorSlugsOf(tree, id),
+      isHomePage: isRoot,
+      annotations: ann,
+    });
+    out.set(id, { path: resolved.path, isRoot });
+  }
+  return out;
+}
+
+/** {@link composePathsDetailed}, paths only. */
+export async function composePaths(
+  tx: TransactionRunner,
+  tree: PageTree,
+  pageIds: ReadonlyArray<string>,
+  annotationScope: RenderScope,
+): Promise<Map<string, string>> {
+  const detailed = await composePathsDetailed(tx, tree, pageIds, annotationScope);
+  return new Map([...detailed].map(([id, c]) => [id, c.path]));
+}
+
+/**
+ * Write new `current_path` values, vacating before claiming: inside one
+ * statement sequence two pages may swap paths (a home flip, a subtree
+ * moved onto a sibling's old URL), and `current_path` is unique per
+ * branch namespace.
+ */
+async function writeCurrentPaths(
+  tx: TransactionRunner,
+  changes: ReadonlyArray<{ id: string; path: string }>,
+): Promise<void> {
+  for (const c of changes) {
+    await tx.execute(sql`
+      UPDATE pages SET current_path = current_path || ${`#moving-${c.id}`}
+      WHERE id = ${c.id}::uuid
+    `);
+  }
+  for (const c of changes) {
+    await tx.execute(sql`UPDATE pages SET current_path = ${c.path} WHERE id = ${c.id}::uuid`);
+  }
+}
+
+/**
+ * Recompute `current_path` for the given pages AND every page below
+ * them (a parent's path is a prefix of its children's), under `scope`,
+ * and persist it where that scope owns the row. Plugin URL annotations
+ * can live on a chat branch (e.g. a variant link written in a chat), so
+ * a branch composes with its own plugin state and its own pending tree:
  *
  * - main scope persists every given row (existing behaviour);
  * - a branch scope persists only rows that branch created — a main
  *   row's live path must not move before publish. The merge recomputes
- *   main-line paths once the branch's plugin rows are live
+ *   main-line paths once the branch's rows are live
  *   ({@link refreshLivePathsAfterMerge}).
  *
- * @returns the composed path per page, persisted or not.
+ * @returns the composed path per page (given pages and their
+ *   descendants), persisted or not, plus the previous stored path of
+ *   every row whose stored path changed.
  */
 export async function recomputeCurrentPaths(
   tx: TransactionRunner,
   pageIds: ReadonlyArray<string>,
   scope: RenderScope,
 ): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  const uniqueIds = [...new Set(pageIds)];
-  if (uniqueIds.length === 0) return out;
+  return (await recomputeCurrentPathsWithMoves(tx, pageIds, scope)).paths;
+}
 
-  const idList = sql.join(
-    uniqueIds.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
-  const fetched = (await tx.execute(sql`
-    SELECT id::text AS id, slug, chat_branch_id::text AS chat_branch_id
-    FROM pages WHERE id IN (${idList})
-  `)) as unknown as PathRow[];
-  if (fetched.length === 0) return out;
-  // Preserve the caller's order — vacating the current "/" holder
-  // BEFORE assigning the new one is load-bearing for the uniqueness
-  // index (pages.set_home_page passes [oldHolders..., newHome]).
-  const byId = new Map(fetched.map((r) => [r.id, r]));
-  const rows = uniqueIds.map((id) => byId.get(id)).filter((r): r is PathRow => r !== undefined);
-
-  const designated = await loadDesignatedHomePageId(tx);
-  // current_path is live, main-line state: annotate from main, never from
-  // a chat's branch rows.
-  const annotations = await collectUrlAnnotations(
-    rows.map((r) => r.id),
-    scope,
-  );
-
-  for (const row of rows) {
-    const resolved = resolvePageUrl({
-      pageId: row.id,
-      slug: row.slug,
-      isHomePage: isCompositionHome(row.id, row.slug, designated, annotations.get(row.id) ?? {}),
-      annotations: annotations.get(row.id) ?? {},
-    });
-    out.set(row.id, resolved.path);
-    if (scope.chatBranchId !== null && row.chat_branch_id !== scope.chatBranchId) continue;
-    await tx.execute(sql`
-      UPDATE pages SET current_path = ${resolved.path} WHERE id = ${row.id}::uuid
-    `);
-  }
-  return out;
+/** A persisted path change: where the page was, and where it is now. */
+export interface PathMove {
+  readonly pageId: string;
+  readonly from: string;
+  readonly to: string;
 }
 
 /**
- * Resolve WITHOUT persisting — the diff engine's "what would the paths
- * be" half. Same I/O + composition as the recompute.
+ * {@link recomputeCurrentPaths}, also reporting every persisted move —
+ * the input the 301 + link-rewrite side effects need.
+ */
+export async function recomputeCurrentPathsWithMoves(
+  tx: TransactionRunner,
+  pageIds: ReadonlyArray<string>,
+  scope: RenderScope,
+): Promise<{ paths: Map<string, string>; moves: PathMove[] }> {
+  const uniqueIds = [...new Set(pageIds)];
+  if (uniqueIds.length === 0) return { paths: new Map(), moves: [] };
+  const tree = await loadPageTree(tx, scope.chatBranchId);
+  const targets = [...uniqueIds, ...descendantIdsOf(tree, uniqueIds)];
+  const paths = await composePaths(tx, tree, targets, scope);
+  const stored = await loadStoredPaths(tx, [...paths.keys()]);
+  const moves: PathMove[] = [];
+  for (const [id, path] of paths) {
+    const node = tree.byId.get(id) as PageTreeNode;
+    if (scope.chatBranchId !== null && node.chatBranchId !== scope.chatBranchId) continue;
+    const from = stored.get(id);
+    if (from === undefined || from === path) continue;
+    moves.push({ pageId: id, from, to: path });
+  }
+  await writeCurrentPaths(
+    tx,
+    moves.map((m) => ({ id: m.pageId, path: m.to })),
+  );
+  return { paths, moves };
+}
+
+async function loadStoredPaths(
+  tx: TransactionRunner,
+  pageIds: ReadonlyArray<string>,
+): Promise<Map<string, string>> {
+  if (pageIds.length === 0) return new Map();
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id, current_path FROM pages
+    WHERE id IN (${sql.join(
+      pageIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    )})
+  `)) as unknown as { id: string; current_path: string }[];
+  return new Map(rows.map((r) => [r.id, r.current_path]));
+}
+
+/**
+ * Resolve WITHOUT persisting — the diff engine's and the branch
+ * preview's "what would the paths be" half. Same tree + composition as
+ * the recompute; under a chat scope the chat's pending moves apply.
  */
 export async function resolveCurrentPathsDryRun(
   tx: TransactionRunner,
-  pages: ReadonlyArray<PageRowForPath>,
+  pageIds: ReadonlyArray<string>,
   scope: RenderScope,
 ): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  if (pages.length === 0) return out;
-  const designated = await loadDesignatedHomePageId(tx);
-  const annotations = await collectUrlAnnotations(
-    pages.map((r) => r.id),
-    scope,
-  );
-  for (const row of pages) {
-    const resolved = resolvePageUrl({
-      pageId: row.id,
-      slug: row.slug,
-      isHomePage: isCompositionHome(row.id, row.slug, designated, annotations.get(row.id) ?? {}),
-      annotations: annotations.get(row.id) ?? {},
-    });
-    out.set(row.id, resolved.path);
-  }
-  return out;
+  if (pageIds.length === 0) return new Map();
+  const tree = await loadPageTree(tx, scope.chatBranchId);
+  return composePaths(tx, tree, pageIds, scope);
 }
 
 /**
@@ -212,16 +297,12 @@ export const refreshCurrentPathOp = defineOperation({
     if (row && scope.chatBranchId !== null && row.chat_branch_id !== scope.chatBranchId) {
       // A main page refreshed from a chat: its live URL must not move
       // before publish. Report the branch's view; the merge applies it.
-      const preview = await resolveCurrentPathsDryRun(
-        tx,
-        [{ id: input.pageId, slug: row.slug }],
-        scope,
-      );
+      const preview = await resolveCurrentPathsDryRun(tx, [input.pageId], scope);
       const path = preview.get(input.pageId) ?? oldPath;
       return ok({ path, moved: false });
     }
-    const recomputed = await recomputeCurrentPaths(tx, [input.pageId], scope);
-    const newPath = recomputed.get(input.pageId);
+    const recomputed = await recomputeCurrentPathsWithMoves(tx, [input.pageId], scope);
+    const newPath = recomputed.paths.get(input.pageId);
     if (!newPath) {
       return err({
         kind: "HandlerError",
@@ -230,18 +311,9 @@ export const refreshCurrentPathOp = defineOperation({
       });
     }
     const moved = newPath !== oldPath;
-    if (moved && input.redirectFromOld !== "skip") {
-      const red = await createRedirectOp.handler(
-        ctx,
-        { fromPath: oldPath, toPath: newPath, statusCode: 301 },
-        tx,
-      );
-      if (!red.ok) {
-        throw new Error(
-          `refresh_current_path aborted — redirect ${oldPath} → ${newPath} failed to land`,
-        );
-      }
-    }
+    // The page and, when nested children derive their path from it, its
+    // descendants: each gets the full move treatment.
+    await applyPathMoveEffects(ctx, tx, recomputed.moves, input.redirectFromOld);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -256,17 +328,22 @@ export const refreshCurrentPathOp = defineOperation({
 });
 
 /**
- * Recompose every live page's path on main after a merge made a branch's
- * plugin rows live, and 301 the pages that moved — the main-line half of
- * what `pages.refresh_current_path` deferred while the change sat on the
- * branch. Annotations come only from plugins, so callers run this only
- * when plugin rows were merged.
+ * Recompose main-line paths after a merge, and give every page that moved
+ * the full move treatment (301, chain collapse, link rewrites —
+ * {@link applyPathMoveEffects}). Two merge inputs can move URLs:
  *
- * Plugin calls run in their own transactions and cannot see the merge's
- * uncommitted writes. The annotations are therefore read in the BRANCH
- * view — committed main plus the branch overlay — which is exactly the
- * post-merge state when the merge takes every plugin row the branch
- * holds (the caller guarantees that).
+ * - replayed page rows (a chat renamed or reparented pages): those pages
+ *   and their subtrees are recomposed from the in-tx, post-replay tree —
+ *   the same composition a direct `pages.update` runs;
+ * - plugin rows (a locale variant link): every live page is recomposed.
+ *   Plugin calls run in their own transactions and cannot see the
+ *   merge's uncommitted writes, so the annotations are read in the
+ *   BRANCH view — committed main plus the branch overlay — which is
+ *   exactly the post-merge state when the merge takes every plugin row
+ *   the branch holds (the caller guarantees that).
+ *
+ * Pages that only now became live (created on the branch) get their
+ * path but no move effects: their old path was never public.
  *
  * @returns the pages whose live path moved.
  */
@@ -274,47 +351,45 @@ export async function refreshLivePathsAfterMerge(
   ctx: ExecutionContext,
   tx: TransactionRunner,
   chatBranchId: string,
+  opts: {
+    readonly pluginRowsMerged: boolean;
+    readonly replayedPageIds: readonly string[];
+    readonly newlyLivePageIds: ReadonlySet<string>;
+    /** Replayed pages whose pending rename / move asked for no 301s;
+     *  their subtrees' moves honour it too. */
+    readonly skipRedirectPageIds: ReadonlySet<string>;
+  },
 ): Promise<string[]> {
-  // Without the plugin host loaded no URL plugin would answer, and every
-  // prefixed path (/de/…) would recompose bare. Fail rather than strip.
-  hostSystemActorId();
-  const live = (await tx.execute(sql`
-    SELECT id::text AS id, slug, current_path FROM pages
-    WHERE deleted_at IS NULL AND chat_branch_id IS NULL
-  `)) as unknown as { id: string; slug: string; current_path: string }[];
-  if (live.length === 0) return [];
-  const composed = await resolveCurrentPathsDryRun(
+  const tree = await loadPageTree(tx, null);
+  let targets: string[];
+  let annotationScope: RenderScope;
+  if (opts.pluginRowsMerged) {
+    // Without the plugin host loaded no URL plugin would answer, and every
+    // prefixed path (/de/…) would recompose bare. Fail rather than strip.
+    hostSystemActorId();
+    targets = [...tree.byId.keys()];
+    annotationScope = { chatBranchId };
+  } else {
+    const roots = opts.replayedPageIds.filter((id) => tree.byId.has(id));
+    targets = [...roots, ...descendantIdsOf(tree, roots)];
+    annotationScope = { chatBranchId: null };
+  }
+  if (targets.length === 0) return [];
+  const composed = await composePaths(tx, tree, targets, annotationScope);
+  const stored = await loadStoredPaths(tx, targets);
+  const moves: PathMove[] = [];
+  for (const [id, to] of composed) {
+    const from = stored.get(id);
+    if (from !== undefined && from !== to) moves.push({ pageId: id, from, to });
+  }
+  await writeCurrentPaths(
     tx,
-    live.map((p) => ({ id: p.id, slug: p.slug })),
-    { chatBranchId },
+    moves.map((m) => ({ id: m.pageId, path: m.to })),
   );
-  // The redirects are main-line state, like the paths they follow.
-  const { chatBranchId: _branch, chatTaskId: _task, ...mainCtx } = ctx;
-  const moved = live.filter((p) => {
-    const next = composed.get(p.id);
-    return next !== undefined && next !== p.current_path;
-  });
-  // Vacate before claiming: two pages may swap paths, and current_path
-  // is unique.
-  for (const page of moved) {
-    await tx.execute(sql`
-      UPDATE pages SET current_path = ${`${page.current_path}#moving-${page.id}`}
-      WHERE id = ${page.id}::uuid
-    `);
-  }
-  for (const page of moved) {
-    const newPath = composed.get(page.id) as string;
-    await tx.execute(sql`UPDATE pages SET current_path = ${newPath} WHERE id = ${page.id}::uuid`);
-    const red = await createRedirectOp.handler(
-      mainCtx,
-      { fromPath: page.current_path, toPath: newPath, statusCode: 301 },
-      tx,
-    );
-    if (!red.ok) {
-      throw new Error(
-        `merge: redirect ${page.current_path} → ${newPath} failed to land after a plugin URL change`,
-      );
-    }
-  }
-  return moved.map((p) => p.id);
+  const effective = moves.filter((m) => !opts.newlyLivePageIds.has(m.pageId));
+  const skips = (id: string): boolean =>
+    opts.skipRedirectPageIds.has(id) ||
+    ancestorIdsOf(tree, id).some((a) => opts.skipRedirectPageIds.has(a));
+  await applyPathMoveEffects(ctx, tx, effective, { skip: skips });
+  return moves.map((m) => m.pageId);
 }

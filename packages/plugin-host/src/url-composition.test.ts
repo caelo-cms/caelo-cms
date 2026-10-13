@@ -39,9 +39,55 @@ const dashSlugFormat: UrlContributionDef = {
   decode: (urlSlug) => urlSlug.replace(/-/g, "/"),
 };
 
-function page(slug: string, annotations: Record<string, unknown> = {}, isHomePage = false) {
-  return { pageId: "00000000-0000-4000-8000-000000000001", slug, isHomePage, annotations };
+function page(
+  slug: string,
+  annotations: Record<string, unknown> = {},
+  isHomePage = false,
+  ancestorSlugs: string[] = [],
+) {
+  return {
+    pageId: "00000000-0000-4000-8000-000000000001",
+    slug,
+    ancestorSlugs,
+    isHomePage,
+    annotations,
+  };
 }
+
+describe("nested page URLs — ancestor chain", () => {
+  it("places the parent chain between the prefix and the own slug", () => {
+    expect(resolvePageUrl(page("alerts", {}, false, ["seo-monitoring"])).path).toBe(
+      "/seo-monitoring/alerts",
+    );
+    urlContributionsRegistry.register("intl", [localePrefix]);
+    expect(resolvePageUrl(page("alerts", { locale: "de" }, false, ["a", "b"])).path).toBe(
+      "/de/a/b/alerts",
+    );
+  });
+
+  it("slug-format shapes only the page's own segment, and must keep it one segment", () => {
+    urlContributionsRegistry.register("dasher", [dashSlugFormat]);
+    expect(resolvePageUrl(page("x/y", {}, false, ["parent"])).path).toBe("/parent/x-y");
+    urlContributionsRegistry.reset();
+    urlContributionsRegistry.register("splitter", [
+      { slot: "slug-format", encode: (p) => `section/${p.slug}`, decode: (s) => s },
+    ]);
+    expect(() => resolvePageUrl(page("item"))).toThrow(/invalid path segment/);
+  });
+
+  it("an invalid ancestor slug fails loudly", () => {
+    expect(() => resolvePageUrl(page("alerts", {}, false, ["../up"]))).toThrow(/core\/parent-page/);
+  });
+
+  it("decode splits the parent chain from the leaf", () => {
+    urlContributionsRegistry.register("intl", [localePrefix]);
+    const d = decodePagePath("/de/seo-monitoring/alerts/");
+    expect(d.slug).toBe("alerts");
+    expect(d.ancestorSlugs).toEqual(["seo-monitoring"]);
+    expect(d.annotations).toEqual({ locale: "de" });
+    expect(decodePagePath("/pricing").ancestorSlugs).toEqual([]);
+  });
+});
 
 describe("#390 — composition grammar", () => {
   it("no contributions: '/<slug>' and '/' for the designated root", () => {

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P8 — slug-change link rewriter integration. After change_page_slug
- * (via direct pages.update + pages.rewrite_module_links), every
- * matching <a href="/<oldSlug>..."> in module HTML round-trips to the
- * new slug. Bound to the leading "/" so it doesn't rewrite suffix
- * matches.
+ * P8 — URL-move link rewriter integration. pages.rewrite_module_links
+ * takes old → new PATH pairs (slug changes and nested-page moves alike)
+ * and rewrites every matching <a href="/<old path>"> in module HTML,
+ * exact per path — never a suffix match like "/not-<old>".
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -115,8 +114,7 @@ describe("P8 slug-change link rewriter", () => {
 
   it("rewrite_module_links flips matching hrefs and audits the touched module ids", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.rewrite_module_links", {
-      oldSlug: OLD_SLUG,
-      newSlug: NEW_SLUG,
+      moves: [{ fromPath: `/${OLD_SLUG}`, toPath: `/${NEW_SLUG}` }],
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -132,10 +130,9 @@ describe("P8 slug-change link rewriter", () => {
     expect(html).not.toContain(`href="/${OLD_SLUG}"`);
   });
 
-  it("is a no-op when oldSlug === newSlug", async () => {
+  it("is a no-op when the path does not change", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.rewrite_module_links", {
-      oldSlug: NEW_SLUG,
-      newSlug: NEW_SLUG,
+      moves: [{ fromPath: `/${NEW_SLUG}`, toPath: `/${NEW_SLUG}` }],
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
