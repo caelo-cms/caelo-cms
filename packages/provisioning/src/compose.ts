@@ -43,6 +43,14 @@ export const COMPOSE_ADMIN_PORT = 5173;
 /** `.caelo/<this>/` holds the pending Owner-bootstrap token the admin consumes. */
 export const BOOTSTRAP_DIR = "bootstrap";
 
+/**
+ * Where the host's `.caelo/output/` appears in the admin (read-write, the
+ * generator's output root) and in Caddy (read-only). The seeded deploy
+ * targets' `out_dir` (`output/<env>`) resolves below it, which is where the
+ * Caddyfile's site roots point (`/srv/caelo/output/<env>/current`).
+ */
+export const SITE_OUTPUT_ROOT = "/srv/caelo";
+
 /** The gateway's HTTP port inside the Compose network. */
 export const COMPOSE_GATEWAY_PORT = 8090;
 
@@ -167,7 +175,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caelo-caddy-data:/data
       - caelo-caddy-config:/config
-      - ./output:/srv/caelo:ro
+      - ./output:${SITE_OUTPUT_ROOT}:ro
 
 ${adminService(spec, adminMemoryMiB, env)}
 
@@ -227,7 +235,10 @@ ${serviceRuntime(
   // from `/app/.caelo/` on first boot (hooks.server.ts). Only that dir is
   // mounted — never `.caelo/` itself, which holds config.json's superuser
   // and MinIO passwords. Without the token /setup accepts any first Owner.
-  [`./${BOOTSTRAP_DIR}:/app/.caelo`],
+  // The static site: the admin builds into it (CAELO_OUTPUT_ROOT below),
+  // Caddy serves it read-only from the same host dir. On the host, so a
+  // recreated admin (upgrade) keeps the published site.
+  [`./${BOOTSTRAP_DIR}:/app/.caelo`, `./output:${SITE_OUTPUT_ROOT}`],
 )}
     container_name: caelo-admin
     restart: unless-stopped
@@ -240,6 +251,7 @@ ${serviceRuntime(
       CAELO_SECRET_KEK: "${escapeYaml(spec.caeloSecretKek)}"
       CAELO_SITE_URL: "${escapeYaml(publicSiteUrl(spec.domain))}"
       PORT: "${COMPOSE_ADMIN_PORT}"
+      CAELO_OUTPUT_ROOT: "${SITE_OUTPUT_ROOT}"
       NODE_ENV: production
 ${env("ANTHROPIC_API_KEY", spec.anthropicApiKey)}
 ${env("RESEND_API_KEY", spec.resendApiKey)}`;

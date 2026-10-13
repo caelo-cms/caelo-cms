@@ -13,10 +13,11 @@ import {
 } from "./self-hosted-release.js";
 import { composePath, type UpgradeLog, upgradeSelfHosted } from "./self-hosted-upgrade.js";
 
+const OLD_DIGEST = { admin: `sha256:${"1".repeat(64)}`, gateway: `sha256:${"2".repeat(64)}` };
 const OLD: ReleaseImages = {
   mode: "release",
-  admin: `ghcr.io/caelo-cms/admin@sha256:${"1".repeat(64)}`,
-  gateway: `ghcr.io/caelo-cms/gateway@sha256:${"2".repeat(64)}`,
+  admin: `ghcr.io/caelo-cms/admin@${OLD_DIGEST.admin}`,
+  gateway: `ghcr.io/caelo-cms/gateway@${OLD_DIGEST.gateway}`,
 };
 const NEW_DIGEST = { admin: `sha256:${"a".repeat(64)}`, gateway: `sha256:${"b".repeat(64)}` };
 const NEW: ReleaseImages = {
@@ -28,23 +29,26 @@ const NEW: ReleaseImages = {
 /** A stand-in for generateDockerCompose: just the two image lines. */
 const render = (images: ReleaseImages) => `admin: ${images.admin}\ngateway: ${images.gateway}\n`;
 
-/** GHCR fake: the anonymous token dance, then the configured digest per repository. */
-const registry = (async (input: string | URL | Request, init?: RequestInit) => {
-  const url = String(input);
-  if (url.startsWith("https://api.github.com/")) return Response.json({ tag_name: "v0.11.0" });
-  if (url.startsWith("https://ghcr.io/token")) return Response.json({ token: "t" });
-  if (!new Headers(init?.headers).get("authorization")) {
+/** GHCR fake: the anonymous token dance, then `digests` per repository. */
+function registryServing(digests: { admin: string; gateway: string }): typeof fetch {
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("https://api.github.com/")) return Response.json({ tag_name: "v0.11.0" });
+    if (url.startsWith("https://ghcr.io/token")) return Response.json({ token: "t" });
+    if (!new Headers(init?.headers).get("authorization")) {
+      return new Response(null, {
+        status: 401,
+        headers: { "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io"' },
+      });
+    }
+    const service = url.includes("/caelo-cms/admin/") ? "admin" : "gateway";
     return new Response(null, {
-      status: 401,
-      headers: { "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io"' },
+      status: 200,
+      headers: { "docker-content-digest": digests[service] },
     });
-  }
-  const service = url.includes("/caelo-cms/admin/") ? "admin" : "gateway";
-  return new Response(null, {
-    status: 200,
-    headers: { "docker-content-digest": NEW_DIGEST[service] },
-  });
-}) as typeof fetch;
+  }) as typeof fetch;
+}
+const registry = registryServing(NEW_DIGEST);
 
 type Rule = (argv: string) => Partial<CommandResult> | undefined;
 
@@ -165,10 +169,47 @@ describe("upgradeSelfHosted", () => {
       { version: "0.11.0", images: NEW },
       { from: "0.10.0", to: "0.11.0", outcome: "upgraded" },
     );
+    writeFileSync(composePath(dir), render(NEW));
     const runner = fakeRunner();
     const r = await upgradeSelfHosted({ version: "0.11.0" }, deps(runner));
     expect(r).toEqual({ ok: true, status: "already-current", version: "0.11.0" });
-    expect(steps(runner.calls)).toEqual(["cosign-probe", "verify admin", "verify gateway"]);
+    // No backup, pull or migration — only converging + proving health.
+    expect(steps(runner.calls)).toEqual([
+      "cosign-probe",
+      "verify admin",
+      "verify gateway",
+      "up both",
+      "health admin",
+      "health gateway",
+    ]);
+  });
+
+  it("reports an unhealthy install that is already on the target", async () => {
+    recordRelease(
+      dir,
+      { version: "0.11.0", images: NEW },
+      { from: "0.10.0", to: "0.11.0", outcome: "upgraded" },
+    );
+    writeFileSync(composePath(dir), render(NEW));
+    const runner = fakeRunner([(c) => (c.includes("/healthz") ? { exitCode: 1 } : undefined)]);
+    const r = await upgradeSelfHosted({ version: "0.11.0" }, deps(runner));
+    expect(r).toMatchObject({ ok: false, stage: "converge", previousRunning: false });
+  });
+
+  it("re-runs the full flow when a stopped run left the Compose file on other digests", async () => {
+    // release.json says 0.10.0 (OLD); an interrupted upgrade left NEW in the file.
+    writeFileSync(composePath(dir), render(NEW));
+    const runner = fakeRunner();
+    const r = await upgradeSelfHosted(
+      { version: "0.10.0" },
+      {
+        ...deps(runner),
+        fetchImpl: registryServing({ admin: OLD_DIGEST.admin, gateway: OLD_DIGEST.gateway }),
+      },
+    );
+    expect(r).toEqual({ ok: true, status: "upgraded", version: "0.10.0" });
+    expect(steps(runner.calls)).toContain("migrate admin");
+    expect(readFileSync(composePath(dir), "utf8")).toBe(render(OLD));
   });
 
   it("refuses to touch the host when a signature does not verify", async () => {

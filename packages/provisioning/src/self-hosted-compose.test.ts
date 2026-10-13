@@ -48,11 +48,15 @@ describe("self-hosted Compose — release images (#696)", () => {
     expect(yaml).not.toContain("DEV MODE");
   });
 
-  it("hands the admin only the bootstrap-token dir, never .caelo/ with its secrets", () => {
+  it("mounts the bootstrap-token + site output dirs, never .caelo/ with its secrets", () => {
     const admin = service(yaml, "caelo-admin");
-    expect(admin).toContain("    volumes:\n      - ./bootstrap:/app/.caelo");
+    expect(admin).toContain(
+      "    volumes:\n      - ./bootstrap:/app/.caelo\n      - ./output:/srv/caelo",
+    );
     expect(yaml).not.toMatch(/- \.\/?:/);
     expect(service(yaml, "caelo-gateway")).not.toContain("volumes:");
+    expect(admin).toContain('CAELO_OUTPUT_ROOT: "/srv/caelo"');
+    expect(service(yaml, "caddy")).toContain("- ./output:/srv/caelo:ro");
   });
 
   it("keeps the env + secret wiring of each service", () => {

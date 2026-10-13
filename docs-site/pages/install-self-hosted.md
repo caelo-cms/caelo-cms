@@ -63,7 +63,7 @@ Run it from the directory that holds `.caelo/`. In order, it:
 5. restarts the admin, waits for `/_caelo/health`, then restarts the gateway and waits for its health check;
 6. records the new version in `.caelo/release.json`.
 
-If a health check fails, the previous images are started again and checked, and `release.json` notes the rolled-back attempt. Re-running `upgrade` is safe: an install that already runs the target release is left alone, and an interrupted run is simply repeated.
+If a health check fails, the previous images are started again and checked, and `release.json` notes the rolled-back attempt. Re-running `upgrade` is safe: on an install that already runs the target release it only makes sure the containers match the Compose file and pass their health checks, and an interrupted run is simply repeated. The published site lives on the host in `.caelo/output/`, so restarting the admin never loses it.
 
 An install created before prebuilt images existed (its Compose file bind-mounts the Caelo repository into `oven/bun`) is moved onto the signed images by its first `upgrade`.
 

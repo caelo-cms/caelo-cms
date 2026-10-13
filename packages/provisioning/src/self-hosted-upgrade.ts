@@ -88,6 +88,7 @@ export type SelfHostedUpgradeResult =
 type UpgradeStage =
   | "target"
   | "verify"
+  | "converge"
   | "backup"
   | "pull"
   | "migrate"
@@ -144,11 +145,28 @@ export async function upgradeSelfHosted(
   if (
     current &&
     current.images.admin === images.admin &&
-    current.images.gateway === images.gateway
+    current.images.gateway === images.gateway &&
+    readFileSync(file, "utf8") === previousCompose
   ) {
+    // Recorded, and the Compose file agrees. `up` converges containers a
+    // stopped run or a failed rollback may have left on other images (a
+    // no-op when they already match); the health checks prove it serves.
+    log.info(
+      `Already on ${current.version}; checking the running containers match and are healthy.`,
+    );
+    const converged = await startBoth(deps);
+    if (!converged.ok) {
+      return fail(
+        "converge",
+        `${converged.error}\nThe recorded release ${current.version} is not serving healthily — check \`docker compose logs\`.`,
+        false,
+      );
+    }
     log.info(`Already on ${current.version} (${shortDigest(images.admin)}); nothing to do.`);
     return { ok: true, status: "already-current", version: current.version };
   }
+  // Otherwise (a different target, or a Compose file a stopped run left
+  // with other digests) the full flow below converges the install.
 
   // Rendered before the backup so a config problem stops the run before
   // anything on the host is touched.
@@ -373,14 +391,23 @@ async function rollback(
 ): Promise<boolean> {
   deps.log.warn("Rolling back to the previous images");
   restoreCompose(file, previousCompose);
+  return (await startBoth(deps)).ok;
+}
+
+/** `up -d` both services on the current Compose file, then health-check each. */
+async function startBoth(
+  deps: SelfHostedUpgradeDeps,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const up = await deps.runner.run(
     compose(deps.caeloDir, "up", "-d", "--no-deps", COMPOSE_SERVICE.admin, COMPOSE_SERVICE.gateway),
   );
-  if (up.exitCode !== 0) return false;
+  if (up.exitCode !== 0)
+    return { ok: false, error: `docker compose up failed: ${tail(up.stderr)}` };
   for (const service of RELEASE_SERVICES) {
-    if (!(await waitHealthy(service, deps.caeloDir, deps)).ok) return false;
+    const healthy = await waitHealthy(service, deps.caeloDir, deps);
+    if (!healthy.ok) return { ok: false, error: `${service}: ${healthy.error}` };
   }
-  return true;
+  return { ok: true };
 }
 
 function restoreCompose(file: string, previous: string): void {
