@@ -13,7 +13,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as automation from "@pulumi/pulumi/automation";
 import { redactCredentials } from "./checkpoint-secrets.js";
@@ -105,12 +105,24 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
   // run leaves it untouched.
   const settingsFile = join(workDir, `Pulumi.${GCP_STACK_ENV}.yaml`);
   const preserved = async <T>(fn: () => Promise<T>): Promise<T> => {
-    const before = existsSync(settingsFile) ? readFileSync(settingsFile) : null;
+    // Read without a separate existence check (no check-then-use race), and
+    // put the file back atomically (temp file + rename).
+    let before: Buffer | null;
+    try {
+      before = readFileSync(settingsFile);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      before = null;
+    }
     try {
       return await fn();
     } finally {
       if (before === null) rmSync(settingsFile, { force: true });
-      else writeFileSync(settingsFile, before);
+      else {
+        const tmp = `${settingsFile}.restore-${process.pid}`;
+        writeFileSync(tmp, before, { flag: "w" });
+        renameSync(tmp, settingsFile);
+      }
     }
   };
 
