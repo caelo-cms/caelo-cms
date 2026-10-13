@@ -16,6 +16,7 @@ import { gcloud as defaultGcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep, type Sleep } from "./gcloud-retry.js";
 import {
   operatorMember,
+  PROPAGATION_DELAYS_MS,
   provisionerServiceAccountEmail,
   TOKEN_CREATOR_ROLE,
   withoutAmbientGoogleCredentials,
@@ -29,9 +30,6 @@ export type AdcCheck =
       readonly reason: "no-adc" | "denied" | "error";
       readonly error: string;
     };
-
-/** Delays between impersonation probes while a fresh TokenCreator grant propagates. */
-const PROPAGATION_DELAYS_MS: readonly number[] = [5_000, 10_000, 15_000, 30_000, 60_000, 60_000];
 
 /**
  * Verify the credential chain Pulumi will use: the operator's Application

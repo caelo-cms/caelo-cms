@@ -105,6 +105,7 @@ describe("convergeKeylessProvisioner — new install", () => {
     // Never project-wide, never a key operation, nothing written to disk.
     expect(g.lines().some((l) => l.startsWith("projects add-iam-policy-binding"))).toBe(false);
     expect(g.lines().some((l) => l.includes(" keys "))).toBe(false);
+    expect(g.lines().some((l) => l.includes("print-access-token"))).toBe(false);
     expect(readdirSync(secretsDir)).toEqual([]);
   });
 
@@ -196,6 +197,76 @@ describe("convergeKeylessProvisioner — existing install with a key (upgrade)",
     const deleteAt = g.lines().findIndex((l) => l.includes("keys delete"));
     expect(grantAt).toBeGreaterThanOrEqual(0);
     expect(grantAt).toBeLessThan(deleteAt);
+  });
+
+  it("a conditional binding does not count as a grant", async () => {
+    writeLegacyKey();
+    const conditional = JSON.stringify({
+      bindings: [
+        {
+          role: TOKEN_CREATOR_ROLE,
+          members: ["user:owner@example.com"],
+          condition: {
+            title: "expired",
+            expression: 'request.time < timestamp("2020-01-01T00:00:00Z")',
+          },
+        },
+      ],
+    });
+    const g = fakeGcloud({
+      "iam service-accounts describe": [ok(SA)],
+      "iam service-accounts get-iam-policy": [ok(conditional)],
+      "iam service-accounts keys list": [ok(JSON.stringify([{ name: keyName(KEY_ID) }]))],
+    });
+    const r = await convergeKeylessProvisioner(target(), { run: g.run, sleep: noSleep });
+    expect(r.ok && r.grant).toBe("granted");
+    const add = g.calls.find((c) => c.args.includes("add-iam-policy-binding"));
+    expect(add?.args).toContain("--condition=None");
+  });
+
+  it("keeps the key when impersonation does not work yet, even after waiting", async () => {
+    const path = writeLegacyKey();
+    const denied = () => fail("PERMISSION_DENIED: iam.serviceAccounts.getAccessToken");
+    const g = fakeGcloud({
+      "iam service-accounts describe": [ok(SA)],
+      "iam service-accounts get-iam-policy": [ok("{}")],
+      "auth print-access-token": [
+        denied(),
+        denied(),
+        denied(),
+        denied(),
+        denied(),
+        denied(),
+        denied(),
+      ],
+    });
+    const slept: number[] = [];
+    const r = await convergeKeylessProvisioner(target(), {
+      run: g.run,
+      sleep: async (ms) => void slept.push(ms),
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("its key was kept");
+    expect(slept.length).toBeGreaterThan(0);
+    expect(existsSync(path)).toBe(true);
+    expect(g.lines().some((l) => l.includes(" keys "))).toBe(false);
+  });
+
+  it("verifies impersonation through gcloud before deleting, and never keeps the token", async () => {
+    writeLegacyKey();
+    const g = fakeGcloud({
+      "iam service-accounts describe": [ok(SA)],
+      "iam service-accounts get-iam-policy": [ok(tokenCreatorPolicy("user:owner@example.com"))],
+      "auth print-access-token": [ok("ya29.must-not-leak\n")],
+      "iam service-accounts keys list": [ok(JSON.stringify([{ name: keyName(KEY_ID) }]))],
+    });
+    const r = await convergeKeylessProvisioner(target(), { run: g.run, sleep: noSleep });
+    expect(r.ok && r.legacyKey).toBe("removed");
+    const verifyAt = g.lines().findIndex((l) => l.startsWith("auth print-access-token"));
+    const deleteAt = g.lines().findIndex((l) => l.includes("keys delete"));
+    expect(g.lines()[verifyAt]).toContain(`--impersonate-service-account=${SA}`);
+    expect(verifyAt).toBeLessThan(deleteAt);
+    expect(JSON.stringify(r)).not.toContain("must-not-leak");
   });
 
   it("is idempotent: a second run finds no key and changes nothing", async () => {

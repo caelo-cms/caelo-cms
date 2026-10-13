@@ -81,7 +81,7 @@ export function operatorMember(account: string): string {
 }
 
 interface IamPolicy {
-  bindings?: { role?: string; members?: string[] }[];
+  bindings?: { role?: string; members?: string[]; condition?: unknown }[];
 }
 
 export type ImpersonationGrant =
@@ -120,9 +120,13 @@ export async function ensureProvisionerImpersonation(
     } catch {
       parsed = {};
     }
+    // Only an unconditional binding counts: a conditional one (e.g. an
+    // expired time-limited grant) may not allow impersonation at all.
     const has = (parsed.bindings ?? []).some(
       (b) =>
-        b.role === TOKEN_CREATOR_ROLE && (b.members ?? []).some((m) => m.toLowerCase() === member),
+        b.role === TOKEN_CREATOR_ROLE &&
+        b.condition == null &&
+        (b.members ?? []).some((m) => m.toLowerCase() === member),
     );
     if (has) return { ok: true, status: "already" };
   }
@@ -292,6 +296,37 @@ function readKeyIdentity(
   return { ok: true, keyId: keyId.toLowerCase(), clientEmail: clientEmail.toLowerCase() };
 }
 
+/** Delays between impersonation probes while a fresh TokenCreator grant propagates. */
+export const PROPAGATION_DELAYS_MS: readonly number[] = [
+  5_000, 10_000, 15_000, 30_000, 60_000, 60_000,
+];
+
+/**
+ * Prove the operator's gcloud account can impersonate `sa` by having gcloud
+ * mint a short-lived token for it. The token on stdout is dropped unread.
+ * After a fresh grant, waits out IAM propagation.
+ */
+async function verifyGcloudImpersonation(
+  run: GcloudRunner,
+  sleep: Sleep,
+  sa: string,
+  freshGrant: boolean,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const delays = freshGrant ? PROPAGATION_DELAYS_MS : [];
+  const args = ["auth", "print-access-token", `--impersonate-service-account=${sa}`, "--quiet"];
+  let r = await run(args);
+  for (const delay of delays) {
+    if (r.ok) break;
+    await sleep(delay);
+    r = await run(args);
+  }
+  if (r.ok) return { ok: true };
+  return {
+    ok: false,
+    error: `Your gcloud account can't impersonate ${sa} yet, so its key was kept: ${r.stderr.trim() || "(no output)"}\nA grant made moments ago can take a few minutes to apply: wait, then re-run. If it persists, check that your account holds ${TOKEN_CREATOR_ROLE} on ${sa} without a condition.`,
+  };
+}
+
 export type KeylessConvergence =
   | {
       readonly ok: true;
@@ -357,6 +392,12 @@ export async function convergeKeylessProvisioner(
     deps,
   );
   if (!grant.ok) return grant;
+  // The key is still the install's working credential: delete it only once
+  // impersonation demonstrably works, not merely because a binding exists.
+  if (keyOnDisk) {
+    const works = await verifyGcloudImpersonation(run, sleep, sa, grant.status === "granted");
+    if (!works.ok) return works;
+  }
   const legacy = await removeLegacyProvisionerKey(
     { projectId: target.projectId, secretsDir: target.secretsDir },
     { run },

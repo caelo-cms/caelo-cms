@@ -106,7 +106,7 @@ A leaked laptop, backup or synced folder therefore leaks no lasting access to yo
 
 **Installs created before this change** kept a JSON key at `~/.caelo-<install-id>/secrets/sa-key.json`. The next `bunx @caelo-cms/provisioning upgrade` (or installer re-run) removes it, before anything else changes:
 
-1. it gives your gcloud account the impersonation role above (or confirms it has it);
+1. it gives your gcloud account the impersonation role above (or confirms it has it, without a condition) and checks that impersonating actually works — waiting a few minutes for a fresh grant to apply — so the key is never deleted before its replacement works;
 2. it reads the key's id from the file and deletes exactly that key of `caelo-provisioner` in IAM — no other key; if the service account has other user-managed keys, it lists them with the command to delete each one, and leaves them alone;
 3. it deletes the file and prints a "Service-account key removed" summary.
 
