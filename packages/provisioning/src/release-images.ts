@@ -76,6 +76,20 @@ export function canonicalDigest(s: string): string | null {
   return `sha256:${hex.join("")}`;
 }
 
+const TAG_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-v";
+const RELEASE_TAG = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+/**
+ * A semver release tag (`v0.10.43`, `0.11.0-rc.1`) rebuilt from a constant
+ * alphabet, else null. The tag comes from the GitHub API and is recorded in
+ * release.json, so — like {@link canonicalDigest} — only our own characters
+ * reach the file.
+ */
+export function canonicalReleaseTag(s: string): string | null {
+  if (s.length > 64 || !RELEASE_TAG.test(s)) return null;
+  return [...s].map((c) => TAG_CHARS[TAG_CHARS.indexOf(c)]).join("");
+}
+
 /**
  * The registry tag for an upgrade request: an explicit version (a leading
  * `v` dropped, as release tags are `vX.Y.Z` but image tags `X.Y.Z`), else
@@ -197,9 +211,10 @@ export async function fetchLatestReleaseTag(
     );
     if (!res.ok) return { ok: false, reason: `GitHub API HTTP ${res.status} ${res.statusText}` };
     const json = (await res.json()) as { tag_name?: string };
-    return json.tag_name
-      ? { ok: true, tag: json.tag_name }
-      : { ok: false, reason: "GitHub returned a release without a tag" };
+    const tag = json.tag_name ? canonicalReleaseTag(json.tag_name) : null;
+    return tag
+      ? { ok: true, tag }
+      : { ok: false, reason: `GitHub returned no usable release tag (${json.tag_name})` };
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }

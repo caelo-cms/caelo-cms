@@ -2,6 +2,8 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  canonicalDigest,
+  canonicalReleaseTag,
   cosignVerifyArgv,
   parseBearerChallenge,
   RELEASE_SIGNER_IDENTITY_REGEXP,
@@ -102,5 +104,16 @@ describe("cosignVerifyArgv", () => {
     expect(argv.slice(0, 3)).toEqual(["cosign", "verify", "ghcr.io/caelo-cms/admin@x"]);
     expect(argv).toContain(RELEASE_SIGNER_IDENTITY_REGEXP);
     expect(argv).toContain("https://token.actions.githubusercontent.com");
+  });
+});
+
+describe("canonical values from the network", () => {
+  it("accepts well-formed digests and release tags only", () => {
+    expect(canonicalDigest(`sha256:${"e".repeat(64)}`)).toBe(`sha256:${"e".repeat(64)}`);
+    expect(canonicalDigest("sha256:../../etc")).toBeNull();
+    expect(canonicalReleaseTag("v0.10.43")).toBe("v0.10.43");
+    expect(canonicalReleaseTag("0.11.0-rc.1")).toBe("0.11.0-rc.1");
+    expect(canonicalReleaseTag("v1.0.0/../x")).toBeNull();
+    expect(canonicalReleaseTag("latest")).toBeNull();
   });
 });
