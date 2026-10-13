@@ -18,6 +18,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
+import { type StagedBy, stagedBySchema } from "../../quality/chat-feedback.js";
 import type { QualityCategory } from "../../quality/ratchet.js";
 import {
   auditRunStatusSchema,
@@ -48,6 +49,8 @@ export const runSummarySchema = z.object({
   fixRound: z.number().int(),
   /** The failed audit this run retries, if any. */
   retryOf: z.string().nullable(),
+  /** #685 — who staged the build of a chat Stage (null outside a chat). */
+  stagedBy: stagedBySchema.nullable(),
   /** An editor's recorded "publish anyway" over this failed audit. */
   publishOverride: z.object({ by: z.string(), reason: z.string(), at: z.string() }).nullable(),
   /** Queued by the automatic redeploy: whether it published or stopped. */
@@ -77,6 +80,7 @@ export interface RunDbRow {
   finished_at: string | Date | null;
   fix_round: number;
   retry_of: string | null;
+  staged_by: StagedBy | null;
   publish_override_by: string | null;
   publish_override_reason: string | null;
   publish_override_at: string | Date | null;
@@ -90,7 +94,7 @@ export const RUN_COLUMNS = sql`
   q.chat_session_id::text AS chat_session_id, q.status, q.classification,
   cardinality(q.target_page_ids) AS page_count, q.problem_count, q.base_url,
   q.error_code, q.error_message, q.created_at, q.started_at, q.finished_at,
-  q.fix_round, q.retry_of::text AS retry_of, q.publish_override_by::text AS publish_override_by,
+  q.fix_round, q.retry_of::text AS retry_of, q.staged_by, q.publish_override_by::text AS publish_override_by,
   q.publish_override_reason, q.publish_override_at,
   q.auto_publish, q.auto_publish_outcome, q.auto_publish_message`;
 
@@ -111,6 +115,7 @@ export function toRunSummary(r: RunDbRow): RunSummary {
     finishedAt: r.finished_at === null ? null : iso(r.finished_at),
     fixRound: Number(r.fix_round),
     retryOf: r.retry_of,
+    stagedBy: r.staged_by,
     publishOverride:
       r.publish_override_by !== null && r.publish_override_at !== null
         ? {
