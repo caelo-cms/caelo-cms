@@ -14,12 +14,18 @@
   import { untrack } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import { Badge } from "#lib/components/ui/badge/index.js";
-  import { isActive, PHASE_LABELS, STATUS_DISPLAY } from "#lib/updates-display.js";
+  import { isActive, PHASE_LABELS, statusDisplay } from "#lib/updates-display.js";
 
   let {
     request: initialRequest,
     events: initialEvents,
-  }: { request: PlatformUpdateRequest; events: PlatformUpdateEvent[] } = $props();
+    selfHosted = false,
+  }: {
+    request: PlatformUpdateRequest;
+    events: PlatformUpdateEvent[];
+    /** A self-hosted install (its hand-run upgrade is on the server). */
+    selfHosted?: boolean;
+  } = $props();
 
   // Seeded once from the page's load; the poll below owns them afterwards
   // (the page re-keys this component when a new request appears).
@@ -66,7 +72,7 @@
     }
     return out;
   });
-  const display = $derived(STATUS_DISPLAY[request.status]);
+  const display = $derived(statusDisplay(request.status, selfHosted));
 
   function time(iso: string): string {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
