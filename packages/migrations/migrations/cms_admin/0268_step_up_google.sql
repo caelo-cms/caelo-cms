@@ -10,10 +10,12 @@
 -- password variant. A stolen session cookie or an unattended browser can
 -- therefore not install an update.
 --
---   sessions.step_up_at / step_up_email   the last verified step-up of THIS
---                                         session (Google's auth_time) and
---                                         the Google account that did it.
---                                         Each guarded action consumes it.
+--   sessions.step_up_at / step_up_email / step_up_purpose
+--                                         the last verified step-up of THIS
+--                                         session (Google's auth_time), the
+--                                         Google account that did it and
+--                                         the action it was for. Each
+--                                         guarded action consumes it.
 --   step_up_challenges                    one row per started sign-in: the
 --                                         OAuth state (hashed), PKCE
 --                                         verifier and nonce; redeemed once
@@ -30,7 +32,11 @@ SET LOCAL caelo.actor_kind = 'system';
 
 ALTER TABLE sessions
   ADD COLUMN IF NOT EXISTS step_up_at timestamptz NULL,
-  ADD COLUMN IF NOT EXISTS step_up_email text NULL;
+  ADD COLUMN IF NOT EXISTS step_up_email text NULL,
+  -- What the sign-in was for: a step-up begun to change the policy cannot
+  -- be spent on installing an update, or the other way round.
+  ADD COLUMN IF NOT EXISTS step_up_purpose text NULL
+    CHECK (step_up_purpose IN ('platform_update', 'update_policy', 'step_up_client'));
 
 CREATE TABLE step_up_challenges (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),

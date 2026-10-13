@@ -32,7 +32,12 @@ import {
   sessionHashSchema,
   stepUpProblem,
 } from "../security/step-up/gate.js";
-import { authorizationUrl, newChallengeSecrets } from "../security/step-up/google-oidc.js";
+import { hasGoogleSignature } from "../security/step-up/google-keys.js";
+import {
+  authorizationUrl,
+  newChallengeSecrets,
+  verifyFreshSignIn,
+} from "../security/step-up/google-oidc.js";
 import { missingPermissions } from "./_approver-permission.js";
 
 const GOOGLE_CLIENT_ID = /^[0-9]+-[0-9a-z]+\.apps\.googleusercontent\.com$/;
@@ -78,12 +83,18 @@ export const stepUpStatusOp = defineOperation({
   // workers have none, and must never learn whether a step-up is fresh.
   actorScope: ["human"],
   database: "cms_admin",
-  input: z.object({ sessionHash: sessionHashSchema }).strict(),
+  input: z
+    .object({
+      sessionHash: sessionHashSchema,
+      /** Only a sign-in for this action counts as fresh. */
+      purpose: z.enum(STEP_UP_PURPOSES).optional(),
+    })
+    .strict(),
   output: statusOutput,
   handler: async (ctx, input, tx) => {
     const client = await readClient(tx);
     const session = await readSessionStepUp(tx, ctx.actorId, input.sessionHash);
-    const problem = stepUpProblem(session, new Date());
+    const problem = stepUpProblem(session, new Date(), input.purpose ?? null);
     return ok({
       configured: client !== null,
       clientId: client?.client_id ?? null,
@@ -122,6 +133,7 @@ export const stepUpSetClientOp = defineOperation({
         operation: "replace the Google sign-in client",
         permission: "platform.update",
         sessionHash: input.sessionHash,
+        purpose: "step_up_client",
       });
       if (refusal) return handlerError(op, refusal);
     } else {
@@ -331,11 +343,8 @@ export const stepUpRecordOp = defineOperation({
       outcome: z.discriminatedUnion("ok", [
         z.object({
           ok: z.literal(true),
-          email: z.string().email(),
-          /** Google's auth_time, seconds since epoch. */
-          authTime: z.number().int().positive(),
-          /** The ID token's nonce — must be the challenge's. */
-          nonce: z.string().min(32).max(128),
+          /** Google's ID token, as its token endpoint returned it. */
+          idToken: z.string().min(20).max(8000),
         }),
         z.object({ ok: z.literal(false), reason: z.string().min(1).max(1000) }),
       ]),
@@ -382,27 +391,42 @@ export const stepUpRecordOp = defineOperation({
       return refuse("This sign-in took longer than 10 minutes. Start it again.");
     }
     if (!input.outcome.ok) return refuse(`Google sign-in failed: ${input.outcome.reason}`);
-    const { email, authTime, nonce } = input.outcome;
-    if (nonce !== c.nonce) return refuse("The Google sign-in is not from this confirmation.");
+    // The token must be Google's own (signature by a key from Google's
+    // fixed JWKS URL), for this install's client, this challenge's nonce, a
+    // sign-in after the challenge began, and the user's own address — the
+    // op checks all of it; it takes no claim from its caller.
+    const client = await readClient(tx);
+    if (!client) return refuse("The Google sign-in client was removed meanwhile.");
+    if (!(await hasGoogleSignature(input.outcome.idToken))) {
+      return refuse(
+        "The sign-in token is not signed by Google (or Google's signing keys could not be loaded). Start the confirmation again.",
+      );
+    }
+    const verified = verifyFreshSignIn(input.outcome.idToken, {
+      clientId: client.client_id,
+      nonce: c.nonce,
+      startedAtSec: Math.floor(new Date(c.created_at).getTime() / 1000),
+      nowSec: Math.floor(Date.now() / 1000),
+    });
+    if (!verified.ok) return refuse(`Google sign-in not accepted: ${verified.reason}.`);
+    const { email, authTime } = verified.value;
     const session = await readSessionStepUp(tx, ctx.actorId, input.sessionHash);
     if (!session) return refuse("this browser session is not signed in any more");
-    if (email.toLowerCase() !== session.userEmail.toLowerCase()) {
+    if (email !== session.userEmail.toLowerCase()) {
       return refuse(
         `You signed in to Google as ${email}, but this Caelo account is ${session.userEmail}. Sign in with ${session.userEmail}.`,
       );
     }
-    const authMs = authTime * 1000;
-    // Same checks as verifyFreshSignIn, repeated where the data is stored.
-    if (authMs + 30_000 < new Date(c.created_at).getTime() || authMs > Date.now() + 30_000) {
-      return refuse("the Google sign-in is not from this confirmation");
-    }
     await tx.execute(sql`
       UPDATE sessions
-         SET step_up_at = to_timestamp(${authTime}), step_up_email = ${email.toLowerCase()}
+         SET step_up_at = to_timestamp(${authTime}), step_up_email = ${email},
+             step_up_purpose = ${c.purpose}
        WHERE encode(sha256(convert_to(token, 'UTF8')), 'hex') = ${input.sessionHash}
          AND user_id = ${ctx.actorId}::uuid
     `);
     await audit(true, `fresh Google sign-in for ${c.purpose}`);
-    return ok({ freshUntil: new Date(authMs + STEP_UP_MAX_AGE_SECONDS * 1000).toISOString() });
+    return ok({
+      freshUntil: new Date(authTime * 1000 + STEP_UP_MAX_AGE_SECONDS * 1000).toISOString(),
+    });
   },
 });

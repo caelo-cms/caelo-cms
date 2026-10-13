@@ -119,6 +119,12 @@ export interface UpgraderJobDeps {
   readonly execution: string | null;
   /** fetchVerifiedReleaseManifest against the fixed registry. */
   readonly fetchManifest: (version: string) => Promise<ReleaseManifestResult>;
+  /**
+   * Take the install's state lock (the one `pulumi up` and `state migrate`
+   * hold) for the whole run; returns its release. Throws when another run
+   * holds it.
+   */
+  readonly lockState: () => () => void;
   /** install.json from the install's ops bucket (null when absent). */
   readonly readInstall: () => InstallMetadata | null;
   readonly writeInstall: (meta: InstallMetadata) => void;
@@ -145,6 +151,11 @@ export interface UpgraderRunResult {
 
 const ROLLED_PHASES = new Set(["roll", "health"]);
 
+/** Attempts at recording a request's end state before the run fails. */
+const FINISH_ATTEMPTS = 3;
+
+const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** Run the job once. Never throws; see the file comment for the sequence. */
 export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRunResult> {
   const { queue, log } = deps;
@@ -165,20 +176,37 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     log,
     request.id,
   );
+  let releaseLock: (() => void) | null = null;
   const finish = async (end: UpdateEnd): Promise<UpgraderRunResult> => {
     r.phase("finish");
     if (end.status === "succeeded") r.success(`Caelo ${request.targetVersion} is installed.`);
     else r.error(end.reason ?? end.status);
     await r.flush();
-    try {
-      await queue.finish(request.id, end);
-    } catch (e) {
-      log({
-        severity: "ERROR",
-        message: `could not record the end of request ${request.id}: ${errorText(e)}`,
-      });
+    if (releaseLock) {
+      try {
+        releaseLock();
+      } catch (e) {
+        r.warn(errorText(e));
+      }
+      releaseLock = null;
     }
-    const failed = end.status === "failed" || end.status === "rolled_back";
+    // The end state is what unblocks the next update; a transient database
+    // error must not leave the request "running" while the run reports
+    // success.
+    let recorded = false;
+    for (let attempt = 1; attempt <= FINISH_ATTEMPTS && !recorded; attempt++) {
+      try {
+        await queue.finish(request.id, end);
+        recorded = true;
+      } catch (e) {
+        log({
+          severity: "ERROR",
+          message: `could not record the end of request ${request.id} (attempt ${attempt}/${FINISH_ATTEMPTS}): ${errorText(e)}`,
+        });
+        if (attempt < FINISH_ATTEMPTS) await (deps.sleep ?? defaultSleep)(attempt * 5_000);
+      }
+    }
+    const failed = end.status === "failed" || end.status === "rolled_back" || !recorded;
     return { exitCode: failed ? 1 : 0, requestId: request.id, status: end.status };
   };
   const stopWith = (
@@ -199,6 +227,17 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     r.info(
       `Upgrader started${deps.execution ? ` (run ${deps.execution})` : ""}: installing Caelo ${request.targetVersion}.`,
     );
+
+    // Exclusive against the installer's own state writers for the whole run.
+    try {
+      releaseLock = deps.lockState();
+    } catch (e) {
+      return stopWith(
+        "failed",
+        ["state-locked"],
+        `Nothing was changed: another install operation is running on this site (${errorText(e)}). Try again when it has finished.`,
+      );
+    }
 
     // 2. What the install runs — from its own state, never from the admin.
     r.phase("verify");

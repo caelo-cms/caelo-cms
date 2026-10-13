@@ -159,6 +159,9 @@ describe("upgrader job ops as platform_updater", () => {
     expect(claim.ok && claim.value.recovered).toEqual([dead]);
     expect(claim.ok && claim.value.claimed).toBeNull();
     expect(await request(dead)).toMatchObject({ status: "failed", refusal_codes: ["stale"] });
+    // A dead automatic install pauses automatic installs.
+    const policy = await admin((tx) => tx`SELECT paused FROM platform_update_policy`);
+    expect((policy as unknown as { paused: boolean }[])[0]?.paused).toBe(true);
   });
 });
 

@@ -13,5 +13,4 @@ export {
   jobEventOp,
   jobFinishOp,
   jobRecordOp,
-  STALE_RUN_MINUTES,
 } from "./ops.js";
