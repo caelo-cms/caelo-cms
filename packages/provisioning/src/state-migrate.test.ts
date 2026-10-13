@@ -40,7 +40,12 @@ const GCS = gcsBackendRecord("acme", "europe-west1");
 function fakePulumi(version = "3.260.0") {
   const stacks = new Map<string, FakeStack>();
   const calls: string[] = [];
-  const faults = { corruptCopy: false, copyFails: false, driftOnTarget: 0 };
+  const faults: {
+    corruptCopy: boolean;
+    copyFails: boolean;
+    driftOnTarget: number;
+    onStateDigest?: () => void;
+  } = { corruptCopy: false, copyFails: false, driftOnTarget: 0 };
   const ops: StatePulumiOps = {
     async cliVersion() {
       return version;
@@ -55,6 +60,12 @@ function fakePulumi(version = "3.260.0") {
       const s = stacks.get(b.url);
       if (!s) throw new Error(`no stack in ${b.url}`);
       return s.drift;
+    },
+    async stateDigest(b) {
+      const s = stacks.get(b.url);
+      if (!s) throw new Error(`no stack in ${b.url}`);
+      faults.onStateDigest?.();
+      return canonicalJson({ ...s, drift: 0 });
     },
     async outputsDigest(b) {
       const s = stacks.get(b.url);
@@ -253,6 +264,24 @@ describe("migrateState — failures leave the source authoritative", () => {
     expect(t.p.stacks.has(t.gcsUrl)).toBe(false);
     expect(t.p.stacks.has(t.localUrl)).toBe(true);
     expect(t.m.retired).toEqual([]);
+  });
+
+  it("a source updated by another run during the copy aborts before the switch", async () => {
+    const t = machine();
+    let reads = 0;
+    t.p.faults.onStateDigest = () => {
+      reads++;
+      // Second read (just before the switch): an installer run elsewhere wrote the source.
+      if (reads === 2) {
+        const src = t.p.stacks.get(t.localUrl);
+        if (src) src.outputs = { ...src.outputs, extra: 1 };
+      }
+    };
+    const r = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("changed during the migration");
+    expect(t.m.backend).toEqual({ kind: "local" });
+    expect(t.p.stacks.has(t.gcsUrl)).toBe(false);
   });
 
   it("a copy whose preview shows changes is discarded", async () => {

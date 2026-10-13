@@ -101,7 +101,7 @@ import {
   type ResolvedBackend,
   resolveBackend,
 } from "../state-backend.js";
-import { GcsStateStore } from "../state-store.js";
+import { GcsStateStore, migrationLockHolder } from "../state-store.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { GCP_STACK_KNOB_DEFAULTS, pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
 
@@ -920,6 +920,15 @@ async function stepStateBackend(
   provisionerEmail: string,
 ): Promise<ResolvedBackend> {
   const root = installRoot(installId);
+  // `state migrate` switches the backend under a lock in the ops bucket; a
+  // run now would write the stack it is copying.
+  const holder = migrationLockHolder(gcsBackendRecord(projectId, region).bucket);
+  if (holder) {
+    cancel(
+      `A state migration of this install is running (${holder}). Re-run once it has finished.`,
+    );
+    process.exit(1);
+  }
   const meta = readMetadata(installId);
   if (!meta) throw new Error(`No install.json for install '${installId}'.`);
   const kind = chooseInstallBackend(

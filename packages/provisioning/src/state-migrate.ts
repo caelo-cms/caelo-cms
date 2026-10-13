@@ -60,6 +60,8 @@ export interface StatePulumiOps {
   previewChanges(backend: ResolvedBackend): Promise<number>;
   /** sha256 of the stack outputs, secrets included. Never the values. */
   outputsDigest(backend: ResolvedBackend): Promise<string>;
+  /** sha256 of the stack's exported checkpoint (ciphertext; never decrypted). */
+  stateDigest(backend: ResolvedBackend): Promise<string>;
   /** `pulumi stack migrate <from> --secrets-provider <to's>` into `to`. */
   stackMigrate(from: ResolvedBackend, to: ResolvedBackend): Promise<void>;
   /** export → init → import → change-secrets-provider (older CLIs). */
@@ -191,6 +193,8 @@ export async function migrateState(
   let from: ResolvedBackend;
   let mode: "stack-migrate" | "export-import";
   let sourceDigest: string;
+  /** The source's checkpoint, to notice another run writing it meanwhile. */
+  let sourceState: string;
   try {
     const version = await pulumi.cliVersion();
     if (!version) {
@@ -226,6 +230,7 @@ export async function migrateState(
       };
     }
     sourceDigest = await pulumi.outputsDigest(from);
+    sourceState = await pulumi.stateDigest(from);
     pre.done(
       `Source ok: ${from.url}, no pending operations, no drift (Pulumi ${version}, ${mode === "stack-migrate" ? "pulumi stack migrate" : "export/import fallback"})`,
     );
@@ -372,6 +377,14 @@ export async function migrateState(
         return abandon(`Verification failed: a preview of the copy shows ${changes} change(s)`);
       if ((await pulumi.outputsDigest(to)) !== sourceDigest) {
         return abandon("Verification failed: the copy's outputs differ from the source's");
+      }
+      // An installer run elsewhere may have updated the source since the
+      // preflight (only migrations take the lock): the copy would then miss
+      // that update. Checked last, right before the switch.
+      if ((await pulumi.stateDigest(from)) !== sourceState) {
+        return abandon(
+          "The source stack changed during the migration (another run updated it); migrate again once it is idle",
+        );
       }
     } catch (e) {
       return abandon(`Verification failed: ${errorText(e)}`);

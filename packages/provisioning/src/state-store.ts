@@ -160,3 +160,21 @@ export class GcsStateStore implements StateStore {
     writeTextAtomic(join(this.root, file), text);
   }
 }
+
+/** `gs://<bucket>/install/migrate.lock` — held while `state migrate` runs. */
+export function migrationLockUrl(bucket: string): string {
+  return `gs://${bucket}/${OPS_INSTALL_PREFIX}/migrate.lock`;
+}
+
+/**
+ * Who holds the install's migration lock (its JSON), or null when no
+ * migration runs — also when the bucket doesn't exist or can't be read
+ * (then no migration can be running in it either).
+ */
+export function migrationLockHolder(
+  bucket: string,
+  run: SyncGcloud = realSyncGcloud,
+): string | null {
+  const r = run(["storage", "cat", migrationLockUrl(bucket)]);
+  return r.ok ? r.stdout.trim() || "unknown" : null;
+}

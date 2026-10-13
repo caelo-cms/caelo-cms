@@ -132,6 +132,11 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
       return stacks.some((s) => s.name === GCP_STACK_ENV || s.name?.endsWith(`/${GCP_STACK_ENV}`));
     },
 
+    async stateDigest(b) {
+      const deployment = await exportDeployment(b);
+      return createHash("sha256").update(canonicalJson(deployment)).digest("hex");
+    },
+
     async pendingOperations(b) {
       return (await exportDeployment(b)).pending_operations?.length ?? 0;
     },
@@ -240,6 +245,7 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
   return {
     ...ops,
     pendingOperations: (b) => preserved(() => ops.pendingOperations(b)),
+    stateDigest: (b) => preserved(() => ops.stateDigest(b)),
     previewChanges: (b) => preserved(() => ops.previewChanges(b)),
     outputsDigest: (b) => preserved(() => ops.outputsDigest(b)),
   };

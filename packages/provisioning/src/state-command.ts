@@ -43,7 +43,7 @@ import {
 } from "./state-backend.js";
 import { migrateState } from "./state-migrate.js";
 import { realStatePulumiOps } from "./state-pulumi.js";
-import { GcsStateStore, realSyncGcloud, type SyncGcloud } from "./state-store.js";
+import { GcsStateStore, migrationLockUrl, realSyncGcloud, type SyncGcloud } from "./state-store.js";
 import { clackReporter } from "./upgrade/reporter.js";
 import { GCP_STACK_KNOB_DEFAULTS } from "./wizards/gcp-pulumi.js";
 
@@ -107,7 +107,7 @@ export function backupInstallDir(
  * @returns the release function
  */
 export function migrationLock(bucket: string, run: SyncGcloud): () => Promise<void> {
-  const url = `gs://${bucket}/install/migrate.lock`;
+  const url = migrationLockUrl(bucket);
   const body = JSON.stringify({
     host: hostname(),
     pid: process.pid,

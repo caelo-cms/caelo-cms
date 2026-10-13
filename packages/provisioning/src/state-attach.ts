@@ -119,10 +119,10 @@ export function attachInstall(
     }
   }
   if (!existsSync(root)) mkdirSync(root, { recursive: true, mode: 0o700 });
-  const store = new GcsStateStore(bucket, root, deps.run);
-  // read() mirrors each document into the install dir.
-  store.read("install.json");
-  store.read("progress.json");
+  // Mirror exactly the install.json validated above (a re-read could fetch
+  // a different one written meanwhile); progress.json is bookkeeping.
+  new LocalStateStore(root).write("install.json", JSON.parse(text));
+  new GcsStateStore(bucket, root, deps.run).read("progress.json");
   return {
     ok: true,
     installId,
