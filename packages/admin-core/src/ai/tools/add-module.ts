@@ -281,7 +281,7 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
       targetRef: {
         type: "string",
         minLength: 1,
-        maxLength: 200,
+        maxLength: 500,
         description:
           "Page: its id or URL path (e.g. '/docs/setup'). Layout / template: slug or id.",
       },

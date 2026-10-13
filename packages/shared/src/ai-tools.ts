@@ -175,7 +175,8 @@ export const addModuleToolInput = z
   .object({
     target: z.enum(["page", "layout", "template"]),
     /** Page: id or URL path. Layout / template: slug or id. Resolved server-side. */
-    targetRef: z.string().min(1).max(200),
+    // A page path can run to ~390 chars (6 levels x 64-char slugs).
+    targetRef: z.string().min(1).max(500),
     blockName: z.string().min(1).max(80),
     position: positionInputSchema,
     /** Reuse an existing module by id (any target). Mutually exclusive with the
@@ -636,7 +637,8 @@ export const createTemplateToolInput = z
 export const removeModuleFromToolInput = z
   .object({
     target: z.enum(["page", "layout"]),
-    targetRef: z.string().min(1).max(200),
+    // A page path can run to ~390 chars (6 levels x 64-char slugs).
+    targetRef: z.string().min(1).max(500),
     moduleId: z.string().uuid(),
   })
   .strict();
