@@ -33,12 +33,13 @@
  *     where branch-write IS the desired semantic, store branchId in
  *     the persisted row and read it here.
  *
- * (b) Plugin tools fold in (#388). The dispatch first resolves the
- *     tool against `pluginToolsRegistry` (mirroring the chat-runner's
- *     dispatcher) and routes plugin tools through
- *     `runPluginOperation`; built-ins fall through to the built-in
- *     registry. A queued plugin tool's Approve therefore dispatches
- *     instead of 400ing with "unknown tool".
+ * (b) Plugin tools fold in (#388, #687). `approveQueuedToolCall`
+ *     resolves the tool against `pluginToolsRegistry` first and runs
+ *     plugin tools through the plugin host the way the in-chat gate
+ *     does (approver's invocation, the tool's requiredPermission,
+ *     live only for an approver who may publish); built-ins fall
+ *     through to the built-in registry. Approval-declared plugin tools
+ *     an external agent called over the Power-MCP land here.
  *
  * (c) Owner-ctx dispatch + actor-scope mismatch (v0.6.0 alpha.4 Fix R).
  *     The dispatched tool runs with `locals.ctx` (actorKind: "human")
@@ -55,8 +56,8 @@
  *     ctx with an Owner attribution layered on top.
  */
 
-import { createDefaultToolRegistry } from "@caelo-cms/admin-core";
-import { loadedPlugins, pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";
+import { approveQueuedToolCall, createDefaultToolRegistry } from "@caelo-cms/admin-core";
+import { pluginToolsRegistry } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -141,69 +142,19 @@ export const actions: Actions = {
       for (const permission of declared) requirePermission(locals, permission);
     }
 
-    // Step 1: atomic claim — transitions pending → applied + returns
-    // the persisted toolName + args. Re-clicking the Approve button
-    // (race condition) returns "proposal already applied".
-    const claim = await execute(registry, adapter, locals.ctx, "tool_approvals.read_for_execute", {
+    // Claim (atomic pending → applied, so a double click applies once),
+    // dispatch with the persisted args, record the result on the row —
+    // shared with the Power-MCP integration tests (#687). Plugin tools run
+    // through the plugin host as the approver, like the in-chat gate.
+    const approved = await approveQueuedToolCall({
+      registry,
+      adapter,
+      approverCtx: locals.ctx,
       proposalId,
     });
-    if (!claim.ok) {
-      const message =
-        typeof claim.error === "object" && claim.error && "message" in claim.error
-          ? String((claim.error as { message: unknown }).message)
-          : "approve failed";
-      return fail(400, { error: message });
-    }
-    const { toolName, args, chatSessionId } = claim.value as {
-      toolName: string;
-      args: Record<string, unknown>;
-      chatSessionId: string | null;
-    };
-
-    // Step 2: dispatch through the same tool registry the chat-runner
-    // uses. ctx is the Owner's session ctx, not the AI ctx — audit
-    // shows the human approver as the actor that ran the tool.
-    let dispatchResult: { ok: boolean; content: string };
-    try {
-      // #388 — plugin tools resolve first (mirrors tool-dispatch.ts);
-      // built-ins fall through to the built-in registry.
-      const pluginTool = pluginToolsRegistry.resolve(toolName);
-      if (pluginTool) {
-        if (loadedPlugins.bySlug(pluginTool.pluginSlug)?.externalApproval)
-          throw new Error(
-            "This legacy proposal has no installation binding. Request a fresh external plugin call in the Caelo chat.",
-          );
-        const r = await runPluginOperation({
-          invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
-          approvedToolName: toolName,
-          pluginSlug: pluginTool.pluginSlug,
-          operationName: pluginTool.spec.operationName,
-          args,
-        });
-        dispatchResult = r.ok
-          ? { ok: true, content: JSON.stringify(r.value) }
-          : { ok: false, content: `${r.error.kind}: ${r.error.message}` };
-      } else {
-        const tools = createDefaultToolRegistry();
-        dispatchResult = await tools.dispatch(toolName, args, locals.ctx, {
-          adapter,
-          registry,
-          ...(chatSessionId ? { chatSessionId } : {}),
-        });
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      dispatchResult = { ok: false, content: `dispatch threw: ${errMsg}` };
-    }
-
-    // Step 3: capture the dispatch outcome so the queue page shows
-    // result-aware status without an extra round-trip. Best-effort —
-    // failure here doesn't undo the Step 1 'applied' transition.
-    await execute(registry, adapter, locals.ctx, "tool_approvals.mark_result", {
-      proposalId,
-      ok: dispatchResult.ok,
-      summary: dispatchResult.content.slice(0, 2000),
-    });
+    if (!approved.ok) return fail(400, { error: approved.error });
+    const { toolName, chatSessionId } = approved.value;
+    const dispatchResult = { ok: approved.value.ok, content: approved.value.content };
 
     // v0.6.0 alpha.4 Fix T — propagate the REAL dispatch result back
     // into the chat session so the AI sees the actual outcome on its

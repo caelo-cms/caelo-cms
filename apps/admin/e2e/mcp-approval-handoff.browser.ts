@@ -14,6 +14,7 @@ import {
   ensureIsolatedOwner,
   ISOLATED_OWNER_PASSWORD,
   mintAdminMcpToken,
+  runBunInline,
 } from "./helpers.js";
 
 test.beforeAll(clearLoginRateBucket);
@@ -114,5 +115,90 @@ test("an external agent's proposal is decided in the chat and handed back to the
   );
 
   // Neither click started a turn of this chat's own AI.
+  expect(streamPosts).toEqual([]);
+});
+
+/** Creates `count` draft pages (system actor) and returns their ids. */
+function seedPages(prefix: string, count: number): string[] {
+  const out = runBunInline(
+    `
+    import { SQL } from "bun";
+    import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
+    import { registerAdminOps } from "@caelo-cms/admin-core";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    const templateId = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const rows = await tx\`SELECT id::text AS id FROM templates ORDER BY created_at LIMIT 1\`;
+      return rows[0]?.id;
+    });
+    await sql.end();
+    if (!templateId) throw new Error("no template to seed pages with");
+    const adapter = new DatabaseAdapter({ adminDatabaseUrl: process.env.ADMIN_DATABASE_URL, publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL });
+    const registry = new OperationRegistry(); registerAdminOps(registry);
+    const ids = [];
+    for (let i = 0; i < Number(process.env.COUNT); i++) {
+      const r = await execute(registry, adapter, { actorId: "00000000-0000-0000-0000-00000000ffff", actorKind: "system", requestId: "e2e-seed-pages" }, "pages.create", { slug: process.env.PREFIX + "-" + i, title: process.env.PREFIX + " " + i, templateId });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      ids.push(r.value.pageId);
+    }
+    process.stdout.write(JSON.stringify(ids));
+    await adapter.close();
+    `,
+    { PREFIX: prefix, COUNT: String(count) },
+  );
+  return JSON.parse(out.trim()) as string[];
+}
+
+// Issue #687 — an SDK-style gated tool (no propose op of its own) called
+// over MCP: delete_pages_many with 5+ pages queues in the generic
+// tool-approval queue, its card shows in the operator's chat as the
+// external agent's, and Approve runs it through the shared apply path
+// (approveQueuedToolCall) — the same path an approval-declared plugin tool
+// such as set_locales takes.
+test("an external agent's needs-approval tool call is approved in the chat and handed back", async ({
+  page,
+  request,
+}) => {
+  const token = mintAdminMcpToken(ensureIsolatedOwner(OWNER_EMAIL), "mcp-gated-e2e");
+  const session = await mcpPost<{ chatSessionId: string }>(request, token, "/api/mcp/session", {
+    newSession: true,
+    title: `mcp-gated-e2e-${Date.now()}`,
+  });
+  const pageIds = seedPages(`e2e-mcp-gated-${Date.now()}`, 5);
+  const called = await mcpPost<{
+    ok: boolean;
+    content: string;
+    approval: { proposalId: string; domain: string } | null;
+  }>(request, token, "/api/mcp/tool", {
+    toolName: "delete_pages_many",
+    args: { deletions: pageIds.map((pageId) => ({ pageId, disposition: "404" })) },
+    chatSessionId: session.chatSessionId,
+  });
+  expect(called.ok, called.content).toBe(true);
+  expect(called.approval?.domain).toBe("tool_approvals");
+  const proposalId = called.approval!.proposalId;
+  const outcome = async () =>
+    (await mcpPost<{ outcome: string }>(request, token, "/api/mcp/approval", { proposalId }))
+      .outcome;
+  expect(await outcome()).toBe("pending");
+
+  const streamPosts: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().includes("/stream")) streamPosts.push(r.url());
+  });
+  await login(page);
+  await page.goto(`/content/chat/${session.chatSessionId}`);
+  const row = page
+    .getByTestId("chat-pending-strip")
+    .locator("li")
+    .filter({ hasText: proposalId.slice(0, 8) });
+  await expect(row.getByTestId("pending-external-agent")).toHaveText(
+    "Requested by the external agent (MCP)",
+  );
+  await row.getByTestId("pending-approve").click();
+  await expect(
+    page.getByTestId("chat-mcp-handoff").filter({ hasText: "Approved and applied" }),
+  ).toBeVisible({ timeout: 15_000 });
+  expect(await outcome()).toBe("applied");
   expect(streamPosts).toEqual([]);
 });

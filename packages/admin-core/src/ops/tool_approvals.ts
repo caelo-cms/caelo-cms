@@ -92,6 +92,12 @@ export const readToolApprovalForExecuteOp = defineOperation({
     toolName: z.string(),
     args: z.record(z.string(), z.unknown()),
     chatSessionId: z.string().nullable(),
+    /**
+     * The proposing session's branch (#687) — an approved plugin call stays
+     * on it when the approver cannot publish, and an external plugin's
+     * installation binding is keyed by it.
+     */
+    chatBranchId: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
     // Atomic claim: only transitions if currently 'pending', so
@@ -105,11 +111,14 @@ export const readToolApprovalForExecuteOp = defineOperation({
       WHERE id = ${input.proposalId}::uuid AND status = 'pending'
       RETURNING tool_name AS tool_name,
                 args AS args,
-                chat_session_id::text AS chat_session_id
+                chat_session_id::text AS chat_session_id,
+                (SELECT cs.chat_branch_id::text FROM chat_sessions cs
+                  WHERE cs.id = tool_approval_actions.chat_session_id) AS chat_branch_id
     `)) as unknown as Array<{
       tool_name: string;
       args: unknown;
       chat_session_id: string | null;
+      chat_branch_id: string | null;
     }>;
     const row = rows[0];
     if (!row) {
@@ -132,6 +141,7 @@ export const readToolApprovalForExecuteOp = defineOperation({
       toolName: row.tool_name,
       args,
       chatSessionId: row.chat_session_id,
+      chatBranchId: row.chat_branch_id,
     });
   },
 });
