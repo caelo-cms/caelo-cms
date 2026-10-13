@@ -162,6 +162,12 @@ export const registerAgentRunOp = defineOperation({
        */
       stopEpochAtArrival: z.number().int().nonnegative().optional(),
       /**
+       * A caelo_chat turn: the MCP token driving it. If the operator stopped
+       * that token's agent in this chat, its turns are refused too — the
+       * Stop must not be bypassed by switching MCP surfaces.
+       */
+      mcpTokenId: z.string().uuid().optional(),
+      /**
        * True only for a message the operator sent (or an Approve/Reject they
        * clicked) in the chat itself. Such a turn lifts the chat's Stop latch;
        * every other turn (auto nudges, caelo_chat) is refused while it holds.
@@ -221,6 +227,21 @@ export const registerAgentRunOp = defineOperation({
           message:
             "Not run: this message reached the server before you pressed Stop, so it was stopped with the rest. Send it again if you still want it.",
         });
+      }
+      if (input.mcpTokenId) {
+        const blocked = (await tx.execute(sql`
+          SELECT 1 AS blocked FROM chat_agent_runs
+          WHERE chat_session_id = ${input.chatSessionId}::uuid
+            AND mcp_token_id = ${input.mcpTokenId}::uuid AND state = 'stopped'
+        `)) as unknown as { blocked: number }[];
+        if (blocked.length > 0) {
+          return ok({
+            registered: false as const,
+            reason: "stopped" as const,
+            message:
+              'The operator stopped this external agent in this chat. Nothing runs for it here until they click "Allow again".',
+          });
+        }
       }
       if (session.agents_stopped_at !== null) {
         if (!input.operatorInitiated) {

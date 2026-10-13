@@ -349,7 +349,7 @@ export const mcpSendChatOp = defineOperation({
         message: `auth_error: token ${resolved.error}`,
       });
     }
-    const { actorId, aiCostCapMicrocents } = resolved.value;
+    const { actorId, aiCostCapMicrocents, tokenId } = resolved.value;
 
     // Fresh requestId per turn — MCP clients echo it back so the operator
     // can click through to /security/audit/<id> for the full trail.
@@ -421,6 +421,7 @@ export const mcpSendChatOp = defineOperation({
         // Issue #664 — listed in the chat's running agents; the operator's
         // Stop reaches it, and a stopped chat refuses it.
         agentRunSource: "mcp_chat",
+        agentRunMcpTokenId: tokenId,
         ...(stopEpochAtArrival !== undefined ? { stopEpochAtArrival } : {}),
       },
       {

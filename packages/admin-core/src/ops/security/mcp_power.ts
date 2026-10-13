@@ -514,17 +514,13 @@ export const mcpExecuteToolOp = defineOperation({
     // working in the session (the Live Edit chat then does not start a turn
     // of its own AI, and lists this agent with a Stop button); a call after
     // the operator stopped it is refused until they allow it again.
-    const presence = await execute(
-      registry,
-      adapter,
-      humanCtxWithBranch,
-      "chat.touch_external_agent",
-      {
+    const touchPresence = () =>
+      execute(registry, adapter, humanCtxWithBranch, "chat.touch_external_agent", {
         chatSessionId: input.chatSessionId,
         mcpTokenId: auth.tokenId,
         label: `External agent "${auth.displayName}" (MCP)`.slice(0, 200),
-      },
-    );
+      });
+    const presence = await touchPresence();
     if (!presence.ok) {
       const detail = "message" in presence.error ? presence.error.message : presence.error.kind;
       return err({
@@ -697,9 +693,17 @@ export const mcpExecuteToolOp = defineOperation({
         approval,
       });
     };
+    // A long call (image generation may take minutes) keeps the agent
+    // listed as working — and stoppable — until it returns; the window then
+    // counts from the call's end, not its start.
+    const keepPresent = setInterval(() => {
+      touchPresence().catch(() => undefined);
+    }, POWER_MCP_PRESENCE_RENEW_MS);
     try {
       return await dispatchAndRecord();
     } finally {
+      clearInterval(keepPresent);
+      await touchPresence().catch(() => undefined);
       if (leaseHolderId) {
         const released = await execute(
           registry,
@@ -714,6 +718,9 @@ export const mcpExecuteToolOp = defineOperation({
     }
   },
 });
+
+/** How often a running Power-MCP call renews the agent's presence (well inside the 2-min window). */
+const POWER_MCP_PRESENCE_RENEW_MS = 30_000;
 
 /** How long a Power-MCP write may hold the chat's turn lease (its call duration). */
 const POWER_MCP_CALL_LEASE_TTL_MS = 10 * 60_000;

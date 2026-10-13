@@ -96,6 +96,7 @@ export async function* runChatTurn(
         // Only the operator's own action lifts a Stop; auto-sent nudges and
         // external callers never do.
         operatorInitiated: options.operatorInitiated === true,
+        ...(options.agentRunMcpTokenId ? { mcpTokenId: options.agentRunMcpTokenId } : {}),
         ...(options.stopEpochAtArrival !== undefined
           ? { stopEpochAtArrival: options.stopEpochAtArrival }
           : {}),

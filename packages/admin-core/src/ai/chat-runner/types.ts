@@ -168,6 +168,8 @@ export interface ChatRunnerOptions {
    * registration refuses the turn — it was sent before the Stop.
    */
   readonly stopEpochAtArrival?: number;
+  /** caelo_chat (issue #665): the MCP token driving the turn — its Stop block applies. */
+  readonly agentRunMcpTokenId?: string;
   /**
    * The running-agents row of THIS turn — set by `runChatTurn` itself after
    * registration, read by the spawn handler to parent its subagents.

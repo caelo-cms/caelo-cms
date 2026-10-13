@@ -36,6 +36,8 @@ export interface AgentRunRegistration {
   readonly parentRunId?: string;
   /** The chat's Stop count when the request arrived (refused if a Stop came since). */
   readonly stopEpochAtArrival?: number;
+  /** caelo_chat: the MCP token driving the turn (its Stop block applies). */
+  readonly mcpTokenId?: string;
   /** The operator's own message (or Approve/Reject click) in this chat. */
   readonly operatorInitiated: boolean;
 }
@@ -81,6 +83,7 @@ export function queryApiAgentRunStore(
         source: reg.source,
         label: reg.label,
         ...(reg.parentRunId ? { parentRunId: reg.parentRunId } : {}),
+        ...(reg.mcpTokenId ? { mcpTokenId: reg.mcpTokenId } : {}),
         ...(reg.stopEpochAtArrival !== undefined
           ? { stopEpochAtArrival: reg.stopEpochAtArrival }
           : {}),

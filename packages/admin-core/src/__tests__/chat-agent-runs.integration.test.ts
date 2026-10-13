@@ -770,6 +770,28 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
     const readRefused = await mcpCall(token, chatSessionId, "list_pages", {});
     expect(readRefused.content).toStartWith("stopped_by_operator:");
     expect((await listRuns(chatSessionId))[0]).toMatchObject({ kind: "mcp", state: "stopped" });
+    // … and the same token cannot go around it through caelo_chat (codex review).
+    const tokenId = await withSql(async (tx) => {
+      const rows =
+        (await tx`SELECT mcp_token_id::text AS id FROM chat_agent_runs WHERE id = ${runs[0]?.id as string}::uuid`) as unknown as {
+          id: string;
+        }[];
+      return rows[0]?.id as string;
+    });
+    const viaChat = await execute(registry, adapter, OWNER, "chat.register_agent_run", {
+      chatSessionId,
+      kind: "turn",
+      source: "mcp_chat",
+      label: "External agent (caelo_chat)",
+      operatorInitiated: false,
+      mcpTokenId: tokenId,
+    });
+    expect(viaChat.ok && (viaChat.value as { registered: boolean; reason?: string })).toMatchObject(
+      {
+        registered: false,
+        reason: "stopped",
+      },
+    );
 
     // … and the stopped agent no longer keeps the Live Edit AI out.
     const now = new AnswerOnly();
