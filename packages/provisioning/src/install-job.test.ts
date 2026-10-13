@@ -342,6 +342,30 @@ describe("readExecutionLogs and late entries", () => {
   });
 });
 
+describe("readExecutionLogs and full pages", () => {
+  it("reads on past a full page instead of re-reading the same oldest entries", async () => {
+    const full = Array.from({ length: 1000 }, (_, i) => ({
+      insertId: `old${i}`,
+      timestamp: `2026-10-13T10:00:${String(Math.floor(i / 20)).padStart(2, "0")}Z`,
+      textPayload: `old ${i}`,
+    }));
+    const { run, calls } = fakeRun((args) =>
+      args[2]?.includes('timestamp>="2026-10-13T10:00:49Z"')
+        ? ok(
+            JSON.stringify([
+              { insertId: "new", timestamp: "2026-10-13T10:00:55Z", textPayload: "new line" },
+            ]),
+          )
+        : ok(JSON.stringify(full)),
+    );
+    const seen = new Set<string>();
+    const r = await readExecutionLogs(run, { projectId: "p", execution: "e1" }, null, seen);
+    expect(r.lines.at(-1)).toBe("new line");
+    expect(r.lines).toHaveLength(1001);
+    expect(calls).toHaveLength(2);
+  });
+});
+
 describe("the setup-link secret", () => {
   it("creates the secret with the install's replication, adds the link on stdin and disables older versions", async () => {
     const { run, calls } = fakeRun((args) => {
