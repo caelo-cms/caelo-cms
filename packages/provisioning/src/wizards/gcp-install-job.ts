@@ -13,10 +13,12 @@
 import { CAELO_VERSION } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
+import { formatDnsRecordGroups, groupDnsRecords, type InstallDnsRecord } from "../dns/groups.js";
 import { activeAccount, gcloud } from "../gcloud.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import { realSleep } from "../gcloud-retry.js";
 import {
+  claimInstallJobStatus,
   decideInstallJob,
   describeExecution,
   INSTALL_JOB_NAME,
@@ -27,10 +29,10 @@ import {
   readInstallJobStatus,
   readSetupLink,
   startInstallJob,
-  writeInstallJobStatus,
 } from "../install-job.js";
 import {
   currentMetadata,
+  getStepPayload,
   type InstallMetadata,
   installRoot,
   isStepDone,
@@ -78,6 +80,11 @@ async function decide(
   return decideInstallJob(status, live);
 }
 
+/** At most this many polls after the job finished, to catch late log lines. */
+const DRAIN_POLLS = 12;
+/** ...stopping early after this many polls in a row brought nothing new. */
+const DRAIN_QUIET_POLLS = 3;
+
 /** How a tail ended. */
 export type TailOutcome =
   | { readonly kind: "succeeded" }
@@ -96,10 +103,22 @@ export async function tailInstallJob(
   const seen = new Set<string>();
   let cursor: string | null = null;
   let lastPhase = "";
-  const flush = async () => {
+  const flush = async (): Promise<number> => {
     const logs = await readExecutionLogs(deps.run, target, cursor, seen);
     cursor = logs.cursor;
     for (const line of logs.lines) deps.print(line);
+    return logs.lines.length;
+  };
+  // Cloud Logging ingests asynchronously: the bucket can say "done" before
+  // the job's last lines (its summary, the go-live DNS records) are
+  // queryable. Keep reading until a few polls in a row bring nothing new,
+  // for at most DRAIN_POLLS polls.
+  const drain = async (): Promise<void> => {
+    let quiet = 0;
+    for (let i = 0; i < DRAIN_POLLS && quiet < DRAIN_QUIET_POLLS; i++) {
+      await deps.sleep(deps.intervalMs);
+      quiet = (await flush()) === 0 ? quiet + 1 : 0;
+    }
   };
   for (let tick = 0; ; tick++) {
     await flush();
@@ -109,8 +128,12 @@ export async function tailInstallJob(
       lastPhase = ours.phase;
       deps.print(bold(cyan(`==> ${ours.phase}`)) + (ours.detail ? `\n    ${ours.detail}` : ""));
     }
-    if (ours?.state === "succeeded") return { kind: "succeeded" };
+    if (ours?.state === "succeeded") {
+      await drain();
+      return { kind: "succeeded" };
+    }
     if (ours?.state === "failed") {
+      await drain();
       return { kind: "failed", status: ours, why: ours.detail ?? `stopped at "${ours.phase}"` };
     }
     // The job writes its status as it goes; an execution that died (out of
@@ -118,7 +141,7 @@ export async function tailInstallJob(
     if (tick % 6 === 5) {
       const live = await describeExecution(deps.run, target);
       if (live !== "running") {
-        await flush();
+        await drain();
         const final = readInstallJobStatus(bucket, deps.syncRun);
         if (final?.execution === target.execution && final.state === "succeeded") {
           return { kind: "succeeded" };
@@ -193,16 +216,35 @@ async function showResult(meta: InstallMetadata): Promise<void> {
     process.exit(1);
   }
   const adminBase = new URL(link).origin;
+  // The records from the stack's outputs, as the pulumi-up step recorded
+  // them — not from the log, which a re-run after the install no longer shows.
+  const outputs =
+    getStepPayload<{ outputs?: Record<string, unknown> }>(meta.installId, `pulumi-up-${projectId}`)
+      ?.outputs ?? {};
+  const records = Array.isArray(outputs.dnsRecordsRequiredOut)
+    ? (outputs.dnsRecordsRequiredOut as InstallDnsRecord[])
+    : [];
+  const dnsLines =
+    records.length > 0
+      ? [
+          "",
+          bold(`DNS records for ${meta.domain}:`),
+          ...formatDnsRecordGroups(groupDnsRecords(records, meta.domain), meta.domain).map(
+            (l) => `  ${l}`,
+          ),
+        ]
+      : [];
   note(
     [
       green(`✓ ${meta.domain} is installed.`),
+      ...dnsLines,
       "",
       bold("Next steps:"),
       `  1. Owner setup — open in your browser (sign in with ${meta.ownerEmail}):`,
       `     ${cyan(link)}`,
       `  2. AI provider — visit ${cyan(`${adminBase}/settings/ai`)} and paste your Anthropic API key.`,
-      `  3. DNS records for go-live and everything else the install printed are in the log above`,
-      `     (and in ${cyan(`${adminBase}/settings/dns`)}).`,
+      `  3. Set the go-live DNS records above once your new site is published`,
+      `     (the admin lists them too, at ${cyan(`${adminBase}/settings/domains`)}).`,
       "",
       bold("Later:"),
       `  New releases: ${cyan(`${adminBase}/settings/updates`)} shows how to install them.`,
@@ -273,7 +315,10 @@ export async function launchInstallJob(opts: {
     process.exit(1);
   }
   const now = new Date().toISOString();
-  writeInstallJobStatus(
+  // The execution is already running and writes its own status; this one
+  // only lands if it hasn't yet, so a re-run started meanwhile attaches
+  // instead of starting a second execution (install-job.ts claimInstallJobStatus).
+  claimInstallJobStatus(
     opsBucketName(projectId),
     {
       statusVersion: 1,

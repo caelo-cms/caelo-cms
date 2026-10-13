@@ -149,6 +149,45 @@ export function writeInstallJobStatus(
   }
 }
 
+/**
+ * Write `status` only if the document doesn't name its execution yet and
+ * nobody wrote it since this call read it (`--if-generation-match`). The
+ * launcher records a just-started execution this way: the execution itself
+ * may already have written a newer phase — or its failure — which must win.
+ *
+ * @returns whether this call's write landed
+ */
+export function claimInstallJobStatus(
+  bucket: string,
+  status: InstallJobStatus,
+  run: SyncGcloud,
+): boolean {
+  const url = installJobStatusUrl(bucket);
+  const described = run(["storage", "objects", "describe", url, "--format=value(generation)"]);
+  let generation: string;
+  if (described.ok) generation = described.stdout.trim();
+  else if (NOT_FOUND.test(described.stderr)) generation = "0";
+  else throw new Error(`Could not read ${url}: ${described.stderr.trim()}`);
+  if (!/^\d+$/.test(generation)) throw new Error(`${url}: unexpected generation "${generation}"`);
+  if (readInstallJobStatus(bucket, run)?.execution === status.execution) return false;
+  const parsed = InstallJobStatusSchema.parse(status);
+  assertNoSecrets(parsed, "install-job.json");
+  const r = run(
+    [
+      "storage",
+      "cp",
+      "-",
+      url,
+      "--content-type=application/json",
+      `--if-generation-match=${generation}`,
+    ],
+    `${JSON.stringify(parsed, null, 2)}\n`,
+  );
+  if (r.ok) return true;
+  if (/PreconditionFailed|412|pre-conditions/i.test(r.stderr)) return false;
+  throw new Error(`Could not write ${url}: ${r.stderr.trim() || `gcloud exited ${r.exitCode}`}`);
+}
+
 /** Where a Cloud Run execution stands. */
 export type ExecutionState = "running" | "succeeded" | "failed" | "missing";
 

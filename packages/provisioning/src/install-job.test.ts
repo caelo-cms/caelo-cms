@@ -10,6 +10,7 @@ import { describe, expect, it } from "bun:test";
 import type { GcloudResult } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import {
+  claimInstallJobStatus,
   decideInstallJob,
   describeExecution,
   INSTALL_JOB_NAME,
@@ -48,15 +49,31 @@ const STATUS: InstallJobStatus = {
   updatedAt: "2026-10-13T10:05:00.000Z",
 };
 
-/** An in-memory ops bucket behind `gcloud storage cat|cp`. */
-function fakeBucket(objects: Map<string, string> = new Map()): SyncGcloud {
+/**
+ * An in-memory ops bucket behind `gcloud storage cat|cp|objects describe`,
+ * with object generations and `--if-generation-match`.
+ */
+function fakeBucket(
+  objects: Map<string, string> = new Map(),
+  generations: Map<string, number> = new Map(),
+): SyncGcloud {
   return (args, input) => {
     if (args[0] === "storage" && args[1] === "cat") {
       const v = objects.get(args[2] ?? "");
       return v === undefined ? fail("One or more URLs matched no objects.") : ok(v);
     }
+    if (args[0] === "storage" && args[1] === "objects" && args[2] === "describe") {
+      const g = generations.get(args[3] ?? "");
+      return g === undefined ? fail("NotFound: 404") : ok(`${g}\n`);
+    }
     if (args[0] === "storage" && args[1] === "cp" && args[2] === "-") {
-      objects.set(args[3] ?? "", input ?? "");
+      const url = args[3] ?? "";
+      const match = args.find((a) => a.startsWith("--if-generation-match="));
+      if (match && Number(match.split("=")[1]) !== (generations.get(url) ?? 0)) {
+        return fail("PreconditionFailed: 412 At least one of the pre-conditions did not hold.");
+      }
+      objects.set(url, input ?? "");
+      generations.set(url, (generations.get(url) ?? 0) + 1);
       return ok();
     }
     return fail(`unexpected: ${args.join(" ")}`);
@@ -126,6 +143,39 @@ describe("the status document", () => {
     const objects = new Map([[installJobStatusUrl(BUCKET), '{"statusVersion":9}']]);
     expect(() => readInstallJobStatus(BUCKET, fakeBucket(objects))).toThrow(/not an install-job/);
     expect(() => readInstallJobStatus(BUCKET, () => fail("403 Forbidden"))).toThrow(/403/);
+  });
+});
+
+describe("claimInstallJobStatus", () => {
+  it("records a just-started execution when the document doesn't name it yet", () => {
+    const run = fakeBucket();
+    writeInstallJobStatus(BUCKET, { ...STATUS, execution: "old", state: "failed" }, run);
+    expect(claimInstallJobStatus(BUCKET, STATUS, run)).toBe(true);
+    expect(readInstallJobStatus(BUCKET, run)).toEqual(STATUS);
+  });
+
+  it("never overwrites what the execution itself already recorded", () => {
+    const run = fakeBucket();
+    const own = { ...STATUS, phase: "Waiting for DNS", detail: "A admin.acme.com → 1.2.3.4" };
+    writeInstallJobStatus(BUCKET, own, run);
+    expect(claimInstallJobStatus(BUCKET, { ...STATUS, phase: "Starting" }, run)).toBe(false);
+    expect(readInstallJobStatus(BUCKET, run)).toEqual(own);
+  });
+
+  it("loses the race against a write that lands after its read", () => {
+    const inner = fakeBucket();
+    let raced = false;
+    // The execution writes between the launcher's generation read and its write.
+    const run: SyncGcloud = (args, input) => {
+      const r = inner(args, input);
+      if (!raced && args[1] === "objects") {
+        raced = true;
+        writeInstallJobStatus(BUCKET, { ...STATUS, phase: "Choosing the release images" }, inner);
+      }
+      return r;
+    };
+    expect(claimInstallJobStatus(BUCKET, { ...STATUS, execution: "launcher" }, run)).toBe(false);
+    expect(readInstallJobStatus(BUCKET, inner)?.phase).toBe("Choosing the release images");
   });
 });
 
@@ -284,6 +334,8 @@ describe("tailInstallJob", () => {
     const { run } = fakeRun((args) => {
       if (args[0] === "logging") {
         poll++;
+        // Lines 4 and 5 arrive after the job recorded success (late ingestion).
+        if (poll > 5) return ok("[]");
         return ok(
           JSON.stringify([
             { insertId: `i${poll}`, timestamp: `t${poll}`, textPayload: `line ${poll}` },
@@ -303,7 +355,13 @@ describe("tailInstallJob", () => {
       },
     });
     expect(outcome).toEqual({ kind: "succeeded" });
-    expect(printed.filter((l) => l.startsWith("line"))).toEqual(["line 1", "line 2", "line 3"]);
+    expect(printed.filter((l) => l.startsWith("line"))).toEqual([
+      "line 1",
+      "line 2",
+      "line 3",
+      "line 4",
+      "line 5",
+    ]);
     expect(printed.some((l) => l.includes(STATUS.phase))).toBe(true);
   });
 
