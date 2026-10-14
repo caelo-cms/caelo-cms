@@ -1,37 +1,255 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #696 Phase 0 — Settings → Updates: the release this install runs, the
- * newest release with its notes, and (for whoever may change settings —
- * the Owner by default) the exact, version-pinned command that upgrades
- * this install. Anyone with settings.read sees the versions; the command
- * needs settings.write because running it is an Owner decision.
+ * Settings → Updates (#696): the release this install runs, the newest
+ * release with its notes, and how to install it.
  *
- * Nothing here installs anything: the AI only reads the same status
- * (`get_caelo_version`), and in-product installs arrive in a later phase.
+ *   - Phase 0: for whoever may change settings, the exact, version-pinned
+ *     command that upgrades this install from a terminal.
+ *   - Phase 2: on installs with the upgrader job, "Install update" for whoever
+ *     holds `platform.update` (the Owner): a fresh Google sign-in (step-up),
+ *     a confirmation of what will happen, then the request + the job start,
+ *     and a live timeline of the job's run that survives the admin restarting
+ *     (it is in the database). A release that changes the cloud setup ends as
+ *     "needs Cloud Shell" with the commands to run there.
+ *
+ * Nothing here installs anything itself and the AI only reads (CLAUDE.md §2;
+ * #696 decision 3). The ops behind the actions re-check the permission and the
+ * step-up, and consume the step-up.
  */
 
-import type { PlatformUpdateStatus } from "@caelo-cms/admin-core";
+import {
+  type PlatformUpdateEvent,
+  type PlatformUpdateRequest,
+  type PlatformUpdateStatus,
+  STEP_UP_REQUIRED,
+  startUpgraderFor,
+} from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
-import { error } from "@sveltejs/kit";
+import { error, fail, redirect } from "@sveltejs/kit";
+import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
-import { resolveUpgradePath, type UpgradePath } from "#lib/upgrade-path.js";
-import type { PageServerLoad } from "./$types";
+import {
+  beginStepUp,
+  requireStepUp,
+  STEP_UP_RESULT_COOKIE,
+  stepUpRedirectUri,
+} from "#lib/server/step-up.js";
+import { upgraderTrigger } from "#lib/server/upgrader.js";
+import {
+  cloudShellUpgrade,
+  installProjectId,
+  resolveUpgradePath,
+  type UpgradePath,
+} from "#lib/upgrade-path.js";
+import type { Actions, PageServerLoad } from "./$types";
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, cookies, url }) => {
   const user = requirePermission(locals, "settings.read");
   const { adapter, registry } = getQueryContext();
-  const r = await execute(registry, adapter, locals.ctx, "platform_updates.status", {});
-  if (!r.ok) throw error(500, opErrorMessage(r.error, "could not read the update status"));
-  const status = r.value as PlatformUpdateStatus;
+  const [statusResult, latestResult, historyResult] = await Promise.all([
+    execute(registry, adapter, locals.ctx, "platform_updates.status", {}),
+    execute(registry, adapter, locals.ctx, "platform_updates.get", {}),
+    execute(registry, adapter, locals.ctx, "platform_updates.list", { limit: 10 }),
+  ]);
+  if (!statusResult.ok) {
+    throw error(500, opErrorMessage(statusResult.error, "could not read the update status"));
+  }
+  const status = statusResult.value as PlatformUpdateStatus;
+  const latest = latestResult.ok
+    ? (latestResult.value as {
+        request: PlatformUpdateRequest | null;
+        events: PlatformUpdateEvent[];
+      })
+    : { request: null, events: [] };
+  const history = historyResult.ok
+    ? (historyResult.value as { requests: PlatformUpdateRequest[] }).requests
+    : [];
+
   const canUpgrade = user.permissions.has("settings.write");
+  const canInstall = user.permissions.has("platform.update");
   // Only built for those who may run it, and only when there is a newer
   // release to name — the command always carries an exact version.
   const upgrade: UpgradePath | null =
     canUpgrade && status.upgradeAvailable && status.latestVersion
       ? resolveUpgradePath(process.env, status.latestVersion)
       : null;
-  return { status, canUpgrade, upgrade };
+
+  const upgrader = upgraderTrigger();
+  const stepUp = canInstall ? await requireStepUp(locals, cookies, "platform_update") : null;
+  // A run that died (out of memory, timeout) never writes its end; Cloud
+  // Run knows. Say so instead of showing "Installing" until the next run
+  // ends it.
+  let deadRun: { logsUrl: string } | null = null;
+  const active = latest.request;
+  if (active?.status === "running" && active.execution && upgrader.ok && upgrader.trigger) {
+    const run = await upgrader.trigger.latest().catch(() => null);
+    if (run && run.execution === active.execution && run.state !== "running") {
+      deadRun = { logsUrl: run.logsUrl };
+    }
+  }
+  // A release that needs Cloud Shell: the commands, pinned to that release.
+  const cloudShell =
+    canUpgrade && latest.request?.status === "needs_cloud_shell"
+      ? cloudShellUpgrade(process.env, latest.request.targetVersion)
+      : null;
+
+  type StepUpResult = { ok: boolean; purpose: string; message: string };
+  let stepUpResult: StepUpResult | null = null;
+  const flash = cookies.get(STEP_UP_RESULT_COOKIE);
+  if (flash) {
+    cookies.delete(STEP_UP_RESULT_COOKIE, { path: "/settings/updates" });
+    try {
+      stepUpResult = JSON.parse(flash) as StepUpResult;
+    } catch {
+      stepUpResult = null;
+    }
+  }
+
+  return {
+    status,
+    canUpgrade,
+    canInstall,
+    upgrade,
+    upgrader: upgrader.ok
+      ? { available: upgrader.trigger !== null, problem: null }
+      : { available: false, problem: `${upgrader.error} ${upgrader.nextStep}` },
+    stepUp: stepUp
+      ? stepUp.fresh
+        ? { configured: true, fresh: true, freshUntil: stepUp.freshUntil, problem: null }
+        : { configured: stepUp.configured, fresh: false, freshUntil: null, problem: stepUp.problem }
+      : null,
+    stepUpResult,
+    redirectUri: stepUpRedirectUri(url.origin),
+    credentialsUrl: (() => {
+      const project = installProjectId({ CAELO_UPGRADER_JOB: process.env.CAELO_UPGRADER_JOB });
+      return project
+        ? `https://console.cloud.google.com/apis/credentials?project=${project}`
+        : "https://console.cloud.google.com/apis/credentials";
+    })(),
+    latest,
+    deadRun,
+    history,
+    cloudShell,
+  };
+};
+
+const STEP_UP_PURPOSES = ["platform_update", "update_policy", "step_up_client"] as const;
+type Purpose = (typeof STEP_UP_PURPOSES)[number];
+
+/** A failed op as a form result: step-up refusals flagged, so the page offers the sign-in. */
+function opFailure(error: unknown, fallback: string) {
+  const message = opErrorMessage(error, fallback);
+  const stepUpRequired = message.startsWith(STEP_UP_REQUIRED);
+  return fail(stepUpRequired ? 403 : 400, {
+    error: message.replace(`${STEP_UP_REQUIRED}: `, ""),
+    stepUpRequired,
+  });
+}
+
+export const actions: Actions = {
+  /** Start a fresh Google sign-in; Google sends the browser back to the callback. */
+  stepUp: async ({ request, locals, cookies, url }) => {
+    requirePermission(locals, "platform.update");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const purpose = String(form.get("purpose") ?? "platform_update");
+    if (!(STEP_UP_PURPOSES as readonly string[]).includes(purpose)) {
+      return fail(400, { error: "Unknown confirmation." });
+    }
+    const r = await beginStepUp(locals, cookies, {
+      purpose: purpose as Purpose,
+      returnTo: "/settings/updates",
+      origin: url.origin,
+    });
+    if (!r.ok) return fail(400, { error: r.error });
+    throw redirect(303, r.location);
+  },
+
+  /** Request the newest release and start the upgrader job. */
+  install: async ({ request, locals, cookies }) => {
+    requirePermission(locals, "platform.update");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const version = String(form.get("version") ?? "");
+    const upgrader = upgraderTrigger();
+    if (!upgrader.ok) return fail(500, { error: `${upgrader.error} ${upgrader.nextStep}` });
+    if (!upgrader.trigger) {
+      return fail(400, {
+        error: "This install has no upgrader yet; run the upgrade command shown on this page.",
+      });
+    }
+    const check = await requireStepUp(locals, cookies, "platform_update");
+    if (!check.fresh) {
+      return fail(403, {
+        error: "Confirm with a fresh Google sign-in first.",
+        stepUpRequired: true,
+      });
+    }
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "platform_updates.request", {
+      targetVersion: version,
+      sessionHash: check.sessionHash,
+    });
+    if (!r.ok) return opFailure(r.error, "Could not request the update.");
+    const requestId = (r.value as { requestId: string }).requestId;
+    const started = await startUpgraderFor(
+      registry,
+      adapter,
+      locals.ctx,
+      requestId,
+      upgrader.trigger,
+    );
+    if (!started.ok) {
+      return fail(502, {
+        error: `The upgrader could not be started: ${started.error} ${started.nextStep}`,
+      });
+    }
+    return { ok: `Installing v${version} — follow along below.` };
+  },
+
+  /** Withdraw a request the upgrader has not picked up yet. */
+  cancel: async ({ request, locals, cookies }) => {
+    requirePermission(locals, "platform.update");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const check = await requireStepUp(locals, cookies, "platform_update");
+    if (!check.fresh) {
+      return fail(403, {
+        error: "Confirm with a fresh Google sign-in first.",
+        stepUpRequired: true,
+      });
+    }
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "platform_updates.cancel", {
+      requestId: String(form.get("requestId") ?? ""),
+      sessionHash: check.sessionHash,
+    });
+    if (!r.ok) return opFailure(r.error, "Could not cancel the update.");
+    return { ok: "Update cancelled." };
+  },
+
+  /** Store the install's Google OAuth client for step-up sign-ins. */
+  setClient: async ({ request, locals, cookies }) => {
+    requirePermission(locals, "platform.update");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const check = await requireStepUp(locals, cookies, "step_up_client");
+    if (!check.sessionHash) return fail(401, { error: "Sign in again first." });
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "step_up.set_client", {
+      clientId: String(form.get("clientId") ?? "").trim(),
+      clientSecret: String(form.get("clientSecret") ?? "").trim(),
+      sessionHash: check.sessionHash,
+    });
+    if (!r.ok) return opFailure(r.error, "Check the client ID and secret.");
+    const replaced = (r.value as { replaced: boolean }).replaced;
+    return {
+      ok: replaced
+        ? "Google sign-in client replaced."
+        : "Google sign-in is set up. Updates are now confirmed with a fresh Google sign-in.",
+    };
+  },
 };

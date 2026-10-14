@@ -44,6 +44,11 @@ export interface SyncJobConfig {
   readonly staticMembers: string;
   /** Cloud SQL private IP. */
   readonly databaseHost: string;
+  /**
+   * Comma-separated service accounts that keep token-creator on caelo-mcp
+   * besides the users (the upgrader job, #696); empty on installs without one.
+   */
+  readonly mcpSigners: string;
 }
 
 /** Read the job's config from its env; throws naming every missing variable. */
@@ -66,6 +71,8 @@ export function configFromEnv(env: Record<string, string | undefined>): SyncJobC
     mcpServiceAccount: get(required.mcpServiceAccount),
     staticMembers: get(required.staticMembers),
     databaseHost: get(required.databaseHost),
+    // Optional: jobs set up before the upgrader existed do not carry it.
+    mcpSigners: get("CAELO_OPERATOR_ACCESS_MCP_SIGNERS"),
   };
 }
 
@@ -91,7 +98,11 @@ export interface SyncReport {
 /** One reconcile pass over both managed bindings. Never throws. */
 export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<SyncReport> {
   let ok = true;
-  const { members: staticMembers, rejected } = parseStaticMembers(config.staticMembers);
+  const { members: staticMembers, rejected: rejectedStatic } = parseStaticMembers(
+    config.staticMembers,
+  );
+  const { members: mcpSigners, rejected: rejectedSigners } = parseStaticMembers(config.mcpSigners);
+  const rejected = [...rejectedStatic, ...rejectedSigners];
   for (const entry of rejected) {
     ok = false;
     deps.log({
@@ -179,7 +190,7 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
     `the MCP service account ${config.mcpServiceAccount}`,
     `https://iam.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(config.mcpServiceAccount)}`,
     TOKEN_CREATOR_ROLE,
-    members,
+    new Set([...members, ...mcpSigners]),
     { query: "?options.requestedPolicyVersion=3" },
   );
   return {

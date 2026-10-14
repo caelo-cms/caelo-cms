@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { releaseNotesExcerpt, resolveUpgradePath } from "./upgrade-path.js";
+import { cloudShellInstallUrl } from "@caelo-cms/shared";
+import { cloudShellUpgrade, releaseNotesExcerpt, resolveUpgradePath } from "./upgrade-path.js";
 
 const gcp = {
   CAELO_PROVIDER: "gcp",
@@ -75,5 +76,37 @@ describe("releaseNotesExcerpt", () => {
     const r = releaseNotesExcerpt("word ".repeat(100), 22);
     expect(r.truncated).toBe(true);
     expect(r.text).toBe("word word word word\n…");
+  });
+});
+
+describe("cloudShellUpgrade", () => {
+  it("opens Cloud Shell on the install's project with pinned commands", () => {
+    const c = cloudShellUpgrade(
+      {
+        ...gcp,
+        CAELO_UPGRADER_JOB:
+          "projects/acme-prod/locations/europe-west1/jobs/caelo-production-upgrader",
+      },
+      "0.11.0",
+    );
+    expect(c?.consoleUrl).toBe(cloudShellInstallUrl("0.11.0", "gcp"));
+    expect(c?.commands.slice(1)).toEqual([
+      "bunx @caelo-cms/provisioning@0.11.0 attach --project acme-prod",
+      "bunx @caelo-cms/provisioning@0.11.0 upgrade --version 0.11.0 --install example.com",
+    ]);
+  });
+
+  it("without the job's project: no attach step", () => {
+    const c = cloudShellUpgrade(gcp, "0.11.0");
+    expect(c?.projectId).toBeNull();
+    expect(c?.commands).toHaveLength(2);
+  });
+
+  it("a pre-release has no Cloud Shell link, only the commands", () => {
+    expect(cloudShellUpgrade(gcp, "0.11.0-rc.1")?.consoleUrl).toBeNull();
+  });
+
+  it("is null where the CLI cannot upgrade", () => {
+    expect(cloudShellUpgrade({ CAELO_SITE_URL: "https://example.com" }, "0.11.0")).toBeNull();
   });
 });

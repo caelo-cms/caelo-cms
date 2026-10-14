@@ -10,6 +10,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { withIamAuthFlag } from "./cloudsql-iam-user.js";
 import type { GcloudResult } from "./gcloud.js";
 import {
   ensureOperatorAccessSync,
@@ -17,7 +18,6 @@ import {
   OPERATOR_ACCESS_ROLE,
   type OperatorAccessSyncTarget,
   resolveOperatorAccessTarget,
-  withIamAuthFlag,
 } from "./operator-access.js";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });

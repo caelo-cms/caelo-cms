@@ -201,6 +201,7 @@ function upgradeDeps(
       return { ok: true };
     },
     healthProbe: async () => ({ ok: true, probe: fakeHealth(events, opts.deep) }),
+    resolveOpsImage: async () => `registry/ops@sha256:${"c".repeat(64)}`,
     recordDigests: async (d) => {
       events.push("record digests");
       recorded.digests.push(d);
@@ -259,6 +260,76 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(deep).toBeLessThan(digests);
     expect(recorded.digests).toEqual([DIGEST]);
     expect(lines).toContain(`done: Pre-upgrade backup ${BACKUP_ID} of ${SQL} taken`);
+  });
+
+  it("sets up the upgrader job after migrations, before operator access keeps its caelo-mcp grant (#696)", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(lines).toContain(
+      "done: Upgrader job ready (the Owner can install updates from the admin)",
+    );
+    const migrate = indexOf(events, /^migrate /);
+    const upgrader = indexOf(events, /^gcloud run jobs deploy caelo-production-upgrader /);
+    const opAccess = indexOf(
+      events,
+      /^gcloud run jobs deploy caelo-production-operator-access-sync /,
+    );
+    expect(migrate < upgrader && upgrader < opAccess).toBe(true);
+    expect(events[upgrader]).toContain(`--image=registry/ops@sha256:${"c".repeat(64)}`);
+    expect(events[opAccess]).toContain(
+      "CAELO_OPERATOR_ACCESS_MCP_SIGNERS=serviceAccount:caelo-production-upgrader@acme.iam.gserviceaccount.com",
+    );
+  });
+
+  it("without an ops image the upgrader step fails, the roll goes on, the converge is incomplete", async () => {
+    const events: string[] = [];
+    const { deps, recorded, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, { ...deps, resolveOpsImage: async () => null })).toBe(
+      true,
+    );
+    expect(events.some((e) => /jobs deploy caelo-production-upgrader/.test(e))).toBe(false);
+    expect(recorded.contract).toEqual([]);
+    expect(lines.some((l) => l.includes("Upgrader job not set up"))).toBe(true);
+    // The admin keeps whatever CAELO_UPGRADER_JOB it had.
+    expect(
+      events.some((e) => /services update caelo-production-admin.*CAELO_UPGRADER_JOB=/.test(e)),
+    ).toBe(false);
+  });
+
+  it("verifies the ops image's signature before the upgrader runs it; unverified = not set up", async () => {
+    const events: string[] = [];
+    const { deps } = upgradeDeps(events);
+    const verified: string[] = [];
+    expect(
+      await upgradeGcpInstall(TARGET, {
+        ...deps,
+        verifyImages: async (images) => {
+          verified.push(...images.map((i) => i.slug));
+          return !images.some((i) => i.slug === "ops");
+        },
+      }),
+    ).toBe(true);
+    expect(verified).toContain("ops");
+    expect(events.some((e) => /jobs deploy caelo-production-upgrader/.test(e))).toBe(false);
+  });
+
+  it("a failed upgrader setup keeps an existing upgrader's caelo-mcp signing grant", async () => {
+    const events: string[] = [];
+    const { deps } = upgradeDeps(events, {
+      overrides: [
+        [/^run jobs deploy caelo-production-upgrader/, fail("transient")],
+        [/^iam service-accounts describe caelo-production-upgrader@/, ok("x\n")],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const opAccess = indexOf(
+      events,
+      /^gcloud run jobs deploy caelo-production-operator-access-sync /,
+    );
+    expect(events[opAccess]).toContain(
+      "CAELO_OPERATOR_ACCESS_MCP_SIGNERS=serviceAccount:caelo-production-upgrader@",
+    );
   });
 
   it("a failed backup stops the upgrade before any change", async () => {
@@ -416,6 +487,7 @@ describe("app-roll and converge stay on their side", () => {
         reporter: recordingReporter().reporter,
         migrate: async () => ({ ok: true }),
         health: fakeHealth(events),
+        resolveOpsImage: async () => `registry/ops@sha256:${"c".repeat(64)}`,
         recordDigests: async () => {},
       },
     );
@@ -462,6 +534,7 @@ describe("app-roll and converge stay on their side", () => {
         reporter: recordingReporter().reporter,
         migrate: async () => ({ ok: true }),
         health: fakeHealth(events),
+        resolveOpsImage: async () => `registry/ops@sha256:${"c".repeat(64)}`,
         recordDigests: async () => {
           throw new Error("must not record");
         },
@@ -487,6 +560,7 @@ describe("app-roll and converge stay on their side", () => {
         reporter,
         migrate: async () => ({ ok: false, error: "migrate-admin-exec: exit 1" }),
         health: fakeHealth(events),
+        resolveOpsImage: async () => `registry/ops@sha256:${"c".repeat(64)}`,
         recordDigests: async () => {},
       },
     );
