@@ -121,6 +121,7 @@ import {
   verifyCosignAll,
 } from "../upgrade/release-images.js";
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
+import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { promptProjectId } from "./gcp-prompts.js";
 import { GCP_STACK_KNOB_DEFAULTS, pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
@@ -436,6 +437,11 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // makes it a member of cloudsqlsuperuser. Revoked before migrations: the
   // migration job's role audit verifies it and fails the install otherwise.
   await stepPublicRoleIsolation(projectId);
+
+  // === 10.95. The admin may write redirects into the URL map (#587) ===
+  // Confirm-publish writes the redirects table into the load balancer's URL
+  // map; the custom role is the CLI's, not the stack's (url-map-redirects-access.ts).
+  if (provider === "gcp") await stepUrlMapRedirectsAccess(projectId);
 
   phase("Applying database migrations");
   {
@@ -909,6 +915,23 @@ async function stepPublicRoleIsolation(projectId: string): Promise<void> {
     process.exit(1);
   }
   s.stop(green("public_role holds no database roles"));
+}
+
+/**
+ * The admin's custom role for writing the redirects table into the URL map
+ * (#587). Idempotent, so it runs on every wizard pass.
+ */
+async function stepUrlMapRedirectsAccess(projectId: string): Promise<void> {
+  const s = spinner();
+  s.start("Letting the admin serve redirects from the load balancer...");
+  const r = await ensureUrlMapRedirectsAccess({ projectId, env: GCP_STACK_ENV });
+  if (!r.ok) {
+    s.stop(red(`Failed: ${r.error}`));
+    log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(green(`Redirects role ready (${r.role})`));
 }
 
 /**

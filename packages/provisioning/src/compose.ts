@@ -27,6 +27,8 @@
  * every fresh `docker compose up` fail.
  */
 
+import { CADDY_REDIRECTS_FILE } from "@caelo-cms/shared";
+import { caddyRedirectReloadCommand } from "./caddy-redirects.js";
 import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB, publicSiteUrl } from "./stack-contract.js";
 import { ghcrRepository, isImageDigest, type ReleaseService } from "./upgrade/release-images.js";
 
@@ -60,6 +62,13 @@ export const BOOTSTRAP_DIR = "bootstrap";
  * Caddyfile's site roots point (`/srv/caelo/output/<env>/current`).
  */
 export const SITE_OUTPUT_ROOT = "/srv/caelo";
+
+/**
+ * #587 — every site's redirect snippet as Caddy sees it (one per deploy
+ * target below {@link SITE_OUTPUT_ROOT}); the Caddy container reloads when
+ * any of them changes (caddy-redirects.ts).
+ */
+export const COMPOSE_REDIRECT_SNIPPETS = `${SITE_OUTPUT_ROOT}/output/*/current/${CADDY_REDIRECTS_FILE}`;
 
 /** `.caelo/<this>/` holds the uploaded media (the admin's local media adapter root). */
 export const MEDIA_DIR = "media";
@@ -257,6 +266,9 @@ ${postgresAgent(spec.agent)}    volumes:
 
   caddy:
     image: ${CADDY_IMAGE}
+    # #587 — Caddy plus a loop that reloads it when a deploy changes a
+    # site's _redirects.caddy import (caddy-redirects.ts).
+    ${caddyRedirectReloadCommand(COMPOSE_REDIRECT_SNIPPETS)}
     restart: unless-stopped
     ports: ["${spec.ports.http}:80", "${spec.ports.https}:443"]
     volumes:

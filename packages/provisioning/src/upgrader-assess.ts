@@ -47,6 +47,7 @@ import {
   type StoredUpdatePolicy,
   updateKind,
 } from "@caelo-cms/shared";
+import { infraStepsText } from "./infra-contract.js";
 import {
   assessAutoInstall,
   channelForVersion,
@@ -194,7 +195,7 @@ export function assessUpgradeRequest(input: {
     return stop(
       "needs_cloud_shell",
       "infra-contract",
-      `v${target} changes this install's cloud setup (infrastructure contract ${infraContractVersion} → ${manifest.infraContractVersion}). The admin may not change cloud permissions, so this release is installed once with your own Google account in Cloud Shell.`,
+      `v${target} changes this install's cloud setup (infrastructure contract ${infraContractVersion} → ${manifest.infraContractVersion}: ${infraStepsText(infraContractVersion, manifest.infraContractVersion)}). The admin may not change cloud permissions, so this release is installed once with your own Google account in Cloud Shell.`,
       manifest,
     );
   }

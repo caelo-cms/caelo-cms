@@ -27,6 +27,10 @@
  *
  * Staging vhosts force `X-Robots-Tag: noindex`.
  *
+ * Public vhosts import the redirect snippet of the build they serve
+ * (`_redirects.caddy`, #587); the Caddy container reloads itself when a
+ * deploy changes it (caddy-redirects.ts).
+ *
  * Public vhosts mark content-hashed build outputs (fonts, plugin
  * bundles — `CONTENT_HASHED_PATH_PATTERN` in @caelo-cms/shared)
  * `immutable` for a year. Everything else keeps Caddy's file_server
@@ -47,7 +51,11 @@
  * set it, so the `header` line wins over the host's mime.types name.
  */
 
-import { CONTENT_HASHED_PATH_PATTERN, IMMUTABLE_CACHE_CONTROL } from "@caelo-cms/shared";
+import {
+  CONTENT_HASHED_PATH_PATTERN,
+  caddyRedirectsImport,
+  IMMUTABLE_CACHE_CONTROL,
+} from "@caelo-cms/shared";
 
 export interface CaddyDomainSpec {
   readonly hostname: string;
@@ -146,8 +154,10 @@ function vhost(d: CaddyDomainSpec, spec: CaddyfileSpec): string {
   // `try_files` is its own directive (a rewrite), never a file_server
   // subdirective (#566).
   const root = d.env === "staging" ? spec.stagingSiteRoot : spec.publicSiteRoot;
+  // #587 — the redirects table of the build this vhost serves.
   return `${d.hostname} {${noindex}
   root * ${root}
+  ${caddyRedirectsImport(root)}
   @content_hashed {
     path_regexp content_hashed ${CONTENT_HASHED_PATH_PATTERN}
     file

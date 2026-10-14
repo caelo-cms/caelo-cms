@@ -43,6 +43,9 @@ export const INFRA_CONTRACT_PATHS: readonly string[] = [
   "packages/provisioning/src/upgrade/converge.ts",
   "packages/provisioning/src/mcp-iap.ts",
   "packages/provisioning/src/default-firewall.ts",
+  // #587 — the admin's URL-map redirects role and the URL map's shape.
+  "packages/provisioning/src/url-map-redirects-access.ts",
+  "packages/provisioning/src/gcp-url-map.ts",
 ];
 
 /**

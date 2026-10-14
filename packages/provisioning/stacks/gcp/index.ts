@@ -30,6 +30,7 @@ import {
   runServiceAccountId,
   staticPublisherServiceAccountId,
 } from "../../dist/gcp-names.js";
+import { createSiteUrlMap } from "../../dist/gcp-url-map.js";
 import {
   ADMIN_MEMORY_DEFAULT,
   adminEnvContract,
@@ -1004,28 +1005,27 @@ new gcp.iap.WebBackendServiceIamMember(
 // URL map: routes by host header.
 //   admin.<domain>  → admin backend (IAP-gated)
 //   <domain>        → default static bucket; /api/* → gateway
-const urlMap = new gcp.compute.URLMap(
+// #587 — the public path matcher also carries the redirects table as
+// `urlRedirect` rules, written by the admin on every Confirm-publish; the
+// stack ignores that field after creation (src/gcp-url-map.ts).
+const urlMap = createSiteUrlMap(
   `${namePrefix}-url-map`,
   {
-    defaultService: staticBackendBucket.id,
-    hostRules: [
-      { hosts: [domain], pathMatcher: "public" },
-      { hosts: [adminDomain], pathMatcher: "admin" },
-    ],
-    pathMatchers: [
-      {
-        name: "public",
-        defaultService: staticBackendBucket.id,
-        pathRules: [{ paths: ["/api/*"], service: gatewayBackendService.id }],
-      },
-      {
-        name: "admin",
-        defaultService: adminBackendService.id,
-      },
-    ],
+    domain,
+    adminDomain,
+    staticBackend: staticBackendBucket.id,
+    gatewayBackend: gatewayBackendService.id,
+    adminBackend: adminBackendService.id,
   },
   opts,
 );
+
+// #587 — the admin's run SA may rewrite the URL map's redirect rules through
+// a project custom role. The CLI owns that role, not this stack: the
+// installer and `cms-provision upgrade` both run ensureUrlMapRedirectsAccess
+// (url-map-redirects-access.ts). A role declared here would collide with the
+// one upgrade creates on installs older than it (a role id exists once per
+// project, and a create of an existing one fails).
 
 // Managed TLS cert covering both hostnames.
 const managedCert = new gcp.compute.ManagedSslCertificate(
