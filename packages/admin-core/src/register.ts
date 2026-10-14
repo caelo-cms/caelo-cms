@@ -366,7 +366,7 @@ import {
   platformUpdatesSchedulerStatusOp,
   platformUpdatesSchedulerTickOp,
 } from "./ops/platform-update-scheduler.js";
-import { platformUpdateStatusOp } from "./ops/platform-updates.js";
+import { platformUpdateStatusOp, platformUpdatesCheckNowOp } from "./ops/platform-updates.js";
 import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
   listPluginCapabilityGrantsOp,
@@ -1138,6 +1138,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(aggregateNotificationsOp);
   // #696 — installed vs newest release (Settings → Updates, get_caelo_version).
   registry.register(platformUpdateStatusOp);
+  // "Check now" on Settings → Updates (human-only; the fetch runs outside).
+  registry.register(platformUpdatesCheckNowOp);
   // #696 Phase 2 — "Install update": Owner + fresh Google sign-in (step-up);
   // the upgrader job does the install. list/get/policy.get are AI-readable.
   registry.register(platformUpdatesRequestOp);
