@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Step-up re-authentication with a fresh Google sign-in (epic #696,
- * maintainer decision 4). See security/step-up/google-oidc.ts for the
- * protocol and security/step-up/gate.ts for how guarded ops use the result.
+ * Step-up re-authentication with the Caelo password (epic #696 decision 4,
+ * revised by #757). See security/step-up/gate.ts for how guarded ops use the
+ * result.
  *
- *   step_up.status      is a Google client configured; is this session's
- *                       step-up fresh
- *   step_up.set_client  store the install's Google OAuth client (the first
- *                       time without a step-up — there is nothing to sign in
- *                       with yet —, afterwards only with one)
- *   step_up.begin       start a sign-in: challenge row + Google URL
- *   step_up.redeem      the callback takes its challenge back (single use)
- *   step_up.record      the callback records the verified sign-in on the
- *                       session, or the failed attempt (audited either way)
+ *   step_up.confirm_password   the caller re-enters their password; a right
+ *                              one records a step-up for one action on this
+ *                              session, a wrong one counts towards
+ *                              {@link STEP_UP_MAX_FAILURES}, at which the
+ *                              session is signed out.
  *
- * Every op is human-only: a step-up proves a person is at the browser, so
- * neither the AI nor a system worker can hold or make one.
+ * Why the password and not a fresh Google sign-in: the admin already sits
+ * behind IAP / the forward-auth proxy, so only allowlisted people reach it at
+ * all. The step-up has to stop a bystander at an unlocked computer and a
+ * stolen session cookie, and the password does both — without the Google
+ * OAuth client the Owner had to create by hand per install. Browser autofill
+ * is the known gap; passkeys replace the password in #725.
+ *
+ * Human-only: a step-up proves a person is at the browser, so neither the
+ * AI nor a system worker can make one.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -24,189 +27,41 @@ import { err, ok, STEP_UP_MAX_AGE_SECONDS, STEP_UP_PURPOSES } from "@caelo-cms/s
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAuditFromCtx } from "../audit.js";
-import { decryptSecret, encryptSecret } from "../security/secret-box.js";
-import {
-  consumeStepUp,
-  guardedActionRefusal,
-  readSessionStepUp,
-  sessionHashSchema,
-  stepUpProblem,
-} from "../security/step-up/gate.js";
-import { hasGoogleSignature } from "../security/step-up/google-keys.js";
-import {
-  authorizationUrl,
-  newChallengeSecrets,
-  verifyFreshSignIn,
-} from "../security/step-up/google-oidc.js";
+import { MAX_PASSWORD_LENGTH, verifyPassword } from "../password.js";
+import { readSessionStepUp, sessionHashSchema } from "../security/step-up/gate.js";
 import { missingPermissions } from "./_approver-permission.js";
 
-const GOOGLE_CLIENT_ID = /^[0-9]+-[0-9a-z]+\.apps\.googleusercontent\.com$/;
+/**
+ * Wrong passwords a session may enter for step-ups before it is signed out.
+ * Without a bound, a stolen session cookie would turn this op into an
+ * unlimited password oracle; signing out sends the thief back through IAP
+ * and the login form.
+ */
+export const STEP_UP_MAX_FAILURES = 5;
+
+/** Message prefix when the session was signed out: the route clears the cookie. */
+export const STEP_UP_SIGNED_OUT = "step_up_signed_out";
 
 const handlerError = (operation: string, message: string) =>
   err({ kind: "HandlerError" as const, operation, message });
 
-async function sha256Hex(value: string): Promise<string> {
-  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-interface ClientRow {
-  client_id: string;
-  client_secret_encrypted: Uint8Array;
-  client_secret_iv: Uint8Array;
-  client_secret_kek_fp: string;
-  updated_at: Date | string;
-}
-
-async function readClient(tx: Parameters<typeof readSessionStepUp>[0]): Promise<ClientRow | null> {
-  const rows = (await tx.execute(sql`
-    SELECT client_id, client_secret_encrypted, client_secret_iv, client_secret_kek_fp, updated_at
-      FROM step_up_google_client WHERE id = 1
-  `)) as unknown as ClientRow[];
-  return rows[0] ?? null;
-}
-
-const statusOutput = z.object({
-  /** Whether the install has a Google OAuth client for step-up. */
-  configured: z.boolean(),
-  clientId: z.string().nullable(),
-  /** Until when this session's step-up authorizes an action; null = none. */
-  freshUntil: z.string().nullable(),
-  /** Why the session has no usable step-up (null when fresh). */
-  problem: z.string().nullable(),
-});
-export type StepUpStatus = z.infer<typeof statusOutput>;
-
-export const stepUpStatusOp = defineOperation({
-  name: "step_up.status",
-  // Why human-only: describes the caller's own browser session; the AI and
-  // workers have none, and must never learn whether a step-up is fresh.
+export const stepUpConfirmPasswordOp = defineOperation({
+  name: "step_up.confirm_password",
+  // Why human-only: proves a person is at the caller's own browser right
+  // now; the AI and workers have no password and no browser session.
   actorScope: ["human"],
   database: "cms_admin",
   input: z
     .object({
       sessionHash: sessionHashSchema,
-      /** Only a sign-in for this action counts as fresh. */
-      purpose: z.enum(STEP_UP_PURPOSES).optional(),
-    })
-    .strict(),
-  output: statusOutput,
-  handler: async (ctx, input, tx) => {
-    const client = await readClient(tx);
-    const session = await readSessionStepUp(tx, ctx.actorId, input.sessionHash);
-    const problem = stepUpProblem(session, new Date(), input.purpose ?? null);
-    return ok({
-      configured: client !== null,
-      clientId: client?.client_id ?? null,
-      freshUntil:
-        problem === null && session?.stepUpAt
-          ? new Date(session.stepUpAt.getTime() + STEP_UP_MAX_AGE_SECONDS * 1000).toISOString()
-          : null,
-      problem,
-    });
-  },
-});
-
-export const stepUpSetClientOp = defineOperation({
-  name: "step_up.set_client",
-  // Why human-only: the Owner's Google OAuth client credentials — what every
-  // later step-up signs in with. Changing them needs a step-up itself.
-  actorScope: ["human"],
-  database: "cms_admin",
-  input: z
-    .object({
-      clientId: z
-        .string()
-        .trim()
-        .regex(GOOGLE_CLIENT_ID, "expected a Google client ID (…apps.googleusercontent.com)"),
-      clientSecret: z.string().trim().min(10).max(200),
-      sessionHash: sessionHashSchema,
-    })
-    .strict(),
-  output: z.object({ replaced: z.boolean() }),
-  handler: async (ctx, input, tx) => {
-    const op = "step_up.set_client";
-    const existing = await readClient(tx);
-    if (existing) {
-      // Replacing the client is itself a guarded action.
-      const refusal = await guardedActionRefusal(tx, ctx, {
-        operation: "replace the Google sign-in client",
-        permission: "platform.update",
-        sessionHash: input.sessionHash,
-        purpose: "step_up_client",
-      });
-      if (refusal) return handlerError(op, refusal);
-    } else {
-      const missing = await missingPermissions(tx, ctx.actorId, ["platform.update"]);
-      if (missing.length > 0) {
-        return handlerError(
-          op,
-          "permission_denied: setting up the Google sign-in needs the platform.update permission (the Owner has it).",
-        );
-      }
-    }
-    const enc = await encryptSecret(input.clientSecret);
-    const ct = Buffer.from(enc.ciphertext);
-    const iv = Buffer.from(enc.iv);
-    if (existing) {
-      await tx.execute(sql`
-        UPDATE step_up_google_client SET
-          client_id = ${input.clientId}, client_secret_encrypted = ${ct},
-          client_secret_iv = ${iv}, client_secret_kek_fp = ${enc.kekFingerprint},
-          updated_by = ${ctx.actorId}::uuid, updated_at = now()
-        WHERE id = 1
-      `);
-      await consumeStepUp(tx, ctx.actorId, input.sessionHash);
-    } else {
-      // First setup: insert-only. If another first setup won the race, this
-      // one must not overwrite it without the step-up a replacement needs.
-      const inserted = (await tx.execute(sql`
-        INSERT INTO step_up_google_client (
-          id, client_id, client_secret_encrypted, client_secret_iv, client_secret_kek_fp,
-          updated_by, updated_at
-        ) VALUES (
-          1, ${input.clientId}, ${ct}, ${iv}, ${enc.kekFingerprint}, ${ctx.actorId}::uuid, now()
-        )
-        ON CONFLICT (id) DO NOTHING
-        RETURNING id
-      `)) as unknown as { id: number }[];
-      if (inserted.length === 0) {
-        return handlerError(
-          op,
-          "Google sign-in was set up a moment ago by someone else. Reload the page; replacing it needs a fresh Google sign-in.",
-        );
-      }
-    }
-    await recordAuditFromCtx(tx, ctx, {
-      operation: op,
-      input: { clientId: input.clientId },
-      succeeded: true,
-      resultSummary: existing ? "replaced" : "configured",
-    });
-    return ok({ replaced: existing !== null });
-  },
-});
-
-export const stepUpBeginOp = defineOperation({
-  name: "step_up.begin",
-  // Why human-only: starts a Google sign-in in the caller's own browser.
-  actorScope: ["human"],
-  database: "cms_admin",
-  input: z
-    .object({
-      sessionHash: sessionHashSchema,
+      /** The action the confirmation authorizes (one of it). */
       purpose: z.enum(STEP_UP_PURPOSES),
-      returnTo: z
-        .string()
-        .regex(/^\/[A-Za-z0-9/_-]*$/, "expected an admin path")
-        .max(200),
-      /** The admin origin's callback URL — registered on the OAuth client. */
-      redirectUri: z.string().url().max(500),
+      password: z.string().min(1).max(MAX_PASSWORD_LENGTH),
     })
     .strict(),
-  output: z.object({ authorizationUrl: z.string() }),
+  output: z.object({ freshUntil: z.string() }),
   handler: async (ctx, input, tx) => {
-    const op = "step_up.begin";
+    const op = "step_up.confirm_password";
     const missing = await missingPermissions(tx, ctx.actorId, ["platform.update"]);
     if (missing.length > 0) {
       return handlerError(
@@ -214,219 +69,65 @@ export const stepUpBeginOp = defineOperation({
         "permission_denied: only someone with the platform.update permission (the Owner) can confirm update actions.",
       );
     }
-    const client = await readClient(tx);
-    if (!client) {
-      return handlerError(
-        op,
-        "Google sign-in for confirming updates is not set up for this install yet. Set it up under Settings → Updates first.",
-      );
-    }
-    const session = await readSessionStepUp(tx, ctx.actorId, input.sessionHash);
+    // Locked: two wrong passwords racing must both count.
+    const session = await readSessionStepUp(tx, ctx.actorId, input.sessionHash, { lock: true });
     if (!session) return handlerError(op, "this browser session is not signed in any more");
-    const secrets = await newChallengeSecrets();
-    // Old attempts of this user are dead weight; one live attempt each time.
-    await tx.execute(sql`
-      DELETE FROM step_up_challenges
-       WHERE user_id = ${ctx.actorId}::uuid AND (expires_at < now() OR session_hash = ${input.sessionHash})
-    `);
-    await tx.execute(sql`
-      INSERT INTO step_up_challenges (
-        user_id, session_hash, state_hash, nonce, code_verifier, purpose, return_to, redirect_uri
-      ) VALUES (
-        ${ctx.actorId}::uuid, ${input.sessionHash}, ${await sha256Hex(secrets.state)},
-        ${secrets.nonce}, ${secrets.codeVerifier}, ${input.purpose}, ${input.returnTo},
-        ${input.redirectUri}
-      )
-    `);
-    return ok({
-      authorizationUrl: authorizationUrl({
-        clientId: client.client_id,
-        redirectUri: input.redirectUri,
-        state: secrets.state,
-        nonce: secrets.nonce,
-        codeChallenge: secrets.codeChallenge,
-        loginHint: session.userEmail,
-      }),
-    });
-  },
-});
-
-const redeemOutput = z.object({
-  /** The challenge the step-up is recorded against (step_up.record). */
-  challengeId: z.string(),
-  clientId: z.string(),
-  clientSecret: z.string(),
-  codeVerifier: z.string(),
-  nonce: z.string(),
-  redirectUri: z.string(),
-  returnTo: z.string(),
-  purpose: z.enum(STEP_UP_PURPOSES),
-  /** When the step-up began: Google's auth_time must not be earlier. */
-  startedAt: z.string(),
-});
-export type StepUpRedeemed = z.infer<typeof redeemOutput>;
-
-export const stepUpRedeemOp = defineOperation({
-  name: "step_up.redeem",
-  // Why human-only: the OAuth callback of the caller's own sign-in; returns
-  // the client secret for the code exchange, which only the server sees.
-  actorScope: ["human"],
-  database: "cms_admin",
-  input: z.object({ sessionHash: sessionHashSchema, state: z.string().min(16).max(200) }).strict(),
-  output: redeemOutput,
-  handler: async (ctx, input, tx) => {
-    const op = "step_up.redeem";
-    // Single use: a second callback with the same state finds nothing.
     const rows = (await tx.execute(sql`
-      UPDATE step_up_challenges SET redeemed_at = now()
-       WHERE state_hash = ${await sha256Hex(input.state)}
-         AND user_id = ${ctx.actorId}::uuid
-         AND redeemed_at IS NULL
-       RETURNING id::text AS id, session_hash, nonce, code_verifier, purpose, return_to,
-                 redirect_uri, created_at, expires_at
-    `)) as unknown as {
-      id: string;
-      session_hash: string;
-      nonce: string;
-      code_verifier: string;
-      purpose: (typeof STEP_UP_PURPOSES)[number];
-      return_to: string;
-      redirect_uri: string;
-      created_at: Date | string;
-      expires_at: Date | string;
-    }[];
-    const c = rows[0];
-    if (!c) {
+      SELECT password_hash FROM users WHERE id = ${ctx.actorId}::uuid AND deleted_at IS NULL
+    `)) as unknown as { password_hash: string }[];
+    const hash = rows[0]?.password_hash;
+    const passwordOk = hash ? await verifyPassword(input.password, hash) : false;
+    const bySession = sql`encode(sha256(convert_to(token, 'UTF8')), 'hex') = ${input.sessionHash}
+       AND user_id = ${ctx.actorId}::uuid`;
+
+    if (!passwordOk) {
+      const failures = session.stepUpFailures + 1;
+      const signedOut = failures >= STEP_UP_MAX_FAILURES;
+      // A wrong password also drops any confirmation still on the session:
+      // whoever is typing now is not known to be the Owner.
+      if (signedOut) {
+        await tx.execute(sql`DELETE FROM sessions WHERE ${bySession}`);
+      } else {
+        await tx.execute(sql`
+          UPDATE sessions
+             SET step_up_failures = ${failures}, step_up_at = NULL, step_up_purpose = NULL
+           WHERE ${bySession}
+        `);
+      }
+      // Returning the error (not throwing) commits the count and this audit
+      // row — a rollback would erase both (query-api OperationAbortError).
+      await recordAuditFromCtx(tx, ctx, {
+        operation: op,
+        input: { purpose: input.purpose },
+        succeeded: false,
+        resultSummary: signedOut
+          ? `wrong password ${failures}x — session signed out`
+          : `wrong password (${failures}/${STEP_UP_MAX_FAILURES})`,
+      });
+      const left = STEP_UP_MAX_FAILURES - failures;
       return handlerError(
         op,
-        "This sign-in link is unknown or was already used. Start the confirmation again.",
+        signedOut
+          ? `${STEP_UP_SIGNED_OUT}: Wrong password ${STEP_UP_MAX_FAILURES} times — you have been signed out. Sign in again to continue.`
+          : `Wrong password. ${left} more ${left === 1 ? "try" : "tries"} before you are signed out.`,
       );
     }
-    if (c.session_hash !== input.sessionHash) {
-      return handlerError(op, "This sign-in was started in another browser session.");
-    }
-    if (new Date(c.expires_at).getTime() < Date.now()) {
-      return handlerError(op, "This sign-in took longer than 10 minutes. Start it again.");
-    }
-    const client = await readClient(tx);
-    if (!client) return handlerError(op, "The Google sign-in client was removed meanwhile.");
-    const clientSecret = await decryptSecret({
-      ciphertext: new Uint8Array(client.client_secret_encrypted),
-      iv: new Uint8Array(client.client_secret_iv),
-      kekFingerprint: client.client_secret_kek_fp,
-    });
-    return ok({
-      challengeId: c.id,
-      clientId: client.client_id,
-      clientSecret,
-      codeVerifier: c.code_verifier,
-      nonce: c.nonce,
-      redirectUri: c.redirect_uri,
-      returnTo: c.return_to,
-      purpose: c.purpose,
-      startedAt: new Date(c.created_at).toISOString(),
-    });
-  },
-});
 
-export const stepUpRecordOp = defineOperation({
-  name: "step_up.record",
-  // Why human-only: records the caller's own verified Google sign-in on
-  // their session (or the failed attempt) — the proof guarded ops consume.
-  actorScope: ["human"],
-  database: "cms_admin",
-  input: z
-    .object({
-      sessionHash: sessionHashSchema,
-      /** The challenge step_up.redeem took back for this sign-in. */
-      challengeId: z.string().uuid(),
-      outcome: z.discriminatedUnion("ok", [
-        z.object({
-          ok: z.literal(true),
-          /** Google's ID token, as its token endpoint returned it. */
-          idToken: z.string().min(20).max(8000),
-        }),
-        z.object({ ok: z.literal(false), reason: z.string().min(1).max(1000) }),
-      ]),
-    })
-    .strict(),
-  output: z.object({ freshUntil: z.string() }),
-  handler: async (ctx, input, tx) => {
-    const op = "step_up.record";
-    // The step-up exists only against a challenge this user started from
-    // this session and the callback redeemed — and is recorded once. The
-    // sign-in time is judged against the challenge's own start, never a
-    // caller-supplied one.
-    const rows = (await tx.execute(sql`
-      DELETE FROM step_up_challenges
-       WHERE id = ${input.challengeId}::uuid
-         AND user_id = ${ctx.actorId}::uuid
-         AND redeemed_at IS NOT NULL
-       RETURNING session_hash, nonce, purpose, created_at, expires_at
-    `)) as unknown as {
-      session_hash: string;
-      nonce: string;
-      purpose: string;
-      created_at: Date | string;
-      expires_at: Date | string;
-    }[];
-    const c = rows[0];
-    const audit = (succeeded: boolean, resultSummary: string) =>
-      recordAuditFromCtx(tx, ctx, {
-        operation: op,
-        input: { purpose: c?.purpose ?? "unknown", ok: input.outcome.ok },
-        succeeded,
-        resultSummary,
-      });
-    const refuse = async (message: string) => {
-      await audit(false, message.slice(0, 200));
-      return handlerError(op, message);
-    };
-    if (!c || c.session_hash !== input.sessionHash) {
-      return refuse(
-        "There is no completed Google sign-in to record. Start the confirmation again.",
-      );
-    }
-    if (new Date(c.expires_at).getTime() < Date.now()) {
-      return refuse("This sign-in took longer than 10 minutes. Start it again.");
-    }
-    if (!input.outcome.ok) return refuse(`Google sign-in failed: ${input.outcome.reason}`);
-    // The token must be Google's own (signature by a key from Google's
-    // fixed JWKS URL), for this install's client, this challenge's nonce, a
-    // sign-in after the challenge began, and the user's own address — the
-    // op checks all of it; it takes no claim from its caller.
-    const client = await readClient(tx);
-    if (!client) return refuse("The Google sign-in client was removed meanwhile.");
-    if (!(await hasGoogleSignature(input.outcome.idToken))) {
-      return refuse(
-        "The sign-in token is not signed by Google (or Google's signing keys could not be loaded). Start the confirmation again.",
-      );
-    }
-    const verified = verifyFreshSignIn(input.outcome.idToken, {
-      clientId: client.client_id,
-      nonce: c.nonce,
-      startedAtSec: Math.floor(new Date(c.created_at).getTime() / 1000),
-      nowSec: Math.floor(Date.now() / 1000),
-    });
-    if (!verified.ok) return refuse(`Google sign-in not accepted: ${verified.reason}.`);
-    const { email, authTime } = verified.value;
-    const session = await readSessionStepUp(tx, ctx.actorId, input.sessionHash);
-    if (!session) return refuse("this browser session is not signed in any more");
-    if (email !== session.userEmail.toLowerCase()) {
-      return refuse(
-        `You signed in to Google as ${email}, but this Caelo account is ${session.userEmail}. Sign in with ${session.userEmail}.`,
-      );
-    }
-    await tx.execute(sql`
+    const confirmed = (await tx.execute(sql`
       UPDATE sessions
-         SET step_up_at = to_timestamp(${authTime}), step_up_email = ${email},
-             step_up_purpose = ${c.purpose}
-       WHERE encode(sha256(convert_to(token, 'UTF8')), 'hex') = ${input.sessionHash}
-         AND user_id = ${ctx.actorId}::uuid
-    `);
-    await audit(true, `fresh Google sign-in for ${c.purpose}`);
+         SET step_up_at = now(), step_up_purpose = ${input.purpose}, step_up_failures = 0
+       WHERE ${bySession}
+       RETURNING step_up_at
+    `)) as unknown as { step_up_at: Date | string }[];
+    const at = new Date(confirmed[0]?.step_up_at ?? Date.now());
+    await recordAuditFromCtx(tx, ctx, {
+      operation: op,
+      input: { purpose: input.purpose },
+      succeeded: true,
+      resultSummary: `password confirmed for ${input.purpose}`,
+    });
     return ok({
-      freshUntil: new Date(authTime * 1000 + STEP_UP_MAX_AGE_SECONDS * 1000).toISOString(),
+      freshUntil: new Date(at.getTime() + STEP_UP_MAX_AGE_SECONDS * 1000).toISOString(),
     });
   },
 });

@@ -5,7 +5,7 @@
  * recent install attempts, one attempt's timeline, the automatic-update
  * policy, and what the auto-update scheduler last decided. Read-only by design (CLAUDE.md §2; #696 maintainer decision 3):
  * the Owner installs updates and changes the policy at Settings → Updates,
- * each time confirmed with a fresh Google sign-in the AI cannot give. The
+ * each time confirmed with the Owner's password, which the AI cannot give. The
  * formatted results say so, so the AI points there instead of trying.
  */
 
@@ -19,7 +19,7 @@ import type { SchedulerStatus } from "../../ops/platform-update-scheduler.js";
 import { UPDATES_PATH } from "../../ops/platform-updates.js";
 import { makeReadTool } from "./_make-read-tool.js";
 
-const OWNER_ONLY = `Only the Owner can install updates or change this, at ${UPDATES_PATH} (Settings → Updates), confirmed with a fresh Google sign-in. You cannot: tell the operator and link the page.`;
+const OWNER_ONLY = `Only the Owner can install updates or change this, at ${UPDATES_PATH} (Settings → Updates), confirmed with the Owner's password. You cannot: tell the operator and link the page.`;
 
 const STATUS_WORDS: Record<PlatformUpdateRequest["status"], string> = {
   pending: "waiting for the upgrader to start",

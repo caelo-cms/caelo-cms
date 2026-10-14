@@ -537,13 +537,7 @@ import {
   setStagingAccessOp,
   setStagingHostOp,
 } from "./ops/staging_access.js";
-import {
-  stepUpBeginOp,
-  stepUpRecordOp,
-  stepUpRedeemOp,
-  stepUpSetClientOp,
-  stepUpStatusOp,
-} from "./ops/step-up.js";
+import { stepUpConfirmPasswordOp } from "./ops/step-up.js";
 import {
   deleteStructuredSetOp,
   getStructuredSetOp,
@@ -1141,7 +1135,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(platformUpdateStatusOp);
   // "Check now" on Settings → Updates (human-only; the fetch runs outside).
   registry.register(platformUpdatesCheckNowOp);
-  // #696 Phase 2 — "Install update": Owner + fresh Google sign-in (step-up);
+  // #696 Phase 2 — "Install update": Owner + password confirmation (step-up);
   // the upgrader job does the install. list/get/policy.get are AI-readable.
   registry.register(platformUpdatesRequestOp);
   registry.register(platformUpdatesCancelOp);
@@ -1159,11 +1153,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(platformUpdatesNotificationClaimOp);
   registry.register(platformUpdatesNotificationFinishOp);
   registry.register(platformUpdatesSchedulerStatusOp);
-  registry.register(stepUpStatusOp);
-  registry.register(stepUpSetClientOp);
-  registry.register(stepUpBeginOp);
-  registry.register(stepUpRedeemOp);
-  registry.register(stepUpRecordOp);
+  // #757 — the step-up for the actions above: the Owner's password, re-entered.
+  registry.register(stepUpConfirmPasswordOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the
   // chat-runner's `## Pending proposals` system-prompt block (so the
   // AI doesn't re-propose what's already queued) and by the AppShell

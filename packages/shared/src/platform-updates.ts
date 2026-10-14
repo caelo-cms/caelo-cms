@@ -287,14 +287,15 @@ export function autoInstallRefusal(
 }
 
 /**
- * How long a verified Google sign-in authorizes one guarded action. Long
- * enough to read the confirmation dialog, short enough that an unattended
- * browser is useless soon after.
+ * How long a password confirmation authorizes one guarded action (#757). The
+ * admin confirms and acts in the same request, so the window only has to
+ * cover that request; anything longer would let an unattended browser reuse
+ * a confirmation the Owner made for an action that then failed.
  */
-export const STEP_UP_MAX_AGE_SECONDS = 600;
+export const STEP_UP_MAX_AGE_SECONDS = 60;
 
-/** What a step-up is for (`step_up_challenges.purpose`). */
-export const STEP_UP_PURPOSES = ["platform_update", "update_policy", "step_up_client"] as const;
+/** What a step-up is for (`sessions.step_up_purpose`). */
+export const STEP_UP_PURPOSES = ["platform_update", "update_policy"] as const;
 export type StepUpPurpose = (typeof STEP_UP_PURPOSES)[number];
 
 /**

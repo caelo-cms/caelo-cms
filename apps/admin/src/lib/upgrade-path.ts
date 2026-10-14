@@ -161,7 +161,7 @@ export function releaseNotesExcerpt(
  * The install's Google Cloud project, from the upgrader job's resource name
  * (`projects/<id>/…`); null when the admin has no upgrader job.
  */
-export function installProjectId(env: Pick<UpgradePathEnv, "CAELO_UPGRADER_JOB">): string | null {
+function installProjectId(env: Pick<UpgradePathEnv, "CAELO_UPGRADER_JOB">): string | null {
   return (
     /^projects\/([a-z][a-z0-9-]{4,28}[a-z0-9])\//.exec(env.CAELO_UPGRADER_JOB?.trim() ?? "")?.[1] ??
     null

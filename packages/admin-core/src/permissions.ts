@@ -23,7 +23,7 @@ export const PERMISSIONS = [
   // Issue #569: see other editors' isolated chat branches (migration 0249).
   "drafts.view_all",
   // #696: install Caelo updates + change the update policy (migration 0267);
-  // every use additionally needs a fresh Google sign-in (step-up).
+  // every use additionally needs the Owner's password, re-entered (step-up, #757).
   "platform.update",
 ] as const;
 

@@ -4,10 +4,11 @@
  * #696 Phase 2 — "Install update" against real Postgres (§6):
  *
  *   - authz of the writes: the AI, system workers and non-Owners are refused;
- *     the Owner needs a fresh Google sign-in from the same session (step-up),
- *     a stale or foreign one is refused, and one sign-in authorizes exactly
- *     one action;
- *   - the step-up ops end to end (client set up → begin → redeem → record);
+ *     the Owner needs their password, re-entered in the same session
+ *     (step-up, #757), a stale or foreign one is refused, and one
+ *     confirmation authorizes exactly one action;
+ *   - step_up.confirm_password: a wrong password is audited and counted,
+ *     the fifth signs the session out, a right one resets the count;
  *   - request rules: only the newest known release, one at a time, cancel
  *     only while pending, a failed job start ends the request;
  *   - list/get/policy.get are open to the AI (it informs, never installs);
@@ -20,12 +21,9 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
+import { STEP_UP_MAX_FAILURES } from "../ops/step-up.js";
 import { registerAdminOps } from "../register.js";
-import { _setKekForTests } from "../security/secret-box.js";
-import { completeGoogleStepUp } from "../security/step-up/complete.js";
 import { sessionHashOf } from "../security/step-up/gate.js";
-import { GOOGLE_TOKEN_ENDPOINT } from "../security/step-up/google-oidc.js";
-import { googleSigner } from "./fixtures/google-id-token.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -35,7 +33,7 @@ const P = "pu-install";
 const OWNER_EMAIL = `${P}-owner@example.com`;
 const EDITOR_EMAIL = `${P}-editor@example.com`;
 const NEWEST = "99.1.0";
-const CLIENT_ID = "123456789-abcdef.apps.googleusercontent.com";
+const PASSWORD = "harbor-lantern-quill-71";
 
 const AI: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-000000000a1a",
@@ -54,7 +52,6 @@ let owner: ExecutionContext;
 let editor: ExecutionContext;
 let ownerSession: string;
 let editorSession: string;
-let google: Awaited<ReturnType<typeof googleSigner>>;
 
 async function admin<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const db = new SQL(ADMIN_URL as string);
@@ -89,7 +86,7 @@ function message(r: Awaited<ReturnType<typeof run>>): string {
 async function createUser(email: string, roleNames: string[]): Promise<ExecutionContext> {
   const r = await okValue<{ userId: string }>(SYSTEM, "users.create", {
     email,
-    password: "harbor-lantern-quill-71",
+    password: PASSWORD,
     displayName: email.split("@")[0],
     roleNames,
   });
@@ -99,55 +96,40 @@ async function createUser(email: string, roleNames: string[]): Promise<Execution
 async function login(email: string): Promise<string> {
   const r = await okValue<{ token: string }>(SYSTEM, "auth.login", {
     email,
-    password: "harbor-lantern-quill-71",
+    password: PASSWORD,
   });
   return sessionHashOf(r.token);
 }
 
-/** Run the real step-up ops as Google would answer them. */
+/** The real step-up op: re-enter the password for one action. */
 async function stepUp(
   ctx: ExecutionContext,
   sessionHash: string,
-  opts: {
-    email?: string;
-    authTimeOffsetSec?: number;
-    nonce?: string;
-    purpose?: "platform_update" | "update_policy";
-    signer?: Awaited<ReturnType<typeof googleSigner>>;
-  } = {},
+  opts: { password?: string; purpose?: "platform_update" | "update_policy" } = {},
 ) {
-  const begin = await okValue<{ authorizationUrl: string }>(ctx, "step_up.begin", {
+  return run(ctx, "step_up.confirm_password", {
     sessionHash,
     purpose: opts.purpose ?? "platform_update",
-    returnTo: "/settings/updates",
-    redirectUri: "https://admin.example.com/settings/updates/step-up/callback",
+    password: opts.password ?? PASSWORD,
   });
-  const url = new URL(begin.authorizationUrl);
-  expect(url.searchParams.get("max_age")).toBe("0");
-  expect(url.searchParams.get("client_id")).toBe(CLIENT_ID);
-  const state = url.searchParams.get("state") as string;
-  const redeemed = await okValue<{ challengeId: string; nonce: string; clientSecret: string }>(
-    ctx,
-    "step_up.redeem",
-    { sessionHash, state },
+}
+
+/** The step-up columns of the session named by `sessionHash`; null once deleted. */
+async function sessionRow(sessionHash: string) {
+  const rows = await admin(
+    (tx) =>
+      tx`SELECT step_up_at, step_up_purpose, step_up_failures FROM sessions
+           WHERE encode(sha256(convert_to(token, 'UTF8')), 'hex') = ${sessionHash}`,
   );
-  expect(redeemed.nonce).toBe(url.searchParams.get("nonce") as string);
-  expect(redeemed.clientSecret).toBe("test-client-secret-value");
-  const now = Math.floor(Date.now() / 1000);
-  const claims = {
-    iss: "https://accounts.google.com",
-    aud: CLIENT_ID,
-    exp: now + 3600,
-    nonce: opts.nonce ?? redeemed.nonce,
-    email: opts.email ?? OWNER_EMAIL,
-    email_verified: true,
-    auth_time: now + (opts.authTimeOffsetSec ?? 0),
-  };
-  return run(ctx, "step_up.record", {
-    sessionHash,
-    challengeId: redeemed.challengeId,
-    outcome: { ok: true, idToken: await (opts.signer ?? google).sign(claims) },
-  });
+  return (
+    (
+      rows as unknown as {
+        step_up_at: Date | null;
+        step_up_purpose: string | null;
+        step_up_failures: number;
+      }[]
+    )[0] ?? null
+  );
 }
 
 async function setLatest(version: string | null): Promise<void> {
@@ -157,14 +139,12 @@ async function setLatest(version: string | null): Promise<void> {
 async function wipe(): Promise<void> {
   await admin(async (tx) => {
     await tx`DELETE FROM platform_update_requests`;
-    await tx`DELETE FROM step_up_google_client`;
     await tx`UPDATE platform_update_policy SET mode = 'notify', auto_security = false,
       auto_patch = false, auto_minor = false, channel = 'stable', window_start = NULL,
       window_end = NULL, window_timezone = 'UTC', soak_hours = 24, security_soak_hours = 2,
       paused = false, paused_reason = NULL, paused_at = NULL, paused_until = NULL,
       paused_by = NULL WHERE id = 1`;
     for (const email of [OWNER_EMAIL, EDITOR_EMAIL]) {
-      await tx`DELETE FROM step_up_challenges WHERE user_id IN (SELECT id FROM users WHERE email = ${email})`;
       await tx`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE email = ${email})`;
       await tx`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email = ${email})`;
       await tx`DELETE FROM users WHERE email = ${email}`;
@@ -173,9 +153,6 @@ async function wipe(): Promise<void> {
 }
 
 beforeAll(async () => {
-  _setKekForTests(new Uint8Array(32).fill(7));
-  google = await googleSigner();
-  await google.install();
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
@@ -185,24 +162,15 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await admin(async (tx) => {
-    await tx`DELETE FROM platform_update_requests`;
-    await tx`DELETE FROM step_up_google_client`;
-  });
+  await admin((tx) => tx`DELETE FROM platform_update_requests`);
   await setLatest(NEWEST);
   ownerSession = await login(OWNER_EMAIL);
   editorSession = await login(EDITOR_EMAIL);
-  await okValue(owner, "step_up.set_client", {
-    clientId: CLIENT_ID,
-    clientSecret: "test-client-secret-value",
-    sessionHash: ownerSession,
-  });
 });
 
 afterAll(async () => {
   await wipe();
   await setLatest(null);
-  _setKekForTests(null);
   await adapter.close();
 });
 
@@ -215,20 +183,19 @@ describe("platform_updates.request authz", () => {
       });
       expect(r.ok === false && r.error.kind).toBe("ActorScopeRejected");
     }
-    for (const op of ["platform_updates.cancel", "platform_update_policy.set", "step_up.begin"]) {
+    for (const op of [
+      "platform_updates.cancel",
+      "platform_update_policy.set",
+      "step_up.confirm_password",
+    ]) {
       const r = await run(AI, op, {});
       expect(r.ok === false && r.error.kind).toBe("ActorScopeRejected");
     }
   });
 
-  it("refuses a non-Owner even with a step-up", async () => {
-    const begin = await run(editor, "step_up.begin", {
-      sessionHash: editorSession,
-      purpose: "platform_update",
-      returnTo: "/settings/updates",
-      redirectUri: "https://admin.example.com/cb",
-    });
-    expect(message(begin)).toContain("permission_denied");
+  it("refuses a non-Owner even with their right password", async () => {
+    const confirm = await stepUp(editor, editorSession);
+    expect(message(confirm)).toContain("permission_denied");
     const r = await run(editor, "platform_updates.request", {
       targetVersion: NEWEST,
       sessionHash: editorSession,
@@ -252,45 +219,73 @@ describe("platform_updates.request authz", () => {
   it("refuses a stale step-up", async () => {
     expect((await stepUp(owner, ownerSession)).ok).toBe(true);
     await admin(
-      (tx) => tx`UPDATE sessions SET step_up_at = now() - interval '11 minutes'
+      (tx) => tx`UPDATE sessions SET step_up_at = now() - interval '2 minutes'
                   WHERE user_id = ${owner.actorId}::uuid AND step_up_at IS NOT NULL`,
     );
     const r = await run(owner, "platform_updates.request", {
       targetVersion: NEWEST,
       sessionHash: ownerSession,
     });
-    expect(message(r)).toContain("step_up_required: the Google sign-in was 11 minutes ago");
+    expect(message(r)).toContain("step_up_required: the password was confirmed 120 seconds ago");
   });
 
-  it("refuses a sign-in with a different Google account", async () => {
-    const r = await stepUp(owner, ownerSession, { email: "someone-else@example.com" });
-    expect(message(r)).toContain("this Caelo account is");
-  });
-
-  it("refuses a Google sign-in older than the step-up itself (Google reused a session)", async () => {
-    const r = await stepUp(owner, ownerSession, { authTimeOffsetSec: -3600 });
-    expect(message(r)).toContain("reused an earlier sign-in");
-  });
-
-  it("records a step-up only against a redeemed challenge of this session, once, with its nonce", async () => {
-    // No challenge at all: claims alone are worth nothing.
-    const forged = await run(owner, "step_up.record", {
-      sessionHash: ownerSession,
-      challengeId: "00000000-0000-4000-8000-000000000001",
-      outcome: { ok: true, idToken: await google.sign({ email: OWNER_EMAIL }) },
-    });
-    expect(message(forged)).toContain("no completed Google sign-in");
-    // A token whose nonce is not this challenge's.
-    const wrongNonce = await stepUp(owner, ownerSession, { nonce: "x".repeat(43) });
-    expect(message(wrongNonce)).toContain("nonce mismatch");
-    // A well-formed token Google never signed.
-    const impostor = await googleSigner();
-    const unsigned = await stepUp(owner, ownerSession, { signer: impostor });
-    expect(message(unsigned)).toContain("not signed by Google");
-    const status = await okValue<{ freshUntil: string | null }>(owner, "step_up.status", {
+  it("a wrong password records nothing, is audited and counted; a right one resets the count", async () => {
+    const wrong = await stepUp(owner, ownerSession, { password: "not-the-password" });
+    expect(message(wrong)).toContain(`${STEP_UP_MAX_FAILURES - 1} more tries`);
+    expect(await sessionRow(ownerSession)).toMatchObject({ step_up_at: null, step_up_failures: 1 });
+    const request = await run(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
       sessionHash: ownerSession,
     });
-    expect(status.freshUntil).toBeNull();
+    expect(message(request)).toStartWith("step_up_required:");
+    const audit = await admin(
+      (tx) =>
+        tx`SELECT succeeded, result_summary FROM audit_events WHERE actor_id = ${owner.actorId}::uuid
+             AND operation = 'step_up.confirm_password' ORDER BY created_at DESC LIMIT 1`,
+    );
+    expect((audit as unknown as { succeeded: boolean; result_summary: string }[])[0]).toMatchObject(
+      { succeeded: false, result_summary: `wrong password (1/${STEP_UP_MAX_FAILURES})` },
+    );
+    expect((await stepUp(owner, ownerSession)).ok).toBe(true);
+    expect(await sessionRow(ownerSession)).toMatchObject({
+      step_up_purpose: "platform_update",
+      step_up_failures: 0,
+    });
+  });
+
+  it("a wrong password drops a confirmation already on the session", async () => {
+    expect((await stepUp(owner, ownerSession)).ok).toBe(true);
+    await stepUp(owner, ownerSession, { password: "not-the-password" });
+    const r = await run(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+    });
+    expect(message(r)).toStartWith("step_up_required:");
+  });
+
+  it(`the ${STEP_UP_MAX_FAILURES}th wrong password signs the session out; other sessions stay`, async () => {
+    const otherSession = await login(OWNER_EMAIL);
+    for (let i = 1; i < STEP_UP_MAX_FAILURES; i++) {
+      await stepUp(owner, ownerSession, { password: `wrong-${i}` });
+    }
+    expect(await sessionRow(ownerSession)).toMatchObject({
+      step_up_failures: STEP_UP_MAX_FAILURES - 1,
+    });
+    const last = await stepUp(owner, ownerSession, { password: "wrong-last" });
+    expect(message(last)).toStartWith("step_up_signed_out:");
+    expect(await sessionRow(ownerSession)).toBeNull();
+    expect(await sessionRow(otherSession)).not.toBeNull();
+    // The signed-out session cannot confirm, even with the right password.
+    expect(message(await stepUp(owner, ownerSession))).toContain("not signed in any more");
+  });
+
+  it("confirms only the caller's own session", async () => {
+    const r = await stepUp(owner, editorSession);
+    expect(message(r)).toContain("not signed in any more");
+    expect(await sessionRow(editorSession)).toMatchObject({
+      step_up_at: null,
+      step_up_failures: 0,
+    });
   });
 
   it("a sign-in begun for another action does not authorize the install", async () => {
@@ -299,15 +294,16 @@ describe("platform_updates.request authz", () => {
       targetVersion: NEWEST,
       sessionHash: ownerSession,
     });
-    expect(message(r)).toContain("for a different action");
+    expect(message(r)).toContain("confirmed for a different action");
   });
 
   it("accepts a fresh step-up once, then needs a new one", async () => {
-    expect((await stepUp(owner, ownerSession)).ok).toBe(true);
-    const status = await okValue<{ freshUntil: string | null }>(owner, "step_up.status", {
+    const confirmed = await okValue<{ freshUntil: string }>(owner, "step_up.confirm_password", {
       sessionHash: ownerSession,
+      purpose: "platform_update",
+      password: PASSWORD,
     });
-    expect(status.freshUntil).not.toBeNull();
+    expect(new Date(confirmed.freshUntil).getTime()).toBeGreaterThan(Date.now());
     const first = await okValue<{ requestId: string }>(owner, "platform_updates.request", {
       targetVersion: NEWEST,
       sessionHash: ownerSession,
@@ -480,37 +476,6 @@ describe("platform_update_policy", () => {
   });
 });
 
-describe("step_up.set_client", () => {
-  it("replacing the client needs a step-up; the secret never leaves in status", async () => {
-    const r = await run(owner, "step_up.set_client", {
-      clientId: CLIENT_ID,
-      clientSecret: "another-secret-value",
-      sessionHash: ownerSession,
-    });
-    expect(message(r)).toStartWith("step_up_required:");
-    const status = await okValue<Record<string, unknown>>(owner, "step_up.status", {
-      sessionHash: ownerSession,
-    });
-    expect(status).toMatchObject({ configured: true, clientId: CLIENT_ID });
-    expect(JSON.stringify(status)).not.toContain("test-client-secret-value");
-  });
-
-  it("a redeemed sign-in link cannot be used twice or from another session", async () => {
-    const begin = await okValue<{ authorizationUrl: string }>(owner, "step_up.begin", {
-      sessionHash: ownerSession,
-      purpose: "update_policy",
-      returnTo: "/settings/updates",
-      redirectUri: "https://admin.example.com/cb",
-    });
-    const state = new URL(begin.authorizationUrl).searchParams.get("state") as string;
-    const otherSession = await login(OWNER_EMAIL);
-    const wrong = await run(owner, "step_up.redeem", { sessionHash: otherSession, state });
-    expect(message(wrong)).toContain("another browser session");
-    const again = await run(owner, "step_up.redeem", { sessionHash: ownerSession, state });
-    expect(message(again)).toContain("unknown or was already used");
-  });
-});
-
 describe("platform_updater database role (migration 0267)", () => {
   it("can claim and narrate a request, and nothing else", async () => {
     await stepUp(owner, ownerSession);
@@ -541,7 +506,6 @@ describe("platform_updater database role (migration 0267)", () => {
     for (const forbidden of [
       "SELECT email FROM users LIMIT 1",
       "SELECT token FROM sessions LIMIT 1",
-      "SELECT client_id FROM step_up_google_client",
       `UPDATE platform_update_requests SET target_version = '0.0.1' WHERE id = '${requestId}'`,
       `UPDATE platform_update_requests SET requested_by = NULL WHERE id = '${requestId}'`,
       "INSERT INTO platform_update_requests (target_version, from_version, trigger) VALUES ('1.0.0', '0.1.0', 'auto')",
@@ -552,110 +516,5 @@ describe("platform_updater database role (migration 0267)", () => {
     ]) {
       expect(await asUpdater(forbidden)).toContain("permission denied");
     }
-  });
-});
-
-describe("completeGoogleStepUp (the OAuth callback)", () => {
-  /** Google's token + JWKS endpoints, answering with an ID token for `email`. */
-  function googleEndpoints(email: string, authTimeOffsetSec = 0) {
-    let nonce = "";
-    const fetchFn = async (url: string, init: RequestInit) => {
-      if (url !== GOOGLE_TOKEN_ENDPOINT) return google.fetch(url);
-      const body = new URLSearchParams(String(init.body));
-      expect(body.get("code_verifier")?.length).toBeGreaterThanOrEqual(43);
-      const now = Math.floor(Date.now() / 1000);
-      const idToken = await google.sign({
-        iss: "https://accounts.google.com",
-        aud: body.get("client_id"),
-        exp: now + 3600,
-        nonce,
-        email,
-        email_verified: true,
-        auth_time: now + authTimeOffsetSec,
-      });
-      return new Response(JSON.stringify({ id_token: idToken }), { status: 200 });
-    };
-    return { fetchFn, setNonce: (n: string) => (nonce = n) };
-  }
-
-  async function begin(): Promise<{ state: string; nonce: string }> {
-    const r = await okValue<{ authorizationUrl: string }>(owner, "step_up.begin", {
-      sessionHash: ownerSession,
-      purpose: "platform_update",
-      returnTo: "/settings/updates",
-      redirectUri: "https://admin.example.com/settings/updates/step-up/callback",
-    });
-    const url = new URL(r.authorizationUrl);
-    return {
-      state: url.searchParams.get("state") as string,
-      nonce: url.searchParams.get("nonce") as string,
-    };
-  }
-
-  it("records a fresh sign-in by the owner's account; the install request then passes", async () => {
-    const { state, nonce } = await begin();
-    const g = googleEndpoints(OWNER_EMAIL.toUpperCase());
-    g.setNonce(nonce);
-    const done = await completeGoogleStepUp({
-      registry,
-      adapter,
-      ctx: owner,
-      sessionHash: ownerSession,
-      state,
-      code: "4/abc",
-      error: null,
-      fetch: g.fetchFn,
-    });
-    expect(done).toEqual({ ok: true, returnTo: "/settings/updates", purpose: "platform_update" });
-    expect(
-      (
-        await run(owner, "platform_updates.request", {
-          targetVersion: NEWEST,
-          sessionHash: ownerSession,
-        })
-      ).ok,
-    ).toBe(true);
-  });
-
-  it("refuses a reused Google session and audits the failed attempt", async () => {
-    const { state, nonce } = await begin();
-    const g = googleEndpoints(OWNER_EMAIL, -3600);
-    g.setNonce(nonce);
-    const done = await completeGoogleStepUp({
-      registry,
-      adapter,
-      ctx: owner,
-      sessionHash: ownerSession,
-      state,
-      code: "4/abc",
-      error: null,
-      fetch: g.fetchFn,
-    });
-    expect(done.ok ? "" : done.message).toContain("reused an earlier sign-in");
-    const audit = await admin(
-      (tx) =>
-        tx`SELECT succeeded FROM audit_events WHERE actor_id = ${owner.actorId}::uuid
-             AND operation = 'step_up.record' ORDER BY created_at DESC LIMIT 1`,
-    );
-    expect((audit as unknown as { succeeded: boolean }[])[0]?.succeeded).toBe(false);
-  });
-
-  it("a cancelled Google sign-in leaves no step-up", async () => {
-    const { state } = await begin();
-    const done = await completeGoogleStepUp({
-      registry,
-      adapter,
-      ctx: owner,
-      sessionHash: ownerSession,
-      state,
-      code: null,
-      error: "access_denied",
-      fetch: async () => new Response("unused", { status: 500 }),
-    });
-    expect(done.ok ? "" : done.message).toContain("cancelled");
-    const status = await okValue<{ freshUntil: string | null }>(owner, "step_up.status", {
-      sessionHash: ownerSession,
-    });
-    expect(status.freshUntil).toBeNull();
   });
 });

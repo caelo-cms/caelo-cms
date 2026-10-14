@@ -11,8 +11,8 @@
  * (platform-updates/scheduler.ts) queues automatic requests from it.
  *
  * `get` is open to the AI (it may explain the policy); `set`, `pause` and
- * `resume` are human-only with the Owner permission and a fresh Google
- * sign-in (decisions 4 + 6: every policy change is a step-up action).
+ * `resume` are human-only with the Owner permission and a password
+ * confirmation (decisions 4 + 6, #757: every policy change is a step-up action).
  */
 
 import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
