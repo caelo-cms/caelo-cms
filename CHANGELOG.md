@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.10.48
+
+### Features
+- d340cec7 caelo-agent — Install update for self-hosted installs (#696) (#721)
+- 3ee152f1 Install update with Google step-up and a live timeline (#696) (#719)
+- 2d4c4f48 set up the upgrader job with scoped grants (#696) (#717)
+- 573cdb6b the in-cloud upgrader job (caelo-ops upgrader) (#696) (#714)
+- 2d2bd691 platform update requests, policy + Google step-up ops (#696) (#713)
+- 77feebae install-job mode — GCP install runs as a Cloud Run job, terminal tails it (#696) (#715)
+
+### Fixes
+- 59b6ed5b fail fast on a refused AI provider key (#720)
+- 9de79095 root-cause the quality-fix-offer and live-edit click flakes (#722)
+
+### Docs
+- 35bdda41 "Open in Cloud Shell" install buttons, pinned per release (#696) (#716)
+
 ## v0.10.47
 
 ### Features

@@ -2,7 +2,12 @@
 
 import { describe, expect, it } from "bun:test";
 import { cloudShellInstallUrl } from "@caelo-cms/shared";
-import { cloudShellUpgrade, releaseNotesExcerpt, resolveUpgradePath } from "./upgrade-path.js";
+import {
+  cloudShellUpgrade,
+  releaseNotesExcerpt,
+  resolveUpgradePath,
+  type UpgradePath,
+} from "./upgrade-path.js";
 
 const gcp = {
   CAELO_PROVIDER: "gcp",
@@ -34,12 +39,27 @@ describe("resolveUpgradePath", () => {
       providerLabel: "AWS",
       docsUrl: "https://caelo-cms.com/install-aws",
     });
-    // Compose sets no CAELO_PROVIDER: a self-hosted install.
-    expect(resolveUpgradePath({ CAELO_SITE_URL: "https://example.com" }, "0.10.44")).toEqual({
-      kind: "unsupported",
-      providerLabel: "self-hosted",
+  });
+
+  it("builds the server-side command for a self-hosted install (#696 Phase 4)", () => {
+    const selfHosted: UpgradePath = {
+      kind: "cli",
+      provider: "self-hosted",
+      install: "example.com",
+      // No --install: the CLI finds the install by the folder it runs in.
+      command: "bunx @caelo-cms/provisioning@0.10.44 upgrade --version 0.10.44",
       docsUrl: "https://caelo-cms.com/install-self-hosted",
-    });
+    };
+    expect(
+      resolveUpgradePath(
+        { CAELO_PROVIDER: "self-hosted", CAELO_SITE_URL: "https://example.com" },
+        "0.10.44",
+      ),
+    ).toEqual(selfHosted);
+    // Older Compose files set no CAELO_PROVIDER: still self-hosted.
+    expect(resolveUpgradePath({ CAELO_SITE_URL: "https://example.com" }, "0.10.44")).toEqual(
+      selfHosted,
+    );
   });
 
   it("says what is missing instead of guessing the install", () => {
@@ -52,9 +72,10 @@ describe("resolveUpgradePath", () => {
   it("honours the e2e provider stand-in outside production only", () => {
     const env = { CAELO_SITE_URL: "https://example.com", CAELO_E2E_UPDATES_PROVIDER: "gcp" };
     expect(resolveUpgradePath({ ...env, NODE_ENV: "development" }, "0.10.44").kind).toBe("cli");
-    expect(resolveUpgradePath({ ...env, NODE_ENV: "production" }, "0.10.44").kind).toBe(
-      "unsupported",
-    );
+    expect(resolveUpgradePath({ ...env, NODE_ENV: "production" }, "0.10.44")).toMatchObject({
+      kind: "cli",
+      provider: "self-hosted",
+    });
   });
 });
 

@@ -106,7 +106,11 @@ export interface UpdateQueue {
     message: string,
   ): Promise<void>;
   record(requestId: string, facts: UpdateFacts): Promise<void>;
-  finish(requestId: string, end: UpdateEnd): Promise<void>;
+  /**
+   * End a running request. Resolves false when it was no longer running
+   * (another process already ended it), so nothing changed.
+   */
+  finish(requestId: string, end: UpdateEnd): Promise<boolean>;
 }
 
 export interface UpgraderJobDeps {
@@ -193,22 +197,7 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       }
       releaseLock = null;
     }
-    // The end state is what unblocks the next update; a transient database
-    // error must not leave the request "running" while the run reports
-    // success.
-    let recorded = false;
-    for (let attempt = 1; attempt <= FINISH_ATTEMPTS && !recorded; attempt++) {
-      try {
-        await queue.finish(request.id, end);
-        recorded = true;
-      } catch (e) {
-        log({
-          severity: "ERROR",
-          message: `could not record the end of request ${request.id} (attempt ${attempt}/${FINISH_ATTEMPTS}): ${errorText(e)}`,
-        });
-        if (attempt < FINISH_ATTEMPTS) await (deps.sleep ?? defaultSleep)(attempt * 5_000);
-      }
-    }
+    const recorded = await recordUpdateEnd(queue, request.id, end, log, deps.sleep);
     const failed = end.status === "failed" || end.status === "rolled_back" || !recorded;
     return { exitCode: failed ? 1 : 0, requestId: request.id, status: end.status };
   };
@@ -437,6 +426,35 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       `The upgrader stopped unexpectedly: ${errorText(e)}. If the site misbehaves, check Settings → Updates and the job's log.`,
     );
   }
+}
+
+/**
+ * End request `requestId` as `end`, retrying a failed write: the end state
+ * is what unblocks the next update, so a transient database error must not
+ * leave the request "running" while the run reports success.
+ *
+ * @returns whether the end was written (false after the last attempt failed)
+ */
+export async function recordUpdateEnd(
+  queue: UpdateQueue,
+  requestId: string,
+  end: UpdateEnd,
+  log: JobLog,
+  sleep: Sleep = defaultSleep,
+): Promise<boolean> {
+  for (let attempt = 1; attempt <= FINISH_ATTEMPTS; attempt++) {
+    try {
+      await queue.finish(requestId, end);
+      return true;
+    } catch (e) {
+      log({
+        severity: "ERROR",
+        message: `could not record the end of request ${requestId} (attempt ${attempt}/${FINISH_ATTEMPTS}): ${errorText(e)}`,
+      });
+      if (attempt < FINISH_ATTEMPTS) await sleep(attempt * 5_000);
+    }
+  }
+  return false;
 }
 
 /** The digests the revisions serving traffic run, per service. */

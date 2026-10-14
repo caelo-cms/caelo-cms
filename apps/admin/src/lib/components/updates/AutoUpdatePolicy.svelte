@@ -38,6 +38,7 @@
     stepUp,
     csrfToken,
     error,
+    upgraderAvailable,
   }: {
     policy: StoredUpdatePolicy;
     scheduler: SchedulerStatus;
@@ -45,6 +46,8 @@
     stepUp: { configured: boolean; fresh: boolean; freshUntil: string | null } | null;
     csrfToken: string;
     error: string | null;
+    /** This install has an upgrader (Cloud Run job or the self-hosted agent). */
+    upgraderAvailable: boolean;
   } = $props();
 
   // svelte-ignore state_referenced_locally
@@ -129,8 +132,10 @@
     {#if canEdit && stepUp}
       {#if !stepUp.configured}
         <p class="text-muted-foreground" data-testid="policy-needs-setup">
-          Changing these settings is confirmed with a fresh Google sign-in. Set up Google sign-in
-          for updates first.
+          Changing these settings is confirmed with a fresh Google sign-in.
+          {upgraderAvailable
+            ? "Set up Google sign-in for updates first (below)."
+            : "Google sign-in for updates is set up together with the upgrader this page explains above; until then Caelo only tells you about new releases."}
         </p>
       {:else if !stepUp.fresh}
         <form method="post" action="?/stepUp">

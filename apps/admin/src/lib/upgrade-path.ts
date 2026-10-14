@@ -11,11 +11,12 @@ import {
  * How the Owner upgrades THIS install (issue #696 Phase 0), as Settings →
  * Updates shows it.
  *
- * Today an upgrade is the provisioning CLI's `upgrade` command, run by the
- * Owner on the machine that installed Caelo. That command exists for Google
- * Cloud installs only (`lifecycle.ts` refuses every other provider), so the
- * page offers it there and says plainly what is missing everywhere else —
- * a command that would only print "not yet implemented" is worse than none.
+ * An upgrade by hand is the provisioning CLI's `upgrade` command: for Google
+ * Cloud installs run on the machine that installed Caelo (or Cloud Shell),
+ * for self-hosted installs on the server, in the folder that holds
+ * `.caelo/` (#696 Phase 4). AWS and Azure have none yet (`lifecycle.ts`
+ * refuses them), so the page says plainly what is missing there — a command
+ * that would only print "not yet implemented" is worse than none.
  *
  * Pure, with the environment passed in, so it is unit-testable.
  */
@@ -24,16 +25,19 @@ import {
 const DOCS_BASE = "https://caelo-cms.com";
 
 /** Providers whose installs `cms-provision upgrade` can upgrade. */
-const CLI_UPGRADE_PROVIDERS = ["gcp", "gcp-firebase"] as const;
+const CLI_UPGRADE_PROVIDERS = ["gcp", "gcp-firebase", "self-hosted"] as const;
 type CliUpgradeProvider = (typeof CLI_UPGRADE_PROVIDERS)[number];
 
 export type UpgradePath =
-  /** Run `command` on the machine that installed Caelo. */
+  /**
+   * Run `command` on the machine that installed Caelo (self-hosted: on the
+   * server, in the folder that holds `.caelo/`).
+   */
   | {
       readonly kind: "cli";
       readonly provider: CliUpgradeProvider;
       readonly command: string;
-      /** The `--install` value: the site's domain. */
+      /** The site's domain (the `--install` value on Google Cloud). */
       readonly install: string;
       readonly docsUrl: string;
     }
@@ -67,8 +71,11 @@ function isCliProvider(p: string): p is CliUpgradeProvider {
   return (CLI_UPGRADE_PROVIDERS as readonly string[]).includes(p);
 }
 
-/** The provider this admin was installed with; unset means self-hosted (compose sets none). */
-function providerOf(env: UpgradePathEnv): string {
+/**
+ * The provider this admin was installed with; unset means self-hosted (the
+ * Compose file of installs before #696 Phase 4c set none).
+ */
+export function updatesProvider(env: UpgradePathEnv): string {
   const e2e = env.NODE_ENV !== "production" ? env.CAELO_E2E_UPDATES_PROVIDER?.trim() : undefined;
   return e2e || env.CAELO_PROVIDER?.trim() || "self-hosted";
 }
@@ -86,7 +93,7 @@ const PROVIDER_LABELS: Record<string, string> = {
  * @param version the release to upgrade to (the release check's newest).
  */
 export function resolveUpgradePath(env: UpgradePathEnv, version: string): UpgradePath {
-  const provider = providerOf(env);
+  const provider = updatesProvider(env);
   if (!isCliProvider(provider)) {
     const docsPage =
       provider === "aws" || provider === "azure" ? `install-${provider}` : "install-self-hosted";
@@ -105,6 +112,17 @@ export function resolveUpgradePath(env: UpgradePathEnv, version: string): Upgrad
     };
   }
   const install = installHintFromSiteUrl(siteUrl);
+  if (provider === "self-hosted") {
+    // The CLI finds the install by its `.caelo/` folder; --install names
+    // cloud installs only.
+    return {
+      kind: "cli",
+      provider,
+      install: install ?? siteUrl,
+      command: provisioningCommand(version, ["upgrade", "--version", version]),
+      docsUrl: `${DOCS_BASE}/install-self-hosted`,
+    };
+  }
   if (!install) {
     return {
       kind: "misconfigured",
@@ -178,7 +196,8 @@ export function cloudShellUpgrade(
   readonly commands: readonly string[];
 } | null {
   const path = resolveUpgradePath(env, version);
-  if (path.kind !== "cli") return null;
+  // Self-hosted installs upgrade on their own server, never in Cloud Shell.
+  if (path.kind !== "cli" || path.provider === "self-hosted") return null;
   const projectId = installProjectId(env);
   const commands = [BUN_INSTALL];
   if (projectId) commands.push(provisioningCommand(version, ["attach", "--project", projectId]));

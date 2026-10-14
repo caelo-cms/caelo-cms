@@ -11,6 +11,11 @@
  *     with a fresh sign-in (step-up), confirms the install, and follows the
  *     upgrader's live timeline — fed here the way the job writes it; a
  *     release that changes the cloud setup shows the Cloud Shell step;
+ *   - Phase 4c, self-hosted (the `caelo_e2e_updates_provider` cookie
+ *     switches this browser to a self-hosted install): without a running
+ *     update agent the Owner gets its setup command and the server-side
+ *     upgrade command; with one checking in, "Install update" queues the
+ *     request for it; a release it cannot install shows the server step.
  *   - Phase 5 "Automatic updates": every policy change, pause and resume
  *     needs its own fresh Google sign-in; the page shows the scheduler's
  *     last decision and the update emails (and that none were sent while
@@ -114,6 +119,24 @@ const FIXTURE_SCRIPT = `
                VALUES ('scheduled', \${process.env.E2E_LATEST}, 'scheduled:e2e',
                  'Caelo v99.0.0 will install automatically', 'Body.', 'no_transport',
                  'No email transport is configured (Settings → Email).')\`;
+    } else if (op === "agent-beat") {
+      // What the update agent writes on every poll (platform-updater ops).
+      await tx\`DELETE FROM platform_update_agent\`;
+      if (process.env.E2E_AGENT_MINUTES) {
+        await tx\`INSERT INTO platform_update_agent (id, agent_version, host, last_seen_at, problem)
+                 VALUES (1, '0.10.47', 'e2e-box',
+                         now() - make_interval(mins => \${Number(process.env.E2E_AGENT_MINUTES)}),
+                         \${process.env.E2E_AGENT_PROBLEM || null})\`;
+      }
+    } else if (op === "needs-server") {
+      await tx\`DELETE FROM platform_update_requests\`;
+      const [owner] = await tx\`SELECT id FROM users WHERE email = 'dev-owner@example.com'\`;
+      await tx\`INSERT INTO platform_update_requests
+                 (target_version, from_version, trigger, requested_by, status, status_reason,
+                  refusal_codes, started_at, finished_at)
+               VALUES (\${process.env.E2E_LATEST}, '0.10.45', 'manual', \${owner.id}, 'needs_cloud_shell',
+                 'This install has not recorded which Caelo release it runs yet. Upgrade it once with the upgrade command on the server.',
+                 ARRAY['install-version-unknown'], now(), now())\`;
     } else if (op === "wipe") {
       await tx\`DELETE FROM platform_update_notifications\`;
       await tx\`UPDATE platform_update_policy SET mode = 'notify', auto_security = false,
@@ -121,6 +144,7 @@ const FIXTURE_SCRIPT = `
                  window_timezone = 'UTC', soak_hours = 24, security_soak_hours = 2, paused = false,
                  paused_reason = NULL, paused_at = NULL, paused_until = NULL, paused_by = NULL\`;
       await tx\`DELETE FROM platform_update_requests\`;
+      await tx\`DELETE FROM platform_update_agent\`;
       await tx\`DELETE FROM step_up_google_client\`;
       await tx\`
         UPDATE release_check_cache
@@ -268,6 +292,114 @@ test("a release that changes the cloud setup explains the Cloud Shell step", asy
     /^https:\/\/(shell|console)\.cloud\.google\.com\//,
   );
   await expect(page.getByTestId("cloud-shell-command").last()).toHaveText(COMMAND);
+});
+
+/** Show this browser a self-hosted install (test-only cookie, lib/server/upgrader.ts). */
+async function asSelfHosted(page: Page, baseURL: string | undefined): Promise<void> {
+  await page.context().addCookies([
+    {
+      name: "caelo_e2e_updates_provider",
+      value: "self-hosted",
+      url: baseURL ?? "http://localhost:4173",
+    },
+  ]);
+}
+
+const SELF_HOSTED_COMMAND = `bunx @caelo-cms/provisioning@${LATEST} upgrade --version ${LATEST}`;
+
+test("self-hosted without a running update agent: agent setup + the server command", async ({
+  page,
+  baseURL,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "agent-beat", E2E_EMAIL: REVIEWER_EMAIL });
+  await asSelfHosted(page, baseURL);
+  await login(page, "dev-owner@example.com", "dev owner password");
+  await page.goto("/settings/updates");
+
+  const installed = ((await page.getByTestId("installed-version").textContent()) ?? "").slice(1);
+  await expect(page.getByTestId("agent-setup")).toBeVisible();
+  await expect(page.getByTestId("agent-state")).toContainText("not set up");
+  await expect(page.getByTestId("agent-install-command")).toHaveText(
+    `bunx @caelo-cms/provisioning@${installed} agent install`,
+  );
+  await expect(page.getByTestId("install-update")).toHaveCount(0);
+  await expect(page.getByTestId("step-up-setup")).toHaveCount(0);
+  // The hand-run upgrade: on the server, no --install (the folder names the install).
+  await expect(page.getByTestId("upgrade-command")).toHaveText(SELF_HOSTED_COMMAND);
+  await expect(page.getByTestId("upgrade-instructions")).toContainText("holds .caelo/");
+
+  // An agent that stopped checking in, or reports a problem, gets no button either.
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "agent-beat",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_AGENT_MINUTES: "30",
+  });
+  await page.reload();
+  await expect(page.getByTestId("agent-state")).toContainText("not running now");
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "agent-beat",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_AGENT_MINUTES: "0",
+    E2E_AGENT_PROBLEM: "cosign is not installed on the server.",
+  });
+  await page.reload();
+  await expect(page.getByTestId("agent-state")).toContainText("cosign is not installed");
+  await expect(page.getByTestId("install-update")).toHaveCount(0);
+});
+
+test("self-hosted with the agent checking in: Install update queues the request for it", async ({
+  page,
+  baseURL,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "agent-beat",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_AGENT_MINUTES: "0",
+  });
+  await asSelfHosted(page, baseURL);
+  await login(page, "dev-owner@example.com", "dev owner password");
+  await page.goto("/settings/updates");
+
+  await expect(page.getByTestId("agent-setup")).toHaveCount(0);
+  await expect(page.getByTestId("step-up-setup")).toContainText("any Google Cloud project");
+  await page.getByLabel("Client ID").fill("123456789-e2eclient.apps.googleusercontent.com");
+  await page.getByLabel("Client secret").fill("e2e-client-secret-value");
+  await page.getByTestId("save-step-up-client").click();
+
+  await expect(page.getByTestId("install-update")).toContainText("update agent on your server");
+  await page.getByTestId("step-up-install").click();
+  const dialog = page.getByTestId("install-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("picks it up within a minute");
+  await dialog.getByTestId("confirm-install").click();
+
+  // Queued for the agent; nothing was started by the admin itself.
+  const timeline = page.getByTestId("update-timeline");
+  await expect(timeline).toContainText(`→ v${LATEST}`);
+  await expect(page.getByTestId("update-status")).toHaveText("Waiting to start");
+  await expect(timeline).toContainText("Upgrader started (run agent@e2e-box)");
+});
+
+test("self-hosted: a release the agent cannot install shows the server step", async ({
+  page,
+  baseURL,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "needs-server",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_LATEST: LATEST,
+  });
+  await asSelfHosted(page, baseURL);
+  await login(page, "dev-owner@example.com", "dev owner password");
+  await page.goto("/settings/updates");
+  await expect(page.getByTestId("server-upgrade")).toBeVisible();
+  await expect(page.getByTestId("server-upgrade-reason")).toContainText(
+    "upgrade command on the server",
+  );
+  await expect(page.getByTestId("update-status")).toHaveText("Needs a manual upgrade");
+  await expect(page.getByTestId("cloud-shell-upgrade")).toHaveCount(0);
 });
 
 test("Automatic updates: each change confirmed with Google; status and emails shown", async ({

@@ -146,6 +146,8 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
       facts: z.union([releaseFactsSchema, z.object({ unavailable: z.string().min(1).max(1000) })]),
       /** This install has an upgrader the admin can hand a request to. */
       upgraderAvailable: z.boolean(),
+      /** Why it has none right now (e.g. the self-hosted agent is not checking in). */
+      upgraderProblem: z.string().max(2000).nullable(),
     })
     .strict(),
   output: z.object({
@@ -244,6 +246,7 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
       release,
       facts,
       upgraderAvailable: input.upgraderAvailable,
+      upgraderProblem: input.upgraderProblem,
       now: new Date(),
     });
 

@@ -134,6 +134,7 @@ function memoryQueue(request: ClaimedUpdate | null) {
     },
     finish: async (_id, e) => {
       end = e;
+      return true;
     },
   };
   return { queue, events, facts, end: () => end };
@@ -293,7 +294,7 @@ describe("runUpgraderJob", () => {
       finish: async (id, end) => {
         calls += 1;
         if (calls < 3) throw new Error("connection reset");
-        await q.queue.finish(id, end);
+        return q.queue.finish(id, end);
       },
     };
     expect(await runUpgraderJob({ ...deps, queue: flaky })).toMatchObject({

@@ -41,7 +41,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { MEDIA_DIR, type ReleaseImages } from "./compose.js";
+import type { PlatformUpdatePhase } from "@caelo-cms/shared";
+import { ghcrImageDigest, MEDIA_DIR, type ReleaseImages } from "./compose.js";
 import { selfCommand } from "./self-command.js";
 import {
   type HostRunner,
@@ -62,6 +63,12 @@ export interface UpgradeLog {
   info(message: string): void;
   warn(message: string): void;
   error(message: string): void;
+  /**
+   * The stage the following lines belong to, in the vocabulary of the
+   * admin's update timeline. Only the host agent (#696 Phase 4c) listens;
+   * the terminal ignores it.
+   */
+  phase?(phase: PlatformUpdatePhase): void;
 }
 
 export interface SelfHostedUpgradeDeps {
@@ -83,6 +90,13 @@ export interface SelfHostedUpgradeOpts {
   readonly version?: string;
   readonly channel?: "stable" | "rc" | "beta";
   readonly skipVerify?: boolean;
+  /**
+   * The admin + gateway digests the release's signed manifest names (the
+   * host agent passes them). The digests GHCR serves for the tag must match,
+   * or nothing changes — a registry cannot swap in another signed image of
+   * an older release under the new tag.
+   */
+  readonly expectedDigests?: { readonly admin: string; readonly gateway: string };
 }
 
 export type SelfHostedUpgradeResult =
@@ -212,6 +226,7 @@ export async function upgradeSelfHosted(
     : legacyComposeCheckpoint(caeloDir, live);
 
   // 1. Target release → verified digests.
+  log.phase?.("verify");
   const target = await targetVersion(opts, deps.fetchImpl);
   if (!target.ok) return fail("target", target.error, true);
   log.step(
@@ -226,6 +241,18 @@ export async function upgradeSelfHosted(
   if (!resolved.ok) return fail("verify", resolved.error, true);
   if (opts.skipVerify) log.warn("--skip-verify set — image signatures NOT verified.");
   const images = resolved.images;
+  if (opts.expectedDigests) {
+    const mismatch = RELEASE_SERVICES.filter(
+      (s) => ghcrImageDigest(s, images[s]) !== opts.expectedDigests?.[s],
+    );
+    if (mismatch.length > 0) {
+      return fail(
+        "verify",
+        `The registry serves other ${mismatch.join(" + ")} images for ${target.version} than its signed release manifest names; nothing was changed.`,
+        true,
+      );
+    }
+  }
   if (
     current &&
     current.images.admin === images.admin &&
@@ -235,6 +262,7 @@ export async function upgradeSelfHosted(
     // Recorded, and the Compose file agrees. `up` converges containers a
     // stopped run or a failed rollback may have left on other images (a
     // no-op when they already match); the health checks prove it serves.
+    log.phase?.("health");
     log.info(
       `Already on ${current.version}; checking the running containers match and are healthy.`,
     );
@@ -257,6 +285,7 @@ export async function upgradeSelfHosted(
   const nextCompose = deps.renderCompose(images);
 
   // 2. Backup — before anything on the host changes.
+  log.phase?.("backup");
   log.step("Backing up the databases (pg_dump)");
   const backup = await backupDatabases(caeloDir, runner, now());
   if (!backup.ok) return fail("backup", backup.error, true);
@@ -269,6 +298,7 @@ export async function upgradeSelfHosted(
 
   // 3. New digests into the Compose file; pull them.
   writeFileSync(file, nextCompose, { mode: 0o600 });
+  log.phase?.("roll");
   log.step("Pulling the new images");
   const pull = await runner.run(
     compose(caeloDir, "pull", COMPOSE_SERVICE.admin, COMPOSE_SERVICE.gateway),
@@ -279,6 +309,7 @@ export async function upgradeSelfHosted(
   }
 
   // 4. Migrations from the new admin image; the old containers keep serving.
+  log.phase?.("migrations");
   log.step("Running database migrations with the new admin image");
   const migrated = await runMigrations(caeloDir, runner);
   if (!migrated.ok) {
@@ -293,10 +324,12 @@ export async function upgradeSelfHosted(
   // 5. Roll admin, then gateway, each health-checked.
   for (const service of RELEASE_SERVICES) {
     const stage = service === "admin" ? "roll-admin" : "roll-gateway";
+    log.phase?.("roll");
     log.step(`Restarting ${service} on ${shortDigest(images[service])}`);
     const up = await runner.run(
       compose(caeloDir, "up", "-d", "--no-deps", COMPOSE_SERVICE[service]),
     );
+    log.phase?.("health");
     const healthy =
       up.exitCode === 0
         ? await waitHealthy(service, caeloDir, deps)
@@ -321,6 +354,7 @@ export async function upgradeSelfHosted(
   }
 
   // 6. Record.
+  log.phase?.("record");
   recordRelease(
     caeloDir,
     { version: target.version, images },
@@ -478,6 +512,7 @@ async function rollback(
   previousCompose: string,
   deps: SelfHostedUpgradeDeps,
 ): Promise<boolean> {
+  deps.log.phase?.("rollback");
   deps.log.warn("Rolling back to the previous images");
   restoreCompose(file, previousCompose);
   return (await startBoth(deps)).ok;

@@ -159,6 +159,12 @@ export {
 } from "./security/step-up/gate.js";
 export { GOOGLE_JWKS_URL } from "./security/step-up/google-keys.js";
 export { GOOGLE_TOKEN_ENDPOINT, STEP_UP_CALLBACK_PATH } from "./security/step-up/google-oidc.js";
+// #696 Phase 4c — self-hosted installs: the update agent on the server.
+export {
+  agentInstallCommand,
+  agentUnavailable,
+  agentUpgraderTrigger,
+} from "./security/upgrader/agent-trigger.js";
 export {
   UPGRADER_SETUP_HINT,
   type UpgraderExecution,

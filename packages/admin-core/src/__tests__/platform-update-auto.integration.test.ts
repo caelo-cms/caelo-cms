@@ -15,18 +15,25 @@
  *   - the outbox: one email per event however often ticks run, claimed by
  *     one sender, Owners as recipients, delivery recorded (incl. "no
  *     transport configured");
- *   - runAutoUpdateTick end to end with a fake upgrader + manifest reader;
+ *   - runAutoUpdateTick end to end with a fake upgrader + manifest reader,
+ *     and on self-hosted through the update agent (#696 Phase 4c): queued
+ *     only while the agent checks in without a problem;
  *   - the AI reads the scheduler's status, never writes.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import { CAELO_VERSION, type ExecutionContext } from "@caelo-cms/shared";
+import {
+  CAELO_VERSION,
+  type ExecutionContext,
+  type PlatformUpdateAgentStatus,
+} from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { runAutoUpdateTick } from "../platform-updates/scheduler.js";
 import { registerAdminOps } from "../register.js";
 import { _setKekForTests } from "../security/secret-box.js";
 import { sessionHashOf } from "../security/step-up/gate.js";
+import { agentUpgraderTrigger } from "../security/upgrader/agent-trigger.js";
 import type { UpgraderTrigger } from "../security/upgrader/job-trigger.js";
 import { googleSigner } from "./fixtures/google-id-token.js";
 
@@ -196,6 +203,7 @@ async function tick(facts: unknown = FACTS, opts: { factsVersion?: string | null
     factsVersion: opts.factsVersion === undefined ? latest.latest_version : opts.factsVersion,
     facts,
     upgraderAvailable: true,
+    upgraderProblem: null,
   });
 }
 
@@ -236,6 +244,7 @@ async function resetState(): Promise<void> {
   await admin(async (tx) => {
     await tx`DELETE FROM platform_update_notifications`;
     await tx`DELETE FROM platform_update_requests`;
+    await tx`DELETE FROM platform_update_agent`;
     await tx`UPDATE platform_update_scheduler SET lease_holder = NULL, last_run_at = NULL,
       last_version = NULL, last_action = NULL, last_reason = NULL, last_wait_until = NULL`;
     await tx`UPDATE platform_update_policy SET mode = 'notify', auto_security = false,
@@ -399,6 +408,7 @@ describe("platform_updates.scheduler_tick", () => {
         factsVersion: null,
         facts: FACTS,
         upgraderAvailable: true,
+        upgraderProblem: null,
       });
       expect(r.ok).toBe(false);
     }
@@ -807,5 +817,112 @@ describe("runAutoUpdateTick (the loop's body)", () => {
     );
     expect(status.lastReason).toContain("HTTP 404");
     expect(await requests()).toHaveLength(0);
+  });
+});
+
+describe("runAutoUpdateTick on self-hosted: through the update agent", () => {
+  const manifest = (version: string) => ({
+    ok: true as const,
+    manifest: {
+      manifestVersion: 1 as const,
+      version,
+      channel: "stable" as const,
+      digests: {
+        admin: `sha256:${"a".repeat(64)}`,
+        gateway: `sha256:${"b".repeat(64)}`,
+        ops: `sha256:${"c".repeat(64)}`,
+      },
+      minFromVersion: "0.1.0",
+      // Ignored on self-hosted: its Compose setup is rendered by the release itself.
+      infraContractVersion: 9,
+      migrations: {
+        contract: false,
+        lastContractVersion: null,
+        head: "0271_platform_auto_updates",
+      },
+      security: false,
+      advisories: [],
+    },
+  });
+  const readAgent = async (): Promise<PlatformUpdateAgentStatus | null> =>
+    (
+      await okValue<{ agent: PlatformUpdateAgentStatus | null }>(
+        SYSTEM,
+        "platform_updates.agent_status",
+        {},
+      )
+    ).agent;
+  const tickSelfHosted = () =>
+    runAutoUpdateTick({
+      adapter,
+      registry,
+      // What the admin wires on self-hosted (lib/server/upgrader.ts).
+      upgrader: () => ({ ok: true, trigger: agentUpgraderTrigger(readAgent) }),
+      readManifest: async (v) => manifest(v),
+      provider: "self-hosted",
+      holder: "test",
+      log: () => {},
+    });
+  const beat = (minutesAgo: number, problem: string | null = null) =>
+    admin(
+      (tx) => tx`INSERT INTO platform_update_agent (id, agent_version, host, last_seen_at, problem)
+                 VALUES (1, ${CAELO_VERSION}, 'box-1', now() - make_interval(mins => ${minutesAgo}), ${problem})
+                 ON CONFLICT (id) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at,
+                   problem = EXCLUDED.problem`,
+    );
+
+  it("queues nothing while no agent is set up, and says so", async () => {
+    await setPolicy({ soakHours: 0, securitySoakHours: 0 });
+    await setLatest(NEXT_PATCH, 1);
+    const out = await tickSelfHosted();
+    expect(out.action).toBe("blocked");
+    const status = await okValue<{ lastReason: string }>(
+      AI,
+      "platform_updates.scheduler_status",
+      {},
+    );
+    expect(status.lastReason).toContain("update agent is not set up");
+    expect(await requests()).toHaveLength(0);
+  });
+
+  it("queues nothing while the agent is silent or reports a problem", async () => {
+    await setPolicy({ soakHours: 0, securitySoakHours: 0 });
+    await setLatest(NEXT_PATCH, 1);
+    await beat(30);
+    expect((await tickSelfHosted()).action).toBe("blocked");
+    await beat(0, "cosign is not installed on the server.");
+    await expireLease();
+    expect((await tickSelfHosted()).action).toBe("blocked");
+    const status = await okValue<{ lastReason: string }>(
+      AI,
+      "platform_updates.scheduler_status",
+      {},
+    );
+    expect(status.lastReason).toContain("cosign is not installed");
+    expect(await requests()).toHaveLength(0);
+  });
+
+  it("with the agent checking in: the automatic request is queued for it", async () => {
+    await setPolicy({ soakHours: 0, securitySoakHours: 0 });
+    await setLatest(NEXT_PATCH, 1);
+    await beat(0);
+    const out = await tickSelfHosted();
+    expect(out).toMatchObject({ ran: true, action: "install" });
+    const [req] = await requests();
+    expect(req).toMatchObject({
+      id: out.requestId,
+      trigger: "auto",
+      auto_basis: "patch",
+      requested_by: null,
+      // Pending: the agent claims it on its next poll (job_claim), like a manual one.
+      status: "pending",
+    });
+    const events = await admin(
+      (tx) =>
+        tx`SELECT message FROM platform_update_events WHERE request_id = ${out.requestId}::uuid ORDER BY id`,
+    );
+    expect((events as unknown as { message: string }[]).map((e) => e.message).join("\n")).toContain(
+      "Upgrader started (run agent@box-1)",
+    );
   });
 });

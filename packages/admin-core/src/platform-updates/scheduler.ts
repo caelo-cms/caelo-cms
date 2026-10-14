@@ -16,7 +16,9 @@
  *      — and writes the Owner's emails to the outbox;
  *   4. starts the upgrader for a new request (or one whose start was lost)
  *      through the same trigger the Owner's click uses, and records the
- *      outcome on the request;
+ *      outcome on the request. On self-hosted installs that trigger is the
+ *      update agent (#696 Phase 4c): the request row is what it polls for,
+ *      so nothing is queued unless the agent checks in without a problem;
  *   5. sends what is in the outbox through the configured email transport.
  *
  * Nothing here can do more than the Owner's policy allows: the upgrader job
@@ -30,10 +32,11 @@ import {
   type OperationRegistry,
   SYSTEM_ACTOR_ID,
 } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import type { ExecutionContext, PlatformUpdateAgentStatus } from "@caelo-cms/shared";
 import { buildEmailTransport, type EmailConfigRow } from "../email/transport.js";
 import { startUpgraderFor } from "../ops/platform-update-requests.js";
 import type { PlatformUpdateStatus } from "../ops/platform-updates.js";
+import { agentUnavailable } from "../security/upgrader/agent-trigger.js";
 import type { UpgraderTrigger } from "../security/upgrader/job-trigger.js";
 import { updateNotificationHtml } from "./notification-text.js";
 import { type ManifestReader, readReleaseFacts } from "./release-facts.js";
@@ -51,7 +54,11 @@ export interface AutoUpdateSchedulerOpts {
   readonly registry: OperationRegistry;
   readonly upgrader: UpgraderResolver;
   readonly readManifest: ManifestReader;
-  /** `CAELO_PROVIDER`. */
+  /**
+   * The install's provider as Settings → Updates resolves it (`self-hosted`
+   * when `CAELO_PROVIDER` is unset). On `self-hosted` the update agent's
+   * heartbeat decides whether anything is queued.
+   */
   readonly provider: string | undefined;
   /** Names this instance in the scheduler's status line. */
   readonly holder: string;
@@ -97,7 +104,25 @@ export async function runAutoUpdateTick(opts: AutoUpdateSchedulerOpts): Promise<
         );
   const upgrader = opts.upgrader();
   if (!upgrader.ok) log(`[auto-update] the upgrader is misconfigured: ${upgrader.error}`);
-  const trigger = upgrader.ok ? upgrader.trigger : null;
+  let trigger = upgrader.ok ? upgrader.trigger : null;
+  let upgraderProblem: string | null = upgrader.ok
+    ? null
+    : `${upgrader.error} ${upgrader.nextStep}`;
+  // Self-hosted: the request row IS the trigger and the update agent on the
+  // server picks it up. Queue nothing while the agent is missing, silent or
+  // reporting a problem — a request nobody claims would only end as failed
+  // and use up the release's one automatic attempt.
+  if (trigger && opts.provider === "self-hosted") {
+    const { agent } = await call<{ agent: PlatformUpdateAgentStatus | null }>(
+      "platform_updates.agent_status",
+      {},
+    );
+    const unavailable = agentUnavailable(agent);
+    if (unavailable) {
+      trigger = null;
+      upgraderProblem = `${unavailable.error} ${unavailable.nextStep}`;
+    }
+  }
 
   const tick = await call<{
     ran: boolean;
@@ -111,6 +136,7 @@ export async function runAutoUpdateTick(opts: AutoUpdateSchedulerOpts): Promise<
     factsVersion,
     facts,
     upgraderAvailable: trigger !== null,
+    upgraderProblem,
   });
   if (tick.ran) log(`[auto-update] ${tick.action}: ${tick.reason}`);
 

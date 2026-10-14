@@ -273,6 +273,18 @@ describe("decideAutoUpdate — releases that never install automatically", () =>
   });
 });
 
+describe("decideAutoUpdate — upgrader not ready", () => {
+  it("names why the upgrader cannot take the release (e.g. the self-hosted agent)", () => {
+    const d = decideAutoUpdate({
+      ...input({}),
+      upgraderAvailable: false,
+      upgraderProblem: "The update agent on box-1 has not checked in since 10:00.",
+    });
+    expect(d.action).toBe("blocked");
+    expect(d.reason).toContain("has not checked in");
+  });
+});
+
 describe("decideAutoUpdate — modes and versions", () => {
   it.each([
     ["up to date", { version: INSTALLED }, "none"],

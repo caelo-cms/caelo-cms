@@ -346,6 +346,7 @@ import {
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import { appliedAdminMigrationsOp, appliedPublicMigrationsOp } from "./ops/platform_health.js";
+import { platformUpdatesAgentStatusOp } from "./ops/platform-update-agent.js";
 import {
   platformUpdatePolicyGetOp,
   platformUpdatePolicyPauseOp,
@@ -1144,6 +1145,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(platformUpdatesRecordTriggerOp);
   registry.register(platformUpdatesListOp);
   registry.register(platformUpdatesGetOp);
+  registry.register(platformUpdatesAgentStatusOp);
   registry.register(platformUpdatePolicyGetOp);
   registry.register(platformUpdatePolicySetOp);
   // #696 Phase 5 — automatic updates: Owner pause/resume (step-up), the

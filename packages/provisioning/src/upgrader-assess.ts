@@ -31,6 +31,13 @@
  * | contract migrations, Owner's click                  | proceed + warning |
  * | automatic run the update policy does not allow      | refused           |
  * | automatic "security" run, signed manifest disagrees | refused           |
+ *
+ * Self-hosted installs (the host agent, #696 Phase 4c) have no separately
+ * converged infrastructure: their Compose file, roles and bootstrap script
+ * are rendered by the target release's own provisioning CLI in the same run
+ * that rolls the images. So for them `installed.infraContractVersion` is
+ * null and the infra-contract row never applies; every "needs_cloud_shell"
+ * stop names the upgrade command on the server instead of Cloud Shell.
  */
 
 import {
@@ -80,10 +87,23 @@ export type RequestDecision =
 
 /** What the install's own state says it runs. */
 export interface InstalledState {
-  /** install.json `releaseVersion`; null when never recorded. */
+  /** install.json `releaseVersion` (self-hosted: release.json); null when never recorded. */
   readonly version: string | null;
-  /** install.json `infraContractVersion` (0 when never converged). */
-  readonly infraContractVersion: number;
+  /**
+   * install.json `infraContractVersion` (0 when never converged); null for
+   * an install without separately converged infrastructure (self-hosted).
+   */
+  readonly infraContractVersion: number | null;
+}
+
+/** Where the Owner runs an upgrade by hand when the automatic path cannot. */
+export type ManualUpgradePath = "cloud-shell" | "server";
+
+/** "…once with Cloud Shell" / "…once on the server": the hand-run upgrade, in words. */
+function manualRun(path: ManualUpgradePath): string {
+  return path === "server"
+    ? "with the upgrade command on the server (Settings → Updates shows it)"
+    : "with Cloud Shell";
 }
 
 const stop = (
@@ -111,8 +131,11 @@ export function assessUpgradeRequest(input: {
   readonly installed: InstalledState;
   readonly policy: StoredUpdatePolicy;
   readonly now: Date;
+  /** Default `cloud-shell` (the GCP upgrader job). */
+  readonly manualPath?: ManualUpgradePath;
 }): RequestDecision {
   const { request, installed } = input;
+  const by = manualRun(input.manualPath ?? "cloud-shell");
   const target = request.targetVersion;
   if (!input.manifest.ok) {
     const e = input.manifest.error;
@@ -127,7 +150,7 @@ export function assessUpgradeRequest(input: {
         return stop(
           "needs_cloud_shell",
           "manifest-unreadable",
-          `This upgrader is too old to read the release information of v${target}. Install it once with Cloud Shell; afterwards the admin can install updates again. (${e.message})`,
+          `This upgrader is too old to read the release information of v${target}. Install it once ${by}; afterwards the admin can install updates again. (${e.message})`,
         );
       default:
         return stop(
@@ -142,7 +165,7 @@ export function assessUpgradeRequest(input: {
     return stop(
       "needs_cloud_shell",
       "install-version-unknown",
-      "This install has not recorded which Caelo release it runs yet. Upgrade it once with Cloud Shell; that records it, and the admin can install updates from then on.",
+      `This install has not recorded which Caelo release it runs yet. Upgrade it once ${by}; that records it, and the admin can install updates from then on.`,
       manifest,
     );
   }
@@ -162,17 +185,22 @@ export function assessUpgradeRequest(input: {
       manifest,
     );
   }
-  if (needsConverge(installed, manifest.infraContractVersion)) {
+  // Self-hosted: the target's own CLI renders the host setup in this run.
+  const infraContractVersion = installed.infraContractVersion ?? manifest.infraContractVersion;
+  if (
+    installed.infraContractVersion !== null &&
+    needsConverge({ infraContractVersion }, manifest.infraContractVersion)
+  ) {
     return stop(
       "needs_cloud_shell",
       "infra-contract",
-      `v${target} changes this install's cloud setup (infrastructure contract ${installed.infraContractVersion} → ${manifest.infraContractVersion}). The admin may not change cloud permissions, so this release is installed once with your own Google account in Cloud Shell.`,
+      `v${target} changes this install's cloud setup (infrastructure contract ${infraContractVersion} → ${manifest.infraContractVersion}). The admin may not change cloud permissions, so this release is installed once with your own Google account in Cloud Shell.`,
       manifest,
     );
   }
   const assessment = assessAutoInstall(manifest, {
     version: installed.version,
-    infraContractVersion: installed.infraContractVersion,
+    infraContractVersion,
   });
   const destructive = assessment.mode === "manual";
   const warnings: string[] = [];

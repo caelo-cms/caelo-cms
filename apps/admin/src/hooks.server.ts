@@ -59,12 +59,17 @@ import {
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
-import { type ExecutionContext, redirectTargetIssue } from "@caelo-cms/shared";
+import {
+  type ExecutionContext,
+  type PlatformUpdateAgentStatus,
+  redirectTargetIssue,
+} from "@caelo-cms/shared";
 import type { Handle, ServerInit } from "@sveltejs/kit/hooks";
 import { legacySecurityRedirect } from "#lib/legacy-security-redirect.js";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
 import { getQueryContext, mediaStorageSetup } from "#lib/server/query.js";
 import { upgraderTrigger } from "#lib/server/upgrader.js";
+import { updatesProvider } from "#lib/upgrade-path.js";
 
 // Dev-mode KEK auto-gen. secret-box reads CAELO_SECRET_KEK lazily
 // (only at first encrypt/decrypt), so populating it before any DB
@@ -392,12 +397,19 @@ function bootstrapAutoUpdates(): void {
   autoUpdateBootstrapped = true;
   if (process.env.CAELO_UPDATE_SCHEDULER === "off") return;
   const { adapter, registry } = getQueryContext();
+  // Same upgrader the Owner's "Install update" uses: the Cloud Run job, or
+  // on self-hosted the update agent (read through its heartbeat op).
+  const readAgent = async (): Promise<PlatformUpdateAgentStatus | null> => {
+    const r = await execute(registry, adapter, SYSTEM_CTX, "platform_updates.agent_status", {});
+    if (!r.ok) throw new Error(`platform_updates.agent_status: ${JSON.stringify(r.error)}`);
+    return (r.value as { agent: PlatformUpdateAgentStatus | null }).agent;
+  };
   startAutoUpdateScheduler({
     adapter,
     registry,
-    upgrader: upgraderTrigger,
+    upgrader: () => upgraderTrigger(process.env, readAgent),
     readManifest: registryManifestReader({ fetch: (url, init) => fetch(url, init) }),
-    provider: process.env.CAELO_PROVIDER,
+    provider: updatesProvider(process.env),
     holder: `${process.env.K_REVISION ?? hostname()}/${process.pid}`,
   });
 }

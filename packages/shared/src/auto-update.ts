@@ -106,6 +106,8 @@ export interface AutoUpdateInput {
   readonly facts: ReleaseFacts | { readonly unavailable: string };
   /** This install has an upgrader the admin can hand a request to. */
   readonly upgraderAvailable: boolean;
+  /** Why it has none right now, in plain words (null: none set up at all). */
+  readonly upgraderProblem?: string | null;
   readonly now: Date;
 }
 
@@ -260,7 +262,9 @@ export function decideAutoUpdate(input: AutoUpdateInput): AutoUpdateDecision {
     return {
       action: "blocked",
       ...base,
-      reason: `v${v} could install automatically, but this install has no upgrader the admin can start. Run the upgrade command from Settings → Updates once; it sets the upgrader up.`,
+      reason: input.upgraderProblem
+        ? `v${v} could install automatically, but the upgrader cannot take it now: ${input.upgraderProblem}`
+        : `v${v} could install automatically, but this install has no upgrader the admin can start. Run the upgrade command from Settings → Updates once; it sets the upgrader up.`,
     };
   }
   const auto = { ...base, basis } as const;

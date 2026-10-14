@@ -206,6 +206,22 @@ jobs:
         with:
           bun-version: 1.4.2
 
+      # Fail fast when the provider refuses the CI key (spending/usage limit,
+      # invalid key, permission) — one `max_tokens: 1` call on the cheapest
+      # catalog model before compose, build and the scenarios. Without it a
+      # capped account made every scenario fail on an unrelated-looking
+      # assertion or a 6-minute Stage timeout (run 38455081117). Overloaded /
+      # 5xx answers are retried with backoff, then reported as "provider
+      # unavailable". The provider's message goes to the step summary, an
+      # `::error::` and the PR comment (via the report file); the key is
+      # never printed. Needs no `bun install`: the script uses fetch + node
+      # builtins only.
+      - name: AI provider preflight (fail fast)
+        id: provider-preflight
+        env:
+          ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
+        run: bun scripts/ai-provider-preflight.ts --report apps/admin/test-results/livedit/provider-preflight.md
+
       - name: Install dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
 
@@ -288,7 +304,7 @@ jobs:
       # the `SET` command tag so stdout is pure JSON. `if: always()` so a
       # red suite still records its spend. Never fails the job.
       - name: Capture real AI cost from ai_calls
-        if: always()
+        if: always() && steps.provider-preflight.outcome == 'success'
         env:
           PGHOST: localhost
         run: |
@@ -343,7 +359,7 @@ jobs:
       # stdout is pure JSON. `if: always()` so a red suite still reports.
       # Annotations only — this step never fails the job.
       - name: Capture AI-detected bugs from ai_bug_reports
-        if: always()
+        if: always() && steps.provider-preflight.outcome == 'success'
         env:
           PGHOST: localhost
         run: |
@@ -384,7 +400,7 @@ jobs:
       # Separate from the failure-only artifact below: this uploads on
       # every run (green + red) so the metric series has no gaps.
       - name: Upload AI cost metric (always)
-        if: always()
+        if: always() && steps.provider-preflight.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: e2e-livedit-cost-${{ github.run_id }}
@@ -398,7 +414,7 @@ jobs:
       # rather than folded into the cost one so `e2e-livedit-cost-<run_id>`
       # keeps its name for anything already scraping that series.
       - name: Upload detected-bugs metric (always)
-        if: always()
+        if: always() && steps.provider-preflight.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: e2e-livedit-bugs-${{ github.run_id }}
@@ -412,7 +428,7 @@ jobs:
       # green, so the failure-only bundle below never carries the failed
       # attempt's turn — and a flake is a bug to root-cause (CLAUDE.md §4).
       - name: Upload chat transcripts (always)
-        if: always()
+        if: always() && steps.provider-preflight.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: e2e-livedit-transcripts-${{ github.run_id }}-${{ github.run_attempt }}
@@ -421,7 +437,7 @@ jobs:
           retention-days: 14
 
       - name: Dump diagnostic DB tables on failure
-        if: failure()
+        if: failure() && steps.provider-preflight.outcome == 'success'
         env:
           PGHOST: localhost
         run: |
@@ -440,7 +456,7 @@ jobs:
       # uploaded because they can be sizeable and contain the same
       # HTML the test already exercises via the production fetch.
       - name: Dump static-gen output dir listings on failure
-        if: failure()
+        if: failure() && steps.provider-preflight.outcome == 'success'
         run: |
           mkdir -p apps/admin/test-results/livedit/output-listing
           {
@@ -459,7 +475,7 @@ jobs:
           } > apps/admin/test-results/livedit/output-listing/production-current.txt
 
       - name: Upload artifacts on failure
-        if: failure()
+        if: failure() && steps.provider-preflight.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: e2e-livedit-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
@@ -485,9 +501,28 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
           JOB_STATUS: ${{ job.status }}
+          PREFLIGHT_OUTCOME: ${{ steps.provider-preflight.outcome }}
         run: |
           set -euo pipefail
           shopt -s nullglob
+
+          # The provider preflight failed: no scenario ran, so there are no
+          # screenshots or stats — post the provider's answer instead, so the
+          # PR shows the real cause rather than a wall of downstream failures.
+          PREFLIGHT_REPORT="apps/admin/test-results/livedit/provider-preflight.md"
+          if [ "$PREFLIGHT_OUTCOME" = "failure" ]; then
+            {
+              printf '## e2e-livedit run [%s](https://github.com/%s/actions/runs/%s) — %s\n\n' \
+                "$RUN_ID" "$REPO" "$RUN_ID" "$JOB_STATUS"
+              if [ -s "$PREFLIGHT_REPORT" ]; then
+                cat "$PREFLIGHT_REPORT"
+              else
+                printf 'The AI provider preflight failed before any scenario ran; see the run log.\n'
+              fi
+            } > /tmp/e2e-livedit-comment.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/e2e-livedit-comment.md
+            exit 0
+          fi
 
           FAIL_DIR="apps/admin/test-results/livedit/playwright-report/data"
           FINAL_DIR="apps/admin/test-results/livedit/final-state"

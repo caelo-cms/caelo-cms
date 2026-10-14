@@ -26,22 +26,43 @@ function literal(s: string): string {
 }
 
 /**
- * The psql script (run as the superuser, connected to any database) that
- * brings roles, databases and the gateway's grants to the configured state.
- * Mirrors bootstrap.sh, plus the password reset bootstrap.sh never does.
+ * #696 Phase 4c — the host update agent's database login. A member of
+ * `platform_updater` (migration 0267), so it holds exactly the upgrader's
+ * grants: read requests + policy, move a request through its run columns,
+ * append events, write the heartbeat (0270) and its own audit rows.
  */
-export function roleConvergenceScript(passwords: RolePasswords): string {
-  const roles: [string, string][] = [
-    ["admin_role", passwords.admin],
-    ["public_role", passwords.public],
-    ["gateway_role", passwords.gateway],
-  ];
+export const AGENT_DB_ROLE = "caelo_agent";
+
+/** The application roles bootstrap.sh and the convergence create. */
+const APP_ROLES = ["admin_role", "public_role", "gateway_role"] as const;
+type AppRole = (typeof APP_ROLES)[number];
+
+/** How a role's password appears in the SQL: a literal, or a psql variable. */
+type PasswordSql = (role: AppRole | typeof AGENT_DB_ROLE) => string;
+
+/**
+ * The convergence SQL (psql, as the superuser, connected to any database).
+ * `password` renders each role's password; `agent` adds the agent's login.
+ */
+function convergenceSql(password: PasswordSql, agent: boolean): string {
   return [
     "\\set ON_ERROR_STOP on",
-    ...roles.flatMap(([role, password]) => [
+    ...APP_ROLES.flatMap((role) => [
       `SELECT 'CREATE ROLE ${role} NOINHERIT LOGIN' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') \\gexec`,
-      `ALTER ROLE ${role} WITH LOGIN PASSWORD ${literal(password)};`,
+      `ALTER ROLE ${role} WITH LOGIN PASSWORD ${password(role)};`,
     ]),
+    // The upgrader's role (migration 0267 creates it only with CREATEROLE,
+    // which the self-hosted admin_role lacks).
+    "SELECT 'CREATE ROLE platform_updater NOLOGIN' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'platform_updater') \\gexec",
+    ...(agent
+      ? [
+          // INHERIT: the agent acts with platform_updater's privileges
+          // without SET ROLE, like the Cloud SQL IAM user of the GCP job.
+          `SELECT 'CREATE ROLE ${AGENT_DB_ROLE} INHERIT LOGIN' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${AGENT_DB_ROLE}') \\gexec`,
+          `ALTER ROLE ${AGENT_DB_ROLE} WITH INHERIT LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${password(AGENT_DB_ROLE)};`,
+          `SELECT 'GRANT platform_updater TO ${AGENT_DB_ROLE}' WHERE NOT pg_has_role('${AGENT_DB_ROLE}', 'platform_updater', 'MEMBER') \\gexec`,
+        ]
+      : []),
     "SELECT 'CREATE DATABASE cms_admin OWNER admin_role' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'cms_admin') \\gexec",
     "SELECT 'CREATE DATABASE cms_public OWNER admin_role' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'cms_public') \\gexec",
     "REVOKE ALL ON DATABASE cms_admin FROM PUBLIC;",
@@ -54,8 +75,68 @@ export function roleConvergenceScript(passwords: RolePasswords): string {
     "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_gateway_role') THEN PERFORM caelo_grant_gateway_role(); END IF; END $$;",
     // Migration 0251's staging-gate grants (issue #650), same convergence.
     "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_gateway_staging_access') THEN PERFORM caelo_grant_gateway_staging_access(); END IF; END $$;",
+    // Migrations 0267 + 0270 (#696): the upgrader role's grants, applied
+    // now that the role exists.
+    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_platform_updater') THEN PERFORM caelo_grant_platform_updater(); END IF; END $$;",
     "",
   ].join("\n");
+}
+
+/**
+ * The psql script (run as the superuser, connected to any database) that
+ * brings roles, databases and the gateway's grants to the configured state.
+ * Mirrors bootstrap.sh, plus the password reset bootstrap.sh never does.
+ * With `agentPassword`, also the host agent's login (#696 Phase 4c).
+ */
+export function roleConvergenceScript(passwords: RolePasswords, agentPassword?: string): string {
+  const byRole: Record<AppRole, string> = {
+    admin_role: passwords.admin,
+    public_role: passwords.public,
+    gateway_role: passwords.gateway,
+  };
+  return convergenceSql(
+    (role) => literal(role === AGENT_DB_ROLE ? (agentPassword ?? "") : byRole[role]),
+    agentPassword !== undefined,
+  );
+}
+
+/** The env var bootstrap.sh reads each role's password from (compose.ts sets them). */
+const PASSWORD_ENV: Record<AppRole | typeof AGENT_DB_ROLE, string> = {
+  admin_role: "ADMIN_ROLE_PASSWORD",
+  public_role: "PUBLIC_ROLE_PASSWORD",
+  gateway_role: "GATEWAY_ROLE_PASSWORD",
+  [AGENT_DB_ROLE]: "AGENT_ROLE_PASSWORD",
+};
+
+/**
+ * `.caelo/bootstrap.sh` — what the Postgres container runs on its first
+ * start (docker-entrypoint-initdb.d): the same convergence SQL, with every
+ * password read from the container's environment (psql variables), so the
+ * file holds no secret and can be world-readable for the postgres user.
+ *
+ * @param opts.agent - whether the Compose file sets up the host agent
+ */
+export function selfHostedBootstrapScript(opts: { readonly agent: boolean }): string {
+  const roles: readonly (AppRole | typeof AGENT_DB_ROLE)[] = [
+    ...APP_ROLES,
+    ...(opts.agent ? [AGENT_DB_ROLE as typeof AGENT_DB_ROLE] : []),
+  ];
+  const variables = roles.map((role) => `  -v ${role}_pw="$${PASSWORD_ENV[role]}" \\`).join("\n");
+  const checks = roles
+    .map((role) => `: "\${${PASSWORD_ENV[role]}:?must be set in environment}"`)
+    .join("\n");
+  return `#!/bin/sh
+# SPDX-License-Identifier: MPL-2.0
+# Generated by cms-provision — do not edit. Runs once, on the Postgres
+# container's first start: creates the Caelo roles and databases. Every
+# password comes from the container's environment (docker-compose.yml).
+set -e
+${checks}
+psql --username "$POSTGRES_USER" --dbname postgres -q \\
+${variables}
+  -f - <<'CAELO_SQL'
+${convergenceSql((role) => `:'${role}_pw'`, opts.agent)}CAELO_SQL
+`;
 }
 
 /** Runs a psql script as the superuser; resolves to psql's exit code + stderr. */
@@ -74,12 +155,17 @@ export type ConvergeOutcome =
  */
 export async function convergeSelfHostedRoles(
   passwords: RolePasswords,
-  deps: { readonly probe: () => Promise<boolean>; readonly psql: SuperuserPsql },
+  deps: {
+    readonly probe: () => Promise<boolean>;
+    readonly psql: SuperuserPsql;
+    /** The host agent's password, when the agent is set up (#696). */
+    readonly agentPassword?: string;
+  },
 ): Promise<ConvergeOutcome> {
   if (!(await deps.probe())) {
     return { ok: false, reachable: false, error: "the Postgres container is not running" };
   }
-  const r = await deps.psql(roleConvergenceScript(passwords));
+  const r = await deps.psql(roleConvergenceScript(passwords, deps.agentPassword));
   if (r.exitCode === 0) return { ok: true };
   return { ok: false, reachable: true, error: r.stderr.trim() || `psql exited ${r.exitCode}` };
 }
