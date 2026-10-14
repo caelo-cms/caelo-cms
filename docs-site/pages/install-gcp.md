@@ -296,6 +296,26 @@ Before it changes anything, `upgrade` takes a Cloud SQL backup and prints its id
 
 The AI can tell you which version you run and whether an update is out, but it cannot install one.
 
+### Installing an update from the admin
+
+Installs set up or upgraded with this release get an **upgrader**: a Cloud Run job in your project (`caelo-production-upgrader`) that installs Caelo releases from inside Google Cloud, so you no longer need the machine you installed from. On **Settings → Caelo updates** the Owner then sees **Install update** instead of (and the command as an alternative to) the terminal steps:
+
+1. **One-time: Google sign-in for updates.** Before installing, Caelo asks you to sign in to Google again — right then, with your password and second factor. A stolen admin session therefore cannot install anything, and there is no password alternative. The page walks you through creating the Google OAuth client it needs in your project (*APIs & Services → Credentials → OAuth client ID → Web application*, with the redirect URI the page shows) and pasting its ID and secret.
+2. **Confirm with Google**, then confirm the install. The page shows what will happen.
+3. **Watch the timeline.** The upgrader checks the release's signature, backs up the database (no backup, no change), updates the database, switches the admin and the form service to the new release, tests both, and switches back automatically if a test fails. The timeline survives the admin restarting during the switch, and **Update history** keeps every attempt.
+
+What the upgrader may and may not do: it runs as its own service account with exactly the rights to deploy the two services, run the migration job, back up Cloud SQL and read/write the install's records (`install/` in the `<project>-caelo-ops` bucket). It cannot change IAM, service accounts, secrets or anything else in the project, and the admin can only start it — not change what it runs. It installs only releases signed by Caelo's release workflow that are newer than the one you run.
+
+**Releases that change your cloud setup** (new permissions, a new service) cannot be installed this way, because the admin's upgrader is not allowed to change them. The page then explains why and gives a **Open Cloud Shell** link plus the commands to paste there — Cloud Shell is a free terminal in your browser, already signed in as you:
+
+```bash
+curl -fsSL https://bun.sh/install | bash && export PATH="$HOME/.bun/bin:$PATH"
+bunx @caelo-cms/provisioning@<version> attach --project <gcp-project-id>
+bunx @caelo-cms/provisioning@<version> upgrade --version <version> --install <domain>
+```
+
+To get the upgrader on an existing install, run `upgrade` once as described above (its state must live in the project: `state migrate` first if it still lives on your machine).
+
 ### What `upgrade` does
 
 `upgrade` brings an existing install to what a fresh install of the target release looks like, without re-running the full provisioning:
