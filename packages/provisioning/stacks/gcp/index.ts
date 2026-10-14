@@ -323,6 +323,13 @@ const pgAdminUser = new gcp.sql.User(
   opts,
 );
 
+// #633 — the Admin API makes this user a member of cloudsqlsuperuser, and
+// the stack cannot declare "no roles" (an empty `databaseRoles` reads as
+// unset, and the field is write-only, so drift would never show).
+// `cms-provision` revokes the membership on every install pass and every
+// `upgrade` (public-role-isolation.ts); the migration job's role audit
+// fails the install or upgrade while it remains
+// (packages/migrations/src/role-audit.ts).
 const pgPublicUser = new gcp.sql.User(
   `${namePrefix}-pg-public`,
   { instance: sqlInstance.name, name: "public_role", password: publicRolePassword },

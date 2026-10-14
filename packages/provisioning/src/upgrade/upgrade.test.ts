@@ -217,7 +217,7 @@ function upgradeDeps(
 
 /** Calls that change IAM, service accounts, secrets or APIs — converge-only. */
 const CONVERGE_WRITE =
-  /add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|service-accounts create|secrets create|secrets versions add|services enable|roles create|firewall-rules delete/;
+  /add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|service-accounts create|secrets create|secrets versions add|services enable|roles create|firewall-rules delete|users assign-roles/;
 /** Calls that move a service or run migrations — app-roll-only. */
 const APP_ROLL_WRITE =
   /^run services update |^run services update-traffic|jobs execute caelo-migrate/;
@@ -381,6 +381,34 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(lines.some((l) => l.startsWith("warn:") && l.includes(restore))).toBe(true);
     // The rollback is the end: retired bindings stay until a healthy roll.
     expect(calls.some((c) => c.includes("remove-iam-policy-binding"))).toBe(false);
+  });
+
+  it("revokes public_role's Cloud SQL role memberships before the migrations audit them (#633)", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const revoke = indexOf(
+      events,
+      /^gcloud sql users assign-roles public_role --instance=caelo-production-pg-abc --type=BUILT_IN --revoke-existing-roles --project=acme/,
+    );
+    expect(indexOf(events, /^gcloud sql backups create/)).toBeLessThan(revoke);
+    expect(revoke).toBeLessThan(indexOf(events, /^migrate /));
+    expect(lines).toContain(
+      "done: public_role holds no database roles (no database roles left on caelo-production-pg-abc)",
+    );
+  });
+
+  it("a refused public_role revoke stops the upgrade before migrations and any roll (#633)", async () => {
+    const events: string[] = [];
+    const { deps, calls, lines } = upgradeDeps(events, {
+      overrides: [[/^sql users assign-roles public_role/, fail("PERMISSION_DENIED: no")]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(false);
+    expect(events.some((e) => e.startsWith("migrate"))).toBe(false);
+    expect(calls.filter((c) => APP_ROLL_WRITE.test(c))).toEqual([]);
+    expect(lines).toContain(
+      "failed: public_role's role memberships could not be revoked. Aborting upgrade.",
+    );
   });
 
   it("runs the keyless-provisioner step as the first converge step; its failure stops before migrations", async () => {
