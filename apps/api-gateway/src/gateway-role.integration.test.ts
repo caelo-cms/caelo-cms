@@ -35,7 +35,6 @@ import {
   gatewayDatabaseUrls,
   handleRequest,
   invalidateGatewaySettings,
-  parseCookies,
   setGatewayAdapter,
 } from "./server.js";
 
@@ -267,7 +266,9 @@ describe("/api/* served as gateway_role + public_role (#613)", () => {
   it("dispatches a visitor write, logs the request and audits the plugin op", async () => {
     const r = await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "hi" }));
     await expectStatus(r, 200);
-    expect(r.headers.get("set-cookie")).toContain("caelo_visitor_id=");
+    // No consent provider runs here, so nobody has consented to the
+    // visitor-id cookie (#677).
+    expect(r.headers.get("set-cookie")).toBeNull();
     const body = (await r.json()) as { ok: boolean; data: { id: string } };
     expect(body.ok).toBe(true);
     // The request log write is fire-and-forget; give it a moment.
@@ -312,11 +313,10 @@ describe("/api/* served as gateway_role + public_role (#613)", () => {
                VALUES (${SLUG}, 'save', 2, 60)`;
     });
     invalidateRateLimitSpecCache();
-    const first = await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "1" }));
-    const cookie = parseCookies(first.headers.get("set-cookie")?.split(";")[0] ?? null);
-    await expectStatus(first, 200);
-    // A signed visitor cookie moves the visitor onto its own bucket.
-    const header = { cookie: `caelo_visitor_id=${cookie.caelo_visitor_id ?? ""}` };
+    // A visitor without a visitor id (no consent, #677) is throttled by
+    // client IP; the per-visitor bucket is covered with consent in
+    // visitor-consent.integration.test.ts.
+    const header = { "X-Forwarded-For": "203.0.113.200" };
     const statuses: number[] = [];
     for (let i = 0; i < 3; i++) {
       const r = await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "n" }, header));

@@ -8,6 +8,7 @@
     { "label": "Plugins", "href": "/plugins-build" },
     { "label": "MCP", "href": "/mcp" },
     { "label": "Security", "href": "/security" },
+    { "label": "Visitor privacy", "href": "/visitor-privacy" },
     { "label": "Changelog", "href": "/changelog" },
     { "label": "GitHub", "href": "https://github.com/caelo-cms/caelo-cms", "target": "_blank" },
     {

@@ -60,7 +60,8 @@ export interface MakePluginContextOpts {
  * gateway reads it after dispatch to emit the right Set-Cookie header.
  */
 export interface VisitorContext {
-  readonly visitorId: string;
+  /** Null when the visitor has not consented to being recognised (#677). */
+  readonly visitorId: string | null;
   readonly sessionToken: string | null;
   readonly captcha: VisitorCaptchaVerdict;
   readonly sessionMutation?: { current: SessionMutation };
@@ -594,12 +595,16 @@ function makePluginApi(_plugin: LoadedPlugin, _infra: PluginHostInfra) {
 // ---------------------------------------------------------------------------
 // PluginVisitor — set by the gateway from cookie. When dispatched outside
 // the gateway (internal Tier-1 calls / tests), defaults to a system visitor.
+// A visitor call without consent to the visitor id carries null (#677):
+// the plugin must not stand an id in for one the visitor declined.
 // ---------------------------------------------------------------------------
+
+const SYSTEM_VISITOR_ID = "00000000-0000-0000-0000-000000000000";
 
 function makePluginVisitor(visitorContext?: VisitorContext): PluginVisitor {
   const mut = visitorContext?.sessionMutation;
   return {
-    id: visitorContext?.visitorId ?? "00000000-0000-0000-0000-000000000000",
+    id: visitorContext ? visitorContext.visitorId : SYSTEM_VISITOR_ID,
     publicUserId: null,
     ipHash: "",
     sessionToken: visitorContext?.sessionToken ?? null,

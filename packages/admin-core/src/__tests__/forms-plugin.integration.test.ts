@@ -6,8 +6,10 @@
  * Validates:
  *   - Plugin loads + cms_public schema gets provisioned (forms + form_submissions).
  *   - Owner creates a form definition (admin op).
- *   - Visitor POSTs to /api/plugin/forms/submit via the gateway → submission lands
- *     with visitor_id from the cookie.
+ *   - Visitor POSTs to /api/plugin/forms/submit via the gateway → submission lands.
+ *     No consent provider runs here, so nobody consented to the visitor-id
+ *     cookie (#677): none is set and the row's visitor_id is null — a form
+ *     submission works without one.
  *   - Admin lists submissions → sees the visitor's row.
  *   - mark_read flips status; archive flips again.
  *   - submit refuses unknown form slug.
@@ -193,7 +195,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     });
     expect(create.ok).toBe(true);
 
-    // Visitor POSTs via the gateway. Cookie set on first contact.
+    // Visitor POSTs via the gateway. No visitor cookie without consent (#677).
     const submitReq = new Request("http://localhost/api/plugin/forms/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -210,12 +212,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     expect(submitBody.ok).toBe(true);
     expect(submitBody.data.submissionId).toMatch(/^[0-9a-f-]{36}$/);
 
-    const visitorCookie = submitRes.headers.get("set-cookie") ?? "";
-    // P13 — cookie is signed `<uuid>.<issuedAt>.<sig>`. Raw UUID is the
-    // first dot-separated segment.
-    const signed = visitorCookie.split("caelo_visitor_id=")[1]?.split(";")[0] ?? "";
-    const visitorId = signed.split(".")[0] ?? "";
-    expect(visitorId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(submitRes.headers.get("set-cookie")).toBeNull();
 
     // Admin lists the submission.
     const list = await runPluginOperation({
@@ -231,7 +228,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
         submissions: Array<{
           id: string;
           form_slug: string;
-          visitor_id: string;
+          visitor_id: string | null;
           status: string;
           data: { email: string; message: string };
         }>;
@@ -240,7 +237,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     expect(submissions).toHaveLength(1);
     expect(submissions[0]?.form_slug).toBe(FORM_SLUG);
     expect(submissions[0]?.status).toBe("new");
-    expect(submissions[0]?.visitor_id).toBe(visitorId);
+    expect(submissions[0]?.visitor_id).toBeNull();
     expect(submissions[0]?.data.email).toBe("alice@example.com");
   });
 
