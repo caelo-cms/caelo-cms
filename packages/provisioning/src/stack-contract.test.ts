@@ -311,10 +311,9 @@ describe("self-hosted compose", () => {
       domain: "acme.com",
       postgresPassword: "p",
       rolePasswords: { admin: "a", public: "b", gateway: "g" },
-      minioRootUser: "u",
-      minioRootPassword: "m",
       caeloSecretKek: "k",
       diskSize: "10G",
+      ports: { http: 80, https: 443 },
       images: {
         mode: "release" as const,
         admin: `ghcr.io/caelo-cms/admin@sha256:${"a".repeat(64)}`,

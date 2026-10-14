@@ -21,10 +21,10 @@ Behind that loop sits a small, opinionated kernel: two isolated Postgres roles w
 ## Install in one line
 
 ```bash
-bunx @caelo-cms/provisioning@latest --provider self-hosted
+bunx @caelo-cms/provisioning@latest --provider self-hosted --domain example.com --owner-email you@example.com
 ```
 
-That stands up Postgres + pgBackRest + Caddy (with auto-SSL) + the admin app + the API gateway as a Docker Compose stack. It works on any Linux box with Docker + Bun.
+That stands up Postgres + Caddy (with auto-SSL) + the admin app + the API gateway as a Docker Compose stack, runs the migrations and health-checks it. It works on any Linux box with Docker + Bun.
 
 ### One click on Google Cloud
 

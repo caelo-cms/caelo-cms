@@ -2,6 +2,10 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  CADDY_IMAGE,
+  COMPOSE_ADMIN_UPSTREAM,
+  COMPOSE_APP_SERVICES,
+  COMPOSE_GATEWAY_UPSTREAM,
   type ComposeSpec,
   generateDockerCompose,
   ghcrImageDigest,
@@ -15,11 +19,10 @@ const base: Omit<ComposeSpec, "images"> = {
   domain: "example.com",
   postgresPassword: "pgpw",
   rolePasswords: { admin: "adminpw", public: "publicpw", gateway: "gatewaypw" },
-  minioRootUser: "caelo",
-  minioRootPassword: "miniopw",
   caeloSecretKek: "0".repeat(64),
   anthropicApiKey: "sk-ant-x",
   diskSize: "20Gi",
+  ports: { http: 80, https: 443 },
 };
 
 /** The block of one Compose service, up to the next blank line. */
@@ -77,9 +80,66 @@ describe("self-hosted Compose — release images (#696)", () => {
     expect(gateway).not.toMatch(/ADMIN_DATABASE|adminpw|CAELO_SECRET_KEK/);
   });
 
-  it("keeps Caddy and Postgres as they were", () => {
-    expect(service(yaml, "caddy")).toContain("image: caddy:2-alpine");
+  it("runs Caddy on the pinned image the Caddyfile is validated against, Postgres as before", () => {
+    expect(service(yaml, "caddy")).toContain(`image: ${CADDY_IMAGE}`);
+    expect(CADDY_IMAGE).toMatch(/^caddy:\d+\.\d+\.\d+-alpine$/);
     expect(service(yaml, "postgres")).toContain("image: postgres:16-alpine");
+  });
+
+  it("mounts the bootstrap script Postgres runs on its first start", () => {
+    expect(service(yaml, "postgres")).toContain(
+      "- ./bootstrap.sh:/docker-entrypoint-initdb.d/00_bootstrap.sh:ro",
+    );
+  });
+
+  it("has no pgBackRest sidecar and bind-mounts only paths the CLI creates (#707)", () => {
+    expect(yaml).not.toContain("pgbackrest");
+    expect(yaml).not.toContain("caelo-pg-backups");
+    // Each is written (files) or created (dirs) by `init` / `up`; a path
+    // nothing creates becomes an empty root-owned dir under Docker.
+    const hostPaths = new Set([...yaml.matchAll(/- \.\/([\w.-]+):/g)].map((m) => m[1]));
+    expect([...hostPaths].sort()).toEqual([
+      "Caddyfile",
+      "bootstrap",
+      "bootstrap.sh",
+      "media",
+      "output",
+    ]);
+  });
+
+  it("names no containers, so an install can share a host with other stacks (#707)", () => {
+    expect(yaml).not.toContain("container_name");
+  });
+
+  it("defines every service restore stops and Caddy proxies to (#707)", () => {
+    for (const name of COMPOSE_APP_SERVICES) expect(yaml).toContain(`\n  ${name}:\n`);
+    expect(COMPOSE_ADMIN_UPSTREAM).toBe("caelo-admin:5173");
+    expect(COMPOSE_GATEWAY_UPSTREAM).toBe("caelo-gateway:8090");
+    expect(service(yaml, "caelo-admin")).toContain('PORT: "5173"');
+    expect(service(yaml, "caelo-gateway")).toContain('GATEWAY_PORT: "8090"');
+  });
+
+  it("publishes Caddy on the configured host ports", () => {
+    expect(service(yaml, "caddy")).toContain('ports: ["80:80", "443:443"]');
+    const custom = generateDockerCompose({
+      ...base,
+      ports: { http: 18080, https: 18443 },
+      images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+    });
+    expect(service(custom, "caddy")).toContain('ports: ["18080:80", "18443:443"]');
+    for (const ports of [
+      { http: 0, https: 443 },
+      { http: 80, https: 70000 },
+      { http: 8080, https: 8080 },
+    ]) {
+      expect(() =>
+        generateDockerCompose({
+          ...base,
+          ports,
+          images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+        }),
+      ).toThrow();
+    }
   });
 
   it("refuses a tag, a foreign repository or a malformed digest", () => {

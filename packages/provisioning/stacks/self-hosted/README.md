@@ -23,11 +23,11 @@ pulumi config set caelo-self-hosted:gatewayImage ghcr.io/caelo-cms/gateway@sha25
 pulumi up
 ```
 
-Pulumi mints postgres + minio passwords, generates `docker-compose.yml` + `Caddyfile` + `pending-token.json` under `.caelo/`, and runs `docker compose up -d`. After the run:
+Pulumi mints the postgres and role passwords and the KEK, generates `docker-compose.yml` + `Caddyfile` + `bootstrap.sh` + `pending-token.json` under `.caelo/`, starts Postgres, runs the migrations and runs `docker compose up -d`. Point DNS for `<domain>`, `admin.<domain>` and `staging.<domain>` at the host. After the run:
 
 ```bash
 pulumi stack output bootstrapUrl
-# → https://example.com/setup?token=<64-hex>
+# → https://admin.example.com/setup?token=<64-hex>
 ```
 
 Open that URL once Caddy has issued the cert (~30 s).
@@ -38,7 +38,7 @@ Open that URL once Caddy has issued the cert (~30 s).
 pulumi destroy
 ```
 
-Tears down the compose stack with `-v`, deleting all volumes (Postgres + MinIO + Caddy data). The generated files are removed too.
+Tears down the compose stack with `-v`, deleting all volumes (Postgres + Caddy data). The generated files are removed too.
 
 ## Why this exists alongside `cms-provision`
 

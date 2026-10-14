@@ -196,7 +196,7 @@ export function composePath(caeloDir: string): string {
 }
 
 /** `docker compose -f <file>` — every Compose call targets the install's file explicitly. */
-function compose(caeloDir: string, ...args: string[]): string[] {
+export function compose(caeloDir: string, ...args: string[]): string[] {
   return ["docker", "compose", "-f", composePath(caeloDir), ...args];
 }
 
@@ -415,12 +415,35 @@ export async function backupDatabases(
     };
   }
   const dir = join(caeloDir, "backups", `pre-upgrade-${at.toISOString().replace(/[:.]/g, "-")}`);
+  const dumped = await dumpDatabases(caeloDir, runner, dir);
+  if (!dumped.ok) return { ok: false, error: `${dumped.error} The upgrade did not start.` };
+  return { ok: true, dir };
+}
+
+/** The files {@link dumpDatabases} writes, and what each holds. */
+export const DATABASE_DUMPS = {
+  /** The cluster's roles (reference only — restores re-create them from config.json). */
+  globals: "globals.sql",
+  cms_admin: "cms_admin.dump",
+  cms_public: "cms_public.dump",
+} as const;
+
+/**
+ * pg_dump both databases (custom format) plus the cluster's roles into
+ * `dir` (created mode 700) from the running Postgres container. Every dump
+ * must exit 0 and be non-empty.
+ */
+export async function dumpDatabases(
+  caeloDir: string,
+  runner: HostRunner,
+  dir: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
   const dumps: [string, string[]][] = [
-    ["globals.sql", ["pg_dumpall", "-U", "caelo", "--globals-only"]],
-    ["cms_admin.dump", ["pg_dump", "-U", "caelo", "-Fc", "cms_admin"]],
-    ["cms_public.dump", ["pg_dump", "-U", "caelo", "-Fc", "cms_public"]],
+    [DATABASE_DUMPS.globals, ["pg_dumpall", "-U", "caelo", "--globals-only"]],
+    [DATABASE_DUMPS.cms_admin, ["pg_dump", "-U", "caelo", "-Fc", "cms_admin"]],
+    [DATABASE_DUMPS.cms_public, ["pg_dump", "-U", "caelo", "-Fc", "cms_public"]],
   ];
   for (const [name, cmd] of dumps) {
     const out = join(dir, name);
@@ -430,12 +453,12 @@ export async function backupDatabases(
     if (r.exitCode !== 0 || fileSize(out) === 0) {
       return {
         ok: false,
-        error: `Backup failed (${cmd.join(" ")} → ${out}): ${tail(r.stderr) || "empty dump"}. The upgrade did not start.`,
+        error: `Backup failed (${cmd.join(" ")} → ${out}): ${tail(r.stderr) || "empty dump"}.`,
       };
     }
     chmodSync(out, 0o600);
   }
-  return { ok: true, dir };
+  return { ok: true };
 }
 
 /**
@@ -483,10 +506,14 @@ const HEALTH_PROBE: Record<"admin" | "gateway", string> = {
     'const r=await fetch("http://127.0.0.1:"+(process.env.PORT||process.env.GATEWAY_PORT||"8090")+"/healthz").catch(()=>null);process.exit(r&&r.ok?0:1)',
 };
 
-async function waitHealthy(
+/**
+ * Probe `service` inside its container until it answers healthy, or give up
+ * after `healthAttempts` tries (default 45, 2 s apart).
+ */
+export async function waitHealthy(
   service: "admin" | "gateway",
   caeloDir: string,
-  deps: SelfHostedUpgradeDeps,
+  deps: Pick<SelfHostedUpgradeDeps, "runner" | "sleep" | "healthAttempts" | "healthIntervalMs">,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const attempts = deps.healthAttempts ?? 45;
   const interval = deps.healthIntervalMs ?? 2000;
