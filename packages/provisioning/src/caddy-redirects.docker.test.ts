@@ -1,17 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #587 — the self-hosted redirect path end to end against a real Caddy:
- * the generated `_redirects.caddy` snippet, imported by the repo's
- * Caddyfiles, passes `caddy validate`; a running Caddy answers redirected
- * paths with the planned status + Location (query kept, case-sensitive, the
- * live page wins, 410 for gone); run with the reload loop the install's
- * Compose file uses (caddyRedirectReloadScript), Caddy picks up a deploy's
- * new snippet; a snippet Caddy rejects leaves the previous redirects served,
- * and the next good snippet is picked up again.
+ * #587 — the self-hosted redirect path end to end against the Caddy image
+ * the Compose file runs ({@link CADDY_IMAGE}):
  *
- * Needs Docker. Skipped locally when Docker is not running; in CI (`CI`
- * set) a missing Docker fails the test instead of skipping it.
+ * - the GENERATED Caddyfile (the seed vhosts `init` writes) and the repo's
+ *   dev Caddyfiles pass `caddy validate` with a real redirect snippet
+ *   imported;
+ * - a container started like the Compose service (same Caddyfile shape,
+ *   same `/srv/caelo` mount, same reload-loop command and snippet glob)
+ *   answers redirected paths on the live and the staging host with the
+ *   planned status + Location — query kept, case-sensitive, the live page
+ *   wins, 410 for gone;
+ * - the reload loop picks up a deploy's new snippet, a snippet Caddy
+ *   rejects leaves the previous redirects live, and the next good snippet
+ *   is picked up again.
+ *
+ * Needs Docker and curl. CI sets `CAELO_CADDY_VALIDATE=required` (as for
+ * caddy-validate.test.ts), which turns a missing Docker into a failure.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -19,23 +25,35 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildRedirectPlan, emitCaddyRedirects, type RedirectTableRow } from "@caelo-cms/shared";
+import { generateCaddyfile, selfHostedSeedDomains } from "./caddy.js";
 import { caddyRedirectReloadScript } from "./caddy-redirects.js";
+import {
+  CADDY_IMAGE,
+  COMPOSE_ADMIN_UPSTREAM,
+  COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_REDIRECT_SNIPPETS,
+  SITE_OUTPUT_ROOT,
+} from "./compose.js";
 
-/** The Caddy image the test runs (pinned; the Compose files use the 2.x line). */
-const CADDY_IMAGE = "caddy:2.11.7-alpine";
-const CADDY_DIR = resolve(import.meta.dir, "../caddy");
-
+const REQUIRED = process.env.CAELO_CADDY_VALIDATE === "required";
 const dockerUp = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).success;
-if (!dockerUp && process.env.CI) {
-  throw new Error("caddy-redirects.docker.test: Docker is required in CI but `docker info` failed");
+if (!dockerUp && REQUIRED) {
+  throw new Error(
+    "caddy-redirects.docker.test: CAELO_CADDY_VALIDATE=required but `docker info` failed",
+  );
 }
+
+const LIVE = "example.test";
+const STAGING = "staging.example.test";
+const CADDY_DIR = resolve(import.meta.dir, "../caddy");
+const SERVED = ["index.html", "about/index.html", "blog/index.html"];
 
 function docker(args: string[]): { ok: boolean; out: string } {
   const r = Bun.spawnSync(["docker", ...args], { stdout: "pipe", stderr: "pipe" });
   return { ok: r.success, out: `${r.stdout.toString()}${r.stderr.toString()}` };
 }
 
-function snippet(rows: [string, string, number][], servedFiles: string[]): string {
+function snippet(rows: [string, string, number][]): string {
   const tableRows: RedirectTableRow[] = rows.map(([fromPath, toPath, statusCode]) => ({
     fromPath,
     toPath,
@@ -45,60 +63,94 @@ function snippet(rows: [string, string, number][], servedFiles: string[]): strin
     buildRedirectPlan({
       rows: tableRows,
       pageUrlStyle: "directory",
-      servedFiles: new Set(servedFiles),
+      servedFiles: new Set(SERVED),
     }),
   );
 }
 
-const SERVED = ["index.html", "about/index.html", "blog/index.html"];
-
-describe.skipIf(!dockerUp)("self-hosted redirects through a real Caddy", () => {
+describe.skipIf(!dockerUp)(`self-hosted redirects through ${CADDY_IMAGE}`, () => {
   const name = `caelo-test-587-${process.pid}-${Date.now()}`;
   let dir = "";
-  let site = "";
+  let httpsPort = "";
 
-  const write = (body: string) => writeFileSync(join(dir, "srv/current/_redirects.caddy"), body);
-  const get = (path: string) => fetch(`${site}${path}`, { redirect: "manual" });
-  /** Poll until `path` redirects to `location` (the loop polls every 2 s). */
-  const eventually = async (path: string, location: string | null) => {
+  /** The host dir mounted at SITE_OUTPUT_ROOT, as `./output` is in Compose. */
+  const outputDir = () => join(dir, "output");
+  const current = (env: string) => join(outputDir(), "output", env, "current");
+  const write = (env: string, body: string) =>
+    writeFileSync(join(current(env), "_redirects.caddy"), body);
+
+  /** Status + Location of `https://<host><path>` through the container. */
+  const probe = (host: string, path: string): { status: number; location: string | null } => {
+    const r = Bun.spawnSync(
+      [
+        "curl",
+        "-sk",
+        "-o",
+        "/dev/null",
+        "-D",
+        "-",
+        "--resolve",
+        `${host}:${httpsPort}:127.0.0.1`,
+        `https://${host}:${httpsPort}${path}`,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const head = r.stdout.toString();
+    const status = Number(head.match(/^HTTP\/\S+ (\d{3})/)?.[1] ?? 0);
+    const location = head.match(/^location: ([^\r\n]*)/im)?.[1]?.trim() ?? null;
+    return { status, location };
+  };
+  const eventually = async (host: string, path: string, location: string) => {
     const deadline = Date.now() + 30_000;
     for (;;) {
-      const got = (await get(path)).headers.get("location");
+      const got = probe(host, path).location;
       if (got === location) return;
       if (Date.now() > deadline) {
-        throw new Error(`${path} → ${got}, expected ${location}: ${docker(["logs", name]).out}`);
+        throw new Error(
+          `${host}${path} → ${got}, expected ${location}: ${docker(["logs", name]).out}`,
+        );
       }
       await Bun.sleep(250);
     }
   };
 
-  beforeAll(async () => {
+  beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), "caelo-587-caddy-"));
-    mkdirSync(join(dir, "srv/current/about"), { recursive: true });
-    mkdirSync(join(dir, "srv/current/blog"), { recursive: true });
-    for (const f of SERVED) writeFileSync(join(dir, "srv/current", f), `<p>${f}</p>`);
     for (const env of ["production", "staging"]) {
-      writeFileSync(
-        join(dir, `Caddyfile.${env}`),
-        readFileSync(join(CADDY_DIR, `Caddyfile.${env}`), "utf8"),
-      );
+      for (const f of SERVED) {
+        mkdirSync(join(current(env), f, ".."), { recursive: true });
+        writeFileSync(join(current(env), f), `<p>${env} ${f}</p>`);
+      }
     }
-    write(
-      snippet(
-        [
-          ["/old", "/about", 301],
-          ["/tmp", "/blog", 302],
-          ["/perm", "/about", 308],
-          ["/hop1", "/hop2", 301],
-          ["/hop2", "/blog", 301],
-          ["/Case", "/about", 301],
-          ["/q", "/about?ref=old", 301],
-          ["/gone", "/410", 410],
-          ["/about", "/elsewhere", 301],
-        ],
-        SERVED,
-      ),
+    // The Caddyfile `init` writes, with Caddy's local CA so the test needs
+    // no public DNS.
+    writeFileSync(
+      join(dir, "Caddyfile"),
+      generateCaddyfile({
+        ownerEmail: "owner@example.test",
+        tls: "internal",
+        publicSiteRoot: `${SITE_OUTPUT_ROOT}/output/production/current`,
+        stagingSiteRoot: `${SITE_OUTPUT_ROOT}/output/staging/current`,
+        adminUpstream: COMPOSE_ADMIN_UPSTREAM,
+        gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
+        domains: selfHostedSeedDomains(LIVE, STAGING),
+      }),
     );
+    write(
+      "production",
+      snippet([
+        ["/old", "/about", 301],
+        ["/tmp", "/blog", 302],
+        ["/perm", "/about", 308],
+        ["/hop1", "/hop2", 301],
+        ["/hop2", "/blog", 301],
+        ["/Case", "/about", 301],
+        ["/q", "/about?ref=old", 301],
+        ["/gone", "/410", 410],
+        ["/about", "/elsewhere", 301],
+      ]),
+    );
+    write("staging", snippet([["/staged-old", "/blog", 301]]));
   });
 
   afterAll(() => {
@@ -106,15 +158,15 @@ describe.skipIf(!dockerUp)("self-hosted redirects through a real Caddy", () => {
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
-  it("the repo's Caddyfiles validate with the generated snippet imported", () => {
-    for (const env of ["production", "staging"]) {
-      const r = docker([
+  it("the generated Caddyfile and the repo's dev Caddyfiles validate with a snippet imported", () => {
+    const validate = (caddyfile: string, siteMount: string) =>
+      docker([
         "run",
         "--rm",
         "-v",
-        `${join(dir, `Caddyfile.${env}`)}:/etc/caddy/Caddyfile:ro`,
+        `${caddyfile}:/etc/caddy/Caddyfile:ro`,
         "-v",
-        `${join(dir, "srv")}:/srv:ro`,
+        siteMount,
         CADDY_IMAGE,
         "caddy",
         "validate",
@@ -123,82 +175,81 @@ describe.skipIf(!dockerUp)("self-hosted redirects through a real Caddy", () => {
         "--adapter",
         "caddyfile",
       ]);
-      expect(`${env}: ${r.ok}`).toBe(`${env}: true`);
-      expect(r.out).toContain("Valid configuration");
+    const generated = validate(join(dir, "Caddyfile"), `${outputDir()}:${SITE_OUTPUT_ROOT}:ro`);
+    expect(generated.out).toContain("Valid configuration");
+    for (const env of ["production", "staging"]) {
+      const devFile = join(dir, `Caddyfile.${env}`);
+      writeFileSync(devFile, readFileSync(join(CADDY_DIR, `Caddyfile.${env}`), "utf8"));
+      // docker-compose.yml mounts output/<env> at /srv; current/ holds the snippet.
+      const r = validate(devFile, `${join(outputDir(), "output", env)}:/srv:ro`);
+      expect(`${env}: ${r.out.includes("Valid configuration")}`).toBe(`${env}: true`);
     }
-  }, 120_000);
+  }, 180_000);
 
-  it("a running Caddy answers redirected paths with the planned status + Location", async () => {
+  it("a container started like the Compose service answers the planned redirects", async () => {
     const run = docker([
       "run",
       "-d",
       "--name",
       name,
       "-p",
-      "127.0.0.1::80",
+      "127.0.0.1::443",
       "-v",
-      `${join(dir, "Caddyfile.production")}:/etc/caddy/Caddyfile:ro`,
+      `${join(dir, "Caddyfile")}:/etc/caddy/Caddyfile:ro`,
       "-v",
-      `${join(dir, "srv")}:/srv:ro`,
+      `${outputDir()}:${SITE_OUTPUT_ROOT}:ro`,
       CADDY_IMAGE,
-      // As the install's Compose file runs it (compose.ts).
+      // The Compose service's command, with the Compose snippet glob.
       "/bin/sh",
       "-c",
-      caddyRedirectReloadScript("/srv/current/_redirects.caddy"),
+      caddyRedirectReloadScript(COMPOSE_REDIRECT_SNIPPETS),
     ]);
-    expect(run.out).not.toContain("Error");
-    const port = (p: number) =>
-      docker(["port", name, `${p}/tcp`])
-        .out.trim()
-        .split("\n")[0] ?? "";
-    site = `http://${port(80)}`;
-    const deadline = Date.now() + 60_000;
-    for (;;) {
-      const up = await fetch(`${site}/`).then(
-        (r) => r.ok,
-        () => false,
-      );
-      if (up) break;
-      if (Date.now() > deadline)
+    expect(run.ok).toBe(true);
+    httpsPort = docker(["port", name, "443/tcp"]).out.trim().split("\n")[0]?.split(":").pop() ?? "";
+    const deadline = Date.now() + 90_000;
+    while (probe(LIVE, "/").status !== 200) {
+      if (Date.now() > deadline) {
         throw new Error(`Caddy did not start: ${docker(["logs", name]).out}`);
+      }
       await Bun.sleep(500);
     }
 
-    const expectRedirect = async (path: string, status: number, location: string) => {
-      const res = await get(path);
-      expect(`${path} ${res.status} ${res.headers.get("location")}`).toBe(
-        `${path} ${status} ${location}`,
+    const expectRedirect = (path: string, status: number, location: string, host = LIVE) => {
+      const r = probe(host, path);
+      expect(`${host}${path} ${r.status} ${r.location}`).toBe(
+        `${host}${path} ${status} ${location}`,
       );
     };
-    await expectRedirect("/old", 301, "/about/");
-    await expectRedirect("/old/", 301, "/about/");
-    await expectRedirect("/old?utm_source=x&a=1", 301, "/about/?utm_source=x&a=1");
-    await expectRedirect("/tmp", 302, "/blog/");
-    await expectRedirect("/perm/", 308, "/about/");
-    await expectRedirect("/hop1", 301, "/blog/");
-    await expectRedirect("/Case", 301, "/about/");
-    await expectRedirect("/q?dropped=1", 301, "/about?ref=old");
-    expect((await get("/gone")).status).toBe(410);
+    expectRedirect("/old", 301, "/about/");
+    expectRedirect("/old/", 301, "/about/");
+    expectRedirect("/old?utm_source=x&a=1", 301, "/about/?utm_source=x&a=1");
+    expectRedirect("/tmp", 302, "/blog/");
+    expectRedirect("/perm/", 308, "/about/");
+    expectRedirect("/hop1", 301, "/blog/");
+    expectRedirect("/Case", 301, "/about/");
+    expectRedirect("/q?dropped=1", 301, "/about?ref=old");
+    expectRedirect("/staged-old", 301, "/blog/", STAGING);
+    expect(probe(LIVE, "/gone").status).toBe(410);
     // Exact, case-sensitive: /case is not /Case.
-    expect((await get("/case")).status).toBe(404);
+    expect(probe(LIVE, "/case").status).toBe(404);
+    // Each host serves its own build's redirects.
+    expect(probe(LIVE, "/staged-old").status).toBe(404);
     // The live page wins over the recorded /about → /elsewhere.
-    const about = await get("/about/");
-    expect(about.status).toBe(200);
-    expect(await about.text()).toBe("<p>about/index.html</p>");
-  }, 120_000);
+    expect(probe(LIVE, "/about/")).toEqual({ status: 200, location: null });
+  }, 180_000);
 
-  it("picks up a deploy's new snippet through the reload loop", async () => {
-    write(snippet([["/brand-new", "/blog", 301]], SERVED));
-    await eventually("/brand-new", "/blog/");
-    expect((await get("/old")).status).toBe(404);
+  it("the reload loop picks up a deploy's new snippet", async () => {
+    write("production", snippet([["/brand-new", "/blog", 301]]));
+    await eventually(LIVE, "/brand-new", "/blog/");
+    expect(probe(LIVE, "/old").status).toBe(404);
   }, 60_000);
 
-  it("a snippet Caddy rejects leaves the previous redirects live", async () => {
-    write("map {path} {\n");
-    await Bun.sleep(3_000);
-    expect((await get("/brand-new")).headers.get("location")).toBe("/blog/");
-    // The next good snippet is picked up again.
-    write(snippet([["/after-fix", "/about", 301]], SERVED));
-    await eventually("/after-fix", "/about/");
+  it("a snippet Caddy rejects leaves the previous redirects live; the next good one is picked up", async () => {
+    write("production", "map {path} {\n");
+    await Bun.sleep(5_000);
+    expect(probe(LIVE, "/brand-new").location).toBe("/blog/");
+    expect(docker(["logs", name]).out).toContain("Caddy rejected the reload");
+    write("production", snippet([["/after-fix", "/about", 301]]));
+    await eventually(LIVE, "/after-fix", "/about/");
   }, 60_000);
 });

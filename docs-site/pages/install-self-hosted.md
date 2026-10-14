@@ -9,13 +9,13 @@ seo:
 
 # Install — self-hosted
 
-The simplest deployment target: one Linux host with Docker. The provisioner writes a Docker Compose stack — Postgres, Caddy with automatic TLS, MinIO, the admin and the API gateway — into `./.caelo/` and gives you the commands to start it.
+The simplest deployment target: one Linux host with Docker. One command writes a Docker Compose stack — Postgres, Caddy with automatic TLS, the admin and the API gateway — into `./.caelo/`, starts it, applies the database migrations and checks that everything answers.
 
 The admin and the gateway run the **prebuilt release images** from `ghcr.io/caelo-cms/admin` and `ghcr.io/caelo-cms/gateway`, pinned by digest and verified with [cosign](https://docs.sigstore.dev/) against Caelo's release workflow before anything is written. You never build an image, and nothing of the Caelo source code is mounted into a container.
 
 ## Requirements
 
-- A Linux box with public IPv4 + DNS pointed at it (for production TLS via Let's Encrypt)
+- A Linux box with public IPv4, ports 80 + 443 reachable, and DNS for three hosts pointed at it (for production TLS via Let's Encrypt): `<domain>` (the site), `admin.<domain>` (the admin) and `staging.<domain>` (the staging site, or the host you pass as `--staging-domain`)
 - [Docker Engine](https://docs.docker.com/engine/install/) ≥ 20 with the Compose plugin
 - [Bun](https://bun.sh) ≥ 1.3 (`curl -fsSL https://bun.sh/install | bash`)
 - [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) — verifies the image signatures
@@ -27,27 +27,24 @@ The admin and the gateway run the **prebuilt release images** from `ghcr.io/cael
 Run from the directory that should hold the install (the provisioner creates `./.caelo/` there):
 
 ```bash
-bunx @caelo-cms/provisioning@latest init --provider self-hosted \
+bunx @caelo-cms/provisioning@latest --provider self-hosted \
   --domain caelo.example.com \
   --owner-email you@example.com
 ```
 
-What happens:
+(`… init --provider self-hosted …` is the same command.) What happens:
 
 1. The admin + gateway images of the provisioner's own Caelo version are resolved to digests in GHCR and **cosign-verified**. A failed check stops here; nothing is written. (`--version x.y.z` installs a different release.)
 2. Secrets are generated and stored in `.caelo/config.json` (mode 600). The verified digests are recorded in `.caelo/release.json`.
 3. `.caelo/docker-compose.yml`, `.caelo/Caddyfile` and `.caelo/bootstrap.sh` (creates the database roles on Postgres's first start; it holds no secrets) are written. The Compose file references the images by digest, so a `docker compose pull` can never change the release behind your back.
 4. On Linux with systemd, the **update agent** is set up (see [below](#installing-updates-from-the-admin)), so the admin can install future releases. Elsewhere `init` says why it skipped it; updates then install with the `upgrade` command.
+5. The stack starts: the images are pulled, Postgres starts (its first start creates the database roles and databases), the migrations run with the release's admin image, then Caddy, the admin and the gateway start, and the admin's and the gateway's health checks must pass.
 
-Then start it — the provisioner prints these commands with your paths filled in:
+Finally open the Owner-bootstrap URL the provisioner printed (`https://admin.<domain>/setup?token=…`). The token expires after 24 hours. Caddy serves the admin on `admin.<domain>`, the live site on `<domain>` (with `/api/*` going to the gateway) and the staging site on its own host, marked `noindex`.
 
-```bash
-docker compose -f .caelo/docker-compose.yml up -d postgres
-bunx @caelo-cms/provisioning@<version> migrate   # the provisioner prints this with its exact version
-docker compose -f .caelo/docker-compose.yml up -d
-```
+If a step fails, the provisioner says which one and why. Fix the cause and run `bunx @caelo-cms/provisioning@<version> up` from the same directory: it re-checks the database roles, re-writes the Compose file and the Caddyfile, and converges the running stack from wherever it stopped. `up` is also what you run after changing anything in `.caelo/config.json`.
 
-Finally open the Owner-bootstrap URL the provisioner printed (`https://<domain>/setup?token=…`). The token expires after 24 hours.
+**Without public DNS** (a LAN box, an evaluation install): add `--tls internal`. Caddy then issues every certificate from its own local CA instead of Let's Encrypt; browsers warn until you trust that CA's root (`docker compose -f .caelo/docker-compose.yml exec caddy cat /data/caddy/pki/authorities/local/root.crt`). **Ports 80 / 443 taken** (another web server on the host): `--http-port` / `--https-port` publish Caddy elsewhere — Let's Encrypt can then only issue certificates if the other server forwards those hosts to Caddy, so combine them with `--tls internal` or a forwarding proxy.
 
 ## Upgrading
 
@@ -123,9 +120,25 @@ Every redirect Caelo records (a page moved or renamed, a URL migration, one you 
 | Apply DB migrations by hand | `bunx @caelo-cms/provisioning@<version> migrate` |
 | Which release runs | `.caelo/release.json` (version, image digests, upgrade history) |
 | Update agent | `bunx @caelo-cms/provisioning@<version> agent status` / `agent logs` |
+| Back up the install | `bunx @caelo-cms/provisioning@<version> backup [--to file.tar.gz]` — see [Backup and restore](#backup-and-restore) |
 | Restore a pre-upgrade backup | see *Troubleshooting* below |
 | Rotate any secret | `/settings/<area>` in the admin OR see incident-response §G |
 | Admin memory for the [quality checks](/quality-gate) | `caelo-self-hosted:adminMemory` (default `2Gi`, reserved for the admin container) |
+
+## Backup and restore
+
+Run from the directory that holds `.caelo/`:
+
+```bash
+bunx @caelo-cms/provisioning@<version> backup --to caelo-backup.tar.gz
+bunx @caelo-cms/provisioning@<version> restore --from caelo-backup.tar.gz --yes
+```
+
+`backup` writes one archive (mode 600) with a `pg_dump` of both databases, the published site (`.caelo/output/`) and the uploaded media (`.caelo/media/`). The install keeps serving while it runs. It does **not** contain `.caelo/config.json` — the database passwords and the key that encrypts stored AI provider keys — so the archive can be copied off the host; keep a copy of `config.json` somewhere safe yourself, because without it encrypted provider keys in a backup cannot be read.
+
+`restore` checks the archive first (nothing changes if it is incomplete), stops the admin and the gateway, replaces both databases and the files, and starts everything again with health checks. The database roles and their passwords come from this install's `config.json`, not from the archive. If a restore stops half-way, run it again: it starts over from the archive.
+
+Backups are point-in-time snapshots, not continuous WAL archiving — run `backup` on a schedule (e.g. a daily cron job) and copy the archives off the host.
 
 ## Troubleshooting
 
@@ -146,6 +159,8 @@ B=.caelo/backups/pre-upgrade-<timestamp>
 docker compose -f .caelo/docker-compose.yml exec -T postgres pg_restore -U caelo --clean -d cms_admin < $B/cms_admin.dump
 docker compose -f .caelo/docker-compose.yml exec -T postgres pg_restore -U caelo --clean -d cms_public < $B/cms_public.dump
 ```
+
+**An install made with an earlier release never came up (Caddy refuses the Caddyfile, `502` on the admin, `pgbackrest.conf` or `minio/minio` errors)** — earlier releases wrote a Caddyfile Caddy 2.11 refuses, proxied to `localhost` inside the Caddy container, put the admin on the same host as the site, and referenced a pgBackRest sidecar and a MinIO image that no longer exists. Run `bunx @caelo-cms/provisioning@latest up` once from the directory that holds `.caelo/`: it rewrites both files, removes the old services and starts the stack. The admin is then at `admin.<domain>` — add that DNS record.
 
 **`release.json records no release images`** from `up` — the install predates prebuilt images. Run `upgrade` once to move it onto them.
 

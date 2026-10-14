@@ -10,21 +10,23 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { generateCaddyfile } from "./caddy.js";
+import { generateCaddyfile, selfHostedSeedDomains } from "./caddy.js";
 import { caddyRedirectReloadCommand, caddyRedirectReloadScript } from "./caddy-redirects.js";
-import { generateDockerCompose } from "./compose.js";
+import {
+  COMPOSE_ADMIN_UPSTREAM,
+  COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_REDIRECT_SNIPPETS,
+  generateDockerCompose,
+} from "./compose.js";
 
 const caddyfile = generateCaddyfile({
   ownerEmail: "owner@example.com",
+  tls: "acme",
   publicSiteRoot: "/srv/caelo/output/production/current",
   stagingSiteRoot: "/srv/caelo/output/staging/current",
-  adminPort: 5173,
-  gatewayPort: 8090,
-  domains: [
-    { hostname: "example.com", kind: "public", env: "production" },
-    { hostname: "staging.example.com", kind: "public", env: "staging" },
-    { hostname: "admin.example.com", kind: "admin", env: "production" },
-  ],
+  adminUpstream: COMPOSE_ADMIN_UPSTREAM,
+  gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
+  domains: selfHostedSeedDomains("example.com", "staging.example.com"),
 });
 
 /** The site block of `host`: from its `<host> {` line to the next `}` line. */
@@ -60,10 +62,10 @@ describe("Compose — Caddy picks up new redirects (#587)", () => {
     domain: "example.com",
     postgresPassword: "pgpw",
     rolePasswords: { admin: "a", public: "p", gateway: "g" },
-    minioRootUser: "caelo",
-    minioRootPassword: "m",
     caeloSecretKek: "0".repeat(64),
     diskSize: "20Gi",
+    ports: { http: 80, https: 443 },
+    project: "caelo-example-com",
     images: {
       mode: "release",
       admin: `ghcr.io/caelo-cms/admin@sha256:${"a".repeat(64)}`,
@@ -78,7 +80,13 @@ describe("Compose — Caddy picks up new redirects (#587)", () => {
 
   it("runs Caddy with the loop that reloads it on a changed snippet", () => {
     expect(service("caddy")).toContain(
-      `    ${caddyRedirectReloadCommand("/srv/caelo/output/*/current/_redirects.caddy")}\n`,
+      `    ${caddyRedirectReloadCommand(COMPOSE_REDIRECT_SNIPPETS)}\n`,
+    );
+    expect(COMPOSE_REDIRECT_SNIPPETS).toBe("/srv/caelo/output/*/current/_redirects.caddy");
+    // The loop names no container or project: it runs inside the Caddy
+    // container of whichever Compose project this is.
+    expect(caddyRedirectReloadCommand(COMPOSE_REDIRECT_SNIPPETS)).not.toMatch(
+      /caelo-caddy|COMPOSE_PROJECT|docker/,
     );
     expect(yaml).not.toContain("caddy-admin");
   });

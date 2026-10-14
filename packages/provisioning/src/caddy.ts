@@ -5,15 +5,25 @@
  *
  * Reads the `domains` table + the deploy targets and emits a
  * deterministic Caddyfile string. The CLI's `regenerate-caddy`
- * sub-command writes this to `/etc/caddy/Caddyfile` and runs
+ * sub-command writes this to `.caelo/Caddyfile` and runs
  * `caddy reload`.
  *
  * Per-vhost shape:
  *   <hostname> {
- *     # admin   → reverse_proxy localhost:5173
- *     # public  → root + try_files (static), with /api/* → gateway
- *     tls <ownerEmail>
+ *     # admin   → reverse_proxy <adminUpstream>
+ *     # public  → /api/* → <gatewayUpstream>; everything else is the
+ *     #           static site (try_files + file_server, 404 → /404.html)
  *   }
+ *
+ * Upstreams are `host:port` as seen FROM CADDY. In the Compose install
+ * Caddy runs in its own container, where `localhost` is Caddy itself, so
+ * the CLI passes the Compose service names (`caelo-admin:5173`,
+ * `caelo-gateway:8090`) — issue #707.
+ *
+ * Every directive here must be one Caddy accepts: the output is checked
+ * with `caddy validate` on the pinned Caddy image (caddy-validate.test.ts,
+ * run in CI) — issue #566 shipped a `try_files` nested inside
+ * `file_server { }`, which Caddy 2.11 refuses, so no vhost came up.
  *
  * Staging vhosts force `X-Robots-Tag: noindex`.
  *
@@ -29,6 +39,11 @@
  * matcher also requires the file to exist (`file`), so a 404 for a
  * hashed URL (an old page requesting an asset the new build dropped)
  * is never cached for a year.
+ *
+ * A path that matches no file is a real 404 serving the generator's
+ * `/404.html` — never the home page with a 200 (an SPA-style
+ * `/index.html` fallback would turn every dead URL into a soft 404).
+ * Same behaviour as the GCS / S3 / Blob adapters (CLAUDE.md §11.B).
  *
  * `.ico` files (theme favicons) are served as `image/x-icon`, the one
  * icon MIME the media library stores and `<link rel="icon" type>`
@@ -48,21 +63,64 @@ export interface CaddyDomainSpec {
   readonly env: "production" | "staging";
 }
 
+/**
+ * How Caddy gets certificates: `acme` — publicly trusted ones from Let's
+ * Encrypt / ZeroSSL (needs public DNS + ports 80/443 reachable); `internal`
+ * — Caddy's own local CA, for a LAN or evaluation install without public
+ * DNS (browsers warn until the CA root is trusted).
+ */
+export type CaddyTlsMode = "acme" | "internal";
+
 export interface CaddyfileSpec {
   readonly ownerEmail: string;
-  readonly publicSiteRoot: string; // absolute path on disk
+  readonly tls: CaddyTlsMode;
+  readonly publicSiteRoot: string; // absolute path inside the Caddy container
   readonly stagingSiteRoot: string;
-  readonly adminPort: number;
-  readonly gatewayPort: number;
+  /** `host:port` of the admin as Caddy reaches it (Compose: `caelo-admin:5173`). */
+  readonly adminUpstream: string;
+  /** `host:port` of the API gateway as Caddy reaches it (Compose: `caelo-gateway:8090`). */
+  readonly gatewayUpstream: string;
   readonly domains: ReadonlyArray<CaddyDomainSpec>;
 }
 
+/** The host the admin of a self-hosted install answers on (same convention as GCP). */
+export function selfHostedAdminHost(domain: string): string {
+  return `admin.${domain}`;
+}
+
+/**
+ * The vhosts every self-hosted install serves before an Owner adds domains
+ * in the admin: the admin on `admin.<domain>`, the live site on `<domain>`,
+ * the staging site on its own host. The admin needs its own host — it
+ * routes from `/` (`/setup`, `/login`, …), so it cannot share one with the
+ * public site, and Caddy refuses two site blocks for the same address.
+ */
+export function selfHostedSeedDomains(domain: string, stagingDomain: string): CaddyDomainSpec[] {
+  return [
+    { hostname: selfHostedAdminHost(domain), kind: "admin", env: "production" },
+    { hostname: domain, kind: "public", env: "production" },
+    { hostname: stagingDomain, kind: "public", env: "staging" },
+  ];
+}
+
 export function generateCaddyfile(spec: CaddyfileSpec): string {
+  const hostnames = new Set<string>();
+  for (const d of spec.domains) {
+    if (hostnames.has(d.hostname)) {
+      // Caddy refuses a config with two site blocks for one address, so a
+      // duplicate would take every vhost down, not just this one.
+      throw new Error(
+        `Caddyfile: ${d.hostname} is listed twice — one host serves either the admin or a public site, not both.`,
+      );
+    }
+    hostnames.add(d.hostname);
+  }
+
   const blocks: string[] = [];
 
   // Global options.
   blocks.push(`{
-  email ${spec.ownerEmail}
+  email ${spec.ownerEmail}${spec.tls === "internal" ? "\n  local_certs" : ""}
 }
 `);
 
@@ -76,7 +134,7 @@ export function generateCaddyfile(spec: CaddyfileSpec): string {
     blocks.push(`# No domains configured yet — cms-provision regenerate-caddy
 # will overwrite this file when you add one at /settings/domains.
 :8081 {
-  reverse_proxy localhost:${spec.adminPort}
+  reverse_proxy ${spec.adminUpstream}
 }
 `);
   }
@@ -88,12 +146,13 @@ function vhost(d: CaddyDomainSpec, spec: CaddyfileSpec): string {
   const noindex = d.env === "staging" ? `\n  header X-Robots-Tag "noindex"` : "";
   if (d.kind === "admin") {
     return `${d.hostname} {${noindex}
-  reverse_proxy localhost:${spec.adminPort}
+  reverse_proxy ${spec.adminUpstream}
 }
 `;
   }
-  // public — API routes go to the gateway,
-  // the rest serves static files. Locale variants serve from a
+  // public — API routes go to the gateway, the rest is the static site.
+  // `try_files` is its own directive (a rewrite), never a file_server
+  // subdirective (#566).
   const root = d.env === "staging" ? spec.stagingSiteRoot : spec.publicSiteRoot;
   // #587 — the redirects table of the build this vhost serves.
   return `${d.hostname} {${noindex}
@@ -107,15 +166,15 @@ function vhost(d: CaddyDomainSpec, spec: CaddyfileSpec): string {
   @ico path *.ico
   header @ico Content-Type "image/x-icon"
   handle /api/* {
-    reverse_proxy localhost:${spec.gatewayPort}
-  }
-  handle /admin/* {
-    reverse_proxy localhost:${spec.adminPort}
+    reverse_proxy ${spec.gatewayUpstream}
   }
   handle {
-    file_server {
-      try_files {path} {path}/index.html /index.html
-    }
+    try_files {path} {path}/index.html
+    file_server
+  }
+  handle_errors 404 {
+    rewrite * /404.html
+    file_server
   }
 }
 `;
