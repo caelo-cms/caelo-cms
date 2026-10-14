@@ -18,7 +18,16 @@
  *    native addon and no Python;
  *  - variation axes (`wght`, `opsz`, ...) and every OpenType layout
  *    feature are kept, so `font-weight: 100 900` and feature settings
- *    behave as with the original file.
+ *    behave as with the original file. This is the whole reason our
+ *    slices are larger than Google Fonts' for the same family: Google
+ *    pins axes the request does not name and serves a reduced feature
+ *    set (Inter's default latin slice keeps only calt/ccmp/frac/numr/
+ *    dnom/pnum/tnum/kern/mark/mkmk; no ss*, cv*, case, zero, sups, ...).
+ *    With the same choices this pipeline lands within ~3% of Google's
+ *    bytes. Both would silently change rendering for a site that uses
+ *    optical sizes or `font-feature-settings`, so neither is applied.
+ *    Hinting is kept too: Google strips it only for non-Windows user
+ *    agents, and a static file cannot vary by user agent.
  *
  * Slices are by script, never by site text: content edits and new
  * translations cannot change a derived file. The output is a pure

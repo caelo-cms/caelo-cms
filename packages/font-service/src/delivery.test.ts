@@ -97,6 +97,20 @@ describe("deriveWebDelivery", () => {
     }
   });
 
+  test("keeps opt-in OpenType features in the latin slice (deliberate size trade-off)", async () => {
+    // Google Fonts' default Inter slice drops these (and pins opsz), which is
+    // most of why its latin file is smaller. A site may turn them on through
+    // font-feature-settings / font-variant-*, so stripping them would change
+    // rendering. This test stops a size "optimisation" from removing them silently.
+    const latin = (await deriveWebDelivery(interWoff2)).faces.find((f) => f.subset === "latin")!;
+    const features = new Set(
+      (openFont(latin.bytes).font as unknown as { availableFeatures: string[] }).availableFeatures,
+    );
+    for (const tag of ["kern", "tnum", "frac", "sups", "salt", "ss05", "cv01", "cv11"]) {
+      expect(features.has(tag)).toBe(true);
+    }
+  });
+
   test("is deterministic and independent of the source container", async () => {
     const first = await deriveWebDelivery(notoWoff);
     const second = await deriveWebDelivery(notoWoff);

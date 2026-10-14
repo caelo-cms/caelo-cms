@@ -105,7 +105,12 @@ code points, encodes each as WOFF2 and emits one `@font-face` per slice with its
 - Only slices the face actually covers are emitted; together they contain every
   character of the original, so nothing is lost by slicing.
 - Variation axes and all OpenType layout features are kept: a variable face
-  still declares `font-weight: <min> <max>`.
+  still declares `font-weight: <min> <max>`, and `font-feature-settings`
+  (`ss01`, `cv11`, `tnum`, ...) keeps working. This makes slices larger than
+  Google Fonts' for the same family (Inter latin: 105 KB vs 48 KB), because
+  Google pins axes the request does not name (Inter's `opsz`) and serves a
+  reduced feature set. Hinting is kept as well: Google strips it only for
+  non-Windows browsers, and static files cannot vary by browser.
 - Slices depend on the script, never on site text: editing content or adding a
   translation does not change any font file.
 - WOFF and WOFF2 uploads are decoded once and encoded once (no compression on
