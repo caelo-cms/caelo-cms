@@ -701,13 +701,16 @@ const QUALITY_ACCEPT_REASON =
  * click is the operator's own acceptance (the AI is not involved); the card
  * drops the group once it applied.
  */
-async function acceptRemainingQualityGroups(page: Page): Promise<void> {
+async function acceptRemainingQualityGroups(page: Page, accepted: string[]): Promise<void> {
   const card = page.getByTestId("quality-fix-offer");
   const groups = card.getByTestId("quality-offer-group");
   for (let guard = 0; guard < 50; guard += 1) {
     if ((await groups.count()) === 0) return;
     const group = groups.first();
     const key = await group.getAttribute("data-group-key");
+    if (key === null)
+      throw new Error("acceptRemainingQualityGroups: a group without data-group-key");
+    accepted.push(key);
     await group.getByTestId("quality-offer-group-accept").click();
     await group.getByTestId("quality-offer-accept-reason").fill(QUALITY_ACCEPT_REASON);
     await group.getByTestId("quality-offer-accept-confirm").click();
@@ -741,14 +744,18 @@ const QUALITY_ACCEPT_REMAINING_PROMPT =
  *
  * A FAILED check (no result) fails the test loudly: in CI that is an
  * infrastructure regression, not something to publish over.
+ *
+ * Returns the group keys the operator accepted on the card, so the
+ * scenario reports what the AI did not get to 100 instead of hiding it.
  */
 export async function awaitQualityGateOpen(
   page: Page,
   chatSessionId: string,
   timeoutMs = 20 * 60_000,
-): Promise<{ restages: number; state: string }> {
+): Promise<{ restages: number; state: string; accepted: readonly string[] }> {
   const deadline = Date.now() + timeoutMs;
   let restages = 0;
+  const accepted: string[] = [];
   const read = async (): Promise<QualityChatStatus> => {
     const res = await page.request.get(`/content/chat/${chatSessionId}/quality-audit`);
     if (!res.ok()) throw new Error(`quality status HTTP ${res.status()}: ${await res.text()}`);
@@ -763,10 +770,14 @@ export async function awaitQualityGateOpen(
   // returned on that two-second-old "accepted" while the new audit ran; its
   // fix round then ran during Publish and was charged to the homepage
   // token/loop thresholds (4 of the 27 loops). Null = closed again.
-  const opened = async (): Promise<{ restages: number; state: string } | null> => {
+  const opened = async (): Promise<{
+    restages: number;
+    state: string;
+    accepted: readonly string[];
+  } | null> => {
     await waitForChatTurnIdle(page);
     const settled = await read();
-    return settled.gate?.open ? { restages, state: settled.gate.state } : null;
+    return settled.gate?.open ? { restages, state: settled.gate.state, accepted } : null;
   };
   // The operator's "Fix all with AI" click starts the AI's fix turn; wait for
   // that turn to start (bounded) and then to end, instead of
@@ -804,7 +815,7 @@ export async function awaitQualityGateOpen(
     // like an operator who wants them fixed.
     if (offerOpen && restages >= 2) {
       await waitForChatTurnIdle(page);
-      await acceptRemainingQualityGroups(page);
+      await acceptRemainingQualityGroups(page, accepted);
       const decided = await read();
       if (decided.gate?.open) {
         const done = await opened();

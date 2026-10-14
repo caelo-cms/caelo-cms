@@ -175,7 +175,14 @@ test("the quality view shows page-check findings, Performance metrics, site-wide
     "Layout shift 0.356: body > header — Unsized image element: header > img.logo",
   );
 
-  const row = page.getByTestId("quality-acceptance-row").filter({ hasText: REASON });
-  await expect(row).toContainText("site-wide");
-  await expect(row).toContainText("robots/allowed-test up to 2");
+  // #727: acceptances are reviewed grouped per decision. A site-wide one is
+  // its own group (not "1 page(s)") and shows its scope, the accepted value
+  // and the reason without expanding.
+  const group = page.locator(
+    '[data-testid="quality-acceptance-group"][data-group-key="check-site:robots/allowed-test"]',
+  );
+  await expect(group).toContainText("robots/allowed-test");
+  await expect(group).toContainText("site-wide");
+  await expect(group).toContainText("up to 2 error(s)");
+  await expect(group).toContainText(REASON);
 });

@@ -110,7 +110,7 @@ The automatic redeploy (Settings → Gateway) works the same way. When only cont
 - the gate of the current staged build and why it is open or blocked;
 - recent checks with their findings per page, including page-check warnings and site-wide findings;
 - per page Lighthouse audited, its Performance metrics (FCP, LCP, TBT, CLS, Speed Index) with the LCP element and the layout shifts;
-- every accepted finding, **grouped per decision** (one rule across its pages) with the value accepted per page and the reason. The Owner can **revoke** a whole group, a selection, or a single page in one go; what was revoked blocks again at once, without a new check. Revoked and used-up acceptances stay listed as history;
+- every accepted finding, **grouped per decision** (one rule across its pages) with the value accepted per page and the reason. A site-wide acceptance (an error about the whole site, not a page) is its own group, marked *site-wide*. The Owner can **revoke** a whole group, a selection, or a single page in one go; what was revoked blocks again at once, without a new check. Revoked and used-up acceptances stay listed as history;
 - every *publish anyway* decision with who made it and why.
 
 ## Upgrading from the earlier rules

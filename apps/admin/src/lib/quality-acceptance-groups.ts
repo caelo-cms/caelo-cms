@@ -11,6 +11,8 @@
 /** One acceptance row as `quality_acceptances.list` returns it. */
 export interface AcceptanceRow {
   readonly id: string;
+  /** Null for a site-wide page-check acceptance (a finding with no page). */
+  readonly pageId: string | null;
   readonly pagePath: string;
   readonly kind: "finding" | "score" | "check";
   readonly auditId: string | null;
@@ -24,14 +26,25 @@ export interface AcceptanceRow {
 }
 
 export interface AcceptanceGroup {
-  /** Stable key: `check:<rule>`, `finding:<audit>` or `score:<category>`. */
+  /**
+   * Stable key: `check:<rule>`, `check-site:<rule>` (site-wide),
+   * `finding:<audit>` or `score:<category>`.
+   */
   readonly key: string;
   /** What was accepted, as the operator reads it. */
   readonly label: string;
   readonly kind: AcceptanceRow["kind"];
+  /**
+   * A site-wide acceptance covers findings that belong to no page, so it is
+   * its own group: counting it as "1 page(s)" next to the per-page
+   * acceptances of the same rule would misstate what was decided.
+   */
+  readonly siteWide: boolean;
   readonly rows: readonly AcceptanceRow[];
   /** The distinct reasons given (a bulk decision usually has one). */
   readonly reasons: readonly string[];
+  /** The distinct accepted values ("up to 2 error(s)", "score 88"). */
+  readonly values: readonly string[];
 }
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -41,15 +54,22 @@ const CATEGORY_LABEL: Record<string, string> = {
   seo: "SEO",
 };
 
-function keyOf(row: AcceptanceRow): { key: string; label: string } {
+function keyOf(row: AcceptanceRow): { key: string; label: string; siteWide: boolean } {
   if (row.kind === "score") {
     const c = row.category ?? "";
-    return { key: `score:${c}`, label: `${CATEGORY_LABEL[c] ?? c} score below 100` };
+    return {
+      key: `score:${c}`,
+      label: `${CATEGORY_LABEL[c] ?? c} score below 100`,
+      siteWide: false,
+    };
   }
   const id = row.auditId ?? "";
-  return row.kind === "check"
-    ? { key: `check:${id}`, label: id }
-    : { key: `finding:${id}`, label: `Lighthouse ${id}` };
+  if (row.kind === "finding") {
+    return { key: `finding:${id}`, label: `Lighthouse ${id}`, siteWide: false };
+  }
+  return row.pageId === null
+    ? { key: `check-site:${id}`, label: id, siteWide: true }
+    : { key: `check:${id}`, label: id, siteWide: false };
 }
 
 /** What one row accepted on its page ("score 87", "up to 3 errors"). */
@@ -66,19 +86,29 @@ export function acceptedValue(row: AcceptanceRow): string {
 export function groupLiveAcceptances(rows: readonly AcceptanceRow[]): AcceptanceGroup[] {
   const groups = new Map<
     string,
-    { key: string; label: string; kind: AcceptanceRow["kind"]; rows: AcceptanceRow[] }
+    {
+      key: string;
+      label: string;
+      kind: AcceptanceRow["kind"];
+      siteWide: boolean;
+      rows: AcceptanceRow[];
+    }
   >();
   for (const row of rows) {
     if (row.revokedAt !== null) continue;
-    const { key, label } = keyOf(row);
+    const { key, label, siteWide } = keyOf(row);
     let g = groups.get(key);
     if (!g) {
-      g = { key, label, kind: row.kind, rows: [] };
+      g = { key, label, kind: row.kind, siteWide, rows: [] };
       groups.set(key, g);
     }
     g.rows.push(row);
   }
   return [...groups.values()]
-    .map((g) => ({ ...g, reasons: [...new Set(g.rows.map((r) => r.reason))] }))
+    .map((g) => ({
+      ...g,
+      reasons: [...new Set(g.rows.map((r) => r.reason))],
+      values: [...new Set(g.rows.map(acceptedValue))],
+    }))
     .sort((a, b) => b.rows.length - a.rows.length || a.key.localeCompare(b.key));
 }

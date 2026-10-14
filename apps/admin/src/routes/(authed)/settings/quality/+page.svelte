@@ -339,19 +339,24 @@
                 />
               {/if}
               <strong class="min-w-0"><code>{g.label}</code></strong>
-              <span class="text-muted-foreground">· {g.rows.length} page(s)</span>
+              <span class="text-muted-foreground">
+                · {g.siteWide ? "site-wide" : `${g.rows.length} page(s)`}
+                · {g.values.length === 1 ? g.values[0] : "value per page"}
+              </span>
               <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={g.reasons.join(" · ")}>
                 {g.reasons.join(" · ")}
               </span>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                aria-expanded={expanded[g.key] === true}
-                onclick={() => (expanded[g.key] = !expanded[g.key])}
-              >
-                {expanded[g.key] ? "Hide pages" : "Show pages"}
-              </Button>
+              {#if !g.siteWide}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  aria-expanded={expanded[g.key] === true}
+                  onclick={() => (expanded[g.key] = !expanded[g.key])}
+                >
+                  {expanded[g.key] ? "Hide pages" : "Show pages"}
+                </Button>
+              {/if}
               {#if data.canRevoke}
                 <form method="post" action="?/revoke">
                   <input type="hidden" name="_csrf" value={data.csrfToken} />
@@ -359,7 +364,7 @@
                     <input type="hidden" name="acceptanceIds" value={id} />
                   {/each}
                   <Button type="submit" size="sm" variant="outline" data-testid="quality-revoke-group-btn">
-                    Revoke all {g.rows.length}
+                    {g.siteWide ? "Revoke" : `Revoke all ${g.rows.length}`}
                   </Button>
                 </form>
               {/if}
