@@ -453,7 +453,7 @@ describe("buildToolCatalogue", () => {
       "edit_module",
       "create_content_instance", // core write, NOT in the allowlist below
       "remove_module_from", // core write, NOT in the allowlist below
-      "autofill_page_seo", // non-core write, NOT allowlisted
+      "optimize_page_seo", // non-core write, NOT allowlisted
       "list_pages",
     );
     const result = buildToolCatalogue({
@@ -472,8 +472,8 @@ describe("buildToolCatalogue", () => {
     // The non-core write stays in the catalogue (reachable via search)
     // but is NOT preloaded.
     const names = new Set(result.map((t) => t.name));
-    expect(names.has("autofill_page_seo")).toBe(true);
-    expect(loaded.has("autofill_page_seo")).toBe(false);
+    expect(names.has("optimize_page_seo")).toBe(true);
+    expect(loaded.has("optimize_page_seo")).toBe(false);
   });
 
   // Tool Search default-on — core workflow tools carry alwaysLoaded so

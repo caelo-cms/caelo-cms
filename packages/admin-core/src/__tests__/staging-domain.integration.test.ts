@@ -260,6 +260,8 @@ beforeAll(async () => {
       blocks: [{ blockName: "content", moduleIds: [moduleId] }],
     });
     await ok("pages.update", { pageId, status: "published" });
+    // Builds refuse published pages without a meta description.
+    await ok("pages_seo.autofill", { pageId, metaDescription: `The ${slug} page.` });
   }
 });
 

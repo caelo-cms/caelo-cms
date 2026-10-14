@@ -295,6 +295,8 @@ beforeAll(async () => {
       pageId,
       blocks: [{ blockName: "content", moduleIds: [moduleId] }],
     });
+    // Builds refuse published pages without a meta description.
+    await op(HUMAN, "pages_seo.autofill", { pageId, metaDescription: `The ${slug} page.` });
   }
 });
 

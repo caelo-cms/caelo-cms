@@ -79,7 +79,7 @@ export const listStaleSeoPagesTool = makeListReadTool<
   name: "list_stale_seo_pages",
   description:
     "List pages whose SEO was never optimized or whose meta description is empty (newest pages first) — the dashboard's 'needs SEO' tile. " +
-    "Use when the operator asks which pages need SEO work; then bulk_optimize_seo (with their context) or set_page_seo_many.",
+    "Use when the operator asks which pages need SEO work; then autofill_page_seo_many for EMPTY descriptions that were never autofilled, bulk_optimize_seo (with their context) to re-optimize, or set_page_seo_many for exact values.",
   opName: "pages_seo.list_stale",
   input: z.object({}).strict(),
   buildOpInput: (input) => ({ limit: Math.min(200, (input.offset ?? 0) + (input.limit ?? 50)) }),

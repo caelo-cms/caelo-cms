@@ -55,6 +55,7 @@ interface Gist {
   sourceUrl: string | null;
   proposedSlug: string | null;
   proposedTitle: string | null;
+  sourceMetaDescription: string | null;
   html: string;
   contentHtml: string;
   chromeModuleBlocks: string[];
@@ -133,6 +134,22 @@ function strippedCounterLines(args: {
     lines.push("- nothing matched (no chrome / consent / duplicate-nav / preset noise here)");
   }
   return lines;
+}
+
+/**
+ * The source page's meta description and what to do with it. The rebuilt
+ * page needs one before its first Stage (the build refuses pages without
+ * one), so the source's own text is surfaced — it would otherwise be lost
+ * in the migration, as on searchviu.com.
+ */
+function sourceMetaDescriptionLine(source: string | null): string {
+  if (source === null) {
+    return "Source meta description: (not captured — this crawl predates it; read it with inspect_external_page on the source URL). Carry it over with autofill_page_seo_many before the Stage.";
+  }
+  if (source.trim().length === 0) {
+    return "Source meta description: (the source page has none) — write one from the page's content with autofill_page_seo_many before the Stage.";
+  }
+  return `Source meta description: ${source} — carry it over (shortened to at most 160 characters if longer) with autofill_page_seo_many before the Stage.`;
 }
 
 export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
@@ -271,6 +288,7 @@ export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
       `Page handle: ${pageRef} — reuse with read_page_more({ pageRef, cursor }) / query_page_html({ pageRef, ... }); no re-fetch.`,
       `Proposed slug: ${g.proposedSlug ?? "(none)"}`,
       `Proposed title: ${g.proposedTitle ?? "(none)"}`,
+      sourceMetaDescriptionLine(g.sourceMetaDescription),
       "",
       ...strippedSection,
       "## Page text (Markdown)",

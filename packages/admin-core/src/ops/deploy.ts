@@ -59,6 +59,10 @@ import {
 } from "../deploy/build-parity.js";
 import { draftPagesSummary, mainDraftPages } from "../deploy/draft-pages.js";
 import { lockLiveReleases } from "../deploy/live-release-lock.js";
+import {
+  describeMissingMetaDescriptions,
+  pagesMissingMetaDescription,
+} from "../deploy/missing-seo.js";
 import { stagingSiteUrl } from "../deploy/staging-domain.js";
 import { lockStagingPublication } from "../deploy/staging-publication-lock.js";
 import {
@@ -571,6 +575,24 @@ export const triggerDeployOp = defineOperation({
                   ${`Automatic publish stopped: ${held}`})
         `);
         return err({ kind: "HandlerError", operation: "deploy.trigger", message: held });
+      }
+    }
+    // CLAUDE.md §2 SEO fill-once — no page is built for staging or
+    // production without a meta description (deploy/missing-seo.ts). Before
+    // the quality gate: a publish-anyway override is about a failed
+    // Lighthouse run, never about missing SEO. Recorded as a failed run so
+    // Ops and the bell show it when nobody watched the request (the
+    // automatic redeploy). Dev builds stay unchecked — they are local
+    // previews, never served to visitors.
+    if (target.env === "staging" || target.env === "production") {
+      const missingSeo = describeMissingMetaDescriptions(await pagesMissingMetaDescription(tx));
+      if (missingSeo) {
+        await tx.execute(sql`
+          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', now(),
+                  ${`Blocked, missing SEO: ${missingSeo}`})
+        `);
+        return err({ kind: "HandlerError", operation: "deploy.trigger", message: missingSeo });
       }
     }
     if (target.env === "production") {

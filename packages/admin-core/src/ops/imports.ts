@@ -1294,6 +1294,9 @@ export const getImportPageGistOp = defineOperation({
     sourceUrl: z.string().nullable(),
     proposedSlug: z.string().nullable(),
     proposedTitle: z.string().nullable(),
+    /** The source page's meta description: "" when the source has none,
+     *  null when the crawl predates capturing it (migration 0272). */
+    sourceMetaDescription: z.string().nullable(),
     // Assembled source HTML — for the tool layer to convert to Markdown +
     // cache; NEVER surfaced raw to the model (see get_import_page).
     html: z.string(),
@@ -1320,6 +1323,7 @@ export const getImportPageGistOp = defineOperation({
       source_url: string | null;
       proposed_slug: string | null;
       proposed_title: string | null;
+      source_meta_description: string | null;
       proposed_modules: unknown;
       proposed_theme_tokens: unknown;
       sampled_design_tokens: unknown;
@@ -1337,7 +1341,8 @@ export const getImportPageGistOp = defineOperation({
       });
     }
     const cols = sql`p.id::text AS id, p.run_id::text AS run_id, p.source_url, p.proposed_slug,
-                     p.proposed_title, p.proposed_modules, p.proposed_theme_tokens,
+                     p.proposed_title, p.source_meta_description,
+                     p.proposed_modules, p.proposed_theme_tokens,
                      p.sampled_design_tokens, p.screenshot_object_key,
                      r.boilerplate_summary`;
     const rows = (await tx.execute(sql`
@@ -1381,6 +1386,7 @@ export const getImportPageGistOp = defineOperation({
       sourceUrl: r.source_url,
       proposedSlug: r.proposed_slug,
       proposedTitle: r.proposed_title,
+      sourceMetaDescription: r.source_meta_description,
       html,
       contentHtml,
       chromeModuleBlocks,
@@ -1412,6 +1418,11 @@ export const writeExtractedPagesOp = defineOperation({
             requestedUrl: z.string().url().optional(),
             proposedSlug: z.string().min(1).max(120),
             proposedTitle: z.string().max(500),
+            /** The source page's meta description ("" = it has none). The
+             *  rebuild carries it over via autofill_page_seo_many. Absent =
+             *  not captured: stored NULL, which get_import_page reports as
+             *  such (never as "the source has none"). */
+            sourceMetaDescription: z.string().max(2000).optional(),
             proposedModules: z.array(
               z.object({
                 blockName: z.string(),
@@ -1453,10 +1464,12 @@ export const writeExtractedPagesOp = defineOperation({
       const r = (await tx.execute(sql`
         INSERT INTO import_pages (
           run_id, source_url, requested_url, proposed_slug, proposed_title,
+          source_meta_description,
           proposed_modules, proposed_theme_tokens,
           structural_signature, cluster_key, page_css, notes
         ) VALUES (
           ${input.runId}::uuid, ${p.sourceUrl}, ${p.requestedUrl ?? null}, ${p.proposedSlug}, ${p.proposedTitle},
+          ${p.sourceMetaDescription ?? null},
           ${jsonbParam(p.proposedModules)},
           ${jsonbParam(p.proposedThemeTokens)},
           ${p.signature ?? null}, ${p.signature ?? null}, ${p.pageCss ?? null},

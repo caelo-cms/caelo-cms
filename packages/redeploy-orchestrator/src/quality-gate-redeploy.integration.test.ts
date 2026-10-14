@@ -140,6 +140,8 @@ beforeAll(async () => {
     status: "published",
   });
   homeId = pageId;
+  // Builds refuse published pages without a meta description.
+  await op("pages_seo.autofill", { pageId, metaDescription: "Home of the redeploy suite." });
   await op("pages.set_modules", {
     pageId,
     blocks: [{ blockName: "content", moduleIds: [moduleId] }],

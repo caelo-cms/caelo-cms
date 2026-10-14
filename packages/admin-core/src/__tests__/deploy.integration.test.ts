@@ -164,6 +164,14 @@ async function seedPage(): Promise<string> {
     status: "published",
   });
   if (!hupd.ok) throw new Error("home publish seed");
+  // Builds refuse published pages without a meta description.
+  const seo = await execute(registry, adapter, HUMAN, "pages_seo.autofill_many", {
+    items: [
+      { pageId, metaDescription: "About the deploy suite." },
+      { pageId: homePageId, metaDescription: "Home of the deploy suite." },
+    ],
+  });
+  if (!seo.ok) throw new Error("seo seed");
   return pageId;
 }
 
