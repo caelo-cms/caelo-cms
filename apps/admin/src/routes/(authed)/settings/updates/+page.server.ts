@@ -19,6 +19,8 @@
  */
 
 import {
+  agentInstallCommand,
+  agentUnavailable,
   type PlatformUpdateEvent,
   type PlatformUpdateRequest,
   type PlatformUpdateStatus,
@@ -26,6 +28,7 @@ import {
   startUpgraderFor,
 } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
+import type { PlatformUpdateAgentStatus } from "@caelo-cms/shared";
 import { error, fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
@@ -37,14 +40,23 @@ import {
   STEP_UP_RESULT_COOKIE,
   stepUpRedirectUri,
 } from "#lib/server/step-up.js";
-import { upgraderTrigger } from "#lib/server/upgrader.js";
+import { updatesEnv, upgraderTrigger } from "#lib/server/upgrader.js";
 import {
   cloudShellUpgrade,
   installProjectId,
   resolveUpgradePath,
   type UpgradePath,
+  updatesProvider,
 } from "#lib/upgrade-path.js";
 import type { Actions, PageServerLoad } from "./$types";
+
+/** The self-hosted update agent's last check-in (null when it never checked in). */
+async function readAgent(ctx: App.Locals["ctx"]): Promise<PlatformUpdateAgentStatus | null> {
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, ctx, "platform_updates.agent_status", {});
+  if (!r.ok) throw new Error(opErrorMessage(r.error, "could not read the update agent's status"));
+  return (r.value as { agent: PlatformUpdateAgentStatus | null }).agent;
+}
 
 export const load: PageServerLoad = async ({ locals, cookies, url }) => {
   const user = requirePermission(locals, "settings.read");
@@ -70,14 +82,20 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
 
   const canUpgrade = user.permissions.has("settings.write");
   const canInstall = user.permissions.has("platform.update");
+  const env = updatesEnv(cookies);
+  const selfHosted = updatesProvider(env) === "self-hosted";
   // Only built for those who may run it, and only when there is a newer
   // release to name — the command always carries an exact version.
   const upgrade: UpgradePath | null =
     canUpgrade && status.upgradeAvailable && status.latestVersion
-      ? resolveUpgradePath(process.env, status.latestVersion)
+      ? resolveUpgradePath(env, status.latestVersion)
       : null;
 
-  const upgrader = upgraderTrigger();
+  // #696 Phase 4c — on a self-hosted install the update agent on the server
+  // installs; "Install update" is offered only while it checks in healthy.
+  const agent = selfHosted && canInstall ? await readAgent(locals.ctx) : null;
+  const agentProblem = selfHosted && canInstall ? agentUnavailable(agent) : null;
+  const upgrader = upgraderTrigger(env, () => readAgent(locals.ctx));
   const stepUp = canInstall ? await requireStepUp(locals, cookies, "platform_update") : null;
   // A run that died (out of memory, timeout) never writes its end; Cloud
   // Run knows. Say so instead of showing "Installing" until the next run
@@ -91,9 +109,13 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
     }
   }
   // A release that needs Cloud Shell: the commands, pinned to that release.
+  // Self-hosted: the upgrade command on the server instead.
+  const needsHand = canUpgrade && latest.request?.status === "needs_cloud_shell";
   const cloudShell =
-    canUpgrade && latest.request?.status === "needs_cloud_shell"
-      ? cloudShellUpgrade(process.env, latest.request.targetVersion)
+    needsHand && latest.request ? cloudShellUpgrade(env, latest.request.targetVersion) : null;
+  const serverUpgrade =
+    needsHand && selfHosted && latest.request
+      ? resolveUpgradePath(env, latest.request.targetVersion)
       : null;
 
   type StepUpResult = { ok: boolean; purpose: string; message: string };
@@ -113,9 +135,21 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
     canUpgrade,
     canInstall,
     upgrade,
-    upgrader: upgrader.ok
-      ? { available: upgrader.trigger !== null, problem: null }
-      : { available: false, problem: `${upgrader.error} ${upgrader.nextStep}` },
+    selfHosted,
+    upgrader: !upgrader.ok
+      ? { available: false, problem: `${upgrader.error} ${upgrader.nextStep}` }
+      : selfHosted
+        ? { available: canInstall && agentProblem === null, problem: null }
+        : { available: upgrader.trigger !== null, problem: null },
+    agent:
+      selfHosted && canInstall
+        ? {
+            status: agent,
+            problem: agentProblem,
+            // Pinned to the running release: the agent it sets up is this one.
+            installCommand: agentInstallCommand(status.installedVersion),
+          }
+        : null,
     stepUp: stepUp
       ? stepUp.fresh
         ? { configured: true, fresh: true, freshUntil: stepUp.freshUntil, problem: null }
@@ -133,6 +167,7 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
     deadRun,
     history,
     cloudShell,
+    serverUpgrade: serverUpgrade?.kind === "cli" ? serverUpgrade : null,
   };
 };
 
@@ -174,7 +209,7 @@ export const actions: Actions = {
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const version = String(form.get("version") ?? "");
-    const upgrader = upgraderTrigger();
+    const upgrader = upgraderTrigger(updatesEnv(cookies), () => readAgent(locals.ctx));
     if (!upgrader.ok) return fail(500, { error: `${upgrader.error} ${upgrader.nextStep}` });
     if (!upgrader.trigger) {
       return fail(400, {

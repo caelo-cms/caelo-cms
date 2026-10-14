@@ -42,6 +42,20 @@ export const STATUS_DISPLAY: Readonly<
   cancelled: { label: "Cancelled", tone: "secondary" },
 };
 
+/**
+ * The badge for `status` on this kind of install: a self-hosted install's
+ * hand-run upgrade happens on its server, not in Cloud Shell (#696 Phase 4c).
+ */
+export function statusDisplay(
+  status: PlatformUpdateStatusValue,
+  selfHosted: boolean,
+): (typeof STATUS_DISPLAY)[PlatformUpdateStatusValue] {
+  if (status === "needs_cloud_shell" && selfHosted) {
+    return { label: "Needs a manual upgrade", tone: "warning" };
+  }
+  return STATUS_DISPLAY[status];
+}
+
 /** Whether a request is still in flight (the page keeps polling). */
 export function isActive(status: PlatformUpdateStatusValue): boolean {
   return status === "pending" || status === "running";

@@ -20,6 +20,7 @@ The admin and the gateway run the **prebuilt release images** from `ghcr.io/cael
 - [Bun](https://bun.sh) ≥ 1.3 (`curl -fsSL https://bun.sh/install | bash`)
 - [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) — verifies the image signatures
 - 2 GB RAM minimum (4 GB comfortable); 10 GB disk for Postgres + uploads
+- For **Install update** in the admin: systemd (any mainstream Linux distribution), and a non-root user in the `docker` group to run the install as — see [Installing updates from the admin](#installing-updates-from-the-admin)
 
 ## Install
 
@@ -35,7 +36,8 @@ What happens:
 
 1. The admin + gateway images of the provisioner's own Caelo version are resolved to digests in GHCR and **cosign-verified**. A failed check stops here; nothing is written. (`--version x.y.z` installs a different release.)
 2. Secrets are generated and stored in `.caelo/config.json` (mode 600). The verified digests are recorded in `.caelo/release.json`.
-3. `.caelo/docker-compose.yml` and `.caelo/Caddyfile` are written. The Compose file references the images by digest, so a `docker compose pull` can never change the release behind your back.
+3. `.caelo/docker-compose.yml`, `.caelo/Caddyfile` and `.caelo/bootstrap.sh` (creates the database roles on Postgres's first start; it holds no secrets) are written. The Compose file references the images by digest, so a `docker compose pull` can never change the release behind your back.
+4. On Linux with systemd, the **update agent** is set up (see [below](#installing-updates-from-the-admin)), so the admin can install future releases. Elsewhere `init` says why it skipped it; updates then install with the `upgrade` command.
 
 Then start it — the provisioner prints these commands with your paths filled in:
 
@@ -70,6 +72,42 @@ If a health check fails, the previous images are started again and checked, and 
 
 An install created before prebuilt images existed (its Compose file bind-mounts the Caelo repository into `oven/bun`) is moved onto the signed images by its first `upgrade`. Its uploaded media is copied (not moved) from the checkout's `apps/admin/data/media` into `.caelo/media/`, and its original Compose file is kept as `.caelo/docker-compose.pre-release.yml` for rollback.
 
+## Installing updates from the admin
+
+Settings → Updates in the admin can install a new Caelo release with one click (Owner only, confirmed with a fresh Google sign-in). On a self-hosted install the click does not install anything itself: it writes an update request into the database, and the **update agent** on your server carries it out.
+
+The agent is a systemd timer (`caelo-agent-<your-domain>-<hash>.timer`; `agent status` names it) that runs the provisioning CLI **as your user** — the one that ran `init` — once a minute:
+
+1. it checks in with the database (the admin shows "Install update" only while the agent has checked in within the last five minutes, and shows what it found wrong on the server, such as a missing `cosign`);
+2. it picks up the oldest pending request;
+3. it downloads the release's **signed release manifest** and verifies it with cosign against Caelo's release workflow. It refuses a bad signature, an older or equal version, a release that needs an intermediate one first, and — for automatic installs — releases with destructive database changes or ones your update policy does not allow;
+4. it installs the provisioning CLI **of the new release** from npm into `.caelo/agent/cli/` (install scripts off) and verifies it the way the Cloud Shell installer does: `npm audit signatures` (registry signatures + Sigstore provenance) and SLSA provenance naming `caelo-cms/caelo-cms` at the release's tag. If that fails, the update is refused and nothing changes — there is no fallback to an unverified copy;
+5. only then it starts that CLI to run exactly the [upgrade](#upgrading) described above: verified images (which must match the manifest's digests), database backup, migrations, health-checked restart, rollback. That CLI writes every step into the timeline on Settings → Updates, and afterwards the agent runs the new release itself.
+
+Why a timer on the host and not a container: running Compose from inside a container needs the Docker socket, which is root on the host for anything that gets into that container. The agent needs nothing your user does not already have to run `docker compose`. No unit runs as root, and the admin never gets more than "write a request row".
+
+The agent reaches Postgres as its own login, `caelo_agent`, which may only read update requests, move them through their run states, write their timeline and its heartbeat — nothing else in the database. For it, Postgres is published on the host's **loopback interface only** (`127.0.0.1:15432`, or the next free port; `--port` picks another) — never on a public interface. Publishing it restarts Postgres **once**, the first time the agent is set up: a few seconds of downtime, announced before it happens. Later runs find the port published and leave Postgres alone, and the agent itself never restarts Postgres outside an update.
+
+### Set up, check, remove
+
+`init` and `upgrade` set the agent up (or bring it up to date) automatically on Linux. To do it yourself, run from the directory that holds `.caelo/`:
+
+```bash
+bunx @caelo-cms/provisioning@<version> agent install     # idempotent; the first run restarts Postgres once (a few seconds)
+bunx @caelo-cms/provisioning@<version> agent status      # timer, pinned version, last run
+bunx @caelo-cms/provisioning@<version> agent logs        # its journal (--follow, --lines N)
+bunx @caelo-cms/provisioning@<version> agent uninstall   # timer off; the port goes with Postgres's next restart; init/upgrade leave it off
+```
+
+Requirements on the server:
+
+- **Your user is in the `docker` group** (as it already must be to run the install). Membership in that group is equivalent to root on the host — that is Docker's design, not the agent's; the agent adds no further access. Rootless Docker works too: `DOCKER_HOST` is carried into the unit.
+- **npm** (Node.js) on the `PATH` the agent sees — it verifies the provenance of each release's CLI before running it.
+- **cosign** on the `PATH` the agent sees (the `PATH` of the shell that ran `agent install` is written into the unit).
+- **Lingering** for your user, so the timer runs while you are logged out. `agent install` switches it on (`loginctl enable-linger`); where the system policy does not allow that, it prints the one command an administrator runs: `sudo loginctl enable-linger <user>`.
+
+**The Google sign-in.** Installing an update (and changing the update policy) needs a fresh Google sign-in, also on a self-hosted install. Settings → Updates walks you through creating a Google OAuth client once (in any Google Cloud project — it costs nothing) and pasting its ID and secret. Until that is done, the page shows the `upgrade` command to run instead.
+
 ## Day-2 operations
 
 | Task | Command / location |
@@ -78,6 +116,7 @@ An install created before prebuilt images existed (its Compose file bind-mounts 
 | Tail logs | `docker compose -f .caelo/docker-compose.yml logs -f caelo-admin caelo-gateway caddy` |
 | Apply DB migrations by hand | `bunx @caelo-cms/provisioning@<version> migrate` |
 | Which release runs | `.caelo/release.json` (version, image digests, upgrade history) |
+| Update agent | `bunx @caelo-cms/provisioning@<version> agent status` / `agent logs` |
 | Restore a pre-upgrade backup | see *Troubleshooting* below |
 | Rotate any secret | `/settings/<area>` in the admin OR see incident-response §G |
 | Admin memory for the [quality checks](/quality-gate) | `caelo-self-hosted:adminMemory` (default `2Gi`, reserved for the admin container) |
@@ -103,6 +142,16 @@ docker compose -f .caelo/docker-compose.yml exec -T postgres pg_restore -U caelo
 ```
 
 **`release.json records no release images`** from `up` — the install predates prebuilt images. Run `upgrade` once to move it onto them.
+
+**Settings → Updates says the update agent is not set up, or not running** — run `agent status` on the server. `not installed`: run `agent install`. Installed but no recent run: `agent logs` shows why; the usual causes are the install being stopped (`docker compose … up -d`), lingering being off (the timer stops when you log out — see above), or the login `caelo_agent` missing after a restore (re-run `agent install`, which re-creates it).
+
+**`Docker is not reachable for the agent's user`** on the update timeline — the user the agent runs as cannot reach the Docker daemon. Add it to the `docker` group (`sudo usermod -aG docker <user>`, then log in again) and re-run `agent install`.
+
+**`cosign is not installed on the server`** — install cosign so it is on the `PATH` of your shell, then re-run `agent install` (it records that `PATH` in the unit).
+
+**`another upgrade is running on this install`** — the agent and a hand-run `upgrade` never roll at the same time (`.caelo/upgrade.lock`). Wait for the other one to finish; a lock left by a crashed run is taken over automatically.
+
+**An update ended "needs the upgrade command on the server"** — the install has no recorded release yet (it predates prebuilt images), or the release information is newer than the agent understands. Run the `upgrade` command shown on Settings → Updates once on the server; afterwards the admin can install updates again.
 
 ## Contributor dev mode
 

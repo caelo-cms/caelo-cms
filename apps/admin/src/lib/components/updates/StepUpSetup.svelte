@@ -26,7 +26,14 @@
     csrfToken,
     redirectUri,
     credentialsUrl,
-  }: { csrfToken: string; redirectUri: string; credentialsUrl: string } = $props();
+    selfHosted = false,
+  }: {
+    csrfToken: string;
+    redirectUri: string;
+    credentialsUrl: string;
+    /** A self-hosted install has no Google Cloud project of its own (#696 Phase 4c). */
+    selfHosted?: boolean;
+  } = $props();
 </script>
 
 <Card data-testid="step-up-setup">
@@ -51,7 +58,14 @@
           rel="noopener noreferrer"
           class="inline-flex items-center gap-1 underline underline-offset-4"
           >Google Cloud → Credentials <ExternalLink class="size-3" aria-hidden="true" /></a
-        > for this site's project.
+        >
+        {#if selfHosted}
+          in any Google Cloud project of yours — if you have none, Google offers to create one;
+          it costs nothing. Later sign-ins must use a Google account with the email address you
+          sign in to this admin with.
+        {:else}
+          for this site's project.
+        {/if}
       </li>
       <li>
         If Google asks you to configure the consent screen first: choose <em>Internal</em> if you use

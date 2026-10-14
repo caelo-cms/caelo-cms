@@ -13,7 +13,11 @@
 
 import { describe, expect, it } from "bun:test";
 import { SQL } from "bun";
-import { convergeSelfHostedRoles, type SuperuserPsql } from "./self-hosted-roles.js";
+import {
+  convergeSelfHostedRoles,
+  type SuperuserPsql,
+  selfHostedBootstrapScript,
+} from "./self-hosted-roles.js";
 
 const env = process.env;
 const required = [
@@ -116,5 +120,42 @@ describe("self-hosted role convergence against Postgres (#613 review)", () => {
     } finally {
       await admin.end();
     }
+  });
+});
+
+describe("the install's bootstrap.sh (#696 Phase 4c)", () => {
+  it("runs as the Postgres entrypoint would and creates the agent's login, idempotently", async () => {
+    const script = selfHostedBootstrapScript({ agent: true });
+    for (let run = 0; run < 2; run++) {
+      const proc = Bun.spawn(["sh", "-c", script], {
+        stdout: "ignore",
+        stderr: "pipe",
+        env: {
+          ...env,
+          PGHOST: env.PGHOST ?? "localhost",
+          PGPORT: env.POSTGRES_PORT,
+          ...(env.POSTGRES_PASSWORD ? { PGPASSWORD: env.POSTGRES_PASSWORD } : {}),
+          AGENT_ROLE_PASSWORD: "bootstrap-agent-pw",
+        },
+      });
+      const stderr = await new Response(proc.stderr).text();
+      expect({ exitCode: await proc.exited, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    }
+    const agent = new SQL(
+      `postgres://caelo_agent:bootstrap-agent-pw@${env.PGHOST ?? "localhost"}:${env.POSTGRES_PORT}/cms_admin`,
+    );
+    try {
+      const rows = (await agent.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return tx`SELECT current_user::text AS u, count(*)::int AS n FROM platform_update_policy`;
+      })) as { u: string; n: number }[];
+      expect(rows[0]).toEqual({ u: "caelo_agent", n: 1 });
+    } finally {
+      await agent.end();
+    }
+    const dropped = await psql(
+      "\\set ON_ERROR_STOP on\n\\connect cms_admin\nDROP OWNED BY caelo_agent;\n\\connect cms_public\nDROP OWNED BY caelo_agent;\n\\connect postgres\nDROP ROLE caelo_agent;\n",
+    );
+    expect(dropped).toEqual({ exitCode: 0, stderr: "" });
   });
 });

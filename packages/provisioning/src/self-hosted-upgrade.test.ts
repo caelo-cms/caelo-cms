@@ -355,3 +355,40 @@ describe("upgradeSelfHosted", () => {
     }
   });
 });
+
+describe("upgradeSelfHosted — driven by the host agent (#696 Phase 4c)", () => {
+  it("changes nothing when the registry serves other digests than the signed manifest names", async () => {
+    const runner = fakeRunner();
+    const r = await upgradeSelfHosted(
+      {
+        version: "0.11.0",
+        expectedDigests: { admin: NEW_DIGEST.admin, gateway: OLD_DIGEST.gateway },
+      },
+      deps(runner),
+    );
+    expect(r).toMatchObject({ ok: false, stage: "verify", previousRunning: true });
+    expect(r.ok ? "" : r.error).toContain("gateway");
+    expect(steps(runner.calls)).toEqual(["cosign-probe", "verify admin", "verify gateway"]);
+    expect(readFileSync(composePath(dir), "utf8")).toBe(render(OLD));
+  });
+
+  it("names its stages for the admin's timeline, in order", async () => {
+    const phases: string[] = [];
+    const r = await upgradeSelfHosted(
+      { version: "0.11.0", expectedDigests: NEW_DIGEST },
+      { ...deps(fakeRunner()), log: { ...log, phase: (p) => phases.push(p) } },
+    );
+    expect(r.ok).toBe(true);
+    expect(phases).toEqual([
+      "verify",
+      "backup",
+      "roll",
+      "migrations",
+      "roll",
+      "health",
+      "roll",
+      "health",
+      "record",
+    ]);
+  });
+});

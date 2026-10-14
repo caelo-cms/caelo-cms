@@ -4,9 +4,10 @@
   /**
    * #696 — Settings → Updates. Versions + release notes for everyone with
    * settings.read; for the Owner (platform.update) on installs with the
-   * upgrader job, "Install update": a fresh Google sign-in, a confirmation of
-   * what will happen, then a live timeline. Otherwise — and always as the
-   * alternative — the pinned upgrade command for those who may run it.
+   * upgrader job — or, self-hosted, a running update agent on the server —
+   * "Install update": a fresh Google sign-in, a confirmation of what will
+   * happen, then a live timeline. Otherwise — and always as the alternative —
+   * the pinned upgrade command for those who may run it.
    * See +page.server.ts, #lib/upgrade-path.ts and #lib/components/updates/.
    */
 
@@ -22,6 +23,7 @@
     CardHeader,
     CardTitle,
   } from "#lib/components/ui/card/index.js";
+  import AgentSetup from "#lib/components/updates/AgentSetup.svelte";
   import CloudShellUpgrade from "#lib/components/updates/CloudShellUpgrade.svelte";
   import StepUpSetup from "#lib/components/updates/StepUpSetup.svelte";
   import UpdateTimeline from "#lib/components/updates/UpdateTimeline.svelte";
@@ -33,7 +35,7 @@
     DialogHeader,
     DialogTitle,
   } from "#lib/components/ui/dialog/index.js";
-  import { isActive, STATUS_DISPLAY } from "#lib/updates-display.js";
+  import { isActive, statusDisplay } from "#lib/updates-display.js";
   import { releaseNotesExcerpt } from "#lib/upgrade-path.js";
 
   let { data, form } = $props();
@@ -173,7 +175,11 @@
           </Alert>
         {/if}
         {#key latestRequest.id}
-          <UpdateTimeline request={latestRequest} events={data.latest.events} />
+          <UpdateTimeline
+            request={latestRequest}
+            events={data.latest.events}
+            selfHosted={data.selfHosted}
+          />
         {/key}
         {#if latestRequest.status === "pending" && data.canInstall}
           <form method="post" action={data.stepUp?.fresh ? "?/cancel" : "?/stepUp"}>
@@ -187,6 +193,22 @@
         {/if}
       </CardContent>
     </Card>
+  {/if}
+
+  {#if latestRequest?.status === "needs_cloud_shell" && data.serverUpgrade}
+    <Alert data-testid="server-upgrade">
+      <AlertTitle>Install v{latestRequest.targetVersion} on the server once</AlertTitle>
+      <AlertDescription>
+        <p data-testid="server-upgrade-reason">{latestRequest.statusReason}</p>
+        <p class="mt-1">
+          Run the upgrade command on the server (below); afterwards updates install from here again.
+        </p>
+      </AlertDescription>
+    </Alert>
+    <!-- The same command further down (the newest release) is not repeated. -->
+    {#if data.upgrade?.kind !== "cli" || data.upgrade.command !== data.serverUpgrade.command}
+      {@render cliInstructions(data.serverUpgrade, latestRequest.targetVersion)}
+    {/if}
   {/if}
 
   {#if latestRequest?.status === "needs_cloud_shell" && data.cloudShell}
@@ -218,11 +240,12 @@
         csrfToken={data.csrfToken}
         redirectUri={data.redirectUri}
         credentialsUrl={data.credentialsUrl}
+        selfHosted={data.selfHosted}
       />
       {#if data.upgrade?.kind === "cli"}
         <details class="rounded-md border p-3 text-sm" data-testid="cli-alternative">
           <summary class="cursor-pointer font-medium">Install from a terminal instead</summary>
-          <div class="mt-3">{@render cliInstructions(data.upgrade)}</div>
+          <div class="mt-3">{@render cliInstructions(data.upgrade, status.latestVersion)}</div>
         </details>
       {/if}
     {:else if inProduct && data.stepUp}
@@ -230,9 +253,16 @@
         <CardHeader>
           <CardTitle class="text-base">Install v{status.latestVersion}</CardTitle>
           <CardDescription>
-            Caelo installs it from inside your Google Cloud project: it checks the release is
-            genuine, backs up your database, switches to the new version, tests it, and goes back
-            automatically if the test fails. You confirm with a fresh Google sign-in.
+            {#if data.selfHosted}
+              The update agent on your server{data.agent?.status ? ` (${data.agent.status.host})` : ""}
+              installs it: it checks the release is genuine, backs up your database, switches to the
+              new version, tests it, and goes back automatically if the test fails. You confirm with a
+              fresh Google sign-in.
+            {:else}
+              Caelo installs it from inside your Google Cloud project: it checks the release is
+              genuine, backs up your database, switches to the new version, tests it, and goes back
+              automatically if the test fails. You confirm with a fresh Google sign-in.
+            {/if}
           </CardDescription>
         </CardHeader>
         <CardContent class="space-y-3 text-sm">
@@ -266,7 +296,7 @@
       {#if data.upgrade?.kind === "cli"}
         <details class="rounded-md border p-3 text-sm" data-testid="cli-alternative">
           <summary class="cursor-pointer font-medium">Install from a terminal instead</summary>
-          <div class="mt-3">{@render cliInstructions(data.upgrade)}</div>
+          <div class="mt-3">{@render cliInstructions(data.upgrade, status.latestVersion)}</div>
         </details>
       {/if}
     {:else if data.upgrade?.kind === "cli"}
@@ -276,7 +306,14 @@
           <AlertDescription>{data.upgrader.problem}</AlertDescription>
         </Alert>
       {/if}
-      {@render cliInstructions(data.upgrade)}
+      {#if data.agent && !data.upgrader.available && !busy}
+        <AgentSetup
+          agent={data.agent.status}
+          problem={data.agent.problem}
+          installCommand={data.agent.installCommand}
+        />
+      {/if}
+      {@render cliInstructions(data.upgrade, status.latestVersion)}
     {:else if data.upgrade?.kind === "unsupported"}
       <Alert data-testid="upgrade-unsupported">
         <AlertTitle>No upgrade command for {data.upgrade.providerLabel} installs yet</AlertTitle>
@@ -310,7 +347,9 @@
             <li class="flex flex-wrap items-center gap-2 py-2">
               <span class="font-mono text-xs text-muted-foreground">{day(r.requestedAt)}</span>
               <span>v{r.fromVersion} → v{r.targetVersion}</span>
-              <Badge variant={STATUS_DISPLAY[r.status].tone}>{STATUS_DISPLAY[r.status].label}</Badge>
+              <Badge variant={statusDisplay(r.status, data.selfHosted).tone}>
+                {statusDisplay(r.status, data.selfHosted).label}
+              </Badge>
               <span class="text-xs text-muted-foreground">
                 {r.trigger === "auto" ? "automatic" : (r.requestedBy ?? "")}
               </span>
@@ -337,10 +376,16 @@
         <li>If a test fails, both go back to v{status.installedVersion} automatically.</li>
       </ol>
       <p class="text-sm text-muted-foreground">
-        Takes about 5 to 15 minutes. Your public site stays online. The admin restarts once and may be
-        unreachable for about a minute; unsaved typing elsewhere in the admin can be lost. If this
-        release needs a change to your cloud setup, nothing is installed and this page explains the
-        Cloud Shell step instead.
+        {#if data.selfHosted}
+          The update agent picks it up within a minute; the update takes about 5 to 15 minutes. Your
+          public site stays online. The admin restarts once and may be unreachable for about a
+          minute; unsaved typing elsewhere in the admin can be lost.
+        {:else}
+          Takes about 5 to 15 minutes. Your public site stays online. The admin restarts once and may be
+          unreachable for about a minute; unsaved typing elsewhere in the admin can be lost. If this
+          release needs a change to your cloud setup, nothing is installed and this page explains the
+          Cloud Shell step instead.
+        {/if}
       </p>
       <form method="post" action="?/install">
         <input type="hidden" name="_csrf" value={data.csrfToken} />
@@ -356,13 +401,21 @@
   </Dialog>
 {/if}
 
-{#snippet cliInstructions(upgrade: { command: string; install: string; docsUrl: string })}
+{#snippet cliInstructions(
+  upgrade: { provider: string; command: string; install: string; docsUrl: string },
+  version: string | null,
+)}
     <Card data-testid="upgrade-instructions">
       <CardHeader>
-        <CardTitle class="text-base">Install v{status.latestVersion}</CardTitle>
+        <CardTitle class="text-base">Install v{version}</CardTitle>
         <CardDescription>
-          Run this command in a terminal on the computer you installed Caelo from. It is made for
-          this site ({upgrade.install}) and this release.
+          {#if upgrade.provider === "self-hosted"}
+            Run this command on the server that runs this site, in the folder that holds
+            <code>.caelo/</code>. It is made for this release.
+          {:else}
+            Run this command in a terminal on the computer you installed Caelo from. It is made for
+            this site ({upgrade.install}) and this release.
+          {/if}
         </CardDescription>
       </CardHeader>
       <CardContent class="space-y-4 text-sm">
@@ -382,6 +435,38 @@
           </Button>
         </div>
 
+        {#if upgrade.provider === "self-hosted"}
+          <div class="space-y-1">
+            <p class="font-medium">Before you run it</p>
+            <ul class="list-disc space-y-1 pl-5 text-muted-foreground">
+              <li>Run it as the user that runs your Caelo install (a member of the docker group).</li>
+              <li>
+                Have <a
+                  href="https://docs.sigstore.dev/cosign/system_config/installation/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="underline underline-offset-4">cosign</a
+                > installed on the server — the command uses it to check the release is genuine.
+              </li>
+            </ul>
+          </div>
+          <div class="space-y-1">
+            <p class="font-medium">What it does</p>
+            <ol class="list-decimal space-y-1 pl-5 text-muted-foreground">
+              <li>Checks that the new release was signed by Caelo's release process. It stops if not.</li>
+              <li>
+                Backs up both databases into <code>.caelo/backups/</code>. If the backup fails, it
+                stops before anything has changed.
+              </li>
+              <li>Updates your database to the new release's structure.</li>
+              <li>
+                Switches the admin and the public form service to the new release and checks that
+                both work. If either check fails, both go back to the version you have now.
+              </li>
+              <li>Sets up (or updates) the update agent, so the next update installs from here.</li>
+            </ol>
+          </div>
+        {:else}
         <div class="space-y-1">
           <p class="font-medium">Before you run it</p>
           <ul class="list-disc space-y-1 pl-5 text-muted-foreground">
@@ -433,6 +518,7 @@
             works with them; restoring overwrites everything written since the backup.
           </p>
         </div>
+        {/if}
 
         <p class="text-muted-foreground">
           It usually takes 5 to 15 minutes. Your public site stays online the whole time; the admin

@@ -5,6 +5,7 @@ import {
   autoInstallRefusal,
   inMaintenanceWindow,
   isFinishedUpdateStatus,
+  PLATFORM_UPDATE_STALE_REASON,
   type StoredUpdatePolicy,
   updateKind,
   updatePolicySchema,
@@ -144,4 +145,11 @@ it("isFinishedUpdateStatus", () => {
   expect(isFinishedUpdateStatus("pending")).toBe(false);
   expect(isFinishedUpdateStatus("running")).toBe(false);
   expect(isFinishedUpdateStatus("needs_cloud_shell")).toBe(true);
+});
+
+describe("PLATFORM_UPDATE_STALE_REASON (#721)", () => {
+  it("names no provider's tool: it ends dead Google Cloud and self-hosted runs alike", () => {
+    expect(PLATFORM_UPDATE_STALE_REASON).not.toContain("Cloud Shell");
+    expect(PLATFORM_UPDATE_STALE_REASON).toContain("Settings → Updates");
+  });
 });

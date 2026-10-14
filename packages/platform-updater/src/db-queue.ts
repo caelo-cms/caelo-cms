@@ -6,7 +6,7 @@
  * into a failed request (or, for the claim, a failed run) with the message.
  */
 
-import type { UpdateQueue } from "@caelo-cms/provisioning";
+import type { AgentQueue, UpdateQueue } from "@caelo-cms/provisioning";
 import {
   type DatabaseAdapter,
   execute,
@@ -14,7 +14,7 @@ import {
   SYSTEM_ACTOR_ID,
 } from "@caelo-cms/query-api";
 import type { ExecutionContext, StoredUpdatePolicy } from "@caelo-cms/shared";
-import { jobClaimOp, jobEventOp, jobFinishOp, jobRecordOp } from "./ops.js";
+import { agentHeartbeatOp, jobClaimOp, jobEventOp, jobFinishOp, jobRecordOp } from "./ops.js";
 
 /** A registry holding exactly the job's ops. */
 export function upgraderRegistry(): OperationRegistry {
@@ -23,6 +23,7 @@ export function upgraderRegistry(): OperationRegistry {
   registry.register(jobEventOp);
   registry.register(jobRecordOp);
   registry.register(jobFinishOp);
+  registry.register(agentHeartbeatOp);
   return registry;
 }
 
@@ -31,6 +32,18 @@ export function createDbUpdateQueue(
   adapter: DatabaseAdapter,
   registry: OperationRegistry = upgraderRegistry(),
 ): UpdateQueue {
+  return createDbAgentQueue(adapter, registry);
+}
+
+/**
+ * The self-hosted host agent's queue (#696 Phase 4c): the job's queue plus
+ * the heartbeat, over `adapter` connected as `caelo_agent` (a member of
+ * platform_updater).
+ */
+export function createDbAgentQueue(
+  adapter: DatabaseAdapter,
+  registry: OperationRegistry = upgraderRegistry(),
+): AgentQueue {
   let n = 0;
   const ctx = (): ExecutionContext => ({
     actorId: SYSTEM_ACTOR_ID,
@@ -61,12 +74,20 @@ export function createDbUpdateQueue(
       await call("platform_updates.job_record", { requestId, facts });
     },
     async finish(requestId, end) {
-      await call("platform_updates.job_finish", {
+      const r = await call<{ finished: boolean }>("platform_updates.job_finish", {
         requestId,
         status: end.status,
         reason: end.reason,
         codes: [...end.codes],
         pauseAutoUpdates: end.pauseAutoUpdates,
+      });
+      return r.finished;
+    },
+    async heartbeat(beat) {
+      await call("platform_updates.agent_heartbeat", {
+        agentVersion: beat.agentVersion,
+        host: beat.host,
+        problem: beat.problem,
       });
     },
   };
