@@ -79,6 +79,7 @@ describe("resolveThemeFonts (issue #150)", () => {
       tokens: tokensWith({ body: '"Poppins", sans-serif' }),
       cacheDir,
       publicBasePath: "/_assets/fonts",
+      preloadLanguage: null,
       fetcher: fakeFetcher(calls),
     });
     expect(res.unresolved).toEqual([]);
@@ -103,6 +104,7 @@ describe("resolveThemeFonts (issue #150)", () => {
       tokens: tokensWith({ body: "Poppins" }),
       cacheDir,
       publicBasePath: "/_caelo/fonts",
+      preloadLanguage: null,
       fetcher: fakeFetcher(calls),
     };
     await resolveThemeFonts(args);
@@ -120,6 +122,7 @@ describe("resolveThemeFonts (issue #150)", () => {
       tokens: tokensWith({ body: "Poppins", heading: "Playfair Display" }),
       cacheDir,
       publicBasePath: "/_assets/fonts",
+      preloadLanguage: null,
       fetcher: fakeFetcher([], ["Playfair Display"]),
     });
     expect(res.unresolved).toEqual(["Playfair Display"]);
@@ -142,6 +145,7 @@ describe("resolveThemeFonts (issue #150)", () => {
       tokens: tokensWith({ body: "Poppins" }),
       cacheDir,
       publicBasePath: "/_assets/fonts",
+      preloadLanguage: null,
       fetcher: evilFetcher,
     });
     expect(res.unresolved).toEqual(["Poppins"]);
@@ -154,6 +158,7 @@ describe("resolveThemeFonts (issue #150)", () => {
       tokens: tokensWith({ body: "system-ui, sans-serif", mono: "Menlo, monospace" }),
       cacheDir,
       publicBasePath: "/_assets/fonts",
+      preloadLanguage: null,
       fetcher: fakeFetcher(calls),
     });
     expect(res).toEqual({ css: "", preloads: [], files: [], unresolved: [] });

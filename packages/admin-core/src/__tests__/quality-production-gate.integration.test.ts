@@ -250,6 +250,13 @@ beforeAll(async () => {
       status: "draft",
     })
   ).pageId;
+  // Builds refuse published pages without a meta description.
+  await op(SYS, "pages_seo.autofill_many", {
+    items: [
+      { pageId: homeId, metaDescription: "Home of the production gate suite." },
+      { pageId: draftPageId, metaDescription: "A draft that goes live later." },
+    ],
+  });
 });
 
 afterAll(async () => {

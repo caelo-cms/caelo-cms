@@ -6,8 +6,9 @@
  * static generator copies the same cache files into `_assets/fonts/`
  * at deploy, so production HTML never hits this endpoint.
  *
- * Files are content-addressed (sha16 of the upstream URL) → immutable
- * cache-control is safe. Path traversal is excluded by the strict
+ * Files are content-addressed (sha16 of the upstream URL, or source
+ * sha256 + toolchain tag for registry faces) → immutable cache-control
+ * is safe. Path traversal is excluded by the strict
  * slug/file patterns, not by fs checks.
  *
  * Auth: any authenticated user — same stance as the media route.
@@ -22,6 +23,8 @@ import type { RequestHandler } from "./$types";
 
 const FAMILY_RE = /^[a-z0-9-]{1,80}$/;
 const FILE_RE = /^[a-f0-9]{16}\.woff2$/;
+/** Registry-derived slices: `<source sha256>.<slice>.<toolchain tag>.woff2`. */
+const PINNED_FILE_RE = /^[a-f0-9]{64}\.[a-z]+(-[a-z]+)?\.[a-f0-9]{12}\.woff2$/;
 
 export const GET: RequestHandler = async ({ params, locals, request }) => {
   // issue #412 — the server-side screenshot browser presents a signed
@@ -34,7 +37,7 @@ export const GET: RequestHandler = async ({ params, locals, request }) => {
     !family ||
     !file ||
     !FAMILY_RE.test(family) ||
-    !(family === "pinned" ? /^[a-f0-9]{64}\.(ttf|otf|woff|woff2)$/.test(file) : FILE_RE.test(file))
+    !(family === "pinned" ? PINNED_FILE_RE : FILE_RE).test(file)
   ) {
     throw error(404, "not found");
   }

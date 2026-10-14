@@ -40,6 +40,7 @@ const BULK_TOOL_PAIRS: readonly (readonly [string, string])[] = [
   ["create_content_instance", "create_content_instances"],
   ["delete_content_instance", "delete_content_instances"],
   ["set_page_seo", "set_page_seo_many"],
+  ["autofill_page_seo", "autofill_page_seo_many"],
   ["set_media_alt", "set_media_alt_many"],
   ["set_media_source", "set_media_source_many"],
   ["optimize_page_seo", "bulk_optimize_seo"],

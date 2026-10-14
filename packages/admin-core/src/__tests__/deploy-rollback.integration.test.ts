@@ -138,6 +138,14 @@ describe("deploy.rollback", () => {
       pageId: homePageId,
       status: "published",
     });
+    // Builds refuse published pages without a meta description.
+    const seo = await execute(registry, adapter, HUMAN, "pages_seo.autofill_many", {
+      items: [
+        { pageId, metaDescription: "The rollback page." },
+        { pageId: homePageId, metaDescription: "Home of the rollback suite." },
+      ],
+    });
+    if (!seo.ok) throw new Error("seo seed");
 
     // Build 1 — VERSION_ONE.
     await openQualityGate(adapter);

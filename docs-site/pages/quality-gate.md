@@ -32,6 +32,8 @@ A Stage that only changes texts and field values, moves existing modules, or edi
 
 Lighthouse covers the homepage plus the pages the Stage changed (up to five). Performance is the median of three runs; the other categories are measured once.
 
+Missing meta descriptions do not wait for this check: a Stage (and any production build) refuses published pages without one and names them, because the check only looks at a few pages. See [Live edit](/live-edit).
+
 ## What blocks Publish live
 
 Each page keeps a **baseline** per category, starting at 100. A Stage is blocked when:

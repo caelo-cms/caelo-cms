@@ -3,7 +3,7 @@
 import { activatePluginTool } from "./activate-plugin.js";
 import { addModuleTool } from "./add-module.js";
 import { addPluginToPageTool } from "./add-plugin-to-page.js";
-import { autofillPageSeoTool } from "./autofill-page-seo.js";
+import { autofillPageSeoManyTool, autofillPageSeoTool } from "./autofill-page-seo.js";
 import { bootstrapSiteScaffoldTool } from "./bootstrap-site-scaffold.js";
 import { bugReportTool } from "./bug-report.js";
 import { buildPageTool } from "./build-page.js";
@@ -432,6 +432,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // Bulk `_many` variant via the DRY makeBulkTool factory (CLAUDE.md §11).
   registry.register(setPageSeoManyTool);
   registry.register(autofillPageSeoTool);
+  registry.register(autofillPageSeoManyTool);
   registry.register(optimizePageSeoTool);
   // P8 AI-first review pass — bulk variants + redirect surface.
   registry.register(findRedirectsTool);

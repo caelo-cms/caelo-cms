@@ -288,6 +288,13 @@ beforeAll(async () => {
   for (const pageId of [homeId, aboutId, homeDeId, aboutDeId]) {
     await op(SYS, "pages.set_status", { pageId, status: "published" });
   }
+  // Builds refuse published pages without a meta description.
+  await op(SYS, "pages_seo.autofill_many", {
+    items: [homeId, aboutId, homeDeId, aboutDeId].map((pageId) => ({
+      pageId,
+      metaDescription: "A page of the plugin output suite.",
+    })),
+  });
   // consent-manager judges embeds at render time; its scan records them.
   await pluginOp("consent-manager", "scan_modules", {});
 

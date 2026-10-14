@@ -24,6 +24,7 @@
     "@caelo-cms/font-service": "workspace:*"
   },
   "devDependencies": {
-    "@caelo-cms/admin-core": "workspace:*"
+    "@caelo-cms/admin-core": "workspace:*",
+    "fontverter": "2.0.0"
   }
 }
