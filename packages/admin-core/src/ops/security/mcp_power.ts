@@ -7,8 +7,17 @@
  * executes one tool per `mcp.execute_tool` call with the same
  * ExecutionContext the chat-runner would use — so snapshots, audit,
  * branch scoping and chat-task grouping are byte-identical to a browser
- * chat. No Caelo-side provider call happens on this path; that is the
- * point (the reasoning cost moves to the caller's own agent).
+ * chat. The reasoning runs in the caller's own agent, on its own
+ * subscription — that is the point of this surface.
+ *
+ * Issue #741 — and the AI work of a tool call stays there too. Unless the
+ * token's Owner allowed it (`allow_caelo_ai`), a call is AI-delegated: the
+ * tool sees a provider that refuses to generate and plugins see
+ * `invocation.aiDelegated`, so nothing spends the install's AI. Tools whose
+ * AI part the agent can do (translation, moduleize, page extraction, …)
+ * hand back a work item or an actionable error instead; image generation
+ * points the agent at caelo_upload_images. With the opt-in on, the token's cost
+ * cap applies to every call.
  *
  * Invariants preserved (CLAUDE.md §11.A):
  * - Calls dispatch as an AI actor bound to the token's owner. An external
@@ -39,6 +48,7 @@ import { buildStatusLine } from "../../ai/chat-runner/context-blocks.js";
 import { loadMemory } from "../../ai/chat-runner/persistence.js";
 import { withTakeoverNotices } from "../../ai/chat-runner/tool-dispatch.js";
 import { isReadOrMetaTool } from "../../ai/chat-runner/write-tools.js";
+import { delegatedProvider } from "../../ai/delegated-provider.js";
 import { chatPluginInvocation } from "../../ai/plugin-invocation.js";
 import { queuePluginToolApproval } from "../../ai/queued-tool-approval.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
@@ -77,23 +87,6 @@ export const POWER_MCP_EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
   ["submit_result", "subagent-only structured result channel"],
 ]);
 
-/**
- * Tools whose handlers make their OWN provider calls (image endpoints,
- * small-model extraction, translation). The per-token cost cap is
- * enforced before dispatching these — the chat-runner's streaming cap
- * does not run on this path.
- */
-const AI_SPENDING_TOOLS: ReadonlySet<string> = new Set([
-  "generate_image",
-  "edit_image",
-  "query_page_html",
-  "translate_page",
-  "start_translation_job",
-  // Plugin tools whose operation calls ctx.ai (forms / newsletter writers).
-  "summarize_form_submissions",
-  "draft_newsletter_campaign",
-]);
-
 const toolCatalogueEntry = z.object({
   name: z.string(),
   description: z.string(),
@@ -115,13 +108,25 @@ const toolCatalogueEntry = z.object({
  * in-app copies must stay untouched. Annotating here keeps every current
  * AND future description honest on this surface with one transform.
  */
-export function powerToolCatalogue(tools: ToolRegistry): z.infer<typeof toolCatalogueEntry>[] {
+export function powerToolCatalogue(
+  tools: ToolRegistry,
+  opts: { readonly aiDelegated?: boolean } = {},
+): z.infer<typeof toolCatalogueEntry>[] {
+  // #741 — on a token whose AI work stays with the agent, every tool that
+  // would spend the install's AI says what it does here instead.
+  const withAiNote = (name: string, description: string) =>
+    opts.aiDelegated && toolUsesInstallAi(tools, name)
+      ? `${description}${MCP_DELEGATED_AI_NOTE}`
+      : description;
   const core = tools
     .catalogue()
     .filter((t) => !POWER_MCP_EXCLUDED_TOOLS.has(t.name))
     .map((t) => {
       const conditional = !t.gated && tools.get(t.name)?.needsApproval !== undefined;
-      const description = annotateExcludedToolMentions(t.description, POWER_MCP_EXCLUDED_TOOLS);
+      const description = withAiNote(
+        t.name,
+        annotateExcludedToolMentions(t.description, POWER_MCP_EXCLUDED_TOOLS),
+      );
       return {
         name: t.name,
         description: t.gated
@@ -141,9 +146,9 @@ export function powerToolCatalogue(tools: ToolRegistry): z.infer<typeof toolCata
     .list()
     .filter((p) => !POWER_MCP_EXCLUDED_TOOLS.has(p.spec.name))
     .map((p) => {
-      const description = annotateExcludedToolMentions(
-        p.spec.description,
-        POWER_MCP_EXCLUDED_TOOLS,
+      const description = withAiNote(
+        p.spec.name,
+        annotateExcludedToolMentions(p.spec.description, POWER_MCP_EXCLUDED_TOOLS),
       );
       return {
         name: p.spec.name,
@@ -154,6 +159,22 @@ export function powerToolCatalogue(tools: ToolRegistry): z.infer<typeof toolCata
     });
   return [...core, ...plugin];
 }
+
+/**
+ * #741 — whether `toolName` (core or plugin) declares that it can spend
+ * the install's AI. Exported for the unit test.
+ */
+export function toolUsesInstallAi(tools: ToolRegistry, toolName: string): boolean {
+  return (
+    tools.get(toolName)?.usesInstallAi === true ||
+    pluginToolsRegistry.resolve(toolName)?.spec.usesInstallAi === true
+  );
+}
+
+/** #741 — appended to tools that would spend the install's AI, on a token where they cannot. */
+const MCP_DELEGATED_AI_NOTE =
+  "\n\nOver this connection the install's AI is not used: the AI part comes back to you — a work item to answer with your own model " +
+  "and send back through the tool it names, or an `AiDelegated:` answer that says what to do instead (see caelo_get_context).";
 
 /**
  * #687 — what an approval-gated tool means on THIS surface. Tool
@@ -190,6 +211,7 @@ async function resolveAdminScopedToken(
       displayName: string;
       scope: McpTokenScope;
       aiCostCapMicrocents: number | null;
+      allowCaeloAi: boolean;
     }
   | { ok: false; message: string }
 > {
@@ -212,6 +234,7 @@ async function resolveAdminScopedToken(
     displayName: resolved.value.displayName,
     scope: resolved.value.scope,
     aiCostCapMicrocents: resolved.value.aiCostCapMicrocents,
+    allowCaeloAi: resolved.value.allowCaeloAi,
   };
 }
 
@@ -252,7 +275,9 @@ export const mcpListToolsOp = defineOperation({
     if (!auth.ok) {
       return err({ kind: "HandlerError", operation: "mcp.list_tools", message: auth.message });
     }
-    return ok({ tools: powerToolCatalogue(createDefaultToolRegistry()) });
+    return ok({
+      tools: powerToolCatalogue(createDefaultToolRegistry(), { aiDelegated: !auth.allowCaeloAi }),
+    });
   },
 });
 
@@ -511,11 +536,23 @@ export const mcpExecuteToolOp = defineOperation({
       }
     }
 
+    // #741 — without the Owner's opt-in the call is AI-delegated and cannot
+    // spend the install's AI at all, so there is nothing to cap.
+    const aiDelegated = !auth.allowCaeloAi;
+
     // Per-token cost cap, enforced at this boundary because the
     // chat-runner's streaming cap does not run on the Power-MCP path.
-    // Scope: the work session's accumulated ai_calls spend — the closest
-    // analogue to the chat-runner's per-turn accumulation.
-    if (auth.aiCostCapMicrocents !== null && AI_SPENDING_TOOLS.has(input.toolName)) {
+    // Scope: the work session's accumulated ai_calls spend (core tools,
+    // plugin ctx.ai calls and image generation all record against it) —
+    // the closest analogue to the chat-runner's per-turn accumulation.
+    // Which tools it gates comes from each tool's own `usesInstallAi`
+    // declaration, not a list of names kept here: that list went stale
+    // (#741) and let translation spend uncapped.
+    if (
+      !aiDelegated &&
+      auth.aiCostCapMicrocents !== null &&
+      toolUsesInstallAi(createDefaultToolRegistry(), input.toolName)
+    ) {
       const spendRows = (await tx.execute(sql`
         SELECT COALESCE(SUM(cost_estimate_microcents), 0)::bigint AS spent
         FROM ai_calls
@@ -531,9 +568,9 @@ export const mcpExecuteToolOp = defineOperation({
           kind: "HandlerError",
           operation: "mcp.execute_tool",
           message:
-            `cost cap reached: spent ~${spent} µ¢ / cap ${auth.aiCostCapMicrocents} µ¢ on this session — ` +
-            `'${input.toolName}' makes its own AI provider calls and is blocked. Non-AI tools still work; ` +
-            `the Owner can mint a higher-cap token at /settings/mcp.`,
+            `cost cap reached: spent ~${spent} µ¢ / cap ${auth.aiCostCapMicrocents} µ¢ of the install's AI on this session — ` +
+            `'${input.toolName}' uses the install's AI and was not run. Tools without AI work still run. Ask the Owner for a higher-cap token at /settings/mcp, ` +
+            `or for a token without "may use Caelo's AI", which hands the AI work back to you instead of spending the install's AI.`,
         });
       }
     }
@@ -615,7 +652,9 @@ export const mcpExecuteToolOp = defineOperation({
       }
     }
     const dispatchAndRecord = async () => {
-      const provider = await resolveProvider();
+      const resolvedProvider = await resolveProvider();
+      const provider =
+        resolvedProvider && aiDelegated ? delegatedProvider(resolvedProvider) : resolvedProvider;
       const tools = createDefaultToolRegistry();
 
       // Tier-1 plugin tools route through the plugin host, exactly like the
@@ -637,13 +676,14 @@ export const mcpExecuteToolOp = defineOperation({
             chatSessionId: input.chatSessionId,
             pluginTool,
             args: input.args ?? {},
+            aiDelegated,
           })
         : pluginTool
           ? await runPluginOperation({
               pluginSlug: pluginTool.pluginSlug,
               operationName: pluginTool.spec.operationName,
               args: input.args ?? {},
-              invocation: chatPluginInvocation(aiCtx, auth.actorId),
+              invocation: chatPluginInvocation(aiCtx, auth.actorId, { aiDelegated }),
             }).then(
               (r): ToolResult =>
                 r.ok
@@ -659,6 +699,7 @@ export const mcpExecuteToolOp = defineOperation({
               tools,
               humanCtx: humanCtxWithBranch,
               ...(provider ? { provider } : {}),
+              ...(aiDelegated ? { aiDelegated: true } : {}),
               // No spawnChildChatTurn / requestScreenshot / pushClientEvent:
               // the tools that need them are in POWER_MCP_EXCLUDED_TOOLS.
               // screenshot_page works WITHOUT them since issue #412 — with no
@@ -900,6 +941,34 @@ export const mcpGetApprovalOutcomeOp = defineOperation({
 
 // ─── mcp.get_context ─────────────────────────────────────────────────
 
+/**
+ * #741 — how AI work is split on this connection, told to the agent once in
+ * its context so a work item or an `AiDelegated:` answer is expected, not a
+ * surprise. Depends on the token, so it is appended here rather than baked
+ * into the static "power-mcp" prompt variant.
+ */
+export function aiWorkContract(allowCaeloAi: boolean): string {
+  const workItems =
+    "Some tools return a work item instead of doing AI work themselves: " +
+    '`{ "workItem": { "kind": "ai_work_item", "task", "instructions": { "system", "user" }, "responseFormat", "apply": { "tool", "args", "resultArg" } } }` ' +
+    "(or a list of them, e.g. translate_all_stale). Answer `instructions` with your own model exactly as asked (bare JSON when responseFormat is json), " +
+    "then call `apply.tool` with `apply.args` plus your answer at `apply.resultArg` — a top-level argument name, or a path into apply.args such as `items[0].result`. " +
+    "Batch work items of the same bulk tool into one call by concatenating their `items` arrays (apply_translations takes up to 100). " +
+    "A work item without `apply` (a summary) is for you and your operator only.";
+  return allowCaeloAi
+    ? "## AI work on this connection\n\n" +
+        "You do the reasoning; this token additionally lets you run AI work on the install's own AI (image generation, translation runs), " +
+        "billed to the install and limited by the token's cost cap. Prefer doing text work yourself when you can — it costs the install nothing.\n\n" +
+        workItems
+    : "## AI work on this connection\n\n" +
+        "All AI work happens in YOUR model, on your subscription — the install's AI is not available to this token. " +
+        "Tools whose AI part you can do hand it back to you: translations (translate_variant / translate_all_stale / translate_chrome → apply_translations), " +
+        "comment moderation, form summaries, newsletter drafts. add_module needs your parametrised HTML plus explicit `fields[]` (no server-side moduleize). " +
+        "query_page_html in describe mode returns the HTML for you to extract from. generate_image / edit_image are unavailable: " +
+        "create images yourself and upload them with caelo_upload_images. A tool answering `AiDelegated: …` names what to do instead.\n\n" +
+        workItems;
+}
+
 const contextSkillRow = z.object({
   slug: z.string(),
   displayName: z.string(),
@@ -963,7 +1032,7 @@ export const mcpGetContextOp = defineOperation({
       "power-mcp",
     );
     const systemContext = annotateExcludedToolMentions(
-      chunks.map((c) => c.body).join("\n\n"),
+      [...chunks.map((c) => c.body), aiWorkContract(auth.allowCaeloAi)].join("\n\n"),
       POWER_MCP_EXCLUDED_TOOLS,
     );
 

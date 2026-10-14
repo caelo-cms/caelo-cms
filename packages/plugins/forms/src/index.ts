@@ -40,7 +40,14 @@ import {
   postPluginJson,
   setStatus,
 } from "@caelo-cms/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1, z } from "@caelo-cms/plugin-sdk";
+import {
+  type AiWorkItem,
+  defineComponent,
+  definePlugin,
+  isAiDelegated,
+  type PluginContextTier1,
+  z,
+} from "@caelo-cms/plugin-sdk";
 
 const SLUG = "forms";
 
@@ -68,6 +75,9 @@ const setSubmissionStatusArgs = z
     status: submissionStatus,
   })
   .strict();
+
+const SUMMARY_SYSTEM_PROMPT =
+  "You summarise visitor form submissions for a CMS Owner. Be terse: count, the 3-5 most common themes, and any ALL-CAPS or angry-sounding ones flagged separately. Plain text only.";
 
 interface SubmissionRow {
   id: string;
@@ -221,10 +231,14 @@ export default definePlugin<PluginContextTier1>({
      * `summarize` — uses ctx.ai.complete on the latest 50 submissions to
      * produce a short Owner brief ("23 submissions; 6 mention pricing").
      * Returns "no submissions" if empty so the AI tool gives a clean answer.
+     *
+     * Issue #741 — on a delegated (Power-MCP) call the summary is the
+     * calling agent's AI work: it gets the exact prompt back as a work
+     * item WITHOUT `apply`, because the summary is for its operator and
+     * nothing in Caelo changes.
      */
     summarize: async (ctx, args) => {
       const input = (args ?? {}) as { formSlug?: string; since?: string };
-      if (!ctx.ai) throw new Error("summarize: ai_provider capability not granted");
       const filter: Record<string, unknown> = {
         limit: 50,
         orderBy: "submitted_at",
@@ -243,15 +257,22 @@ export default definePlugin<PluginContextTier1>({
         .slice(0, 20)
         .map((r) => `- [${r.status}] ${JSON.stringify(r.data).slice(0, 200)}`)
         .join("\n");
+      const userPrompt = `Summarise these ${rows.length} submissions:\n${sample}`;
+      if (isAiDelegated(ctx)) {
+        const workItem: AiWorkItem = {
+          kind: "ai_work_item",
+          task: `Summarise ${rows.length} recent form submissions${input.formSlug ? ` of form "${input.formSlug}"` : ""}`,
+          instructions: { system: SUMMARY_SYSTEM_PROMPT, user: userPrompt },
+          responseFormat: "text",
+        };
+        return { workItem, totalConsidered: rows.length };
+      }
+      // Only reached on the install-side path: a delegated call never
+      // touches ctx.ai, so it must not need the handle either.
+      if (!ctx.ai) throw new Error("summarize: ai_provider capability not granted");
       const completion = await ctx.ai.complete({
-        system:
-          "You summarise visitor form submissions for a CMS Owner. Be terse: count, the 3-5 most common themes, and any ALL-CAPS or angry-sounding ones flagged separately. Plain text only.",
-        messages: [
-          {
-            role: "user",
-            content: `Summarise these ${rows.length} submissions:\n${sample}`,
-          },
-        ],
+        system: SUMMARY_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: userPrompt }],
         maxTokens: 400,
       });
       return { summary: completion.text, totalConsidered: rows.length };
@@ -300,8 +321,11 @@ export default definePlugin<PluginContextTier1>({
     {
       name: "summarize_form_submissions",
       description:
-        "Produce a short summary of recent form submissions (count + common themes + flagged ones). Pass `formSlug` to scope to one form, or `since` (ISO timestamp) to scope to a time window.",
+        "Produce a short summary of recent form submissions (count + common themes + flagged ones). Pass `formSlug` to scope to one form, or `since` (ISO timestamp) to scope to a time window. " +
+        "Over the Power-MCP it returns the submissions as a `workItem` (the summary prompt) instead — summarise them yourself for your operator; nothing needs to be sent back.",
       operationName: "summarize",
+      // Spends the install's AI unless answered or delegated (#741).
+      usesInstallAi: true,
       // Reads the same visitor submissions as list_submissions.
       requiredPermission: "settings.write",
       inputJsonSchema: {

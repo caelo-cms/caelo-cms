@@ -35,6 +35,8 @@ const proposeCreateInput = z
     /** Issue #376 — 'admin' unlocks the Power-MCP surface. Default 'chat'. */
     scope: z.enum(["chat", "admin"]).optional(),
     aiCostCapMicrocents: z.number().int().nonnegative().nullable().optional(),
+    /** #741 — admin tokens only: the agent may spend the install's own AI. Default off. */
+    allowCaeloAi: z.boolean().optional(),
   })
   .strict();
 
@@ -53,6 +55,7 @@ export const proposeMcpTokenCreateOp = defineOperation({
       displayName: input.displayName,
       scope: input.scope ?? "chat",
       aiCostCapMicrocents: input.aiCostCapMicrocents ?? null,
+      allowCaeloAi: input.allowCaeloAi === true,
       // Always-true reminder for the Owner UI banner.
       tokenPolicy: "server-generated-on-approve",
     };

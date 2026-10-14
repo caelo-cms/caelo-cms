@@ -22,9 +22,53 @@ import {
   readBakeTimestamp,
   setStatus,
 } from "@caelo-cms/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import {
+  type AiWorkItem,
+  defineComponent,
+  definePlugin,
+  isAiDelegated,
+  type PluginContextTier1,
+  z,
+} from "@caelo-cms/plugin-sdk";
 
 const MAX_THREAD_DEPTH = 3;
+
+type ModerationDecision = "approved" | "rejected" | "spam";
+
+/**
+ * `ai_moderate` boundary. `verdict` is the classification a Power-MCP
+ * agent produced itself (issue #741) after answering the work item this
+ * operation handed back; absent on the install-side path.
+ */
+const aiModerateArgs = z
+  .object({
+    commentId: z.string().uuid(),
+    verdict: z.string().trim().min(1).max(200).optional(),
+  })
+  .strict();
+
+const MODERATION_SYSTEM_PROMPT =
+  "You moderate visitor comments. Reply with EXACTLY one of: APPROVE, REJECT, SPAM. Approve everything that's a real opinion or question. Reject toxic/abusive but non-spam content. SPAM only for obvious bot/promotional spam.";
+
+/** The user turn of the moderation prompt — one source for the install's
+ *  AI call and the work item handed to a Power-MCP agent, so both answer
+ *  the same question. */
+function moderationUserPrompt(target: { author_name: string; content: string }): string {
+  return `${target.author_name} wrote:\n${target.content}`;
+}
+
+/**
+ * Map a model reply onto a decision: trimmed, uppercased, prefix-matched
+ * so "SPAM." or "Reject - abusive" still count. `null` when the reply
+ * names none of the three verdicts.
+ */
+function parseVerdict(raw: string): { verdict: string; decision: ModerationDecision | null } {
+  const verdict = raw.trim().toUpperCase();
+  if (verdict.startsWith("SPAM")) return { verdict, decision: "spam" };
+  if (verdict.startsWith("REJECT")) return { verdict, decision: "rejected" };
+  if (verdict.startsWith("APPROVE")) return { verdict, decision: "approved" };
+  return { verdict, decision: null };
+}
 
 interface SubmitInput {
   pageId: string;
@@ -252,31 +296,66 @@ export default definePlugin<PluginContextTier1>({
 
     /**
      * AI moderation. Classifies a single pending comment as approved /
-     * rejected / spam via ctx.ai.complete; flips status on the basis
-     * of a confident "spam" or "rejected"; otherwise leaves pending
-     * for human review (intentionally cautious by default).
+     * rejected / spam and writes the status.
+     *
+     * Three paths (issue #741):
+     *   - `verdict` given: a Power-MCP agent classified the comment with
+     *     its own model; apply that, no `ctx.ai` call.
+     *   - delegated call without `verdict`: the AI work belongs to the
+     *     calling agent, so hand back the exact prompt as a work item
+     *     whose `apply` re-calls this tool with the answer. Nothing written.
+     *   - otherwise: the install's AI classifies. A reply naming none of
+     *     the three verdicts counts as approve (the long-standing default).
      */
     ai_moderate: async (ctx, args) => {
-      const input = args as { commentId: string };
-      if (!ctx.ai) throw new Error("ai_moderate: ai_provider capability required");
+      const input = aiModerateArgs.parse(args);
       const matches = await ctx.query.list<"comments", { content: string; author_name: string }>(
         "comments",
         { id: input.commentId, limit: 1 },
       );
       const target = matches[0];
       if (!target) throw new Error("ai_moderate: comment not found");
+
+      if (input.verdict !== undefined) {
+        const { verdict, decision } = parseVerdict(input.verdict);
+        if (!decision) {
+          // An explicit answer that names no verdict is a malformed call,
+          // not a cautious model reply — refuse rather than approve it.
+          throw new Error(
+            `ai_moderate: verdict "${input.verdict}" is not one of APPROVE, REJECT, SPAM — call ai_moderate_comment again with exactly one of them`,
+          );
+        }
+        await ctx.query.update("comments", input.commentId, { status: decision });
+        return { commentId: input.commentId, status: decision, verdict };
+      }
+
+      if (isAiDelegated(ctx)) {
+        const workItem: AiWorkItem = {
+          kind: "ai_work_item",
+          task: `Classify visitor comment ${input.commentId} as APPROVE, REJECT or SPAM`,
+          instructions: { system: MODERATION_SYSTEM_PROMPT, user: moderationUserPrompt(target) },
+          responseFormat: "text",
+          apply: {
+            tool: "ai_moderate_comment",
+            args: { commentId: input.commentId },
+            resultArg: "verdict",
+          },
+        };
+        return { workItem };
+      }
+
+      // Only reached on the install-side path: an answered or delegated
+      // call never touches ctx.ai, so it must not need the handle either.
+      if (!ctx.ai) throw new Error("ai_moderate: ai_provider capability required");
       const completion = await ctx.ai.complete({
-        system:
-          "You moderate visitor comments. Reply with EXACTLY one of: APPROVE, REJECT, SPAM. Approve everything that's a real opinion or question. Reject toxic/abusive but non-spam content. SPAM only for obvious bot/promotional spam.",
-        messages: [{ role: "user", content: `${target.author_name} wrote:\n${target.content}` }],
+        system: MODERATION_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: moderationUserPrompt(target) }],
         maxTokens: 8,
       });
-      const verdict = completion.text.trim().toUpperCase();
-      let decision: "approved" | "rejected" | "spam" = "approved";
-      if (verdict.startsWith("SPAM")) decision = "spam";
-      else if (verdict.startsWith("REJECT")) decision = "rejected";
-      await ctx.query.update("comments", input.commentId, { status: decision });
-      return { commentId: input.commentId, status: decision, verdict };
+      const { verdict, decision } = parseVerdict(completion.text);
+      const status = decision ?? "approved";
+      await ctx.query.update("comments", input.commentId, { status });
+      return { commentId: input.commentId, status, verdict };
     },
   },
   tools: [
@@ -304,13 +383,27 @@ export default definePlugin<PluginContextTier1>({
     {
       name: "ai_moderate_comment",
       description:
-        "Use ctx.ai.complete to classify ONE comment. Returns the AI's verdict + the new status. Cautious by default — uncertain comments stay pending.",
+        "Classify ONE pending comment as approve / reject / spam and set its status. Returns the verdict + the new status. " +
+        "Without `verdict`, the site's AI classifies it. Over the Power-MCP you classify it yourself: the call returns a `workItem` " +
+        "(the moderation prompt) — answer it with APPROVE, REJECT or SPAM and call this tool again with the same commentId plus that answer as `verdict`. " +
+        "Pass `verdict` only when answering such a work item; use moderate_comment to set a status you decided without the moderation prompt.",
       operationName: "ai_moderate",
+      // Spends the install's AI unless answered or delegated (#741).
+      usesInstallAi: true,
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
         required: ["commentId"],
-        properties: { commentId: { type: "string" } },
+        properties: {
+          commentId: { type: "string", format: "uuid" },
+          verdict: {
+            type: "string",
+            minLength: 1,
+            maxLength: 200,
+            description:
+              "Your answer to this tool's work item: APPROVE, REJECT or SPAM. Omit to let the site's AI classify.",
+          },
+        },
       },
     },
   ],

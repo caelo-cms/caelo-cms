@@ -496,12 +496,15 @@ export const proposeMcpTokenCreateTool = makeProposeTool({
     "Propose minting a new MCP bearer token. Pass displayName + optional scope + optional aiCostCapMicrocents. " +
     "scope 'chat' (default) drives the caelo_chat surface; scope 'admin' additionally unlocks the Power-MCP " +
     "tool surface for external agents. " +
+    "allowCaeloAi (admin only, default false) lets that agent spend the install's own AI (image generation, Caelo-side translation runs); " +
+    "leave it off unless the operator asks — the agent then does the AI work on its own subscription. " +
     "Token plaintext is generated server-side at approve time and shown ONCE in the Owner UI banner.",
   schema: z
     .object({
       displayName: z.string().min(1).max(100),
       scope: z.enum(["chat", "admin"]).optional(),
       aiCostCapMicrocents: z.number().int().nonnegative().nullable().optional(),
+      allowCaeloAi: z.boolean().optional(),
     })
     .strict(),
   inputSchema: {
@@ -512,9 +515,11 @@ export const proposeMcpTokenCreateTool = makeProposeTool({
       displayName: { type: "string", minLength: 1, maxLength: 100 },
       scope: { type: "string", enum: ["chat", "admin"] },
       aiCostCapMicrocents: { type: "integer", minimum: 0, nullable: true },
+      allowCaeloAi: { type: "boolean" },
     },
   },
-  summarize: (input) => `mint MCP token "${input.displayName}" (scope: ${input.scope ?? "chat"})`,
+  summarize: (input) =>
+    `mint MCP token "${input.displayName}" (scope: ${input.scope ?? "chat"}${input.allowCaeloAi ? ", may use Caelo's AI" : ""})`,
 });
 
 export const proposeMcpTokenRevokeTool = makeProposeTool({

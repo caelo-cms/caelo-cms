@@ -12,7 +12,7 @@ seo:
 `@caelo-cms/mcp-server` connects your Caelo install to Claude Code (or any [Model Context Protocol](https://modelcontextprotocol.io)–aware client) — without opening the browser. It ships **two surfaces**, selected by the token's scope:
 
 - **`caelo_chat`** (token scope `chat`) — talks to Caelo's **own** AI agent. You describe an outcome; Caelo's chat-runner reasons and does the work. The simplest integration: anyone can wire it up and say "build me a pricing page".
-- **Power-MCP** (token scope `admin`, binary `caelo-admin-mcp`) — the **full chat-runner tool catalogue** exposed directly, so *your* agent (e.g. Claude Code) drives the tool loop itself. Caelo makes **no provider calls** on this path — the reasoning happens (and is billed) in your own agent. For tool-heavy work like site migrations this cuts the install's AI cost to near zero.
+- **Power-MCP** (token scope `admin`, binary `caelo-admin-mcp`) — the **full chat-runner tool catalogue** exposed directly, so *your* agent (e.g. Claude Code) drives the tool loop itself. The reasoning **and the AI work inside tools** happen (and are billed) in your own agent: by default Caelo makes **no provider calls** on this path — tools that would need AI hand the work back to your agent (see [AI work stays with your agent](#ai-work-stays-with-your-agent)). For tool-heavy work like site migrations or translating a whole site this keeps the install's AI cost at zero.
 
 Both surfaces share the same bearer-token model, the same audit trail, and the same security invariants.
 
@@ -97,6 +97,16 @@ Two meta-tools frame every Power-MCP session:
 
 Then work with the catalogue directly. Tool failures come back AI-actionable (naming valid choices and next steps), the same error surfaces Caelo's own agent self-corrects from.
 
+### AI work stays with your agent
+
+A few tools have an AI step of their own — translating a page, classifying a comment, turning raw HTML into a module. Over the Power-MCP that step runs in **your** model by default, so the install's AI budget is never touched:
+
+- **Work items.** `translate_variant`, `translate_all_stale` and `translate_chrome` return work items instead of translating: the exact instructions Caelo's translator would have used (source text, glossary, style guide, the JSON contract). Your agent translates and sends the results back with **`apply_translations`** — one call for many pages — which checks them exactly like a Caelo-side translation (module layout locked, SEO fill-once) and refuses an answer whose page changed in the meantime. `ai_moderate_comment` and `draft_newsletter_campaign` work the same way (your answer goes back into the same tool as `verdict` / `bodyHtml`); `summarize_form_submissions` returns the submissions for your agent to summarise.
+- **Modules.** `add_module` needs your parametrised HTML plus an explicit `fields[]`; Caelo does not moduleize raw HTML on this path. `query_page_html` in `describe` mode returns the page HTML for your agent to extract from.
+- **Images.** `generate_image` and `edit_image` are unavailable; create images with your own tools and upload them with `caelo_upload_images`.
+
+`caelo_get_context` spells this out for your agent. If you want the agent to be able to use the install's AI as well (image generation, Caelo-side translation runs), tick **Agent may use Caelo's AI** when minting the admin token at `/settings/mcp`; that spend is billed to the install and bounded by the token's cost cap.
+
 ### Approvals come back to your agent
 
 When your agent calls an approval-gated tool, the proposal appears in the operator's open chat for that session, usually the Live Edit chat, because `caelo_open_session` resumes it. The card is labelled **Requested by the external agent (MCP)**. It also appears in the per-domain queue and at `/settings/pending`.
@@ -155,8 +165,8 @@ Who may sign it follows the user list: when the Owner adds a user (in `/settings
 
 ## Token scopes, caps, rotation
 
-- **Scopes.** `chat` drives `caelo_chat` and image uploads. `admin` additionally unlocks the Power-MCP endpoints. Existing tokens stay `chat`; using one against the Power-MCP returns a 401 naming the fix.
-- **Cost cap.** `ai_cost_cap_microcents` (set at mint time) bounds a leaked token's wallet impact. On the chat surface the runner checks it during the turn (`cost cap reached: spent ~N µ¢ / cap M µ¢`); on the Power-MCP it gates the tools that make their own provider calls (`generate_image`, `query_page_html`) against the session's accumulated spend. To change a cap, mint a replacement token and revoke the old one.
+- **Scopes.** `chat` drives `caelo_chat` and image uploads. `admin` additionally unlocks the Power-MCP endpoints; an admin token can additionally be allowed to use the install's own AI (**Agent may use Caelo's AI**, off by default). Existing tokens stay `chat`; using one against the Power-MCP returns a 401 naming the fix.
+- **Cost cap.** `ai_cost_cap_microcents` (set at mint time) bounds a leaked token's wallet impact. On the chat surface the runner checks it during the turn (`cost cap reached: spent ~N µ¢ / cap M µ¢`); on the Power-MCP, for a token that may use Caelo's AI, every call is checked against the session's accumulated spend (core tools, plugin AI calls and image generation all count). A token without that permission cannot spend the install's AI at all. To change a cap, mint a replacement token and revoke the old one.
 - **Rotation.** Tokens TTL out at **90 days** by default. Mint a new one, paste the new snippet, revoke the old at `/settings/mcp`. The next call with a revoked bearer returns `auth_error: token revoked`.
 
 ## What's NOT exposed

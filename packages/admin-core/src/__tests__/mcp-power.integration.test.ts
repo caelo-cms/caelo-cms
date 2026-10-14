@@ -16,6 +16,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import type { Screenshot, Screenshotter } from "@caelo-cms/site-importer";
 import { SQL } from "bun";
+import { sql } from "drizzle-orm";
 import {
   PREVIEW_SCREENSHOT_TOKEN_HEADER,
   verifyPreviewScreenshotToken,
@@ -83,11 +84,16 @@ async function wipeOurRows(): Promise<void> {
   }
 }
 
-async function mintToken(scope: "chat" | "admin", cap?: number): Promise<string> {
+async function mintToken(
+  scope: "chat" | "admin",
+  cap?: number,
+  allowCaeloAi?: boolean,
+): Promise<string> {
   const r = await execute(registry, adapter, ownerCtx, "mcp_tokens.create", {
-    displayName: `power-test-${scope}${cap !== undefined ? "-capped" : ""}`,
+    displayName: `power-test-${scope}${cap !== undefined ? "-capped" : ""}${allowCaeloAi ? "-caelo-ai" : ""}`,
     scope,
     ...(cap !== undefined ? { aiCostCapMicrocents: cap } : {}),
+    ...(allowCaeloAi !== undefined ? { allowCaeloAi } : {}),
   });
   if (!r.ok) throw new Error("token mint failed");
   return (r.value as { plaintextToken: string }).plaintextToken;
@@ -513,7 +519,8 @@ describe("Power-MCP surface (admin token)", () => {
   });
 
   it("enforces the per-token cost cap for AI-spending tools at the boundary", async () => {
-    const cappedToken = await mintToken("admin", 1_000);
+    // #741 — only a token allowed to use Caelo's AI can spend at all.
+    const cappedToken = await mintToken("admin", 1_000, true);
     const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
       plaintextToken: cappedToken,
       newSession: true,
@@ -551,6 +558,84 @@ describe("Power-MCP surface (admin token)", () => {
       args: {},
     });
     expect(stillWorks.ok).toBe(true);
+  });
+
+  it("hands AI work back on a token without Caelo's AI (#741): no spend, actionable answers", async () => {
+    const token = await mintToken("admin");
+    const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
+      plaintextToken: token,
+      newSession: true,
+      title: "mcp-power-test delegated session",
+    });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const sessionId = (opened.value as { chatSessionId: string }).chatSessionId;
+    const run = (toolName: string, args: Record<string, unknown>) =>
+      execute(registry, adapter, systemCtx, "mcp.execute_tool", {
+        plaintextToken: token,
+        chatSessionId: sessionId,
+        toolName,
+        args,
+      });
+
+    const image = await run("generate_image", { prompt: "a test image" });
+    expect(image.ok).toBe(true);
+    if (!image.ok) return;
+    const imageResult = image.value as { ok: boolean; content: string };
+    expect(imageResult.ok).toBe(false);
+    expect(imageResult.content).toContain("AiDelegated:");
+    expect(imageResult.content).toContain("caelo_upload_images");
+
+    const spend = await adapter.withAdminTransaction(systemCtx, async (tx) =>
+      tx.execute(
+        sql`SELECT count(*)::int AS n FROM ai_calls WHERE chat_session_id = ${sessionId}::uuid`,
+      ),
+    );
+    expect((spend as unknown as Array<{ n: number }>)[0]?.n).toBe(0);
+  });
+
+  it("tells a delegated token's agent about work items in its context and catalogue (#741)", async () => {
+    const token = await mintToken("admin");
+    const ctxR = await execute(registry, adapter, systemCtx, "mcp.get_context", {
+      plaintextToken: token,
+    });
+    expect(ctxR.ok).toBe(true);
+    if (!ctxR.ok) return;
+    const context = (ctxR.value as { systemContext: string }).systemContext;
+    expect(context).toContain("## AI work on this connection");
+    expect(context).toContain("not available to this token");
+
+    const listed = await execute(registry, adapter, systemCtx, "mcp.list_tools", {
+      plaintextToken: token,
+    });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const tools = (listed.value as { tools: Array<{ name: string; description: string }> }).tools;
+    expect(tools.find((t) => t.name === "generate_image")?.description).toContain(
+      "install's AI is not used",
+    );
+  });
+
+  it("refuses allowCaeloAi on a chat token and lists the setting (#741)", async () => {
+    const refused = await execute(registry, adapter, ownerCtx, "mcp_tokens.create", {
+      displayName: "power-test-chat-with-ai",
+      scope: "chat",
+      allowCaeloAi: true,
+    });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect("message" in refused.error ? refused.error.message : "").toContain("admin-scoped");
+
+    await mintToken("admin", undefined, true);
+    const list = await execute(registry, adapter, ownerCtx, "mcp_tokens.list", {});
+    expect(list.ok).toBe(true);
+    if (!list.ok) return;
+    const rows = (list.value as { tokens: Array<{ displayName: string; allowCaeloAi: boolean }> })
+      .tokens;
+    expect(rows.find((t) => t.displayName === "power-test-admin-caelo-ai")?.allowCaeloAi).toBe(
+      true,
+    );
+    expect(rows.find((t) => t.displayName === "power-test-admin")?.allowCaeloAi).toBe(false);
   });
 
   it("serves the composed context without the loop-specific blocks", async () => {

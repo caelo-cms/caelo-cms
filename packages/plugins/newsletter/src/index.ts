@@ -29,15 +29,36 @@ import {
   postPluginJson,
   setStatus,
 } from "@caelo-cms/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1, z } from "@caelo-cms/plugin-sdk";
+import {
+  type AiWorkItem,
+  defineComponent,
+  definePlugin,
+  isAiDelegated,
+  type PluginContextTier1,
+  z,
+} from "@caelo-cms/plugin-sdk";
+
+/**
+ * Longest campaign body an agent may hand in. `body_html` is an unbounded
+ * `text` column, so the cap is an email limit, not a storage one: Gmail
+ * clips a message body past ~102 KB, and every send appends the
+ * unsubscribe footer — 100 000 characters keeps the whole campaign visible.
+ */
+const MAX_BODY_HTML_LENGTH = 100_000;
 
 const draftCampaignArgs = z
   .object({
     slug: z.string().min(1).max(120),
     subject: z.string().min(1).max(300),
     brief: z.string().min(1).max(8000),
+    /** Issue #741 — the campaign HTML a Power-MCP agent wrote itself
+     *  from this tool's work item; absent on the install-side path. */
+    bodyHtml: z.string().trim().min(1).max(MAX_BODY_HTML_LENGTH).optional(),
   })
   .strict();
+
+const DRAFT_SYSTEM_PROMPT =
+  "Write a single newsletter campaign in clean HTML — header, 1-3 sections, CTA. Plain HTML only, no markdown, no extra commentary.";
 
 const sendCampaignArgs = z.object({ campaignId: z.string().uuid() }).strict();
 
@@ -186,12 +207,46 @@ export default definePlugin<PluginContextTier1>({
       };
     },
 
+    /**
+     * Save a campaign as `draft`. Three paths (issue #741):
+     *   - `bodyHtml` given: a Power-MCP agent wrote the HTML with its own
+     *     model; save it, no `ctx.ai` call. `costInputTokens` is 0 — the
+     *     install's AI spent nothing, and the field keeps one result shape.
+     *   - delegated call without `bodyHtml`: hand back the exact prompt as
+     *     a work item whose `apply` re-calls this tool with the answer.
+     *     Nothing written.
+     *   - otherwise: the install's AI writes the HTML.
+     */
     draft_campaign: async (ctx, args) => {
       const input = draftCampaignArgs.parse(args);
+      if (input.bodyHtml !== undefined) {
+        const r = await ctx.query.insert("campaigns", {
+          slug: input.slug,
+          subject: input.subject,
+          body_html: input.bodyHtml,
+          status: "draft",
+        });
+        return { id: r.id, costInputTokens: 0 };
+      }
+      if (isAiDelegated(ctx)) {
+        const workItem: AiWorkItem = {
+          kind: "ai_work_item",
+          task: `Write the HTML body of newsletter campaign "${input.subject}"`,
+          instructions: { system: DRAFT_SYSTEM_PROMPT, user: input.brief },
+          responseFormat: "text",
+          apply: {
+            tool: "draft_newsletter_campaign",
+            args: { slug: input.slug, subject: input.subject, brief: input.brief },
+            resultArg: "bodyHtml",
+          },
+        };
+        return { workItem };
+      }
+      // Only reached on the install-side path: an answered or delegated
+      // call never touches ctx.ai, so it must not need the handle either.
       if (!ctx.ai) throw new Error("draft_campaign: ai_provider capability required");
       const completion = await ctx.ai.complete({
-        system:
-          "Write a single newsletter campaign in clean HTML — header, 1-3 sections, CTA. Plain HTML only, no markdown, no extra commentary.",
+        system: DRAFT_SYSTEM_PROMPT,
         messages: [{ role: "user", content: input.brief }],
         maxTokens: 800,
       });
@@ -316,8 +371,12 @@ export default definePlugin<PluginContextTier1>({
       name: "draft_newsletter_campaign",
       description:
         "Draft a newsletter campaign from a brief: the newsletter's own writer produces the HTML and it is saved as a DRAFT — nothing is sent. " +
-        "Pass a unique slug, the subject line, and a brief with the content, tone and call to action. Send it later with send_newsletter_campaign.",
+        "Pass a unique slug, the subject line, and a brief with the content, tone and call to action. Send it later with send_newsletter_campaign. " +
+        "Over the Power-MCP you write the HTML yourself: the call returns a `workItem` (the writer's prompt) and saves nothing — answer it and call this tool again with the same slug, subject and brief plus your HTML as `bodyHtml`. " +
+        "Pass `bodyHtml` only when answering such a work item.",
       operationName: "draft_campaign",
+      // Spends the install's AI unless answered or delegated (#741).
+      usesInstallAi: true,
       requiredPermission: "settings.write",
       inputJsonSchema: {
         type: "object",
@@ -327,6 +386,13 @@ export default definePlugin<PluginContextTier1>({
           slug: { type: "string", minLength: 1, maxLength: 120 },
           subject: { type: "string", minLength: 1, maxLength: 300 },
           brief: { type: "string", minLength: 1, maxLength: 8000 },
+          bodyHtml: {
+            type: "string",
+            minLength: 1,
+            maxLength: MAX_BODY_HTML_LENGTH,
+            description:
+              "Your answer to this tool's work item: the campaign as plain HTML. Omit to let the site's writer produce it.",
+          },
         },
       },
     },

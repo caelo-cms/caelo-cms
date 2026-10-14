@@ -5,7 +5,10 @@
  * admin`). Where the chat server routes editing through a tool that talks to Caelo's own
  * AI, this server exposes the whole chat-runner tool catalogue so the
  * CALLING agent (Claude Code et al.) drives the tool loop itself — no
- * Caelo-side reasoning cost.
+ * Caelo-side reasoning cost. Issue #741: the AI work inside tools stays with
+ * the agent too unless the token's Owner allowed "may use Caelo's AI" —
+ * tools then hand back work items (translations, …) instead of calling the
+ * install's provider; `caelo_get_context` explains the contract.
  *
  * The catalogue is fetched live from `/api/mcp/tools` at startup (an
  * admin-scoped token is required; 'chat' tokens get a 401 with the fix).
