@@ -36,7 +36,7 @@ It ends by printing the Owner setup link (`https://admin.your-domain.example.com
 
 ### On Google Cloud, from the browser
 
-No Linux host at hand? [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.49&cloudshell_tutorial=gcp.md) installs Caelo into your own Google Cloud project from Cloud Shell, with a step-by-step tutorial — see [One-click install](/install-gcp#one-click-install-from-cloud-shell). The [Firebase Hosting variant](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.49&cloudshell_tutorial=gcp-firebase.md) has a lower fixed cost.
+No Linux host at hand? [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.50&cloudshell_tutorial=gcp.md) installs Caelo into your own Google Cloud project from Cloud Shell, with a step-by-step tutorial — see [One-click install](/install-gcp#one-click-install-from-cloud-shell). The [Firebase Hosting variant](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.50&cloudshell_tutorial=gcp-firebase.md) has a lower fixed cost.
 
 ## First thing to do
 

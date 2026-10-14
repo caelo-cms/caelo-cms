@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.50
+
+### Features
+- 88f75435 confirm update actions with the Caelo password, not a Google OAuth client (#757) (#760)
+- b72310b8 keep AI work in the Power-MCP agent — hand back work items instead of spending the install's AI (#741) (#744)
+- eeb4f392 optimum target, no grandfathering, bulk Owner decisions (#727) (#743)
+- 4ea3bfa8 show when the release check ran and add "Check now" (#742)
+- e8606814 store Lighthouse Performance metrics per page and expose them to the AI and MCP (#738)
+
+### Fixes
+- e69b7168 serve the redirects table on every provider (#587) (#756)
+- a96b3310 one-command Compose install that actually comes up (#566, #707) (#755)
+- 3f003311 take public_role out of cloudsqlsuperuser on GCP (#633) (#752)
+- 518e581a set caelo_visitor_id only with analytics consent (#677) (#753)
+- 1814cb1c footer scenario primes a branded theme; cold-start gate stops inviting a question when identity is on record (#740)
+
 ## v0.10.49
 
 ### Features
