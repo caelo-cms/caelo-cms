@@ -136,6 +136,20 @@ export default defineConfig({
     // from `@playwright/test` / `@axe-core/playwright`. Marking them
     // external skips the analysis, cuts module count, and matches the
     // dependency boundary (test-only, not part of the admin runtime).
-    external: ["playwright-core", "@playwright/test", "@axe-core/playwright"],
+    //
+    // The font-delivery toolchain (`@caelo-cms/font-service` delivery.ts)
+    // stays external too, for a runtime reason: subset-font loads
+    // harfbuzz's wasm via `require.resolve("harfbuzzjs/dist/…wasm")` and
+    // wawoff2 (behind fontverter) is Emscripten output that finds its
+    // code through `__dirname`. Inlined into an ESM server chunk both
+    // break (`__dirname is not defined`); left external they load from
+    // node_modules, which the admin image ships.
+    external: [
+      "playwright-core",
+      "@playwright/test",
+      "@axe-core/playwright",
+      "subset-font",
+      "fontverter",
+    ],
   },
 });

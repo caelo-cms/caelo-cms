@@ -1054,6 +1054,9 @@ export const renderPagePreviewOp = defineOperation({
         tokens: composeTheme.tokens,
         cacheDir: defaultFontsCacheDir(process.cwd()),
         publicBasePath: "/_caelo/fonts",
+        // The editor iframe gains nothing from a preload hint; the @font-face
+        // CSS (and so the rendered typefaces) is identical to the build's.
+        preloadLanguage: null,
       });
       if (resolvedFonts.css.length > 0) {
         previewFonts = { css: resolvedFonts.css, preloads: resolvedFonts.preloads };

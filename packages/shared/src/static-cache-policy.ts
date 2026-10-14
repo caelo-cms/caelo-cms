@@ -17,9 +17,12 @@
  *     Google Fonts faces; the name is a hash of the upstream face URL,
  *     which Google versions per file (a changed face gets a new URL,
  *     hence a new name).
- *   - `_assets/fonts/pinned/<sha256>.<ttf|otf|woff|woff2>` — library
- *     fonts pinned by the sha256 of their bytes. (The sibling
- *     `pinned/<font-id>.license.txt` is id-named, NOT hashed.)
+ *   - `_assets/fonts/pinned/<sha256>.<slice>.<12 hex>.woff2` — WOFF2
+ *     unicode-range slices derived from a registry font: the sha256 of
+ *     the pinned source plus the delivery-toolchain tag
+ *     (`font-service/src/delivery.ts`), which together determine the
+ *     bytes. (The sibling `pinned/<font-id>.license.txt` is id-named,
+ *     NOT hashed.)
  *   - `_caelo/plugin/<slug>/<stem>.<12 hex>.<js|css>` — plugin client
  *     assets, sha256 of the content in the name
  *     (`plugin-host/src/client-assets.ts`).
@@ -52,7 +55,7 @@ export const HTML_CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=86
  * matcher and Caddy's `path_regexp` (both RE2) and to `RegExp` here.
  */
 export const CONTENT_HASHED_PATH_PATTERN =
-  "^/(?:_app/immutable/.+|_assets/fonts/[^/]+/[0-9a-f]{16,64}\\.(?:woff2|woff|ttf|otf)|_assets/[a-z0-9][a-z0-9-]*(?:/[a-z][a-z0-9-]*)?\\.[0-9a-f]{16}\\.[a-z0-9]{2,5}|_caelo/plugin/[^/]+/[^/]+\\.[0-9a-f]{12}\\.(?:js|css))$";
+  "^/(?:_app/immutable/.+|_assets/fonts/[^/]+/[0-9a-f]{16}\\.woff2|_assets/fonts/pinned/[0-9a-f]{64}\\.[a-z]+(?:-[a-z]+)?\\.[0-9a-f]{12}\\.woff2|_assets/[a-z0-9][a-z0-9-]*(?:/[a-z][a-z0-9-]*)?\\.[0-9a-f]{16}\\.[a-z0-9]{2,5}|_caelo/plugin/[^/]+/[^/]+\\.[0-9a-f]{12}\\.(?:js|css))$";
 
 /** Hex length of the content hash in published media names (#667). */
 export const MEDIA_CONTENT_HASH_HEX_LENGTH = 16;

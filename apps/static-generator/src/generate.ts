@@ -667,12 +667,17 @@ export async function generateSite(args: {
       tokens: activeTheme.tokens,
       cacheDir: defaultFontsCacheDir(root),
       publicBasePath: "/_assets/fonts",
+      // Pages a plugin assigns another locale still get every slice via
+      // unicode-range; only the preload hint follows the site language.
+      preloadLanguage: seoSettings.siteLanguage,
     });
     if (resolved.unresolved.length > 0) {
       throw new Error(
         `static-generator: ${resolved.unresolved.map(fontUnresolvableMarker).join(", ")} — ` +
-          "the active theme names web fonts that could not be fetched/parsed. " +
-          "Fix the typography tokens (set_theme_tokens) or restore access to the fonts source, then redeploy.",
+          "the active theme names web fonts that could not be fetched, parsed or converted to WOFF2 " +
+          "(FontDeliveryFailed:<slice>:<reason> names the slice that failed to derive from a registry face). " +
+          "Fix the typography tokens (set_theme_tokens), re-import or replace the face in the font registry, " +
+          "or restore access to the fonts source, then redeploy.",
       );
     }
     if (resolved.files.length > 0) {

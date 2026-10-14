@@ -60,6 +60,20 @@ afterAll(async () => {
       sql`DELETE FROM theme_snapshots WHERE theme_id IN (SELECT id FROM themes WHERE slug=${THEME_SLUG})`,
     );
     await tx.execute(sql`DELETE FROM themes WHERE slug=${THEME_SLUG}`);
+    await tx.execute(
+      sql`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug='home' AND template_id IN (SELECT id FROM templates WHERE slug=${`${THEME_SLUG}-tpl`}))`,
+    );
+    await tx.execute(
+      sql`DELETE FROM pages WHERE template_id IN (SELECT id FROM templates WHERE slug=${`${THEME_SLUG}-tpl`})`,
+    );
+    await tx.execute(
+      sql`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE display_name=${`${THEME_SLUG} body`})`,
+    );
+    await tx.execute(sql`DELETE FROM modules WHERE display_name=${`${THEME_SLUG} body`}`);
+    await tx.execute(
+      sql`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug=${`${THEME_SLUG}-tpl`})`,
+    );
+    await tx.execute(sql`DELETE FROM templates WHERE slug=${`${THEME_SLUG}-tpl`}`);
   });
   await adapter.close();
 });
@@ -152,6 +166,30 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
     ((await run("themes.get", { slug: THEME_SLUG })) as { theme: { tokens: ThemeDocument } }).theme
       .tokens,
   ).toEqual(tokens);
+  // One published page so the build emits HTML carrying the @font-face CSS.
+  const template = (await run("templates.create", {
+    slug: `${THEME_SLUG}-tpl`,
+    displayName: `${THEME_SLUG} template`,
+    html: `<html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
+  })) as { templateId: string };
+  await run("template_blocks.set", {
+    templateId: template.templateId,
+    blocks: [{ name: "content", displayName: "Content", position: 0 }],
+  });
+  await run("pages.build_page", {
+    page: { slug: "home", title: "Fonts", templateId: template.templateId, status: "published" },
+    modules: [
+      {
+        blockName: "content",
+        displayName: `${THEME_SLUG} body`,
+        description: "Page body text.",
+        kind: "content",
+        html: '<p class="body">{{body_text}}</p>',
+        fields: [{ name: "body_text", kind: "text", label: "Body" }],
+        content: { source: "inline", values: { body_text: "Grüße" } },
+      },
+    ],
+  });
   const cacheDir = await mkdtemp(join(tmpdir(), "font-service-test-"));
   try {
     await adapter.withAdminTransaction(ctx, async (tx) => {
@@ -160,21 +198,27 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
         cacheDir,
         publicBasePath: "/_caelo/fonts",
         readFont: fontReader(tx, ctx),
+        preloadLanguage: null,
         fetcher: (() => {
           throw new Error("Unexpected font network fetch");
         }) as typeof fetch,
       });
       expect(preview.unresolved).toEqual([]);
       expect(preview.css).toContain(font.cssFamily);
-      expect(preview.files.length).toBe(2);
-      expect(Buffer.from(await readFile(preview.files[0]!.cachePath)).toString("base64")).toBe(
-        data,
-      );
+      // The fixture covers Latin + Vietnamese: two WOFF2 slices + the license.
+      expect(preview.files.map((f) => f.relPath).filter((p) => p.endsWith(".woff2"))).toEqual([
+        expect.stringMatching(
+          new RegExp(`^pinned/${font.sha256}\\.vietnamese\\.[0-9a-f]{12}\\.woff2$`),
+        ),
+        expect.stringMatching(new RegExp(`^pinned/${font.sha256}\\.latin\\.[0-9a-f]{12}\\.woff2$`)),
+      ]);
+      expect(preview.preloads).toEqual([]);
       const build = await resolveThemeFonts({
         tokens,
         cacheDir,
         publicBasePath: "/_assets/fonts",
         readFont: fontReader(tx, ctx),
+        preloadLanguage: null,
       });
       expect(build.files).toEqual(preview.files);
       expect(build.css).toBe(preview.css.replaceAll("/_caelo/fonts", "/_assets/fonts"));
@@ -183,6 +227,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
         cacheDir,
         publicBasePath: "/restored",
         readFont: fontReader(tx, ctx),
+        preloadLanguage: null,
       });
       expect(restored.files).toEqual(preview.files);
       const changed = await tx.execute(
@@ -210,15 +255,31 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
           robotsDefault: "noindex",
         },
       });
-      const publishedFiles = await readdir(join(published.buildDir, "_assets/fonts/pinned"));
-      expect(publishedFiles.sort()).toEqual(
-        [`${font.id}.license.txt`, `${font.sha256}.woff`].sort(),
+      // The registry file (WOFF here, TTF for acquired Google faces) is never
+      // published: visitors get derived WOFF2 slices only.
+      const publishedFiles = (
+        await readdir(join(published.buildDir, "_assets/fonts/pinned"))
+      ).sort();
+      const expected = build.files.map((f) => f.relPath.slice("pinned/".length));
+      expect(publishedFiles).toEqual(expected.sort());
+      expect(publishedFiles.filter((f) => !f.endsWith(".woff2"))).toEqual([
+        `${font.id}.license.txt`,
+      ]);
+      for (const f of publishedFiles.filter((name) => name.endsWith(".woff2"))) {
+        const bytes = await readFile(join(published.buildDir, "_assets/fonts/pinned", f));
+        expect(bytes.subarray(0, 4).toString("ascii")).toBe("wOF2");
+        expect(bytes.toString("base64")).not.toBe(data);
+      }
+      const home = await readFile(join(published.buildDir, "index.html"), "utf8");
+      expect(home).not.toMatch(/format\(["']?(truetype|opentype|woff)["']?\)/);
+      expect(home).toContain("unicode-range:U+0000-00FF");
+      // Site language "en" → only the Latin slice is preloaded.
+      const preloads = [...home.matchAll(/<link rel="preload" as="font"[^>]*href="([^"]+)"/g)].map(
+        (m) => m[1],
       );
-      expect(
-        Buffer.from(
-          await readFile(join(published.buildDir, "_assets/fonts/pinned", `${font.sha256}.woff`)),
-        ).toString("base64"),
-      ).toBe(data);
+      expect(preloads).toEqual([
+        expect.stringMatching(/\/pinned\/[0-9a-f]{64}\.latin\.[0-9a-f]{12}\.woff2$/),
+      ]);
       expect(
         await readFile(
           join(published.buildDir, "_assets/fonts/pinned", `${font.id}.license.txt`),

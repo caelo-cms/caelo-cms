@@ -356,7 +356,7 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
 
 describe("gcsStaticPublisher — Cache-Control per path class", () => {
   const FONT = "_assets/fonts/inter/29ede7bd4be32ab0.woff2";
-  const PINNED_FONT = `_assets/fonts/pinned/${"d".repeat(64)}.woff2`;
+  const PINNED_FONT = `_assets/fonts/pinned/${"d".repeat(64)}.latin.0123456789ab.woff2`;
   const PLUGIN_JS = "_caelo/plugin/consent-manager/runtime.0123456789ab.js";
   const MEDIA = "_assets/searchviu-logo.png";
   const MEDIA_VARIANT = "_assets/hero/w800.webp";
