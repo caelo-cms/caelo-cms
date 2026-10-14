@@ -640,6 +640,15 @@ export function publishSeededPage(pageId: string): void {
       await sql.begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
         await tx\`UPDATE pages SET status = 'published' WHERE id = \${process.env.PAGE_ID}::uuid\`;
+        // #730 — builds refuse a published page without a meta description.
+        // This page is a fixture the test publishes itself (the AI never
+        // authored it), so it carries its own description like a real
+        // published page would; a description the AI wrote is kept.
+        await tx\`
+          INSERT INTO pages_seo (page_id, meta_description)
+          VALUES (\${process.env.PAGE_ID}::uuid, 'Seeded page of the live-edit scenario.')
+          ON CONFLICT (page_id) DO UPDATE
+            SET meta_description = COALESCE(NULLIF(btrim(pages_seo.meta_description), ''), EXCLUDED.meta_description)\`;
       });
       await sql.end();
       `,

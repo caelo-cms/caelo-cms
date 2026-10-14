@@ -26,8 +26,13 @@
  * subtract them honestly. They are reported as Caelo bugs instead, the
  * root causes are fixed in the platform, and until then only an editor's
  * explicit acceptance lets the build through. The AI never recommends one.
+ *
+ * #727 — page-check problems (checks/evaluate.ts) gate the same way: an
+ * error rule over its accepted count blocks until fixed or accepted, on its
+ * page or, for a page-less finding, site-wide. Warnings never reach here.
  */
 
+import type { CheckRuleProblem } from "./checks/evaluate.js";
 import type { QualityCategory, QualityProblem } from "./ratchet.js";
 
 /** What the gate needs to know about the audit of the staged build. */
@@ -50,6 +55,8 @@ export interface GateAudit {
     readonly pagePath: string;
     readonly problems: readonly QualityProblem[];
   }[];
+  /** #727 — site-wide findings-check problems (no page). */
+  readonly siteProblems: readonly CheckRuleProblem[];
 }
 
 /** Live (unrevoked) acceptances of the audited pages. */
@@ -58,6 +65,8 @@ export interface GateAcceptances {
   readonly findings: ReadonlySet<string>;
   /** `${pageId}|${category}` → accepted score. */
   readonly scores: ReadonlyMap<string, number>;
+  /** #727 — `${pageId or "site"}|${ruleId}` → accepted error count. */
+  readonly checks: ReadonlyMap<string, number>;
 }
 
 export type GateState =
@@ -70,7 +79,9 @@ export type GateState =
   | "errored";
 
 export interface OpenProblem {
-  readonly pageId: string;
+  /** Null for a site-wide problem. */
+  readonly pageId: string | null;
+  /** The page's path, or "site-wide". */
   readonly pagePath: string;
   readonly problem: QualityProblem;
 }
@@ -95,13 +106,26 @@ export function findingKey(pageId: string, auditId: string): string {
 export function scoreKey(pageId: string, category: QualityCategory): string {
   return `${pageId}|${category}`;
 }
+/** #727 — key of a findings-check acceptance (`pageId` null = site-wide). */
+export function checkKey(pageId: string | null, ruleId: string): string {
+  return `${pageId ?? "site"}|${ruleId}`;
+}
+
+/** What an open problem is listed as when it has no page. */
+export const SITE_WIDE_PATH = "site-wide";
 
 /** True when an editor's acceptance on this page covers the problem. */
 export function isProblemAccepted(
-  pageId: string,
+  pageId: string | null,
   problem: QualityProblem,
   acceptances: GateAcceptances,
 ): boolean {
+  if (problem.kind === "check_rule") {
+    // The per-rule ratchet: accepted up to a count of errors; one more blocks.
+    const accepted = acceptances.checks.get(checkKey(pageId, problem.ruleId));
+    return accepted !== undefined && problem.count <= accepted;
+  }
+  if (pageId === null) return false;
   if (problem.kind === "failing_audit") {
     return acceptances.findings.has(findingKey(pageId, problem.auditId));
   }
@@ -110,9 +134,14 @@ export function isProblemAccepted(
 }
 
 function describeProblem(p: OpenProblem): string {
-  return p.problem.kind === "failing_audit"
-    ? `${p.pagePath}: ${p.problem.auditId}`
-    : `${p.pagePath}: ${p.problem.category} ${p.problem.score} < ${p.problem.baseline}`;
+  switch (p.problem.kind) {
+    case "failing_audit":
+      return `${p.pagePath}: ${p.problem.auditId}`;
+    case "score_below_baseline":
+      return `${p.pagePath}: ${p.problem.category} ${p.problem.score} < ${p.problem.baseline}`;
+    case "check_rule":
+      return `${p.pagePath}: ${p.problem.ruleId} (${p.problem.count}×)`;
+  }
 }
 
 /**
@@ -181,6 +210,11 @@ export function decideGate(audit: GateAudit | null, acceptances: GateAcceptances
           if (!isProblemAccepted(page.pageId, problem, acceptances)) {
             openProblems.push({ pageId: page.pageId, pagePath: page.pagePath, problem });
           }
+        }
+      }
+      for (const problem of audit.siteProblems) {
+        if (!isProblemAccepted(null, problem, acceptances)) {
+          openProblems.push({ pageId: null, pagePath: SITE_WIDE_PATH, problem });
         }
       }
       if (openProblems.length === 0) {

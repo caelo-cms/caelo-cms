@@ -4,16 +4,23 @@ template: doc-page
 status: published
 seo:
   title: Quality gate — Caelo CMS
-  description: Every substantial Stage is checked with Lighthouse. New accessibility, SEO, best-practice or performance problems block Publish live until the AI fixes them or an editor accepts them.
+  description: Every Stage is checked — page checks read every page, and Lighthouse audits Stages that change how pages render. New errors block Publish live until the AI fixes them or an editor accepts them.
 ---
 
 # The quality gate
 
-Caelo checks every substantial Stage with **Lighthouse** — Performance, Accessibility, Best Practices and SEO, on a mobile viewport — before it can go live. New problems block **Publish live**. The AI fixes what it can; what it can't fix, an editor decides about. The target is 100 in every category.
+Caelo checks every Stage before it can go live, with two kinds of checks:
 
-## When a Stage is checked
+- **Page checks** read every page of the staged build on every Stage — also a Stage that only changed SEO texts. Plugins add them; the SEO checks plugin is the first (in progress).
+- **Lighthouse** — Performance, Accessibility, Best Practices and SEO, on a mobile viewport — audits a Stage that can change how pages look or perform. The target is 100 in every category.
 
-The check runs automatically after a Stage that can change how pages look or perform:
+New errors block **Publish live**. Warnings and hints are shown but never block. The AI fixes what it can; what it can't fix, an editor decides about.
+
+The checks always look at the **staged build** — exactly what Publish live would ship — never at the live site.
+
+## When Lighthouse runs
+
+Lighthouse runs automatically after a Stage that can change how pages look or perform:
 
 - module HTML, CSS or JavaScript was created or changed;
 - a layout, template or the theme changed;
@@ -21,9 +28,9 @@ The check runs automatically after a Stage that can change how pages look or per
 - plugin settings that render on pages changed;
 - it is the site's first Stage, or the previous check did not end clean.
 
-A Stage that only changes texts and field values, moves existing modules, or edits SEO texts or redirects is not checked — it goes live as before.
+A Stage that only changes texts and field values, moves existing modules, or edits SEO texts or redirects gets no Lighthouse audit; the page checks still read every page, which takes seconds.
 
-The check covers the homepage plus the pages the Stage changed (up to five). Performance is the median of three runs; the other categories are measured once.
+Lighthouse covers the homepage plus the pages the Stage changed (up to five). Performance is the median of three runs; the other categories are measured once.
 
 Missing meta descriptions do not wait for this check: a Stage (and any production build) refuses published pages without one and names them, because the check only looks at a few pages. See [Live edit](/live-edit).
 
@@ -32,7 +39,10 @@ Missing meta descriptions do not wait for this check: a Stage (and any productio
 Each page keeps a **baseline** per category, starting at 100. A Stage is blocked when:
 
 - a Lighthouse audit fails that nobody accepted on that page, or
-- a category score falls below the page's baseline. Performance jitters, so a performance drop only counts when two consecutive checks show it.
+- a category score falls below the page's baseline. Performance jitters, so a performance drop only counts when two consecutive checks show it, or
+- a page check reports an error that nobody accepted on that page (or site-wide, for a finding about the whole site).
+
+A page-check acceptance covers the errors it was given for — say, two images on `/team` — and a third one blocks again. When a page has fewer errors than were accepted, the accepted number drops with it; at zero the acceptance is used up.
 
 Findings caused by the platform block too, including a Performance drop they cause. Caelo does not quietly leave them out: that would also hide real regressions in how sites are served. They are reported as Caelo bugs and fixed in Caelo.
 
@@ -66,7 +76,7 @@ The automatic redeploy (Settings → Gateway) works the same way. When only cont
 **Settings → Quality** (`/settings/quality`) shows:
 
 - the gate of the current staged build and why it is open or blocked;
-- recent checks with their findings per page;
+- recent checks with their findings per page, including page-check warnings and site-wide findings;
 - every accepted finding — the Owner can **revoke** one, after which it blocks again on its page;
 - baselines below 100;
 - every *publish anyway* decision with who made it and why.

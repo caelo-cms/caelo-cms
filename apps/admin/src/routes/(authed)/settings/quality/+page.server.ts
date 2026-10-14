@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #553 — the quality view: what the Lighthouse checks of staged builds
- * found, the per-page baselines, what editors accepted (the Owner can
+ * #553 / #727 — the quality view: what the checks of staged builds found
+ * (the page checks on every page, Lighthouse when it ran), the per-page
+ * baselines, what editors accepted (the Owner can
  * revoke it), and every "publish anyway" decision with actor and reason.
  * Read surfaces are the same ops the AI reads; revoking is the Owner's.
  */
@@ -89,8 +90,13 @@ interface AuditRun {
   deployRunId: string;
   chatSessionId: string | null;
   status: string;
-  classification: { reasons: { rule: string; label: string }[]; skipped: string[] };
+  classification: {
+    auditNeeded: boolean;
+    reasons: { rule: string; label: string }[];
+    skipped: string[];
+  };
   pageCount: number;
+  checkSummary: { checkIds: string[]; pagesChecked: number } | null;
   problemCount: number;
   errorCode: string | null;
   errorMessage: string | null;
@@ -113,10 +119,11 @@ interface Baseline {
 interface Acceptance {
   id: string;
   pagePath: string;
-  kind: "finding" | "score";
+  kind: "finding" | "score" | "check";
   auditId: string | null;
   category: string | null;
   acceptedScore: number | null;
+  acceptedCount: number | null;
   reason: string;
   acceptedBy: string;
   acceptedAt: string;
@@ -135,11 +142,32 @@ interface AuditDetail {
     problems: (
       | { kind: "failing_audit"; auditId: string; title: string; displayValue?: string }
       | { kind: "score_below_baseline"; category: string; score: number; baseline: number }
+      | CheckRuleProblem
     )[];
+    checkFindings: CheckFinding[];
     heldBack: (
       | { kind: "performance_drop"; score: number }
       | { kind: "performance_finding"; auditId: string }
     )[];
     errorMessage: string | null;
   }[];
+  checks: {
+    siteProblems: CheckRuleProblem[];
+    siteFindings: CheckFinding[];
+    errors: { checkId: string | null; message: string }[];
+  } | null;
+}
+
+interface CheckRuleProblem {
+  kind: "check_rule";
+  ruleId: string;
+  count: number;
+  allowed: number;
+  findings: { message: string }[];
+}
+
+interface CheckFinding {
+  ruleId: string;
+  severity: "error" | "warning" | "info";
+  message: string;
 }

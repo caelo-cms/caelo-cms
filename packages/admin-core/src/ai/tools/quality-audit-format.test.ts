@@ -18,6 +18,7 @@ function page(problems: Page["problems"]): Page {
     failingAudits: [],
     problems,
     heldBack: [],
+    checkFindings: [],
     errorCode: null,
     errorMessage: null,
   };

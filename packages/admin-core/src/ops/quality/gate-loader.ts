@@ -11,7 +11,9 @@
 
 import type { defineOperation } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
+import type { CheckRuleProblem } from "../../quality/checks/evaluate.js";
 import {
+  checkKey,
   decideGate,
   findingKey,
   type GateAudit,
@@ -36,7 +38,8 @@ export async function loadGateAuditById(tx: Tx, auditRunId: string): Promise<Gat
 async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null> {
   const runs = (await tx.execute(sql`
     SELECT id::text AS id, status, error_code, error_message,
-           publish_override_by::text AS publish_override_by, publish_override_reason
+           publish_override_by::text AS publish_override_by, publish_override_reason,
+           COALESCE(checks->'siteProblems', '[]'::jsonb) AS site_problems
     FROM quality_audit_runs
     WHERE ${where}
     ORDER BY created_at DESC LIMIT 1
@@ -47,6 +50,7 @@ async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null>
     error_message: string | null;
     publish_override_by: string | null;
     publish_override_reason: string | null;
+    site_problems: unknown;
   }[];
   const run = runs[0];
   if (!run) return null;
@@ -73,36 +77,46 @@ async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null>
       pagePath: p.current_path,
       problems: json<QualityProblem[]>(p.problems),
     })),
+    siteProblems: json<CheckRuleProblem[]>(run.site_problems),
   };
 }
 
-/** Live acceptances of the given pages, keyed for `decideGate`. */
+/**
+ * Live acceptances of the given pages plus the site-wide (page-less)
+ * findings-check acceptances, keyed for `decideGate`.
+ */
 export async function loadAcceptances(
   tx: Tx,
   pageIds: readonly string[],
-): Promise<{ findings: Set<string>; scores: Map<string, number> }> {
+): Promise<{ findings: Set<string>; scores: Map<string, number>; checks: Map<string, number> }> {
   const findings = new Set<string>();
   const scores = new Map<string, number>();
-  if (pageIds.length === 0) return { findings, scores };
+  const checks = new Map<string, number>();
   const rows = (await tx.execute(sql`
-    SELECT page_id::text AS page_id, kind, audit_id, category, accepted_score
+    SELECT page_id::text AS page_id, kind, audit_id, category, accepted_score, accepted_count
     FROM quality_acceptances
     WHERE revoked_at IS NULL
-      AND page_id = ANY(${uuidList(pageIds)})
+      AND (page_id = ANY(${uuidList(pageIds)}) OR (page_id IS NULL AND kind = 'check'))
   `)) as unknown as {
-    page_id: string;
-    kind: "finding" | "score";
+    page_id: string | null;
+    kind: "finding" | "score" | "check";
     audit_id: string | null;
     category: QualityCategory | null;
     accepted_score: number | null;
+    accepted_count: number | null;
   }[];
   for (const r of rows) {
+    if (r.kind === "check" && r.audit_id && r.accepted_count !== null) {
+      checks.set(checkKey(r.page_id, r.audit_id), r.accepted_count);
+      continue;
+    }
+    if (r.page_id === null) continue;
     if (r.kind === "finding" && r.audit_id) findings.add(findingKey(r.page_id, r.audit_id));
     if (r.kind === "score" && r.category && r.accepted_score !== null) {
       scores.set(scoreKey(r.page_id, r.category), r.accepted_score);
     }
   }
-  return { findings, scores };
+  return { findings, scores, checks };
 }
 
 /** The gate decision for publishing `deployRunId`. */

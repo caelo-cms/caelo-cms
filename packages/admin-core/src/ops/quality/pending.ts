@@ -21,6 +21,8 @@ import { err, ok, type ProposalStatus, proposalStatus, type Result } from "@cael
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { ruleIdSchema } from "../../quality/checks/findings.js";
+import { SITE_WIDE_PATH } from "../../quality/gate.js";
 import type { QualityProblem } from "../../quality/ratchet.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { requiresApproverPermission } from "../_approver-permission.js";
@@ -60,13 +62,18 @@ type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 const acceptItemSchema = z.union([
   z.object({ pagePath: z.string().min(1).max(500), auditId: z.string().min(1).max(200) }).strict(),
   z.object({ pagePath: z.string().min(1).max(500), category: categorySchema }).strict(),
+  // #727 — a page-check rule over its accepted count: every error of the
+  // rule measured now is accepted on that page; omit pagePath for a
+  // site-wide finding.
+  z.object({ pagePath: z.string().min(1).max(500).optional(), ruleId: ruleIdSchema }).strict(),
 ]);
 
 export const proposeAcceptInput = z
   .object({
     /** The audit the findings come from (get_quality_audit shows its id). */
     auditRunId: z.string().uuid(),
-    /** Findings (Lighthouse audit id) or score drops (category) per page. */
+    /** Findings (Lighthouse audit id), score drops (category) or page-check
+     *  rules (rule id) per page. */
     items: z.array(acceptItemSchema).min(1).max(50),
     /** Why these are acceptable — shown to the editor and stored. */
     reason: z.string().trim().min(3).max(500),
@@ -76,14 +83,53 @@ export const proposeAcceptInput = z
 type ProposeAcceptInput = z.infer<typeof proposeAcceptInput>;
 
 interface ResolvedItem {
-  readonly pageId: string;
+  /** Null only for a site-wide page-check rule. */
+  readonly pageId: string | null;
   readonly pagePath: string;
-  readonly kind: "finding" | "score";
+  readonly kind: "finding" | "score" | "check";
+  /** The Lighthouse audit id, or the page-check rule id. */
   readonly auditId: string | null;
   readonly category: string | null;
   /** For a score drop: the measured score that becomes the baseline. */
   readonly score: number | null;
+  /** For a page-check rule: the error count that becomes accepted. */
+  readonly count: number | null;
   readonly label: string;
+}
+
+function problemName(x: QualityProblem): string {
+  switch (x.kind) {
+    case "failing_audit":
+      return x.auditId;
+    case "score_below_baseline":
+      return `${x.category} score`;
+    case "check_rule":
+      return x.ruleId;
+  }
+}
+
+function resolveCheckItem(
+  pageId: string | null,
+  pagePath: string,
+  problems: readonly QualityProblem[],
+  ruleId: string,
+): ResolvedItem | { message: string } {
+  const p = problems.find((x) => x.kind === "check_rule" && x.ruleId === ruleId);
+  if (p?.kind !== "check_rule") {
+    return {
+      message: `'${ruleId}' is not a problem ${pageId === null ? "site-wide" : `on ${pagePath}`} in this audit — its problems: ${problems.map(problemName).join(", ") || "none"}`,
+    };
+  }
+  return {
+    pageId,
+    pagePath,
+    kind: "check",
+    auditId: ruleId,
+    category: null,
+    score: null,
+    count: p.count,
+    label: `${pagePath}: ${ruleId} — ${p.count} error(s) accepted (a new one blocks again)`,
+  };
 }
 
 /**
@@ -100,7 +146,12 @@ async function resolveItems(
     FROM quality_audit_pages qp JOIN pages p ON p.id = qp.page_id AND p.deleted_at IS NULL
     WHERE qp.audit_run_id = ${input.auditRunId}::uuid
   `)) as unknown as { page_id: string; current_path: string; problems: unknown }[];
-  if (rows.length === 0) {
+  const siteRows = (await tx.execute(sql`
+    SELECT COALESCE(checks->'siteProblems', '[]'::jsonb) AS site_problems
+    FROM quality_audit_runs WHERE id = ${input.auditRunId}::uuid
+  `)) as unknown as { site_problems: unknown }[];
+  const siteProblems = json<QualityProblem[]>(siteRows[0]?.site_problems ?? []);
+  if (rows.length === 0 && siteProblems.length === 0) {
     return {
       ok: false,
       message: `audit ${input.auditRunId} has no audited pages — call get_quality_audit for the current audit id`,
@@ -109,20 +160,31 @@ async function resolveItems(
   const byPath = new Map(rows.map((r) => [r.current_path, r]));
   const resolved: ResolvedItem[] = [];
   for (const item of input.items) {
-    const page = byPath.get(item.pagePath);
+    if ("ruleId" in item && item.pagePath === undefined) {
+      const r = resolveCheckItem(null, SITE_WIDE_PATH, siteProblems, item.ruleId);
+      if ("message" in r) return { ok: false, message: r.message };
+      resolved.push(r);
+      continue;
+    }
+    const pagePath = item.pagePath as string;
+    const page = byPath.get(pagePath);
     if (!page) {
       return {
         ok: false,
-        message: `${item.pagePath} was not audited in ${input.auditRunId} — audited pages: ${rows.map((r) => r.current_path).join(", ")}`,
+        message: `${pagePath} has no findings in ${input.auditRunId} — pages with findings: ${rows.map((r) => r.current_path).join(", ") || "none"}${siteProblems.length > 0 ? " (site-wide findings: omit pagePath)" : ""}`,
       };
     }
     const problems = json<QualityProblem[]>(page.problems);
-    if ("auditId" in item) {
+    if ("ruleId" in item) {
+      const r = resolveCheckItem(page.page_id, page.current_path, problems, item.ruleId);
+      if ("message" in r) return { ok: false, message: r.message };
+      resolved.push(r);
+    } else if ("auditId" in item) {
       const p = problems.find((x) => x.kind === "failing_audit" && x.auditId === item.auditId);
       if (p?.kind !== "failing_audit") {
         return {
           ok: false,
-          message: `'${item.auditId}' is not a problem on ${page.current_path} in this audit — its problems: ${problems.map((x) => (x.kind === "failing_audit" ? x.auditId : `${x.category} score`)).join(", ") || "none"}`,
+          message: `'${item.auditId}' is not a problem on ${page.current_path} in this audit — its problems: ${problems.map(problemName).join(", ") || "none"}`,
         };
       }
       resolved.push({
@@ -132,6 +194,7 @@ async function resolveItems(
         auditId: item.auditId,
         category: null,
         score: null,
+        count: null,
         label: `${page.current_path}: ${p.auditId} — ${p.title}`,
       });
     } else {
@@ -151,6 +214,7 @@ async function resolveItems(
         auditId: null,
         category: item.category,
         score: p.score,
+        count: null,
         label: `${page.current_path}: ${item.category} score ${p.score} (baseline ${p.baseline} → ${p.score})`,
       });
     }
@@ -306,6 +370,23 @@ async function applyAcceptances(
   if (!r.ok) return r;
   let accepted = 0;
   for (const item of r.items) {
+    if (item.kind === "check") {
+      // The per-rule ratchet (#727): the accepted count replaces the
+      // previous acceptance of the rule there (kept as history, revoked).
+      await tx.execute(sql`
+        UPDATE quality_acceptances SET revoked_at = now(), revoked_by = ${ctx.actorId}::uuid
+        WHERE kind = 'check' AND audit_id = ${item.auditId} AND revoked_at IS NULL
+          AND ${item.pageId === null ? sql`page_id IS NULL` : sql`page_id = ${item.pageId}::uuid`}
+      `);
+      await tx.execute(sql`
+        INSERT INTO quality_acceptances
+          (page_id, kind, audit_id, accepted_count, reason, accepted_by, audit_run_id)
+        VALUES (${item.pageId === null ? null : sql`${item.pageId}::uuid`}, 'check', ${item.auditId},
+                ${item.count}, ${input.reason}, ${ctx.actorId}::uuid, ${input.auditRunId}::uuid)
+      `);
+      accepted += 1;
+      continue;
+    }
     if (item.kind === "finding") {
       const ins = (await tx.execute(sql`
         INSERT INTO quality_acceptances (page_id, kind, audit_id, reason, accepted_by, audit_run_id)

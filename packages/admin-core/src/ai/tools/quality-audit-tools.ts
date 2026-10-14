@@ -6,8 +6,9 @@
  *
  *   get_quality_audit         the full findings of one audit: per page the
  *                             scores vs. baselines, every problem with its
- *                             Lighthouse audit id, held-back Performance
- *                             signals, and infrastructure errors.
+ *                             Lighthouse audit id or page-check rule id
+ *                             (#727, with its fix hint), held-back
+ *                             Performance signals, and infrastructure errors.
  *   list_quality_audits       recent audit runs and how they ended.
  *   list_quality_acceptances  findings / score drops editors accepted, per
  *                             page — so the AI never asks twice.
@@ -17,6 +18,11 @@ import { z } from "zod";
 import type { getAuditOp, listAcceptancesOp, listAuditsOp } from "../../ops/quality/read.js";
 import { findingOwner } from "../../quality/platform-audits.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
+import {
+  formatCheckNotes,
+  formatCheckProblem,
+  formatChecksSummary,
+} from "./quality-check-format.js";
 
 type AuditValue = z.infer<(typeof getAuditOp)["output"]>;
 type AuditRun = NonNullable<AuditValue["run"]>;
@@ -76,7 +82,7 @@ function statusLine(run: AuditRun): string {
     case "errored":
       return `Audit FAILED (${run.errorCode ?? "error"}): ${run.errorMessage ?? "no reason recorded"}. This is an infrastructure failure, not a verdict on the pages.`;
     case "skipped":
-      return `No audit needed for this Stage: ${run.classification.skipped.join("; ") || "no rendering changes"}.`;
+      return `Nothing to check for this Stage: ${run.classification.skipped.join("; ") || "no published pages"}.`;
     case "superseded":
       return "Superseded by a newer Stage before it ran; that Stage's audit covers these pages.";
   }
@@ -124,7 +130,9 @@ export function formatPage(p: AuditPage): string[] {
     );
   }
   for (const problem of p.problems) {
-    if (problem.kind === "failing_audit") {
+    if (problem.kind === "check_rule") {
+      lines.push(...formatCheckProblem(problem));
+    } else if (problem.kind === "failing_audit") {
       lines.push(
         `- PROBLEM failing audit \`${problem.auditId}\` — ${problem.title}${problem.displayValue ? ` (${problem.displayValue})` : ""} [${problem.categories.join(", ")}]${ownerNote(findingOwner(problem.auditId, problem.elements ?? [], p.url))}`,
       );
@@ -172,15 +180,16 @@ export function formatPage(p: AuditPage): string[] {
         : `- held back (noise guard): \`${h.auditId}\` — ${h.title}; counts if the next audit shows it again`,
     );
   }
+  lines.push(...formatCheckNotes(p.checkFindings));
   return lines;
 }
 
 export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   name: "get_quality_audit",
   description:
-    "Read a Lighthouse quality audit of the staged site (Performance, Accessibility, Best Practices, SEO; mobile). " +
-    "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores against the page's baseline, every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), Performance signals the noise guard is holding back, and infrastructure errors. " +
-    "A problem is a failing audit the editors have not accepted on that page, or a score below the page's baseline. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. " +
+    "Read the quality check of the staged site: the page checks (added by plugins such as SEO checks) that read EVERY page on every Stage, plus a Lighthouse audit (Performance, Accessibility, Best Practices, SEO; mobile) when the Stage changed how pages render. " +
+    "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores against the page's baseline, every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), every page-check problem with its rule id (`<check>/<rule>`, e.g. `seo-check/title-missing` — rule ids contain a slash) and a fix hint naming the tool to use, site-wide findings, non-blocking warnings and hints, Performance signals the noise guard is holding back, and infrastructure errors. " +
+    "A problem is a failing audit the editors have not accepted on that page, a score below the page's baseline, or a page-check rule with more errors than an editor accepted. Warnings and hints never block. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. " +
     "A finding marked CAELO PLATFORM (back/forward cache, caching of Caelo's own files, server response, compression, redirects) is decided by Caelo's hosting/build setup, not by the site: report it with bug_report, never edit the site for it, never propose accepting it. " +
     "Typical input: {} or { auditRunId }.",
   opName: "quality_audits.get",
@@ -194,13 +203,20 @@ export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   format: (value) => {
     const v = value as AuditValue;
     if (!v.run) {
-      return "No quality audit exists yet for this chat — audits run after a Stage that changes module code, layouts, templates, themes, new pages or plugin config.";
+      return "No quality audit exists yet for this chat — every Stage is checked (page checks on every page; Lighthouse when module code, layouts, templates, the theme, new pages or plugin config changed).";
     }
     const r = v.run;
     const lines = [`audit ${r.id} (deploy run ${r.deployRunId}) — ${r.status}`, statusLine(r)];
-    if (r.classification.reasons.length > 0) {
-      lines.push(`audited because: ${r.classification.reasons.map((x) => x.label).join("; ")}`);
+    if (r.classification.auditNeeded) {
+      lines.push(
+        `Lighthouse ran because: ${r.classification.reasons.map((x) => x.label).join("; ")}`,
+      );
+    } else if (r.status !== "skipped") {
+      lines.push(
+        `Lighthouse not needed for this Stage (${r.classification.skipped.slice(0, 3).join("; ") || "no rendering changes"}).`,
+      );
     }
+    if (v.checks) lines.push(...formatChecksSummary(v.checks));
     for (const p of v.pages) lines.push("", ...formatPage(p));
     return lines.join("\n");
   },
@@ -211,8 +227,8 @@ const checkStageInput = z.object({}).strict();
 export const checkStageAuditTool = makeReadTool<z.infer<typeof checkStageInput>>({
   name: "check_stage_audit",
   description:
-    "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse quality check, and why? " +
-    "Audited: new or changed module html/css/js, layout / template / theme changes, new pages, plugin configuration. Not audited: only text and field values, placing or moving existing modules, SEO texts, redirects. " +
+    "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (The page checks read every page on EVERY Stage regardless.) " +
+    "Lighthouse runs for: new or changed module html/css/js, layout / template / theme changes, new pages, plugin configuration. Not for: only text and field values, placing or moving existing modules, SEO texts, redirects. " +
     "Lists the deciding changes and the pages the check would cover. Takes no input (uses the current chat).",
   opName: "quality_audits.classify_stage",
   input: checkStageInput,
@@ -230,11 +246,11 @@ export const checkStageAuditTool = makeReadTool<z.infer<typeof checkStageInput>>
     };
     const c = v.classification;
     if (!c.auditNeeded) {
-      return `The next Stage needs no quality check by its own changes (${c.skipped.join("; ") || "nothing pending"}). It can still be audited when this is the site's first Stage, a plugin was activated, or the previous check did not end clean.`;
+      return `The next Stage needs no Lighthouse audit by its own changes (${c.skipped.join("; ") || "nothing pending"}); the page checks still read every page and Publish live waits for them. Lighthouse can still run when this is the site's first Stage, a plugin was activated, or the previous Lighthouse audit did not end clean.`;
     }
     return [
       `The next Stage will be quality-checked (Lighthouse) because: ${c.reasons.map((r) => `${r.rule} — ${r.label}`).join("; ")}.`,
-      `Pages it touches: ${v.touchedPageIds.length} (the homepage is always included; up to 5 are audited). Publish live waits for the result.`,
+      `Pages it touches: ${v.touchedPageIds.length} (the homepage is always included; up to 5 are audited by Lighthouse; the page checks read every page). Publish live waits for the result.`,
     ].join("\n");
   },
 });
@@ -293,9 +309,9 @@ export const listQualityAcceptancesTool = makeListReadTool<
 >({
   name: "list_quality_acceptances",
   description:
-    "List quality findings and score drops editors accepted (TOON rows: page, kind, auditId, category, acceptedScore, reason, acceptedAt, revoked). " +
-    "An acceptance applies ONLY to its page: the same Lighthouse audit failing on another page is still a problem there. Check this before asking an editor to accept something again. " +
-    "`filter` searches the audit id, reason and page path server-side; optional `pageId`, `includeRevoked`.",
+    "List quality findings, score drops and page-check rules editors accepted (TOON rows: page, kind, auditId, category, acceptedScore, acceptedCount, reason, acceptedAt, revoked). " +
+    "An acceptance applies ONLY to its page (page `site-wide` = a site-wide page-check rule): the same finding on another page is still a problem there. A `check` acceptance covers up to acceptedCount errors of its rule (auditId holds the rule id); a new one beyond that blocks again. Check this before asking an editor to accept something again. " +
+    "`filter` searches the audit/rule id, reason and page path server-side; optional `pageId`, `includeRevoked`.",
   opName: "quality_acceptances.list",
   input: listAcceptancesInput,
   buildOpInput: (input) => ({
@@ -312,6 +328,7 @@ export const listQualityAcceptancesTool = makeListReadTool<
     { key: "auditId", value: (r) => r.auditId },
     { key: "category", value: (r) => r.category },
     { key: "acceptedScore", value: (r) => r.acceptedScore },
+    { key: "acceptedCount", value: (r) => r.acceptedCount },
     { key: "reason", value: (r) => r.reason },
     { key: "acceptedAt", value: (r) => r.acceptedAt },
     { key: "revoked", value: (r) => (r.revokedAt ? "yes" : "") },

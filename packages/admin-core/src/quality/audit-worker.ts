@@ -9,8 +9,10 @@
  * It polls for queued audit runs (`quality_audits.claim_next`, safe across
  * several admin instances), and the Stage flow kicks it right after
  * enqueueing so an audit starts without waiting for the next poll. For
- * each run it resolves the staged build's origin, runs Lighthouse in the
- * child process, and reports through `quality_audits.record_result`. Every
+ * each run it resolves the staged build's origin, runs the registered
+ * checks (#727, quality/checks/registry.ts) — the cheap findings checks
+ * over every page, and Lighthouse in the child process when the Stage
+ * needs it — and reports through `quality_audits.record_result`. Every
  * failure path reports too: an audit never stays silently unrun.
  *
  * One audit at a time per process: an audit drives a whole Chromium and
@@ -23,8 +25,10 @@ import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cm
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { localBuildArchiveDir } from "../ops/deploy.js";
+import { type CheckRegistry, createCoreCheckRegistry } from "./checks/registry.js";
+import { runChecksOnStagedBuild } from "./checks/run-staged.js";
 import type { AuditJob } from "./lighthouse-protocol.js";
-import { type AuditJobResult, runAuditJob } from "./lighthouse-runner.js";
+import type { AuditJobResult } from "./lighthouse-runner.js";
 import {
   gcsStagingSource,
   localBuildSource,
@@ -51,7 +55,10 @@ export interface ClaimedAuditRun {
   readonly siteUrl: string | null;
   readonly env: string;
   readonly outDir: string;
+  /** Lighthouse's pages; empty when the Stage needs no Lighthouse. */
   readonly pages: readonly { readonly pageId: string; readonly currentPath: string }[];
+  /** #727 — every published page, for the findings checks. */
+  readonly checkPages: readonly { readonly pageId: string; readonly currentPath: string }[];
 }
 
 export type StagingOrigin =
@@ -210,10 +217,23 @@ export function stagedPageUrl(
 interface WorkerDeps {
   readonly adapter: DatabaseAdapter;
   readonly registry: OperationRegistry;
+  /** The checks to run; core's (Lighthouse + core findings checks) when
+   *  omitted. The plugin `checks` composition point (#727) passes one with plugin checks added. */
+  readonly checks?: CheckRegistry;
   /** Override the Lighthouse runner (tests). */
   readonly runJob?: (job: AuditJob) => Promise<AuditJobResult>;
+  /** Override the page fetch of the findings checks (tests). */
+  readonly fetchPage?: typeof fetch;
   /** Override provider env (tests). */
   readonly env?: OriginEnv;
+}
+
+let coreChecks: CheckRegistry | null = null;
+
+/** Core's registry, built once per process. */
+function defaultChecks(): CheckRegistry {
+  coreChecks ??= createCoreCheckRegistry();
+  return coreChecks;
 }
 
 async function record(
@@ -221,7 +241,7 @@ async function record(
   auditRunId: string,
   baseUrl: string | null,
   outcome:
-    | { kind: "completed"; pages: unknown[]; pageErrors: unknown[] }
+    | { kind: "completed"; pages: unknown[]; pageErrors: unknown[]; checks: unknown }
     | { kind: "failed"; code: string; message: string },
 ): Promise<void> {
   const r = await execute(deps.registry, deps.adapter, WORKER_CTX, "quality_audits.record_result", {
@@ -246,12 +266,23 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
     provider: process.env.CAELO_PROVIDER,
     stagingBaseUrl: process.env.CAELO_STAGING_BASE_URL,
   };
-  if (run.pages.length === 0) {
+  if (run.pages.length === 0 && run.checkPages.length === 0) {
     await record(deps, run.auditRunId, null, {
       kind: "failed",
       code: "no-pages",
       message:
         "none of the pages selected for this audit is published on staging any more — Stage again to audit the current pages",
+    });
+    return;
+  }
+  const checks = deps.checks ?? defaultChecks();
+  const runLighthouse = deps.runJob ?? checks.lighthouse()?.run;
+  if (run.pages.length > 0 && !runLighthouse) {
+    await record(deps, run.auditRunId, null, {
+      kind: "failed",
+      code: "lighthouse-unavailable",
+      message:
+        "this Stage needs a Lighthouse audit but no Lighthouse check is registered in this admin process — a Caelo bug; report it with bug_report",
     });
     return;
   }
@@ -264,16 +295,26 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
     });
     return;
   }
-  const job: AuditJob = {
-    pages: run.pages.map((p) => ({
-      pageId: p.pageId,
-      url: stagedPageUrl(origin.baseUrl, p.currentPath, run.pageUrlStyle),
-    })),
-    performanceRuns: run.performanceRuns,
-  };
-  let result: AuditJobResult;
+  const pageUrl = (currentPath: string) =>
+    stagedPageUrl(origin.baseUrl, currentPath, run.pageUrlStyle);
+  let result: AuditJobResult | null = null;
+  let checked: Awaited<ReturnType<typeof runChecksOnStagedBuild>>;
   try {
-    result = await (deps.runJob ?? runAuditJob)(job);
+    checked = await runChecksOnStagedBuild(
+      checks.findingChecks(),
+      run.checkPages.map((p) => ({
+        pageId: p.pageId,
+        path: p.currentPath,
+        url: pageUrl(p.currentPath),
+      })),
+      deps.fetchPage,
+    );
+    if (run.pages.length > 0 && runLighthouse) {
+      result = await runLighthouse({
+        pages: run.pages.map((p) => ({ pageId: p.pageId, url: pageUrl(p.currentPath) })),
+        performanceRuns: run.performanceRuns,
+      });
+    }
   } finally {
     await origin.close?.();
   }
@@ -281,19 +322,19 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
   const shown = origin.displayBaseUrl ?? origin.baseUrl;
   const display = (url: string) =>
     origin.displayBaseUrl ? toDisplayUrl(url, origin.baseUrl, origin.displayBaseUrl) : url;
-  if (!result.ok) {
+  const displayText = (text: string) =>
+    origin.displayBaseUrl ? text.split(trimTrailingSlashes(origin.baseUrl)).join(shown) : text;
+  if (result && !result.ok) {
     await record(deps, run.auditRunId, shown, {
       kind: "failed",
       code: result.failure.code,
-      message: origin.displayBaseUrl
-        ? result.failure.message.split(trimTrailingSlashes(origin.baseUrl)).join(shown)
-        : result.failure.message,
+      message: displayText(result.failure.message),
     });
     return;
   }
   await record(deps, run.auditRunId, shown, {
     kind: "completed",
-    pages: result.pages.map((p) => ({
+    pages: (result?.pages ?? []).map((p) => ({
       pageId: p.pageId,
       url: display(p.url),
       ...(p.finalUrl ? { finalUrl: display(p.finalUrl) } : {}),
@@ -313,13 +354,21 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
       },
       performanceRuns: [...p.performanceRuns],
     })),
-    pageErrors: result.pageErrors.map((e) => ({
+    pageErrors: (result?.pageErrors ?? []).map((e) => ({
       ...e,
       url: display(e.url),
-      message: origin.displayBaseUrl
-        ? e.message.split(trimTrailingSlashes(origin.baseUrl)).join(shown)
-        : e.message,
+      message: displayText(e.message),
     })),
+    checks: {
+      ...checked,
+      pages: checked.pages.map((p) => ({ ...p, url: display(p.url) })),
+      findings: checked.findings.map((f) => ({ ...f, message: displayText(f.message) })),
+      errors: checked.errors.map((e) => ({
+        ...e,
+        ...(e.url ? { url: display(e.url) } : {}),
+        message: displayText(e.message),
+      })),
+    },
   });
 }
 

@@ -46,9 +46,11 @@
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">Quality</h1>
     <p class="text-sm text-muted-foreground">
-      Every substantial Stage is checked with Lighthouse (Performance, Accessibility, Best
-      Practices, SEO). New problems block Publish live until they are fixed or an editor accepts
-      them on their page.
+      Every Stage is checked: page checks (added by plugins) read every page of the staged
+      build, and a Stage that changes how pages render is also checked with
+      Lighthouse (Performance, Accessibility, Best Practices, SEO). New errors block Publish live
+      until they are fixed or an editor accepts them on their page; warnings and hints only
+      inform.
     </p>
   </div>
 
@@ -95,15 +97,37 @@
           <span class="ml-auto text-xs font-normal text-muted-foreground">{when(run.createdAt)}</span>
         </CardTitle>
         <CardDescription>
-          {#if run.classification.reasons.length > 0}
-            Audited because: {run.classification.reasons.map((r) => r.label).join("; ")}
+          {#if run.classification.auditNeeded}
+            Lighthouse ran because: {run.classification.reasons.map((r) => r.label).join("; ")}
           {:else}
-            {run.classification.skipped.join("; ") || "No rendering changes"}
+            No Lighthouse audit needed: {run.classification.skipped.join("; ") ||
+              "no rendering changes"}
+          {/if}
+          {#if run.checkSummary}
+            <br />Page checks ({run.checkSummary.checkIds.join(", ")}) read {run.checkSummary
+              .pagesChecked} page(s).
           {/if}
           {#if run.errorMessage}<br />Failed: {run.errorMessage}{/if}
         </CardDescription>
       </CardHeader>
       <CardContent class="space-y-4 text-sm">
+        {#if data.detail.checks && (data.detail.checks.siteProblems.length > 0 || data.detail.checks.siteFindings.length > 0 || data.detail.checks.errors.length > 0)}
+          {@const checks = data.detail.checks}
+          <div class="rounded-md border p-3" data-testid="quality-site-findings">
+            <strong>Site-wide</strong>
+            <ul class="mt-2 list-disc pl-5">
+              {#each checks.errors as e, i (i)}
+                <li class="text-destructive">Check failed: {e.message}</li>
+              {/each}
+              {#each checks.siteProblems as pr (pr.ruleId)}
+                <li><code>{pr.ruleId}</code> — {pr.findings[0]?.message ?? ""} ({pr.count}×)</li>
+              {/each}
+              {#each checks.siteFindings.filter((f) => f.severity !== "error") as f, i (i)}
+                <li class="text-muted-foreground">{f.severity}: <code>{f.ruleId}</code> — {f.message}</li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
         {#each data.detail.pages as p (p.pageId)}
           <div class="rounded-md border p-3">
             <div class="flex items-center gap-2">
@@ -128,10 +152,20 @@
                   <li>
                     {#if pr.kind === "failing_audit"}
                       <code>{pr.auditId}</code> — {pr.title}{pr.displayValue ? ` (${pr.displayValue})` : ""}
+                    {:else if pr.kind === "check_rule"}
+                      <code>{pr.ruleId}</code> — {pr.findings[0]?.message ?? ""}
+                      ({pr.count}×{pr.allowed > 0 ? `, ${pr.allowed} accepted` : ""})
                     {:else}
                       {CATEGORY_LABEL[pr.category] ?? pr.category} {pr.score} is below its baseline {pr.baseline}
                     {/if}
                   </li>
+                {/each}
+              </ul>
+            {/if}
+            {#if p.checkFindings.some((f) => f.severity !== "error")}
+              <ul class="mt-2 list-disc pl-5 text-muted-foreground" data-testid="quality-check-notes">
+                {#each p.checkFindings.filter((f) => f.severity !== "error") as f, i (i)}
+                  <li>{f.severity}: <code>{f.ruleId}</code> — {f.message}</li>
                 {/each}
               </ul>
             {/if}
@@ -150,7 +184,7 @@
         <EmptyStatePlaceholder
           icon={Gauge}
           title="No quality checks yet"
-          description="A Stage that changes modules, layouts, templates, the theme, adds pages or plugin settings is checked automatically."
+          description="Every Stage is checked automatically: page checks on every page, plus Lighthouse when modules, layouts, templates, the theme, pages or plugin settings changed."
         />
       {:else}
         <Table>
@@ -175,9 +209,14 @@
                   {/if}
                 </TableCell>
                 <TableCell>{r.problemCount}</TableCell>
-                <TableCell>{r.pageCount}</TableCell>
+                <TableCell>
+                  {r.checkSummary?.pagesChecked ?? 0} checked · {r.pageCount} Lighthouse
+                </TableCell>
                 <TableCell class="max-w-96 truncate text-xs" title={r.errorMessage ?? ""}>
-                  {r.errorMessage ?? r.classification.reasons.map((x) => x.rule).join(", ")}
+                  {r.errorMessage ??
+                    (r.classification.auditNeeded
+                      ? r.classification.reasons.map((x) => x.rule).join(", ")
+                      : "page checks only")}
                 </TableCell>
                 <TableCell><a class="text-xs underline" href={`?run=${r.id}`}>details</a></TableCell>
               </TableRow>
@@ -192,8 +231,9 @@
     <CardHeader>
       <CardTitle class="text-base">Accepted findings</CardTitle>
       <CardDescription>
-        Accepted by editors, per page. An accepted score is the page's baseline for that
-        category. {data.canRevoke
+        Accepted by editors, per page (or site-wide). An accepted score is the page's baseline for
+        that category; an accepted page-check rule covers up to its count of errors, and fewer
+        errors lower that count. {data.canRevoke
           ? "Revoking makes the finding block Publish live on its page again."
           : "Only the Owner can revoke."}
       </CardDescription>
@@ -217,7 +257,8 @@
               <TableRow data-testid="quality-acceptance-row">
                 <TableCell>{a.pagePath}</TableCell>
                 <TableCell>
-                  {#if a.kind === "finding"}<code>{a.auditId}</code>{:else}
+                  {#if a.kind === "finding"}<code>{a.auditId}</code>{:else if a.kind === "check"}
+                    <code>{a.auditId}</code> up to {a.acceptedCount}{:else}
                     {CATEGORY_LABEL[a.category ?? ""] ?? a.category} {a.acceptedScore}{/if}
                 </TableCell>
                 <TableCell class="max-w-96 text-xs">{a.reason}</TableCell>

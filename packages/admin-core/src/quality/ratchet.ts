@@ -22,6 +22,8 @@
  *   writes the accepted score as the new baseline (not done here).
  */
 
+import type { CheckRuleProblem } from "./checks/evaluate.js";
+
 /** The four Lighthouse categories the gate audits, in report order. */
 export const QUALITY_CATEGORIES = [
   "performance",
@@ -84,7 +86,8 @@ export interface BaselineState {
   readonly belowStreak: number;
 }
 
-export type QualityProblem =
+/** A problem the Lighthouse ratchet found on a page. */
+export type LighthouseProblem =
   | {
       readonly kind: "failing_audit";
       readonly auditId: string;
@@ -101,6 +104,12 @@ export type QualityProblem =
       readonly baseline: number;
     };
 
+/**
+ * Anything that blocks Publish live on a page: a Lighthouse problem, or a
+ * findings-check rule over its accepted count (#727, checks/evaluate.ts).
+ */
+export type QualityProblem = LighthouseProblem | CheckRuleProblem;
+
 /** A Performance signal the noise guard is holding back this time. It
  *  becomes a problem if the next audit of the page shows it again. */
 export type HeldBackSignal =
@@ -108,7 +117,7 @@ export type HeldBackSignal =
   | { readonly kind: "performance_finding"; readonly auditId: string; readonly title: string };
 
 export interface PageEvaluation {
-  readonly problems: readonly QualityProblem[];
+  readonly problems: readonly LighthouseProblem[];
   readonly heldBack: readonly HeldBackSignal[];
   /** Baselines to persist for the page after this audit. */
   readonly nextBaselines: Readonly<Record<QualityCategory, BaselineState>>;
@@ -137,7 +146,7 @@ export function evaluatePage(args: {
   readonly acceptedAuditIds: ReadonlySet<string>;
   readonly previousHeldBackFindings: ReadonlySet<string>;
 }): PageEvaluation {
-  const problems: QualityProblem[] = [];
+  const problems: LighthouseProblem[] = [];
   const heldBack: HeldBackSignal[] = [];
   const nextBaselines = {} as Record<QualityCategory, BaselineState>;
 

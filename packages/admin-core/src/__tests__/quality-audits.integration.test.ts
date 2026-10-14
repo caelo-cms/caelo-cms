@@ -28,6 +28,7 @@ import {
   listQualityAuditsTool,
 } from "../ai/tools/quality-audit-tools.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
+import { testCheckRegistry } from "../quality/checks/__tests__/fixtures/test-checks.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
 import type { AuditJobResult } from "../quality/lighthouse-runner.js";
 import type { FailingAudit, QualityCategory } from "../quality/ratchet.js";
@@ -172,11 +173,30 @@ async function claim(): Promise<{
   return v.run;
 }
 
+/** #727 — a completed audit whose page checks found nothing to report. */
+const NO_CHECKS = { ran: [], pages: [], findings: [], errors: [] };
+
 async function record(auditRunId: string, pages: ReturnType<typeof pageResult>[]) {
   return op<{ status: string; problemCount: number }>(SYS, "quality_audits.record_result", {
     auditRunId,
     baseUrl: "http://staging.test",
-    outcome: { kind: "completed", pages, pageErrors: [] },
+    outcome: { kind: "completed", pages, pageErrors: [], checks: NO_CHECKS },
+  });
+}
+
+/** A staged origin serving the routing manifest of `runId` and, for every
+ *  other path, a page with a meta description (the page checks pass). */
+function stagedServer(runId: string) {
+  return Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (req) =>
+      new URL(req.url).pathname === "/routing-manifest.json"
+        ? Response.json({ runId })
+        : new Response(
+            '<!doctype html><html><head><meta name="description" content="A page."></head><body></body></html>',
+            { headers: { "content-type": "text/html" } },
+          ),
   });
 }
 
@@ -440,17 +460,26 @@ describe("quality audit lifecycle + ratchet", () => {
     expect(baselines[0]?.baseline).toBe(100);
   });
 
-  it("a content-only Stage after a clean audit is skipped (and says why)", async () => {
+  it("a content-only Stage after a clean audit runs the page checks only, on every page (#727)", async () => {
     const deployRunId = await deployRun("staging", 50);
     const v = await op<{
       status: string;
       targetPageIds: string[];
       classification: Classified["classification"];
     }>(SYS, "quality_audits.enqueue", { deployRunId, chatSessionId, branch: CONTENT_ONLY });
-    expect(v.status).toBe("skipped");
+    expect(v.status).toBe("queued");
+    // No Lighthouse: its classification and target pages are unchanged.
+    expect(v.classification.auditNeeded).toBe(false);
     expect(v.targetPageIds).toEqual([]);
     expect(v.classification.skipped).toEqual(["field values: copy"]);
-    expect(await claim()).toBeNull();
+    const run = (
+      await op<{
+        run: { auditRunId: string; pages: unknown[]; checkPages: { pageId: string }[] };
+      }>(SYS, "quality_audits.claim_next", {})
+    ).run;
+    expect(run?.pages).toEqual([]);
+    expect(run?.checkPages.map((p) => p.pageId)).toEqual([homeId, aboutId]);
+    expect((await record(run?.auditRunId as string, [])).status).toBe("passed");
   });
 
   it("a staging deploy outside a chat always audits, plus the pages it staged", async () => {
@@ -526,6 +555,7 @@ describe("quality audit lifecycle + ratchet", () => {
       baseUrl: "http://staging.test",
       outcome: {
         kind: "completed",
+        checks: NO_CHECKS,
         pages: [pageResult(homeId, {})],
         pageErrors: [
           {
@@ -586,17 +616,17 @@ describe("worker drain", () => {
   it("resolves the staged origin, runs the job and records the result", async () => {
     const deployRunId = await deployRun("staging", 90);
     await op(SYS, "quality_audits.enqueue", { deployRunId, chatSessionId: null, branch: null });
-    const server = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch: () => Response.json({ runId: deployRunId }),
-    });
+    const server = stagedServer(deployRunId);
     const port = server.port;
     const jobs: AuditJob[] = [];
     try {
       const processed = await drainAuditQueue({
         adapter,
         registry,
+        // #727 — a plugin-style findings check, so the page checks run.
+        checks: testCheckRegistry(async () => {
+          throw new Error("runJob replaces the Lighthouse runner");
+        }),
         env: { provider: "self-hosted", stagingBaseUrl: `http://127.0.0.1:${port}` },
         runJob: async (job): Promise<AuditJobResult> => {
           jobs.push(job);
@@ -613,8 +643,12 @@ describe("worker drain", () => {
     }
     // Outside a chat, after a clean audit: just the homepage.
     expect(jobs[0]?.pages.map((p) => p.url)).toEqual([`http://127.0.0.1:${port}/`]);
-    const got = await op<{ run: { status: string } }>(SYS, "quality_audits.get", { deployRunId });
+    const got = await op<{
+      run: { status: string; checkSummary: { pagesChecked: number; checkIds: string[] } };
+    }>(SYS, "quality_audits.get", { deployRunId });
     expect(got.run.status).toBe("passed");
+    // #727 — the page checks read every published page.
+    expect(got.run.checkSummary).toMatchObject({ pagesChecked: 2, checkIds: ["test-meta"] });
   });
 
   it("records an unreachable staging origin as a failed audit", async () => {

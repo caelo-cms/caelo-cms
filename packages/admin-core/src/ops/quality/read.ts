@@ -19,6 +19,9 @@ import { err, ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { type StagedBy, stagedBySchema } from "../../quality/chat-feedback.js";
+import { findingSchema } from "../../quality/checks/findings.js";
+import { type RunChecksSummary, runChecksSummarySchema } from "../../quality/checks/outcome.js";
+import { SITE_WIDE_PATH } from "../../quality/gate.js";
 import type { QualityCategory } from "../../quality/ratchet.js";
 import {
   auditRunStatusSchema,
@@ -37,7 +40,16 @@ export const runSummarySchema = z.object({
   chatSessionId: z.string().nullable(),
   status: auditRunStatusSchema,
   classification: stageClassificationSchema,
+  /** Pages Lighthouse audited (0 when the Stage needed no Lighthouse). */
   pageCount: z.number().int(),
+  /** #727 — the findings checks of the run (null before they ran). */
+  checkSummary: z
+    .object({
+      checkIds: z.array(z.string()),
+      pagesChecked: z.number().int(),
+      findingCounts: z.object({ error: z.number(), warning: z.number(), info: z.number() }),
+    })
+    .nullable(),
   problemCount: z.number().int(),
   baseUrl: z.string().nullable(),
   errorCode: z.string().nullable(),
@@ -87,6 +99,7 @@ export interface RunDbRow {
   auto_publish: boolean;
   auto_publish_outcome: "published" | "blocked" | null;
   auto_publish_message: string | null;
+  checks: unknown;
 }
 
 export const RUN_COLUMNS = sql`
@@ -96,9 +109,10 @@ export const RUN_COLUMNS = sql`
   q.error_code, q.error_message, q.created_at, q.started_at, q.finished_at,
   q.fix_round, q.retry_of::text AS retry_of, q.staged_by, q.publish_override_by::text AS publish_override_by,
   q.publish_override_reason, q.publish_override_at,
-  q.auto_publish, q.auto_publish_outcome, q.auto_publish_message`;
+  q.auto_publish, q.auto_publish_outcome, q.auto_publish_message, q.checks`;
 
 export function toRunSummary(r: RunDbRow): RunSummary {
+  const checks = r.checks === null ? null : json<RunChecksSummary>(r.checks);
   return {
     id: r.id,
     deployRunId: r.deploy_run_id,
@@ -106,6 +120,13 @@ export function toRunSummary(r: RunDbRow): RunSummary {
     status: r.status,
     classification: json<RunSummary["classification"]>(r.classification),
     pageCount: Number(r.page_count),
+    checkSummary: checks
+      ? {
+          checkIds: checks.ran.map((c) => c.id),
+          pagesChecked: checks.pagesChecked,
+          findingCounts: checks.findingCounts,
+        }
+      : null,
     problemCount: Number(r.problem_count),
     baseUrl: r.base_url,
     errorCode: r.error_code,
@@ -177,6 +198,8 @@ const auditPageSchema = z.object({
   failingAudits: z.array(failingAuditSchema),
   problems: z.array(problemSchema),
   heldBack: z.array(heldBackSchema),
+  /** #727 — every finding of the page checks on this page (all severities). */
+  checkFindings: z.array(findingSchema),
   errorCode: z.string().nullable(),
   errorMessage: z.string().nullable(),
 });
@@ -196,7 +219,13 @@ export const getAuditOp = defineOperation({
       chatSessionId: z.string().uuid().optional(),
     })
     .strict(),
-  output: z.object({ run: runSummarySchema.nullable(), pages: z.array(auditPageSchema) }),
+  output: z.object({
+    run: runSummarySchema.nullable(),
+    pages: z.array(auditPageSchema),
+    /** #727 — the page checks of the run: which ran, site-wide findings
+     *  and problems, check errors. Null before they ran. */
+    checks: runChecksSummarySchema.nullable(),
+  }),
   handler: async (_ctx, input, tx) => {
     const given = [input.auditRunId, input.deployRunId, input.chatSessionId].filter(
       (v) => v !== undefined,
@@ -229,12 +258,12 @@ export const getAuditOp = defineOperation({
           message: `audit run ${input.auditRunId} not found — call list_quality_audits for valid ids`,
         });
       }
-      return ok({ run: null, pages: [] });
+      return ok({ run: null, pages: [], checks: null });
     }
     const pageRows = (await tx.execute(sql`
       SELECT qp.page_id::text AS page_id, p.title, p.current_path, qp.url, qp.status, qp.scores,
              qp.performance_runs, qp.failing_audits, qp.problems, qp.held_back,
-             qp.error_code, qp.error_message,
+             qp.check_findings, qp.error_code, qp.error_message,
              COALESCE((SELECT jsonb_object_agg(b.category, b.baseline)
                          FROM quality_baselines b WHERE b.page_id = qp.page_id), '{}'::jsonb) AS baselines
       FROM quality_audit_pages qp
@@ -252,6 +281,7 @@ export const getAuditOp = defineOperation({
       failing_audits: unknown;
       problems: unknown;
       held_back: unknown;
+      check_findings: unknown;
       error_code: string | null;
       error_message: string | null;
       baselines: unknown;
@@ -276,22 +306,29 @@ export const getAuditOp = defineOperation({
         failingAudits: json<z.infer<typeof failingAuditSchema>[]>(r.failing_audits),
         problems: json<z.infer<typeof problemSchema>[]>(r.problems),
         heldBack: json<z.infer<typeof heldBackSchema>[]>(r.held_back),
+        checkFindings: json<z.infer<typeof findingSchema>[]>(r.check_findings),
         errorCode: r.error_code,
         errorMessage: r.error_message,
       })),
+      checks: runRow.checks === null ? null : json<RunChecksSummary>(runRow.checks),
     });
   },
 });
 
 const acceptanceSchema = z.object({
   id: z.string(),
-  pageId: z.string(),
+  /** Null for a site-wide page-check acceptance (#727). */
+  pageId: z.string().nullable(),
   pageTitle: z.string(),
+  /** The page's path, or "site-wide". */
   pagePath: z.string(),
-  kind: z.enum(["finding", "score"]),
+  /** `check` (#727): a page-check rule accepted up to `acceptedCount`. */
+  kind: z.enum(["finding", "score", "check"]),
+  /** The Lighthouse audit id, or the page-check rule id. */
   auditId: z.string().nullable(),
   category: categorySchema.nullable(),
   acceptedScore: z.number().int().nullable(),
+  acceptedCount: z.number().int().nullable(),
   reason: z.string(),
   acceptedBy: z.string(),
   acceptedAt: z.string(),
@@ -308,7 +345,7 @@ export const listAcceptancesOp = defineOperation({
   input: z
     .object({
       pageId: z.string().uuid().optional(),
-      /** Substring of the Lighthouse audit id, the reason, or the page path. */
+      /** Substring of the Lighthouse audit id / rule id, the reason, or the page path. */
       query: z.string().max(200).optional(),
       includeRevoked: z.boolean().default(false),
       limit: z.number().int().min(1).max(500).default(100),
@@ -327,22 +364,23 @@ export const listAcceptancesOp = defineOperation({
     }
     const rows = (await tx.execute(sql`
       SELECT a.id::text AS id, a.page_id::text AS page_id, p.title, p.current_path, a.kind,
-             a.audit_id, a.category, a.accepted_score, a.reason,
+             a.audit_id, a.category, a.accepted_score, a.accepted_count, a.reason,
              a.accepted_by::text AS accepted_by, a.accepted_at, a.audit_run_id::text AS audit_run_id, a.revoked_at
       FROM quality_acceptances a
-      JOIN pages p ON p.id = a.page_id AND p.deleted_at IS NULL
-      WHERE TRUE${sql.join(filters, sql``)}
+      LEFT JOIN pages p ON p.id = a.page_id
+      WHERE (a.page_id IS NULL OR p.deleted_at IS NULL)${sql.join(filters, sql``)}
       ORDER BY a.accepted_at DESC
       LIMIT ${input.limit}
     `)) as unknown as {
       id: string;
-      page_id: string;
-      title: string;
-      current_path: string;
-      kind: "finding" | "score";
+      page_id: string | null;
+      title: string | null;
+      current_path: string | null;
+      kind: "finding" | "score" | "check";
       audit_id: string | null;
       category: z.infer<typeof categorySchema> | null;
       accepted_score: number | null;
+      accepted_count: number | null;
       reason: string;
       accepted_by: string;
       accepted_at: string | Date;
@@ -353,12 +391,13 @@ export const listAcceptancesOp = defineOperation({
       acceptances: rows.map((r) => ({
         id: r.id,
         pageId: r.page_id,
-        pageTitle: r.title,
-        pagePath: r.current_path,
+        pageTitle: r.title ?? SITE_WIDE_PATH,
+        pagePath: r.current_path ?? SITE_WIDE_PATH,
         kind: r.kind,
         auditId: r.audit_id,
         category: r.category,
         acceptedScore: r.accepted_score,
+        acceptedCount: r.accepted_count === null ? null : Number(r.accepted_count),
         reason: r.reason,
         acceptedBy: r.accepted_by,
         acceptedAt: iso(r.accepted_at),

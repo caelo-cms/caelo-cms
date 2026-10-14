@@ -24,6 +24,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { chatFeedbackFor, problemLabel } from "../../quality/chat-feedback.js";
+import { SITE_WIDE_PATH } from "../../quality/gate.js";
 import type { QualityProblem } from "../../quality/ratchet.js";
 import { appendChatMessageOp } from "../chat/messages.js";
 import { promoteDeployOp } from "../deploy.js";
@@ -226,6 +227,15 @@ export const chatStatusOp = defineOperation({
       path: r.current_path,
       findings: json<QualityProblem[]>(r.problems).map(problemLabel),
     }));
+    // #727 — site-wide page-check problems have no page row.
+    const siteRows = (await tx.execute(sql`
+      SELECT COALESCE(checks->'siteProblems', '[]'::jsonb) AS site_problems
+      FROM quality_audit_runs WHERE id = ${audit.id}::uuid
+    `)) as unknown as { site_problems: unknown }[];
+    const siteProblems = json<QualityProblem[]>(siteRows[0]?.site_problems ?? []);
+    if (siteProblems.length > 0) {
+      problemPages.push({ path: SITE_WIDE_PATH, findings: siteProblems.map(problemLabel) });
+    }
     const feedback = chatFeedbackFor({
       status: audit.status,
       fixRound: audit.fixRound,
@@ -235,6 +245,7 @@ export const chatStatusOp = defineOperation({
       errorCode: audit.errorCode,
       errorMessage: audit.errorMessage,
       skippedBecause: audit.classification.skipped,
+      lighthouse: audit.classification.auditNeeded,
     });
     // Only the audit of the build staging serves NOW may drive the chat: a
     // chat whose Stage another chat has since replaced must not offer an

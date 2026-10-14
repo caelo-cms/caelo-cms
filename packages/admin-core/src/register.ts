@@ -411,7 +411,7 @@ import {
   releaseChatNotificationOp,
   retryAuditOp,
 } from "./ops/quality/gate.js";
-import { claimNextAuditOp, enqueueAuditOp, recordAuditResultOp } from "./ops/quality/lifecycle.js";
+import { claimNextAuditOp, enqueueAuditOp } from "./ops/quality/lifecycle.js";
 import {
   executeQualityProposalOp,
   listPendingQualityProposalsOp,
@@ -420,6 +420,7 @@ import {
   rejectQualityProposalOp,
 } from "./ops/quality/pending.js";
 import { getAuditOp, listAcceptancesOp, listAuditsOp } from "./ops/quality/read.js";
+import { recordAuditResultOp } from "./ops/quality/record-result.js";
 import {
   createRedirectOp,
   createRedirectsManyOp,
