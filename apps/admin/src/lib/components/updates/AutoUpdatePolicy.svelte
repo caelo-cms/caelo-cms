@@ -187,8 +187,16 @@
             </Select>
           </div>
 
-          <fieldset class={mode === "auto" ? "space-y-2" : "space-y-2 opacity-50"}>
+          <!-- The choices stay editable and submitted in every mode (a disabled
+               fieldset would save them as off), so this says when they apply
+               instead of fading them below WCAG contrast. -->
+          <fieldset class="space-y-2">
             <legend class="font-medium">Install automatically</legend>
+            {#if mode !== "auto"}
+              <p class="text-xs text-muted-foreground" data-testid="policy-auto-inactive">
+                Used only when the setting above is "Install the kinds I choose automatically".
+              </p>
+            {/if}
             <label class="flex items-start gap-2">
               <input type="checkbox" name="autoSecurity" checked={policy.autoSecurity} data-testid="policy-auto-security" />
               <span>Security fixes — releases that fix a published security advisory</span>
