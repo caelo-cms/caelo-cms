@@ -187,8 +187,8 @@ export function formatPage(p: AuditPage): string[] {
 export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   name: "get_quality_audit",
   description:
-    "Read the quality check of the staged site: the page checks that read EVERY page on every Stage (e.g. meta descriptions), plus a Lighthouse audit (Performance, Accessibility, Best Practices, SEO; mobile) when the Stage changed how pages render. " +
-    "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores against the page's baseline, every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), every page-check problem with its rule id (`page-meta/description-missing` — rule ids contain a slash) and a fix hint naming the tool to use, site-wide findings, non-blocking warnings and hints, Performance signals the noise guard is holding back, and infrastructure errors. " +
+    "Read the quality check of the staged site: the page checks (added by plugins such as SEO checks) that read EVERY page on every Stage, plus a Lighthouse audit (Performance, Accessibility, Best Practices, SEO; mobile) when the Stage changed how pages render. " +
+    "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores against the page's baseline, every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), every page-check problem with its rule id (`<check>/<rule>`, e.g. `seo-check/title-missing` — rule ids contain a slash) and a fix hint naming the tool to use, site-wide findings, non-blocking warnings and hints, Performance signals the noise guard is holding back, and infrastructure errors. " +
     "A problem is a failing audit the editors have not accepted on that page, a score below the page's baseline, or a page-check rule with more errors than an editor accepted. Warnings and hints never block. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. " +
     "A finding marked CAELO PLATFORM (back/forward cache, caching of Caelo's own files, server response, compression, redirects) is decided by Caelo's hosting/build setup, not by the site: report it with bug_report, never edit the site for it, never propose accepting it. " +
     "Typical input: {} or { auditRunId }.",
@@ -227,7 +227,7 @@ const checkStageInput = z.object({}).strict();
 export const checkStageAuditTool = makeReadTool<z.infer<typeof checkStageInput>>({
   name: "check_stage_audit",
   description:
-    "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (The page checks — e.g. meta descriptions — read every page on EVERY Stage regardless.) " +
+    "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (The page checks read every page on EVERY Stage regardless.) " +
     "Lighthouse runs for: new or changed module html/css/js, layout / template / theme changes, new pages, plugin configuration. Not for: only text and field values, placing or moving existing modules, SEO texts, redirects. " +
     "Lists the deciding changes and the pages the check would cover. Takes no input (uses the current chat).",
   opName: "quality_audits.classify_stage",

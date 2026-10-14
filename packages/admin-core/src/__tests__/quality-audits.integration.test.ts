@@ -28,6 +28,7 @@ import {
   listQualityAuditsTool,
 } from "../ai/tools/quality-audit-tools.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
+import { testCheckRegistry } from "../quality/checks/__tests__/fixtures/test-checks.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
 import type { AuditJobResult } from "../quality/lighthouse-runner.js";
 import type { FailingAudit, QualityCategory } from "../quality/ratchet.js";
@@ -622,6 +623,10 @@ describe("worker drain", () => {
       const processed = await drainAuditQueue({
         adapter,
         registry,
+        // #727 — a plugin-style findings check, so the page checks run.
+        checks: testCheckRegistry(async () => {
+          throw new Error("runJob replaces the Lighthouse runner");
+        }),
         env: { provider: "self-hosted", stagingBaseUrl: `http://127.0.0.1:${port}` },
         runJob: async (job): Promise<AuditJobResult> => {
           jobs.push(job);
@@ -643,7 +648,7 @@ describe("worker drain", () => {
     }>(SYS, "quality_audits.get", { deployRunId });
     expect(got.run.status).toBe("passed");
     // #727 — the page checks read every published page.
-    expect(got.run.checkSummary).toMatchObject({ pagesChecked: 2, checkIds: ["page-meta"] });
+    expect(got.run.checkSummary).toMatchObject({ pagesChecked: 2, checkIds: ["test-meta"] });
   });
 
   it("records an unreachable staging origin as a failed audit", async () => {

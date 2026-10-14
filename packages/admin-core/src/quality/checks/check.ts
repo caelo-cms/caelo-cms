@@ -14,7 +14,7 @@
  *   it is on, or no page when it is about the site as a whole.
  *
  * The context is deliberately an object so later PRs extend it without
- * reshaping checks: PR B adds the site context (locales, redirects,
+ * reshaping checks: #727 adds the site context (locales, redirects,
  * sitemap.xml, robots.txt) for plugin-contributed checks.
  */
 

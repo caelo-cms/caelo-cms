@@ -39,12 +39,12 @@ test.beforeAll(() => {
         FROM deploy_targets WHERE name = 'staging'
         RETURNING id\`)[0];
       const problem = {
-        kind: "check_rule", checkId: "page-meta", ruleId: "page-meta/description-missing",
+        kind: "check_rule", checkId: "seo-check", ruleId: "seo-check/title-missing",
         count: 1, allowed: 0,
-        findings: [{ message: "No meta description: search engines show a random snippet." }],
+        findings: [{ message: "No title: search engines show the URL instead." }],
       };
       const warning = {
-        ruleId: "page-meta/title-long", severity: "warning", pageId: page.id,
+        ruleId: "seo-check/title-long", severity: "warning", pageId: page.id,
         message: "Long title: 72 characters.",
       };
       const site = {
@@ -58,7 +58,7 @@ test.beforeAll(() => {
           \${JSON.stringify({ auditNeeded: false, reasons: [], skipped: ["field values: hero"] })}::jsonb,
           now(), 2,
           \${JSON.stringify({
-            ran: [{ id: "page-meta", title: "Page meta tags", scope: "page", source: { kind: "core" } }],
+            ran: [{ id: "seo-check", title: "SEO checks", scope: "page", source: { kind: "plugin", slug: "seo-check" } }],
             pagesChecked: 3,
             findingCounts: { error: 2, warning: 1, info: 0 },
             siteFindings: [{ ruleId: "robots/blocked", severity: "error", message: site.findings[0].message }],
@@ -110,11 +110,11 @@ test("the quality view shows page-check findings, site-wide ones, and a site-wid
   await page.goto(`/settings/quality?run=${RUN_ID}`);
   const detail = page.getByTestId("quality-audit-detail");
   await expect(detail).toContainText("No Lighthouse audit needed: field values: hero");
-  await expect(detail).toContainText("Page checks (page-meta) read 3 page(s)");
-  await expect(detail).toContainText("page-meta/description-missing");
-  await expect(detail).toContainText("No meta description");
+  await expect(detail).toContainText("Page checks (seo-check) read 3 page(s)");
+  await expect(detail).toContainText("seo-check/title-missing");
+  await expect(detail).toContainText("No title");
   await expect(detail.getByTestId("quality-check-notes")).toContainText(
-    "warning: page-meta/title-long",
+    "warning: seo-check/title-long",
   );
   await expect(detail.getByTestId("quality-site-findings")).toContainText("robots/blocked");
 

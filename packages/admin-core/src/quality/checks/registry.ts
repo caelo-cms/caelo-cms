@@ -12,8 +12,12 @@
  *   covers the homepage plus up to five changed pages, and its scores go
  *   through the per-category ratchet (ratchet.ts).
  *
- * `source` records who contributed an entry. Core registers its checks at
- * construction; PR B adds plugin-contributed checks with
+ * `source` records who contributed an entry. Core registers Lighthouse at
+ * construction and ships no findings check of its own: the one rule it
+ * had in mind (pages without a meta description) is enforced before the
+ * build by `deploy.trigger` (#730, deploy/missing-seo.ts), so a staged
+ * build can never contain such a page. The findings checks come from
+ * plugins (#727, the `checks` composition point), added with
  * `{ kind: "plugin", slug }` through the same `register` — the registry's
  * shape does not change for them.
  */
@@ -21,7 +25,6 @@
 import type { AuditJob } from "../lighthouse-protocol.js";
 import { type AuditJobResult, runAuditJob } from "../lighthouse-runner.js";
 import type { QualityCheck } from "./check.js";
-import { pageMetaCheck } from "./core/page-meta.js";
 import { checkIdSchema } from "./findings.js";
 
 /** Who contributed a check. */
@@ -115,12 +118,11 @@ export class CheckRegistry {
   }
 }
 
-/** The checks core ships, in run order: Lighthouse first, then the cheap ones. */
+/** The checks core ships: Lighthouse. Plugins add the findings checks (#727). */
 export function createCoreCheckRegistry(
   options: { readonly lighthouse?: LighthouseRunner } = {},
 ): CheckRegistry {
   const registry = new CheckRegistry();
   registry.registerLighthouse(options.lighthouse ?? runAuditJob);
-  registry.register(pageMetaCheck, CORE);
   return registry;
 }

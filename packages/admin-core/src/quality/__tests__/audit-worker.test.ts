@@ -8,6 +8,7 @@ import {
   stagedPageUrl,
   toDisplayUrl,
 } from "../audit-worker.js";
+import { testCheckRegistry } from "../checks/__tests__/fixtures/test-checks.js";
 
 const RUN_ID = "00000000-0000-4000-8000-0000000000aa";
 
@@ -206,10 +207,15 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
         registry: registry as never,
         adapter: adapter as never,
         env: { provider: "gcp-firebase" },
+        checks: testCheckRegistry(async () => {
+          throw new Error("runJob replaces the Lighthouse runner");
+        }),
         // #727 — the page checks read the same preview origin.
         fetchPage: (async (url: string) => {
           fetched.push(url);
-          return new Response("<html><head><title>x</title></head><body></body></html>");
+          return new Response(
+            '<html><head><meta name="description" content="TODO"></head><body></body></html>',
+          );
         }) as unknown as typeof fetch,
         runJob: async (job) => {
           jobs.push(job);
@@ -256,8 +262,8 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
     expect(JSON.stringify(jobs)).toContain("https://site--ch.web.app/");
     expect(fetched).toEqual(["https://site--ch.web.app/"]);
     const text = JSON.stringify(recorded);
-    // The page check's finding (no meta description) is reported too.
-    expect(text).toContain("page-meta/description-missing");
+    // The registered page check's finding is reported too.
+    expect(text).toContain("test-meta/placeholder-description");
     expect(text).not.toContain("web.app");
     expect(text).toContain("https://staging.example.com/");
     expect(text).toContain("https://staging.example.com/_assets/logo.png");

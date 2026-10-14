@@ -7,7 +7,7 @@
  * broke, how bad it is, where (a page, or the site as a whole), what the AI
  * should do about it. The shape is validated with Zod wherever findings
  * cross a boundary — a check's return value (checks contributed by plugins
- * are untrusted input, PR B), the worker → `quality_audits.record_result`
+ * are untrusted input), the worker → `quality_audits.record_result`
  * hand-over, and the read ops.
  *
  * Severity decides the gate (maintainer decision on #727): an `error` the
@@ -22,18 +22,18 @@ export const FINDING_SEVERITIES = ["error", "warning", "info"] as const;
 
 /**
  * A check id: lower-case kebab words, optionally namespaced with one dot
- * (`page-meta`, `seo-check.titles`). `lighthouse` is the built-in browser
+ * (`seo-check`, `seo-check.titles`). `lighthouse` is the built-in browser
  * audit. The id prefixes every rule id the check reports.
  */
 export const checkIdSchema = z
   .string()
   .regex(
     /^[a-z][a-z0-9-]{0,39}(\.[a-z][a-z0-9-]{0,39})?$/,
-    "a check id is lower-case kebab words, optionally one dot-namespace (e.g. 'page-meta', 'seo-check.titles')",
+    "a check id is lower-case kebab words, optionally one dot-namespace (e.g. 'seo-check', 'seo-check.titles')",
   );
 
 /**
- * A rule id: `<checkId>/<rule>` (`page-meta/description-missing`). The slash
+ * A rule id: `<checkId>/<rule>` (`seo-check/title-missing`). The slash
  * keeps rule ids apart from Lighthouse audit ids (`image-alt`), which share
  * the acceptance table, and names the check that owns the rule.
  */
@@ -42,7 +42,7 @@ export const ruleIdSchema = z
   .max(120)
   .regex(
     /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)?\/[a-z][a-z0-9-]*$/,
-    "a rule id is '<checkId>/<rule>' in lower-case kebab words (e.g. 'page-meta/description-missing')",
+    "a rule id is '<checkId>/<rule>' in lower-case kebab words (e.g. 'seo-check/title-missing')",
   );
 
 /** Where the AI fixes a finding: the tool to call and what to do with it. */
@@ -76,7 +76,7 @@ export const findingSchema = z
 export type Finding = z.infer<typeof findingSchema>;
 export type FindingFix = z.infer<typeof findingFixSchema>;
 
-/** The check id a rule id belongs to (`page-meta/x` → `page-meta`). */
+/** The check id a rule id belongs to (`seo-check/x` → `seo-check`). */
 export function checkIdOfRule(ruleId: string): string {
   const slash = ruleId.indexOf("/");
   return slash === -1 ? ruleId : ruleId.slice(0, slash);

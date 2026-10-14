@@ -46,8 +46,8 @@
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">Quality</h1>
     <p class="text-sm text-muted-foreground">
-      Every Stage is checked: page checks read every page of the staged build (for example
-      meta descriptions), and a Stage that changes how pages render is also checked with
+      Every Stage is checked: page checks (added by plugins) read every page of the staged
+      build, and a Stage that changes how pages render is also checked with
       Lighthouse (Performance, Accessibility, Best Practices, SEO). New errors block Publish live
       until they are fixed or an editor accepts them on their page; warnings and hints only
       inform.

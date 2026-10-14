@@ -218,7 +218,7 @@ interface WorkerDeps {
   readonly adapter: DatabaseAdapter;
   readonly registry: OperationRegistry;
   /** The checks to run; core's (Lighthouse + core findings checks) when
-   *  omitted. PR B passes one with plugin-contributed checks added. */
+   *  omitted. The plugin `checks` composition point (#727) passes one with plugin checks added. */
   readonly checks?: CheckRegistry;
   /** Override the Lighthouse runner (tests). */
   readonly runJob?: (job: AuditJob) => Promise<AuditJobResult>;

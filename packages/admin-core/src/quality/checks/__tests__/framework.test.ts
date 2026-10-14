@@ -2,7 +2,6 @@
 
 import { describe, expect, it } from "bun:test";
 import type { PageCheck, SiteCheck, StagedPage } from "../check.js";
-import { DESCRIPTION_MISSING_RULE, metaDescriptions, pageMetaCheck } from "../core/page-meta.js";
 import { fetchStagedPages } from "../fetch-pages.js";
 import {
   checkIdOfRule,
@@ -14,6 +13,11 @@ import {
 } from "../findings.js";
 import { CheckRegistry, createCoreCheckRegistry, LIGHTHOUSE_CHECK_ID } from "../registry.js";
 import { runFindingChecks } from "../runner.js";
+import {
+  metaDescriptions,
+  PLACEHOLDER_RULE,
+  placeholderDescriptionCheck,
+} from "./fixtures/test-checks.js";
 
 const P1 = "00000000-0000-4000-8000-000000000001";
 const P2 = "00000000-0000-4000-8000-000000000002";
@@ -26,7 +30,7 @@ const CORE = { kind: "core" } as const;
 
 describe("findings shape", () => {
   it("rule ids are '<checkId>/<rule>' and never collide with Lighthouse audit ids", () => {
-    expect(ruleIdSchema.safeParse("page-meta/description-missing").success).toBe(true);
+    expect(ruleIdSchema.safeParse("seo-check/title-missing").success).toBe(true);
     expect(ruleIdSchema.safeParse("seo-check.titles/too-long").success).toBe(true);
     for (const bad of ["image-alt", "Page/x", "a/b/c", "a/", "/b"]) {
       expect(ruleIdSchema.safeParse(bad).success).toBe(false);
@@ -35,7 +39,7 @@ describe("findings shape", () => {
   });
 
   it("check ids are kebab words with at most one dot namespace", () => {
-    expect(checkIdSchema.safeParse("page-meta").success).toBe(true);
+    expect(checkIdSchema.safeParse("seo-check").success).toBe(true);
     expect(checkIdSchema.safeParse("seo-check.links").success).toBe(true);
     expect(checkIdSchema.safeParse("a.b.c").success).toBe(false);
     expect(checkIdSchema.safeParse("Upper").success).toBe(false);
@@ -65,19 +69,16 @@ describe("findings shape", () => {
 describe("CheckRegistry", () => {
   const check: PageCheck = { id: "demo", title: "Demo", scope: "page", run: () => [] };
 
-  it("core registers Lighthouse first, then the page-meta check", () => {
+  it("core registers Lighthouse only; findings checks come from plugins", () => {
     const r = createCoreCheckRegistry({
       lighthouse: async () => ({ ok: true, pages: [], pageErrors: [] }),
     });
-    expect(r.list().map((e) => [e.id, e.kind])).toEqual([
-      [LIGHTHOUSE_CHECK_ID, "lighthouse"],
-      ["page-meta", "findings"],
-    ]);
-    expect(r.findingChecks().map((e) => e.id)).toEqual(["page-meta"]);
+    expect(r.list().map((e) => [e.id, e.kind])).toEqual([[LIGHTHOUSE_CHECK_ID, "lighthouse"]]);
+    expect(r.findingChecks()).toEqual([]);
     expect(r.lighthouse()?.id).toBe("lighthouse");
   });
 
-  it("accepts plugin-contributed checks next to core's (PR B)", () => {
+  it("accepts plugin-contributed checks next to core's", () => {
     const r = new CheckRegistry();
     r.register(check, { kind: "plugin", slug: "seo-check" });
     expect(r.findingChecks()[0]).toMatchObject({
@@ -222,7 +223,7 @@ describe("runFindingChecks", () => {
   });
 });
 
-describe("page-meta check", () => {
+describe("the test-only placeholder check (proves the framework)", () => {
   it("reads <meta name=description> in <head> only, decoding entities", () => {
     expect(
       metaDescriptions(
@@ -232,21 +233,19 @@ describe("page-meta check", () => {
     expect(metaDescriptions("<html><head><meta name=description></head></html>")).toEqual([null]);
   });
 
-  it("a page with a description passes; missing or blank is an error with a fix", async () => {
-    const run = (html: string) => pageMetaCheck.run({ page: page(P1, "/", html) });
+  it("a real description passes; a TODO placeholder is an error with a fix", async () => {
+    const run = (html: string) => placeholderDescriptionCheck.run({ page: page(P1, "/", html) });
     expect(await run('<head><meta name="description" content="Hello"></head>')).toEqual([]);
-    const missing = await run("<head><title>x</title></head>");
-    expect(missing).toEqual([
+    const placeholder = await run('<head><meta name="description" content="TODO"></head>');
+    expect(placeholder).toEqual([
       expect.objectContaining({
-        ruleId: DESCRIPTION_MISSING_RULE,
+        ruleId: PLACEHOLDER_RULE,
         severity: "error",
         pageId: P1,
         fix: expect.objectContaining({ tool: "set_page_seo_many" }),
       }),
     ]);
-    expect(findingLabel((missing[0] as Finding).message)).toBe("No meta description");
-    const blank = await run('<head><meta name="description" content="   "></head>');
-    expect(findingLabel((blank[0] as Finding).message)).toBe("Empty meta description");
+    expect(findingLabel((placeholder[0] as Finding).message)).toBe("Placeholder meta description");
   });
 });
 

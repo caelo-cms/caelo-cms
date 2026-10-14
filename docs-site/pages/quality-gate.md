@@ -11,7 +11,7 @@ seo:
 
 Caelo checks every Stage before it can go live, with two kinds of checks:
 
-- **Page checks** read every page of the staged build on every Stage — also a Stage that only changed SEO texts. Today they check that every page has a meta description; more SEO rules follow as a plugin.
+- **Page checks** read every page of the staged build on every Stage — also a Stage that only changed SEO texts. Plugins add them; the SEO checks plugin is the first (in progress).
 - **Lighthouse** — Performance, Accessibility, Best Practices and SEO, on a mobile viewport — audits a Stage that can change how pages look or perform. The target is 100 in every category.
 
 New errors block **Publish live**. Warnings and hints are shown but never block. The AI fixes what it can; what it can't fix, an editor decides about.

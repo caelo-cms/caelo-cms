@@ -4,7 +4,7 @@
  * Issue #727 — run the findings checks over the pages of a staged build.
  *
  * Every check's output is validated at this boundary (CLAUDE.md §4: Zod at
- * every boundary — plugin-contributed checks, PR B, are untrusted). A check
+ * every boundary — plugin-contributed checks are untrusted). A check
  * that throws, hangs, or returns something malformed is NOT skipped: it is
  * reported as a check error, which fails the audit loudly (no fallbacks,
  * CLAUDE.md §2) — a silently missing check would read as "no findings".

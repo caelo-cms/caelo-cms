@@ -5,10 +5,11 @@
  * and real self-hosted staging builds (served to the worker on a loopback
  * port, provider "aws"). Lighthouse is faked; the page checks are real.
  *
- *   - the core page-meta check reads EVERY page of the staged build; a
- *     missing meta description blocks Publish live and reaches the chat's
- *     fix offer;
- *   - an SEO-only Stage runs the page checks (not Lighthouse) and a fixed
+ *   - a findings check registered as a plugin would (the test-only
+ *     placeholder-description check; core ships none) reads EVERY page of
+ *     the staged build; its error blocks Publish live and reaches the
+ *     chat's fix offer;
+ *   - an SEO-only Stage runs the page checks (not Lighthouse) and the fixed
  *     description opens the gate;
  *   - the per-rule ratchet: acceptances (page and site-wide) cover the
  *     errors measured, a new error blocks again, fewer errors tighten the
@@ -26,6 +27,10 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
+import {
+  PLACEHOLDER_RULE,
+  testCheckRegistry,
+} from "../quality/checks/__tests__/fixtures/test-checks.js";
 import { type CheckRegistry, createCoreCheckRegistry } from "../quality/checks/registry.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
 import type { AuditJobResult } from "../quality/lighthouse-runner.js";
@@ -44,7 +49,7 @@ const SYS: ExecutionContext = { actorId: SYSTEM_ID, actorKind: "system", request
 const HUMAN: ExecutionContext = { actorId: OWNER_ID, actorKind: "human", requestId: "qc-727" };
 const AI: ExecutionContext = { actorId: SYSTEM_ID, actorKind: "ai", requestId: "qc-727" };
 const PFX = "qc727-";
-const RULE = "page-meta/description-missing";
+const RULE = PLACEHOLDER_RULE;
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
@@ -121,7 +126,7 @@ async function audit(
     adapter,
     registry,
     runJob,
-    ...(checks ? { checks } : {}),
+    checks: checks ?? testCheckRegistry(runJob),
     env: {
       provider: "aws",
       loopbackSource: (run) =>
@@ -245,11 +250,13 @@ beforeAll(async () => {
       status: "published",
     })
   ).pageId;
-  // /about has a description; the homepage has none.
+  // Builds refuse pages without a description (#730). /about has a real
+  // one; the homepage still carries a placeholder the test check flags.
   await op(HUMAN, "pages_seo.set", {
     pageId: aboutId,
     metaDescription: "Who we are and what we do.",
   });
+  await op(HUMAN, "pages_seo.set", { pageId: homeId, metaDescription: "TODO: write this" });
 });
 
 afterAll(async () => {
@@ -267,7 +274,7 @@ afterAll(async () => {
 describe("the page checks run on every Stage, on every page", () => {
   let chatSessionId: string;
 
-  it("a missing meta description blocks Publish live and reaches the fix offer", async () => {
+  it("a page-check error blocks Publish live and reaches the fix offer", async () => {
     chatSessionId = await newChat("meta");
     const staged = await stage(chatSessionId);
     // First Stage of the site: Lighthouse runs too.
@@ -276,7 +283,7 @@ describe("the page checks run on every Stage, on every page", () => {
 
     const got = await op<AuditRead>(AI, "quality_audits.get", { deployRunId: staged.runId });
     expect(got.run.status).toBe("problems");
-    expect(got.run.checkSummary).toMatchObject({ pagesChecked: 2, checkIds: ["page-meta"] });
+    expect(got.run.checkSummary).toMatchObject({ pagesChecked: 2, checkIds: ["test-meta"] });
     const home = got.pages.find((p) => p.pageId === homeId);
     expect(home?.problems).toEqual([
       expect.objectContaining({ kind: "check_rule", ruleId: RULE, count: 1 }),
@@ -295,7 +302,7 @@ describe("the page checks run on every Stage, on every page", () => {
       { chatSessionId },
     );
     expect(chat.feedback?.kind).toBe("offer");
-    expect(chat.feedback?.text).toContain("/ (No meta description)");
+    expect(chat.feedback?.text).toContain("/ (Placeholder meta description)");
   });
 
   it("an SEO-only Stage runs only the page checks, and the fix opens the gate", async () => {
