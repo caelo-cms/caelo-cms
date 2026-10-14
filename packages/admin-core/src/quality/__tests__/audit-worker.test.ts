@@ -22,6 +22,7 @@ function run(overrides: Partial<ClaimedAuditRun> = {}): ClaimedAuditRun {
     env: "staging",
     outDir: "output/staging",
     pages: [{ pageId: "00000000-0000-4000-8000-0000000000cc", currentPath: "/" }],
+    checkPages: [{ pageId: "00000000-0000-4000-8000-0000000000cc", currentPath: "/" }],
     ...overrides,
   };
 }
@@ -176,6 +177,7 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
   it("runs Lighthouse against the preview origin but records only the staging host", async () => {
     const recorded: unknown[] = [];
     const jobs: unknown[] = [];
+    const fetched: string[] = [];
     const registry = {
       lookup: () => ({
         ok: true,
@@ -204,6 +206,11 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
         registry: registry as never,
         adapter: adapter as never,
         env: { provider: "gcp-firebase" },
+        // #727 — the page checks read the same preview origin.
+        fetchPage: (async (url: string) => {
+          fetched.push(url);
+          return new Response("<html><head><title>x</title></head><body></body></html>");
+        }) as unknown as typeof fetch,
         runJob: async (job) => {
           jobs.push(job);
           return {
@@ -247,7 +254,10 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
       run({ previewUrl: "https://site--ch.web.app", siteUrl: "https://staging.example.com" }),
     );
     expect(JSON.stringify(jobs)).toContain("https://site--ch.web.app/");
+    expect(fetched).toEqual(["https://site--ch.web.app/"]);
     const text = JSON.stringify(recorded);
+    // The page check's finding (no meta description) is reported too.
+    expect(text).toContain("page-meta/description-missing");
     expect(text).not.toContain("web.app");
     expect(text).toContain("https://staging.example.com/");
     expect(text).toContain("https://staging.example.com/_assets/logo.png");

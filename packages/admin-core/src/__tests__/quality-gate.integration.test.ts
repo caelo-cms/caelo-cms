@@ -29,6 +29,7 @@ import { SQL } from "bun";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
+import { CheckRegistry } from "../quality/checks/registry.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
 import type { AuditJobResult } from "../quality/lighthouse-runner.js";
 import type { FailingAudit, QualityCategory } from "../quality/ratchet.js";
@@ -191,10 +192,18 @@ function fakeLighthouse(
   };
 }
 
+/** These tests are about Lighthouse's gate; the page checks (#727) have
+ *  their own suite (quality-checks.integration.test.ts). */
+const LIGHTHOUSE_ONLY = new CheckRegistry();
+LIGHTHOUSE_ONLY.registerLighthouse(async () => {
+  throw new Error("the test's runJob replaces the Lighthouse runner");
+});
+
 async function audit(runJob: (job: AuditJob) => Promise<AuditJobResult>): Promise<void> {
   await drainAuditQueue({
     adapter,
     registry,
+    checks: LIGHTHOUSE_ONLY,
     runJob,
     // aws: no staging URL → the loopback origin over this process's build.
     env: {

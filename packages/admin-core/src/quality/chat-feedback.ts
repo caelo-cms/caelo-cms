@@ -25,6 +25,7 @@
  */
 
 import { z } from "zod";
+import { findingLabel } from "./checks/findings.js";
 import type { QualityProblem } from "./ratchet.js";
 
 /** Fix rounds per Stage chain (#553). */
@@ -59,6 +60,8 @@ export interface ChatAuditSummary {
   readonly errorCode: string | null;
   readonly errorMessage: string | null;
   readonly skippedBecause: readonly string[];
+  /** #727 — whether Lighthouse ran (the page checks run on every Stage). */
+  readonly lighthouse: boolean;
 }
 
 export type ChatFeedback =
@@ -77,10 +80,16 @@ export type ChatFeedback =
 
 /** A short operator-readable label for one problem. */
 export function problemLabel(p: QualityProblem): string {
-  if (p.kind === "failing_audit") {
-    return p.displayValue ? `${p.title} (${p.displayValue})` : p.title;
+  switch (p.kind) {
+    case "failing_audit":
+      return p.displayValue ? `${p.title} (${p.displayValue})` : p.title;
+    case "score_below_baseline":
+      return `${p.category} score ${p.score} (was ${p.baseline})`;
+    case "check_rule": {
+      const label = p.findings[0] ? findingLabel(p.findings[0].message) : p.ruleId;
+      return p.count > 1 ? `${label} (${p.count}×)` : label;
+    }
   }
-  return `${p.category} score ${p.score} (was ${p.baseline})`;
 }
 
 function pageList(pages: readonly ChatProblemPage[]): string {
@@ -152,7 +161,9 @@ export function chatFeedbackFor(audit: ChatAuditSummary): ChatFeedback | null {
     case "passed":
       return {
         kind: "note",
-        text: "Quality check passed (Performance, Accessibility, Best Practices, SEO) — Publish live is available.",
+        text: audit.lighthouse
+          ? "Quality check passed (page checks; Lighthouse: Performance, Accessibility, Best Practices, SEO) — Publish live is available."
+          : `Quality check passed (page checks on every page; no Lighthouse audit needed: ${audit.skippedBecause.slice(0, 3).join("; ") || "no rendering changes"}) — Publish live is available.`,
       };
     case "skipped":
       return {

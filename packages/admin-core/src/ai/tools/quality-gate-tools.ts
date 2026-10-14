@@ -82,11 +82,11 @@ export const acceptQualityFindingsTool = makeProposeTool<AcceptInput>({
   // had the AI argue "I'd accept all four" (two of them Caelo bugs) and
   // offer to request the approval itself.
   when:
-    'ONLY when the operator explicitly asks to accept quality findings or to publish the page as it is ("accept it", "leave the contrast as it is", "ship it anyway"): records their acceptance of failing Lighthouse audits by id (e.g. `color-contrast`) or of a category score drop, each on a specific page path. ' +
+    'ONLY when the operator explicitly asks to accept quality findings or to publish the page as it is ("accept it", "leave the contrast as it is", "ship it anyway"): records their acceptance of failing Lighthouse audits by id (e.g. `color-contrast`), of a category score drop, or of a page-check rule by `ruleId` (e.g. `page-meta/description-missing`; the errors measured now are accepted, a new one blocks again; omit pagePath for a site-wide rule), each on a specific page path. ' +
     "Never on your own initiative, and never recommend, suggest or argue for an acceptance (no \"I'd accept these\", no offering to request the approval): an acceptance lowers the page's quality bar for good, so it is the operator's decision. When findings remain that you cannot fix, describe them plainly and say Publish live stays blocked until they are fixed or the operator decides to accept them. " +
     "Findings get_quality_audit marks CAELO PLATFORM are Caelo bugs: report them with bug_report instead. " +
     "An acceptance applies ONLY to that page — the same finding on another page still blocks. An accepted score becomes the page's new baseline. " +
-    "Take auditRunId, page paths and audit ids from get_quality_audit; the reason is the operator's, in their words. Bundle every item of one decision into one call. " +
+    "Take auditRunId, page paths and audit / rule ids from get_quality_audit; the reason is the operator's, in their words. Bundle every item of one decision into one call. " +
     "Once approved, an acceptance counts at once — Publish live opens without a new Stage. Do NOT call stage_changes afterwards just to 'pick up' the acceptance: a Stage with nothing new still re-runs the whole quality check, which can report fresh findings and start another fix round.",
   schema: proposeAcceptInput,
   inputSchema: z.toJSONSchema(proposeAcceptInput) as Record<string, unknown>,

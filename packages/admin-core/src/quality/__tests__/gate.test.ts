@@ -11,7 +11,11 @@ import {
 } from "../chat-feedback.js";
 import { decideGate, findingKey, type GateAudit, scoreKey } from "../gate.js";
 
-const NONE = { findings: new Set<string>(), scores: new Map<string, number>() };
+const NONE = {
+  findings: new Set<string>(),
+  scores: new Map<string, number>(),
+  checks: new Map<string, number>(),
+};
 
 function audit(over: Partial<GateAudit> = {}): GateAudit {
   return {
@@ -21,6 +25,7 @@ function audit(over: Partial<GateAudit> = {}): GateAudit {
     errorMessage: null,
     publishOverride: null,
     pages: [],
+    siteProblems: [],
     ...over,
   };
 }
@@ -73,12 +78,14 @@ describe("decideGate", () => {
     const partial = decideGate(audit({ status: "problems", pages: problems }), {
       findings: finding,
       scores: new Map(),
+      checks: new Map(),
     });
     expect(partial).toMatchObject({ open: false, state: "problems" });
     expect(partial.openProblems).toHaveLength(1);
     const all = decideGate(audit({ status: "problems", pages: problems }), {
       findings: finding,
       scores: new Map([[scoreKey("p-about", "accessibility"), 92]]),
+      checks: new Map(),
     });
     expect(all).toMatchObject({ open: true, state: "accepted" });
   });
@@ -87,6 +94,7 @@ describe("decideGate", () => {
     const d = decideGate(audit({ status: "problems", pages: problems }), {
       findings: new Set([findingKey("p-about", "color-contrast")]),
       scores: new Map([[scoreKey("p-about", "accessibility"), 95]]),
+      checks: new Map(),
     });
     expect(d.open).toBe(false);
   });
@@ -95,6 +103,7 @@ describe("decideGate", () => {
     const d = decideGate(audit({ status: "problems", pages: problems }), {
       findings: new Set([findingKey("p-home", "color-contrast")]),
       scores: new Map([[scoreKey("p-home", "accessibility"), 50]]),
+      checks: new Map(),
     });
     expect(d.openProblems).toHaveLength(2);
   });
@@ -122,6 +131,7 @@ describe("chatFeedbackFor", () => {
     errorCode: null,
     errorMessage: null,
     skippedBecause: [] as string[],
+    lighthouse: true,
   };
   const fivePages: ChatProblemPage[] = [
     { path: "/", findings: ["Low contrast", "Image without alt", "Missing label"] },

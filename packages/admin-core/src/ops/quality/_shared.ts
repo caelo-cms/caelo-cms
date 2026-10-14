@@ -6,6 +6,7 @@
 
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
+import { checkRuleProblemSchema } from "../../quality/checks/outcome.js";
 import { QUALITY_CATEGORIES } from "../../quality/ratchet.js";
 import { jsonbParam } from "../../sql-helpers.js";
 
@@ -32,6 +33,8 @@ export const classificationReasonSchema = z
 
 export const stageClassificationSchema = z
   .object({
+    /** Whether Lighthouse runs for the Stage (#727: the findings checks
+     *  run on every Stage regardless). */
     auditNeeded: z.boolean(),
     reasons: z.array(classificationReasonSchema),
     skipped: z.array(z.string()),
@@ -80,6 +83,7 @@ export const problemSchema = z.discriminatedUnion("kind", [
       baseline: z.number().int(),
     })
     .strict(),
+  checkRuleProblemSchema,
 ]);
 
 export const heldBackSchema = z.discriminatedUnion("kind", [

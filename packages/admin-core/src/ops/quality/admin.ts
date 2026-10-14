@@ -102,8 +102,8 @@ export const revokeAcceptanceOp = defineOperation({
        WHERE id = ${input.acceptanceId}::uuid AND revoked_at IS NULL
       RETURNING page_id::text AS page_id, kind, category, audit_id
     `)) as unknown as {
-      page_id: string;
-      kind: "finding" | "score";
+      page_id: string | null;
+      kind: "finding" | "score" | "check";
       category: string | null;
       audit_id: string | null;
     }[];
@@ -117,7 +117,7 @@ export const revokeAcceptanceOp = defineOperation({
     }
     // A revoked score acceptance no longer holds the baseline down: the
     // page is measured against the 100 target again.
-    if (row.kind === "score" && row.category) {
+    if (row.kind === "score" && row.category && row.page_id) {
       await tx.execute(sql`
         UPDATE quality_baselines SET baseline = ${INITIAL_BASELINE}, below_streak = 0, updated_at = now()
         WHERE page_id = ${row.page_id}::uuid AND category = ${row.category}
