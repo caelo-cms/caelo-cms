@@ -133,3 +133,26 @@ export function upgraderServiceAccountId(env: string): string {
 export function upgraderServiceAccountEmail(projectId: string, env: string): string {
   return `${upgraderServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
 }
+
+/**
+ * #587 — id of the project custom role that lets the admin write the
+ * redirect rules into the `gcp` stack's URL map (url-map-redirects.ts).
+ * Role ids allow letters, digits, `_` and `.`.
+ */
+export function urlMapRedirectsRoleId(env: string): string {
+  return `caelo_${env.replace(/[^A-Za-z0-9]/g, "_")}_urlMapRedirects`;
+}
+
+/**
+ * #587 — permissions of {@link urlMapRedirectsRoleId}: read-modify-write of
+ * the URL map and waiting for the operation. A URL-map update must be
+ * allowed to "use" every backend the map references, hence the `.use` pair.
+ */
+export const URL_MAP_REDIRECTS_PERMISSIONS: readonly string[] = [
+  "compute.urlMaps.list",
+  "compute.urlMaps.get",
+  "compute.urlMaps.update",
+  "compute.backendBuckets.use",
+  "compute.backendServices.use",
+  "compute.globalOperations.get",
+];

@@ -31,6 +31,25 @@ export interface QualityGate {
   readonly openProblemCount: number;
 }
 
+/**
+ * #727 — one group of open quality problems: one rule across pages
+ * ("seo-check/description-missing: 312 pages"). `ref` names it the way an
+ * acceptance does; `pages[].detail` is the measured value on that page.
+ */
+export interface QualityProblemGroup {
+  readonly key: string;
+  readonly ref:
+    | { readonly auditId: string }
+    | { readonly category: string }
+    | { readonly ruleId: string };
+  readonly title: string;
+  readonly pages: readonly {
+    readonly pageId: string | null;
+    readonly pagePath: string;
+    readonly detail: string;
+  }[];
+}
+
 /** What the chat is told about a settled audit (#553). An `offer` (#685)
  *  is a card: its `prompt` is sent only on the operator's click. */
 export type QualityFeedback =
@@ -40,7 +59,16 @@ export type QualityFeedback =
       readonly text: string;
       readonly actionLabel: string;
       readonly prompt: string;
+      /** #727 — the open problems by group: fix / accept / pick each. */
+      readonly groups: readonly QualityProblemGroup[];
     };
+
+/** #727 — the groups (and optionally pages of each) a card click covers. */
+export interface QualityGroupSelection {
+  readonly key: string;
+  /** Only these pages of the group; omitted = all of them. */
+  readonly pagePaths?: readonly string[];
+}
 
 export interface QualityStatus {
   readonly audit: { readonly id: string; readonly status: string } | null;
@@ -125,7 +153,13 @@ export async function postQualityAction(
   chatSessionId: string,
   csrfToken: string,
   body:
-    | { action: "claim"; auditRunId: string }
+    | { action: "claim"; auditRunId: string; fixSelection?: readonly QualityGroupSelection[] }
+    | {
+        action: "accept";
+        auditRunId: string;
+        groups: readonly QualityGroupSelection[];
+        reason: string;
+      }
     | { action: "ack"; auditRunId: string }
     | { action: "release"; auditRunId: string }
     | { action: "dismiss"; auditRunId: string }
@@ -135,6 +169,7 @@ export async function postQualityAction(
   send?: string | null;
   note?: string;
   dismissed?: boolean;
+  accepted?: number;
   error?: string;
 }> {
   const res = await fetch(`/content/chat/${chatSessionId}/quality-audit`, {
@@ -147,6 +182,7 @@ export async function postQualityAction(
     send?: string | null;
     note?: string;
     dismissed?: boolean;
+    accepted?: number;
     error?: string;
   };
   return { ok: res.ok && data.ok !== false, ...data };

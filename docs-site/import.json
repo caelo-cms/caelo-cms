@@ -143,6 +143,13 @@
       "title": "Security policy + disclosure"
     },
     {
+      "source": "pages/visitor-privacy.md",
+      "slug": "visitor-privacy",
+      "template": "doc-page",
+      "name": "Visitor privacy",
+      "title": "Visitor cookies and consent"
+    },
+    {
       "source": "pages/changelog.md",
       "slug": "changelog",
       "template": "doc-page",

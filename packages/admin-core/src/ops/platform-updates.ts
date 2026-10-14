@@ -13,13 +13,23 @@
  *
  * The newest release comes from `release_check_cache`, which the
  * release-check worker fills from GitHub once an hour — no network inside
- * this op's transaction (see release-check-worker.ts for why).
+ * this op's transaction (see release-check-worker.ts for why). "Check now"
+ * on the page asks GitHub first, outside any transaction, and records the
+ * answer with `platform_updates.check_now` (platform-updates/release-check.ts).
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
 import { CAELO_VERSION, err, isNewerVersion, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { recordAuditFromCtx } from "../audit.js";
+import {
+  RELEASE_CHECK_COOLDOWN_MS,
+  releaseCheckCooldownMessage,
+  releaseCheckOutcomeSchema,
+  writeReleaseCheck,
+} from "../platform-updates/release-check.js";
+import { missingPermissions } from "./_approver-permission.js";
 
 /** Where the Owner installs updates. One constant so the bell, the op and the AI agree. */
 export const UPDATES_PATH = "/settings/updates";
@@ -89,6 +99,78 @@ export const platformUpdateStatusOp = defineOperation({
       publishedAt: r.published_at,
       checkedAt: r.checked_at,
       updatesPath: UPDATES_PATH,
+    });
+  },
+});
+
+export const platformUpdatesCheckNowOp = defineOperation({
+  name: "platform_updates.check_now",
+  // Why human-only: the "Check now" button on Settings → Updates. The AI
+  // already reads the cached answer through get_caelo_version, and the
+  // hourly release-check worker keeps that cache fresh; an AI-triggered
+  // check would only spend this server's 60-an-hour GitHub API quota.
+  actorScope: ["human"],
+  database: "cms_admin",
+  input: z.object({ outcome: releaseCheckOutcomeSchema }).strict(),
+  output: z.object({ recorded: z.literal(true), latestVersion: z.string().nullable() }),
+  handler: async (ctx, input, tx) => {
+    const op = "platform_updates.check_now";
+    const { outcome } = input;
+    const auditInput = outcome.reached
+      ? { reached: true, latestVersion: outcome.latestVersion }
+      : { reached: false, problem: outcome.problem };
+    // Whoever may open Settings → Updates may refresh what it shows: the
+    // check changes nothing but the cache (the page guards the same).
+    const missing = await missingPermissions(tx, ctx.actorId, ["settings.read"]);
+    if (missing.length > 0) {
+      const message =
+        "permission_denied: checking for Caelo releases needs the settings.read permission; your role does not have it.";
+      await recordAuditFromCtx(tx, ctx, {
+        operation: op,
+        input: auditInput,
+        succeeded: false,
+        resultSummary: message,
+      });
+      return err({ kind: "HandlerError" as const, operation: op, message });
+    }
+    const wrote = await writeReleaseCheck(tx, outcome, RELEASE_CHECK_COOLDOWN_MS);
+    if (!wrote) {
+      // Another check (a second click, another Owner, the hourly worker)
+      // landed inside the cooldown since the caller looked.
+      const rows = (await tx.execute(sql`
+        SELECT GREATEST(0, ${RELEASE_CHECK_COOLDOWN_MS}::int
+                 - (EXTRACT(EPOCH FROM (now() - fetched_at)) * 1000)::int) AS remaining_ms
+          FROM release_check_cache WHERE id = 1
+      `)) as unknown as { remaining_ms: number }[];
+      const row = rows[0];
+      if (!row) {
+        return err({
+          kind: "HandlerError" as const,
+          operation: op,
+          message:
+            "release_check_cache has no row (id = 1); migration 0053 seeds it — re-run the database migrations.",
+        });
+      }
+      const retryAfterMs = Number(row.remaining_ms) || RELEASE_CHECK_COOLDOWN_MS;
+      await recordAuditFromCtx(tx, ctx, {
+        operation: op,
+        input: auditInput,
+        succeeded: false,
+        resultSummary: releaseCheckCooldownMessage(retryAfterMs),
+      });
+      return err({ kind: "RateLimited" as const, operation: op, retryAfterMs });
+    }
+    await recordAuditFromCtx(tx, ctx, {
+      operation: op,
+      input: auditInput,
+      succeeded: true,
+      resultSummary: outcome.reached
+        ? `newest release v${outcome.latestVersion}`
+        : `check failed (${outcome.problem}): ${outcome.message}`.slice(0, 200),
+    });
+    return ok({
+      recorded: true as const,
+      latestVersion: outcome.reached ? outcome.latestVersion : null,
     });
   },
 });

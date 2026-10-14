@@ -503,6 +503,8 @@ const TOOL_PLAYBOOK_BLOCKS: Record<PromptSurface, string> = {
 // Publish live stays the user's click (an AI Stage never auto-publishes).
 // Issue #667 — staging on its own is fine, but what the quality check
 // leaves open is the user's call: the AI never pushes an acceptance.
+// Issue #727 — "optimum, not good enough": the target is 100 / zero
+// findings; only the truly unfixable goes to the user, as a bulk decision.
 const STAGING_BLOCK = [
   "## Staging",
   "",
@@ -514,7 +516,7 @@ const STAGING_BLOCK = [
   "",
   "When the requested work is done, Stage it yourself with `stage_changes`: it merges this chat's changes into the site, rebuilds the staging site (noindex) and runs the quality check. Then finish your turn: tell the user staging is ready to review and the check is running. The check's result appears in the chat; when it finds problems the user is asked whether you should fix them, and the fix request you then get lists the findings. **Publish live is always the user's click** — you never publish, and nothing you stage goes live automatically. Don't claim a change is live.",
   "",
-  "Quality findings you cannot fix are the user's decision, not yours: describe them plainly and say Publish live stays blocked until they are fixed or the user decides to accept them. Never recommend, suggest or request an acceptance on your own (`accept_quality_findings` only when the user explicitly asks to accept or to publish as is). Findings `get_quality_audit` marks CAELO PLATFORM are Caelo bugs: report them with `bug_report` and tell the user so.",
+  "The quality target is the optimum: 100 in every Lighthouse category and zero findings. A score like 90 is NOT acceptable on its own — never call it good enough. Keep fixing, reading the scores and metrics from `get_quality_audit` (never run Lighthouse yourself), until the target is reached wherever it is achievable. Only what truly cannot be fixed goes to the user: explain why, then offer ONE decision per group of findings with `accept_quality_findings` (`groups`) — the user approves or rejects it; never recommend accepting, and never for something you could still fix. Findings `get_quality_audit` marks CAELO PLATFORM are Caelo bugs: report them with `bug_report` and tell the user so.",
   "",
   "Every turn that changed the site ends with `stage_changes` — small content edits and follow-up requests included, and also while a quality check is running or findings await a decision (the new Stage is what gets checked next). Never leave the Stage to the user or ask them when to stage. (Exception: an experiment on its own branch is staged only when the user decides to keep it.)",
   "",

@@ -40,7 +40,7 @@ import {
 } from "@caelo-cms/plugin-sdk";
 import { type CategoryRow, DEFAULT_CATEGORIES } from "./categories.js";
 import { defaultPlaceholder } from "./placeholder.js";
-import { buildRuntimeJs, RUNTIME_CSS } from "./runtime.js";
+import { buildRuntimeJs, CONSENT_COOKIE, RUNTIME_CSS } from "./runtime.js";
 import { deferralReason, moduleHosts } from "./scan.js";
 import { CONSENT_SKILLS } from "./skills.js";
 import {
@@ -508,6 +508,11 @@ export default definePlugin<PluginContextTier1>({
       if (unknown.length > 0) {
         throw new Error(`record_consent: unknown consent categories: ${unknown.join(", ")}`);
       }
+      // The visitor id is present only when this very decision grants
+      // the category that covers it (#677): the gateway reads the
+      // decision cookie the runtime wrote just before posting here. A
+      // rejection is recorded without one — the record is the policy
+      // version and the categories, and that is the proof needed.
       await ctx.query.insert("consent_log", {
         visitor_id: ctx.visitor.id,
         ip_hash: ctx.visitor.ipHash,
@@ -560,6 +565,24 @@ export default definePlugin<PluginContextTier1>({
           ],
           placement: "Put the banner module in the site LAYOUT — one placement covers every page.",
         },
+        // The cookies Caelo itself sets, so the banner's category copy and
+        // the privacy policy can name them (#677). Registered tags add
+        // their vendors' cookies on top.
+        siteCookies: [
+          {
+            name: CONSENT_COOKIE,
+            category: "necessary",
+            lifetime: "1 year",
+            purpose: "Remembers the visitor's consent choice.",
+          },
+          {
+            name: "caelo_visitor_id",
+            category: "analytics",
+            lifetime: "30 days",
+            purpose:
+              "Recognises the same browser across requests to the site's forms, comments and ratings. Set only after the visitor grants analytics; deleted when they withdraw.",
+          },
+        ],
       };
     },
 
@@ -829,7 +852,8 @@ export default definePlugin<PluginContextTier1>({
         orderBy: "created_at",
         orderDir: "desc",
       })) as unknown as Array<{
-        visitor_id: string;
+        /** Null when the visitor had not granted `analytics` (#677). */
+        visitor_id: string | null;
         ip_hash: string;
         granted: unknown;
         policy_version: number;
@@ -903,6 +927,32 @@ export default definePlugin<PluginContextTier1>({
         if (reachedWindow || oldest.length < batch) break;
       }
       return { deleted, cutoff: new Date(cutoff).toISOString() };
+    },
+
+    /**
+     * Core's question to the consent provider (#677): which cookie holds
+     * the visitor's decision, which policy version a decision must carry
+     * to count, and which category covers each core visitor-tracking
+     * purpose. The API gateway asks before it sets `caelo_visitor_id`.
+     *
+     * `visitor_id` → `analytics`: the cookie recognises one browser across
+     * visits for 30 days. Nothing the visitor asks for needs it — forms,
+     * comments, ratings and the captcha all work without it, and rate
+     * limiting falls back to the client IP — so it is not `necessary`.
+     * It does not remember a preference the visitor set, so it is not
+     * `functional`. What it does is link one browser's requests together
+     * (the gateway's request log, which submissions and votes came from
+     * the same browser), which is measuring how the site is used: the
+     * narrowest category that fits is `analytics`. Never `marketing`:
+     * nothing leaves the site and no advertising profile is built.
+     */
+    visitor_consent_rule: async (ctx) => {
+      const settings = await settingsOf(adminQueryOf(ctx));
+      return {
+        cookie: CONSENT_COOKIE,
+        policyVersion: settings.policy_version,
+        purposes: { visitor_id: "analytics" },
+      };
     },
 
     /**

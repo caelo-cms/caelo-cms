@@ -70,7 +70,6 @@ async function wipe(): Promise<void> {
   await withSql(async (tx) => {
     await tx`DELETE FROM quality_pending_actions`;
     await tx`DELETE FROM quality_acceptances`;
-    await tx`DELETE FROM quality_baselines`;
     await tx`DELETE FROM quality_audit_runs`;
     await tx`DELETE FROM deploy_runs`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}%`} OR slug = 'home')`;
@@ -476,8 +475,8 @@ describe("the automatic redeploy publishes only through the gate", () => {
   });
 });
 
-describe("the quality view: baselines and Owner revoke", () => {
-  it("lists baselines below 100 and lets only the Owner revoke an acceptance", async () => {
+describe("the quality view: Owner revoke (#727: no baselines)", () => {
+  it("records accepted values and lets only the Owner revoke them — in bulk", async () => {
     // Accept the current problems (an editor's in-chat card).
     const auditRunId = (
       await op<{ gate: { auditRunId: string } }>(SYS, "quality_audits.gate_status", {})
@@ -502,36 +501,27 @@ describe("the quality view: baselines and Owner revoke", () => {
     );
     await op(EDITOR, "quality_audits.execute_proposal", { proposalId: proposal.proposalId });
 
-    const below = await op<{
-      baselines: { pagePath: string; category: string; baseline: number }[];
-    }>(SYS, "quality_baselines.list", { belowTargetOnly: true });
-    expect(below.baselines).toEqual([
-      expect.objectContaining({ pagePath: "/", category: "accessibility", baseline: 90 }),
-    ]);
-
-    const acceptances = await op<{ acceptances: { id: string; kind: string }[] }>(
-      SYS,
-      "quality_acceptances.list",
-      {},
-    );
+    const acceptances = await op<{
+      acceptances: { id: string; kind: string; acceptedScore: number | null }[];
+    }>(SYS, "quality_acceptances.list", {});
     const score = acceptances.acceptances.find((a) => a.kind === "score");
     if (!score) throw new Error("no score acceptance");
-    expect(await opErr(EDITOR, "quality_acceptances.revoke", { acceptanceId: score.id })).toContain(
-      "Owner decision",
-    );
+    expect(score.acceptedScore).toBe(90);
     expect(
-      await opErr({ ...SYS, actorKind: "ai" }, "quality_acceptances.revoke", {
-        acceptanceId: score.id,
+      await opErr(EDITOR, "quality_acceptances.revoke_many", { acceptanceIds: [score.id] }),
+    ).toContain("Owner decision");
+    expect(
+      await opErr({ ...SYS, actorKind: "ai" }, "quality_acceptances.revoke_many", {
+        acceptanceIds: [score.id],
       }),
     ).toContain("ActorScopeRejected");
     expect(
-      await op(OWNER, "quality_acceptances.revoke", { acceptanceId: score.id, reason: "fix it" }),
-    ).toEqual({ revoked: true });
-    // The page is measured against 100 again and the drop blocks again.
-    const after = await op<{ baselines: unknown[] }>(SYS, "quality_baselines.list", {
-      belowTargetOnly: true,
-    });
-    expect(after.baselines).toEqual([]);
+      await op(OWNER, "quality_acceptances.revoke_many", {
+        acceptanceIds: [score.id],
+        reason: "fix it",
+      }),
+    ).toEqual({ revoked: 1 });
+    // The page is held to 100 again and the score blocks again at once.
     const gate = await op<{ gate: { open: boolean; message: string } }>(
       SYS,
       "quality_audits.gate_status",
@@ -539,9 +529,9 @@ describe("the quality view: baselines and Owner revoke", () => {
     );
     expect(gate.gate.open).toBe(false);
     expect(gate.gate.message).toContain("accessibility 90 < 100");
-    expect(await opErr(OWNER, "quality_acceptances.revoke", { acceptanceId: score.id })).toContain(
-      "already revoked",
-    );
+    expect(
+      await opErr(OWNER, "quality_acceptances.revoke_many", { acceptanceIds: [score.id] }),
+    ).toContain("already revoked");
   });
 });
 
@@ -575,7 +565,9 @@ describe("the fix-quality-findings skill", () => {
 
   // #667 (0256) — the skill made the AI propose acceptances for anything it
   // could not fix; it argued "I'd accept all four", two of them Caelo bugs.
-  it("leaves acceptances to the operator and reports Caelo platform findings", async () => {
+  // #727 (0277) — the target is 100 / zero findings; only the truly
+  // unfixable goes to the operator, explained, as one decision per group.
+  it("holds the AI to the optimum and hands only the unfixable to the operator", async () => {
     const rows = await withSql(
       async (tx) =>
         (await tx`SELECT body FROM skills WHERE slug = 'fix-quality-findings'`) as unknown as {
@@ -583,10 +575,14 @@ describe("the fix-quality-findings skill", () => {
         }[],
     );
     const body = rows[0]?.body ?? "";
-    expect(body).toContain("Use `accept_quality_findings` ONLY when the operator explicitly asks");
-    expect(body).toContain(
-      'Do not write "I would accept …" and do not offer to request the approval.',
-    );
+    expect(body).toContain("0. THE TARGET IS THE OPTIMUM: 100 in every Lighthouse category");
+    expect(body).toContain("A score like 90 is NOT acceptable on its own");
+    expect(body).toContain("until Performance is 100");
+    expect(body).toContain("Never run Lighthouse yourself");
+    expect(body).toContain("offer the operator ONE decision per group of findings");
+    expect(body).toContain("never phrase it as your recommendation");
+    expect(body).not.toContain("baseline");
+    expect(body).not.toContain("at most TWO automatic fix rounds");
     expect(body).toContain("CAELO PLATFORM");
     expect(body).toContain("`bug_report`");
     expect(body).toContain("`image-delivery-insight`");

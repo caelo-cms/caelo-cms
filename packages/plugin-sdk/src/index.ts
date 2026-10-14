@@ -716,9 +716,18 @@ export interface PluginTheme {
  * the gateway (e.g. internal Tier-1 calls) get a system visitor id.
  */
 export interface PluginVisitor {
-  /** Opaque per-session identifier. Stable across requests within one
-   *  visitor session; rotated on logout. */
-  readonly id: string;
+  /** Opaque identifier, stable across requests from one browser for as
+   *  long as the `caelo_visitor_id` cookie lives (30 days).
+   *
+   *  NULL when the visitor has not consented to being recognised — no
+   *  decision yet, "reject all", or no consent provider on the site
+   *  (#677). The id is an analytics-category cookie, so most visitors in
+   *  the EU will arrive without one. An operation must work without it:
+   *  store null, and skip whatever only makes sense for a recognised
+   *  visitor (e.g. updating their earlier vote instead of adding one).
+   *  Never substitute a value of your own — that would recreate the
+   *  identifier the visitor declined. */
+  readonly id: string | null;
   /** Authenticated visitor's public_user_id, or null if anonymous. */
   readonly publicUserId: string | null;
   /** Bcrypt-hashed IP for analytics + rate-limiting without storing PII. */
@@ -827,7 +836,9 @@ export type PluginInvocationOrigin =
 export interface PluginInvocation {
   readonly origin: PluginInvocationOrigin;
   /** The acting actor: the AI actor in a chat, the Owner in the panel,
-   *  the system actor for workers/render, the visitor id for visitors. */
+   *  the system actor for workers/render, the visitor id for visitors —
+   *  or `"anonymous-visitor"` for a visitor who has not consented to
+   *  being recognised (#677). */
   readonly actorId: string;
   /** The human a chat belongs to. */
   readonly operatorActorId?: string;

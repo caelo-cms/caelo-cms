@@ -99,6 +99,7 @@ import {
   PROVISIONER_ACCOUNT_ID,
   provisionerServiceAccountEmail,
 } from "../provisioner-identity.js";
+import { revokePublicRoleMemberships } from "../public-role-isolation.js";
 import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
 import type { RunMode } from "../run-mode.js";
 import { selfCommand } from "../self-command.js";
@@ -120,6 +121,7 @@ import {
   verifyCosignAll,
 } from "../upgrade/release-images.js";
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
+import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { promptProjectId } from "./gcp-prompts.js";
 import { GCP_STACK_KNOB_DEFAULTS, pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
@@ -430,6 +432,17 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // P21 ship 3 — shared with `cms-provision upgrade`. Aborts the
   // wizard with a clear error if migrations fail (vs. silently
   // continuing with a half-migrated DB).
+  // === 10.9. public_role out of cloudsqlsuperuser (#633) ===
+  // The stack creates public_role through the Cloud SQL Admin API, which
+  // makes it a member of cloudsqlsuperuser. Revoked before migrations: the
+  // migration job's role audit verifies it and fails the install otherwise.
+  await stepPublicRoleIsolation(projectId);
+
+  // === 10.95. The admin may write redirects into the URL map (#587) ===
+  // Confirm-publish writes the redirects table into the load balancer's URL
+  // map; the custom role is the CLI's, not the stack's (url-map-redirects-access.ts).
+  if (provider === "gcp") await stepUrlMapRedirectsAccess(projectId);
+
   phase("Applying database migrations");
   {
     const { runMigrationsViaCloudRunJob } = await import("../migration-runner.js");
@@ -884,6 +897,41 @@ async function stepGrantBaseRoles(
   }
   s.stop(green(`${granted} IAM roles granted`));
   markStepDone(installId, stepName, { granted });
+}
+
+/**
+ * Revoke the database roles the Cloud SQL Admin API gave `public_role`
+ * (cloudsqlsuperuser, #633). Idempotent, so it runs on every wizard pass;
+ * the migration job's role audit verifies the result.
+ */
+async function stepPublicRoleIsolation(projectId: string): Promise<void> {
+  const s = spinner();
+  s.start("Removing public_role from the Cloud SQL superuser group...");
+  const r = await revokePublicRoleMemberships({ projectId, env: GCP_STACK_ENV });
+  if (r.status === "failed") {
+    s.stop(red(`Failed: ${r.error ?? ""}`));
+    log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(green("public_role holds no database roles"));
+}
+
+/**
+ * The admin's custom role for writing the redirects table into the URL map
+ * (#587). Idempotent, so it runs on every wizard pass.
+ */
+async function stepUrlMapRedirectsAccess(projectId: string): Promise<void> {
+  const s = spinner();
+  s.start("Letting the admin serve redirects from the load balancer...");
+  const r = await ensureUrlMapRedirectsAccess({ projectId, env: GCP_STACK_ENV });
+  if (!r.ok) {
+    s.stop(red(`Failed: ${r.error}`));
+    log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(green(`Redirects role ready (${r.role})`));
 }
 
 /**

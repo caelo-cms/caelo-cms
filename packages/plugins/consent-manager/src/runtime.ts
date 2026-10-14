@@ -44,6 +44,14 @@
 import type { ConsentCategory } from "./categories.js";
 import { jsonForInlineScript } from "./tags.js";
 
+/**
+ * The first-party cookie holding the visitor's decision, as URI-encoded
+ * JSON `{granted: string[], policyVersion: number, at: string}`. The API
+ * gateway reads it too (via `visitor_consent_rule`, #677), so the server
+ * never sets the visitor-id cookie on a decision the browser did not make.
+ */
+export const CONSENT_COOKIE = "caelo_consent";
+
 /** What gets baked into the emitted runtime. */
 export interface RuntimeConfig {
   readonly categories: ReadonlyArray<Pick<ConsentCategory, "key" | "displayName" | "required">>;
@@ -71,7 +79,7 @@ html.caelo-consent-open [data-consent-banner]{display:revert}`;
  * (it is embedded in one).
  */
 const RUNTIME_BODY = `
-var COOKIE = "caelo_consent";
+var COOKIE = ${JSON.stringify(CONSENT_COOKIE)};
 var doc = document;
 var root = doc.documentElement;
 

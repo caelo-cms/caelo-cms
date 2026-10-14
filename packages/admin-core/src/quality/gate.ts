@@ -30,14 +30,38 @@
  * #727 — page-check problems (checks/evaluate.ts) gate the same way: an
  * error rule over its accepted count blocks until fixed or accepted, on its
  * page or, for a page-less finding, site-wide. Warnings never reach here.
+ *
+ * #727 "optimum, not good enough" — the problems recorded on an audit are
+ * everything off target (ratchet.ts); acceptances are applied HERE, live,
+ * comparing the accepted value with the measured one. Accepting opens the
+ * gate at once and revoking closes it at once. An audit recorded under
+ * older rules (CURRENT_GATE_RULES) is not trusted: it blocks until checked
+ * again.
  */
 
 import type { CheckRuleProblem } from "./checks/evaluate.js";
-import type { QualityCategory, QualityProblem } from "./ratchet.js";
+import {
+  acceptedValueCovers,
+  isPerformanceNoisy,
+  problemValue,
+  QUALITY_TARGET,
+  type QualityCategory,
+  type QualityProblem,
+} from "./ratchet.js";
+
+/**
+ * The rules an audit is recorded under. Version 2 (#727, migration 0276):
+ * the 100 target, every audit below 1 a finding, no per-page baselines.
+ * An audit recorded under older rules hid debt the current rules block on,
+ * so the gate does not trust its verdict: it asks for a new check.
+ */
+export const CURRENT_GATE_RULES = 2;
 
 /** What the gate needs to know about the audit of the staged build. */
 export interface GateAudit {
   readonly id: string;
+  /** `quality_audit_runs.gate_rules`: the rules it was recorded under. */
+  readonly gateRules: number;
   readonly status:
     | "queued"
     | "running"
@@ -61,8 +85,9 @@ export interface GateAudit {
 
 /** Live (unrevoked) acceptances of the audited pages. */
 export interface GateAcceptances {
-  /** `${pageId}|${auditId}` for accepted findings. */
-  readonly findings: ReadonlySet<string>;
+  /** `${pageId}|${auditId}` → the audit score accepted, in points (0..100);
+   *  null for a finding accepted before values were recorded (0276). */
+  readonly findings: ReadonlyMap<string, number | null>;
   /** `${pageId}|${category}` → accepted score. */
   readonly scores: ReadonlyMap<string, number>;
   /** #727 — `${pageId or "site"}|${ruleId}` → accepted error count. */
@@ -114,7 +139,11 @@ export function checkKey(pageId: string | null, ruleId: string): string {
 /** What an open problem is listed as when it has no page. */
 export const SITE_WIDE_PATH = "site-wide";
 
-/** True when an editor's acceptance on this page covers the problem. */
+/**
+ * True when an editor's live acceptance on this page covers the problem:
+ * the accepted value is not worse than what was measured (ratchet.ts —
+ * Performance values within ACCEPTED_PERFORMANCE_TOLERANCE of it).
+ */
 export function isProblemAccepted(
   pageId: string | null,
   problem: QualityProblem,
@@ -126,11 +155,14 @@ export function isProblemAccepted(
     return accepted !== undefined && problem.count <= accepted;
   }
   if (pageId === null) return false;
-  if (problem.kind === "failing_audit") {
-    return acceptances.findings.has(findingKey(pageId, problem.auditId));
-  }
-  const accepted = acceptances.scores.get(scoreKey(pageId, problem.category));
-  return accepted !== undefined && problem.score >= accepted;
+  const accepted =
+    problem.kind === "failing_audit"
+      ? acceptances.findings.get(findingKey(pageId, problem.auditId))
+      : acceptances.scores.get(scoreKey(pageId, problem.category));
+  if (accepted === undefined) return false;
+  // A finding accepted before values were recorded covers it as recorded.
+  if (accepted === null) return true;
+  return acceptedValueCovers(problemValue(problem), accepted, isPerformanceNoisy(problem));
 }
 
 function describeProblem(p: OpenProblem): string {
@@ -138,7 +170,7 @@ function describeProblem(p: OpenProblem): string {
     case "failing_audit":
       return `${p.pagePath}: ${p.problem.auditId}`;
     case "score_below_baseline":
-      return `${p.pagePath}: ${p.problem.category} ${p.problem.score} < ${p.problem.baseline}`;
+      return `${p.pagePath}: ${p.problem.category} ${p.problem.score} < ${QUALITY_TARGET}`;
     case "check_rule":
       return `${p.pagePath}: ${p.problem.ruleId} (${p.problem.count}×)`;
   }
@@ -160,6 +192,20 @@ export function decideGate(audit: GateAudit | null, acceptances: GateAcceptances
       canPublishAnyway: false,
       message:
         "Publish live is blocked: the staged build has not been quality-checked. Run the audit (retry_quality_audit, or 'Run quality check' in the toolbar), or Stage again.",
+    };
+  }
+  if (
+    audit.gateRules < CURRENT_GATE_RULES &&
+    (audit.status === "passed" || audit.status === "problems" || audit.status === "skipped")
+  ) {
+    return {
+      open: false,
+      state: "missing",
+      auditRunId: audit.id,
+      openProblems: [],
+      canPublishAnyway: false,
+      message:
+        "Publish live is blocked: the staged build was checked under the earlier quality rules, which let scores below 100 and existing findings pass. Run the check again under the current rules (retry_quality_audit, or 'Run quality check' in the toolbar), or Stage again.",
     };
   }
   switch (audit.status) {
@@ -235,7 +281,7 @@ export function decideGate(audit: GateAudit | null, acceptances: GateAcceptances
         auditRunId: audit.id,
         openProblems,
         canPublishAnyway: false,
-        message: `Publish live is blocked by ${openProblems.length} quality problem(s): ${shown}${more}. Fix them and Stage again (get_quality_audit has the details; findings it marks CAELO PLATFORM are Caelo bugs — report them with bug_report). What cannot be fixed stays blocking until an editor decides to accept it — accept_quality_findings only on the editor's explicit request, never as the AI's recommendation.`,
+        message: `Publish live is blocked by ${openProblems.length} quality problem(s): ${shown}${more}. The target is 100 in every category and zero findings — fix them and Stage again (get_quality_audit has the details and the metrics; findings it marks CAELO PLATFORM are Caelo bugs — report them with bug_report). Only what truly cannot be fixed goes to the operator as one decision per group of findings (accept_quality_findings with groups); never call a score below 100 good enough.`,
       };
     }
   }

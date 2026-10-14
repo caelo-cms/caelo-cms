@@ -59,14 +59,19 @@ describe("composeSystemPrompt", () => {
 
   // Issue #667 — the AI staged on its own (fine) and then argued for
   // accepting the remaining findings ("I'd accept all four"), two of them
-  // Caelo bugs. Accepting is the user's decision; platform findings are
-  // reported. The rule is static (CLAUDE.md §11: no dynamic prompt blocks).
-  it("leaves quality acceptances to the user and routes platform findings to bug_report", () => {
+  // Caelo bugs. Issue #727 — an AI also once called a Performance 90 "fine";
+  // the target is 100 / zero findings, and only the truly unfixable goes to
+  // the user as a bulk decision, never as the AI's recommendation. The rule
+  // is static (CLAUDE.md §11: no dynamic prompt blocks).
+  it("holds quality to the optimum and leaves acceptances to the user", () => {
     const out = composeSystemPrompt([]);
-    expect(out).toContain("Never recommend, suggest or request an acceptance on your own");
+    expect(out).toContain("100 in every Lighthouse category and zero findings");
+    expect(out).toContain("A score like 90 is NOT acceptable on its own");
+    expect(out).toContain("never run Lighthouse yourself");
     expect(out).toContain(
-      "`accept_quality_findings` only when the user explicitly asks to accept or to publish as is",
+      "offer ONE decision per group of findings with `accept_quality_findings`",
     );
+    expect(out).toContain("never recommend accepting");
     expect(out).toContain("CAELO PLATFORM are Caelo bugs: report them with `bug_report`");
     expect(composeSystemPrompt([])).toBe(out);
   });

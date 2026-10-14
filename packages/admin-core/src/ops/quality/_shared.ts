@@ -75,6 +75,8 @@ export const problemSchema = z.discriminatedUnion("kind", [
       elements: z.array(flaggedElementSchema).optional(),
     })
     .strict(),
+  // A category below the 100 target (#727; `baseline` is always 100 — the
+  // kind keeps its #553 name so the previous image reads new rows).
   z
     .object({
       kind: z.literal("score_below_baseline"),
@@ -84,19 +86,6 @@ export const problemSchema = z.discriminatedUnion("kind", [
     })
     .strict(),
   checkRuleProblemSchema,
-]);
-
-export const heldBackSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("performance_drop"),
-      score: z.number().int(),
-      baseline: z.number().int(),
-    })
-    .strict(),
-  z
-    .object({ kind: z.literal("performance_finding"), auditId: z.string(), title: z.string() })
-    .strict(),
 ]);
 
 export const auditRunStatusSchema = z.enum([

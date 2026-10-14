@@ -71,6 +71,10 @@ jobs:
       PUBLIC_DATABASE_URL: postgres://public_role:caelo_public_ci@localhost:5432/cms_public
       # The API gateway's own cms_admin login (#613); bootstrap.sh creates it.
       GATEWAY_DATABASE_URL: postgres://gateway_role:caelo_gateway_ci@localhost:5432/cms_admin
+      # #566 — caddy-validate.test.ts runs `caddy validate` on the generated
+      # self-hosted Caddyfile with the pinned Caddy image. Required here, so
+      # a runner without Docker fails the job instead of skipping the check.
+      CAELO_CADDY_VALIDATE: required
 
     services:
       postgres:

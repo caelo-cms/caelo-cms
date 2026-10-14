@@ -48,15 +48,6 @@ export {
 export { type ComposeSpec, generateDockerCompose, type RolePasswords } from "./compose.js";
 export { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
 export {
-  type CloudFrontRedirectArtifact,
-  emitRedirectsAzureFrontDoor,
-  emitRedirectsCloudFront,
-  emitRedirectsCloudflare,
-  type FrontDoorRule,
-  type RedirectRow,
-  type RedirectStatusCode,
-} from "./redirects-emit.js";
-export {
   INFRA_CONTRACT_PATHS,
   isInfraContractPath,
   RELEASE_MIN_FROM_VERSION,

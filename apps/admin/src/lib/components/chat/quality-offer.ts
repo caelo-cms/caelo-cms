@@ -11,15 +11,21 @@
  */
 
 import type { AgentRunView } from "#lib/components/agents/agent-runs-client.js";
-import type { QualityStatus } from "#lib/components/edit/quality-status.svelte.js";
+import type {
+  QualityGroupSelection,
+  QualityProblemGroup,
+  QualityStatus,
+} from "#lib/components/edit/quality-status.svelte.js";
 
 /** The fix offer the card shows. */
 export interface QualityFixOffer {
   readonly auditRunId: string;
   /** Card text: what was found, where, who staged, and the question. */
   readonly text: string;
-  /** "Fix with AI", or "Summarise with AI" after the fix-round cap. */
+  /** "Fix all with AI", or "Keep fixing with AI" after the fix-round cap. */
   readonly actionLabel: string;
+  /** #727 — the open problems by group; each is fixed, accepted or picked. */
+  readonly groups: readonly QualityProblemGroup[];
 }
 
 /**
@@ -31,7 +37,12 @@ export function openQualityOffer(status: QualityStatus | null): QualityFixOffer 
   if (!status?.audit || status.notified) return null;
   const f = status.feedback;
   if (f?.kind !== "offer") return null;
-  return { auditRunId: status.audit.id, text: f.text, actionLabel: f.actionLabel };
+  return {
+    auditRunId: status.audit.id,
+    text: f.text,
+    actionLabel: f.actionLabel,
+    groups: f.groups,
+  };
 }
 
 /**
@@ -55,3 +66,31 @@ export function externalAgentRefusal(agent: AgentRunView): string {
     "and two agents editing the same pages would undo each other's work. Stop it in the 'Agents running' bar above (or wait until it is done), then click again."
   );
 }
+
+/**
+ * #727 — what a group-level click covers: the whole group, or the pages
+ * the operator ticked under "Pick pages". Null when a pick has no page
+ * ticked (nothing to act on).
+ */
+export function groupSelection(
+  group: QualityProblemGroup,
+  picked: ReadonlySet<string> | null,
+): QualityGroupSelection | null {
+  if (picked === null) return { key: group.key };
+  const pagePaths = group.pages.map((p) => p.pagePath).filter((path) => picked.has(path));
+  if (pagePaths.length === 0) return null;
+  return pagePaths.length === group.pages.length
+    ? { key: group.key }
+    : { key: group.key, pagePaths };
+}
+
+/** How many pages a selection covers, for the card's button labels. */
+export function selectionPageCount(
+  group: QualityProblemGroup,
+  selection: QualityGroupSelection,
+): number {
+  return selection.pagePaths?.length ?? group.pages.length;
+}
+
+/** The shortest reason an acceptance takes (the server requires 3 chars). */
+export const MIN_ACCEPT_REASON = 3;

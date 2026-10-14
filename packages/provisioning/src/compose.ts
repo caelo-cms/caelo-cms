@@ -3,8 +3,8 @@
 /**
  * P14 — production docker-compose.yml generator.
  *
- * Emits the production stack: Postgres + pgBackRest sidecar + Caddy +
- * MinIO + the two Caelo services (admin, gateway). Idempotent: same input →
+ * Emits the production stack: Postgres + Caddy + the two Caelo services
+ * (admin, gateway). Idempotent: same input →
  * byte-identical output. The CLI's `init` / `up` / `upgrade` sub-commands
  * write this to `.caelo/docker-compose.yml`.
  *
@@ -15,8 +15,20 @@
  * `docker compose pull` change the running release behind the operator's
  * back. Contributors who want their working tree in the containers ask for
  * {@link DevImages} explicitly (`init --dev`) — never the default.
+ *
+ * #707 — no `container_name`: Compose names containers per project, so an
+ * install can share a host with other stacks (a fixed `caelo-postgres`
+ * collides with the contributor dev stack's container of that name). Every
+ * CLI command addresses containers by service name (`docker compose exec`).
+ * Backups are `pg_dump`s plus the media and site files (self-hosted-backup.ts);
+ * there is no pgBackRest sidecar — it never had access to the data volume.
+ * No MinIO either: nothing in Caelo used it (media live in `.caelo/media/`),
+ * and its `minio/minio` image is no longer published, so the service made
+ * every fresh `docker compose up` fail.
  */
 
+import { CADDY_REDIRECTS_FILE } from "@caelo-cms/shared";
+import { caddyRedirectReloadCommand } from "./caddy-redirects.js";
 import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB, publicSiteUrl } from "./stack-contract.js";
 import { ghcrRepository, isImageDigest, type ReleaseService } from "./upgrade/release-images.js";
 
@@ -51,6 +63,13 @@ export const BOOTSTRAP_DIR = "bootstrap";
  */
 export const SITE_OUTPUT_ROOT = "/srv/caelo";
 
+/**
+ * #587 — every site's redirect snippet as Caddy sees it (one per deploy
+ * target below {@link SITE_OUTPUT_ROOT}); the Caddy container reloads when
+ * any of them changes (caddy-redirects.ts).
+ */
+export const COMPOSE_REDIRECT_SNIPPETS = `${SITE_OUTPUT_ROOT}/output/*/current/${CADDY_REDIRECTS_FILE}`;
+
 /** `.caelo/<this>/` holds the uploaded media (the admin's local media adapter root). */
 export const MEDIA_DIR = "media";
 /** Where {@link MEDIA_DIR} appears in the admin container (its `MEDIA_ROOT_DIR`). */
@@ -58,6 +77,66 @@ export const MEDIA_ROOT = "/data/media";
 
 /** The gateway's HTTP port inside the Compose network. */
 export const COMPOSE_GATEWAY_PORT = 8090;
+
+/**
+ * The Compose services that run Caelo code — what `restore` stops while it
+ * rewrites the databases, and what the health checks probe. Workers run
+ * inside the admin (CLAUDE.md §11.B Tier 5); there is no orchestrator or
+ * runner service.
+ */
+export const COMPOSE_APP_SERVICES = ["caelo-admin", "caelo-gateway"] as const;
+
+/**
+ * Where Caddy reaches the admin and the gateway: their Compose service
+ * names. Caddy runs in its own container, so `localhost` there is Caddy
+ * itself (issue #707).
+ */
+export const COMPOSE_ADMIN_UPSTREAM = `caelo-admin:${COMPOSE_ADMIN_PORT}`;
+export const COMPOSE_GATEWAY_UPSTREAM = `caelo-gateway:${COMPOSE_GATEWAY_PORT}`;
+
+/**
+ * The Caddy image, pinned to the release the generated Caddyfile is
+ * validated against (caddy-validate.test.ts runs `caddy validate` on this
+ * exact image in CI). A floating `caddy:2-alpine` could pick up a Caddy
+ * that rejects the config on the next `docker compose pull`.
+ */
+export const CADDY_IMAGE = "caddy:2.11.7-alpine";
+
+/** The host ports Caddy publishes for HTTP and HTTPS. */
+export interface PublishedPorts {
+  readonly http: number;
+  readonly https: number;
+}
+
+/**
+ * The Compose project an install's containers, network and volumes belong
+ * to, emitted as the file's top-level `name`. Without it Compose names the
+ * project after the directory holding the file — `.caelo` → `caelo` for
+ * every install, so two installs on one host would share containers and
+ * the database volume. New installs get one per domain; installs from
+ * before this was stored keep `caelo`, the name their volumes carry.
+ */
+export function composeProjectName(domain: string): string {
+  return `caelo-${domain
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")}`;
+}
+
+/** Whether `name` is a Compose project name (lowercase, digits, `-`, `_`; leading letter or digit). */
+export function isComposeProjectName(name: string): boolean {
+  return /^[a-z0-9][a-z0-9_-]*$/.test(name);
+}
+
+/** `https://<domain>`, with the published HTTPS port when it is not 443. */
+export function selfHostedSiteUrl(domain: string, httpsPort: number): string {
+  return httpsPort === 443 ? publicSiteUrl(domain) : `${publicSiteUrl(domain)}:${httpsPort}`;
+}
+
+/** Whether `port` can be published on the host (any TCP port). */
+export function isPublishablePort(port: number): boolean {
+  return Number.isInteger(port) && port >= 1 && port <= 65535;
+}
 
 /**
  * `ghcr.io/caelo-cms/<service>@<digest>` — the only image reference shape a
@@ -95,8 +174,6 @@ export interface ComposeSpec {
   /** The Postgres superuser's; only the database container uses it. */
   readonly postgresPassword: string; // generated by cms-provision; persisted in .caelo/secrets
   readonly rolePasswords: RolePasswords;
-  readonly minioRootUser: string;
-  readonly minioRootPassword: string;
   /**
    * P18 — project KEK (32 bytes hex) for at-rest encryption of AI provider
    * keys + future secrets. Generated per install by cms-provision; persisted
@@ -116,6 +193,13 @@ export interface ComposeSpec {
   readonly adminMemory?: string;
   /** Which admin + gateway images run (see {@link ComposeImages}). */
   readonly images: ComposeImages;
+  /**
+   * The host ports Caddy listens on (`80` / `443` for a public install —
+   * ACME's HTTP and TLS-ALPN challenges need exactly those).
+   */
+  readonly ports: PublishedPorts;
+  /** The Compose project ({@link composeProjectName}). */
+  readonly project: string;
   /**
    * #696 Phase 4c — the host update agent's database login, when the agent
    * is set up: Postgres is then also published on `127.0.0.1:<dbPort>` (never
@@ -142,6 +226,15 @@ export function generateDockerCompose(spec: ComposeSpec): string {
   }
   const env = (k: string, v: string | undefined): string =>
     v ? `      ${k}: "${escapeYaml(v)}"` : "";
+  for (const port of [spec.ports.http, spec.ports.https]) {
+    if (!isPublishablePort(port)) throw new Error(`port ${port} is not a TCP port`);
+  }
+  if (!isComposeProjectName(spec.project)) {
+    throw new Error(`${JSON.stringify(spec.project)} is not a Compose project name`);
+  }
+  if (spec.ports.http === spec.ports.https) {
+    throw new Error(`HTTP and HTTPS cannot share port ${spec.ports.http}`);
+  }
   if (spec.agent && !isAgentDbPort(spec.agent.dbPort)) {
     throw new Error(`agent dbPort ${spec.agent.dbPort} is not a TCP port between 1024 and 65535`);
   }
@@ -149,10 +242,11 @@ export function generateDockerCompose(spec: ComposeSpec): string {
 # Generated by cms-provision — do not edit; re-run \`bunx cms-provision up\`.
 # Domain: ${spec.domain}
 
+name: ${spec.project}
+
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: caelo-postgres
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: "${escapeYaml(spec.postgresPassword)}"
@@ -170,31 +264,13 @@ ${postgresAgent(spec.agent)}    volumes:
       timeout: 5s
       retries: 5
 
-  pgbackrest:
-    image: pgbackrest/pgbackrest:latest
-    container_name: caelo-pgbackrest
-    restart: unless-stopped
-    depends_on: [postgres]
-    volumes:
-      - caelo-pg-backups:/var/lib/pgbackrest
-      - ./pgbackrest.conf:/etc/pgbackrest.conf:ro
-
-  minio:
-    image: minio/minio:latest
-    container_name: caelo-minio
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: "${escapeYaml(spec.minioRootUser)}"
-      MINIO_ROOT_PASSWORD: "${escapeYaml(spec.minioRootPassword)}"
-    volumes:
-      - caelo-minio:/data
-
   caddy:
-    image: caddy:2-alpine
-    container_name: caelo-caddy
+    image: ${CADDY_IMAGE}
+    # #587 — Caddy plus a loop that reloads it when a deploy changes a
+    # site's _redirects.caddy import (caddy-redirects.ts).
+    ${caddyRedirectReloadCommand(COMPOSE_REDIRECT_SNIPPETS)}
     restart: unless-stopped
-    ports: ["80:80", "443:443"]
+    ports: ["${spec.ports.http}:80", "${spec.ports.https}:443"]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caelo-caddy-data:/data
@@ -207,8 +283,6 @@ ${gatewayService(spec)}
 
 volumes:
   caelo-pg:
-  caelo-pg-backups:
-  caelo-minio:
   caelo-caddy-data:
   caelo-caddy-config:
 `;
@@ -278,7 +352,7 @@ ${serviceRuntime(
   // `.caelo/bootstrap/pending-token.json`; the admin reads (and deletes) it
   // from `/app/.caelo/` on first boot (hooks.server.ts). Only that dir is
   // mounted — never `.caelo/` itself, which holds config.json's superuser
-  // and MinIO passwords. Without the token /setup accepts any first Owner.
+  // password. Without the token /setup accepts any first Owner.
   // The static site: the admin builds into it (CAELO_OUTPUT_ROOT below),
   // Caddy serves it read-only from the same host dir. On the host, so a
   // recreated admin (upgrade) keeps the published site.
@@ -289,7 +363,6 @@ ${serviceRuntime(
     `./${MEDIA_DIR}:${MEDIA_ROOT}`,
   ],
 )}
-    container_name: caelo-admin
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
@@ -298,7 +371,7 @@ ${serviceRuntime(
       ADMIN_DATABASE_URL: "${dbUrl("admin_role", spec.rolePasswords.admin, "cms_admin")}"
       PUBLIC_ADMIN_DATABASE_URL: "${dbUrl("admin_role", spec.rolePasswords.admin, "cms_public")}"
       CAELO_SECRET_KEK: "${escapeYaml(spec.caeloSecretKek)}"
-      CAELO_SITE_URL: "${escapeYaml(publicSiteUrl(spec.domain))}"
+      CAELO_SITE_URL: "${escapeYaml(selfHostedSiteUrl(spec.domain, spec.ports.https))}"
       PORT: "${COMPOSE_ADMIN_PORT}"
       CAELO_OUTPUT_ROOT: "${SITE_OUTPUT_ROOT}"
       MEDIA_ROOT_DIR: "${MEDIA_ROOT}"
@@ -311,7 +384,6 @@ ${env("RESEND_API_KEY", spec.resendApiKey)}`;
 function gatewayService(spec: ComposeSpec): string {
   return `  caelo-gateway:
 ${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts")}
-    container_name: caelo-gateway
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }

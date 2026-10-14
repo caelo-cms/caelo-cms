@@ -269,6 +269,18 @@ const siteDomain = new azure.cdn.AFDCustomDomain(`${namePrefix}-fd-domain`, {
   tlsSettings: { certificateType: "ManagedCertificate", minimumTlsVersion: "TLS12" },
 });
 
+// #587 — the redirects table as rules-engine rules on the static route
+// (redirect-emit-front-door.ts in @caelo-cms/shared): Front Door answers
+// them at the edge before the Blob origin. The deploy owns the rules; the
+// stack only creates the rule set and attaches it.
+// FIXME(issue #750): the Blob static publisher is still a stub (#6); until
+// it writes the rules, the set stays empty and no redirect is served.
+const redirectRuleSet = new azure.cdn.RuleSet(`${namePrefix}-fd-redirects`, {
+  resourceGroupName: rg.name,
+  profileName: frontDoor.name,
+  ruleSetName: "caeloRedirects",
+});
+
 new azure.cdn.Route(
   `${namePrefix}-fd-route`,
   {
@@ -278,6 +290,7 @@ new azure.cdn.Route(
     routeName: "static",
     originGroup: { id: staticOriginGroup.id },
     customDomains: [{ id: siteDomain.id }],
+    ruleSets: [{ id: redirectRuleSet.id }],
     patternsToMatch: ["/*"],
     // Without a cache configuration Front Door does not cache the route at
     // all; static files are edge-cached per their Cache-Control (§11.B

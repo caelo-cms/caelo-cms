@@ -432,7 +432,7 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     const quality = await awaitQualityGateOpen(page, chatSessionId);
     const qualityLogEnd = logOffset(ADMIN_LOG_PATH);
     console.log(
-      `[scenario-homepage] quality gate open (${quality.state}) after ${quality.restages} fix re-Stage(s)`,
+      `[scenario-homepage] quality gate open (${quality.state}) after ${quality.restages} fix re-Stage(s); operator accepted ${quality.accepted.length === 0 ? "nothing" : quality.accepted.join(", ")}`,
     );
     // The AI's Stage held production: nothing it staged may go live until
     // a human Publish live (#620 Part B) — the click below is that human.

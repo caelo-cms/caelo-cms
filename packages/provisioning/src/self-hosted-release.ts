@@ -45,8 +45,20 @@ export interface HostRunner {
   /**
    * Run `argv` to completion. With `stdoutPath`, stdout streams into that
    * file (mode 600) instead of being captured — used for database dumps.
+   * With `stdinPath`, that file is the process's stdin (restores). With
+   * `inherit`, stdout + stderr go to the terminal (long pulls and starts
+   * the operator should watch) and come back empty.
    */
-  run(argv: readonly string[], opts?: { readonly stdoutPath?: string }): Promise<CommandResult>;
+  run(argv: readonly string[], opts?: HostRunOptions): Promise<CommandResult>;
+}
+
+/** See {@link HostRunner.run}. */
+export interface HostRunOptions {
+  /** Extra environment variables on top of the CLI's own. */
+  readonly env?: Readonly<Record<string, string>>;
+  readonly stdoutPath?: string;
+  readonly stdinPath?: string;
+  readonly inherit?: boolean;
 }
 
 /** The real runner: Bun.spawn; a missing binary is exit code 127, not a throw. */
@@ -54,13 +66,16 @@ export const bunHostRunner: HostRunner = {
   async run(argv, opts) {
     try {
       const proc = Bun.spawn([...argv], {
-        stdout: opts?.stdoutPath ? Bun.file(opts.stdoutPath) : "pipe",
-        stderr: "pipe",
+        ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
+        stdin: opts?.stdinPath ? Bun.file(opts.stdinPath) : "ignore",
+        stdout: opts?.stdoutPath ? Bun.file(opts.stdoutPath) : opts?.inherit ? "inherit" : "pipe",
+        stderr: opts?.inherit ? "inherit" : "pipe",
       });
-      const stdout = opts?.stdoutPath
-        ? ""
-        : await new Response(proc.stdout as ReadableStream).text();
-      const stderr = await new Response(proc.stderr).text();
+      const stdout =
+        opts?.stdoutPath || opts?.inherit
+          ? ""
+          : await new Response(proc.stdout as ReadableStream).text();
+      const stderr = opts?.inherit ? "" : await new Response(proc.stderr as ReadableStream).text();
       return { exitCode: await proc.exited, stdout, stderr };
     } catch (e) {
       return { exitCode: 127, stdout: "", stderr: e instanceof Error ? e.message : String(e) };

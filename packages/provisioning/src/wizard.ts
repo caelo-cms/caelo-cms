@@ -222,8 +222,10 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
       });
       break;
     case "self-hosted":
+      // The self-hosted install runs on the Docker host itself, from the
+      // directory that should hold `.caelo/` — not from this wizard.
       cancel(
-        `Self-hosted wizard is the existing \`cms-provision init\` flow. Run \`${selfCommand("init", "--domain", "...", "--owner-email", "...")}\` for now; wizard polish lands in a follow-up commit.`,
+        `Run this on the Docker host, in the directory that should hold the install:\n  ${selfCommand("--provider", "self-hosted", "--domain", domain, "--owner-email", ownerEmail)}`,
       );
       process.exit(0);
       break;

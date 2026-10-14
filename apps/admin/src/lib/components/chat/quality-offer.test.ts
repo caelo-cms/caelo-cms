@@ -2,13 +2,29 @@
 
 import { describe, expect, it } from "bun:test";
 import type { AgentRunView } from "#lib/components/agents/agent-runs-client.js";
-import type { QualityStatus } from "#lib/components/edit/quality-status.svelte.js";
+import type {
+  QualityProblemGroup,
+  QualityStatus,
+} from "#lib/components/edit/quality-status.svelte.js";
 import {
   autoDeliverableNote,
   externalAgentRefusal,
+  groupSelection,
   openQualityOffer,
+  selectionPageCount,
   workingExternalAgent,
 } from "./quality-offer.js";
+
+const GROUP: QualityProblemGroup = {
+  key: "seo-check/description-missing",
+  ref: { ruleId: "seo-check/description-missing" },
+  title: "Missing meta description",
+  pages: [
+    { pageId: "p1", pagePath: "/", detail: "1×" },
+    { pageId: "p2", pagePath: "/about", detail: "1×" },
+    { pageId: "p3", pagePath: "/team", detail: "1×" },
+  ],
+};
 
 function status(over: Partial<QualityStatus> = {}): QualityStatus {
   return {
@@ -17,8 +33,9 @@ function status(over: Partial<QualityStatus> = {}): QualityStatus {
     feedback: {
       kind: "offer",
       text: "Quality check found 2 issue(s) on 1 page(s): / (contrast). Let the AI fix them?",
-      actionLabel: "Fix with AI",
+      actionLabel: "Fix all with AI",
       prompt: "Please fix the quality findings. …",
+      groups: [GROUP],
     },
     deployRunId: "d1",
     gate: null,
@@ -49,7 +66,8 @@ describe("openQualityOffer (issue #685)", () => {
     expect(openQualityOffer(s)).toEqual({
       auditRunId: "a1",
       text: expect.stringContaining("Let the AI fix them?"),
-      actionLabel: "Fix with AI",
+      actionLabel: "Fix all with AI",
+      groups: [GROUP],
     });
     expect(autoDeliverableNote(s)).toBeNull();
   });
@@ -83,5 +101,23 @@ describe("workingExternalAgent (issues #682 / #685)", () => {
     expect(workingExternalAgent([run({ cancelRequested: true })])).toBeNull();
     expect(workingExternalAgent([run({ kind: "turn", source: "live_edit" })])).toBeNull();
     expect(workingExternalAgent(null)).toBeNull();
+  });
+});
+
+describe("groupSelection (#727 bulk decisions on the card)", () => {
+  it("the whole group when not picking", () => {
+    expect(groupSelection(GROUP, null)).toEqual({ key: GROUP.key });
+  });
+
+  it("only the ticked pages when picking; all ticked is the whole group", () => {
+    const some = groupSelection(GROUP, new Set(["/about", "/elsewhere"]));
+    expect(some).toEqual({ key: GROUP.key, pagePaths: ["/about"] });
+    expect(selectionPageCount(GROUP, some as NonNullable<typeof some>)).toBe(1);
+    expect(groupSelection(GROUP, new Set(["/", "/about", "/team"]))).toEqual({ key: GROUP.key });
+    expect(selectionPageCount(GROUP, { key: GROUP.key })).toBe(3);
+  });
+
+  it("nothing ticked selects nothing", () => {
+    expect(groupSelection(GROUP, new Set())).toBeNull();
   });
 });

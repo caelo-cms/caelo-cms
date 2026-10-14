@@ -22,11 +22,11 @@ const FILE = [
 const NO_FILES: ReadonlySet<string> = new Set();
 
 describe("firebaseRedirectsFromFile", () => {
-  it("matches each from-path with and without trailing slash and points at the directory URL", () => {
+  it("matches each page path with and without trailing slash, a file-like path as written, and points at the directory URL", () => {
     expect(firebaseRedirectsFromFile(FILE, "directory", NO_FILES)).toEqual([
       { regex: "^/de/?$", location: "/", statusCode: 301 },
       { regex: "^/preise/?$", location: "/de/preise/", statusCode: 301 },
-      { regex: "^/old\\.html/?$", location: "/new.pdf", statusCode: 302 },
+      { regex: "^/old\\.html$", location: "/new.pdf", statusCode: 302 },
     ]);
   });
 
@@ -72,5 +72,12 @@ describe("firebaseRedirectsFromFile", () => {
     expect(
       firebaseRedirectsFromFile(file, "no-extension", noExtension).map((r) => r.regex),
     ).toEqual(["^/de/preise/?$", "^/de/?$"]);
+  });
+
+  it("collapses chains through the plan (#587)", () => {
+    expect(firebaseRedirectsFromFile("/a /b 301\n/b /c 308\n", "directory", NO_FILES)).toEqual([
+      { regex: "^/a/?$", location: "/c/", statusCode: 301 },
+      { regex: "^/b/?$", location: "/c/", statusCode: 308 },
+    ]);
   });
 });

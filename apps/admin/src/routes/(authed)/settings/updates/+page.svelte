@@ -11,7 +11,8 @@
    * See +page.server.ts, #lib/upgrade-path.ts and #lib/components/updates/.
    */
 
-  import { Check, Copy } from "lucide-svelte";
+  import { Check, Copy, RefreshCw } from "lucide-svelte";
+  import { enhance } from "$app/forms";
   import { toast } from "svelte-sonner";
   import { Alert, AlertDescription, AlertTitle } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -36,8 +37,9 @@
     DialogHeader,
     DialogTitle,
   } from "#lib/components/ui/dialog/index.js";
-  import { isActive, statusDisplay } from "#lib/updates-display.js";
+  import { isActive, releaseCheckState, statusDisplay } from "#lib/updates-display.js";
   import { releaseNotesExcerpt } from "#lib/upgrade-path.js";
+  import { cn } from "#lib/utils.js";
 
   let { data, form } = $props();
 
@@ -67,6 +69,22 @@
   }
 
   const status = $derived(data.status);
+
+  /** Ticks every 30 s so "checked 40 min ago" stays true on an open tab. */
+  let now = $state(new Date());
+  $effect(() => {
+    const id = setInterval(() => (now = new Date()), 30_000);
+    return () => clearInterval(id);
+  });
+  // Re-read the clock whenever the page's data changes (after "Check now").
+  $effect(() => {
+    void status.checkedAt;
+    now = new Date();
+  });
+  const checkState = $derived(releaseCheckState(status, now));
+
+  /** "Check now" runs a GitHub request; the button says so while it does. */
+  let checking = $state(false);
   const notes = $derived(
     status.releaseNotes ? releaseNotesExcerpt(status.releaseNotes) : null,
   );
@@ -103,24 +121,57 @@
     <CardContent class="space-y-2 text-sm">
       <div class="flex flex-wrap items-center gap-2">
         <span class="font-mono text-lg" data-testid="installed-version">v{status.installedVersion}</span>
-        {#if status.upgradeAvailable}
+        {#if checkState.kind === "update_available"}
           <Badge variant="warning">Update available</Badge>
-        {:else if status.latestVersion}
+        {:else if checkState.kind === "up_to_date"}
           <Badge variant="success">Up to date</Badge>
+        {:else if checkState.kind === "failed"}
+          <Badge variant="destructive">Last check failed</Badge>
+        {:else}
+          <Badge variant="secondary">Not checked yet</Badge>
+        {/if}
+        {#if checkState.kind !== "never"}
+          <span
+            class="text-muted-foreground"
+            data-testid="release-checked-at"
+            title={status.checkedAt ? new Date(status.checkedAt).toLocaleString() : undefined}
+          >· checked {checkState.ago}</span>
         {/if}
       </div>
-      {#if status.latestVersion === null}
-        <p class="text-muted-foreground" data-testid="release-check-unknown">
-          {#if status.checkedAt === null}
-            Caelo checks for new releases once an hour and hasn't checked yet. Come back in a few
-            minutes.
+      <div class="flex flex-wrap items-center gap-3">
+        <p class="text-muted-foreground" data-testid="release-check-explainer">
+          {#if checkState.kind === "never"}
+            Caelo checks for new releases once an hour and hasn't checked yet.
+          {:else if checkState.kind === "failed"}
+            The last check for new releases couldn't reach GitHub, so Caelo can't tell whether
+            you're up to date. It tries again every hour.
           {:else}
-            The last check for new releases ({day(status.checkedAt)}) couldn't reach GitHub. Caelo
-            tries again every hour.
+            Caelo checks GitHub for new releases once an hour.
           {/if}
         </p>
-      {:else if status.checkedAt}
-        <p class="text-muted-foreground">Last checked for new releases on {day(status.checkedAt)}.</p>
+        <form method="post" action="?/checkNow" use:enhance={() => {
+            checking = true;
+            return async ({ update }) => {
+              await update();
+              checking = false;
+            };
+          }}
+        >
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
+          <Button
+            type="submit"
+            variant="outline"
+            size="sm"
+            disabled={checking}
+            data-testid="check-releases-now"
+          >
+            <RefreshCw class={cn("size-4", checking && "animate-spin")} />
+            {checking ? "Checking…" : "Check now"}
+          </Button>
+        </form>
+      </div>
+      {#if form?.releaseCheck && form?.error}
+        <p class="text-destructive" data-testid="release-check-error">{form.error}</p>
       {/if}
     </CardContent>
   </Card>
@@ -239,7 +290,7 @@
         </AlertDescription>
       </Alert>
     {:else if inProduct && data.stepUp && !data.stepUp.configured}
-      {#if form?.error}
+      {#if form?.error && !form?.releaseCheck}
         <Alert variant="destructive" data-testid="step-up-setup-error">
           <AlertTitle>Google sign-in was not saved</AlertTitle>
           <AlertDescription>{form.error}</AlertDescription>
@@ -297,7 +348,7 @@
               you are signed in to Google already.
             </p>
           {/if}
-          {#if form?.error && !form?.policy}
+          {#if form?.error && !form?.policy && !form?.releaseCheck}
             <p class="text-sm text-destructive" data-testid="install-error">{form.error}</p>
           {/if}
         </CardContent>

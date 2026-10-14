@@ -30,48 +30,30 @@
  * visitors and crawlers that second hop.
  */
 
+import { buildRedirectPlan, parseRedirectsFile, type RedirectStatusCode } from "@caelo-cms/shared";
+
 /** One entry of a Hosting version's `config.redirects` (REST shape). */
 export interface FirebaseRedirect {
   readonly regex: string;
   readonly location: string;
-  readonly statusCode: 301 | 302 | 307 | 308;
+  readonly statusCode: RedirectStatusCode;
 }
-
-const REDIRECT_STATUSES = new Set([301, 302, 307, 308]);
 
 /** Escape a literal for an RE2 pattern. */
 function escapeRe2(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** In the directory style, internal page paths end in "/"; files
- *  (anything with an extension in its last segment) stay as they are. */
-function locationFor(toPath: string, pageUrlStyle: "directory" | "no-extension"): string {
-  if (pageUrlStyle !== "directory" || toPath.endsWith("/")) return toPath;
-  if (!toPath.startsWith("/") || /[?#]/.test(toPath)) return toPath;
-  const lastSegment = toPath.slice(toPath.lastIndexOf("/") + 1);
-  if (lastSegment.includes(".")) return toPath;
-  return `${toPath}/`;
-}
-
-/** Does a file of the build answer `bare` (no trailing slash)? Hosting
- *  serves `/x` from the file `x` and from the directory index
- *  `x/index.html`. */
-function servedByBuild(bare: string, servedFiles: ReadonlySet<string>): boolean {
-  if (bare === "/") return servedFiles.has("index.html");
-  const rel = bare.slice(1);
-  return servedFiles.has(rel) || servedFiles.has(`${rel}/index.html`);
-}
-
 /**
  * Translate the generator's `_redirects` file into Hosting redirect
- * rules. Throws on a malformed line — a rule silently dropped is a 404
- * on a URL someone links to.
+ * rules, through the redirect plan every provider serves (#587:
+ * `buildRedirectPlan` — exact paths, chain collapse, the build wins).
+ * Throws on a malformed line or a row no host can serve — a rule
+ * silently dropped is a 404 on a URL someone links to.
  *
  * 410 rows are left out: Hosting can only answer a redirect rule with a
  * 3xx, and a gone page with no file already answers 404, the closest
- * status Hosting can give. Rows whose `from` path a build file serves
- * are left out too — the live page wins (see the module comment).
+ * status Hosting can give.
  *
  * @param redirectsFile Contents of `<buildDir>/_redirects`.
  * @param pageUrlStyle  The deploy target's page emission style.
@@ -83,33 +65,19 @@ export function firebaseRedirectsFromFile(
   pageUrlStyle: "directory" | "no-extension",
   servedFiles: ReadonlySet<string>,
 ): FirebaseRedirect[] {
-  const out: FirebaseRedirect[] = [];
-  const lines = redirectsFile.split("\n");
-  for (const [index, raw] of lines.entries()) {
-    const line = raw.trim();
-    if (line.length === 0 || line.startsWith("#")) continue;
-    const parts = line.split(" ");
-    const [from, to, status] = parts;
-    const statusCode = Number(status);
-    if (parts.length !== 3 || !from?.startsWith("/") || !to || !Number.isInteger(statusCode)) {
-      throw new Error(
-        `firebase-redirects: _redirects line ${index + 1} is not "<from> <to> <status>": ${JSON.stringify(raw)}. The static generator writes this file from the redirects table — fix the row there.`,
-      );
-    }
-    if (statusCode === 410) continue;
-    if (!REDIRECT_STATUSES.has(statusCode)) {
-      throw new Error(
-        `firebase-redirects: _redirects line ${index + 1} has status ${statusCode}; Firebase Hosting redirects must be 301, 302, 307 or 308.`,
-      );
-    }
-    const bare = from.length > 1 && from.endsWith("/") ? from.slice(0, -1) : from;
-    if (servedByBuild(bare, servedFiles)) continue;
-    const regex = bare === "/" ? "^/$" : `^${escapeRe2(bare)}/?$`;
-    out.push({
-      regex,
-      location: locationFor(to, pageUrlStyle),
-      statusCode: statusCode as FirebaseRedirect["statusCode"],
-    });
-  }
-  return out;
+  const plan = buildRedirectPlan({
+    rows: parseRedirectsFile(redirectsFile),
+    pageUrlStyle,
+    servedFiles,
+  });
+  return plan.redirects.map((r) => ({
+    // The plan lists `/old` and `/old/`, or a single path (the root, a
+    // file-like path); one anchored regex covers them.
+    regex:
+      r.matchPaths.length === 2
+        ? `^${escapeRe2(r.fromPath)}/?$`
+        : `^${r.matchPaths.map(escapeRe2).join("")}$`,
+    location: r.location,
+    statusCode: r.statusCode,
+  }));
 }

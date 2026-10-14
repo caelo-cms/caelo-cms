@@ -11,6 +11,10 @@
  * into the destination's `current/` with per-target robots.txt +
  * routing-manifest patched; rollback re-syncs an archived build into
  * `current/`.
+ *
+ * #587 — nothing to do for redirects here: the Caddy container reloads
+ * itself when a sync changes a build's `_redirects.caddy` import
+ * (caddy-redirects.ts in @caelo-cms/provisioning).
  */
 
 import { existsSync } from "node:fs";

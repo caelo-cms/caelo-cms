@@ -6,7 +6,8 @@
  *   get_publish_gate              may the staged build go live? (read)
  *   retry_quality_audit           re-run a failed / missing check (routine)
  *   accept_quality_findings       APPROVAL-GATED: an editor accepts findings
- *                                 or score drops on specific pages
+ *                                 or scores below 100 on pages — bulk per
+ *                                 group of one problem across pages (#727)
  *   publish_despite_failed_audit  APPROVAL-GATED: an editor publishes over a
  *                                 FAILED check, with a recorded reason
  *
@@ -28,7 +29,7 @@ const noInput = z.object({}).strict();
 export const getPublishGateTool = makeReadTool<Record<string, never>>({
   name: "get_publish_gate",
   description:
-    "Check whether Publish live is open for the current staged build, and if not why and what to do next (quality problems to fix or accept, a failed check to retry, a check still running). " +
+    "Check whether Publish live is open for the current staged build, and if not why and what to do next (quality problems to fix — the target is 100 and zero findings — or, if truly unfixable, to hand to the operator as a decision; a failed check to retry; a check still running). " +
     "Call before telling the operator they can publish. For the findings themselves use get_quality_audit.",
   opName: "quality_audits.gate_status",
   input: noInput,
@@ -77,20 +78,22 @@ export const acceptQualityFindingsTool = makeProposeTool<AcceptInput>({
   toolName: "accept_quality_findings",
   opName: "quality_audits.propose_accept",
   pendingQueuePath: "/settings/quality/pending",
-  // #667 — mirrors publish_despite_failed_audit: the operator's explicit
-  // wish, never the AI's recommendation. The dogfood run that started #667
-  // had the AI argue "I'd accept all four" (two of them Caelo bugs) and
-  // offer to request the approval itself.
+  // #667 — the AI never argues for an acceptance (the dogfood run had it
+  // say "I'd accept all four", two of them Caelo bugs). #727 "optimum, not
+  // good enough" — what truly cannot be fixed goes to the operator as ONE
+  // decision per group of findings; the operator approves or rejects it.
   when:
-    'ONLY when the operator explicitly asks to accept quality findings or to publish the page as it is ("accept it", "leave the contrast as it is", "ship it anyway"): records their acceptance of failing Lighthouse audits by id (e.g. `color-contrast`), of a category score drop, or of a page-check rule by `ruleId` (e.g. `seo-check/title-missing`; the errors measured now are accepted, a new one blocks again; omit pagePath for a site-wide rule), each on a specific page path. ' +
-    "Never on your own initiative, and never recommend, suggest or argue for an acceptance (no \"I'd accept these\", no offering to request the approval): an acceptance lowers the page's quality bar for good, so it is the operator's decision. When findings remain that you cannot fix, describe them plainly and say Publish live stays blocked until they are fixed or the operator decides to accept them. " +
-    "Findings get_quality_audit marks CAELO PLATFORM are Caelo bugs: report them with bug_report instead. " +
-    "An acceptance applies ONLY to that page — the same finding on another page still blocks. An accepted score becomes the page's new baseline. " +
-    "Take auditRunId, page paths and audit / rule ids from get_quality_audit; the reason is the operator's, in their words. Bundle every item of one decision into one call. " +
+    'Hand the operator a decision on quality findings that truly CANNOT be fixed, or record the acceptance the operator explicitly asked for ("accept it", "leave the contrast as it is", "ship it anyway"). ' +
+    "The target is 100 in every Lighthouse category and zero findings: a score like 90 is NOT acceptable on its own, and anything you can still fix you fix (read the metrics in get_quality_audit; never run Lighthouse yourself). " +
+    "Use it on your own only after explaining WHY a finding cannot be fixed (a third-party embed, a brand colour the operator confirmed, a Caelo platform issue you reported with bug_report), and phrase it as the operator's choice, never as your recommendation. " +
+    'BULK: prefer `groups` — one problem across pages in one entry (`{ ruleId: "seo-check/description-missing" }` = every page it is open on; add `pagePaths` for a subset; a Lighthouse audit by `auditId`, a category below 100 by `category`). Use `items` only for single findings on named pages. Bundle every group of one decision into ONE call. ' +
+    "What is accepted is the value measured now (score, audit score, error count): a worse value blocks again, a better one tightens the acceptance. An acceptance applies ONLY to its pages. Check list_quality_acceptances first; never ask twice. " +
+    "Take auditRunId, page paths and audit / rule ids from get_quality_audit; the reason is the operator's or the plain fact why it cannot be fixed. " +
     "Once approved, an acceptance counts at once — Publish live opens without a new Stage. Do NOT call stage_changes afterwards just to 'pick up' the acceptance: a Stage with nothing new still re-runs the whole quality check, which can report fresh findings and start another fix round.",
   schema: proposeAcceptInput,
   inputSchema: z.toJSONSchema(proposeAcceptInput) as Record<string, unknown>,
-  summarize: (input) => `accept ${input.items.length} quality finding(s): ${input.reason}`,
+  summarize: (input, preview) =>
+    `accept ${String(preview.acceptanceCount ?? input.items?.length ?? 0)} quality finding(s) (${input.groups?.length ?? 0} group(s), ${input.items?.length ?? 0} single): ${input.reason}`,
 });
 
 type PublishAnywayInput = z.infer<typeof proposePublishAnywayInput>;

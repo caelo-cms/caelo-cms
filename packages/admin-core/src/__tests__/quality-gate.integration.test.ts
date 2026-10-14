@@ -89,7 +89,6 @@ async function wipe(): Promise<void> {
   await withSql(async (tx) => {
     await tx`DELETE FROM quality_pending_actions`;
     await tx`DELETE FROM quality_acceptances`;
-    await tx`DELETE FROM quality_baselines`;
     await tx`DELETE FROM quality_audit_runs`;
     await tx`DELETE FROM deploy_runs`;
     await tx`DELETE FROM chat_entity_locks WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE ${`${PFX}%`})`;
@@ -358,20 +357,35 @@ describe("block → fix → publish", () => {
     expect(p.message).toContain("Stage again");
 
     const st = await op<{
-      feedback: { kind: string; text: string; actionLabel: string; prompt: string };
+      feedback: {
+        kind: string;
+        text: string;
+        actionLabel: string;
+        prompt: string;
+        groups: { key: string; pages: { pagePath: string }[] }[];
+      };
       audit: { id: string; fixRound: number; stagedBy: string | null };
     }>(HUMAN, "quality_audits.chat_status", { chatSessionId });
     expect(st.audit.fixRound).toBe(0);
     // #685 — problems are an offer the operator answers, never a turn the
     // panel sends by itself; the prompt carries the findings and who staged.
+    // #727 — grouped by rule across pages.
     expect(st.audit.stagedBy).toBe("operator");
     expect(st.feedback.kind).toBe("offer");
-    expect(st.feedback.actionLabel).toBe("Fix with AI");
-    expect(st.feedback.text).toContain(`on 1 page(s): /${PFX}about (Image elements`);
+    expect(st.feedback.actionLabel).toBe("Fix all with AI");
+    expect(st.feedback.text).toContain("Image elements do not have [alt] attributes (1 page(s))");
     expect(st.feedback.text).toContain("Staged by you.");
-    expect(st.feedback.text).toContain("Let the AI fix them?");
-    expect(st.feedback.prompt).toContain("Fix round 1 of 2");
-    expect(st.feedback.prompt).toContain(`- /${PFX}about: `);
+    expect(st.feedback.text).toContain("Let the AI fix them");
+    expect(st.feedback.groups).toEqual([
+      expect.objectContaining({
+        key: "lighthouse/accessibility/image-alt",
+        pages: [expect.objectContaining({ pagePath: `/${PFX}about` })],
+      }),
+    ]);
+    expect(st.feedback.prompt).toContain("Fix round 1:");
+    expect(st.feedback.prompt).toContain(
+      `- lighthouse/accessibility/image-alt — Image elements do not have [alt] attributes: 1 page(s) (/${PFX}about)`,
+    );
     expect(st.feedback.prompt).toContain("I staged this build myself");
     // The chat is told exactly once: one tab holds the delivery lease; the
     // ack (after the operator's click sent the turn) marks it delivered.
@@ -527,26 +541,23 @@ describe("acceptances in the chat", () => {
       }),
     ).toMatchObject({ kind: "accept", accepted: 2 });
     expect(await gate()).toMatchObject({ open: true, state: "accepted" });
-    // #685 — nothing left to fix: the offer is withdrawn.
-    const settled = await op<{ feedback: unknown }>(HUMAN, "quality_audits.chat_status", {
-      chatSessionId,
-    });
-    expect(settled.feedback).toBeNull();
+    // #685 — nothing left to fix: the offer becomes a status note.
+    const settled = await op<{ feedback: { kind: string; text: string } | null }>(
+      HUMAN,
+      "quality_audits.chat_status",
+      { chatSessionId },
+    );
+    expect(settled.feedback).toMatchObject({ kind: "note" });
+    expect(settled.feedback?.text).toContain("every remaining finding is accepted");
 
-    const acc = await op<{ acceptances: { kind: string; acceptedScore: number | null }[] }>(
-      AI,
-      "quality_acceptances.list",
-      {},
-    );
-    expect(acc.acceptances.map((a) => a.kind).sort()).toEqual(["finding", "score"]);
-    const baseline = await withSql(
-      async (tx) =>
-        (await tx`SELECT b.baseline FROM quality_baselines b JOIN pages p ON p.id = b.page_id
-                  WHERE p.slug = ${`${PFX}about`} AND b.category = 'accessibility'`) as unknown as {
-          baseline: number;
-        }[],
-    );
-    expect(baseline[0]?.baseline).toBe(92);
+    // #727 — each acceptance records the value it accepted.
+    const acc = await op<{
+      acceptances: { kind: string; auditId: string | null; acceptedScore: number | null }[];
+    }>(AI, "quality_acceptances.list", {});
+    expect(acc.acceptances.map((a) => [a.kind, a.auditId, a.acceptedScore]).sort()).toEqual([
+      ["finding", "color-contrast", 0],
+      ["score", null, 92],
+    ]);
   });
 
   it("an acceptance proposed for an older audit cannot be applied after a newer one", async () => {
@@ -742,7 +753,7 @@ describe("a failed quality check", () => {
 });
 
 describe("2-round fix cap", () => {
-  it("after two fix rounds the offer only asks the AI to summarise", async () => {
+  it("after two fix rounds the card says so — and the operator still decides", async () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
       HUMAN,
       "chat.create_session",
@@ -776,11 +787,13 @@ describe("2-round fix cap", () => {
         fixRequested: true,
       });
     }
-    expect(prompts[0]).toContain("Fix round 1 of 2");
-    expect(prompts[1]).toContain("Fix round 2 of 2");
-    expect(prompts[2]).toContain("left after 2 fix rounds");
-    expect(prompts[2]).toContain("Do not change the site further");
-    expect(labels).toEqual(["Fix with AI", "Fix with AI", "Summarise with AI"]);
+    expect(prompts[0]).toContain("Fix round 1:");
+    expect(prompts[1]).toContain("Fix round 2:");
+    expect(prompts[2]).toContain("left after 2 fix round(s) and I asked you to continue");
+    for (const prompt of prompts) {
+      expect(prompt).toContain("a score like 90 is NOT good enough on its own");
+    }
+    expect(labels).toEqual(["Fix all with AI", "Fix all with AI", "Keep fixing with AI"]);
   });
 
   it("a Stage after 'Not now' uses up no fix round (#685)", async () => {
@@ -800,7 +813,7 @@ describe("2-round fix cap", () => {
         feedback: { kind: string; actionLabel: string };
       }>(HUMAN, "quality_audits.chat_status", { chatSessionId: s.chatSessionId });
       expect(st.audit.fixRound).toBe(0);
-      expect(st.feedback).toMatchObject({ kind: "offer", actionLabel: "Fix with AI" });
+      expect(st.feedback).toMatchObject({ kind: "offer", actionLabel: "Fix all with AI" });
       if (i === 1) {
         // A click whose tab closed before the turn ran: the claim (with its
         // fix request) is left behind and its lease runs out.
@@ -824,6 +837,182 @@ describe("2-round fix cap", () => {
         ).claimed,
       ).toBe(true);
     }
+  });
+});
+
+describe("bulk decisions (#727 'optimum, not good enough')", () => {
+  const unusedJs: FailingAudit = {
+    id: "unused-javascript",
+    title: "Reduce unused JavaScript",
+    score: 0.5,
+    categories: ["performance"],
+  };
+  const about = `/${PFX}about`;
+  let chatSessionId: string;
+  let branch: ExecutionContext;
+
+  type Status = {
+    feedback: {
+      kind: string;
+      prompt: string;
+      groups: { key: string; pages: { pagePath: string; detail: string }[] }[];
+    } | null;
+  };
+  const openGate = () =>
+    op<{ gate: { open: boolean; state: string; openProblemCount: number; message: string } }>(
+      AI,
+      "quality_audits.gate_status",
+      {},
+    ).then((g) => g.gate);
+
+  it("every value below 100 blocks; the card groups it by rule across pages", async () => {
+    const s = await op<{ chatSessionId: string; chatBranchId: string }>(
+      HUMAN,
+      "chat.create_session",
+      { isolation: "experiment", title: `${PFX}bulk` },
+    );
+    chatSessionId = s.chatSessionId;
+    branch = { ...HUMAN, chatBranchId: s.chatBranchId };
+    await editModule(branch, "<p>bulk 1</p>");
+    await stage(chatSessionId);
+    // A 93 and a 92 are not "good enough": both block.
+    await audit(
+      fakeLighthouse(() => ({
+        scores: { performance: 93, accessibility: 92 },
+        failing: [unusedJs],
+      })),
+    );
+    expect(await openGate()).toMatchObject({ open: false, state: "problems", openProblemCount: 6 });
+    const st = await op<Status>(HUMAN, "quality_audits.chat_status", { chatSessionId });
+    expect(st.feedback?.groups.map((g) => [g.key, g.pages.length])).toEqual([
+      ["lighthouse/accessibility/score", 2],
+      ["lighthouse/performance/score", 2],
+      ["lighthouse/performance/unused-javascript", 2],
+    ]);
+    expect(st.feedback?.groups[1]?.pages[0]).toMatchObject({ pagePath: "/", detail: "score 93" });
+    // A picked fix narrows the prompt to that group and page.
+    const picked = await op<Status>(HUMAN, "quality_audits.chat_status", {
+      chatSessionId,
+      fixSelection: [{ key: "lighthouse/performance/unused-javascript", pagePaths: ["/"] }],
+    });
+    expect(picked.feedback?.prompt).toContain(
+      "these quality findings I picked: 1 group(s) on 1 page(s)",
+    );
+    expect(picked.feedback?.prompt).not.toContain("lighthouse/accessibility/score");
+  });
+
+  it("a bulk acceptance covers a whole group in one click — only what is open", async () => {
+    const auditRunId = (await gate()).auditRunId as string;
+    // A page the group is not open on is refused, naming where it is open.
+    expect(
+      await opErr(AI, "quality_audits.propose_accept", {
+        auditRunId,
+        groups: [{ category: "performance", pagePaths: ["/nope"] }],
+        reason: "third-party widget",
+      }),
+    ).toContain("is not open on /nope");
+    const proposal = await op<{
+      proposalId: string;
+      preview: { accepts: string[]; acceptanceCount: number };
+    }>(AI, "quality_audits.propose_accept", {
+      auditRunId,
+      groups: [
+        { category: "accessibility" },
+        { auditId: "unused-javascript" },
+        { category: "performance", pagePaths: ["/"] },
+      ],
+      reason: "the embedded booking widget ships its own script and colours",
+    });
+    expect(proposal.preview.acceptanceCount).toBe(5);
+    expect(proposal.preview.accepts).toEqual([
+      `accessibility score on 2 page(s): /, ${about}`,
+      `unused-javascript on 2 page(s): /, ${about}`,
+      "performance score on 1 page(s): /",
+    ]);
+    // The AI proposes; only the editor's click applies (§11.A).
+    expect(
+      await opErr(AI, "quality_audits.execute_proposal", { proposalId: proposal.proposalId }),
+    ).toContain("ActorScopeRejected");
+    expect(
+      await op(HUMAN, "quality_audits.execute_proposal", { proposalId: proposal.proposalId }),
+    ).toMatchObject({ kind: "accept", accepted: 5 });
+    expect(await openGate()).toMatchObject({ open: false, openProblemCount: 1 });
+    // The rest of the group: only the page still open is accepted.
+    const rest = await op<{ proposalId: string; preview: { acceptanceCount: number } }>(
+      HUMAN,
+      "quality_audits.propose_accept",
+      { auditRunId, groups: [{ category: "performance" }], reason: "same widget" },
+    );
+    expect(rest.preview.acceptanceCount).toBe(1);
+    await op(HUMAN, "quality_audits.execute_proposal", { proposalId: rest.proposalId });
+    expect(await openGate()).toMatchObject({ open: true, state: "accepted" });
+    const values = await op<{
+      acceptances: { pagePath: string; kind: string; acceptedScore: number | null }[];
+    }>(AI, "quality_acceptances.list", { query: "widget" });
+    expect(values.acceptances).toHaveLength(6);
+    expect(
+      values.acceptances
+        .filter((a) => a.kind === "score")
+        .map((a) => a.acceptedScore)
+        .sort(),
+    ).toEqual([92, 92, 93, 93]);
+  });
+
+  it("a worse value re-blocks: Performance beyond the noise tolerance, a deterministic score at once", async () => {
+    await editModule(branch, "<p>bulk 2</p>");
+    await stage(chatSessionId);
+    await audit(
+      fakeLighthouse((path) =>
+        path === "/"
+          ? // Performance 92 vs accepted 93: within the tolerance — covered.
+            // Accessibility 91 vs accepted 92: deterministic — blocks.
+            { scores: { performance: 92, accessibility: 91 }, failing: [unusedJs] }
+          : // Performance 90 vs accepted 93: beyond the tolerance — blocks.
+            { scores: { performance: 90, accessibility: 92 }, failing: [unusedJs] },
+      ),
+    );
+    const g = await openGate();
+    expect(g).toMatchObject({ open: false, state: "problems", openProblemCount: 2 });
+    expect(g.message).toContain("/: accessibility 91 < 100");
+    expect(g.message).toContain(`${about}: performance 90 < 100`);
+  });
+
+  it("the Owner revokes a bulk decision in one call; it blocks again at once", async () => {
+    const live = await op<{
+      acceptances: { id: string; kind: string; category: string | null }[];
+    }>(AI, "quality_acceptances.list", { query: "widget" });
+    const a11y = live.acceptances
+      .filter((a) => a.kind === "score" && a.category === "accessibility")
+      .map((a) => a.id);
+    expect(a11y).toHaveLength(2);
+    expect(await opErr(AI, "quality_acceptances.revoke_many", { acceptanceIds: a11y })).toContain(
+      "ActorScopeRejected",
+    );
+    expect(
+      await opErr(REVIEWER, "quality_acceptances.revoke_many", { acceptanceIds: a11y }),
+    ).toContain("Owner decision");
+    // All or nothing: one unknown id revokes none.
+    expect(
+      await opErr(HUMAN, "quality_acceptances.revoke_many", {
+        acceptanceIds: [...a11y, crypto.randomUUID()],
+      }),
+    ).toContain("nothing was revoked");
+    expect((await openGate()).openProblemCount).toBe(2);
+    expect(
+      await op(HUMAN, "quality_acceptances.revoke_many", {
+        acceptanceIds: a11y,
+        reason: "fix the widget contrast instead",
+      }),
+    ).toEqual({ revoked: 2 });
+    // Without a new audit: /about's Accessibility 92 is open again too.
+    const g = await openGate();
+    expect(g.openProblemCount).toBe(3);
+    expect(g.message).toContain(`${about}: accessibility 92 < 100`);
+    const st = await op<Status>(HUMAN, "quality_audits.chat_status", { chatSessionId });
+    expect(st.feedback?.groups.map((x) => [x.key, x.pages.length])).toEqual([
+      ["lighthouse/accessibility/score", 2],
+      ["lighthouse/performance/score", 1],
+    ]);
   });
 });
 

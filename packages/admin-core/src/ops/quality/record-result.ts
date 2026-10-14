@@ -6,10 +6,17 @@
  *
  * A completed audit carries two parts:
  * - Lighthouse (`pages`, `pageErrors`): per audited page the scores and
- *   failing audits, evaluated by the per-category ratchet (ratchet.ts)
- *   exactly as before #727. Empty when the Stage needed no Lighthouse.
+ *   failing audits; every category below 100 and every failing audit is a
+ *   problem (ratchet.ts, #727 "optimum"). Empty when the Stage needed no
+ *   Lighthouse.
  * - the findings checks (`checks`): every finding on every page of the
- *   staged build, evaluated by the per-rule ratchet (checks/evaluate.ts).
+ *   staged build; every rule with an error is a problem
+ *   (checks/evaluate.ts).
+ *
+ * Problems are recorded with what was measured and WITHOUT applying
+ * acceptances: the gate applies the live ones (quality/gate.ts), so an
+ * acceptance or a revoke counts at once. What is recorded here is the
+ * acceptance ratchet — accepted values that improved are tightened.
  *
  * Both land in the same rows: `quality_audit_pages.problems` holds a page's
  * Lighthouse AND check problems (that is what the gate, the chat offer and
@@ -33,15 +40,14 @@ import type { Finding } from "../../quality/checks/findings.js";
 import { checksOutcomeSchema } from "../../quality/checks/outcome.js";
 import { pageMeasurementSchema } from "../../quality/lighthouse-protocol.js";
 import {
-  type BaselineState,
   evaluatePage,
-  type HeldBackSignal,
+  type LighthouseAcceptance,
+  lighthouseAcceptanceUpdates,
   type PageMeasurement,
-  type QualityCategory,
   type QualityProblem,
 } from "../../quality/ratchet.js";
 import { jsonbParam } from "../../sql-helpers.js";
-import { json, uuidList } from "./_shared.js";
+import { uuidList } from "./_shared.js";
 import {
   applyAcceptanceTightening,
   loadCheckAcceptances,
@@ -70,73 +76,48 @@ const pageErrorInput = z
   })
   .strict();
 
-async function loadRatchetState(
+/**
+ * The Lighthouse part of one page: every problem off target (ratchet.ts),
+ * plus the acceptance ratchet — a deterministic score or finding measured
+ * better than its accepted value tightens the acceptance, a category back
+ * at 100 spends it (revoked by the worker, recorded as such).
+ */
+async function evaluateLighthousePage(
   tx: Tx,
-  auditRunId: string,
-  pageId: string,
-): Promise<{
-  baselines: Partial<Record<QualityCategory, BaselineState>>;
-  accepted: Set<string>;
-  previousHeldBack: Set<string>;
-}> {
-  const baselineRows = (await tx.execute(sql`
-    SELECT category, baseline, below_streak FROM quality_baselines WHERE page_id = ${pageId}::uuid
-  `)) as unknown as { category: QualityCategory; baseline: number; below_streak: number }[];
-  const baselines: Partial<Record<QualityCategory, BaselineState>> = {};
-  for (const b of baselineRows) {
-    baselines[b.category] = { baseline: b.baseline, belowStreak: b.below_streak };
-  }
-  const acceptedRows = (await tx.execute(sql`
-    SELECT audit_id FROM quality_acceptances
-    WHERE page_id = ${pageId}::uuid AND kind = 'finding' AND revoked_at IS NULL
-  `)) as unknown as { audit_id: string }[];
-  const prevRows = (await tx.execute(sql`
-    SELECT qp.held_back FROM quality_audit_pages qp
-    WHERE qp.page_id = ${pageId}::uuid AND qp.audit_run_id <> ${auditRunId}::uuid
-      AND qp.status <> 'errored'
-    ORDER BY qp.created_at DESC LIMIT 1
-  `)) as unknown as { held_back: unknown }[];
-  const previousHeldBack = new Set<string>();
-  for (const h of json<HeldBackSignal[]>(prevRows[0]?.held_back ?? [])) {
-    if (h.kind === "performance_finding") previousHeldBack.add(h.auditId);
-  }
-  return { baselines, accepted: new Set(acceptedRows.map((r) => r.audit_id)), previousHeldBack };
-}
-
-/** Persist the Lighthouse ratchet of one page; returns its problems. */
-async function ratchetLighthousePage(
-  tx: Tx,
-  auditRunId: string,
   actorId: string,
   page: z.infer<typeof auditedPageInput>,
-): Promise<{ problems: readonly QualityProblem[]; heldBack: readonly HeldBackSignal[] }> {
-  const state = await loadRatchetState(tx, auditRunId, page.pageId);
-  const evaluation = evaluatePage({
-    measurement: page.measurement as PageMeasurement,
-    baselines: state.baselines,
-    acceptedAuditIds: state.accepted,
-    previousHeldBackFindings: state.previousHeldBack,
-  });
-  for (const [category, next] of Object.entries(evaluation.nextBaselines)) {
-    await tx.execute(sql`
-      INSERT INTO quality_baselines (page_id, category, baseline, below_streak, updated_by_run)
-      VALUES (${page.pageId}::uuid, ${category}, ${next.baseline}, ${next.belowStreak},
-              ${auditRunId}::uuid)
-      ON CONFLICT (page_id, category) DO UPDATE
-        SET baseline = EXCLUDED.baseline, below_streak = EXCLUDED.below_streak,
-            updated_at = now(), updated_by_run = EXCLUDED.updated_by_run
-    `);
-    // Ratchet: once the page scores above an accepted drop, that
-    // acceptance is spent — a later drop below the new baseline must
-    // block again, not hide behind the old acceptance.
-    await tx.execute(sql`
-      UPDATE quality_acceptances
-         SET revoked_at = now(), revoked_by = ${actorId}::uuid
-       WHERE page_id = ${page.pageId}::uuid AND kind = 'score' AND category = ${category}
-         AND revoked_at IS NULL AND accepted_score < ${next.baseline}
-    `);
+): Promise<readonly QualityProblem[]> {
+  const measurement = page.measurement as PageMeasurement;
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id, kind, audit_id, category, accepted_score
+    FROM quality_acceptances
+    WHERE page_id = ${page.pageId}::uuid AND kind IN ('finding', 'score') AND revoked_at IS NULL
+  `)) as unknown as {
+    id: string;
+    kind: "finding" | "score";
+    audit_id: string | null;
+    category: string | null;
+    accepted_score: number | null;
+  }[];
+  const acceptances: LighthouseAcceptance[] = rows.map((r) => ({
+    id: r.id,
+    kind: r.kind,
+    key: (r.kind === "finding" ? r.audit_id : r.category) ?? "",
+    accepted: r.accepted_score === null ? null : Number(r.accepted_score),
+  }));
+  for (const u of lighthouseAcceptanceUpdates(acceptances, measurement)) {
+    if (u.action === "spend") {
+      await tx.execute(sql`
+        UPDATE quality_acceptances SET revoked_at = now(), revoked_by = ${actorId}::uuid
+        WHERE id = ${u.id}::uuid AND revoked_at IS NULL
+      `);
+    } else {
+      await tx.execute(sql`
+        UPDATE quality_acceptances SET accepted_score = ${u.value} WHERE id = ${u.id}::uuid
+      `);
+    }
   }
-  return { problems: evaluation.problems, heldBack: evaluation.heldBack };
+  return evaluatePage(measurement);
 }
 
 /** One `quality_audit_pages` row, Lighthouse and check parts merged. */
@@ -146,7 +127,6 @@ interface PageRow {
   lighthouse: z.infer<typeof auditedPageInput> | null;
   lighthouseError: z.infer<typeof pageErrorInput> | null;
   problems: QualityProblem[];
-  heldBack: readonly HeldBackSignal[];
   findings: Finding[];
 }
 
@@ -164,7 +144,8 @@ async function insertPageRow(tx: Tx, auditRunId: string, row: PageRow): Promise<
       ${jsonbParam(row.lighthouse?.measurement.failingAudits ?? [])},
       ${row.lighthouse ? jsonbParam(row.lighthouse.measurement.metrics) : null},
       ${jsonbParam(row.problems)},
-      ${jsonbParam(row.heldBack)},
+      -- #727: no noise guard holds anything back any more (ratchet.ts).
+      '[]'::jsonb,
       ${jsonbParam(row.findings)},
       ${failed?.code ?? null}, ${failed?.message ?? null}
     )
@@ -251,7 +232,6 @@ async function recordCompleted(
         lighthouse: null,
         lighthouseError: null,
         problems: [],
-        heldBack: [],
         findings: [],
       };
       rows.set(pageId, row);
@@ -262,9 +242,7 @@ async function recordCompleted(
   for (const page of outcome.pages.filter((p) => existing.has(p.pageId))) {
     const row = rowFor(page.pageId, page.finalUrl ?? page.url);
     row.lighthouse = page;
-    const lh = await ratchetLighthousePage(tx, auditRunId, actorId, page);
-    row.problems.push(...lh.problems);
-    row.heldBack = lh.heldBack;
+    row.problems.push(...(await evaluateLighthousePage(tx, actorId, page)));
   }
   const lighthouseErrors = outcome.pageErrors.filter((e) => existing.has(e.pageId));
   for (const e of lighthouseErrors) rowFor(e.pageId, e.url).lighthouseError = e;

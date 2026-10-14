@@ -8,8 +8,8 @@
  *   - enqueue rules (first Stage, previous audit not clean, chat-less
  *     deploys, skipped runs, non-staging runs refused);
  *   - the claim → record lifecycle incl. supersession and the stale sweep;
- *   - the ratchet persisted across audits (baselines, Performance noise
- *     guard, per-page acceptances);
+ *   - #727 "optimum": every value below 100 is a problem, acceptances
+ *     apply live at the value accepted and only ratchet up;
  *   - read ops + the AI read tools; actor scopes.
  *
  * Lighthouse itself is not run here (the worker's runner is replaced by a
@@ -72,7 +72,6 @@ async function withSql<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
 async function wipe(): Promise<void> {
   await withSql(async (tx) => {
     await tx`DELETE FROM quality_acceptances`;
-    await tx`DELETE FROM quality_baselines`;
     await tx`DELETE FROM quality_audit_runs`;
     await tx`DELETE FROM deploy_runs`;
     await tx`DELETE FROM chat_entity_locks WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE ${`${PFX}%`})`;
@@ -102,6 +101,14 @@ async function deployRun(
     const id = rows[0]?.id;
     if (!id) throw new Error("deploy run seed");
     return id;
+  });
+}
+
+/** Give a deploy run a build, so it is what staging serves and Publish
+ *  would ship (the gate reads the newest succeeded run with a build). */
+async function markBuilt(deployRunId: string): Promise<void> {
+  await withSql(async (tx) => {
+    await tx`UPDATE deploy_runs SET build_id = ${`build-${deployRunId}`} WHERE id = ${deployRunId}::uuid`;
   });
 }
 
@@ -365,52 +372,53 @@ describe("quality audit lifecycle + ratchet", () => {
     });
     expect(old.runs).toHaveLength(1);
 
-    // about: missing alt text + Accessibility 92 → problems; home: one
-    // jittery Performance run → held back, not a problem.
+    // #727 "optimum": about — missing alt text + Accessibility 92; home —
+    // Performance 97. Every value below 100 is a problem; no noise guard
+    // holds the first Performance drop back, no baseline grandfathers it.
     const r = await record(run?.auditRunId as string, [
       pageResult(homeId, { performance: 97 }),
       pageResult(aboutId, { accessibility: 92 }, [imageAlt]),
     ]);
-    expect(r).toEqual({ status: "problems", problemCount: 2 });
+    expect(r).toEqual({ status: "problems", problemCount: 3 });
 
     const audit = await op<{
       run: { status: string; problemCount: number };
       pages: {
         pageId: string;
-        problems: { kind: string }[];
-        heldBack: { kind: string }[];
-        baselines: Record<string, number>;
+        problems: { kind: string; category?: string }[];
+        problemAccepted: boolean[];
       }[];
     }>(SYS, "quality_audits.get", { deployRunId });
     expect(audit.run.status).toBe("problems");
     const home = audit.pages.find((p) => p.pageId === homeId);
     const about = audit.pages.find((p) => p.pageId === aboutId);
-    expect(home?.problems).toEqual([]);
-    expect(home?.heldBack.map((h) => h.kind)).toEqual(["performance_drop"]);
+    expect(home?.problems).toEqual([
+      { kind: "score_below_baseline", category: "performance", score: 97, baseline: 100 },
+    ]);
+    expect(home?.problemAccepted).toEqual([false]);
     expect(about?.problems.map((p) => p.kind).sort()).toEqual([
       "failing_audit",
       "score_below_baseline",
     ]);
-    // A drop never lowers the baseline by itself.
-    expect(about?.baselines.accessibility).toBe(100);
   });
 
-  it("acceptances apply per page; the accepted score is the new baseline; noise guard triggers on the 2nd drop", async () => {
+  it("acceptances apply live, per page, at the value accepted", async () => {
     const lastRun = (
       await op<{ runs: { id: string }[] }>(SYS, "quality_audits.list", { status: "problems" })
     ).runs[0]?.id;
-    // What PR 2's in-chat accept card writes: the finding + the score drop.
+    // What the in-chat accept card writes: the finding at its audit score
+    // and the category at the score measured.
     await withSql(async (tx) => {
       await tx`
-        INSERT INTO quality_acceptances (page_id, kind, audit_id, reason, accepted_by, audit_run_id)
-        VALUES (${aboutId}::uuid, 'finding', 'image-alt', 'decorative image, alt intentionally empty', ${SYSTEM_ID}::uuid, ${lastRun}::uuid)`;
+        INSERT INTO quality_acceptances (page_id, kind, audit_id, accepted_score, reason, accepted_by, audit_run_id)
+        VALUES (${aboutId}::uuid, 'finding', 'image-alt', 0, 'decorative image, alt intentionally empty', ${SYSTEM_ID}::uuid, ${lastRun}::uuid)`;
       await tx`
         INSERT INTO quality_acceptances (page_id, kind, category, accepted_score, reason, accepted_by, audit_run_id)
         VALUES (${aboutId}::uuid, 'score', 'accessibility', 92, 'same image', ${SYSTEM_ID}::uuid, ${lastRun}::uuid)`;
-      await tx`UPDATE quality_baselines SET baseline = 92 WHERE page_id = ${aboutId}::uuid AND category = 'accessibility'`;
     });
 
     const deployRunId = await deployRun("staging", 30);
+    await markBuilt(deployRunId);
     const v = await op<{ status: string; classification: Classified["classification"] }>(
       SYS,
       "quality_audits.enqueue",
@@ -420,45 +428,73 @@ describe("quality audit lifecycle + ratchet", () => {
     expect(v.classification.reasons.map((r) => r.rule)).toEqual(["previous_not_clean"]);
     const run = await claim();
     const r = await record(run?.auditRunId as string, [
-      // 2nd consecutive Performance drop on home → now a problem; the same
-      // image-alt finding on home is NOT covered by about's acceptance.
+      // The same image-alt finding on home is NOT covered by about's acceptance.
       pageResult(homeId, { performance: 96 }, [imageAlt]),
       pageResult(aboutId, { accessibility: 92 }, [imageAlt]),
     ]);
-    expect(r.status).toBe("problems");
+    // Recorded as measured — accepted or not.
+    expect(r).toEqual({ status: "problems", problemCount: 4 });
     const audit = await op<{
       pages: {
         pageId: string;
         problems: { kind: string; category?: string; auditId?: string }[];
+        problemAccepted: boolean[];
       }[];
     }>(SYS, "quality_audits.get", { auditRunId: run?.auditRunId });
-    expect(audit.pages.find((p) => p.pageId === aboutId)?.problems).toEqual([]);
-    const homeProblems = audit.pages.find((p) => p.pageId === homeId)?.problems ?? [];
-    expect(homeProblems.map((p) => p.auditId ?? p.category).sort()).toEqual([
+    expect(audit.pages.find((p) => p.pageId === aboutId)?.problemAccepted).toEqual([true, true]);
+    const home = audit.pages.find((p) => p.pageId === homeId);
+    expect(home?.problems.map((p) => p.auditId ?? p.category).sort()).toEqual([
       "image-alt",
       "performance",
     ]);
+    expect(home?.problemAccepted).toEqual([false, false]);
+    const gate = await op<{ gate: { open: boolean; openProblemCount: number } }>(
+      SYS,
+      "quality_audits.gate_status",
+      {},
+    );
+    expect(gate.gate).toMatchObject({ open: false, openProblemCount: 2 });
   });
 
-  it("an improvement raises the baseline; a later drop below it triggers", async () => {
-    const deployRunId = await deployRun("staging", 40);
-    await op(SYS, "quality_audits.enqueue", { deployRunId, chatSessionId, branch: CONTENT_ONLY });
-    const run = await claim();
-    expect(
-      (
-        await record(run?.auditRunId as string, [
-          pageResult(homeId, {}),
-          pageResult(aboutId, { accessibility: 100 }),
-        ])
-      ).status,
-    ).toBe("passed");
-    const baselines = await withSql(
-      async (tx) =>
-        (await tx`SELECT baseline FROM quality_baselines WHERE page_id = ${aboutId}::uuid AND category = 'accessibility'`) as unknown as {
-          baseline: number;
-        }[],
+  it("a better deterministic score tightens the acceptance, a worse one blocks, 100 spends it", async () => {
+    const auditOnce = async (minutes: number, pages: ReturnType<typeof pageResult>[]) => {
+      const deployRunId = await deployRun("staging", minutes);
+      await markBuilt(deployRunId);
+      await op(SYS, "quality_audits.enqueue", { deployRunId, chatSessionId, branch: CONTENT_ONLY });
+      const run = await claim();
+      return record(run?.auditRunId as string, pages);
+    };
+    const accessibilityAcceptance = async () =>
+      withSql(
+        async (tx) =>
+          (await tx`SELECT accepted_score, revoked_at FROM quality_acceptances
+                    WHERE page_id = ${aboutId}::uuid AND kind = 'score' AND category = 'accessibility'
+                    ORDER BY accepted_at DESC LIMIT 1`) as unknown as {
+            accepted_score: number;
+            revoked_at: Date | null;
+          }[],
+      );
+    const gateOpen = async () =>
+      (await op<{ gate: { open: boolean } }>(SYS, "quality_audits.gate_status", {})).gate.open;
+
+    // 95 is better than the accepted 92: the acceptance tightens to 95.
+    await auditOnce(40, [
+      pageResult(homeId, {}),
+      pageResult(aboutId, { accessibility: 95 }, [imageAlt]),
+    ]);
+    expect((await accessibilityAcceptance())[0]?.accepted_score).toBe(95);
+    expect(await gateOpen()).toBe(true);
+    // 94 is worse than the (tightened) accepted 95: blocks again.
+    await auditOnce(43, [
+      pageResult(homeId, {}),
+      pageResult(aboutId, { accessibility: 94 }, [imageAlt]),
+    ]);
+    expect(await gateOpen()).toBe(false);
+    // Back at 100: the score acceptance is spent (revoked by the worker).
+    expect((await auditOnce(46, [pageResult(homeId, {}), pageResult(aboutId, {})])).status).toBe(
+      "passed",
     );
-    expect(baselines[0]?.baseline).toBe(100);
+    expect((await accessibilityAcceptance())[0]?.revoked_at).not.toBeNull();
   });
 
   it("a content-only Stage after a clean audit runs the page checks only, on every page (#727)", async () => {
@@ -709,8 +745,15 @@ describe("read surfaces", () => {
     ).runs;
     const audit = await getQualityAuditTool.handler(AI, { auditRunId: problems[0]?.id }, toolCtx);
     expect(audit.ok).toBe(true);
-    expect(audit.content).toContain("PROBLEM failing audit `image-alt`");
-    expect(audit.content).toContain("Performance score 96 is below its baseline 100");
+    // The newest problems run: /about at Accessibility 94 (worse than the
+    // accepted 95) with its accepted image-alt finding.
+    expect(audit.content).toContain(
+      "PROBLEM Accessibility score 94 is below the target 100 — not good enough",
+    );
+    expect(audit.content).toContain(
+      "ACCEPTED by an editor (does not block; leave it unless asked) failing audit `image-alt`",
+    );
+    expect(audit.content).toContain("scores (target 100 each)");
 
     const list = await listQualityAuditsTool.handler(AI, { status: "errored" }, toolCtx);
     // interrupted, timeout, page error, unreachable staging.

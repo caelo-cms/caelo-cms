@@ -4,8 +4,8 @@
   /**
    * P8 — manual redirect editor. Auto-redirects from change_page_slug
    * + delete_page (disposition: redirect) land here too. Editor +
-   * Owner can manage; static-generator emits the table to
-   * `_redirects.caddy` / `_redirects` / `_redirects.cloudflare`.
+   * Owner can manage; every provider serves the table at the edge
+   * through the shared redirect plan (#587, @caelo-cms/shared).
    */
 
   import { Trash2 } from "lucide-svelte";
@@ -38,9 +38,8 @@
     <h1 class="text-2xl font-semibold tracking-tight">Redirects</h1>
     <p class="text-sm text-muted-foreground">
       Edge 301 / 302 mappings. Auto-created by slug changes + page deletes; this view lets you add
-      manual ones. Emitted to <code class="font-mono">_redirects.caddy</code>,
-      <code class="font-mono">_redirects</code> (Netlify / Cloudflare Pages), and the SvelteKit
-      hooks-server fallback.
+      manual ones. Every publish puts them live on your hosting, where they are answered before
+      any page.
     </p>
   </div>
 

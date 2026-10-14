@@ -14,14 +14,15 @@ import type { RunChecksSummary } from "../../quality/checks/outcome.js";
 /** Non-blocking findings shown per page / site before "… and N more". */
 const NOTE_LIMIT = 8;
 
-/** Lines of one page-check problem (a rule over its accepted count). */
-export function formatCheckProblem(problem: CheckRuleProblem): string[] {
-  const accepted =
-    problem.allowed > 0
-      ? ` (an editor accepted ${problem.allowed}; every error beyond that blocks)`
-      : "";
+/**
+ * Lines of one page-check problem. `accepted`: a live editor acceptance
+ * covers it now (#727: accepted findings stay visible, but do not block).
+ */
+export function formatCheckProblem(problem: CheckRuleProblem, accepted = false): string[] {
   const lines = [
-    `- PROBLEM page check \`${problem.ruleId}\` — ${problem.count} error(s)${accepted}`,
+    accepted
+      ? `- ACCEPTED by an editor (does not block; leave it unless asked) page check \`${problem.ruleId}\` — ${problem.count} error(s)`
+      : `- PROBLEM page check \`${problem.ruleId}\` — ${problem.count} error(s)`,
   ];
   const fixes = new Set<string>();
   for (const f of problem.findings) {
@@ -50,8 +51,14 @@ export function formatCheckNotes(findings: readonly Finding[]): string[] {
   return lines;
 }
 
-/** The run-level block: what the page checks read, site-wide findings, errors. */
-export function formatChecksSummary(checks: RunChecksSummary): string[] {
+/**
+ * The run-level block: what the page checks read, site-wide findings,
+ * errors. `siteAccepted[i]`: a live acceptance covers `siteProblems[i]`.
+ */
+export function formatChecksSummary(
+  checks: RunChecksSummary,
+  siteAccepted: readonly boolean[] = [],
+): string[] {
   const c = checks.findingCounts;
   const lines = [
     `page checks (every page, every Stage): ${checks.ran.map((r) => r.id).join(", ") || "none"} — ${checks.pagesChecked} page(s) read; ${c.error} error(s), ${c.warning} warning(s), ${c.info} hint(s)`,
@@ -61,7 +68,9 @@ export function formatChecksSummary(checks: RunChecksSummary): string[] {
   }
   if (checks.siteProblems.length > 0 || checks.siteFindings.some((f) => f.severity !== "error")) {
     lines.push("", "## site-wide (accept with ruleId and no pagePath)");
-    for (const p of checks.siteProblems) lines.push(...formatCheckProblem(p));
+    for (const [i, p] of checks.siteProblems.entries()) {
+      lines.push(...formatCheckProblem(p, siteAccepted[i] === true));
+    }
     lines.push(...formatCheckNotes(checks.siteFindings));
   }
   return lines;

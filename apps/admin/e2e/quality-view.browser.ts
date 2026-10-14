@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #553 — /settings/quality, the Owner's quality view. An accepted
- * finding is listed with its reason, and the Owner revokes it through the
- * real form action (routing + CSRF + quality_acceptances.revoke), after
- * which the row shows as revoked. The acceptance is seeded straight into
- * the table (the shape the in-chat accept card writes); the ops themselves
- * are covered by the admin-core integration suite.
+ * Issue #553 / #727 — /settings/quality, the Owner's quality view. A bulk
+ * acceptance (one page-check rule accepted on three pages) is listed as ONE
+ * group with its reason; the Owner reviews its pages, revokes a picked page
+ * through the real form action (routing + CSRF + quality_acceptances.
+ * revoke_many), then the rest of the group in one click. Revoked rows stay
+ * as history. The acceptances are seeded straight into the table (the
+ * shape the bulk accept writes); the ops themselves are covered by the
+ * admin-core integration suite.
  */
 
 import { expect, test } from "@playwright/test";
@@ -14,7 +16,10 @@ import { clearLoginRateBucket, runBunInline } from "./helpers.js";
 
 test.beforeAll(clearLoginRateBucket);
 
-const REASON = `e2e-quality-view-${Date.now()}`;
+const STAMP = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const REASON = `e2e-quality-view-${STAMP}`;
+const RULE = `e2e-check/bulk-${STAMP}`;
+const SLUGS = ["a", "b", "c"].map((x) => `qv-${STAMP}-${x}`);
 
 test.beforeAll(() => {
   runBunInline(
@@ -24,15 +29,26 @@ test.beforeAll(() => {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       const actor = (await tx\`SELECT id FROM actors WHERE kind = 'system' LIMIT 1\`)[0].id;
-      const page = (await tx\`SELECT id FROM pages ORDER BY created_at LIMIT 1\`)[0];
-      if (!page) throw new Error("quality-view e2e: no page in the seeded site");
-      await tx\`
-        INSERT INTO quality_acceptances (page_id, kind, audit_id, reason, accepted_by)
-        VALUES (\${page.id}::uuid, 'finding', 'image-alt', \${process.env.REASON}, \${actor}::uuid)\`;
+      const stamp = process.env.STAMP;
+      const lay = await tx\`INSERT INTO layouts (slug, display_name, html, css)
+        VALUES (\${"qv-" + stamp + "-lay"}, 'L',
+                '<!doctype html><html><head><title>{{title}}</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',
+                '') RETURNING id\`;
+      const tpl = await tx\`INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
+        VALUES (\${"qv-" + stamp + "-tpl"}, 'T', 'content', '<main><caelo-slot name="content">_</caelo-slot></main>',
+                '', \${lay[0].id}) RETURNING id\`;
+      for (const slug of JSON.parse(process.env.SLUGS)) {
+        const page = await tx\`INSERT INTO pages (slug, name, title, template_id, status, current_path)
+          VALUES (\${slug}, \${slug}, 'Quality view', \${tpl[0].id}, 'published', \${"/" + slug})
+          RETURNING id\`;
+        await tx\`
+          INSERT INTO quality_acceptances (page_id, kind, audit_id, accepted_count, reason, accepted_by)
+          VALUES (\${page[0].id}, 'check', \${process.env.RULE}, 1, \${process.env.REASON}, \${actor}::uuid)\`;
+      }
     });
     await sql.end();
     `,
-    { REASON },
+    { STAMP, REASON, RULE, SLUGS: JSON.stringify(SLUGS) },
   );
 });
 
@@ -43,15 +59,21 @@ test.afterAll(() => {
     const sql = new SQL(process.env.ADMIN_DATABASE_URL);
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const stamp = process.env.STAMP;
       await tx\`DELETE FROM quality_acceptances WHERE reason = \${process.env.REASON}\`;
+      for (const slug of JSON.parse(process.env.SLUGS)) {
+        await tx\`DELETE FROM pages WHERE slug = \${slug}\`;
+      }
+      await tx\`DELETE FROM templates WHERE slug = \${"qv-" + stamp + "-tpl"}\`;
+      await tx\`DELETE FROM layouts WHERE slug = \${"qv-" + stamp + "-lay"}\`;
     });
     await sql.end();
     `,
-    { REASON },
+    { STAMP, REASON, SLUGS: JSON.stringify(SLUGS) },
   );
 });
 
-test("Owner sees the quality gate and revokes an accepted finding", async ({ page }) => {
+test("Owner reviews a bulk acceptance as one group and revokes it in bulk", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
@@ -60,12 +82,34 @@ test("Owner sees the quality gate and revokes an accepted finding", async ({ pag
 
   await page.goto("/settings/quality");
   await expect(page.getByTestId("quality-gate-card")).toBeVisible();
-  const row = page.getByTestId("quality-acceptance-row").filter({ hasText: REASON });
-  await expect(row).toBeVisible();
-  await expect(row).toContainText("image-alt");
+  const group = page.locator(
+    `[data-testid="quality-acceptance-group"][data-group-key="check:${RULE}"]`,
+  );
+  await expect(group).toBeVisible();
+  await expect(group).toContainText("3 page(s)");
+  await expect(group).toContainText(REASON);
 
-  await row.getByLabel("Reason for revoking this acceptance (optional)").fill("fix it properly");
-  await row.getByTestId("quality-revoke-btn").click();
-  await expect(row.getByText("revoked")).toBeVisible({ timeout: 15_000 });
-  await expect(row.getByTestId("quality-revoke-btn")).toHaveCount(0);
+  // Review the pages, pick one, revoke just that one.
+  await group.getByRole("button", { name: "Show pages" }).click();
+  const rows = group.getByTestId("quality-acceptance-row");
+  await expect(rows).toHaveCount(3);
+  await expect(rows.first()).toContainText("up to 1 error(s)");
+  await rows
+    .filter({ hasText: `/${SLUGS[0]}` })
+    .getByTestId("quality-acceptance-select")
+    .check();
+  await page.getByLabel("Reason for revoking the selected acceptances (optional)").fill("fix it");
+  await page.getByTestId("quality-revoke-selected-btn").click();
+  await expect(page.getByText("1 acceptance(s) revoked")).toBeVisible({ timeout: 15_000 });
+  await expect(group).toContainText("2 page(s)");
+
+  // The rest of the decision in one click.
+  await group.getByTestId("quality-revoke-group-btn").click();
+  await expect(page.getByText("2 acceptance(s) revoked")).toBeVisible({ timeout: 15_000 });
+  await expect(group).toHaveCount(0);
+
+  // Revoked acceptances stay visible as history.
+  const history = page.getByTestId("quality-revoked-acceptances");
+  await history.locator("summary").click();
+  for (const slug of SLUGS) await expect(history).toContainText(`/${slug}: ${RULE}`);
 });

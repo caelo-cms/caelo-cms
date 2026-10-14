@@ -138,6 +138,25 @@ before accepting the placeholder.
 
 ---
 
+## The visitor-id cookie
+
+Caelo's own API gateway sets one cookie that is not strictly necessary:
+`caelo_visitor_id`, which recognises the same browser across requests
+for 30 days. It is an **Analytics** cookie, so the gateway sets it only
+when the visitor's current choice grants Analytics — never before a
+choice, never after "reject all", and never on a site without this
+plugin. Withdrawing consent deletes it on the next gateway request; a
+policy-version bump does the same until the visitor answers again.
+
+The gateway reads the choice from the `caelo_consent` cookie and asks
+this plugin (`visitor_consent_rule`) which policy version counts and
+which category covers the visitor id. Forms, comments, ratings and the
+anti-spam check all work without the id. Details for site visitors and
+your privacy policy: the docs site's *Visitor cookies and consent* page
+(`docs-site/pages/visitor-privacy.md`).
+
+---
+
 ## Proving consent
 
 Ask for the consent record and you get a CSV: when, which visitor, which

@@ -47,6 +47,7 @@
   } from "./quality-offer.js";
   import {
     postQualityAction,
+    type QualityGroupSelection,
     qualityStatusFor,
   } from "#lib/components/edit/quality-status.svelte.js";
   import {
@@ -659,8 +660,14 @@
     qualityOfferError = null;
   });
 
-  /** "Fix with AI" — the operator's click starts the fix round (#685). */
-  async function acceptQualityOffer(auditRunId: string): Promise<void> {
+  /**
+   * "Fix with AI" — the operator's click starts the fix round (#685). #727:
+   * `fixSelection` narrows it to the groups / pages picked on the card.
+   */
+  async function acceptQualityOffer(
+    auditRunId: string,
+    fixSelection: QualityGroupSelection[] | null = null,
+  ): Promise<void> {
     if (streaming || qualityOfferActing !== null) return;
     qualityOfferActing = auditRunId;
     qualityOfferError = null;
@@ -675,7 +682,11 @@
       }
       // The claim also records the requested fix round — before the turn,
       // since the AI re-stages inside it.
-      const r = await postQualityAction(session.id, csrfToken, { action: "claim", auditRunId });
+      const r = await postQualityAction(session.id, csrfToken, {
+        action: "claim",
+        auditRunId,
+        ...(fixSelection ? { fixSelection } : {}),
+      });
       if (!r.ok) {
         qualityOfferError = r.error ?? "Could not start the fix — try again.";
         return;
@@ -702,6 +713,35 @@
       }
     } catch {
       qualityOfferError = "Could not start the fix — check the connection and try again.";
+    } finally {
+      qualityOfferActing = null;
+      void qualityStatus.refresh();
+    }
+  }
+
+  /**
+   * #727 — "Accept all…" / "Accept selected…" on a group: the operator's own
+   * acceptance with their reason, applied by this click (the AI is not
+   * involved). The offer stays: the groups shrink to what is still open.
+   */
+  async function acceptQualityGroups(
+    auditRunId: string,
+    groups: QualityGroupSelection[],
+    reason: string,
+  ): Promise<void> {
+    if (qualityOfferActing !== null) return;
+    qualityOfferActing = auditRunId;
+    qualityOfferError = null;
+    try {
+      const r = await postQualityAction(session.id, csrfToken, {
+        action: "accept",
+        auditRunId,
+        groups,
+        reason,
+      });
+      if (!r.ok) qualityOfferError = r.error ?? "Could not accept — try again.";
+    } catch {
+      qualityOfferError = "Could not accept — check the connection and try again.";
     } finally {
       qualityOfferActing = null;
       void qualityStatus.refresh();
@@ -2502,11 +2542,15 @@
           <QualityFixOfferCard
             text={qualityOffer.text}
             actionLabel={qualityOffer.actionLabel}
+            groups={qualityOffer.groups}
             busy={qualityOfferActing !== null}
             aiBusy={streaming}
             error={qualityOfferError}
-            onFix={() => {
-              if (qualityOffer) void acceptQualityOffer(qualityOffer.auditRunId);
+            onFix={(selection) => {
+              if (qualityOffer) void acceptQualityOffer(qualityOffer.auditRunId, selection);
+            }}
+            onAccept={(selection, reason) => {
+              if (qualityOffer) void acceptQualityGroups(qualityOffer.auditRunId, selection, reason);
             }}
             onDismiss={() => {
               if (qualityOffer) void dismissQualityOffer(qualityOffer.auditRunId);
