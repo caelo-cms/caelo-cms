@@ -80,15 +80,53 @@ A hash-derived CSS family separates different versions of the same named face.
 `resolveThemeFonts` is shared by page preview, genesis previews and static
 builds. Pinned references never fetch a replacement from the network. A missing
 revision, hash mismatch, forbidden embedding or incompatible face/weight is
-reported; it blocks deployment. The build copies only referenced font files
-and their license texts, not the font registry. Restoring an earlier exported
-DTCG theme document through `themes.import` restores its original references.
+reported; it blocks deployment. The build copies only the delivery files of
+referenced faces and their license texts, not the font registry. Restoring an
+earlier exported DTCG theme document through `themes.import` restores its
+original references.
 
 Legacy family-string themes continue using the existing Google resolver until
 explicitly pinned. Variable faces expose their axis ranges; the web resolver
-supports weights within `wght`. The service does not convert formats or produce
-static variable-font instances. Consumers state supported formats and use the
-chosen face's default instance unless they implement variation selection.
+supports weights within `wght`. The service does not produce static
+variable-font instances. Consumers state supported formats and use the chosen
+face's default instance unless they implement variation selection.
+
+### Web delivery: WOFF2 unicode-range slices
+
+The registry keeps the complete original (an acquired Google family is a full
+TTF, ~0.9 MB for Inter's variable face); visitors never download it. At build
+time (and for the editor preview) `deriveWebDelivery` in
+`packages/font-service/src/delivery.ts` cuts each pinned face into the script
+slices Google Fonts uses (`latin`, `latin-ext`, `cyrillic`, `cyrillic-ext`,
+`greek`, `greek-ext`, `vietnamese`) plus one `other` slice for any remaining
+code points, encodes each as WOFF2 and emits one `@font-face` per slice with its
+`unicode-range`. Browsers download only the slices a page's text needs.
+
+- Only slices the face actually covers are emitted; together they contain every
+  character of the original, so nothing is lost by slicing.
+- Variation axes and all OpenType layout features are kept: a variable face
+  still declares `font-weight: <min> <max>`.
+- Slices depend on the script, never on site text: editing content or adding a
+  translation does not change any font file.
+- WOFF and WOFF2 uploads are decoded once and encoded once (no compression on
+  top of compression).
+- A face whose OS/2 `fsType` forbids subsetting ships as one whole-face WOFF2
+  without `unicode-range` (a WOFF2 upload is shipped unchanged).
+- Derived files are cached under `pinned/<source sha256>.<slice>.<toolchain
+  tag>.woff2`; the tag hashes the installed versions of subset-font,
+  harfbuzzjs, fontverter and wawoff2 plus the slice table, so a dependency
+  upgrade produces new files instead of reusing old output. The names are
+  content-addressed, so CDNs cache them as immutable.
+- Each slice is re-read and checked (WOFF2 signature, every intended code point
+  mapped, axes intact). Any failure fails the deploy with
+  `theme-font-unresolvable:pinned:<role>:FontDeliveryFailed:<slice>:<reason>`;
+  the original file is never shipped as a substitute.
+- One slice per pinned face is preloaded: the one for the likely script of the
+  site language (`site_defaults.site_language`, e.g. `de` → `latin`,
+  `ru` → `cyrillic`, `el` → `greek`). Other scripts and unsplit faces get no
+  preload, because a preloaded slice the page never uses is wasted bandwidth.
+
+Operators do not need to convert fonts to WOFF2 before uploading.
 
 ## AI and plugin API
 

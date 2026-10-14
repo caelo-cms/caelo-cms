@@ -18,7 +18,7 @@
 	# `file` gates the header on the file existing: a 404 for a hashed
 	# URL (old page after a deploy switch) must not be cached for a year.
 	@content_hashed {
-		path_regexp content_hashed ^/(?:_app/immutable/.+|_assets/fonts/[^/]+/[0-9a-f]{16,64}\.(?:woff2|woff|ttf|otf)|_assets/[a-z0-9][a-z0-9-]*(?:/[a-z][a-z0-9-]*)?\.[0-9a-f]{16}\.[a-z0-9]{2,5}|_caelo/plugin/[^/]+/[^/]+\.[0-9a-f]{12}\.(?:js|css))$
+		path_regexp content_hashed ^/(?:_app/immutable/.+|_assets/fonts/[^/]+/[0-9a-f]{16}\.woff2|_assets/fonts/pinned/[0-9a-f]{64}\.[a-z]+(?:-[a-z]+)?\.[0-9a-f]{12}\.woff2|_assets/[a-z0-9][a-z0-9-]*(?:/[a-z][a-z0-9-]*)?\.[0-9a-f]{16}\.[a-z0-9]{2,5}|_caelo/plugin/[^/]+/[^/]+\.[0-9a-f]{12}\.(?:js|css))$
 		file
 	}
 	header @content_hashed Cache-Control "public, max-age=31536000, immutable"

@@ -8,8 +8,8 @@ const HASHED_PATHS = [
   // Lighthouse report on gcp-firebase staging (v0.10.28).
   "/_assets/fonts/inter/29ede7bd4be32ab0.woff2",
   "/_assets/fonts/manrope/f3a06e9b32049b82.woff2",
-  `/_assets/fonts/pinned/${"a".repeat(64)}.woff2`,
-  `/_assets/fonts/pinned/${"0".repeat(64)}.ttf`,
+  `/_assets/fonts/pinned/${"a".repeat(64)}.latin.0123456789ab.woff2`,
+  `/_assets/fonts/pinned/${"0".repeat(64)}.cyrillic-ext.0123456789ab.woff2`,
   "/_caelo/plugin/consent-manager/runtime.0123456789ab.js",
   "/_caelo/plugin/consent-manager/banner.abcdef012345.css",
   "/_app/immutable/chunks/abc.js",
@@ -40,6 +40,10 @@ const STABLE_PATHS = [
   // Pinned-font license file is id-named, not hashed.
   "/_assets/fonts/pinned/0b1f6c2e-9d7a-4c1e-8f3a-2b6d9e0c1a4f.license.txt",
   // Look-alikes that must not slip through.
+  // The registry source itself is never published; were a raw pinned file to
+  // appear, it must not be pinned in caches for a year.
+  `/_assets/fonts/pinned/${"0".repeat(64)}.ttf`,
+  `/_assets/fonts/pinned/${"a".repeat(64)}.latin.woff2`,
   "/_assets/fonts/inter/not-a-hash.woff2",
   "/_assets/fonts/inter/29ede7bd4be32ab0.woff2.html",
   "/_caelo/plugin/consent-manager/runtime.js",

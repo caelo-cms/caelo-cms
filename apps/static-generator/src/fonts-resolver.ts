@@ -42,6 +42,7 @@ import {
   selectPreloadFaces,
   type ThemeDocument,
 } from "@caelo-cms/shared";
+import { pinnedFaceSlices, preloadSliceFor } from "./pinned-font-delivery.js";
 
 /**
  * Face bytes are only fetched from the fonts CDN. The srcUrl comes out
@@ -73,6 +74,12 @@ export interface ResolveThemeFontsArgs {
   /** Injectable for tests; defaults to global fetch. */
   readonly fetcher?: typeof fetch;
   readonly readFont?: (ref: FontRef) => Promise<{ metadata: FontMetadata; bytes: Uint8Array }>;
+  /**
+   * BCP 47 language the pages are written in; picks which unicode-range
+   * slice of each pinned face is preloaded (see `preloadSliceFor`).
+   * `null` preloads no pinned slice.
+   */
+  readonly preloadLanguage: string | null;
 }
 
 export interface ResolvedThemeFonts {
@@ -160,6 +167,8 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
   const pinnedFamilies = new Set<string>();
   const pinnedCss: string[] = [];
   const pinnedPreloads: string[] = [];
+  // Several roles may bind the same face; its @font-face rules go out once.
+  const emittedPinned = new Set<string>();
   const resolvedFaces: ResolvedFontFace[] = [];
   const files: { cachePath: string; relPath: string }[] = [];
   const unresolved: string[] = [];
@@ -196,24 +205,36 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
           (entry.$value?.fontStyle ?? "normal") !== metadata.style
         )
           throw new Error("FontFaceMismatch");
-        const relPath = `pinned/${ref.sha256}.${metadata.format}`;
-        const cachePath = join(args.cacheDir, relPath);
-        await mkdir(dirname(cachePath), { recursive: true });
-        await writeFile(cachePath, bytes);
-        const url = `${args.publicBasePath}/${relPath}`;
-        const format = { ttf: "truetype", otf: "opentype", woff: "woff", woff2: "woff2" }[
-          metadata.format
-        ];
-        pinnedCss.push(
-          `@font-face{font-family:${metadata.cssFamily};font-style:${metadata.style};font-weight:${wght ? `${wght.min} ${wght.max}` : metadata.weight};font-display:swap;src:url("${url}") format("${format}");}`,
-        );
-        if (!files.some((f) => f.relPath === relPath)) {
-          files.push({ cachePath, relPath });
-          pinnedPreloads.push(url);
+        // The registry file is the complete original (often a ~0.9 MB
+        // TTF); visitors get WOFF2 unicode-range slices derived from it.
+        // A derivation failure throws and lands in `unresolved` below —
+        // the raw source is never shipped in its place.
+        const delivery = await pinnedFaceSlices({
+          cacheDir: args.cacheDir,
+          sha256: ref.sha256,
+          bytes,
+        });
+        const fontWeight = wght ? `${wght.min} ${wght.max}` : String(metadata.weight);
+        const slicesToEmit = emittedPinned.has(ref.sha256) ? [] : delivery.slices;
+        emittedPinned.add(ref.sha256);
+        for (const slice of slicesToEmit) {
+          const range = slice.unicodeRange === null ? "" : `unicode-range:${slice.unicodeRange};`;
+          pinnedCss.push(
+            `@font-face{font-family:${metadata.cssFamily};font-style:${metadata.style};font-weight:${fontWeight};font-display:swap;src:url("${args.publicBasePath}/${slice.relPath}") format("woff2");${range}}`,
+          );
+          if (!files.some((f) => f.relPath === slice.relPath)) {
+            files.push({ cachePath: join(args.cacheDir, slice.relPath), relPath: slice.relPath });
+          }
+        }
+        const preload = preloadSliceFor(args.preloadLanguage, delivery);
+        const preloadUrl = preload === null ? null : `${args.publicBasePath}/${preload.relPath}`;
+        if (preloadUrl !== null && !pinnedPreloads.includes(preloadUrl)) {
+          pinnedPreloads.push(preloadUrl);
         }
         const licensePath = `pinned/${ref.id}.license.txt`;
         if (!files.some((f) => f.relPath === licensePath)) {
           const licenseCache = join(args.cacheDir, licensePath);
+          await mkdir(dirname(licenseCache), { recursive: true });
           await writeFile(licenseCache, metadata.license.text);
           files.push({ cachePath: licenseCache, relPath: licensePath });
         }
