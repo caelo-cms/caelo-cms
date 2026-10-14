@@ -3,7 +3,7 @@
 /**
  * #696 Phase 5 — automatic updates against real Postgres (§6):
  *
- *   - pause / resume / policy set: Owner + fresh Google sign-in only, never
+ *   - pause / resume / policy set: Owner + password confirmation only, never
  *     the AI; saving the policy never lifts a pause;
  *   - the scheduler tick (system only): its lease (concurrent ticks make
  *     one decision), the decision written as a request exactly like a
@@ -31,11 +31,9 @@ import {
 import { SQL } from "bun";
 import { runAutoUpdateTick } from "../platform-updates/scheduler.js";
 import { registerAdminOps } from "../register.js";
-import { _setKekForTests } from "../security/secret-box.js";
 import { sessionHashOf } from "../security/step-up/gate.js";
 import { agentUpgraderTrigger } from "../security/upgrader/agent-trigger.js";
 import type { UpgraderTrigger } from "../security/upgrader/job-trigger.js";
-import { googleSigner } from "./fixtures/google-id-token.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -44,7 +42,6 @@ if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 const P = "pu-auto";
 const OWNER_EMAIL = `${P}-owner@example.com`;
 const EDITOR_EMAIL = `${P}-editor@example.com`;
-const CLIENT_ID = "123456789-abcdef.apps.googleusercontent.com";
 
 const [MAJ, MIN, PAT] = CAELO_VERSION.split(".").map(Number) as [number, number, number];
 const NEXT_PATCH = `${MAJ}.${MIN}.${PAT + 1}`;
@@ -70,7 +67,6 @@ let owner: ExecutionContext;
 let editor: ExecutionContext;
 let ownerSession: string;
 let editorSession: string;
-let google: Awaited<ReturnType<typeof googleSigner>>;
 
 async function admin<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const db = new SQL(ADMIN_URL as string);
@@ -119,33 +115,12 @@ async function login(email: string): Promise<string> {
   return sessionHashOf(r.token);
 }
 
-/** The real step-up ops, with Google's answer signed by the test key. */
-async function stepUp(ctx: ExecutionContext, sessionHash: string, email = OWNER_EMAIL) {
-  const begin = await okValue<{ authorizationUrl: string }>(ctx, "step_up.begin", {
+/** The real step-up op: the user re-enters their password for a policy change. */
+async function stepUp(ctx: ExecutionContext, sessionHash: string) {
+  await okValue(ctx, "step_up.confirm_password", {
     sessionHash,
     purpose: "update_policy",
-    returnTo: "/settings/updates",
-    redirectUri: "https://admin.example.com/settings/updates/step-up/callback",
-  });
-  const state = new URL(begin.authorizationUrl).searchParams.get("state") as string;
-  const redeemed = await okValue<{ challengeId: string; nonce: string }>(ctx, "step_up.redeem", {
-    sessionHash,
-    state,
-  });
-  const now = Math.floor(Date.now() / 1000);
-  const idToken = await google.sign({
-    iss: "https://accounts.google.com",
-    aud: CLIENT_ID,
-    exp: now + 3600,
-    nonce: redeemed.nonce,
-    email,
-    email_verified: true,
-    auth_time: now,
-  });
-  await okValue(ctx, "step_up.record", {
-    sessionHash,
-    challengeId: redeemed.challengeId,
-    outcome: { ok: true, idToken },
+    password: "harbor-lantern-quill-71",
   });
 }
 
@@ -259,9 +234,7 @@ async function resetState(): Promise<void> {
 
 async function wipeUsers(): Promise<void> {
   await admin(async (tx) => {
-    await tx`DELETE FROM step_up_google_client`;
     for (const email of [OWNER_EMAIL, EDITOR_EMAIL]) {
-      await tx`DELETE FROM step_up_challenges WHERE user_id IN (SELECT id FROM users WHERE email = ${email})`;
       await tx`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE email = ${email})`;
       await tx`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email = ${email})`;
       await tx`DELETE FROM users WHERE email = ${email}`;
@@ -270,9 +243,6 @@ async function wipeUsers(): Promise<void> {
 }
 
 beforeAll(async () => {
-  _setKekForTests(new Uint8Array(32).fill(7));
-  google = await googleSigner();
-  await google.install();
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
@@ -288,18 +258,12 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetState();
-  await admin((tx) => tx`DELETE FROM step_up_google_client`);
   ownerSession = await login(OWNER_EMAIL);
   editorSession = await login(EDITOR_EMAIL);
-  await okValue(owner, "step_up.set_client", {
-    clientId: CLIENT_ID,
-    clientSecret: "test-client-secret-value",
-    sessionHash: ownerSession,
-  });
 });
 
 describe("pause / resume / set (Owner + step-up)", () => {
-  it("pausing needs the Owner and a fresh Google sign-in; the AI cannot", async () => {
+  it("pausing needs the Owner and a password confirmation; the AI cannot", async () => {
     const until = new Date(Date.now() + 86_400_000).toISOString();
     expect(
       message(

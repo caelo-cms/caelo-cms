@@ -117,7 +117,7 @@ export {
 export * from "./ops/roles.js";
 // P17 PR4 — MCP bridge wiring helper.
 export { configureMcpBridge } from "./ops/security/mcp_tokens.js";
-export type { StepUpRedeemed, StepUpStatus } from "./ops/step-up.js";
+export { STEP_UP_SIGNED_OUT } from "./ops/step-up.js";
 // Operator access (Google IAP) follows user changes made in the panel too.
 export {
   describeOperatorAccessSync,
@@ -158,13 +158,10 @@ export {
   generateKekHex,
   kekFingerprint,
 } from "./security/secret-box.js";
-export { completeGoogleStepUp, type StepUpCompletion } from "./security/step-up/complete.js";
 export {
   STEP_UP_REQUIRED,
   sessionHashOf,
 } from "./security/step-up/gate.js";
-export { GOOGLE_JWKS_URL } from "./security/step-up/google-keys.js";
-export { GOOGLE_TOKEN_ENDPOINT, STEP_UP_CALLBACK_PATH } from "./security/step-up/google-oidc.js";
 // #696 Phase 4c — self-hosted installs: the update agent on the server.
 export {
   agentInstallCommand,

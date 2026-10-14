@@ -17,8 +17,8 @@
  *
  * The writes are human-only (CLAUDE.md §2: deployment is locked from the
  * AI; #696 maintainer decision 3: the AI only informs) and each needs the
- * `platform.update` permission plus a fresh Google sign-in from the same
- * browser session (security/step-up/gate.ts), consumed by the action.
+ * `platform.update` permission plus the Owner's password, re-entered in the
+ * same browser session (security/step-up/gate.ts), consumed by the action.
  */
 
 import {
@@ -206,7 +206,7 @@ export const platformUpdatesRequestOp = defineOperation({
   name: "platform_updates.request",
   // Why human-only: installing a Caelo release is a deployment (CLAUDE.md
   // §2, deployment locked from the AI; #696 decision 3: the AI only informs).
-  // Owner permission + a fresh Google sign-in, checked in the handler.
+  // Owner permission + a password confirmation, checked in the handler.
   actorScope: ["human"],
   database: "cms_admin",
   input: z.object({ targetVersion: releaseVersionSchema, sessionHash: sessionHashSchema }).strict(),
@@ -273,7 +273,7 @@ export const platformUpdatesRequestOp = defineOperation({
       requestId,
       "queued",
       "info",
-      `Update to ${input.targetVersion} requested (confirmed with a fresh Google sign-in).`,
+      `Update to ${input.targetVersion} requested (confirmed with the Owner's password).`,
     );
     await consumeStepUp(tx, ctx.actorId, input.sessionHash);
     await recordAuditFromCtx(tx, ctx, {
@@ -290,7 +290,7 @@ export const platformUpdatesRequestOp = defineOperation({
 export const platformUpdatesCancelOp = defineOperation({
   name: "platform_updates.cancel",
   // Why human-only: withdraws the Owner's own deployment request (same gate
-  // as platform_updates.request: Owner permission + fresh Google sign-in).
+  // as platform_updates.request: Owner permission + password confirmation).
   actorScope: ["human"],
   database: "cms_admin",
   input: z.object({ requestId: z.string().uuid(), sessionHash: sessionHashSchema }).strict(),

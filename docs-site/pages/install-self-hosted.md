@@ -73,7 +73,7 @@ An install created before prebuilt images existed (its Compose file bind-mounts 
 
 ## Installing updates from the admin
 
-Settings → Updates in the admin can install a new Caelo release with one click (Owner only, confirmed with a fresh Google sign-in). On a self-hosted install the click does not install anything itself: it writes an update request into the database, and the **update agent** on your server carries it out.
+Settings → Updates in the admin can install a new Caelo release with one click (Owner only, confirmed with your Caelo password). On a self-hosted install the click does not install anything itself: it writes an update request into the database, and the **update agent** on your server carries it out.
 
 The agent is a systemd timer (`caelo-agent-<your-domain>-<hash>.timer`; `agent status` names it) that runs the provisioning CLI **as your user** — the one that ran `init` — once a minute:
 
@@ -105,7 +105,7 @@ Requirements on the server:
 - **cosign** on the `PATH` the agent sees (the `PATH` of the shell that ran `agent install` is written into the unit).
 - **Lingering** for your user, so the timer runs while you are logged out. `agent install` switches it on (`loginctl enable-linger`); where the system policy does not allow that, it prints the one command an administrator runs: `sudo loginctl enable-linger <user>`.
 
-**The Google sign-in.** Installing an update (and changing the update policy) needs a fresh Google sign-in, also on a self-hosted install. Settings → Updates walks you through creating a Google OAuth client once (in any Google Cloud project — it costs nothing) and pasting its ID and secret. Until that is done, the page shows the `upgrade` command to run instead.
+**The password confirmation.** Installing an update (and changing the update policy) asks for your Caelo password again, every time, so nobody can install from a computer you left signed in. Five wrong passwords in a row sign the session out. There is nothing to set up for it.
 
 ## Redirects
 

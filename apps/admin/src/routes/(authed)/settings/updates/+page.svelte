@@ -5,9 +5,9 @@
    * #696 — Settings → Updates. Versions + release notes for everyone with
    * settings.read; for the Owner (platform.update) on installs with the
    * upgrader job — or, self-hosted, a running update agent on the server —
-   * "Install update": a fresh Google sign-in, a confirmation of what will
-   * happen, then a live timeline. Otherwise — and always as the alternative —
-   * the pinned upgrade command for those who may run it.
+   * "Install update": a confirmation of what will happen with the Owner's
+   * password (#757), then a live timeline. Otherwise — and always as the
+   * alternative — the pinned upgrade command for those who may run it.
    * See +page.server.ts, #lib/upgrade-path.ts and #lib/components/updates/.
    */
 
@@ -27,16 +27,8 @@
   import AgentSetup from "#lib/components/updates/AgentSetup.svelte";
   import AutoUpdatePolicy from "#lib/components/updates/AutoUpdatePolicy.svelte";
   import CloudShellUpgrade from "#lib/components/updates/CloudShellUpgrade.svelte";
-  import StepUpSetup from "#lib/components/updates/StepUpSetup.svelte";
+  import PasswordConfirmDialog from "#lib/components/updates/PasswordConfirmDialog.svelte";
   import UpdateTimeline from "#lib/components/updates/UpdateTimeline.svelte";
-  import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-  } from "#lib/components/ui/dialog/index.js";
   import { isActive, releaseCheckState, statusDisplay } from "#lib/updates-display.js";
   import { releaseNotesExcerpt } from "#lib/upgrade-path.js";
   import { cn } from "#lib/utils.js";
@@ -48,25 +40,17 @@
   /** The Owner can install from here: permission + an upgrader job on this install. */
   const inProduct = $derived(data.canInstall && data.upgrader.available);
   let confirmOpen = $state(false);
-  /** The Google sign-in setup card already shows in the install section. */
-  const setupShownAbove = $derived(
-    data.status.upgradeAvailable &&
-      (data.canUpgrade || data.canInstall) &&
-      inProduct &&
-      data.stepUp !== null &&
-      !data.stepUp.configured,
+  let cancelOpen = $state(false);
+  /** A wrong or missing password: the dialog it was typed into opens again with the message. */
+  const stepUpError = $derived(
+    form && "stepUpRequired" in form && form.stepUpRequired && "action" in form
+      ? { action: form.action as string, error: form.error as string }
+      : null,
   );
-
-  // Back from Google: open the confirmation the sign-in was for.
   $effect(() => {
-    const r = data.stepUpResult;
-    if (r?.ok && r.purpose === "platform_update" && data.stepUp?.fresh && !busy) confirmOpen = true;
-    if (r && !r.ok) toast.error(`Google sign-in: ${r.message}`);
+    if (stepUpError?.action === "install") confirmOpen = true;
+    if (stepUpError?.action === "cancel") cancelOpen = true;
   });
-
-  function until(iso: string | null): string {
-    return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-  }
 
   const status = $derived(data.status);
 
@@ -242,14 +226,28 @@
           />
         {/key}
         {#if latestRequest.status === "pending" && data.canInstall}
-          <form method="post" action={data.stepUp?.fresh ? "?/cancel" : "?/stepUp"}>
+          <form id="cancel-update-form" method="post" action="?/cancel">
             <input type="hidden" name="_csrf" value={data.csrfToken} />
             <input type="hidden" name="requestId" value={latestRequest.id} />
-            <input type="hidden" name="purpose" value="platform_update" />
-            <Button type="submit" variant="outline" size="sm" data-testid="cancel-update">
-              {data.stepUp?.fresh ? "Cancel this update" : "Cancel (confirm with Google first)"}
-            </Button>
           </form>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-testid="cancel-update"
+            onclick={() => (cancelOpen = true)}
+          >
+            Cancel this update…
+          </Button>
+          <PasswordConfirmDialog
+            bind:open={cancelOpen}
+            formId="cancel-update-form"
+            title={`Cancel the update to v${latestRequest.targetVersion}?`}
+            description="It has not started yet; nothing on your site changes."
+            submitLabel="Cancel the update"
+            error={stepUpError?.action === "cancel" ? stepUpError.error : null}
+            testid="cancel-dialog"
+          />
         {/if}
       </CardContent>
     </Card>
@@ -289,26 +287,7 @@
           until then.
         </AlertDescription>
       </Alert>
-    {:else if inProduct && data.stepUp && !data.stepUp.configured}
-      {#if form?.error && !form?.releaseCheck}
-        <Alert variant="destructive" data-testid="step-up-setup-error">
-          <AlertTitle>Google sign-in was not saved</AlertTitle>
-          <AlertDescription>{form.error}</AlertDescription>
-        </Alert>
-      {/if}
-      <StepUpSetup
-        csrfToken={data.csrfToken}
-        redirectUri={data.redirectUri}
-        credentialsUrl={data.credentialsUrl}
-        selfHosted={data.selfHosted}
-      />
-      {#if data.upgrade?.kind === "cli"}
-        <details class="rounded-md border p-3 text-sm" data-testid="cli-alternative">
-          <summary class="cursor-pointer font-medium">Install from a terminal instead</summary>
-          <div class="mt-3">{@render cliInstructions(data.upgrade, status.latestVersion)}</div>
-        </details>
-      {/if}
-    {:else if inProduct && data.stepUp}
+    {:else if inProduct}
       <Card data-testid="install-update">
         <CardHeader>
           <CardTitle class="text-base">Install v{status.latestVersion}</CardTitle>
@@ -316,39 +295,24 @@
             {#if data.selfHosted}
               The update agent on your server{data.agent?.status ? ` (${data.agent.status.host})` : ""}
               installs it: it checks the release is genuine, backs up your database, switches to the
-              new version, tests it, and goes back automatically if the test fails. You confirm with a
-              fresh Google sign-in.
+              new version, tests it, and goes back automatically if the test fails. You confirm with
+              your Caelo password.
             {:else}
               Caelo installs it from inside your Google Cloud project: it checks the release is
               genuine, backs up your database, switches to the new version, tests it, and goes back
-              automatically if the test fails. You confirm with a fresh Google sign-in.
+              automatically if the test fails. You confirm with your Caelo password.
             {/if}
           </CardDescription>
         </CardHeader>
         <CardContent class="space-y-3 text-sm">
           {#if busy}
             <p class="text-muted-foreground">An update is already in progress (see above).</p>
-          {:else if data.stepUp.fresh}
-            <p class="text-muted-foreground" data-testid="step-up-fresh">
-              Confirmed with Google — valid until {until(data.stepUp.freshUntil)}.
-            </p>
+          {:else}
             <Button data-testid="open-install-dialog" onclick={() => (confirmOpen = true)}>
               Install v{status.latestVersion}…
             </Button>
-          {:else}
-            <form method="post" action="?/stepUp">
-              <input type="hidden" name="_csrf" value={data.csrfToken} />
-              <input type="hidden" name="purpose" value="platform_update" />
-              <Button type="submit" data-testid="step-up-install">
-                Confirm with Google to install v{status.latestVersion}
-              </Button>
-            </form>
-            <p class="text-xs text-muted-foreground">
-              Google asks for your password again (and your second factor, if you use one) — even if
-              you are signed in to Google already.
-            </p>
           {/if}
-          {#if form?.error && !form?.policy && !form?.releaseCheck}
+          {#if form?.error && !form?.policy && !form?.releaseCheck && !stepUpError}
             <p class="text-sm text-destructive" data-testid="install-error">{form.error}</p>
           {/if}
         </CardContent>
@@ -400,19 +364,11 @@
     policy={data.policy}
     scheduler={data.scheduler}
     canEdit={data.canInstall}
-    stepUp={data.policyStepUp}
     csrfToken={data.csrfToken}
     error={form?.policy ? (form.error ?? null) : null}
+    failedAction={stepUpError?.action ?? null}
     upgraderAvailable={data.upgrader.available}
   />
-  {#if inProduct && data.policyStepUp && !data.policyStepUp.configured && !setupShownAbove}
-    <StepUpSetup
-      csrfToken={data.csrfToken}
-      redirectUri={data.redirectUri}
-      credentialsUrl={data.credentialsUrl}
-      selfHosted={data.selfHosted}
-    />
-  {/if}
 
   {#if data.history.length > 0}
     <Card>
@@ -439,44 +395,40 @@
   {/if}
 </div>
 
-{#if inProduct && data.stepUp?.fresh && status.latestVersion}
-  <Dialog bind:open={confirmOpen}>
-    <DialogContent data-testid="install-dialog">
-      <DialogHeader>
-        <DialogTitle>Install Caelo v{status.latestVersion}?</DialogTitle>
-        <DialogDescription>What happens, in order:</DialogDescription>
-      </DialogHeader>
-      <ol class="list-decimal space-y-1 pl-5 text-sm">
-        <li>The release's signature is checked; an unsigned or older release is refused.</li>
-        <li>Your database is backed up. If that fails, nothing changes.</li>
-        <li>The database is updated to the new version's structure.</li>
-        <li>The admin and the public form service switch to v{status.latestVersion} and are tested.</li>
-        <li>If a test fails, both go back to v{status.installedVersion} automatically.</li>
-      </ol>
-      <p class="text-sm text-muted-foreground">
-        {#if data.selfHosted}
-          The update agent picks it up within a minute; the update takes about 5 to 15 minutes. Your
-          public site stays online. The admin restarts once and may be unreachable for about a
-          minute; unsaved typing elsewhere in the admin can be lost.
-        {:else}
-          Takes about 5 to 15 minutes. Your public site stays online. The admin restarts once and may be
-          unreachable for about a minute; unsaved typing elsewhere in the admin can be lost. If this
-          release needs a change to your cloud setup, nothing is installed and this page explains the
-          Cloud Shell step instead.
-        {/if}
-      </p>
-      <form method="post" action="?/install">
-        <input type="hidden" name="_csrf" value={data.csrfToken} />
-        <input type="hidden" name="version" value={status.latestVersion} />
-        <DialogFooter>
-          <Button type="button" variant="ghost" onclick={() => (confirmOpen = false)}>
-            Not now
-          </Button>
-          <Button type="submit" data-testid="confirm-install">Install v{status.latestVersion}</Button>
-        </DialogFooter>
-      </form>
-    </DialogContent>
-  </Dialog>
+{#if inProduct && status.latestVersion}
+  <form id="install-form" method="post" action="?/install">
+    <input type="hidden" name="_csrf" value={data.csrfToken} />
+    <input type="hidden" name="version" value={status.latestVersion} />
+  </form>
+  <PasswordConfirmDialog
+    bind:open={confirmOpen}
+    formId="install-form"
+    title={`Install Caelo v${status.latestVersion}?`}
+    description="What happens, in order:"
+    submitLabel={`Install v${status.latestVersion}`}
+    error={stepUpError?.action === "install" ? stepUpError.error : null}
+    testid="install-dialog"
+  >
+    <ol class="list-decimal space-y-1 pl-5 text-sm">
+      <li>The release's signature is checked; an unsigned or older release is refused.</li>
+      <li>Your database is backed up. If that fails, nothing changes.</li>
+      <li>The database is updated to the new version's structure.</li>
+      <li>The admin and the public form service switch to v{status.latestVersion} and are tested.</li>
+      <li>If a test fails, both go back to v{status.installedVersion} automatically.</li>
+    </ol>
+    <p class="text-sm text-muted-foreground">
+      {#if data.selfHosted}
+        The update agent picks it up within a minute; the update takes about 5 to 15 minutes. Your
+        public site stays online. The admin restarts once and may be unreachable for about a
+        minute; unsaved typing elsewhere in the admin can be lost.
+      {:else}
+        Takes about 5 to 15 minutes. Your public site stays online. The admin restarts once and may be
+        unreachable for about a minute; unsaved typing elsewhere in the admin can be lost. If this
+        release needs a change to your cloud setup, nothing is installed and this page explains the
+        Cloud Shell step instead.
+      {/if}
+    </p>
+  </PasswordConfirmDialog>
 {/if}
 
 {#snippet cliInstructions(

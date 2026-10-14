@@ -5,11 +5,12 @@
    * #696 Phase 5 — Settings → Updates → Automatic updates. Shows the Owner's
    * policy in plain words, what the scheduler last decided and which update
    * emails went out; lets the Owner change the policy, pause or resume —
-   * each after its own fresh Google sign-in (maintainer decisions 4 + 6).
-   * The ops re-check the permission and the sign-in and use it up.
+   * each confirmed with their password (decisions 4 + 6, #757). The ops
+   * re-check the permission and the confirmation and use it up.
    */
 
   import type { SchedulerStatus } from "@caelo-cms/admin-core";
+  import { enhance, type SubmitFunction } from "$app/forms";
   import type { StoredUpdatePolicy } from "@caelo-cms/shared";
   import { Alert, AlertDescription, AlertTitle } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -24,6 +25,7 @@
   import { Input } from "#lib/components/ui/input/index.js";
   import { Label } from "#lib/components/ui/label/index.js";
   import { Select } from "#lib/components/ui/select/index.js";
+  import PasswordConfirmDialog from "./PasswordConfirmDialog.svelte";
   import {
     autoUpdateSummary,
     DELIVERY_DISPLAY,
@@ -35,20 +37,51 @@
     policy,
     scheduler,
     canEdit,
-    stepUp,
     csrfToken,
     error,
+    failedAction,
     upgraderAvailable,
   }: {
     policy: StoredUpdatePolicy;
     scheduler: SchedulerStatus;
     canEdit: boolean;
-    stepUp: { configured: boolean; fresh: boolean; freshUntil: string | null } | null;
     csrfToken: string;
     error: string | null;
+    /** The policy action whose password confirmation just failed; its dialog reopens. */
+    failedAction: string | null;
     /** This install has an upgrader (Cloud Run job or the self-hosted agent). */
     upgraderAvailable: boolean;
   } = $props();
+
+  /** Which change the password dialog confirms; null = closed. */
+  type PolicyAction = "savePolicy" | "pause" | "resume";
+  const FORM_IDS: Record<PolicyAction, string> = {
+    savePolicy: "policy-form",
+    pause: "pause-form",
+    resume: "resume-form",
+  };
+  const TITLES: Record<PolicyAction, string> = {
+    savePolicy: "Save the automatic-update settings?",
+    pause: "Pause automatic updates?",
+    resume: "Resume automatic updates?",
+  };
+  const isPolicyAction = (a: string | null): a is PolicyAction =>
+    a === "savePolicy" || a === "pause" || a === "resume";
+  // svelte-ignore state_referenced_locally
+  let confirming = $state<PolicyAction | null>(isPolicyAction(failedAction) ? failedAction : null);
+  $effect(() => {
+    if (isPolicyAction(failedAction)) confirming = failedAction;
+  });
+
+  /**
+   * Submitted in place, so a wrong password keeps what the Owner typed into
+   * the form (a full reload would show the stored policy again); the dialog
+   * closes once the change went through.
+   */
+  const submitInPlace: SubmitFunction = () => async ({ result, update }) => {
+    await update({ reset: false });
+    if (result.type === "success") confirming = null;
+  };
 
   // svelte-ignore state_referenced_locally
   let mode = $state(policy.mode);
@@ -129,34 +162,21 @@
       </div>
     {/if}
 
-    {#if canEdit && stepUp}
-      {#if !stepUp.configured}
-        <p class="text-muted-foreground" data-testid="policy-needs-setup">
-          Changing these settings is confirmed with a fresh Google sign-in.
-          {upgraderAvailable
-            ? "Set up Google sign-in for updates first (below)."
-            : "Google sign-in for updates is set up together with the upgrader this page explains above; until then Caelo only tells you about new releases."}
+    {#if canEdit}
+      {#if !upgraderAvailable}
+        <p class="text-muted-foreground" data-testid="policy-needs-upgrader">
+          These settings can be changed once this install can install updates itself (see above);
+          until then Caelo only tells you about new releases.
         </p>
-      {:else if !stepUp.fresh}
-        <form method="post" action="?/stepUp">
-          <input type="hidden" name="_csrf" value={csrfToken} />
-          <input type="hidden" name="purpose" value="update_policy" />
-          <Button type="submit" variant="outline" data-testid="step-up-policy">
-            Change automatic updates (confirm with Google)
-          </Button>
-        </form>
       {:else}
-        <p class="text-muted-foreground" data-testid="policy-step-up-fresh">
-          Confirmed with Google — you can make one change until
-          {stepUp.freshUntil
-            ? new Date(stepUp.freshUntil).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })
-            : ""}.
-        </p>
-
-        <form method="post" action="?/savePolicy" class="space-y-4 rounded-md border p-4" data-testid="policy-form">
+        <form
+          id="policy-form"
+          method="post"
+          action="?/savePolicy"
+          use:enhance={submitInPlace}
+          class="space-y-4 rounded-md border p-4"
+          data-testid="policy-form"
+        >
           <input type="hidden" name="_csrf" value={csrfToken} />
           <div class="space-y-1">
             <Label for="policy-mode">When a new Caelo release comes out</Label>
@@ -167,8 +187,16 @@
             </Select>
           </div>
 
-          <fieldset class={mode === "auto" ? "space-y-2" : "space-y-2 opacity-50"}>
+          <!-- The choices stay editable and submitted in every mode (a disabled
+               fieldset would save them as off), so this says when they apply
+               instead of fading them below WCAG contrast. -->
+          <fieldset class="space-y-2">
             <legend class="font-medium">Install automatically</legend>
+            {#if mode !== "auto"}
+              <p class="text-xs text-muted-foreground" data-testid="policy-auto-inactive">
+                Used only when the setting above is "Install the kinds I choose automatically".
+              </p>
+            {/if}
             <label class="flex items-start gap-2">
               <input type="checkbox" name="autoSecurity" checked={policy.autoSecurity} data-testid="policy-auto-security" />
               <span>Security fixes — releases that fix a published security advisory</span>
@@ -232,18 +260,32 @@
             Waiting lets problems with a new release surface before it reaches your site. Security
             fixes wait less, because the problem they fix is public.
           </p>
-          <Button type="submit" data-testid="save-policy">Save</Button>
+          <Button type="button" data-testid="save-policy" onclick={() => (confirming = "savePolicy")}>
+            Save…
+          </Button>
         </form>
 
         {#if policy.paused}
-          <form method="post" action="?/resume">
+          <form id="resume-form" method="post" action="?/resume" use:enhance={submitInPlace}>
             <input type="hidden" name="_csrf" value={csrfToken} />
-            <Button type="submit" variant="outline" data-testid="resume-auto-updates">
-              Resume automatic updates
+            <Button
+              type="button"
+              variant="outline"
+              data-testid="resume-auto-updates"
+              onclick={() => (confirming = "resume")}
+            >
+              Resume automatic updates…
             </Button>
           </form>
         {:else}
-          <form method="post" action="?/pause" class="flex flex-wrap items-end gap-3" data-testid="pause-form">
+          <form
+            id="pause-form"
+            method="post"
+            action="?/pause"
+            use:enhance={submitInPlace}
+            class="flex flex-wrap items-end gap-3"
+            data-testid="pause-form"
+          >
             <input type="hidden" name="_csrf" value={csrfToken} />
             <div class="space-y-1">
               <Label for="pause-for">Pause automatic updates</Label>
@@ -260,12 +302,29 @@
               <Label for="pause-reason">Why (optional)</Label>
               <Input id="pause-reason" name="reason" maxlength={500} placeholder="e.g. launch week" />
             </div>
-            <Button type="submit" variant="outline" data-testid="pause-auto-updates">Pause</Button>
+            <Button
+              type="button"
+              variant="outline"
+              data-testid="pause-auto-updates"
+              onclick={() => (confirming = "pause")}
+            >
+              Pause…
+            </Button>
           </form>
         {/if}
-        <p class="text-xs text-muted-foreground">Each change needs its own Google sign-in.</p>
+        <p class="text-xs text-muted-foreground">Each change asks for your password.</p>
+        {#if confirming}
+          <PasswordConfirmDialog
+            bind:open={() => confirming !== null, (v) => { if (!v) confirming = null; }}
+            formId={FORM_IDS[confirming]}
+            title={TITLES[confirming]}
+            submitLabel="Confirm"
+            error={failedAction === confirming ? error : null}
+            testid="policy-dialog"
+          />
+        {/if}
       {/if}
-      {#if error}
+      {#if error && !isPolicyAction(failedAction)}
         <p class="text-sm text-destructive" data-testid="policy-error">{error}</p>
       {/if}
     {/if}

@@ -8,11 +8,11 @@
  *     command that upgrades this install from a terminal.
  *   - Phase 5: the automatic-update policy (which kinds install on their
  *     own, maintenance window, soak periods, pause/resume) — every change a
- *     step-up action of its own — plus what the scheduler last decided and
+ *     step-up action of its own (the Owner's password, #757) — plus what the scheduler last decided and
  *     which update emails went out.
  *   - Phase 2: on installs with the upgrader job, "Install update" for whoever
- *     holds `platform.update` (the Owner): a fresh Google sign-in (step-up),
- *     a confirmation of what will happen, then the request + the job start,
+ *     holds `platform.update` (the Owner): a confirmation of what will
+ *     happen with the Owner's password (step-up), then the request + the job start,
  *     and a live timeline of the job's run that survives the admin restarting
  *     (it is in the database). A release that changes the cloud setup ends as
  *     "needs Cloud Shell" with the commands to run there.
@@ -21,8 +21,9 @@
  * release-check worker does, hourly) — for anyone who may open this page.
  *
  * Nothing here installs anything itself and the AI only reads (CLAUDE.md §2;
- * #696 decision 3). The ops behind the actions re-check the permission and the
- * step-up, and consume the step-up.
+ * #696 decision 3). Every guarded action confirms the password from its own
+ * form first (lib/server/step-up.ts); the ops behind the actions re-check the
+ * permission and the step-up, and consume it.
  */
 
 import {
@@ -38,22 +39,16 @@ import {
 } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import type { PlatformUpdateAgentStatus, StoredUpdatePolicy } from "@caelo-cms/shared";
-import { error, fail, redirect } from "@sveltejs/kit";
+import { error, fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { releaseCheckFetch } from "#lib/server/release-check.js";
-import {
-  beginStepUp,
-  requireStepUp,
-  STEP_UP_RESULT_COOKIE,
-  stepUpRedirectUri,
-} from "#lib/server/step-up.js";
+import { confirmStepUp } from "#lib/server/step-up.js";
 import { updatesEnv, upgraderTrigger } from "#lib/server/upgrader.js";
 import {
   cloudShellUpgrade,
-  installProjectId,
   resolveUpgradePath,
   type UpgradePath,
   updatesProvider,
@@ -68,7 +63,7 @@ async function readAgent(ctx: App.Locals["ctx"]): Promise<PlatformUpdateAgentSta
   return (r.value as { agent: PlatformUpdateAgentStatus | null }).agent;
 }
 
-export const load: PageServerLoad = async ({ locals, cookies, url }) => {
+export const load: PageServerLoad = async ({ locals, cookies }) => {
   const user = requirePermission(locals, "settings.read");
   const { adapter, registry } = getQueryContext();
   const [statusResult, latestResult, historyResult, policyResult, schedulerResult] =
@@ -115,9 +110,6 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
   const agent = selfHosted && canInstall ? await readAgent(locals.ctx) : null;
   const agentProblem = selfHosted && canInstall ? agentUnavailable(agent) : null;
   const upgrader = upgraderTrigger(env, () => readAgent(locals.ctx));
-  const stepUp = canInstall ? await requireStepUp(locals, cookies, "platform_update") : null;
-  // A policy change is its own step-up action (purpose update_policy).
-  const policyStepUp = canInstall ? await requireStepUp(locals, cookies, "update_policy") : null;
   // A run that died (out of memory, timeout) never writes its end; Cloud
   // Run knows. Say so instead of showing "Installing" until the next run
   // ends it.
@@ -139,18 +131,6 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
       ? resolveUpgradePath(env, latest.request.targetVersion)
       : null;
 
-  type StepUpResult = { ok: boolean; purpose: string; message: string };
-  let stepUpResult: StepUpResult | null = null;
-  const flash = cookies.get(STEP_UP_RESULT_COOKIE);
-  if (flash) {
-    cookies.delete(STEP_UP_RESULT_COOKIE, { path: "/settings/updates" });
-    try {
-      stepUpResult = JSON.parse(flash) as StepUpResult;
-    } catch {
-      stepUpResult = null;
-    }
-  }
-
   return {
     status,
     canUpgrade,
@@ -171,26 +151,8 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
             installCommand: agentInstallCommand(status.installedVersion),
           }
         : null,
-    stepUp: stepUp
-      ? stepUp.fresh
-        ? { configured: true, fresh: true, freshUntil: stepUp.freshUntil, problem: null }
-        : { configured: stepUp.configured, fresh: false, freshUntil: null, problem: stepUp.problem }
-      : null,
-    policyStepUp: policyStepUp
-      ? policyStepUp.fresh
-        ? { configured: true, fresh: true, freshUntil: policyStepUp.freshUntil }
-        : { configured: policyStepUp.configured, fresh: false, freshUntil: null }
-      : null,
     policy: policyResult.value as StoredUpdatePolicy,
     scheduler: schedulerResult.value as SchedulerStatus,
-    stepUpResult,
-    redirectUri: stepUpRedirectUri(url.origin),
-    credentialsUrl: (() => {
-      const project = installProjectId({ CAELO_UPGRADER_JOB: process.env.CAELO_UPGRADER_JOB });
-      return project
-        ? `https://console.cloud.google.com/apis/credentials?project=${project}`
-        : "https://console.cloud.google.com/apis/credentials";
-    })(),
     latest,
     deadRun,
     history,
@@ -199,10 +161,7 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
   };
 };
 
-const STEP_UP_PURPOSES = ["platform_update", "update_policy", "step_up_client"] as const;
-type Purpose = (typeof STEP_UP_PURPOSES)[number];
-
-/** A failed op as a form result: step-up refusals flagged, so the page offers the sign-in. */
+/** A failed op as a form result: step-up refusals flagged, so the page asks for the password again. */
 function opFailure(error: unknown, fallback: string, extra: { policy?: true } = {}) {
   const message = opErrorMessage(error, fallback);
   const stepUpRequired = message.startsWith(STEP_UP_REQUIRED);
@@ -215,14 +174,6 @@ function opFailure(error: unknown, fallback: string, extra: { policy?: true } = 
 
 /** Pause lengths the page offers, in days ("until I resume" is the other choice). */
 const PAUSE_DAYS = [1, 3, 7, 14, 30];
-
-function policyStepUpMissing() {
-  return fail(403, {
-    error: "Confirm with a fresh Google sign-in first.",
-    stepUpRequired: true,
-    policy: true,
-  });
-}
 
 export const actions: Actions = {
   /**
@@ -256,24 +207,6 @@ export const actions: Actions = {
     };
   },
 
-  /** Start a fresh Google sign-in; Google sends the browser back to the callback. */
-  stepUp: async ({ request, locals, cookies, url }) => {
-    requirePermission(locals, "platform.update");
-    const form = await request.formData();
-    await assertCsrfToken(form, locals);
-    const purpose = String(form.get("purpose") ?? "platform_update");
-    if (!(STEP_UP_PURPOSES as readonly string[]).includes(purpose)) {
-      return fail(400, { error: "Unknown confirmation." });
-    }
-    const r = await beginStepUp(locals, cookies, {
-      purpose: purpose as Purpose,
-      returnTo: "/settings/updates",
-      origin: url.origin,
-    });
-    if (!r.ok) return fail(400, { error: r.error });
-    throw redirect(303, r.location);
-  },
-
   /** Request the newest release and start the upgrader job. */
   install: async ({ request, locals, cookies }) => {
     requirePermission(locals, "platform.update");
@@ -287,13 +220,8 @@ export const actions: Actions = {
         error: "This install has no upgrader yet; run the upgrade command shown on this page.",
       });
     }
-    const check = await requireStepUp(locals, cookies, "platform_update");
-    if (!check.fresh) {
-      return fail(403, {
-        error: "Confirm with a fresh Google sign-in first.",
-        stepUpRequired: true,
-      });
-    }
+    const check = await confirmStepUp(locals, cookies, form, "platform_update", "install");
+    if (!check.ok) return check.failure;
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "platform_updates.request", {
       targetVersion: version,
@@ -321,13 +249,8 @@ export const actions: Actions = {
     requirePermission(locals, "platform.update");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const check = await requireStepUp(locals, cookies, "platform_update");
-    if (!check.fresh) {
-      return fail(403, {
-        error: "Confirm with a fresh Google sign-in first.",
-        stepUpRequired: true,
-      });
-    }
+    const check = await confirmStepUp(locals, cookies, form, "platform_update", "cancel");
+    if (!check.ok) return check.failure;
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "platform_updates.cancel", {
       requestId: String(form.get("requestId") ?? ""),
@@ -337,13 +260,13 @@ export const actions: Actions = {
     return { ok: "Update cancelled." };
   },
 
-  /** Save the automatic-update policy (its own fresh Google sign-in). */
+  /** Save the automatic-update policy (its own password confirmation). */
   savePolicy: async ({ request, locals, cookies }) => {
     requirePermission(locals, "platform.update");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const check = await requireStepUp(locals, cookies, "update_policy");
-    if (!check.fresh) return policyStepUpMissing();
+    const check = await confirmStepUp(locals, cookies, form, "update_policy", "savePolicy");
+    if (!check.ok) return check.failure;
     const windowOn = form.get("windowEnabled") === "on";
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "platform_update_policy.set", {
@@ -370,12 +293,13 @@ export const actions: Actions = {
     requirePermission(locals, "platform.update");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const check = await requireStepUp(locals, cookies, "update_policy");
-    if (!check.fresh) return policyStepUpMissing();
+    // Checked before the confirmation, so a bad choice does not leave one unused.
     const days = String(form.get("pauseFor") ?? "");
     if (days !== "resume" && !PAUSE_DAYS.includes(Number(days))) {
       return fail(400, { error: "Choose how long to pause.", policy: true });
     }
+    const check = await confirmStepUp(locals, cookies, form, "update_policy", "pause");
+    if (!check.ok) return check.failure;
     const until =
       days === "resume" ? null : new Date(Date.now() + Number(days) * 86_400_000).toISOString();
     const reason = String(form.get("reason") ?? "").trim();
@@ -394,35 +318,13 @@ export const actions: Actions = {
     requirePermission(locals, "platform.update");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const check = await requireStepUp(locals, cookies, "update_policy");
-    if (!check.fresh) return policyStepUpMissing();
+    const check = await confirmStepUp(locals, cookies, form, "update_policy", "resume");
+    if (!check.ok) return check.failure;
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "platform_update_policy.resume", {
       sessionHash: check.sessionHash,
     });
     if (!r.ok) return opFailure(r.error, "Could not resume automatic updates.", { policy: true });
     return { ok: "Automatic updates resumed." };
-  },
-
-  /** Store the install's Google OAuth client for step-up sign-ins. */
-  setClient: async ({ request, locals, cookies }) => {
-    requirePermission(locals, "platform.update");
-    const form = await request.formData();
-    await assertCsrfToken(form, locals);
-    const check = await requireStepUp(locals, cookies, "step_up_client");
-    if (!check.sessionHash) return fail(401, { error: "Sign in again first." });
-    const { adapter, registry } = getQueryContext();
-    const r = await execute(registry, adapter, locals.ctx, "step_up.set_client", {
-      clientId: String(form.get("clientId") ?? "").trim(),
-      clientSecret: String(form.get("clientSecret") ?? "").trim(),
-      sessionHash: check.sessionHash,
-    });
-    if (!r.ok) return opFailure(r.error, "Check the client ID and secret.");
-    const replaced = (r.value as { replaced: boolean }).replaced;
-    return {
-      ok: replaced
-        ? "Google sign-in client replaced."
-        : "Google sign-in is set up. Updates are now confirmed with a fresh Google sign-in.",
-    };
   },
 };

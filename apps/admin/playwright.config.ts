@@ -89,11 +89,9 @@ export default defineConfig({
       // Test-only, ignored when NODE_ENV=production (lib/upgrade-path.ts).
       CAELO_E2E_UPDATES_PROVIDER: "gcp",
       // #696 Phase 2 — "Install update" without a cloud: starting the
-      // upgrader job starts nothing, and the Google step-up sign-in is a
-      // local stand-in (lib/server/upgrader.ts, lib/server/step-up.ts).
+      // upgrader job starts nothing (lib/server/upgrader.ts).
       // Test-only, ignored when NODE_ENV=production.
       CAELO_E2E_FAKE_UPGRADER: "1",
-      CAELO_E2E_FAKE_GOOGLE_SIGNIN: "1",
     },
   },
 });

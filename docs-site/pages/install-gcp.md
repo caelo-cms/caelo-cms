@@ -300,8 +300,8 @@ The AI can tell you which version you run and whether an update is out, but it c
 
 Installs set up or upgraded with this release get an **upgrader**: a Cloud Run job in your project (`caelo-production-upgrader`) that installs Caelo releases from inside Google Cloud, so you no longer need the machine you installed from. On **Settings → Caelo updates** the Owner then sees **Install update** instead of (and the command as an alternative to) the terminal steps:
 
-1. **One-time: Google sign-in for updates.** Before installing, Caelo asks you to sign in to Google again — right then, with your password and second factor. A stolen admin session therefore cannot install anything, and there is no password alternative. The page walks you through creating the Google OAuth client it needs in your project (*APIs & Services → Credentials → OAuth client ID → Web application*, with the redirect URI the page shows) and pasting its ID and secret.
-2. **Confirm with Google**, then confirm the install. The page shows what will happen.
+1. **Click Install update.** The page shows what will happen, in order.
+2. **Enter your Caelo password** to confirm. It is asked again for every update action, so nobody can install from a computer you left signed in, and a stolen admin session alone is not enough (the admin also sits behind Google's access gate). Five wrong passwords in a row sign the session out. Nothing to set up beforehand.
 3. **Watch the timeline.** The upgrader checks the release's signature, backs up the database (no backup, no change), updates the database, switches the admin and the form service to the new release, tests both, and switches back automatically if a test fails. The timeline survives the admin restarting during the switch, and **Update history** keeps every attempt.
 
 What the upgrader may and may not do: it runs as its own service account with exactly the rights to deploy the two services, run the migration job, back up Cloud SQL and read/write the install's records (`install/` in the `<project>-caelo-ops` bucket). It cannot change IAM, service accounts, secrets or anything else in the project, and the admin can only start it — not change what it runs. It installs only releases signed by Caelo's release workflow that are newer than the one you run.
@@ -318,7 +318,7 @@ To get the upgrader on an existing install, run `upgrade` once as described abov
 
 ### Automatic updates
 
-Below the install section, **Automatic updates** lets the Owner choose what installs without a click. Every change — saving the settings, pausing, resuming — is confirmed with its own fresh Google sign-in, like installing.
+Below the install section, **Automatic updates** lets the Owner choose what installs without a click. Every change — saving the settings, pausing, resuming — is confirmed with your password, like installing.
 
 | Setting | Default | What it means |
 |---|---|---|
