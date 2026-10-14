@@ -2,17 +2,16 @@
 
 /**
  * #587 — self-hosted wiring for the redirects table: each public vhost
- * imports its build's `_redirects.caddy`, Caddy's admin API listens on a
- * unix socket in a volume only Caddy and the admin mount, and the admin
- * gets the socket + a read-only Caddyfile to reload through. (The snippet
- * itself runs through a real Caddy in admin-core's
- * caddy-redirects.docker.test.ts.)
+ * imports its build's `_redirects.caddy`, and the Caddy container reloads
+ * itself when a deploy changes it (caddy-redirects.ts). The snippet and the
+ * loop run against a real Caddy in caddy-redirects.docker.test.ts.
  */
 
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { generateCaddyfile } from "./caddy.js";
+import { caddyRedirectReloadCommand, caddyRedirectReloadScript } from "./caddy-redirects.js";
 import { generateDockerCompose } from "./compose.js";
 
 const caddyfile = generateCaddyfile({
@@ -48,14 +47,6 @@ describe("Caddyfile — redirects (#587)", () => {
     expect(block("admin.example.com")).not.toContain("_redirects.caddy");
   });
 
-  it("serves the admin API on the shared unix socket only", () => {
-    expect(
-      caddyfile.startsWith(
-        "{\n  email owner@example.com\n  admin unix//run/caddy-admin/admin.sock\n}",
-      ),
-    ).toBe(true);
-  });
-
   it("the dev Caddyfiles import the snippet of /srv/current", () => {
     for (const env of ["production", "staging"]) {
       const src = readFileSync(resolve(import.meta.dir, `../caddy/Caddyfile.${env}`), "utf8");
@@ -64,7 +55,7 @@ describe("Caddyfile — redirects (#587)", () => {
   });
 });
 
-describe("Compose — Caddy reload path (#587)", () => {
+describe("Compose — Caddy picks up new redirects (#587)", () => {
   const yaml = generateDockerCompose({
     domain: "example.com",
     postgresPassword: "pgpw",
@@ -85,26 +76,32 @@ describe("Compose — Caddy reload path (#587)", () => {
     return yaml.slice(start, end === -1 ? undefined : end);
   };
 
-  it("shares the admin socket volume between Caddy and the admin only", () => {
-    expect(service("caddy")).toContain("- caelo-caddy-admin:/run/caddy-admin");
-    expect(service("caelo-admin")).toContain("- caelo-caddy-admin:/run/caddy-admin");
-    expect(service("caelo-gateway")).not.toContain("caddy-admin");
-    expect(yaml).toMatch(/\nvolumes:\n[\s\S]*\n {2}caelo-caddy-admin:\n/);
-  });
-
-  it("gives the admin the socket and a read-only copy of the Caddyfile", () => {
-    const admin = service("caelo-admin");
-    expect(admin).toContain("- ./Caddyfile:/etc/caelo/Caddyfile:ro");
-    expect(admin).toContain('CAELO_CADDY_ADMIN_SOCKET: "/run/caddy-admin/admin.sock"');
-    expect(admin).toContain('CAELO_CADDYFILE: "/etc/caelo/Caddyfile"');
+  it("runs Caddy with the loop that reloads it on a changed snippet", () => {
+    expect(service("caddy")).toContain(
+      `    ${caddyRedirectReloadCommand("/srv/caelo/output/*/current/_redirects.caddy")}\n`,
+    );
+    expect(yaml).not.toContain("caddy-admin");
   });
 });
 
 describe("dev docker-compose.yml (#587)", () => {
-  it("runs both dev Caddies with --watch so a new build's snippet is picked up", () => {
+  it("runs both dev Caddies with the same reload loop", () => {
     const src = readFileSync(resolve(import.meta.dir, "../../../docker-compose.yml"), "utf8");
-    expect(
-      src.match(/command: caddy run --config \/etc\/caddy\/Caddyfile --adapter caddyfile --watch/g),
-    ).toHaveLength(2);
+    const line = `    ${caddyRedirectReloadCommand("/srv/current/_redirects.caddy")}\n`;
+    expect(src.split(line)).toHaveLength(3);
+  });
+});
+
+describe("caddyRedirectReloadScript", () => {
+  it("refuses a glob that could break out of the shell script", () => {
+    expect(() => caddyRedirectReloadScript("/srv/x; rm -rf /")).toThrow(/unsafe snippet glob/);
+  });
+
+  it("doubles every $ for Compose, nothing else", () => {
+    const script = caddyRedirectReloadScript("/srv/current/_redirects.caddy");
+    const cmd = caddyRedirectReloadCommand("/srv/current/_redirects.caddy");
+    const parsed = JSON.parse(cmd.slice("command: ".length)) as string[];
+    expect(parsed.slice(0, 2)).toEqual(["/bin/sh", "-c"]);
+    expect(parsed[2]?.replaceAll("$$", "$")).toBe(script);
   });
 });

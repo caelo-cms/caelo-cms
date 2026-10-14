@@ -4,11 +4,11 @@
  * The redirect plan as a Caddyfile snippet (self-hosted, #587).
  *
  * The static generator writes it to `<build>/_redirects.caddy`; each public
- * Caddy site block imports the file of the build it serves, and the deploy
- * reloads Caddy through its admin API (static-publisher-self-hosted.ts), so
- * a redirect is answered by Caddy itself with no compute on the request
- * path. A reload re-reads imports; a bad snippet is rejected by Caddy, which
- * keeps the previous config, and the deploy reports the error.
+ * Caddy site block imports the file of the build it serves, and the Caddy
+ * container reloads itself when a deploy changes it (caddy-redirects.ts in
+ * @caelo-cms/provisioning). A redirect is answered by Caddy itself with no
+ * compute on the request path and no channel from the admin into Caddy. A
+ * snippet Caddy rejects leaves the previous config running.
  *
  * Shape: one `map` from the request path to the target and status, then one
  * `redir` per status keyed on the mapped status. `map` is an exact,
@@ -35,19 +35,6 @@ export const CADDY_REDIRECTS_FILE = "_redirects.caddy";
 export function caddyRedirectsImport(siteRoot: string): string {
   return `import ${trimTrailingSlashes(siteRoot)}/${CADDY_REDIRECTS_FILE}*`;
 }
-
-/**
- * Self-hosted: Caddy's admin API listens on this unix socket, in a volume
- * only Caddy and the admin mount (never the gateway, which handles public
- * traffic). The admin reloads Caddy through it after every deploy so the
- * imported redirect snippet takes effect.
- */
-export const CADDY_ADMIN_SOCKET_DIR = "/run/caddy-admin";
-export const CADDY_ADMIN_SOCKET = `${CADDY_ADMIN_SOCKET_DIR}/admin.sock`;
-/** Admin env: the socket above. */
-export const CADDY_ADMIN_SOCKET_ENV = "CAELO_CADDY_ADMIN_SOCKET";
-/** Admin env: a read-only copy of the Caddyfile Caddy runs, for the reload. */
-export const CADDYFILE_ENV = "CAELO_CADDYFILE";
 
 const PLACEHOLDER_TARGET = "caelo_redirect_to";
 const PLACEHOLDER_STATUS = "caelo_redirect_status";

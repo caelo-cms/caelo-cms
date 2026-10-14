@@ -18,8 +18,8 @@
  * Staging vhosts force `X-Robots-Tag: noindex`.
  *
  * Public vhosts import the redirect snippet of the build they serve
- * (`_redirects.caddy`, #587); the admin reloads Caddy through the admin
- * API's unix socket after each deploy so the new snippet takes effect.
+ * (`_redirects.caddy`, #587); the Caddy container reloads itself when a
+ * deploy changes it (caddy-redirects.ts).
  *
  * Public vhosts mark content-hashed build outputs (fonts, plugin
  * bundles — `CONTENT_HASHED_PATH_PATTERN` in @caelo-cms/shared)
@@ -37,7 +37,6 @@
  */
 
 import {
-  CADDY_ADMIN_SOCKET,
   CONTENT_HASHED_PATH_PATTERN,
   caddyRedirectsImport,
   IMMUTABLE_CACHE_CONTROL,
@@ -62,11 +61,8 @@ export function generateCaddyfile(spec: CaddyfileSpec): string {
   const blocks: string[] = [];
 
   // Global options.
-  // #587 — the admin API on a unix socket the admin reloads through after
-  // each deploy (see CADDY_ADMIN_SOCKET).
   blocks.push(`{
   email ${spec.ownerEmail}
-  admin unix/${CADDY_ADMIN_SOCKET}
 }
 `);
 

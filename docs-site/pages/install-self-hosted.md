@@ -112,7 +112,7 @@ Requirements on the server:
 
 ## Redirects
 
-Every redirect Caelo records (a page moved or renamed, a URL migration, one you add under **Settings → Redirects**) is answered by Caddy with its status and the new address. Each build carries a `_redirects.caddy` file next to the pages; the site's Caddy block imports it, and every deploy reloads Caddy through its admin API (a socket in the `caelo-caddy-admin` volume that only Caddy and the admin mount). If Caddy rejects the reload, the deploy reports Caddy's error and Caddy keeps serving the previous configuration. A page that exists always wins over a redirect from the same address, chains are served as one hop, the visitor's query string is kept, and `410 Gone` entries answer 410.
+Every redirect Caelo records (a page moved or renamed, a URL migration, one you add under **Settings → Redirects**) is answered by Caddy with its status and the new address. Each build carries a `_redirects.caddy` file next to the pages; the site's Caddy block imports it, and the Caddy container reloads itself within a few seconds of a deploy that changes it. If Caddy rejects the new file, it keeps serving the previous redirects and logs `caelo: redirects changed but Caddy rejected the reload` (`docker compose -f .caelo/docker-compose.yml logs caddy`); the next deploy tries again. A page that exists always wins over a redirect from the same address, chains are served as one hop, the visitor's query string is kept, and `410 Gone` entries answer 410.
 
 ## Day-2 operations
 
