@@ -169,6 +169,39 @@ async function appendEvent(
   `);
 }
 
+/**
+ * End runs that died without reporting back (Cloud Run timeout, crash) as
+ * failed, so they cannot block the next update. A dead automatic run may
+ * have left the site half-rolled, so it pauses automatic installs until
+ * the Owner looked — like the upgrader job's own recovery
+ * (platform-updater `platform_updates.job_claim`).
+ *
+ * @returns the ids of the runs it ended
+ */
+export async function endStaleRuns(tx: TransactionRunner): Promise<string[]> {
+  const stale = (await tx.execute(sql`
+    UPDATE platform_update_requests
+       SET status = 'failed', finished_at = now(), status_reason = ${PLATFORM_UPDATE_STALE_REASON},
+           refusal_codes = ARRAY['stale']
+     WHERE status = 'running'
+       AND started_at < now() - make_interval(mins => ${PLATFORM_UPDATE_STALE_MINUTES})
+     RETURNING id::text AS id, trigger, target_version
+  `)) as unknown as { id: string; trigger: string; target_version: string }[];
+  for (const s of stale) {
+    await appendEvent(tx, s.id, "finish", "error", PLATFORM_UPDATE_STALE_REASON);
+  }
+  const deadAuto = stale.find((s) => s.trigger === "auto");
+  if (deadAuto) {
+    await tx.execute(sql`
+      UPDATE platform_update_policy
+         SET paused = true, paused_at = now(), paused_until = NULL, paused_by = NULL,
+             paused_reason = ${`The automatic install of ${deadAuto.target_version} stopped before it finished.`}
+       WHERE id = 1
+    `);
+  }
+  return stale.map((s) => s.id);
+}
+
 export const platformUpdatesRequestOp = defineOperation({
   name: "platform_updates.request",
   // Why human-only: installing a Caelo release is a deployment (CLAUDE.md
@@ -221,17 +254,7 @@ export const platformUpdatesRequestOp = defineOperation({
     }
     // A run that died (Cloud Run timeout, crash) never reports back; end it
     // here too, not only on the next job run, so it cannot block updates.
-    const stale = (await tx.execute(sql`
-      UPDATE platform_update_requests
-         SET status = 'failed', finished_at = now(), status_reason = ${PLATFORM_UPDATE_STALE_REASON},
-             refusal_codes = ARRAY['stale']
-       WHERE status = 'running'
-         AND started_at < now() - make_interval(mins => ${PLATFORM_UPDATE_STALE_MINUTES})
-       RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
-    for (const s of stale) {
-      await appendEvent(tx, s.id, "finish", "error", PLATFORM_UPDATE_STALE_REASON);
-    }
+    await endStaleRuns(tx);
     const active = await readRequests(tx, sql`r.status IN ('pending', 'running')`, 1);
     if (active[0]) {
       return refuse(
@@ -308,9 +331,10 @@ export const platformUpdatesCancelOp = defineOperation({
 
 export const platformUpdatesRecordTriggerOp = defineOperation({
   name: "platform_updates.record_trigger",
-  // Why human-only: the admin's bookkeeping right after the Owner's own
-  // request — whether the upgrader job could be started for it.
-  actorScope: ["human"],
+  // Why human-only: the admin's bookkeeping right after a request — whether
+  // the upgrader job could be started for it. The Owner's session records
+  // its own requests; the auto-update scheduler (system) its automatic ones.
+  actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
     .object({
@@ -328,13 +352,15 @@ export const platformUpdatesRecordTriggerOp = defineOperation({
   output: z.object({ recorded: z.literal(true) }),
   handler: async (ctx, input, tx) => {
     const op = "platform_updates.record_trigger";
+    const mine =
+      ctx.actorKind === "system" ? sql`trigger = 'auto'` : sql`requested_by = ${ctx.actorId}::uuid`;
     // Only for the requester's own request, and only while it has not
     // moved on: a retried or late call must not add a contradicting line to
     // a request the job claimed, finished or the Owner cancelled.
     if (input.outcome.started) {
       const rows = (await tx.execute(sql`
         SELECT status FROM platform_update_requests
-         WHERE id = ${input.requestId}::uuid AND requested_by = ${ctx.actorId}::uuid
+         WHERE id = ${input.requestId}::uuid AND ${mine}
            AND status IN ('pending', 'running')
       `)) as unknown as { status: string }[];
       if (!rows[0]) {
@@ -354,7 +380,7 @@ export const platformUpdatesRecordTriggerOp = defineOperation({
       const rows = (await tx.execute(sql`
         UPDATE platform_update_requests
            SET status = 'failed', status_reason = ${reason.slice(0, 4000)}, finished_at = now()
-         WHERE id = ${input.requestId}::uuid AND requested_by = ${ctx.actorId}::uuid
+         WHERE id = ${input.requestId}::uuid AND ${mine}
            AND status = 'pending'
          RETURNING id
       `)) as unknown as { id: string }[];

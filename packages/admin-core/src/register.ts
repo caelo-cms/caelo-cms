@@ -349,6 +349,8 @@ import { appliedAdminMigrationsOp, appliedPublicMigrationsOp } from "./ops/platf
 import { platformUpdatesAgentStatusOp } from "./ops/platform-update-agent.js";
 import {
   platformUpdatePolicyGetOp,
+  platformUpdatePolicyPauseOp,
+  platformUpdatePolicyResumeOp,
   platformUpdatePolicySetOp,
 } from "./ops/platform-update-policy.js";
 import {
@@ -358,6 +360,12 @@ import {
   platformUpdatesRecordTriggerOp,
   platformUpdatesRequestOp,
 } from "./ops/platform-update-requests.js";
+import {
+  platformUpdatesNotificationClaimOp,
+  platformUpdatesNotificationFinishOp,
+  platformUpdatesSchedulerStatusOp,
+  platformUpdatesSchedulerTickOp,
+} from "./ops/platform-update-scheduler.js";
 import { platformUpdateStatusOp } from "./ops/platform-updates.js";
 import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
@@ -1140,6 +1148,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(platformUpdatesAgentStatusOp);
   registry.register(platformUpdatePolicyGetOp);
   registry.register(platformUpdatePolicySetOp);
+  // #696 Phase 5 — automatic updates: Owner pause/resume (step-up), the
+  // admin's scheduler (system) and its status (AI-readable).
+  registry.register(platformUpdatePolicyPauseOp);
+  registry.register(platformUpdatePolicyResumeOp);
+  registry.register(platformUpdatesSchedulerTickOp);
+  registry.register(platformUpdatesNotificationClaimOp);
+  registry.register(platformUpdatesNotificationFinishOp);
+  registry.register(platformUpdatesSchedulerStatusOp);
   registry.register(stepUpStatusOp);
   registry.register(stepUpSetClientOp);
   registry.register(stepUpBeginOp);

@@ -13,7 +13,7 @@ import {
   OperationRegistry,
   SYSTEM_ACTOR_ID,
 } from "@caelo-cms/query-api";
-import type { ExecutionContext, StoredUpdatePolicy } from "@caelo-cms/shared";
+import type { AutoUpdateBasis, ExecutionContext, StoredUpdatePolicy } from "@caelo-cms/shared";
 import { agentHeartbeatOp, jobClaimOp, jobEventOp, jobFinishOp, jobRecordOp } from "./ops.js";
 
 /** A registry holding exactly the job's ops. */
@@ -62,6 +62,7 @@ export function createDbAgentQueue(
           id: string;
           targetVersion: string;
           trigger: "manual" | "auto";
+          autoBasis: AutoUpdateBasis | null;
           policy: StoredUpdatePolicy;
         } | null;
       }>("platform_updates.job_claim", { execution });

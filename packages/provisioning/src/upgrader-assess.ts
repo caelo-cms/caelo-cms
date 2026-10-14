@@ -30,6 +30,7 @@
  * | contract (destructive) migrations, automatic run    | refused           |
  * | contract migrations, Owner's click                  | proceed + warning |
  * | automatic run the update policy does not allow      | refused           |
+ * | automatic "security" run, signed manifest disagrees | refused           |
  *
  * Self-hosted installs (the host agent, #696 Phase 4c) have no separately
  * converged infrastructure: their Compose file, roles and bootstrap script
@@ -40,6 +41,7 @@
  */
 
 import {
+  type AutoUpdateBasis,
   autoInstallRefusal,
   type PlatformUpdateTrigger,
   type StoredUpdatePolicy,
@@ -119,7 +121,12 @@ const stop = (
 
 /** Decide what the job does with a request. See the file comment for the matrix. */
 export function assessUpgradeRequest(input: {
-  readonly request: { readonly targetVersion: string; readonly trigger: PlatformUpdateTrigger };
+  readonly request: {
+    readonly targetVersion: string;
+    readonly trigger: PlatformUpdateTrigger;
+    /** Why the admin's scheduler queued an automatic request (Phase 5). */
+    readonly autoBasis?: AutoUpdateBasis | null;
+  };
   readonly manifest: ReleaseManifestResult;
   readonly installed: InstalledState;
   readonly policy: StoredUpdatePolicy;
@@ -227,6 +234,16 @@ export function assessUpgradeRequest(input: {
           );
     if (refusal) {
       return stop("refused", "policy", `Not installed automatically: ${refusal}.`, manifest);
+    }
+    // The scheduler read the manifest unverified; it may only have used the
+    // security fix's shorter soak period if the SIGNED manifest backs it.
+    if (request.autoBasis === "security" && assessment.kind !== "security") {
+      return stop(
+        "refused",
+        "policy",
+        `Not installed automatically: v${target} was queued as a security fix, but its signed release information names no published security advisory. Install it from Settings → Updates.`,
+        manifest,
+      );
     }
   }
   return { kind: "proceed", manifest, warnings };

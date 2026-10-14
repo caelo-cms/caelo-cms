@@ -316,6 +316,35 @@ bunx @caelo-cms/provisioning@<version> upgrade --version <version> --install <do
 
 To get the upgrader on an existing install, run `upgrade` once as described above (its state must live in the project: `state migrate` first if it still lives on your machine).
 
+### Automatic updates
+
+Below the install section, **Automatic updates** lets the Owner choose what installs without a click. Every change — saving the settings, pausing, resuming — is confirmed with its own fresh Google sign-in, like installing.
+
+| Setting | Default | What it means |
+|---|---|---|
+| When a new release comes out | *Tell me; I install it myself* | *Don't tell me* / *Tell me* / *Install the kinds I choose automatically* |
+| Security fixes | off | Releases whose signed release information names a **published GitHub Security Advisory**. A release only counts as a security fix with one: the release workflow refuses the flag without it, and the upgrader checks it again against the signed manifest. |
+| Patch releases | off | Bug-fix releases (`0.10.47 → 0.10.48`). |
+| Minor releases | off | Feature releases (`0.10 → 0.11`). |
+| Maintenance window | any time | Only start an automatic install between two times in your time zone (a window like `22:00–04:00` spans midnight). |
+| Wait after a release | 24 hours | A release becomes installable this long after it was published, so problems others hit surface first. |
+| Wait for security fixes | 2 hours | The same for security fixes: shorter, because the problem they fix is public, but long enough for a broken release to be pulled. `0` installs at once; it can never be longer than the normal wait. |
+
+Never installed automatically, whatever you choose — you get an email instead:
+
+- **major releases** (before Caelo 1.0);
+- releases that **change your cloud setup** — they need Cloud Shell, see above;
+- releases with **destructive database changes** — you install them from the page;
+- releases that are not on the stable channel.
+
+**How it runs.** The admin checks every 15 minutes (one admin instance decides per check, however many are running). When a release is allowed, past its waiting time and inside the window, it queues the same request **Install update** writes — marked *automatic* in the history — and starts the upgrader. The upgrader verifies the signed release information and the policy again before it changes anything. Each release is tried automatically once; if that attempt is refused or fails, it is not retried on its own.
+
+**Pause.** *Pause* stops automatic installs for 1 day to 30 days, or until you resume them. A failed or rolled-back automatic install pauses them too, until you have looked at it and clicked *Resume*.
+
+**Emails.** The Owner (everyone holding the *platform.update* permission) gets an email when a release is available, when one is scheduled to install automatically, when it was installed, when an automatic install did not complete, and when a release needs Cloud Shell. They go through the email service set up at **Settings → Email**; without one, the page lists them as *Not sent: no email set up*. The emails name the page (`/settings/updates`) rather than link it.
+
+The AI can explain the policy and what the scheduler last decided (`get_caelo_update_policy`, `get_caelo_auto_update_status`), but it cannot change either or install anything.
+
 ### What `upgrade` does
 
 `upgrade` brings an existing install to what a fresh install of the target release looks like, without re-running the full provisioning:

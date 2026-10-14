@@ -12,6 +12,8 @@
 
 import { defineOperation, recordAudit, SYSTEM_ACTOR_ID } from "@caelo-cms/query-api";
 import {
+  AUTO_UPDATE_BASES,
+  type AutoUpdateBasis,
   ok,
   PLATFORM_UPDATE_EVENT_LEVELS,
   PLATFORM_UPDATE_EVENT_MAX,
@@ -34,9 +36,12 @@ const policySchema = z.object({
   windowEnd: z.string().nullable(),
   windowTimezone: z.string(),
   soakHours: z.number(),
+  securitySoakHours: z.number(),
   paused: z.boolean(),
   pausedReason: z.string().nullable(),
   pausedAt: z.string().nullable(),
+  pausedUntil: z.string().nullable(),
+  pausedByOwner: z.boolean(),
   updatedAt: z.string(),
 });
 
@@ -48,6 +53,7 @@ const claimOutput = z.object({
       id: z.string(),
       targetVersion: z.string(),
       trigger: z.enum(PLATFORM_UPDATE_TRIGGERS),
+      autoBasis: z.enum(AUTO_UPDATE_BASES).nullable(),
       policy: policySchema,
     })
     .nullable(),
@@ -97,11 +103,12 @@ export const jobClaimOp = defineOperation({
           LIMIT 1
           FOR UPDATE SKIP LOCKED
        )
-       RETURNING id::text AS id, target_version, trigger
+       RETURNING id::text AS id, target_version, trigger, auto_basis
     `)) as unknown as {
       id: string;
       target_version: string;
       trigger: "manual" | "auto";
+      auto_basis: AutoUpdateBasis | null;
     }[];
     const row = claimed[0];
     if (!row) return ok({ recovered: stale.map((s) => s.id), claimed: null });
@@ -109,7 +116,8 @@ export const jobClaimOp = defineOperation({
       SELECT mode, auto_security, auto_patch, auto_minor, channel,
              to_char(window_start, 'HH24:MI') AS window_start,
              to_char(window_end, 'HH24:MI') AS window_end,
-             window_timezone, soak_hours, paused, paused_reason, paused_at, updated_at
+             window_timezone, soak_hours, security_soak_hours, paused, paused_reason,
+             paused_at, paused_until, paused_by IS NOT NULL AS paused_by_owner, updated_at
         FROM platform_update_policy WHERE id = 1
     `)) as unknown as {
       mode: StoredUpdatePolicy["mode"];
@@ -121,9 +129,12 @@ export const jobClaimOp = defineOperation({
       window_end: string | null;
       window_timezone: string;
       soak_hours: number;
+      security_soak_hours: number;
       paused: boolean;
       paused_reason: string | null;
       paused_at: Date | string | null;
+      paused_until: Date | string | null;
+      paused_by_owner: boolean;
       updated_at: Date | string;
     }[];
     const p = policies[0];
@@ -138,6 +149,7 @@ export const jobClaimOp = defineOperation({
         id: row.id,
         targetVersion: row.target_version,
         trigger: row.trigger,
+        autoBasis: row.auto_basis,
         policy: {
           mode: p.mode,
           autoSecurity: p.auto_security,
@@ -148,9 +160,12 @@ export const jobClaimOp = defineOperation({
           windowEnd: p.window_end,
           windowTimezone: p.window_timezone,
           soakHours: p.soak_hours,
+          securitySoakHours: p.security_soak_hours,
           paused: p.paused,
           pausedReason: p.paused_reason,
           pausedAt: p.paused_at === null ? null : new Date(p.paused_at).toISOString(),
+          pausedUntil: p.paused_until === null ? null : new Date(p.paused_until).toISOString(),
+          pausedByOwner: p.paused_by_owner,
           updatedAt: new Date(p.updated_at).toISOString(),
         },
       },

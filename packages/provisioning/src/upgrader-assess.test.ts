@@ -35,9 +35,12 @@ const POLICY: StoredUpdatePolicy = {
   windowEnd: null,
   windowTimezone: "UTC",
   soakHours: 24,
+  securitySoakHours: 2,
   paused: false,
   pausedReason: null,
   pausedAt: null,
+  pausedUntil: null,
+  pausedByOwner: false,
   updatedAt: "2026-10-13T00:00:00Z",
 };
 
@@ -57,6 +60,7 @@ interface Row {
   readonly manifest?: ReleaseManifestResult;
   readonly installed?: InstalledState;
   readonly trigger?: "manual" | "auto";
+  readonly autoBasis?: "security" | "patch" | "minor";
   readonly policy?: StoredUpdatePolicy;
   readonly target?: string;
   /** "proceed" or `<status>/<code>`. */
@@ -158,6 +162,39 @@ const ROWS: readonly Row[] = [
     expect: "proceed",
   },
   {
+    name: "automatic 'security' flag without a published advisory",
+    trigger: "auto",
+    policy: { ...POLICY, autoMinor: false, autoPatch: false },
+    manifest: verified({ security: true, advisories: [] }),
+    expect: "refused/policy",
+  },
+  {
+    name: "queued as a security fix, signed manifest says it is not one",
+    trigger: "auto",
+    autoBasis: "security",
+    expect: "refused/policy",
+    reasonContains: "names no published security advisory",
+  },
+  {
+    name: "queued as a security fix, signed manifest agrees",
+    trigger: "auto",
+    autoBasis: "security",
+    manifest: verified({ security: true, advisories: ["GHSA-abcd-efgh-ijkm"] }),
+    expect: "proceed",
+  },
+  {
+    name: "automatic, Owner pause already over",
+    trigger: "auto",
+    policy: {
+      ...POLICY,
+      paused: true,
+      pausedByOwner: true,
+      pausedAt: "2026-10-12T00:00:00Z",
+      pausedUntil: "2026-10-13T00:00:00Z",
+    },
+    expect: "proceed",
+  },
+  {
     name: "automatic, outside the window",
     trigger: "auto",
     policy: { ...POLICY, windowStart: "02:00", windowEnd: "03:00" },
@@ -175,7 +212,11 @@ const ROWS: readonly Row[] = [
 describe("assessUpgradeRequest — refusal matrix", () => {
   it.each(ROWS.map((r) => [r.name, r] as const))("%s", (_name, row) => {
     const d = assessUpgradeRequest({
-      request: { targetVersion: row.target ?? "0.11.0", trigger: row.trigger ?? "manual" },
+      request: {
+        targetVersion: row.target ?? "0.11.0",
+        trigger: row.trigger ?? "manual",
+        autoBasis: row.autoBasis ?? null,
+      },
       manifest: row.manifest ?? verified(),
       installed: row.installed ?? INSTALLED,
       policy: row.policy ?? POLICY,

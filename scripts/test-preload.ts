@@ -121,6 +121,9 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   // Tests that change it restore it themselves
   // (platform-update-install.integration.test.ts).
   "platform_update_policy",
+  // Seed-bearing since 0271 (#696 Phase 5): the auto-update scheduler's
+  // lease + status singleton.
+  "platform_update_scheduler",
   "rate_limit_profiles",
   "release_check_cache",
   "role_permissions",

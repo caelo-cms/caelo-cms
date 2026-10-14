@@ -21,66 +21,39 @@
  * says what to check next.
  */
 
-import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
 import {
-  IMAGE_DIGEST,
-  RELEASE_OIDC_ISSUER,
-  RELEASE_WORKFLOWS_URL,
-} from "./upgrade/release-images.js";
+  fetchReleaseArtifact,
+  isSecurityRelease,
+  parseReleaseManifest,
+  RELEASE_CHANNELS,
+  RELEASE_IMAGES,
+  type ReleaseChannel,
+  type ReleaseImage,
+  type ReleaseManifest,
+} from "@caelo-cms/shared";
+import { RELEASE_OIDC_ISSUER, RELEASE_WORKFLOWS_URL } from "./upgrade/release-images.js";
 
-/** Release channels. Pre-release versions name theirs (`0.11.0-rc.1` → `rc`). */
-export const RELEASE_CHANNELS = ["stable", "rc", "beta", "alpha"] as const;
-export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
+// The manifest's shape and location live in @caelo-cms/shared (the admin's
+// auto-update scheduler reads them too); re-exported so this module stays
+// the CLI's one import for release manifests.
+export {
+  RELEASE_CHANNELS,
+  RELEASE_IMAGES,
+  RELEASE_MANIFEST_ARTIFACT_TYPE,
+  RELEASE_MANIFEST_MEDIA_TYPE,
+  RELEASE_MANIFEST_REGISTRY,
+  RELEASE_MANIFEST_REPOSITORY,
+  type ReleaseChannel,
+  type ReleaseImage,
+  type ReleaseManifest,
+  ReleaseManifestSchema,
+  SIGSTORE_BUNDLE_MEDIA_TYPE,
+} from "@caelo-cms/shared";
 
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
-const GHSA_ID = /^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$/;
-
-/** The services a release ships images for. */
-export const RELEASE_IMAGES = ["admin", "gateway", "ops"] as const;
-export type ReleaseImage = (typeof RELEASE_IMAGES)[number];
-
-const digest = z.string().regex(IMAGE_DIGEST, "expected sha256:<64 hex>");
-
-/** Zod schema of `release-manifest.json` (manifestVersion 1). */
-export const ReleaseManifestSchema = z.object({
-  manifestVersion: z.literal(1),
-  version: z.string().regex(SEMVER, "expected a SemVer version without a leading v"),
-  channel: z.enum(RELEASE_CHANNELS),
-  digests: z.object({ admin: digest, gateway: digest, ops: digest }),
-  minFromVersion: z.string().regex(SEMVER),
-  infraContractVersion: z.number().int().positive(),
-  migrations: z.object({
-    /** True when the release carries destructive (contract) migrations. */
-    contract: z.boolean(),
-    /**
-     * Newest release up to and including this one that carried contract
-     * migrations (null: none known). An install below it that jumps
-     * straight here would run those destructive steps while its old image
-     * still serves — so it is manual too, even when `contract` is false.
-     */
-    lastContractVersion: z.string().regex(SEMVER).nullable(),
-    /** Newest cms_admin migration in the release, e.g. `0262_tool_approval_branch`. */
-    head: z.string().min(1),
-  }),
-  /** Set only via the release-cut input, backed by published GitHub Security Advisories. */
-  security: z.boolean(),
-  advisories: z.array(z.string().regex(GHSA_ID, "expected a GHSA id")),
-});
-export type ReleaseManifest = z.infer<typeof ReleaseManifestSchema>;
-
-/** Registry the upgrader reads manifests from — the public AR mirror Cloud Run pulls from. */
-export const RELEASE_MANIFEST_REGISTRY = "europe-west1-docker.pkg.dev";
-/** Repository path of the manifest artifact inside {@link RELEASE_MANIFEST_REGISTRY}. */
-export const RELEASE_MANIFEST_REPOSITORY = "caelo-website/caelo-cms-images/release-manifest";
-
-/** OCI artifact type + layer media types of the pushed manifest. */
-export const RELEASE_MANIFEST_ARTIFACT_TYPE = "application/vnd.caelo.release-manifest.v1";
-export const RELEASE_MANIFEST_MEDIA_TYPE = "application/vnd.caelo.release-manifest.v1+json";
-export const SIGSTORE_BUNDLE_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle.v0.3+json";
 
 // The signer constants are shared with the image verification (one source).
 export { RELEASE_OIDC_ISSUER };
@@ -190,38 +163,8 @@ const defaultDeps: ReleaseManifestDeps = {
   cosign: runCosign,
 };
 
-interface OciDescriptor {
-  readonly mediaType: string;
-  readonly digest: string;
-}
-
-const OciManifestSchema = z.object({
-  artifactType: z.string().optional(),
-  layers: z.array(z.object({ mediaType: z.string(), digest: z.string().regex(IMAGE_DIGEST) })),
-});
-
 function fail(code: ReleaseManifestErrorCode, message: string): ReleaseManifestResult {
   return { ok: false, error: { code, message } };
-}
-
-async function fetchBlob(
-  deps: ReleaseManifestDeps,
-  base: string,
-  layer: OciDescriptor,
-): Promise<Uint8Array | ReleaseManifestError> {
-  const res = await deps.fetch(`${base}/blobs/${layer.digest}`);
-  if (!res.ok) {
-    return { code: "registry", message: `blob ${layer.digest}: HTTP ${res.status}` };
-  }
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  const actual = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-  if (actual !== layer.digest) {
-    return {
-      code: "blob-digest",
-      message: `blob content does not match its digest (${layer.digest} expected, ${actual} served) — the registry or a proxy altered it`,
-    };
-  }
-  return bytes;
 }
 
 /**
@@ -237,64 +180,16 @@ export async function fetchVerifiedReleaseManifest(
   deps: ReleaseManifestDeps = defaultDeps,
 ): Promise<ReleaseManifestResult> {
   if (!SEMVER.test(version)) return fail("schema", `"${version}" is not a SemVer version`);
-  const base = `https://${deps.registry ?? RELEASE_MANIFEST_REGISTRY}/v2/${deps.repository ?? RELEASE_MANIFEST_REPOSITORY}`;
-
-  let artifact: z.infer<typeof OciManifestSchema>;
-  try {
-    const res = await deps.fetch(`${base}/manifests/${version}`, {
-      headers: { Accept: "application/vnd.oci.image.manifest.v1+json" },
-    });
-    if (!res.ok) {
-      return fail(
-        "registry",
-        `no release manifest for v${version} at ${base} (HTTP ${res.status}). Releases before the signed manifest (epic #696) have none; otherwise check the version exists.`,
-      );
-    }
-    const parsed = OciManifestSchema.safeParse(await res.json());
-    if (!parsed.success)
-      return fail("artifact-shape", `not an OCI manifest: ${parsed.error.message}`);
-    artifact = parsed.data;
-  } catch (e) {
-    return fail("registry", `registry unreachable: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  if (artifact.artifactType !== RELEASE_MANIFEST_ARTIFACT_TYPE) {
-    return fail(
-      "artifact-shape",
-      `artifactType is ${artifact.artifactType ?? "(none)"}, expected ${RELEASE_MANIFEST_ARTIFACT_TYPE}`,
-    );
-  }
-  const manifestLayers = artifact.layers.filter((l) => l.mediaType === RELEASE_MANIFEST_MEDIA_TYPE);
-  const bundleLayers = artifact.layers.filter((l) => l.mediaType === SIGSTORE_BUNDLE_MEDIA_TYPE);
-  const [manifestLayer] = manifestLayers;
-  const [bundleLayer] = bundleLayers;
-  if (manifestLayers.length !== 1 || bundleLayers.length !== 1 || !manifestLayer || !bundleLayer) {
-    return fail(
-      "artifact-shape",
-      "the artifact must hold exactly one release-manifest layer and one Sigstore bundle layer",
-    );
-  }
-
-  let manifestBytes: Uint8Array;
-  let bundleBytes: Uint8Array;
-  try {
-    const m = await fetchBlob(deps, base, manifestLayer);
-    if (!(m instanceof Uint8Array)) return { ok: false, error: m };
-    const b = await fetchBlob(deps, base, bundleLayer);
-    if (!(b instanceof Uint8Array)) return { ok: false, error: b };
-    manifestBytes = m;
-    bundleBytes = b;
-  } catch (e) {
-    return fail("registry", `registry unreachable: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  const artifact = await fetchReleaseArtifact(version, deps);
+  if (!artifact.ok) return { ok: false, error: artifact.error };
 
   // cosign verifies files, so the exact bytes go to a private temp dir.
   const dir = await mkdtemp(join(tmpdir(), "caelo-release-manifest-"));
   try {
     const manifestPath = join(dir, "release-manifest.json");
     const bundlePath = join(dir, "release-manifest.json.sigstore.json");
-    await writeFile(manifestPath, manifestBytes, { mode: 0o600 });
-    await writeFile(bundlePath, bundleBytes, { mode: 0o600 });
+    await writeFile(manifestPath, artifact.manifestBytes, { mode: 0o600 });
+    await writeFile(bundlePath, artifact.bundleBytes, { mode: 0o600 });
     const verify = await deps.cosign([
       "verify-blob",
       "--bundle",
@@ -315,26 +210,9 @@ export async function fetchVerifiedReleaseManifest(
     await rm(dir, { recursive: true, force: true });
   }
 
-  let json: unknown;
-  try {
-    json = JSON.parse(new TextDecoder().decode(manifestBytes));
-  } catch {
-    return fail("schema", "the signed manifest is not valid JSON");
-  }
-  const parsed = ReleaseManifestSchema.safeParse(json);
-  if (!parsed.success) {
-    return fail(
-      "schema",
-      `the signed manifest does not match manifestVersion 1 — this CLI may be too old to read it: ${parsed.error.message}`,
-    );
-  }
-  if (parsed.data.version !== version) {
-    return fail(
-      "version-mismatch",
-      `asked for v${version} but the signed manifest describes v${parsed.data.version}`,
-    );
-  }
-  return { ok: true, manifest: parsed.data };
+  const parsed = parseReleaseManifest(artifact.manifestBytes, version);
+  if (!parsed.ok) return fail(parsed.code, `signed manifest: ${parsed.message}`);
+  return { ok: true, manifest: parsed.manifest };
 }
 
 /** One image whose resolved digest differs from the manifest's. */
@@ -426,5 +304,7 @@ export function assessAutoInstall(
     );
   }
   if (manual.length > 0) return { mode: "manual", kind: "normal", reasons: manual };
-  return { mode: "auto", kind: manifest.security ? "security" : "normal", reasons: [] };
+  // Security counts only with a published advisory behind it (#696
+  // decision 2); the release workflow already refuses the flag without one.
+  return { mode: "auto", kind: isSecurityRelease(manifest) ? "security" : "normal", reasons: [] };
 }

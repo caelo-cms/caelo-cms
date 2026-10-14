@@ -4,6 +4,7 @@ export const PROJECT_NAME = "caelo-cms";
 
 export * from "./ai-tools.js";
 export * from "./auth-forms.js";
+export * from "./auto-update.js";
 export * from "./base-css.js";
 export * from "./build-page.js";
 export * from "./cap-failures.js";
@@ -43,6 +44,7 @@ export * from "./preview-scanner.js";
 export * from "./proposal-status.js";
 export * from "./provisioning-command.js";
 export * from "./redirect-target.js";
+export * from "./release-manifest.js";
 export * from "./responsive-images.js";
 export * from "./result.js";
 export * from "./safe-keys.js";

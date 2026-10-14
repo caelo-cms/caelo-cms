@@ -10,7 +10,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { OpenedAgentQueue } from "@caelo-cms/provisioning";
-import { roleConvergenceScript } from "@caelo-cms/provisioning";
+import { assessUpgradeRequest, roleConvergenceScript } from "@caelo-cms/provisioning";
 import { SQL } from "bun";
 import { openAgentQueue } from "./agent-db.js";
 
@@ -184,6 +184,85 @@ describe("caelo_agent — the self-hosted update agent's login", () => {
       execution: "agent@box-1",
       admin_digest: `sha256:${"a".repeat(64)}`,
     });
+  });
+
+  it("picks up the scheduler's automatic request with its basis and the whole policy (#696 Phase 5)", async () => {
+    const { queue } = opened;
+    await admin(async (tx) => {
+      await tx`DELETE FROM platform_update_requests`;
+      // An Owner pause that has run out; the scheduler lifts it on its next
+      // tick, the agent must not wait for that.
+      await tx`
+        UPDATE platform_update_policy
+           SET mode = 'auto', auto_patch = true, security_soak_hours = 1, paused = true,
+               paused_at = now() - interval '8 days', paused_until = now() - interval '1 hour',
+               paused_reason = 'launch week'
+         WHERE id = 1`;
+    });
+    try {
+      // The row platform_updates.scheduler_tick writes: no requester, an auto basis.
+      const [{ id }] = (await admin(
+        (tx) => tx`
+          INSERT INTO platform_update_requests (target_version, from_version, trigger, auto_basis)
+          VALUES ('99.0.1', '99.0.0', 'auto', 'patch') RETURNING id::text AS id`,
+      )) as unknown as { id: string }[];
+      const claimed = await queue.claim("agent@box-1");
+      expect(claimed).toMatchObject({
+        id,
+        targetVersion: "99.0.1",
+        trigger: "auto",
+        autoBasis: "patch",
+        policy: {
+          mode: "auto",
+          autoPatch: true,
+          securitySoakHours: 1,
+          paused: true,
+          pausedByOwner: false,
+        },
+      });
+      expect(Date.parse(claimed?.policy.pausedUntil ?? "")).toBeLessThan(Date.now());
+      if (!claimed) throw new Error("nothing claimed");
+
+      // What the agent decides with it (agent/run.ts): installed as an automatic run.
+      const decision = assessUpgradeRequest({
+        request: claimed,
+        manifest: {
+          ok: true,
+          manifest: {
+            manifestVersion: 1,
+            version: "99.0.1",
+            channel: "stable",
+            digests: {
+              admin: `sha256:${"a".repeat(64)}`,
+              gateway: `sha256:${"b".repeat(64)}`,
+              ops: `sha256:${"c".repeat(64)}`,
+            },
+            minFromVersion: "99.0.0",
+            infraContractVersion: 1,
+            migrations: {
+              contract: false,
+              lastContractVersion: null,
+              head: "0271_platform_auto_updates",
+            },
+            security: false,
+            advisories: [],
+          },
+        },
+        installed: { version: "99.0.0", infraContractVersion: null },
+        policy: claimed.policy,
+        now: new Date(),
+        manualPath: "server",
+      });
+      expect(decision.kind).toBe("proceed");
+    } finally {
+      await admin(
+        (tx) => tx`
+          UPDATE platform_update_policy
+             SET mode = 'notify', auto_patch = false, security_soak_hours = 2, paused = false,
+                 paused_at = NULL, paused_until = NULL, paused_reason = NULL
+           WHERE id = 1`,
+      );
+    }
   });
 
   it("can touch nothing else", async () => {

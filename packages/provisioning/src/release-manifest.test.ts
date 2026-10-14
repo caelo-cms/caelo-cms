@@ -214,7 +214,14 @@ describe("assessAutoInstall", () => {
       kind: "normal",
       reasons: [],
     });
-    expect(assessAutoInstall({ ...MANIFEST, security: true }, installed).kind).toBe("security");
+    const advisories = ["GHSA-abcd-efgh-jkmp"];
+    expect(assessAutoInstall({ ...MANIFEST, security: true, advisories }, installed).kind).toBe(
+      "security",
+    );
+  });
+
+  it("counts security only with a published advisory behind it (#696 decision 2)", () => {
+    expect(assessAutoInstall({ ...MANIFEST, security: true }, installed).kind).toBe("normal");
   });
 
   it("downgrades a security release with contract migrations to manual", () => {

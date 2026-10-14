@@ -160,8 +160,9 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM step_up_google_client`;
     await tx`UPDATE platform_update_policy SET mode = 'notify', auto_security = false,
       auto_patch = false, auto_minor = false, channel = 'stable', window_start = NULL,
-      window_end = NULL, window_timezone = 'UTC', soak_hours = 24, paused = false,
-      paused_reason = NULL, paused_at = NULL WHERE id = 1`;
+      window_end = NULL, window_timezone = 'UTC', soak_hours = 24, security_soak_hours = 2,
+      paused = false, paused_reason = NULL, paused_at = NULL, paused_until = NULL,
+      paused_by = NULL WHERE id = 1`;
     for (const email of [OWNER_EMAIL, EDITOR_EMAIL]) {
       await tx`DELETE FROM step_up_challenges WHERE user_id IN (SELECT id FROM users WHERE email = ${email})`;
       await tx`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE email = ${email})`;
@@ -419,6 +420,7 @@ describe("platform_update_policy", () => {
     windowEnd: "05:00",
     windowTimezone: "Europe/Berlin",
     soakHours: 48,
+    securitySoakHours: 2,
   };
 
   it("is readable by the AI and writable only by the Owner with a step-up", async () => {

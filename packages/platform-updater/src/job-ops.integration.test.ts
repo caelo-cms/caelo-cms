@@ -168,10 +168,24 @@ describe("upgrader job ops as platform_updater", () => {
 describe("createDbUpdateQueue", () => {
   it("drives the ops through the Query API", async () => {
     const id = await addRequest("99.0.2");
+    // Phase 5: the scheduler names why it queued the request; the job gets it.
+    await admin(
+      (tx) => tx`UPDATE platform_update_requests SET auto_basis = 'patch' WHERE id = ${id}::uuid`,
+    );
     const queue = createDbUpdateQueue(adapter);
     const claimed = await queue.claim("exec-8");
-    expect(claimed).toMatchObject({ id, targetVersion: "99.0.2", trigger: "auto" });
-    expect(claimed?.policy.soakHours).toBe(24);
+    expect(claimed).toMatchObject({
+      id,
+      targetVersion: "99.0.2",
+      trigger: "auto",
+      autoBasis: "patch",
+    });
+    expect(claimed?.policy).toMatchObject({
+      soakHours: 24,
+      securitySoakHours: 2,
+      pausedUntil: null,
+      pausedByOwner: false,
+    });
     await queue.event(id, "start", "info", "hello");
     await queue.record(id, { manifestSecurity: true });
     await queue.finish(id, {
