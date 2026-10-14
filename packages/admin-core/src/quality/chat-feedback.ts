@@ -16,17 +16,20 @@
  * per page, who staged the build, and that the build may contain changes
  * made outside this conversation.
  *
- * The 2-round cap (#553): a fix round is offered while the audit's
- * `fixRound` is below MAX_AUTO_FIX_ROUNDS. After that the offer only asks
- * the AI to summarise what is left — no further changes for these findings,
- * so a stubborn finding cannot loop Stages and cost. It never recommends an
- * acceptance (#667): that decision is the operator's, and platform findings
- * are reported as Caelo bugs instead.
+ * The fix-round count (#553): after MAX_AUTO_FIX_ROUNDS the card says the
+ * findings are left after those rounds; the AI still only works on the
+ * operator's click.
+ *
+ * #727 "optimum, not good enough": the target is 100 and zero findings, and
+ * the card groups the OPEN problems by rule across pages. Per group the
+ * operator lets the AI fix it, accepts it (an editor's acceptance with a
+ * reason — never the AI's), or picks pages. Every fix request repeats the
+ * target to the AI; only what truly cannot be fixed comes back to the
+ * operator, as one decision per group.
  */
 
 import { z } from "zod";
-import { findingLabel } from "./checks/findings.js";
-import type { QualityProblem } from "./ratchet.js";
+import { groupSummaryLine, type ProblemGroup } from "./problem-groups.js";
 
 /** Fix rounds per Stage chain (#553). */
 export const MAX_AUTO_FIX_ROUNDS = 2;
@@ -34,13 +37,6 @@ export const MAX_AUTO_FIX_ROUNDS = 2;
 /** Who staged the build a chat's audit checks (#685, column `staged_by`). */
 export const stagedBySchema = z.enum(["operator", "live_edit_ai", "other_agent"]);
 export type StagedBy = z.infer<typeof stagedBySchema>;
-
-/** One audited page with problems, as the chat is told about it. */
-export interface ChatProblemPage {
-  readonly path: string;
-  /** Short, operator-readable labels of the page's problems. */
-  readonly findings: readonly string[];
-}
 
 export interface ChatAuditSummary {
   readonly status:
@@ -52,9 +48,6 @@ export interface ChatAuditSummary {
     | "skipped"
     | "superseded";
   readonly fixRound: number;
-  readonly problemCount: number;
-  /** Pages with problems, homepage first. */
-  readonly problemPages: readonly ChatProblemPage[];
   /** Who staged the audited build; null when not recorded. */
   readonly stagedBy: StagedBy | null;
   readonly errorCode: string | null;
@@ -62,6 +55,9 @@ export interface ChatAuditSummary {
   readonly skippedBecause: readonly string[];
   /** #727 — whether Lighthouse ran (the page checks run on every Stage). */
   readonly lighthouse: boolean;
+  /** #727 — the OPEN problems (no live acceptance covers them) grouped by
+   *  rule across pages; the card offers fix / accept / pick per group. */
+  readonly groups: readonly ProblemGroup[];
 }
 
 export type ChatFeedback =
@@ -76,44 +72,10 @@ export type ChatFeedback =
       readonly text: string;
       readonly actionLabel: string;
       readonly prompt: string;
+      /** #727 — the open problems per group: "fix all", "accept all" (an
+       *  editor's acceptance with a reason) or "pick pages" each. */
+      readonly groups: ProblemGroup[];
     };
-
-/** A short operator-readable label for one problem. */
-export function problemLabel(p: QualityProblem): string {
-  switch (p.kind) {
-    case "failing_audit":
-      return p.displayValue ? `${p.title} (${p.displayValue})` : p.title;
-    case "score_below_baseline":
-      return `${p.category} score ${p.score} (was ${p.baseline})`;
-    case "check_rule": {
-      const label = p.findings[0] ? findingLabel(p.findings[0].message) : p.ruleId;
-      return p.count > 1 ? `${label} (${p.count}×)` : label;
-    }
-  }
-}
-
-function pageList(pages: readonly ChatProblemPage[]): string {
-  if (pages.length === 0) return "the audited pages";
-  const shown = pages
-    .slice(0, 3)
-    .map((p) => {
-      const f = p.findings.slice(0, 2).join(", ");
-      const more = p.findings.length > 2 ? ` +${p.findings.length - 2}` : "";
-      return f ? `${p.path} (${f}${more})` : p.path;
-    })
-    .join("; ");
-  return pages.length > 3 ? `${shown}; and ${pages.length - 3} more page(s)` : shown;
-}
-
-/** Every finding per page, for the AI (bounded so a huge audit stays readable). */
-function findingsBlock(pages: readonly ChatProblemPage[]): string {
-  const lines = pages.slice(0, 10).map((p) => {
-    const more = p.findings.length > 8 ? `; +${p.findings.length - 8} more` : "";
-    return `- ${p.path}: ${p.findings.slice(0, 8).join("; ")}${more}`;
-  });
-  if (pages.length > 10) lines.push(`- … and ${pages.length - 10} more page(s)`);
-  return lines.join("\n");
-}
 
 function stagedByCard(stagedBy: StagedBy | null): string {
   switch (stagedBy) {
@@ -180,34 +142,89 @@ export function chatFeedbackFor(audit: ChatAuditSummary): ChatFeedback | null {
   }
 }
 
+/** The groups (and, per group, the pages) a fix request covers. */
+export interface FixSelection {
+  readonly key: string;
+  /** Only these pages of the group; omitted = every page of it. */
+  readonly pagePaths?: readonly string[];
+}
+
+/** The groups narrowed to a selection; unknown keys and paths drop out. */
+export function selectGroups(
+  groups: readonly ProblemGroup[],
+  selection: readonly FixSelection[],
+): ProblemGroup[] {
+  const out: ProblemGroup[] = [];
+  for (const sel of selection) {
+    const g = groups.find((x) => x.key === sel.key);
+    if (!g) continue;
+    const paths = sel.pagePaths ? new Set(sel.pagePaths) : null;
+    const pages = paths ? g.pages.filter((p) => paths.has(p.pagePath)) : g.pages;
+    if (pages.length > 0) out.push({ ...g, pages });
+  }
+  return out;
+}
+
+/** The groups of a fix request, one line each with every page (bounded). */
+function groupsBlock(groups: readonly ProblemGroup[]): string {
+  return groups
+    .slice(0, 20)
+    .map((g) => `- ${groupSummaryLine(g, 12)}`)
+    .concat(groups.length > 20 ? [`- … and ${groups.length - 20} more group(s)`] : [])
+    .join("\n");
+}
+
+/** The standing instruction of every fix request (#727 "optimum"). */
+const OPTIMUM_INSTRUCTION =
+  "The target is 100 in every Lighthouse category and zero findings: a score like 90 is NOT good enough on its own. Keep fixing until the target is reached, reading the metrics in get_quality_audit (never run Lighthouse yourself). " +
+  "Findings marked CAELO PLATFORM are Caelo bugs: report them with bug_report and do not change the site for them. " +
+  "Only when something truly cannot be fixed (explain why), offer me ONE decision per group with accept_quality_findings (groups) — never for something you could still fix, and never as your recommendation.";
+
+/**
+ * The turn a fix click sends: every open group ("Fix with AI"), or only
+ * the groups / pages the operator picked on the card. Null when the
+ * selection matches no open problem (nothing to fix).
+ */
+export function fixPromptFor(
+  audit: ChatAuditSummary,
+  selection: readonly FixSelection[] | null,
+): string | null {
+  const groups = selection === null ? [...audit.groups] : selectGroups(audit.groups, selection);
+  if (groups.length === 0) return null;
+  const pageCount = new Set(groups.flatMap((g) => g.pages.map((p) => p.pagePath))).size;
+  const scope =
+    selection === null
+      ? `Please fix the quality findings of the staged build: ${groups.length} group(s) on ${pageCount} page(s). Publish live is blocked until they are fixed or accepted.`
+      : `Please fix these quality findings I picked: ${groups.length} group(s) on ${pageCount} page(s). Leave the other findings alone for now.`;
+  const round =
+    audit.fixRound < MAX_AUTO_FIX_ROUNDS
+      ? `Fix round ${audit.fixRound + 1}: call get_quality_audit for the details, fix what you can, then Stage again yourself (stage_changes) so the fixes are re-checked.`
+      : `These findings are left after ${audit.fixRound} fix round(s) and I asked you to continue: call get_quality_audit, fix what you still can, then Stage again yourself (stage_changes).`;
+  return `${scope}\nFindings by group:\n${groupsBlock(groups)}\n${stagedByPrompt(audit.stagedBy)}\n${round} ${OPTIMUM_INSTRUCTION}`;
+}
+
 function problemsOffer(audit: ChatAuditSummary): ChatFeedback {
-  const pageCount = audit.problemPages.length;
-  const summary = `Quality check found ${audit.problemCount} issue(s) on ${pageCount} page(s): ${pageList(audit.problemPages)}.`;
-  const who = stagedByCard(audit.stagedBy);
-  const lead = who ? `${summary} ${who}` : summary;
-  const findings =
-    `Quality check of the staged build found ${audit.problemCount} problem(s) on ${pageCount} page(s). Publish live is blocked until they are fixed or accepted.\n` +
-    `Findings:\n${findingsBlock(audit.problemPages)}\n` +
-    stagedByPrompt(audit.stagedBy);
-  if (audit.fixRound < MAX_AUTO_FIX_ROUNDS) {
+  if (audit.groups.length === 0) {
     return {
-      kind: "offer",
-      text: `${lead} Publish live stays blocked until they are fixed or accepted. Let the AI fix them?`,
-      actionLabel: "Fix with AI",
-      prompt:
-        `Please fix the quality findings. ${findings}\n` +
-        `Fix round ${audit.fixRound + 1} of ${MAX_AUTO_FIX_ROUNDS}: call get_quality_audit for the details, fix what you can, then Stage again yourself (stage_changes) so the fixes are re-checked. ` +
-        "Findings marked CAELO PLATFORM are Caelo bugs: report them with bug_report and do not change the site for them. For anything else you cannot fix, or that looks intended, tell me plainly what it is. " +
-        "Do not propose or recommend accepting findings — accepting is my decision; use accept_quality_findings only when I explicitly ask for it.",
+      kind: "note",
+      text: "Quality check: every remaining finding is accepted by an editor — Publish live is available. Accepted findings stay listed (and revocable) under Settings → Quality.",
     };
   }
+  const pageCount = new Set(audit.groups.flatMap((g) => g.pages.map((p) => p.pagePath))).size;
+  const summary = `Quality check found ${audit.groups.length} kind(s) of issue on ${pageCount} page(s): ${audit.groups
+    .slice(0, 3)
+    .map((g) => `${g.title} (${g.pages.length} page(s))`)
+    .join("; ")}${audit.groups.length > 3 ? `; and ${audit.groups.length - 3} more` : ""}.`;
+  const who = stagedByCard(audit.stagedBy);
+  const lead = who ? `${summary} ${who}` : summary;
+  const capped = audit.fixRound >= MAX_AUTO_FIX_ROUNDS;
   return {
     kind: "offer",
-    text: `${lead} They are left after ${MAX_AUTO_FIX_ROUNDS} fix rounds; Publish live stays blocked until they are fixed or accepted. Let the AI summarise what is left?`,
-    actionLabel: "Summarise with AI",
-    prompt:
-      `${findings}\n` +
-      `These are left after ${MAX_AUTO_FIX_ROUNDS} fix rounds. Do not change the site further for these findings. Call get_quality_audit and summarise what is left in plain words — without recommending to accept anything. Report findings marked CAELO PLATFORM with bug_report and tell me they are Caelo issues you reported. ` +
-      "Tell me Publish live stays blocked until they are fixed or I decide to accept them; use accept_quality_findings only when I explicitly ask for it.",
+    text: capped
+      ? `${lead} They are left after ${audit.fixRound} fix rounds. Publish live stays blocked until each is fixed or accepted — decide per group below.`
+      : `${lead} The target is 100 and zero findings; Publish live stays blocked until each is fixed or accepted. Let the AI fix them, or decide per group below.`,
+    actionLabel: capped ? "Keep fixing with AI" : "Fix all with AI",
+    prompt: fixPromptFor(audit, null) as string,
+    groups: [...audit.groups],
   };
 }

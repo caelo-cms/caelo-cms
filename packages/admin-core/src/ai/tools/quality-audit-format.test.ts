@@ -14,12 +14,11 @@ function page(problems: Page["problems"]): Page {
     url: "http://localhost:8081/",
     status: "problems",
     scores: { "best-practices": 96 },
-    baselines: { "best-practices": 100 },
     performanceRuns: [100],
     failingAudits: [],
     metrics: null,
     problems,
-    heldBack: [],
+    problemAccepted: problems.map(() => false),
     checkFindings: [],
     errorCode: null,
     errorMessage: null,
@@ -90,7 +89,7 @@ describe("get_quality_audit page formatting", () => {
     const line = (id: string) => lines.find((l) => l.includes(`\`${id}\``)) ?? "";
     for (const id of ["bf-cache", "cache-insight", "server-response-time"]) {
       expect(line(id)).toContain("CAELO PLATFORM: decided by Caelo's hosting");
-      expect(line(id)).toContain("do not propose accepting it");
+      expect(line(id)).toContain("never recommend it");
     }
     expect(line("uses-text-compression")).toContain("caused by this site");
     expect(line("image-alt")).not.toContain("CAELO PLATFORM");

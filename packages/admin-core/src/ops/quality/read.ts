@@ -6,9 +6,10 @@
  * fixes without asking the operator).
  *
  *   quality_audits.list       audit runs, newest first, filterable.
- *   quality_audits.get        one run with every page's scores, findings,
- *                             problems and held-back signals.
- *   quality_acceptances.list  accepted findings / score drops per page.
+ *   quality_audits.get        one run with every page's scores, findings
+ *                             and problems, each marked when a live
+ *                             acceptance covers it.
+ *   quality_acceptances.list  accepted findings / scores / rules per page.
  *
  * Pages that were deleted (soft delete) drop out of every read: their
  * acceptances no longer apply anywhere (#553 §5).
@@ -21,19 +22,19 @@ import { z } from "zod";
 import { type StagedBy, stagedBySchema } from "../../quality/chat-feedback.js";
 import { findingSchema } from "../../quality/checks/findings.js";
 import { type RunChecksSummary, runChecksSummarySchema } from "../../quality/checks/outcome.js";
-import { SITE_WIDE_PATH } from "../../quality/gate.js";
+import { isProblemAccepted, SITE_WIDE_PATH } from "../../quality/gate.js";
 import { performanceMetricsSchema } from "../../quality/lighthouse-protocol.js";
-import type { QualityCategory } from "../../quality/ratchet.js";
+import type { QualityCategory, QualityProblem } from "../../quality/ratchet.js";
 import {
   auditRunStatusSchema,
   categorySchema,
   failingAuditSchema,
-  heldBackSchema,
   iso,
   json,
   problemSchema,
   stageClassificationSchema,
 } from "./_shared.js";
+import { loadAcceptances } from "./gate-loader.js";
 
 export const runSummarySchema = z.object({
   id: z.string(),
@@ -193,16 +194,19 @@ const auditPageSchema = z.object({
   pagePath: z.string(),
   url: z.string(),
   status: z.enum(["clean", "problems", "errored"]),
+  /** 0..100 per category; every category is held to 100 (#727). */
   scores: z.record(categorySchema, z.number().int()).nullable(),
-  baselines: z.record(categorySchema, z.number().int()),
   performanceRuns: z.array(z.number().int()),
   failingAudits: z.array(failingAuditSchema),
   /** Lighthouse's Performance metrics (FCP, LCP, TBT, CLS, SI: medians
    *  over the runs, the LCP element, layout shifts). Data, not problems.
    *  Null when Lighthouse did not audit the page in this run. */
   metrics: performanceMetricsSchema.nullable(),
+  /** Everything off target in this audit, as measured. */
   problems: z.array(problemSchema),
-  heldBack: z.array(heldBackSchema),
+  /** Per problem (same order): a live editor acceptance covers it now, so
+   *  it does not block (#727: accepted findings stay visible). */
+  problemAccepted: z.array(z.boolean()),
   /** #727 — every finding of the page checks on this page (all severities). */
   checkFindings: z.array(findingSchema),
   errorCode: z.string().nullable(),
@@ -230,6 +234,9 @@ export const getAuditOp = defineOperation({
     /** #727 — the page checks of the run: which ran, site-wide findings
      *  and problems, check errors. Null before they ran. */
     checks: runChecksSummarySchema.nullable(),
+    /** Per site-wide problem (same order as checks.siteProblems): covered
+     *  by a live editor acceptance. */
+    siteProblemAccepted: z.array(z.boolean()),
   }),
   handler: async (_ctx, input, tx) => {
     const given = [input.auditRunId, input.deployRunId, input.chatSessionId].filter(
@@ -263,14 +270,12 @@ export const getAuditOp = defineOperation({
           message: `audit run ${input.auditRunId} not found — call list_quality_audits for valid ids`,
         });
       }
-      return ok({ run: null, pages: [], checks: null });
+      return ok({ run: null, pages: [], checks: null, siteProblemAccepted: [] });
     }
     const pageRows = (await tx.execute(sql`
       SELECT qp.page_id::text AS page_id, p.title, p.current_path, qp.url, qp.status, qp.scores,
-             qp.performance_runs, qp.failing_audits, qp.metrics, qp.problems, qp.held_back,
-             qp.check_findings, qp.error_code, qp.error_message,
-             COALESCE((SELECT jsonb_object_agg(b.category, b.baseline)
-                         FROM quality_baselines b WHERE b.page_id = qp.page_id), '{}'::jsonb) AS baselines
+             qp.performance_runs, qp.failing_audits, qp.metrics, qp.problems,
+             qp.check_findings, qp.error_code, qp.error_message
       FROM quality_audit_pages qp
       JOIN pages p ON p.id = qp.page_id
       WHERE qp.audit_run_id = ${runRow.id}::uuid AND p.deleted_at IS NULL
@@ -286,18 +291,15 @@ export const getAuditOp = defineOperation({
       failing_audits: unknown;
       metrics: unknown;
       problems: unknown;
-      held_back: unknown;
       check_findings: unknown;
       error_code: string | null;
       error_message: string | null;
-      baselines: unknown;
     }[];
-    const fullBaselines = (stored: Record<string, number>) => ({
-      performance: stored.performance ?? 100,
-      accessibility: stored.accessibility ?? 100,
-      "best-practices": stored["best-practices"] ?? 100,
-      seo: stored.seo ?? 100,
-    });
+    const acceptances = await loadAcceptances(
+      tx,
+      pageRows.map((r) => r.page_id),
+    );
+    const checks = runRow.checks === null ? null : json<RunChecksSummary>(runRow.checks);
     return ok({
       run: toRunSummary(runRow),
       pages: pageRows.map((r) => ({
@@ -307,18 +309,22 @@ export const getAuditOp = defineOperation({
         url: r.url,
         status: r.status,
         scores: r.scores === null ? null : json<Record<QualityCategory, number>>(r.scores),
-        baselines: fullBaselines(json<Record<string, number>>(r.baselines)),
         performanceRuns: (r.performance_runs ?? []).map(Number),
         failingAudits: json<z.infer<typeof failingAuditSchema>[]>(r.failing_audits),
         metrics:
           r.metrics === null ? null : json<z.infer<typeof performanceMetricsSchema>>(r.metrics),
         problems: json<z.infer<typeof problemSchema>[]>(r.problems),
-        heldBack: json<z.infer<typeof heldBackSchema>[]>(r.held_back),
+        problemAccepted: json<QualityProblem[]>(r.problems).map((p) =>
+          isProblemAccepted(r.page_id, p, acceptances),
+        ),
         checkFindings: json<z.infer<typeof findingSchema>[]>(r.check_findings),
         errorCode: r.error_code,
         errorMessage: r.error_message,
       })),
-      checks: runRow.checks === null ? null : json<RunChecksSummary>(runRow.checks),
+      checks,
+      siteProblemAccepted: (checks?.siteProblems ?? []).map((p) =>
+        isProblemAccepted(null, p, acceptances),
+      ),
     });
   },
 });

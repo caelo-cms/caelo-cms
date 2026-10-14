@@ -4,22 +4,36 @@ import { describe, expect, it } from "bun:test";
 import {
   type ChatAuditSummary,
   type ChatFeedback,
-  type ChatProblemPage,
   chatFeedbackFor,
+  fixPromptFor,
   MAX_AUTO_FIX_ROUNDS,
-  problemLabel,
 } from "../chat-feedback.js";
-import { decideGate, findingKey, type GateAudit, scoreKey } from "../gate.js";
+import {
+  CURRENT_GATE_RULES,
+  checkKey,
+  decideGate,
+  findingKey,
+  type GateAcceptances,
+  type GateAudit,
+  scoreKey,
+} from "../gate.js";
+import { groupOpenProblems, type ProblemGroup } from "../problem-groups.js";
+import { ACCEPTED_PERFORMANCE_TOLERANCE } from "../ratchet.js";
 
-const NONE = {
-  findings: new Set<string>(),
-  scores: new Map<string, number>(),
-  checks: new Map<string, number>(),
+const NONE: GateAcceptances = {
+  findings: new Map(),
+  scores: new Map(),
+  checks: new Map(),
 };
+
+function accepting(over: Partial<GateAcceptances>): GateAcceptances {
+  return { ...NONE, ...over };
+}
 
 function audit(over: Partial<GateAudit> = {}): GateAudit {
   return {
     id: "a1",
+    gateRules: CURRENT_GATE_RULES,
     status: "passed",
     errorCode: null,
     errorMessage: null,
@@ -66,46 +80,162 @@ describe("decideGate", () => {
     expect(d).toMatchObject({ open: false, state: "problems", canPublishAnyway: false });
     expect(d.openProblems).toHaveLength(2);
     expect(d.message).toContain("/about: color-contrast");
-    expect(d.message).toContain("accept_quality_findings");
-    // #667 — acceptance is the editor's call, never the AI's suggestion.
-    expect(d.message).toContain("only on the editor's explicit request");
-    expect(d.message).not.toContain("have an editor accept");
+    expect(d.message).toContain("/about: accessibility 92 < 100");
+    // #727 — the target is the optimum; only the unfixable goes to the
+    // operator, as a bulk decision, never as the AI's recommendation (#667).
+    expect(d.message).toContain("The target is 100 in every category and zero findings");
+    expect(d.message).toContain("never call a score below 100 good enough");
+    expect(d.message).toContain("accept_quality_findings with groups");
     expect(d.message).toContain("bug_report");
   });
 
   it("acceptances on the page clear their problems; partially accepted still blocks", () => {
-    const finding = new Set([findingKey("p-about", "color-contrast")]);
-    const partial = decideGate(audit({ status: "problems", pages: problems }), {
-      findings: finding,
-      scores: new Map(),
-      checks: new Map(),
-    });
+    const findings = new Map([[findingKey("p-about", "color-contrast"), 0]]);
+    const partial = decideGate(
+      audit({ status: "problems", pages: problems }),
+      accepting({ findings }),
+    );
     expect(partial).toMatchObject({ open: false, state: "problems" });
     expect(partial.openProblems).toHaveLength(1);
-    const all = decideGate(audit({ status: "problems", pages: problems }), {
-      findings: finding,
-      scores: new Map([[scoreKey("p-about", "accessibility"), 92]]),
-      checks: new Map(),
-    });
+    const all = decideGate(
+      audit({ status: "problems", pages: problems }),
+      accepting({ findings, scores: new Map([[scoreKey("p-about", "accessibility"), 92]]) }),
+    );
     expect(all).toMatchObject({ open: true, state: "accepted" });
   });
 
-  it("an accepted score only covers that score or better", () => {
-    const d = decideGate(audit({ status: "problems", pages: problems }), {
-      findings: new Set([findingKey("p-about", "color-contrast")]),
-      scores: new Map([[scoreKey("p-about", "accessibility"), 95]]),
-      checks: new Map(),
-    });
+  it("an accepted deterministic value covers that value or better — one point worse blocks", () => {
+    const d = decideGate(
+      audit({ status: "problems", pages: problems }),
+      accepting({
+        findings: new Map([[findingKey("p-about", "color-contrast"), 0]]),
+        scores: new Map([[scoreKey("p-about", "accessibility"), 93]]),
+      }),
+    );
     expect(d.open).toBe(false);
+    expect(d.openProblems.map((o) => o.problem.kind)).toEqual(["score_below_baseline"]);
+  });
+
+  it("an accepted audit score blocks again when the audit scores worse", () => {
+    const halfway: GateAudit["pages"] = [
+      {
+        pageId: "p-about",
+        pagePath: "/about",
+        problems: [
+          {
+            kind: "failing_audit",
+            auditId: "uses-responsive-images",
+            title: "Properly size images",
+            score: 0.5,
+            categories: ["performance", "best-practices"],
+          },
+        ],
+      },
+    ];
+    const key = findingKey("p-about", "uses-responsive-images");
+    expect(
+      decideGate(
+        audit({ status: "problems", pages: halfway }),
+        accepting({ findings: new Map([[key, 50]]) }),
+      ).open,
+    ).toBe(true);
+    expect(
+      decideGate(
+        audit({ status: "problems", pages: halfway }),
+        accepting({ findings: new Map([[key, 60]]) }),
+      ).open,
+    ).toBe(false);
+    // A finding accepted before 0276 recorded values covers it as recorded.
+    expect(
+      decideGate(
+        audit({ status: "problems", pages: halfway }),
+        accepting({ findings: new Map([[key, null]]) }),
+      ).open,
+    ).toBe(true);
+  });
+
+  it("Performance is compared with an accepted value within the noise tolerance, never with the target", () => {
+    const perf = (score: number): GateAudit["pages"] => [
+      {
+        pageId: "p",
+        pagePath: "/",
+        problems: [{ kind: "score_below_baseline", category: "performance", score, baseline: 100 }],
+      },
+    ];
+    // Without an acceptance 99 blocks: no "good enough" bar.
+    expect(decideGate(audit({ status: "problems", pages: perf(99) }), NONE).open).toBe(false);
+    const accepted = accepting({ scores: new Map([[scoreKey("p", "performance"), 90]]) });
+    const within = 90 - ACCEPTED_PERFORMANCE_TOLERANCE;
+    expect(decideGate(audit({ status: "problems", pages: perf(within) }), accepted).open).toBe(
+      true,
+    );
+    expect(decideGate(audit({ status: "problems", pages: perf(within - 1) }), accepted).open).toBe(
+      false,
+    );
+    // Deterministic categories get no tolerance at all.
+    const a11y: GateAudit["pages"] = [
+      {
+        pageId: "p",
+        pagePath: "/",
+        problems: [
+          { kind: "score_below_baseline", category: "accessibility", score: 89, baseline: 100 },
+        ],
+      },
+    ];
+    expect(
+      decideGate(
+        audit({ status: "problems", pages: a11y }),
+        accepting({ scores: new Map([[scoreKey("p", "accessibility"), 90]]) }),
+      ).open,
+    ).toBe(false);
+  });
+
+  it("a check acceptance covers up to its count; one more error blocks", () => {
+    const rule = (count: number): GateAudit["pages"] => [
+      {
+        pageId: "p",
+        pagePath: "/",
+        problems: [
+          {
+            kind: "check_rule",
+            checkId: "seo-check",
+            ruleId: "seo-check/description-missing",
+            count,
+            allowed: 0,
+            findings: [{ message: "Missing meta description" }],
+          },
+        ],
+      },
+    ];
+    const accepted = accepting({
+      checks: new Map([[checkKey("p", "seo-check/description-missing"), 2]]),
+    });
+    expect(decideGate(audit({ status: "problems", pages: rule(2) }), accepted).open).toBe(true);
+    expect(decideGate(audit({ status: "problems", pages: rule(3) }), accepted).open).toBe(false);
   });
 
   it("an acceptance never covers another page", () => {
-    const d = decideGate(audit({ status: "problems", pages: problems }), {
-      findings: new Set([findingKey("p-home", "color-contrast")]),
-      scores: new Map([[scoreKey("p-home", "accessibility"), 50]]),
-      checks: new Map(),
-    });
+    const d = decideGate(
+      audit({ status: "problems", pages: problems }),
+      accepting({
+        findings: new Map([[findingKey("p-home", "color-contrast"), 0]]),
+        scores: new Map([[scoreKey("p-home", "accessibility"), 50]]),
+      }),
+    );
     expect(d.openProblems).toHaveLength(2);
+  });
+
+  it("an audit recorded under the earlier rules (baselines, 0.9 pass) is not trusted", () => {
+    for (const status of ["passed", "problems", "skipped"] as const) {
+      const d = decideGate(audit({ status, gateRules: 1, pages: [] }), NONE);
+      expect(d).toMatchObject({ open: false, state: "missing" });
+      expect(d.message).toContain("earlier quality rules");
+      expect(d.message).toContain("retry_quality_audit");
+    }
+    // A failed old audit stays a failed audit (retry it either way).
+    expect(
+      decideGate(audit({ status: "errored", gateRules: 1, errorMessage: "x" }), NONE).state,
+    ).toBe("errored");
   });
 
   it("a failed audit blocks but offers publish anyway; the override opens it", () => {
@@ -125,30 +255,52 @@ describe("decideGate", () => {
 describe("chatFeedbackFor", () => {
   const base = {
     fixRound: 0,
-    problemCount: 0,
-    problemPages: [] as ChatProblemPage[],
     stagedBy: null,
     errorCode: null,
     errorMessage: null,
     skippedBecause: [] as string[],
     lighthouse: true,
+    groups: [] as ProblemGroup[],
   };
-  const fivePages: ChatProblemPage[] = [
-    { path: "/", findings: ["Low contrast", "Image without alt", "Missing label"] },
-    { path: "/a", findings: ["accessibility score 92 (was 100)"] },
-    { path: "/b", findings: ["Missing meta description"] },
-    { path: "/c", findings: ["Render-blocking CSS"] },
-    { path: "/d", findings: ["Image too large"] },
-  ];
+  const descriptionMissing = (path: string) => ({
+    pageId: `id-${path}`,
+    pagePath: path,
+    problem: {
+      kind: "check_rule" as const,
+      checkId: "seo-check",
+      ruleId: "seo-check/description-missing",
+      count: 1,
+      allowed: 0,
+      findings: [{ message: "Missing meta description" }],
+    },
+  });
+  const groups = groupOpenProblems([
+    ...["/", "/a", "/b", "/c"].map(descriptionMissing),
+    {
+      pageId: "id-/",
+      pagePath: "/",
+      problem: {
+        kind: "score_below_baseline",
+        category: "performance",
+        score: 90,
+        baseline: 100,
+      },
+    },
+    {
+      pageId: "id-/a",
+      pagePath: "/a",
+      problem: {
+        kind: "failing_audit",
+        auditId: "unused-javascript",
+        title: "Reduce unused JavaScript",
+        score: 0.5,
+        categories: ["performance"],
+      },
+    },
+  ]);
   type Offer = Extract<ChatFeedback, { kind: "offer" }>;
   const offer = (over: Partial<ChatAuditSummary> = {}): Offer => {
-    const f = chatFeedbackFor({
-      ...base,
-      status: "problems",
-      problemCount: 7,
-      problemPages: fivePages,
-      ...over,
-    });
+    const f = chatFeedbackFor({ ...base, status: "problems", groups, ...over });
     if (f?.kind !== "offer") throw new Error(`expected an offer, got ${JSON.stringify(f)}`);
     return f;
   };
@@ -176,22 +328,25 @@ describe("chatFeedbackFor", () => {
     });
   });
 
-  it("problems are an offer the operator answers — for every origin of the Stage (#685)", () => {
-    for (const stagedBy of ["operator", "live_edit_ai", "other_agent", null] as const) {
-      const f = offer({ stagedBy });
-      expect(f.kind).toBe("offer");
-      expect(f.actionLabel).toBe("Fix with AI");
-      expect(f.text).toContain("Quality check found 7 issue(s) on 5 page(s)");
-      expect(f.text).toContain("Let the AI fix them?");
-    }
+  it("problems an editor accepted entirely are a note, not an offer", () => {
+    const f = chatFeedbackFor({ ...base, status: "problems", groups: [] });
+    expect(f?.kind).toBe("note");
+    expect(f?.text).toContain("every remaining finding is accepted");
   });
 
-  it("the card names the pages with their first findings, briefly", () => {
-    const f = offer();
-    expect(f.text).toContain("/ (Low contrast, Image without alt +1)");
-    expect(f.text).toContain("/a (accessibility score 92 (was 100))");
-    expect(f.text).toContain("and 2 more page(s)");
-    expect(f.text).not.toContain("/d");
+  it("problems are an offer with the open groups — for every origin of the Stage (#685)", () => {
+    for (const stagedBy of ["operator", "live_edit_ai", "other_agent", null] as const) {
+      const f = offer({ stagedBy });
+      expect(f.actionLabel).toBe("Fix all with AI");
+      expect(f.text).toContain("Quality check found 3 kind(s) of issue on 4 page(s)");
+      expect(f.text).toContain("Missing meta description (4 page(s))");
+      expect(f.text).toContain("The target is 100 and zero findings");
+      expect(f.groups.map((g) => [g.key, g.pages.length])).toEqual([
+        ["seo-check/description-missing", 4],
+        ["lighthouse/performance/score", 1],
+        ["lighthouse/performance/unused-javascript", 1],
+      ]);
+    }
   });
 
   it("the card and the prompt say who staged", () => {
@@ -204,69 +359,49 @@ describe("chatFeedbackFor", () => {
     expect(offer({ stagedBy: null }).prompt).toContain("not recorded who staged");
   });
 
-  it("the prompt carries every finding per page and the 'not only your changes' note", () => {
+  it("the prompt lists every group with its pages and the 'not only your changes' note", () => {
     const { prompt } = offer({ stagedBy: "operator" });
-    for (const p of fivePages) {
-      for (const finding of p.findings) expect(prompt).toContain(finding);
-      expect(prompt).toContain(`- ${p.path}: `);
-    }
+    expect(prompt).toContain(
+      "- seo-check/description-missing — Missing meta description: 4 page(s) (/, /a, /b, /c)",
+    );
+    expect(prompt).toContain("- lighthouse/performance/score — Performance score below 100");
     expect(prompt).toContain("can also contain changes made outside this conversation");
     expect(prompt).toContain("do not undo work someone else made on purpose");
   });
 
-  it("offers fix rounds until the cap, then only a summary", () => {
-    expect(offer({ fixRound: 0 }).prompt).toContain("Fix round 1 of 2");
-    expect(offer({ fixRound: 1 }).prompt).toContain("Fix round 2 of 2");
-    // Issue #620 — the AI stages its own fixes; a "ask me to Stage" here
-    // taught it the operator stages, and it stopped staging later work
-    // (PR #624 real-AI homepage run).
-    expect(offer().prompt).toContain("Stage again yourself (stage_changes)");
-    expect(offer().prompt).not.toContain("ask me to Stage");
-    const capped = offer({ fixRound: MAX_AUTO_FIX_ROUNDS });
-    expect(capped.actionLabel).toBe("Summarise with AI");
-    expect(capped.text).toContain("Let the AI summarise what is left?");
-    expect(capped.prompt).toContain("Do not change the site further");
-    expect(capped.prompt).toContain("accept_quality_findings");
-  });
-
-  it("never asks the AI to push for acceptances; platform findings become bug reports (#667)", () => {
+  it("every fix request holds the AI to the optimum and keeps acceptances the operator's (#727, #667)", () => {
     for (const fixRound of [0, 1, MAX_AUTO_FIX_ROUNDS]) {
       const { prompt } = offer({ fixRound });
-      expect(prompt).not.toMatch(/ask me (to accept|whether to accept)/);
-      expect(prompt).toContain("only when I explicitly ask");
+      expect(prompt).toContain("a score like 90 is NOT good enough on its own");
+      expect(prompt).toContain("Keep fixing until the target is reached");
+      expect(prompt).toContain("never run Lighthouse yourself");
+      expect(prompt).toContain("ONE decision per group with accept_quality_findings");
+      expect(prompt).toContain("never as your recommendation");
       expect(prompt).toContain("bug_report");
+      // Issue #620 — the AI stages its own fixes.
+      expect(prompt).toContain("Stage again yourself (stage_changes)");
     }
-    const capped = offer({ fixRound: MAX_AUTO_FIX_ROUNDS }).prompt;
-    expect(capped).toContain("without recommending to accept anything");
-    expect(capped).toContain(
-      "Publish live stays blocked until they are fixed or I decide to accept them",
-    );
   });
-});
 
-describe("problemLabel", () => {
-  it("names a failing audit by its title (and value), a score drop by its numbers", () => {
-    expect(
-      problemLabel({
-        kind: "failing_audit",
-        auditId: "color-contrast",
-        title: "Low contrast",
-        score: 0,
-        categories: ["accessibility"],
-      }),
-    ).toBe("Low contrast");
-    expect(
-      problemLabel({
-        kind: "failing_audit",
-        auditId: "lcp",
-        title: "Largest Contentful Paint",
-        score: 0.3,
-        categories: ["performance"],
-        displayValue: "4.1 s",
-      }),
-    ).toBe("Largest Contentful Paint (4.1 s)");
-    expect(
-      problemLabel({ kind: "score_below_baseline", category: "seo", score: 88, baseline: 100 }),
-    ).toBe("seo score 88 (was 100)");
+  it("after the fix-round cap the card says so and still lets the operator decide", () => {
+    expect(offer({ fixRound: 0 }).prompt).toContain("Fix round 1:");
+    const capped = offer({ fixRound: MAX_AUTO_FIX_ROUNDS });
+    expect(capped.actionLabel).toBe("Keep fixing with AI");
+    expect(capped.text).toContain(`left after ${MAX_AUTO_FIX_ROUNDS} fix rounds`);
+    expect(capped.text).toContain("decide per group below");
+    expect(capped.groups).toHaveLength(3);
+  });
+
+  it("a picked fix covers only the chosen groups and pages", () => {
+    const summary = { ...base, status: "problems" as const, groups };
+    const prompt = fixPromptFor(summary, [
+      { key: "seo-check/description-missing", pagePaths: ["/b"] },
+    ]);
+    expect(prompt).toContain("these quality findings I picked: 1 group(s) on 1 page(s)");
+    expect(prompt).toContain(
+      "seo-check/description-missing — Missing meta description: 1 page(s) (/b)",
+    );
+    expect(prompt).not.toContain("unused-javascript");
+    expect(fixPromptFor(summary, [{ key: "nope" }])).toBeNull();
   });
 });

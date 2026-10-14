@@ -6,8 +6,11 @@
  * operator's click starts a turn:
  *
  *   1. Operator Stage with findings → the card shows and NO /stream request
- *      goes out; "Fix with AI" sends one turn whose message carries the
- *      findings, the page and who staged.
+ *      goes out; "Fix all with AI" sends one turn whose message carries the
+ *      findings by group, the pages and who staged.
+ *   1b. #727 — findings grouped by rule across pages: the operator accepts
+ *      a picked page, then the rest of a group (the acceptance counts at
+ *      once), and lets the AI fix just the remaining group.
  *   2. "Not now" → a status note, the card goes, nothing runs, Publish live
  *      stays blocked.
  *   3. An external agent works in the chat (#682) → the click is refused
@@ -106,6 +109,12 @@ test.beforeAll(() => {
                 '', \${lay[0].id}) RETURNING id\`;
       await tx\`INSERT INTO pages (slug, name, title, template_id, status, current_path)
         VALUES (\${s}, \${s}, 'Quality offer', \${tpl[0].id}, 'published', \${process.env.PAGE_PATH})\`;
+      // #727 — two more pages, so one rule can fail across pages.
+      for (const x of ["b", "c"]) {
+        await tx\`INSERT INTO pages (slug, name, title, template_id, status, current_path)
+          VALUES (\${s + "-" + x}, \${s + "-" + x}, 'Quality offer ' || \${x}, \${tpl[0].id}, 'published',
+                  \${process.env.PAGE_PATH + "-" + x})\`;
+      }
     });
     await sql.end();
     `,
@@ -121,7 +130,9 @@ test.afterAll(() => {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       const s = process.env.SLUG;
-      await tx\`DELETE FROM pages WHERE slug = \${s}\`;
+      await tx\`DELETE FROM quality_acceptances WHERE page_id IN
+        (SELECT id FROM pages WHERE slug IN (\${s}, \${s + "-b"}, \${s + "-c"}))\`;
+      await tx\`DELETE FROM pages WHERE slug IN (\${s}, \${s + "-b"}, \${s + "-c"})\`;
       await tx\`DELETE FROM templates WHERE slug = \${s + "-tpl"}\`;
       await tx\`DELETE FROM layouts WHERE slug = \${s + "-lay"}\`;
     });
@@ -140,6 +151,7 @@ function seedProblemAudit(
   chatSessionId: string,
   ownerId: string,
   stagedBy: "operator" | "other_agent",
+  shape: "single" | "grouped" = "single",
 ): void {
   const runId = runBunInline(
     `
@@ -157,23 +169,39 @@ function seedProblemAudit(
         VALUES (\${target.id}, \${process.env.OWNER_ID}::uuid, 'succeeded', now() + interval '1 hour',
                 now() + interval '1 hour', 'e2e-quality-offer')
         RETURNING id::text AS id\`)[0];
-      const problems = [{ kind: "failing_audit", auditId: "color-contrast", title: "Low contrast text", score: 0, categories: ["accessibility"] }];
+      const contrast = { kind: "failing_audit", auditId: "color-contrast", title: "Low contrast text", score: 0, categories: ["accessibility"] };
+      // #727 — "grouped": one page-check rule failing on all three pages,
+      // plus Accessibility 92 on the first.
+      const missing = { kind: "check_rule", checkId: "seo-check", ruleId: "seo-check/description-missing", count: 1, allowed: 0, findings: [{ message: "Missing meta description" }] };
+      const a11y = { kind: "score_below_baseline", category: "accessibility", score: 92, baseline: 100 };
+      const grouped = process.env.SHAPE === "grouped";
+      const slugs = grouped
+        ? [process.env.SLUG, process.env.SLUG + "-b", process.env.SLUG + "-c"]
+        : [process.env.SLUG];
+      const pages = [];
+      for (const slug of slugs) {
+        pages.push((await tx\`SELECT id::text AS id FROM pages WHERE slug = \${slug}\`)[0]);
+      }
+      const problemsOf = (i) => (grouped ? (i === 0 ? [missing, a11y] : [missing]) : [contrast]);
+      const total = pages.reduce((n, _p, i) => n + problemsOf(i).length, 0);
       const audit = (await tx\`INSERT INTO quality_audit_runs
           (deploy_run_id, chat_session_id, requested_by, status, classification, target_page_ids,
            problem_count, started_at, finished_at, fix_round, staged_by)
         VALUES (\${run.id}::uuid, \${process.env.CHAT_ID}::uuid, \${process.env.OWNER_ID}::uuid, 'problems',
           \${JSON.stringify({ auditNeeded: true, reasons: [], skipped: [] })}::jsonb,
-          ARRAY[\${page.id}::uuid], 1, now(), now(), 0, \${process.env.STAGED_BY})
+          ARRAY[\${page.id}::uuid], \${total}, now(), now(), 0, \${process.env.STAGED_BY})
         RETURNING id::text AS id\`)[0];
-      await tx\`INSERT INTO quality_audit_pages (audit_run_id, page_id, url, status, problems)
-        VALUES (\${audit.id}::uuid, \${page.id}::uuid, 'http://staging.invalid/', 'problems',
-          \${JSON.stringify(problems)}::jsonb)\`;
+      for (const [i, p] of pages.entries()) {
+        await tx\`INSERT INTO quality_audit_pages (audit_run_id, page_id, url, status, problems)
+          VALUES (\${audit.id}::uuid, \${p.id}::uuid, 'http://staging.invalid/', 'problems',
+            \${JSON.stringify(problemsOf(i))}::jsonb)\`;
+      }
       return run.id;
     });
     process.stdout.write(id);
     await sql.end();
     `,
-    { CHAT_ID: chatSessionId, OWNER_ID: ownerId, STAGED_BY: stagedBy, SLUG },
+    { CHAT_ID: chatSessionId, OWNER_ID: ownerId, STAGED_BY: stagedBy, SLUG, SHAPE: shape },
   ).trim();
   seededRuns.push(runId);
 }
@@ -198,7 +226,7 @@ async function qualityStatus(
   return (await res.json()) as { notified: boolean; gate: { open: boolean } | null };
 }
 
-test("an operator Stage with findings asks first; only 'Fix with AI' starts the AI", async ({
+test("an operator Stage with findings asks first; only 'Fix all with AI' starts the AI", async ({
   context,
   page,
 }) => {
@@ -219,10 +247,14 @@ test("an operator Stage with findings asks first; only 'Fix with AI' starts the 
 
   const card = page.getByTestId("quality-fix-offer");
   await expect(card).toBeVisible({ timeout: 30_000 });
-  await expect(card).toContainText("Quality check found 1 issue(s) on 1 page(s)");
-  await expect(card).toContainText(`${path} (Low contrast text)`);
+  await expect(card).toContainText("Quality check found 1 kind(s) of issue on 1 page(s)");
+  await expect(card).toContainText("Low contrast text (1 page(s))");
   await expect(card).toContainText("Staged by you.");
-  await expect(card).toContainText("Let the AI fix them?");
+  await expect(card).toContainText("Let the AI fix them");
+  await expect(card.getByTestId("quality-offer-group")).toHaveAttribute(
+    "data-group-key",
+    "lighthouse/accessibility/color-contrast",
+  );
   // Long enough for the old auto-send (it fired as soon as the chat was idle).
   await page.waitForTimeout(5_000);
   expect(sent).toHaveLength(0);
@@ -235,8 +267,12 @@ test("an operator Stage with findings asks first; only 'Fix with AI' starts the 
     trigger?: string;
   };
   expect(body.trigger).toBe("operator");
-  expect(body.content).toContain("Fix round 1 of 2");
-  expect(body.content).toContain(`- ${path}: Low contrast text`);
+  expect(body.content).toContain("Fix round 1:");
+  expect(body.content).toContain(
+    `- lighthouse/accessibility/color-contrast — Low contrast text: 1 page(s) (${path})`,
+  );
+  // #727 — the AI is held to the optimum.
+  expect(body.content).toContain("a score like 90 is NOT good enough on its own");
   expect(body.content).toContain("I staged this build myself");
   expect(body.content).toContain("can also contain changes made outside this conversation");
   await expect(page.getByText("Fixing the contrast now.")).toBeVisible({ timeout: 20_000 });
@@ -365,4 +401,69 @@ test("'Fix with AI' is refused while an external agent works in the chat", async
   );
   expect(sent).toHaveLength(0);
   expect((await qualityStatus(page.request, chatSessionId)).notified).toBe(false);
+});
+
+test("bulk decisions per group: pick and accept, accept all, fix one group (#727)", async ({
+  context,
+  page,
+}) => {
+  await registerTestProvider(BASE, PROVIDER, [
+    [
+      { kind: "text-delta", text: "Raising the accessibility score now." },
+      { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ],
+  ]);
+  await attachTestProviderHeader(context, PROVIDER);
+  const ownerId = await login(page);
+  const chatSessionId = await newChat(page);
+  seedProblemAudit(chatSessionId, ownerId, "operator", "grouped");
+  const sent = watchStreamRequests(page, chatSessionId);
+  await page.reload();
+
+  const card = page.getByTestId("quality-fix-offer");
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  await expect(card).toContainText("Quality check found 2 kind(s) of issue on 3 page(s)");
+  const groups = card.getByTestId("quality-offer-group");
+  await expect(groups).toHaveCount(2);
+  const missing = card.locator('[data-group-key="seo-check/description-missing"]');
+  const a11y = card.locator('[data-group-key="lighthouse/accessibility/score"]');
+  await expect(missing).toContainText("3 page(s)");
+  await expect(a11y).toContainText("1 page(s)");
+
+  // Pick one page of the big group and accept just that one.
+  await missing.getByTestId("quality-offer-group-pick").click();
+  await missing
+    .locator(`[data-testid="quality-offer-pick-page"][data-page-path="${PAGE_PATH}-b"]`)
+    .check();
+  await missing.getByTestId("quality-offer-group-accept").click();
+  await missing.getByTestId("quality-offer-accept-reason").fill("archived page, no SEO value");
+  await expect(missing.getByTestId("quality-offer-accept-confirm")).toHaveText(
+    "Accept on 1 page(s)",
+  );
+  await missing.getByTestId("quality-offer-accept-confirm").click();
+  await expect(missing).toContainText("2 page(s)", { timeout: 15_000 });
+
+  // Then the rest of the group in one decision.
+  await missing.getByTestId("quality-offer-group-accept").click();
+  await missing.getByTestId("quality-offer-accept-reason").fill("legacy landing pages");
+  await expect(missing.getByTestId("quality-offer-accept-confirm")).toHaveText(
+    "Accept on 2 page(s)",
+  );
+  await missing.getByTestId("quality-offer-accept-confirm").click();
+  await expect(missing).toHaveCount(0, { timeout: 15_000 });
+  await expect(groups).toHaveCount(1);
+  // Accepting never started the AI.
+  expect(sent).toHaveLength(0);
+
+  // The remaining group: the AI fixes just that one.
+  await a11y.getByTestId("quality-offer-group-fix").click();
+  await expect.poll(() => sent.length, { timeout: 15_000 }).toBe(1);
+  const body = JSON.parse(sent[0]?.body ?? "{}") as { content: string };
+  expect(body.content).toContain("these quality findings I picked: 1 group(s) on 1 page(s)");
+  expect(body.content).toContain("lighthouse/accessibility/score");
+  expect(body.content).not.toContain("seo-check/description-missing");
+  await expect(page.getByText("Raising the accessibility score now.")).toBeVisible({
+    timeout: 20_000,
+  });
 });

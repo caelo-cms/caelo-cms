@@ -23,13 +23,13 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { chatFeedbackFor, problemLabel } from "../../quality/chat-feedback.js";
-import { SITE_WIDE_PATH } from "../../quality/gate.js";
-import type { QualityProblem } from "../../quality/ratchet.js";
+import { chatFeedbackFor, fixPromptFor } from "../../quality/chat-feedback.js";
+import { CURRENT_GATE_RULES, type GateDecision } from "../../quality/gate.js";
+import { groupOpenProblems } from "../../quality/problem-groups.js";
 import { appendChatMessageOp } from "../chat/messages.js";
 import { promoteDeployOp } from "../deploy.js";
 import { actorHasPermission } from "./_permissions.js";
-import { json } from "./_shared.js";
+import { categorySchema } from "./_shared.js";
 import { latestSucceededRun, publishGateForRun } from "./gate-loader.js";
 import { enqueueAuditOp } from "./lifecycle.js";
 import { RUN_COLUMNS, type RunDbRow, runSummarySchema, toRunSummary } from "./read.js";
@@ -49,15 +49,13 @@ const gateStatusOutput = z.object({
   gate: gateSchema.nullable(),
 });
 
-async function gateFor(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  fromTarget: string,
-): Promise<z.infer<typeof gateStatusOutput>> {
-  const run = await latestSucceededRun(tx, fromTarget);
-  if (!run) return { deployRunId: null, gate: null };
-  const g = await publishGateForRun(tx, run.id);
+function gateView(
+  deployRunId: string | null,
+  g: GateDecision | null,
+): z.infer<typeof gateStatusOutput> {
+  if (deployRunId === null || g === null) return { deployRunId: null, gate: null };
   return {
-    deployRunId: run.id,
+    deployRunId,
     gate: {
       open: g.open,
       state: g.state,
@@ -67,6 +65,15 @@ async function gateFor(
       openProblemCount: g.openProblems.length,
     },
   };
+}
+
+async function gateFor(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  fromTarget: string,
+): Promise<z.infer<typeof gateStatusOutput>> {
+  const run = await latestSucceededRun(tx, fromTarget);
+  if (!run) return { deployRunId: null, gate: null };
+  return gateView(run.id, await publishGateForRun(tx, run.id));
 }
 
 export const gateStatusOp = defineOperation({
@@ -98,13 +105,14 @@ export const retryAuditOp = defineOperation({
       });
     }
     const latest = (await tx.execute(sql`
-      SELECT id::text AS id, status, chat_session_id::text AS chat_session_id, classification,
-             target_page_ids::text[] AS target_page_ids, performance_runs, fix_round
+      SELECT id::text AS id, status, gate_rules, chat_session_id::text AS chat_session_id,
+             classification, target_page_ids::text[] AS target_page_ids, performance_runs, fix_round
       FROM quality_audit_runs WHERE deploy_run_id = ${run.id}::uuid
       ORDER BY created_at DESC LIMIT 1
     `)) as unknown as {
       id: string;
       status: string;
+      gate_rules: number;
       chat_session_id: string | null;
       classification: unknown;
       target_page_ids: string[];
@@ -112,7 +120,14 @@ export const retryAuditOp = defineOperation({
       fix_round: number;
     }[];
     const prev = latest[0];
-    if (!prev || prev.status === "superseded") {
+    // #727 — a settled audit recorded under older gate rules is not
+    // trusted (it let scores below 100 pass): check the build again, like
+    // one that was never audited, with Lighthouse on the recent pages.
+    const outdated =
+      prev !== undefined &&
+      Number(prev.gate_rules) < CURRENT_GATE_RULES &&
+      (prev.status === "passed" || prev.status === "problems" || prev.status === "skipped");
+    if (!prev || prev.status === "superseded" || outdated) {
       // Never audited (e.g. staged before the gate existed, or the enqueue
       // failed): audit it like a Stage outside a chat.
       // Nothing says which pages this Stage touched, so audit the pages
@@ -177,6 +192,20 @@ export const retryAuditOp = defineOperation({
   },
 });
 
+/** #727 — one group of open problems on the chat's card. */
+const problemGroupSchema = z.object({
+  key: z.string(),
+  ref: z.union([
+    z.object({ auditId: z.string() }),
+    z.object({ category: categorySchema }),
+    z.object({ ruleId: z.string() }),
+  ]),
+  title: z.string(),
+  pages: z.array(
+    z.object({ pageId: z.string().nullable(), pagePath: z.string(), detail: z.string() }),
+  ),
+});
+
 const feedbackSchema = z
   .discriminatedUnion("kind", [
     z.object({ kind: z.literal("note"), text: z.string() }),
@@ -186,16 +215,37 @@ const feedbackSchema = z
       text: z.string(),
       actionLabel: z.string(),
       prompt: z.string(),
+      groups: z.array(problemGroupSchema),
     }),
   ])
   .nullable();
+
+/** #727 — the groups / pages a "fix" click on the card covers. */
+export const fixSelectionSchema = z
+  .array(
+    z
+      .object({
+        key: z.string().min(1).max(300),
+        pagePaths: z.array(z.string().min(1).max(500)).min(1).max(20000).optional(),
+      })
+      .strict(),
+  )
+  .min(1)
+  .max(100);
 
 export const chatStatusOp = defineOperation({
   name: "quality_audits.chat_status",
   // Read-only; the chat panel polls it. Open to every actor (§11).
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ chatSessionId: z.string().uuid() }).strict(),
+  input: z
+    .object({
+      chatSessionId: z.string().uuid(),
+      /** #727 — the card's "fix" click on some groups / pages: the offer's
+       *  `prompt` then covers only those (nothing selected = every group). */
+      fixSelection: fixSelectionSchema.optional(),
+    })
+    .strict(),
   output: z.object({
     audit: runSummarySchema.nullable(),
     /** Whether the chat was already told about `audit`. */
@@ -213,50 +263,40 @@ export const chatStatusOp = defineOperation({
       WHERE q.chat_session_id = ${input.chatSessionId}::uuid
       ORDER BY q.created_at DESC LIMIT 1
     `)) as unknown as (RunDbRow & { chat_notified_at: string | Date | null })[];
-    const gate = await gateFor(tx, "staging");
+    const staged = await latestSucceededRun(tx, "staging");
+    const decision = staged ? await publishGateForRun(tx, staged.id) : null;
+    const gate = gateView(staged?.id ?? null, decision);
     const row = rows[0];
     if (!row) return ok({ audit: null, notified: false, feedback: null, ...gate });
     const audit = toRunSummary(row);
-    const pageRows = (await tx.execute(sql`
-      SELECT p.current_path, qp.problems
-      FROM quality_audit_pages qp JOIN pages p ON p.id = qp.page_id
-      WHERE qp.audit_run_id = ${audit.id}::uuid AND qp.status = 'problems'
-      ORDER BY (p.current_path = '/') DESC, p.current_path
-    `)) as unknown as { current_path: string; problems: unknown }[];
-    const problemPages = pageRows.map((r) => ({
-      path: r.current_path,
-      findings: json<QualityProblem[]>(r.problems).map(problemLabel),
-    }));
-    // #727 — site-wide page-check problems have no page row.
-    const siteRows = (await tx.execute(sql`
-      SELECT COALESCE(checks->'siteProblems', '[]'::jsonb) AS site_problems
-      FROM quality_audit_runs WHERE id = ${audit.id}::uuid
-    `)) as unknown as { site_problems: unknown }[];
-    const siteProblems = json<QualityProblem[]>(siteRows[0]?.site_problems ?? []);
-    if (siteProblems.length > 0) {
-      problemPages.push({ path: SITE_WIDE_PATH, findings: siteProblems.map(problemLabel) });
-    }
-    const feedback = chatFeedbackFor({
+    // Only the audit of the build staging serves NOW may drive the chat: a
+    // chat whose Stage another chat has since replaced must not offer an
+    // obsolete fix round (or claim Publish is available).
+    // A retry of the same build's check by someone else replaces it too.
+    const current =
+      staged !== null && staged.id === audit.deployRunId && decision?.auditRunId === audit.id;
+    // #727 — the card groups the problems the gate blocks on NOW: an
+    // acceptance (or revoke) changes the groups at once.
+    const open = current && decision ? decision.openProblems : [];
+    const summary = {
       status: audit.status,
       fixRound: audit.fixRound,
-      problemCount: problemPages.reduce((n, p) => n + p.findings.length, 0),
-      problemPages,
       stagedBy: audit.stagedBy,
       errorCode: audit.errorCode,
       errorMessage: audit.errorMessage,
       skippedBecause: audit.classification.skipped,
       lighthouse: audit.classification.auditNeeded,
-    });
-    // Only the audit of the build staging serves NOW may drive the chat: a
-    // chat whose Stage another chat has since replaced must not offer an
-    // obsolete fix round (or claim Publish is available). Nor is a fix
-    // offered once an editor accepted every finding: the gate is open.
-    const current = gate.deployRunId === null || gate.deployRunId === audit.deployRunId;
-    const settledByAcceptance = feedback?.kind === "offer" && current && gate.gate?.open === true;
+      groups: groupOpenProblems(open),
+    };
+    let feedback = chatFeedbackFor(summary);
+    if (feedback?.kind === "offer" && input.fixSelection) {
+      const prompt = fixPromptFor(summary, input.fixSelection);
+      feedback = prompt === null ? null : { ...feedback, prompt };
+    }
     return ok({
       audit,
       notified: row.chat_notified_at !== null,
-      feedback: current && !settledByAcceptance ? feedback : null,
+      feedback: current ? feedback : null,
       ...gate,
     });
   },
