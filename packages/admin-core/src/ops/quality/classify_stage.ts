@@ -24,6 +24,7 @@ import {
 } from "../../draft.js";
 import { classifyStageChanges, type StageChange } from "../../quality/classify.js";
 import { stageClassificationSchema, uuidList } from "./_shared.js";
+import { lastPageMetrics, lastPageMetricsSchema } from "./page-metrics.js";
 
 /** Structured-set kinds that are content lists, not theme/design data. */
 const LIST_KINDS = new Set(["nav-menu", "taxonomy", "link-list"]);
@@ -247,6 +248,12 @@ export const classifyStageOp = defineOperation({
       chatSessionId: z.string().uuid().optional(),
       /** Issue #620 — a Stage selection of shared-draft chats. */
       chatSessionIds: z.array(z.string().uuid()).min(1).max(50).optional(),
+      /**
+       * Also return the last measured Lighthouse Performance metrics of
+       * the touched pages and the homepage (`lastMetrics`). The AI's
+       * `check_stage_audit` asks for them; the Stage flow does not.
+       */
+      includeLastMetrics: z.boolean().default(false),
     })
     .strict()
     .refine((v) => (v.chatSessionId === undefined) !== (v.chatSessionIds === undefined), {
@@ -263,6 +270,9 @@ export const classifyStageOp = defineOperation({
      * reaches the build unaudited.
      */
     headerIds: z.array(z.string()),
+    /** With `includeLastMetrics`: per page the newest measured metrics
+     *  (homepage first); absent otherwise. */
+    lastMetrics: z.array(lastPageMetricsSchema).optional(),
   }),
   handler: async (_ctx, input, tx) => {
     const ids = input.chatSessionIds ?? (input.chatSessionId ? [input.chatSessionId] : []);
@@ -325,10 +335,12 @@ export const classifyStageOp = defineOperation({
       ...(await pageChanges(tx, w)),
       ...(await kindOnlyChanges(tx, w)),
     ];
+    const touched = await touchedPageIds(tx, changes);
     return ok({
       classification: classifyStageChanges(changes),
-      touchedPageIds: await touchedPageIds(tx, changes),
+      touchedPageIds: touched,
       headerIds,
+      ...(input.includeLastMetrics ? { lastMetrics: await lastPageMetrics(tx, touched) } : {}),
     });
   },
 });

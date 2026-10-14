@@ -5,7 +5,8 @@
  * staged build to a temp dir, serve it through the loopback origin the
  * worker uses on providers without a reachable staging URL, run the real
  * Lighthouse child against it through the bundled Chromium, and assert
- * that all four category scores and the planted finding come back.
+ * that all four category scores, the planted finding and the Performance
+ * metrics (each measured in every run, with the LCP element) come back.
  *
  *   bun packages/admin-core/scripts/lighthouse-smoke.ts
  *
@@ -60,6 +61,18 @@ if (!findings.includes("image-alt")) {
   console.error("[lighthouse-smoke] expected the image-alt finding, got", findings);
   process.exit(1);
 }
+// The Performance metrics: every one measured in all three runs, and the
+// LCP element named — a Lighthouse upgrade that renames the audits fails here.
+const metrics = page.measurement.metrics;
+const unmeasured = metrics.metrics.filter((m) => m.numericValue === null);
+if (metrics.runs !== 3 || unmeasured.length > 0 || !metrics.lcpElement) {
+  console.error("[lighthouse-smoke] expected every Performance metric over 3 runs", metrics);
+  process.exit(1);
+}
+const shown = metrics.metrics.map((m) => `${m.label}=${m.displayValue}`).join(" ");
+console.log(
+  `[lighthouse-smoke] metrics ${shown}; LCP element ${metrics.lcpElement.selector ?? metrics.lcpElement.label}`,
+);
 console.log(
   `[lighthouse-smoke] OK in ${Date.now() - started} ms: scores=${JSON.stringify(page.measurement.scores)} performanceRuns=${JSON.stringify(page.performanceRuns)} findings=${findings.join(",")}`,
 );

@@ -139,6 +139,7 @@ interface AuditDetail {
     status: string;
     scores: Record<string, number> | null;
     baselines: Record<string, number>;
+    metrics: PerformanceMetrics | null;
     problems: (
       | { kind: "failing_audit"; auditId: string; title: string; displayValue?: string }
       | { kind: "score_below_baseline"; category: string; score: number; baseline: number }
@@ -170,4 +171,24 @@ interface CheckFinding {
   ruleId: string;
   severity: "error" | "warning" | "info";
   message: string;
+}
+
+/** `quality_audits.get` page metrics (admin-core lighthouse-metrics.ts). */
+interface PerformanceMetrics {
+  runs: number;
+  metrics: {
+    id: string;
+    label: string;
+    title: string;
+    displayValue: string | null;
+    score: number | null;
+    unavailableReason: string | null;
+  }[];
+  lcpElement: { selector?: string; label?: string } | null;
+  lcpBreakdown: { subpart: string; label: string; durationMs: number }[];
+  layoutShifts: {
+    element: { selector?: string; label?: string };
+    score: number;
+    causes: string[];
+  }[];
 }

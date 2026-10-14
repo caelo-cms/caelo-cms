@@ -18,6 +18,7 @@ import {
   resolveLighthouseChild,
   runAuditJob,
 } from "../lighthouse-runner.js";
+import { sampleMetrics } from "./fixtures/sample-metrics.js";
 
 const dir = mkdtempSync(join(tmpdir(), "caelo-lh-runner-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -45,7 +46,8 @@ describe("runAuditJob", () => {
       `${READ_STDIN}
 out({ kind: "page", pageId: job.pages[0].pageId, url: job.pages[0].url,
   measurement: { scores: { performance: 98, accessibility: 100, "best-practices": 100, seo: 100 },
-    failingAudits: [{ id: "image-alt", title: "alt", score: 0, categories: ["accessibility"] }] },
+    failingAudits: [{ id: "image-alt", title: "alt", score: 0, categories: ["accessibility"] }],
+    metrics: ${JSON.stringify(sampleMetrics())} },
   performanceRuns: [97, 98, 99] });
 out({ kind: "page-error", pageId: job.pages[0].pageId, url: "http://x/", code: "ERRORED_DOCUMENT_REQUEST", message: "404" });
 out({ kind: "done" });`,
@@ -56,6 +58,7 @@ out({ kind: "done" });`,
     expect(r.pages).toHaveLength(1);
     expect(r.pages[0]?.measurement.scores.performance).toBe(98);
     expect(r.pages[0]?.performanceRuns).toEqual([97, 98, 99]);
+    expect(r.pages[0]?.measurement.metrics).toEqual(sampleMetrics());
     expect(r.pageErrors).toEqual([
       { pageId: PAGE_ID, url: "http://x/", code: "ERRORED_DOCUMENT_REQUEST", message: "404" },
     ]);
@@ -108,6 +111,23 @@ out({ kind: "done" });`,
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.failure.code).toBe("protocol");
+  });
+
+  it("rejects a page measurement without its Performance metrics", async () => {
+    const path = stub(
+      "nometrics",
+      `${READ_STDIN}
+out({ kind: "page", pageId: job.pages[0].pageId, url: job.pages[0].url,
+  measurement: { scores: { performance: 98, accessibility: 100, "best-practices": 100, seo: 100 },
+    failingAudits: [] },
+  performanceRuns: [98] });
+out({ kind: "done" });`,
+    );
+    const r = await runAuditJob(job, { childPath: path });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.failure.code).toBe("protocol");
+    expect(r.failure.message).toContain("metrics");
   });
 
   it("budgets time per page and run", () => {

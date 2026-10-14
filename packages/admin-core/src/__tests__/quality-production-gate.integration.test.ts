@@ -18,6 +18,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { setDeployBridge } from "../ops/deploy.js";
+import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
 import { CheckRegistry } from "../quality/checks/registry.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
@@ -119,6 +120,7 @@ function fakeLighthouse(failing: FailingAudit[], accessibility = 100) {
       measurement: {
         scores: { performance: 100, accessibility, "best-practices": 100, seo: 100 },
         failingAudits: failing,
+        metrics: sampleMetrics(),
       },
       performanceRuns: [100, 100, 100],
     })),

@@ -10,6 +10,7 @@ import {
   type PageMeasurement,
   type QualityCategory,
 } from "../ratchet.js";
+import { sampleMetrics } from "./fixtures/sample-metrics.js";
 
 const ALL_100 = { performance: 100, accessibility: 100, "best-practices": 100, seo: 100 };
 
@@ -17,7 +18,7 @@ function measure(
   scores: Partial<Record<QualityCategory, number>>,
   failingAudits: FailingAudit[] = [],
 ): PageMeasurement {
-  return { scores: { ...ALL_100, ...scores }, failingAudits };
+  return { scores: { ...ALL_100, ...scores }, failingAudits, metrics: sampleMetrics() };
 }
 
 function evaluate(
@@ -169,5 +170,17 @@ describe("medianScore", () => {
 
   it("refuses an empty list (an audit without runs is a failure, not a score)", () => {
     expect(() => medianScore([])).toThrow(/no Performance runs/);
+  });
+});
+
+describe("Performance metrics are data, not findings", () => {
+  it("a poor metric never becomes a problem or a held-back signal", () => {
+    // The recorded metrics carry a POOR CLS (0.356, score 0.31) and a
+    // layout shift; with every score at its baseline nothing blocks.
+    const m = measure({});
+    expect(m.metrics.metrics.find((x) => x.label === "CLS")?.score).toBeLessThan(0.5);
+    const r = evaluate(m);
+    expect(r.problems).toEqual([]);
+    expect(r.heldBack).toEqual([]);
   });
 });

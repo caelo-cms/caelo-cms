@@ -23,6 +23,7 @@
  */
 
 import type { CheckRuleProblem } from "./checks/evaluate.js";
+import type { PerformanceMetrics } from "./lighthouse-metrics.js";
 
 /** The four Lighthouse categories the gate audits, in report order. */
 export const QUALITY_CATEGORIES = [
@@ -76,6 +77,9 @@ export interface FlaggedElement {
 export interface PageMeasurement {
   readonly scores: Readonly<Record<QualityCategory, number>>;
   readonly failingAudits: readonly FailingAudit[];
+  /** The Performance metrics (FCP, LCP, TBT, CLS, SI) behind the
+   *  Performance score. Data for the AI, never evaluated by the ratchet. */
+  readonly metrics: PerformanceMetrics;
 }
 
 /** Stored ratchet state of one page and category. */

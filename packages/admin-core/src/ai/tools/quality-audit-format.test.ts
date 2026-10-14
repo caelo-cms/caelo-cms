@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { sampleMetrics } from "../../quality/__tests__/fixtures/sample-metrics.js";
 import { formatPage } from "./quality-audit-tools.js";
 
 type Page = Parameters<typeof formatPage>[0];
@@ -16,6 +17,7 @@ function page(problems: Page["problems"]): Page {
     baselines: { "best-practices": 100 },
     performanceRuns: [100],
     failingAudits: [],
+    metrics: null,
     problems,
     heldBack: [],
     checkFindings: [],
@@ -94,5 +96,50 @@ describe("get_quality_audit page formatting", () => {
     expect(line("image-alt")).not.toContain("CAELO PLATFORM");
     // The flagged resource is shown, as code, so the AI can tell whose file it is.
     expect(lines).toContain("  - flagged `http://localhost:8081/_assets/logo.png`");
+  });
+});
+
+describe("get_quality_audit Performance metrics", () => {
+  it("shows each metric with its rating, the LCP element and the layout shifts", () => {
+    const lines = formatPage({ ...page([]), status: "clean", metrics: sampleMetrics() });
+    expect(lines).toContain(
+      "Performance metrics (median of 1 Lighthouse run(s) on the staged build; data behind the Performance score, not problems):",
+    );
+    expect(lines).toContain("- LCP 2.2 s (Largest Contentful Paint) — score 0.95, good");
+    expect(lines).toContain("- CLS 0.356 (Cumulative Layout Shift) — score 0.31, POOR");
+    expect(lines).toContain("- LCP element: `body > h1` `<h1>` (Hello)");
+    expect(lines).toContain(
+      "- LCP breakdown: Time to first byte 2 ms, Element render delay 597 ms",
+    );
+    expect(lines).toContain(
+      "- layout shift 0.3558: `body` `<body>` (body) — causes: Media element lacking an explicit size: body > img.hero",
+    );
+  });
+
+  it("says why a metric is missing instead of printing a value", () => {
+    const m = sampleMetrics();
+    const metrics = {
+      ...m,
+      metrics: m.metrics.map((x) =>
+        x.label === "LCP"
+          ? {
+              ...x,
+              numericValue: null,
+              displayValue: null,
+              score: null,
+              runValues: [null],
+              unavailableReason: "LCP was not measured in 1 of 1 Lighthouse run(s) (run 1: NO_LCP)",
+            }
+          : x,
+      ),
+    };
+    const lines = formatPage({ ...page([]), status: "clean", metrics });
+    expect(lines).toContain(
+      "- LCP (Largest Contentful Paint) not measured: LCP was not measured in 1 of 1 Lighthouse run(s) (run 1: NO_LCP)",
+    );
+  });
+
+  it("omits the block for a page Lighthouse did not audit", () => {
+    expect(formatPage(page([])).some((l) => l.startsWith("Performance metrics"))).toBe(false);
   });
 });

@@ -112,6 +112,18 @@ async function main(): Promise<void> {
               categories: [...categories],
               ...(elements ? { elements: [...elements] } : {}),
             })),
+            metrics: {
+              ...measurement.metrics,
+              metrics: measurement.metrics.metrics.map((m) => ({
+                ...m,
+                runValues: [...m.runValues],
+              })),
+              lcpBreakdown: [...measurement.metrics.lcpBreakdown],
+              layoutShifts: measurement.metrics.layoutShifts.map((l) => ({
+                ...l,
+                causes: [...l.causes],
+              })),
+            },
           },
           performanceRuns,
         });

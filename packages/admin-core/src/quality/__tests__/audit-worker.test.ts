@@ -9,6 +9,7 @@ import {
   toDisplayUrl,
 } from "../audit-worker.js";
 import { testCheckRegistry } from "../checks/__tests__/fixtures/test-checks.js";
+import { sampleMetrics } from "./fixtures/sample-metrics.js";
 
 const RUN_ID = "00000000-0000-4000-8000-0000000000aa";
 
@@ -242,6 +243,7 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
                       ],
                     },
                   ],
+                  metrics: sampleMetrics(),
                 },
                 performanceRuns: [],
               },
@@ -268,5 +270,7 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
     expect(text).toContain("https://staging.example.com/");
     expect(text).toContain("https://staging.example.com/_assets/logo.png");
     expect(text).toContain("https://cdn.example.net/widget.js");
+    // The Performance metrics reach record_result untouched.
+    expect(text).toContain('"lcpElement":{"selector":"body > h1"');
   });
 });

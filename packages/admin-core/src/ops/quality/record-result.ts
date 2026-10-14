@@ -156,12 +156,13 @@ async function insertPageRow(tx: Tx, auditRunId: string, row: PageRow): Promise<
   await tx.execute(sql`
     INSERT INTO quality_audit_pages
       (audit_run_id, page_id, url, status, scores, performance_runs,
-       failing_audits, problems, held_back, check_findings, error_code, error_message)
+       failing_audits, metrics, problems, held_back, check_findings, error_code, error_message)
     VALUES (
       ${auditRunId}::uuid, ${row.pageId}::uuid, ${row.url}, ${status},
       ${row.lighthouse ? jsonbParam(row.lighthouse.measurement.scores) : null},
       ARRAY(SELECT jsonb_array_elements_text(${jsonbParam(row.lighthouse?.performanceRuns ?? [])})::int),
       ${jsonbParam(row.lighthouse?.measurement.failingAudits ?? [])},
+      ${row.lighthouse ? jsonbParam(row.lighthouse.measurement.metrics) : null},
       ${jsonbParam(row.problems)},
       ${jsonbParam(row.heldBack)},
       ${jsonbParam(row.findings)},

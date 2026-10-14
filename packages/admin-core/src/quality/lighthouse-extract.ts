@@ -10,6 +10,8 @@
  * typed here with only the fields we read.
  */
 
+import { performanceMetricsFromRuns } from "./lighthouse-metrics.js";
+import { elementFromNode, nonEmpty } from "./lighthouse-node.js";
 import {
   type FailingAudit,
   type FlaggedElement,
@@ -47,6 +49,11 @@ export interface LhrLike {
         readonly score: number | null;
         readonly scoreDisplayMode: string;
         readonly displayValue?: string;
+        /** A metric's raw value (Performance metrics, lighthouse-metrics.ts). */
+        readonly numericValue?: number;
+        readonly numericUnit?: string;
+        /** Set when `scoreDisplayMode` is `error`. */
+        readonly errorMessage?: string;
         /** Table/list details; `items[].node` describes a flagged element. */
         readonly details?: { readonly items?: readonly unknown[] };
       }
@@ -62,11 +69,6 @@ const MAX_FLAGGED_ELEMENTS = 5;
 export const TRUNCATED_ELEMENTS_PREFIX = "+";
 /** Label suffix of that marker. */
 export const TRUNCATED_ELEMENTS_SUFFIX = " more flagged item(s) not shown";
-const MAX_ELEMENT_TEXT = 300;
-
-function nonEmpty(v: unknown): string | undefined {
-  return typeof v === "string" && v.length > 0 ? v.slice(0, MAX_ELEMENT_TEXT) : undefined;
-}
 
 /**
  * A console / network entry (`errors-in-console`): the message and the URL
@@ -124,14 +126,8 @@ function flaggedElements(
       if (entry) out.push(entry);
       continue;
     }
-    const n = node as Record<string, unknown>;
-    const element: FlaggedElement = {
-      ...(nonEmpty(n.selector) ? { selector: nonEmpty(n.selector) } : {}),
-      ...(nonEmpty(n.snippet) ? { snippet: nonEmpty(n.snippet) } : {}),
-      ...(nonEmpty(n.nodeLabel) ? { label: nonEmpty(n.nodeLabel) } : {}),
-      ...(nonEmpty(n.explanation) ? { explanation: nonEmpty(n.explanation) } : {}),
-    };
-    if (Object.keys(element).length > 0) out.push(element);
+    const element = elementFromNode(node);
+    if (element) out.push(element);
   }
   return out;
 }
@@ -258,6 +254,9 @@ export function failingAudits(lhr: LhrLike): FailingAudit[] {
  * - Findings that belong only to Performance count when they fail in a
  *   majority of the Performance runs; everything else comes from the full
  *   run.
+ * - Performance metrics (FCP, LCP, TBT, CLS, SI): median over the same
+ *   runs, as data next to the scores — never findings
+ *   (lighthouse-metrics.ts).
  *
  * @returns the measurement plus every Performance score, for the record.
  */
@@ -289,6 +288,7 @@ export function measurementFromRuns(
     measurement: {
       scores: { ...scores, performance: medianScore(performanceRuns) },
       failingAudits: findings,
+      metrics: performanceMetricsFromRuns([fullRun, ...extraPerformanceRuns]),
     },
     performanceRuns,
   };

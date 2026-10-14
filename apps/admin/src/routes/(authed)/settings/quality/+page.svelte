@@ -37,6 +37,14 @@
     return "outline";
   }
 
+  /** Lighthouse's metric rating bands: >= 0.9 good, >= 0.5 average, else poor. */
+  function metricClass(score: number | null): string {
+    if (score === null) return "text-muted-foreground";
+    if (score >= 0.9) return "text-emerald-700 dark:text-emerald-400";
+    if (score >= 0.5) return "text-amber-600 dark:text-amber-400";
+    return "text-destructive";
+  }
+
   function when(iso: string): string {
     return iso.slice(0, 16).replace("T", " ");
   }
@@ -142,6 +150,36 @@
                     <strong class={s < (p.baselines[c] ?? 100) ? "text-destructive" : ""}>{s}</strong>
                     <span class="text-muted-foreground">/ {p.baselines[c] ?? 100}</span>
                   </span>
+                {/each}
+              </div>
+            {/if}
+            {#if p.metrics}
+              {@const m = p.metrics}
+              <div class="mt-2 space-y-1 text-xs" data-testid="quality-page-metrics">
+                <div class="flex flex-wrap gap-3">
+                  {#each m.metrics as metric (metric.id)}
+                    <span title={metric.unavailableReason ?? metric.title}>
+                      {metric.label}
+                      <strong class={metricClass(metric.score)}>
+                        {metric.displayValue ?? "not measured"}
+                      </strong>
+                    </span>
+                  {/each}
+                  <span class="text-muted-foreground">median of {m.runs} run(s)</span>
+                </div>
+                {#if m.lcpElement}
+                  <div class="text-muted-foreground">
+                    LCP element: <code>{m.lcpElement.selector ?? m.lcpElement.label}</code>
+                    {#if m.lcpBreakdown.length > 0}
+                      · {m.lcpBreakdown.map((b) => `${b.label} ${b.durationMs} ms`).join(", ")}
+                    {/if}
+                  </div>
+                {/if}
+                {#each m.layoutShifts as shift, i (i)}
+                  <div class="text-muted-foreground">
+                    Layout shift {shift.score}: <code>{shift.element.selector ?? shift.element.label}</code>
+                    {#if shift.causes.length > 0}— {shift.causes.join("; ")}{/if}
+                  </div>
                 {/each}
               </div>
             {/if}

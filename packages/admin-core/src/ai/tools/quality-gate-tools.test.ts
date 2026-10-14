@@ -8,7 +8,9 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { getQualityAuditTool } from "./quality-audit-tools.js";
+import { powerToolCatalogue } from "../../ops/security/mcp_power.js";
+import { createDefaultToolRegistry } from "./index.js";
+import { checkStageAuditTool, getQualityAuditTool } from "./quality-audit-tools.js";
 import { acceptQualityFindingsTool, publishDespiteFailedAuditTool } from "./quality-gate-tools.js";
 
 describe("accept_quality_findings description", () => {
@@ -39,5 +41,27 @@ describe("accept_quality_findings description", () => {
   it("stays approval-gated", () => {
     expect(acceptQualityFindingsTool.approvalMode).toBe("user-approval");
     expect(d).toContain("APPROVAL-GATED");
+  });
+});
+
+describe("Lighthouse metrics on the quality read tools", () => {
+  it("tell the agent the metrics are there and not to run Lighthouse itself", () => {
+    for (const tool of [getQualityAuditTool, checkStageAuditTool]) {
+      expect(tool.description).toContain("LCP");
+      expect(tool.description).toContain("CLS");
+      expect(tool.description).toContain(
+        "Use this instead of running Lighthouse yourself: the audit runs against the real staged build",
+      );
+    }
+  });
+
+  it("are served to external agents in the Power-MCP catalogue with that wording", () => {
+    const catalogue = powerToolCatalogue(createDefaultToolRegistry());
+    for (const name of ["get_quality_audit", "check_stage_audit"]) {
+      const entry = catalogue.find((t) => t.name === name);
+      expect(entry).toBeDefined();
+      expect(entry?.description).toContain("instead of running Lighthouse yourself");
+      expect(entry?.gated).toBeUndefined();
+    }
   });
 });
