@@ -9,7 +9,12 @@
 
 import { spawnSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
-import { clearLoginRateBucket, resetOverlayLayoutFor, runBunInline } from "./helpers.js";
+import {
+  clearLoginRateBucket,
+  enableLiveEditMode,
+  resetOverlayLayoutFor,
+  runBunInline,
+} from "./helpers.js";
 
 function runBunInlineCapture(script: string, env: Record<string, string>): string {
   const r = spawnSync("bun", ["-e", script], {
@@ -105,9 +110,9 @@ test("toolbar-toggle gating: no chip when off; chip when on", async ({ page }) =
   await page.waitForTimeout(500);
   await expect(chip).toHaveCount(0);
 
-  // Click the toolbar toggle ON — chip lands.
-  await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  // Click the toolbar toggle ON — chip lands. Waits for the iframe to
+  // apply edit mode, not just for the toolbar button to flip.
+  await enableLiveEditMode(page);
   await taggedH1.evaluate((el: HTMLElement) => {
     el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });

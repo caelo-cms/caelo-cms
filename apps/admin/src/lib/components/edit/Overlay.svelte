@@ -35,6 +35,7 @@
     DropdownMenuTrigger,
   } from "#lib/components/ui/dropdown-menu/index.js";
   import { cn } from "#lib/utils.js";
+  import { overlayPositionStyle } from "./overlay-position.js";
   import {
     DEFAULT_LAYOUT,
     debounced,
@@ -60,6 +61,10 @@
   import type { PluginPreviewSelection } from "@caelo-cms/shared";
   interface Props {
     docked?: boolean;
+    /** px from the viewport top to the bottom of the /edit chrome (banner +
+     *  toolbar). The pinned-right column starts below it, so it never covers
+     *  the toolbar's controls when the cross-chat banner pushes them down. */
+    chromeBottom?: number;
     previewSelection?: PluginPreviewSelection | null;
     onClearPreviewSelection?: () => void;
     /** Onboarding quick replies forwarded to ChatPanel. */
@@ -90,6 +95,7 @@
   }
   let {
     docked = false,
+    chromeBottom = 44,
     previewSelection = null,
     onClearPreviewSelection,
     firstRunSuggestions = [],
@@ -226,15 +232,7 @@
   }
 
   // Position styles per pin mode.
-  const positionStyle = $derived(
-    docked ? "position:relative; inset:auto; width:100%; height:100%;" : layout.collapsed
-      ? "right: 24px; bottom: 24px; width: 56px; height: 56px;"
-      : layout.pin === "pinned-bottom"
-        ? `left: 0; right: 0; bottom: 0; height: ${layout.pinnedHeight}px;`
-        : layout.pin === "pinned-right"
-          ? `right: 0; top: 56px; bottom: 0; width: ${layout.pinnedWidth}px;`
-          : `left: ${layout.x}px; top: ${layout.y}px; width: ${layout.width}px; height: ${layout.height}px;`,
-  );
+  const positionStyle = $derived(overlayPositionStyle(layout, { docked, chromeBottom }));
 
   function handleToolResult(payload: ToolResultPayload): void {
     onToolResult?.(payload);

@@ -249,6 +249,62 @@ test("an operator Stage with findings asks first; only 'Fix with AI' starts the 
   expect(sent).toHaveLength(1);
 });
 
+// Regression: the card stayed up ~20 s after "Fix with AI" (CI flake on
+// PR #717) because the status poller DROPPED the post-ack refresh while an
+// older refresh — one that had read the state before the ack committed —
+// was still on the wire. The network is shaped so that exact interleaving
+// happens every time: the status read is answered late, the ack lands
+// while it is pending. The card must go with the next refresh, not the
+// next 20 s poll tick.
+test("the offer goes away after 'Fix with AI' even when a status read was in flight", async ({
+  context,
+  page,
+}) => {
+  await registerTestProvider(BASE, PROVIDER, [
+    [
+      { kind: "text-delta", text: "Fixing it under a slow status read." },
+      { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ],
+  ]);
+  await attachTestProviderHeader(context, PROVIDER);
+  const ownerId = await login(page);
+  const chatSessionId = await newChat(page);
+  seedProblemAudit(chatSessionId, ownerId, "operator");
+  const statusUrl = `/content/chat/${chatSessionId}/quality-audit`;
+  await page.route(`**${statusUrl}`, async (route) => {
+    const req = route.request();
+    if (req.method() === "GET") {
+      // Read the state now, answer late: the read predates the ack below.
+      const res = await route.fetch();
+      await new Promise((r) => setTimeout(r, 1_500));
+      await route.fulfill({ response: res });
+      return;
+    }
+    if ((req.postData() ?? "").includes('"ack"')) {
+      // Let the stream finish and its status read go out first.
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    await route.continue();
+  });
+  await page.reload();
+
+  const card = page.getByTestId("quality-fix-offer");
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  await card.getByTestId("quality-fix-offer-fix").click();
+  await expect(page.getByText("Fixing it under a slow status read.")).toBeVisible({
+    timeout: 20_000,
+  });
+  // Well under the 20 s idle poll interval: only a refresh that was not
+  // dropped can hide the card in time.
+  await expect(card).toHaveCount(0, { timeout: 10_000 });
+  await expect
+    .poll(async () => (await qualityStatus(page.request, chatSessionId)).notified, {
+      timeout: 15_000,
+    })
+    .toBe(true);
+});
+
 test("'Not now' leaves a note and runs nothing; Publish live stays blocked", async ({ page }) => {
   const ownerId = await login(page);
   const chatSessionId = await newChat(page);
