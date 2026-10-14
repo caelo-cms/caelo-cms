@@ -18,6 +18,7 @@ import {
   applyStrings,
   buildChromeTranslationPrompt,
   type ChromeField,
+  type ChromeTranslationPayload,
   type ChromeTranslationTarget,
   chromeTranslationPayload,
   instanceTargetKey,
@@ -31,6 +32,7 @@ import {
   validateChromeTranslation,
 } from "./chrome.js";
 import type { LocaleRow, PageVariantRow } from "./index.js";
+import { basisOf } from "./stable-json.js";
 import {
   type GlossaryEntry,
   renderGlossaryBlock,
@@ -380,22 +382,33 @@ async function upsertVariant(
   }
 }
 
+/** Everything one locale's chrome translation is built from. */
+export interface PreparedChromeTranslation {
+  readonly locale: LocaleRow;
+  readonly sourceLocale: LocaleRow;
+  readonly upToDate: number;
+  readonly skippedIndependent: number;
+  readonly nothingToTranslate: number;
+  /** The targets the prompt asks for; empty = nothing to do. */
+  readonly offered: readonly (ChromeTranslationTarget & { target: ChromeTarget })[];
+  readonly variants: readonly ChromeVariantRow[];
+  readonly glossary: readonly GlossaryEntry[];
+  readonly styleGuide: string | null;
+  /** Null when nothing is offered — there is no call to make. */
+  readonly prompt: { readonly system: string; readonly user: string } | null;
+}
+
 /**
- * Translate a locale's chrome in ONE AI call: every target that has
- * text and whose variant is missing or translated-but-stale (or the
- * given targets, with `force`). Independent variants are skipped unless
- * forced (the re-attach path, after the Owner approved it).
+ * Pick the targets a locale's chrome translation covers — every target
+ * that has text and whose variant is missing or translated-but-stale (or
+ * the given targets, with `force`) — and build the ONE prompt for them.
+ * Independent variants are skipped unless forced (the re-attach path,
+ * after the Owner approved it). Writes nothing but staleness markers.
  */
-export async function translateChrome(
+export async function prepareChromeTranslation(
   deps: ChromeDeps,
-  ai: PluginAi,
   args: { localeCode: string; targetKeys?: readonly string[]; force?: boolean },
-): Promise<{
-  translated: number;
-  upToDate: number;
-  skippedIndependent: number;
-  nothingToTranslate: number;
-}> {
+): Promise<PreparedChromeTranslation> {
   const locale = requireTargetLocale(deps, args.localeCode);
   const source = defaultLocaleOf(deps.locales);
   if (!source) throw new Error("no default locale is registered — set_locales first");
@@ -412,7 +425,7 @@ export async function translateChrome(
     }
   }
 
-  const counts = { translated: 0, upToDate: 0, skippedIndependent: 0, nothingToTranslate: 0 };
+  const counts = { upToDate: 0, skippedIndependent: 0, nothingToTranslate: 0 };
   const offered: (ChromeTranslationTarget & { target: ChromeTarget })[] = [];
   for (const t of targets) {
     if (args.targetKeys && !args.targetKeys.includes(t.key)) continue;
@@ -432,7 +445,8 @@ export async function translateChrome(
     }
     offered.push({ id: `c${offered.length}`, label: t.label, strings, target: t });
   }
-  if (offered.length === 0) return counts;
+  const base = { locale, sourceLocale: source, ...counts, offered, variants };
+  if (offered.length === 0) return { ...base, glossary: [], styleGuide: null, prompt: null };
 
   const glossary = (
     (await deps.q.list("glossary", { locale_code: locale.code, limit: 500 })) as unknown as {
@@ -446,48 +460,122 @@ export async function translateChrome(
       body: string;
     }[]
   )[0];
+  const styleGuide = style?.body ?? null;
   const prompt = buildChromeTranslationPrompt({
     sourceLocale: source.code,
     targetLocale: locale.code,
     targetLocaleDisplayName: locale.display_name,
     targets: offered,
     glossaryBlock: renderGlossaryBlock(glossary),
-    styleGuideBlock: renderStyleGuideBlock(style?.body ?? null),
+    styleGuideBlock: renderStyleGuideBlock(styleGuide),
   });
-  const result = await ai.complete({
-    system: prompt.system,
-    messages: [{ role: "user", content: prompt.user }],
-    maxTokens: 16_000,
-    purpose: "translation",
+  return { ...base, glossary, styleGuide, prompt };
+}
+
+/**
+ * #741 — fingerprint of what a prepared chrome translation asks for: the
+ * offered targets' strings (the answer is keyed by their ids and paths),
+ * glossary and style guide. Labels stay out — they count pages, which a
+ * page translation's fork can change without touching a single string.
+ */
+export function chromeTranslationBasis(p: PreparedChromeTranslation): Promise<string> {
+  return basisOf({
+    kind: "chrome",
+    sourceLocale: p.sourceLocale.code,
+    locale: p.locale.code,
+    offered: p.offered.map((o) => ({ id: o.id, key: o.target.key, strings: o.strings })),
+    glossary: p.glossary,
+    styleGuide: p.styleGuide,
   });
-  let payload: z.infer<typeof chromeTranslationPayload>;
+}
+
+/**
+ * Parse a model's answer and hold it to the chrome contract: exactly the
+ * offered targets and paths. Throws on anything that may not be written.
+ *
+ * @param answer raw answer text (a ```json fence is tolerated), or the
+ *   JSON value an agent already parsed.
+ * @param retryHint the next step named when the answer is not the JSON
+ *   the prompt asked for.
+ */
+export function parseChromeTranslationAnswer(
+  answer: string | Readonly<Record<string, unknown>>,
+  p: PreparedChromeTranslation,
+  retryHint: string,
+): ChromeTranslationPayload {
+  let payload: ChromeTranslationPayload;
   try {
-    payload = chromeTranslationPayload.parse(JSON.parse(stripJsonFence(result.text)));
+    payload = chromeTranslationPayload.parse(
+      typeof answer === "string" ? JSON.parse(stripJsonFence(answer)) : answer,
+    );
   } catch (e) {
     throw new Error(
-      `chrome translation response did not match the contract: ${(e as Error).message}. Re-run translate_chrome.`,
+      `chrome translation response did not match the contract: ${(e as Error).message}. ${retryHint}`,
     );
   }
-  validateChromeTranslation(payload, offered);
+  validateChromeTranslation(payload, p.offered);
+  return payload;
+}
 
+/**
+ * Upsert every answered target as a `translated`, up-to-date variant
+ * (dropping an own module — re-attach lands here).
+ *
+ * @returns how many variants were written.
+ */
+export async function writeChromeTranslation(
+  deps: ChromeDeps,
+  p: PreparedChromeTranslation,
+  payload: ChromeTranslationPayload,
+): Promise<number> {
+  let translated = 0;
   for (const answer of payload.targets) {
-    const o = offered.find((x) => x.id === answer.target);
+    const o = p.offered.find((x) => x.id === answer.target);
     if (!o) continue; // validateChromeTranslation refused these
-    const existing = variants.find(
-      (x) => x.target_key === o.target.key && x.locale_code === locale.code,
+    const existing = p.variants.find(
+      (x) => x.target_key === o.target.key && x.locale_code === p.locale.code,
     );
     await upsertVariant(deps.q, existing, {
       target_key: o.target.key,
-      locale_code: locale.code,
+      locale_code: p.locale.code,
       mode: "translated",
       module_id: null,
       values: applyStrings(o.target.values, answer.strings),
       translation_status: "up_to_date",
       source_hash: sourceFingerprint(o.target.fields, o.target.values),
     });
-    counts.translated += 1;
+    translated += 1;
   }
-  return counts;
+  return translated;
+}
+
+/** The install-side pass: prepare → the install's AI → write, in ONE call. */
+export async function translateChrome(
+  deps: ChromeDeps,
+  ai: PluginAi,
+  args: { localeCode: string; targetKeys?: readonly string[]; force?: boolean },
+): Promise<{
+  translated: number;
+  upToDate: number;
+  skippedIndependent: number;
+  nothingToTranslate: number;
+}> {
+  const p = await prepareChromeTranslation(deps, args);
+  const counts = (translated: number) => ({
+    translated,
+    upToDate: p.upToDate,
+    skippedIndependent: p.skippedIndependent,
+    nothingToTranslate: p.nothingToTranslate,
+  });
+  if (p.prompt === null) return counts(0);
+  const result = await ai.complete({
+    system: p.prompt.system,
+    messages: [{ role: "user", content: p.prompt.user }],
+    maxTokens: 16_000,
+    purpose: "translation",
+  });
+  const payload = parseChromeTranslationAnswer(result.text, p, "Re-run translate_chrome.");
+  return counts(await writeChromeTranslation(deps, p, payload));
 }
 
 const setVariantsArgs = z
@@ -553,6 +641,10 @@ export async function setChromeVariants(
   return { updated };
 }
 
+const reattachArgs = z
+  .object({ targetKey: z.string().min(1), localeCode: z.string().min(2).max(35) })
+  .strict();
+
 /**
  * Re-attach a detached variant: back to `translated`, own module
  * dropped, content re-derived from the source NOW (overwriting the
@@ -563,10 +655,7 @@ export async function reattachChromeVariant(
   ai: PluginAi,
   rawArgs: unknown,
 ): Promise<{ translated: number }> {
-  const args = z
-    .object({ targetKey: z.string().min(1), localeCode: z.string().min(2).max(35) })
-    .strict()
-    .parse(rawArgs);
+  const args = reattachArgs.parse(rawArgs);
   requireTargetLocale(deps, args.localeCode);
   const r = await translateChrome(deps, ai, {
     localeCode: args.localeCode,
@@ -574,4 +663,57 @@ export async function reattachChromeVariant(
     force: true,
   });
   return { translated: r.translated };
+}
+
+/**
+ * #741 — re-attach when the AI work belongs to the calling agent: the
+ * approved half without the translation. The entry flips to
+ * `translated` + `needs_update`, which is exactly what translate_chrome
+ * offers, so the agent's next translate_chrome work item covers it.
+ *
+ * The own module and own values stay until that answer is applied —
+ * writeChromeTranslation drops the module and replaces the values in one
+ * upsert. Dropping them here would leave the language rendering the
+ * source module with the detached values (or none) in between; keeping
+ * them, the language shows its own, still correct-language chrome until
+ * the translation lands. The Owner's approval covered "this entry
+ * follows the source again"; the overwrite itself is then an ordinary
+ * translated-chrome write.
+ */
+export async function reattachChromeVariantDelegated(
+  deps: ChromeDeps,
+  rawArgs: unknown,
+): Promise<{ reattached: boolean; translated: 0; nextStep: string }> {
+  const args = reattachArgs.parse(rawArgs);
+  const locale = requireTargetLocale(deps, args.localeCode);
+  const target = (await loadChromeTargets(deps.cms)).find((t) => t.key === args.targetKey);
+  if (!target) {
+    throw new Error(
+      `unknown chrome target(s) ${args.targetKey} — read intl_status for the current targetKeys`,
+    );
+  }
+  // Mirrors the install path: a target without text is never offered,
+  // so a forced translation of it changes nothing.
+  if (translatableStrings(target.fields, target.values).length === 0) {
+    return {
+      reattached: false,
+      translated: 0,
+      nextStep: `"${target.label}" has no text to translate, so there is nothing to re-attach; the ${locale.display_name} entry is unchanged.`,
+    };
+  }
+  const existing = (await loadChromeVariants(deps.q)).find(
+    (v) => v.target_key === args.targetKey && v.locale_code === locale.code,
+  );
+  if (existing) {
+    await deps.q.update("chrome_variants", existing.id, {
+      mode: "translated",
+      translation_status: "needs_update",
+      source_hash: null,
+    });
+  }
+  return {
+    reattached: true,
+    translated: 0,
+    nextStep: `The ${locale.display_name} entry follows the default language again but is not translated yet (it keeps showing its current content until then). Call translate_chrome({ localeCode: "${locale.code}" }) for the work item, translate it yourself, and send the answer back with apply_translations.`,
+  };
 }

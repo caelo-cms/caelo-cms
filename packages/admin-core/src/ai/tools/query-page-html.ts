@@ -168,6 +168,7 @@ const DESCRIBE_SCHEMA = {
 
 export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
   name: "query_page_html",
+  usesInstallAi: true,
   description:
     "Pull a SPECIFIC part of an external page's HTML — without loading the whole page into context. Reuses a `pageRef` from a prior inspect_external_page (no re-fetch); pass `url` only if you have no handle. " +
     'Pick ONE mode: `keyword` (exact text — HTML around each hit), `cssSelector` / `xpath` (return matching elements\' outerHTML), or `describe` (natural language like "the pricing table" or "each product card\'s title + price" — a small fast model reads the full HTML and returns just that, so the big HTML never enters your context). ' +
@@ -295,6 +296,24 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
     }
 
     // describe mode — small-model extraction over the (capped) full HTML.
+    const cappedHtml =
+      page.html.length > DESCRIBE_HTML_CAP
+        ? `${page.html.slice(0, DESCRIBE_HTML_CAP)}\n<!-- …HTML truncated for extraction -->`
+        : page.html;
+    // #741 — on an AI-delegated call (Power-MCP) the calling agent does the
+    // extraction itself: it gets the same capped HTML the small model would
+    // have read. This model is resolved outside ToolContext.provider, so the
+    // delegated-provider guard would not catch it — hence the explicit branch.
+    if (toolCtx.aiDelegated) {
+      return {
+        ok: true,
+        content:
+          `## query_page_html — HTML of ${page.url} for you to extract "${toolInput.describe}" from\n` +
+          "Extraction is your AI work on this connection (the install's model is not used). " +
+          "To keep your context small, prefer `keyword`, `cssSelector` or `xpath` once you know what to look for.\n" +
+          `\`\`\`html\n${cappedHtml}\n\`\`\``,
+      };
+    }
     const resolved = await getActiveProviderForModel(SMALL_MODEL);
     if (!resolved) {
       return {
@@ -303,10 +322,6 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
           "query_page_html(describe): could not resolve a small extraction model (no active AI provider / key). Use `keyword` instead, or the operator configures the provider at /settings/ai.",
       };
     }
-    const cappedHtml =
-      page.html.length > DESCRIBE_HTML_CAP
-        ? `${page.html.slice(0, DESCRIBE_HTML_CAP)}\n<!-- …HTML truncated for extraction -->`
-        : page.html;
     const result = await resolved.provider.generateObject({
       systemPrompt:
         "You extract from a web page's raw HTML. Return ONLY what the caller asks for — the relevant HTML fragment(s) verbatim, or the requested info. Do not summarise the whole page. If the requested content is absent, set found=false and result to an empty string.",

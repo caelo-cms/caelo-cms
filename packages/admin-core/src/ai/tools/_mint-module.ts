@@ -60,6 +60,17 @@ export interface MintModuleErr {
 }
 
 /**
+ * #741 — why `add_module` without `fields[]` does not run on an AI-delegated
+ * (Power-MCP) call, and what to send instead (CLAUDE.md §1A: the AI authors
+ * the semantic fields in the same call as the HTML).
+ */
+export const DELEGATED_MINT_NEEDS_FIELDS =
+  "Nothing was created. On this connection you author the module yourself — the install's AI does not moduleize raw HTML for you. " +
+  "Re-call with the HTML parametrised ({{field_name}} placeholders, semantic snake_case names like hero_title / primary_cta_href; repeating items as one list field, never label2/label3) " +
+  "plus an explicit `fields[]` declaring each placeholder (name, kind, label) and the ORIGINAL copy as `values` (or each field's `default`). " +
+  "Pass `fields: []` only for a module with no editable content.";
+
+/**
  * Mint a module from HTML: moduleize (when a provider is available) → create.
  * Returns the new module id + slug, or a structured tool error.
  */
@@ -85,7 +96,15 @@ export async function mintModuleFromHtml(
   // loops chasing both). So skip moduleize whenever explicit fields are
   // supplied and trust the AI's html + fields verbatim.
   const hasExplicitFields = (args.fieldsHint?.length ?? 0) > 0;
-  if (toolCtx.provider && !hasExplicitFields) {
+  // #741 — on an AI-delegated call (Power-MCP) moduleize would spend the
+  // install's AI on what the calling agent is there to author: refuse before
+  // anything is written and say exactly what to send. An explicit empty
+  // `fields: []` is the agent's statement that the module has no editable
+  // content (a divider, a spacer), so it is accepted as authored.
+  if (toolCtx.aiDelegated && args.fieldsHint === undefined) {
+    return { ok: false, content: DELEGATED_MINT_NEEDS_FIELDS };
+  }
+  if (toolCtx.provider && !hasExplicitFields && !toolCtx.aiDelegated) {
     try {
       const mod = await moduleize({
         provider: toolCtx.provider,
@@ -106,6 +125,23 @@ export async function mintModuleFromHtml(
             model: r.model,
             costMicrocents: 0,
           }).catch(() => {});
+        },
+        onUsage: async (u) => {
+          // The priced spend row (ai_calls) the cost dashboard and the
+          // Power-MCP cap read. Best-effort like the chat-runner's own
+          // recording: the provider is already paid.
+          await execute(toolCtx.registry, toolCtx.adapter, ctx, "chat.record_ai_call", {
+            chatSessionId: toolCtx.chatSessionId ?? null,
+            provider: toolCtx.provider?.name ?? "unknown",
+            model: u.model,
+            inputTokens: u.inputTokens,
+            outputTokens: u.outputTokens,
+          }).catch((e: unknown) => {
+            console.error("[moduleize] ai_calls row not recorded — spend is understated", {
+              model: u.model,
+              error: e instanceof Error ? e.message : String(e),
+            });
+          });
         },
       });
       html = mod.html;

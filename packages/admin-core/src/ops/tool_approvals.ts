@@ -108,6 +108,12 @@ export const readToolApprovalForExecuteOp = defineOperation({
      * and an external plugin's installation binding is keyed by it.
      */
     chatBranchId: z.string().nullable(),
+    /**
+     * #741 — the call was queued by an external agent that does the AI work
+     * itself (recorded in the preview at queue time). The approved call then
+     * runs with the install's AI unavailable, as it would have unqueued.
+     */
+    aiDelegated: z.boolean(),
   }),
   handler: async (ctx, input, tx) => {
     // Atomic claim: only transitions if currently 'pending', so
@@ -122,12 +128,14 @@ export const readToolApprovalForExecuteOp = defineOperation({
       RETURNING tool_name AS tool_name,
                 args AS args,
                 chat_session_id::text AS chat_session_id,
-                chat_branch_id::text AS chat_branch_id
+                chat_branch_id::text AS chat_branch_id,
+                COALESCE((preview->>'aiDelegated')::boolean, false) AS ai_delegated
     `)) as unknown as Array<{
       tool_name: string;
       args: unknown;
       chat_session_id: string | null;
       chat_branch_id: string | null;
+      ai_delegated: boolean;
     }>;
     const row = rows[0];
     if (!row) {
@@ -151,6 +159,7 @@ export const readToolApprovalForExecuteOp = defineOperation({
       args,
       chatSessionId: row.chat_session_id,
       chatBranchId: row.chat_branch_id,
+      aiDelegated: row.ai_delegated === true,
     });
   },
 });

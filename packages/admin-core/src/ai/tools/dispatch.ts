@@ -102,6 +102,13 @@ export interface ToolContext {
    * cleanly when called outside a chat-runner context.
    */
   readonly provider?: AIProvider;
+  /**
+   * Issue #741 — true when this call's AI work belongs to the calling agent
+   * (Power-MCP without the token's opt-in). `provider` is then a
+   * `delegatedProvider` (ai/delegated-provider.ts) that refuses to generate; a tool that would
+   * generate hands back a work item or an actionable error instead.
+   */
+  readonly aiDelegated?: boolean;
   readonly tools?: ToolRegistry;
   readonly humanCtx?: ExecutionContext;
   /** Hands off to runChatTurn; closure created by the parent's runner. */
@@ -283,6 +290,14 @@ export interface ToolDefinitionWithHandler<I> {
   readonly name: string;
   /** The tool's description — static; see the 2026-07 note above. */
   readonly description: string;
+  /**
+   * #741 — the handler can spend the install's AI (a provider call of its
+   * own, moduleize, image generation). Declared so the Power-MCP applies a
+   * token's cost cap to exactly these tools and tells the agent the AI part
+   * comes back to it on an AI-delegated call. A tool that spends without
+   * declaring it is a bug the cap cannot see.
+   */
+  readonly usesInstallAi?: true;
   /**
    * v0.6.0 W5 — SDK-6-inspired approval gate. When set and returns
    * `true` for the parsed args, the dispatcher emits a structured

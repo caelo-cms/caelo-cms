@@ -50,6 +50,14 @@ export interface ConfiguredImageModel {
 type ToolResult = { ok: boolean; content: string };
 
 /**
+ * #741 — why an image tool does not run on an AI-delegated call, and what
+ * the agent does instead.
+ */
+export const AI_DELEGATED_IMAGE_ERROR =
+  "AiDelegated: this token does not let you spend the install's image model. Create the image yourself (your own image tool or a stock photo), " +
+  'upload it with caelo_upload_images, and reference the returned media id/url. The Owner can allow Caelo-side image generation for this token at /settings/mcp ("may use Caelo\'s AI").';
+
+/**
  * Pick the image-capable provider (an active OpenAI/Google provider with
  * an image model; the primary one when several) and its model profile.
  */
@@ -57,6 +65,10 @@ export async function resolveImageModel(
   ctx: ExecutionContext,
   toolCtx: ToolContext,
 ): Promise<ConfiguredImageModel | { error: string }> {
+  // #741 — on an AI-delegated call (Power-MCP without the token's opt-in)
+  // the install's image model is not billed: the agent makes the image
+  // itself. Checked here, the one entry every image tool resolves through.
+  if (toolCtx.aiDelegated) return { error: AI_DELEGATED_IMAGE_ERROR };
   if (isFakeImageEnabled()) {
     // e2e only — never in production (see isFakeImageEnabled).
     const capabilities = imageCapabilities("fake-image") as ImageCapabilities;

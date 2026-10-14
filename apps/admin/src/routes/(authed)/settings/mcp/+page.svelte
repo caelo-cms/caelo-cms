@@ -24,6 +24,8 @@
   } from "#lib/components/ui/table/index.js";
 
   let { data, form } = $props();
+  // #741 — "may use Caelo's AI" only exists for admin (Power-MCP) tokens.
+  let newScope = $state<"chat" | "admin">("chat");
 
   function fmtUsdMc(mc: number | null): string {
     if (mc === null) return "uncapped";
@@ -107,6 +109,7 @@
               <TableHead>Scope</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Cap</TableHead>
+              <TableHead>AI work</TableHead>
               <TableHead>Last used</TableHead>
               <TableHead>Expires</TableHead>
               <TableHead></TableHead>
@@ -122,6 +125,15 @@
                 </TableCell>
                 <TableCell><Badge variant={rowVariant(status)}>{status}</Badge></TableCell>
                 <TableCell>{fmtUsdMc(t.aiCostCapMicrocents)}</TableCell>
+                <TableCell class="text-xs">
+                  {#if t.scope === "chat"}
+                    Caelo's AI
+                  {:else if t.allowCaeloAi}
+                    agent + Caelo's AI
+                  {:else}
+                    agent only
+                  {/if}
+                </TableCell>
                 <TableCell class="text-xs">{t.lastUsedAt ?? "never"}</TableCell>
                 <TableCell class="text-xs">{t.expiresAt.slice(0, 10)}</TableCell>
                 <TableCell>
@@ -158,7 +170,7 @@
         </div>
         <div class="space-y-2">
           <Label for="scope">Scope</Label>
-          <Select id="scope" name="scope">
+          <Select id="scope" name="scope" bind:value={newScope}>
             <option value="chat">chat — talk to Caelo's AI (caelo_chat)</option>
             <option value="admin">admin — full tool catalogue (Power-MCP)</option>
           </Select>
@@ -176,6 +188,27 @@
         <div class="flex items-end">
           <Button type="submit">Create token</Button>
         </div>
+        {#if newScope === "admin"}
+          <div class="flex items-start gap-2 md:col-span-4">
+            <input
+              id="allowCaeloAi"
+              name="allowCaeloAi"
+              type="checkbox"
+              value="on"
+              class="mt-1 size-4 accent-primary"
+            />
+            <div class="space-y-1">
+              <Label for="allowCaeloAi">Agent may use Caelo's AI</Label>
+              <p class="text-xs text-muted-foreground">
+                Off (recommended): the connected agent does all AI work on its own subscription —
+                translations, module authoring, page extraction come back to it as work items, and
+                image generation is unavailable (it uploads its own images). On: it may also run
+                image generation and translations on this install's AI, billed here and limited by the
+                cap above.
+              </p>
+            </div>
+          </div>
+        {/if}
       </form>
     </CardContent>
   </Card>

@@ -151,6 +151,12 @@ export const pluginToolSpec = z.object({
    *  in the panel and therefore in the chat). Enforced by the host for
    *  `chat` and `approved` invocations, including the Power-MCP. */
   requiredPermission: z.enum(["content.write", "settings.write", "deploy.trigger"]).optional(),
+  /** #741 — the operation can call `ctx.ai` or generate images, i.e. spend
+   *  the install's AI. Declared so the Power-MCP applies a token's cost cap
+   *  to exactly these tools and tells the agent the AI part comes back to
+   *  it as a work item. An operation that spends without declaring it is a
+   *  bug the cap cannot see. */
+  usesInstallAi: z.boolean().optional(),
 });
 
 export type PluginToolSpec = z.infer<typeof pluginToolSpec>;
@@ -828,6 +834,57 @@ export interface PluginInvocation {
   /** Set for origin `chat`: the chat's branch. */
   readonly chatBranchId?: string;
   readonly chatTaskId?: string;
+  /**
+   * Issue #741 — true when the caller is an external agent on the
+   * Power-MCP that does the AI work itself, on its own subscription. The
+   * install's AI is then unavailable to this call: `ctx.ai.complete` and
+   * `ctx.images.generate`/`edit` throw an `AiDelegated:` error. An
+   * operation that would call `ctx.ai` returns an {@link AiWorkItem}
+   * instead, naming the tool that takes the agent's answer.
+   */
+  readonly aiDelegated?: boolean;
+}
+
+/** Prefix of the error the host throws when a plugin calls `ctx.ai` or
+ *  generates an image on an {@link PluginInvocation.aiDelegated} call. */
+export const AI_DELEGATED_ERROR_PREFIX = "AiDelegated:";
+
+/**
+ * Issue #741 — the AI part of an operation, handed to the calling agent
+ * instead of run on the install's AI. The agent answers `instructions`
+ * with its own model and calls `apply.tool` with `apply.args` plus its
+ * answer under `apply.resultArg`. The instructions are the exact prompt
+ * the operation would have sent, so the answer meets the same contract,
+ * and `apply.tool` validates it the same way the install-side path does.
+ */
+export interface AiWorkItem {
+  readonly kind: "ai_work_item";
+  /** One line: what this item asks for, e.g. "Translate /pricing into German". */
+  readonly task: string;
+  readonly instructions: { readonly system: string; readonly user: string };
+  /** `json`: the answer is the bare JSON the instructions describe. */
+  readonly responseFormat: "json" | "text";
+  /**
+   * Where the answer goes. Absent when the answer is for the agent and its
+   * operator only (a summary): nothing in Caelo changes.
+   */
+  readonly apply?: {
+    readonly tool: string;
+    readonly args: Readonly<Record<string, unknown>>;
+    /**
+     * Where in the arguments of `apply.tool` the agent's answer goes: a
+     * top-level name (`verdict`) or, for a bulk tool, a path into
+     * `apply.args` (`items[0].result`). `apply.args` with the answer set
+     * there is a complete call; several items of one bulk tool batch by
+     * concatenating their `items` arrays.
+     */
+    readonly resultArg: string;
+  };
+}
+
+/** Whether the AI part of this call belongs to the calling agent (#741). */
+export function isAiDelegated(ctx: { readonly invocation: PluginInvocation }): boolean {
+  return ctx.invocation.aiDelegated === true;
 }
 
 /** What every plugin receives. Granted handles extend it (PluginContextTier1). */

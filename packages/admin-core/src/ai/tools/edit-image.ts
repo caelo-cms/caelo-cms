@@ -32,6 +32,7 @@ export type EditImageInput = z.infer<typeof editImageInput>;
 
 export const editImageTool: ToolDefinitionWithHandler<EditImageInput> = {
   name: "edit_image",
+  usesInstallAi: true,
   description:
     'Change an EXISTING image from the media library with a prompt ("make the sky dusk", "remove the logo") — the result is a NEW media asset linked to its source; the source is never modified. ' +
     "`source` is a media id or slug (find_media). Optional `mask`: a PNG from the media library whose transparent area marks what may change — only on models that support masks; otherwise describe the region in the prompt. Optional `references` guide the look. " +

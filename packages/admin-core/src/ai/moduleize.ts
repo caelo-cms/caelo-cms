@@ -68,6 +68,16 @@ export interface ModuleizeArgs {
   readonly maxRepairs?: number;
   /** Fires only when a repair happened, so the caller can persist telemetry. */
   readonly onRetry?: (record: ModuleizeRetryRecord) => Promise<void>;
+  /**
+   * #741 — fires after every provider call with what it consumed, so the
+   * caller records the spend in `ai_calls` (cost dashboard, Power-MCP cost
+   * cap). Retry telemetry alone missed every single-attempt call.
+   */
+  readonly onUsage?: (usage: {
+    readonly model: string;
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+  }) => Promise<void>;
   readonly abortSignal?: AbortSignal;
 }
 
@@ -249,6 +259,7 @@ export async function moduleize(args: ModuleizeArgs): Promise<ModuleizeResult> {
     inputTokens += it;
     outputTokens += ot;
     model = m;
+    if (it > 0 || ot > 0) await args.onUsage?.({ model: m, inputTokens: it, outputTokens: ot });
     // A provider/API error (rate limit, usage cap, network) is NOT a
     // moduleize repair case — retrying just burns more calls on a hard
     // failure. Fail loudly, immediately, without a telemetry row (this

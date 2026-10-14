@@ -45,6 +45,8 @@ const tokenRow = z.object({
   displayName: z.string(),
   scope: mcpTokenScope,
   aiCostCapMicrocents: z.number().int().nonnegative().nullable(),
+  /** #741 — an admin token may spend the install's own AI (off: the agent does the AI work). */
+  allowCaeloAi: z.boolean(),
   lastUsedAt: z.string().nullable(),
   revokedAt: z.string().nullable(),
   createdAt: z.string(),
@@ -62,7 +64,7 @@ export const listMcpTokensOp = defineOperation({
   handler: async (_ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, actor_id::text AS actor_id, display_name, scope,
-             ai_cost_cap_microcents, last_used_at, revoked_at,
+             ai_cost_cap_microcents, allow_caelo_ai, last_used_at, revoked_at,
              created_at, expires_at
       FROM mcp_tokens
       ORDER BY created_at DESC
@@ -72,6 +74,7 @@ export const listMcpTokensOp = defineOperation({
       display_name: string;
       scope: McpTokenScope;
       ai_cost_cap_microcents: bigint | string | number | null;
+      allow_caelo_ai: boolean;
       last_used_at: string | Date | null;
       revoked_at: string | Date | null;
       created_at: string | Date;
@@ -94,6 +97,7 @@ export const listMcpTokensOp = defineOperation({
         displayName: r.display_name,
         scope: r.scope,
         aiCostCapMicrocents: toN(r.ai_cost_cap_microcents),
+        allowCaeloAi: r.allow_caelo_ai,
         lastUsedAt: toS(r.last_used_at),
         revokedAt: toS(r.revoked_at),
         createdAt: toS(r.created_at) ?? "",
@@ -117,6 +121,12 @@ export const createMcpTokenOp = defineOperation({
       // and a direct call behave identically via the `?? "chat"` below.
       scope: mcpTokenScope.optional(),
       aiCostCapMicrocents: z.number().int().nonnegative().nullable().optional(),
+      /**
+       * #741 — admin tokens only: the agent may use the install's own AI
+       * (image generation, Caelo-side translation runs). Off by default.
+       * Optional for the same execute_proposal reason as `scope`.
+       */
+      allowCaeloAi: z.boolean().optional(),
     })
     .strict(),
   output: z.object({
@@ -134,9 +144,19 @@ export const createMcpTokenOp = defineOperation({
       .join("");
 
     const scope = input.scope ?? "chat";
+    // The setting only exists on the Power-MCP surface; a chat token always
+    // runs Caelo's own agent, so storing true there would mean nothing.
+    if (input.allowCaeloAi === true && scope !== "admin") {
+      return err({
+        kind: "HandlerError",
+        operation: "mcp_tokens.create",
+        message:
+          "allowCaeloAi applies to admin-scoped tokens only — a chat token always runs Caelo's own agent. Drop the flag or mint scope 'admin'.",
+      });
+    }
     const rows = (await tx.execute(sql`
-      INSERT INTO mcp_tokens (actor_id, token_hash, display_name, scope, ai_cost_cap_microcents)
-      VALUES (${ctx.actorId}::uuid, ${tokenHash}, ${input.displayName}, ${scope}, ${input.aiCostCapMicrocents ?? null})
+      INSERT INTO mcp_tokens (actor_id, token_hash, display_name, scope, ai_cost_cap_microcents, allow_caelo_ai)
+      VALUES (${ctx.actorId}::uuid, ${tokenHash}, ${input.displayName}, ${scope}, ${input.aiCostCapMicrocents ?? null}, ${input.allowCaeloAi === true})
       RETURNING id::text AS id
     `)) as unknown as Array<{ id: string }>;
     const id = rows[0]?.id;
@@ -208,6 +228,8 @@ export async function resolveMcpToken(
       displayName: string;
       scope: McpTokenScope;
       aiCostCapMicrocents: number | null;
+      /** #741 — the token's agent may spend the install's AI (Power-MCP only). */
+      allowCaeloAi: boolean;
     },
     "not_found" | "expired" | "revoked"
   >
@@ -225,7 +247,7 @@ export async function resolveMcpToken(
     async (tx) => {
       const rows = (await tx.execute(sql`
         SELECT id::text AS id, actor_id::text AS actor_id, scope, display_name,
-               ai_cost_cap_microcents, expires_at, revoked_at
+               ai_cost_cap_microcents, allow_caelo_ai, expires_at, revoked_at
         FROM mcp_tokens
         WHERE token_hash = ${tokenHash}
       `)) as unknown as Array<{
@@ -234,6 +256,7 @@ export async function resolveMcpToken(
         display_name: string;
         scope: McpTokenScope;
         ai_cost_cap_microcents: bigint | string | number | null;
+        allow_caelo_ai: boolean;
         expires_at: string | Date;
         revoked_at: string | Date | null;
       }>;
@@ -259,6 +282,7 @@ export async function resolveMcpToken(
         displayName: r.display_name,
         scope: r.scope,
         aiCostCapMicrocents: cap,
+        allowCaeloAi: r.allow_caelo_ai === true,
       });
     },
   );
