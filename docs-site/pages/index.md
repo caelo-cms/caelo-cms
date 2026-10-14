@@ -28,10 +28,10 @@ talk → preview → publish.
 ### Install in one line
 
 ```bash
-bunx @caelo-cms/provisioning@latest --provider self-hosted
+bunx @caelo-cms/provisioning@latest --provider self-hosted --domain example.com --owner-email you@example.com
 ```
 
-Self-hosted = Docker Compose with Postgres + pgBackRest + Caddy (auto-SSL) + the admin + the API gateway. Cloud = `--provider gcp` / `aws` / `azure` — Pulumi spins up Cloud SQL HA + managed object storage + the platform's CDN + Secret Manager.
+Self-hosted = Docker Compose with Postgres + Caddy (auto-SSL) + the admin + the API gateway, started and health-checked by that one command. Cloud = `--provider gcp` / `aws` / `azure` — Pulumi spins up Cloud SQL HA + managed object storage + the platform's CDN + Secret Manager.
 
 ### Or one click on Google Cloud
 

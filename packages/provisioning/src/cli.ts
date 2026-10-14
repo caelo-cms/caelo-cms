@@ -9,10 +9,14 @@
  *   init [--domain D --owner-email E]  — first-time setup; generates
  *                                         secrets, resolves + cosign-verifies
  *                                         the release images, writes .caelo/,
- *                                         prints the start steps + the
- *                                         bootstrap token URL. `--dev` runs a
- *                                         Caelo checkout instead (contributors).
- *   up                                  — re-runs against existing config.
+ *                                         starts the stack (migrations
+ *                                         included), health-checks it and
+ *                                         prints the bootstrap token URL.
+ *                                         `--provider self-hosted` with no
+ *                                         sub-command runs this. `--dev` runs
+ *                                         a Caelo checkout (contributors).
+ *   up                                  — re-emits from the existing config
+ *                                         and converges the running stack.
  *   migrate                             — applies DB migrations with the
  *                                         admin image the install runs.
  *   upgrade [--version X]               — verified, backed-up, health-checked
@@ -22,9 +26,10 @@
  *                                         the Owner starts in the admin.
  *   regenerate-caddy                    — re-emits Caddyfile from the
  *                                         domains table; runs `caddy reload`.
- *   backup --to <path>                  — pgBackRest full + MinIO mirror →
- *                                         single .tar.zst.
- *   restore --from <path>               — wipes target + restores.
+ *   backup [--to <path>]                — pg_dump of both databases + the
+ *                                         site + media files → one .tar.gz.
+ *   restore --from <path> --yes         — replaces databases + files with
+ *                                         a backup, restarts, health-checks.
  *   status                              — prints container health + cert
  *                                         expiry per domain.
  *
@@ -43,14 +48,28 @@ import {
 import type { AgentCliContext } from "./agent/command.js";
 import type { AgentConfig } from "./agent/config.js";
 import { generateBootstrapToken } from "./bootstrap-token.js";
-import { type CaddyDomainSpec, generateCaddyfile } from "./caddy.js";
+import {
+  type CaddyDomainSpec,
+  type CaddyTlsMode,
+  generateCaddyfile,
+  selfHostedAdminHost,
+  selfHostedSeedDomains,
+} from "./caddy.js";
 import { redactCredentials } from "./checkpoint-secrets.js";
 import { initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
 import {
   BOOTSTRAP_DIR,
+  COMPOSE_ADMIN_UPSTREAM,
+  COMPOSE_GATEWAY_UPSTREAM,
   type ComposeImages,
+  composeProjectName,
   generateDockerCompose,
+  isPublishablePort,
+  MEDIA_DIR,
+  type PublishedPorts,
   type RolePasswords,
+  SITE_OUTPUT_ROOT,
+  selfHostedSiteUrl,
 } from "./compose.js";
 import { selfCommand } from "./self-command.js";
 import {
@@ -76,8 +95,6 @@ interface CaeloConfig {
   stagingDomain?: string;
   ownerEmail: string;
   postgresPassword: string;
-  minioRootUser: string;
-  minioRootPassword: string;
   /**
    * P18 — project KEK (32 hex bytes). Auto-generated on `cms-provision init`,
    * persisted in `.caelo/config.json`, mounted into the admin + gateway
@@ -111,6 +128,24 @@ interface CaeloConfig {
    * its database password and the loopback port Postgres is published on.
    */
   agent?: AgentConfig;
+  /**
+   * #707 — how Caddy gets certificates (`init --tls internal` for a LAN or
+   * evaluation install without public DNS). Optional so older config.json
+   * files load; loadConfig() back-fills `acme`, what they always ran.
+   */
+  tls?: CaddyTlsMode;
+  /**
+   * #707 — the host ports Caddy publishes (`init --http-port/--https-port`).
+   * Optional so older config.json files load; loadConfig() back-fills 80/443.
+   */
+  ports?: PublishedPorts;
+  /**
+   * #707 — the Compose project (`name:` in the Compose file). Optional so
+   * older config.json files load; loadConfig() back-fills `caelo`, the
+   * project name Compose derived from `.caelo/` for them (their volumes
+   * carry it).
+   */
+  composeProject?: string;
 }
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
@@ -189,7 +224,17 @@ function randomSecret(bytes = 32): string {
 
 function loadConfig(): CaeloConfig | null {
   if (!existsSync(CONFIG_PATH)) return null;
-  return JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as CaeloConfig;
+  const cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as CaeloConfig;
+  // #707 — settings added later, back-filled (and stored) with what every
+  // install ran before they existed, so `upgrade` / `agent` render the same
+  // Compose file as before.
+  if (!cfg.tls || !cfg.ports || !cfg.composeProject) {
+    cfg.tls ??= "acme";
+    cfg.ports ??= { http: 80, https: 443 };
+    cfg.composeProject ??= "caelo";
+    saveConfig(cfg);
+  }
+  return cfg;
 }
 
 function saveConfig(c: CaeloConfig): void {
@@ -220,22 +265,24 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
     cfg.stagingDomain = defaultStagingHost(cfg.domain);
     saveConfig(cfg);
   }
+  if (!cfg.tls) throw new Error("config has no tls — it is back-filled on load; this is a bug");
   emitComposeFiles(cfg);
-  // Seed the install with the operator's primary domain plus a staging
-  // sibling. Extra domains added via /settings/domains are appended by
+  // Seed the install with the admin host, the primary domain and the
+  // staging host. Extra domains added via /settings/domains are appended by
   // regenerate-caddy when it queries the live domains table.
-  const baseDomains: CaddyDomainSpec[] = [
-    { hostname: cfg.domain, kind: "admin", env: "production" },
-    { hostname: cfg.domain, kind: "public", env: "production" },
-    { hostname: cfg.stagingDomain, kind: "public", env: "staging" },
-  ];
   const caddy = generateCaddyfile({
     ownerEmail: cfg.ownerEmail,
-    publicSiteRoot: "/srv/caelo/output/production/current",
-    stagingSiteRoot: "/srv/caelo/output/staging/current",
-    adminPort: 5173,
-    gatewayPort: 8090,
-    domains: dedupeDomains([...baseDomains, ...extraDomains]),
+    tls: cfg.tls,
+    publicSiteRoot: `${SITE_OUTPUT_ROOT}/output/production/current`,
+    stagingSiteRoot: `${SITE_OUTPUT_ROOT}/output/staging/current`,
+    // Caddy runs in its own container: the Compose service names, never
+    // localhost (#707).
+    adminUpstream: COMPOSE_ADMIN_UPSTREAM,
+    gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
+    domains: dedupeDomains([
+      ...selfHostedSeedDomains(cfg.domain, cfg.stagingDomain),
+      ...extraDomains,
+    ]),
   });
   writeFileSync(CADDYFILE_PATH, caddy);
 }
@@ -254,6 +301,9 @@ function emitComposeFiles(cfg: CaeloConfig): void {
     selfHostedBootstrapScript({ agent: activeAgent(cfg) !== undefined }),
     { mode: 0o755 },
   );
+  // The bind-mounted content dirs, created by the CLI so Docker does not
+  // create them root-owned on a Linux host.
+  for (const dir of ["output", MEDIA_DIR]) mkdirSync(resolve(CAELO_DIR, dir), { recursive: true });
 }
 
 /** The Compose file for `cfg` running `images` (secrets come from config.json). */
@@ -263,17 +313,22 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
     throw new Error("config has no rolePasswords — run `cms-provision up`");
   }
   if (!cfg.caeloSecretKek) throw new Error("config has no caeloSecretKek — run `cms-provision up`");
+  if (!cfg.ports || !cfg.composeProject) {
+    throw new Error(
+      "config has no ports / composeProject — they are back-filled on load; this is a bug",
+    );
+  }
   return generateDockerCompose({
     domain: cfg.domain,
     postgresPassword: cfg.postgresPassword,
     rolePasswords: cfg.rolePasswords,
-    minioRootUser: cfg.minioRootUser,
-    minioRootPassword: cfg.minioRootPassword,
     caeloSecretKek: cfg.caeloSecretKek,
     anthropicApiKey: cfg.anthropicApiKey,
     resendApiKey: cfg.resendApiKey,
     diskSize: "20Gi",
     images,
+    ports: cfg.ports,
+    project: cfg.composeProject,
     ...(activeAgent(cfg) ? { agent: activeAgent(cfg) } : {}),
   });
 }
@@ -347,19 +402,83 @@ function installImages(cfg: CaeloConfig): ComposeImages {
 }
 
 function dedupeDomains(list: CaddyDomainSpec[]): CaddyDomainSpec[] {
-  // Two domain entries with the same (hostname, kind) collapse to the
-  // first occurrence — the seed wins over operator additions on a
-  // collision (which keeps admin routing intact even if someone adds
-  // their primary domain via the UI by mistake).
+  // One vhost per hostname (Caddy refuses two site blocks for one address):
+  // the first occurrence wins, so the seed wins over operator additions on
+  // a collision (which keeps admin routing intact even if someone adds the
+  // admin host via the UI as a public domain by mistake).
   const seen = new Set<string>();
   const out: CaddyDomainSpec[] = [];
   for (const d of list) {
-    const key = `${d.hostname}::${d.kind}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (seen.has(d.hostname)) continue;
+    seen.add(d.hostname);
     out.push(d);
   }
   return out;
+}
+
+/** `--http-port` / `--https-port` (default 80 / 443), or exit with a usage error. */
+function portsArg(): PublishedPorts {
+  const parse = (name: string, fallback: number): number => {
+    const raw = arg(name);
+    if (raw === undefined) return fallback;
+    const port = Number(raw);
+    if (!isPublishablePort(port)) {
+      console.error(`--${name}: ${JSON.stringify(raw)} is not a TCP port`);
+      process.exit(2);
+    }
+    return port;
+  };
+  return { http: parse("http-port", 80), https: parse("https-port", 443) };
+}
+
+/** `--tls acme|internal` (default acme), or exit with a usage error. */
+function tlsArg(): CaddyTlsMode {
+  const raw = arg("tls") ?? "acme";
+  if (raw !== "acme" && raw !== "internal") {
+    console.error(
+      `--tls: ${JSON.stringify(raw)} — choose acme (public DNS) or internal (local CA)`,
+    );
+    process.exit(2);
+  }
+  return raw;
+}
+
+/** `https://<host>[:port]` for a host Caddy serves. */
+function siteUrl(cfg: CaeloConfig, host: string): string {
+  if (!cfg.ports)
+    throw new Error("config has no ports — they are back-filled on load; this is a bug");
+  return selfHostedSiteUrl(host, cfg.ports.https);
+}
+
+/**
+ * Re-render the Caddyfile from config + the domains table and reload the
+ * running Caddy (regenerate-caddy, restore).
+ */
+async function refreshCaddy(
+  cfg: CaeloConfig,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  emitConfig(cfg, await fetchExtraDomains());
+  const { reloadCaddy } = await import("./self-hosted-start.js");
+  return reloadCaddy(CAELO_DIR, bunHostRunner);
+}
+
+/**
+ * Pull, start Postgres, migrate, start everything, health-check
+ * (self-hosted-start.ts). Exits non-zero with the reason on failure; the
+ * operator re-runs `up`, which converges from wherever it stopped.
+ */
+async function startStack(): Promise<void> {
+  const { startSelfHosted } = await import("./self-hosted-start.js");
+  const r = await startSelfHosted({
+    caeloDir: CAELO_DIR,
+    runner: bunHostRunner,
+    log: (m) => console.log(`==> ${m}`),
+  });
+  if (!r.ok) {
+    console.error(`\nThe install did not come up (${r.stage}): ${r.error}`);
+    console.error(`Fix the cause and run \`${selfCommand("up")}\` — it continues from here.`);
+    process.exit(1);
+  }
 }
 
 async function init(): Promise<void> {
@@ -382,13 +501,19 @@ async function init(): Promise<void> {
   }
   if (!domain || !ownerEmail) {
     console.error(
-      "Usage: cms-provision init [--provider self-hosted] --domain example.com [--staging-domain staging.example.com] --owner-email me@example.com [--version x.y.z] [--skip-verify] [--dev]\n" +
+      "Usage: cms-provision init [--provider self-hosted] --domain example.com [--staging-domain staging.example.com] --owner-email me@example.com [--version x.y.z] [--skip-verify] [--dev] [--tls acme|internal] [--http-port 80] [--https-port 443]\n" +
         "Cloud providers (gcp | gcp-firebase | aws | azure) run the wizard: cms-provision --provider <name>",
     );
     process.exit(2);
   }
   if (existsSync(CONFIG_PATH)) {
     console.error(`config already exists at ${CONFIG_PATH}; run \`cms-provision up\` to re-deploy`);
+    process.exit(2);
+  }
+  const tls = tlsArg();
+  const ports = portsArg();
+  if (ports.http === ports.https) {
+    console.error("--http-port and --https-port must differ");
     process.exit(2);
   }
   const stagingArg = arg("staging-domain");
@@ -439,12 +564,13 @@ async function init(): Promise<void> {
     rolePasswords: newRolePasswords(),
     // A fresh volume: bootstrap.sh creates the roles with these on first start.
     rolesConverged: true,
-    minioRootUser: "caelo",
-    minioRootPassword: randomSecret(32),
     caeloSecretKek: randomSecret(32),
     anthropicApiKey: process.env.ANTHROPIC_API_KEY,
     resendApiKey: process.env.RESEND_API_KEY,
     imageMode: dev ? "dev" : "release",
+    tls,
+    ports,
+    composeProject: composeProjectName(domain),
   };
   saveConfig(cfg);
   if (images.mode === "release") {
@@ -486,21 +612,36 @@ async function init(): Promise<void> {
   console.log(`Wrote ${COMPOSE_PATH}`);
   console.log(`Wrote ${CADDYFILE_PATH}`);
   console.log(`Wrote ${PENDING_TOKEN_PATH} (admin will insert on first boot)`);
-  console.log("");
   console.log(
     images.mode === "release"
       ? `Images: Caelo ${version}, pinned by digest (${images.admin.split("@")[1]?.slice(0, 19)}…)`
       : "Images: DEV MODE — admin + gateway run this checkout (contributors only).",
   );
+  // Printed BEFORE the start: the admin consumes pending-token.json on its
+  // first boot, so a start that fails half-way and is resumed with `up`
+  // would otherwise leave the operator without the link.
+  const adminHost = selfHostedAdminHost(domain);
+  const setupUrl = `${siteUrl(cfg, adminHost)}/setup?token=${tok.token}`;
   console.log("");
-  console.log("Next steps:");
-  console.log(`  docker compose -f ${COMPOSE_PATH} up -d postgres`);
-  console.log(`  ${selfCommand("migrate")}     # applies the database migrations`);
-  console.log(`  docker compose -f ${COMPOSE_PATH} up -d`);
-  console.log("  # Wait ~30s for Caddy + ACME");
+  console.log(`Owner setup link (save it; valid until ${tok.expiresAt}):`);
+  console.log(`  ${setupUrl}`);
   console.log("");
-  console.log("Then visit:");
-  console.log(`  https://${domain}/setup?token=${tok.token}`);
+  // #707 / §11.C — one command ends with a serving install, not with steps
+  // to copy.
+  await startStack();
+  console.log("");
+  console.log("Caelo is running. Point these DNS records at this host (A/AAAA):");
+  for (const host of [adminHost, domain, cfg.stagingDomain ?? defaultStagingHost(domain)]) {
+    console.log(`  ${host}`);
+  }
+  console.log(
+    tls === "acme"
+      ? "Caddy fetches the certificates once they resolve (ports 80 + 443 must be reachable)."
+      : "TLS: Caddy's local CA (--tls internal) — browsers warn until its root is trusted.",
+  );
+  console.log("");
+  console.log("Then create the Owner account:");
+  console.log(`  ${setupUrl}`);
   console.log(`  (token expires ${tok.expiresAt})`);
   if (agentSetup) {
     console.log("");
@@ -514,6 +655,15 @@ async function up(): Promise<void> {
   if (!cfg) {
     console.error("no config — run `cms-provision init` first");
     process.exit(2);
+  }
+  // Postgres runs on the CURRENT Compose file first, so the roles can be
+  // converged and the operator-added domains read before anything is
+  // re-emitted (a failure here surfaces through the convergence below).
+  if (existsSync(COMPOSE_PATH)) {
+    await bunHostRunner.run(
+      ["docker", "compose", "-f", COMPOSE_PATH, "up", "-d", "--wait", "postgres"],
+      { inherit: true },
+    );
   }
   // #613 — the database roles first, then the Compose URLs that use them.
   if (!cfg.rolePasswords) {
@@ -538,9 +688,10 @@ async function up(): Promise<void> {
     cfg.rolesConverged = true;
     saveConfig(cfg);
   }
-  emitConfig(cfg, await tryFetchExtraDomains(cfg));
+  emitConfig(cfg, await fetchExtraDomains());
   console.log(`Re-emitted ${COMPOSE_PATH} + ${CADDYFILE_PATH}`);
-  console.log("Run `docker compose -f .caelo/docker-compose.yml up -d` to apply.");
+  await startStack();
+  console.log(`\nCaelo is running: ${siteUrl(cfg, selfHostedAdminHost(cfg.domain))}`);
 }
 
 /** Whether the install's Postgres container answers (with the CURRENT Compose file). */
@@ -590,71 +741,63 @@ async function superuserPsql(script: string): Promise<{ exitCode: number; stderr
   return { exitCode: await proc.exited, stderr };
 }
 
-interface DomainRow {
-  hostname: string;
-  kind: "admin" | "public";
-  env: "production" | "staging";
-}
-
 /**
- * Pull operator-added domains directly from Postgres so the regenerated
- * Caddyfile picks them up. Uses `docker compose exec` so we don't need
- * the operator's host to have psql installed. Fails open: a DB-down
- * install still emits the seed Caddyfile so the admin stays reachable.
+ * Operator-added domains (Settings → Domains) from `cms_admin.domains`, so
+ * the regenerated Caddyfile keeps serving them. Uses `docker compose exec`
+ * so the host needs no psql. A stopped database yields the seed vhosts only
+ * (with a warning — nothing can be read); a running database whose query
+ * fails is an error, never a silent drop of the operator's domains.
  */
-async function tryFetchExtraDomains(cfg: CaeloConfig): Promise<CaddyDomainSpec[]> {
-  try {
-    const composeFile = COMPOSE_PATH;
-    const sql =
-      "SELECT hostname, kind, env FROM domains WHERE removed_at IS NULL ORDER BY hostname";
-    const proc = Bun.spawn(
-      [
-        "docker",
-        "compose",
-        "-f",
-        composeFile,
-        "exec",
-        "-T",
-        "postgres",
-        "psql",
-        "-U",
-        "caelo",
-        "-d",
-        "caelo",
-        "-At",
-        "-F",
-        "|",
-        "-c",
-        sql,
-      ],
-      { stdout: "pipe", stderr: "pipe", env: { ...process.env, PGPASSWORD: cfg.postgresPassword } },
+async function fetchExtraDomains(): Promise<CaddyDomainSpec[]> {
+  if (!(await postgresIsUp())) {
+    console.warn(
+      "Postgres is not running: the Caddyfile gets the seed hosts only (domains added in the admin are re-read on the next `up`).",
     );
-    const stdout = await new Response(proc.stdout).text();
-    await proc.exited;
-    if (proc.exitCode !== 0) {
-      console.warn("regenerate-caddy: could not query domains table (DB down?); using seed only");
-      return [];
-    }
-    const rows: DomainRow[] = [];
-    for (const line of stdout.split("\n")) {
-      if (!line.trim()) continue;
-      const [hostname, kind, env] = line.split("|");
-      if (!hostname || !kind || !env) continue;
-      rows.push({
-        hostname,
-        kind: kind as DomainRow["kind"],
-        env: env as DomainRow["env"],
-      });
-    }
-    return rows.map<CaddyDomainSpec>((r) => ({
-      hostname: r.hostname,
-      kind: r.kind,
-      env: r.env,
-    }));
-  } catch (e) {
-    console.warn("regenerate-caddy: domains lookup threw (DB unreachable?); using seed only", e);
     return [];
   }
+  // The superuser bypasses RLS; the table exists once the migrations ran.
+  const sql =
+    "SELECT hostname, kind FROM domains WHERE kind IN ('admin', 'public') ORDER BY hostname";
+  const r = await bunHostRunner.run([
+    "docker",
+    "compose",
+    "-f",
+    COMPOSE_PATH,
+    "exec",
+    "-T",
+    "postgres",
+    "psql",
+    "-U",
+    "caelo",
+    "-d",
+    "cms_admin",
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-At",
+    "-F",
+    "|",
+    "-c",
+    sql,
+  ]);
+  if (r.exitCode !== 0) {
+    // Before the first migration there is no domains table — and no domains.
+    if (/relation "domains" does not exist|database "cms_admin" does not exist/.test(r.stderr)) {
+      return [];
+    }
+    throw new Error(`could not read the domains table: ${r.stderr.trim()}`);
+  }
+  return parseDomainRows(r.stdout);
+}
+
+/** `hostname|kind` rows from psql -At → vhosts (domains has no env column: they are live hosts). */
+function parseDomainRows(stdout: string): CaddyDomainSpec[] {
+  const rows: CaddyDomainSpec[] = [];
+  for (const line of stdout.split("\n")) {
+    const [hostname, kind] = line.trim().split("|");
+    if (!hostname || (kind !== "admin" && kind !== "public")) continue;
+    rows.push({ hostname, kind, env: "production" });
+  }
+  return rows;
 }
 
 async function regenerateCaddy(): Promise<void> {
@@ -664,32 +807,12 @@ async function regenerateCaddy(): Promise<void> {
     console.error("no config — run `cms-provision init` first");
     process.exit(2);
   }
-  const extra = await tryFetchExtraDomains(cfg);
-  emitConfig(cfg, extra);
-  console.log(`Re-emitted ${CADDYFILE_PATH} (${extra.length} domain(s) from DB).`);
-  // Reload caddy in-place — no downtime, picks up cert provisioning for
-  // any new domains automatically via ACME.
-  const proc = Bun.spawn(
-    [
-      "docker",
-      "compose",
-      "-f",
-      COMPOSE_PATH,
-      "exec",
-      "caddy",
-      "caddy",
-      "reload",
-      "--config",
-      "/etc/caddy/Caddyfile",
-    ],
-    { stdout: "inherit", stderr: "inherit" },
-  );
-  await proc.exited;
-  if (proc.exitCode !== 0) {
-    console.warn(
-      "caddy reload exited non-zero — Caddyfile written, run reload manually once the container is up.",
-    );
+  const r = await refreshCaddy(cfg);
+  if (!r.ok) {
+    console.error(`${CADDYFILE_PATH} was re-written, but ${r.error}`);
+    process.exit(1);
   }
+  console.log(`Re-emitted ${CADDYFILE_PATH} and reloaded Caddy.`);
 }
 
 async function status(): Promise<void> {
@@ -713,188 +836,77 @@ async function status(): Promise<void> {
   console.log("Cert status:      visit /settings/domains in the admin");
 }
 
+/** `backup [--to <file>]` for a self-hosted install (self-hosted-backup.ts). */
 async function backup(): Promise<void> {
   requireSelfHosted("backup");
-  const cfg = loadConfig();
-  if (!cfg) {
-    console.error("no config");
+  if (!loadConfig()) {
+    console.error("no config — run `cms-provision init` first");
     process.exit(2);
   }
-  const to = arg("to") ?? resolve(process.cwd(), `caelo-backup-${Date.now()}.tar.zst`);
-  console.log(`Backup target: ${to}`);
-
-  // 1. pgBackRest full backup inside the sidecar container.
-  console.log("Step 1/3: pgBackRest full backup …");
-  const pgb = Bun.spawn(
-    [
-      "docker",
-      "compose",
-      "-f",
-      COMPOSE_PATH,
-      "exec",
-      "-T",
-      "pgbackrest",
-      "pgbackrest",
-      "--type=full",
-      "--stanza=caelo",
-      "backup",
-    ],
-    { stdout: "inherit", stderr: "inherit" },
+  const to = resolve(
+    arg("to") ?? `caelo-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.tar.gz`,
   );
-  await pgb.exited;
-  if (pgb.exitCode !== 0) {
-    console.error("pgBackRest backup failed; aborting");
-    process.exit(pgb.exitCode ?? 1);
+  const { backupSelfHosted } = await import("./self-hosted-backup.js");
+  const r = await backupSelfHosted(to, readRelease(CAELO_DIR)?.version ?? CAELO_VERSION, {
+    caeloDir: CAELO_DIR,
+    runner: bunHostRunner,
+    log: (m) => console.log(`==> ${m}`),
+  });
+  if (!r.ok) {
+    console.error(`Backup failed: ${r.error}`);
+    process.exit(1);
   }
-
-  // 2. MinIO mirror to a tmp inside the minio container.
-  console.log("Step 2/3: mirroring MinIO bucket …");
-  const mc = Bun.spawn(
-    [
-      "docker",
-      "compose",
-      "-f",
-      COMPOSE_PATH,
-      "exec",
-      "-T",
-      "minio",
-      "mc",
-      "mirror",
-      "--overwrite",
-      "/data",
-      "/tmp/minio-backup",
-    ],
-    { stdout: "inherit", stderr: "inherit" },
+  console.log(`Backup complete: ${r.path}`);
+  console.log(
+    `It holds the databases, the published site and the media — not ${CONFIG_PATH} (the secrets); keep a copy of that separately.`,
   );
-  await mc.exited;
-  if (mc.exitCode !== 0) {
-    console.error("MinIO mirror failed; aborting");
-    process.exit(mc.exitCode ?? 1);
-  }
-
-  // 3. tar+zstd from named volumes onto the host.
-  console.log(`Step 3/3: archiving → ${to}`);
-  const tar = Bun.spawn(
-    [
-      "docker",
-      "run",
-      "--rm",
-      "-v",
-      "caelo_caelo-pg-backups:/pgb:ro",
-      "-v",
-      "caelo_caelo-minio:/minio:ro",
-      "-v",
-      `${resolve(to, "..")}:/out`,
-      "alpine:3",
-      "sh",
-      "-c",
-      `apk add --no-cache zstd tar >/dev/null && tar --zstd -cf /out/${to.split("/").pop()} -C /pgb . -C /minio .`,
-    ],
-    { stdout: "inherit", stderr: "inherit" },
-  );
-  await tar.exited;
-  if (tar.exitCode !== 0) {
-    console.error("tar archive failed");
-    process.exit(tar.exitCode ?? 1);
-  }
-  console.log(`Backup complete: ${to}`);
 }
 
+/** `restore --from <file> --yes` for a self-hosted install (self-hosted-backup.ts). */
 async function restore(): Promise<void> {
   requireSelfHosted("restore");
   const from = arg("from");
   if (!from) {
-    console.error("Usage: cms-provision restore --from <path> [--yes]");
+    console.error("Usage: cms-provision restore --from <backup.tar.gz> --yes");
     process.exit(2);
   }
   if (!process.argv.includes("--yes")) {
     console.error(
-      `DESTRUCTIVE: would restore from ${from}, wiping current pgbackrest + minio volumes. Re-run with --yes to confirm.`,
+      `DESTRUCTIVE: replaces both databases, the published site and the media with ${from}. Re-run with --yes to confirm.`,
     );
     process.exit(1);
   }
   const cfg = loadConfig();
-  if (!cfg) {
-    console.error("no config");
+  if (!cfg?.rolePasswords) {
+    console.error("no config with role passwords — run `cms-provision init` / `up` first");
     process.exit(2);
   }
-
-  console.log(`Restoring from ${from} …`);
-  // 1. Stop dependent services so they don't write while we restore.
-  console.log("Step 1/4: stopping admin/gateway/orchestrator/runner …");
-  await Bun.spawn(
-    [
-      "docker",
-      "compose",
-      "-f",
-      COMPOSE_PATH,
-      "stop",
-      "caelo-admin",
-      "caelo-gateway",
-      "caelo-orchestrator",
-      "caelo-runner",
-    ],
-    { stdout: "inherit", stderr: "inherit" },
-  ).exited;
-
-  // 2. Untar into the named volumes.
-  console.log("Step 2/4: extracting archive into volumes …");
-  const tarDir = resolve(from, "..");
-  const tarFile = from.split("/").pop();
-  const ex = Bun.spawn(
-    [
-      "docker",
-      "run",
-      "--rm",
-      "-v",
-      "caelo_caelo-pg-backups:/pgb",
-      "-v",
-      "caelo_caelo-minio:/minio",
-      "-v",
-      `${tarDir}:/in:ro`,
-      "alpine:3",
-      "sh",
-      "-c",
-      `apk add --no-cache zstd tar >/dev/null && rm -rf /pgb/* /minio/* && tar --zstd -xf /in/${tarFile} -C /pgb && tar --zstd -xf /in/${tarFile} -C /minio`,
-    ],
-    { stdout: "inherit", stderr: "inherit" },
-  );
-  await ex.exited;
-  if (ex.exitCode !== 0) {
-    console.error("extract failed");
-    process.exit(ex.exitCode ?? 1);
+  const passwords = cfg.rolePasswords;
+  const { restoreSelfHosted } = await import("./self-hosted-backup.js");
+  const r = await restoreSelfHosted(resolve(from), {
+    caeloDir: CAELO_DIR,
+    runner: bunHostRunner,
+    log: (m) => console.log(`==> ${m}`),
+    convergeRoles: () =>
+      convergeSelfHostedRoles(passwords, {
+        probe: postgresIsUp,
+        psql: superuserPsql,
+        ...(activeAgent(cfg) ? { agentPassword: activeAgent(cfg)?.dbPassword } : {}),
+      }),
+    refreshCaddy: () => refreshCaddy(cfg),
+  });
+  if (!r.ok) {
+    console.error(`Restore failed: ${r.error}`);
+    if (r.installChanged) {
+      console.error(
+        `The install is partly restored. Fix the cause and run the same restore again — it starts over from the archive.`,
+      );
+    }
+    process.exit(1);
   }
-
-  // 3. pgBackRest restore.
-  console.log("Step 3/4: pgBackRest restore …");
-  const pgr = Bun.spawn(
-    [
-      "docker",
-      "compose",
-      "-f",
-      COMPOSE_PATH,
-      "exec",
-      "-T",
-      "pgbackrest",
-      "pgbackrest",
-      "--stanza=caelo",
-      "restore",
-    ],
-    { stdout: "inherit", stderr: "inherit" },
+  console.log(
+    `Restore complete (backup of Caelo ${r.manifest.caeloVersion}, taken ${r.manifest.createdAt}).`,
   );
-  await pgr.exited;
-  if (pgr.exitCode !== 0) {
-    console.error("pgBackRest restore failed");
-    process.exit(pgr.exitCode ?? 1);
-  }
-
-  // 4. Bring services back up.
-  console.log("Step 4/4: restarting services …");
-  await Bun.spawn(["docker", "compose", "-f", COMPOSE_PATH, "up", "-d"], {
-    stdout: "inherit",
-    stderr: "inherit",
-  }).exited;
-  console.log("Restore complete.");
 }
 
 /**
@@ -1099,7 +1111,7 @@ const handlers: Record<string, () => Promise<void>> = {
   // back-compat scripts that bypassed the dispatcher.
   status: lifecycleStatus,
   "status-self-hosted": status,
-  backup: lifecycleBackup,
+  backup: async () => (selfHostedInstallPresent() ? backup() : lifecycleBackup()),
   "backup-self-hosted": backup,
   restore,
   upgrade: lifecycleUpgrade,

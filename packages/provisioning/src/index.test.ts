@@ -21,8 +21,9 @@ describe("Caddyfile generator", () => {
       ownerEmail: "owner@example.com",
       publicSiteRoot: "/srv/caelo/output/production/current",
       stagingSiteRoot: "/srv/caelo/output/staging/current",
-      adminPort: 5173,
-      gatewayPort: 8090,
+      tls: "acme",
+      adminUpstream: "caelo-admin:5173",
+      gatewayUpstream: "caelo-gateway:8090",
       domains: [
         { hostname: "example.com", kind: "public", env: "production" },
         { hostname: "staging.example.com", kind: "public", env: "staging" },
@@ -47,12 +48,13 @@ describe("Caddyfile generator", () => {
       ownerEmail: "x@y.z",
       publicSiteRoot: "/srv/caelo/output/production/current",
       stagingSiteRoot: "/srv/caelo/output/staging/current",
-      adminPort: 5173,
-      gatewayPort: 8090,
+      tls: "acme",
+      adminUpstream: "caelo-admin:5173",
+      gatewayUpstream: "caelo-gateway:8090",
       domains: [],
     });
     expect(out).toContain(":8081 {");
-    expect(out).toContain("reverse_proxy localhost:5173");
+    expect(out).toContain("reverse_proxy caelo-admin:5173");
   });
 });
 
@@ -61,8 +63,9 @@ describe("Caddy cache policy for content-hashed assets", () => {
     ownerEmail: "owner@example.com",
     publicSiteRoot: "/srv/caelo/output/production/current",
     stagingSiteRoot: "/srv/caelo/output/staging/current",
-    adminPort: 5173,
-    gatewayPort: 8090,
+    tls: "acme",
+    adminUpstream: "caelo-admin:5173",
+    gatewayUpstream: "caelo-gateway:8090",
     domains: [
       { hostname: "example.com", kind: "public", env: "production" },
       { hostname: "admin.example.com", kind: "admin", env: "production" },
@@ -119,19 +122,18 @@ describe("docker-compose generator", () => {
       domain: "example.com",
       postgresPassword: "supersecret",
       rolePasswords: { admin: "adminpw", public: "publicpw", gateway: "gatewaypw" },
-      minioRootUser: "caelo",
-      minioRootPassword: "miniopass",
       caeloSecretKek: "0".repeat(64),
       anthropicApiKey: "sk-ant-…",
       diskSize: "20Gi",
       images: RELEASE_IMAGES,
+      ports: { http: 80, https: 443 },
+      project: "caelo-example-com",
     });
-    expect(out).toContain("caelo-postgres");
-    expect(out).toContain("caelo-caddy");
+    expect(out).toContain("  postgres:\n");
+    expect(out).toContain("  caddy:\n");
     expect(out).toContain("caelo-admin");
     expect(out).toContain("caelo-gateway");
     expect(out).toContain("supersecret");
-    expect(out).toContain("miniopass");
     expect(out).toContain("ANTHROPIC_API_KEY");
     expect(out).toContain("CAELO_SECRET_KEK");
   });
@@ -141,11 +143,11 @@ describe("docker-compose generator", () => {
       domain: "example.com",
       postgresPassword: "supersecret",
       rolePasswords: { admin: "adminpw", public: "publicpw", gateway: "gatewaypw" },
-      minioRootUser: "caelo",
-      minioRootPassword: "miniopass",
       caeloSecretKek: "0".repeat(64),
       diskSize: "20Gi",
       images: RELEASE_IMAGES,
+      ports: { http: 80, https: 443 },
+      project: "caelo-example-com",
     });
     const gateway = out.slice(out.indexOf("caelo-gateway:"), out.indexOf("\nvolumes:"));
     expect(gateway).toContain(
@@ -164,11 +166,11 @@ describe("docker-compose generator", () => {
       domain: "example.com",
       postgresPassword: 'pa"ss',
       rolePasswords: { admin: "a", public: "b", gateway: "g" },
-      minioRootUser: "caelo",
-      minioRootPassword: "x",
       caeloSecretKek: "0".repeat(64),
       diskSize: "1Gi",
       images: RELEASE_IMAGES,
+      ports: { http: 80, https: 443 },
+      project: "caelo-example-com",
     });
     expect(out).toContain('pa\\"ss');
   });

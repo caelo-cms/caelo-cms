@@ -9,7 +9,8 @@
  *      written to `<caeloDir>/pending-token.json`. Captured as a Pulumi
  *      output so operators can read `pulumi stack output bootstrapUrl`
  *      after `pulumi up`.
- *   3. `caeloDockerCompose` — runs `docker compose up -d` and tears down
+ *   3. `caeloDockerCompose` — starts Postgres, runs the migrations, runs
+ *      `docker compose up -d` and tears down
  *      with `docker compose down -v` on destroy.
  *
  * Why thin: Caelo's self-hosted stack is fundamentally a single Compose
@@ -24,8 +25,15 @@ import { resolve } from "node:path";
 import { local } from "@pulumi/command";
 import * as pulumi from "@pulumi/pulumi";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
-import { generateCaddyfile } from "../../dist/caddy.js";
-import { generateDockerCompose } from "../../dist/compose.js";
+import { generateCaddyfile, selfHostedAdminHost, selfHostedSeedDomains } from "../../dist/caddy.js";
+import {
+  COMPOSE_ADMIN_UPSTREAM,
+  COMPOSE_GATEWAY_UPSTREAM,
+  composeProjectName,
+  generateDockerCompose,
+  SITE_OUTPUT_ROOT,
+} from "../../dist/compose.js";
+import { selfHostedBootstrapScript } from "../../dist/self-hosted-roles.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -44,6 +52,8 @@ const gatewayImage = cfg.require("gatewayImage");
 
 const composePath = resolve(caeloDir, "docker-compose.yml");
 const caddyPath = resolve(caeloDir, "Caddyfile");
+// What Postgres runs on its first start: the roles + databases (compose.ts mounts it).
+const bootstrapPath = resolve(caeloDir, "bootstrap.sh");
 // The admin container mounts only `<caeloDir>/bootstrap/` (compose.ts).
 const tokenPath = resolve(caeloDir, "bootstrap", "pending-token.json");
 
@@ -56,44 +66,45 @@ const postgresPassword = pulumi.secret(randomHex(32));
 const adminRolePassword = pulumi.secret(randomHex(32));
 const publicRolePassword = pulumi.secret(randomHex(32));
 const gatewayRolePassword = pulumi.secret(randomHex(32));
-const minioRootUser = "caelo";
-const minioRootPassword = pulumi.secret(randomHex(32));
+// P18 — the KEK that encrypts stored provider keys.
+const caeloSecretKek = pulumi.secret(randomHex(32));
 
 const composeYaml = pulumi
   .all([
     postgresPassword,
-    minioRootPassword,
     adminRolePassword,
     publicRolePassword,
     gatewayRolePassword,
+    caeloSecretKek,
   ])
-  .apply(([pgPw, minioPw, adminPw, publicPw, gatewayPw]) =>
+  .apply(([pgPw, adminPw, publicPw, gatewayPw, kek]) =>
     generateDockerCompose({
       domain,
       postgresPassword: pgPw,
       rolePasswords: { admin: adminPw, public: publicPw, gateway: gatewayPw },
-      minioRootUser,
-      minioRootPassword: minioPw,
+      caeloSecretKek: kek,
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,
       resendApiKey: process.env.RESEND_API_KEY,
       diskSize: "20Gi",
       ...(adminMemory ? { adminMemory } : {}),
       images: { mode: "release", admin: adminImage, gateway: gatewayImage },
+      ports: { http: 80, https: 443 },
+      project: composeProjectName(domain),
     }),
   );
 
+// Same generator inputs as `cms-provision init` (#707): the admin on
+// admin.<domain>, Caddy reaching the services by their Compose names.
 const caddyConf = generateCaddyfile({
   ownerEmail,
-  publicSiteRoot: "/srv/caelo/output/production/current",
-  stagingSiteRoot: "/srv/caelo/output/staging/current",
-  adminPort: 5173,
-  gatewayPort: 8090,
-  domains: [
-    { hostname: domain, kind: "admin", env: "production" as const },
-    { hostname: domain, kind: "public", env: "production" as const },
-    { hostname: stagingHost, kind: "public", env: "staging" as const },
-  ],
+  tls: "acme",
+  publicSiteRoot: `${SITE_OUTPUT_ROOT}/output/production/current`,
+  stagingSiteRoot: `${SITE_OUTPUT_ROOT}/output/staging/current`,
+  adminUpstream: COMPOSE_ADMIN_UPSTREAM,
+  gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
+  domains: selfHostedSeedDomains(domain, stagingHost),
 });
+const bootstrapScript = selfHostedBootstrapScript({ agent: false });
 
 // Mint the owner bootstrap token at preview time. Captured below as a
 // Pulumi output so the URL surfaces on `pulumi up`.
@@ -111,8 +122,12 @@ EOF
 cat > ${tokenPath} <<'EOF'
 ${JSON.stringify(tokenInfo, null, 2)}
 EOF
+cat > ${bootstrapPath} <<'EOF'
+${bootstrapScript}
+EOF
+chmod 755 ${bootstrapPath}
 `,
-  delete: pulumi.interpolate`rm -f ${composePath} ${caddyPath} ${tokenPath}`,
+  delete: pulumi.interpolate`rm -f ${composePath} ${caddyPath} ${tokenPath} ${bootstrapPath}`,
   triggers: [composeYaml, caddyConf],
 });
 
@@ -121,7 +136,15 @@ EOF
 const composeUp = new local.Command(
   "caeloDockerCompose",
   {
-    create: pulumi.interpolate`docker compose -f ${composePath} up -d`,
+    // Same order as `cms-provision init` (self-hosted-start.ts): Postgres
+    // (its first start runs bootstrap.sh), the migrations with the
+    // install's admin image, then everything else.
+    create: pulumi.interpolate`set -e
+docker compose -f ${composePath} up -d --wait postgres
+for target in admin public; do
+  docker compose -f ${composePath} run --rm --no-deps -T caelo-admin bun --bun /app/packages/migrations/src/migrate.ts "$target"
+done
+docker compose -f ${composePath} up -d --remove-orphans`,
     delete: pulumi.interpolate`docker compose -f ${composePath} down -v`,
     triggers: [composeYaml],
   },
@@ -130,9 +153,9 @@ const composeUp = new local.Command(
 
 export const composeFilePath = composePath;
 export const caddyFilePath = caddyPath;
-export const bootstrapUrl = pulumi.interpolate`https://${domain}/setup?token=${tokenInfo.token}`;
+export const bootstrapUrl = pulumi.interpolate`https://${selfHostedAdminHost(domain)}/setup?token=${tokenInfo.token}`;
 export const bootstrapTokenExpiresAt = tokenInfo.expiresAt;
-export { minioRootPassword, postgresPassword };
+export { postgresPassword };
 
 // Re-export so the destroy summary shows operators what they'll lose.
 export const composeRunOutput = composeUp.stdout;
