@@ -21,7 +21,14 @@ const RUN_ID = crypto.randomUUID();
 const REASON = `e2e-page-checks-${Date.now()}`;
 const SLUG = `e2e-page-checks-${Date.now()}`;
 
-function metric(id: string, label: string, title: string, value: number, display: string, score: number) {
+function metric(
+  id: string,
+  label: string,
+  title: string,
+  value: number,
+  display: string,
+  score: number,
+) {
   return {
     id,
     label,
