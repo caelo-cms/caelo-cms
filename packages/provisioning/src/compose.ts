@@ -17,6 +17,12 @@
  * {@link DevImages} explicitly (`init --dev`) — never the default.
  */
 
+import {
+  CADDY_ADMIN_SOCKET,
+  CADDY_ADMIN_SOCKET_DIR,
+  CADDY_ADMIN_SOCKET_ENV,
+  CADDYFILE_ENV,
+} from "@caelo-cms/shared";
 import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB, publicSiteUrl } from "./stack-contract.js";
 import { ghcrRepository, isImageDigest, type ReleaseService } from "./upgrade/release-images.js";
 
@@ -55,6 +61,11 @@ export const SITE_OUTPUT_ROOT = "/srv/caelo";
 export const MEDIA_DIR = "media";
 /** Where {@link MEDIA_DIR} appears in the admin container (its `MEDIA_ROOT_DIR`). */
 export const MEDIA_ROOT = "/data/media";
+
+/** #587 — the volume holding Caddy's admin API socket (Caddy + admin only). */
+const CADDY_ADMIN_VOLUME = "caelo-caddy-admin";
+/** #587 — where the admin sees the Caddyfile it posts on a reload. */
+const ADMIN_CADDYFILE_PATH = "/etc/caelo/Caddyfile";
 
 /** The gateway's HTTP port inside the Compose network. */
 export const COMPOSE_GATEWAY_PORT = 8090;
@@ -200,6 +211,8 @@ ${postgresAgent(spec.agent)}    volumes:
       - caelo-caddy-data:/data
       - caelo-caddy-config:/config
       - ./output:${SITE_OUTPUT_ROOT}:ro
+      # #587 — the admin API's socket, shared with the admin only.
+      - ${CADDY_ADMIN_VOLUME}:${CADDY_ADMIN_SOCKET_DIR}
 
 ${adminService(spec, adminMemoryMiB, env)}
 
@@ -211,6 +224,7 @@ volumes:
   caelo-minio:
   caelo-caddy-data:
   caelo-caddy-config:
+  ${CADDY_ADMIN_VOLUME}:
 `;
 }
 
@@ -287,6 +301,11 @@ ${serviceRuntime(
     `./${BOOTSTRAP_DIR}:/app/.caelo`,
     `./output:${SITE_OUTPUT_ROOT}`,
     `./${MEDIA_DIR}:${MEDIA_ROOT}`,
+    // #587 — after each deploy the admin reloads Caddy through its admin
+    // API socket so the build's redirect snippet takes effect; the reload
+    // posts the Caddyfile Caddy runs.
+    `${CADDY_ADMIN_VOLUME}:${CADDY_ADMIN_SOCKET_DIR}`,
+    `./Caddyfile:${ADMIN_CADDYFILE_PATH}:ro`,
   ],
 )}
     container_name: caelo-admin
@@ -303,6 +322,8 @@ ${serviceRuntime(
       CAELO_OUTPUT_ROOT: "${SITE_OUTPUT_ROOT}"
       MEDIA_ROOT_DIR: "${MEDIA_ROOT}"
       CAELO_PROVIDER: "self-hosted"
+      ${CADDY_ADMIN_SOCKET_ENV}: "${CADDY_ADMIN_SOCKET}"
+      ${CADDYFILE_ENV}: "${ADMIN_CADDYFILE_PATH}"
       NODE_ENV: production
 ${env("ANTHROPIC_API_KEY", spec.anthropicApiKey)}
 ${env("RESEND_API_KEY", spec.resendApiKey)}`;

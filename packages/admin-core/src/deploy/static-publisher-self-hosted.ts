@@ -11,11 +11,15 @@
  * into the destination's `current/` with per-target robots.txt +
  * routing-manifest patched; rollback re-syncs an archived build into
  * `current/`.
+ *
+ * #587 — every step that changes a `current/` ends with a Caddy reload,
+ * which re-reads the build's `_redirects.caddy` import (caddy-reload.ts).
  */
 
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
+import { reloadCaddyIfConfigured } from "./caddy-reload.js";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
 export const selfHostedStaticPublisher: StaticPublisher = {
@@ -28,6 +32,7 @@ export const selfHostedStaticPublisher: StaticPublisher = {
    */
   async publishStaging({ buildDir, target }) {
     const fileCount = await countFiles(buildDir);
+    await reloadCaddyIfConfigured();
     return {
       provider: "self-hosted",
       uploadedCount: fileCount,
@@ -116,6 +121,7 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     }
     await mkdir(toCurrent, { recursive: true });
     await syncContentsInto(overlayDir, toCurrent);
+    await reloadCaddyIfConfigured();
     const fileCount = await countFiles(overlayDir);
     const summary: PromoteSummary = {
       provider: "self-hosted",
@@ -133,6 +139,7 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     const currentDir = join(dirname(dirname(sourceBuildDir)), "current");
     await mkdir(currentDir, { recursive: true });
     await syncContentsInto(sourceBuildDir, currentDir);
+    await reloadCaddyIfConfigured();
     const fileCount = await countFiles(sourceBuildDir);
     return {
       provider: "self-hosted",

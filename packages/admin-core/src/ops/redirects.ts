@@ -3,10 +3,11 @@
 /**
  * P6.7.5 — minimal redirect store. Auto-populated when a page slug
  * changes (`change_page_slug`) or a page is deleted with
- * `disposition='redirect'`. The static generator emits a
- * `_redirects.caddy` snippet and the SvelteKit hooks fall back to the
- * table on a 404 so smoke / dev environments respect the redirect
- * without Caddy in front.
+ * `disposition='redirect'`. Every build carries the table and each
+ * provider serves it at the edge (#587, redirect-plan.ts in
+ * @caelo-cms/shared); the SvelteKit hooks fall back to the table on a
+ * 404 so smoke / dev environments respect the redirect without a
+ * serving layer in front.
  *
  * Future polish (P8): add a UI to edit / disable / delete; sitemap +
  * canonical-URL surface for SEO; bulk import.

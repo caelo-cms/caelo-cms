@@ -14,6 +14,9 @@
  *   - CAELO_STAGING_BUCKET (storage account container name)
  *   - storage account credentials via DefaultAzureCredential.
  *
+ * #587 — redirects: the real publisher must also replace the stack's Front Door rule set rules with the redirect plan (`buildRedirectPlan` → `frontDoorRedirectRules`, @caelo-cms/shared) after the files are live, or Azure installs answer every recorded 301 with a 404.
+ * FIXME(issue #750): implement with the publisher.
+ *
  * Per CLAUDE.md §2 (no fallbacks pre-1.0): the stub throws loudly
  * with a pointer to the tracking issue.
  */

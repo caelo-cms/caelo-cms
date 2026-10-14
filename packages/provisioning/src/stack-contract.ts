@@ -703,6 +703,8 @@ export const STACK_IAM_NOT_ENSURED: Record<GcpProvider, Readonly<Record<string, 
     "admin-iap-mcp": "Ensured by ensureMcpIapAccess (mcp-iap.ts).",
     "edge-log-sink-bq-perms":
       "The member is the sink's generated writer identity, which only Pulumi knows; analytics only.",
+    "admin-url-map-redirects":
+      "A project custom role (#587); ensured with the role itself by ensureUrlMapRedirectsAccess (url-map-redirects-access.ts).",
   },
   "gcp-firebase": {
     "admin-iap-*":

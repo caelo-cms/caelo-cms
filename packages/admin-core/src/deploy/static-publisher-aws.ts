@@ -21,6 +21,9 @@
  *   - CAELO_STAGING_BUCKET (S3 bucket name)
  *   - AWS region resolved by the SDK from environment.
  *
+ * #587 — redirects: the real publisher must also write the redirect plan (`buildRedirectPlan` → `cloudFrontKeyValueEntries`, @caelo-cms/shared) into the stack's CloudFront KeyValueStore after the files are live, or AWS installs answer every recorded 301 with a 404.
+ * FIXME(issue #749): implement with the publisher.
+ *
  * Per CLAUDE.md §2 (no fallbacks pre-1.0): the stub throws loudly
  * with a pointer to the tracking issue. Do not silently fall back to
  * self-hosted — that would mask the gap.

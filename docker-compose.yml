@@ -37,6 +37,9 @@ services:
   caddy-staging:
     image: caddy:2-alpine
     container_name: caelo-caddy-staging
+    # #587 — --watch reloads when a build changes its _redirects.caddy
+    # import. Dev only; installs reload through the admin API instead.
+    command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile --watch
     ports:
       - "${STAGING_PORT:-8081}:80"
     volumes:
@@ -46,6 +49,9 @@ services:
   caddy-production:
     image: caddy:2-alpine
     container_name: caelo-caddy-production
+    # #587 — --watch reloads when a build changes its _redirects.caddy
+    # import. Dev only; installs reload through the admin API instead.
+    command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile --watch
     ports:
       - "${PRODUCTION_PORT:-8082}:80"
     volumes:

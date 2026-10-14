@@ -110,6 +110,10 @@ Requirements on the server:
 
 **The Google sign-in.** Installing an update (and changing the update policy) needs a fresh Google sign-in, also on a self-hosted install. Settings → Updates walks you through creating a Google OAuth client once (in any Google Cloud project — it costs nothing) and pasting its ID and secret. Until that is done, the page shows the `upgrade` command to run instead.
 
+## Redirects
+
+Every redirect Caelo records (a page moved or renamed, a URL migration, one you add under **Settings → Redirects**) is answered by Caddy with its status and the new address. Each build carries a `_redirects.caddy` file next to the pages; the site's Caddy block imports it, and every deploy reloads Caddy through its admin API (a socket in the `caelo-caddy-admin` volume that only Caddy and the admin mount). If Caddy rejects the reload, the deploy reports Caddy's error and Caddy keeps serving the previous configuration. A page that exists always wins over a redirect from the same address, chains are served as one hop, the visitor's query string is kept, and `410 Gone` entries answer 410.
+
 ## Day-2 operations
 
 | Task | Command / location |
