@@ -5,8 +5,11 @@
  * propose/execute engine (CLAUDE.md §11.A) behind the in-chat approval
  * cards:
  *
- *   quality_audits.propose_accept          accept findings / score drops on
- *                                          pages (any editor may approve).
+ *   quality_audits.propose_accept          accept findings / scores below
+ *                                          100 on pages — single items or
+ *                                          #727 bulk groups (one problem
+ *                                          across many pages, one click).
+ *                                          Any editor may approve.
  *   quality_audits.propose_publish_anyway  publish over a FAILED audit.
  *   quality_audits.execute_proposal        apply — human/system only.
  *   quality_audits.reject_proposal / list_pending.
@@ -22,8 +25,8 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { ruleIdSchema } from "../../quality/checks/findings.js";
-import { SITE_WIDE_PATH } from "../../quality/gate.js";
-import type { QualityProblem } from "../../quality/ratchet.js";
+import { decideGate, SITE_WIDE_PATH } from "../../quality/gate.js";
+import { auditScorePoints, type QualityProblem } from "../../quality/ratchet.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { requiresApproverPermission } from "../_approver-permission.js";
 import {
@@ -36,12 +39,17 @@ import {
 import { actorHasPermission } from "./_permissions.js";
 import { categorySchema, iso, json } from "./_shared.js";
 import { publishAnywayOp } from "./gate.js";
-import { latestSucceededRun, publishGateForRun } from "./gate-loader.js";
+import {
+  latestSucceededRun,
+  loadAcceptances,
+  loadGateAuditById,
+  publishGateForRun,
+} from "./gate-loader.js";
 
 /**
  * The audit the gate currently decides on (the newest audit of the build
  * staging serves). Acceptances only make sense against it: accepting from
- * an older audit could lower a baseline a newer, better audit raised.
+ * an older audit would record values a newer audit no longer measures.
  */
 async function currentGateAuditId(tx: Tx): Promise<string | null> {
   const run = await latestSucceededRun(tx, "staging");
@@ -68,17 +76,37 @@ const acceptItemSchema = z.union([
   z.object({ pagePath: z.string().min(1).max(500).optional(), ruleId: ruleIdSchema }).strict(),
 ]);
 
+/** Pages of a group: omitted = every page the group is open on. */
+const groupPagesSchema = z.array(z.string().min(1).max(500)).min(1).max(20000).optional();
+
+/**
+ * #727 — a BULK decision: one problem across pages ("seo-check/
+ * description-missing on 312 pages"), named by what failed. Every page the
+ * problem is open on in the current audit, or only `pagePaths` ("site-wide"
+ * for a site-wide page-check finding).
+ */
+const acceptGroupSchema = z.union([
+  z.object({ auditId: z.string().min(1).max(200), pagePaths: groupPagesSchema }).strict(),
+  z.object({ category: categorySchema, pagePaths: groupPagesSchema }).strict(),
+  z.object({ ruleId: ruleIdSchema, pagePaths: groupPagesSchema }).strict(),
+]);
+
 export const proposeAcceptInput = z
   .object({
     /** The audit the findings come from (get_quality_audit shows its id). */
     auditRunId: z.string().uuid(),
-    /** Findings (Lighthouse audit id), score drops (category) or page-check
-     *  rules (rule id) per page. */
-    items: z.array(acceptItemSchema).min(1).max(50),
+    /** Single findings (Lighthouse audit id), category scores below 100
+     *  (category) or page-check rules (rule id) on named pages. */
+    items: z.array(acceptItemSchema).min(1).max(50).optional(),
+    /** Bulk: one problem on every page it is open on (or the listed ones). */
+    groups: z.array(acceptGroupSchema).min(1).max(50).optional(),
     /** Why these are acceptable — shown to the editor and stored. */
     reason: z.string().trim().min(3).max(500),
   })
-  .strict();
+  .strict()
+  .refine((v) => (v.items?.length ?? 0) + (v.groups?.length ?? 0) > 0, {
+    message: "name at least one finding: `items` (per page) or `groups` (one problem across pages)",
+  });
 
 type ProposeAcceptInput = z.infer<typeof proposeAcceptInput>;
 
@@ -90,7 +118,8 @@ interface ResolvedItem {
   /** The Lighthouse audit id, or the page-check rule id. */
   readonly auditId: string | null;
   readonly category: string | null;
-  /** For a score drop: the measured score that becomes the baseline. */
+  /** The accepted value in points: a category score, or a Lighthouse
+   *  audit's score × 100. A worse measurement blocks again. */
   readonly score: number | null;
   /** For a page-check rule: the error count that becomes accepted. */
   readonly count: number | null;
@@ -108,6 +137,51 @@ function problemName(x: QualityProblem): string {
   }
 }
 
+/** The acceptance of one recorded problem on one page (or site-wide). */
+function resolvedFromProblem(
+  pageId: string | null,
+  pagePath: string,
+  p: QualityProblem,
+): ResolvedItem {
+  switch (p.kind) {
+    case "check_rule":
+      return {
+        pageId,
+        pagePath,
+        kind: "check",
+        auditId: p.ruleId,
+        category: null,
+        score: null,
+        count: p.count,
+        label: `${pagePath}: ${p.ruleId} — ${p.count} error(s) accepted (a new one blocks again)`,
+      };
+    case "failing_audit": {
+      const points = auditScorePoints(p.score);
+      return {
+        pageId,
+        pagePath,
+        kind: "finding",
+        auditId: p.auditId,
+        category: null,
+        score: points,
+        count: null,
+        label: `${pagePath}: ${p.auditId} — ${p.title} (score ${points}; a worse score blocks again)`,
+      };
+    }
+    case "score_below_baseline":
+      return {
+        pageId,
+        pagePath,
+        kind: "score",
+        auditId: null,
+        category: p.category,
+        score: p.score,
+        count: null,
+        label: `${pagePath}: ${p.category} score ${p.score} accepted (target 100; a lower score blocks again)`,
+      };
+  }
+}
+
 function resolveCheckItem(
   pageId: string | null,
   pagePath: string,
@@ -120,16 +194,7 @@ function resolveCheckItem(
       message: `'${ruleId}' is not a problem ${pageId === null ? "site-wide" : `on ${pagePath}`} in this audit — its problems: ${problems.map(problemName).join(", ") || "none"}`,
     };
   }
-  return {
-    pageId,
-    pagePath,
-    kind: "check",
-    auditId: ruleId,
-    category: null,
-    score: null,
-    count: p.count,
-    label: `${pagePath}: ${ruleId} — ${p.count} error(s) accepted (a new one blocks again)`,
-  };
+  return resolvedFromProblem(pageId, pagePath, p);
 }
 
 /**
@@ -140,7 +205,7 @@ function resolveCheckItem(
 async function resolveItems(
   tx: Tx,
   input: ProposeAcceptInput,
-): Promise<{ ok: true; items: ResolvedItem[] } | { ok: false; message: string }> {
+): Promise<{ ok: true; items: ResolvedItem[]; lines: string[] } | { ok: false; message: string }> {
   const rows = (await tx.execute(sql`
     SELECT qp.page_id::text AS page_id, p.current_path, qp.problems
     FROM quality_audit_pages qp JOIN pages p ON p.id = qp.page_id AND p.deleted_at IS NULL
@@ -159,7 +224,7 @@ async function resolveItems(
   }
   const byPath = new Map(rows.map((r) => [r.current_path, r]));
   const resolved: ResolvedItem[] = [];
-  for (const item of input.items) {
+  for (const item of input.items ?? []) {
     if ("ruleId" in item && item.pagePath === undefined) {
       const r = resolveCheckItem(null, SITE_WIDE_PATH, siteProblems, item.ruleId);
       if ("message" in r) return { ok: false, message: r.message };
@@ -187,16 +252,7 @@ async function resolveItems(
           message: `'${item.auditId}' is not a problem on ${page.current_path} in this audit — its problems: ${problems.map(problemName).join(", ") || "none"}`,
         };
       }
-      resolved.push({
-        pageId: page.page_id,
-        pagePath: page.current_path,
-        kind: "finding",
-        auditId: item.auditId,
-        category: null,
-        score: null,
-        count: null,
-        label: `${page.current_path}: ${p.auditId} — ${p.title}`,
-      });
+      resolved.push(resolvedFromProblem(page.page_id, page.current_path, p));
     } else {
       const p = problems.find(
         (x) => x.kind === "score_below_baseline" && x.category === item.category,
@@ -204,22 +260,94 @@ async function resolveItems(
       if (p?.kind !== "score_below_baseline") {
         return {
           ok: false,
-          message: `the ${item.category} score is not below its baseline on ${page.current_path} in this audit — nothing to accept`,
+          message: `the ${item.category} score is not below 100 on ${page.current_path} in this audit — nothing to accept`,
         };
       }
-      resolved.push({
-        pageId: page.page_id,
-        pagePath: page.current_path,
-        kind: "score",
-        auditId: null,
-        category: item.category,
-        score: p.score,
-        count: null,
-        label: `${page.current_path}: ${item.category} score ${p.score} (baseline ${p.baseline} → ${p.score})`,
-      });
+      resolved.push(resolvedFromProblem(page.page_id, page.current_path, p));
     }
   }
-  return { ok: true, items: resolved };
+  const lines = resolved.map((i) => i.label);
+  for (const group of input.groups ?? []) {
+    const r = await resolveGroup(tx, input.auditRunId, group);
+    if (!r.ok) return r;
+    resolved.push(...r.items);
+    const sample = r.items.slice(0, 5).map((i) => i.pagePath);
+    const more = r.items.length > 5 ? `, +${r.items.length - 5} more` : "";
+    lines.push(`${groupName(group)} on ${r.items.length} page(s): ${sample.join(", ")}${more}`);
+  }
+  return { ok: true, items: dedupeItems(resolved), lines };
+}
+
+/** One acceptance per page + kind + id: an item and a group naming the
+ *  same finding accept it once. */
+function dedupeItems(items: readonly ResolvedItem[]): ResolvedItem[] {
+  const seen = new Map<string, ResolvedItem>();
+  for (const i of items) {
+    seen.set(`${i.pageId ?? "site"}|${i.kind}|${i.auditId ?? i.category ?? ""}`, i);
+  }
+  return [...seen.values()];
+}
+
+type AcceptGroup = NonNullable<ProposeAcceptInput["groups"]>[number];
+
+function groupMatches(group: AcceptGroup, p: QualityProblem): boolean {
+  if ("ruleId" in group) return p.kind === "check_rule" && p.ruleId === group.ruleId;
+  if ("auditId" in group) return p.kind === "failing_audit" && p.auditId === group.auditId;
+  return p.kind === "score_below_baseline" && p.category === group.category;
+}
+
+function groupName(group: AcceptGroup): string {
+  if ("ruleId" in group) return group.ruleId;
+  if ("auditId" in group) return group.auditId;
+  return `${group.category} score`;
+}
+
+/**
+ * #727 — resolve a bulk group against the OPEN problems of the audit (what
+ * the gate blocks on now): already-accepted pages are not accepted twice,
+ * and a page the operator picked that is not open is an error, not a
+ * silent skip.
+ */
+async function resolveGroup(
+  tx: Tx,
+  auditRunId: string,
+  group: AcceptGroup,
+): Promise<{ ok: true; items: ResolvedItem[] } | { ok: false; message: string }> {
+  const audit = await loadGateAuditById(tx, auditRunId);
+  if (!audit) return { ok: false, message: `audit ${auditRunId} not found` };
+  const acceptances = await loadAcceptances(
+    tx,
+    audit.pages.map((p) => p.pageId),
+  );
+  const open = decideGate(audit, acceptances).openProblems.filter((o) =>
+    groupMatches(group, o.problem),
+  );
+  if (open.length === 0) {
+    return {
+      ok: false,
+      message: `'${groupName(group)}' is not open on any page in audit ${auditRunId} — it is fixed or already accepted. get_quality_audit lists what is open.`,
+    };
+  }
+  const picked = group.pagePaths ? new Set(group.pagePaths) : null;
+  if (picked) {
+    const openPaths = new Set(open.map((o) => o.pagePath));
+    const unknown = [...picked].filter((path) => !openPaths.has(path));
+    if (unknown.length > 0) {
+      return {
+        ok: false,
+        message: `'${groupName(group)}' is not open on ${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? ` and ${unknown.length - 5} more` : ""} — it is open on ${open.length} page(s): ${open
+          .slice(0, 10)
+          .map((o) => o.pagePath)
+          .join(", ")}${open.length > 10 ? ", …" : ""}`,
+      };
+    }
+  }
+  return {
+    ok: true,
+    items: open
+      .filter((o) => picked === null || picked.has(o.pagePath))
+      .map((o) => resolvedFromProblem(o.pageId, o.pagePath, o.problem)),
+  };
 }
 
 async function queueProposal(
@@ -296,8 +424,9 @@ export const proposeAcceptOp = defineOperation({
     const preview = {
       kind: "accept",
       reason: input.reason,
-      accepts: r.items.map((i) => i.label),
-      note: "Applies only to these pages; the same finding on another page still blocks.",
+      accepts: r.lines,
+      acceptanceCount: r.items.length,
+      note: "Applies only to these pages; the same finding on another page still blocks. A worse value than accepted blocks again; every acceptance stays listed (and revocable) under Settings → Quality.",
     };
     return queueProposal(
       tx,
@@ -358,7 +487,12 @@ export const proposePublishAnywayOp = defineOperation({
   },
 });
 
-/** Write the acceptances of a confirmed proposal as `ctx` (the human). */
+/**
+ * Write the acceptances of a confirmed proposal as `ctx` (the human), in
+ * one statement pair however many pages a bulk decision covers: the live
+ * acceptance of each page + kind + id is revoked (kept as history) and
+ * replaced by the new one with the value measured now.
+ */
 async function applyAcceptances(
   tx: Tx,
   ctx: { actorId: string },
@@ -368,60 +502,38 @@ async function applyAcceptances(
   // audit superseded, between the card and the click.
   const r = await resolveItems(tx, input);
   if (!r.ok) return r;
-  let accepted = 0;
-  for (const item of r.items) {
-    if (item.kind === "check") {
-      // The per-rule ratchet (#727): the accepted count replaces the
-      // previous acceptance of the rule there (kept as history, revoked).
-      await tx.execute(sql`
-        UPDATE quality_acceptances SET revoked_at = now(), revoked_by = ${ctx.actorId}::uuid
-        WHERE kind = 'check' AND audit_id = ${item.auditId} AND revoked_at IS NULL
-          AND ${item.pageId === null ? sql`page_id IS NULL` : sql`page_id = ${item.pageId}::uuid`}
-      `);
-      await tx.execute(sql`
-        INSERT INTO quality_acceptances
-          (page_id, kind, audit_id, accepted_count, reason, accepted_by, audit_run_id)
-        VALUES (${item.pageId === null ? null : sql`${item.pageId}::uuid`}, 'check', ${item.auditId},
-                ${item.count}, ${input.reason}, ${ctx.actorId}::uuid, ${input.auditRunId}::uuid)
-      `);
-      accepted += 1;
-      continue;
-    }
-    if (item.kind === "finding") {
-      const ins = (await tx.execute(sql`
-        INSERT INTO quality_acceptances (page_id, kind, audit_id, reason, accepted_by, audit_run_id)
-        VALUES (${item.pageId}::uuid, 'finding', ${item.auditId}, ${input.reason},
-                ${ctx.actorId}::uuid, ${input.auditRunId}::uuid)
-        ON CONFLICT (page_id, audit_id) WHERE kind = 'finding' AND revoked_at IS NULL DO NOTHING
-        RETURNING id
-      `)) as unknown as { id: string }[];
-      accepted += ins.length;
-      continue;
-    }
-    // A score acceptance replaces the page's previous one for the category
-    // (kept as history, revoked) and lowers the baseline to the accepted
-    // score — the ratchet then guards that level (#553 §5).
-    await tx.execute(sql`
-      UPDATE quality_acceptances SET revoked_at = now(), revoked_by = ${ctx.actorId}::uuid
-      WHERE page_id = ${item.pageId}::uuid AND kind = 'score' AND category = ${item.category}
-        AND revoked_at IS NULL
-    `);
-    await tx.execute(sql`
-      INSERT INTO quality_acceptances
-        (page_id, kind, category, accepted_score, reason, accepted_by, audit_run_id)
-      VALUES (${item.pageId}::uuid, 'score', ${item.category}, ${item.score}, ${input.reason},
-              ${ctx.actorId}::uuid, ${input.auditRunId}::uuid)
-    `);
-    await tx.execute(sql`
-      INSERT INTO quality_baselines (page_id, category, baseline, below_streak, updated_by_run)
-      VALUES (${item.pageId}::uuid, ${item.category}, ${item.score}, 0, ${input.auditRunId}::uuid)
-      ON CONFLICT (page_id, category) DO UPDATE
-        SET baseline = EXCLUDED.baseline, below_streak = 0, updated_at = now(),
-            updated_by_run = EXCLUDED.updated_by_run
-    `);
-    accepted += 1;
-  }
-  return { ok: true, accepted };
+  const rows = jsonbParam(
+    r.items.map((i) => ({
+      page_id: i.pageId,
+      kind: i.kind,
+      audit_id: i.auditId,
+      category: i.category,
+      score: i.score,
+      count: i.count,
+    })),
+  );
+  const recordset = sql`jsonb_to_recordset(${rows}) AS r(page_id uuid, kind text, audit_id text, category text, score integer, count integer)`;
+  await tx.execute(sql`
+    UPDATE quality_acceptances a
+       SET revoked_at = now(), revoked_by = ${ctx.actorId}::uuid
+      FROM ${recordset}
+     WHERE a.revoked_at IS NULL AND a.kind = r.kind
+       AND a.page_id IS NOT DISTINCT FROM r.page_id
+       AND a.audit_id IS NOT DISTINCT FROM r.audit_id
+       AND a.category IS NOT DISTINCT FROM r.category
+  `);
+  const inserted = (await tx.execute(sql`
+    INSERT INTO quality_acceptances
+      (page_id, kind, audit_id, category, accepted_score, accepted_count, reason, accepted_by,
+       audit_run_id)
+    SELECT r.page_id, r.kind, r.audit_id, r.category,
+           CASE WHEN r.kind = 'check' THEN NULL ELSE r.score END,
+           CASE WHEN r.kind = 'check' THEN r.count ELSE NULL END,
+           ${input.reason}, ${ctx.actorId}::uuid, ${input.auditRunId}::uuid
+      FROM ${recordset}
+    RETURNING id
+  `)) as unknown as { id: string }[];
+  return { ok: true, accepted: inserted.length };
 }
 
 const executeQualityProposalOpDefinition = defineOperation({

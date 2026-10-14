@@ -399,7 +399,7 @@ import {
   setProvisioningOutputsOp,
   verifyDnsRecordOp,
 } from "./ops/provisioning_outputs.js";
-import { listBaselinesOp, revokeAcceptanceOp } from "./ops/quality/admin.js";
+import { revokeAcceptancesOp } from "./ops/quality/admin.js";
 import { planAutoRedeployOp, settleAutoPublishOp } from "./ops/quality/auto-publish.js";
 import { classifyStageOp } from "./ops/quality/classify_stage.js";
 import {
@@ -770,8 +770,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listPendingQualityProposalsOp);
   registry.register(planAutoRedeployOp);
   registry.register(settleAutoPublishOp);
-  registry.register(listBaselinesOp);
-  registry.register(revokeAcceptanceOp);
+  registry.register(revokeAcceptancesOp);
   // P4 snapshots
   registry.register(listSnapshotsOp);
   registry.register(getSnapshotWithEntitiesOp);

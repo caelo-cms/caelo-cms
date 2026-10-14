@@ -2,6 +2,7 @@
   // SPDX-License-Identifier: MPL-2.0
   import { Gauge } from "lucide-svelte";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
+  import { acceptedValue, groupLiveAcceptances } from "#lib/quality-acceptance-groups.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge, type BadgeVariant } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -48,6 +49,19 @@
   function when(iso: string): string {
     return iso.slice(0, 16).replace("T", " ");
   }
+
+  // #727 — bulk review: live acceptances grouped per decision.
+  const acceptanceGroups = $derived(groupLiveAcceptances(data.acceptances));
+  const revokedAcceptances = $derived(data.acceptances.filter((a) => a.revokedAt !== null));
+  /** Acceptance ids ticked for "Revoke selected". */
+  let selectedIds = $state<string[]>([]);
+  /** Groups expanded to show their pages. */
+  let expanded = $state<Record<string, boolean>>({});
+
+  function toggleIds(ids: readonly string[], on: boolean): void {
+    const rest = selectedIds.filter((id) => !ids.includes(id));
+    selectedIds = on ? [...rest, ...ids] : rest;
+  }
 </script>
 
 <div class="space-y-6">
@@ -56,9 +70,9 @@
     <p class="text-sm text-muted-foreground">
       Every Stage is checked: page checks (added by plugins) read every page of the staged
       build, and a Stage that changes how pages render is also checked with
-      Lighthouse (Performance, Accessibility, Best Practices, SEO). New errors block Publish live
-      until they are fixed or an editor accepts them on their page; warnings and hints only
-      inform.
+      Lighthouse (Performance, Accessibility, Best Practices, SEO). The target is the optimum —
+      100 in every category and zero findings. Every finding blocks Publish live until it is
+      fixed or an editor accepts it on its pages; warnings and hints only inform.
     </p>
   </div>
 
@@ -127,8 +141,11 @@
               {#each checks.errors as e, i (i)}
                 <li class="text-destructive">Check failed: {e.message}</li>
               {/each}
-              {#each checks.siteProblems as pr (pr.ruleId)}
-                <li><code>{pr.ruleId}</code> — {pr.findings[0]?.message ?? ""} ({pr.count}×)</li>
+              {#each checks.siteProblems as pr, i (pr.ruleId)}
+                <li>
+                  {#if data.detail.siteProblemAccepted[i]}<Badge variant="outline">accepted</Badge>{/if}
+                  <code>{pr.ruleId}</code> — {pr.findings[0]?.message ?? ""} ({pr.count}×)
+                </li>
               {/each}
               {#each checks.siteFindings.filter((f) => f.severity !== "error") as f, i (i)}
                 <li class="text-muted-foreground">{f.severity}: <code>{f.ruleId}</code> — {f.message}</li>
@@ -147,8 +164,8 @@
                 {#each Object.entries(p.scores) as [c, s] (c)}
                   <span>
                     {CATEGORY_LABEL[c] ?? c}
-                    <strong class={s < (p.baselines[c] ?? 100) ? "text-destructive" : ""}>{s}</strong>
-                    <span class="text-muted-foreground">/ {p.baselines[c] ?? 100}</span>
+                    <strong class={s < 100 ? "text-destructive" : ""}>{s}</strong>
+                    <span class="text-muted-foreground">/ 100</span>
                   </span>
                 {/each}
               </div>
@@ -187,14 +204,15 @@
             {#if p.problems.length > 0}
               <ul class="mt-2 list-disc pl-5">
                 {#each p.problems as pr, i (i)}
-                  <li>
+                  <li class={p.problemAccepted[i] ? "text-muted-foreground" : ""}>
+                    {#if p.problemAccepted[i]}<Badge variant="outline">accepted</Badge>{/if}
                     {#if pr.kind === "failing_audit"}
                       <code>{pr.auditId}</code> — {pr.title}{pr.displayValue ? ` (${pr.displayValue})` : ""}
                     {:else if pr.kind === "check_rule"}
                       <code>{pr.ruleId}</code> — {pr.findings[0]?.message ?? ""}
                       ({pr.count}×{pr.allowed > 0 ? `, ${pr.allowed} accepted` : ""})
                     {:else}
-                      {CATEGORY_LABEL[pr.category] ?? pr.category} {pr.score} is below its baseline {pr.baseline}
+                      {CATEGORY_LABEL[pr.category] ?? pr.category} {pr.score} is below 100
                     {/if}
                   </li>
                 {/each}
@@ -265,102 +283,143 @@
     </CardContent>
   </Card>
 
-  <Card>
+  <Card data-testid="quality-acceptances-card">
     <CardHeader>
       <CardTitle class="text-base">Accepted findings</CardTitle>
       <CardDescription>
-        Accepted by editors, per page (or site-wide). An accepted score is the page's baseline for
-        that category; an accepted page-check rule covers up to its count of errors, and fewer
-        errors lower that count. {data.canRevoke
-          ? "Revoking makes the finding block Publish live on its page again."
+        What editors decided to live with, grouped per decision (one rule across its pages). Each
+        acceptance holds the value measured when it was accepted — a worse value blocks again, a
+        better one tightens it. {data.canRevoke
+          ? "Revoking makes the findings block Publish live on their pages again at once."
           : "Only the Owner can revoke."}
       </CardDescription>
     </CardHeader>
-    <CardContent>
-      {#if data.acceptances.length === 0}
-        <p class="text-sm text-muted-foreground">Nothing accepted.</p>
+    <CardContent class="space-y-3 text-sm">
+      {#if acceptanceGroups.length === 0}
+        <p class="text-muted-foreground">Nothing accepted.</p>
       {:else}
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Page</TableHead>
-              <TableHead>Accepted</TableHead>
-              <TableHead>Reason</TableHead>
-              <TableHead>When</TableHead>
-              <TableHead></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {#each data.acceptances as a (a.id)}
-              <TableRow data-testid="quality-acceptance-row">
-                <TableCell>{a.pagePath}</TableCell>
-                <TableCell>
-                  {#if a.kind === "finding"}<code>{a.auditId}</code>{:else if a.kind === "check"}
-                    <code>{a.auditId}</code> up to {a.acceptedCount}{:else}
-                    {CATEGORY_LABEL[a.category ?? ""] ?? a.category} {a.acceptedScore}{/if}
-                </TableCell>
-                <TableCell class="max-w-96 text-xs">{a.reason}</TableCell>
-                <TableCell class="text-muted-foreground">{when(a.acceptedAt)}</TableCell>
-                <TableCell>
-                  {#if a.revokedAt}
-                    <Badge variant="outline">revoked</Badge>
-                  {:else if data.canRevoke}
-                    <form method="post" action="?/revoke" class="flex items-center gap-2">
-                      <input type="hidden" name="_csrf" value={data.csrfToken} />
-                      <input type="hidden" name="acceptanceId" value={a.id} />
-                      <input
-                        type="text"
-                        name="reason"
-                        placeholder="reason (optional)"
-                        aria-label="Reason for revoking this acceptance (optional)"
-                        class="w-40 rounded-md border bg-background p-1 text-xs"
-                      />
-                      <Button type="submit" size="sm" variant="outline" data-testid="quality-revoke-btn">
-                        Revoke
-                      </Button>
-                    </form>
-                  {/if}
-                </TableCell>
-              </TableRow>
-            {/each}
-          </TableBody>
-        </Table>
+        <form method="post" action="?/revoke" class="space-y-3" id="quality-revoke-selected">
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
+          {#each selectedIds as id (id)}
+            <input type="hidden" name="acceptanceIds" value={id} />
+          {/each}
+          {#if data.canRevoke}
+            <div class="flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                name="reason"
+                placeholder="reason (optional)"
+                aria-label="Reason for revoking the selected acceptances (optional)"
+                class="w-56 rounded-md border bg-background p-1 text-xs"
+              />
+              <Button
+                type="submit"
+                size="sm"
+                variant="outline"
+                disabled={selectedIds.length === 0}
+                data-testid="quality-revoke-selected-btn"
+              >
+                Revoke selected ({selectedIds.length})
+              </Button>
+            </div>
+          {/if}
+        </form>
+        {#each acceptanceGroups as g (g.key)}
+          {@const ids = g.rows.map((r) => r.id)}
+          {@const allSelected = ids.every((id) => selectedIds.includes(id))}
+          <div class="rounded-md border p-2" data-testid="quality-acceptance-group" data-group-key={g.key}>
+            <div class="flex flex-wrap items-center gap-2">
+              {#if data.canRevoke}
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  aria-label={`Select every page of ${g.label}`}
+                  onchange={(e) => toggleIds(ids, e.currentTarget.checked)}
+                  data-testid="quality-acceptance-group-select"
+                />
+              {/if}
+              <strong class="min-w-0"><code>{g.label}</code></strong>
+              <span class="text-muted-foreground">
+                · {g.siteWide ? "site-wide" : `${g.rows.length} page(s)`}
+                · {g.values.length === 1 ? g.values[0] : "value per page"}
+              </span>
+              <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={g.reasons.join(" · ")}>
+                {g.reasons.join(" · ")}
+              </span>
+              {#if !g.siteWide}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  aria-expanded={expanded[g.key] === true}
+                  onclick={() => (expanded[g.key] = !expanded[g.key])}
+                >
+                  {expanded[g.key] ? "Hide pages" : "Show pages"}
+                </Button>
+              {/if}
+              {#if data.canRevoke}
+                <form method="post" action="?/revoke">
+                  <input type="hidden" name="_csrf" value={data.csrfToken} />
+                  {#each ids as id (id)}
+                    <input type="hidden" name="acceptanceIds" value={id} />
+                  {/each}
+                  <Button type="submit" size="sm" variant="outline" data-testid="quality-revoke-group-btn">
+                    {g.siteWide ? "Revoke" : `Revoke all ${g.rows.length}`}
+                  </Button>
+                </form>
+              {/if}
+            </div>
+            {#if expanded[g.key]}
+              <Table class="mt-2">
+                <TableHeader>
+                  <TableRow>
+                    {#if data.canRevoke}<TableHead class="w-8"></TableHead>{/if}
+                    <TableHead>Page</TableHead>
+                    <TableHead>Accepted</TableHead>
+                    <TableHead>Reason</TableHead>
+                    <TableHead>When</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {#each g.rows as a (a.id)}
+                    <TableRow data-testid="quality-acceptance-row">
+                      {#if data.canRevoke}
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.includes(a.id)}
+                            aria-label={`Select ${a.pagePath}`}
+                            onchange={(e) => toggleIds([a.id], e.currentTarget.checked)}
+                            data-testid="quality-acceptance-select"
+                          />
+                        </TableCell>
+                      {/if}
+                      <TableCell>{a.pagePath}</TableCell>
+                      <TableCell>{acceptedValue(a)}</TableCell>
+                      <TableCell class="max-w-96 text-xs">{a.reason}</TableCell>
+                      <TableCell class="text-muted-foreground">{when(a.acceptedAt)}</TableCell>
+                    </TableRow>
+                  {/each}
+                </TableBody>
+              </Table>
+            {/if}
+          </div>
+        {/each}
       {/if}
-    </CardContent>
-  </Card>
-
-  <Card>
-    <CardHeader>
-      <CardTitle class="text-base">Baselines below 100</CardTitle>
-      <CardDescription>
-        The ratchet: a page is measured against its last accepted score; improvements raise it
-        again automatically.
-      </CardDescription>
-    </CardHeader>
-    <CardContent>
-      {#if data.baselines.length === 0}
-        <p class="text-sm text-muted-foreground">Every audited page targets 100 in every category.</p>
-      {:else}
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Page</TableHead>
-              <TableHead>Category</TableHead>
-              <TableHead>Baseline</TableHead>
-              <TableHead>Updated</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {#each data.baselines as b (`${b.pageId}-${b.category}`)}
-              <TableRow>
-                <TableCell>{b.pagePath}</TableCell>
-                <TableCell>{CATEGORY_LABEL[b.category] ?? b.category}</TableCell>
-                <TableCell>{b.baseline}</TableCell>
-                <TableCell class="text-muted-foreground">{when(b.updatedAt)}</TableCell>
-              </TableRow>
+      {#if revokedAcceptances.length > 0}
+        <details class="text-xs" data-testid="quality-revoked-acceptances">
+          <summary class="cursor-pointer text-muted-foreground">
+            Revoked or spent ({revokedAcceptances.length})
+          </summary>
+          <ul class="mt-1 space-y-0.5">
+            {#each revokedAcceptances as a (a.id)}
+              <li class="text-muted-foreground">
+                {a.pagePath}: <code>{a.auditId ?? a.category}</code> ({acceptedValue(a)}) — {a.reason}
+                · revoked {when(a.revokedAt ?? a.acceptedAt)}
+              </li>
             {/each}
-          </TableBody>
-        </Table>
+          </ul>
+        </details>
       {/if}
     </CardContent>
   </Card>

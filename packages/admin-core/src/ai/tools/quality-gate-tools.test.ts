@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #667 — the acceptance contract the model reads. The dogfood run
- * that opened #667 had the AI recommend accepting all remaining findings
- * ("I'd accept all four") and offer to request the approval; two of them
- * were Caelo bugs. These pin the wording that forbids that.
+ * Issue #667 / #727 — the acceptance contract the model reads. The dogfood
+ * run that opened #667 had the AI recommend accepting all remaining
+ * findings ("I'd accept all four"); two were Caelo bugs. #727: the target is
+ * 100 and zero findings, and only the truly unfixable reaches the operator,
+ * as a bulk decision. These pin that wording.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -16,31 +17,45 @@ import { acceptQualityFindingsTool, publishDespiteFailedAuditTool } from "./qual
 describe("accept_quality_findings description", () => {
   const d = acceptQualityFindingsTool.description;
 
-  it("is for the operator's explicit request only, like publish_despite_failed_audit", () => {
-    expect(d.startsWith("ONLY when the operator explicitly asks")).toBe(true);
+  // #727 "optimum, not good enough" — an AI once called a Performance 90
+  // fine; sent back, it reached 100.
+  it("holds the AI to the optimum before anything goes to the operator", () => {
+    expect(d).toContain("The target is 100 in every Lighthouse category and zero findings");
+    expect(d).toContain("a score like 90 is NOT acceptable on its own");
+    expect(d).toContain("anything you can still fix you fix");
+    expect(d).toContain("never run Lighthouse yourself");
+  });
+
+  it("hands the truly unfixable to the operator as a bulk decision, never as a recommendation (#667)", () => {
+    expect(d).toContain("truly CANNOT be fixed");
+    expect(d).toContain("after explaining WHY a finding cannot be fixed");
+    expect(d).toContain("never as your recommendation");
+    expect(d).toContain("BULK: prefer `groups`");
+    expect(d).toContain("a worse value blocks again");
     expect(
       publishDespiteFailedAuditTool.description.startsWith("Only when the editor explicitly wants"),
     ).toBe(true);
-    expect(d).toContain("Never on your own initiative");
-  });
-
-  it("forbids recommending an acceptance or offering to request it", () => {
-    expect(d).toContain("never recommend, suggest or argue for an acceptance");
-    expect(d).toContain("no offering to request the approval");
-    expect(d).toContain("Publish live stays blocked until they are fixed or the operator decides");
-    // The old wording invited the AI to ask for acceptance of anything it
-    // could not fix.
-    expect(d).not.toContain("something you cannot fix");
   });
 
   it("routes Caelo platform findings to bug_report", () => {
-    expect(d).toContain("CAELO PLATFORM are Caelo bugs: report them with bug_report");
-    expect(getQualityAuditTool.description).toContain("never propose accepting it");
+    expect(d).toContain("a Caelo platform issue you reported with bug_report");
+    expect(getQualityAuditTool.description).toContain(
+      "report it with bug_report and never edit the site for it",
+    );
   });
 
   it("stays approval-gated", () => {
     expect(acceptQualityFindingsTool.approvalMode).toBe("user-approval");
     expect(d).toContain("APPROVAL-GATED");
+  });
+});
+
+describe("get_quality_audit holds the AI to 100", () => {
+  it("says a 90 is not acceptable and to keep fixing", () => {
+    const d = getQualityAuditTool.description;
+    expect(d).toContain("THE TARGET IS 100 IN EVERY CATEGORY AND ZERO FINDINGS");
+    expect(d).toContain("A score like 90 is NOT acceptable on its own");
+    expect(d).toContain("repeat until Performance is 100");
   });
 });
 

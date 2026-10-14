@@ -3,16 +3,16 @@
 /**
  * Issue #727 — the per-rule ratchet of the findings checks. Pure.
  *
- * Lighthouse ratchets per page and category score (ratchet.ts). A findings
- * check has no score; it has, per page (or for the site) and rule, a COUNT
- * of error findings. The ratchet works on that count:
+ * A findings check has no score; it has, per page (or for the site) and
+ * rule, a COUNT of error findings. The target is 0:
  *
- * - The target is 0. Without an acceptance every error finding is a
- *   problem and blocks Publish live (as an unaccepted Lighthouse finding
- *   does) — pre-existing debt is not silently grandfathered in.
+ * - Every rule with an error finding is a problem and blocks Publish live
+ *   — pre-existing debt is not grandfathered in.
  * - An editor's acceptance records the count it accepted ("3 images
- *   without alt on /team"). Up to that count the rule passes; a NEW error
- *   beyond it blocks again.
+ *   without alt on /team"). The GATE applies it live (gate.ts): up to that
+ *   count the rule passes; a NEW error beyond it blocks again. The problem
+ *   itself stays recorded with what was measured, so revoking the
+ *   acceptance blocks again at once, without a new audit.
  * - When fewer errors are measured than accepted, the accepted count drops
  *   to what was measured (an acceptance at 0 is spent and revoked): quality
  *   only ratchets up, exactly like an accepted Lighthouse score.
@@ -25,14 +25,16 @@ import { checkIdOfRule, type Finding, type FindingFix } from "./findings.js";
 /** Problem rows keep this many example findings for the AI. */
 export const PROBLEM_EXAMPLE_LIMIT = 5;
 
-/** One rule over its accepted count, on one page or site-wide. */
+/** One rule with error findings, on one page or site-wide. */
 export interface CheckRuleProblem {
   readonly kind: "check_rule";
   readonly checkId: string;
   readonly ruleId: string;
   /** Error findings of the rule measured now. */
   readonly count: number;
-  /** Error findings an editor's acceptance allowed (0 without one). */
+  /** Error findings an editor's acceptance allowed when the audit was
+   *  recorded (0 without one) — for the record; the gate reads the live
+   *  acceptance. */
   readonly allowed: number;
   /** The first findings, so the AI can act without another read. */
   readonly findings: readonly { readonly message: string; readonly fix?: FindingFix }[];
@@ -51,10 +53,12 @@ export function errorsByRule(findings: readonly Finding[]): Map<string, Finding[
 }
 
 /**
- * The problems of one page (or of the site) after the ratchet.
+ * The problems of one page (or of the site): every rule with an error
+ * finding, accepted or not (the gate decides what an acceptance covers).
  *
  * @param findings - every finding of that page (or the page-less ones).
- * @param acceptedCounts - live acceptances there: rule id → accepted count.
+ * @param acceptedCounts - live acceptances there: rule id → accepted count,
+ *   recorded on the problem as `allowed`.
  */
 export function evaluateCheckFindings(
   findings: readonly Finding[],
@@ -63,7 +67,6 @@ export function evaluateCheckFindings(
   const problems: CheckRuleProblem[] = [];
   for (const [ruleId, errors] of errorsByRule(findings)) {
     const allowed = acceptedCounts.get(ruleId) ?? 0;
-    if (errors.length <= allowed) continue;
     problems.push({
       kind: "check_rule",
       checkId: checkIdOfRule(ruleId),

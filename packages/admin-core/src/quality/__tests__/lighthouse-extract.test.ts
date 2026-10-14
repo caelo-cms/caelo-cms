@@ -65,7 +65,9 @@ function lhr(opts: {
 }
 
 describe("failingAudits", () => {
-  it("keeps scored audits below 0.9 and tags every gated category referencing them", () => {
+  // #727 "optimum, not good enough": a 0.95 is not a pass — every scored
+  // audit below 1 is a finding (Lighthouse's own report shows >= 0.9 green).
+  it("keeps every scored audit below 1 and tags every gated category referencing them", () => {
     const run = lhr({
       performance: 90,
       audits: [
@@ -88,12 +90,38 @@ describe("failingAudits", () => {
         displayValue: "1 element",
       },
       {
+        id: "meta-description",
+        title: "title of meta-description",
+        score: 0.95,
+        categories: ["seo"],
+      },
+      {
         id: "unused-javascript",
         title: "title of unused-javascript",
         score: 0.5,
         categories: ["performance"],
       },
     ]);
+  });
+
+  it("an audit at 0.99 is a finding; only a perfect score passes", () => {
+    const run = lhr({
+      performance: 100,
+      audits: [audit("color-contrast", 0.99, "numeric"), audit("image-alt", 1)],
+    });
+    expect(failingAudits(run).map((f) => [f.id, f.score])).toEqual([["color-contrast", 0.99]]);
+  });
+
+  it("informative, manual and not-applicable audits never become findings", () => {
+    const run = lhr({
+      performance: 100,
+      audits: [
+        audit("image-alt", 0, "informative"),
+        audit("color-contrast", 0, "manual"),
+        audit("meta-description", 0, "notApplicable"),
+      ],
+    });
+    expect(failingAudits(run)).toEqual([]);
   });
 
   it("a Lighthouse runtime error is an infrastructure failure, not a score", () => {

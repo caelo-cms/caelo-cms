@@ -304,7 +304,7 @@ describe("the page checks run on every Stage, on every page", () => {
       { chatSessionId },
     );
     expect(chat.feedback?.kind).toBe("offer");
-    expect(chat.feedback?.text).toContain("/ (Placeholder meta description)");
+    expect(chat.feedback?.text).toContain("Placeholder meta description (1 page(s))");
   });
 
   it("an SEO-only Stage runs only the page checks, and the fix opens the gate", async () => {
