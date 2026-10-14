@@ -23,7 +23,7 @@ function attestation(
   workflow: { repository: string; ref: string },
 ): Response {
   const statement = {
-    subject: [{ name: `pkg:npm/${name.replace("@", "%40")}@${version}` }],
+    subject: [{ name: `pkg:npm/${name.replaceAll("@", "%40")}@${version}` }],
     predicate: { buildDefinition: { externalParameters: { workflow } } },
   };
   return Response.json({

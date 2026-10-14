@@ -102,7 +102,7 @@ export async function provenanceProblem(
   }
   const workflow = statement.predicate?.buildDefinition?.externalParameters?.workflow ?? {};
   const subjects = (statement.subject ?? []).map((s) => s.name);
-  const wantSubject = `pkg:npm/${name.replace("@", "%40")}@${version}`;
+  const wantSubject = `pkg:npm/${name.replaceAll("@", "%40")}@${version}`;
   if (
     workflow.repository !== SOURCE_REPOSITORY ||
     workflow.ref !== `refs/tags/v${version}` ||
