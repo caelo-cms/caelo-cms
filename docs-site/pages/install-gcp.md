@@ -42,8 +42,8 @@ So the provisioner deletes all four, on both `--provider gcp` and `--provider gc
 
 | Provider | |
 |---|---|
-| `gcp` — load balancer, Cloud CDN, Cloud Armor | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.48&cloudshell_tutorial=gcp.md) |
-| `gcp-firebase` — Firebase Hosting, lower fixed cost | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.48&cloudshell_tutorial=gcp-firebase.md) |
+| `gcp` — load balancer, Cloud CDN, Cloud Armor | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.49&cloudshell_tutorial=gcp.md) |
+| `gcp-firebase` — Firebase Hosting, lower fixed cost | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.49&cloudshell_tutorial=gcp-firebase.md) |
 
 The button opens [Google Cloud Shell](https://cloud.google.com/shell) in your browser with the [`caelo-cms/install`](https://github.com/caelo-cms/install) repository at the branch of this release, and a tutorial next to the terminal. You need nothing installed — only a Google account that can create a project and link billing, and your domain.
 

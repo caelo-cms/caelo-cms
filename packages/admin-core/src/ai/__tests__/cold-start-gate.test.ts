@@ -204,4 +204,43 @@ describe("checkColdStartGate (issue #106)", () => {
     );
     expect(grayOklch.blocked).toBe(true);
   });
+  // issue #735 — the Real-AI footer scenario failed twice in a row: with
+  // identity on record and only the primary still grayscale, the gate's
+  // headline named just the satisfied conditions and closed with "ASK ONE
+  // question ('What's this site for?')". The AI asked, and the turn ended
+  // without the footer. With identity captured the gate must name the
+  // missing piece, hand over the identity, and forbid the question.
+  it("issue #735 — identity captured + grayscale primary: names the gap, hands over identity, no question", async () => {
+    const res = await checkColdStartGate(
+      AI,
+      toolCtxWith(
+        {
+          origin: "operator",
+          description: "Migrated from structured_sets theme/site",
+          tokens: { color: { primary: { $type: "color", $value: "#171717" } } },
+        },
+        { siteName: "Caelo", sitePurpose: "An AI-first CMS for developers" },
+      ),
+      "add_module",
+    );
+    expect(res.blocked).toBe(true);
+    const content = res.gateResult?.content ?? "";
+    expect(content).toContain("primary color is still grayscale");
+    expect(content).not.toContain("brand-derived and described");
+    expect(content).toContain("siteName 'Caelo'");
+    expect(content).toContain("sitePurpose 'An AI-first CMS for developers'");
+    expect(content).toContain("do NOT ask the operator");
+    expect(content).not.toContain("What's this site for?");
+  });
+
+  it("issue #735 — with NO identity the gate still allows one clarifying question", async () => {
+    const res = await checkColdStartGate(
+      AI,
+      toolCtxWith({ origin: "seed", description: null }, null),
+      "build_page",
+    );
+    const content = res.gateResult?.content ?? "";
+    expect(content).toContain("no site identity captured yet");
+    expect(content).toContain("What's this site for?");
+  });
 });
