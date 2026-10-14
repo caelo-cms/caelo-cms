@@ -351,7 +351,10 @@ export default definePlugin<PluginContextTier1>({
       const r = await ctx.query.insert("auth_config_proposals", {
         proposed_signup_open: input.signupOpen,
         proposed_password_min_length: input.passwordMinLength,
-        proposed_by: ctx.visitor.id,
+        // The actor that proposed it. Not a visitor operation, so this was
+        // never a visitor id (outside the gateway ctx.visitor.id is the
+        // system placeholder).
+        proposed_by: ctx.invocation.actorId,
         status: "pending",
         reason: "",
       });

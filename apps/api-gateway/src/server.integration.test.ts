@@ -7,8 +7,10 @@
  * its cms_public schema, then drives the gateway's `handleRequest` with
  * synthetic Request objects (no live socket needed). Asserts:
  *   - POST /api/plugin/<slug>/<op> dispatches via runPluginOperation.
- *   - Visitor cookie is set on first contact, reused on second.
- *   - Plugin's ctx.visitor.id matches the cookie value.
+ *   - With no consent provider running nobody can have consented to the
+ *     visitor-id cookie (#677): none is set, a held one is expired, and
+ *     the plugin sees `ctx.visitor.id === null`. The consented paths are
+ *     in visitor-consent.integration.test.ts.
  *   - 404 / 400 / 503 status codes for missing plugin / bad route / disabled.
  *   - JSON body parsing errors return 400.
  */
@@ -19,12 +21,7 @@ import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
-import {
-  handleRequest,
-  invalidateGatewaySettings,
-  parseCookies,
-  setGatewayAdapter,
-} from "./server.js";
+import { handleRequest, invalidateGatewaySettings, setGatewayAdapter } from "./server.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -159,23 +156,14 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
     expect(body.ok).toBe(true);
   });
 
-  it("dispatches a plugin op + sets visitor cookie on first contact", async () => {
+  it("dispatches a plugin op without a visitor id when no consent provider runs (#677)", async () => {
     await bootstrapAndProvision();
     const r = await handleRequest(postReq(`/api/plugin/${SLUG}/save`, { message: "hi" }));
     expect(r.status).toBe(200);
-    const setCookie = r.headers.get("set-cookie");
-    expect(setCookie).toContain("caelo_visitor_id=");
-    expect(setCookie).toContain("HttpOnly");
-    // P13 — cookie value is signed: `<uuid>.<issuedAt>.<sig>`. The raw
-    // UUID is the first dot-separated segment.
-    const cookies = parseCookies(setCookie?.split(";")[0] ?? null);
-    const signed = cookies.caelo_visitor_id ?? "";
-    const visitorId = signed.split(".")[0] ?? "";
-    expect(visitorId).toMatch(/^[0-9a-f-]{36}$/);
-
-    const body = (await r.json()) as { ok: boolean; data: { visitorSeen: string } };
+    expect(r.headers.get("set-cookie")).toBeNull();
+    const body = (await r.json()) as { ok: boolean; data: { visitorSeen: string | null } };
     expect(body.ok).toBe(true);
-    expect(body.data.visitorSeen).toBe(visitorId);
+    expect(body.data.visitorSeen).toBeNull();
   });
 
   it("404s an operation the plugin did not expose to visitors", async () => {
@@ -193,38 +181,28 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
     expect(body.ok).toBe(false);
   });
 
-  it("reuses existing signed visitor cookie on second contact", async () => {
+  it("expires a visitor cookie the browser still holds and ignores it (#677)", async () => {
     await bootstrapAndProvision();
-    // Round-trip via a real first request to learn the signed cookie,
-    // then reuse it as the second-contact cookie.
-    const r1 = await handleRequest(postReq(`/api/plugin/${SLUG}/save`, { message: "first" }));
-    const setCookie = r1.headers.get("set-cookie") ?? "";
-    const signedVisitor = parseCookies(setCookie.split(";")[0] ?? null).caelo_visitor_id ?? "";
-    expect(signedVisitor).not.toBe("");
-
-    const r2 = await handleRequest(
-      postReq(`/api/plugin/${SLUG}/save`, { message: "x" }, `caelo_visitor_id=${signedVisitor}`),
-    );
-    expect(r2.status).toBe(200);
-    // Existing valid cookie → no Set-Cookie header (we only set on fresh visitors).
-    expect(r2.headers.get("set-cookie")).toBeNull();
-    const body = (await r2.json()) as { data: { visitorSeen: string } };
-    const expectedVisitorId = signedVisitor.split(".")[0];
-    expect(body.data.visitorSeen).toBe(expectedVisitorId);
-  });
-
-  it("rejects a tampered visitor cookie + issues fresh visitor", async () => {
-    await bootstrapAndProvision();
-    // Tampered cookie (right shape but wrong signature) → treat as fresh.
-    const tampered = `00000000-0000-0000-0000-000000000000.${Math.floor(Date.now() / 1000)}.${"0".repeat(64)}`;
+    // Shaped like a signed cookie; whether its signature is valid does not
+    // matter — without consent the gateway never reads the id.
+    const held = `11111111-1111-4111-8111-111111111111.${Math.floor(Date.now() / 1000)}.${"0".repeat(64)}`;
     const r = await handleRequest(
-      postReq(`/api/plugin/${SLUG}/save`, { message: "x" }, `caelo_visitor_id=${tampered}`),
+      postReq(`/api/plugin/${SLUG}/save`, { message: "x" }, `caelo_visitor_id=${held}`),
     );
     expect(r.status).toBe(200);
     const setCookie = r.headers.get("set-cookie") ?? "";
-    expect(setCookie).toContain("caelo_visitor_id=");
-    const fresh = parseCookies(setCookie.split(";")[0] ?? null).caelo_visitor_id ?? "";
-    expect(fresh.split(".")[0]).not.toBe("00000000-0000-0000-0000-000000000000");
+    expect(setCookie).toStartWith("caelo_visitor_id=;");
+    expect(setCookie).toContain("Max-Age=0");
+    const body = (await r.json()) as { data: { visitorSeen: string | null } };
+    expect(body.data.visitorSeen).toBeNull();
+  });
+
+  it("does not fail on a malformed cookie header", async () => {
+    await bootstrapAndProvision();
+    const r = await handleRequest(
+      postReq(`/api/plugin/${SLUG}/save`, { message: "x" }, "caelo_consent=%E0%A4%A; other=1"),
+    );
+    expect(r.status).toBe(200);
   });
 
   it("returns 404 for an unknown plugin slug", async () => {

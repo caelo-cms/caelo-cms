@@ -73,7 +73,8 @@ interface SubmissionRow {
   id: string;
   form_slug: string;
   page_id: string | null;
-  visitor_id: string;
+  /** Null when the visitor had not consented to the visitor-id cookie (#677). */
+  visitor_id: string | null;
   data: Record<string, unknown>;
   status: string;
   submitted_at: string;
@@ -113,7 +114,9 @@ export default definePlugin<PluginContextTier1>({
      *
      * 1. Captcha gate (P12 stub passes everything in dev; P13 hardens).
      * 2. Verify the form definition exists.
-     * 3. Insert into form_submissions with visitor_id from ctx.visitor.
+     * 3. Insert into form_submissions with visitor_id from ctx.visitor —
+     *    null when the visitor has not consented to the visitor-id
+     *    cookie (#677); a submission never needs it.
      */
     submit: async (ctx, args) => {
       const input = args as SubmitInput;

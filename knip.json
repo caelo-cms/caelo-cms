@@ -40,6 +40,9 @@
         "scripts/sync-docs-site.ts"
       ]
     },
+    "apps/api-gateway": {
+      "entry": ["e2e/*.ts"]
+    },
     "packages/admin-core": {
       "entry": [
         "src/healthcheck.ts",
