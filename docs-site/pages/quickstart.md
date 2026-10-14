@@ -36,7 +36,7 @@ You'll be prompted for an Owner email + password during the install. Save them s
 
 ### On Google Cloud, from the browser
 
-No Linux host at hand? [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.47&cloudshell_tutorial=gcp.md) installs Caelo into your own Google Cloud project from Cloud Shell, with a step-by-step tutorial — see [One-click install](/install-gcp#one-click-install-from-cloud-shell). The [Firebase Hosting variant](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.47&cloudshell_tutorial=gcp-firebase.md) has a lower fixed cost.
+No Linux host at hand? [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.48&cloudshell_tutorial=gcp.md) installs Caelo into your own Google Cloud project from Cloud Shell, with a step-by-step tutorial — see [One-click install](/install-gcp#one-click-install-from-cloud-shell). The [Firebase Hosting variant](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.48&cloudshell_tutorial=gcp-firebase.md) has a lower fixed cost.
 
 ## First thing to do
 
