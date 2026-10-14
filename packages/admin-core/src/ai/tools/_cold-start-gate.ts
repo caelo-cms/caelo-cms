@@ -202,27 +202,76 @@ export async function checkColdStartGate(
     gateResult: {
       ok: false,
       content:
-        `${toolName}: cold-start install detected — ` +
-        `${noIdentity ? "no site identity captured" : "site identity captured"}` +
-        ` AND ` +
-        `${
-          noActiveTheme
-            ? "no active theme yet"
-            : seedTheme
-              ? "theme is still seed-origin (grayscale)"
-              : undescribedTheme
-                ? "theme is evolved but has no recorded design rationale (description)"
-                : "theme is brand-derived and described"
-        }.\n\n` +
+        `${toolName}: blocked until the site has a brand palette — ${describeBlockedState({
+          noIdentity,
+          noActiveTheme,
+          seedTheme,
+          undescribedTheme,
+        })}.\n\n` +
         `Caelo is chat-first (CLAUDE.md §1A) — the AI captures brand context AND composes a ` +
         `brand-derived theme BEFORE authoring any modules. The page would otherwise render against ` +
         `the seed-grayscale palette and lose the operator's intent.\n\n` +
         `Required setup (run these in order, then retry your \`${toolName}\` call):\n\n` +
         steps.map((s, i) => `${i + 1}. ${s}`).join("\n") +
-        `\n\nIf the operator's prompt is too vague to infer identity, ASK ONE concise question ` +
-        `("What's this site for?") before guessing.`,
+        `\n\n${identityGuidance(noIdentity ? null : defaults)}`,
     },
   };
+}
+
+/**
+ * One-line, literal description of WHICH setup step is missing. Issue
+ * #735: the earlier headline read "cold-start install detected — site
+ * identity captured AND theme is brand-derived and described" for the
+ * grayscale-primary state — it named only the satisfied conditions, so
+ * the AI concluded the install was blank and asked the operator what
+ * the site is for, although the identity was on record.
+ */
+function describeBlockedState(state: {
+  noIdentity: boolean;
+  noActiveTheme: boolean;
+  seedTheme: boolean;
+  undescribedTheme: boolean;
+}): string {
+  const identity = state.noIdentity ? "no site identity captured yet" : "site identity is captured";
+  const theme = state.noActiveTheme
+    ? "no active theme yet"
+    : state.seedTheme
+      ? "the active theme is still seed-origin (grayscale)"
+      : state.undescribedTheme
+        ? "the theme is evolved but has no recorded design rationale (description)"
+        : "the active theme's primary color is still grayscale";
+  return `${identity}, but ${theme}`;
+}
+
+/**
+ * The closing line on where the brand context comes from. With no
+ * identity on record, the AI may ask ONE question when the prompt gives
+ * no signal. With identity captured, the answer to "what is this site
+ * for?" already exists, so the gate hands it over and forbids the
+ * question — asking would push an implementation step (the theme) onto
+ * the operator (CLAUDE.md §1A). Issue #735: that question ended the turn
+ * before the operator's actual request (a footer) was built.
+ */
+function identityGuidance(
+  defaults: { siteName: string | null; sitePurpose: string | null } | null,
+): string {
+  if (defaults === null) {
+    return (
+      `If the operator's prompt is too vague to infer identity, ASK ONE concise question ` +
+      `("What's this site for?") before guessing.`
+    );
+  }
+  const known = [
+    defaults.siteName?.trim() ? `siteName '${defaults.siteName.trim()}'` : null,
+    defaults.sitePurpose?.trim() ? `sitePurpose '${defaults.sitePurpose.trim()}'` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(", ");
+  return (
+    `The site identity is already on record (${known}). Derive the palette from it and continue ` +
+    `with the operator's request in this same turn — do NOT ask the operator what the site is ` +
+    `for or which colors to use; they can redirect the palette afterwards.`
+  );
 }
 
 /**

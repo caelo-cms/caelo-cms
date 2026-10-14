@@ -81,14 +81,22 @@ function seedFooterBlock(): void {
 }
 
 /**
- * Move the site past cold-start: capture site identity + flip the active
- * theme off `seed` origin. Without this, the cold-start gate
- * (`_cold-start-gate.ts`) intercepts add_module_to_layout and the AI spends
- * the turn proposing identity/theme setup instead of building the footer —
- * leaving footerModuleCount=0. This scenario tests the footer-build path on a
- * real (post-onboarding) site; the cold-start onboarding path is covered
- * separately by scenario-homepage. Mirrors apps/admin/e2e/_seed.ts's
- * POST_CHAT_SEED_SCRIPT. Idempotent (COALESCE + WHERE origin='seed').
+ * Move the site past cold-start: capture site identity, flip the active
+ * theme off `seed` origin, record a design rationale, AND give it a
+ * chromatic primary. The cold-start gate (`_cold-start-gate.ts`) clears
+ * only when all of those hold (the primary-chroma check is #149's
+ * follow-up); short of that it intercepts add_module and the AI spends the
+ * turn on theme setup instead of the footer — leaving footerModuleCount=0.
+ * Issue #735: this prime used to stop at the origin flip, so the gate
+ * fired on EVERY run (seed primary #171717) and the scenario silently
+ * tested gate recovery instead of the footer path; it passed only when the
+ * model chose to pick a palette itself rather than ask the operator. This
+ * scenario tests the footer-build path on a real (post-onboarding) site;
+ * the cold-start onboarding path is covered separately by
+ * scenario-homepage. Mirrors apps/admin/e2e/_seed.ts's
+ * POST_CHAT_SEED_SCRIPT (indigo primary) plus a violet accent — the state
+ * the AI itself produced on the runs where it recovered from the gate, so
+ * the scenarios after this one see the same theme as before. Idempotent.
  */
 function primePostOnboarding(): void {
   const r = spawnSync(
@@ -109,8 +117,14 @@ function primePostOnboarding(): void {
           \`;
           await tx\`
             UPDATE themes
-            SET origin = 'operator'
-            WHERE is_active = true AND origin = 'seed'
+            SET origin = CASE WHEN origin = 'seed' THEN 'operator' ELSE origin END,
+                description = COALESCE(NULLIF(description, ''),
+                  'Indigo primary with a violet accent for a modern, trustworthy developer product.'),
+                tokens = jsonb_set(
+                  jsonb_set(tokens, '{color,primary}', '{"$type": "color", "$value": "#4f46e5"}'::jsonb),
+                  '{color,accent}', '{"$type": "color", "$value": "#7c3aed"}'::jsonb
+                )
+            WHERE is_active = true
           \`;
         });
         await sql.end();
