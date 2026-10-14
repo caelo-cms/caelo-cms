@@ -10,7 +10,12 @@
 
 import { spawnSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
-import { clearLoginRateBucket, resetOverlayLayoutFor, runBunInline } from "./helpers.js";
+import {
+  clearLoginRateBucket,
+  enableLiveEditMode,
+  resetOverlayLayoutFor,
+  runBunInline,
+} from "./helpers.js";
 
 function runBunInlineCapture(script: string, env: Record<string, string>): string {
   const r = spawnSync("bun", ["-e", script], {
@@ -95,13 +100,12 @@ test("clicking an element in the live-preview iframe appends a chip", async ({ p
   await page.goto(`/edit?page=${ids.pg}`);
   await expect(page).toHaveURL(/\/edit/, { timeout: 15_000 });
 
-  // P6.7.3 — toolbar toggle replaces the modifier combo. Flip Edit on
-  // before clicking the iframe element.
-  await page.locator('[data-testid="edit-mode-toggle"]').click();
-
   const previewFrame = page.frameLocator("iframe[title='Live preview']");
   const taggedH1 = previewFrame.locator("h1[data-caelo-module-id]");
   await expect(taggedH1).toContainText("HERO_CLICK_TARGET", { timeout: 15_000 });
+  // P6.7.3 — toolbar toggle replaces the modifier combo. Flip Edit on
+  // (and wait for the iframe to apply it) before clicking the element.
+  await enableLiveEditMode(page);
 
   // Synthesize the click so we bypass the floating overlay's pointer
   // interception. With edit mode ON the inject-script's capture

@@ -140,6 +140,10 @@
   // P6.7.3 — Edit mode toggle. ON: clicks in the iframe become chips.
   // OFF: live-site browsing (links navigate, JS runs).
   let editMode = $state(false);
+  // Height of the page chrome above the preview (cross-chat banner +
+  // toolbar); the pinned-right overlay is placed below it.
+  let bannerHeight = $state(0);
+  let toolbarHeight = $state(44);
   // P6.6b — side-by-side diff overlay toggle. The panel reads
   // `editedModules` from the page data and renders main-vs-branch
   // iframes; unchecking a module rolls back its branch overlay on
@@ -357,13 +361,18 @@
 <div class="relative flex h-screen w-full flex-col">
   <!-- v0.8.0 — cross-chat awareness strip. Renders nothing when there
        are no other open chats with pending changes. -->
-  <CrossChatBanner chats={data.otherOpenChats ?? []} />
+  <!-- Measured with the toolbar below: the pinned-right chat column starts
+       under both, so the banner never pushes toolbar controls beneath it. -->
+  <div class="shrink-0" bind:clientHeight={bannerHeight}>
+    <CrossChatBanner chats={data.otherOpenChats ?? []} />
+  </div>
 
   <!-- Slim toolbar — wordmark + URL + page picker + back-to-admin. No
        sidebar, no breadcrumbs, no admin chrome. -->
   <header
     class="z-30 flex h-11 shrink-0 items-center gap-3 border-b bg-background px-3 text-sm"
     data-testid="edit-toolbar"
+    bind:clientHeight={toolbarHeight}
   >
     <a
       href="/"
@@ -580,6 +589,7 @@
   <div class={pluginPreviewUrl ? "h-[45vh] shrink-0 md:h-full md:w-[420px]" : "contents"}>
   <Overlay
     docked={!!pluginPreviewUrl}
+    chromeBottom={bannerHeight + toolbarHeight}
     previewSelection={previewSelection ?? previewContext}
     onClearPreviewSelection={previewSelection ? () => { previewSelection = null; } : undefined}
     session={data.activeChat}

@@ -281,6 +281,18 @@ jobs:
         run: bun run e2e
         working-directory: apps/admin
 
+      # Traces + error contexts of failing specs (playwright.config.ts keeps a
+      # trace on failure). Without them a flaky spec's CI failure is a bare
+      # "Test timeout of 30000ms exceeded" with nothing to root-cause from.
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-traces-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/admin/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
   admin-prod-image:
     name: Admin production image — boot smoke
     needs: lockfile
