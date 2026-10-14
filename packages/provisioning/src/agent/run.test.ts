@@ -127,6 +127,11 @@ function setup(over: Partial<AgentRunDeps> = {}, request: ClaimedUpdate | null =
         locks.released += 1;
       };
     },
+    verifyTargetCli: async (version) => ({
+      ok: true,
+      dir: `/srv/.caelo/agent/cli/caelo-${version}`,
+      cliPath: `/srv/.caelo/agent/cli/caelo-${version}/node_modules/@caelo-cms/provisioning/dist/cli.js`,
+    }),
     applyTarget: async (req) => {
       applied.push(req);
       // The target's CLI records the end itself.
@@ -174,10 +179,13 @@ describe("runAgentOnce", () => {
         targetVersion: "0.11.0",
         trigger: "manual",
         digests: { admin: D("a"), gateway: D("b") },
+        cliPath:
+          "/srv/.caelo/agent/cli/caelo-0.11.0/node_modules/@caelo-cms/provisioning/dist/cli.js",
       },
     ]);
     expect(q.facts[0]).toMatchObject({ adminDigest: D("a"), manifestSecurity: false });
-    expect(q.events.map((e) => e.phase)).toEqual(["start", "verify", "assess"]);
+    expect([...new Set(q.events.map((e) => e.phase))]).toEqual(["start", "verify", "assess"]);
+    expect(q.events.some((e) => /built by Caelo's release workflow/.test(e.message))).toBe(true);
     expect(q.events.some((e) => /signed by Caelo's release workflow/.test(e.message))).toBe(true);
     expect(q.ends).toEqual([
       { status: "succeeded", reason: null, codes: [], pauseAutoUpdates: false },
@@ -267,6 +275,27 @@ describe("runAgentOnce", () => {
         policy: { ...POLICY, mode: "auto", autoMinor: true },
       },
       expect: "refused/contract-migrations",
+    },
+    {
+      name: "a target CLI whose npm provenance does not check out",
+      over: {
+        verifyTargetCli: async () => ({
+          ok: false,
+          error: { code: "provenance", message: "built by https://github.com/evil/caelo-cms" },
+        }),
+      },
+      expect: "refused/cli-provenance",
+      reason: /not the one Caelo's release workflow published/,
+    },
+    {
+      name: "npm missing on the server",
+      over: {
+        verifyTargetCli: async () => ({
+          ok: false,
+          error: { code: "npm-missing", message: "npm is not installed" },
+        }),
+      },
+      expect: "failed/cli-npm-missing",
     },
     {
       name: "an automatic run the policy does not allow",

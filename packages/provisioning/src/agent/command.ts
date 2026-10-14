@@ -9,8 +9,9 @@
  * agent/systemd.ts, which are tested against fakes.
  */
 
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { CAELO_VERSION, PLATFORM_UPDATE_TRIGGERS } from "@caelo-cms/shared";
 import { z } from "zod";
 import type { ReleaseImages } from "../compose.js";
@@ -20,6 +21,12 @@ import { bunHostRunner, type HostRunner, readRelease } from "../self-hosted-rele
 import type { ConvergeOutcome } from "../self-hosted-roles.js";
 import type { JobLog } from "../upgrader-reporter.js";
 import { applyAgentUpdate } from "./apply.js";
+import {
+  installVerifiedCli,
+  verifiedCliDir,
+  verifiedCliPath,
+  verifiedCliRoot,
+} from "./cli-provenance.js";
 import { type AgentConfig, agentConfigFor, agentDbConnection } from "./config.js";
 import { acquireUpgradeLock } from "./lock.js";
 import { loadAgentQueueOpener } from "./queue.js";
@@ -35,7 +42,7 @@ import {
   repinAgentUnits,
   uninstallAgentUnits,
 } from "./systemd.js";
-import { type AgentUnitSpec, agentPackageRef, agentUnitName } from "./units.js";
+import { type AgentUnitSpec, agentUnitName } from "./units.js";
 
 /** What the CLI owns that the agent commands need. */
 export interface AgentCliContext {
@@ -70,8 +77,9 @@ function flag(argv: readonly string[], name: string): string | undefined {
 }
 
 /** The unit spec for this install, pinned to `version`. */
-function unitSpec(ctx: AgentCliContext, version: string): AgentUnitSpec {
+function unitSpec(ctx: AgentCliContext, version: string, cliPath?: string): AgentUnitSpec {
   return {
+    ...(cliPath ? { cliPath } : {}),
     name: agentUnitName(ctx.domain, ctx.caeloDir),
     domain: ctx.domain,
     version,
@@ -84,31 +92,59 @@ function unitSpec(ctx: AgentCliContext, version: string): AgentUnitSpec {
 }
 
 /** `docker compose -f <file> …`. */
-function composeArgv(ctx: AgentCliContext, ...args: string[]): string[] {
+function composeArgv(ctx: Pick<AgentCliContext, "caeloDir">, ...args: string[]): string[] {
   return ["docker", "compose", "-f", `${ctx.caeloDir}/docker-compose.yml`, ...args];
 }
 
-async function postgresReady(ctx: AgentCliContext, runner: HostRunner): Promise<boolean> {
+async function postgresReady(
+  ctx: Pick<AgentCliContext, "caeloDir">,
+  runner: HostRunner,
+): Promise<boolean> {
   const r = await runner.run(
     composeArgv(ctx, "exec", "-T", "postgres", "pg_isready", "-U", "caelo"),
   );
   return r.exitCode === 0;
 }
 
+/** The notice printed before the one restart Postgres gets for the agent. */
+export const POSTGRES_RESTART_NOTICE =
+  "Postgres restarts once, a few seconds of downtime: it is now also published on 127.0.0.1 for the update agent. The admin reconnects by itself.";
+
 /**
- * Apply the agent's database side to a RUNNING install: the role, then
- * `up -d postgres` so the loopback port (and its removal) takes effect —
- * Compose recreates the container only when its definition changed, a few
- * seconds the admin's pool rides out.
+ * Whether the running Postgres container already publishes `port` on the
+ * loopback interface (`docker compose port postgres 5432`).
  */
-async function applyDatabaseSide(
-  ctx: AgentCliContext,
+export async function postgresPublishedOnLoopback(
+  ctx: Pick<AgentCliContext, "caeloDir">,
   runner: HostRunner,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+  port: number,
+): Promise<boolean> {
+  const r = await runner.run(composeArgv(ctx, "port", "postgres", "5432"));
+  return r.exitCode === 0 && r.stdout.trim().split("\n").includes(`127.0.0.1:${port}`);
+}
+
+/**
+ * Apply the agent's database side to a RUNNING install: the login, then —
+ * only the first time, when the container does not publish the agent's
+ * port yet — one `up -d postgres` to publish it (#721: Postgres restarts
+ * once, announced first). Re-running finds the port published and leaves
+ * Postgres alone; `agent run` / `agent apply` never get here.
+ */
+export async function applyDatabaseSide(
+  ctx: Pick<AgentCliContext, "caeloDir" | "convergeRoles">,
+  runner: HostRunner,
+  port: number,
+  opts: {
+    readonly notice?: (m: string) => void;
+    readonly sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<{ ok: true; restarted: boolean } | { ok: false; error: string }> {
   const roles = await ctx.convergeRoles();
   if (!roles.ok) {
     return { ok: false, error: `could not create the agent's database login: ${roles.error}` };
   }
+  if (await postgresPublishedOnLoopback(ctx, runner, port)) return { ok: true, restarted: false };
+  (opts.notice ?? say)(POSTGRES_RESTART_NOTICE);
   const up = await runner.run(composeArgv(ctx, "up", "-d", "postgres"));
   if (up.exitCode !== 0) {
     return {
@@ -116,9 +152,10 @@ async function applyDatabaseSide(
       error: `docker compose up -d postgres failed: ${up.stderr.trim().slice(0, 400)}`,
     };
   }
+  const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
   for (let i = 0; i < 30; i++) {
-    if (await postgresReady(ctx, runner)) return { ok: true };
-    await Bun.sleep(1000);
+    if (await postgresReady(ctx, runner)) return { ok: true, restarted: true };
+    await sleep(1000);
   }
   return { ok: false, error: "Postgres did not come back within 30 seconds" };
 }
@@ -188,7 +225,7 @@ export async function setUpAgent(
   const warnings: string[] = [];
   if (opts.database === "live") {
     if (await postgresReady(ctx, runner)) {
-      const db = await applyDatabaseSide(ctx, runner);
+      const db = await applyDatabaseSide(ctx, runner, agent.dbPort);
       if (!db.ok) return { kind: "failed", error: db.error };
     } else {
       warnings.push(
@@ -198,8 +235,14 @@ export async function setUpAgent(
   }
   const name = agentUnitName(ctx.domain, ctx.caeloDir);
   const pinned = installedAgentVersion(host, name);
-  const version = pinned && compareSemver(pinned, CAELO_VERSION) > 0 ? pinned : CAELO_VERSION;
-  const units = await installAgentUnits(unitSpec(ctx, version), host);
+  // Never back to an older release: a newer pin is one an update verified.
+  const newer = pinned !== null && compareSemver(pinned, CAELO_VERSION) > 0;
+  const version = newer && pinned ? pinned : CAELO_VERSION;
+  const verified = verifiedCliPath(verifiedCliDir(ctx.caeloDir, version));
+  const units = await installAgentUnits(
+    unitSpec(ctx, version, newer && existsSync(verified) ? verified : undefined),
+    host,
+  );
   if (!units.ok) return { kind: "failed", error: units.error };
   return { kind: "installed", unit: name, version, warnings: [...warnings, ...units.warnings] };
 }
@@ -301,10 +344,11 @@ async function agentUninstall(ctx: AgentCliContext): Promise<number> {
     // Compose file stops publishing the port.
     ctx.saveAgent({ ...agent, disabled: true });
     ctx.emitConfig();
-    if (await postgresReady(ctx, runner)) {
-      const up = await runner.run(composeArgv(ctx, "up", "-d", "postgres"));
-      if (up.exitCode !== 0) console.warn(`  ! docker compose up -d postgres: ${up.stderr.trim()}`);
-    }
+    // Postgres is not restarted for this (it restarts only on the first
+    // agent install): the loopback port goes away with its next restart.
+    say(
+      `The Compose file no longer publishes Postgres on 127.0.0.1:${agent.dbPort}; that takes effect the next time Postgres restarts.`,
+    );
   }
   say(
     "Update agent removed. Settings → Updates shows the upgrade command again; " +
@@ -321,6 +365,10 @@ async function hostPreflight(ctx: AgentCliContext, runner: HostRunner): Promise<
   const docker = await runner.run(["docker", "info", "--format", "{{.ServerVersion}}"]);
   if (docker.exitCode !== 0) {
     return `Docker is not reachable for the agent's user (${docker.stderr.trim().slice(0, 300) || `exit ${docker.exitCode}`}). The user that runs the agent must be able to run \`docker\` (the docker group).`;
+  }
+  const npm = await runner.run(["npm", "--version"]);
+  if (npm.exitCode !== 0) {
+    return "npm is not installed on the server (or not on the agent's PATH); the agent needs it to verify the provenance of the Caelo release it installs. Install Node.js + npm, then run the agent install command again.";
   }
   const cosign = await runner.run(["cosign", "version"]);
   if (cosign.exitCode !== 0) {
@@ -344,13 +392,36 @@ async function teeTail(
   return tail;
 }
 
+/** Env var naming the parent agent's CLI for the child (so it is kept). */
+const PARENT_CLI_ENV = "CAELO_AGENT_PARENT_CLI";
+
+/**
+ * Remove the verified CLI installs of older releases (each is the
+ * provisioning package with its dependencies), keeping `keep` — the
+ * child's own and the still-running parent's.
+ */
+function pruneVerifiedClis(caeloDir: string, keep: readonly (string | undefined)[]): void {
+  const root = verifiedCliRoot(caeloDir);
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const dir = join(root, entry);
+    if (keep.some((k) => k?.startsWith(`${dir}/`))) continue;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /** Start the target release's `agent apply` and wait for it. */
 async function spawnApply(request: AgentApplyRequest): Promise<AgentApplyOutcome> {
+  // The verified install (agent/cli-provenance.ts) — never `bun x`, which
+  // would fetch an unverified copy.
   const argv = [
     process.execPath,
-    "x",
-    "--bun",
-    agentPackageRef(request.targetVersion),
+    request.cliPath,
     "agent",
     "apply",
     "--request",
@@ -365,7 +436,12 @@ async function spawnApply(request: AgentApplyRequest): Promise<AgentApplyOutcome
     request.digests.gateway,
   ];
   try {
-    const proc = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", env: process.env });
+    const proc = Bun.spawn(argv, {
+      stdout: "pipe",
+      stderr: "pipe",
+      // Tells the child which verified install it must not prune (ours).
+      env: { ...process.env, [PARENT_CLI_ENV]: process.argv[1] ?? "" },
+    });
     const [out, err] = await Promise.all([
       teeTail(proc.stdout, (c) => process.stdout.write(c), 1500),
       teeTail(proc.stderr, (c) => process.stderr.write(c), 1500),
@@ -405,6 +481,10 @@ async function agentRun(ctx: AgentCliContext): Promise<number> {
       readInstalled: () => readRelease(ctx.caeloDir),
       fetchManifest: (version) => fetchVerifiedReleaseManifest(version),
       lock: () => acquireUpgradeLock(ctx.caeloDir, "the update agent"),
+      verifyTargetCli: (version) =>
+        installVerifiedCli(version, verifiedCliDir(ctx.caeloDir, version), {
+          runner: bunHostRunner,
+        }),
       applyTarget: spawnApply,
       now: () => new Date(),
       log: journalLog,
@@ -467,8 +547,13 @@ async function agentApply(argv: readonly string[], ctx: AgentCliContext): Promis
           },
         ),
       selfUpdate: async () => {
-        const r = await repinAgentUnits(unitSpec(ctx, CAELO_VERSION), host);
-        return r.ok ? { ok: true } : { ok: false, error: r.error };
+        // This process runs from the verified install the parent made; the
+        // agent runs from it from now on (no unverified `bun x`).
+        const own = process.argv[1];
+        const r = await repinAgentUnits(unitSpec(ctx, CAELO_VERSION, own), host);
+        if (!r.ok) return { ok: false, error: r.error };
+        pruneVerifiedClis(ctx.caeloDir, [own, process.env[PARENT_CLI_ENV]]);
+        return { ok: true };
       },
       log: journalLog,
     });

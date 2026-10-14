@@ -77,6 +77,15 @@ describe("agent units", () => {
     expect(unit).toContain('WorkingDirectory="/srv/100%%"');
   });
 
+  it("after an update, runs the provenance-verified CLI instead of bun x", () => {
+    const cliPath =
+      "/srv/caelo site/.caelo/agent/cli/caelo-0.11.0/node_modules/@caelo-cms/provisioning/dist/cli.js";
+    const unit = agentServiceUnit({ ...SPEC, version: "0.11.0", cliPath });
+    expect(unit).toContain(`ExecStart="/home/op/.bun/bin/bun" "${cliPath}" "agent" "run"`);
+    expect(unit).not.toContain('"x"');
+    expect(pinnedAgentVersion(unit)).toBe("0.11.0");
+  });
+
   it("refuses values that cannot be one systemd word", () => {
     expect(() => agentServiceUnit({ ...SPEC, workDir: '/srv/"x"' })).toThrow();
     expect(() => agentServiceUnit({ ...SPEC, path: "/bin\nExecStartPre=/evil" })).toThrow();

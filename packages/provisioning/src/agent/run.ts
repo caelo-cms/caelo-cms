@@ -15,14 +15,16 @@
  *      signature, downgrade, below minFromVersion, contract migrations or a
  *      policy refusal on an automatic run. Self-hosted has no separately
  *      converged infrastructure, so the infra-contract row never applies;
- *   4. only then run the TARGET release's own CLI (`bun x
- *      @caelo-cms/provisioning@<target> agent apply`, agent/apply.ts), which
+ *   4. install the TARGET release's own CLI from npm and verify its registry
+ *      signatures + provenance (agent/cli-provenance.ts, the checks of the
+ *      Cloud Shell runner) — refused outright when they fail;
+ *   5. only then run that CLI's `agent apply` (agent/apply.ts), which
  *      performs the same backup → pull → migrate → roll → health → rollback
  *      as a hand-run `upgrade` and narrates it into the request's timeline.
  *      The target's CLI renders the target's Compose file, so a release that
  *      changes the stack needs no extra step. No code of the target runs
  *      before its manifest verified and passed the checks above;
- *   5. if that process ended without recording an end state, end the
+ *   6. if that process ended without recording an end state, end the
  *      request as failed with its output.
  *
  * The install's upgrade lock is held for the whole run, so a hand-run
@@ -36,6 +38,7 @@ import { assessUpgradeRequest } from "../upgrader-assess.js";
 import type { UpdateEnd, UpdateEndStatus } from "../upgrader-job.js";
 import { recordUpdateEnd } from "../upgrader-job.js";
 import { eventReporter, type JobLog } from "../upgrader-reporter.js";
+import type { VerifiedCli } from "./cli-provenance.js";
 import type { AgentQueue } from "./queue.js";
 
 /** What the target release's `agent apply` is told (argv of the child). */
@@ -45,6 +48,8 @@ export interface AgentApplyRequest {
   readonly trigger: PlatformUpdateTrigger;
   /** From the verified manifest: the images the target must resolve to. */
   readonly digests: { readonly admin: string; readonly gateway: string };
+  /** The target's CLI, installed and provenance-verified (agent/cli-provenance.ts). */
+  readonly cliPath: string;
 }
 
 /** How the target's `agent apply` process ended. */
@@ -67,6 +72,12 @@ export interface AgentRunDeps {
   readonly fetchManifest: (version: string) => Promise<ReleaseManifestResult>;
   /** Take the install's upgrade lock (agent/lock.ts); throws when held. */
   readonly lock: () => () => void;
+  /**
+   * Install the target release's CLI and verify its npm signatures +
+   * provenance (agent/cli-provenance.ts). Nothing of it runs unless this
+   * passes.
+   */
+  readonly verifyTargetCli: (version: string) => Promise<VerifiedCli>;
   /** Run the target release's `agent apply` and wait for it. */
   readonly applyTarget: (request: AgentApplyRequest) => Promise<AgentApplyOutcome>;
   readonly now: () => Date;
@@ -193,6 +204,24 @@ export async function runAgentOnce(deps: AgentRunDeps): Promise<AgentRunResult> 
     }
     for (const w of decision.warnings) r.warn(w);
     const m = decision.manifest;
+    const step = r.step(
+      `Fetching the Caelo ${m.version} installer and verifying its npm provenance...`,
+    );
+    const cli = await deps.verifyTargetCli(m.version);
+    if (!cli.ok) {
+      step.failed(cli.error.message);
+      // A package that is not the release's is refused; a missing npm or a
+      // failed download is a failure to retry.
+      const refused = ["audit-signatures", "version", "provenance"].includes(cli.error.code);
+      return await stopWith(
+        refused ? "refused" : "failed",
+        [`cli-${cli.error.code}`],
+        `Nothing was changed: the installer of Caelo ${m.version} ${refused ? "is not the one Caelo's release workflow published" : "could not be fetched"} (${cli.error.message}).`,
+      );
+    }
+    step.done(
+      `The Caelo ${m.version} installer is signed and was built by Caelo's release workflow.`,
+    );
     r.info(
       `${installed?.version} → ${m.version}: handing over to the Caelo ${m.version} installer on this server.`,
     );
@@ -215,6 +244,7 @@ export async function runAgentOnce(deps: AgentRunDeps): Promise<AgentRunResult> 
         targetVersion: m.version,
         trigger: request.trigger,
         digests: { admin: m.digests.admin, gateway: m.digests.gateway },
+        cliPath: cli.cliPath,
       });
     } finally {
       clearInterval(beat);

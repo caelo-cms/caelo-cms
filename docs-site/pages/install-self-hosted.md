@@ -81,26 +81,28 @@ The agent is a systemd timer (`caelo-agent-<your-domain>-<hash>.timer`; `agent s
 1. it checks in with the database (the admin shows "Install update" only while the agent has checked in within the last five minutes, and shows what it found wrong on the server, such as a missing `cosign`);
 2. it picks up the oldest pending request;
 3. it downloads the release's **signed release manifest** and verifies it with cosign against Caelo's release workflow. It refuses a bad signature, an older or equal version, a release that needs an intermediate one first, and — for automatic installs — releases with destructive database changes or ones your update policy does not allow;
-4. only then it starts the provisioning CLI **of the new release** to run exactly the [upgrade](#upgrading) described above: verified images (which must match the manifest's digests), database backup, migrations, health-checked restart, rollback. That CLI writes every step into the timeline on Settings → Updates, and afterwards the agent runs the new release itself.
+4. it installs the provisioning CLI **of the new release** from npm into `.caelo/agent/cli/` (install scripts off) and verifies it the way the Cloud Shell installer does: `npm audit signatures` (registry signatures + Sigstore provenance) and SLSA provenance naming `caelo-cms/caelo-cms` at the release's tag. If that fails, the update is refused and nothing changes — there is no fallback to an unverified copy;
+5. only then it starts that CLI to run exactly the [upgrade](#upgrading) described above: verified images (which must match the manifest's digests), database backup, migrations, health-checked restart, rollback. That CLI writes every step into the timeline on Settings → Updates, and afterwards the agent runs the new release itself.
 
 Why a timer on the host and not a container: running Compose from inside a container needs the Docker socket, which is root on the host for anything that gets into that container. The agent needs nothing your user does not already have to run `docker compose`. No unit runs as root, and the admin never gets more than "write a request row".
 
-The agent reaches Postgres as its own login, `caelo_agent`, which may only read update requests, move them through their run states, write their timeline and its heartbeat — nothing else in the database. For it, Postgres is published on the host's **loopback interface only** (`127.0.0.1:15432`, or the next free port; `--port` picks another) — never on a public interface.
+The agent reaches Postgres as its own login, `caelo_agent`, which may only read update requests, move them through their run states, write their timeline and its heartbeat — nothing else in the database. For it, Postgres is published on the host's **loopback interface only** (`127.0.0.1:15432`, or the next free port; `--port` picks another) — never on a public interface. Publishing it restarts Postgres **once**, the first time the agent is set up: a few seconds of downtime, announced before it happens. Later runs find the port published and leave Postgres alone, and the agent itself never restarts Postgres outside an update.
 
 ### Set up, check, remove
 
 `init` and `upgrade` set the agent up (or bring it up to date) automatically on Linux. To do it yourself, run from the directory that holds `.caelo/`:
 
 ```bash
-bunx @caelo-cms/provisioning@<version> agent install     # idempotent; restarts Postgres once to publish the loopback port
+bunx @caelo-cms/provisioning@<version> agent install     # idempotent; the first run restarts Postgres once (a few seconds)
 bunx @caelo-cms/provisioning@<version> agent status      # timer, pinned version, last run
 bunx @caelo-cms/provisioning@<version> agent logs        # its journal (--follow, --lines N)
-bunx @caelo-cms/provisioning@<version> agent uninstall   # timer off, port unpublished; init/upgrade leave it off
+bunx @caelo-cms/provisioning@<version> agent uninstall   # timer off; the port goes with Postgres's next restart; init/upgrade leave it off
 ```
 
 Requirements on the server:
 
 - **Your user is in the `docker` group** (as it already must be to run the install). Membership in that group is equivalent to root on the host — that is Docker's design, not the agent's; the agent adds no further access. Rootless Docker works too: `DOCKER_HOST` is carried into the unit.
+- **npm** (Node.js) on the `PATH` the agent sees — it verifies the provenance of each release's CLI before running it.
 - **cosign** on the `PATH` the agent sees (the `PATH` of the shell that ran `agent install` is written into the unit).
 - **Lingering** for your user, so the timer runs while you are logged out. `agent install` switches it on (`loginctl enable-linger`); where the system policy does not allow that, it prints the one command an administrator runs: `sudo loginctl enable-linger <user>`.
 

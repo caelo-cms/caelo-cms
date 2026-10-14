@@ -66,9 +66,14 @@ export type PlatformUpdateTrigger = (typeof PLATFORM_UPDATE_TRIGGERS)[number];
  */
 export const PLATFORM_UPDATE_STALE_MINUTES = 90;
 
-/** Why a stale run was ended (shown on its timeline). */
+/**
+ * Why a stale run was ended (shown on its timeline). Provider-neutral: the
+ * same text ends a dead Google Cloud job run and a dead self-hosted agent
+ * run, and Settings → Updates shows each install its own way to upgrade by
+ * hand (Cloud Shell there, the upgrade command on the server here).
+ */
 export const PLATFORM_UPDATE_STALE_REASON =
-  "The upgrader stopped before it finished (its run timed out or crashed). The previous release may still serve, or the new one may be partly rolled out: open the site, and if it misbehaves run the upgrade once with Cloud Shell.";
+  "The upgrader stopped before it finished (its run timed out or crashed). The previous release may still serve, or the new one may be partly rolled out: open the site, and if it misbehaves run the upgrade by hand once — Settings → Updates shows how for this install.";
 
 /** Longest an event message may be (DB CHECK). */
 export const PLATFORM_UPDATE_EVENT_MAX = 4000;

@@ -43,6 +43,12 @@ export interface AgentUnitSpec {
   readonly path: string;
   /** DOCKER_HOST of the installing shell (rootless Docker), when set. */
   readonly dockerHost?: string;
+  /**
+   * The provenance-verified CLI of {@link version} (agent/cli-provenance.ts)
+   * — what an update re-pins the agent to. Without it the service runs the
+   * release the operator installed with (`bun x`, as they did by hand).
+   */
+  readonly cliPath?: string;
 }
 
 /** The longest a single run (one full upgrade) may take before systemd stops it. */
@@ -91,7 +97,10 @@ function environment(key: string, value: string): string {
 }
 
 /** The argv of one agent run (also what `agent status` shows). */
-export function agentRunArgv(spec: Pick<AgentUnitSpec, "bunPath" | "version">): string[] {
+export function agentRunArgv(
+  spec: Pick<AgentUnitSpec, "bunPath" | "version" | "cliPath">,
+): string[] {
+  if (spec.cliPath) return [spec.bunPath, spec.cliPath, "agent", "run"];
   return [spec.bunPath, "x", "--bun", agentPackageRef(spec.version), "agent", "run"];
 }
 
@@ -146,8 +155,9 @@ export function agentTimerUnit(spec: Pick<AgentUnitSpec, "name" | "domain">): st
 
 /** The release an installed service file runs, or null when it names none. */
 export function pinnedAgentVersion(serviceUnit: string): string | null {
-  const m = /@caelo-cms\/provisioning@([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)"/.exec(
-    serviceUnit,
-  );
+  const exec = /^ExecStart=.*$/m.exec(serviceUnit)?.[0] ?? "";
+  const m =
+    /@caelo-cms\/provisioning@([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)"/.exec(exec) ??
+    /\/caelo-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)\/node_modules\//.exec(exec);
   return m?.[1] ?? null;
 }
