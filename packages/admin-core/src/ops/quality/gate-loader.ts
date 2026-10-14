@@ -37,7 +37,7 @@ export async function loadGateAuditById(tx: Tx, auditRunId: string): Promise<Gat
 
 async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null> {
   const runs = (await tx.execute(sql`
-    SELECT id::text AS id, status, error_code, error_message,
+    SELECT id::text AS id, status, gate_rules, error_code, error_message,
            publish_override_by::text AS publish_override_by, publish_override_reason,
            COALESCE(checks->'siteProblems', '[]'::jsonb) AS site_problems
     FROM quality_audit_runs
@@ -46,6 +46,7 @@ async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null>
   `)) as unknown as {
     id: string;
     status: GateAudit["status"];
+    gate_rules: number;
     error_code: string | null;
     error_message: string | null;
     publish_override_by: string | null;
@@ -66,6 +67,7 @@ async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null>
   return {
     id: run.id,
     status: run.status,
+    gateRules: Number(run.gate_rules),
     errorCode: run.error_code,
     errorMessage: run.error_message,
     publishOverride:
@@ -88,8 +90,12 @@ async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null>
 export async function loadAcceptances(
   tx: Tx,
   pageIds: readonly string[],
-): Promise<{ findings: Set<string>; scores: Map<string, number>; checks: Map<string, number> }> {
-  const findings = new Set<string>();
+): Promise<{
+  findings: Map<string, number | null>;
+  scores: Map<string, number>;
+  checks: Map<string, number>;
+}> {
+  const findings = new Map<string, number | null>();
   const scores = new Map<string, number>();
   const checks = new Map<string, number>();
   const rows = (await tx.execute(sql`
@@ -111,9 +117,14 @@ export async function loadAcceptances(
       continue;
     }
     if (r.page_id === null) continue;
-    if (r.kind === "finding" && r.audit_id) findings.add(findingKey(r.page_id, r.audit_id));
+    if (r.kind === "finding" && r.audit_id) {
+      findings.set(
+        findingKey(r.page_id, r.audit_id),
+        r.accepted_score === null ? null : Number(r.accepted_score),
+      );
+    }
     if (r.kind === "score" && r.category && r.accepted_score !== null) {
-      scores.set(scoreKey(r.page_id, r.category), r.accepted_score);
+      scores.set(scoreKey(r.page_id, r.category), Number(r.accepted_score));
     }
   }
   return { findings, scores, checks };

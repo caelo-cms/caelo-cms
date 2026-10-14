@@ -5,8 +5,9 @@
  * service accounts, secrets or other cloud resources so the install matches
  * what the release's stacks declare — the gateway's run SA and the
  * CLI-generated runtime secrets, the stack's IAM/CDN/firewall invariants,
- * MCP access through IAP, the gateway's and public_role's database logins,
- * the operator-access sync job, and dropping bindings nothing reads any more.
+ * MCP access through IAP, public_role's Cloud SQL role memberships (#633),
+ * the gateway's and public_role's database logins, the operator-access sync
+ * job, and dropping bindings nothing reads any more.
  *
  * It needs the rights of whoever provisioned the install, so only
  * `cms-provision upgrade` (the operator's own identity) runs it — never the
@@ -33,6 +34,7 @@ import { upgraderServiceAccountEmail } from "../gcp-names.js";
 import type { InstallMetadata } from "../install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "../mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "../operator-access.js";
+import { revokePublicRoleMemberships } from "../public-role-isolation.js";
 import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
@@ -52,6 +54,7 @@ import {
   removeRetiredIamBindings,
 } from "../stack-converge.js";
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
+import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import type { AppRollHooks, AppRollPlan, RollPlan, RollSlug } from "./app-roll.js";
 import type { UpgradeReporter } from "./reporter.js";
 
@@ -90,8 +93,8 @@ export interface ConvergeDeps {
 
 export interface ConvergeSession {
   /**
-   * Before the app-roll: runtime identities + secrets, stack invariants, MCP
-   * access. False when a step the install cannot work without failed —
+   * Before the app-roll: runtime identities + secrets, stack invariants,
+   * public_role's Cloud SQL role memberships (#633), MCP access. False when a step the install cannot work without failed —
    * nothing app-side changed then.
    */
   beforeAppRoll(): Promise<boolean>;
@@ -195,6 +198,25 @@ export function startConverge(
     return true;
   }
 
+  async function publicRoleIsolation(): Promise<boolean> {
+    // #633 — the Admin API made public_role a member of cloudsqlsuperuser.
+    // Revoked here, before migrations, because the migration job's role
+    // audit is what verifies it and fails the upgrade while it remains.
+    const s = r.step("Removing public_role from the Cloud SQL superuser group...");
+    const outcome = await revokePublicRoleMemberships(
+      { projectId: install.projectId, env: install.env },
+      runDeps,
+    );
+    if (outcome.status === "failed") {
+      s.failed("public_role's role memberships could not be revoked. Aborting upgrade.");
+      r.error(`  ${outcome.error ?? ""}`);
+      r.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
+      return false;
+    }
+    s.done(`public_role holds no database roles (${outcome.detail ?? "revoked"})`);
+    return true;
+  }
+
   async function mcpAccess(): Promise<void> {
     // Issue #37 — the MCP service account + its IAP/token-creator bindings.
     // Also what the deep health check signs its IAP credential as. A failure
@@ -225,6 +247,29 @@ export function startConverge(
     r.warn("The upgrade continues; external MCP clients stay blocked by IAP until this succeeds.");
     incomplete = true;
     leaveUntouched.push(MCP_ENV_VAR);
+  }
+
+  async function urlMapRedirectsAccess(): Promise<void> {
+    // #587 — on `gcp` the admin writes the redirects table into the URL map
+    // on Confirm-publish, through a custom role the stack declares. Without
+    // it Confirm-publish fails loudly (403); the rest of the install works,
+    // so a failure here warns.
+    if (install.provider !== "gcp") return;
+    const s = r.step("Ensuring the admin may write redirects into the URL map...");
+    const access = await ensureUrlMapRedirectsAccess({
+      projectId: install.projectId,
+      env: install.env,
+      ...runDeps,
+    });
+    if (access.ok) {
+      s.done(`URL-map redirects role ready (${access.role})`);
+      return;
+    }
+    s.warned(`URL-map redirects role not set up: ${access.error}`);
+    r.warn(
+      "The upgrade continues; Confirm-publish fails with a permission error until this succeeds. Re-run upgrade with an account that may manage IAM roles.",
+    );
+    incomplete = true;
   }
 
   /** The admin's IAP resource: the service on gcp-firebase, the LB backend on gcp. */
@@ -372,7 +417,9 @@ export function startConverge(
       if (deps.provisionerIdentity && !(await deps.provisionerIdentity())) return false;
       if (!(await runtimeIdentities())) return false;
       if (!(await stackInvariants())) return false;
+      if (!(await publicRoleIsolation())) return false;
       await mcpAccess();
+      await urlMapRedirectsAccess();
       return true;
     },
 

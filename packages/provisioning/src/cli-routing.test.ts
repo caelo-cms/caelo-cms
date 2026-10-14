@@ -13,6 +13,18 @@ describe("resolveCliRoute", () => {
     ).toEqual({ kind: "wizard" });
   });
 
+  it("routes the self-hosted one-command install to init (#707)", () => {
+    expect(
+      resolveCliRoute(
+        argv("--provider", "self-hosted", "--domain", "example.com", "--owner-email", "o@x.y"),
+        HANDLERS,
+      ),
+    ).toEqual({ kind: "handler", name: "init" });
+    expect(resolveCliRoute(argv("--provider", "self-hosted", "--help"), HANDLERS)).toEqual({
+      kind: "usage",
+    });
+  });
+
   it("routes a bare invocation to the wizard", () => {
     expect(resolveCliRoute(argv(), HANDLERS)).toEqual({ kind: "wizard" });
   });

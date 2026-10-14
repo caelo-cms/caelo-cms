@@ -253,6 +253,18 @@ describe("assessAutoInstall", () => {
     );
     expect(a.mode).toBe("manual");
     expect(a.reasons[0]).toContain("1 → 3");
+    expect(a.reasons[0]).toContain("public_role out of the Cloud SQL superuser group (#633)");
+  });
+
+  it("names both pending infrastructure steps for a 2 → 4 bump (#633, #587)", () => {
+    const a = assessAutoInstall(
+      { ...MANIFEST, infraContractVersion: 4 },
+      { ...installed, infraContractVersion: 2 },
+    );
+    expect(a.mode).toBe("manual");
+    expect(a.reasons[0]).toContain(
+      "2 → 4: public_role out of the Cloud SQL superuser group (#633); the admin's permission to serve redirects from the load balancer (#587)",
+    );
   });
 
   it("refuses downgrades, re-installs and versions below minFromVersion", () => {

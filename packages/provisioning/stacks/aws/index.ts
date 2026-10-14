@@ -11,8 +11,9 @@
  *     - Bootstrap script runs as a one-shot ECS task post-create.
  *  3. S3 buckets: caelo-media + caelo-static (per env).
  *  4. CloudFront distribution with two origins (S3 static + ALB-fronted ECS).
- *     Static files are served as files — no edge compute on the request
- *     path (CLAUDE.md §11.B Tier 1).
+ *     Static files are served as files (CLAUDE.md §11.B Tier 1); the only
+ *     edge code is the redirects table's CloudFront Function, a KeyValueStore
+ *     lookup that runs before the origin (#587).
  *  5. ECS Fargate cluster + four services (admin, gateway, orchestrator, runner).
  *  6. Secrets Manager entries (postgres-password, anthropic-api-key, ...).
  *  7. Route 53 hosted zone + ACM certs per (domain, locale).
@@ -26,6 +27,7 @@
  * is to wire those env vars to AWS-native resources.
  */
 
+import { cloudFrontRedirectFunctionCode } from "@caelo-cms/shared";
 import * as aws from "@pulumi/aws";
 import * as awsx from "@pulumi/awsx";
 import * as pulumi from "@pulumi/pulumi";
@@ -225,6 +227,27 @@ const cert = new aws.acm.Certificate(
   { provider: usEast1Provider },
 );
 
+// === 6b. Redirects at the edge (#587) ===
+// The redirects table: a CloudFront Function on viewer-request answers each
+// redirected path from a KeyValueStore before the S3 origin is asked
+// (redirect-emit-cloudfront.ts in @caelo-cms/shared). The deploy writes
+// the store, so redirects change without republishing the function.
+// FIXME(issue #749): the S3 static publisher is still a stub (#5); until
+// it writes the store, the function finds no keys and every request passes
+// through to the origin.
+const redirectKvs = new aws.cloudfront.KeyValueStore(`${namePrefix}-redirects`, {
+  name: `${namePrefix}-redirects`,
+  comment: `Caelo ${env} redirects table (#587)`,
+});
+const redirectFunction = new aws.cloudfront.Function(`${namePrefix}-redirects`, {
+  name: `${namePrefix}-redirects`,
+  runtime: "cloudfront-js-2.0",
+  comment: `Caelo ${env}: answer the redirects table at the edge (#587)`,
+  publish: true,
+  code: redirectKvs.arn.apply((arn) => cloudFrontRedirectFunctionCode(kvsIdFromArn(arn))),
+  keyValueStoreAssociations: [redirectKvs.arn],
+});
+
 // === 7. CloudFront distribution ===
 const distribution = new aws.cloudfront.Distribution(`${namePrefix}-cdn`, {
   enabled: true,
@@ -252,6 +275,7 @@ const distribution = new aws.cloudfront.Distribution(`${namePrefix}-cdn`, {
     minTtl: 0,
     defaultTtl: 60,
     maxTtl: 86400,
+    functionAssociations: [{ eventType: "viewer-request", functionArn: redirectFunction.arn }],
   },
   orderedCacheBehaviors: [
     {
@@ -421,6 +445,7 @@ export const edgeLogSinkUrlOut = out.edgeLogSinkUrl;
 export const providerOut = out.provider;
 export const environmentOut = out.environment;
 export const cloudfrontDomainOut = distribution.domainName;
+export const redirectKvsArnOut = redirectKvs.arn;
 export const ecsClusterArnOut = cluster.arn;
 export const rdsAddressOut = db.address;
 
@@ -429,3 +454,10 @@ export const rdsAddressOut = db.address;
 // state via `pulumi.secret(...)`. Operators retrieve via
 // `pulumi stack output --show-secrets`.
 export const bootstrapTokenExpiresAtOut = tokenInfo.expiresAt;
+
+/** A KeyValueStore's id: the last segment of its ARN. */
+function kvsIdFromArn(arn: string): string {
+  const id = arn.slice(arn.lastIndexOf("/") + 1);
+  if (!id || id === arn) throw new Error(`not a CloudFront KeyValueStore ARN: ${arn}`);
+  return id;
+}

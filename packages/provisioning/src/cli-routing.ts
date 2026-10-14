@@ -30,6 +30,13 @@ export function resolveCliRoute(argv: readonly string[], handlerNames: Iterable<
   if (argv.includes("--no-wizard") || argv.includes("--help") || argv.includes("-h")) {
     return { kind: "usage" };
   }
+  // #707 — `--provider self-hosted --domain … --owner-email …` is the
+  // self-hosted one-command install: `init` writes `.caelo/` and starts the
+  // stack. (The cloud wizard has nothing to provision for it.)
+  const provider = argv.indexOf("--provider");
+  if (provider !== -1 && argv[provider + 1] === "self-hosted") {
+    return { kind: "handler", name: "init" };
+  }
   return { kind: "wizard" };
 }
 

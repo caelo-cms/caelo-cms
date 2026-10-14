@@ -2,7 +2,7 @@
 
 /**
  * Issue #553 — reduce Lighthouse results (LHRs) to the compact
- * `PageMeasurement` the ratchet evaluates. Pure; runs inside the audit
+ * `PageMeasurement` the gate evaluates (ratchet.ts). Pure; runs inside the audit
  * child process so the multi-megabyte LHR never crosses the process
  * boundary.
  *
@@ -144,8 +144,13 @@ export class LighthouseRunError extends Error {
   }
 }
 
-/** Lighthouse's own pass threshold (report-utils `showAsPassed`). */
-const PASS_MIN_SCORE = 0.9;
+/**
+ * A scored audit passes only at a perfect score (#727, "optimum, not good
+ * enough"): every audit below 1 is a finding. Lighthouse's own report shows
+ * audits at >= 0.9 as passed; the gate deliberately does not — a 0.9 is
+ * work left on the table, and the AI is asked to finish it.
+ */
+const PASS_SCORE = 1;
 
 /** Score display modes that can fail. `informative`, `manual`,
  *  `notApplicable` and `error` never count as findings. */
@@ -230,7 +235,7 @@ export function failingAudits(lhr: LhrLike): FailingAudit[] {
   for (const [id, categories] of categoriesOf) {
     const audit = lhr.audits[id];
     if (!audit || audit.score === null || !SCORED_MODES.has(audit.scoreDisplayMode)) continue;
-    if (audit.score >= PASS_MIN_SCORE) continue;
+    if (audit.score >= PASS_SCORE) continue;
     const elements = flaggedElements(audit.details);
     out.push({
       id,

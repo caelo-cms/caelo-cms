@@ -28,17 +28,30 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  assertGcpRedirectBudget,
+  buildRedirectPlan,
+  GCP_PUBLIC_BASE_PATHS,
   HTML_CACHE_CONTROL,
   IMMUTABLE_CACHE_CONTROL,
   isContentHashedPath,
+  parseRedirectsFile,
+  type RedirectPlan,
 } from "@caelo-cms/shared";
 import type { Bucket, Storage as StorageType } from "@google-cloud/storage";
+import {
+  adcComputeApi,
+  applyGcpRedirectPlan,
+  type GcpComputeApi,
+} from "./gcp-url-map-redirects.js";
 import { cacheControlForContentType, contentTypeFor } from "./static-file-policy.js";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
 const PARALLEL_UPLOADS = 100;
 const PARALLEL_COPIES = 100;
 const MANIFEST_KEY = "_state/last-build-manifest.json";
+/** #587 — the staged run's redirect plan, in the staging bucket outside the
+ *  run's file prefix (promote copies that prefix to the live bucket). */
+const redirectPlanKey = (runId: string) => `_redirect-plans/${runId}.json`;
 
 /**
  * Bump whenever `cacheControlForContentType` / `cacheControlFor`
@@ -96,185 +109,294 @@ async function bucketHandles(): Promise<BucketHandles> {
   };
 }
 
-export const gcsStaticPublisher: StaticPublisher = {
-  async publishStaging({ buildDir, runId, target: _target }) {
-    const h = await bucketHandles();
-    const files = await walkBuildDir(buildDir);
-    const manifest = await readLiveManifest(h.staticBucket);
-    // v0.2.85 — read the per-key Content-Type sidecar emitted by
-    // the static-generator. Keys whose Content-Type can't be
-    // inferred from extension (bare-slug pages in 'no-extension'
-    // mode) are declared here; the publisher uses the override
-    // before falling back to extension-based lookup.
-    const contentTypeOverrides = await readContentTypeOverrides(buildDir);
-    let uploaded = 0;
-    let skipped = 0;
-    const prefix = `${runId}/`;
-    await runBatched(files, PARALLEL_UPLOADS, async (file) => {
-      const localCrc = await crc32cOfFile(file.absolutePath);
-      const liveCrc = manifest?.files[file.relativePath];
-      if (liveCrc === localCrc) {
-        // Identical to what's currently live. Don't upload to
-        // staging — the staging-preview proxy falls back to the
-        // static bucket for missing files. Saves storage + time.
-        skipped += 1;
-        return;
-      }
-      const contentType =
-        contentTypeOverrides[file.relativePath] ?? contentTypeFor(file.relativePath);
-      await uploadFile(h.stagingBucket, {
-        key: prefix + file.relativePath,
-        sitePath: file.relativePath,
-        absolutePath: file.absolutePath,
-        contentType,
-      });
-      uploaded += 1;
-    });
-    return {
-      provider: "gcp",
-      uploadedCount: uploaded,
-      skippedUnchangedCount: skipped,
-      location: `gs://${h.stagingBucketName}/${prefix}`,
-    };
-  },
+/** What the GCS publisher reaches beyond the buckets (tests inject fakes). */
+export interface GcsPublisherDeps {
+  /** The Compute API the redirect rules are written through (#587). */
+  readonly computeApi: () => Promise<GcpComputeApi>;
+}
 
-  async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl }) {
-    const h = await bucketHandles();
-    // List everything under the staging prefix — the only files there
-    // are the ones publishStaging actually changed. Server-side copy
-    // each into the static bucket. Then update the live manifest.
-    const prefix = `${sourceRunId}/`;
-    const [stagedFiles] = await h.stagingBucket.getFiles({ prefix });
-    if (stagedFiles.length === 0) {
-      throw new Error(
-        `promoteToProduction: no staged files found under gs://${h.stagingBucketName}/${prefix}. Run Stage first.`,
-      );
-    }
-    const { buildRobotsTxtWithSitemap, envNoindexBuildError, manifestBakesEnvNoindex } =
-      await import("@caelo-cms/static-generator");
-    // routing-manifest.json changes every build (runId, builtAt), so the
-    // hash-skip never leaves it out of the staging prefix.
-    const stagingManifest = h.stagingBucket.file(`${prefix}routing-manifest.json`);
-    const [stagingManifestExists] = await stagingManifest.exists();
-    const stagingManifestBody = stagingManifestExists
-      ? (await stagingManifest.download())[0].toString("utf8")
-      : null;
-    if (
-      fromTarget.robotsDefault === "noindex" &&
-      toTarget.robotsDefault === "index" &&
-      manifestBakesEnvNoindex(parseJsonOrNull(stagingManifestBody))
-    ) {
-      throw envNoindexBuildError(sourceRunId);
-    }
-    let copied = 0;
-    await runBatched(stagedFiles, PARALLEL_COPIES, async (stagedFile) => {
-      const relPath = stagedFile.name.slice(prefix.length);
-      // robots.txt + routing-manifest are per-target — overwrite with
-      // the destination target's values rather than copying staging's.
-      // We re-render those after the copy loop completes.
-      if (relPath === "robots.txt" || relPath === "routing-manifest.json") {
-        return;
-      }
-      // Keep the Content-Type publishStaging stored on the staged
-      // object: bare-slug pages ('no-extension' URL style) were
-      // uploaded as text/html via the _content-types.json sidecar, and
-      // re-deriving from the (missing) extension here would demote
-      // them to application/octet-stream with the 1h asset policy.
-      const stagedContentType = (stagedFile.metadata as { contentType?: unknown } | undefined)
-        ?.contentType;
-      const contentType =
-        typeof stagedContentType === "string" ? stagedContentType : contentTypeFor(relPath);
-      await stagedFile.copy(h.staticBucket.file(relPath), {
-        contentType,
-        metadata: { cacheControl: cacheControlForContentType(contentType, relPath) },
+/** The GCS publisher; {@link gcsStaticPublisher} is the production one. */
+export function createGcsStaticPublisher(
+  deps: GcsPublisherDeps = { computeApi: adcComputeApi },
+): StaticPublisher {
+  return {
+    async publishStaging({ buildDir, runId, target }) {
+      const h = await bucketHandles();
+      const files = await walkBuildDir(buildDir);
+      const manifest = await readLiveManifest(h.staticBucket);
+      // v0.2.85 — read the per-key Content-Type sidecar emitted by
+      // the static-generator. Keys whose Content-Type can't be
+      // inferred from extension (bare-slug pages in 'no-extension'
+      // mode) are declared here; the publisher uses the override
+      // before falling back to extension-based lookup.
+      const contentTypeOverrides = await readContentTypeOverrides(buildDir);
+      let uploaded = 0;
+      let skipped = 0;
+      const prefix = `${runId}/`;
+      await runBatched(files, PARALLEL_UPLOADS, async (file) => {
+        const localCrc = await crc32cOfFile(file.absolutePath);
+        const liveCrc = manifest?.files[file.relativePath];
+        if (liveCrc === localCrc) {
+          // Identical to what's currently live. Don't upload to
+          // staging — the staging-preview proxy falls back to the
+          // static bucket for missing files. Saves storage + time.
+          skipped += 1;
+          return;
+        }
+        const contentType =
+          contentTypeOverrides[file.relativePath] ?? contentTypeFor(file.relativePath);
+        await uploadFile(h.stagingBucket, {
+          key: prefix + file.relativePath,
+          sitePath: file.relativePath,
+          absolutePath: file.absolutePath,
+          contentType,
+        });
+        uploaded += 1;
       });
-      copied += 1;
-    });
-    // Apply per-target robots.txt + routing-manifest overrides. After
-    // the copy loop the sitemap is live whether it changed (copied just
-    // now) or was hash-skipped as unchanged. Staging's X-Robots-Tag
-    // lives only on the staging-preview proxy response, never in object
-    // metadata, so there is no header to strip here.
-    const [sitemapLive] = await h.staticBucket.file("sitemap.xml").exists();
-    const robotsBody = buildRobotsTxtWithSitemap(toTarget.robotsDefault, siteBaseUrl, sitemapLive);
-    await uploadBytes(h.staticBucket, "robots.txt", Buffer.from(robotsBody, "utf8"), "text/plain");
-    copied += 1;
-    // Refresh the routing manifest if staging produced one.
-    if (stagingManifestBody !== null) {
-      try {
-        const manifest = JSON.parse(stagingManifestBody) as Record<string, unknown>;
-        manifest.target = toTarget.name;
-        manifest.env = toTarget.env;
-        await uploadBytes(
-          h.staticBucket,
-          "routing-manifest.json",
-          Buffer.from(JSON.stringify(manifest, null, 2), "utf8"),
-          "application/json",
+      // #587 — the redirects go live with Confirm-publish, as URL-map rules.
+      // The plan needs this build's file list (the live page wins), which
+      // promote no longer has, so it is computed and checked against the
+      // URL-map quota here: an over-quota set fails Stage, not Publish live.
+      const plan = await redirectPlanForBuild(
+        buildDir,
+        target.pageUrlStyle ?? "directory",
+        files.map((f) => f.relativePath),
+      );
+      await uploadBytes(
+        h.stagingBucket,
+        redirectPlanKey(runId),
+        Buffer.from(JSON.stringify(plan), "utf8"),
+        "application/json",
+      );
+      return {
+        provider: "gcp",
+        uploadedCount: uploaded,
+        skippedUnchangedCount: skipped,
+        location: `gs://${h.stagingBucketName}/${prefix}`,
+      };
+    },
+
+    async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl }) {
+      const h = await bucketHandles();
+      // List everything under the staging prefix — the only files there
+      // are the ones publishStaging actually changed. Server-side copy
+      // each into the static bucket. Then update the live manifest.
+      const prefix = `${sourceRunId}/`;
+      const [stagedFiles] = await h.stagingBucket.getFiles({ prefix });
+      if (stagedFiles.length === 0) {
+        throw new Error(
+          `promoteToProduction: no staged files found under gs://${h.stagingBucketName}/${prefix}. Run Stage first.`,
         );
-        copied += 1;
-      } catch {
-        // Malformed manifest — skip the per-target patch.
       }
-    }
-    // Update the live manifest with the new state. We rebuild it from
-    // the static bucket's actual contents to stay self-consistent —
-    // someone may have edited objects out-of-band.
-    const newManifest = await buildLiveManifest(h.staticBucket, sourceRunId);
-    await uploadBytes(
-      h.staticBucket,
-      MANIFEST_KEY,
-      Buffer.from(JSON.stringify(newManifest), "utf8"),
-      "application/json",
-    );
-    const summary: PromoteSummary = {
-      provider: "gcp",
-      uploadedCount: copied,
-      skippedUnchangedCount: 0,
-      location: `gs://${h.staticBucketName}/`,
-      destinationBuildId: sourceRunId,
-    };
-    return summary;
-  },
-
-  async rollback({ sourceBuildDir, target: _target }): Promise<PublishSummary> {
-    // Rollback re-uploads the archived build dir to the static bucket
-    // root. Because we don't archive cloud builds today (only the
-    // _staging/<runId>/ prefix lives in staging bucket), rollback on
-    // cloud requires the operator to keep the source build dir on the
-    // admin's local /tmp — out of scope for v0.2.78. The Ops dashboard
-    // surfaces "rollback is local-disk only" until v0.2.79+ adds a
-    // builds/<runId>/ archive prefix to the static bucket.
-    if (!sourceBuildDir) {
-      throw new Error(
-        "static-publisher-gcs.rollback: cloud rollback requires an archived build dir (not yet implemented in v0.2.78). Tracked for v0.2.79+.",
-      );
-    }
-    const h = await bucketHandles();
-    const files = await walkBuildDir(sourceBuildDir);
-    // v0.2.85 — same content-type-override pattern as publishStaging
-    // so a rollback restores bare-slug pages with the right
-    // Content-Type.
-    const contentTypeOverrides = await readContentTypeOverrides(sourceBuildDir);
-    let uploaded = 0;
-    await runBatched(files, PARALLEL_UPLOADS, async (file) => {
-      const contentType =
-        contentTypeOverrides[file.relativePath] ?? contentTypeFor(file.relativePath);
-      await uploadFile(h.staticBucket, {
-        key: file.relativePath,
-        sitePath: file.relativePath,
-        absolutePath: file.absolutePath,
-        contentType,
+      const { buildRobotsTxtWithSitemap, envNoindexBuildError, manifestBakesEnvNoindex } =
+        await import("@caelo-cms/static-generator");
+      // routing-manifest.json changes every build (runId, builtAt), so the
+      // hash-skip never leaves it out of the staging prefix.
+      const stagingManifest = h.stagingBucket.file(`${prefix}routing-manifest.json`);
+      const [stagingManifestExists] = await stagingManifest.exists();
+      const stagingManifestBody = stagingManifestExists
+        ? (await stagingManifest.download())[0].toString("utf8")
+        : null;
+      if (
+        fromTarget.robotsDefault === "noindex" &&
+        toTarget.robotsDefault === "index" &&
+        manifestBakesEnvNoindex(parseJsonOrNull(stagingManifestBody))
+      ) {
+        throw envNoindexBuildError(sourceRunId);
+      }
+      // #587 — read before any file moves: a run staged without a plan
+      // fails here with nothing changed.
+      const redirectPlan = await readStagedRedirectPlan(h.stagingBucket, sourceRunId);
+      let copied = 0;
+      await runBatched(stagedFiles, PARALLEL_COPIES, async (stagedFile) => {
+        const relPath = stagedFile.name.slice(prefix.length);
+        // robots.txt + routing-manifest are per-target — overwrite with
+        // the destination target's values rather than copying staging's.
+        // We re-render those after the copy loop completes.
+        if (relPath === "robots.txt" || relPath === "routing-manifest.json") {
+          return;
+        }
+        // Keep the Content-Type publishStaging stored on the staged
+        // object: bare-slug pages ('no-extension' URL style) were
+        // uploaded as text/html via the _content-types.json sidecar, and
+        // re-deriving from the (missing) extension here would demote
+        // them to application/octet-stream with the 1h asset policy.
+        const stagedContentType = (stagedFile.metadata as { contentType?: unknown } | undefined)
+          ?.contentType;
+        const contentType =
+          typeof stagedContentType === "string" ? stagedContentType : contentTypeFor(relPath);
+        await stagedFile.copy(h.staticBucket.file(relPath), {
+          contentType,
+          metadata: { cacheControl: cacheControlForContentType(contentType, relPath) },
+        });
+        copied += 1;
       });
-      uploaded += 1;
-    });
-    return {
-      provider: "gcp",
-      uploadedCount: uploaded,
-      skippedUnchangedCount: 0,
-      location: `gs://${h.staticBucketName}/`,
-    };
-  },
-};
+      // Apply per-target robots.txt + routing-manifest overrides. After
+      // the copy loop the sitemap is live whether it changed (copied just
+      // now) or was hash-skipped as unchanged. Staging's X-Robots-Tag
+      // lives only on the staging-preview proxy response, never in object
+      // metadata, so there is no header to strip here.
+      const [sitemapLive] = await h.staticBucket.file("sitemap.xml").exists();
+      const robotsBody = buildRobotsTxtWithSitemap(
+        toTarget.robotsDefault,
+        siteBaseUrl,
+        sitemapLive,
+      );
+      await uploadBytes(
+        h.staticBucket,
+        "robots.txt",
+        Buffer.from(robotsBody, "utf8"),
+        "text/plain",
+      );
+      copied += 1;
+      // Refresh the routing manifest if staging produced one.
+      if (stagingManifestBody !== null) {
+        try {
+          const manifest = JSON.parse(stagingManifestBody) as Record<string, unknown>;
+          manifest.target = toTarget.name;
+          manifest.env = toTarget.env;
+          await uploadBytes(
+            h.staticBucket,
+            "routing-manifest.json",
+            Buffer.from(JSON.stringify(manifest, null, 2), "utf8"),
+            "application/json",
+          );
+          copied += 1;
+        } catch {
+          // Malformed manifest — skip the per-target patch.
+        }
+      }
+      // Update the live manifest with the new state. We rebuild it from
+      // the static bucket's actual contents to stay self-consistent —
+      // someone may have edited objects out-of-band.
+      const newManifest = await buildLiveManifest(h.staticBucket, sourceRunId);
+      await uploadBytes(
+        h.staticBucket,
+        MANIFEST_KEY,
+        Buffer.from(JSON.stringify(newManifest), "utf8"),
+        "application/json",
+      );
+      // #587 — after the files: the redirects of the build now live.
+      await applyRedirectPlan(redirectPlan, await deps.computeApi());
+      const summary: PromoteSummary = {
+        provider: "gcp",
+        uploadedCount: copied,
+        skippedUnchangedCount: 0,
+        location: `gs://${h.staticBucketName}/`,
+        destinationBuildId: sourceRunId,
+      };
+      return summary;
+    },
+
+    async rollback({ sourceBuildDir, target }): Promise<PublishSummary> {
+      // Rollback re-uploads the archived build dir to the static bucket
+      // root. Because we don't archive cloud builds today (only the
+      // _staging/<runId>/ prefix lives in staging bucket), rollback on
+      // cloud requires the operator to keep the source build dir on the
+      // admin's local /tmp — out of scope for v0.2.78. The Ops dashboard
+      // surfaces "rollback is local-disk only" until v0.2.79+ adds a
+      // builds/<runId>/ archive prefix to the static bucket.
+      if (!sourceBuildDir) {
+        throw new Error(
+          "static-publisher-gcs.rollback: cloud rollback requires an archived build dir (not yet implemented in v0.2.78). Tracked for v0.2.79+.",
+        );
+      }
+      const h = await bucketHandles();
+      const files = await walkBuildDir(sourceBuildDir);
+      // v0.2.85 — same content-type-override pattern as publishStaging
+      // so a rollback restores bare-slug pages with the right
+      // Content-Type.
+      const contentTypeOverrides = await readContentTypeOverrides(sourceBuildDir);
+      let uploaded = 0;
+      await runBatched(files, PARALLEL_UPLOADS, async (file) => {
+        const contentType =
+          contentTypeOverrides[file.relativePath] ?? contentTypeFor(file.relativePath);
+        await uploadFile(h.staticBucket, {
+          key: file.relativePath,
+          sitePath: file.relativePath,
+          absolutePath: file.absolutePath,
+          contentType,
+        });
+        uploaded += 1;
+      });
+      // #587 — the rolled-back build's redirects, as on Confirm-publish.
+      await applyRedirectPlan(
+        await redirectPlanForBuild(
+          sourceBuildDir,
+          target.pageUrlStyle ?? "directory",
+          files.map((f) => f.relativePath),
+        ),
+        await deps.computeApi(),
+      );
+      return {
+        provider: "gcp",
+        uploadedCount: uploaded,
+        skippedUnchangedCount: 0,
+        location: `gs://${h.staticBucketName}/`,
+      };
+    },
+  };
+}
+
+export const gcsStaticPublisher: StaticPublisher = createGcsStaticPublisher();
+
+/**
+ * The redirect plan of a local build, checked against the URL-map quota.
+ * Every build carries `_redirects`; one without it is not a generator build.
+ */
+async function redirectPlanForBuild(
+  buildDir: string,
+  pageUrlStyle: "directory" | "no-extension",
+  relativePaths: readonly string[],
+): Promise<RedirectPlan> {
+  let file: string;
+  try {
+    file = await readFile(join(buildDir, "_redirects"), "utf8");
+  } catch (e) {
+    throw new Error(
+      `static-publisher-gcs: ${join(buildDir, "_redirects")} is missing (${(e as Error).message}). The static generator writes it on every build; re-run the build instead of deploying a partial directory.`,
+    );
+  }
+  const plan = buildRedirectPlan({
+    rows: parseRedirectsFile(file),
+    pageUrlStyle,
+    servedFiles: new Set(relativePaths),
+  });
+  assertGcpRedirectBudget(plan, [{ paths: GCP_PUBLIC_BASE_PATHS }]);
+  return plan;
+}
+
+async function readStagedRedirectPlan(stagingBucket: Bucket, runId: string): Promise<RedirectPlan> {
+  const file = stagingBucket.file(redirectPlanKey(runId));
+  const [exists] = await file.exists();
+  if (!exists) {
+    throw new Error(
+      `static-publisher-gcs: the redirect plan of run ${runId} (gs://<staging>/${redirectPlanKey(runId)}) is missing — the run was staged by an older release or the object was deleted. Run Stage again, then Confirm-publish.`,
+    );
+  }
+  const plan = JSON.parse((await file.download())[0].toString("utf8")) as RedirectPlan;
+  if (!Array.isArray(plan.redirects) || !Array.isArray(plan.gone)) {
+    throw new Error(
+      `static-publisher-gcs: gs://<staging>/${redirectPlanKey(runId)} is not a redirect plan. Run Stage again, then Confirm-publish.`,
+    );
+  }
+  return plan;
+}
+
+/** Put a plan live on the load balancer routing the site's host. */
+async function applyRedirectPlan(plan: RedirectPlan, api: GcpComputeApi): Promise<void> {
+  const siteUrl = process.env.CAELO_SITE_URL;
+  if (!siteUrl) {
+    throw new Error(
+      "static-publisher-gcs: CAELO_SITE_URL not set. The GCP Pulumi stack sets it on the admin Cloud Run service; the redirects are served for that host.",
+    );
+  }
+  await applyGcpRedirectPlan({
+    plan,
+    siteHost: new URL(siteUrl).host,
+    api,
+  });
+}
 
 function parseJsonOrNull(raw: string | null): unknown {
   if (raw === null) return null;

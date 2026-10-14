@@ -5,11 +5,11 @@
  * on-demand list_/get_ tools, no system-prompt context block).
  *
  *   get_quality_audit         the full findings of one audit: per page the
- *                             scores vs. baselines, the Performance metrics
- *                             (FCP, LCP, TBT, CLS, SI), every problem with its
- *                             Lighthouse audit id or page-check rule id
- *                             (#727, with its fix hint), held-back
- *                             Performance signals, and infrastructure errors.
+ *                             scores vs. the 100 target, the Performance
+ *                             metrics (FCP, LCP, TBT, CLS, SI), every problem
+ *                             with its Lighthouse audit id or page-check rule
+ *                             id (#727, with its fix hint) — accepted ones
+ *                             marked — and infrastructure errors.
  *   check_stage_audit         whether the next Stage runs Lighthouse, and the
  *                             last measured metrics of the pages it touches.
  *   list_quality_audits       recent audit runs and how they ended.
@@ -73,9 +73,9 @@ function statusLine(run: AuditRun): string {
     case "running":
       return `Audit ${run.status} — it takes 1–2 minutes. ${AUDIT_PENDING_NEXT_STEP}`;
     case "passed":
-      return "Audit passed: no new problems.";
+      return "Audit passed: 100 in every category and no findings.";
     case "problems":
-      return `Audit found ${run.problemCount} problem(s).`;
+      return `Audit found ${run.problemCount} problem(s) off the target (100 in every category, zero findings); those an editor accepted are marked and do not block.`;
     case "errored":
       return `Audit FAILED (${run.errorCode ?? "error"}): ${run.errorMessage ?? "no reason recorded"}. This is an infrastructure failure, not a verdict on the pages.`;
     case "skipped":
@@ -93,11 +93,11 @@ function statusLine(run: AuditRun): string {
 function ownerNote(owner: ReturnType<typeof findingOwner>): string {
   switch (owner) {
     case "platform":
-      return " — CAELO PLATFORM: decided by Caelo's hosting/build setup, not by this site. Do not edit the site for it and do not propose accepting it: report it with bug_report and tell the operator it is a Caelo issue you reported; Publish live stays blocked unless the operator decides to accept it.";
+      return " — CAELO PLATFORM: decided by Caelo's hosting/build setup, not by this site. Do not edit the site for it: report it with bug_report and tell the operator it is a Caelo issue you reported. Publish live stays blocked until Caelo fixes it or the operator decides to accept it (you may hand them that decision per group, explained — never recommend it).";
     case "site":
       return " — caused by this site: the flagged URLs/reasons point at a module's script or third-party embed; fix that module.";
     case "check":
-      return " — read the flagged items: same-site files (/_assets/…, /_caelo/…, pages) and browser-flag or response-header reasons are a CAELO PLATFORM issue (report with bug_report, do not propose accepting it); third-party URLs and script reasons (e.g. an unload handler) are fixed in the module; any other browser reason (e.g. memory) is neither — describe it, don't change the site for it.";
+      return " — read the flagged items: same-site files (/_assets/…, /_caelo/…, pages) and browser-flag or response-header reasons are a CAELO PLATFORM issue (report with bug_report, do not edit the site for it); third-party URLs and script reasons (e.g. an unload handler) are fixed in the module; any other browser reason (e.g. memory) is neither — describe it, don't change the site for it.";
     case null:
       return "";
   }
@@ -105,8 +105,8 @@ function ownerNote(owner: ReturnType<typeof findingOwner>): string {
 
 /**
  * One audited page as the AI reads it in `get_quality_audit`: scores vs.
- * baselines, each problem with the elements / console entries that locate
- * its fix, and the held-back Performance signals.
+ * the 100 target, each problem with the elements / console entries that
+ * locate its fix, accepted problems marked as such.
  *
  * @returns the page's lines (joined by the tool's formatter)
  */
@@ -118,21 +118,22 @@ export function formatPage(p: AuditPage): string[] {
   }
   if (p.scores) {
     lines.push(
-      `scores (baseline): ${Object.entries(p.scores)
-        .map(
-          ([c, s]) =>
-            `${CATEGORY_LABEL[c] ?? c} ${s} (${p.baselines[c as keyof typeof p.baselines]})`,
-        )
+      `scores (target 100 each): ${Object.entries(p.scores)
+        .map(([c, s]) => `${CATEGORY_LABEL[c] ?? c} ${s}`)
         .join(", ")}; Performance runs ${p.performanceRuns.join("/")}`,
     );
   }
   if (p.metrics) lines.push(...formatMetrics(p.metrics));
-  for (const problem of p.problems) {
+  for (const [index, problem] of p.problems.entries()) {
+    const accepted = p.problemAccepted[index] === true;
+    const tag = accepted
+      ? "ACCEPTED by an editor (does not block; leave it unless asked)"
+      : "PROBLEM";
     if (problem.kind === "check_rule") {
-      lines.push(...formatCheckProblem(problem));
+      lines.push(...formatCheckProblem(problem, accepted));
     } else if (problem.kind === "failing_audit") {
       lines.push(
-        `- PROBLEM failing audit \`${problem.auditId}\` — ${problem.title}${problem.displayValue ? ` (${problem.displayValue})` : ""} [${problem.categories.join(", ")}]${ownerNote(findingOwner(problem.auditId, problem.elements ?? [], p.url))}`,
+        `- ${tag} failing audit \`${problem.auditId}\` — ${problem.title}${problem.displayValue ? ` (${problem.displayValue})` : ""} [${problem.categories.join(", ")}]${ownerNote(findingOwner(problem.auditId, problem.elements ?? [], p.url))}`,
       );
       // The flagged elements locate the fix (which module, which rule):
       // without them a color-contrast finding is guesswork.
@@ -167,16 +168,9 @@ export function formatPage(p: AuditPage): string[] {
       }
     } else {
       lines.push(
-        `- PROBLEM ${CATEGORY_LABEL[problem.category] ?? problem.category} score ${problem.score} is below its baseline ${problem.baseline}`,
+        `- ${tag} ${CATEGORY_LABEL[problem.category] ?? problem.category} score ${problem.score} is below the target 100${accepted ? "" : " — not good enough: fix what pulls it down (the metrics above name the element)"}`,
       );
     }
-  }
-  for (const h of p.heldBack) {
-    lines.push(
-      h.kind === "performance_drop"
-        ? `- held back (noise guard): Performance ${h.score} < baseline ${h.baseline}; counts if the next audit shows it again`
-        : `- held back (noise guard): \`${h.auditId}\` — ${h.title}; counts if the next audit shows it again`,
-    );
   }
   lines.push(...formatCheckNotes(p.checkFindings));
   return lines;
@@ -186,10 +180,10 @@ export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   name: "get_quality_audit",
   description:
     "Read the quality check of the staged site: the page checks (added by plugins such as SEO checks) that read EVERY page on every Stage, plus a Lighthouse audit (Performance, Accessibility, Best Practices, SEO; mobile) when the Stage changed how pages render. " +
-    "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores against the page's baseline, the Performance metrics behind the Performance score (FCP, LCP, TBT, CLS, Speed Index: the median over the runs with Lighthouse's rating, plus the LCP element, the LCP breakdown and the elements that shifted with their causes), every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), every page-check problem with its rule id (`<check>/<rule>`, e.g. `seo-check/title-missing` — rule ids contain a slash) and a fix hint naming the tool to use, site-wide findings, non-blocking warnings and hints, Performance signals the noise guard is holding back, and infrastructure errors. " +
-    "A problem is a failing audit the editors have not accepted on that page, a score below the page's baseline, or a page-check rule with more errors than an editor accepted. Warnings and hints never block. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. " +
-    "To make a page faster, read its metrics here and fix the worst one in the module that renders the named element. Use this instead of running Lighthouse yourself: the audit runs against the real staged build, which no other URL serves. " +
-    "A finding marked CAELO PLATFORM (back/forward cache, caching of Caelo's own files, server response, compression, redirects) is decided by Caelo's hosting/build setup, not by the site: report it with bug_report, never edit the site for it, never propose accepting it. " +
+    "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores (the target is 100 in every category), the Performance metrics behind the Performance score (FCP, LCP, TBT, CLS, Speed Index: the median over the runs with Lighthouse's rating, plus the LCP element, the LCP breakdown and the elements that shifted with their causes), every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), every page-check problem with its rule id (`<check>/<rule>`, e.g. `seo-check/title-missing` — rule ids contain a slash) and a fix hint naming the tool to use, site-wide findings, non-blocking warnings and hints, and infrastructure errors. " +
+    "THE TARGET IS 100 IN EVERY CATEGORY AND ZERO FINDINGS: every category below 100, every scored Lighthouse audit below a perfect score, and every page-check error is a PROBLEM that blocks Publish live. A score like 90 is NOT acceptable on its own — keep fixing until 100 wherever achievable. Problems an editor accepted are marked ACCEPTED and do not block (a worse value than accepted blocks again). Warnings and hints never block. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. " +
+    "To make a page faster, read its metrics here and fix the worst one in the module that renders the named element, then Stage again and re-read — repeat until Performance is 100. Use this instead of running Lighthouse yourself: the audit runs against the real staged build, which no other URL serves. Only what truly cannot be fixed goes to the operator, as one decision per group (accept_quality_findings with groups), with the reason why. " +
+    "A finding marked CAELO PLATFORM (back/forward cache, caching of Caelo's own files, server response, compression, redirects) is decided by Caelo's hosting/build setup, not by the site: report it with bug_report and never edit the site for it; it blocks until Caelo fixes it or the operator decides to accept it. " +
     "Typical input: {} or { auditRunId }.",
   opName: "quality_audits.get",
   input: getAuditInput,
@@ -215,7 +209,7 @@ export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
         `Lighthouse not needed for this Stage (${r.classification.skipped.slice(0, 3).join("; ") || "no rendering changes"}).`,
       );
     }
-    if (v.checks) lines.push(...formatChecksSummary(v.checks));
+    if (v.checks) lines.push(...formatChecksSummary(v.checks, v.siteProblemAccepted));
     for (const p of v.pages) lines.push("", ...formatPage(p));
     return lines.join("\n");
   },
@@ -248,7 +242,7 @@ export const checkStageAuditTool = makeReadTool<z.infer<typeof checkStageInput>>
   description:
     "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (The page checks read every page on EVERY Stage regardless.) " +
     "Lighthouse runs for: new or changed module html/css/js, layout / template / theme changes, new pages, plugin configuration. Not for: only text and field values, placing or moving existing modules, SEO texts, redirects. " +
-    "Lists the deciding changes and the pages the check would cover, plus the last measured Performance metrics (FCP, LCP, TBT, CLS, Speed Index; LCP element, layout shifts) of those pages and the homepage — the baseline to plan a speed fix against. Use this instead of running Lighthouse yourself: the audit runs against the real staged build. Takes no input (uses the current chat).",
+    "Lists the deciding changes and the pages the check would cover, plus the last measured Performance metrics (FCP, LCP, TBT, CLS, Speed Index; LCP element, layout shifts) of those pages and the homepage — the starting point for a speed fix (the target is Performance 100). Use this instead of running Lighthouse yourself: the audit runs against the real staged build. Takes no input (uses the current chat).",
   opName: "quality_audits.classify_stage",
   input: checkStageInput,
   // Outside a chat (Power-MCP without a session) the op's own validation
@@ -326,8 +320,8 @@ export const listQualityAcceptancesTool = makeListReadTool<
 >({
   name: "list_quality_acceptances",
   description:
-    "List quality findings, score drops and page-check rules editors accepted (TOON rows: page, kind, auditId, category, acceptedScore, acceptedCount, reason, acceptedAt, revoked). " +
-    "An acceptance applies ONLY to its page (page `site-wide` = a site-wide page-check rule): the same finding on another page is still a problem there. A `check` acceptance covers up to acceptedCount errors of its rule (auditId holds the rule id); a new one beyond that blocks again. Check this before asking an editor to accept something again. " +
+    "List quality findings, category scores below 100 and page-check rules editors accepted (TOON rows: page, kind, auditId, category, acceptedScore, acceptedCount, reason, acceptedAt, revoked). " +
+    "An acceptance applies ONLY to its page (page `site-wide` = a site-wide page-check rule): the same finding on another page is still a problem there. It records the value accepted — a `score` acceptance the category score, a `finding` acceptance the audit's score in points (acceptedScore), a `check` acceptance up to acceptedCount errors of its rule (auditId holds the rule id) — and a worse value blocks again. Check this before asking the operator to decide on something again. " +
     "`filter` searches the audit/rule id, reason and page path server-side; optional `pageId`, `includeRevoked`.",
   opName: "quality_acceptances.list",
   input: listAcceptancesInput,

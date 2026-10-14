@@ -1,25 +1,36 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #553 — the quality ratchet. Pure functions only: the audit worker
- * feeds them the Lighthouse result of one page plus that page's stored
- * baselines and accepted findings, and persists what comes back.
+ * Issue #553 / #727 — what the Lighthouse part of an audit finds on a page,
+ * and how an editor's acceptance is compared with it. Pure functions only:
+ * the audit worker feeds them one page's measurement, and the gate feeds
+ * them the live acceptances.
  *
- * The rules (maintainer decisions on #553):
- * - Baseline: per page and category, the last accepted score. A page that
- *   has never been audited starts at 100 in every category.
- * - Problem (a): a Lighthouse audit that fails now and is not in the page's
- *   accepted findings.
- * - Problem (b): a category score below the baseline. Accessibility, Best
- *   Practices and SEO are deterministic and trigger immediately.
- * - Performance noise guard: Performance is the median of several runs and
- *   still jitters, so a drop below the baseline only counts once it was
- *   seen in two consecutive audits of the page. The same guard holds back
- *   findings that only belong to the Performance category, so a flaky
- *   "reduce unused JS" does not start a fix loop on an unchanged page.
- * - Ratchet: a score above the baseline raises the baseline automatically.
- *   Lowering it is only possible through an explicit acceptance, which
- *   writes the accepted score as the new baseline (not done here).
+ * Maintainer decision on #727 (2026-10-14, "optimum, not good enough"):
+ * - The target is 100 in every category and a passing score (1) on every
+ *   scored audit. A 90 is not "fine": every category below 100 and every
+ *   scored audit below 1 is a problem that blocks Publish live.
+ * - No grandfathering. There is no per-page baseline any more (the
+ *   `quality_baselines` ratchet of #553 let existing debt pass): a problem
+ *   blocks until it is fixed or an editor accepts it on its page.
+ * - An acceptance records the VALUE it accepted (a category score, an
+ *   audit's score, a check rule's error count). A measurement worse than
+ *   that value blocks again; a better one tightens the acceptance (it only
+ *   ratchets up), except where noise makes "better" meaningless (below).
+ *
+ * Measurement noise, handled explicitly and nowhere else:
+ * - Performance is the median of several runs (`medianScore`), and an
+ *   audit that belongs only to Performance counts when it fails in a
+ *   majority of the runs (lighthouse-extract.ts). Nothing else is smoothed:
+ *   no "good enough" bar, no consecutive-audit guard.
+ * - Even the median jitters by a point or two between audits of an
+ *   unchanged page. So when — and ONLY when — a Performance value is
+ *   compared with an editor's acceptance, it may be up to
+ *   ACCEPTED_PERFORMANCE_TOLERANCE points below the accepted value before
+ *   it counts as "worse". Without an acceptance there is no tolerance: 99
+ *   is a problem. Performance acceptances are also never tightened or
+ *   spent automatically (a lucky run would raise the bar to noise); they
+ *   stay until an editor revokes them.
  */
 
 import type { CheckRuleProblem } from "./checks/evaluate.js";
@@ -35,12 +46,16 @@ export const QUALITY_CATEGORIES = [
 
 export type QualityCategory = (typeof QUALITY_CATEGORIES)[number];
 
-/** Initial baseline of every page and category (the target is 100). */
-export const INITIAL_BASELINE = 100;
+/** The score every category is held to. */
+export const QUALITY_TARGET = 100;
 
-/** Consecutive below-baseline Performance audits needed before the drop
- *  counts as a problem (the noise guard). */
-export const PERFORMANCE_DROP_STREAK = 2;
+/**
+ * Points a Performance value (category score, or the score of an audit
+ * that belongs only to Performance) may fall below an editor's ACCEPTED
+ * value before it counts as worse. Measurement noise of the median of
+ * three runs, observed at 1–2 points; never applied against the target.
+ */
+export const ACCEPTED_PERFORMANCE_TOLERANCE = 2;
 
 /** One failing Lighthouse audit on a page, reduced to what the gate and
  *  the AI need. `categories` are the gated categories referencing it. */
@@ -78,19 +93,11 @@ export interface PageMeasurement {
   readonly scores: Readonly<Record<QualityCategory, number>>;
   readonly failingAudits: readonly FailingAudit[];
   /** The Performance metrics (FCP, LCP, TBT, CLS, SI) behind the
-   *  Performance score. Data for the AI, never evaluated by the ratchet. */
+   *  Performance score. Data for the AI, never a problem on their own. */
   readonly metrics: PerformanceMetrics;
 }
 
-/** Stored ratchet state of one page and category. */
-export interface BaselineState {
-  readonly baseline: number;
-  /** Consecutive audits whose score was below `baseline` (Performance
-   *  only; always 0 for the deterministic categories). */
-  readonly belowStreak: number;
-}
-
-/** A problem the Lighthouse ratchet found on a page. */
+/** A problem the Lighthouse part of an audit found on a page. */
 export type LighthouseProblem =
   | {
       readonly kind: "failing_audit";
@@ -102,6 +109,12 @@ export type LighthouseProblem =
       readonly elements?: readonly FlaggedElement[];
     }
   | {
+      /**
+       * A category below the target. The stored kind and the `baseline`
+       * field keep their #553 names so the previous image still reads new
+       * rows (expand-only releases, #696); `baseline` is always
+       * QUALITY_TARGET now.
+       */
       readonly kind: "score_below_baseline";
       readonly category: QualityCategory;
       readonly score: number;
@@ -110,80 +123,25 @@ export type LighthouseProblem =
 
 /**
  * Anything that blocks Publish live on a page: a Lighthouse problem, or a
- * findings-check rule over its accepted count (#727, checks/evaluate.ts).
+ * findings-check rule with error findings (#727, checks/evaluate.ts).
  */
 export type QualityProblem = LighthouseProblem | CheckRuleProblem;
 
-/** A Performance signal the noise guard is holding back this time. It
- *  becomes a problem if the next audit of the page shows it again. */
-export type HeldBackSignal =
-  | { readonly kind: "performance_drop"; readonly score: number; readonly baseline: number }
-  | { readonly kind: "performance_finding"; readonly auditId: string; readonly title: string };
-
-export interface PageEvaluation {
-  readonly problems: readonly LighthouseProblem[];
-  readonly heldBack: readonly HeldBackSignal[];
-  /** Baselines to persist for the page after this audit. */
-  readonly nextBaselines: Readonly<Record<QualityCategory, BaselineState>>;
-}
-
-/** Baseline state for a category the page has none stored for yet. */
-export function initialBaselineState(): BaselineState {
-  return { baseline: INITIAL_BASELINE, belowStreak: 0 };
-}
-
 /**
- * Evaluate one page's audit against its ratchet state.
- *
- * @param measurement - this audit's scores (Performance already the median)
- *   and failing audits.
- * @param baselines - stored state per category; missing categories start
- *   at the initial baseline.
- * @param acceptedAuditIds - Lighthouse audit ids the editors accepted on
- *   THIS page. An acceptance never applies to another page.
- * @param previousHeldBackFindings - Performance-only audit ids the previous
- *   audit of this page held back (second half of the noise guard).
+ * Every problem of one page's measurement: each category below the target
+ * and each failing audit. Acceptances are NOT applied here — the gate
+ * applies them live (gate.ts), so accepting or revoking counts at once,
+ * without a new audit.
  */
-export function evaluatePage(args: {
-  readonly measurement: PageMeasurement;
-  readonly baselines: Partial<Readonly<Record<QualityCategory, BaselineState>>>;
-  readonly acceptedAuditIds: ReadonlySet<string>;
-  readonly previousHeldBackFindings: ReadonlySet<string>;
-}): PageEvaluation {
+export function evaluatePage(measurement: PageMeasurement): LighthouseProblem[] {
   const problems: LighthouseProblem[] = [];
-  const heldBack: HeldBackSignal[] = [];
-  const nextBaselines = {} as Record<QualityCategory, BaselineState>;
-
   for (const category of QUALITY_CATEGORIES) {
-    const state = args.baselines[category] ?? initialBaselineState();
-    const score = args.measurement.scores[category];
-    if (score >= state.baseline) {
-      // At or above the baseline: the ratchet only ever moves up here.
-      nextBaselines[category] = { baseline: score, belowStreak: 0 };
-      continue;
-    }
-    if (category !== "performance") {
-      problems.push({ kind: "score_below_baseline", category, score, baseline: state.baseline });
-      nextBaselines[category] = { baseline: state.baseline, belowStreak: 0 };
-      continue;
-    }
-    const streak = state.belowStreak + 1;
-    nextBaselines[category] = { baseline: state.baseline, belowStreak: streak };
-    if (streak >= PERFORMANCE_DROP_STREAK) {
-      problems.push({ kind: "score_below_baseline", category, score, baseline: state.baseline });
-    } else {
-      heldBack.push({ kind: "performance_drop", score, baseline: state.baseline });
+    const score = measurement.scores[category];
+    if (score < QUALITY_TARGET) {
+      problems.push({ kind: "score_below_baseline", category, score, baseline: QUALITY_TARGET });
     }
   }
-
-  for (const audit of args.measurement.failingAudits) {
-    if (args.acceptedAuditIds.has(audit.id)) continue;
-    const performanceOnly =
-      audit.categories.length > 0 && audit.categories.every((c) => c === "performance");
-    if (performanceOnly && !args.previousHeldBackFindings.has(audit.id)) {
-      heldBack.push({ kind: "performance_finding", auditId: audit.id, title: audit.title });
-      continue;
-    }
+  for (const audit of measurement.failingAudits) {
     problems.push({
       kind: "failing_audit",
       auditId: audit.id,
@@ -194,8 +152,88 @@ export function evaluatePage(args: {
       ...(audit.elements !== undefined ? { elements: audit.elements } : {}),
     });
   }
+  return problems;
+}
 
-  return { problems, heldBack, nextBaselines };
+/** A 0..1 Lighthouse audit score as the 0..100 points acceptances store. */
+export function auditScorePoints(score: number): number {
+  return Math.round(score * 100);
+}
+
+/** Whether an audit is referenced by the Performance category only. */
+function performanceOnly(categories: readonly QualityCategory[]): boolean {
+  return categories.length > 0 && categories.every((c) => c === "performance");
+}
+
+/** Whether a Lighthouse problem is measured with Performance noise: the
+ *  Performance category score, or an audit only Performance references. */
+export function isPerformanceNoisy(problem: LighthouseProblem): boolean {
+  if (problem.kind === "score_below_baseline") return problem.category === "performance";
+  return performanceOnly(problem.categories);
+}
+
+/**
+ * Whether a measured value (0..100 points) is still covered by an editor's
+ * accepted value. The tolerance applies only to noisy (Performance)
+ * values; a deterministic value must not be any worse.
+ */
+export function acceptedValueCovers(measured: number, accepted: number, noisy: boolean): boolean {
+  return measured >= accepted - (noisy ? ACCEPTED_PERFORMANCE_TOLERANCE : 0);
+}
+
+/** The 0..100 value of a Lighthouse problem that an acceptance compares. */
+export function problemValue(problem: LighthouseProblem): number {
+  return problem.kind === "score_below_baseline" ? problem.score : auditScorePoints(problem.score);
+}
+
+/** A live Lighthouse acceptance on one page, as the tightening reads it. */
+export interface LighthouseAcceptance {
+  readonly id: string;
+  readonly kind: "finding" | "score";
+  /** The audit id (finding) or the category (score). */
+  readonly key: string;
+  /** The accepted value in points; null for a finding accepted before
+   *  values were recorded and not backfillable by migration 0276. */
+  readonly accepted: number | null;
+}
+
+/** What to do with an acceptance after a measurement: raise its value, or
+ *  revoke it because the page now meets the target ("spend"). */
+export type AcceptanceUpdate =
+  | { readonly id: string; readonly action: "tighten"; readonly value: number }
+  | { readonly id: string; readonly action: "spend" };
+
+/**
+ * The acceptance ratchet of one page after a Lighthouse measurement:
+ * - a deterministic category at the target spends its score acceptance; a
+ *   better score raises it;
+ * - a deterministic finding that still fails, at a better score, raises
+ *   its acceptance. A passing audit leaves its acceptance as recorded: the
+ *   measurement does not say which categories a passing audit belongs to,
+ *   so a deterministic pass cannot be told from a noisy one;
+ * - Performance acceptances never move automatically (noise, see top).
+ */
+export function lighthouseAcceptanceUpdates(
+  acceptances: readonly LighthouseAcceptance[],
+  measurement: PageMeasurement,
+): AcceptanceUpdate[] {
+  const updates: AcceptanceUpdate[] = [];
+  for (const a of acceptances) {
+    if (a.accepted === null) continue;
+    if (a.kind === "score") {
+      if (a.key === "performance") continue;
+      const score = measurement.scores[a.key as QualityCategory];
+      if (score === undefined) continue;
+      if (score >= QUALITY_TARGET) updates.push({ id: a.id, action: "spend" });
+      else if (score > a.accepted) updates.push({ id: a.id, action: "tighten", value: score });
+      continue;
+    }
+    const failing = measurement.failingAudits.find((f) => f.id === a.key);
+    if (!failing || performanceOnly(failing.categories)) continue;
+    const value = auditScorePoints(failing.score);
+    if (value > a.accepted) updates.push({ id: a.id, action: "tighten", value });
+  }
+  return updates;
 }
 
 /** Median of a non-empty list of scores (mean of the middle pair for an

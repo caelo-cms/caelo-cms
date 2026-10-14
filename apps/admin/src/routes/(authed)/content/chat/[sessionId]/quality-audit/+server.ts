@@ -21,6 +21,15 @@
  *        offer: a status note records it and the offer is settled; nothing
  *        runs, and Publish live stays blocked as the gate says.
  * POST {action:"retry"} → re-run a failed / missing check of the staged build.
+ *
+ * #727 — the card groups the open problems by rule across pages:
+ * POST {action:"claim", auditRunId, fixSelection} → a fix request for only
+ *        the picked groups / pages (the prompt is still built server-side).
+ * POST {action:"accept", auditRunId, groups, reason} → the operator's own
+ *        bulk acceptance of the picked groups (every open page, or the
+ *        picked ones): proposed and applied as THIS human in one click, on
+ *        the same propose/execute engine the AI's approval card uses. The AI
+ *        is not involved, so there is nothing to approve twice.
  */
 
 import { describeError, verifyCsrfToken } from "@caelo-cms/admin-core";
@@ -41,7 +50,17 @@ interface ChatStatus {
   notified: boolean;
   feedback:
     | { kind: "note"; text: string }
-    | { kind: "offer"; text: string; actionLabel: string; prompt: string }
+    | {
+        kind: "offer";
+        text: string;
+        actionLabel: string;
+        prompt: string;
+        groups: {
+          key: string;
+          ref: { auditId: string } | { category: string } | { ruleId: string };
+          pages: { pagePath: string }[];
+        }[];
+      }
     | null;
   deployRunId: string | null;
   gate: {
@@ -54,10 +73,39 @@ interface ChatStatus {
   } | null;
 }
 
-async function chatStatus(locals: App.Locals, chatSessionId: string): Promise<ChatStatus> {
+/** A card selection: group keys, optionally narrowed to some pages. */
+interface GroupSelection {
+  key: string;
+  pagePaths?: string[];
+}
+
+/** The body's selection, shape-checked (the op validates it again). */
+function parseSelection(v: unknown): GroupSelection[] | null {
+  if (!Array.isArray(v) || v.length === 0 || v.length > 100) return null;
+  const out: GroupSelection[] = [];
+  for (const item of v) {
+    if (item === null || typeof item !== "object") return null;
+    const { key, pagePaths } = item as { key?: unknown; pagePaths?: unknown };
+    if (typeof key !== "string" || key.length === 0) return null;
+    if (pagePaths === undefined) {
+      out.push({ key });
+      continue;
+    }
+    if (!Array.isArray(pagePaths) || !pagePaths.every((p) => typeof p === "string")) return null;
+    out.push({ key, pagePaths: pagePaths as string[] });
+  }
+  return out;
+}
+
+async function chatStatus(
+  locals: App.Locals,
+  chatSessionId: string,
+  fixSelection?: GroupSelection[],
+): Promise<ChatStatus> {
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "quality_audits.chat_status", {
     chatSessionId,
+    ...(fixSelection ? { fixSelection } : {}),
   });
   if (!r.ok) throw error(500, describeError(r.error));
   return r.value as ChatStatus;
@@ -80,6 +128,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   const body = (await request.json().catch(() => null)) as {
     action?: string;
     auditRunId?: string;
+    fixSelection?: unknown;
+    groups?: unknown;
+    reason?: unknown;
   } | null;
   const { adapter, registry } = getQueryContext();
 
@@ -134,10 +185,72 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     return json({ ok: true, dismissed, ...(dismissed ? { note: NOT_NOW_NOTE } : {}) });
   }
 
+  if (body?.action === "accept" && typeof body.auditRunId === "string") {
+    const selection = parseSelection(body.groups);
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+    if (!selection) return json({ ok: false, error: "choose at least one group" }, { status: 400 });
+    // Re-read: only the open groups of the chat's current offer can be
+    // accepted, named by what the server says they are.
+    const status = await chatStatus(locals, params.sessionId);
+    if (!status.audit || status.audit.id !== body.auditRunId || status.feedback?.kind !== "offer") {
+      return json(
+        {
+          ok: false,
+          error: "This quality check is no longer open — the card shows the current one.",
+        },
+        { status: 409 },
+      );
+    }
+    const groups = [];
+    for (const sel of selection) {
+      const group = status.feedback.groups.find((g) => g.key === sel.key);
+      if (!group) {
+        return json(
+          { ok: false, error: `'${sel.key}' is no longer open (fixed or accepted meanwhile).` },
+          { status: 409 },
+        );
+      }
+      groups.push({ ...group.ref, ...(sel.pagePaths ? { pagePaths: sel.pagePaths } : {}) });
+    }
+    const proposed = await execute(registry, adapter, locals.ctx, "quality_audits.propose_accept", {
+      auditRunId: body.auditRunId,
+      groups,
+      reason,
+    });
+    if (!proposed.ok) {
+      return json({ ok: false, error: describeError(proposed.error) }, { status: 409 });
+    }
+    const proposalId = (proposed.value as { proposalId: string }).proposalId;
+    const applied = await execute(
+      registry,
+      adapter,
+      locals.ctx,
+      "quality_audits.execute_proposal",
+      {
+        proposalId,
+      },
+    );
+    if (!applied.ok) {
+      // Leave no pending card behind for a decision that did not apply.
+      await execute(registry, adapter, locals.ctx, "quality_audits.reject_proposal", {
+        proposalId,
+        reason: "the operator's acceptance from the chat card could not be applied",
+      });
+      return json({ ok: false, error: describeError(applied.error) }, { status: 409 });
+    }
+    return json({ ok: true, accepted: (applied.value as { accepted?: number }).accepted ?? 0 });
+  }
+
   if (body?.action === "claim" && typeof body.auditRunId === "string") {
     // Re-read: only the chat's own newest audit can be claimed here, and the
-    // message is computed server-side (never trusted from the client).
-    const status = await chatStatus(locals, params.sessionId);
+    // message is computed server-side (never trusted from the client). #727:
+    // a picked fix narrows the prompt to the picked groups / pages.
+    const fixSelection =
+      body.fixSelection === undefined ? undefined : parseSelection(body.fixSelection);
+    if (fixSelection === null) {
+      return json({ ok: false, error: "invalid fix selection" }, { status: 400 });
+    }
+    const status = await chatStatus(locals, params.sessionId, fixSelection);
     if (!status.audit || status.audit.id !== body.auditRunId || !status.feedback) {
       return json({ ok: true, send: null });
     }

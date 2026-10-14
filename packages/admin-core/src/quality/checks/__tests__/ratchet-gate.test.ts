@@ -6,8 +6,9 @@ import {
   formatCheckProblem,
   formatChecksSummary,
 } from "../../../ai/tools/quality-check-format.js";
-import { chatFeedbackFor, problemLabel } from "../../chat-feedback.js";
-import { checkKey, decideGate, type GateAudit } from "../../gate.js";
+import { chatFeedbackFor } from "../../chat-feedback.js";
+import { CURRENT_GATE_RULES, checkKey, decideGate, type GateAudit } from "../../gate.js";
+import { groupOpenProblems } from "../../problem-groups.js";
 import { type CheckRuleProblem, evaluateCheckFindings, tightenedAcceptances } from "../evaluate.js";
 import type { Finding } from "../findings.js";
 
@@ -41,10 +42,13 @@ describe("evaluateCheckFindings (the per-rule ratchet)", () => {
     expect(problems[0]?.findings[0]?.fix?.tool).toBe("set_media_alt_many");
   });
 
-  it("an accepted count covers up to that many errors; one more blocks", () => {
+  // #727 — accepted rules stay recorded as problems (with the count the
+  // acceptance allowed, for the record); the gate applies the live
+  // acceptance, so a revoke blocks again at once.
+  it("records an accepted rule as a problem with its allowed count", () => {
     expect(
       evaluateCheckFindings([err("img/alt"), err("img/alt")], new Map([["img/alt", 2]])),
-    ).toEqual([]);
+    ).toEqual([expect.objectContaining({ ruleId: "img/alt", count: 2, allowed: 2 })]);
     const over = evaluateCheckFindings(
       [err("img/alt"), err("img/alt"), err("img/alt")],
       new Map([["img/alt", 2]]),
@@ -82,6 +86,7 @@ describe("the gate with page-check problems", () => {
   };
   const audit: GateAudit = {
     id: "a1",
+    gateRules: CURRENT_GATE_RULES,
     status: "problems",
     errorCode: null,
     errorMessage: null,
@@ -89,7 +94,7 @@ describe("the gate with page-check problems", () => {
     pages: [{ pageId: P, pagePath: "/team", problems: [problem] }],
     siteProblems: [{ ...problem, ruleId: "robots/blocked", checkId: "robots", count: 1 }],
   };
-  const none = { findings: new Set<string>(), scores: new Map<string, number>() };
+  const none = { findings: new Map<string, number | null>(), scores: new Map<string, number>() };
 
   it("blocks on page and site-wide problems, naming both", () => {
     const d = decideGate(audit, { ...none, checks: new Map() });
@@ -128,7 +133,11 @@ describe("the gate with page-check problems", () => {
   });
 
   it("the chat and the AI get labels, counts and the fix hint", () => {
-    expect(problemLabel(problem)).toBe("Missing alt (2×)");
+    expect(groupOpenProblems([{ pageId: P, pagePath: "/team", problem }])[0]).toMatchObject({
+      key: "img/alt",
+      title: "Missing alt",
+      pages: [{ pagePath: "/team", detail: "2×" }],
+    });
     const lines = formatCheckProblem({
       ...problem,
       allowed: 1,
@@ -136,9 +145,8 @@ describe("the gate with page-check problems", () => {
         { message: "Missing alt: logo", fix: { tool: "set_media_alt_many", hint: "describe" } },
       ],
     });
-    expect(lines[0]).toBe(
-      "- PROBLEM page check `img/alt` — 2 error(s) (an editor accepted 1; every error beyond that blocks)",
-    );
+    expect(lines[0]).toBe("- PROBLEM page check `img/alt` — 2 error(s)");
+    expect(formatCheckProblem(problem, true)[0]).toContain("ACCEPTED by an editor (does not block");
     expect(lines).toContain("  - … and 1 more of this rule");
     expect(lines).toContain("  fix: `set_media_alt_many` — describe");
     expect(formatCheckNotes([{ ...err("img/size"), severity: "info" }])[0]).toContain(
@@ -160,8 +168,7 @@ describe("the gate with page-check problems", () => {
     const base = {
       status: "passed" as const,
       fixRound: 0,
-      problemCount: 0,
-      problemPages: [],
+      groups: [],
       stagedBy: null,
       errorCode: null,
       errorMessage: null,

@@ -4,7 +4,7 @@ template: doc-page
 status: published
 seo:
   title: Quality gate — Caelo CMS
-  description: Every Stage is checked — page checks read every page, and Lighthouse audits Stages that change how pages render. New errors block Publish live until the AI fixes them or an editor accepts them.
+  description: Every Stage is checked against the optimum — 100 in every Lighthouse category and zero findings. Every finding blocks Publish live until the AI fixes it or an editor accepts it, in bulk if need be.
 ---
 
 # The quality gate
@@ -14,7 +14,7 @@ Caelo checks every Stage before it can go live, with two kinds of checks:
 - **Page checks** read every page of the staged build on every Stage — also a Stage that only changed SEO texts. Plugins add them; the SEO checks plugin is the first (in progress).
 - **Lighthouse** — Performance, Accessibility, Best Practices and SEO, on a mobile viewport — audits a Stage that can change how pages look or perform. The target is 100 in every category.
 
-New errors block **Publish live**. Warnings and hints are shown but never block. The AI fixes what it can; what it can't fix, an editor decides about.
+The target is the **optimum**: 100 in every Lighthouse category and zero findings. A 90 is not "good enough" — every finding blocks **Publish live** until it is fixed or an editor accepts it. Warnings and hints are shown but never block. The AI keeps fixing until the target is reached wherever it can be; only what truly cannot be fixed comes to you, as one decision per group of findings.
 
 The checks always look at the **staged build** — exactly what Publish live would ship — never at the live site.
 
@@ -46,7 +46,7 @@ Every page Lighthouse audits also records its Performance metrics — the number
 
 Each value is the median of the same runs as the Performance score, with Lighthouse's rating (good, needs improvement, poor). With them come the **LCP element** and how its time splits up (server response, load delay, load time, render delay), and the elements that **shifted**, with the cause Lighthouse names (for example an image without a size). If a run could not measure a metric, it is shown as *not measured* with the reason, never as zero.
 
-Metrics are information, not findings: they never block Publish live on their own. The Performance score and its baseline do that.
+Metrics are information, not findings: they never block Publish live on their own. The Performance score does that — anything below 100 blocks. They are what the AI fixes against: it reads them, fixes the worst one in the module that renders the named element, Stages again, and repeats until Performance is 100.
 
 The AI reads them in `get_quality_audit` (per audited page) and `check_stage_audit` (the last measured values of the pages your pending changes touch, plus the homepage), so "make the homepage faster" starts from the real staged numbers and the element that causes them. External agents on [Power-MCP](/mcp) get the same two tools and should use them instead of running Lighthouse themselves: the audit runs against the real staged build, which no other URL serves.
 
@@ -54,27 +54,41 @@ Missing meta descriptions do not wait for this check: a Stage (and any productio
 
 ## What blocks Publish live
 
-Each page keeps a **baseline** per category, starting at 100. A Stage is blocked when:
+Every page is held to the same target, with no exceptions carried over from the past. A Stage is blocked when, on any checked page:
 
-- a Lighthouse audit fails that nobody accepted on that page, or
-- a category score falls below the page's baseline. Performance jitters, so a performance drop only counts when two consecutive checks show it, or
-- a page check reports an error that nobody accepted on that page (or site-wide, for a finding about the whole site).
+- a Lighthouse category scores **below 100** — 99 blocks as much as 60;
+- a Lighthouse audit scores **below a perfect score** (Lighthouse's own report shows audits from 0.9 up in green; Caelo does not);
+- a page check reports an error (or, site-wide, an error about the whole site);
 
-A page-check acceptance covers the errors it was given for — say, two images on `/team` — and a third one blocks again. When a page has fewer errors than were accepted, the accepted number drops with it; at zero the acceptance is used up.
+and no live acceptance covers it.
 
-Findings caused by the platform block too, including a Performance drop they cause. Caelo does not quietly leave them out: that would also hide real regressions in how sites are served. They are reported as Caelo bugs and fixed in Caelo.
+Findings caused by the platform block too, including a Performance score they pull down. Caelo does not quietly leave them out: that would also hide real regressions in how sites are served. They are reported as Caelo bugs and fixed in Caelo.
 
-When a page scores higher, its baseline rises with it — quality only ratchets up.
+### Accepting, in bulk
+
+What cannot be fixed — a third-party embed, a brand colour you want to keep, a platform issue Caelo has not fixed yet — an editor can **accept**. Acceptances work per group: one rule across all the pages it fails on, for example *"seo-check/description-missing: 312 pages"* or *"lighthouse/performance/unused-javascript: 14 pages"*. One decision covers the whole group, or the pages you pick from it.
+
+An acceptance records the **value measured** when it was made: the category score, the audit's score, or the number of page-check errors. It covers that value, and blocks again when the page gets worse. When the page gets better, the acceptance tightens to the better value; once the page reaches the target, the acceptance is used up. Acceptances apply only to their pages — the same finding on another page still blocks.
+
+### Measurement noise
+
+Lighthouse's Performance score jitters a little between runs of the same page. Caelo handles that in two places and nowhere else:
+
+- The Performance score is the **median of three runs**, and an audit that only Performance uses counts when it fails in most of those runs.
+- When a Performance value is compared with an **accepted** value, it may be up to **2 points** below it before it counts as worse. This tolerance never applies against the target: without an acceptance, a Performance of 99 blocks. Accepted Performance values are also never tightened or used up automatically — a lucky run would otherwise raise the bar to noise — so they stay until an editor revokes them.
+
+Accessibility, Best Practices, SEO and the page checks are deterministic: no tolerance at all.
 
 ## How it plays out in the chat
 
 1. You Stage — or the AI stages its finished work. A minute or two later the result appears in the same chat.
-2. If there are problems, the chat **asks you first**: *"Quality check found 3 issues on 2 pages: / (Low contrast, …); /about (…). Let the AI fix them?"* Nothing changes until you decide. This holds however the Stage happened — your **Stage** button, **Open changes**, the AI's own Stage, or an external agent's. You may have moved on while the check ran, and the AI may not have made every staged change.
-   - **Fix with AI** starts the fix. The AI gets the findings per page, who staged the build, and a reminder that the build can contain changes from other chats or agents, so it checks the page before changing it. It fixes what it can — missing alt texts, low contrast, missing labels and headings, meta descriptions, image sizes, render-blocking CSS — and Stages again, which re-checks.
+2. If there are problems, the chat **asks you first**, with the findings **grouped by rule across pages**: *"Quality check found 2 kinds of issue on 312 pages: Missing meta description (312 pages); Performance score below 100 (3 pages)."* Nothing changes until you decide. This holds however the Stage happened — your **Stage** button, **Open changes**, the AI's own Stage, or an external agent's. You may have moved on while the check ran, and the AI may not have made every staged change.
+   - **Fix all with AI** starts the fix of everything. The AI gets the findings by group, who staged the build, and a reminder that the build can contain changes from other chats or agents, so it checks the page before changing it. It is told the target is 100 and zero findings, fixes what it can — missing alt texts, low contrast, missing labels and headings, meta descriptions, image sizes, render-blocking CSS, layout shifts — and Stages again, which re-checks.
+   - Per group you choose: **Fix all** (the AI fixes only that group), **Accept all…** (you accept the group on every page with a reason — it counts at once, Publish live opens as soon as nothing else blocks), or **Pick pages** (tick pages, then fix or accept just those).
    - **Not now** leaves the site as it is. The chat notes your decision, and Publish live stays blocked until the problems are fixed or accepted.
    - Or just type what you want instead ("only fix the homepage", "leave the contrast").
-3. A fix chain has at most **two fix rounds** — only rounds you started with **Fix with AI** count. After that the card offers **Summarise with AI** instead: the AI stops changing the site for these findings and tells you plainly what is left.
-4. Accepting a finding is **your** decision. The AI does not recommend acceptances or ask for them on its own. When you tell it to accept something ("leave the brand colour as it is", "ship it anyway"), it puts an approval card in the chat with your reason, and an editor approves it. An acceptance applies to **that page only**; the same finding on another page still blocks. An accepted score becomes that page's new baseline.
+3. Every fix round is started by you. After two rounds the card says the findings are left after those rounds and offers **Keep fixing with AI** together with the same per-group choices.
+4. When the AI finds something it truly cannot fix, it says **why** and offers you one decision per group — an approval card in the chat. It does not call a score below 100 good enough, does not offer an acceptance for something it could still fix, and does not recommend accepting. You approve or reject the card.
 5. Some findings are caused by Caelo itself, not by your site: back/forward cache, cache lifetimes of Caelo's own files, server response time, compression, redirects. The AI does not change your site for them. It reports each one as a Caelo bug and tells you so. Publish live stays blocked until the platform is fixed, or until you decide to accept the finding.
 
 The toolbar always says why Publish live is blocked and offers the next step: *Retry check*, *Stage again*, or *Publish anyway* (see below).
@@ -96,9 +110,16 @@ The automatic redeploy (Settings → Gateway) works the same way. When only cont
 - the gate of the current staged build and why it is open or blocked;
 - recent checks with their findings per page, including page-check warnings and site-wide findings;
 - per page Lighthouse audited, its Performance metrics (FCP, LCP, TBT, CLS, Speed Index) with the LCP element and the layout shifts;
-- every accepted finding — the Owner can **revoke** one, after which it blocks again on its page;
-- baselines below 100;
+- every accepted finding, **grouped per decision** (one rule across its pages) with the value accepted per page and the reason. A site-wide acceptance (an error about the whole site, not a page) is its own group, marked *site-wide*. The Owner can **revoke** a whole group, a selection, or a single page in one go; what was revoked blocks again at once, without a new check. Revoked and used-up acceptances stay listed as history;
 - every *publish anyway* decision with who made it and why.
+
+## Upgrading from the earlier rules
+
+Before this version, the gate let existing debt pass: audits scoring 0.9 or more were not findings, and each page kept a **baseline** per category — a score could only block when it fell below that page's previous score. The upgrade ends both, without carrying anything over:
+
+- **Existing debt blocks after the upgrade.** Scores below 100, audits between 0.9 and 1, and everything a baseline below 100 let pass show up as blocking findings on the next check.
+- **Baselines are not turned into acceptances.** A baseline was the gate's memory, never an editor's decision. Existing acceptances stay; accepted findings get the score measured when they were accepted, so a worse score blocks again.
+- **The staged build is checked again.** Its last check ran under the earlier rules, so Publish live asks for a new check first (*Retry check* in the toolbar, or Stage again). Expect a longer list of findings than before: let the AI fix them, and accept in bulk what cannot be fixed.
 
 ## Server sizing
 

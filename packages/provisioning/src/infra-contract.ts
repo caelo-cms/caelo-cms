@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 2;
+export const INFRA_CONTRACT_VERSION = 4;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -30,3 +30,44 @@ export const INFRA_CONTRACT_VERSION = 2;
 //   2 — the upgrader job (#696 Phase 2): its service account + scoped
 //       grants, the Cloud SQL backup role, its IAM database user, the job,
 //       the admin's run-only grant and CAELO_UPGRADER_JOB on the admin.
+//   3 — public_role out of cloudsqlsuperuser (#633): the Admin API revoke
+//       runs as the operator; migration 0278's role audit refuses an install
+//       that has not had it, so the in-cloud upgrader must not get there
+//       first.
+//   4 — #587: on `gcp`, the admin's custom role for writing the redirects
+//       table into the URL map (url-map-redirects-access.ts).
+
+/**
+ * What each contract version adds, in operator terms — the upgrader's
+ * refusal names the steps an install is missing. Keep one entry per version
+ * (the history above says why each bump happened).
+ */
+export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
+  1: "the converge/app-roll split",
+  2: "the in-cloud upgrader job and its scoped permissions",
+  3: "public_role out of the Cloud SQL superuser group (#633)",
+  4: "the admin's permission to serve redirects from the load balancer (#587)",
+};
+
+/**
+ * The steps an install at contract `installed` lacks for `target`, oldest
+ * first. A release newer than this code can carry versions it does not know
+ * (the upgrader reads the NEW release's manifest); those are named by number.
+ *
+ * @example
+ *   pendingInfraSteps(2, 4)
+ *   // → ["public_role out of the Cloud SQL superuser group (#633)",
+ *   //    "the admin's permission to serve redirects from the load balancer (#587)"]
+ */
+export function pendingInfraSteps(installed: number, target: number): string[] {
+  const steps: string[] = [];
+  for (let v = Math.max(installed, 0) + 1; v <= target; v += 1) {
+    steps.push(INFRA_CONTRACT_STEPS[v] ?? `infrastructure step ${v} (see that release's notes)`);
+  }
+  return steps;
+}
+
+/** {@link pendingInfraSteps} as one sentence fragment for messages. */
+export function infraStepsText(installed: number, target: number): string {
+  return pendingInfraSteps(installed, target).join("; ");
+}

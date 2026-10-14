@@ -691,6 +691,34 @@ interface QualityChatStatus {
   gate: { open: boolean; state: string; message: string } | null;
 }
 
+/** Why the scenario operator accepts what the fix rounds left (#727). */
+const QUALITY_ACCEPT_REASON =
+  "Accepted for the scenario run after two AI fix rounds: the CI runner's Lighthouse cannot reach the target for these.";
+
+/**
+ * #727 — click "Accept all…" on every group the quality card still shows,
+ * with a reason, like an operator who wants to publish what is left. Each
+ * click is the operator's own acceptance (the AI is not involved); the card
+ * drops the group once it applied.
+ */
+async function acceptRemainingQualityGroups(page: Page, accepted: string[]): Promise<void> {
+  const card = page.getByTestId("quality-fix-offer");
+  const groups = card.getByTestId("quality-offer-group");
+  for (let guard = 0; guard < 50; guard += 1) {
+    if ((await groups.count()) === 0) return;
+    const group = groups.first();
+    const key = await group.getAttribute("data-group-key");
+    if (key === null)
+      throw new Error("acceptRemainingQualityGroups: a group without data-group-key");
+    accepted.push(key);
+    await group.getByTestId("quality-offer-group-accept").click();
+    await group.getByTestId("quality-offer-accept-reason").fill(QUALITY_ACCEPT_REASON);
+    await group.getByTestId("quality-offer-accept-confirm").click();
+    await expect(card.locator(`[data-group-key="${key}"]`)).toHaveCount(0, { timeout: 30_000 });
+  }
+  throw new Error("acceptRemainingQualityGroups: the card kept offering groups");
+}
+
 /** The operator's answer when the AI asks, after the automatic fix rounds,
  *  whether to accept the remaining quality findings. */
 const QUALITY_ACCEPT_REMAINING_PROMPT =
@@ -702,26 +730,32 @@ const QUALITY_ACCEPT_REMAINING_PROMPT =
  *
  * The admin's worker audits the staged build (real Lighthouse, real
  * bundled Chromium). When it finds problems the chat asks first (#685:
- * "Let the AI fix them?"); the helper clicks "Fix with AI" like an operator
+ * "Let the AI fix them?"); the helper clicks "Fix all with AI" like an operator
  * who wants it fixed, and waits for that turn. The
  * AI re-stages its fix itself (issue #620); only when it did not does the
  * helper Stage again (the operator's click), up to the 2 automatic fix rounds.
- * When findings remain after those rounds the AI asks the operator whether
- * to accept them; the helper answers "accept" once, like an operator who
- * wants to publish. Acceptances the AI proposes are auto-approved in this suite
- * (CAELO_E2E_AUTO_APPROVE_PROPOSALS), so an "unfixable" finding resolves
- * through the same card a real editor would click.
+ * #727 — the target is 100 and zero findings, so on a CI runner something
+ * is usually left after those rounds (a Performance score the runner cannot
+ * reach). The helper then decides on the quality card like an operator who
+ * wants to publish: "Accept all…" per remaining group, with a reason. If the
+ * AI did not re-stage and no card is up, it answers the AI's question with
+ * "accept" once; acceptances the AI proposes are auto-approved in this suite
+ * (CAELO_E2E_AUTO_APPROVE_PROPOSALS), the same card a real editor clicks.
  *
  * A FAILED check (no result) fails the test loudly: in CI that is an
  * infrastructure regression, not something to publish over.
+ *
+ * Returns the group keys the operator accepted on the card, so the
+ * scenario reports what the AI did not get to 100 instead of hiding it.
  */
 export async function awaitQualityGateOpen(
   page: Page,
   chatSessionId: string,
   timeoutMs = 20 * 60_000,
-): Promise<{ restages: number; state: string }> {
+): Promise<{ restages: number; state: string; accepted: readonly string[] }> {
   const deadline = Date.now() + timeoutMs;
   let restages = 0;
+  const accepted: string[] = [];
   const read = async (): Promise<QualityChatStatus> => {
     const res = await page.request.get(`/content/chat/${chatSessionId}/quality-audit`);
     if (!res.ok()) throw new Error(`quality status HTTP ${res.status()}: ${await res.text()}`);
@@ -736,12 +770,16 @@ export async function awaitQualityGateOpen(
   // returned on that two-second-old "accepted" while the new audit ran; its
   // fix round then ran during Publish and was charged to the homepage
   // token/loop thresholds (4 of the 27 loops). Null = closed again.
-  const opened = async (): Promise<{ restages: number; state: string } | null> => {
+  const opened = async (): Promise<{
+    restages: number;
+    state: string;
+    accepted: readonly string[];
+  } | null> => {
     await waitForChatTurnIdle(page);
     const settled = await read();
-    return settled.gate?.open ? { restages, state: settled.gate.state } : null;
+    return settled.gate?.open ? { restages, state: settled.gate.state, accepted } : null;
   };
-  // The operator's "Fix with AI" click starts the AI's fix turn; wait for
+  // The operator's "Fix all with AI" click starts the AI's fix turn; wait for
   // that turn to start (bounded) and then to end, instead of
   // guessing with a fixed sleep — a turn that had not started yet read as
   // "idle" and the helper moved on mid-fix.
@@ -770,6 +808,20 @@ export async function awaitQualityGateOpen(
     }
     if (st.gate?.state === "errored" || st.gate?.state === "missing") {
       throw new Error(`awaitQualityGateOpen: the quality check failed — ${st.gate.message}`);
+    }
+    // #727 — after the automatic fix rounds, decide what is left the way an
+    // operator who wants to publish does: accept every remaining group on
+    // the card (one decision per group, with a reason). Before that, answer
+    // like an operator who wants them fixed.
+    if (offerOpen && restages >= 2) {
+      await waitForChatTurnIdle(page);
+      await acceptRemainingQualityGroups(page, accepted);
+      const decided = await read();
+      if (decided.gate?.open) {
+        const done = await opened();
+        if (done) return done;
+      }
+      continue;
     }
     // Problems: the chat asks before the AI fixes anything (#685). Answer
     // like an operator who wants them fixed, then let that turn run to the end.

@@ -14,6 +14,10 @@
 
 :80 {
 	root * /srv/current
+	# #587 — the redirects table of the build served here (the generator
+	# writes it; `*` so a fresh checkout without a build still starts).
+	# docker-compose.yml reloads Caddy when it changes (caddy-redirects.ts).
+	import /srv/current/_redirects.caddy*
 	# Content-hashed build outputs (fonts, plugin bundles, media) never
 	# change under the same URL — cache them for a year. Keep this pattern in
 	# sync with CONTENT_HASHED_PATH_PATTERN in @caelo-cms/shared

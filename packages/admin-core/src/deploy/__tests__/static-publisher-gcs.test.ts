@@ -29,6 +29,7 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
 // (issue #305). Snapshot the exports BEFORE mock.module patches the
 // namespace's live bindings.
 import * as realGcsStorage from "@google-cloud/storage";
+import type { GcpUrlMap } from "../gcp-url-map-redirects.js";
 import { CACHE_POLICY_VERSION } from "../static-publisher-gcs.js";
 
 const realGcsStorageExports = { ...realGcsStorage };
@@ -162,12 +163,38 @@ afterAll(() => {
 
 let buildDir: string;
 
+/** URL-map writes the publisher made through its Compute API (#587). */
+let urlMapUpdates: GcpUrlMap[];
+const SITE_MAP: GcpUrlMap = {
+  name: "caelo-production-url-map-x",
+  fingerprint: "fp",
+  hostRules: [{ hosts: ["example.com"], pathMatcher: "public" }],
+  pathMatchers: [{ name: "public", pathRules: [{ paths: ["/api/*"], service: "gw" }] }],
+};
+
+async function publisher() {
+  const { createGcsStaticPublisher } = await import("../static-publisher-gcs.js");
+  return createGcsStaticPublisher({
+    computeApi: async () => ({
+      listUrlMaps: async () => [urlMapUpdates.at(-1) ?? SITE_MAP],
+      updateUrlMap: async (name, body) => {
+        urlMapUpdates.push(body);
+        return { name: `op-${name}`, status: "DONE" };
+      },
+      waitOperation: async (name) => ({ name, status: "DONE" }),
+    }),
+  });
+}
+
 beforeEach(async () => {
   staticBucket = makeBucket("test-static");
   stagingBucket = makeBucket("test-staging");
   process.env.CAELO_STATIC_BUCKET = "test-static";
   process.env.CAELO_STAGING_BUCKET = "test-staging";
+  process.env.CAELO_SITE_URL = "https://example.com";
+  urlMapUpdates = [];
   buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-"));
+  await writeFile(join(buildDir, "_redirects"), "# generated\n/old /en/about 301\n", "utf8");
   await mkdir(join(buildDir, "en", "about"), { recursive: true });
   await writeFile(join(buildDir, "en", "about", "index.html"), "<html>about</html>", "utf8");
   await writeFile(join(buildDir, "robots.txt"), "default robots", "utf8");
@@ -183,6 +210,7 @@ afterEach(async () => {
   await rm(buildDir, { recursive: true, force: true });
   delete process.env.CAELO_STATIC_BUCKET;
   delete process.env.CAELO_STAGING_BUCKET;
+  delete process.env.CAELO_SITE_URL;
 });
 
 const TARGET: DeployTarget = {
@@ -205,14 +233,14 @@ const PROD_TARGET: DeployTarget = {
 
 describe("gcsStaticPublisher.publishStaging", () => {
   it("uploads every file when no live manifest exists", async () => {
-    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    const gcsStaticPublisher = await publisher();
     const summary = await gcsStaticPublisher.publishStaging({
       buildDir,
       runId: "run-1",
       target: TARGET,
     });
     expect(summary.provider).toBe("gcp");
-    expect(summary.uploadedCount).toBe(3);
+    expect(summary.uploadedCount).toBe(4);
     expect(summary.skippedUnchangedCount).toBe(0);
     expect(summary.location).toBe("gs://test-staging/run-1/");
     // Files landed under the runId prefix in the staging bucket.
@@ -235,6 +263,7 @@ describe("gcsStaticPublisher.publishStaging", () => {
     // Content-Type: text/html and Cache-Control matching HTML.
     await rm(buildDir, { recursive: true, force: true });
     buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-noext-"));
+    await writeFile(join(buildDir, "_redirects"), "# generated\n", "utf8");
     await mkdir(join(buildDir, "en"), { recursive: true });
     await writeFile(join(buildDir, "en", "about"), "<html>about</html>", "utf8");
     await writeFile(
@@ -242,7 +271,7 @@ describe("gcsStaticPublisher.publishStaging", () => {
       JSON.stringify({ "en/about": "text/html; charset=utf-8" }),
       "utf8",
     );
-    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    const gcsStaticPublisher = await publisher();
     await gcsStaticPublisher.publishStaging({
       buildDir,
       runId: "run-noext",
@@ -269,14 +298,14 @@ describe("gcsStaticPublisher.publishStaging", () => {
         }),
       ),
     });
-    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    const gcsStaticPublisher = await publisher();
     const summary = await gcsStaticPublisher.publishStaging({
       buildDir,
       runId: "run-2",
       target: TARGET,
     });
     expect(summary.skippedUnchangedCount).toBe(1);
-    expect(summary.uploadedCount).toBe(2);
+    expect(summary.uploadedCount).toBe(3);
     expect(stagingBucket.files.has("run-2/en/about/index.html")).toBe(false);
   });
 });
@@ -291,7 +320,7 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
 
   it("Publish live serves production robots.txt with the Sitemap line and the staged sitemap", async () => {
     await writeGeneratorArtefacts({ env: "staging", envNoindexInHtml: false });
-    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    const gcsStaticPublisher = await publisher();
     await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-seo", target: TARGET });
     await gcsStaticPublisher.promoteToProduction({
       sourceRunId: "run-seo",
@@ -312,7 +341,7 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
 
   it("refuses a legacy staging build whose pages carry staging's noindex", async () => {
     await writeGeneratorArtefacts({ env: "staging" });
-    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    const gcsStaticPublisher = await publisher();
     await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-legacy", target: TARGET });
     await expect(
       gcsStaticPublisher.promoteToProduction({
@@ -329,7 +358,7 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
   it("copies staging objects to static bucket root and patches robots.txt", async () => {
     // First publish to populate staging.
     await writeGeneratorArtefacts({ env: "staging", envNoindexInHtml: false });
-    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    const gcsStaticPublisher = await publisher();
     await gcsStaticPublisher.publishStaging({
       buildDir,
       runId: "run-3",
@@ -386,7 +415,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
 
   it("content-hashed fonts + plugin bundles are immutable on staging AND after promote", async () => {
     await seedAssets();
-    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    const gcsStaticPublisher = await publisher();
     await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-cc", target: TARGET });
     for (const rel of [FONT, PINNED_FONT, PLUGIN_JS]) {
       expect(cacheControlOf(stagingBucket, `run-cc/${rel}`)).toBe(IMMUTABLE_CACHE_CONTROL);
@@ -414,7 +443,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
     await mkdir(join(buildDir, "_assets"), { recursive: true });
     await writeFile(join(buildDir, ICO), new Uint8Array([0, 0, 1, 0, 1, 0]));
     await writePromotableManifest();
-    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    const gcsStaticPublisher = await publisher();
     await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-ico", target: TARGET });
     const contentTypeOf = (bucket: MockBucket, key: string): string | undefined =>
       (bucket.files.get(key)?.metadata as { contentType?: string } | undefined)?.contentType;
@@ -434,6 +463,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
   it("promote keeps a bare-slug page's staged text/html Content-Type + HTML policy", async () => {
     await rm(buildDir, { recursive: true, force: true });
     buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-noext-promote-"));
+    await writeFile(join(buildDir, "_redirects"), "# generated\n", "utf8");
     await mkdir(join(buildDir, "en"), { recursive: true });
     await writeFile(join(buildDir, "en", "about"), "<html>about</html>", "utf8");
     await writeFile(
@@ -442,7 +472,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
       "utf8",
     );
     await writePromotableManifest();
-    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    const gcsStaticPublisher = await publisher();
     await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-ne", target: TARGET });
     await gcsStaticPublisher.promoteToProduction({
       sourceRunId: "run-ne",
@@ -468,7 +498,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
       // byte-identical font would be skipped and keep max-age=3600.
       body: Buffer.from(JSON.stringify({ buildId: "prev", files: { [FONT]: fontCrc } })),
     });
-    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    const gcsStaticPublisher = await publisher();
     const summary = await gcsStaticPublisher.publishStaging({
       buildDir,
       runId: "run-pv",
@@ -514,3 +544,91 @@ function computeCrc32cBase64(buf: Buffer): string {
   bytes[3] = c & 0xff;
   return Buffer.from(bytes).toString("base64");
 }
+
+describe("gcsStaticPublisher — redirects on the load balancer (#587)", () => {
+  async function writePromotable(): Promise<void> {
+    await writeFile(
+      join(buildDir, "routing-manifest.json"),
+      JSON.stringify({ env: "staging", envNoindexInHtml: false }),
+      "utf8",
+    );
+  }
+
+  it("Stage stores the build's plan; Publish live writes it into the URL map", async () => {
+    await writePromotable();
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-r", target: TARGET });
+    const stored = JSON.parse(
+      stagingBucket.files.get("_redirect-plans/run-r.json")?.body?.toString("utf8") ?? "{}",
+    ) as { redirects: { fromPath: string; location: string }[] };
+    expect(stored.redirects.map((r) => [r.fromPath, r.location])).toEqual([["/old", "/en/about/"]]);
+    expect(urlMapUpdates).toEqual([]);
+
+    await gcsStaticPublisher.promoteToProduction({
+      sourceRunId: "run-r",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://example.com",
+    });
+    // The plan is not a site file.
+    expect(staticBucket.files.has("_redirect-plans/run-r.json")).toBe(false);
+    expect(urlMapUpdates).toHaveLength(1);
+    expect(urlMapUpdates[0]?.pathMatchers?.[0]?.pathRules).toEqual([
+      { paths: ["/api/*"], service: "gw" },
+      {
+        paths: ["/old", "/old/"],
+        urlRedirect: {
+          pathRedirect: "/en/about/",
+          redirectResponseCode: "MOVED_PERMANENTLY_DEFAULT",
+          stripQuery: false,
+        },
+      },
+    ]);
+  });
+
+  it("leaves out a redirect whose old path the build serves", async () => {
+    await writeFile(join(buildDir, "_redirects"), "/en/about /x 301\n", "utf8");
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-s", target: TARGET });
+    const stored = JSON.parse(
+      stagingBucket.files.get("_redirect-plans/run-s.json")?.body?.toString("utf8") ?? "{}",
+    ) as { redirects: unknown[]; shadowedByBuild: string[] };
+    expect(stored.redirects).toEqual([]);
+    expect(stored.shadowedByBuild).toEqual(["/en/about"]);
+  });
+
+  it("Stage refuses a redirect set over the URL-map quota", async () => {
+    const lines = Array.from({ length: 500 }, (_, i) => `/p${i} /en/about 301`).join("\n");
+    await writeFile(join(buildDir, "_redirects"), `${lines}\n`, "utf8");
+    const gcsStaticPublisher = await publisher();
+    await expect(
+      gcsStaticPublisher.publishStaging({ buildDir, runId: "run-big", target: TARGET }),
+    ).rejects.toThrow(/500 redirect\(s\) need 1001 paths/);
+  });
+
+  it("Stage fails loudly on a build without _redirects", async () => {
+    await rm(join(buildDir, "_redirects"));
+    const gcsStaticPublisher = await publisher();
+    await expect(
+      gcsStaticPublisher.publishStaging({ buildDir, runId: "run-x", target: TARGET }),
+    ).rejects.toThrow(/_redirects is missing/);
+  });
+
+  it("Publish live refuses a run staged without a plan (older release) before copying anything", async () => {
+    await writePromotable();
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-old", target: TARGET });
+    stagingBucket.files.delete("_redirect-plans/run-old.json");
+    await expect(
+      gcsStaticPublisher.promoteToProduction({
+        sourceRunId: "run-old",
+        sourceBuildDir: buildDir,
+        fromTarget: TARGET,
+        toTarget: PROD_TARGET,
+        siteBaseUrl: "https://example.com",
+      }),
+    ).rejects.toThrow(/Run Stage again/);
+    expect(staticBucket.files.has("en/about/index.html")).toBe(false);
+  });
+});

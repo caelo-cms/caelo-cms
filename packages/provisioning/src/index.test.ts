@@ -8,12 +8,6 @@ import { generateBootstrapToken } from "./bootstrap-token.js";
 import { generateCaddyfile } from "./caddy.js";
 import { loadCdnCopyAdapter, selfHostedCdnCopy } from "./cdn-copy.js";
 import { generateDockerCompose } from "./compose.js";
-import {
-  emitRedirectsAzureFrontDoor,
-  emitRedirectsCloudFront,
-  emitRedirectsCloudflare,
-  type RedirectRow,
-} from "./redirects-emit.js";
 
 describe("Caddyfile generator", () => {
   it("emits a vhost per domain + email block", () => {
@@ -21,8 +15,9 @@ describe("Caddyfile generator", () => {
       ownerEmail: "owner@example.com",
       publicSiteRoot: "/srv/caelo/output/production/current",
       stagingSiteRoot: "/srv/caelo/output/staging/current",
-      adminPort: 5173,
-      gatewayPort: 8090,
+      tls: "acme",
+      adminUpstream: "caelo-admin:5173",
+      gatewayUpstream: "caelo-gateway:8090",
       domains: [
         { hostname: "example.com", kind: "public", env: "production" },
         { hostname: "staging.example.com", kind: "public", env: "staging" },
@@ -47,12 +42,13 @@ describe("Caddyfile generator", () => {
       ownerEmail: "x@y.z",
       publicSiteRoot: "/srv/caelo/output/production/current",
       stagingSiteRoot: "/srv/caelo/output/staging/current",
-      adminPort: 5173,
-      gatewayPort: 8090,
+      tls: "acme",
+      adminUpstream: "caelo-admin:5173",
+      gatewayUpstream: "caelo-gateway:8090",
       domains: [],
     });
     expect(out).toContain(":8081 {");
-    expect(out).toContain("reverse_proxy localhost:5173");
+    expect(out).toContain("reverse_proxy caelo-admin:5173");
   });
 });
 
@@ -61,8 +57,9 @@ describe("Caddy cache policy for content-hashed assets", () => {
     ownerEmail: "owner@example.com",
     publicSiteRoot: "/srv/caelo/output/production/current",
     stagingSiteRoot: "/srv/caelo/output/staging/current",
-    adminPort: 5173,
-    gatewayPort: 8090,
+    tls: "acme",
+    adminUpstream: "caelo-admin:5173",
+    gatewayUpstream: "caelo-gateway:8090",
     domains: [
       { hostname: "example.com", kind: "public", env: "production" },
       { hostname: "admin.example.com", kind: "admin", env: "production" },
@@ -119,19 +116,18 @@ describe("docker-compose generator", () => {
       domain: "example.com",
       postgresPassword: "supersecret",
       rolePasswords: { admin: "adminpw", public: "publicpw", gateway: "gatewaypw" },
-      minioRootUser: "caelo",
-      minioRootPassword: "miniopass",
       caeloSecretKek: "0".repeat(64),
       anthropicApiKey: "sk-ant-…",
       diskSize: "20Gi",
       images: RELEASE_IMAGES,
+      ports: { http: 80, https: 443 },
+      project: "caelo-example-com",
     });
-    expect(out).toContain("caelo-postgres");
-    expect(out).toContain("caelo-caddy");
+    expect(out).toContain("  postgres:\n");
+    expect(out).toContain("  caddy:\n");
     expect(out).toContain("caelo-admin");
     expect(out).toContain("caelo-gateway");
     expect(out).toContain("supersecret");
-    expect(out).toContain("miniopass");
     expect(out).toContain("ANTHROPIC_API_KEY");
     expect(out).toContain("CAELO_SECRET_KEK");
   });
@@ -141,11 +137,11 @@ describe("docker-compose generator", () => {
       domain: "example.com",
       postgresPassword: "supersecret",
       rolePasswords: { admin: "adminpw", public: "publicpw", gateway: "gatewaypw" },
-      minioRootUser: "caelo",
-      minioRootPassword: "miniopass",
       caeloSecretKek: "0".repeat(64),
       diskSize: "20Gi",
       images: RELEASE_IMAGES,
+      ports: { http: 80, https: 443 },
+      project: "caelo-example-com",
     });
     const gateway = out.slice(out.indexOf("caelo-gateway:"), out.indexOf("\nvolumes:"));
     expect(gateway).toContain(
@@ -164,11 +160,11 @@ describe("docker-compose generator", () => {
       domain: "example.com",
       postgresPassword: 'pa"ss',
       rolePasswords: { admin: "a", public: "b", gateway: "g" },
-      minioRootUser: "caelo",
-      minioRootPassword: "x",
       caeloSecretKek: "0".repeat(64),
       diskSize: "1Gi",
       images: RELEASE_IMAGES,
+      ports: { http: 80, https: 443 },
+      project: "caelo-example-com",
     });
     expect(out).toContain('pa\\"ss');
   });
@@ -187,130 +183,6 @@ describe("bootstrap token generator", () => {
     const a = generateBootstrapToken().token;
     const b = generateBootstrapToken().token;
     expect(a).not.toBe(b);
-  });
-});
-
-describe("redirects-emit", () => {
-  const rows: RedirectRow[] = [
-    { fromPath: "/old", toPath: "/new", statusCode: 301 },
-    { fromPath: "/blog/2024", toPath: "/blog", statusCode: 302 },
-    { fromPath: "/legacy", toPath: "/modern", statusCode: 308 },
-  ];
-
-  describe("emitRedirectsCloudflare", () => {
-    it("emits one line per row in `<from> <to> <status>` format", () => {
-      const out = emitRedirectsCloudflare(rows);
-      expect(out).toContain("/old /new 301\n");
-      expect(out).toContain("/blog/2024 /blog 302\n");
-      expect(out).toContain("/legacy /modern 308\n");
-      expect(out.startsWith("# Generated by @caelo-cms/provisioning")).toBe(true);
-    });
-
-    it("empty rows → header only, no trailing newline noise", () => {
-      const out = emitRedirectsCloudflare([]);
-      expect(out).toBe("# Generated by @caelo-cms/provisioning — do not edit by hand.\n");
-    });
-
-    it("is byte-identical for the same input (deterministic)", () => {
-      expect(emitRedirectsCloudflare(rows)).toBe(emitRedirectsCloudflare([...rows]));
-    });
-  });
-
-  describe("emitRedirectsCloudFront", () => {
-    it("returns parseable JSON config + a Lambda source that consumes it", () => {
-      const out = emitRedirectsCloudFront(rows);
-      const parsed = JSON.parse(out.jsonConfig) as {
-        redirects: Array<{ from: string; to: string; status: number }>;
-      };
-      expect(parsed.redirects).toHaveLength(3);
-      expect(parsed.redirects[0]).toEqual({ from: "/old", to: "/new", status: 301 });
-      expect(out.lambdaSource).toContain("exports.handler");
-      expect(out.lambdaSource).toContain('require("./redirects.json")');
-    });
-
-    it("preserves status codes verbatim (301/302/307/308)", () => {
-      const allStatuses: RedirectRow[] = [
-        { fromPath: "/a", toPath: "/x", statusCode: 301 },
-        { fromPath: "/b", toPath: "/x", statusCode: 302 },
-        { fromPath: "/c", toPath: "/x", statusCode: 307 },
-        { fromPath: "/d", toPath: "/x", statusCode: 308 },
-      ];
-      const out = emitRedirectsCloudFront(allStatuses);
-      const parsed = JSON.parse(out.jsonConfig) as {
-        redirects: Array<{ status: number }>;
-      };
-      expect(parsed.redirects.map((r) => r.status)).toEqual([301, 302, 307, 308]);
-    });
-  });
-
-  describe("emitRedirectsAzureFrontDoor", () => {
-    it("emits one rule per row with monotonically-increasing order", () => {
-      const out = emitRedirectsAzureFrontDoor(rows);
-      expect(out).toHaveLength(3);
-      expect(out[0]?.name).toBe("redirect-1");
-      expect(out[0]?.order).toBe(1);
-      expect(out[2]?.order).toBe(3);
-    });
-
-    it("maps status codes to Front Door redirectType vocabulary", () => {
-      const out = emitRedirectsAzureFrontDoor([
-        { fromPath: "/a", toPath: "/x", statusCode: 301 },
-        { fromPath: "/b", toPath: "/x", statusCode: 302 },
-        { fromPath: "/c", toPath: "/x", statusCode: 307 },
-        { fromPath: "/d", toPath: "/x", statusCode: 308 },
-      ]);
-      expect(out.map((r) => r.actions[0]?.parameters.redirectType)).toEqual([
-        "Moved",
-        "Found",
-        "TemporaryRedirect",
-        "PermanentRedirect",
-      ]);
-    });
-
-    it("RequestUri condition matches the from path exactly", () => {
-      const out = emitRedirectsAzureFrontDoor(rows);
-      expect(out[1]?.conditions[0]?.parameters.matchValues).toEqual(["/blog/2024"]);
-      expect(out[1]?.actions[0]?.parameters.destinationPath).toBe("/blog");
-    });
-  });
-
-  describe("path-validation guard (review-pass #9)", () => {
-    it("Cloudflare emitter rejects fromPath with whitespace", () => {
-      expect(() =>
-        emitRedirectsCloudflare([{ fromPath: "/old path", toPath: "/new", statusCode: 301 }]),
-      ).toThrow(/contains whitespace/);
-    });
-
-    it("CloudFront emitter rejects toPath with newline", () => {
-      expect(() =>
-        emitRedirectsCloudFront([{ fromPath: "/old", toPath: "/new\nlies", statusCode: 301 }]),
-      ).toThrow(/contains whitespace/);
-    });
-
-    it("every emitter rejects an off-site or URL-embedding toPath (#657)", () => {
-      for (const toPath of ["//evil.example/x", "/https://example.com/x"]) {
-        const rows = [{ fromPath: "/old", toPath, statusCode: 301 as const }];
-        expect(() => emitRedirectsCloudflare(rows)).toThrow(/redirects-emit: toPath/);
-        expect(() => emitRedirectsCloudFront(rows)).toThrow(/redirects-emit: toPath/);
-        expect(() => emitRedirectsAzureFrontDoor(rows)).toThrow(/redirects-emit: toPath/);
-      }
-    });
-
-    it("Azure emitter rejects tab in path", () => {
-      expect(() =>
-        emitRedirectsAzureFrontDoor([{ fromPath: "/old\there", toPath: "/x", statusCode: 301 }]),
-      ).toThrow(/contains whitespace/);
-    });
-
-    it("hyphens, dots, slashes, unicode in path segments are accepted", () => {
-      // Regression guard for the original buggy regex `[\s -]` which
-      // rejected hyphens.
-      expect(() =>
-        emitRedirectsCloudflare([
-          { fromPath: "/blog/spring-launch", toPath: "/blog/sommer-2026", statusCode: 301 },
-        ]),
-      ).not.toThrow();
-    });
   });
 });
 

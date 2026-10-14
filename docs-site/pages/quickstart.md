@@ -22,17 +22,17 @@ This is the "get something running in the next 10 minutes" path. For the long-fo
 ```bash
 bunx @caelo-cms/provisioning@latest --provider self-hosted \
   --domain your-domain.example.com \
-  --anthropic-key sk-ant-...
+  --owner-email you@example.com
 ```
 
-This stands up a Docker Compose stack:
+This stands up and starts a Docker Compose stack:
 
-- **Postgres** with `pgBackRest` for WAL backups
-- **Caddy** with automatic Let's Encrypt TLS for your domain
-- The **admin app** (SvelteKit + Bun) on `https://your-domain.example.com`
-- The **API gateway** for visitor-facing plugin endpoints
+- **Postgres** (backed up with `cms-provision backup`)
+- **Caddy** with automatic Let's Encrypt TLS for your domains
+- The **admin app** (SvelteKit + Bun) on `https://admin.your-domain.example.com`
+- The **API gateway** for visitor-facing plugin endpoints, under `/api/*` on your site
 
-You'll be prompted for an Owner email + password during the install. Save them somewhere safe — there's no "forgot password" flow yet (P17 review-pass item).
+It ends by printing the Owner setup link (`https://admin.your-domain.example.com/setup?token=…`), where you create the Owner account. Save its password somewhere safe — there's no "forgot password" flow yet (P17 review-pass item). Details: [self-hosted install](/install-self-hosted).
 
 ### On Google Cloud, from the browser
 
