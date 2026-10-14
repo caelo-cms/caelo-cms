@@ -72,6 +72,8 @@ export async function queuePluginToolApproval(input: {
   readonly chatSessionId: string;
   readonly pluginTool: RegisteredPluginTool;
   readonly args: Record<string, unknown>;
+  /** #741 — the agent does the AI work; the approved call must not spend the install's AI. */
+  readonly aiDelegated?: boolean;
 }): Promise<ToolResult> {
   const { spec, pluginSlug } = input.pluginTool;
   const problem = toolArgsProblem(spec, input.args);
@@ -91,7 +93,9 @@ export async function queuePluginToolApproval(input: {
       await recordExternalToolApproval({
         plugin,
         infra: hostInfra(),
-        invocation: chatPluginInvocation(input.aiCtx, input.operatorActorId),
+        invocation: chatPluginInvocation(input.aiCtx, input.operatorActorId, {
+          aiDelegated: input.aiDelegated === true,
+        }),
         toolCallId: proposalId,
         args: input.args,
         toolName: spec.name,
@@ -115,6 +119,8 @@ export async function queuePluginToolApproval(input: {
       plugin: pluginSlug,
       args: input.args,
       ...(spec.requiredPermission ? { approverNeeds: spec.requiredPermission } : {}),
+      // Read back by tool_approvals.read_for_execute when the card is approved.
+      ...(input.aiDelegated ? { aiDelegated: true } : {}),
     },
     chatSessionId: input.chatSessionId,
   });
@@ -172,11 +178,12 @@ export async function approveQueuedToolCall(input: {
     proposalId,
   });
   if (!claim.ok) return { ok: false, error: describeError(claim.error) };
-  const { toolName, args, chatSessionId, chatBranchId } = claim.value as {
+  const { toolName, args, chatSessionId, chatBranchId, aiDelegated } = claim.value as {
     toolName: string;
     args: Record<string, unknown>;
     chatSessionId: string | null;
     chatBranchId: string | null;
+    aiDelegated: boolean;
   };
 
   let result: { ok: boolean; content: string };
@@ -188,6 +195,7 @@ export async function approveQueuedToolCall(input: {
           proposalId,
           chatSessionId,
           chatBranchId,
+          aiDelegated,
         })
       : await createDefaultToolRegistry().dispatch(toolName, args, approverCtx, {
           adapter,
@@ -267,6 +275,7 @@ async function runApprovedPluginTool(
     proposalId: string;
     chatSessionId: string | null;
     chatBranchId: string | null;
+    aiDelegated: boolean;
   },
 ): Promise<{ ok: boolean; content: string }> {
   // Same rule as the in-chat gate: live only for an approver who could
@@ -277,13 +286,18 @@ async function runApprovedPluginTool(
     call.approverId,
     "deploy.trigger",
   );
+  const delegation = { aiDelegated: call.aiDelegated };
   const invocation =
     canPublish || !call.chatBranchId
-      ? approvedPluginInvocation(call.approverId)
-      : approvedPluginInvocation(call.approverId, {
-          chatBranchId: call.chatBranchId,
-          ...(call.chatSessionId ? { chatTaskId: call.chatSessionId } : {}),
-        });
+      ? approvedPluginInvocation(call.approverId, undefined, delegation)
+      : approvedPluginInvocation(
+          call.approverId,
+          {
+            chatBranchId: call.chatBranchId,
+            ...(call.chatSessionId ? { chatTaskId: call.chatSessionId } : {}),
+          },
+          delegation,
+        );
   const r = await runPluginOperation({
     approvedToolName: pluginTool.spec.name,
     // An external plugin's binding was recorded under the proposal id.

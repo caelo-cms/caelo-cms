@@ -14,6 +14,7 @@ type TokenRow = {
   displayName: string;
   scope: "chat" | "admin";
   aiCostCapMicrocents: number | null;
+  allowCaeloAi: boolean;
   lastUsedAt: string | null;
   revokedAt: string | null;
   createdAt: string;
@@ -45,6 +46,8 @@ export const actions: Actions = {
     const displayName = String(form.get("displayName") ?? "").trim();
     const capRaw = String(form.get("aiCostCapMicrocents") ?? "");
     const scopeRaw = String(form.get("scope") ?? "chat");
+    // #741 — the checkbox only renders for admin tokens; the op refuses it on chat.
+    const allowCaeloAi = scopeRaw === "admin" && form.get("allowCaeloAi") === "on";
     if (!displayName) return fail(400, { error: "displayName required" });
     if (scopeRaw !== "chat" && scopeRaw !== "admin") {
       return fail(400, { error: "scope must be 'chat' or 'admin'" });
@@ -57,6 +60,7 @@ export const actions: Actions = {
       displayName,
       scope: scopeRaw,
       aiCostCapMicrocents: cap,
+      allowCaeloAi,
     });
     if (!r.ok) return fail(400, { error: "could not create token" });
     const v = r.value as { id: string; plaintextToken: string };

@@ -11,10 +11,12 @@ import type { ExecutionContext } from "@caelo-cms/shared";
  *
  * @param aiCtx the AI actor's context carrying the chat branch + task
  * @param operatorActorId the human the chat belongs to
+ * @param opts.aiDelegated the calling agent does the AI work (Power-MCP, #741)
  */
 export function chatPluginInvocation(
   aiCtx: ExecutionContext,
   operatorActorId: string,
+  opts: { readonly aiDelegated?: boolean } = {},
 ): PluginInvocation {
   return {
     origin: "chat",
@@ -22,6 +24,7 @@ export function chatPluginInvocation(
     operatorActorId,
     ...(aiCtx.chatBranchId ? { chatBranchId: aiCtx.chatBranchId } : {}),
     ...(aiCtx.chatTaskId ? { chatTaskId: aiCtx.chatTaskId } : {}),
+    ...(opts.aiDelegated ? { aiDelegated: true } : {}),
   };
 }
 
@@ -34,10 +37,18 @@ export function chatPluginInvocation(
  *
  * @param operatorActorId the human who approved
  * @param chatBranch the chat's branch and task, when the action must stay on it
+ * @param opts.aiDelegated the call was requested by an external agent that
+ *   does the AI work itself (#741): approving it never spends the install's AI
  */
 export function approvedPluginInvocation(
   operatorActorId: string,
   chatBranch?: { readonly chatBranchId: string; readonly chatTaskId?: string },
+  opts: { readonly aiDelegated?: boolean } = {},
 ): PluginInvocation {
-  return { origin: "approved", actorId: operatorActorId, ...(chatBranch ?? {}) };
+  return {
+    origin: "approved",
+    actorId: operatorActorId,
+    ...(chatBranch ?? {}),
+    ...(opts.aiDelegated ? { aiDelegated: true } : {}),
+  };
 }

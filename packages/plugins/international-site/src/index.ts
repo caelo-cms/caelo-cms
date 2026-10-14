@@ -37,7 +37,9 @@
 
 import { escapeHtml } from "@caelo-cms/plugin-component-kit";
 import {
+  type AiWorkItem,
   definePlugin,
+  isAiDelegated,
   type PageUrlStyle,
   type PluginAdminQuery,
   type PluginAi,
@@ -46,14 +48,33 @@ import {
   z,
 } from "@caelo-cms/plugin-sdk";
 import {
+  APPLY_TRANSLATIONS_TOOL,
+  applyTranslations,
+  applyTranslationsInputJsonSchema,
+  chromeWorkItem,
+  pageWorkItem,
+  WORK_ITEM_NEXT_STEP,
+} from "./apply-translations.js";
+import {
   type ChromeDeps,
   chromeStatus,
+  chromeTranslationBasis,
+  prepareChromeTranslation,
   reattachChromeVariant,
+  reattachChromeVariantDelegated,
   refreshChromeStaleness,
   resolveChromeVariants,
   setChromeVariants,
   translateChrome,
 } from "./chrome-ops.js";
+import {
+  type GlossaryRow,
+  pageTranslationBasis,
+  preparePageTranslation,
+  SEO_STALE_NEXT_STEP,
+  type StyleGuideRow,
+  translateVariantPage,
+} from "./page-translation.js";
 
 /**
  * The serving target's page URL style core hands every render-time
@@ -66,18 +87,6 @@ function pageUrlStyleOf(args: unknown): PageUrlStyle {
   return renderUrlArgs.parse(args).pageUrlStyle;
 }
 
-import {
-  alignSlots,
-  buildFullTranslationPrompt,
-  buildSlotIndex,
-  buildUpdateTranslationPrompt,
-  type ContentSlot,
-  type GlossaryEntry,
-  stripJsonFence,
-  translationResultPayload,
-  validateMetaDescription,
-  validateStructuralLock,
-} from "./translation.js";
 import {
   decodeLocalePrefix,
   defaultLocaleRootRedirect,
@@ -161,246 +170,6 @@ function eventsOf(ctx: unknown): PluginEvents {
     );
   }
   return events;
-}
-
-interface GlossaryRow {
-  id: string;
-  term: string;
-  locale_code: string;
-  translation: string;
-  context: string | null;
-}
-
-interface StyleGuideRow {
-  id: string;
-  locale_code: string;
-  body: string;
-}
-
-async function loadPlacements(cms: CmsHandle, pageId: string): Promise<ContentSlot[]> {
-  const r = await cms.call<{
-    placements: {
-      blockName: string;
-      position: number;
-      moduleSlug: string;
-      values: Record<string, unknown>;
-    }[];
-  }>("page_module_content.list_for_page", { pageId });
-  return r.placements;
-}
-
-/** A page's stored meta description; "" when it has none. */
-async function loadMetaDescription(cms: CmsHandle, pageId: string): Promise<string> {
-  const r = await cms.call<{ seo: { metaDescription: string } | null }>("pages_seo.get", {
-    pageId,
-  });
-  return r.seo?.metaDescription ?? "";
-}
-
-/**
- * What happened to the variant's meta description (#591): core's
- * fill-once verdict (`pages_seo.apply_translation`), or `untranslated`
- * when the source has none or an update pass left it unchanged.
- */
-type TranslatedSeoOutcome = "filled" | "unchanged" | "marked_stale" | "untranslated";
-
-/** Told to the AI when a live variant's SEO was kept, not overwritten. */
-const SEO_STALE_NEXT_STEP =
-  "The variant is live and already had a meta description, so the new translation did not overwrite it (SEO fill-once rule). It is now flagged as stale SEO. If the operator wants the translated description, re-optimize it explicitly with optimize_page_seo (seo-optimize skill).";
-
-/**
- * #397 — one context-aware translation pass for a variant page. Whole
- * page in ONE ctx.ai call (never sentence-by-sentence); structural
- * lock validated post-hoc; the result lands on the DRAFT variant.
- * #591 — the meta description (og:description) is translated in the
- * same call; writing it back follows core's fill-once rule.
- */
-async function translateVariantPage(
-  ctx: unknown,
-  args: { variantPageId: string; mode?: "auto" | "full" | "update" },
-): Promise<{
-  mode: "full" | "update";
-  slotsApplied: number;
-  titleApplied: boolean;
-  seo: TranslatedSeoOutcome;
-}> {
-  const q = adminQueryOf(ctx);
-  const cms = cmsOf(ctx);
-  const ai = aiOf(ctx);
-  await refreshLocaleCache(q);
-
-  const variantRows = (await q.list("page_variants", {
-    page_id: args.variantPageId,
-    limit: 1,
-  })) as unknown as PageVariantRow[];
-  const variantRow = variantRows[0];
-  if (!variantRow) {
-    throw new Error(
-      `page ${args.variantPageId} is not in a variant group — create_variant / link_page_variants first`,
-    );
-  }
-  const group = (await q.list("page_variants", {
-    group_id: variantRow.group_id,
-    limit: 100,
-  })) as unknown as PageVariantRow[];
-  const sourceRow = group.find((v) => v.translation_status === "source");
-  if (!sourceRow) {
-    throw new Error(
-      `variant group ${variantRow.group_id} has no source variant — link the original page first`,
-    );
-  }
-  if (sourceRow.page_id === args.variantPageId) {
-    throw new Error("this page IS the source of its group — pick a target variant to translate");
-  }
-  const sourceLocale = localeCache.get(sourceRow.locale_code);
-  const targetLocale = localeCache.get(variantRow.locale_code);
-  if (!sourceLocale || !targetLocale) {
-    throw new Error("group references locales that are no longer registered — fix via set_locales");
-  }
-
-  // Page titles via the open read surface.
-  const pages = await cms.call<{ pages: { id: string; title: string }[] }>("pages.list", {});
-  const sourceTitle = pages.pages.find((p) => p.id === sourceRow.page_id)?.title ?? "";
-  const variantTitle = pages.pages.find((p) => p.id === args.variantPageId)?.title ?? "";
-
-  const sourceMetaDescription = await loadMetaDescription(cms, sourceRow.page_id);
-  const variantMetaDescription = await loadMetaDescription(cms, args.variantPageId);
-  const sourceSlots = await loadPlacements(cms, sourceRow.page_id);
-  const variantSlots = await loadPlacements(cms, args.variantPageId);
-  const alignment = alignSlots(sourceSlots, variantSlots);
-
-  // Glossary + style guide for the TARGET locale.
-  const glossaryRows = (await q.list("glossary", {
-    locale_code: targetLocale.code,
-    limit: 500,
-  })) as unknown as GlossaryRow[];
-  const glossary: GlossaryEntry[] = glossaryRows.map((g) => ({
-    term: g.term,
-    translation: g.translation,
-    context: g.context,
-  }));
-  const styleRows = (await q.list("style_guides", {
-    locale_code: targetLocale.code,
-    limit: 1,
-  })) as unknown as StyleGuideRow[];
-  const styleGuide = styleRows[0]?.body ?? null;
-
-  // Mode: a fresh clone still carries the source strings verbatim →
-  // full; anything already (partially) translated → update, which
-  // preserves human polish on slots the model omits.
-  let mode: "full" | "update";
-  if (args.mode === "full" || args.mode === "update") {
-    mode = args.mode;
-  } else {
-    const untouched = alignment
-      .filter((a) => a.kind === "aligned")
-      .every(
-        (a) =>
-          a.kind === "aligned" &&
-          JSON.stringify(a.source.values) === JSON.stringify(a.variant.values),
-      );
-    mode = untouched ? "full" : "update";
-  }
-
-  const prompt =
-    mode === "full"
-      ? buildFullTranslationPrompt({
-          sourceLocale: sourceLocale.code,
-          targetLocale: targetLocale.code,
-          targetLocaleDisplayName: targetLocale.display_name,
-          sourceTitle,
-          sourceMetaDescription,
-          sourceSlots,
-          glossary,
-          styleGuide,
-        })
-      : buildUpdateTranslationPrompt({
-          sourceLocale: sourceLocale.code,
-          targetLocale: targetLocale.code,
-          targetLocaleDisplayName: targetLocale.display_name,
-          sourceTitle,
-          sourceMetaDescription,
-          sourceSlots,
-          variantTitle,
-          variantMetaDescription,
-          variantSlots,
-          alignment,
-          glossary,
-          styleGuide,
-        });
-
-  const result = await ai.complete({
-    system: prompt.system,
-    messages: [{ role: "user", content: prompt.user }],
-    maxTokens: 16_000,
-    purpose: "translation",
-  });
-  let payload: ReturnType<typeof translationResultPayload.parse>;
-  try {
-    payload = translationResultPayload.parse(JSON.parse(stripJsonFence(result.text)));
-  } catch (e) {
-    throw new Error(
-      `translation response did not match the contract: ${(e as Error).message}. Re-run translate_variant; if this repeats, the page may contain content the model cannot return as JSON.`,
-    );
-  }
-  // The translator answers with opaque slot ids; resolve them back to
-  // (blockName, position) here, against the very index the prompt was
-  // built from.
-  const slotIndex = buildSlotIndex(sourceSlots);
-  validateStructuralLock(payload, alignment, mode, slotIndex);
-  validateMetaDescription(payload, mode, sourceMetaDescription, variantMetaDescription);
-
-  // Apply — merge translated strings over the variant's current values.
-  const variantByKey = new Map(variantSlots.map((s) => [`${s.blockName}|${s.position}`, s]));
-  let slotsApplied = 0;
-  for (const entry of payload.slots) {
-    const target = slotIndex.get(entry.slot);
-    if (!target) continue; // validateStructuralLock already refused these
-    const slot = { ...target, values: entry.values };
-    const current = variantByKey.get(`${slot.blockName}|${slot.position}`);
-    if (!current) continue; // full-mode 'added' slots have no variant placement — skip
-    const merged = { ...current.values, ...slot.values };
-    try {
-      await cms.call("page_module_content.set", {
-        pageId: args.variantPageId,
-        blockName: slot.blockName,
-        position: slot.position,
-        contentValues: merged,
-      });
-    } catch (e) {
-      const msg = (e as Error).message;
-      if (!/synced/i.test(msg)) throw e;
-      // A synced placement is shared with other pages — a translation
-      // is by definition page-private, so fork first, then write.
-      await cms.call("placement.fork_content", {
-        pageId: args.variantPageId,
-        blockName: slot.blockName,
-        position: slot.position,
-      });
-      await cms.call("page_module_content.set", {
-        pageId: args.variantPageId,
-        blockName: slot.blockName,
-        position: slot.position,
-        contentValues: merged,
-      });
-    }
-    slotsApplied += 1;
-  }
-  let titleApplied = false;
-  if (payload.title && payload.title !== variantTitle) {
-    await cms.call("pages.update", { pageId: args.variantPageId, title: payload.title });
-    titleApplied = true;
-  }
-  let seo: TranslatedSeoOutcome = "untranslated";
-  if (payload.metaDescription !== undefined) {
-    const applied = await cms.call<{ outcome: "filled" | "unchanged" | "marked_stale" }>(
-      "pages_seo.apply_translation",
-      { pageId: args.variantPageId, metaDescription: payload.metaDescription },
-    );
-    seo = applied.outcome;
-  }
-  await q.update("page_variants", variantRow.id, { translation_status: "up_to_date" });
-  return { mode, slotsApplied, titleApplied, seo };
 }
 
 function adminQueryOf(ctx: unknown): PluginAdminQuery {
@@ -497,7 +266,8 @@ async function localesByPage(
   return out;
 }
 
-/** #592 — what the chrome operations need, with a fresh locale registry. */
+/** What the chrome and page translation operations need, with a fresh
+ *  locale registry (#592, #741). */
 async function chromeDepsOf(ctx: unknown): Promise<ChromeDeps> {
   const q = adminQueryOf(ctx);
   await refreshLocaleCache(q);
@@ -764,6 +534,75 @@ async function localeRootPageIds(
   return out;
 }
 
+/** #741 — the Power-MCP half of the translation tools' descriptions. */
+const MCP_TRANSLATE_PAGE =
+  " Over the Power-MCP, when the install's AI is not available to you, it translates nothing itself: it returns a workItem with the exact prompt — translate it with your own model and send the answer back via apply_translations.";
+const MCP_TRANSLATE_ALL =
+  " Over the Power-MCP, when the install's AI is not available to you, it returns workItems (every stale page plus every language's pending chrome) — translate them yourself and send all answers back in one apply_translations call.";
+const MCP_TRANSLATE_CHROME =
+  " Over the Power-MCP, when the install's AI is not available to you, it returns a workItem for the language (or says there is nothing to do) — translate it yourself and send the answer back via apply_translations.";
+const MCP_REATTACH =
+  " Over the Power-MCP, when the install's AI is not available to you, the approved run switches the entry back but does not translate it: then call translate_chrome for that language, translate its workItem yourself and send it back via apply_translations.";
+
+const translateVariantArgs = z
+  .object({
+    variantPageId: z.string().min(1),
+    mode: z.enum(["auto", "full", "update"]).optional(),
+  })
+  .strict();
+
+/**
+ * #741 — translate_all_stale for a delegated call: every needs_update
+ * variant and every non-default locale's pending chrome as work items in
+ * ONE response, each independently appliable, so the agent can translate
+ * them all and answer with a single apply_translations call. No AI call,
+ * no write (beyond chrome staleness markers).
+ */
+async function allStaleWorkItems(
+  deps: ChromeDeps,
+  stale: readonly PageVariantRow[],
+): Promise<{
+  workItems: AiWorkItem[];
+  pages: number;
+  chromeLocales: number;
+  failed: Array<{ pageId: string; error: string }>;
+  chromeFailed: Array<{ localeCode: string; error: string }>;
+  nextStep: string;
+}> {
+  const workItems: AiWorkItem[] = [];
+  const failed: Array<{ pageId: string; error: string }> = [];
+  for (const row of stale) {
+    try {
+      const prepared = await preparePageTranslation(deps, { variantPageId: row.page_id });
+      workItems.push(pageWorkItem(prepared, await pageTranslationBasis(prepared)));
+    } catch (e) {
+      failed.push({ pageId: row.page_id, error: (e as Error).message });
+    }
+  }
+  const pages = workItems.length;
+  const chromeFailed: Array<{ localeCode: string; error: string }> = [];
+  for (const locale of [...deps.locales.values()].filter((l) => !l.is_default)) {
+    try {
+      const prepared = await prepareChromeTranslation(deps, { localeCode: locale.code });
+      if (prepared.prompt === null) continue;
+      workItems.push(chromeWorkItem(prepared, await chromeTranslationBasis(prepared)));
+    } catch (e) {
+      chromeFailed.push({ localeCode: locale.code, error: (e as Error).message });
+    }
+  }
+  return {
+    workItems,
+    pages,
+    chromeLocales: workItems.length - pages,
+    failed,
+    chromeFailed,
+    nextStep:
+      workItems.length === 0
+        ? "Nothing to translate: no page variant is stale and every language's chrome is up to date."
+        : `Answer every work item's instructions with your own model, then send ALL answers back in ONE ${APPLY_TRANSLATIONS_TOOL} call: one items[] entry per work item (its apply.args.items[0] plus your answer as result).`,
+  };
+}
+
 export default definePlugin<PluginContextTier1>({
   slug: "international-site",
   version: "0.1.0",
@@ -913,21 +752,51 @@ export default definePlugin<PluginContextTier1>({
         localesByPage(adminQueryOf(ctx), pageIds),
       ),
 
-    /** #592 — translate a language's shared chrome in one AI call. */
+    /**
+     * #592 — translate a language's shared chrome in one AI call. #741 —
+     * on a delegated call: the same prompt as a work item for the agent.
+     */
     translate_chrome: async (ctx, args) => {
       const { localeCode } = z
         .object({ localeCode: z.string().min(2).max(35) })
         .strict()
         .parse(args);
-      return translateChrome(await chromeDepsOf(ctx), aiOf(ctx), { localeCode });
+      if (!isAiDelegated(ctx)) {
+        return translateChrome(await chromeDepsOf(ctx), aiOf(ctx), { localeCode });
+      }
+      const prepared = await prepareChromeTranslation(await chromeDepsOf(ctx), { localeCode });
+      const counts = {
+        upToDate: prepared.upToDate,
+        skippedIndependent: prepared.skippedIndependent,
+        nothingToTranslate: prepared.nothingToTranslate,
+      };
+      if (prepared.prompt === null) {
+        return {
+          translated: 0,
+          ...counts,
+          nextStep: `Nothing to translate: the ${prepared.locale.display_name} chrome is up to date (independent entries are left alone).`,
+        };
+      }
+      return {
+        workItem: chromeWorkItem(prepared, await chromeTranslationBasis(prepared)),
+        offered: prepared.offered.length,
+        ...counts,
+        nextStep: WORK_ITEM_NEXT_STEP,
+      };
     },
 
     /** #592 — give languages their own chrome content (independent mode). */
     set_chrome_variants: async (ctx, args) => setChromeVariants(await chromeDepsOf(ctx), args),
 
-    /** #592 — back to translated mode; runs only after the Owner approved. */
+    /**
+     * #592 — back to translated mode; runs only after the Owner approved.
+     * #741 — delegated: flips the entry, the agent translates it via
+     * translate_chrome's work item.
+     */
     reattach_chrome_variant: async (ctx, args) =>
-      reattachChromeVariant(await chromeDepsOf(ctx), aiOf(ctx), args),
+      isAiDelegated(ctx)
+        ? reattachChromeVariantDelegated(await chromeDepsOf(ctx), args)
+        : reattachChromeVariant(await chromeDepsOf(ctx), aiOf(ctx), args),
 
     /** Worker tick — keeps the decode-side locale cache warm. */
     refresh_locales: async (ctx) => {
@@ -1274,10 +1143,18 @@ export default definePlugin<PluginContextTier1>({
      * (source changed after a translation existed) — auto-detected.
      */
     translate_variant: async (ctx, args) => {
-      const result = await translateVariantPage(
-        ctx,
-        args as { variantPageId: string; mode?: "auto" | "full" | "update" },
-      );
+      const parsed = translateVariantArgs.parse(args);
+      if (isAiDelegated(ctx)) {
+        // #741 — the agent translates; nothing is written until it
+        // answers through apply_translations.
+        const prepared = await preparePageTranslation(await chromeDepsOf(ctx), parsed);
+        return {
+          workItem: pageWorkItem(prepared, await pageTranslationBasis(prepared)),
+          nextStep: WORK_ITEM_NEXT_STEP,
+        };
+      }
+      const ai = aiOf(ctx);
+      const result = await translateVariantPage(await chromeDepsOf(ctx), ai, parsed);
       return result.seo === "marked_stale" ? { ...result, nextStep: SEO_STALE_NEXT_STEP } : result;
     },
 
@@ -1293,13 +1170,15 @@ export default definePlugin<PluginContextTier1>({
         translation_status: "needs_update",
         limit: 500,
       })) as unknown as PageVariantRow[];
+      if (isAiDelegated(ctx)) return allStaleWorkItems(await chromeDepsOf(ctx), stale);
+      const deps = await chromeDepsOf(ctx);
       const translated: string[] = [];
       const seoStale: string[] = [];
       const failed: Array<{ pageId: string; error: string }> = [];
       let paused = false;
       for (const row of stale) {
         try {
-          const r = await translateVariantPage(ctx, { variantPageId: row.page_id });
+          const r = await translateVariantPage(deps, aiOf(ctx), { variantPageId: row.page_id });
           translated.push(row.page_id);
           if (r.seo === "marked_stale") seoStale.push(row.page_id);
         } catch (e) {
@@ -1319,7 +1198,6 @@ export default definePlugin<PluginContextTier1>({
       let chromeTranslated = 0;
       const chromeFailed: Array<{ localeCode: string; error: string }> = [];
       if (!paused) {
-        const deps = await chromeDepsOf(ctx);
         for (const locale of [...deps.locales.values()].filter((l) => !l.is_default)) {
           try {
             const r = await translateChrome(deps, aiOf(ctx), { localeCode: locale.code });
@@ -1353,6 +1231,12 @@ export default definePlugin<PluginContextTier1>({
             : {}),
       };
     },
+
+    /**
+     * #741 — write an agent's answers to translation work items. Never
+     * calls ctx.ai, so it serves delegated and install-side callers alike.
+     */
+    apply_translations: async (ctx, args) => applyTranslations(await chromeDepsOf(ctx), args),
 
     /** #397 — upsert a glossary term for a target locale. */
     set_glossary_term: async (ctx, args) => {
@@ -1645,8 +1529,10 @@ export default definePlugin<PluginContextTier1>({
         "Translate ONE variant page from its group's source language — the whole page in a single context-aware pass (module layout locked; glossary + style guide applied; existing human-polished translations preserved where the source did not change). " +
         "Use after create_variant (the draft still carries the source language) and for any variant intl_status marks needs_update. The result stays a DRAFT — review, then publish. " +
         'The meta description is translated in the same pass: a draft or a variant without one gets it filled; a LIVE variant that already has one keeps it (SEO fill-once) and comes back seo: "marked_stale" with a nextStep — then re-optimize with optimize_page_seo only if the operator wants it. ' +
-        "NOT for many pages at once — prefer translate_all_stale. NOT for the group's source page itself.",
+        "NOT for many pages at once — prefer translate_all_stale. NOT for the group's source page itself." +
+        MCP_TRANSLATE_PAGE,
       operationName: "translate_variant",
+      usesInstallAi: true,
       // Content write on the chat's branch.
       requiredPermission: "content.write",
       inputJsonSchema: {
@@ -1668,8 +1554,10 @@ export default definePlugin<PluginContextTier1>({
       name: "translate_all_stale",
       description:
         "Re-translate EVERY variant marked needs_update (source pages changed after translation) in one call. Prefer this over repeated translate_variant calls when intl_status shows stale counts > 1. " +
-        "If the plugin's 24h AI budget runs out mid-pass, the result carries paused=true + remaining — tell the operator instead of retrying; if they want the cap raised, propose_set_plugin_ai_cost_cap with the amount they name.",
+        "If the plugin's 24h AI budget runs out mid-pass, the result carries paused=true + remaining — tell the operator instead of retrying; if they want the cap raised, propose_set_plugin_ai_cost_cap with the amount they name." +
+        MCP_TRANSLATE_ALL,
       operationName: "translate_all_stale",
+      usesInstallAi: true,
       // Content write on the chat's branch.
       requiredPermission: "content.write",
       inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
@@ -1679,8 +1567,10 @@ export default definePlugin<PluginContextTier1>({
       description:
         "Translate the site's shared CHROME into one language — navigation menus, header, footer and any content shared across pages — in ONE context-aware pass, so every page in that language shows its own menus and footer. " +
         "Use when a language is added, when intl_status lists chrome entries as 'missing' or 'translated/needs_update' for a locale, or when the preview flags 'there is no <language> version of …'. Links inside menus need no work: they point at each page's same-language version automatically. " +
-        "Chrome a language runs independently (its own items) is never overwritten. translate_all_stale already includes this for every language — prefer it when pages are stale too.",
+        "Chrome a language runs independently (its own items) is never overwritten. translate_all_stale already includes this for every language — prefer it when pages are stale too." +
+        MCP_TRANSLATE_CHROME,
       operationName: "translate_chrome",
+      usesInstallAi: true,
       // Content write on the chat's branch.
       requiredPermission: "content.write",
       inputJsonSchema: {
@@ -1727,8 +1617,10 @@ export default definePlugin<PluginContextTier1>({
       name: "reattach_chrome_variant",
       description:
         "Switch a language's independent chrome entry back to 'translated': its own content (and own module) is REPLACED by a fresh translation of the default language's, and from then on edits to the source mark it stale again. " +
-        "APPROVAL-GATED because it overwrites the language's own content: the turn pauses on an in-chat card and the operator clicks Approve — say 'I prepared switching the <language> menu back to the translated version — please approve' and do NOT claim it is done.",
+        "APPROVAL-GATED because it overwrites the language's own content: the turn pauses on an in-chat card and the operator clicks Approve — say 'I prepared switching the <language> menu back to the translated version — please approve' and do NOT claim it is done." +
+        MCP_REATTACH,
       operationName: "reattach_chrome_variant",
+      usesInstallAi: true,
       approvalMode: "user-approval",
       requiredPermission: "content.write",
       inputJsonSchema: {
@@ -1740,6 +1632,19 @@ export default definePlugin<PluginContextTier1>({
           localeCode: { type: "string", minLength: 2, maxLength: 35 },
         },
       },
+    },
+    {
+      name: APPLY_TRANSLATIONS_TOOL,
+      description:
+        "Write YOUR translations back: the answers to work items that translate_variant, translate_all_stale and translate_chrome return over the Power-MCP when the install's AI is not available to you. " +
+        "Each items[] entry is a work item's apply.args.items[0] copied unchanged (kind, variantPageId + mode or localeCode, basis) plus `result`: your answer to that item's instructions — the JSON object they ask for (or its text). " +
+        "Send every answer you have in ONE call (up to 100 items). All items are checked first — JSON contract, structural lock, and that the page/chrome did not change since the work item was issued (basis); if any item fails, NOTHING is written and the error lists every failing item with what to do (fix the answer, or fetch a fresh work item). " +
+        'Applied pages stay DRAFTS; a result with seo "marked_stale" carries a nextStep. ' +
+        "NOT for translating yourself without a work item — call translate_variant / translate_chrome first; the basis must come from them.",
+      operationName: APPLY_TRANSLATIONS_TOOL,
+      // Content write on the chat's branch, like translate_variant.
+      requiredPermission: "content.write",
+      inputJsonSchema: applyTranslationsInputJsonSchema,
     },
     {
       name: "set_glossary_term",

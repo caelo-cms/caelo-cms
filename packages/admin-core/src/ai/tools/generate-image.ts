@@ -30,6 +30,7 @@ export type GenerateImageInput = z.infer<typeof generateImageInput>;
 
 export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = {
   name: "generate_image",
+  usesInstallAi: true,
   description:
     "Generate a NEW image from a prompt with the configured image model; the result is saved to the media library and returned as mediaId + url (use the url verbatim in <img src>). " +
     'Pass `references` (media ids or slugs from find_media — reference images included: find_media with visibility "reference") to keep a character, product or style consistent. ' +

@@ -24,6 +24,7 @@
  */
 
 import { z } from "@caelo-cms/plugin-sdk";
+import { stableJson } from "./stable-json.js";
 
 /** A field as the chrome helpers need it. */
 export interface ChromeField {
@@ -133,18 +134,7 @@ export function sourceFingerprint(
   fields: readonly ChromeField[],
   values: Readonly<Record<string, unknown>>,
 ): string {
-  const stable = (v: unknown): unknown => {
-    if (Array.isArray(v)) return v.map(stable);
-    if (v && typeof v === "object") {
-      return Object.fromEntries(
-        Object.keys(v as Record<string, unknown>)
-          .sort()
-          .map((k) => [k, stable((v as Record<string, unknown>)[k])]),
-      );
-    }
-    return v;
-  };
-  const text = JSON.stringify(stable({ fields, values }));
+  const text = stableJson({ fields, values });
   // djb2 — a change detector, not a security boundary.
   let h = 5381;
   for (let i = 0; i < text.length; i += 1) h = ((h << 5) + h + text.charCodeAt(i)) | 0;

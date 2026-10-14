@@ -15,7 +15,12 @@
  */
 
 import { createHash } from "node:crypto";
-import type { PluginImageResult, PluginImages, PluginInvocation } from "@caelo-cms/plugin-sdk";
+import {
+  AI_DELEGATED_ERROR_PREFIX,
+  type PluginImageResult,
+  type PluginImages,
+  type PluginInvocation,
+} from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { capabilityRefusal } from "@caelo-cms/shared";
 import { z } from "zod";
@@ -145,6 +150,13 @@ export function makePluginImages(
     operation: "generate" | "edit",
     value: PaidRequest,
   ): Promise<PluginImageResult> {
+    // #741 — on a delegated call the calling agent makes images itself;
+    // the install's image model is not billed for it.
+    if (invocation.aiDelegated) {
+      throw new Error(
+        `${AI_DELEGATED_ERROR_PREFIX} image ${operation} is not available on this call — the calling agent (Power-MCP) creates images itself and uploads them (caelo_upload_images).`,
+      );
+    }
     const operatorId = await authorized();
     if (!infra.imageProvider) throw new Error("PluginImageProviderUnavailable");
     const hash = createHash("sha256")

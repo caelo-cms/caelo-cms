@@ -520,8 +520,9 @@ describe("#397 — context-aware translation", () => {
     }
     expect(aiCalls.length).toBe(callsBefore);
 
-    // Below the tool boundary, a missing value is refused by the storage
-    // layer naming the column, not bound as an empty SQL fragment.
+    // Below the tool boundary, the operation validates its own input (#741)
+    // and refuses the misnamed key naming the right field — the value is
+    // never bound as an empty SQL fragment.
     const unbound = await runPluginOperation({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
@@ -530,7 +531,7 @@ describe("#397 — context-aware translation", () => {
     });
     expect(unbound.ok).toBe(false);
     if (!unbound.ok) {
-      expect(unbound.error.message).toContain('value for column "page_id" is undefined');
+      expect(unbound.error.message).toContain("variantPageId");
       expect(unbound.error.message).not.toContain("Failed query");
     }
 

@@ -16,7 +16,11 @@
  *      the cap both see plugin text spend.
  */
 
-import type { PluginAi } from "@caelo-cms/plugin-sdk";
+import {
+  AI_DELEGATED_ERROR_PREFIX,
+  type PluginAi,
+  type PluginInvocation,
+} from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
 import { z } from "zod";
@@ -45,10 +49,27 @@ export const pluginAiCompleteInput = z
   })
   .strict();
 
-/** Build the `ctx.ai` handle for one plugin. */
-export function makePluginAi(plugin: LoadedPlugin, infra: PluginHostInfra): PluginAi {
+/**
+ * Build the `ctx.ai` handle for one plugin call.
+ *
+ * @param invocation who the call acts for. Its `chatTaskId` (the chat
+ *   session, by the chat-runner's convention) attributes the spend to that
+ *   session, so a Power-MCP token's cost cap sees plugin text spend too.
+ *   `aiDelegated` (#741) makes every call fail: the external agent does the
+ *   AI work and the plugin hands it a work item instead.
+ */
+export function makePluginAi(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  invocation: PluginInvocation,
+): PluginAi {
   return {
     complete: async (rawOpts) => {
+      if (invocation.aiDelegated) {
+        throw new Error(
+          `${AI_DELEGATED_ERROR_PREFIX} plugin '${plugin.slug}' called ctx.ai.complete on a call whose AI work belongs to the calling agent (Power-MCP, issue #741). The operation must return an AiWorkItem instead; this is a bug in the plugin.`,
+        );
+      }
       const provider = infra.aiProvider;
       if (!provider) {
         throw new Error("ctx.ai.complete: no AI provider configured on the host");
@@ -65,7 +86,13 @@ export function makePluginAi(plugin: LoadedPlugin, infra: PluginHostInfra): Plug
       await assertWithinPluginCap(plugin, infra);
       const startedAt = Date.now();
       const result = await provider.complete(opts);
-      await recordPluginAiCall(plugin, infra, result, Date.now() - startedAt);
+      await recordPluginAiCall(
+        plugin,
+        infra,
+        result,
+        Date.now() - startedAt,
+        invocation.chatTaskId ?? null,
+      );
       return {
         text: result.text,
         inputTokens: result.inputTokens,
@@ -140,6 +167,7 @@ async function recordPluginAiCall(
   infra: PluginHostInfra,
   result: Awaited<ReturnType<NonNullable<PluginHostInfra["aiProvider"]>["complete"]>>,
   durationMs: number,
+  chatSessionId: string | null,
 ): Promise<void> {
   const requestId = `plugin-${plugin.slug}-ai`.slice(0, 64);
   try {
@@ -157,6 +185,7 @@ async function recordPluginAiCall(
         cacheCreationTokens: result.cacheCreationTokens,
         durationMs,
         pluginId: plugin.pluginId,
+        chatSessionId,
         requestId,
       },
     );

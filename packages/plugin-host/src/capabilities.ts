@@ -134,7 +134,7 @@ export async function makePluginContext(
     tier1.events = makePluginEvents(plugin, infra);
   }
   if (requested.has("ai_provider") && infra.aiProvider) {
-    tier1.ai = makePluginAi(plugin, infra);
+    tier1.ai = makePluginAi(plugin, infra, invocation);
   }
   if (requested.has("snapshots")) {
     tier1.snapshots = makePluginSnapshots(plugin, infra);

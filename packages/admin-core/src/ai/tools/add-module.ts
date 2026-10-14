@@ -256,6 +256,7 @@ async function resolveModule(
 
 export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
   name: "add_module",
+  usesInstallAi: true,
   description:
     "Add ONE module to a page, a layout (site-wide chrome on every page), or a template (fans out to every page of that page-type). " +
     "**Prefer `build_page` when a PAGE needs more than one module** — it places the whole ordered list WITH content in one transaction. " +
