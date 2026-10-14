@@ -29,6 +29,7 @@ import { generateCaddyfile, selfHostedAdminHost, selfHostedSeedDomains } from ".
 import {
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_GATEWAY_UPSTREAM,
+  composeProjectName,
   generateDockerCompose,
   SITE_OUTPUT_ROOT,
 } from "../../dist/compose.js";
@@ -88,6 +89,7 @@ const composeYaml = pulumi
       ...(adminMemory ? { adminMemory } : {}),
       images: { mode: "release", admin: adminImage, gateway: gatewayImage },
       ports: { http: 80, https: 443 },
+      project: composeProjectName(domain),
     }),
   );
 

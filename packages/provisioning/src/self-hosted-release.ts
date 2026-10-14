@@ -54,6 +54,8 @@ export interface HostRunner {
 
 /** See {@link HostRunner.run}. */
 export interface HostRunOptions {
+  /** Extra environment variables on top of the CLI's own. */
+  readonly env?: Readonly<Record<string, string>>;
   readonly stdoutPath?: string;
   readonly stdinPath?: string;
   readonly inherit?: boolean;
@@ -64,6 +66,7 @@ export const bunHostRunner: HostRunner = {
   async run(argv, opts) {
     try {
       const proc = Bun.spawn([...argv], {
+        ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
         stdin: opts?.stdinPath ? Bun.file(opts.stdinPath) : "ignore",
         stdout: opts?.stdoutPath ? Bun.file(opts.stdoutPath) : opts?.inherit ? "inherit" : "pipe",
         stderr: opts?.inherit ? "inherit" : "pipe",

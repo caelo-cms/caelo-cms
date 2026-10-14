@@ -314,6 +314,7 @@ describe("self-hosted compose", () => {
       caeloSecretKek: "k",
       diskSize: "10G",
       ports: { http: 80, https: 443 },
+      project: "caelo-example-com",
       images: {
         mode: "release" as const,
         admin: `ghcr.io/caelo-cms/admin@sha256:${"a".repeat(64)}`,

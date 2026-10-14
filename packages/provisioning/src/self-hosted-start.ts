@@ -14,7 +14,10 @@
  *   4. start everything (`--remove-orphans` drops services an older Compose
  *      file had, e.g. the pgBackRest sidecar);
  *   5. health-check the admin (`/_caelo/health` proves the DB pool and its
- *      role) and the gateway.
+ *      role) and the gateway;
+ *   6. reload Caddy — Compose does not restart a running Caddy when only
+ *      its bind-mounted Caddyfile changed, so a re-run `up` would otherwise
+ *      keep serving the old vhosts.
  * Every step converges, so a re-run after a failure picks up where it
  * stopped.
  */
@@ -36,7 +39,7 @@ export type StartResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly stage: StartStage; readonly error: string };
 
-type StartStage = "pull" | "postgres" | "migrate" | "start" | "health";
+type StartStage = "pull" | "postgres" | "migrate" | "start" | "health" | "caddy";
 
 /** Bring the install's Compose stack up and prove it serves. Never throws for an expected failure. */
 export async function startSelfHosted(deps: StartDeps): Promise<StartResult> {
@@ -83,7 +86,36 @@ export async function startSelfHosted(deps: StartDeps): Promise<StartResult> {
       );
     }
   }
+  log("Reloading Caddy …");
+  const reloaded = await reloadCaddy(caeloDir, runner);
+  if (!reloaded.ok) return fail("caddy", reloaded.error);
   return { ok: true };
+}
+
+/** `caddy reload` in the running Caddy container with the current Caddyfile. */
+export async function reloadCaddy(
+  caeloDir: string,
+  runner: HostRunner,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await runner.run(
+    compose(
+      caeloDir,
+      "exec",
+      "-T",
+      "caddy",
+      "caddy",
+      "reload",
+      "--config",
+      "/etc/caddy/Caddyfile",
+      "--adapter",
+      "caddyfile",
+    ),
+  );
+  if (r.exitCode === 0) return { ok: true };
+  return {
+    ok: false,
+    error: `caddy reload failed: ${r.stderr.trim().split("\n").slice(-3).join("\n")}`,
+  };
 }
 
 function fail(stage: StartStage, error: string): StartResult {

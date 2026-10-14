@@ -62,12 +62,14 @@ import {
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_GATEWAY_UPSTREAM,
   type ComposeImages,
+  composeProjectName,
   generateDockerCompose,
   isPublishablePort,
   MEDIA_DIR,
   type PublishedPorts,
   type RolePasswords,
   SITE_OUTPUT_ROOT,
+  selfHostedSiteUrl,
 } from "./compose.js";
 import { selfCommand } from "./self-command.js";
 import {
@@ -137,6 +139,13 @@ interface CaeloConfig {
    * Optional so older config.json files load; loadConfig() back-fills 80/443.
    */
   ports?: PublishedPorts;
+  /**
+   * #707 — the Compose project (`name:` in the Compose file). Optional so
+   * older config.json files load; loadConfig() back-fills `caelo`, the
+   * project name Compose derived from `.caelo/` for them (their volumes
+   * carry it).
+   */
+  composeProject?: string;
 }
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
@@ -219,9 +228,10 @@ function loadConfig(): CaeloConfig | null {
   // #707 — settings added later, back-filled (and stored) with what every
   // install ran before they existed, so `upgrade` / `agent` render the same
   // Compose file as before.
-  if (!cfg.tls || !cfg.ports) {
+  if (!cfg.tls || !cfg.ports || !cfg.composeProject) {
     cfg.tls ??= "acme";
     cfg.ports ??= { http: 80, https: 443 };
+    cfg.composeProject ??= "caelo";
     saveConfig(cfg);
   }
   return cfg;
@@ -303,7 +313,11 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
     throw new Error("config has no rolePasswords — run `cms-provision up`");
   }
   if (!cfg.caeloSecretKek) throw new Error("config has no caeloSecretKek — run `cms-provision up`");
-  if (!cfg.ports) throw new Error("config has no ports — run `cms-provision up`");
+  if (!cfg.ports || !cfg.composeProject) {
+    throw new Error(
+      "config has no ports / composeProject — they are back-filled on load; this is a bug",
+    );
+  }
   return generateDockerCompose({
     domain: cfg.domain,
     postgresPassword: cfg.postgresPassword,
@@ -314,6 +328,7 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
     diskSize: "20Gi",
     images,
     ports: cfg.ports,
+    project: cfg.composeProject,
     ...(activeAgent(cfg) ? { agent: activeAgent(cfg) } : {}),
   });
 }
@@ -430,8 +445,21 @@ function tlsArg(): CaddyTlsMode {
 
 /** `https://<host>[:port]` for a host Caddy serves. */
 function siteUrl(cfg: CaeloConfig, host: string): string {
-  const port = cfg.ports?.https ?? 443;
-  return `https://${host}${port === 443 ? "" : `:${port}`}`;
+  if (!cfg.ports)
+    throw new Error("config has no ports — they are back-filled on load; this is a bug");
+  return selfHostedSiteUrl(host, cfg.ports.https);
+}
+
+/**
+ * Re-render the Caddyfile from config + the domains table and reload the
+ * running Caddy (regenerate-caddy, restore).
+ */
+async function refreshCaddy(
+  cfg: CaeloConfig,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  emitConfig(cfg, await fetchExtraDomains());
+  const { reloadCaddy } = await import("./self-hosted-start.js");
+  return reloadCaddy(CAELO_DIR, bunHostRunner);
 }
 
 /**
@@ -542,6 +570,7 @@ async function init(): Promise<void> {
     imageMode: dev ? "dev" : "release",
     tls,
     ports,
+    composeProject: composeProjectName(domain),
   };
   saveConfig(cfg);
   if (images.mode === "release") {
@@ -588,11 +617,18 @@ async function init(): Promise<void> {
       ? `Images: Caelo ${version}, pinned by digest (${images.admin.split("@")[1]?.slice(0, 19)}…)`
       : "Images: DEV MODE — admin + gateway run this checkout (contributors only).",
   );
+  // Printed BEFORE the start: the admin consumes pending-token.json on its
+  // first boot, so a start that fails half-way and is resumed with `up`
+  // would otherwise leave the operator without the link.
+  const adminHost = selfHostedAdminHost(domain);
+  const setupUrl = `${siteUrl(cfg, adminHost)}/setup?token=${tok.token}`;
+  console.log("");
+  console.log(`Owner setup link (save it; valid until ${tok.expiresAt}):`);
+  console.log(`  ${setupUrl}`);
   console.log("");
   // #707 / §11.C — one command ends with a serving install, not with steps
   // to copy.
   await startStack();
-  const adminHost = selfHostedAdminHost(domain);
   console.log("");
   console.log("Caelo is running. Point these DNS records at this host (A/AAAA):");
   for (const host of [adminHost, domain, cfg.stagingDomain ?? defaultStagingHost(domain)]) {
@@ -605,7 +641,7 @@ async function init(): Promise<void> {
   );
   console.log("");
   console.log("Then create the Owner account:");
-  console.log(`  ${siteUrl(cfg, adminHost)}/setup?token=${tok.token}`);
+  console.log(`  ${setupUrl}`);
   console.log(`  (token expires ${tok.expiresAt})`);
   if (agentSetup) {
     console.log("");
@@ -771,32 +807,12 @@ async function regenerateCaddy(): Promise<void> {
     console.error("no config — run `cms-provision init` first");
     process.exit(2);
   }
-  const extra = await fetchExtraDomains();
-  emitConfig(cfg, extra);
-  console.log(`Re-emitted ${CADDYFILE_PATH} (${extra.length} domain(s) from DB).`);
-  // Reload caddy in-place — no downtime, picks up cert provisioning for
-  // any new domains automatically via ACME.
-  const proc = Bun.spawn(
-    [
-      "docker",
-      "compose",
-      "-f",
-      COMPOSE_PATH,
-      "exec",
-      "caddy",
-      "caddy",
-      "reload",
-      "--config",
-      "/etc/caddy/Caddyfile",
-    ],
-    { stdout: "inherit", stderr: "inherit" },
-  );
-  await proc.exited;
-  if (proc.exitCode !== 0) {
-    console.warn(
-      "caddy reload exited non-zero — Caddyfile written, run reload manually once the container is up.",
-    );
+  const r = await refreshCaddy(cfg);
+  if (!r.ok) {
+    console.error(`${CADDYFILE_PATH} was re-written, but ${r.error}`);
+    process.exit(1);
   }
+  console.log(`Re-emitted ${CADDYFILE_PATH} and reloaded Caddy.`);
 }
 
 async function status(): Promise<void> {
@@ -877,6 +893,7 @@ async function restore(): Promise<void> {
         psql: superuserPsql,
         ...(activeAgent(cfg) ? { agentPassword: activeAgent(cfg)?.dbPassword } : {}),
       }),
+    refreshCaddy: () => refreshCaddy(cfg),
   });
   if (!r.ok) {
     console.error(`Restore failed: ${r.error}`);

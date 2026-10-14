@@ -12,7 +12,8 @@
 #      is back, everything serves again;
 #   4. everything the run created is removed (only its own Compose project).
 #
-# It never touches another Compose project: a unique project name, free
+# It never touches another Compose project: a unique domain (the Compose
+# project name, `name:` in the generated file, derives from it), free
 # ports, its own temp dir. TLS comes from Caddy's local CA (`--tls
 # internal`) because ACME cannot issue certificates for a test host.
 #
@@ -25,9 +26,10 @@ VERSION="${1:?usage: self-hosted-e2e.sh <release version, e.g. 0.10.49>}"
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 CLI="$REPO/packages/provisioning/src/cli.ts"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/caelo-selfhosted-e2e.XXXXXX")"
-DOMAIN=caelo-e2e.test
+DOMAIN="e2e-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n').test"
 export CAELO_SELF_HOSTED_DIR="$WORK/.caelo"
-export COMPOSE_PROJECT_NAME="caelo-e2e-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+# The generated file names its project; an inherited override would hide that.
+unset COMPOSE_PROJECT_NAME
 # The release images are linux/amd64 only; on an arm64 host Docker runs them emulated.
 if [ "$(uname -m)" = "arm64" ] || [ "$(uname -m)" = "aarch64" ]; then
   export DOCKER_DEFAULT_PLATFORM=linux/amd64
@@ -65,7 +67,7 @@ expect() {
 }
 psql_admin() { dc exec -T postgres psql -U caelo -d cms_admin -Atc "$1"; }
 
-echo "==> project $COMPOSE_PROJECT_NAME, ports $HTTP_PORT/$HTTPS_PORT, dir $WORK"
+echo "==> domain $DOMAIN, ports $HTTP_PORT/$HTTPS_PORT, dir $WORK"
 cd "$WORK"
 bun "$CLI" --provider self-hosted --domain "$DOMAIN" --owner-email e2e@example.com \
   --version "$VERSION" --tls internal --http-port "$HTTP_PORT" --https-port "$HTTPS_PORT"
@@ -77,13 +79,12 @@ STAGING="https://staging.$DOMAIN:$HTTPS_PORT"
 # A published build where the admin's deploy writes one (deploy target
 # out_dir `output/<env>` under CAELO_OUTPUT_ROOT = the host's .caelo/output).
 OUT="$CAELO_SELF_HOSTED_DIR/output/output"
-mkdir -p "$OUT/production/b1/about" "$OUT/staging/b1"
-echo "<h1>e2e home</h1>" >"$OUT/production/b1/index.html"
-echo "<h1>e2e about</h1>" >"$OUT/production/b1/about/index.html"
-echo "<h1>e2e not found</h1>" >"$OUT/production/b1/404.html"
-echo "<h1>e2e staging</h1>" >"$OUT/staging/b1/index.html"
-ln -s b1 "$OUT/production/current"
-ln -s b1 "$OUT/staging/current"
+# (`current/` is a directory the generator syncs in place.)
+mkdir -p "$OUT/production/current/about" "$OUT/staging/current"
+echo "<h1>e2e home</h1>" >"$OUT/production/current/index.html"
+echo "<h1>e2e about</h1>" >"$OUT/production/current/about/index.html"
+echo "<h1>e2e not found</h1>" >"$OUT/production/current/404.html"
+echo "<h1>e2e staging</h1>" >"$OUT/staging/current/index.html"
 
 check_serving() {
   expect 200 "$ADMIN/_caelo/health" '"ok":true'
@@ -98,6 +99,10 @@ check_serving() {
   echo "ok  staging noindex"
 }
 check_serving
+PROJECT="$(dc config --format json | bun -e 'console.log(JSON.parse(await Bun.stdin.text()).name)')"
+[ "$(docker ps --filter "label=com.docker.compose.project=$PROJECT" -q | wc -l | tr -d ' ')" = 4 ] ||
+  fail "the containers are not in the install's own Compose project $PROJECT"
+echo "ok  compose project $PROJECT"
 [ "$(psql_admin "select count(*) from pg_roles where rolname in ('admin_role','public_role','gateway_role')")" = 3 ] ||
   fail "bootstrap.sh did not create the application roles"
 echo "ok  roles"
@@ -109,11 +114,14 @@ bun "$CLI" backup --to "$WORK/backup.tar.gz"
 psql_admin "delete from domains where hostname = 'before-backup.test'" >/dev/null
 psql_admin "insert into domains (hostname, kind) values ('after-backup.test', 'public')" >/dev/null
 rm "$CAELO_SELF_HOSTED_DIR/media/before-backup.txt"
-echo "<h1>changed</h1>" >"$OUT/production/b1/index.html"
+echo "<h1>changed</h1>" >"$OUT/production/current/index.html"
 bun "$CLI" restore --from "$WORK/backup.tar.gz" --yes
 [ "$(psql_admin "select string_agg(hostname, ',' order by hostname) from domains")" = "before-backup.test" ] ||
   fail "the database was not restored"
 [ -f "$CAELO_SELF_HOSTED_DIR/media/before-backup.txt" ] || fail "the media were not restored"
+grep -q "^before-backup.test {" "$CAELO_SELF_HOSTED_DIR/Caddyfile" ||
+  fail "the Caddyfile was not re-rendered from the restored domains"
+echo "ok  restored database, media and Caddy vhosts"
 check_serving
 
-echo "PASS: self-hosted install, Caddy routing and backup/restore ($COMPOSE_PROJECT_NAME)"
+echo "PASS: self-hosted install, Caddy routing and backup/restore ($PROJECT)"

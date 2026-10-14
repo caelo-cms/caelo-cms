@@ -127,6 +127,7 @@ describe("docker-compose generator", () => {
       diskSize: "20Gi",
       images: RELEASE_IMAGES,
       ports: { http: 80, https: 443 },
+      project: "caelo-example-com",
     });
     expect(out).toContain("  postgres:\n");
     expect(out).toContain("  caddy:\n");
@@ -146,6 +147,7 @@ describe("docker-compose generator", () => {
       diskSize: "20Gi",
       images: RELEASE_IMAGES,
       ports: { http: 80, https: 443 },
+      project: "caelo-example-com",
     });
     const gateway = out.slice(out.indexOf("caelo-gateway:"), out.indexOf("\nvolumes:"));
     expect(gateway).toContain(
@@ -168,6 +170,7 @@ describe("docker-compose generator", () => {
       diskSize: "1Gi",
       images: RELEASE_IMAGES,
       ports: { http: 80, https: 443 },
+      project: "caelo-example-com",
     });
     expect(out).toContain('pa\\"ss');
   });

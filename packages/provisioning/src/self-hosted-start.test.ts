@@ -35,6 +35,7 @@ describe("startSelfHosted (#707 — one command ends with a serving install)", (
       "up -d --remove-orphans",
       "exec -T caelo-admin bun -e <probe>",
       "exec -T caelo-gateway bun -e <probe>",
+      "exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile",
     ]);
   });
 

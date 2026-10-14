@@ -7,6 +7,7 @@ import {
   COMPOSE_APP_SERVICES,
   COMPOSE_GATEWAY_UPSTREAM,
   type ComposeSpec,
+  composeProjectName,
   generateDockerCompose,
   ghcrImageDigest,
   ghcrImageRef,
@@ -23,6 +24,7 @@ const base: Omit<ComposeSpec, "images"> = {
   anthropicApiKey: "sk-ant-x",
   diskSize: "20Gi",
   ports: { http: 80, https: 443 },
+  project: "caelo-example-com",
 };
 
 /** The block of one Compose service, up to the next blank line. */
@@ -117,6 +119,28 @@ describe("self-hosted Compose — release images (#696)", () => {
     expect(COMPOSE_GATEWAY_UPSTREAM).toBe("caelo-gateway:8090");
     expect(service(yaml, "caelo-admin")).toContain('PORT: "5173"');
     expect(service(yaml, "caelo-gateway")).toContain('GATEWAY_PORT: "8090"');
+  });
+
+  it("names its Compose project, so two installs on one host never share containers or volumes", () => {
+    expect(yaml).toContain("\nname: caelo-example-com\n");
+    expect(composeProjectName("Shop.Example.co.uk")).toBe("caelo-shop-example-co-uk");
+    expect(() =>
+      generateDockerCompose({
+        ...base,
+        project: "Bad Name",
+        images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+      }),
+    ).toThrow(/not a Compose project name/);
+  });
+
+  it("puts a non-443 HTTPS port into the admin's site URL", () => {
+    expect(service(yaml, "caelo-admin")).toContain('CAELO_SITE_URL: "https://example.com"');
+    const ported = generateDockerCompose({
+      ...base,
+      ports: { http: 18080, https: 18443 },
+      images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+    });
+    expect(service(ported, "caelo-admin")).toContain('CAELO_SITE_URL: "https://example.com:18443"');
   });
 
   it("publishes Caddy on the configured host ports", () => {
