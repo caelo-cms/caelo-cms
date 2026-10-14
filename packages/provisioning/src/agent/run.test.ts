@@ -40,9 +40,12 @@ const POLICY: StoredUpdatePolicy = {
   windowEnd: null,
   windowTimezone: "UTC",
   soakHours: 24,
+  securitySoakHours: 2,
   paused: false,
   pausedReason: null,
   pausedAt: null,
+  pausedUntil: null,
+  pausedByOwner: false,
   updatedAt: "2026-10-13T00:00:00Z",
 };
 
@@ -369,6 +372,58 @@ describe("runAgentOnce", () => {
     expect(during).toBeGreaterThan(2);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(q.beats.length).toBe(during);
+  });
+
+  // #696 Phase 5: the admin's scheduler queues automatic requests in the
+  // same table (trigger 'auto', auto_basis, requested_by NULL); on a
+  // self-hosted install this agent is what installs them.
+  const AUTO_POLICY: StoredUpdatePolicy = { ...POLICY, mode: "auto", autoMinor: true };
+  const AUTO_REQUEST: ClaimedUpdate = {
+    ...REQUEST,
+    trigger: "auto",
+    autoBasis: "minor",
+    policy: AUTO_POLICY,
+  };
+
+  it("installs an automatic request the scheduler queued, as an automatic run", async () => {
+    const { deps, q, applied } = setup({}, AUTO_REQUEST);
+    const r = await runAgentOnce(deps);
+    expect(r).toEqual({ exitCode: 0, requestId: REQUEST.id, status: null });
+    expect(applied.map((a) => [a.targetVersion, a.trigger])).toEqual([["0.11.0", "auto"]]);
+    expect(q.ends.map((e) => e.status)).toEqual(["succeeded"]);
+  });
+
+  it("installs it once an Owner pause has run out", async () => {
+    const { deps, applied } = setup(
+      {},
+      {
+        ...AUTO_REQUEST,
+        policy: {
+          ...AUTO_POLICY,
+          paused: true,
+          pausedAt: "2026-10-06T12:00:00Z",
+          pausedUntil: "2026-10-13T11:00:00Z",
+          pausedByOwner: true,
+        },
+      },
+    );
+    await runAgentOnce(deps);
+    expect(applied.map((a) => a.trigger)).toEqual(["auto"]);
+  });
+
+  it("refuses an automatic request queued as a security fix the signed manifest does not back", async () => {
+    const { deps, q, applied } = setup(
+      {},
+      {
+        ...AUTO_REQUEST,
+        autoBasis: "security",
+        policy: { ...AUTO_POLICY, autoSecurity: true },
+      },
+    );
+    await runAgentOnce(deps);
+    expect(applied).toEqual([]);
+    expect(q.ends[0]).toMatchObject({ status: "refused", codes: ["policy"] });
+    expect(q.ends[0]?.reason).toMatch(/queued as a security fix/);
   });
 
   it("pauses automatic installs when an automatic run fails", async () => {
