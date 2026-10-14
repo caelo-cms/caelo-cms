@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.10.49
+
+### Features
+- 5781a627 check framework — page checks on every Stage, Lighthouse as one registered check (#727 PR A) (#731)
+- 0327be2f automatic Caelo updates — policy UI, scheduler, Owner emails (#696 Phase 5) (#726)
+
+### Fixes
+- 1c0bea0e no page reaches staging or production without a meta description (#730)
+
+### Other
+- 0d657062 ship pinned registry faces as WOFF2 unicode-range slices (#728)
+
 ## v0.10.48
 
 ### Features
