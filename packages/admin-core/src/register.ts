@@ -490,7 +490,7 @@ import {
   siteDefaultsSeedSiteBaseUrlOp,
   siteDefaultsSetSeoOp,
 } from "./ops/seo.js";
-import { pagesSeoSetManyOp } from "./ops/seo-bulk.js";
+import { pagesSeoAutofillManyOp, pagesSeoSetManyOp } from "./ops/seo-bulk.js";
 import { getSiteDefaultsOp, setSiteDefaultsOp, setSiteIdentityOp } from "./ops/site_defaults.js";
 import {
   executeSiteDefaultsProposalOp,
@@ -1218,6 +1218,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // Bulk `_many` variant via the DRY defineBulkOp factory (CLAUDE.md §11).
   registry.register(pagesSeoSetManyOp);
   registry.register(pagesSeoAutofillOp);
+  registry.register(pagesSeoAutofillManyOp);
   registry.register(pagesSeoApplyTranslationOp);
   registry.register(pagesSeoOptimizeOp);
   registry.register(pagesSeoOptimizeManyOp);

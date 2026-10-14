@@ -441,6 +441,9 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
             ...(p.requestedUrl !== undefined ? { requestedUrl: p.requestedUrl } : {}),
             proposedSlug: p.proposedSlug,
             proposedTitle: p.title,
+            // Bounded like every stored crawl field; the AI shortens it to
+            // the 160-character target when it carries it over anyway.
+            sourceMetaDescription: p.metaDescription.slice(0, 2000),
             proposedModules: p.modules.map((m) => ({
               blockName: m.blockName,
               position: m.position,

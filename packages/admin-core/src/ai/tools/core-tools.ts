@@ -22,6 +22,11 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // Issue #620 — the AI stages its finished work itself; the last step of
   // every routine change, so it stays loaded.
   "stage_changes",
+  // A page's first Stage needs its meta description (the build refuses
+  // pages without one — deploy/missing-seo.ts), so writing it is a step of
+  // every page build, not long-tail SEO work. Its singular sibling rides
+  // along via BULK_TOOL_SIBLINGS.
+  "autofill_page_seo_many",
   // Build + page lifecycle
   "build_page",
   "duplicate_page",

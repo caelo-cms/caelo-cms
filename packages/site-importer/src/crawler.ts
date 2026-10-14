@@ -172,6 +172,10 @@ export interface CrawledPage {
   readonly requestedUrl?: string;
   readonly proposedSlug: string;
   readonly title: string;
+  /** The source page's `<meta name="description">`; "" when it has none.
+   *  The rebuild carries it over as the page's first meta description
+   *  (`autofill_page_seo_many`) instead of losing it in the migration. */
+  readonly metaDescription: string;
   readonly modules: ReturnType<typeof extractModulesFromHtml>["modules"];
   /** run #10 D3 — loud counter: comment-thread subtrees the extractor
    *  removed (WP `#comments`, `.comment-list`, `#respond`, …). The
@@ -545,6 +549,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       ...(redirected ? { requestedUrl: next.url } : {}),
       proposedSlug: urlToSlug(keyUrl, opts.sourceUrl),
       title: extractTitle(res.html),
+      metaDescription: extractPageMeta(res.html, finalUrl).metaDescription,
       modules: extraction.modules,
       commentsStripped: extraction.commentsStripped,
       themeTokens: extractThemeTokens(res.html),

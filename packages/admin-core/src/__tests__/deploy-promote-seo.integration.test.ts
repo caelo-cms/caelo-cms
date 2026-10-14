@@ -136,6 +136,8 @@ async function seedSite(): Promise<void> {
       blocks: [{ blockName: "content", moduleIds: [moduleId] }],
     });
     await ok("pages.update", { pageId, status: "published" });
+    // Builds refuse published pages without a meta description.
+    await ok("pages_seo.autofill", { pageId, metaDescription: `The ${slug} page.` });
     // The operator's own per-page choice — must survive promote.
     if (slug === HIDDEN_SLUG) await ok("pages_seo.set", { pageId, noindex: true });
   }

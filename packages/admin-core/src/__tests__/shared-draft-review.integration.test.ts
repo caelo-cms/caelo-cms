@@ -152,6 +152,8 @@ async function seedPage(slug: string, moduleIds: string[]): Promise<string> {
     status: "published",
   });
   await op(OWNER, "pages.set_modules", { pageId, blocks: [{ blockName: "content", moduleIds }] });
+  // Builds refuse published pages without a meta description.
+  await op(OWNER, "pages_seo.autofill", { pageId, metaDescription: `The ${slug} page.` });
   return pageId;
 }
 

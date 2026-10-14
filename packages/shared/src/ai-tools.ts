@@ -870,14 +870,15 @@ export const setPageSeoToolInput = z
 export type SetPageSeoToolInput = z.infer<typeof setPageSeoToolInput>;
 
 /**
- * P8 — `autofill_page_seo`. Fill-once. Refuses when the page's SEO
- * was already autofilled. Triggered by the `seo-autofill` skill on
- * the first-publish path.
+ * P8 — `autofill_page_seo` (and, per item, `autofill_page_seo_many`).
+ * Fill-once. Refuses when the page's SEO was already autofilled. The AI
+ * calls it before a page's first Stage; staging and production builds
+ * refuse pages without a meta description (deploy/missing-seo.ts).
  */
 export const autofillPageSeoToolInput = z
   .object({
     pageId: z.string().uuid(),
-    metaDescription: z.string().min(1).max(320),
+    metaDescription: z.string().trim().min(1).max(320),
     ogImageAssetId: z.string().uuid().nullable().optional(),
   })
   .strict();

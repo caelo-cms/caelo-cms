@@ -44,7 +44,10 @@ export type SeoSetInput = z.infer<typeof seoSetInputSchema>;
 export const seoAutofillInputSchema = z
   .object({
     pageId: z.string().uuid(),
-    metaDescription: z.string().min(1).max(SEO_DESCRIPTION_HARD_MAX),
+    // Trimmed before the length check: a whitespace-only description would
+    // stamp `autofilled_at` (the fill-once marker) while the page still
+    // ships without a description — and then refuse every later autofill.
+    metaDescription: z.string().trim().min(1).max(SEO_DESCRIPTION_HARD_MAX),
     ogImageAssetId: z.string().uuid().nullable().optional(),
   })
   .strict();

@@ -39,6 +39,8 @@ const RAW_HTML =
   "<h1>Our Pricing</h1><p>Simple plans for growing teams.</p>" +
   '<ul class="elementor-list"><li>Starter</li><li>Pro</li></ul></div>';
 
+const SOURCE_DESCRIPTION = "Simple plans for growing teams, billed monthly or yearly.";
+
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 
@@ -60,10 +62,10 @@ async function seed(): Promise<void> {
       ]);
       await tx`
         INSERT INTO import_pages
-          (id, run_id, source_url, proposed_slug, proposed_title,
+          (id, run_id, source_url, proposed_slug, proposed_title, source_meta_description,
            proposed_modules, proposed_theme_tokens, screenshot_object_key)
         VALUES (${PAGE_ID}::uuid, ${RUN_ID}::uuid, 'https://gist.test/pricing',
-                'pricing', 'Pricing',
+                'pricing', 'Pricing', ${SOURCE_DESCRIPTION},
                 ${modules}::jsonb,
                 ${'{"color-primary":"#ff2244","font-body":"Inter"}'}::jsonb,
                 'crawl/shot-abc.png')`;
@@ -105,6 +107,7 @@ describe("imports.get_page_gist + get_import_page tool", () => {
       html: string;
       themeTokens: Record<string, string>;
       screenshotObjectKey: string | null;
+      sourceMetaDescription: string | null;
     };
     expect(g.proposedSlug).toBe("pricing");
     expect(g.proposedTitle).toBe("Pricing");
@@ -112,6 +115,19 @@ describe("imports.get_page_gist + get_import_page tool", () => {
     expect(g.html).toContain("Our Pricing");
     expect(g.themeTokens["color-primary"]).toBe("#ff2244");
     expect(g.screenshotObjectKey).toBe("crawl/shot-abc.png");
+    expect(g.sourceMetaDescription).toBe(SOURCE_DESCRIPTION);
+  });
+
+  // The searchviu.com migration lost every source description: the crawl
+  // parsed them and dropped them, and the rebuilt pages went live empty.
+  it("tool surfaces the source meta description and the carry-over step", async () => {
+    const res = await getImportPageTool.handler(SYSTEM, { importPageId: PAGE_ID }, {
+      adapter,
+      registry,
+      chatSessionId: "gist-test-session",
+    } as ToolContext);
+    expect(res.content).toContain(`Source meta description: ${SOURCE_DESCRIPTION}`);
+    expect(res.content).toContain("autofill_page_seo_many");
   });
 
   it("tool surfaces Markdown + tokens + a pageRef + a screenshot hint — but NEVER raw page-builder HTML", async () => {
