@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0278 — step-up with the Caelo password instead of a fresh Google sign-in
+-- 0279 — step-up with the Caelo password instead of a fresh Google sign-in
 -- (#757, revising #696 decision 4).
 --
 -- The admin already sits behind IAP / the forward-auth proxy, so the
