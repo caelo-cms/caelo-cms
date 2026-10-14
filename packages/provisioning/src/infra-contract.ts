@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 2;
+export const INFRA_CONTRACT_VERSION = 3;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -30,3 +30,7 @@ export const INFRA_CONTRACT_VERSION = 2;
 //   2 — the upgrader job (#696 Phase 2): its service account + scoped
 //       grants, the Cloud SQL backup role, its IAM database user, the job,
 //       the admin's run-only grant and CAELO_UPGRADER_JOB on the admin.
+//   3 — public_role out of cloudsqlsuperuser (#633): the Admin API revoke
+//       runs as the operator; migration 0278's role audit refuses an install
+//       that has not had it, so the in-cloud upgrader must not get there
+//       first.

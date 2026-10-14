@@ -18,6 +18,7 @@ import { databaseUrlFromEnv } from "@caelo-cms/shared";
 // a value-import of "bun" — avoids the SvelteKit/Vite chain inlining
 // a stub package when admin transitively imports this module.
 import type { SQL as SQLType } from "bun";
+import { assertRoleIsolation } from "./role-audit.js";
 
 type SQL = SQLType;
 const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
@@ -135,6 +136,15 @@ try {
   await runMigrations(sql, migrationsDir);
   await assertNoRlsPolicyDrift(sql);
   console.log(`cms_${target as Target}: migrations applied, RLS drift check passed`);
+  if (target === "admin") {
+    // Issue #633 — the role catalogue is cluster-wide, so one run (on
+    // cms_admin, where the CONNECT check matters) covers both databases.
+    // A violation exits non-zero: the migration job fails and no upgrade
+    // rolls a service onto an install whose public login is over-privileged.
+    const audit = await assertRoleIsolation(sql);
+    for (const w of audit.warnings) console.warn(`role isolation warning: ${w}`);
+    console.log("cms_admin: database role isolation check passed");
+  }
 } finally {
   await sql.end();
 }
