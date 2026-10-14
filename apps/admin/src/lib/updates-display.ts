@@ -60,3 +60,43 @@ export function statusDisplay(
 export function isActive(status: PlatformUpdateStatusValue): boolean {
   return status === "pending" || status === "running";
 }
+
+/**
+ * How long ago the release check ran, in words: "just now", "40 min ago",
+ * "3 h ago", "2 days ago". A time in the future (clock skew between the
+ * database and this server) reads as "just now".
+ */
+export function checkedAgo(checkedAt: string, now: Date): string {
+  const minutes = Math.floor((now.getTime() - new Date(checkedAt).getTime()) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/**
+ * What the "Your version" card says about the release check. `up_to_date`
+ * only when the last check actually reached GitHub — a check that never ran
+ * or failed must not read as "Up to date".
+ */
+export type ReleaseCheckState =
+  | { readonly kind: "never" }
+  | { readonly kind: "failed"; readonly ago: string }
+  | { readonly kind: "up_to_date" | "update_available"; readonly ago: string };
+
+/** The release-check state for `platform_updates.status`'s fields at `now`. */
+export function releaseCheckState(
+  status: {
+    readonly latestVersion: string | null;
+    readonly upgradeAvailable: boolean;
+    readonly checkedAt: string | null;
+  },
+  now: Date,
+): ReleaseCheckState {
+  if (status.checkedAt === null) return { kind: "never" };
+  const ago = checkedAgo(status.checkedAt, now);
+  if (status.latestVersion === null) return { kind: "failed", ago };
+  return { kind: status.upgradeAvailable ? "update_available" : "up_to_date", ago };
+}

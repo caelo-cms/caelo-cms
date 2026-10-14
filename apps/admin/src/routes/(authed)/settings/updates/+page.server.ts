@@ -17,6 +17,9 @@
  *     (it is in the database). A release that changes the cloud setup ends as
  *     "needs Cloud Shell" with the commands to run there.
  *
+ * "Check now" asks GitHub for the newest release right away (otherwise the
+ * release-check worker does, hourly) — for anyone who may open this page.
+ *
  * Nothing here installs anything itself and the AI only reads (CLAUDE.md §2;
  * #696 decision 3). The ops behind the actions re-check the permission and the
  * step-up, and consume the step-up.
@@ -25,6 +28,7 @@
 import {
   agentInstallCommand,
   agentUnavailable,
+  checkReleasesNow,
   type PlatformUpdateEvent,
   type PlatformUpdateRequest,
   type PlatformUpdateStatus,
@@ -39,6 +43,7 @@ import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
+import { releaseCheckFetch } from "#lib/server/release-check.js";
 import {
   beginStepUp,
   requireStepUp,
@@ -220,6 +225,37 @@ function policyStepUpMissing() {
 }
 
 export const actions: Actions = {
+  /**
+   * Run the release check now instead of waiting for the hourly one. Open to
+   * whoever may read this page: it changes nothing but the cached answer.
+   * Refused within a minute of the last check (GitHub's API quota).
+   */
+  checkNow: async ({ request, locals }) => {
+    requirePermission(locals, "settings.read");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const { adapter, registry } = getQueryContext();
+    const fetchImpl = releaseCheckFetch();
+    const r = await checkReleasesNow({
+      registry,
+      adapter,
+      ctx: locals.ctx,
+      ...(fetchImpl ? { fetchImpl } : {}),
+    });
+    if (!r.ok) {
+      // `releaseCheck` keeps the message in the version card, not in the
+      // install section's error spots.
+      return fail(r.kind === "cooldown" ? 429 : r.kind === "check_failed" ? 502 : 500, {
+        error: r.message,
+        releaseCheck: true,
+      });
+    }
+    return {
+      ok: `Checked GitHub just now: the newest release is v${r.latestVersion}.`,
+      releaseCheck: true,
+    };
+  },
+
   /** Start a fresh Google sign-in; Google sends the browser back to the callback. */
   stepUp: async ({ request, locals, cookies, url }) => {
     requirePermission(locals, "platform.update");

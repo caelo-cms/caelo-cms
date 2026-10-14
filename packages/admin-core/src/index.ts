@@ -131,6 +131,12 @@ export * from "./permissions.js";
 // P21 ship 5 — release-check sidecar worker (replaces the in-handler
 // GitHub fetch; bootstrap from hooks.server.ts).
 // #696 Phase 5 — the auto-update scheduler (bootstrapped from hooks.server.ts).
+export {
+  type CheckReleasesNowResult,
+  checkReleasesNow,
+  RELEASE_CHECK_COOLDOWN_MS,
+  type ReleaseFetch,
+} from "./platform-updates/release-check.js";
 export { registryManifestReader } from "./platform-updates/release-facts.js";
 export {
   runAutoUpdateTick,
