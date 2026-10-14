@@ -32,6 +32,24 @@ A Stage that only changes texts and field values, moves existing modules, or edi
 
 Lighthouse covers the homepage plus the pages the Stage changed (up to five). Performance is the median of three runs; the other categories are measured once.
 
+## Performance metrics
+
+Every page Lighthouse audits also records its Performance metrics — the numbers behind the Performance score:
+
+| Metric | What it measures |
+|---|---|
+| **FCP** — First Contentful Paint | when the first text or image appears |
+| **LCP** — Largest Contentful Paint | when the largest element in view (usually the hero image or heading) appears |
+| **TBT** — Total Blocking Time | how long scripts keep the page from responding |
+| **CLS** — Cumulative Layout Shift | how much the layout jumps while it loads |
+| **SI** — Speed Index | how quickly the visible page fills in |
+
+Each value is the median of the same runs as the Performance score, with Lighthouse's rating (good, needs improvement, poor). With them come the **LCP element** and how its time splits up (server response, load delay, load time, render delay), and the elements that **shifted**, with the cause Lighthouse names (for example an image without a size). If a run could not measure a metric, it is shown as *not measured* with the reason, never as zero.
+
+Metrics are information, not findings: they never block Publish live on their own. The Performance score and its baseline do that.
+
+The AI reads them in `get_quality_audit` (per audited page) and `check_stage_audit` (the last measured values of the pages your pending changes touch, plus the homepage), so "make the homepage faster" starts from the real staged numbers and the element that causes them. External agents on [Power-MCP](/mcp) get the same two tools and should use them instead of running Lighthouse themselves: the audit runs against the real staged build, which no other URL serves.
+
 Missing meta descriptions do not wait for this check: a Stage (and any production build) refuses published pages without one and names them, because the check only looks at a few pages. See [Live edit](/live-edit).
 
 ## What blocks Publish live
@@ -77,6 +95,7 @@ The automatic redeploy (Settings → Gateway) works the same way. When only cont
 
 - the gate of the current staged build and why it is open or blocked;
 - recent checks with their findings per page, including page-check warnings and site-wide findings;
+- per page Lighthouse audited, its Performance metrics (FCP, LCP, TBT, CLS, Speed Index) with the LCP element and the layout shifts;
 - every accepted finding — the Owner can **revoke** one, after which it blocks again on its page;
 - baselines below 100;
 - every *publish anyway* decision with who made it and why.

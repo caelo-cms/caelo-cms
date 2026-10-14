@@ -5,16 +5,20 @@
  * on-demand list_/get_ tools, no system-prompt context block).
  *
  *   get_quality_audit         the full findings of one audit: per page the
- *                             scores vs. baselines, every problem with its
+ *                             scores vs. baselines, the Performance metrics
+ *                             (FCP, LCP, TBT, CLS, SI), every problem with its
  *                             Lighthouse audit id or page-check rule id
  *                             (#727, with its fix hint), held-back
  *                             Performance signals, and infrastructure errors.
+ *   check_stage_audit         whether the next Stage runs Lighthouse, and the
+ *                             last measured metrics of the pages it touches.
  *   list_quality_audits       recent audit runs and how they ended.
  *   list_quality_acceptances  findings / score drops editors accepted, per
  *                             page — so the AI never asks twice.
  */
 
 import { z } from "zod";
+import type { classifyStageOp } from "../../ops/quality/classify_stage.js";
 import type { getAuditOp, listAcceptancesOp, listAuditsOp } from "../../ops/quality/read.js";
 import { findingOwner } from "../../quality/platform-audits.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
@@ -23,6 +27,7 @@ import {
   formatCheckProblem,
   formatChecksSummary,
 } from "./quality-check-format.js";
+import { formatMetrics, inlineCode } from "./quality-metrics-format.js";
 
 type AuditValue = z.infer<(typeof getAuditOp)["output"]>;
 type AuditRun = NonNullable<AuditValue["run"]>;
@@ -44,14 +49,6 @@ const getAuditInput = z
       .describe("The newest audit of this staging deploy run."),
   })
   .strict();
-
-/** Markdown inline code that survives backticks inside the text. */
-function inlineCode(text: string): string {
-  const runs = text.match(/`+/g) ?? [];
-  const fence = "`".repeat(Math.max(0, ...runs.map((r) => r.length)) + 1);
-  const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
-  return `${fence}${pad}${text}${pad}${fence}`;
-}
 
 const CATEGORY_LABEL: Record<string, string> = {
   performance: "Performance",
@@ -129,6 +126,7 @@ export function formatPage(p: AuditPage): string[] {
         .join(", ")}; Performance runs ${p.performanceRuns.join("/")}`,
     );
   }
+  if (p.metrics) lines.push(...formatMetrics(p.metrics));
   for (const problem of p.problems) {
     if (problem.kind === "check_rule") {
       lines.push(...formatCheckProblem(problem));
@@ -188,8 +186,9 @@ export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   name: "get_quality_audit",
   description:
     "Read the quality check of the staged site: the page checks (added by plugins such as SEO checks) that read EVERY page on every Stage, plus a Lighthouse audit (Performance, Accessibility, Best Practices, SEO; mobile) when the Stage changed how pages render. " +
-    "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores against the page's baseline, every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), every page-check problem with its rule id (`<check>/<rule>`, e.g. `seo-check/title-missing` — rule ids contain a slash) and a fix hint naming the tool to use, site-wide findings, non-blocking warnings and hints, Performance signals the noise guard is holding back, and infrastructure errors. " +
+    "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores against the page's baseline, the Performance metrics behind the Performance score (FCP, LCP, TBT, CLS, Speed Index: the median over the runs with Lighthouse's rating, plus the LCP element, the LCP breakdown and the elements that shifted with their causes), every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), every page-check problem with its rule id (`<check>/<rule>`, e.g. `seo-check/title-missing` — rule ids contain a slash) and a fix hint naming the tool to use, site-wide findings, non-blocking warnings and hints, Performance signals the noise guard is holding back, and infrastructure errors. " +
     "A problem is a failing audit the editors have not accepted on that page, a score below the page's baseline, or a page-check rule with more errors than an editor accepted. Warnings and hints never block. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. " +
+    "To make a page faster, read its metrics here and fix the worst one in the module that renders the named element. Use this instead of running Lighthouse yourself: the audit runs against the real staged build, which no other URL serves. " +
     "A finding marked CAELO PLATFORM (back/forward cache, caching of Caelo's own files, server response, compression, redirects) is decided by Caelo's hosting/build setup, not by the site: report it with bug_report, never edit the site for it, never propose accepting it. " +
     "Typical input: {} or { auditRunId }.",
   opName: "quality_audits.get",
@@ -224,34 +223,52 @@ export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
 
 const checkStageInput = z.object({}).strict();
 
+type StageValue = z.infer<(typeof classifyStageOp)["output"]>;
+
+/** The last measured metrics of the pages a Stage touches (check_stage_audit). */
+function formatLastMetrics(pages: NonNullable<StageValue["lastMetrics"]>): string[] {
+  if (pages.length === 0) {
+    return [
+      "No Lighthouse metrics measured yet for these pages or the homepage: they appear after the first Stage that runs Lighthouse.",
+    ];
+  }
+  const lines = ["Last measured on the staged build (newest Lighthouse audit per page):"];
+  for (const p of pages) {
+    lines.push(
+      "",
+      `## ${p.pageTitle} (${p.pagePath}) — audit ${p.auditRunId}, ${p.measuredAt}`,
+      ...formatMetrics(p.metrics),
+    );
+  }
+  return lines;
+}
+
 export const checkStageAuditTool = makeReadTool<z.infer<typeof checkStageInput>>({
   name: "check_stage_audit",
   description:
     "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (The page checks read every page on EVERY Stage regardless.) " +
     "Lighthouse runs for: new or changed module html/css/js, layout / template / theme changes, new pages, plugin configuration. Not for: only text and field values, placing or moving existing modules, SEO texts, redirects. " +
-    "Lists the deciding changes and the pages the check would cover. Takes no input (uses the current chat).",
+    "Lists the deciding changes and the pages the check would cover, plus the last measured Performance metrics (FCP, LCP, TBT, CLS, Speed Index; LCP element, layout shifts) of those pages and the homepage — the baseline to plan a speed fix against. Use this instead of running Lighthouse yourself: the audit runs against the real staged build. Takes no input (uses the current chat).",
   opName: "quality_audits.classify_stage",
   input: checkStageInput,
   // Outside a chat (Power-MCP without a session) the op's own validation
   // rejects the missing id — there are no pending chat changes to classify.
-  buildOpInput: (_input, _ctx, toolCtx) => ({ chatSessionId: toolCtx.chatSessionId ?? "" }),
+  buildOpInput: (_input, _ctx, toolCtx) => ({
+    chatSessionId: toolCtx.chatSessionId ?? "",
+    includeLastMetrics: true,
+  }),
   format: (value) => {
-    const v = value as {
-      classification: {
-        auditNeeded: boolean;
-        reasons: { rule: string; label: string }[];
-        skipped: string[];
-      };
-      touchedPageIds: string[];
-    };
+    const v = value as StageValue;
     const c = v.classification;
-    if (!c.auditNeeded) {
-      return `The next Stage needs no Lighthouse audit by its own changes (${c.skipped.join("; ") || "nothing pending"}); the page checks still read every page and Publish live waits for them. Lighthouse can still run when this is the site's first Stage, a plugin was activated, or the previous Lighthouse audit did not end clean.`;
-    }
-    return [
-      `The next Stage will be quality-checked (Lighthouse) because: ${c.reasons.map((r) => `${r.rule} — ${r.label}`).join("; ")}.`,
-      `Pages it touches: ${v.touchedPageIds.length} (the homepage is always included; up to 5 are audited by Lighthouse; the page checks read every page). Publish live waits for the result.`,
-    ].join("\n");
+    const verdict = c.auditNeeded
+      ? [
+          `The next Stage will be quality-checked (Lighthouse) because: ${c.reasons.map((r) => `${r.rule} — ${r.label}`).join("; ")}.`,
+          `Pages it touches: ${v.touchedPageIds.length} (the homepage is always included; up to 5 are audited by Lighthouse; the page checks read every page). Publish live waits for the result.`,
+        ]
+      : [
+          `The next Stage needs no Lighthouse audit by its own changes (${c.skipped.join("; ") || "nothing pending"}); the page checks still read every page and Publish live waits for them. Lighthouse can still run when this is the site's first Stage, a plugin was activated, or the previous Lighthouse audit did not end clean.`,
+        ];
+    return [...verdict, "", ...formatLastMetrics(v.lastMetrics ?? [])].join("\n");
   },
 });
 

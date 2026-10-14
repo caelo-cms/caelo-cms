@@ -27,6 +27,7 @@ import {
   listQualityAcceptancesTool,
   listQualityAuditsTool,
 } from "../ai/tools/quality-audit-tools.js";
+import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
 import { testCheckRegistry } from "../quality/checks/__tests__/fixtures/test-checks.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
@@ -157,7 +158,7 @@ function pageResult(
   return {
     pageId,
     url: `http://staging.test/${pageId}/`,
-    measurement: { scores: merged, failingAudits: failing },
+    measurement: { scores: merged, failingAudits: failing, metrics: sampleMetrics() },
     performanceRuns: [merged.performance, merged.performance, merged.performance],
   };
 }

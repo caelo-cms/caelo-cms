@@ -26,6 +26,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
+import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
 import {
   PLACEHOLDER_RULE,
@@ -107,6 +108,7 @@ const cleanLighthouse = async (job: AuditJob): Promise<AuditJobResult> => ({
     measurement: {
       scores: { performance: 100, accessibility: 100, "best-practices": 100, seo: 100 },
       failingAudits: [],
+      metrics: sampleMetrics(),
     },
     performanceRuns: [100, 100, 100],
   })),

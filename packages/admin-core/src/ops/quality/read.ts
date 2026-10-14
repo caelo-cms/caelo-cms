@@ -22,6 +22,7 @@ import { type StagedBy, stagedBySchema } from "../../quality/chat-feedback.js";
 import { findingSchema } from "../../quality/checks/findings.js";
 import { type RunChecksSummary, runChecksSummarySchema } from "../../quality/checks/outcome.js";
 import { SITE_WIDE_PATH } from "../../quality/gate.js";
+import { performanceMetricsSchema } from "../../quality/lighthouse-protocol.js";
 import type { QualityCategory } from "../../quality/ratchet.js";
 import {
   auditRunStatusSchema,
@@ -196,6 +197,10 @@ const auditPageSchema = z.object({
   baselines: z.record(categorySchema, z.number().int()),
   performanceRuns: z.array(z.number().int()),
   failingAudits: z.array(failingAuditSchema),
+  /** Lighthouse's Performance metrics (FCP, LCP, TBT, CLS, SI: medians
+   *  over the runs, the LCP element, layout shifts). Data, not problems.
+   *  Null when Lighthouse did not audit the page in this run. */
+  metrics: performanceMetricsSchema.nullable(),
   problems: z.array(problemSchema),
   heldBack: z.array(heldBackSchema),
   /** #727 — every finding of the page checks on this page (all severities). */
@@ -262,7 +267,7 @@ export const getAuditOp = defineOperation({
     }
     const pageRows = (await tx.execute(sql`
       SELECT qp.page_id::text AS page_id, p.title, p.current_path, qp.url, qp.status, qp.scores,
-             qp.performance_runs, qp.failing_audits, qp.problems, qp.held_back,
+             qp.performance_runs, qp.failing_audits, qp.metrics, qp.problems, qp.held_back,
              qp.check_findings, qp.error_code, qp.error_message,
              COALESCE((SELECT jsonb_object_agg(b.category, b.baseline)
                          FROM quality_baselines b WHERE b.page_id = qp.page_id), '{}'::jsonb) AS baselines
@@ -279,6 +284,7 @@ export const getAuditOp = defineOperation({
       scores: unknown;
       performance_runs: number[] | null;
       failing_audits: unknown;
+      metrics: unknown;
       problems: unknown;
       held_back: unknown;
       check_findings: unknown;
@@ -304,6 +310,8 @@ export const getAuditOp = defineOperation({
         baselines: fullBaselines(json<Record<string, number>>(r.baselines)),
         performanceRuns: (r.performance_runs ?? []).map(Number),
         failingAudits: json<z.infer<typeof failingAuditSchema>[]>(r.failing_audits),
+        metrics:
+          r.metrics === null ? null : json<z.infer<typeof performanceMetricsSchema>>(r.metrics),
         problems: json<z.infer<typeof problemSchema>[]>(r.problems),
         heldBack: json<z.infer<typeof heldBackSchema>[]>(r.held_back),
         checkFindings: json<z.infer<typeof findingSchema>[]>(r.check_findings),

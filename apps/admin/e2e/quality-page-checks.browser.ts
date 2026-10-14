@@ -4,7 +4,9 @@
  * Issue #727 — /settings/quality shows what the page checks found: a
  * blocking page-check rule on a page (rule id, message, count), the
  * non-blocking warnings next to it, the site-wide findings, and a
- * site-wide page-check acceptance with its accepted count. The audit run
+ * site-wide page-check acceptance with its accepted count. The same page
+ * carries Lighthouse's Performance metrics (FCP, LCP, TBT, CLS, SI with
+ * the LCP element and a layout shift), shown next to its scores. The audit run
  * is seeded straight into the tables in the shape
  * `quality_audits.record_result` writes; the ops themselves are covered by
  * the admin-core integration suite (quality-checks.integration.test.ts).
@@ -18,6 +20,48 @@ test.beforeAll(clearLoginRateBucket);
 const RUN_ID = crypto.randomUUID();
 const REASON = `e2e-page-checks-${Date.now()}`;
 const SLUG = `e2e-page-checks-${Date.now()}`;
+
+function metric(
+  id: string,
+  label: string,
+  title: string,
+  value: number,
+  display: string,
+  score: number,
+) {
+  return {
+    id,
+    label,
+    title,
+    numericUnit: id === "cumulative-layout-shift" ? "unitless" : "millisecond",
+    numericValue: value,
+    displayValue: display,
+    score,
+    runValues: [value],
+    unavailableReason: null,
+  };
+}
+
+/** `quality_audit_pages.metrics` as record_result stores it (0274). */
+const METRICS = JSON.stringify({
+  runs: 1,
+  metrics: [
+    metric("first-contentful-paint", "FCP", "First Contentful Paint", 1200, "1.2 s", 0.97),
+    metric("largest-contentful-paint", "LCP", "Largest Contentful Paint", 4100, "4.1 s", 0.21),
+    metric("total-blocking-time", "TBT", "Total Blocking Time", 120, "120 ms", 0.97),
+    metric("cumulative-layout-shift", "CLS", "Cumulative Layout Shift", 0.356, "0.356", 0.31),
+    metric("speed-index", "SI", "Speed Index", 2200, "2.2 s", 0.99),
+  ],
+  lcpElement: { selector: "main > section.hero > img", label: "Hero" },
+  lcpBreakdown: [{ subpart: "resourceLoadDelay", label: "Resource load delay", durationMs: 1800 }],
+  layoutShifts: [
+    {
+      element: { selector: "body > header" },
+      score: 0.356,
+      causes: ["Unsized image element: header > img.logo"],
+    },
+  ],
+});
 
 test.beforeAll(() => {
   runBunInline(
@@ -66,8 +110,11 @@ test.beforeAll(() => {
             errors: [],
           })}::jsonb)\`;
       await tx\`
-        INSERT INTO quality_audit_pages (audit_run_id, page_id, url, status, problems, check_findings)
+        INSERT INTO quality_audit_pages
+          (audit_run_id, page_id, url, status, scores, performance_runs, metrics, problems, check_findings)
         VALUES (\${process.env.RUN_ID}::uuid, \${page.id}::uuid, 'http://staging.test/', 'problems',
+          \${JSON.stringify({ performance: 71, accessibility: 100, "best-practices": 100, seo: 100 })}::jsonb,
+          '{71}', \${process.env.METRICS}::jsonb,
           \${JSON.stringify([problem])}::jsonb,
           \${JSON.stringify([{ ruleId: problem.ruleId, severity: "error", pageId: page.id, message: problem.findings[0].message }, warning])}::jsonb)\`;
       await tx\`
@@ -76,7 +123,7 @@ test.beforeAll(() => {
     });
     await sql.end();
     `,
-    { RUN_ID, REASON, SLUG },
+    { RUN_ID, REASON, SLUG, METRICS },
   );
 });
 
@@ -98,7 +145,7 @@ test.afterAll(() => {
   );
 });
 
-test("the quality view shows page-check findings, site-wide ones, and a site-wide acceptance", async ({
+test("the quality view shows page-check findings, Performance metrics, site-wide findings, and a site-wide acceptance", async ({
   page,
 }) => {
   await page.goto("/login");
@@ -117,6 +164,16 @@ test("the quality view shows page-check findings, site-wide ones, and a site-wid
     "warning: seo-check/title-long",
   );
   await expect(detail.getByTestId("quality-site-findings")).toContainText("robots/blocked");
+
+  const metrics = detail.getByTestId("quality-page-metrics");
+  await expect(metrics).toContainText("LCP 4.1 s");
+  await expect(metrics).toContainText("CLS 0.356");
+  await expect(metrics).toContainText("median of 1 run(s)");
+  await expect(metrics).toContainText("LCP element: main > section.hero > img");
+  await expect(metrics).toContainText("Resource load delay 1800 ms");
+  await expect(metrics).toContainText(
+    "Layout shift 0.356: body > header — Unsized image element: header > img.logo",
+  );
 
   const row = page.getByTestId("quality-acceptance-row").filter({ hasText: REASON });
   await expect(row).toContainText("site-wide");
