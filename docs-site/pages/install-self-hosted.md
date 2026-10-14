@@ -57,6 +57,8 @@ bunx @caelo-cms/provisioning@<version> upgrade --version <version>
 
 Without `--version`, `upgrade` installs the newest stable release.
 
+**Automatic updates** (Settings → Caelo updates) install releases on their own only where the admin has an upgrader to hand them to. Until this install has one, the policy there still decides what you are told: the admin emails the Owner when a release is out (through the email service at Settings → Email) and says on the page why it cannot install it by itself.
+
 Run it from the directory that holds `.caelo/`. In order, it:
 
 1. resolves the target release's admin + gateway digests and **cosign-verifies** them — a failed check changes nothing;

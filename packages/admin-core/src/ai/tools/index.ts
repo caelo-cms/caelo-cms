@@ -16,6 +16,7 @@ import {
   updatePagesManyTool,
 } from "./bulk-pages-modules.js";
 import {
+  getCaeloAutoUpdateStatusTool,
   getCaeloUpdatePolicyTool,
   getCaeloUpdateTool,
   listCaeloUpdatesTool,
@@ -356,6 +357,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listCaeloUpdatesTool);
   registry.register(getCaeloUpdateTool);
   registry.register(getCaeloUpdatePolicyTool);
+  registry.register(getCaeloAutoUpdateStatusTool);
   // audit #2 — ONE module-placement tool routed by `target`
   // (page/layout/template). Replaces add_module_to_{page,layout,template};
   // adds reuse-by-moduleId on the layout target (the old asymmetry).

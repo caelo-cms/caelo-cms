@@ -25,6 +25,7 @@ process.on("sveltekit:shutdown", (reason: string) => {
 });
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
   assertDurableMediaRoot,
@@ -40,6 +41,8 @@ import {
   lockPluginRow,
   makePluginImageProvider,
   makePluginTextProvider,
+  registryManifestReader,
+  startAutoUpdateScheduler,
   startChatImageGcWorker,
   startDomainEventGcWorker,
   startProposalGcWorker,
@@ -61,6 +64,7 @@ import type { Handle, ServerInit } from "@sveltejs/kit/hooks";
 import { legacySecurityRedirect } from "#lib/legacy-security-redirect.js";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
 import { getQueryContext, mediaStorageSetup } from "#lib/server/query.js";
+import { upgraderTrigger } from "#lib/server/upgrader.js";
 
 // Dev-mode KEK auto-gen. secret-box reads CAELO_SECRET_KEK lazily
 // (only at first encrypt/decrypt), so populating it before any DB
@@ -375,6 +379,29 @@ function bootstrapReleaseCheck(): void {
   startReleaseCheckWorker({ adapter });
 }
 
+// #696 Phase 5 — automatic Caelo updates. Every admin instance runs the
+// loop; a lease in the database makes one decision per interval, and the
+// request it queues is the same row "Install update" writes (the upgrader
+// job / self-hosted agent pick it up and verify the signed manifest).
+// `off` for test runs: the Playwright suite seeds release_check_cache and
+// drives the page itself; a live tick would read the real registry and
+// write emails into the suite's database.
+let autoUpdateBootstrapped = false;
+function bootstrapAutoUpdates(): void {
+  if (autoUpdateBootstrapped) return;
+  autoUpdateBootstrapped = true;
+  if (process.env.CAELO_UPDATE_SCHEDULER === "off") return;
+  const { adapter, registry } = getQueryContext();
+  startAutoUpdateScheduler({
+    adapter,
+    registry,
+    upgrader: upgraderTrigger,
+    readManifest: registryManifestReader({ fetch: (url, init) => fetch(url, init) }),
+    provider: process.env.CAELO_PROVIDER,
+    holder: `${process.env.K_REVISION ?? hostname()}/${process.pid}`,
+  });
+}
+
 // v0.2.37 — proposal GC sidecar. Sweeps pending rows older than 30
 // days → 'superseded' once per day across all *_pending_actions
 // tables. Keeps the bell badge meaningful.
@@ -462,6 +489,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   // land in Cloud Run stderr instead of disappearing into the void.
   bootstrapRedeploy();
   bootstrapReleaseCheck();
+  bootstrapAutoUpdates();
   bootstrapProposalGc();
   bootstrapChatImageGc();
   bootstrapMcpBridge();

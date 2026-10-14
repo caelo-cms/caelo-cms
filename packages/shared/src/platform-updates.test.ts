@@ -65,9 +65,12 @@ describe("autoInstallRefusal", () => {
     windowEnd: null,
     windowTimezone: "UTC",
     soakHours: 24,
+    securitySoakHours: 2,
     paused: false,
     pausedReason: null,
     pausedAt: null,
+    pausedUntil: null,
+    pausedByOwner: false,
     updatedAt: "2026-10-13T00:00:00Z",
   };
   const now = new Date("2026-10-13T12:00:00Z");
@@ -124,6 +127,7 @@ describe("updatePolicySchema", () => {
     windowEnd: "04:00",
     windowTimezone: "Europe/Berlin",
     soakHours: 24,
+    securitySoakHours: 2,
   };
   it("accepts a sane policy and rejects broken ones", () => {
     expect(updatePolicySchema.safeParse(base).success).toBe(true);
@@ -133,6 +137,7 @@ describe("updatePolicySchema", () => {
       { ...base, windowStart: "25:00" },
       { ...base, windowTimezone: "Nowhere/Land" },
       { ...base, soakHours: 1000 },
+      { ...base, securitySoakHours: 48 },
       { ...base, extra: true },
     ]) {
       expect(updatePolicySchema.safeParse(bad).success).toBe(false);

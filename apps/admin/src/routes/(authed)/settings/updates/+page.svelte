@@ -22,6 +22,7 @@
     CardHeader,
     CardTitle,
   } from "#lib/components/ui/card/index.js";
+  import AutoUpdatePolicy from "#lib/components/updates/AutoUpdatePolicy.svelte";
   import CloudShellUpgrade from "#lib/components/updates/CloudShellUpgrade.svelte";
   import StepUpSetup from "#lib/components/updates/StepUpSetup.svelte";
   import UpdateTimeline from "#lib/components/updates/UpdateTimeline.svelte";
@@ -43,6 +44,14 @@
   /** The Owner can install from here: permission + an upgrader job on this install. */
   const inProduct = $derived(data.canInstall && data.upgrader.available);
   let confirmOpen = $state(false);
+  /** The Google sign-in setup card already shows in the install section. */
+  const setupShownAbove = $derived(
+    data.status.upgradeAvailable &&
+      (data.canUpgrade || data.canInstall) &&
+      inProduct &&
+      data.stepUp !== null &&
+      !data.stepUp.configured,
+  );
 
   // Back from Google: open the confirmation the sign-in was for.
   $effect(() => {
@@ -258,7 +267,7 @@
               you are signed in to Google already.
             </p>
           {/if}
-          {#if form?.error}
+          {#if form?.error && !form?.policy}
             <p class="text-sm text-destructive" data-testid="install-error">{form.error}</p>
           {/if}
         </CardContent>
@@ -297,6 +306,22 @@
         <AlertDescription>{data.upgrade.problem}</AlertDescription>
       </Alert>
     {/if}
+  {/if}
+
+  <AutoUpdatePolicy
+    policy={data.policy}
+    scheduler={data.scheduler}
+    canEdit={data.canInstall}
+    stepUp={data.policyStepUp}
+    csrfToken={data.csrfToken}
+    error={form?.policy ? (form.error ?? null) : null}
+  />
+  {#if data.canInstall && data.policyStepUp && !data.policyStepUp.configured && !setupShownAbove}
+    <StepUpSetup
+      csrfToken={data.csrfToken}
+      redirectUri={data.redirectUri}
+      credentialsUrl={data.credentialsUrl}
+    />
   {/if}
 
   {#if data.history.length > 0}

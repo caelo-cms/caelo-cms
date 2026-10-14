@@ -104,6 +104,10 @@ export {
   type PlatformUpdateRequest,
   startUpgraderFor,
 } from "./ops/platform-update-requests.js";
+export type {
+  SchedulerStatus,
+  UpdateNotification,
+} from "./ops/platform-update-scheduler.js";
 // #696 — installed vs newest release; Settings → Updates reads it.
 export { type PlatformUpdateStatus, UPDATES_PATH } from "./ops/platform-updates.js";
 export {
@@ -124,13 +128,21 @@ export {
 export * from "./ops/users.js";
 export * from "./password.js";
 export * from "./permissions.js";
+// P21 ship 5 — release-check sidecar worker (replaces the in-handler
+// GitHub fetch; bootstrap from hooks.server.ts).
+// #696 Phase 5 — the auto-update scheduler (bootstrapped from hooks.server.ts).
+export { registryManifestReader } from "./platform-updates/release-facts.js";
+export {
+  runAutoUpdateTick,
+  startAutoUpdateScheduler,
+  stopAutoUpdateScheduler,
+  type UpgraderResolver,
+} from "./platform-updates/scheduler.js";
 export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
 // #553 — quality-audit worker (Lighthouse after a substantial Stage).
 export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit-worker.js";
 export * from "./rate-limit.js";
 export * from "./register.js";
-// P21 ship 5 — release-check sidecar worker (replaces the in-handler
-// GitHub fetch; bootstrap from hooks.server.ts).
 export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check-worker.js";
 // P12+ at-rest secret encryption (project KEK + AES-GCM).
 export {

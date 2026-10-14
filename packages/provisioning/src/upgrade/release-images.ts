@@ -13,6 +13,7 @@
  * (epic #696) takes the digests from the signed release manifest instead.
  */
 
+import { IMAGE_DIGEST } from "@caelo-cms/shared";
 import { confirm, isCancel, log, spinner } from "@clack/prompts";
 import { green, red } from "kleur/colors";
 
@@ -62,8 +63,9 @@ export function cosignVerifyArgv(imageRef: string): string[] {
   ];
 }
 
-/** A `sha256:<64 hex>` image / blob digest. */
-export const IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/;
+// A `sha256:<64 hex>` image / blob digest — one definition, shared with
+// the release manifest schema.
+export { IMAGE_DIGEST };
 
 /** Whether `s` is a well-formed `sha256:<64 hex>` digest. */
 export function isImageDigest(s: string): boolean {

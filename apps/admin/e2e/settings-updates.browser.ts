@@ -10,7 +10,11 @@
  *   - Phase 2 "Install update": the Owner sets up Google sign-in, confirms
  *     with a fresh sign-in (step-up), confirms the install, and follows the
  *     upgrader's live timeline — fed here the way the job writes it; a
- *     release that changes the cloud setup shows the Cloud Shell step.
+ *     release that changes the cloud setup shows the Cloud Shell step;
+ *   - Phase 5 "Automatic updates": every policy change, pause and resume
+ *     needs its own fresh Google sign-in; the page shows the scheduler's
+ *     last decision and the update emails (and that none were sent while
+ *     no email service is set up); a Reviewer only reads.
  *
  * The suite's admin runs with test-only stand-ins (playwright.config.ts,
  * ignored when NODE_ENV=production): CAELO_E2E_FAKE_UPGRADER (starting the
@@ -92,7 +96,30 @@ const FIXTURE_SCRIPT = `
                VALUES (\${process.env.E2E_LATEST}, '0.10.45', 'manual', \${owner.id}, 'needs_cloud_shell',
                  'v99.0.0 changes this install''s cloud setup (infrastructure contract 1 → 2).',
                  ARRAY['infra-contract'], now(), now())\`;
+    } else if (op === "auto-reset") {
+      await tx\`DELETE FROM platform_update_notifications\`;
+      await tx\`UPDATE platform_update_scheduler SET lease_holder = NULL, last_run_at = NULL,
+                 last_version = NULL, last_action = NULL, last_reason = NULL, last_wait_until = NULL\`;
+      await tx\`UPDATE platform_update_policy SET mode = 'notify', auto_security = false,
+                 auto_patch = false, auto_minor = false, window_start = NULL, window_end = NULL,
+                 window_timezone = 'UTC', soak_hours = 24, security_soak_hours = 2, paused = false,
+                 paused_reason = NULL, paused_at = NULL, paused_until = NULL, paused_by = NULL\`;
+    } else if (op === "auto-status") {
+      // What the scheduler writes after a tick (platform_updates.scheduler_tick).
+      await tx\`UPDATE platform_update_scheduler SET last_run_at = now(), last_version = \${process.env.E2E_LATEST},
+                 last_action = 'wait', last_wait_until = now() + interval '20 hours',
+                 last_reason = 'v99.0.0 (patch release) installs automatically once it has been out for 48 hours.'\`;
+      await tx\`INSERT INTO platform_update_notifications
+                 (kind, target_version, dedupe_key, subject, body, delivery_status, delivery_detail)
+               VALUES ('scheduled', \${process.env.E2E_LATEST}, 'scheduled:e2e',
+                 'Caelo v99.0.0 will install automatically', 'Body.', 'no_transport',
+                 'No email transport is configured (Settings → Email).')\`;
     } else if (op === "wipe") {
+      await tx\`DELETE FROM platform_update_notifications\`;
+      await tx\`UPDATE platform_update_policy SET mode = 'notify', auto_security = false,
+                 auto_patch = false, auto_minor = false, window_start = NULL, window_end = NULL,
+                 window_timezone = 'UTC', soak_hours = 24, security_soak_hours = 2, paused = false,
+                 paused_reason = NULL, paused_at = NULL, paused_until = NULL, paused_by = NULL\`;
       await tx\`DELETE FROM platform_update_requests\`;
       await tx\`DELETE FROM step_up_google_client\`;
       await tx\`
@@ -241,4 +268,87 @@ test("a release that changes the cloud setup explains the Cloud Shell step", asy
     /^https:\/\/(shell|console)\.cloud\.google\.com\//,
   );
   await expect(page.getByTestId("cloud-shell-command").last()).toHaveText(COMMAND);
+});
+
+test("Automatic updates: each change confirmed with Google; status and emails shown", async ({
+  page,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-reset", E2E_EMAIL: REVIEWER_EMAIL });
+  await login(page, "dev-owner@example.com", "dev owner password");
+  await page.goto("/settings/updates");
+
+  // Google sign-in for updates is set up once (the install flow covers it).
+  await page.getByLabel("Client ID").fill("123456789-e2eclient.apps.googleusercontent.com");
+  await page.getByLabel("Client secret").fill("e2e-client-secret-value");
+  await page.getByTestId("save-step-up-client").click();
+
+  const card = page.getByTestId("auto-update-policy");
+  await expect(card.getByTestId("auto-update-summary")).toContainText("install them yourself");
+  // No sign-in yet: no form, only the way to Google.
+  await expect(card.getByTestId("policy-form")).toHaveCount(0);
+  await card.getByTestId("step-up-policy").click();
+
+  // Back from (stand-in) Google: change the policy.
+  await expect(card.getByTestId("policy-step-up-fresh")).toBeVisible();
+  await card.getByLabel("When a new Caelo release comes out").selectOption("auto");
+  await card.getByTestId("policy-auto-patch").check();
+  await card.getByTestId("policy-window-enabled").check();
+  await card.getByLabel("From", { exact: true }).fill("02:00");
+  await card.getByLabel("To", { exact: true }).fill("05:00");
+  await card.getByLabel("Time zone").fill("Europe/Berlin");
+  await card.getByLabel("Wait after a release (hours)").fill("48");
+  await card.getByLabel("Wait for security fixes (hours)").fill("4");
+  await card.getByTestId("save-policy").click();
+
+  await expect(card.getByTestId("auto-update-summary")).toContainText(
+    "Installed automatically: patch releases.",
+  );
+  await expect(card.getByTestId("auto-update-summary")).toContainText(
+    "Only between 02:00 and 05:00 (Europe/Berlin).",
+  );
+  await expect(card.getByTestId("auto-update-summary")).toContainText("waits 48 hours");
+  // The sign-in was used up: the next change needs a new one.
+  await expect(card.getByTestId("policy-form")).toHaveCount(0);
+  await expect(card.getByTestId("step-up-policy")).toBeVisible();
+
+  // Pause for a week, with a reason.
+  await card.getByTestId("step-up-policy").click();
+  await expect(card.getByTestId("pause-form")).toBeVisible();
+  await card.getByLabel("Pause automatic updates", { exact: true }).selectOption("7");
+  await card.getByLabel("Why (optional)").fill("Launch week");
+  await card.getByTestId("pause-auto-updates").click();
+  const paused = card.getByTestId("auto-update-paused");
+  await expect(paused).toContainText("Automatic updates paused until");
+  await expect(paused).toContainText("Launch week");
+
+  // Resume: again its own sign-in.
+  await expect(card.getByTestId("resume-auto-updates")).toHaveCount(0);
+  await card.getByTestId("step-up-policy").click();
+  await card.getByTestId("resume-auto-updates").click();
+  await expect(card.getByTestId("auto-update-paused")).toHaveCount(0);
+
+  // What the scheduler decided, and the emails it could not send.
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "auto-status",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_LATEST: LATEST,
+  });
+  await page.reload();
+  await expect(card.getByTestId("auto-update-status")).toContainText("waiting");
+  await expect(card.getByTestId("auto-update-status")).toContainText("out for 48 hours");
+  await expect(card.getByTestId("update-email-missing")).toBeVisible();
+  await expect(card.getByTestId("update-emails")).toContainText(
+    "Caelo v99.0.0 will install automatically",
+  );
+  await expect(card.getByTestId("update-emails")).toContainText("Not sent: no email set up");
+});
+
+test("a Reviewer reads the automatic-update policy but cannot change it", async ({ page }) => {
+  await login(page, REVIEWER_EMAIL, REVIEWER_PASSWORD);
+  await page.goto("/settings/updates");
+  const card = page.getByTestId("auto-update-policy");
+  await expect(card.getByTestId("auto-update-summary")).toBeVisible();
+  await expect(card.getByTestId("step-up-policy")).toHaveCount(0);
+  await expect(card.getByTestId("policy-form")).toHaveCount(0);
 });

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #696 Phase 2 — the AI's read of in-product Caelo updates: recent
- * install attempts, one attempt's timeline, and the automatic-update
- * policy. Read-only by design (CLAUDE.md §2; #696 maintainer decision 3):
+ * Issue #696 Phase 2 + 5 — the AI's read of in-product Caelo updates:
+ * recent install attempts, one attempt's timeline, the automatic-update
+ * policy, and what the auto-update scheduler last decided. Read-only by design (CLAUDE.md §2; #696 maintainer decision 3):
  * the Owner installs updates and changes the policy at Settings → Updates,
  * each time confirmed with a fresh Google sign-in the AI cannot give. The
  * formatted results say so, so the AI points there instead of trying.
@@ -14,6 +14,7 @@ import type {
   PlatformUpdateEvent,
   PlatformUpdateRequest,
 } from "../../ops/platform-update-requests.js";
+import type { SchedulerStatus } from "../../ops/platform-update-scheduler.js";
 import { UPDATES_PATH } from "../../ops/platform-updates.js";
 import { makeReadTool } from "./_make-read-tool.js";
 
@@ -79,7 +80,8 @@ export const getCaeloUpdateTool = makeReadTool<{ requestId?: string }>({
 export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
   name: "get_caelo_update_policy",
   description:
-    "Whether Caelo updates install automatically on this site and which kinds (security fixes, patch, minor; never major), the maintenance window and soak period, and whether automatic installs are paused after a failure. Read-only.",
+    "Whether Caelo updates install automatically on this site and which kinds (security fixes, patch, minor; never major), the maintenance window, the soak periods, and whether automatic installs are paused (by the Owner, or after a failure). " +
+    "For what the scheduler last decided about the newest release and which update emails went out, use get_caelo_auto_update_status. Read-only.",
   opName: "platform_update_policy.get",
   input: z.object({}).strict(),
   format: (value) => {
@@ -92,8 +94,11 @@ export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
       windowEnd: string | null;
       windowTimezone: string;
       soakHours: number;
+      securitySoakHours: number;
       paused: boolean;
       pausedReason: string | null;
+      pausedUntil: string | null;
+      pausedByOwner: boolean;
     };
     const kinds = [
       p.autoSecurity && "security fixes",
@@ -102,16 +107,63 @@ export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
     ].filter(Boolean);
     const lines = [
       p.mode === "auto"
-        ? `Automatic installs: on for ${kinds.length ? kinds.join(", ") : "nothing yet (no kind switched on)"}; major releases never.`
+        ? `Automatic installs: on for ${kinds.length ? kinds.join(", ") : "nothing yet (no kind switched on)"}; major releases never; releases that change the cloud setup or the database destructively never (the Owner is emailed instead).`
         : p.mode === "notify"
           ? "Automatic installs: off — the Owner is notified and installs by hand."
           : "Automatic installs and update notices: off.",
       p.windowStart
         ? `Maintenance window: ${p.windowStart}–${p.windowEnd} (${p.windowTimezone}).`
         : "Maintenance window: any time.",
-      `Soak period: ${p.soakHours} h after a release is published.`,
+      `Soak period: ${p.soakHours} h after a release is published (security fixes with a published advisory: ${p.securitySoakHours} h).`,
     ];
-    if (p.paused) lines.push(`Paused after a failed automatic install: ${p.pausedReason ?? ""}`);
+    if (p.paused) {
+      lines.push(
+        `Paused ${p.pausedByOwner ? "by the Owner" : "after a failed automatic install"}${p.pausedUntil ? ` until ${p.pausedUntil}` : " until the Owner resumes"}${p.pausedReason ? `: ${p.pausedReason}` : ""}`,
+      );
+    }
+    lines.push(OWNER_ONLY);
+    return lines.join("\n");
+  },
+});
+
+const ACTION_WORDS: Record<NonNullable<SchedulerStatus["lastAction"]>, string> = {
+  none: "nothing to do",
+  notify: "the Owner installs it by hand",
+  wait: "waiting",
+  install: "queued an automatic install",
+  manual: "needs a manual install (destructive database changes)",
+  needs_cloud_shell: "needs the Owner to run it in Cloud Shell (it changes the cloud setup)",
+  blocked: "cannot install automatically",
+};
+
+export const getCaeloAutoUpdateStatusTool = makeReadTool<Record<string, never>>({
+  name: "get_caelo_auto_update_status",
+  description:
+    "What Caelo's automatic-update scheduler last decided about the newest release (installing, waiting for the soak period or maintenance window, paused, or why it will not install it on its own) and the update emails sent to the Owner, with whether each was delivered. " +
+    "Use when the operator asks whether or when an update will install by itself, or why they did (not) get an update email. For the policy itself use get_caelo_update_policy. Read-only.",
+  opName: "platform_updates.scheduler_status",
+  input: z.object({}).strict(),
+  format: (value) => {
+    const s = value as SchedulerStatus;
+    const lines: string[] = [];
+    if (s.lastRunAt === null) {
+      lines.push("The automatic-update scheduler has not run on this install yet.");
+    } else {
+      lines.push(
+        `Last check ${s.lastRunAt.slice(0, 16).replace("T", " ")} UTC${s.lastVersion ? ` about v${s.lastVersion}` : ""}: ${s.lastAction ? ACTION_WORDS[s.lastAction] : "no decision"}${s.lastWaitUntil ? ` (until about ${s.lastWaitUntil.slice(0, 16).replace("T", " ")} UTC)` : ""}.`,
+      );
+      if (s.lastReason) lines.push(s.lastReason);
+    }
+    if (s.notifications.length === 0) {
+      lines.push("No update emails yet.");
+    } else {
+      lines.push("Update emails (newest first):");
+      for (const n of s.notifications) {
+        lines.push(
+          `- ${n.createdAt.slice(0, 16).replace("T", " ")} UTC "${n.subject}": ${n.deliveryStatus.replace("_", " ")}${n.deliveryDetail ? ` (${n.deliveryDetail})` : ""}`,
+        );
+      }
+    }
     lines.push(OWNER_ONLY);
     return lines.join("\n");
   },

@@ -6,6 +6,10 @@
  *
  *   - Phase 0: for whoever may change settings, the exact, version-pinned
  *     command that upgrades this install from a terminal.
+ *   - Phase 5: the automatic-update policy (which kinds install on their
+ *     own, maintenance window, soak periods, pause/resume) — every change a
+ *     step-up action of its own — plus what the scheduler last decided and
+ *     which update emails went out.
  *   - Phase 2: on installs with the upgrader job, "Install update" for whoever
  *     holds `platform.update` (the Owner): a fresh Google sign-in (step-up),
  *     a confirmation of what will happen, then the request + the job start,
@@ -22,10 +26,12 @@ import {
   type PlatformUpdateEvent,
   type PlatformUpdateRequest,
   type PlatformUpdateStatus,
+  type SchedulerStatus,
   STEP_UP_REQUIRED,
   startUpgraderFor,
 } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
+import type { StoredUpdatePolicy } from "@caelo-cms/shared";
 import { error, fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
@@ -49,13 +55,22 @@ import type { Actions, PageServerLoad } from "./$types";
 export const load: PageServerLoad = async ({ locals, cookies, url }) => {
   const user = requirePermission(locals, "settings.read");
   const { adapter, registry } = getQueryContext();
-  const [statusResult, latestResult, historyResult] = await Promise.all([
-    execute(registry, adapter, locals.ctx, "platform_updates.status", {}),
-    execute(registry, adapter, locals.ctx, "platform_updates.get", {}),
-    execute(registry, adapter, locals.ctx, "platform_updates.list", { limit: 10 }),
-  ]);
+  const [statusResult, latestResult, historyResult, policyResult, schedulerResult] =
+    await Promise.all([
+      execute(registry, adapter, locals.ctx, "platform_updates.status", {}),
+      execute(registry, adapter, locals.ctx, "platform_updates.get", {}),
+      execute(registry, adapter, locals.ctx, "platform_updates.list", { limit: 10 }),
+      execute(registry, adapter, locals.ctx, "platform_update_policy.get", {}),
+      execute(registry, adapter, locals.ctx, "platform_updates.scheduler_status", {}),
+    ]);
   if (!statusResult.ok) {
     throw error(500, opErrorMessage(statusResult.error, "could not read the update status"));
+  }
+  if (!policyResult.ok) {
+    throw error(500, opErrorMessage(policyResult.error, "could not read the update policy"));
+  }
+  if (!schedulerResult.ok) {
+    throw error(500, opErrorMessage(schedulerResult.error, "could not read the update scheduler"));
   }
   const status = statusResult.value as PlatformUpdateStatus;
   const latest = latestResult.ok
@@ -79,6 +94,8 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
 
   const upgrader = upgraderTrigger();
   const stepUp = canInstall ? await requireStepUp(locals, cookies, "platform_update") : null;
+  // A policy change is its own step-up action (purpose update_policy).
+  const policyStepUp = canInstall ? await requireStepUp(locals, cookies, "update_policy") : null;
   // A run that died (out of memory, timeout) never writes its end; Cloud
   // Run knows. Say so instead of showing "Installing" until the next run
   // ends it.
@@ -121,6 +138,13 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
         ? { configured: true, fresh: true, freshUntil: stepUp.freshUntil, problem: null }
         : { configured: stepUp.configured, fresh: false, freshUntil: null, problem: stepUp.problem }
       : null,
+    policyStepUp: policyStepUp
+      ? policyStepUp.fresh
+        ? { configured: true, fresh: true, freshUntil: policyStepUp.freshUntil }
+        : { configured: policyStepUp.configured, fresh: false, freshUntil: null }
+      : null,
+    policy: policyResult.value as StoredUpdatePolicy,
+    scheduler: schedulerResult.value as SchedulerStatus,
     stepUpResult,
     redirectUri: stepUpRedirectUri(url.origin),
     credentialsUrl: (() => {
@@ -140,12 +164,24 @@ const STEP_UP_PURPOSES = ["platform_update", "update_policy", "step_up_client"] 
 type Purpose = (typeof STEP_UP_PURPOSES)[number];
 
 /** A failed op as a form result: step-up refusals flagged, so the page offers the sign-in. */
-function opFailure(error: unknown, fallback: string) {
+function opFailure(error: unknown, fallback: string, extra: { policy?: true } = {}) {
   const message = opErrorMessage(error, fallback);
   const stepUpRequired = message.startsWith(STEP_UP_REQUIRED);
   return fail(stepUpRequired ? 403 : 400, {
     error: message.replace(`${STEP_UP_REQUIRED}: `, ""),
     stepUpRequired,
+    ...extra,
+  });
+}
+
+/** Pause lengths the page offers, in days ("until I resume" is the other choice). */
+const PAUSE_DAYS = [1, 3, 7, 14, 30];
+
+function policyStepUpMissing() {
+  return fail(403, {
+    error: "Confirm with a fresh Google sign-in first.",
+    stepUpRequired: true,
+    policy: true,
   });
 }
 
@@ -229,6 +265,73 @@ export const actions: Actions = {
     });
     if (!r.ok) return opFailure(r.error, "Could not cancel the update.");
     return { ok: "Update cancelled." };
+  },
+
+  /** Save the automatic-update policy (its own fresh Google sign-in). */
+  savePolicy: async ({ request, locals, cookies }) => {
+    requirePermission(locals, "platform.update");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const check = await requireStepUp(locals, cookies, "update_policy");
+    if (!check.fresh) return policyStepUpMissing();
+    const windowOn = form.get("windowEnabled") === "on";
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "platform_update_policy.set", {
+      policy: {
+        mode: String(form.get("mode") ?? ""),
+        autoSecurity: form.get("autoSecurity") === "on",
+        autoPatch: form.get("autoPatch") === "on",
+        autoMinor: form.get("autoMinor") === "on",
+        channel: "stable",
+        windowStart: windowOn ? String(form.get("windowStart") ?? "") : null,
+        windowEnd: windowOn ? String(form.get("windowEnd") ?? "") : null,
+        windowTimezone: String(form.get("windowTimezone") ?? "").trim(),
+        soakHours: Number(form.get("soakHours")),
+        securitySoakHours: Number(form.get("securitySoakHours")),
+      },
+      sessionHash: check.sessionHash,
+    });
+    if (!r.ok) return opFailure(r.error, "Could not save the update policy.", { policy: true });
+    return { ok: "Automatic-update settings saved." };
+  },
+
+  /** Pause automatic updates for a while, or until resumed. */
+  pause: async ({ request, locals, cookies }) => {
+    requirePermission(locals, "platform.update");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const check = await requireStepUp(locals, cookies, "update_policy");
+    if (!check.fresh) return policyStepUpMissing();
+    const days = String(form.get("pauseFor") ?? "");
+    if (days !== "resume" && !PAUSE_DAYS.includes(Number(days))) {
+      return fail(400, { error: "Choose how long to pause.", policy: true });
+    }
+    const until =
+      days === "resume" ? null : new Date(Date.now() + Number(days) * 86_400_000).toISOString();
+    const reason = String(form.get("reason") ?? "").trim();
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "platform_update_policy.pause", {
+      until,
+      ...(reason ? { reason } : {}),
+      sessionHash: check.sessionHash,
+    });
+    if (!r.ok) return opFailure(r.error, "Could not pause automatic updates.", { policy: true });
+    return { ok: "Automatic updates paused." };
+  },
+
+  /** Lift a pause (the Owner's own, or the one a failed install set). */
+  resume: async ({ request, locals, cookies }) => {
+    requirePermission(locals, "platform.update");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const check = await requireStepUp(locals, cookies, "update_policy");
+    if (!check.fresh) return policyStepUpMissing();
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "platform_update_policy.resume", {
+      sessionHash: check.sessionHash,
+    });
+    if (!r.ok) return opFailure(r.error, "Could not resume automatic updates.", { policy: true });
+    return { ok: "Automatic updates resumed." };
   },
 
   /** Store the install's Google OAuth client for step-up sign-ins. */

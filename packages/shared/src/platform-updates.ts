@@ -158,7 +158,15 @@ export const updatePolicySchema = z
     windowStart: z.string().regex(WALL_CLOCK, "expected HH:MM").nullable(),
     windowEnd: z.string().regex(WALL_CLOCK, "expected HH:MM").nullable(),
     windowTimezone: z.string().min(1).max(64).refine(isKnownTimeZone, "unknown time zone"),
+    /** Hours after publication before a non-security release installs automatically. */
     soakHours: z.number().int().min(0).max(720),
+    /**
+     * The same for a release whose signed manifest names a published GitHub
+     * Security Advisory (auto-update.ts `isSecurityRelease`). Shorter by
+     * default (2 h vs 24 h): the fix is public, so every hour unpatched is
+     * exposure, while two hours still let a broken release be pulled first.
+     */
+    securitySoakHours: z.number().int().min(0).max(720),
   })
   .strict()
   .refine((p) => (p.windowStart === null) === (p.windowEnd === null), {
@@ -166,6 +174,9 @@ export const updatePolicySchema = z
   })
   .refine((p) => p.mode !== "auto" || p.channel === "stable", {
     message: "automatic installs follow the stable channel only",
+  })
+  .refine((p) => p.securitySoakHours <= p.soakHours, {
+    message: "security fixes cannot wait longer than other releases",
   });
 export type UpdatePolicy = z.infer<typeof updatePolicySchema>;
 
@@ -174,6 +185,10 @@ export interface StoredUpdatePolicy extends UpdatePolicy {
   readonly paused: boolean;
   readonly pausedReason: string | null;
   readonly pausedAt: string | null;
+  /** End of the Owner's pause; null = until resumed (or not paused). */
+  readonly pausedUntil: string | null;
+  /** True when the Owner paused; false when the upgrader paused after a failure. */
+  readonly pausedByOwner: boolean;
   readonly updatedAt: string;
 }
 
@@ -233,6 +248,7 @@ export function autoInstallRefusal(
     | "autoPatch"
     | "autoMinor"
     | "paused"
+    | "pausedUntil"
     | "windowStart"
     | "windowEnd"
     | "windowTimezone"
@@ -241,7 +257,14 @@ export function autoInstallRefusal(
   at: Date,
 ): string | null {
   if (policy.mode !== "auto") return "automatic installs are switched off in the update policy";
-  if (policy.paused) return "automatic installs are paused after a failed install";
+  // An Owner pause with an end that has passed no longer holds (the
+  // scheduler lifts it on its next tick; this keeps the job consistent).
+  if (
+    policy.paused &&
+    (policy.pausedUntil === null || Date.parse(policy.pausedUntil) > at.getTime())
+  ) {
+    return "automatic installs are paused";
+  }
   if (candidate.channel !== "stable") return "only stable releases install automatically";
   if (candidate.contractMigrations) {
     return "the release carries destructive database changes; the Owner installs it by hand";

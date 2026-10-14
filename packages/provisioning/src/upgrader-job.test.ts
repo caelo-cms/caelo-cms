@@ -53,9 +53,12 @@ const POLICY: StoredUpdatePolicy = {
   windowEnd: null,
   windowTimezone: "UTC",
   soakHours: 24,
+  securitySoakHours: 2,
   paused: false,
   pausedReason: null,
   pausedAt: null,
+  pausedUntil: null,
+  pausedByOwner: false,
   updatedAt: "2026-10-13T00:00:00Z",
 };
 

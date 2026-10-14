@@ -33,6 +33,7 @@
  */
 
 import type {
+  AutoUpdateBasis,
   PlatformUpdateEventLevel,
   PlatformUpdatePhase,
   PlatformUpdateTrigger,
@@ -61,6 +62,8 @@ export interface ClaimedUpdate {
   readonly id: string;
   readonly targetVersion: string;
   readonly trigger: PlatformUpdateTrigger;
+  /** Why the admin's scheduler queued an automatic request; null for the Owner's. */
+  readonly autoBasis?: AutoUpdateBasis | null;
   readonly policy: StoredUpdatePolicy;
 }
 

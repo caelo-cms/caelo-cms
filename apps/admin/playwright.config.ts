@@ -76,6 +76,10 @@ export default defineConfig({
       // #696 — settings-updates.browser.ts seeds the release check's
       // result; the live GitHub poll would race (and overwrite) it.
       CAELO_RELEASE_CHECK: "off",
+      // #696 Phase 5 — the auto-update scheduler would read the live
+      // release registry and write update emails into the suite's database;
+      // settings-updates.browser.ts drives the policy page itself.
+      CAELO_UPDATE_SCHEDULER: "off",
       // #696 — Settings → Updates shows the upgrade command for Google
       // Cloud installs only; the suite runs without a cloud provider.
       // Test-only, ignored when NODE_ENV=production (lib/upgrade-path.ts).
