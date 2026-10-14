@@ -16,6 +16,9 @@
  *     update agent the Owner gets its setup command and the server-side
  *     upgrade command; with one checking in, "Install update" queues the
  *     request for it; a release it cannot install shows the server step.
+ *   - the release check: when it last ran ("checked 40 min ago"), a failed
+ *     check never reads as "Up to date", and "Check now" (open to a Reviewer,
+ *     who holds settings.read) refreshes it — at most once a minute;
  *   - Phase 5 "Automatic updates": every policy change, pause and resume
  *     needs its own fresh Google sign-in; the page shows the scheduler's
  *     last decision and the update emails (and that none were sent while
@@ -29,7 +32,8 @@
  *
  * The release check is switched off for the suite (CAELO_RELEASE_CHECK=off in
  * playwright.config.ts) and its cache seeded here, so GitHub never decides
- * what the test sees. The suite's admin runs with CAELO_SITE_URL
+ * what the test sees; "Check now" asks a stand-in that names v99.0.0
+ * (CAELO_E2E_FAKE_RELEASE_CHECK, lib/server/release-check.ts). The suite's admin runs with CAELO_SITE_URL
  * http://localhost:8082 and the Google Cloud provider stand-in, so the
  * install is named `localhost`.
  */
@@ -137,6 +141,14 @@ const FIXTURE_SCRIPT = `
                VALUES (\${process.env.E2E_LATEST}, '0.10.45', 'manual', \${owner.id}, 'needs_cloud_shell',
                  'This install has not recorded which Caelo release it runs yet. Upgrade it once with the upgrade command on the server.',
                  ARRAY['install-version-unknown'], now(), now())\`;
+    } else if (op === "checked-ago") {
+      // What the hourly release check leaves behind, E2E_MINUTES ago; no
+      // E2E_LATEST = that check failed (it reached no release).
+      await tx\`
+        UPDATE release_check_cache
+           SET latest_version = \${process.env.E2E_LATEST || null},
+               fetched_at = now() - make_interval(mins => \${Number(process.env.E2E_MINUTES)})
+         WHERE id = 1\`;
     } else if (op === "wipe") {
       await tx\`DELETE FROM platform_update_notifications\`;
       await tx\`UPDATE platform_update_policy SET mode = 'notify', auto_security = false,
@@ -483,4 +495,46 @@ test("a Reviewer reads the automatic-update policy but cannot change it", async 
   await expect(card.getByTestId("auto-update-summary")).toBeVisible();
   await expect(card.getByTestId("step-up-policy")).toHaveCount(0);
   await expect(card.getByTestId("policy-form")).toHaveCount(0);
+});
+
+test("the release check: when it ran, a failed one, and Check now", async ({ page }) => {
+  // A failed hourly check 5 minutes ago: never "Up to date".
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "checked-ago",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_MINUTES: "5",
+    E2E_LATEST: "",
+  });
+  // A Reviewer may read the page, so may refresh what it shows.
+  await login(page, REVIEWER_EMAIL, REVIEWER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(page.getByText("Last check failed", { exact: true })).toBeVisible();
+  await expect(page.getByText("Up to date", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("release-checked-at")).toHaveText("· checked 5 min ago");
+  await expect(page.getByTestId("release-check-explainer")).toContainText("couldn't reach GitHub");
+
+  // The hourly check found the release 40 minutes ago.
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "checked-ago",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_MINUTES: "40",
+    E2E_LATEST: LATEST,
+  });
+  await page.reload();
+  await expect(page.getByTestId("release-checked-at")).toHaveText("· checked 40 min ago");
+
+  // Check now: asks (the stand-in for) GitHub right away.
+  await page.getByTestId("check-releases-now").click();
+  await expect(
+    page.getByText(`Checked GitHub just now: the newest release is v${LATEST}.`),
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("release-checked-at")).toHaveText("· checked just now");
+  await expect(page.getByTestId("latest-version")).toHaveText(`v${LATEST}`);
+  await expect(page.getByTestId("release-notes")).toContainText("release-check stand-in");
+
+  // A second click within the minute is refused, and says so.
+  await page.getByTestId("check-releases-now").click();
+  await expect(page.getByTestId("release-check-error")).toContainText(
+    "checked for new releases less than a minute ago",
+  );
 });
