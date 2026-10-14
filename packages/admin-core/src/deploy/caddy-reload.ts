@@ -16,7 +16,7 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { CADDY_ADMIN_SOCKET_ENV, CADDYFILE_ENV } from "@caelo-cms/shared";
+import { CADDY_ADMIN_SOCKET_ENV, CADDYFILE_ENV, trimTrailingSlashes } from "@caelo-cms/shared";
 
 /** Where the admin API is reached: a unix socket, or a URL (tests). */
 export type CaddyAdminEndpoint =
@@ -69,7 +69,7 @@ export async function reloadCaddy(target: CaddyReloadTarget): Promise<void> {
         ? // Bun's fetch speaks HTTP over a unix socket via `unix`; the host
           // part of the URL is then only the Host header.
           await fetch("http://localhost/load", { ...init, unix: target.endpoint.path })
-        : await fetch(`${target.endpoint.baseUrl.replace(/\/+$/, "")}/load`, init);
+        : await fetch(`${trimTrailingSlashes(target.endpoint.baseUrl)}/load`, init);
   } catch (e) {
     throw new Error(
       `caddy-reload: Caddy's admin API is unreachable (${(e as Error).message}). The site files are published but new redirects are not served until Caddy reloads. Check that the caelo-caddy container runs, then deploy again.`,

@@ -36,6 +36,7 @@
  */
 
 import { redirectTargetIssue } from "./redirect-target.js";
+import { trimTrailingSlashes } from "./url.js";
 
 /** The redirect statuses the redirects table stores (besides 410). */
 export type RedirectStatusCode = 301 | 302 | 307 | 308;
@@ -190,7 +191,7 @@ function normaliseRows(rows: readonly RedirectTableRow[]): NormalisedRow[] {
     }
     if (/[?#]/.test(fromPath)) {
       throw new Error(
-        `redirect-plan: from path ${shown} contains '?' or '#'. Redirects match the URL path only, so this row can never match. Re-create it for the path alone (e.g. '${fromPath.replace(/[?#].*$/, "") || "/"}') or delete it with bulk_delete_redirects, then rebuild.`,
+        `redirect-plan: from path ${shown} contains '?' or '#'. Redirects match the URL path only, so this row can never match. Re-create it for the path alone (e.g. '${pathBeforeQuery(fromPath)}') or delete it with bulk_delete_redirects, then rebuild.`,
       );
     }
     if (statusCode !== GONE_STATUS && !REDIRECT_STATUSES.has(statusCode)) {
@@ -260,7 +261,13 @@ function combinedStatus(permanent: boolean, preservesMethod: boolean): RedirectS
 }
 
 function stripTrailingSlash(path: string): string {
-  return path.length > 1 && path.endsWith("/") ? path.replace(/\/+$/, "") || "/" : path;
+  return path.length > 1 ? trimTrailingSlashes(path) || "/" : path;
+}
+
+/** The part of a stored path before its first `?` or `#` (`/` if empty). */
+function pathBeforeQuery(path: string): string {
+  const cut = path.search(/[?#]/);
+  return (cut === -1 ? path : path.slice(0, cut)) || "/";
 }
 
 /** Whether the last path segment names a file (`/a/b.html`). */

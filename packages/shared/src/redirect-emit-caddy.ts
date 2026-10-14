@@ -20,6 +20,7 @@
  */
 
 import type { RedirectPlan } from "./redirect-plan.js";
+import { trimTrailingSlashes } from "./url.js";
 
 /** The file name the generator writes the snippet to, at the build root. */
 export const CADDY_REDIRECTS_FILE = "_redirects.caddy";
@@ -32,7 +33,7 @@ export const CADDY_REDIRECTS_FILE = "_redirects.caddy";
  * Every build the generator writes carries the file.
  */
 export function caddyRedirectsImport(siteRoot: string): string {
-  return `import ${siteRoot.replace(/\/+$/, "")}/${CADDY_REDIRECTS_FILE}*`;
+  return `import ${trimTrailingSlashes(siteRoot)}/${CADDY_REDIRECTS_FILE}*`;
 }
 
 /**

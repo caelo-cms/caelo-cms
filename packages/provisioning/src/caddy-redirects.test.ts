@@ -28,9 +28,14 @@ const caddyfile = generateCaddyfile({
   ],
 });
 
-const block = (host: string) =>
-  caddyfile.match(new RegExp(`(?:^|\\n)${host.replace(/\./g, "\\.")} \\{[\\s\\S]*?\\n\\}`))?.[0] ??
-  "";
+/** The site block of `host`: from its `<host> {` line to the next `}` line. */
+function block(host: string): string {
+  const lines = caddyfile.split("\n");
+  const start = lines.indexOf(`${host} {`);
+  if (start === -1) return "";
+  const end = lines.indexOf("}", start);
+  return lines.slice(start, end + 1).join("\n");
+}
 
 describe("Caddyfile — redirects (#587)", () => {
   it("each public vhost imports the redirect snippet of the build it serves", () => {
