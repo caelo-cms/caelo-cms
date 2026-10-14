@@ -34,6 +34,7 @@ import {
   type ReleaseImage,
   type ReleaseManifest,
 } from "@caelo-cms/shared";
+import { infraStepsText } from "./infra-contract.js";
 import { RELEASE_OIDC_ISSUER, RELEASE_WORKFLOWS_URL } from "./upgrade/release-images.js";
 
 // The manifest's shape and location live in @caelo-cms/shared (the admin's
@@ -292,7 +293,7 @@ export function assessAutoInstall(
   const manual: string[] = [];
   if (manifest.infraContractVersion > installed.infraContractVersion) {
     manual.push(
-      `the release changes the infrastructure contract (${installed.infraContractVersion} → ${manifest.infraContractVersion}); it must run with the operator's own identity`,
+      `the release changes the infrastructure contract (${installed.infraContractVersion} → ${manifest.infraContractVersion}: ${infraStepsText(installed.infraContractVersion, manifest.infraContractVersion)}); it must run with the operator's own identity`,
     );
   }
   const lastContract = manifest.migrations.lastContractVersion;

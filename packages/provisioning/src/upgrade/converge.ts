@@ -5,8 +5,9 @@
  * service accounts, secrets or other cloud resources so the install matches
  * what the release's stacks declare — the gateway's run SA and the
  * CLI-generated runtime secrets, the stack's IAM/CDN/firewall invariants,
- * MCP access through IAP, the gateway's and public_role's database logins,
- * the operator-access sync job, and dropping bindings nothing reads any more.
+ * MCP access through IAP, public_role's Cloud SQL role memberships (#633),
+ * the gateway's and public_role's database logins, the operator-access sync
+ * job, and dropping bindings nothing reads any more.
  *
  * It needs the rights of whoever provisioned the install, so only
  * `cms-provision upgrade` (the operator's own identity) runs it — never the
@@ -33,6 +34,7 @@ import { upgraderServiceAccountEmail } from "../gcp-names.js";
 import type { InstallMetadata } from "../install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "../mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "../operator-access.js";
+import { revokePublicRoleMemberships } from "../public-role-isolation.js";
 import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
@@ -91,8 +93,8 @@ export interface ConvergeDeps {
 
 export interface ConvergeSession {
   /**
-   * Before the app-roll: runtime identities + secrets, stack invariants, MCP
-   * access. False when a step the install cannot work without failed —
+   * Before the app-roll: runtime identities + secrets, stack invariants,
+   * public_role's Cloud SQL role memberships (#633), MCP access. False when a step the install cannot work without failed —
    * nothing app-side changed then.
    */
   beforeAppRoll(): Promise<boolean>;
@@ -193,6 +195,25 @@ export function startConverge(
       r.warn("No traffic was shifted and no migrations ran. Fix the bindings above and re-run.");
       return false;
     }
+    return true;
+  }
+
+  async function publicRoleIsolation(): Promise<boolean> {
+    // #633 — the Admin API made public_role a member of cloudsqlsuperuser.
+    // Revoked here, before migrations, because the migration job's role
+    // audit is what verifies it and fails the upgrade while it remains.
+    const s = r.step("Removing public_role from the Cloud SQL superuser group...");
+    const outcome = await revokePublicRoleMemberships(
+      { projectId: install.projectId, env: install.env },
+      runDeps,
+    );
+    if (outcome.status === "failed") {
+      s.failed("public_role's role memberships could not be revoked. Aborting upgrade.");
+      r.error(`  ${outcome.error ?? ""}`);
+      r.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
+      return false;
+    }
+    s.done(`public_role holds no database roles (${outcome.detail ?? "revoked"})`);
     return true;
   }
 
@@ -396,6 +417,7 @@ export function startConverge(
       if (deps.provisionerIdentity && !(await deps.provisionerIdentity())) return false;
       if (!(await runtimeIdentities())) return false;
       if (!(await stackInvariants())) return false;
+      if (!(await publicRoleIsolation())) return false;
       await mcpAccess();
       await urlMapRedirectsAccess();
       return true;

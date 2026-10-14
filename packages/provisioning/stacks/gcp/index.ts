@@ -29,8 +29,6 @@ import {
   MCP_IAP_SERVICE_ACCOUNT_ID,
   runServiceAccountId,
   staticPublisherServiceAccountId,
-  URL_MAP_REDIRECTS_PERMISSIONS,
-  urlMapRedirectsRoleId,
 } from "../../dist/gcp-names.js";
 import { createSiteUrlMap } from "../../dist/gcp-url-map.js";
 import {
@@ -326,6 +324,13 @@ const pgAdminUser = new gcp.sql.User(
   opts,
 );
 
+// #633 — the Admin API makes this user a member of cloudsqlsuperuser, and
+// the stack cannot declare "no roles" (an empty `databaseRoles` reads as
+// unset, and the field is write-only, so drift would never show).
+// `cms-provision` revokes the membership on every install pass and every
+// `upgrade` (public-role-isolation.ts); the migration job's role audit
+// fails the install or upgrade while it remains
+// (packages/migrations/src/role-audit.ts).
 const pgPublicUser = new gcp.sql.User(
   `${namePrefix}-pg-public`,
   { instance: sqlInstance.name, name: "public_role", password: publicRolePassword },
@@ -1015,29 +1020,12 @@ const urlMap = createSiteUrlMap(
   opts,
 );
 
-// #587 — the admin's run SA may rewrite the URL map's redirect rules and
-// nothing else on the load balancer. `cms-provision upgrade` ensures the
-// same role + binding on installs that predate it (url-map-redirects-access.ts).
-const urlMapRedirectsRole = new gcp.projects.IAMCustomRole(
-  `${namePrefix}-url-map-redirects-role`,
-  {
-    project,
-    roleId: urlMapRedirectsRoleId(env),
-    title: "Caelo admin: URL-map redirects",
-    description: "Lets the Caelo admin write the redirects table into the site's URL map (#587).",
-    permissions: [...URL_MAP_REDIRECTS_PERMISSIONS],
-  },
-  opts,
-);
-new gcp.projects.IAMMember(
-  `${namePrefix}-admin-url-map-redirects`,
-  {
-    project,
-    role: urlMapRedirectsRole.name,
-    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
-  },
-  opts,
-);
+// #587 — the admin's run SA may rewrite the URL map's redirect rules through
+// a project custom role. The CLI owns that role, not this stack: the
+// installer and `cms-provision upgrade` both run ensureUrlMapRedirectsAccess
+// (url-map-redirects-access.ts). A role declared here would collide with the
+// one upgrade creates on installs older than it (a role id exists once per
+// project, and a create of an existing one fails).
 
 // Managed TLS cert covering both hostnames.
 const managedCert = new gcp.compute.ManagedSslCertificate(

@@ -14,11 +14,15 @@
  * Each public-write request flows through (in order):
  *   1. Body-size cap (default 64 KB; 1 MB hard ceiling).
  *   2. Resolve signed visitor cookie + signed session cookie (HMAC-SHA256).
- *      Tampered → treat as fresh visitor.
+ *      The visitor id exists only with the visitor's consent to the
+ *      category that covers it (#677, visitor.ts): no decision, "reject
+ *      all" or no consent provider → no id, no Set-Cookie, and any id the
+ *      browser still holds is expired. Tampered → a fresh id (consented).
  *   3. Honeypot edge-evict — bot-filled `hp_address` returns {ok:true}
  *      immediately, no DB writes, no audit, no rate-limit consumption.
- *   4. Per-(plugin, op, visitor) rate limit + token-bucket burst gate.
- *      429 with Retry-After when exceeded.
+ *   4. Per-(plugin, op, visitor) rate limit + token-bucket burst gate —
+ *      keyed by client IP for every visitor the gateway does not
+ *      recognise. 429 with Retry-After when exceeded.
  *   5. Captcha verify (when configured + plugin op opts in via
  *      `_caelo_captcha`). PoW provider in v1; Turnstile/hCaptcha later.
  *   6. Plugin host dispatch + sessionMutation cookie emission.
@@ -64,7 +68,6 @@ import { readBodyWithCap } from "./middleware/body-cap.js";
 import {
   type CaptchaConfig,
   clientIpHash,
-  hashVisitorId,
   issuePowChallenge,
   verifyPowProof,
 } from "./middleware/captcha.js";
@@ -76,19 +79,28 @@ import {
   rateLimitKey,
   resolveRateLimitSpec,
 } from "./middleware/rate-limit.js";
-import { signCookieValue, verifySignedCookie } from "./middleware/signed-cookie.js";
+import { signCookieValue } from "./middleware/signed-cookie.js";
 import {
   handleStagingRequest,
   isStagingRequest,
   type StagingState,
   stagingGateFromEnv,
 } from "./staging-proxy.js";
+import {
+  ANONYMOUS_VISITOR_ACTOR,
+  invalidateVisitorConsentRule,
+  loadVisitorConsentRule,
+  type ResolvedVisitor,
+  resolveVisitor,
+  SESSION_COOKIE,
+} from "./visitor.js";
 
 export {
   ADMIN_CREDENTIAL_ENV,
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
 } from "./database-env.js";
+export { parseCookies, VISITOR_COOKIE } from "./visitor.js";
 
 const SYSTEM_ACTOR_ID = process.env.CAELO_SYSTEM_ACTOR_ID ?? "00000000-0000-0000-0000-00000000ffff";
 // Cloud Run sets PORT=8080 on every container; read that first so a
@@ -96,10 +108,6 @@ const SYSTEM_ACTOR_ID = process.env.CAELO_SYSTEM_ACTOR_ID ?? "00000000-0000-0000
 // name retained for self-hosted Compose installs.
 const PORT = Number.parseInt(process.env.PORT ?? process.env.GATEWAY_PORT ?? "8090", 10);
 const PLUGINS_ROOT = resolve(import.meta.dir, "../../../packages/plugins");
-
-const VISITOR_COOKIE = "caelo_visitor_id";
-const VISITOR_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
-const SESSION_COOKIE = "caelo_session";
 
 const SYSTEM_CTX = {
   actorId: SYSTEM_ACTOR_ID,
@@ -110,31 +118,6 @@ const SYSTEM_CTX = {
 // ---------------------------------------------------------------------------
 // Cookie helpers (signed via HMAC-SHA256).
 // ---------------------------------------------------------------------------
-
-export function parseCookies(header: string | null): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!header) return out;
-  for (const part of header.split(/;\s*/)) {
-    const eq = part.indexOf("=");
-    if (eq <= 0) continue;
-    const name = part.slice(0, eq).trim();
-    const value = decodeURIComponent(part.slice(eq + 1).trim());
-    out[name] = value;
-  }
-  return out;
-}
-
-export function visitorCookieHeader(value: string): string {
-  const flags = [
-    `${VISITOR_COOKIE}=${encodeURIComponent(value)}`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    `Max-Age=${VISITOR_COOKIE_MAX_AGE}`,
-  ];
-  if (process.env.NODE_ENV === "production") flags.push("Secure");
-  return flags.join("; ");
-}
 
 export function sessionCookieHeader(args: { value: string; maxAge: number }): string {
   const flags = [
@@ -267,6 +250,7 @@ function describeFailure(e: unknown): string {
 export function invalidateGatewaySettings(): void {
   cachedSettings = null;
   cachedStagingState = null;
+  invalidateVisitorConsentRule();
 }
 
 // ---------------------------------------------------------------------------
@@ -328,43 +312,48 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
 }
 
 // ---------------------------------------------------------------------------
-// Visitor resolution — verifies signed cookies; falls back to fresh ids.
+// Visitor resolution under the visitor's consent (#677, visitor.ts).
 // ---------------------------------------------------------------------------
 
-export interface ResolvedVisitor {
-  visitorId: string;
-  visitorIdHash: string;
-  isFresh: boolean;
-  sessionToken: string | null;
-}
-
-export async function resolveVisitor(req: Request, secret: string): Promise<ResolvedVisitor> {
-  const cookies = parseCookies(req.headers.get("cookie"));
-  const rawVisitor = cookies[VISITOR_COOKIE] ?? "";
-  const rawSession = cookies[SESSION_COOKIE] ?? "";
-
-  let visitorId: string | null = null;
-  if (rawVisitor) {
-    const v = await verifySignedCookie({
-      signed: rawVisitor,
-      secret,
-      maxAgeSeconds: VISITOR_COOKIE_MAX_AGE,
+/**
+ * Resolve the visitor, or answer 503 when the site's consent provider runs
+ * but cannot say what the visitor decided. Guessing either way is wrong:
+ * "yes" would set a cookie nobody agreed to, and quietly treating a broken
+ * provider as "no" would hide that the banner itself is broken.
+ */
+async function resolveConsentedVisitor(
+  req: Request,
+  settings: GatewaySettings,
+): Promise<{ ok: true; visitor: ResolvedVisitor } | { ok: false; response: Response }> {
+  try {
+    // The registry sync first, so a consent provider an Owner just
+    // activated (or disabled) is the one asked.
+    await syncDispatchPlugins();
+    const rule = await loadVisitorConsentRule();
+    const visitor = await resolveVisitor({
+      req,
+      secret: settings.cookieSecret,
+      rule,
+      sign: (value) => signCookieValue({ value, secret: settings.cookieSecret }),
     });
-    if (v && /^[0-9a-fA-F-]{36}$/.test(v.value)) visitorId = v.value;
+    return { ok: true, visitor };
+  } catch (e) {
+    console.error(`[api-gateway] visitor consent could not be resolved: ${describeFailure(e)}`);
+    return {
+      ok: false,
+      response: jsonResponse(
+        {
+          ok: false,
+          error: {
+            kind: "ConsentUnavailable",
+            message:
+              "the site's consent settings could not be read, so this request was not processed",
+          },
+        },
+        { status: 503 },
+      ),
+    };
   }
-  let isFresh = false;
-  if (!visitorId) {
-    visitorId = crypto.randomUUID();
-    isFresh = true;
-  }
-
-  let sessionToken: string | null = null;
-  if (rawSession) {
-    const s = await verifySignedCookie({ signed: rawSession, secret });
-    if (s && /^[0-9a-fA-F]{64}$/.test(s.value)) sessionToken = s.value;
-  }
-
-  return { visitorId, visitorIdHash: hashVisitorId(visitorId), isFresh, sessionToken };
 }
 
 // ---------------------------------------------------------------------------
@@ -501,20 +490,14 @@ export async function handleRequest(req: Request): Promise<Response> {
         { status: 501 },
       );
     }
-    const visitor = await resolveVisitor(req, settings.cookieSecret);
+    const resolved = await resolveConsentedVisitor(req, settings);
+    if (!resolved.ok) return resolved.response;
+    const { visitor } = resolved;
     const challenge = await issuePowChallenge(cachedAdapter, {
       config: settings.captcha,
       visitorIdHash: visitor.visitorIdHash,
     });
-    const cookies: string[] = [];
-    if (visitor.isFresh) {
-      const signed = await signCookieValue({
-        value: visitor.visitorId,
-        secret: settings.cookieSecret,
-      });
-      cookies.push(visitorCookieHeader(signed));
-    }
-    return jsonResponse({ ok: true, data: challenge }, { setCookies: cookies });
+    return jsonResponse({ ok: true, data: challenge }, { setCookies: [...visitor.setCookies] });
   }
 
   // ---- Plugin dispatch ----
@@ -571,29 +554,27 @@ export async function handleRequest(req: Request): Promise<Response> {
     );
   }
 
-  // 2. Resolve signed visitor cookie.
-  const visitor = await resolveVisitor(req, settings.cookieSecret);
-
-  const cookies: string[] = [];
-  if (visitor.isFresh) {
-    const signed = await signCookieValue({
-      value: visitor.visitorId,
-      secret: settings.cookieSecret,
-    });
-    cookies.push(visitorCookieHeader(signed));
-  }
+  // 2. Resolve the visitor — an id only with the visitor's consent (#677).
+  const resolved = await resolveConsentedVisitor(req, settings);
+  if (!resolved.ok) return resolved.response;
+  const { visitor } = resolved;
+  const cookies: string[] = [...visitor.setCookies];
 
   // P13 audit re-pass — derive an IP-scoped key once. Used on:
   //   (a) the honeypot branch (so bots can't inflate rate_limit_buckets
   //       by spinning fresh uuids — the IP pins the bucket),
-  //   (b) any request from a "fresh" visitor (no signed cookie), so a
-  //       single IP can't bypass throttling by rotating cookies.
-  // Real users with a signed visitor cookie revert to the per-visitor
-  // key (fairer rate budgets when many users share an IP via NAT).
+  //   (b) any request from a visitor the gateway does not recognise — no
+  //       signed cookie, a freshly minted one, or no consent to one
+  //       (#677) — so a single IP can't bypass throttling by rotating or
+  //       withholding cookies.
+  // Recognised visitors (a signed visitor cookie they already held, with
+  // consent) get the per-visitor key (fairer rate budgets when many users
+  // share an IP via NAT).
   const ipHash = clientIpHash(req);
-  const visitorRateKey = visitor.isFresh
-    ? ipScopedRateLimitKey(slug, operationName, ipHash)
-    : rateLimitKey(slug, operationName, visitor.visitorId);
+  const visitorRateKey =
+    visitor.recognised && visitor.visitorId
+      ? rateLimitKey(slug, operationName, visitor.visitorId)
+      : ipScopedRateLimitKey(slug, operationName, ipHash);
 
   // 3. Honeypot edge-evict — lie to the bot, never touch the DB.
   // P13 audit fix #5 — DO NOT mint a fresh visitor cookie for caught
@@ -624,9 +605,9 @@ export async function handleRequest(req: Request): Promise<Response> {
     return jsonResponse({ ok: true, data: { accepted: true } });
   }
 
-  // 4. Rate limit. The registry sync first, so a plugin an Owner just
-  // activated (or disabled) is seen with its manifest's limits.
-  await syncDispatchPlugins();
+  // 4. Rate limit. The registry was synced while resolving the visitor
+  // (step 2), so a plugin an Owner just activated (or disabled) is seen
+  // with its manifest's limits.
   const plugin = loadedPlugins.bySlug(slug);
   const spec = await resolveRateLimitSpec(cachedAdapter, slug, operationName, plugin);
   const rl = await consumeRateLimit(cachedAdapter, {
@@ -699,7 +680,7 @@ export async function handleRequest(req: Request): Promise<Response> {
     pluginSlug: slug,
     operationName,
     args: body,
-    invocation: { origin: "visitor", actorId: visitor.visitorId },
+    invocation: { origin: "visitor", actorId: visitor.visitorId ?? ANONYMOUS_VISITOR_ACTOR },
     visitorContext: {
       visitorId: visitor.visitorId,
       sessionToken: visitor.sessionToken,

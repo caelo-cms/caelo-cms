@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The admin's URL-map redirects role (#587), for `gcp` installs that exist
- * already. New installs get it from the stack (stacks/gcp/index.ts);
- * `cms-provision upgrade` calls {@link ensureUrlMapRedirectsAccess} so older
- * installs get the same custom role + binding:
+ * The admin's URL-map redirects role (#587) on `gcp` installs. The installer
+ * (wizards/gcp.ts) and `cms-provision upgrade` both call
+ * {@link ensureUrlMapRedirectsAccess}, so new and older installs get the same
+ * custom role + binding. The stack does not declare it: a role id exists once
+ * per project, so a stack-created role would collide with one upgrade made.
  *
  *   1. project custom role {@link urlMapRedirectsRoleId} with exactly
  *      {@link URL_MAP_REDIRECTS_PERMISSIONS} (created, or updated to that

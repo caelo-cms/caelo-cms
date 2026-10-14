@@ -8,7 +8,9 @@
  * baked-at-deploy aggregate reads for the Web Component delta pattern.
  *
  * Schema (cms_public.plugin_ratings.*):
- *   ratings           — visitor's score per page. UNIQUE (visitor_id, page_id).
+ *   ratings           — visitor's score per page. One per (visitor_id, page_id)
+ *                       for visitors who consented to the visitor-id cookie;
+ *                       visitor_id NULL (never de-duplicated) for the rest.
  *   rating_aggregates — denormalised count + sum + average for fast static reads.
  *
  * Operations:
@@ -74,12 +76,26 @@ export default definePlugin<PluginContextTier1>({
       }
       const ok = await ctx.captcha.requireProof(null);
       if (!ok) throw new Error("submit: captcha verification failed");
+      // A visitor who has not consented to the visitor-id cookie (#677)
+      // cannot be recognised, so their vote is a new anonymous one: there
+      // is no earlier vote to find. Repeat votes from one browser are then
+      // bounded by the gateway's per-IP rate limit and the captcha, not
+      // by de-duplication.
+      const visitorId = ctx.visitor.id;
+      if (visitorId === null) {
+        const r = await ctx.query.insert("ratings", {
+          page_id: input.pageId,
+          visitor_id: null,
+          score: input.score,
+        });
+        return { recorded: true, id: r.id, mode: "inserted" as const };
+      }
       // Lookup existing vote by (visitor, page) and update OR insert.
       // The schema has no UNIQUE constraint here (the plugin's emitted schema
       // only enforces id PK), so we de-dupe at the plugin layer: list, then
       // update if found, else insert.
       const existing = await ctx.query.list<"ratings", { id: string }>("ratings", {
-        visitor_id: ctx.visitor.id,
+        visitor_id: visitorId,
         page_id: input.pageId,
         limit: 1,
       });
@@ -89,7 +105,7 @@ export default definePlugin<PluginContextTier1>({
       }
       const r = await ctx.query.insert("ratings", {
         page_id: input.pageId,
-        visitor_id: ctx.visitor.id,
+        visitor_id: visitorId,
         score: input.score,
       });
       return { recorded: true, id: r.id, mode: "inserted" as const };
@@ -162,7 +178,7 @@ export default definePlugin<PluginContextTier1>({
       return { refreshed: written, truncated: ratings.length >= QUERY_LIST_CAP };
     },
   },
-  workers: [{ name: "refresh_aggregates", cron: "0 0/5 * * * *", operationName: "_refresh" }],
+  workers: [{ name: "refresh_aggregates", cron: "*/5 * * * *", operationName: "_refresh" }],
   tools: [
     {
       name: "list_rating_aggregates",

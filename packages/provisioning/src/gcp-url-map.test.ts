@@ -3,7 +3,7 @@
 /**
  * #587 — the `gcp` stack's URL map under Pulumi mocks: host routing, the
  * public path matcher the admin writes redirect rules into, the field the
- * stack ignores after creation, and the admin's custom role.
+ * stack ignores after creation; the admin's custom role is the CLI's.
  */
 
 import { beforeAll, describe, expect, it } from "bun:test";
@@ -130,13 +130,9 @@ describe("gcp stack wiring (source)", () => {
     expect(src).not.toMatch(/new gcp\.compute\.URLMap\(\s*`\$\{namePrefix\}-url-map`/);
   });
 
-  it("grants the admin's run SA the URL-map redirects custom role", () => {
-    expect(src).toMatch(
-      /new gcp\.projects\.IAMCustomRole\(\s*`\$\{namePrefix\}-url-map-redirects-role`[\s\S]*?roleId: urlMapRedirectsRoleId\(env\)[\s\S]*?permissions: \[\.\.\.URL_MAP_REDIRECTS_PERMISSIONS\]/,
-    );
-    expect(src).toMatch(
-      /new gcp\.projects\.IAMMember\(\s*`\$\{namePrefix\}-admin-url-map-redirects`[\s\S]*?role: urlMapRedirectsRole\.name[\s\S]*?runSa\.email/,
-    );
+  it("leaves the admin's URL-map redirects role to the CLI (installer + upgrade)", () => {
+    expect(src).not.toContain("IAMCustomRole");
+    expect(src).not.toContain("urlMapRedirects");
   });
 
   it("names a valid custom role id with only the permissions the writer needs", () => {

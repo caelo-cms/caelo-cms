@@ -179,6 +179,9 @@ const TARGET: GcpUpgradeTarget = {
   skipHealthCheck: false,
 };
 
+/** The same install on the `gcp` provider (load balancer + URL map). */
+const GCP_TARGET: GcpUpgradeTarget = { ...TARGET, provider: "gcp" };
+
 function upgradeDeps(
   events: string[],
   opts: { overrides?: [RegExp, Answer][]; deep?: HealthOutcome } = {},
@@ -217,7 +220,7 @@ function upgradeDeps(
 
 /** Calls that change IAM, service accounts, secrets or APIs — converge-only. */
 const CONVERGE_WRITE =
-  /add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|service-accounts create|secrets create|secrets versions add|services enable|roles create|firewall-rules delete/;
+  /add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|service-accounts create|secrets create|secrets versions add|services enable|roles create|roles update|roles undelete|firewall-rules delete|users assign-roles/;
 /** Calls that move a service or run migrations — app-roll-only. */
 const APP_ROLL_WRITE =
   /^run services update |^run services update-traffic|jobs execute caelo-migrate/;
@@ -381,6 +384,80 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(lines.some((l) => l.startsWith("warn:") && l.includes(restore))).toBe(true);
     // The rollback is the end: retired bindings stay until a healthy roll.
     expect(calls.some((c) => c.includes("remove-iam-policy-binding"))).toBe(false);
+  });
+
+  it("revokes public_role's Cloud SQL role memberships before the migrations audit them (#633)", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const revoke = indexOf(
+      events,
+      /^gcloud sql users assign-roles public_role --instance=caelo-production-pg-abc --type=BUILT_IN --revoke-existing-roles --project=acme/,
+    );
+    expect(indexOf(events, /^gcloud sql backups create/)).toBeLessThan(revoke);
+    expect(revoke).toBeLessThan(indexOf(events, /^migrate /));
+    expect(lines).toContain(
+      "done: public_role holds no database roles (no database roles left on caelo-production-pg-abc)",
+    );
+  });
+
+  it("a refused public_role revoke stops the upgrade before migrations and any roll (#633)", async () => {
+    const events: string[] = [];
+    const { deps, calls, lines } = upgradeDeps(events, {
+      overrides: [[/^sql users assign-roles public_role/, fail("PERMISSION_DENIED: no")]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(false);
+    expect(events.some((e) => e.startsWith("migrate"))).toBe(false);
+    expect(calls.filter((c) => APP_ROLL_WRITE.test(c))).toEqual([]);
+    expect(lines).toContain(
+      "failed: public_role's role memberships could not be revoked. Aborting upgrade.",
+    );
+  });
+
+  it("on gcp, runs both contract steps: the public_role revoke (3) and the URL-map redirects role (4)", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events, {
+      overrides: [[/^iam roles describe/, fail("NOT_FOUND: role")]],
+    });
+    expect(await upgradeGcpInstall({ ...GCP_TARGET, infraContractVersion: 4 }, deps)).toBe(true);
+    const revoke = indexOf(events, /^gcloud sql users assign-roles public_role /);
+    const role = indexOf(
+      events,
+      /^gcloud iam roles create caelo_production_urlMapRedirects --project=acme .*--permissions=compute\.urlMaps\.list,/,
+    );
+    const grant = indexOf(
+      events,
+      /^gcloud projects add-iam-policy-binding acme --member=serviceAccount:caelo-production-run-sa@acme\.iam\.gserviceaccount\.com --role=projects\/acme\/roles\/caelo_production_urlMapRedirects /,
+    );
+    expect(revoke).toBeLessThan(indexOf(events, /^migrate /));
+    expect(role).toBeLessThan(grant);
+    expect(grant).toBeLessThan(indexOf(events, /^migrate /));
+    expect(lines).toContain(
+      "done: URL-map redirects role ready (projects/acme/roles/caelo_production_urlMapRedirects)",
+    );
+    // (This fake models gcp-firebase's listings, so gcp-only steps such as
+    // the default-firewall cleanup stay incomplete; the role step is not.)
+    expect(lines.some((l) => l.includes("URL-map redirects role not set up"))).toBe(false);
+  });
+
+  it("on gcp, a refused redirects role leaves the converge incomplete: contract 4 is not recorded", async () => {
+    const events: string[] = [];
+    const { deps, lines, recorded } = upgradeDeps(events, {
+      overrides: [
+        [/^iam roles describe/, fail("NOT_FOUND: role")],
+        [/^iam roles create/, fail("PERMISSION_DENIED: iam.roles.create")],
+      ],
+    });
+    expect(await upgradeGcpInstall({ ...GCP_TARGET, infraContractVersion: 4 }, deps)).toBe(true);
+    expect(lines.some((l) => l.startsWith("warned: URL-map redirects role not set up"))).toBe(true);
+    expect(recorded.contract).toEqual([]);
+  });
+
+  it("on gcp-firebase there is no URL map: no redirects role", async () => {
+    const events: string[] = [];
+    const { deps, calls } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(calls.some((c) => c.includes("urlMapRedirects"))).toBe(false);
   });
 
   it("runs the keyless-provisioner step as the first converge step; its failure stops before migrations", async () => {

@@ -12,7 +12,6 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { URL_MAP_REDIRECTS_PERMISSIONS } from "./gcp-names.js";
 import { adminEnvContract, databaseUrls } from "./stack-contract.js";
 
 const stack = (provider: string) =>
@@ -24,13 +23,7 @@ describe.each(["gcp", "gcp-firebase"])("%s stack — operator access", (provider
   it("grants no IAM-policy-writing role to anyone for operator access", () => {
     expect(src).not.toContain("caeloOperatorAccess");
     expect(src).not.toContain("caeloAdminIapLookup");
-    // The one custom role a stack declares is the admin's URL-map redirects
-    // role (#587), which carries no IAM permission at all.
-    const customRoles = [
-      ...src.matchAll(/new gcp\.projects\.IAMCustomRole\(\s*`\$\{namePrefix\}-([^`]+)`/g),
-    ].map((m) => m[1]);
-    expect(customRoles).toEqual(provider === "gcp" ? ["url-map-redirects-role"] : []);
-    expect(URL_MAP_REDIRECTS_PERMISSIONS.filter((p) => !p.startsWith("compute."))).toEqual([]);
+    expect(src).not.toContain("IAMCustomRole");
     expect(src).not.toMatch(/setIamPolicy|roles\/iap\.admin|roles\/iam\.serviceAccountAdmin/);
   });
 

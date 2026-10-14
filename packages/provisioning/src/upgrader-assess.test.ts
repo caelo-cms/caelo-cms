@@ -114,6 +114,28 @@ const ROWS: readonly Row[] = [
     reasonContains: "Cloud Shell",
   },
   {
+    name: "contract 2 → 4 names both pending steps (#633, #587)",
+    manifest: verified({ infraContractVersion: 4 }),
+    installed: { version: "0.10.45", infraContractVersion: 2 },
+    expect: "needs_cloud_shell/infra-contract",
+    reasonContains:
+      "infrastructure contract 2 → 4: public_role out of the Cloud SQL superuser group (#633); the admin's permission to serve redirects from the load balancer (#587)",
+  },
+  {
+    name: "contract 3 → 4 names only the redirects role (#587)",
+    manifest: verified({ infraContractVersion: 4 }),
+    installed: { version: "0.10.45", infraContractVersion: 3 },
+    expect: "needs_cloud_shell/infra-contract",
+    reasonContains:
+      "infrastructure contract 3 → 4: the admin's permission to serve redirects from the load balancer (#587))",
+  },
+  {
+    name: "contract 4 installed, release at 4",
+    manifest: verified({ infraContractVersion: 4 }),
+    installed: { version: "0.10.45", infraContractVersion: 4 },
+    expect: "proceed",
+  },
+  {
     name: "never converged at all",
     installed: { version: "0.10.45", infraContractVersion: 0 },
     expect: "needs_cloud_shell/infra-contract",

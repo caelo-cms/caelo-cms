@@ -215,6 +215,22 @@ describe("#451 — consent-manager", () => {
     expect(v.bannerContract.hooks.join(" ")).toContain("data-consent-accept-all");
   });
 
+  it("tells core which cookie, policy version and category govern the visitor id (#677)", async () => {
+    const r = await call("visitor_consent_rule");
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    expect(r.value).toEqual({
+      cookie: "caelo_consent",
+      policyVersion: 1,
+      purposes: { visitor_id: "analytics" },
+    });
+    // The AI names the same cookie, in the same category, in the banner copy.
+    const status = await call("consent_status");
+    if (!status.ok) throw new Error(JSON.stringify(status.error));
+    const cookies = (status.value as { siteCookies: Array<{ name: string; category: string }> })
+      .siteCookies;
+    expect(cookies.find((c) => c.name === "caelo_visitor_id")?.category).toBe("analytics");
+  });
+
   it("offers the categories to a module as a data list, not as markup", async () => {
     const lists = await resolveDataLists([pageId], MAIN_RENDER, "directory");
     const items = lists.get(pageId)?.consent_categories;

@@ -13,7 +13,8 @@
  * it.
  *
  * The admin's run SA gets a project custom role with only the permissions
- * that read-modify-write needs (`URL_MAP_REDIRECTS_PERMISSIONS`, gcp-names.ts).
+ * that read-modify-write needs (`URL_MAP_REDIRECTS_PERMISSIONS`, gcp-names.ts);
+ * the CLI creates it (url-map-redirects-access.ts), not the stack.
  *
  * Imported by the stack from `dist/`; keep it free of CLI dependencies.
  */
