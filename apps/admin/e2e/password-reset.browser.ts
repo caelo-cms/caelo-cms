@@ -4,8 +4,8 @@
  * Password change + self-service reset, end-to-end through the real stack.
  *
  * These flows deliberately exercise only paths that DON'T mutate the shared
- * dev-owner credential (other specs depend on it): the forgot-password
- * confirmation, an invalid reset token, a wrong current password, and a
+ * dev-owner credential (other specs depend on it): the forgot-password page
+ * without email, an invalid reset token, a wrong current password, and a
  * strength rejection (the op checks strength before writing, so the password
  * is never changed). The happy-path token mechanics are covered by
  * `password-reset.integration.test.ts` against a real Postgres.
@@ -30,15 +30,19 @@ test.beforeEach(() => {
 });
 
 test.describe("password reset + change", () => {
-  test("login links to forgot-password, which returns a generic confirmation", async ({ page }) => {
+  // #769 — the e2e stack has no email transport (the seed is `none`), so the
+  // page must say no mail can arrive and name the operator's recovery command,
+  // instead of the old "a reset link is on its way".
+  test("login links to forgot-password, which names the recovery command when email is off", async ({
+    page,
+  }) => {
     await page.goto("/login");
     await page.getByRole("link", { name: /forgot your password/i }).click();
     await expect(page).toHaveURL("/forgot");
 
-    await page.getByLabel("Email").fill(OWNER_EMAIL);
-    await page.getByRole("button", { name: /send reset link/i }).click();
-    // Same message whether or not the account exists (no enumeration).
-    await expect(page.getByText(/if an account exists/i)).toBeVisible();
+    await expect(page.getByText(/no email is set up for this install/i)).toBeVisible();
+    await expect(page.getByText("bunx @caelo-cms/provisioning owner-reset")).toBeVisible();
+    await expect(page.getByRole("button", { name: /send reset link/i })).toHaveCount(0);
   });
 
   test("reset page rejects an invalid or expired token", async ({ page }) => {

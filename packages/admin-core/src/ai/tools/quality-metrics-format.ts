@@ -50,6 +50,11 @@ export function formatMetrics(m: Metrics): string[] {
   const lines = [
     `Performance metrics (median of ${m.runs} Lighthouse run(s) on the staged build; data behind the Performance score, not problems):`,
   ];
+  if (m.cpuCalibration) {
+    lines.push(
+      `- CPU throttling ${m.cpuCalibration.cpuSlowdownMultiplier}x, calibrated to the audit host (benchmark index ${m.cpuCalibration.benchmarkIndex}) so every run emulates the same mid-tier phone`,
+    );
+  }
   for (const metric of m.metrics) {
     if (metric.numericValue === null) {
       lines.push(`- ${metric.label} (${metric.title}) not measured: ${metric.unavailableReason}`);

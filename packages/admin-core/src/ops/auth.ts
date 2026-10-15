@@ -231,17 +231,96 @@ export const requestPasswordResetOp = defineOperation({
 
     if (!user) return ok({ delivery: null });
 
-    const rawToken = generateResetToken();
-    const tokenHash = hashResetToken(rawToken);
-    const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
-    await tx.execute(sql`
-      INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
-      VALUES (${user.id}::uuid, ${tokenHash}, ${expiresAt.toISOString()})
-    `);
-
+    const { token } = await issueResetToken(tx, user.id);
     return ok({
-      delivery: { email: input.email, token: rawToken, displayName: user.display_name },
+      delivery: { email: input.email, token, displayName: user.display_name },
     });
+  },
+});
+
+type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
+
+/**
+ * Store a fresh one-hour reset token for `userId` (only its SHA-256 lands in
+ * `password_reset_tokens`) and return the raw token for the caller to deliver.
+ */
+async function issueResetToken(
+  tx: Tx,
+  userId: string,
+): Promise<{ token: string; expiresAt: string }> {
+  const token = generateResetToken();
+  const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS).toISOString();
+  await tx.execute(sql`
+    INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+    VALUES (${userId}::uuid, ${hashResetToken(token)}, ${expiresAt})
+  `);
+  return { token, expiresAt };
+}
+
+/**
+ * Account recovery for whoever runs the install's cloud account: issue a reset
+ * token for an Owner and hand it back to the caller, which is the internal
+ * endpoint `cms-provision owner-reset` calls through the admin's identity
+ * proxy. That caller already holds the install's internal secret and can
+ * reach its database and deploys, so the token grants it nothing it could
+ * not take anyway. It is the recovery path for installs without an email
+ * transport, where `/forgot` cannot deliver a link.
+ *
+ * Without `email` the token is for the install's only Owner. With several
+ * Owners the call fails and names them, so the operator picks with `--email`.
+ * An email that is not an Owner fails too: the command recovers Owner access,
+ * the other accounts are reset by an Owner under Settings -> Users.
+ */
+export const issueOwnerResetOp = defineOperation({
+  name: "auth.issue_owner_reset",
+  // Why system-only: it hands a raw credential to infrastructure tooling that
+  // authenticated at the HTTP boundary (internal token + identity proxy); no
+  // user or AI session ever reaches it.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({
+    email: z.string().email().max(254).optional(),
+    source: z.string().min(1).max(200),
+  }),
+  output: z.object({ email: z.string(), token: z.string(), expiresAt: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const owners = (await tx.execute(sql`
+      SELECT u.id::text AS id, u.email AS email
+      FROM users u
+      JOIN user_roles ur ON ur.user_id = u.id
+      JOIN roles r ON r.id = ur.role_id
+      WHERE r.name = 'owner' AND u.deleted_at IS NULL
+      ORDER BY u.email
+    `)) as unknown as { id: string; email: string }[];
+    const picked = pickOwnerToReset(owners, input.email);
+    if (!picked.ok) {
+      await recordAudit(tx, {
+        actorId: SYSTEM_ACTOR_ID,
+        requestId: ctx.requestId,
+        operation: "auth.issue_owner_reset",
+        input,
+        succeeded: false,
+        resultSummary: picked.summary,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "auth.issue_owner_reset",
+        message: picked.message,
+      });
+    }
+    const owner = picked.owner;
+
+    const issued = await issueResetToken(tx, owner.id);
+    await recordAudit(tx, {
+      actorId: SYSTEM_ACTOR_ID,
+      requestId: ctx.requestId,
+      operation: "auth.issue_owner_reset",
+      input,
+      succeeded: true,
+      entityId: owner.id,
+      resultSummary: `issued via ${input.source}`,
+    });
+    return ok({ email: owner.email, ...issued });
   },
 });
 
@@ -337,3 +416,43 @@ export const resetPasswordOp = defineOperation({
     return ok({ email: row.email });
   },
 });
+
+/** Who `auth.issue_owner_reset` resets, or why it refuses (summary = audit tag). */
+export type OwnerPick =
+  | { ok: true; owner: { id: string; email: string } }
+  | { ok: false; summary: string; message: string };
+
+/**
+ * Pick the Owner account to reset: the named one (case-insensitive), or the
+ * only Owner when none is named. Pure, so the refusal messages are unit-tested.
+ */
+export function pickOwnerToReset(
+  owners: readonly { id: string; email: string }[],
+  email: string | undefined,
+): OwnerPick {
+  const noOwner =
+    "This install has no Owner account yet. Finish the first-run setup at /setup instead.";
+  const ownerList = owners.map((o) => o.email).join(", ");
+  if (email !== undefined) {
+    const wanted = email.toLowerCase();
+    const owner = owners.find((o) => o.email.toLowerCase() === wanted);
+    if (owner) return { ok: true, owner };
+    return {
+      ok: false,
+      summary: "not-an-owner",
+      message:
+        owners.length === 0
+          ? noOwner
+          : `${email} is not an Owner of this install. Owners: ${ownerList}. Other accounts are reset by an Owner under Settings -> Users.`,
+    };
+  }
+  const only = owners.length === 1 ? owners[0] : undefined;
+  if (only) return { ok: true, owner: only };
+  return owners.length === 0
+    ? { ok: false, summary: "no-owner", message: noOwner }
+    : {
+        ok: false,
+        summary: "several-owners",
+        message: `This install has ${owners.length} Owners (${ownerList}). Name the one to reset with --email <address>.`,
+      };
+}

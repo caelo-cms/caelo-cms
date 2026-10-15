@@ -26,6 +26,10 @@ export interface LhrLike {
   readonly requestedUrl?: string;
   readonly finalDisplayedUrl?: string;
   readonly runtimeError?: { readonly code: string; readonly message: string };
+  /** The settings the run used; the CPU calibration checks its throttling. */
+  readonly configSettings?: {
+    readonly throttling?: { readonly cpuSlowdownMultiplier?: number };
+  };
   readonly categories: Readonly<
     Record<
       string,

@@ -331,7 +331,7 @@ export async function activatePluginAsOwner(page: Page, slug: string): Promise<v
   for (const action of ["activate", "reenable"] as const) {
     const button = page.getByTestId(`${action}-${slug}`);
     if ((await button.count()) === 0) continue;
-    await button.click();
+    await button.click({ timeout: 30_000 });
     await expect(page.getByTestId(`disable-${slug}`)).toHaveCount(1, { timeout: 30_000 });
     return;
   }
@@ -375,7 +375,7 @@ export async function deactivatePluginAsOwner(page: Page, slug: string): Promise
       `deactivatePluginAsOwner: expected one [data-testid="disable-${slug}"] on /settings/plugins, found ${found} — "${slug}" stays ACTIVE and leaks into the next scenario. Every Disable button (Tier 1 and Tier 2 tables) must carry that test id.`,
     );
   }
-  await disable.click();
+  await disable.click({ timeout: 30_000 });
   await expect(page.getByTestId(`reenable-${slug}`)).toHaveCount(1, { timeout: 30_000 });
 }
 
@@ -604,8 +604,10 @@ export async function awaitStageComplete(page: Page): Promise<void> {
     // not a race against legitimately longer turns/builds on a busy runner).
     { timeout: 360_000 },
   );
-  await page.getByTestId("stage-btn").click();
-  await page.getByTestId("stage-submit-btn").click();
+  // Bounded: the AI can stage between the visibility check and the click
+  // (the button then leaves the toolbar) — fail in 30s, not at test timeout.
+  await page.getByTestId("stage-btn").click({ timeout: 30_000 });
+  await page.getByTestId("stage-submit-btn").click({ timeout: 30_000 });
   const res = await responsePromise;
   const body = await res.text();
   if (res.status() < 200 || res.status() >= 300) {
@@ -669,7 +671,7 @@ export async function awaitPublishComplete(page: Page): Promise<void> {
   // (chat-already-published case) map to the same form action. Click
   // whichever is in the DOM.
   const promote = page.getByTestId("promote-btn").or(page.getByTestId("promote-only-btn")).first();
-  await promote.click();
+  await promote.click({ timeout: 30_000 });
   const res = await responsePromise;
   const body = await res.text();
   if (res.status() < 200 || res.status() >= 300) {
@@ -687,7 +689,7 @@ export async function awaitPublishComplete(page: Page): Promise<void> {
 interface QualityChatStatus {
   audit: { id: string; status: string; fixRound: number } | null;
   notified: boolean;
-  feedback: { kind: "note" | "offer" } | null;
+  feedback: { kind: "note" } | { kind: "offer"; groups: readonly { key: string }[] } | null;
   gate: { open: boolean; state: string; message: string } | null;
 }
 
@@ -695,28 +697,103 @@ interface QualityChatStatus {
 const QUALITY_ACCEPT_REASON =
   "Accepted for the scenario run after two AI fix rounds: the CI runner's Lighthouse cannot reach the target for these.";
 
+/** Upper bound for one click / fill on the quality card. The card is already
+ *  up when the helper acts, so anything longer is a hang, not a slow UI. */
+const QUALITY_CARD_ACTION_MS = 30_000;
+
+/** How long the gate may take to report open once nothing is left to accept. */
+const QUALITY_GATE_SETTLE_MS = 60_000;
+
+/** The group keys the server still offers on the open card (none = no offer). */
+function offeredGroupKeys(st: QualityChatStatus): string[] {
+  if (st.notified || st.feedback?.kind !== "offer") return [];
+  return st.feedback.groups.map((g) => g.key);
+}
+
 /**
  * #727 — click "Accept all…" on every group the quality card still shows,
  * with a reason, like an operator who wants to publish what is left. Each
- * click is the operator's own acceptance (the AI is not involved); the card
- * drops the group once it applied.
+ * click is the operator's own acceptance (the AI is not involved). Resolves
+ * once the gate is open; throws (with the gate's message) when it is not.
+ *
+ * Driven by the SERVER's list of open groups, re-read before every group,
+ * not by locators over the card: while an accept is in flight the card is
+ * hidden (ChatPanel's `qualityOfferActing`), then re-renders from the
+ * pre-accept status (accepted group included) until its refresh lands —
+ * and when that accept was the last one, the refresh removes the card for
+ * good. A `groups.first().getAttribute()` taken in that window waited
+ * forever for a group that no longer existed (run 38583128804: the
+ * homepage test sat 25 minutes in `locator.getAttribute`). Every card
+ * action therefore carries an explicit timeout too.
  */
-async function acceptRemainingQualityGroups(page: Page, accepted: string[]): Promise<void> {
+async function acceptRemainingQualityGroups(
+  page: Page,
+  read: () => Promise<QualityChatStatus>,
+  accepted: string[],
+): Promise<void> {
   const card = page.getByTestId("quality-fix-offer");
-  const groups = card.getByTestId("quality-offer-group");
   for (let guard = 0; guard < 50; guard += 1) {
-    if ((await groups.count()) === 0) return;
-    const group = groups.first();
-    const key = await group.getAttribute("data-group-key");
-    if (key === null)
-      throw new Error("acceptRemainingQualityGroups: a group without data-group-key");
+    const st = await read();
+    if (st.gate?.open) return;
+    const keys = offeredGroupKeys(st);
+    if (keys.length === 0) {
+      // Nothing left to accept: the gate re-evaluates on read, so it opens
+      // now or the accepts did not cover what blocks it — say which.
+      await expect
+        .poll(async () => (await read()).gate?.open === true, {
+          timeout: QUALITY_GATE_SETTLE_MS,
+          message: `acceptRemainingQualityGroups: no group left to accept (accepted: ${accepted.join(", ") || "none"}) but the gate stayed closed — ${st.gate?.message ?? "no gate"}`,
+        })
+        .toBe(true);
+      return;
+    }
+    const key = keys[0] as string;
+    if (accepted.includes(key)) {
+      throw new Error(
+        `acceptRemainingQualityGroups: the server still offers "${key}" after the operator accepted it — the accept did not apply. Gate: ${st.gate?.message ?? "no gate"}`,
+      );
+    }
+    const group = card.locator(
+      `[data-testid="quality-offer-group"][data-group-key=${JSON.stringify(key)}]`,
+    );
+    try {
+      await group.waitFor({ state: "visible", timeout: QUALITY_CARD_ACTION_MS });
+      await group
+        .getByTestId("quality-offer-group-accept")
+        .click({ timeout: QUALITY_CARD_ACTION_MS });
+      await group
+        .getByTestId("quality-offer-accept-reason")
+        .fill(QUALITY_ACCEPT_REASON, { timeout: QUALITY_CARD_ACTION_MS });
+      const acceptResponse = page.waitForResponse(
+        // The accept itself — not a note claim / ack the panel may POST to
+        // the same endpoint meanwhile. The server applies it before answering.
+        (r: Response) =>
+          r.url().includes("/quality-audit") &&
+          r.request().method() === "POST" &&
+          (r.request().postData() ?? "").includes('"action":"accept"'),
+        { timeout: QUALITY_CARD_ACTION_MS },
+      );
+      await group
+        .getByTestId("quality-offer-accept-confirm")
+        .click({ timeout: QUALITY_CARD_ACTION_MS });
+      const res = await acceptResponse;
+      const body = await res.text();
+      if (!res.ok() || body.includes('"ok":false')) {
+        throw new Error(
+          `acceptRemainingQualityGroups: accepting "${key}" failed — HTTP ${res.status()}: ${body.slice(0, 500)}`,
+        );
+      }
+    } catch (e) {
+      // The gate may have opened while we acted (another tab, the AI's
+      // approved accept): that is the outcome we wanted, not a failure.
+      if ((await read()).gate?.open) return;
+      throw e;
+    }
     accepted.push(key);
-    await group.getByTestId("quality-offer-group-accept").click();
-    await group.getByTestId("quality-offer-accept-reason").fill(QUALITY_ACCEPT_REASON);
-    await group.getByTestId("quality-offer-accept-confirm").click();
-    await expect(card.locator(`[data-group-key="${key}"]`)).toHaveCount(0, { timeout: 30_000 });
   }
-  throw new Error("acceptRemainingQualityGroups: the card kept offering groups");
+  throw new Error(
+    `acceptRemainingQualityGroups: still offering groups after 50 accepts (accepted: ${accepted.join(", ")})`,
+  );
 }
 
 /** The operator's answer when the AI asks, after the automatic fix rounds,
@@ -815,12 +892,9 @@ export async function awaitQualityGateOpen(
     // like an operator who wants them fixed.
     if (offerOpen && restages >= 2) {
       await waitForChatTurnIdle(page);
-      await acceptRemainingQualityGroups(page, accepted);
-      const decided = await read();
-      if (decided.gate?.open) {
-        const done = await opened();
-        if (done) return done;
-      }
+      await acceptRemainingQualityGroups(page, read, accepted);
+      const done = await opened();
+      if (done) return done;
       continue;
     }
     // Problems: the chat asks before the AI fixes anything (#685). Answer
@@ -872,7 +946,7 @@ export async function awaitQualityGateOpen(
           r.url().includes("?/stageAndDeployStaging") && r.request().method() === "POST",
         { timeout: 360_000 },
       );
-      await page.getByTestId("quality-restage-btn").click();
+      await page.getByTestId("quality-restage-btn").click({ timeout: 30_000 });
       const res = await restage;
       const body = await res.text();
       if (body.includes('"type":"failure"') || body.includes('"type":"error"')) {

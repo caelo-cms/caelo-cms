@@ -1,10 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { deliverPasswordResetEmail } from "@caelo-cms/admin-core";
+import { deliverPasswordResetEmail, passwordResetEmailProblem } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { getQueryContext } from "#lib/server/query.js";
-import type { Actions } from "./$types";
+import type { Actions, PageServerLoad } from "./$types";
+
+/**
+ * #769 — whether this install can email a reset link at all. When it can't,
+ * the page says so up front and names the operator's recovery command instead
+ * of pretending a mail is on its way. That reveals the install's mail setup,
+ * not whether any account exists.
+ */
+export const load: PageServerLoad = async ({ locals }) => {
+  const { adapter, registry } = getQueryContext();
+  const problem = await passwordResetEmailProblem({ registry, adapter, ctx: locals.ctx });
+  return { emailUnavailable: problem !== null };
+};
 
 /**
  * Step 1 of self-service reset. Unauthenticated (`locals.ctx` is the system
@@ -29,6 +41,12 @@ export const actions: Actions = {
     }
 
     if (!email) return fail(400, { email, error: "Enter your email address." });
+
+    // A form posted before the page knew (or by a script) must not issue a
+    // token nobody can receive.
+    if ((await passwordResetEmailProblem({ registry, adapter, ctx: locals.ctx })) !== null) {
+      return fail(409, { email, emailUnavailable: true });
+    }
 
     const result = await execute(registry, adapter, locals.ctx, "auth.request_password_reset", {
       email,
