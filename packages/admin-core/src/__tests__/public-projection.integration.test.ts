@@ -16,9 +16,17 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { drainPublicProjection } from "@caelo-cms/migrations/public-projection";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { SQL } from "bun";
-import { drainProjectionOnce, publishProjectionOnce } from "../public-projection.js";
+import { sql } from "drizzle-orm";
+import { rotateStagingCredentialsOp } from "../ops/staging_access.js";
+import {
+  drainProjectionOnce,
+  projectionDatabases,
+  publishProjectionOnce,
+  startPublicProjectionPublisher,
+} from "../public-projection.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -162,5 +170,127 @@ describe("one way only (#635, adversarial)", () => {
       async (tx) => await tx`SELECT 1 FROM published_rate_limits WHERE plugin_slug = 'forged'`,
     )) as unknown[];
     expect(forged).toEqual([]);
+  });
+});
+
+describe("consuming the outbox (#635 review)", () => {
+  it("never deletes a row it did not read: a lower id committed mid-drain survives", async () => {
+    await drainProjectionOnce(adapter, new Map());
+    // A long transaction takes an outbox id first and commits last.
+    const raw = new SQL(ADMIN_URL as string);
+    const slow = await raw.reserve();
+    try {
+      await slow`BEGIN`;
+      await slow`SET LOCAL caelo.actor_kind = 'system'`;
+      await slow`UPDATE staging_access SET cookie_enabled = cookie_enabled WHERE id = 1`;
+      // A later write with a higher id commits now; the drain reads only it.
+      await admin(async (tx) => {
+        await tx`UPDATE plugin_rate_limit_overrides SET per_visitor_max = 8 WHERE plugin_slug = ${P}`;
+      });
+      const dbs = projectionDatabases(adapter);
+      const report = await drainPublicProjection(
+        {
+          readAdmin: dbs.readAdmin,
+          writePublic: async (fn) => {
+            // The slow transaction commits while the drain is publishing.
+            await slow`COMMIT`;
+            await dbs.writePublic(fn);
+          },
+        },
+        new Map(),
+      );
+      expect(report.sections).toEqual(["rate_limits"]);
+      // Its row is still there, so the staging section is republished next.
+      expect(await outboxSections()).toEqual(["staging"]);
+      expect((await drainProjectionOnce(adapter, new Map())).sections).toEqual(["staging"]);
+      expect(await outboxSections()).toEqual([]);
+    } finally {
+      slow.release();
+      await raw.end();
+    }
+  });
+});
+
+describe("publishing before the admin call returns (#635 review)", () => {
+  const SYSTEM = {
+    actorId: "00000000-0000-0000-0000-00000000ffff",
+    actorKind: "system" as const,
+    requestId: "t635-sync",
+  };
+
+  it("an op that changes published state is live on the public side when it returns", async () => {
+    // No poll in this test: the interval never fires.
+    const publisher = startPublicProjectionPublisher({
+      adapter,
+      declarations: () => new Map(),
+      intervalMs: 3_600_000,
+    });
+    try {
+      await drainProjectionOnce(adapter, new Map());
+      const result = await adapter.runOperation(rotateStagingCredentialsOp, SYSTEM, {
+        which: "both",
+      });
+      expect(result.ok).toBe(true);
+      const [source] = (await admin(
+        async (tx) =>
+          await tx`SELECT basic_auth_nonce, header_nonce FROM staging_access WHERE id = 1`,
+      )) as { basic_auth_nonce: string; header_nonce: string }[];
+      const [published] = (await pub(
+        async (tx) =>
+          await tx`SELECT basic_auth_nonce, header_nonce FROM published_staging_access WHERE id = 1`,
+      )) as { basic_auth_nonce: string; header_nonce: string }[];
+      expect(published).toEqual(source);
+      expect(await outboxSections()).toEqual([]);
+
+      // The same for a system worker's transaction.
+      await adapter.withAdminTransaction(SYSTEM, async (tx) => {
+        await tx.execute(
+          sql`UPDATE plugin_rate_limit_overrides SET per_visitor_max = 13 WHERE plugin_slug = ${P}`,
+        );
+      });
+      const rows = (await pub(
+        async (tx) =>
+          await tx`SELECT per_visitor_max FROM published_rate_limits WHERE plugin_slug = ${P}`,
+      )) as { per_visitor_max: number }[];
+      expect(rows).toEqual([{ per_visitor_max: 13 }]);
+    } finally {
+      publisher.stop();
+    }
+  });
+
+  it("a write that changes no published state publishes nothing", async () => {
+    let calls = 0;
+    adapter.setProjectionPublisher(async () => {
+      calls += 1;
+    });
+    try {
+      await adapter.withAdminTransaction(SYSTEM, async (tx) => {
+        await tx.execute(sql`SELECT 1`);
+      });
+      expect(calls).toBe(0);
+    } finally {
+      adapter.setProjectionPublisher(null);
+    }
+  });
+
+  it("a publish that fails after the commit is reported, not swallowed", async () => {
+    adapter.setProjectionPublisher(async () => {
+      throw new Error("cms_public unreachable");
+    });
+    try {
+      const result = await adapter.runOperation(rotateStagingCredentialsOp, SYSTEM, {
+        which: "header",
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.kind).toBe("HandlerError");
+        expect(JSON.stringify(result.error)).toContain("The change is saved");
+      }
+      // The outbox keeps it for the backstop drain.
+      expect(await outboxSections()).toEqual(["staging"]);
+    } finally {
+      adapter.setProjectionPublisher(null);
+      await drainProjectionOnce(adapter, new Map());
+    }
   });
 });

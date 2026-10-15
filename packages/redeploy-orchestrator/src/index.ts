@@ -235,8 +235,8 @@ const visitorOpEvent = z.object({
 
 /**
  * Validate `gateway_plugin_op_events` rows read from cms_public. Rows are
- * returned in id order; a malformed one is dropped (its id still moves
- * the watermark past it only if a later valid row follows).
+ * returned in id order; a malformed one is dropped (the watermark still
+ * moves past it: see {@link advanceVisitorWatermark}).
  */
 export function parseVisitorOpEvents(raw: readonly unknown[]): {
   rows: z.infer<typeof visitorOpEvent>[];
@@ -252,20 +252,119 @@ export function parseVisitorOpEvents(raw: readonly unknown[]): {
   return { rows, dropped };
 }
 
+/** How long an id gap in `gateway_plugin_op_events` may stay open before it counts as settled. */
+const VISITOR_EVENT_GAP_GRACE_SECONDS = 30;
+
 /**
- * The highest event id in a raw `gateway_plugin_op_events` batch (the ids
- * are the database's own bigserial, read as text), or null for an empty
- * batch or one without a readable id.
+ * How far the visitor-event watermark may move after reading `raw` (rows
+ * with `id > after`, in id order, each carrying `settled`: whether the row
+ * is older than {@link VISITOR_EVENT_GAP_GRACE_SECONDS}).
+ *
+ * Ids come from a sequence at INSERT time, so they commit out of order: a
+ * row with a lower id can still appear after a higher one was read. The
+ * watermark therefore moves only through the contiguous run of ids after
+ * `after`. At a gap it stops, unless the row after the gap is settled: a
+ * transaction that took the missing id took it before that row's id and
+ * would have committed long ago (the gateway's inserts are single
+ * statements), so the gap is a rollback or a burned id, not a pending row.
+ *
+ * It also never passes `sequenceLast` (the sequence's last value): an id
+ * above it was not issued by the sequence, so it is forged (public_role may
+ * not choose ids; this is the check behind that grant) and must not move
+ * the watermark past every real event to come.
+ *
+ * Returns the rows the watermark covers and the new watermark (null when
+ * it does not move). Malformed rows inside the run are covered too, so
+ * garbage cannot pin the watermark; the caller still validates every row.
  */
-export function lastEventId(raw: readonly unknown[]): string | null {
-  let last: bigint | null = null;
+export function advanceVisitorWatermark(
+  raw: readonly unknown[],
+  after: string,
+  sequenceLast: string | null,
+): { covered: unknown[]; watermark: string | null } {
+  const ceiling =
+    sequenceLast !== null && /^\d{1,20}$/.test(sequenceLast) ? BigInt(sequenceLast) : null;
+  const withIds: { id: bigint; row: unknown; settled: boolean }[] = [];
   for (const r of raw) {
-    const id = (r as { id?: unknown } | null)?.id;
-    if (typeof id !== "string" || !/^\d{1,20}$/.test(id)) continue;
-    const n = BigInt(id);
-    if (last === null || n > last) last = n;
+    const rec = r as { id?: unknown; settled?: unknown } | null;
+    if (typeof rec?.id !== "string" || !/^\d{1,20}$/.test(rec.id)) continue;
+    withIds.push({ id: BigInt(rec.id), row: r, settled: rec.settled === true });
   }
-  return last === null ? null : last.toString();
+  withIds.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  let mark = BigInt(after);
+  const covered: unknown[] = [];
+  for (const { id, row, settled } of withIds) {
+    if (id <= mark) continue;
+    if (ceiling === null || id > ceiling) break;
+    if (id !== mark + 1n && !settled) break;
+    covered.push(row);
+    mark = id;
+  }
+  return { covered, watermark: covered.length === 0 ? null : mark.toString() };
+}
+
+/**
+ * #635 — visitor plugin op events past the persisted watermark, read from
+ * cms_public as UNTRUSTED rows: anything that is not a well-formed event
+ * of an allowlisted op kind is skipped, and at most 500 are taken per
+ * tick, so a flood of forged rows can delay rebuilds but never widen
+ * what a rebuild may touch.
+ */
+export async function readVisitorOpEvents(
+  adapter: DatabaseAdapter,
+  opKinds: readonly string[],
+): Promise<{
+  events: { operation: string; entity_id: string | null }[];
+  lastId: string | null;
+}> {
+  try {
+    const stored = (await adapter.withAdminTransaction(
+      SYSTEM_CTX,
+      async (tx) =>
+        await tx.execute(
+          sql`SELECT auto_redeploy_last_public_event_id::text AS id FROM site_settings WHERE id = 1`,
+        ),
+    )) as unknown as { id: string }[];
+    const after = stored[0]?.id ?? "0";
+    const { raw, sequenceLast } = await adapter.withPublicTransaction(SYSTEM_CTX, async (tx) => {
+      const seq = (await tx.execute(
+        sql`SELECT pg_sequence_last_value('gateway_plugin_op_events_id_seq'::regclass)::text AS last`,
+      )) as unknown as { last: string | null }[];
+      const found = (await tx.execute(sql`
+          SELECT id::text AS id, operation, entity_id::text AS entity_id, succeeded,
+                 created_at < now() - make_interval(secs => ${VISITOR_EVENT_GAP_GRACE_SECONDS})
+                   AS settled
+          FROM gateway_plugin_op_events
+          WHERE id > ${after}::bigint
+          ORDER BY id ASC
+          LIMIT 500
+        `)) as unknown as unknown[];
+      return { raw: found, sequenceLast: seq[0]?.last ?? null };
+    });
+    const { covered, watermark } = advanceVisitorWatermark(raw, after, sequenceLast);
+    const { rows } = parseVisitorOpEvents(covered);
+    return {
+      events: rows.filter((r) => r.succeeded && opKinds.includes(r.operation)),
+      lastId: watermark,
+    };
+  } catch (e) {
+    console.error(
+      `[redeploy-orchestrator] visitor op events unreadable: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return { events: [], lastId: null };
+  }
+}
+
+/** Persist the visitor-event watermark (see {@link advanceVisitorWatermark}). */
+export async function commitVisitorWatermark(
+  adapter: DatabaseAdapter,
+  lastId: string,
+): Promise<void> {
+  await adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
+    await tx.execute(
+      sql`UPDATE site_settings SET auto_redeploy_last_public_event_id = ${lastId}::bigint WHERE id = 1`,
+    );
+  });
 }
 
 export function startRedeployOrchestrator(cfg: OrchestratorConfig): OrchestratorHandle {
@@ -382,11 +481,11 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           operation: string;
         }>,
     );
-    const visitor = await readVisitorOpEvents(safeOpKinds);
+    const visitor = await readVisitorOpEvents(cfg.adapter, safeOpKinds);
     if (rows.length === 0 && visitor.events.length === 0) {
       // Rows that were all malformed or of other op kinds: nothing to
       // rebuild, but the watermark moves past them.
-      if (visitor.lastId) await commitVisitorWatermark(visitor.lastId);
+      if (visitor.lastId) await commitVisitorWatermark(cfg.adapter, visitor.lastId);
       return;
     }
     for (const r of visitor.events) {
@@ -395,7 +494,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       if (pageId) pendingPageIds.add(pageId);
     }
     // Only now: a failure above leaves the events to the next tick.
-    if (visitor.lastId) await commitVisitorWatermark(visitor.lastId);
+    if (visitor.lastId) await commitVisitorWatermark(cfg.adapter, visitor.lastId);
     // Collect per-page deltas. Operations on `pages.*` carry the page
     // id as `entity_id` directly. Plugin write ops carry their own
     // entity (e.g. `comments.moderate.entity_id` is the comment id);
@@ -640,60 +739,6 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         }).catch(() => undefined);
       }
     }
-  }
-
-  /**
-   * #635 — visitor plugin op events past the persisted watermark, read from
-   * cms_public as UNTRUSTED rows: anything that is not a well-formed event
-   * of an allowlisted op kind is skipped, and at most 500 are taken per
-   * tick, so a flood of forged rows can delay rebuilds but never widen
-   * what a rebuild may touch.
-   */
-  async function readVisitorOpEvents(opKinds: readonly string[]): Promise<{
-    events: { operation: string; entity_id: string | null }[];
-    lastId: string | null;
-  }> {
-    try {
-      const watermark = (await cfg.adapter.withAdminTransaction(
-        SYSTEM_CTX,
-        async (tx) =>
-          await tx.execute(
-            sql`SELECT auto_redeploy_last_public_event_id::text AS id FROM site_settings WHERE id = 1`,
-          ),
-      )) as unknown as { id: string }[];
-      const after = watermark[0]?.id ?? "0";
-      const raw = (await cfg.adapter.withPublicTransaction(
-        SYSTEM_CTX,
-        async (tx) =>
-          await tx.execute(sql`
-            SELECT id::text AS id, operation, entity_id::text AS entity_id, succeeded
-            FROM gateway_plugin_op_events
-            WHERE id > ${after}::bigint
-            ORDER BY id ASC
-            LIMIT 500
-          `),
-      )) as unknown as unknown[];
-      const { rows } = parseVisitorOpEvents(raw);
-      return {
-        events: rows.filter((r) => r.succeeded && opKinds.includes(r.operation)),
-        // The batch's highest id, malformed rows included, so a run of
-        // garbage cannot pin the watermark and starve later events.
-        lastId: lastEventId(raw),
-      };
-    } catch (e) {
-      console.error(
-        `[redeploy-orchestrator] visitor op events unreadable: ${e instanceof Error ? e.message : String(e)}`,
-      );
-      return { events: [], lastId: null };
-    }
-  }
-
-  async function commitVisitorWatermark(lastId: string): Promise<void> {
-    await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
-      await tx.execute(
-        sql`UPDATE site_settings SET auto_redeploy_last_public_event_id = ${lastId}::bigint WHERE id = 1`,
-      );
-    });
   }
 
   async function gcSweep(): Promise<void> {

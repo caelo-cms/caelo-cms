@@ -32,6 +32,21 @@
  * Publishers serialise on a cms_admin advisory lock held across the read
  * and the cms_public write, so an older read can never overwrite a newer
  * publish.
+ *
+ * ## Why this is not a set of Query API ops
+ *
+ * CLAUDE.md §2 routes every *actor's* database access through Query API
+ * ops, so it is validated, RLS-scoped and audited. The publisher is not an
+ * actor's action: it copies state that ops already wrote (and audited) into
+ * a derived, read-only replica, with no input from anyone. It runs as the
+ * `system` actor inside the adapter's own transactions
+ * (`DatabaseAdapter.withAdminTransaction` / `withPublicTransaction`, the
+ * established path for system workers such as the redeploy orchestrator
+ * and the plugin host loader), so RLS still applies, and the only
+ * identifiers it interpolates are the validated ones above. Auditing each
+ * publish would record the same change twice, once per database; the
+ * write that caused it is the audit record. The SQL also has to run in
+ * the migration job, which has no op registry.
  */
 
 import { type SQL, sql } from "drizzle-orm";
@@ -506,7 +521,7 @@ export async function publishPublicProjection(
     await dbs.writePublic(async (ptx) => {
       written = await writeSnapshot(ptx, snap);
     });
-    await consumeOutbox(tx, outbox.maxId);
+    await consumeOutbox(tx, outbox.ids);
     return {
       sections: written.sections,
       comments: written.comments,
@@ -517,7 +532,8 @@ export async function publishPublicProjection(
 }
 
 interface OutboxBatch {
-  readonly maxId: number;
+  /** Exactly the outbox ids read (and only those are consumed). */
+  readonly ids: readonly string[];
   readonly count: number;
   readonly sections: Set<ProjectionSection>;
   readonly commentIds: Set<string>;
@@ -533,20 +549,35 @@ async function readOutbox(tx: ProjectionTx): Promise<OutboxBatch> {
   )) as unknown as { id: string; section: string; entity_id: string | null }[];
   const sections = new Set<ProjectionSection>();
   const commentIds = new Set<string>();
-  let maxId = 0;
   for (const r of found) {
-    maxId = Math.max(maxId, Number(r.id));
     if (r.section === "comments") {
       if (r.entity_id && UUID_RE.test(r.entity_id)) commentIds.add(r.entity_id);
     } else {
       sections.add(r.section as ProjectionSection);
     }
   }
-  return { maxId, count: found.length, sections, commentIds };
+  return { ids: found.map((r) => r.id), count: found.length, sections, commentIds };
 }
 
-async function consumeOutbox(tx: ProjectionTx, maxId: number): Promise<void> {
-  if (maxId > 0) await tx.execute(sql`DELETE FROM public_projection_outbox WHERE id <= ${maxId}`);
+/**
+ * Delete exactly the outbox rows this publish read — never a range. Ids
+ * come from a sequence at INSERT time but become visible at COMMIT, so a
+ * long transaction can commit a LOWER id while this publish runs; a range
+ * delete (`id <= max`) would remove that row without its section ever
+ * being republished. A row not read here stays for the next drain.
+ *
+ * Why reading then deleting by id is enough: an outbox row is written in
+ * the same transaction as the source change, so once the row is visible
+ * the change is committed, and the snapshot read that follows (later
+ * statements, READ COMMITTED) sees it. A row that commits after the
+ * outbox read is not deleted, so its section is published again later.
+ */
+async function consumeOutbox(tx: ProjectionTx, ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await tx.execute(
+    sql`DELETE FROM public_projection_outbox
+        WHERE id = ANY(string_to_array(${ids.join(",")}, ',')::bigint[])`,
+  );
 }
 
 /**
@@ -568,7 +599,7 @@ export async function drainPublicProjection(
     await dbs.writePublic(async (ptx) => {
       written = await writeSnapshot(ptx, snap);
     });
-    await consumeOutbox(tx, outbox.maxId);
+    await consumeOutbox(tx, outbox.ids);
     return {
       sections: written.sections,
       comments: written.comments,
