@@ -479,6 +479,22 @@ test("bulk decisions per group: pick and accept, accept all, fix one group (#727
 test("an accept never flashes the card or shows the accepted group again (#783)", async ({
   page,
 }) => {
+  // The bulk test above accepted this rule on these pages; start the
+  // group from all three pages again.
+  runBunInline(
+    `
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const s = process.env.SLUG;
+      await tx\`DELETE FROM quality_acceptances WHERE page_id IN
+        (SELECT id FROM pages WHERE slug IN (\${s}, \${s + "-b"}, \${s + "-c"}))\`;
+    });
+    await sql.end();
+    `,
+    { SLUG },
+  );
   const ownerId = await login(page);
   const chatSessionId = await newChat(page);
   seedProblemAudit(chatSessionId, ownerId, "operator", "grouped");
