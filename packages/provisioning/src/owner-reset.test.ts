@@ -15,13 +15,17 @@ const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr,
 const ADMIN = "https://caelo-production-admin-abc-ew.a.run.app";
 const target = { projectId: "proj", region: "europe-west1" };
 
-function fakeGcloud(): (args: string[]) => Promise<GcloudResult> {
+function fakeGcloud(
+  overrides: Record<string, GcloudResult> = {},
+): (args: string[]) => Promise<GcloudResult> {
   const answers: Record<string, GcloudResult> = {
+    "auth list": ok("operator@example.com\n"),
     "run services list": ok("caelo-production-admin-abc\n"),
     "run services describe": ok(`${ADMIN}\n`),
     "secrets versions access": ok("s".repeat(40)),
     "auth print-access-token": ok("ya29.operator\n"),
     "services enable iamcredentials.googleapis.com": ok(),
+    ...overrides,
   };
   return async (args) => {
     const key = Object.keys(answers).find((k) => args.join(" ").startsWith(k));
@@ -74,7 +78,7 @@ describe("requestOwnerReset", () => {
     const call = seen[1];
     expect(call?.url).toBe(`${ADMIN}/api/internal/owner-reset`);
     expect(call?.headers.authorization).toBe("Bearer iap.jwt.signed");
-    expect(call?.body).toEqual({});
+    expect(call?.body).toEqual({ requestedBy: "operator@example.com" });
     const [message] = (call?.headers["x-caelo-internal-token"] ?? "").split(".");
     expect(Buffer.from(message ?? "", "base64url").toString()).toEndWith(`:${OWNER_RESET_SCOPE}`);
   });
@@ -86,7 +90,27 @@ describe("requestOwnerReset", () => {
       { email: "owner@example.com" },
       { run: fakeGcloud(), fetch: doFetch },
     );
-    expect(seen[1]?.body).toEqual({ email: "owner@example.com" });
+    expect(seen[1]?.body).toEqual({
+      email: "owner@example.com",
+      requestedBy: "operator@example.com",
+    });
+  });
+
+  it("refuses to run without an active gcloud account to name in the audit row", async () => {
+    const { doFetch, seen } = fakeFetch(() => Response.json(ISSUED));
+    for (const answer of [
+      ok(""),
+      fail("ERROR: no credentialed accounts"),
+      ok("a@x.com\nb@x.com"),
+    ]) {
+      const r = await requestOwnerReset(
+        target,
+        {},
+        { run: fakeGcloud({ "auth list": answer }), fetch: doFetch },
+      );
+      expect(r.ok ? "" : r.error).toContain("gcloud auth login");
+    }
+    expect(seen).toHaveLength(0);
   });
 
   it("passes the admin's refusal through and names the upgrade for an older admin", async () => {
