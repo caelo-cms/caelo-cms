@@ -109,7 +109,7 @@ import {
 } from "./visitor.js";
 
 export {
-  ADMIN_CREDENTIAL_ENV,
+  GATEWAY_DATABASE_ENV,
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
 } from "./database-env.js";

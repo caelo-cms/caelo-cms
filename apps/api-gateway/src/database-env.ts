@@ -4,7 +4,9 @@
  * The API gateway's database identity (issues #613, #635; CLAUDE.md §2
  * "the public side has no path to cms_admin"): which env var it connects
  * with, which role that must resolve to, and the guard that refuses to boot
- * with any way into the authoring database. Kept apart from server.ts so
+ * when the env offers database access beyond that one login (exactly what
+ * it checks, and what it cannot see, is listed at
+ * {@link adminDatabaseAccessInEnv}). Kept apart from server.ts so
  * the dev launcher (dev.ts) can use it without loading the server.
  *
  * The gateway connects to cms_public ONLY, as public_role. What it needs
@@ -12,33 +14,21 @@
  * (`@caelo-cms/migrations/public-projection`).
  */
 
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { databaseUrlFromEnv } from "@caelo-cms/shared";
-
-/**
- * Env vars that would hand the gateway a cms_admin login — by NAME. The
- * value-based check in {@link adminDatabaseAccessInEnv} catches the same
- * thing under any other name; this list also catches a bare password,
- * which no value inspection can recognise.
- */
-export const ADMIN_CREDENTIAL_ENV = [
-  "ADMIN_DATABASE_URL",
-  "ADMIN_DATABASE_PASSWORD",
-  "PUBLIC_ADMIN_DATABASE_URL",
-  "PUBLIC_ADMIN_DATABASE_PASSWORD",
-  // #635 — the gateway's former gateway_role login on cms_admin.
-  "GATEWAY_DATABASE_URL",
-  "GATEWAY_DATABASE_PASSWORD",
-  "GATEWAY_ROLE_PASSWORD",
-  "ADMIN_ROLE_PASSWORD",
-  "POSTGRES_PASSWORD",
-] as const;
 
 /** The only database the gateway may name, and the only role it may log in as. */
 const PUBLIC_DATABASE = "cms_public";
 const PUBLIC_ROLE = "public_role";
 
-/** The env vars allowed to carry a database credential: the gateway's own login. */
-const OWN_LOGIN_ENV = new Set(["PUBLIC_DATABASE_URL", "PUBLIC_DATABASE_PASSWORD"]);
+/**
+ * The ONLY env vars that may carry anything database-related: the gateway's
+ * own login. Every other database-ish variable is refused, whatever it holds
+ * — the gateway has exactly one way to its database.
+ */
+export const GATEWAY_DATABASE_ENV = ["PUBLIC_DATABASE_URL", "PUBLIC_DATABASE_PASSWORD"] as const;
+const OWN_LOGIN_ENV = new Set<string>(GATEWAY_DATABASE_ENV);
 
 /**
  * The roles the gateway's adapter must connect as: no cms_admin pool at
@@ -49,19 +39,54 @@ export const GATEWAY_DATABASE_ROLES = {
   public: [PUBLIC_ROLE],
 } as const;
 
+/**
+ * A database-ish variable or secret-file name: any `_`-separated token that
+ * names a database, a Postgres client setting (libpq's `PG*`, which Bun SQL
+ * and every other client read on their own), a connection string or a
+ * password. Matched per token, so `BYPASS` or `PAGE_SIZE` do not count.
+ */
+const DATABASE_ISH_TOKEN =
+  /^(?:DB|DBNAME|DBUSER|DATABASE|DATABASES|PG[A-Z]*|POSTGRES|POSTGRESQL|PSQL|SQL|DSN|PASS|PASSWD|PASSWORD|PASSWORDS|PWD|CREDENTIAL|CREDENTIALS)$/;
+
+function isDatabaseIshName(name: string): boolean {
+  return name
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .some((token) => DATABASE_ISH_TOKEN.test(token));
+}
+
+/** A value naming the authoring database or one of its roles, in any form. */
+const ADMIN_NAME = /(?<![a-z0-9_])(?:cms_admin|admin_role|gateway_role)(?![a-z0-9_])/i;
+
 const POSTGRES_URL = /postgres(?:ql)?:\/\/[^\s"'`,;]{1,2048}/gi;
 
-/** Why one Postgres URL is not the gateway's own login, or null when it is. */
-function foreignDatabaseUrl(raw: string): string | null {
+/**
+ * A libpq keyword/value connection string (`host=… dbname=… user=…`): at
+ * least two connection keywords, which no ordinary setting carries.
+ */
+const DSN_KEYWORD = /(?:^|[\s;])(?:host|hostaddr|dbname|user|password|passfile|service|port)\s*=/gi;
+
+function isKeywordDsn(value: string): boolean {
+  return (value.match(DSN_KEYWORD) ?? []).length >= 2;
+}
+
+/** Why the gateway's own URL is not public_role on cms_public, or null when it is. */
+function foreignOwnUrl(raw: string): string | null {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    return "an unparseable database URL";
+    return "not a postgres:// URL";
+  }
+  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
+    return "not a postgres:// URL";
+  }
+  const params = url.searchParams;
+  for (const p of ["service", "passfile", "options"]) {
+    if (params.has(p)) return `a URL with a "${p}" parameter, which can switch database or role`;
   }
   const database = decodeURIComponent(url.pathname.replace(/^\//, ""));
   const user = decodeURIComponent(url.username);
-  const params = url.searchParams;
   const dbParam = params.get("dbname") ?? params.get("database");
   const userParam = params.get("user");
   if ((dbParam ?? database) !== PUBLIC_DATABASE) {
@@ -73,46 +98,124 @@ function foreignDatabaseUrl(raw: string): string | null {
   return null;
 }
 
+/** Why a value outside the gateway's own login is a way to a database, or null. */
+function databaseAccessInValue(value: string): string | null {
+  if (value.search(POSTGRES_URL) !== -1) return "holds a database URL";
+  if (isKeywordDsn(value)) return "holds a libpq keyword connection string";
+  if (ADMIN_NAME.test(value)) return "names cms_admin or one of its roles";
+  return null;
+}
+
 /**
- * Every way into cms_admin the env offers, as `NAME: why` — never the value.
- * Checks names ({@link ADMIN_CREDENTIAL_ENV}, any other `*_DATABASE_PASSWORD`),
- * every Postgres URL inside any value (database must be cms_public, role
- * public_role) and the libpq variables (`PGDATABASE`, `PGUSER`, `PGSERVICE`,
- * `PGPASSWORD`, `PGPASSFILE`), which a Postgres client would pick up on its
- * own.
+ * Where file-mounted secrets live: Docker/Compose `secrets:` and the
+ * Kubernetes convention. Only regular files directly inside are read.
+ */
+export const SECRET_MOUNT_DIRS = ["/run/secrets", "/var/run/secrets"] as const;
+
+/** Largest secret file the guard reads; anything larger is not a credential. */
+const MAX_SECRET_FILE_BYTES = 64 * 1024;
+
+/** How the guard reads files (injected in tests). */
+export interface SecretFileReader {
+  /** Regular files directly in `dir` (full paths); empty when it does not exist. */
+  list(dir: string): string[];
+  /** The file's text, or null when it is missing, unreadable, too large or not a file. */
+  read(path: string): string | null;
+}
+
+/** The real filesystem. */
+export const nodeSecretFiles: SecretFileReader = {
+  list(dir) {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return [];
+    }
+    return names
+      .map((n) => join(dir, n))
+      .filter((p) => {
+        try {
+          return statSync(p).isFile();
+        } catch {
+          return false;
+        }
+      });
+  },
+  read(path) {
+    try {
+      const st = statSync(path);
+      if (!st.isFile() || st.size > MAX_SECRET_FILE_BYTES) return null;
+      return readFileSync(path, "utf8");
+    } catch {
+      return null;
+    }
+  },
+};
+
+/**
+ * Every way to a database the gateway's environment offers besides its own
+ * login, as `NAME: why` — never the value. What is checked, exactly:
+ *
+ * - **Names.** Only {@link GATEWAY_DATABASE_ENV} may be database-ish. Any
+ *   other variable whose name has a database, `PG*`, connection-string or
+ *   password token (`DATABASE_URL`, `PGPASSWORD`, `DB_ADMIN_PASS`, …) is
+ *   refused, whatever it holds.
+ * - **Values** of every other variable: one naming `cms_admin`,
+ *   `admin_role` or `gateway_role`, holding a Postgres URL, or holding a
+ *   libpq keyword connection string (`host=… dbname=… user=…`).
+ * - **The own login.** `PUBLIC_DATABASE_URL` must be a postgres:// URL for
+ *   public_role on cms_public, without `service`/`passfile`/`options`.
+ * - **File-mounted secrets.** A `*_FILE` variable's file, and every regular
+ *   file directly in {@link SECRET_MOUNT_DIRS}: a database-ish file name is
+ *   refused, the contents get the value checks.
+ *
+ * Not detectable, and not claimed: a bare password stored under a name with
+ * no database or password token, or a secret file mounted at an arbitrary
+ * path that no `*_FILE` variable names. The database-side probe
+ * ({@link databaseIsolationProblems}) and the role audit cover the role
+ * itself; the provisioning tests cover what each adapter hands the gateway.
  */
 export function adminDatabaseAccessInEnv(
   env: Readonly<Record<string, string | undefined>>,
+  files: SecretFileReader = nodeSecretFiles,
 ): string[] {
   const found: string[] = [];
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined || value === "") continue;
-    if ((ADMIN_CREDENTIAL_ENV as readonly string[]).includes(name)) {
-      found.push(`${name}: a cms_admin credential by name`);
+    if (name === "PUBLIC_DATABASE_URL") {
+      const why = foreignOwnUrl(value);
+      if (why) found.push(`${name}: ${why}`);
       continue;
     }
-    if (/_DATABASE_PASSWORD$/.test(name) && !OWN_LOGIN_ENV.has(name)) {
-      found.push(`${name}: a database password other than the gateway's own`);
+    if (OWN_LOGIN_ENV.has(name)) continue;
+    if (isDatabaseIshName(name)) {
+      found.push(
+        `${name}: a database-related variable; the gateway's only database access is PUBLIC_DATABASE_URL`,
+      );
       continue;
     }
-    if (name === "PGDATABASE" && value !== PUBLIC_DATABASE) {
-      found.push(`${name}: names database "${value}"`);
+    const why = databaseAccessInValue(value);
+    if (why) {
+      found.push(`${name}: ${why}`);
       continue;
     }
-    if (name === "PGUSER" && value !== PUBLIC_ROLE) {
-      found.push(`${name}: names role "${value}"`);
-      continue;
+    if (/_FILE$/i.test(name)) {
+      const contents = files.read(value);
+      const fileWhy = contents === null ? null : databaseAccessInValue(contents);
+      if (fileWhy) found.push(`${name}: its file ${fileWhy}`);
     }
-    if (name === "PGPASSWORD" || name === "PGSERVICE" || name === "PGPASSFILE") {
-      found.push(`${name}: a libpq credential outside the gateway's own URL`);
-      continue;
-    }
-    for (const match of value.matchAll(POSTGRES_URL)) {
-      const why = foreignDatabaseUrl(match[0]);
-      if (why) {
-        found.push(`${name}: ${why}`);
-        break;
+  }
+  for (const dir of SECRET_MOUNT_DIRS) {
+    for (const path of files.list(dir)) {
+      const base = path.slice(path.lastIndexOf("/") + 1);
+      if (isDatabaseIshName(base)) {
+        found.push(`${path}: a database-related secret file`);
+        continue;
       }
+      const contents = files.read(path);
+      const why = contents === null ? null : databaseAccessInValue(contents);
+      if (why) found.push(`${path}: a secret file that ${why}`);
     }
   }
   return found;
@@ -122,18 +225,21 @@ export function adminDatabaseAccessInEnv(
  * The gateway's connection URL: `PUBLIC_DATABASE_URL` (public_role on
  * cms_public) with its `_PASSWORD` companion applied.
  *
- * @throws naming every offending variable (never its value) when the env
- *   holds any way into cms_admin — an install whose env still carries one
- *   has not converged, and running anyway would hide that — or when the
- *   URL is missing.
+ * @throws naming every offending variable or file (never its value) when
+ *   {@link adminDatabaseAccessInEnv} finds anything — an install whose env
+ *   still carries such access has not converged, and running anyway would
+ *   hide that — or when the URL is missing.
  */
-export function gatewayDatabaseUrls(env: Readonly<Record<string, string | undefined>>): {
+export function gatewayDatabaseUrls(
+  env: Readonly<Record<string, string | undefined>>,
+  files: SecretFileReader = nodeSecretFiles,
+): {
   readonly public: string;
 } {
-  const leaked = adminDatabaseAccessInEnv(env);
+  const leaked = adminDatabaseAccessInEnv(env, files);
   if (leaked.length > 0) {
     throw new Error(
-      `the API gateway must not hold any cms_admin credential (CLAUDE.md §2: the public side has no path to cms_admin) but its environment does:\n${leaked.map((l) => `  - ${l}`).join("\n")}\nRemove them; the gateway connects to cms_public only, as public_role (PUBLIC_DATABASE_URL). Cloud installs: run \`cms-provision upgrade\`. Local dev with the shared root .env: start it with \`bun run --filter @caelo-cms/api-gateway dev\`, which leaves them out.`,
+      `the API gateway must not hold any cms_admin credential (CLAUDE.md §2: the public side has no path to cms_admin), and its only database access is PUBLIC_DATABASE_URL, but its environment offers more:\n${leaked.map((l) => `  - ${l}`).join("\n")}\nRemove them; the gateway connects to cms_public only, as public_role (PUBLIC_DATABASE_URL). Cloud installs: run \`cms-provision upgrade\`. Local dev with the shared root .env: start it with \`bun run --filter @caelo-cms/api-gateway dev\`, which leaves them out.`,
     );
   }
   const pub = databaseUrlFromEnv(["PUBLIC_DATABASE_URL"], env);
