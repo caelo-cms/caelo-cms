@@ -32,7 +32,7 @@ This stands up and starts a Docker Compose stack:
 - The **admin app** (SvelteKit + Bun) on `https://admin.your-domain.example.com`
 - The **API gateway** for visitor-facing plugin endpoints, under `/api/*` on your site
 
-It ends by printing the Owner setup link (`https://admin.your-domain.example.com/setup?token=…`), where you create the Owner account. Save its password somewhere safe — there's no "forgot password" flow yet (P17 review-pass item). Details: [self-hosted install](/install-self-hosted).
+It ends by printing the Owner setup link (`https://admin.your-domain.example.com/setup?token=…`), where you create the Owner account. Save its password somewhere safe: **Forgot your password?** on the sign-in page can only email you a link once email is set up under **Settings → Email**, so set that up early. Details: [self-hosted install](/install-self-hosted).
 
 ### On Google Cloud, from the browser
 
