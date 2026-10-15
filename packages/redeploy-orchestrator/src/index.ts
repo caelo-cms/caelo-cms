@@ -252,6 +252,22 @@ export function parseVisitorOpEvents(raw: readonly unknown[]): {
   return { rows, dropped };
 }
 
+/**
+ * The highest event id in a raw `gateway_plugin_op_events` batch (the ids
+ * are the database's own bigserial, read as text), or null for an empty
+ * batch or one without a readable id.
+ */
+export function lastEventId(raw: readonly unknown[]): string | null {
+  let last: bigint | null = null;
+  for (const r of raw) {
+    const id = (r as { id?: unknown } | null)?.id;
+    if (typeof id !== "string" || !/^\d{1,20}$/.test(id)) continue;
+    const n = BigInt(id);
+    if (last === null || n > last) last = n;
+  }
+  return last === null ? null : last.toString();
+}
+
 export function startRedeployOrchestrator(cfg: OrchestratorConfig): OrchestratorHandle {
   const pollMs = cfg.pollIntervalMs ?? 1500;
   const gcMs = cfg.gcIntervalMs ?? 60 * 60 * 1000;
@@ -366,13 +382,20 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           operation: string;
         }>,
     );
-    const visitorRows = await readVisitorOpEvents(safeOpKinds);
-    if (rows.length === 0 && visitorRows.length === 0) return;
-    for (const r of visitorRows) {
+    const visitor = await readVisitorOpEvents(safeOpKinds);
+    if (rows.length === 0 && visitor.events.length === 0) {
+      // Rows that were all malformed or of other op kinds: nothing to
+      // rebuild, but the watermark moves past them.
+      if (visitor.lastId) await commitVisitorWatermark(visitor.lastId);
+      return;
+    }
+    for (const r of visitor.events) {
       if (!r.entity_id) continue;
       const pageId = await resolvePluginOpPageId(cfg.adapter, r.operation, r.entity_id);
       if (pageId) pendingPageIds.add(pageId);
     }
+    // Only now: a failure above leaves the events to the next tick.
+    if (visitor.lastId) await commitVisitorWatermark(visitor.lastId);
     // Collect per-page deltas. Operations on `pages.*` carry the page
     // id as `entity_id` directly. Plugin write ops carry their own
     // entity (e.g. `comments.moderate.entity_id` is the comment id);
@@ -626,9 +649,10 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
    * tick, so a flood of forged rows can delay rebuilds but never widen
    * what a rebuild may touch.
    */
-  async function readVisitorOpEvents(
-    opKinds: readonly string[],
-  ): Promise<{ operation: string; entity_id: string | null }[]> {
+  async function readVisitorOpEvents(opKinds: readonly string[]): Promise<{
+    events: { operation: string; entity_id: string | null }[];
+    lastId: string | null;
+  }> {
     try {
       const watermark = (await cfg.adapter.withAdminTransaction(
         SYSTEM_CTX,
@@ -650,20 +674,26 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           `),
       )) as unknown as unknown[];
       const { rows } = parseVisitorOpEvents(raw);
-      if (rows.length === 0) return [];
-      const last = rows[rows.length - 1]?.id as string;
-      await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
-        await tx.execute(
-          sql`UPDATE site_settings SET auto_redeploy_last_public_event_id = ${last}::bigint WHERE id = 1`,
-        );
-      });
-      return rows.filter((r) => r.succeeded && opKinds.includes(r.operation));
+      return {
+        events: rows.filter((r) => r.succeeded && opKinds.includes(r.operation)),
+        // The batch's highest id, malformed rows included, so a run of
+        // garbage cannot pin the watermark and starve later events.
+        lastId: lastEventId(raw),
+      };
     } catch (e) {
       console.error(
         `[redeploy-orchestrator] visitor op events unreadable: ${e instanceof Error ? e.message : String(e)}`,
       );
-      return [];
+      return { events: [], lastId: null };
     }
+  }
+
+  async function commitVisitorWatermark(lastId: string): Promise<void> {
+    await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
+      await tx.execute(
+        sql`UPDATE site_settings SET auto_redeploy_last_public_event_id = ${lastId}::bigint WHERE id = 1`,
+      );
+    });
   }
 
   async function gcSweep(): Promise<void> {
@@ -680,7 +710,12 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
   }
 
   const pollHandle = setInterval(() => {
-    void tick();
+    // A failed tick leaves its events (and the watermark) for the next one.
+    tick().catch((e: unknown) => {
+      console.error(
+        `[redeploy-orchestrator] tick failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
   }, pollMs);
   const gcHandle = setInterval(() => {
     void gcSweep();

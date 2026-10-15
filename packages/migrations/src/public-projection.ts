@@ -178,6 +178,8 @@ interface Snapshot {
   rateLimits?: Row[];
   plugins?: { rows: Row[]; grants: Row[]; active: ActivePlugin[] };
   pluginRows: Map<string, { slug: string; rows: Row[] }>;
+  /** Active plugins that declare no projection (any more): nothing of theirs may stay published. */
+  withdrawnPlugins: string[];
   pendingPlugins: string[];
   /** Full comment resync. */
   allComments?: Row[];
@@ -252,7 +254,12 @@ async function readSnapshot(
   fullComments: boolean,
   commentIds: ReadonlySet<string>,
 ): Promise<Snapshot> {
-  const snap: Snapshot = { pluginRows: new Map(), pendingPlugins: [], commentChanges: new Map() };
+  const snap: Snapshot = {
+    pluginRows: new Map(),
+    withdrawnPlugins: [],
+    pendingPlugins: [],
+    commentChanges: new Map(),
+  };
   if (want.has("settings")) {
     snap.settings = await rows(
       tx,
@@ -311,7 +318,12 @@ async function readSnapshot(
     const section: ProjectionSection = `plugin:${plugin.id}`;
     if (!want.has(section) && !want.has("plugins")) continue;
     const projection = declarations.get(plugin.slug);
-    if (!projection) continue;
+    if (!projection) {
+      // A version that dropped its declaration: withdraw what an earlier
+      // one published, so the public side keeps nothing undeclared.
+      snap.withdrawnPlugins.push(plugin.id);
+      continue;
+    }
     const found = await readPluginRows(tx, plugin, projection);
     if (found === null) snap.pendingPlugins.push(plugin.slug);
     else snap.pluginRows.set(plugin.id, { slug: plugin.slug, rows: found });
@@ -409,6 +421,12 @@ async function writeSnapshot(
                   activeIds.map((id) => sql`${`plugin:${id}`}`),
                   sql`, `,
                 )})`,
+    );
+  }
+  for (const pluginId of snap.withdrawnPlugins) {
+    await tx.execute(sql`DELETE FROM published_plugin_rows WHERE plugin_id = ${pluginId}::uuid`);
+    await tx.execute(
+      sql`DELETE FROM published_projection_sections WHERE section = ${`plugin:${pluginId}`}`,
     );
   }
   for (const [pluginId, { rows: data }] of snap.pluginRows) {
