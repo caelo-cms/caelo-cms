@@ -34,10 +34,12 @@ The browser chat is one consumer of the chat-runner; `caelo_chat` is another. Th
 claude mcp add caelo \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=mcp_<32-bytes-hex> \
-  -- bunx @caelo-cms/mcp-server@<your Caelo version>
+  -- bunx @caelo-cms/mcp-server
 ```
 
-The snippet pins `@caelo-cms/mcp-server` to your install's release: `bunx` caches an unversioned package indefinitely, so after upgrading Caelo, generate a new command at `/settings/mcp` (the shim and the admin ship in lockstep).
+You add the server once. It stays valid across Caelo upgrades. On every start the server asks your install which Caelo release it runs and, if that differs from its own, switches to exactly that release (`bunx --package @caelo-cms/mcp-server@<release>`) without the client noticing. The server and the admin ship in lockstep, so they always match. If the matching release cannot be installed (offline, registry unreachable), the server stops with a message instead of running a release that does not belong to your install.
+
+If you added the server with a version in the command (installs before #764), remove it once and add it again with the command above.
 
 The admin server reads the install's tool catalogue live: when it changes (a Caelo upgrade, an activated plugin) it sends `notifications/tools/list_changed`, so clients such as Claude Code pick up new tools without reconnecting. It re-checks every 5 minutes (`CAELO_MCP_CATALOGUE_REFRESH_MS`, `0` turns the timer off) and immediately when the agent calls a tool it does not know yet.
 
@@ -81,7 +83,7 @@ Mint a token with scope **`admin`** at `/settings/mcp`, then:
 claude mcp add caelo-admin \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=mcp_<32-bytes-hex> \
-  -- bunx --package @caelo-cms/mcp-server@<your Caelo version> caelo-admin-mcp
+  -- bunx --package @caelo-cms/mcp-server caelo-admin-mcp
 ```
 
 On connect the server sends MCP `instructions`, which Claude Code and other clients put into the agent's context: open a session with `caelo_open_session`, load `caelo_get_context`, then load the skills marked ALWAYS APPLIES. No extra prompt is needed.

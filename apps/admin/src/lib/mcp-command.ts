@@ -13,19 +13,18 @@
  * provisioner); the command then carries `CAELO_IAP_SERVICE_ACCOUNT` so the
  * shim can get through IAP (issue #37) without any manual configuration.
  *
- * The package is pinned to the admin's own release (#552): bunx caches an
- * unversioned package indefinitely, so an upgraded admin kept talking to
- * an old shim. After an upgrade the operator regenerates the command.
+ * The command carries no version (#764): the shim asks the admin for its
+ * release at startup and re-execs as exactly that one, so an upgraded
+ * admin never keeps talking to the shim bunx cached (#552) and the
+ * operator never has to regenerate the command.
  */
 export function claudeMcpAddCommand(args: {
   scope: string;
   adminUrl: string;
   token: string;
   iapServiceAccount: string | null;
-  /** The admin's release (CAELO_VERSION); mcp-server ships in lockstep. */
-  version: string;
 }): string {
-  const pkg = `@caelo-cms/mcp-server@${args.version}`;
+  const pkg = "@caelo-cms/mcp-server";
   const lines = [
     args.scope === "admin" ? "claude mcp add caelo-admin" : "claude mcp add caelo",
     `--env CAELO_ADMIN_URL=${args.adminUrl}`,
