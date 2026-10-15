@@ -2,9 +2,12 @@
 
 /**
  * Moving an existing install's API gateway off admin_role (issue #613),
- * as `cms-provision upgrade` does it. The env side — GATEWAY_DATABASE_URL
- * and the per-role password secrets in, ADMIN_DATABASE_* out — rides the
- * gateway's roll (stack-contract.ts). The database side is ordered around
+ * as `cms-provision upgrade` does it. The env side — the per-role password
+ * secrets in, ADMIN_DATABASE_* out (and, since #635, GATEWAY_DATABASE_* out
+ * too: the gateway has no cms_admin login at all) — rides the gateway's
+ * roll (stack-contract.ts). gateway_role keeps getting its password until
+ * the contract release drops the role, because the previous release's
+ * gateway logs in with it until it is rolled. The database side is ordered around
  * that roll so /api/* keeps working:
  *
  *   1. after migrations (which create `gateway_role` without a password):

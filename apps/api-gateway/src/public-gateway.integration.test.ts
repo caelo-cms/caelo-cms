@@ -35,6 +35,7 @@ import {
 import { STAGING_SESSION_COOKIE, signStagingToken } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
+import { databaseIsolationProblems } from "./database-env.js";
 import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
 import {
   GATEWAY_DATABASE_ROLES,
@@ -241,19 +242,20 @@ afterAll(async () => {
 });
 
 describe("the gateway's database identity (#613, #635)", () => {
-  it("refuses to start with any admin_role credential in the env", () => {
+  it("refuses to start with any cms_admin credential in the env", () => {
     for (const name of [
       "ADMIN_DATABASE_URL",
       "ADMIN_DATABASE_PASSWORD",
       "PUBLIC_ADMIN_DATABASE_URL",
       "PUBLIC_ADMIN_DATABASE_PASSWORD",
+      "GATEWAY_DATABASE_URL",
     ]) {
       expect(() =>
         gatewayDatabaseUrls({
           PUBLIC_DATABASE_URL: "postgres://public_role@h/cms_public",
           [name]: "x",
         }),
-      ).toThrow(new RegExp(`must not hold admin_role credentials.*${name}`));
+      ).toThrow(new RegExp(`must not hold any cms_admin credential[\\s\\S]*${name}`));
     }
   });
 
@@ -275,6 +277,22 @@ describe("the gateway's database identity (#613, #635)", () => {
         async () => "reached",
       ),
     ).rejects.toThrow(AdminDatabaseUnavailableError);
+  });
+
+  it("the boot-time isolation probe passes on the real login and fails on a bad grant", async () => {
+    expect(await databaseIsolationProblems(gatewayAdapter.rawPublic())).toEqual([]);
+    await asAdmin(async (tx) => {
+      await tx.unsafe("GRANT CONNECT ON DATABASE cms_admin TO public_role");
+    });
+    try {
+      expect(await databaseIsolationProblems(gatewayAdapter.rawPublic())).toEqual([
+        "public_role may CONNECT to cms_admin",
+      ]);
+    } finally {
+      await asAdmin(async (tx) => {
+        await tx.unsafe("REVOKE CONNECT ON DATABASE cms_admin FROM public_role");
+      });
+    }
   });
 
   it("its login is public_role, which cannot even connect to cms_admin", async () => {
@@ -359,8 +377,10 @@ describe("/api/* served from cms_public alone (#635)", () => {
     await publishProjectionOnce(adminAdapter, { declarations: new Map(), comments: false });
     try {
       const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
-      expect(r.status).toBe(500);
-      expect(await r.text()).toContain("ProjectionNotPublished");
+      await expectStatus(r, 503);
+      const body = (await r.json()) as { error: { kind: string; message: string } };
+      expect(body.error.kind).toBe("ProjectionNotPublished");
+      expect(body.error.message).toContain(`plugin:${pluginId}`);
       const left = await asPublicAdmin(
         async (tx) =>
           (await tx`SELECT 1 FROM published_plugin_rows WHERE plugin_id = ${pluginId}::uuid`) as unknown[],
@@ -369,6 +389,40 @@ describe("/api/* served from cms_public alone (#635)", () => {
     } finally {
       await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS, comments: false });
     }
+  });
+
+  it("an unpublished plugin registry is a 503, not 404 PluginNotFound (#635 review)", async () => {
+    // A gateway that starts before the admin published the registry knows
+    // no plugin at all; "no such plugin" would be a lie.
+    resetDispatchOnlyHost();
+    await asPublicAdmin(async (tx) => {
+      await tx`DELETE FROM published_projection_sections WHERE section = 'plugins'`;
+    });
+    try {
+      await bootstrapDispatchOnly({
+        infra: { adapter: gatewayAdapter, registry: new OperationRegistry() },
+        pluginsRoot: "/dev/null/unused",
+        systemActorId: SYSTEM_ACTOR_ID,
+        testPlugins: [{ definition: fixture }],
+      });
+      const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
+      await expectStatus(r, 503);
+      const body = (await r.json()) as { error: { kind: string; message: string } };
+      expect(body.error.kind).toBe("ProjectionNotPublished");
+      expect(body.error.message).toContain('"plugins"');
+    } finally {
+      await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS, comments: false });
+      resetDispatchOnlyHost();
+      const report = await bootstrapDispatchOnly({
+        infra: { adapter: gatewayAdapter, registry: new OperationRegistry() },
+        pluginsRoot: "/dev/null/unused",
+        systemActorId: SYSTEM_ACTOR_ID,
+        testPlugins: [{ definition: fixture }],
+      });
+      expect(report.loaded.map((p) => p.slug)).toEqual([SLUG]);
+    }
+    const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
+    await expectStatus(r, 200);
   });
 
   it("still 404s an operation the plugin did not expose", async () => {
@@ -506,6 +560,21 @@ describe("the public side cannot rewrite what the admin published (#635, adversa
       async (tx) => (await tx.execute(sql`SELECT * FROM published_plugin_rows`)) as unknown[],
     );
     expect(rows).toEqual([]);
+  });
+
+  it("cannot choose an op event's id or time: the watermark cannot be pushed past real events", async () => {
+    const forged = sql`INSERT INTO gateway_plugin_op_events (id, plugin_id, operation, input_hash, succeeded)
+      VALUES (9223372036854775807, ${pluginId}::uuid, 't635-gw.save', ${"a".repeat(64)}, true)`;
+    expect(await attempt(forged)).toMatch(/permission denied/);
+    const backdated = sql`INSERT INTO gateway_plugin_op_events (plugin_id, operation, input_hash, succeeded, created_at)
+      VALUES (${pluginId}::uuid, 't635-gw.save', ${"a".repeat(64)}, true, now() - interval '1 day')`;
+    expect(await attempt(backdated)).toMatch(/permission denied/);
+    expect(
+      await attempt(sql`SELECT setval('gateway_plugin_op_events_id_seq', 9000000000)`),
+    ).toMatch(/permission denied/);
+    const legit = sql`INSERT INTO gateway_plugin_op_events (plugin_id, operation, input_hash, succeeded)
+      VALUES (${pluginId}::uuid, 't635-gw.save', ${"a".repeat(64)}, true)`;
+    expect(await attempt(legit)).toBe("ok");
   });
 
   it("cannot read back its own request log or op events", async () => {

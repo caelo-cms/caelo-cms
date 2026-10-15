@@ -51,7 +51,12 @@ import {
   verifyDiskPlugin,
   verifyInMemoryPlugin,
 } from "./loader.js";
-import { readPublishedArtifact, readPublishedRegistry } from "./published-state.js";
+import {
+  ProjectionNotPublishedError,
+  readPublishedArtifact,
+  readPublishedRegistry,
+  setUnpublishedRegistry,
+} from "./published-state.js";
 
 /** How stale the gateway's view of the registry may get. Matches the gateway's settings TTL. */
 export const SYNC_TTL_MS = 5_000;
@@ -179,7 +184,11 @@ export async function syncDispatchPlugins(opts: { force?: boolean } = {}): Promi
     try {
       await reconcile(s.opts, s.verified, await readRegistry(s.opts));
       s.lastError = null;
+      setUnpublishedRegistry(null);
     } catch (e) {
+      // #635 — "the admin has not published the registry" is not a blip:
+      // until it is, every plugin request answers 503 ProjectionNotPublished.
+      if (e instanceof ProjectionNotPublishedError) setUnpublishedRegistry(e);
       s.lastError = (e as Error).message;
       console.error(`[plugin-host] gateway registry sync failed: ${s.lastError}`);
     } finally {

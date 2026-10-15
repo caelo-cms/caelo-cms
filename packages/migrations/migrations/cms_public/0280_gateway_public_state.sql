@@ -154,7 +154,7 @@ CREATE TABLE IF NOT EXISTS published_plugins (
 );
 
 CREATE TABLE IF NOT EXISTS published_plugin_grants (
-  id              uuid PRIMARY KEY,
+  id              bigint PRIMARY KEY,  -- plugin_capability_grants.id
   plugin_id       uuid NOT NULL,
   artifact_digest text NOT NULL,
   capability      text NOT NULL
@@ -244,12 +244,25 @@ CREATE POLICY gateway_plugin_op_events_admin ON gateway_plugin_op_events
   USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL)
   WITH CHECK (false);
 
-GRANT INSERT, DELETE ON gateway_request_log TO public_role;
+-- The append-only logs are granted INSERT on their payload columns only:
+-- `id` comes from the sequence and `created_at` from now(), never from the
+-- writer. The redeploy orchestrator keeps a watermark on
+-- gateway_plugin_op_events.id, so an id a writer could choose (say the
+-- bigint maximum) would stop every later rebuild hint. USAGE on a sequence
+-- allows nextval, not setval, so ids stay at or below its last value.
+GRANT DELETE ON gateway_request_log TO public_role;
+GRANT INSERT (plugin_slug, operation, visitor_id_hash, status_code, duration_ms, body_bytes,
+              was_rate_limited, was_honeypot_caught, captcha_passed, error_kind)
+  ON gateway_request_log TO public_role;
 GRANT USAGE ON SEQUENCE gateway_request_log_id_seq TO public_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON gateway_rate_limit_buckets TO public_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON gateway_pow_challenges TO public_role;
-GRANT INSERT, DELETE ON gateway_plugin_op_events TO public_role;
+GRANT DELETE ON gateway_plugin_op_events TO public_role;
+GRANT INSERT (plugin_id, operation, input_hash, succeeded, entity_id)
+  ON gateway_plugin_op_events TO public_role;
 GRANT USAGE ON SEQUENCE gateway_plugin_op_events_id_seq TO public_role;
+-- The orchestrator never moves its watermark past the sequence's last value.
+GRANT SELECT ON SEQUENCE gateway_plugin_op_events_id_seq TO admin_role;
 -- DELETE … WHERE created_at < … needs SELECT on the filtered column.
 GRANT SELECT (created_at) ON gateway_request_log, gateway_plugin_op_events TO public_role;
 

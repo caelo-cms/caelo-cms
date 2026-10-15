@@ -9,6 +9,11 @@
  * them itself, hourly, expired rows only — the cms_public RLS policies
  * (migration 0280) let public_role delete nothing younger than these
  * windows, whatever this code asks for.
+ *
+ * Fixed DELETE statements through the adapter's `withPublicTransaction`
+ * as the `system` actor, not Query API ops: housekeeping of the gateway's
+ * own expired rows takes no input and changes nothing anyone authored, so
+ * there is nothing to validate or attribute; RLS bounds it either way.
  */
 
 import type { DatabaseAdapter } from "@caelo-cms/query-api";

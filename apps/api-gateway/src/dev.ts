@@ -6,7 +6,7 @@
  *
  * The documented dev setup is one root `.env` (from `.env.example`) shared
  * by the admin and the gateway, and the admin needs its admin_role URLs in
- * it. The gateway refuses to boot while any admin_role credential is in its
+ * it. The gateway refuses to boot while any cms_admin credential is in its
  * environment (database-env.ts `gatewayDatabaseUrls`), so this launcher
  * starts it with the root `.env` minus those vars, and with Bun's own `.env`
  * loading off so nothing adds them back. The strict refusal itself stays
@@ -15,16 +15,17 @@
  */
 
 import { resolve } from "node:path";
-import { ADMIN_CREDENTIAL_ENV } from "./database-env.js";
+import { adminDatabaseAccessInEnv } from "./database-env.js";
 
 /**
- * `env` without the admin_role credentials (and without unset entries), for
- * the gateway's process.
+ * `env` without anything the gateway's guard refuses (every cms_admin
+ * credential, by name or by value) and without unset entries, for the
+ * gateway's process.
  */
 export function gatewayDevEnv(
   env: Readonly<Record<string, string | undefined>>,
 ): Record<string, string> {
-  const drop = new Set<string>(ADMIN_CREDENTIAL_ENV);
+  const drop = new Set(adminDatabaseAccessInEnv(env).map((l) => l.slice(0, l.indexOf(":"))));
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
     if (value !== undefined && !drop.has(name)) out[name] = value;

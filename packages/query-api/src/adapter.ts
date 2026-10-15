@@ -132,6 +132,7 @@ export class DatabaseAdapter {
   readonly #skipVerify: boolean;
   readonly #roles: { readonly admin: string | null; readonly public: readonly string[] };
   #verifyPromise: Promise<void> | null = null;
+  #projectionPublisher: (() => Promise<unknown>) | null = null;
 
   constructor(config: AdapterConfig) {
     this.#roles = config.expectedRoles ?? DEFAULT_ROLES;
@@ -159,6 +160,36 @@ export class DatabaseAdapter {
    */
   get hasAdminDatabase(): boolean {
     return this.#admin !== null;
+  }
+
+  /**
+   * Issue #635 — register the publisher of the gateway projection. After
+   * any cms_admin transaction of this adapter commits a change to
+   * published state (cms_admin 0281's triggers mark it with
+   * `caelo.projection_dirty`), the adapter runs `publish` and waits for it
+   * BEFORE the op or transaction returns. A revoked grant, a deactivated
+   * plugin, an unapproved comment, a rotated cookie secret or a closed
+   * staging gate is therefore live on the public side when the admin call
+   * returns — not whenever an interval timer next gets CPU (Cloud Run
+   * throttles CPU outside requests, and scales to zero). The publisher's
+   * own poll and the boot/migration publish remain as crash recovery.
+   */
+  setProjectionPublisher(publish: (() => Promise<unknown>) | null): void {
+    this.#projectionPublisher = publish;
+  }
+
+  /** Whether this transaction changed published state (see {@link setProjectionPublisher}). */
+  async #projectionDirty(tx: TransactionRunner): Promise<boolean> {
+    if (this.#projectionPublisher === null) return false;
+    const found = (await tx.execute(
+      sql`SELECT current_setting('caelo.projection_dirty', true) AS v`,
+    )) as unknown as { v: string | null }[];
+    return found[0]?.v === "on";
+  }
+
+  async #publishAfterCommit(): Promise<void> {
+    const publish = this.#projectionPublisher;
+    if (publish !== null) await publish();
   }
 
   #adminDb(what: string): BunSQLDatabase {
@@ -235,9 +266,11 @@ export class DatabaseAdapter {
     if (!this.#skipVerify) await this.verifyRoles();
 
     const db = op.database === "cms_admin" ? this.#adminDb(`operation ${op.name}`) : this.#public;
+    let publishAfterCommit = false;
 
+    let result: Result<O, QueryError>;
     try {
-      return await db.transaction(async (tx) => {
+      result = await db.transaction(async (tx) => {
         await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
         await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
         await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
@@ -261,7 +294,9 @@ export class DatabaseAdapter {
           if (denied !== null) return err(branchNotFound(op.name, denied));
         }
 
-        return await op.handler(ctx, validatedInput, tx);
+        const out = await op.handler(ctx, validatedInput, tx);
+        if (op.database === "cms_admin") publishAfterCommit = await this.#projectionDirty(tx);
+        return out;
       });
     } catch (thrown) {
       // Run #9 R8 — handler-requested abort: the throw already rolled the
@@ -290,6 +325,18 @@ export class DatabaseAdapter {
         ...(pgDetail ? { pgDetail } : {}),
       });
     }
+    if (publishAfterCommit) {
+      try {
+        await this.#publishAfterCommit();
+      } catch (thrown) {
+        return err({
+          kind: "HandlerError",
+          operation: op.name,
+          message: `The change is saved, but the public site does not serve it yet: publishing it failed (${thrown instanceof Error ? thrown.message : String(thrown)}). Do not repeat the change; it is published automatically within seconds once the public database answers.`,
+        });
+      }
+    }
+    return result;
   }
 
   async close(): Promise<void> {
@@ -313,7 +360,8 @@ export class DatabaseAdapter {
   ): Promise<T> {
     const admin = this.#adminDb("withAdminTransaction");
     if (!this.#skipVerify) await this.verifyRoles();
-    return await admin.transaction(async (tx) => {
+    let publishAfterCommit = false;
+    const out = await admin.transaction(async (tx) => {
       await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
       await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
       await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
@@ -326,8 +374,13 @@ export class DatabaseAdapter {
       if (denied !== null) {
         throw new OperationAbortError(branchNotFound("withAdminTransaction", denied));
       }
-      return await fn(tx);
+      const result = await fn(tx);
+      publishAfterCommit = await this.#projectionDirty(tx);
+      return result;
     });
+    // #635 — published state changed: live on the public side before returning.
+    if (publishAfterCommit) await this.#publishAfterCommit();
+    return out;
   }
 
   /**

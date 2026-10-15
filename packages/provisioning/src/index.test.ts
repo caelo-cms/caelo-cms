@@ -132,7 +132,7 @@ describe("docker-compose generator", () => {
     expect(out).toContain("CAELO_SECRET_KEK");
   });
 
-  it("gives the gateway gateway_role + public_role and no admin credential (#613)", () => {
+  it("gives the gateway public_role only and no cms_admin credential (#613, #635)", () => {
     const out = generateDockerCompose({
       domain: "example.com",
       postgresPassword: "supersecret",
@@ -145,13 +145,13 @@ describe("docker-compose generator", () => {
     });
     const gateway = out.slice(out.indexOf("caelo-gateway:"), out.indexOf("\nvolumes:"));
     expect(gateway).toContain(
-      'GATEWAY_DATABASE_URL: "postgres://gateway_role:gatewaypw@postgres:5432/cms_admin"',
-    );
-    expect(gateway).toContain(
       'PUBLIC_DATABASE_URL: "postgres://public_role:publicpw@postgres:5432/cms_public"',
     );
-    expect(gateway).not.toMatch(/ADMIN_DATABASE|admin_role|adminpw|supersecret|CAELO_SECRET_KEK/);
-    // bootstrap.sh creates the three roles from these.
+    expect(gateway).not.toMatch(
+      /ADMIN_DATABASE|GATEWAY_DATABASE|cms_admin|admin_role|gateway_role|adminpw|gatewaypw|supersecret|CAELO_SECRET_KEK/,
+    );
+    // bootstrap.sh still creates the three roles from these (gateway_role
+    // until the contract release drops it).
     expect(out).toContain('GATEWAY_ROLE_PASSWORD: "gatewaypw"');
   });
 
