@@ -8,9 +8,13 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   adminDatabaseAccessInEnv,
   gatewayDatabaseUrls,
+  nodeSecretFiles,
   type SecretFileReader,
 } from "./database-env.js";
 
@@ -155,6 +159,27 @@ describe("adminDatabaseAccessInEnv (#635)", () => {
       expect.stringContaining("/run/secrets/upstream: a secret file that holds a libpq"),
       expect.stringContaining("/var/run/secrets/creds: a secret file that names cms_admin"),
     ]);
+  });
+});
+
+describe("nodeSecretFiles (#635)", () => {
+  it("reads small regular files and nothing else", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caelo-secrets-"));
+    try {
+      writeFileSync(join(dir, "token"), "postgres://admin_role@db/cms_admin");
+      writeFileSync(join(dir, "huge"), "x".repeat(64 * 1024 + 1));
+      mkdirSync(join(dir, "sub"));
+      expect(nodeSecretFiles.list(dir).sort()).toEqual(
+        ["huge", "sub", "token"].map((n) => join(dir, n)),
+      );
+      expect(nodeSecretFiles.read(join(dir, "token"))).toBe("postgres://admin_role@db/cms_admin");
+      expect(nodeSecretFiles.read(join(dir, "huge"))).toBeNull();
+      expect(nodeSecretFiles.read(join(dir, "sub"))).toBeNull();
+      expect(nodeSecretFiles.read(join(dir, "missing"))).toBeNull();
+      expect(nodeSecretFiles.list(join(dir, "missing"))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -14,7 +14,7 @@
  * (`@caelo-cms/migrations/public-projection`).
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { databaseUrlFromEnv } from "@caelo-cms/shared";
 
@@ -117,38 +117,42 @@ const MAX_SECRET_FILE_BYTES = 64 * 1024;
 
 /** How the guard reads files (injected in tests). */
 export interface SecretFileReader {
-  /** Regular files directly in `dir` (full paths); empty when it does not exist. */
+  /** Entries directly in `dir` (full paths); empty when it does not exist. */
   list(dir: string): string[];
   /** The file's text, or null when it is missing, unreadable, too large or not a file. */
   read(path: string): string | null;
 }
 
-/** The real filesystem. */
+/**
+ * The real filesystem. A file is opened once and checked on that handle
+ * (`fstat`), never checked by path and then read again by path, so what is
+ * checked is what is read; `O_NONBLOCK` keeps a FIFO from blocking boot.
+ */
 export const nodeSecretFiles: SecretFileReader = {
   list(dir) {
-    let names: string[];
     try {
-      names = readdirSync(dir);
+      return readdirSync(dir).map((n) => join(dir, n));
     } catch {
       return [];
     }
-    return names
-      .map((n) => join(dir, n))
-      .filter((p) => {
-        try {
-          return statSync(p).isFile();
-        } catch {
-          return false;
-        }
-      });
   },
   read(path) {
+    let fd: number;
     try {
-      const st = statSync(path);
-      if (!st.isFile() || st.size > MAX_SECRET_FILE_BYTES) return null;
-      return readFileSync(path, "utf8");
+      fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
     } catch {
       return null;
+    }
+    try {
+      const st = fstatSync(fd);
+      if (!st.isFile() || st.size > MAX_SECRET_FILE_BYTES) return null;
+      const buf = Buffer.alloc(MAX_SECRET_FILE_BYTES + 1);
+      const n = readSync(fd, buf, 0, buf.length, 0);
+      return n > MAX_SECRET_FILE_BYTES ? null : buf.subarray(0, n).toString("utf8");
+    } catch {
+      return null;
+    } finally {
+      closeSync(fd);
     }
   },
 };
