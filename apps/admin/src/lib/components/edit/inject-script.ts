@@ -56,15 +56,18 @@ export const INJECT_SCRIPT = `
   }
 
   // --- edit-mode hover affordance ------------------------------------
+  // #2a64b8 is the admin's light --link token (Caelo blue, #778). It is a
+  // literal because this runs inside the operator's site document, where
+  // the admin's CSS variables do not exist; white on it clears AA (5.8:1).
   var STYLE_ID = "caelo-edit-style";
   if (!document.getElementById(STYLE_ID)) {
     var s = document.createElement("style");
     s.id = STYLE_ID;
     s.textContent =
       "body.caelo-edit-mode [data-caelo-module-id]{cursor:crosshair;}" +
-      "body.caelo-edit-mode [data-caelo-module-id]:hover{outline:2px solid #3b82f6;outline-offset:2px;position:relative;}" +
-      "body.caelo-edit-mode [data-caelo-module-id]:hover::after{content:'\\u270F\\uFE0F Edit';position:absolute;top:-1.4rem;left:0;background:#3b82f6;color:#fff;font:500 11px/1 system-ui;padding:2px 6px;border-radius:3px;pointer-events:none;z-index:2147483647;}" +
-      "body.caelo-edit-mode::before{content:'Edit mode — click any element to add it as a chip';position:fixed;top:0;left:0;right:0;background:#3b82f6;color:#fff;font:500 12px/1.4 system-ui;padding:6px 12px;text-align:center;z-index:2147483646;pointer-events:none;}";
+      "body.caelo-edit-mode [data-caelo-module-id]:hover{outline:2px solid #2a64b8;outline-offset:2px;position:relative;}" +
+      "body.caelo-edit-mode [data-caelo-module-id]:hover::after{content:'\\u270F\\uFE0F Edit';position:absolute;top:-1.4rem;left:0;background:#2a64b8;color:#fff;font:500 11px/1 system-ui;padding:2px 6px;border-radius:3px;pointer-events:none;z-index:2147483647;}" +
+      "body.caelo-edit-mode::before{content:'Edit mode — click any element to add it as a chip';position:fixed;top:0;left:0;right:0;background:#2a64b8;color:#fff;font:500 12px/1.4 system-ui;padding:6px 12px;text-align:center;z-index:2147483646;pointer-events:none;}";
     document.head.appendChild(s);
   }
 

@@ -443,7 +443,7 @@
         <ul class="space-y-1 text-xs">
           {#each pendingChanges.pending.pages as e (e.entityId)}
             <li class="flex items-center gap-2">
-              <span class="rounded bg-blue-500/10 px-1 py-0.5 font-mono text-[10px] text-blue-700"
+              <span class="rounded bg-link/10 px-1 py-0.5 font-mono text-[10px] text-link"
                 >page</span
               >
               <span class="truncate">{e.label}</span>
@@ -452,7 +452,7 @@
           {#each pendingChanges.pending.globals as e (e.entityId)}
             <li class="flex items-center gap-2">
               <span
-                class="rounded bg-purple-500/10 px-1 py-0.5 font-mono text-[10px] text-purple-700"
+                class="rounded bg-purple-500/10 px-1 py-0.5 font-mono text-[10px] text-purple-700 dark:text-purple-300"
                 >{e.kind}</span
               >
               <span class="truncate">{e.label}</span>
@@ -461,7 +461,7 @@
           {/each}
           {#each pendingChanges.pending.lists as e (e.entityId)}
             <li class="flex items-center gap-2">
-              <span class="rounded bg-emerald-500/10 px-1 py-0.5 font-mono text-[10px] text-emerald-700"
+              <span class="rounded bg-emerald-500/10 px-1 py-0.5 font-mono text-[10px] text-emerald-700 dark:text-emerald-300"
                 >list</span
               >
               <span class="truncate">{e.label}</span>

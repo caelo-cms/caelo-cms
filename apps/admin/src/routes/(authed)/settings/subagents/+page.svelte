@@ -39,7 +39,7 @@
         return "text-red-700 dark:text-red-400";
       case "running":
       case "pending":
-        return "text-blue-700 dark:text-blue-400";
+        return "text-link";
       default:
         return "text-muted-foreground";
     }
