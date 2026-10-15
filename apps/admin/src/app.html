@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex" />
     <link rel="icon" type="image/svg+xml" href="%sveltekit.assets%/favicon.svg" />
-    <link rel="apple-touch-icon" href="%sveltekit.assets%/apple-touch-icon.svg" />
+    <!-- PNG, not SVG: iOS Safari ignores vector touch icons. Rendered from
+         static/apple-touch-icon.svg by scripts/render-touch-icon.ts. -->
+    <link rel="apple-touch-icon" href="%sveltekit.assets%/apple-touch-icon.png" />
     <!--
       v0.2.55 — manifest.json link removed. IAP gates every admin path,
       so the PWA manifest fetch redirects to Google's OAuth endpoint, the
@@ -14,7 +16,7 @@
       message. The admin is an authoring tool behind IAP — installable-
       PWA never made sense here. Remove the link, kill the noise.
     -->
-    <meta name="theme-color" content="#0f172a" />
+    <meta name="theme-color" content="#0e1a2e" />
     <title>Caelo CMS Admin</title>
     %sveltekit.head%
   </head>
