@@ -280,7 +280,9 @@ export const issueOwnerResetOp = defineOperation({
   database: "cms_admin",
   input: z.object({
     email: z.string().email().max(254).optional(),
-    source: z.string().min(1).max(200),
+    // Who asked, for the audit row: the endpoint puts the CLI's self-asserted
+    // gcloud account (≤254 chars) in here next to the command name.
+    source: z.string().min(1).max(320),
   }),
   output: z.object({ email: z.string(), token: z.string(), expiresAt: z.string() }),
   handler: async (ctx, input, tx) => {

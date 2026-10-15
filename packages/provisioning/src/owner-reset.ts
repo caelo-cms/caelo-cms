@@ -11,6 +11,12 @@
  * audited) and hands it back over the admin-internal.ts channel; the CLI
  * prints the link once. It is never logged, so it does not land in the
  * project's Cloud Logging the way a "log the link" fallback would.
+ *
+ * The request carries the operator's gcloud account so the admin's audit row
+ * names who asked. That account is self-asserted (the admin sees the shared
+ * `caelo-mcp` identity and the shared internal secret), and labelled so; the
+ * authoritative record is Google's Data Access audit log for the IAM
+ * Credentials and Secret Manager calls this command makes as the operator.
  */
 
 import {
@@ -19,6 +25,7 @@ import {
   type AdminInternalTarget,
   callAdminInternal,
 } from "./admin-internal.js";
+import { gcloud as defaultGcloud } from "./gcloud.js";
 
 /** Token scope the admin endpoint checks (apps/admin …/api/internal/owner-reset). */
 export const OWNER_RESET_SCOPE = "auth.owner_reset";
@@ -40,12 +47,17 @@ export async function requestOwnerReset(
   request: { readonly email?: string },
   deps: AdminInternalDeps = {},
 ): Promise<AdminInternalResult<OwnerReset>> {
+  const account = await readGcloudAccount(deps.run ?? defaultGcloud);
+  if (!account.ok) return account;
   const r = await callAdminInternal<{ email: string; token: string; expiresAt: string }>(
     target,
     {
       endpoint: ENDPOINT,
       scope: OWNER_RESET_SCOPE,
-      body: request.email !== undefined ? { email: request.email } : {},
+      body: {
+        ...(request.email !== undefined ? { email: request.email } : {}),
+        requestedBy: account.value,
+      },
       introducedBy: "#769",
     },
     deps,
@@ -58,6 +70,24 @@ export async function requestOwnerReset(
   }
   const resetUrl = new URL(`/reset?token=${encodeURIComponent(token)}`, adminUrl).toString();
   return { ok: true, value: { email, resetUrl, expiresAt } };
+}
+
+/**
+ * The gcloud account this command runs as, for the admin's audit row. Without
+ * one there is nobody to name, and the IAP step after this would fail anyway.
+ */
+async function readGcloudAccount(
+  run: NonNullable<AdminInternalDeps["run"]>,
+): Promise<AdminInternalResult<string>> {
+  const r = await run(["config", "get-value", "account"]);
+  const account = r.stdout.trim();
+  if (!r.ok || !account || /\s/.test(account)) {
+    return {
+      ok: false,
+      error: `read the active gcloud account: ${r.stderr.trim() || "none is set"}. Run \`gcloud auth login\` with the account you provisioned with.`,
+    };
+  }
+  return { ok: true, value: account };
 }
 
 /** The lines the command prints. Pure — the CLI prints them and stores nothing. */
