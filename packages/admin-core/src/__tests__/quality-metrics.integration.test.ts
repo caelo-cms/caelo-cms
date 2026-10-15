@@ -14,7 +14,11 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import type { ToolContext } from "../ai/tools/dispatch.js";
-import { checkStageAuditTool, getQualityAuditTool } from "../ai/tools/quality-audit-tools.js";
+import {
+  AUDIT_FIX_LOOP_NEXT_STEP,
+  checkStageAuditTool,
+  getQualityAuditTool,
+} from "../ai/tools/quality-audit-tools.js";
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import type { PerformanceMetrics } from "../quality/lighthouse-metrics.js";
 import { registerAdminOps } from "../register.js";
@@ -42,6 +46,7 @@ let aboutId: string;
 let blogId: string;
 let moduleId: string;
 let firstRunId: string;
+let droppedRunId: string;
 
 async function withSql<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL as string);
@@ -347,6 +352,147 @@ describe("Lighthouse metrics per audited page", () => {
     expect(told.content).toContain(
       "- LCP 3.0 s (Largest Contentful Paint) — score 0.5, needs improvement",
     );
+    await op(SYS, "chat.discard_branch", { chatSessionId: s.chatSessionId });
+  });
+
+  it("quality_audits.get names each page's previous scores, and get_quality_audit points out a drop", async () => {
+    // An external agent read 92–97 and reported them instead of fixing: a
+    // drop against the page's previous audit is pointed out as the place to
+    // look first, and the result must end with the fix loop.
+    const dropped = await claimedRun(40, [aboutId]);
+    await op(SYS, "quality_audits.record_result", {
+      auditRunId: dropped,
+      baseUrl: "http://staging.test",
+      outcome: {
+        kind: "completed",
+        pages: [
+          {
+            ...lighthousePage(homeId, sampleMetrics()),
+            measurement: {
+              scores: { ...ALL_100, performance: 92 },
+              failingAudits: [],
+              metrics: sampleMetrics(),
+            },
+            performanceRuns: [92],
+          },
+          lighthousePage(aboutId, sampleMetrics()),
+        ],
+        pageErrors: [],
+        checks: NO_CHECKS,
+      },
+    });
+    const got = await op<{
+      pages: { pageId: string; previousScores: Record<string, number> | null }[];
+    }>(AI, "quality_audits.get", { auditRunId: dropped });
+    const previous = new Map(got.pages.map((p) => [p.pageId, p.previousScores]));
+    expect(previous.get(homeId)).toEqual(ALL_100);
+
+    const first = await op<{ pages: { pageId: string; previousScores: unknown }[] }>(
+      AI,
+      "quality_audits.get",
+      { auditRunId: firstRunId },
+    );
+    expect(first.pages.every((p) => p.previousScores === null)).toBe(true);
+
+    const r = await getQualityAuditTool.handler(AI, { auditRunId: dropped }, {
+      adapter,
+      registry,
+    } as ToolContext);
+    expect(r.content).toContain(
+      "DROPPED since this page's previous audit (100 → 92): check the changes since then first",
+    );
+    expect(r.content.endsWith(AUDIT_FIX_LOOP_NEXT_STEP)).toBe(true);
+    droppedRunId = dropped;
+  });
+
+  it("compares only with an earlier audit on the same branch lineage and, for Performance, the same CPU calibration", async () => {
+    // A chat's audit: the chat-less (main) audits before it measured other
+    // changes, so it has nothing to compare with.
+    const s = await op<{ chatSessionId: string }>(SYS, "chat.create_session", {
+      title: `${PFX}lineage`,
+    });
+    await op(SYS, "quality_audits.enqueue", {
+      deployRunId: await deployRun(50),
+      chatSessionId: s.chatSessionId,
+      branch: {
+        classification: {
+          auditNeeded: true,
+          reasons: [{ rule: "module_code", entityId: moduleId, label: "Hero CSS changed" }],
+          skipped: [],
+        },
+        touchedPageIds: [],
+      },
+      stagedBy: "live_edit_ai",
+    });
+    const chatRun = (
+      await op<{ run: { auditRunId: string } | null }>(SYS, "quality_audits.claim_next", {})
+    ).run?.auditRunId;
+    if (!chatRun) throw new Error("nothing to claim");
+    const homeAt = (scores: Record<string, number>) => ({
+      ...lighthousePage(homeId, sampleMetrics()),
+      measurement: { scores, failingAudits: [], metrics: sampleMetrics() },
+      performanceRuns: [scores.performance as number],
+    });
+    await op(SYS, "quality_audits.record_result", {
+      auditRunId: chatRun,
+      baseUrl: "http://staging.test",
+      outcome: {
+        kind: "completed",
+        pages: [homeAt({ ...ALL_100, performance: 70 })],
+        pageErrors: [],
+        checks: NO_CHECKS,
+      },
+    });
+    const previousOf = async (auditRunId: string) =>
+      new Map(
+        (
+          await op<{ pages: { pageId: string; previousScores: Record<string, number> | null }[] }>(
+            AI,
+            "quality_audits.get",
+            { auditRunId },
+          )
+        ).pages.map((p) => [p.pageId, p.previousScores]),
+      ).get(homeId);
+    expect(await previousOf(chatRun)).toBeNull();
+
+    // The next main audit compares with the previous MAIN audit (92), not
+    // with the chat's 70 recorded in between.
+    const mainRun = await claimedRun(60, []);
+    await op(SYS, "quality_audits.record_result", {
+      auditRunId: mainRun,
+      baseUrl: "http://staging.test",
+      outcome: {
+        kind: "completed",
+        pages: [homeAt({ ...ALL_100, performance: 88, accessibility: 99 })],
+        pageErrors: [],
+        checks: NO_CHECKS,
+      },
+    });
+    expect(await previousOf(mainRun)).toEqual({ ...ALL_100, performance: 92 });
+
+    // Performance measured at another CPU slowdown is another measurement:
+    // dropped from the comparison; the CPU-independent categories stay.
+    const calibrate = (auditRunId: string, multiplier: number) =>
+      withSql(
+        (tx) => tx`
+          UPDATE quality_audit_pages
+          SET metrics = jsonb_set(metrics, '{cpuCalibration}',
+                jsonb_build_object('benchmarkIndex', 1500, 'cpuSlowdownMultiplier', ${multiplier}::numeric))
+          WHERE audit_run_id = ${auditRunId}::uuid AND page_id = ${homeId}::uuid
+        `,
+      );
+    await calibrate(mainRun, 3.9);
+    const { performance: _uncalibrated, ...cpuIndependent } = ALL_100;
+    expect(await previousOf(mainRun)).toEqual(cpuIndependent);
+    await calibrate(droppedRunId, 3.9);
+    expect(await previousOf(mainRun)).toEqual({ ...ALL_100, performance: 92 });
+
+    const r = await getQualityAuditTool.handler(AI, { auditRunId: mainRun }, {
+      adapter,
+      registry,
+    } as ToolContext);
+    expect(r.content).toContain("DROPPED since this page's previous audit (92 → 88)");
+    expect(r.content).toContain("DROPPED since this page's previous audit (100 → 99)");
     await op(SYS, "chat.discard_branch", { chatSessionId: s.chatSessionId });
   });
 });

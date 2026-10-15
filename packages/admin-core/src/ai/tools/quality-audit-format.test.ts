@@ -2,7 +2,13 @@
 
 import { describe, expect, it } from "bun:test";
 import { sampleMetrics } from "../../quality/__tests__/fixtures/sample-metrics.js";
-import { formatPage } from "./quality-audit-tools.js";
+import { ACCEPTED_PERFORMANCE_TOLERANCE } from "../../quality/ratchet.js";
+import {
+  AUDIT_FIX_LOOP_NEXT_STEP,
+  formatAudit,
+  formatPage,
+  readUntilSettled,
+} from "./quality-audit-tools.js";
 
 type Page = Parameters<typeof formatPage>[0];
 
@@ -14,6 +20,7 @@ function page(problems: Page["problems"]): Page {
     url: "http://localhost:8081/",
     status: "problems",
     scores: { "best-practices": 96 },
+    previousScores: null,
     performanceRuns: [100],
     failingAudits: [],
     metrics: null,
@@ -140,5 +147,130 @@ describe("get_quality_audit Performance metrics", () => {
 
   it("omits the block for a page Lighthouse did not audit", () => {
     expect(formatPage(page([])).some((l) => l.startsWith("Performance metrics"))).toBe(false);
+  });
+
+  it("points out a score drop against the page's previous audit, without claiming its cause", () => {
+    const drop = {
+      kind: "score_below_baseline" as const,
+      category: "performance" as const,
+      score: 92,
+      baseline: 100,
+    };
+    const dropped = formatPage({ ...page([drop]), previousScores: { performance: 97 } }).join("\n");
+    expect(dropped).toContain(
+      "DROPPED since this page's previous audit (97 → 92): check the changes since then first",
+    );
+    expect(dropped).not.toContain("caused");
+    const better = formatPage({ ...page([drop]), previousScores: { performance: 90 } });
+    expect(better.join("\n")).not.toContain("DROPPED");
+    expect(formatPage(page([drop])).join("\n")).not.toContain("DROPPED");
+  });
+
+  it("holds a Performance drop within the documented noise tolerance back from the hint only", () => {
+    const at = (category: "performance" | "accessibility", score: number) => ({
+      kind: "score_below_baseline" as const,
+      category,
+      score,
+      baseline: 100,
+    });
+    const withinNoise = 100 - ACCEPTED_PERFORMANCE_TOLERANCE;
+    const noisy = formatPage({
+      ...page([at("performance", withinNoise)]),
+      previousScores: { performance: 100 },
+    }).join("\n");
+    expect(noisy).not.toContain("DROPPED");
+    // The score itself is still a problem: the tolerance never applies
+    // against the target.
+    expect(noisy).toContain(`PROBLEM Performance score ${withinNoise} is below the target 100`);
+    const beyond = formatPage({
+      ...page([at("performance", withinNoise - 1)]),
+      previousScores: { performance: 100 },
+    }).join("\n");
+    expect(beyond).toContain(`DROPPED since this page's previous audit (100 → ${withinNoise - 1})`);
+    // Accessibility is deterministic: one point is a drop.
+    const a11y = formatPage({
+      ...page([at("accessibility", 99)]),
+      previousScores: { accessibility: 100 },
+    }).join("\n");
+    expect(a11y).toContain("DROPPED since this page's previous audit (100 → 99)");
+  });
+});
+
+describe("get_quality_audit result", () => {
+  function auditValue(status: string, problemAccepted: boolean[]) {
+    return {
+      run: {
+        id: "r1",
+        deployRunId: "d1",
+        status,
+        problemCount: problemAccepted.length,
+        classification: { auditNeeded: false, reasons: [], skipped: [] },
+      },
+      pages: [{ ...page([]), problemAccepted, problems: [] }],
+      checks: null,
+      siteProblemAccepted: [],
+    };
+  }
+  it("ends with the fix-loop instruction while a problem is open", () => {
+    // An external agent read 92–97, reported the scores and stopped.
+    const v = auditValue("problems", [false]);
+    expect(formatAudit(v)).toContain(AUDIT_FIX_LOOP_NEXT_STEP);
+    expect(formatAudit(auditValue("problems", [true]))).not.toContain(AUDIT_FIX_LOOP_NEXT_STEP);
+    expect(formatAudit(auditValue("passed", []))).not.toContain(AUDIT_FIX_LOOP_NEXT_STEP);
+  });
+});
+
+describe("readUntilSettled", () => {
+  const settled = { ok: true, value: { run: { status: "problems" } } };
+  const running = { ok: true, value: { run: { status: "running" } } };
+
+  it("re-reads a running audit until it settles", async () => {
+    const reads = [running, running, settled];
+    let clock = 0;
+    const r = await readUntilSettled(async () => reads.shift() ?? settled, {
+      waitMs: 50_000,
+      intervalMs: 5_000,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      now: () => clock,
+    });
+    expect(r).toBe(settled);
+    expect(clock).toBe(10_000);
+  });
+
+  it("gives up at the deadline and returns the running read", async () => {
+    let clock = 0;
+    let reads = 0;
+    const r = await readUntilSettled(
+      async () => {
+        reads += 1;
+        return running;
+      },
+      {
+        waitMs: 12_000,
+        intervalMs: 5_000,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+        now: () => clock,
+      },
+    );
+    expect(r).toBe(running);
+    expect(reads).toBe(4);
+  });
+
+  it("stops waiting when the turn is stopped", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let reads = 0;
+    await readUntilSettled(
+      async () => {
+        reads += 1;
+        return running;
+      },
+      { waitMs: 50_000, intervalMs: 5_000, signal: controller.signal, sleep: async () => {} },
+    );
+    expect(reads).toBe(1);
   });
 });
