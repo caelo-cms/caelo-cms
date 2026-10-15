@@ -88,6 +88,15 @@ export const performanceMetricsSchema = z
           .strict(),
       )
       .max(5),
+    /** The host's benchmark index and the CPU slowdown calibrated to it
+     *  (cpu-calibration.ts). Absent on audits recorded before calibration. */
+    cpuCalibration: z
+      .object({
+        benchmarkIndex: z.number().int().min(0),
+        cpuSlowdownMultiplier: z.number().positive(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

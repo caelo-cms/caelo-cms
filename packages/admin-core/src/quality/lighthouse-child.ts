@@ -17,10 +17,20 @@
  * The browser is the shared bundled Chromium (`launchBundledChromium`,
  * #428), launched here with the DevTools port Lighthouse connects to on
  * 127.0.0.1. One browser per audit, closed before the process exits.
+ *
+ * Before the first page the child measures the host's benchmark index in
+ * that browser and calibrates Lighthouse's CPU slowdown to it
+ * (cpu-calibration.ts), so every run of the audit emulates the same target
+ * device instead of applying a fixed 4x to whatever CPU the admin got.
  */
 
 import { createServer } from "node:net";
 import { launchBundledChromium } from "@caelo-cms/site-importer";
+import {
+  type CpuCalibration,
+  calibrateCpuSlowdown,
+  medianBenchmarkIndex,
+} from "./cpu-calibration.js";
 import { type LhrLike, LighthouseRunError, measurementFromRuns } from "./lighthouse-extract.js";
 import { type AuditJob, auditJobSchema, type ChildEvent } from "./lighthouse-protocol.js";
 import { QUALITY_CATEGORIES } from "./ratchet.js";
@@ -59,6 +69,34 @@ async function loadLighthouse(): Promise<LighthouseFn> {
   return mod.default;
 }
 
+/** Benchmark samples per audit; each takes about one second. */
+const BENCHMARK_SAMPLES = 3;
+
+/**
+ * Lighthouse's own benchmark (`pageFunctions.computeBenchmarkIndex`), run in
+ * a blank page of the audit browser — the same measurement Lighthouse
+ * reports as "CPU/Memory Power", taken before any page is audited.
+ */
+async function measureCpu(
+  // biome-ignore lint/suspicious/noExplicitAny: opaque Playwright Browser handle (launchBundledChromium)
+  browser: any,
+): Promise<CpuCalibration> {
+  const specifier = "lighthouse/core/lib/page-functions.js";
+  const { pageFunctions } = (await import(/* @vite-ignore */ specifier)) as {
+    pageFunctions: { computeBenchmarkIndex: () => number };
+  };
+  const page = await browser.newPage();
+  try {
+    const samples: number[] = [];
+    for (let i = 0; i < BENCHMARK_SAMPLES; i += 1) {
+      samples.push((await page.evaluate(pageFunctions.computeBenchmarkIndex)) as number);
+    }
+    return calibrateCpuSlowdown(medianBenchmarkIndex(samples));
+  } finally {
+    await page.close();
+  }
+}
+
 async function readJob(): Promise<AuditJob> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
@@ -70,12 +108,15 @@ async function runLighthouse(
   url: string,
   port: number,
   categories: readonly string[],
+  cpuSlowdownMultiplier: number,
 ): Promise<LhrLike> {
   const result = await lighthouse(url, {
     port,
     output: "json",
     logLevel: "error",
     onlyCategories: [...categories],
+    // Overrides only the CPU part of the mobile default throttling.
+    throttling: { cpuSlowdownMultiplier },
   });
   if (!result)
     throw new LighthouseRunError("NO_RESULT", `Lighthouse returned no result for ${url}`);
@@ -92,12 +133,35 @@ async function main(): Promise<void> {
     return;
   }
   try {
+    const cpu = await measureCpu(launched.browser);
+    if (!cpu.ok) {
+      emit({ kind: "fatal", code: "host-too-slow", message: cpu.message });
+      return;
+    }
+    const cpuCalibration = {
+      benchmarkIndex: cpu.benchmarkIndex,
+      cpuSlowdownMultiplier: cpu.cpuSlowdownMultiplier,
+    };
     for (const page of job.pages) {
       try {
-        const full = await runLighthouse(lighthouse, page.url, port, QUALITY_CATEGORIES);
+        const full = await runLighthouse(
+          lighthouse,
+          page.url,
+          port,
+          QUALITY_CATEGORIES,
+          cpu.cpuSlowdownMultiplier,
+        );
         const extra: LhrLike[] = [];
         for (let i = 1; i < job.performanceRuns; i += 1) {
-          extra.push(await runLighthouse(lighthouse, page.url, port, ["performance"]));
+          extra.push(
+            await runLighthouse(
+              lighthouse,
+              page.url,
+              port,
+              ["performance"],
+              cpu.cpuSlowdownMultiplier,
+            ),
+          );
         }
         const { measurement, performanceRuns } = measurementFromRuns(full, extra);
         emit({
@@ -123,6 +187,7 @@ async function main(): Promise<void> {
                 ...l,
                 causes: [...l.causes],
               })),
+              cpuCalibration,
             },
           },
           performanceRuns,

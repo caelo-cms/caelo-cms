@@ -69,9 +69,16 @@ if (metrics.runs !== 3 || unmeasured.length > 0 || !metrics.lcpElement) {
   console.error("[lighthouse-smoke] expected every Performance metric over 3 runs", metrics);
   process.exit(1);
 }
+// The CPU calibration ran and was applied: a Lighthouse upgrade that moves
+// `pageFunctions.computeBenchmarkIndex` or ignores the throttling override
+// fails here instead of silently auditing with the fixed 4x again.
+if (!metrics.cpuCalibration || metrics.cpuCalibration.cpuSlowdownMultiplier <= 0) {
+  console.error("[lighthouse-smoke] expected a CPU calibration on the metrics", metrics);
+  process.exit(1);
+}
 const shown = metrics.metrics.map((m) => `${m.label}=${m.displayValue}`).join(" ");
 console.log(
-  `[lighthouse-smoke] metrics ${shown}; LCP element ${metrics.lcpElement.selector ?? metrics.lcpElement.label}`,
+  `[lighthouse-smoke] metrics ${shown}; LCP element ${metrics.lcpElement.selector ?? metrics.lcpElement.label}; CPU ${metrics.cpuCalibration.cpuSlowdownMultiplier}x at benchmark index ${metrics.cpuCalibration.benchmarkIndex}`,
 );
 console.log(
   `[lighthouse-smoke] OK in ${Date.now() - started} ms: scores=${JSON.stringify(page.measurement.scores)} performanceRuns=${JSON.stringify(page.performanceRuns)} findings=${findings.join(",")}`,
