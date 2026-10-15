@@ -69,9 +69,14 @@ if (metrics.runs !== 3 || unmeasured.length > 0 || !metrics.lcpElement) {
   console.error("[lighthouse-smoke] expected every Performance metric over 3 runs", metrics);
   process.exit(1);
 }
-// The CPU calibration ran and was applied: a Lighthouse upgrade that moves
-// `pageFunctions.computeBenchmarkIndex` or ignores the throttling override
-// fails here instead of silently auditing with the fixed 4x again.
+// The CPU calibration ran: a Lighthouse upgrade that moves
+// `pageFunctions.computeBenchmarkIndex` fails here. That it was APPLIED is
+// checked per run by the child itself (`assertCpuSlowdownApplied`: every
+// run's lhr.configSettings.throttling.cpuSlowdownMultiplier must equal the
+// calibrated multiplier, or the page errors with CPU_THROTTLING_NOT_APPLIED
+// and the page-error check above fails) — so a Lighthouse that ignores the
+// throttling override fails this smoke instead of silently auditing at the
+// fixed 4x again.
 if (!metrics.cpuCalibration || metrics.cpuCalibration.cpuSlowdownMultiplier <= 0) {
   console.error("[lighthouse-smoke] expected a CPU calibration on the metrics", metrics);
   process.exit(1);

@@ -133,8 +133,8 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
       content:
         `Staged ${v.mergedEntityCount} change(s) to staging (run ${v.runId}, ${v.pageCount} page(s)).${preview}${also}${links}${drafts} ` +
         (toolCtx.operatorBrowserAttached === true
-          ? "The quality check now runs on staging (1–2 minutes); its result appears in this chat, and when it finds problems the operator is asked whether you should fix them — do NOT poll get_quality_audit / get_publish_gate, finish your turn with your summary. "
-          : "The quality check now runs on staging (1–2 minutes); read it with get_quality_audit after a couple of minutes. ") +
+          ? "The quality check now runs on staging (2–4 minutes); its result appears in this chat, and when it finds problems the operator is asked whether you should fix them — do NOT poll get_quality_audit / get_publish_gate, finish your turn with your summary. "
+          : "The quality check now runs on staging (2–4 minutes); read it with get_quality_audit after a couple of minutes. ") +
         "Publish live is the operator's click (it never happens automatically after a Stage you made); do not say the change is live.",
       value: v,
     };

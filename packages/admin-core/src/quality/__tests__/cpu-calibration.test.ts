@@ -10,10 +10,12 @@
 import { describe, expect, it } from "bun:test";
 import { formatMetrics } from "../../ai/tools/quality-metrics-format.js";
 import {
+  assertCpuSlowdownApplied,
   calibrateCpuSlowdown,
   MIN_BENCHMARK_INDEX,
   medianBenchmarkIndex,
 } from "../cpu-calibration.js";
+import { LighthouseRunError } from "../lighthouse-extract.js";
 import { performanceMetricsFromRuns } from "../lighthouse-metrics.js";
 import { performanceMetricsSchema } from "../lighthouse-protocol.js";
 import { recordedRuns } from "./fixtures/sample-metrics.js";
@@ -56,6 +58,35 @@ describe("calibrateCpuSlowdown (Lighthouse CPU throttling calculator)", () => {
 
   it("refuses an unmeasurable benchmark instead of defaulting", () => {
     expect(calibrateCpuSlowdown(Number.NaN).ok).toBe(false);
+  });
+});
+
+describe("assertCpuSlowdownApplied", () => {
+  const lhrAt = (cpuSlowdownMultiplier?: number) => ({
+    requestedUrl: "http://staging.test/",
+    configSettings: { throttling: { cpuSlowdownMultiplier } },
+  });
+
+  it("passes a run Lighthouse throttled at the calibrated multiplier", () => {
+    expect(() => assertCpuSlowdownApplied(lhrAt(2.5), 2.5)).not.toThrow();
+  });
+
+  it("fails a run that fell back to Lighthouse's fixed 4x", () => {
+    let caught: unknown;
+    try {
+      assertCpuSlowdownApplied(lhrAt(4), 2.5);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(LighthouseRunError);
+    expect((caught as LighthouseRunError).code).toBe("CPU_THROTTLING_NOT_APPLIED");
+    expect((caught as LighthouseRunError).message).toContain(
+      "at CPU slowdown 4x instead of the calibrated 2.5x",
+    );
+  });
+
+  it("fails a run whose settings no longer report the multiplier", () => {
+    expect(() => assertCpuSlowdownApplied({}, 2.5)).toThrow(/unknown/);
   });
 });
 

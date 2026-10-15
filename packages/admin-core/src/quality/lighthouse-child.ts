@@ -27,6 +27,7 @@
 import { createServer } from "node:net";
 import { launchBundledChromium } from "@caelo-cms/site-importer";
 import {
+  assertCpuSlowdownApplied,
   type CpuCalibration,
   calibrateCpuSlowdown,
   medianBenchmarkIndex,
@@ -120,6 +121,7 @@ async function runLighthouse(
   });
   if (!result)
     throw new LighthouseRunError("NO_RESULT", `Lighthouse returned no result for ${url}`);
+  assertCpuSlowdownApplied(result.lhr, cpuSlowdownMultiplier);
   return result.lhr;
 }
 

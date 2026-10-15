@@ -82,7 +82,7 @@ Accessibility, Best Practices, SEO and the page checks are deterministic: no tol
 
 ## How it plays out in the chat
 
-1. You Stage — or the AI stages its finished work. A minute or two later the result appears in the same chat.
+1. You Stage — or the AI stages its finished work. A few minutes later the result appears in the same chat.
 2. If there are problems, the chat **asks you first**, with the findings **grouped by rule across pages**: *"Quality check found 2 kinds of issue on 312 pages: Missing meta description (312 pages); Performance score below 100 (3 pages)."* Nothing changes until you decide. This holds however the Stage happened — your **Stage** button, **Open changes**, the AI's own Stage, or an external agent's. You may have moved on while the check ran, and the AI may not have made every staged change.
    - **Fix all with AI** starts the fix of everything. The AI gets the findings by group, who staged the build, and a reminder that the build can contain changes from other chats or agents, so it checks the page before changing it. It is told the target is 100 and zero findings, fixes what it can — missing alt texts, low contrast, missing labels and headings, meta descriptions, image sizes, render-blocking CSS, layout shifts — and Stages again, which re-checks.
    - Per group you choose: **Fix all** (the AI fixes only that group), **Accept all…** (you accept the group on every page with a reason — it counts at once, Publish live opens as soon as nothing else blocks), or **Pick pages** (tick pages, then fix or accept just those).
