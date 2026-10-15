@@ -31,7 +31,6 @@ const required = [
   "POSTGRES_PORT",
   "ADMIN_DATABASE_URL",
   "PUBLIC_DATABASE_URL",
-  "GATEWAY_DATABASE_URL",
 ] as const;
 const missing = required.filter((name) => !env[name]);
 if (missing.length > 0) throw new Error(`${missing.join(", ")} required (see .env.example)`);
@@ -49,6 +48,14 @@ const onDatabase = (url: string, db: string) => {
   u.pathname = `/${db}`;
   return u.toString();
 };
+
+const migration0282 = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "migrations",
+  "cms_admin",
+  "0282_drop_gateway_role.sql",
+);
 
 const migration0278 = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -107,7 +114,7 @@ async function restoreBootstrapState(): Promise<void> {
   }
   await su.unsafe("REVOKE ALL ON DATABASE cms_admin FROM PUBLIC");
   await su.unsafe("REVOKE ALL ON DATABASE cms_public FROM PUBLIC");
-  await su.unsafe("GRANT CONNECT ON DATABASE cms_admin TO admin_role, gateway_role");
+  await su.unsafe("GRANT CONNECT ON DATABASE cms_admin TO admin_role");
   await su.unsafe("GRANT CONNECT ON DATABASE cms_public TO admin_role, public_role");
 }
 
@@ -174,7 +181,6 @@ describe("public_role isolation on a Cloud SQL-shaped database (#633)", () => {
     expect(await canConnect(publicOnAdmin)).toBe(false);
     // Nobody who uses a database lost it.
     expect(await canConnect(env.PUBLIC_DATABASE_URL as string)).toBe(true);
-    expect(await canConnect(env.GATEWAY_DATABASE_URL as string)).toBe(true);
     expect(await canConnect(env.ADMIN_DATABASE_URL as string)).toBe(true);
     expect(await canConnect(onDatabase(env.ADMIN_DATABASE_URL as string, "cms_public"))).toBe(true);
     const [pub] = (await su`
@@ -254,6 +260,34 @@ describe("the public side reaches no cms_admin object (#635)", () => {
       }
     } finally {
       await pub.end();
+    }
+  });
+});
+
+describe("the former gateway_role (#635)", () => {
+  it("a leftover gateway_role with CONNECT or grants fails the audit; 0282 strips it", async () => {
+    // What a database from before #635 holds (bootstrap.sh created the role
+    // as the superuser, the migrations granted it).
+    await su.unsafe("CREATE ROLE gateway_role NOINHERIT LOGIN");
+    try {
+      await su.unsafe("GRANT CONNECT ON DATABASE cms_admin TO gateway_role");
+      await su.unsafe("GRANT SELECT (gateway_cookie_secret) ON site_settings TO gateway_role");
+      const run = assertRoleIsolation(admin);
+      await expect(run).rejects.toThrow("gateway_role can connect to cms_admin");
+      await expect(run).rejects.toThrow(
+        "gateway_role holds a privilege on cms_admin column site_settings.gateway_cookie_secret",
+      );
+      // 0282 as the migration role, which may revoke but not drop a role
+      // the superuser created.
+      const body = await readFile(migration0282, "utf8");
+      await admin.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx.unsafe(body);
+      });
+      await expect(assertRoleIsolation(admin)).resolves.toBeDefined();
+    } finally {
+      await su.unsafe("DROP OWNED BY gateway_role");
+      await su.unsafe("DROP ROLE IF EXISTS gateway_role");
     }
   });
 });

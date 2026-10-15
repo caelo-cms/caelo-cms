@@ -21,10 +21,10 @@
  *     `cloudsqlsuperuser`: the Admin API makes that group the owner of
  *     cms_admin / cms_public (and so of their `public` schemas), and the
  *     migrations create roles and extensions. It is not audited.
- *   - `public_role`, `gateway_role` (the two logins the public gateway
- *     holds): no role membership at all, no SUPERUSER / BYPASSRLS /
- *     REPLICATION, and `public_role` must not be able to connect to
- *     cms_admin.
+ *   - `public_role` (the public gateway's only login) and the former
+ *     `gateway_role` (#635: gone, or left without any privilege where the
+ *     migration role could not drop it): no role membership at all, no
+ *     SUPERUSER / BYPASSRLS / REPLICATION, and no CONNECT on cms_admin.
  *   - `operator_access_reader`, `platform_updater` (NOLOGIN roles of the
  *     in-cloud jobs) and every login that is a member of them (the jobs'
  *     Cloud SQL IAM users, the self-hosted update agent): no membership in a
@@ -45,7 +45,7 @@
  * the roles it created).
  */
 
-/** Roles the public gateway logs in as. */
+/** The public gateway's login, and its former cms_admin login (gone since #635). */
 export const GATEWAY_LOGIN_ROLES = ["public_role", "gateway_role"] as const;
 
 /** NOLOGIN roles whose members are the in-cloud jobs' logins. */
@@ -181,8 +181,8 @@ export function evaluateRoleAudit(roles: readonly AuditedRole[]): RoleAuditResul
       if (role.memberOf.length > 0) {
         violations.push(`${name} is a member of ${role.memberOf.join(", ")} (it must be of none)`);
       }
-      if (name === "public_role" && role.canConnectHere) {
-        violations.push("public_role can connect to cms_admin");
+      if (role.canConnectHere) {
+        violations.push(`${name} can connect to cms_admin`);
       }
     } else {
       const privileged = role.memberOf.filter((g) => PRIVILEGED_GROUPS.includes(g));
@@ -206,15 +206,13 @@ export function evaluateRoleAudit(roles: readonly AuditedRole[]): RoleAuditResul
 /**
  * Issue #635 — every privilege on a cms_admin object granted to a role the
  * public side logs in as, or to PUBLIC on a table, sequence or schema (which
- * every login inherits — extension-owned objects aside). Run on cms_admin. Columns, tables, sequences,
- * schemas, functions and default privileges are all covered; the public
- * side must not be able to read or write a single authoring object.
- *
- * `gateway_role` is exempt until the contract release that drops it: the
- * previous release's gateway logs in with it while an upgrade rolls (it
- * is no service's login from this release on).
+ * every login inherits — extension-owned objects aside). Run on cms_admin.
+ * Columns, tables, sequences, schemas, functions and default privileges
+ * are all covered; the public side must not be able to read or write a
+ * single authoring object. `gateway_role` is the gateway's former cms_admin
+ * login (#635): wherever it still exists, it must hold nothing.
  */
-export const PUBLIC_SIDE_ROLES = ["public_role"] as const;
+export const PUBLIC_SIDE_ROLES = ["public_role", "gateway_role"] as const;
 
 export const CROSS_DATABASE_GRANTS_SQL = `
 WITH grantees AS (

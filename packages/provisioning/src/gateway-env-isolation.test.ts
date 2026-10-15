@@ -90,7 +90,7 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
     const out = generateDockerCompose({
       domain: "example.com",
       postgresPassword: "superpw",
-      rolePasswords: { admin: "adminpw", public: "publicpw", gateway: "gatewaypw" },
+      rolePasswords: { admin: "adminpw", public: "publicpw" },
       caeloSecretKek: "0".repeat(64),
       diskSize: "20Gi",
       images: {

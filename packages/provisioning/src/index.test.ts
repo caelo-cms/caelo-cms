@@ -115,7 +115,7 @@ describe("docker-compose generator", () => {
     const out = generateDockerCompose({
       domain: "example.com",
       postgresPassword: "supersecret",
-      rolePasswords: { admin: "adminpw", public: "publicpw", gateway: "gatewaypw" },
+      rolePasswords: { admin: "adminpw", public: "publicpw" },
       caeloSecretKek: "0".repeat(64),
       anthropicApiKey: "sk-ant-…",
       diskSize: "20Gi",
@@ -136,7 +136,7 @@ describe("docker-compose generator", () => {
     const out = generateDockerCompose({
       domain: "example.com",
       postgresPassword: "supersecret",
-      rolePasswords: { admin: "adminpw", public: "publicpw", gateway: "gatewaypw" },
+      rolePasswords: { admin: "adminpw", public: "publicpw" },
       caeloSecretKek: "0".repeat(64),
       diskSize: "20Gi",
       images: RELEASE_IMAGES,
@@ -150,16 +150,17 @@ describe("docker-compose generator", () => {
     expect(gateway).not.toMatch(
       /ADMIN_DATABASE|GATEWAY_DATABASE|cms_admin|admin_role|gateway_role|adminpw|gatewaypw|supersecret|CAELO_SECRET_KEK/,
     );
-    // bootstrap.sh still creates the three roles from these (gateway_role
-    // until the contract release drops it).
-    expect(out).toContain('GATEWAY_ROLE_PASSWORD: "gatewaypw"');
+    // bootstrap.sh creates the two application roles from these (#635: no
+    // gateway_role).
+    expect(out).toContain('PUBLIC_ROLE_PASSWORD: "publicpw"');
+    expect(out).not.toContain("GATEWAY_ROLE_PASSWORD");
   });
 
   it("escapes secrets containing quotes safely", () => {
     const out = generateDockerCompose({
       domain: "example.com",
       postgresPassword: 'pa"ss',
-      rolePasswords: { admin: "a", public: "b", gateway: "g" },
+      rolePasswords: { admin: "a", public: "b" },
       caeloSecretKek: "0".repeat(64),
       diskSize: "1Gi",
       images: RELEASE_IMAGES,

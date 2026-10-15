@@ -62,26 +62,19 @@ const tokenPath = resolve(caeloDir, "bootstrap", "pending-token.json");
 // is the operator's recovery path.
 const postgresPassword = pulumi.secret(randomHex(32));
 // #613 — one password per application role; the gateway gets only the
-// public_role and gateway_role ones.
+// public_role one (#635: no cms_admin login).
 const adminRolePassword = pulumi.secret(randomHex(32));
 const publicRolePassword = pulumi.secret(randomHex(32));
-const gatewayRolePassword = pulumi.secret(randomHex(32));
 // P18 — the KEK that encrypts stored provider keys.
 const caeloSecretKek = pulumi.secret(randomHex(32));
 
 const composeYaml = pulumi
-  .all([
-    postgresPassword,
-    adminRolePassword,
-    publicRolePassword,
-    gatewayRolePassword,
-    caeloSecretKek,
-  ])
-  .apply(([pgPw, adminPw, publicPw, gatewayPw, kek]) =>
+  .all([postgresPassword, adminRolePassword, publicRolePassword, caeloSecretKek])
+  .apply(([pgPw, adminPw, publicPw, kek]) =>
     generateDockerCompose({
       domain,
       postgresPassword: pgPw,
-      rolePasswords: { admin: adminPw, public: publicPw, gateway: gatewayPw },
+      rolePasswords: { admin: adminPw, public: publicPw },
       caeloSecretKek: kek,
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,
       resendApiKey: process.env.RESEND_API_KEY,

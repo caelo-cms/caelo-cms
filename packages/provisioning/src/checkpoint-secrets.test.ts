@@ -294,7 +294,6 @@ describe("rotationHints", () => {
       [
         { path: "a", kind: "credential-url", user: "admin_role" },
         { path: "b", kind: "credential-url", user: "public_role" },
-        { path: "c", kind: "credential-url", user: "gateway_role" },
         { path: "d", kind: "credential-url", user: "admin_role" },
       ],
       "gcp-acme",
@@ -302,7 +301,6 @@ describe("rotationHints", () => {
     expect(hints).toEqual([
       `admin_role's password was stored in progress.json. Rotate it: bunx @caelo-cms/provisioning@${CAELO_VERSION} rotate-secret postgres-password --install gcp-acme`,
       `public_role's password was stored in progress.json. Rotate it: bunx @caelo-cms/provisioning@${CAELO_VERSION} rotate-secret public-role-password --install gcp-acme`,
-      `gateway_role's password was stored in progress.json. Rotate it: bunx @caelo-cms/provisioning@${CAELO_VERSION} rotate-secret gateway-role-password --install gcp-acme`,
     ]);
   });
 
