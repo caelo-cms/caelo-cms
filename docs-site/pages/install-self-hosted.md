@@ -63,9 +63,10 @@ Run it from the directory that holds `.caelo/`. In order, it:
 1. resolves the target release's admin + gateway digests and **cosign-verifies** them — a failed check changes nothing;
 2. **backs up both databases** with `pg_dump` into `.caelo/backups/pre-upgrade-<timestamp>/` — if the backup fails, the upgrade does not start;
 3. writes the new digests into the Compose file and pulls the images;
-4. runs the database migrations **with the new admin image** while the current release keeps serving (Caelo migrations are expand-only, so the running release works on the new schema);
-5. restarts the admin, waits for `/_caelo/health`, then restarts the gateway and waits for its health check;
-6. records the new version in `.caelo/release.json`.
+4. runs the database migrations **with the new admin image** while the current release keeps serving (Caelo migrations are expand-only, so the running release works on the new schema). A release that needs an intermediate stop refuses here, before anything is applied, and says which release to install first;
+5. brings the database roles in line with `.caelo/config.json`, the same step `up` runs, which also removes roles a release retired;
+6. restarts the admin, waits for `/_caelo/health`, then restarts the gateway and waits for its health check;
+7. records the new version in `.caelo/release.json`.
 
 If a health check fails, the previous images are started again and checked, and `release.json` notes the rolled-back attempt. Re-running `upgrade` is safe: on an install that already runs the target release it only makes sure the containers match the Compose file and pass their health checks, and an interrupted run is simply repeated. The published site (`.caelo/output/`) and uploaded media (`.caelo/media/`) live on the host, so recreating the admin never loses them.
 
@@ -150,7 +151,9 @@ Backups are point-in-time snapshots, not continuous WAL archiving — run `backu
 
 **`Postgres is not running, so no backup can be taken`** — start it with `docker compose -f .caelo/docker-compose.yml up -d postgres` and re-run `upgrade`.
 
-**Upgrade failed at `migrate`** — the previous release is still running and the Compose file is unchanged. The error shows the failing migration; fix the cause (often disk space or a manually changed table) and re-run.
+**Upgrade failed at `migrate`** — the previous release is still running and the Compose file is unchanged. The error shows the failing migration; fix the cause (often disk space or a manually changed table) and re-run. If it says `migration run refused (release ordering)`, this release cannot be installed straight over yours. Nothing was applied. First upgrade to an earlier release that ships the migration the message names (usually the release just before this one, `upgrade --version <that version>`), then to this one.
+
+**Upgrade failed at `roles`** — the migrations are applied (they are expand-only), the previous release is still running and the Compose file is unchanged. The error is psql's; fix the cause and re-run `upgrade`.
 
 **Upgrade rolled back after a failed health check** — the previous release is running again. See why the new one failed with `docker compose -f .caelo/docker-compose.yml logs caelo-admin` (or `caelo-gateway`). If the output says `ROLLBACK FAILED`, the previous images did not come back healthy either: check `docker compose ps`, and restore the pre-upgrade backup if the database is the cause:
 

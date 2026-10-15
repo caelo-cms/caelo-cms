@@ -979,6 +979,7 @@ async function upgradeSelfHostedCommand(opts: {
       caeloDir: CAELO_DIR,
       runner: bunHostRunner,
       renderCompose: (images) => renderCompose(cfg, images),
+      convergeRoles: agentContext(cfg).convergeRoles,
       log: {
         step: (m) => console.log(`\n==> ${m}`),
         info: (m) => console.log(`    ${m}`),

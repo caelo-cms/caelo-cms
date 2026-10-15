@@ -1,5 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 -- caelo:contract revokes gateway_role's cms_admin login and grants and drops the gateway's legacy cms_admin tables; a gateway older than #635 (0280/0281) can no longer serve /api/*
+-- caelo:requires-earlier-run 0281_public_projection_outbox.sql
 --
 -- 0282 — the contract half of issue #635: the public side has no path to
 -- cms_admin (CLAUDE.md §2).
@@ -24,7 +25,9 @@
 --
 -- Contract: the release before #635 cannot run its gateway on this schema,
 -- so this ships one release after 0280/0281 (see RELEASING.md, contract
--- migrations).
+-- migrations). The runner enforces that: the header line below makes it
+-- refuse a run that would apply 0281 and this migration together on an
+-- existing install (run-order.ts).
 
 SET LOCAL caelo.actor_kind = 'system';
 
