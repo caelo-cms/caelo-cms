@@ -14,7 +14,11 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import type { ToolContext } from "../ai/tools/dispatch.js";
-import { checkStageAuditTool, getQualityAuditTool } from "../ai/tools/quality-audit-tools.js";
+import {
+  AUDIT_FIX_LOOP_NEXT_STEP,
+  checkStageAuditTool,
+  getQualityAuditTool,
+} from "../ai/tools/quality-audit-tools.js";
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import type { PerformanceMetrics } from "../quality/lighthouse-metrics.js";
 import { registerAdminOps } from "../register.js";
@@ -348,5 +352,52 @@ describe("Lighthouse metrics per audited page", () => {
       "- LCP 3.0 s (Largest Contentful Paint) — score 0.5, needs improvement",
     );
     await op(SYS, "chat.discard_branch", { chatSessionId: s.chatSessionId });
+  });
+
+  it("quality_audits.get names each page's previous scores, and get_quality_audit flags a drop as a regression", async () => {
+    // An external agent read 92–97 and reported them instead of fixing: a
+    // drop against the page's previous audit must read as caused by the
+    // Stage, and the result must end with the fix loop.
+    const dropped = await claimedRun(40, [aboutId]);
+    await op(SYS, "quality_audits.record_result", {
+      auditRunId: dropped,
+      baseUrl: "http://staging.test",
+      outcome: {
+        kind: "completed",
+        pages: [
+          {
+            ...lighthousePage(homeId, sampleMetrics()),
+            measurement: {
+              scores: { ...ALL_100, performance: 92 },
+              failingAudits: [],
+              metrics: sampleMetrics(),
+            },
+            performanceRuns: [92],
+          },
+          lighthousePage(aboutId, sampleMetrics()),
+        ],
+        pageErrors: [],
+        checks: NO_CHECKS,
+      },
+    });
+    const got = await op<{
+      pages: { pageId: string; previousScores: Record<string, number> | null }[];
+    }>(AI, "quality_audits.get", { auditRunId: dropped });
+    const previous = new Map(got.pages.map((p) => [p.pageId, p.previousScores]));
+    expect(previous.get(homeId)).toEqual(ALL_100);
+
+    const first = await op<{ pages: { pageId: string; previousScores: unknown }[] }>(
+      AI,
+      "quality_audits.get",
+      { auditRunId: firstRunId },
+    );
+    expect(first.pages.every((p) => p.previousScores === null)).toBe(true);
+
+    const r = await getQualityAuditTool.handler(AI, { auditRunId: dropped }, {
+      adapter,
+      registry,
+    } as ToolContext);
+    expect(r.content).toContain("WORSE than this page's previous audit (100 → 92)");
+    expect(r.content.endsWith(AUDIT_FIX_LOOP_NEXT_STEP)).toBe(true);
   });
 });

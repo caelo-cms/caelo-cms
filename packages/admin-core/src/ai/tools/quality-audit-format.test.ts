@@ -2,7 +2,12 @@
 
 import { describe, expect, it } from "bun:test";
 import { sampleMetrics } from "../../quality/__tests__/fixtures/sample-metrics.js";
-import { formatPage } from "./quality-audit-tools.js";
+import {
+  AUDIT_FIX_LOOP_NEXT_STEP,
+  formatAudit,
+  formatPage,
+  readUntilSettled,
+} from "./quality-audit-tools.js";
 
 type Page = Parameters<typeof formatPage>[0];
 
@@ -14,6 +19,7 @@ function page(problems: Page["problems"]): Page {
     url: "http://localhost:8081/",
     status: "problems",
     scores: { "best-practices": 96 },
+    previousScores: null,
     performanceRuns: [100],
     failingAudits: [],
     metrics: null,
@@ -140,5 +146,98 @@ describe("get_quality_audit Performance metrics", () => {
 
   it("omits the block for a page Lighthouse did not audit", () => {
     expect(formatPage(page([])).some((l) => l.startsWith("Performance metrics"))).toBe(false);
+  });
+
+  it("names a score drop against the page's previous audit as a regression", () => {
+    const drop = {
+      kind: "score_below_baseline" as const,
+      category: "performance" as const,
+      score: 92,
+      baseline: 100,
+    };
+    const worse = formatPage({ ...page([drop]), previousScores: { performance: 97 } });
+    expect(worse.join("\n")).toContain("WORSE than this page's previous audit (97 → 92)");
+    const better = formatPage({ ...page([drop]), previousScores: { performance: 90 } });
+    expect(better.join("\n")).not.toContain("WORSE");
+    expect(formatPage(page([drop])).join("\n")).not.toContain("WORSE");
+  });
+});
+
+describe("get_quality_audit result", () => {
+  function auditValue(status: string, problemAccepted: boolean[]) {
+    return {
+      run: {
+        id: "r1",
+        deployRunId: "d1",
+        status,
+        problemCount: problemAccepted.length,
+        classification: { auditNeeded: false, reasons: [], skipped: [] },
+      },
+      pages: [{ ...page([]), problemAccepted, problems: [] }],
+      checks: null,
+      siteProblemAccepted: [],
+    };
+  }
+  it("ends with the fix-loop instruction while a problem is open", () => {
+    // An external agent read 92–97, reported the scores and stopped.
+    const v = auditValue("problems", [false]);
+    expect(formatAudit(v)).toContain(AUDIT_FIX_LOOP_NEXT_STEP);
+    expect(formatAudit(auditValue("problems", [true]))).not.toContain(AUDIT_FIX_LOOP_NEXT_STEP);
+    expect(formatAudit(auditValue("passed", []))).not.toContain(AUDIT_FIX_LOOP_NEXT_STEP);
+  });
+});
+
+describe("readUntilSettled", () => {
+  const settled = { ok: true, value: { run: { status: "problems" } } };
+  const running = { ok: true, value: { run: { status: "running" } } };
+
+  it("re-reads a running audit until it settles", async () => {
+    const reads = [running, running, settled];
+    let clock = 0;
+    const r = await readUntilSettled(async () => reads.shift() ?? settled, {
+      waitMs: 50_000,
+      intervalMs: 5_000,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      now: () => clock,
+    });
+    expect(r).toBe(settled);
+    expect(clock).toBe(10_000);
+  });
+
+  it("gives up at the deadline and returns the running read", async () => {
+    let clock = 0;
+    let reads = 0;
+    const r = await readUntilSettled(
+      async () => {
+        reads += 1;
+        return running;
+      },
+      {
+        waitMs: 12_000,
+        intervalMs: 5_000,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+        now: () => clock,
+      },
+    );
+    expect(r).toBe(running);
+    expect(reads).toBe(4);
+  });
+
+  it("stops waiting when the turn is stopped", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let reads = 0;
+    await readUntilSettled(
+      async () => {
+        reads += 1;
+        return running;
+      },
+      { waitMs: 50_000, intervalMs: 5_000, signal: controller.signal, sleep: async () => {} },
+    );
+    expect(reads).toBe(1);
   });
 });
