@@ -128,8 +128,6 @@ export {
 export * from "./ops/users.js";
 export * from "./password.js";
 export * from "./permissions.js";
-export * from "./public-projection.js";
-export * from "./untrusted/public-data.js";
 // P21 ship 5 — release-check sidecar worker (replaces the in-handler
 // GitHub fetch; bootstrap from hooks.server.ts).
 // #696 Phase 5 — the auto-update scheduler (bootstrapped from hooks.server.ts).
@@ -147,6 +145,7 @@ export {
   type UpgraderResolver,
 } from "./platform-updates/scheduler.js";
 export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
+export * from "./public-projection.js";
 // #553 — quality-audit worker (Lighthouse after a substantial Stage).
 export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit-worker.js";
 export * from "./rate-limit.js";
@@ -190,3 +189,4 @@ export {
   stageChatSessions,
 } from "./stage/stage-chats.js";
 export * from "./tokens.js";
+export * from "./untrusted/public-data.js";
