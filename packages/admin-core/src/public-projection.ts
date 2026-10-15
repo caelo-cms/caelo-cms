@@ -11,10 +11,16 @@
  *   - {@link PublicProjectionPublisher.publishAll} after the plugin host
  *     booted — every section, so a release that adds a projected column or
  *     plugin converges as soon as the admin runs;
- *   - a drain of `public_projection_outbox` every {@link DRAIN_INTERVAL_MS},
- *     so any committed authoring write that changes published state reaches
- *     the gateway within seconds (the gateway then hears a NOTIFY on
- *     cms_public and drops its caches).
+ *   - a drain right after every write of this process that changed
+ *     published state, before that write's op returns (registered with
+ *     `DatabaseAdapter.setProjectionPublisher`): a security-relevant change
+ *     is live on the public side when the admin call returns, even on a
+ *     host that throttles CPU between requests;
+ *   - a drain of `public_projection_outbox` every {@link DRAIN_INTERVAL_MS}
+ *     as the backstop: writes from elsewhere (another process, a
+ *     migration) and publishes that failed still converge within seconds.
+ *
+ * The gateway hears a NOTIFY on cms_public and drops its caches.
  *
  * Declarations come from the plugins this admin actually loaded (their
  * verified definitions), never from a manifest in the database.
@@ -125,8 +131,14 @@ export function startPublicProjectionPublisher(opts: {
         return report;
       }),
     drain: () => serial(() => drainPublicProjection(dbs, declarations())),
-    stop: () => clearInterval(timer),
+    stop: () => {
+      clearInterval(timer);
+      opts.adapter.setProjectionPublisher(null);
+    },
   };
+  // The drain is queued behind any publish already running, so it starts
+  // after the caller's commit and therefore sees that commit's outbox rows.
+  opts.adapter.setProjectionPublisher(() => publisher.drain());
   const timer = setInterval(() => {
     publisher.drain().catch((e: unknown) => {
       console.error(

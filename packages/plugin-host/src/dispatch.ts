@@ -29,7 +29,12 @@ import { z } from "zod";
 import { type ExternalApproval, operatorHasPermission } from "./external-authorization.js";
 import { previewContext } from "./preview-context.js";
 import type { PluginRowLocker } from "./private-storage.js";
-import { emitPublicPluginOpEvent, isPublicSideHost } from "./published-state.js";
+import {
+  emitPublicPluginOpEvent,
+  isProjectionNotPublished,
+  isPublicSideHost,
+  unpublishedRegistryError,
+} from "./published-state.js";
 import { consumeExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
@@ -345,7 +350,10 @@ export type RunPluginOperationResult =
           | "PluginDisabled"
           | "OperationNotDeclared"
           | "OperationNotPublic"
-          | "OperationFailed";
+          | "OperationFailed"
+          // #635 — the admin has not published what this call needs into
+          // cms_public yet: a loud 503, never an empty or "not found" answer.
+          | "ProjectionNotPublished";
         readonly message: string;
       };
     };
@@ -419,6 +427,10 @@ export async function runPluginOperation(
     return { ok: false, error: { kind: "OperationFailed", message: "Invalid preview context" } };
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) {
+    const unpublished = unpublishedRegistryError();
+    if (unpublished) {
+      return { ok: false, error: { kind: "ProjectionNotPublished", message: unpublished.message } };
+    }
     return {
       ok: false,
       error: {
@@ -552,6 +564,12 @@ export async function runPluginOperation(
       invocation: opts.invocation,
     });
   } catch (e) {
+    if (isProjectionNotPublished(e)) {
+      return {
+        ok: false,
+        error: { kind: "ProjectionNotPublished", message: (e as Error).message },
+      };
+    }
     return {
       ok: false,
       error: {
@@ -595,6 +613,12 @@ export async function runPluginOperation(
     }
     return { ok: true, value };
   } catch (e) {
+    if (isProjectionNotPublished(e)) {
+      return {
+        ok: false,
+        error: { kind: "ProjectionNotPublished", message: (e as Error).message },
+      };
+    }
     return {
       ok: false,
       error: {

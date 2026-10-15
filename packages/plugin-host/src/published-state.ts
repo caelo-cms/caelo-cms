@@ -23,6 +23,13 @@
  * A section the admin has not published yet is a loud
  * {@link ProjectionNotPublishedError}, never an empty answer: "no plugin is
  * active" and "nobody told us yet" must not look alike.
+ *
+ * These reads (and the op-event insert) are fixed SQL run through the
+ * adapter's `withPublicTransaction` as the `system` actor rather than
+ * Query API ops: the gateway has no op registry for cms_public state, the
+ * statements take no identifier from a caller, and RLS on every table
+ * (cms_public 0280) still bounds what public_role can see or write. A
+ * visitor call is audited by the op event this module writes.
  */
 
 import { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
@@ -36,11 +43,40 @@ import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
 /** A projection section the admin has not published yet (fresh install, upgrade in flight). */
 export class ProjectionNotPublishedError extends Error {
   override readonly name = "ProjectionNotPublishedError";
-  constructor(section: string) {
+  constructor(readonly section: string) {
     super(
       `ProjectionNotPublished: the admin has not published "${section}" into cms_public yet — run the database migrations (they publish it) or start the admin`,
     );
   }
+}
+
+/**
+ * Whether `e` says a section is not published. A runtime-authored plugin
+ * runs in a sandbox subprocess, so its error may come back as a message
+ * only; the message prefix is part of the contract.
+ */
+export function isProjectionNotPublished(e: unknown): boolean {
+  return (
+    e instanceof ProjectionNotPublishedError ||
+    (e instanceof Error && /\bProjectionNotPublished: /.test(e.message))
+  );
+}
+
+let unpublishedRegistry: ProjectionNotPublishedError | null = null;
+
+/**
+ * Record the outcome of the gateway's last registry read: the error when
+ * the admin has not published the `plugins` section, else null. Until it
+ * is published the gateway cannot know which plugins exist, so a request
+ * for any plugin is "not published" (503), never "no such plugin" (404).
+ */
+export function setUnpublishedRegistry(e: ProjectionNotPublishedError | null): void {
+  unpublishedRegistry = e;
+}
+
+/** The pending "not published" error of the registry, if any (see {@link setUnpublishedRegistry}). */
+export function unpublishedRegistryError(): ProjectionNotPublishedError | null {
+  return unpublishedRegistry;
 }
 
 /** Whether this host runs on the public side (no cms_admin pool). */

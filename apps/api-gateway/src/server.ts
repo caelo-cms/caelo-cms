@@ -721,7 +721,7 @@ export async function handleRequest(req: Request): Promise<Response> {
     const status =
       result.error.kind === "PluginNotFound"
         ? 404
-        : result.error.kind === "PluginDisabled"
+        : result.error.kind === "PluginDisabled" || result.error.kind === "ProjectionNotPublished"
           ? 503
           : result.error.kind === "OperationNotDeclared"
             ? 400

@@ -37,11 +37,12 @@ The admin **publishes** exactly that into `cms_public`. Data flows one way, admi
 Where each piece lives:
 
 - **What crosses** is declared in `packages/migrations/src/public-projection.ts`, column by column. For plugins, it is the plugin's `visitorProjection` (plugin SDK). Widening the projection is a reviewed change to one of those two places.
-- **Freshness.** Triggers in `cms_admin` migration 0281 record every committed write to a source table in `public_projection_outbox`, in the same transaction as the write. The admin drains the outbox every 2 seconds and republishes those sections (admin-core `startPublicProjectionPublisher`). Two more paths publish everything:
-  - the migration job, after migrating `cms_public`, so a freshly rolled gateway finds its data;
-  - the admin, when it boots.
+- **Freshness.** Triggers in `cms_admin` migration 0281 record every committed write to a source table in `public_projection_outbox`, in the same transaction as the write, and flag that transaction (`caelo.projection_dirty`).
+  - **Before the admin call returns.** When a transaction of the admin's `DatabaseAdapter` (an op, or a worker's `withAdminTransaction`) commits with that flag, the adapter publishes the stale sections and waits for it before returning. A revoked grant, a deactivated plugin, an unapproved comment, a rotated cookie secret or a closed staging gate is live on the public side when the admin call returns. If that publish fails, the op reports "saved, but not live yet" instead of success.
+  - **Backstop.** The admin also drains the outbox every 2 seconds (admin-core `startPublicProjectionPublisher`), for writes from anywhere else and for publishes that failed. Two more paths publish everything: the migration job, after migrating `cms_public`, so a freshly rolled gateway finds its data; and the admin, when it boots.
+  - **Exactly what was read.** A drain deletes the outbox rows it read, by id, never a range: ids are taken at insert but become visible at commit, so a lower id can commit while a drain runs. Such a row stays for the next drain.
 - **Notification.** After each publish the admin sends `NOTIFY caelo_gateway_settings` on `cms_public`, and the gateway drops its caches.
-- **Not published yet is loud.** A section that was never published makes the gateway answer `503`. It never serves an empty answer, so "nothing is active" and "nobody told us" cannot look the same.
+- **Not published yet is loud.** A section that was never published makes the gateway answer `503` with `ProjectionNotPublished`. That holds for the plugin registry too: while it is unpublished, a request for any plugin is a 503, not a 404 `PluginNotFound`. The gateway never serves an empty answer, so "nothing is active" and "nobody told us" cannot look the same.
 
 On the gateway side, `ctx.adminQuery` is a **read-only** handle over the plugin's published projection (plugin-host `published-state.ts`). A table or column outside the declaration is unreachable, and every write throws.
 
@@ -54,7 +55,9 @@ The gateway writes these tables (all in `cms_public`, migration 0280):
 - `gateway_pow_challenges`
 - `gateway_plugin_op_events`
 
-The gateway garbage-collects them itself. Every column is bounded by a `CHECK`. `public_role` can insert log and event rows but cannot read them back.
+The gateway garbage-collects them itself. Every column is bounded by a `CHECK`. `public_role` can insert log and event rows but cannot read them back, and it may insert only their payload columns: `id` comes from the sequence and `created_at` from `now()`.
+
+The redeploy orchestrator keeps a watermark on `gateway_plugin_op_events.id`. It never moves past the sequence's last value, so no row can push it beyond events still to come. It moves only through a contiguous run of ids, because ids commit out of order; a gap closes once the row after it is 30 seconds old.
 
 Plugin op records from visitor calls go to `gateway_plugin_op_events`. They never go to `audit_events`: the public side must not be able to forge entries in the admin's audit trail.
 
