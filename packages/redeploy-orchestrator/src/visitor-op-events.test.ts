@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { parseVisitorOpEvents } from "./index.js";
+import { lastEventId, parseVisitorOpEvents } from "./index.js";
 
 const UUID = "11111111-2222-4333-8444-555555555555";
 
@@ -24,5 +24,15 @@ describe("parseVisitorOpEvents (#635)", () => {
     ]);
     expect(rows.map((r) => r.id)).toEqual(["1", "2"]);
     expect(dropped).toBe(6);
+  });
+});
+
+describe("lastEventId (#635)", () => {
+  it("is the batch's highest id, malformed rows included, so garbage cannot pin the watermark", () => {
+    expect(lastEventId([{ id: "7" }, { id: "12", operation: "<garbage>" }, { id: "9" }])).toBe(
+      "12",
+    );
+    expect(lastEventId([{ id: "x" }, null, "row"])).toBeNull();
+    expect(lastEventId([])).toBeNull();
   });
 });
