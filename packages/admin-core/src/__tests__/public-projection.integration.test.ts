@@ -294,3 +294,43 @@ describe("publishing before the admin call returns (#635 review)", () => {
     }
   });
 });
+
+describe("the plugins section (#635 review)", () => {
+  const SYSTEM_ID = "00000000-0000-0000-0000-00000000ffff";
+  const DIGEST = "c".repeat(64);
+
+  it("publishes capability receipts (bigint ids) of the active artifact", async () => {
+    const pluginId = await admin(async (tx) => {
+      await tx`SELECT set_config('caelo.actor_id', ${SYSTEM_ID}, true)`;
+      const [plugin] = (await tx`
+        INSERT INTO plugins (slug, version, tier, status, manifest_json, source_code, submitted_by)
+        VALUES (${`${P}-grants`}, '1.0.0', 2, 'active', '{}'::jsonb, '', ${SYSTEM_ID}::uuid)
+        RETURNING id::text AS id`) as { id: string }[];
+      const id = plugin?.id ?? "";
+      await tx`
+        INSERT INTO plugin_installation_versions
+          (plugin_id, artifact_digest, manifest_json, source_code, origin, submitted_by)
+        VALUES (${id}::uuid, ${DIGEST}, '{}'::jsonb, '', 'runtime-authored', ${SYSTEM_ID}::uuid)`;
+      await tx`UPDATE plugin_installation_versions SET status = 'active'
+               WHERE plugin_id = ${id}::uuid`;
+      await tx`
+        INSERT INTO plugin_capability_grants (plugin_id, artifact_digest, capability, approved_by)
+        VALUES (${id}::uuid, ${DIGEST}, 'chat_runner_tools', ${SYSTEM_ID}::uuid)`;
+      return id;
+    });
+    try {
+      await publishProjectionOnce(adapter, { declarations: new Map(), comments: false });
+      const grants = (await pub(
+        async (tx) =>
+          await tx`SELECT capability FROM published_plugin_grants
+                               WHERE plugin_id = ${pluginId}::uuid`,
+      )) as { capability: string }[];
+      expect(grants).toEqual([{ capability: "chat_runner_tools" }]);
+    } finally {
+      await admin(async (tx) => {
+        await tx`DELETE FROM plugins WHERE id = ${pluginId}::uuid`;
+      });
+      await publishProjectionOnce(adapter, { declarations: new Map(), comments: false });
+    }
+  });
+});

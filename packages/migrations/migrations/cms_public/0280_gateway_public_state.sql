@@ -154,7 +154,7 @@ CREATE TABLE IF NOT EXISTS published_plugins (
 );
 
 CREATE TABLE IF NOT EXISTS published_plugin_grants (
-  id              uuid PRIMARY KEY,
+  id              bigint PRIMARY KEY,  -- plugin_capability_grants.id
   plugin_id       uuid NOT NULL,
   artifact_digest text NOT NULL,
   capability      text NOT NULL

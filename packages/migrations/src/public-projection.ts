@@ -413,7 +413,7 @@ async function writeSnapshot(
       tx,
       "published_plugin_grants",
       "id, plugin_id, artifact_digest, capability",
-      "id uuid, plugin_id uuid, artifact_digest text, capability text",
+      "id bigint, plugin_id uuid, artifact_digest text, capability text",
       snap.plugins.grants,
     );
     sections.push("plugins");
