@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.51
+
+### Features
+- e5a979a3 public → admin data is untrusted — boundary audit and fixes (#635, 3/4) (#768)
+- 02fdf744 no cms_admin login in any adapter + guardrails (#635, 2/4) (#767)
+- 03ea174d serve /api/* from cms_public only — published projection (#635, 1/4) (#766)
+- df200ddd the shim pins itself to the admin's release (#764) (#765)
+- 7d56284a recover a locked-out Owner without email — cms-provision owner-reset + honest /forgot (#769) (#774)
+
+### Fixes
+- 30f61e37 owner-reset hardening follow-ups (#769) (#784)
+- e1306edb audits survive long finding lists; agents fix problems instead of reporting them (#771)
+- 0ade6b87 an accepted quality finding never reappears on the card; typecheck the e2e suites (#788)
+- 4a281c3b calibrate Lighthouse's CPU slowdown to the audit host (#773)
+- f968d247 quality-gate accept loop no longer hangs when the gate opens mid-loop (#783)
+
 ## v0.10.50
 
 ### Features
