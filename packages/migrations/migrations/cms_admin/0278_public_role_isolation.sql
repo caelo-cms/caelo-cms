@@ -39,6 +39,7 @@ BEGIN
   -- uses a database ever loses CONNECT in between.
   FOREACH r IN ARRAY ARRAY['admin_role', 'gateway_role', 'operator_access_reader', 'platform_updater'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+      -- caelo:dynamic-grantee r iterates the literal array above: cms_admin's own roles, never public_role.
       EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), r);
     END IF;
   END LOOP;
@@ -47,6 +48,7 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_database WHERE datname = 'cms_public') THEN
     FOREACH r IN ARRAY ARRAY['admin_role', 'public_role', 'operator_access_reader', 'platform_updater'] LOOP
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+        -- caelo:dynamic-grantee r iterates the literal array above; CONNECT on cms_public, not cms_admin.
         EXECUTE format('GRANT CONNECT ON DATABASE cms_public TO %I', r);
       END IF;
     END LOOP;

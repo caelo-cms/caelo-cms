@@ -18,8 +18,12 @@
 --
 -- A write that commits always leaves its outbox row, whoever made it (an
 -- op, a branch publish, a revert, a migration, the previous release's
--- admin during an upgrade), and a rolled-back one leaves none. The admin
--- polls the outbox; delivery does not depend on any listener being up.
+-- admin during an upgrade), and a rolled-back one leaves none. A write made
+-- through the admin's DatabaseAdapter is published right after it commits,
+-- before the request returns (the trigger flags the transaction with
+-- `caelo.projection_dirty`). The admin also polls the outbox, so a write
+-- from anywhere else, or a publish that failed, still converges; delivery
+-- does not depend on any listener being up.
 --
 -- Sections and their sources:
 --   settings     site_settings (the four gateway columns)
@@ -73,6 +77,10 @@ BEGIN
     entity := CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END;
   END IF;
   INSERT INTO public_projection_outbox (section, entity_id) VALUES (TG_ARGV[0], entity);
+  -- Tells the writing process (query-api DatabaseAdapter) to publish right
+  -- after its commit, before its request returns. Transaction-local: a
+  -- rollback clears it together with the outbox row.
+  PERFORM set_config('caelo.projection_dirty', 'on', true);
   RETURN NULL;
 END
 $fn$;

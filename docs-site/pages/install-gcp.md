@@ -363,11 +363,21 @@ The health check reaches the IAP-protected admin the way MCP clients do: it sign
 
 **Several installs on one machine.** `upgrade`, `status`, `backup`, `rotate-secret`, `truncate` and `destroy` never guess which install you mean. With more than one install under `~/.caelo-*`, they ask in the terminal which one to act on; `upgrade`, `status` and `backup` also offer "All installs", which runs them one after another and stops at the first that fails. In scripts, name the install with `--install <install-id or domain>`, for example `bunx @caelo-cms/provisioning@0.10.44 upgrade --version 0.10.44 --install example.com`, or `--install all`.
 
+#### Rolling back to an earlier release
+
+`upgrade` rolls back on its own only while it runs (step 8): both services go back to the revisions that served before, and the cloud setup they need is still in place, because `upgrade` removes what a release retired only at the very end. Going back to an earlier release **after** an upgrade finished is a separate run of the earlier release's CLI, from your terminal or Cloud Shell:
+
+```bash
+bunx @caelo-cms/provisioning@<earlier-version> upgrade --version <earlier-version> --install caelo.example.com
+```
+
+Moving traffic to an old revision in the Cloud Console is not enough when the release you leave changed the cloud setup (its infrastructure version is higher, as `install.json` `infraContractVersion` shows): the old revision may need an IAM binding or a secret that the newer release removed. The earlier release's CLI puts back that release's service env and IAM bindings. In-product updates cannot do this: they never install an older release, and the upgrader may not change IAM. The database migrations stay applied. The earlier release runs on them unless the release you leave has contract migrations, which its release notes say; going back across one means restoring the backup `upgrade` printed.
+
 #### The gateway has no login to the authoring database
 
 The public API gateway is the only part of Caelo a visitor reaches, so it is built to be harmless even if an attacker takes it over: it has **no login to `cms_admin`** at all. It connects to `cms_public` only, as `public_role`, with its own password in Secret Manager (`public-role-password`), and its service account can read no other database password.
 
-Its own state (request log, rate limits, captcha challenges, the record of visitor plugin calls) lives in `cms_public`. What it needs from your site's settings (its cookie key and body limit, the staging gate, rate-limit overrides, which plugins are active, the parts of a plugin's settings visitors need, approved comments) the admin **publishes** into `cms_public`: the migrations publish it, and the admin keeps it current within seconds of every change. The gateway refuses to start if its environment offers any way into `cms_admin`, and the admin treats everything it reads back from `cms_public` as untrusted.
+Its own state (request log, rate limits, captcha challenges, the record of visitor plugin calls) lives in `cms_public`. What it needs from your site's settings (its cookie key and body limit, the staging gate, rate-limit overrides, which plugins are active, the parts of a plugin's settings visitors need, approved comments) the admin **publishes** into `cms_public`: the migrations publish it, and the admin keeps it current within seconds of every change. The gateway refuses to start if its environment offers any database access besides its own `cms_public` login, and the admin treats everything it reads back from `cms_public` as untrusted.
 
 An install from before this change converges on its first `upgrade`, without anything for you to do:
 
@@ -376,6 +386,8 @@ An install from before this change converges on its first `upgrade`, without any
 - after both services rolled, the gateway's service account loses its access to the admin's and to `gateway_role`'s password.
 
 The release after that removes the former `gateway_role` login from the database (migration 0282 revokes everything it held and drops it). In-product updates wait for one `upgrade` from your terminal to apply this.
+
+**Rolling back to the release before this change** after the upgrade finished needs that release's CLI ([Rolling back](#rolling-back-to-an-earlier-release)): its gateway connects to `cms_admin` as `gateway_role`, so it needs `GATEWAY_DATABASE_URL` and `GATEWAY_DATABASE_PASSWORD` back in the gateway's env and the gateway service account's access to the `gateway-role-password` secret, which this release removed. `bunx @caelo-cms/provisioning@<earlier-version> upgrade --version <earlier-version>` restores both. Do not roll back by moving Cloud Run traffic alone: the old gateway revision would fail to start without the secret binding.
 
 #### `public_role` holds no superuser-group rights
 

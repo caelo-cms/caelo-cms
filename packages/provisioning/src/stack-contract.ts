@@ -318,7 +318,7 @@ export function serviceSecrets(service: CloudRunSlug): RuntimeSecret[] {
  * upgrade removes them. The gateway never used the KEK, and its run SA
  * cannot read it. Its admin_role pool went with #613 and its gateway_role
  * pool with #635 — the gateway refuses to boot while any cms_admin
- * credential is in its env (apps/api-gateway `assertNoAdminDatabaseAccess`).
+ * credential is in its env (apps/api-gateway `adminDatabaseAccessInEnv`).
  */
 export const RETIRED_SERVICE_ENV: Readonly<Record<CloudRunSlug, readonly string[]>> = {
   admin: [],

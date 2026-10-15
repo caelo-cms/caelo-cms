@@ -387,6 +387,19 @@ not, the cut is refused. When the change is infra-neutral (a comment, a
 refactor, a log line), re-cut with `ack_infra_neutral`
 (`--ack-infra-neutral`) instead. The number never goes down.
 
+**Rollback across a bump.** The automatic rollback inside `upgrade` keeps
+working, because retired bindings and env are removed only after both
+services run the new release. A rollback *after* the upgrade finished is
+not: the older release's revisions may need IAM bindings, secrets or env
+the newer one removed, and the in-cloud upgrader can neither change IAM
+nor install an older release. Operators roll back by running the older
+release's CLI (`bunx @caelo-cms/provisioning@<old> upgrade --version
+<old>`), which re-applies that release's env contract and bindings. A
+release that bumps the number says so in its release notes (PR body) and
+names what the older release needs back; the install docs
+(`docs-site/pages/install-gcp.md`, "Rolling back to an earlier release")
+carry the procedure.
+
 `minFromVersion` comes from `RELEASE_MIN_FROM_VERSION` in `release-contract.ts`;
 raise it when a release needs an intermediate stop.
 

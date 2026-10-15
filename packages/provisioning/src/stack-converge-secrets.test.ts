@@ -38,7 +38,7 @@ const SECRET_VALUES: Record<string, string> = {
   "caelo-production-gateway-role-password": "g".repeat(64),
 };
 
-/** Env vars that would hand the gateway a cms_admin credential (apps/api-gateway ADMIN_CREDENTIAL_ENV). */
+/** Env vars that would hand the gateway a cms_admin credential (a subset of what apps/api-gateway adminDatabaseAccessInEnv refuses). */
 const ADMIN_CREDENTIAL_ENV = [
   "ADMIN_DATABASE_URL",
   "ADMIN_DATABASE_PASSWORD",
