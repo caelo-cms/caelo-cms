@@ -159,7 +159,7 @@ describe("main.json ruleset — CodeQL required status check", () => {
 
 describe("license allow-list lockstep", () => {
   // The MPL-compatible set (CLAUDE.md §3) lives in two places: the
-  // dependency-review workflow gates PR-introduced deps, and `license:check`
+  // dependency-review workflow gates PR-introduced deps, and `license:check:deps`
   // gates the installed tree. They must stay identical, or one gate quietly
   // permits what the other forbids. This test fails the moment they diverge.
   function dependencyReviewAllowList(): Set<string> {
@@ -177,10 +177,10 @@ describe("license allow-list lockstep", () => {
     const pkg = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8")) as {
       scripts: Record<string, string>;
     };
-    const script = pkg.scripts["license:check"];
-    if (!script) throw new Error("package.json has no license:check script");
+    const script = pkg.scripts["license:check:deps"];
+    if (!script) throw new Error("package.json has no license:check:deps script");
     const m = script.match(/--onlyAllow\s+'([^']+)'/);
-    if (!m) throw new Error("license:check has no --onlyAllow '...' argument");
+    if (!m) throw new Error("license:check:deps has no --onlyAllow '...' argument");
     return new Set(
       m[1]!
         .split(";")
@@ -189,7 +189,7 @@ describe("license allow-list lockstep", () => {
     );
   }
 
-  it("dependency-review allow-licenses equals package.json license:check --onlyAllow", () => {
+  it("dependency-review allow-licenses equals package.json license:check:deps --onlyAllow", () => {
     expect([...dependencyReviewAllowList()].sort()).toEqual([...licenseCheckAllowList()].sort());
   });
 });
