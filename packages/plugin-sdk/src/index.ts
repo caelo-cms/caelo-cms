@@ -144,6 +144,11 @@ export const pluginToolSpec = z.object({
    *  bypass where plugin tools skipped the approvals surface entirely
    *  (#388). The tool's description must state the two-step contract. */
   approvalMode: z.literal("user-approval").optional(),
+  /** #635 — arguments the approval card shows IN FULL instead of cut to
+   *  one line, because the approver approves their exact text (e.g. the
+   *  body of an email that is sent as approved). Only meaningful with
+   *  `approvalMode`; bound each one in `inputJsonSchema` (`maxLength`). */
+  approvalPreviewFullArgs: z.array(z.string().min(1).max(64)).max(8).optional(),
   /** The permission the HUMAN a chat call acts for must hold — for the
    *  direct call, or for the approver of an approval-gated one. Use the
    *  permission the plugin's own owner panel requires, so the chat is not

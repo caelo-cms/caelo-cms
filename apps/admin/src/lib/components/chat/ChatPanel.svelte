@@ -2613,7 +2613,9 @@
                       >{EXTERNAL_AGENT_LABEL}</span
                     >
                   {/if}
-                  <pre class="mb-2 whitespace-pre-wrap font-sans text-[11px]">{a.preview ||
+                  <pre
+                    class="mb-2 max-h-96 overflow-y-auto whitespace-pre-wrap break-words font-sans text-[11px]"
+                    data-testid="chat-approval-preview">{a.preview ||
                       a.name}</pre>
                   {#if missing.length > 0}
                     <p

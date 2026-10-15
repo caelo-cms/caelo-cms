@@ -32,18 +32,49 @@ const TOOL_LABELS: Record<string, string> = {
     "Replace the staging crawler credentials — every crawler using the old one is locked out; this cannot be undone",
 };
 
-/** Compact, readable rendering of a tool call for the Approve/Reject card. */
-export function buildApprovalPreview(name: string, args: unknown): string {
+/** Longest preview the card stores (`chat.record_turn_approvals`). */
+export const MAX_APPROVAL_PREVIEW_LENGTH = 120_000;
+
+/**
+ * Compact, readable rendering of a tool call for the Approve/Reject card.
+ * `fullArgs` (#635) are shown whole, after the one-line args, because the
+ * approver approves their exact text; everything else is cut to one line.
+ * A preview that would not fit the card is refused rather than cut, since a
+ * cut "full" argument would no longer be what gets approved.
+ */
+export function buildApprovalPreview(
+  name: string,
+  args: unknown,
+  fullArgs: readonly string[] = [],
+): string {
   const label = TOOL_LABELS[name] ?? name.replace(/^propose_/, "").replace(/_/g, " ");
-  const argLines = renderArgs(args);
-  return argLines.length > 0 ? `${label}\n${argLines}` : label;
+  const full = new Set(fullArgs);
+  const argLines = renderArgs(args, full);
+  const fullBlocks = renderFullArgs(args, full);
+  const preview = [label, argLines, fullBlocks].filter((part) => part.length > 0).join("\n");
+  if (preview.length > MAX_APPROVAL_PREVIEW_LENGTH) {
+    throw new Error(
+      `${name}: the approval card would be ${preview.length} characters (limit ${MAX_APPROVAL_PREVIEW_LENGTH}) — shorten the arguments`,
+    );
+  }
+  return preview;
 }
 
 /** One indented `key: value` line per top-level arg, values truncated. */
-function renderArgs(args: unknown): string {
+function renderArgs(args: unknown, full: ReadonlySet<string>): string {
   if (!args || typeof args !== "object") return "";
   return Object.entries(args as Record<string, unknown>)
+    .filter(([k]) => !full.has(k))
     .map(([k, v]) => `  ${k}: ${truncate(stringify(v))}`)
+    .join("\n");
+}
+
+/** Each full arg as a `key:` header followed by its whole text. */
+function renderFullArgs(args: unknown, full: ReadonlySet<string>): string {
+  if (!args || typeof args !== "object" || full.size === 0) return "";
+  return Object.entries(args as Record<string, unknown>)
+    .filter(([k]) => full.has(k))
+    .map(([k, v]) => `--- ${k} (exactly as approved) ---\n${stringify(v)}`)
     .join("\n");
 }
 

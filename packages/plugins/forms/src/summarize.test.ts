@@ -51,8 +51,9 @@ const run = (ctx: PluginContextTier1, args: unknown) => {
   return op(ctx, args);
 };
 
+// #635 — the visitor-written sample is fenced as data.
 const expectedUser =
-  'Summarise these 2 submissions:\n- [new] {"message":"Pricing?"}\n- [read] {"message":"HELLO"}';
+  'Summarise these 2 submissions:\n<visitor-submissions>\n- [new] {"message":"Pricing?"}\n- [read] {"message":"HELLO"}\n</visitor-submissions>';
 
 describe("summarize", () => {
   it("returns a work item without apply on a delegated call, never touching ctx.ai", async () => {

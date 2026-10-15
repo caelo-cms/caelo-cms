@@ -54,6 +54,11 @@ async function wipe(): Promise<void> {
         await tx`DELETE FROM audit_events WHERE actor_id IN (
           SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${s})
         )`;
+        // #635 — newsletter's send approval is a main-line private-storage
+        // write, which records a snapshot under the plugin's actor.
+        await tx`DELETE FROM site_snapshots WHERE actor_id IN (
+          SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${s})
+        )`;
         await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${s})`;
         await tx`DELETE FROM plugin_schema_migrations WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${s})`;
         await tx`DELETE FROM plugins WHERE slug = ${s}`;
@@ -113,6 +118,25 @@ async function pluginScopedQuery<T>(slug: string, fragment: ReturnType<typeof sq
     await tx.execute(sql.raw(`SELECT set_config('caelo.plugin_id', '${id}', true)`));
     return (await tx.execute(fragment)) as unknown as T[];
   });
+}
+
+/** As {@link pluginScopedQuery}, on the plugin's private storage in cms_admin. */
+async function pluginScopedAdminQuery<T>(
+  slug: string,
+  fragment: ReturnType<typeof sql>,
+): Promise<T[]> {
+  return adapter.withAdminTransaction(
+    { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "p12-private" },
+    async (tx) => {
+      const ids = (await tx.execute(
+        sql`SELECT id::text AS id FROM plugins WHERE slug = ${slug}`,
+      )) as unknown as { id: string }[];
+      const id = ids[0]?.id;
+      if (!id) throw new Error(`pluginScopedAdminQuery: no plugin row for ${slug}`);
+      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${id}, true)`);
+      return (await tx.execute(fragment)) as unknown as T[];
+    },
+  );
 }
 
 async function bootstrapAll(): Promise<void> {
@@ -265,11 +289,12 @@ describe("Newsletter plugin", () => {
     expect(campaignId).toBeDefined();
     if (!campaignId) return;
 
+    const approved = await approvalFor(campaignId);
     const send = await runPluginOperation({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "newsletter",
       operationName: "send_campaign",
-      args: { campaignId },
+      args: approved,
     });
     expect(send.ok).toBe(true);
     if (!send.ok) return;
@@ -297,23 +322,96 @@ describe("Newsletter plugin", () => {
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const v = listed.value as {
-      campaigns: Array<{ id: string; status: string; body_html?: string }>;
+      campaigns: Array<{
+        id: string;
+        status: string;
+        body_html?: string;
+        approvedSend: { status: string; recipientCount: number } | null;
+      }>;
       subscriberCount: number;
     };
     expect(v.subscriberCount).toBe(1);
-    expect(v.campaigns.find((c) => c.id === campaignId)?.status).toBe("queued");
+    const listedCampaign = v.campaigns.find((c) => c.id === campaignId);
+    expect(listedCampaign?.status).toBe("sent");
+    expect(listedCampaign?.approvedSend).toMatchObject({ status: "done", recipientCount: 1 });
     expect(v.campaigns[0]?.body_html).toBeUndefined();
 
-    // Only a draft is sendable: a second send would email everyone again.
+    // An approval is used once: a second send would email everyone again.
     const resend = await runPluginOperation({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "newsletter",
       operationName: "send_campaign",
-      args: { campaignId },
+      args: approved,
     });
     expect(resend.ok).toBe(false);
     if (resend.ok) return;
     expect(resend.error.message).toContain("not 'draft'");
+  });
+
+  it("drain sends the approved snapshot, not the public draft rewritten after approval (#635)", async () => {
+    await bootstrapAll();
+    // A confirmed subscriber and a draft, written as the public side could.
+    await pluginScopedQuery<unknown>(
+      "newsletter",
+      sql`INSERT INTO plugin_newsletter.subscribers (email, email_hash, confirm_token, unsub_token, confirmed_at)
+          VALUES ('bob@example.com', 'h', 'c', 'u', now())`,
+    );
+    await pluginScopedQuery<unknown>(
+      "newsletter",
+      sql`INSERT INTO plugin_newsletter.campaigns (slug, subject, body_html, status) VALUES ('camp-635', 'Hello', '<p>hi</p>', 'draft')`,
+    );
+    const camp = await pluginScopedQuery<{ id: string }>(
+      "newsletter",
+      sql`SELECT id::text AS id FROM plugin_newsletter.campaigns WHERE slug = 'camp-635'`,
+    );
+    const campaignId = camp[0]?.id as string;
+    const send = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "newsletter",
+      operationName: "send_campaign",
+      args: await approvalFor(campaignId),
+    });
+    if (!send.ok) throw new Error(JSON.stringify(send.error));
+    // A compromised public side rewrites the campaign and forges a
+    // subscriber plus queue rows for it.
+    await pluginScopedQuery<unknown>(
+      "newsletter",
+      sql`UPDATE plugin_newsletter.campaigns SET body_html = '<a href="https://evil.example">verify your account</a>' WHERE slug = 'camp-635'`,
+    );
+    await pluginScopedQuery<unknown>(
+      "newsletter",
+      sql`INSERT INTO plugin_newsletter.subscribers (email, email_hash, confirm_token, unsub_token, confirmed_at)
+          VALUES ('victim@example.com', 'h2', 'c2', 'u2', now())`,
+    );
+    await pluginScopedQuery<unknown>(
+      "newsletter",
+      sql`INSERT INTO plugin_newsletter.sends (campaign_id, subscriber_id, status)
+          SELECT ${campaignId}, id::text, 'pending' FROM plugin_newsletter.subscribers WHERE email = 'victim@example.com'`,
+    );
+    const drain = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "newsletter",
+      operationName: "_drain_sends",
+      args: {},
+    });
+    if (!drain.ok) throw new Error(JSON.stringify(drain.error));
+    expect(drain.value).toMatchObject({ sent: 1, attempted: 1, quarantined: 1 });
+    const sends = await pluginScopedQuery<{ status: string; subscriber: string; run: boolean }>(
+      "newsletter",
+      sql`SELECT s.status, sub.email AS subscriber, s.run_id IS NOT NULL AS run
+          FROM plugin_newsletter.sends s JOIN plugin_newsletter.subscribers sub ON sub.id::text = s.subscriber_id
+          WHERE s.campaign_id = ${campaignId} ORDER BY sub.email`,
+    );
+    expect(sends).toEqual([
+      { status: "sent", subscriber: "bob@example.com", run: true },
+      { status: "failed", subscriber: "victim@example.com", run: false },
+    ]);
+    // The approved content lives in private storage, out of the public side's reach.
+    const runs = await pluginScopedAdminQuery<{ body_html: string; status: string }>(
+      "newsletter",
+      sql`SELECT body_html, status FROM plugin_newsletter.send_runs WHERE campaign_id = ${campaignId}`,
+    );
+    expect(runs).toEqual([{ body_html: "<p>hi</p>", status: "done" }]);
   });
 
   it("send_campaign refuses a malformed campaignId before any write", async () => {
@@ -327,6 +425,19 @@ describe("Newsletter plugin", () => {
     expect(r.ok).toBe(false);
   });
 });
+
+/** The approval as get_newsletter_campaign hands it to the AI (#635). */
+async function approvalFor(campaignId: string): Promise<Record<string, unknown>> {
+  const got = await runPluginOperation({
+    invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+    pluginSlug: "newsletter",
+    operationName: "get_campaign",
+    args: { campaignId },
+  });
+  if (!got.ok) throw new Error(JSON.stringify(got.error));
+  const c = got.value as { subject: string; bodyHtml: string; recipientCount: number };
+  return { campaignId, subject: c.subject, bodyHtml: c.bodyHtml, recipientCount: c.recipientCount };
+}
 
 async function humanWithRole(role: string): Promise<string> {
   const id = crypto.randomUUID();
@@ -372,6 +483,7 @@ describe("Newsletter send — the chat path is bound to the panel's permission",
     const campaignId = await seedDraftWithOneSubscriber(`perm-${Date.now()}`);
     const aiActor = "00000000-0000-0000-0000-00000000aaaa";
     const editor = await humanWithRole("editor");
+    const approval = await approvalFor(campaignId);
     const denied = await runPluginOperation({
       invocation: {
         origin: "chat",
@@ -381,7 +493,7 @@ describe("Newsletter send — the chat path is bound to the panel's permission",
       },
       pluginSlug: "newsletter",
       operationName: "send_campaign",
-      args: { campaignId },
+      args: approval,
     });
     expect(denied.ok).toBe(false);
     if (denied.ok) return;
@@ -392,26 +504,39 @@ describe("Newsletter send — the chat path is bound to the panel's permission",
       invocation: { origin: "approved", actorId: owner },
       pluginSlug: "newsletter",
       operationName: "send_campaign",
-      args: { campaignId },
+      args: approval,
     });
     expect(approved.ok).toBe(true);
   });
 
-  it("two overlapping sends of one draft queue it exactly once", async () => {
+  it("two overlapping approvals of one draft mail each subscriber exactly once (#635)", async () => {
     await bootstrapAll();
     const campaignId = await seedDraftWithOneSubscriber(`race-${Date.now()}`);
+    const approval = await approvalFor(campaignId);
+    const system = { origin: "system" as const, actorId: "00000000-0000-0000-0000-000000000000" };
     const send = () =>
       runPluginOperation({
-        invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+        invocation: system,
         pluginSlug: "newsletter",
         operationName: "send_campaign",
-        args: { campaignId },
+        args: approval,
       });
+    // Both may pass the single-use check before either records its run;
+    // the worker then sends only the oldest run of the campaign.
     const results = await Promise.all([send(), send()]);
-    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.filter((r) => r.ok).length).toBeGreaterThanOrEqual(1);
+    for (let i = 0; i < 3; i++) {
+      const drained = await runPluginOperation({
+        invocation: system,
+        pluginSlug: "newsletter",
+        operationName: "_drain_sends",
+        args: {},
+      });
+      if (!drained.ok) throw new Error(JSON.stringify(drained.error));
+    }
     const sends = await pluginScopedQuery<{ n: number }>(
       "newsletter",
-      sql`SELECT count(*)::int AS n FROM plugin_newsletter.sends WHERE campaign_id = ${campaignId}`,
+      sql`SELECT count(*)::int AS n FROM plugin_newsletter.sends WHERE campaign_id = ${campaignId} AND status = 'sent'`,
     );
     expect(sends[0]?.n).toBe(1);
   });

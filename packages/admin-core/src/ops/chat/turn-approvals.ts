@@ -165,7 +165,9 @@ export const recordTurnApprovalsOp = defineOperation({
               approvalId: z.string().min(1).max(200),
               toolCallId: z.string().min(1).max(200),
               toolName: z.string().min(1).max(200),
-              preview: z.string().max(20_000),
+              // = MAX_APPROVAL_PREVIEW_LENGTH (chat-runner/approval.ts): a card
+              // may carry an approved argument whole, e.g. an email body (#635).
+              preview: z.string().max(120_000),
               requiredPermissions: z.array(z.string().min(1).max(100)).max(20),
             })
             .strict(),

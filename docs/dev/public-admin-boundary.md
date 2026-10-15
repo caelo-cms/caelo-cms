@@ -65,7 +65,9 @@ Everything the admin reads from `cms_public` crosses a trust boundary. The rules
 1. **Validate at the boundary.** Each row must match a strict, bounded Zod schema when it is read. A row that does not fit is dropped and counted, never coerced (`parseUntrustedRows`, admin-core `untrusted/public-data.ts`).
 2. **Render as text.** Svelte interpolation only. Never `{@html}`, never a markdown renderer that turns links or images into live elements.
 3. **Never drive a privileged action without a human or validator step.** A public row can be a *hint*. Example: a plugin op event can schedule a rebuild, but only for a page that exists in `cms_admin`, and the rebuild reads the authoritative state. A public row is never an instruction.
-4. **Never instructions to the AI.** Visitor content must reach the admin AI as data, never as instructions. The admin AI holds publish and deploy tools (#763 M8).
+4. **Never instructions to the AI.** Every plugin tool result reaches the admin AI wrapped in `<untrusted-plugin-data>` (`untrustedToolResult` in `@caelo-cms/shared`), and the static system prompt says what that means. Prompts built from visitor text fence it the same way. The admin AI holds publish and deploy tools (#763 M8).
+
+Every read path and how it meets these rules: [public-admin-read-paths.md](./public-admin-read-paths.md).
 5. **No reverse sync.** The admin never copies public state into a table it trusts, unless a validator or a human decides first. Example: comment moderation archives a comment only through the Zod-validated `comment_archive.insert`, on an Owner or AI decision.
 
 ## Guardrails that keep it so
