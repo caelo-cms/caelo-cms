@@ -89,10 +89,10 @@ function parsePlaywrightReport(json: string): {
           const test = t as {
             results?: { duration?: number; status?: string; retry?: number }[];
           };
-          if (!Array.isArray(test.results) || test.results.length === 0) continue;
           // Last attempt is the authoritative outcome.
-          const last = test.results.at(-1);
-          const status = last?.status ?? "unknown";
+          const last = Array.isArray(test.results) ? test.results.at(-1) : undefined;
+          if (last === undefined) continue;
+          const status = last.status ?? "unknown";
           results.push({
             title: spec.title,
             ok: status === "passed",

@@ -412,7 +412,8 @@ describe("formatBugSection", () => {
     );
     const lines = formatBugSection(rows);
     const open = lines.findIndex((l) => /^`{3,}$/.test(l));
-    const fence = lines[open];
+    // `?? ""` only narrows the type: the assertion below fails on a miss.
+    const fence = lines[open] ?? "";
     expect(fence).toBe("`````");
     // The body sits between a matched pair, so nothing escapes into markdown.
     expect(lines.lastIndexOf(fence)).toBeGreaterThan(open);
