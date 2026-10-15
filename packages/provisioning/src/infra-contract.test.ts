@@ -35,6 +35,6 @@ describe("infrastructure contract steps", () => {
   });
 
   it("names a version a newer release added by number", () => {
-    expect(infraStepsText(4, 5)).toBe("infrastructure step 5 (see that release's notes)");
+    expect(infraStepsText(5, 6)).toBe("infrastructure step 6 (see that release's notes)");
   });
 });
