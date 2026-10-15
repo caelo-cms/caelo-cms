@@ -54,6 +54,7 @@ import { queuePluginToolApproval } from "../../ai/queued-tool-approval.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
+import { untrustedToolResult } from "../../untrusted/public-data.js";
 import {
   approvalOutcome,
   findMcpHandoffByToolCall,
@@ -687,7 +688,8 @@ export const mcpExecuteToolOp = defineOperation({
             }).then(
               (r): ToolResult =>
                 r.ok
-                  ? { ok: true, content: JSON.stringify(r.value) }
+                  ? // #635 — plugin data may be visitor-written: data, never instructions.
+                    { ok: true, content: untrustedToolResult(r.value) }
                   : { ok: false, content: `${r.error.kind}: ${r.error.message}` },
             )
           : await tools.dispatch(input.toolName, input.args ?? {}, aiCtx, {

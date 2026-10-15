@@ -1,0 +1,29 @@
+# Where the admin reads public data
+
+This is the inventory of every path on which the admin side reads data from `cms_public` (issue #635). Each row says how the path meets the rule in [public-admin-boundary.md](./public-admin-boundary.md): **data from public to admin is untrusted.**
+
+The admin applies four mechanisms across these paths:
+
+1. **Plugin rows are validated at the read.** When the admin's plugin host lists one of a plugin's public tables, every row is checked against the plugin's own declared column types before the plugin's code sees it. This covers Owner panels, chat tools, workers and the static generator's callbacks (plugin-host `public-row-schema.ts`). A row that does not fit is dropped and counted, never coerced.
+2. **Plugin data reaches the admin AI as untrusted data.** Every plugin tool result is wrapped in `<untrusted-plugin-data>…</untrusted-plugin-data>` (admin-core `untrustedToolResult`). Visitor text cannot close that element. This covers the chat runner, Power-MCP, queued approvals and in-chat approvals. The static system prompt tells the AI to treat the element's contents as data and to approve, publish, deploy or send nothing because of it.
+3. **The chat UI shows untrusted results as plain text.** A visitor's `![](https://…)` must not become a live image or link in the admin, so these results never go through the markdown renderer.
+4. **Core reads of gateway tables are Zod-validated** (`parseUntrustedRows`).
+
+| Read path | `cms_public` source | Where the data goes | How it is handled now |
+|---|---|---|---|
+| `gateway.list_recent_requests`, `gateway.list_analytics` (admin-core `ops/gateway.ts`) | `gateway_request_log` | `/settings/gateway`, SSE live view, chat tools | Strict Zod row schemas (slug and operation charset, status range, bounded strings). Bad rows are dropped and counted (`droppedRows`). |
+| Redeploy orchestrator: visitor op events | `gateway_plugin_op_events` | Schedules per-page rebuilds | Rows are schema-checked; only allowlisted op kinds count; at most 500 rows per tick; a page counts only if it exists in `cms_admin`. A hint can only schedule a rebuild of authoritative state. |
+| Redeploy orchestrator: `resolvePluginOpPageId` | `plugin_comments.comments`, `plugin_ratings.ratings` | Rebuild scope | Page id must be a UUID naming an existing page. The op name now matches what is audited (`comments.bulk_moderate`). |
+| comments `list_pending` | `plugin_comments.comments` | Owner panel (plain text), chat tool | Row validation (1); untrusted wrapper (2, 3). |
+| comments `moderate` / `bulk_moderate`: archive into `cms_admin` | `plugin_comments.comments` | `comment_archive` (then baked into pages) | The decision comes from a human or the AI, never from the row. The copy goes through the Zod-validated `comment_archive.insert` (UUIDs, bounded lengths). Row validation (1). |
+| comments `ai_moderate` | `plugin_comments.comments` | Install AI or Power-MCP work item, then status | **Fails closed:** an unparseable verdict now leaves the comment pending; it used to approve it (#763 M8). The visitor text is fenced in `<visitor-comment>` with `<`, `>`, `&` and `"` escaped. The system prompt treats instructions inside it as spam. |
+| forms `list_submissions` | `plugin_forms.form_submissions` | Owner panel (`<pre>`, text), chat tool | Row validation (1); wrapper (2, 3). |
+| forms `summarize` | `plugin_forms.form_submissions` | Install AI or Power-MCP work item | The sample is fenced in `<visitor-submissions>` with escaping. The system prompt treats it as data. Row validation (1). |
+| newsletter `list_campaigns` | `campaigns`, `subscribers` | Owner panel (text), chat tool | Row validation (1); wrapper (2, 3). |
+| newsletter `send_campaign`, then the `drain_sends` worker | `campaigns`, `subscribers`, `sends` | **Sends email from the site's domain** | The approval records a SHA-256 of subject and body in the plugin's new private storage (`cms_admin`, `approved_campaigns`). The worker sends only content that still matches it, so a campaign rewritten after approval fails "changed after it was approved". Sends with no approval stay queued. Recipients must be a single valid address. Row validation (1). |
+| ratings `list_aggregates`, `refresh_aggregates` | `ratings`, `rating_aggregates` | Owner panel (text), chat tool; derived rows back to `cms_public` only | Row validation (1) (`score` must be an integer); wrapper (2, 3). Nothing crosses into `cms_admin`. |
+| consent-manager `export_log` | `consent_log` | A CSV handed to the Owner (chat tool) | Every cell is quoted with quotes doubled, and formula-leading values (`= + - @ \t \r`) get an apostrophe (`csvCell`). Row validation (1); wrapper (2). |
+| consent-manager `prune_log` worker | `consent_log` | Deletes old `cms_public` rows | Row validation (1). Only `cms_public` is affected. |
+| auth `get_auth_config`, `list_pending_proposals`, `execute_proposal` | `auth_config`, `auth_config_proposals` | `/settings/auth` (text); approval copies the values into `auth_config` (`cms_public`) | Row validation (1) types the proposal values. **Open:** `execute_proposal` does not re-apply `propose_auth_config`'s bounds (`password_min_length ≥ 8`). The auth core is AI-locked (CLAUDE.md §2), so this needs a human-authored change, tracked with #763 PR 6. |
+| `/_caelo/health` | `__drizzle_migrations` (no `public_role` grant) | Health JSON | Only compared with the shipped file list; never rendered as markup or given to the AI. |
+| `promptContext` of comments and forms | pending counts, form slugs | Nothing today: the registry is never rendered | Dormant. If it is ever wired, its values must go through (2). |

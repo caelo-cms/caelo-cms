@@ -94,6 +94,10 @@ import ChoiceCard from "./ChoiceCard.svelte";
       name === "update_modules_many",
   );
   const isFind = $derived(name === "find_media" || name === "find_redirects");
+  // #635 — a plugin tool's result may carry visitor-written text. Shown as
+  // plain text, never through the markdown renderer: a visitor's
+  // `![](https://…)` must not become a live image or link in the admin.
+  const isUntrusted = $derived(content.startsWith("<untrusted-plugin-data>"));
   // Tools conventionally prefix their own error content with "<name> failed:".
   // The failure header below already renders "{name} failed:", so strip a
   // redundant leading copy of THIS tool's own prefix to avoid the doubled
@@ -150,6 +154,12 @@ import ChoiceCard from "./ChoiceCard.svelte";
       <span class="font-mono text-[10px]">{name.replaceAll("_", " ")}</span>
       <span class="ml-1 text-[10px]">— done, click for details</span>
     </summary>
-    <StreamingMarkdown text={content} class="mt-1" />
+    {#if isUntrusted}
+      <pre
+        class="mt-1 whitespace-pre-wrap break-words font-mono text-[11px]"
+        data-testid="tool-card-untrusted">{content}</pre>
+    {:else}
+      <StreamingMarkdown text={content} class="mt-1" />
+    {/if}
   </details>
 {/if}

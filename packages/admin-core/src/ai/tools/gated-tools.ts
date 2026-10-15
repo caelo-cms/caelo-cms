@@ -40,6 +40,7 @@ import {
   isApproverPermissionRefusal,
 } from "../../ops/_approver-permission.js";
 import { describeOperatorAccessSync, syncOperatorAccess } from "../../ops/user_access.js";
+import { untrustedToolResult } from "../../untrusted/public-data.js";
 import { describePersistError } from "../chat-runner/persistence.js";
 import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
 import { approvedPluginInvocation } from "../plugin-invocation.js";
@@ -277,7 +278,8 @@ export function attachPluginGatedExecute(
       if (!r.ok) {
         return { ok: false, error: `${r.error.kind}: ${r.error.message}` };
       }
-      return { ok: true, value: r.value };
+      // #635 — plugin data may be visitor-written: data, never instructions.
+      return { ok: true, value: untrustedToolResult(r.value) };
     },
   };
 }

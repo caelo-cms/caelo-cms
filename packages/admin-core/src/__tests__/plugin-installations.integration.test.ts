@@ -22,6 +22,7 @@ import { submitPluginTool } from "../ai/tools/submit-plugin.js";
 import { lockPluginRow } from "../locks.js";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
 import { registerAdminOps } from "../register.js";
+import { untrustedToolResultValue } from "../untrusted/public-data.js";
 
 let adapter: DatabaseAdapter;
 let pluginsRoot: string;
@@ -703,7 +704,9 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
     args: { body: "authenticated MCP author" },
   })) as { ok: boolean; content: string };
   expect(mcpResult.ok).toBe(true);
-  const mcpNote = JSON.parse(mcpResult.content) as { id: string };
+  // #635 — plugin results reach an agent as untrusted data.
+  expect(mcpResult.content.startsWith("<untrusted-plugin-data>")).toBe(true);
+  const mcpNote = untrustedToolResultValue(mcpResult.content) as { id: string };
   // The MCP session is a chat: its write is on that chat's branch.
   const [mcpBranch] = (await adapter.withAdminTransaction(system, (tx) =>
     tx.execute(

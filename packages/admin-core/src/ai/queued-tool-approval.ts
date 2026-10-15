@@ -43,6 +43,7 @@ import {
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { untrustedToolResult } from "../untrusted/public-data.js";
 import { approvedPluginInvocation, chatPluginInvocation } from "./plugin-invocation.js";
 import { describeError } from "./tools/_describe-error.js";
 import type { ToolResult } from "./tools/dispatch.js";
@@ -308,7 +309,8 @@ async function runApprovedPluginTool(
     args,
     invocation,
   });
+  // #635 — plugin data may be visitor-written: data, never instructions.
   return r.ok
-    ? { ok: true, content: JSON.stringify(r.value) }
+    ? { ok: true, content: untrustedToolResult(r.value) }
     : { ok: false, content: `${r.error.kind}: ${r.error.message}` };
 }

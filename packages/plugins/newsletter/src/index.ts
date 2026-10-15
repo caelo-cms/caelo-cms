@@ -65,6 +65,33 @@ const sendCampaignArgs = z.object({ campaignId: z.string().uuid() }).strict();
 /** Most rows one `ctx.query.list` returns (the SDK's cap). */
 const SUBSCRIBER_LIST_CAP = 1000;
 
+/**
+ * The campaign content an approved send is bound to (#635). Campaigns and
+ * the send queue live in cms_public, where a compromised public side could
+ * rewrite a queued campaign into phishing sent from the site's domain. So
+ * the approval records the SHA-256 of subject + body in the plugin's
+ * PRIVATE storage (cms_admin), and the worker sends only content that still
+ * matches it.
+ */
+export async function campaignDigest(subject: string, bodyHtml: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`${subject}\u0000${bodyHtml}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** A recipient the worker may mail: one plain address, no header tricks. */
+const RECIPIENT = z.string().max(254).email();
+
+function adminQueryOf(ctx: PluginContextTier1) {
+  const q = ctx.adminQuery;
+  if (!q) {
+    throw new Error(
+      "newsletter: ctx.adminQuery missing — the cms_admin_schema capability was not granted",
+    );
+  }
+  return q;
+}
+
 function hashEmail(email: string): string {
   // Deterministic non-cryptographic hash for de-dupe + analytics. Email lookups
   // use this; the raw email is stored alongside for sending. P13 may swap
@@ -111,7 +138,25 @@ export default definePlugin<PluginContextTier1>({
       sent_at: "timestamp_nullable",
     },
   },
-  requestedCapabilities: ["ai_provider", "email", "background_workers", "chat_runner_tools"],
+  /**
+   * #635 — what an approved send was approved FOR, out of the public
+   * side's reach: the worker sends a campaign only while its content still
+   * hashes to an approval recorded here.
+   */
+  adminSchema: {
+    approved_campaigns: {
+      campaign_id: "string",
+      content_sha256: "string",
+      created_at: "timestamp",
+    },
+  },
+  requestedCapabilities: [
+    "ai_provider",
+    "email",
+    "background_workers",
+    "chat_runner_tools",
+    "cms_admin_schema",
+  ],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
   publicOperations: ["subscribe", "confirm", "unsubscribe"],
@@ -261,10 +306,10 @@ export default definePlugin<PluginContextTier1>({
 
     send_campaign: async (ctx, args) => {
       const input = sendCampaignArgs.parse(args);
-      const campaign = await ctx.query.list<"campaigns", { id: string; status: string }>(
+      const campaign = await ctx.query.list<
         "campaigns",
-        { id: input.campaignId, limit: 1 },
-      );
+        { id: string; status: string; subject: string; body_html: string }
+      >("campaigns", { id: input.campaignId, limit: 1 });
       if (!campaign[0]) throw new Error("send_campaign: campaign not found");
       // Only a draft is sendable: re-queuing a queued/sent campaign would
       // email every subscriber a second time, and that cannot be recalled.
@@ -296,6 +341,12 @@ export default definePlugin<PluginContextTier1>({
       if (!claimed) {
         throw new Error("send_campaign: campaign is no longer a draft — another send claimed it");
       }
+      // Bind this approval to exactly this content (#635): the worker sends
+      // nothing whose subject or body changed after this point.
+      await adminQueryOf(ctx).insert("approved_campaigns", {
+        campaign_id: input.campaignId,
+        content_sha256: await campaignDigest(campaign[0].subject, campaign[0].body_html),
+      });
       let queued = 0;
       for (const s of subs) {
         if (!s.confirmed_at || s.unsubscribed_at) continue;
@@ -332,6 +383,32 @@ export default definePlugin<PluginContextTier1>({
         );
         if (!sub[0] || !camp[0]) {
           await ctx.query.update("sends", send.id, { status: "failed", error: "missing record" });
+          continue;
+        }
+        // #635 — the queue, the campaign and the subscriber all come from
+        // cms_public: send only what an approval in private storage covers.
+        const approvals = await adminQueryOf(ctx).list<
+          "approved_campaigns",
+          { content_sha256: string }
+        >("approved_campaigns", { campaign_id: send.campaign_id, limit: 10 });
+        if (approvals.length === 0) {
+          // Not approved (yet): an approval made in a chat that cannot
+          // publish lands when that chat is published. Leave it queued.
+          continue;
+        }
+        const digest = await campaignDigest(camp[0].subject, camp[0].body_html);
+        if (!approvals.some((a) => a.content_sha256 === digest)) {
+          await ctx.query.update("sends", send.id, {
+            status: "failed",
+            error: "the campaign changed after it was approved — not sent",
+          });
+          continue;
+        }
+        if (!RECIPIENT.safeParse(sub[0].email).success) {
+          await ctx.query.update("sends", send.id, {
+            status: "failed",
+            error: "invalid recipient",
+          });
           continue;
         }
         try {

@@ -54,6 +54,11 @@ async function wipe(): Promise<void> {
         await tx`DELETE FROM audit_events WHERE actor_id IN (
           SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${s})
         )`;
+        // #635 — newsletter's send approval is a main-line private-storage
+        // write, which records a snapshot under the plugin's actor.
+        await tx`DELETE FROM site_snapshots WHERE actor_id IN (
+          SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${s})
+        )`;
         await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${s})`;
         await tx`DELETE FROM plugin_schema_migrations WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${s})`;
         await tx`DELETE FROM plugins WHERE slug = ${s}`;
@@ -314,6 +319,52 @@ describe("Newsletter plugin", () => {
     expect(resend.ok).toBe(false);
     if (resend.ok) return;
     expect(resend.error.message).toContain("not 'draft'");
+  });
+
+  it("drain sends nothing whose content changed after approval (#635)", async () => {
+    await bootstrapAll();
+    // A confirmed subscriber and a draft, written as the public side could.
+    await pluginScopedQuery<unknown>(
+      "newsletter",
+      sql`INSERT INTO plugin_newsletter.subscribers (email, email_hash, confirm_token, unsub_token, confirmed_at)
+          VALUES ('bob@example.com', 'h', 'c', 'u', now())`,
+    );
+    await pluginScopedQuery<unknown>(
+      "newsletter",
+      sql`INSERT INTO plugin_newsletter.campaigns (slug, subject, body_html, status) VALUES ('camp-635', 'Hello', '<p>hi</p>', 'draft')`,
+    );
+    const camp = await pluginScopedQuery<{ id: string }>(
+      "newsletter",
+      sql`SELECT id::text AS id FROM plugin_newsletter.campaigns WHERE slug = 'camp-635'`,
+    );
+    const campaignId = camp[0]?.id as string;
+    const send = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "newsletter",
+      operationName: "send_campaign",
+      args: { campaignId },
+    });
+    if (!send.ok) throw new Error(JSON.stringify(send.error));
+    // A compromised public side rewrites the approved campaign.
+    await pluginScopedQuery<unknown>(
+      "newsletter",
+      sql`UPDATE plugin_newsletter.campaigns SET body_html = '<a href="https://evil.example">verify your account</a>' WHERE slug = 'camp-635'`,
+    );
+    const drain = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "newsletter",
+      operationName: "_drain_sends",
+      args: {},
+    });
+    if (!drain.ok) throw new Error(JSON.stringify(drain.error));
+    expect((drain.value as { sent: number }).sent).toBe(0);
+    const sends = await pluginScopedQuery<{ status: string; error: string }>(
+      "newsletter",
+      sql`SELECT status, error FROM plugin_newsletter.sends WHERE campaign_id = ${campaignId}`,
+    );
+    expect(sends).toEqual([
+      { status: "failed", error: "the campaign changed after it was approved — not sent" },
+    ]);
   });
 
   it("send_campaign refuses a malformed campaignId before any write", async () => {
