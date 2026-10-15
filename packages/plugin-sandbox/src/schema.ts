@@ -43,8 +43,12 @@ export function schemaFromSpec(opts: {
   const stmts: string[] = [];
 
   stmts.push(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(schemaName)};`);
-  stmts.push(`GRANT USAGE ON SCHEMA ${quoteIdent(schemaName)} TO public_role;`);
-  stmts.push(`GRANT USAGE ON SCHEMA ${quoteIdent(schemaName)} TO admin_role;`);
+  stmts.push(
+    grantStatement("cms_public", "USAGE", `SCHEMA ${quoteIdent(schemaName)}`, "public_role"),
+  );
+  stmts.push(
+    grantStatement("cms_public", "USAGE", `SCHEMA ${quoteIdent(schemaName)}`, "admin_role"),
+  );
 
   for (const [tableName, columns] of Object.entries(opts.schema)) {
     stmts.push(emitCreateTable(schemaName, tableName, columns, opts.pluginId));
@@ -87,8 +91,8 @@ function emitCreateTable(
     `CREATE POLICY ${quoteIdent(policyName)} ON ${fqTable}`,
     `  USING (current_setting('caelo.plugin_id', true) = '${pluginId}')`,
     `  WITH CHECK (current_setting('caelo.plugin_id', true) = '${pluginId}');`,
-    `GRANT SELECT, INSERT, UPDATE, DELETE ON ${fqTable} TO public_role;`,
-    `GRANT SELECT, INSERT, UPDATE, DELETE ON ${fqTable} TO admin_role;`,
+    grantStatement("cms_public", "SELECT, INSERT, UPDATE, DELETE", fqTable, "public_role"),
+    grantStatement("cms_public", "SELECT, INSERT, UPDATE, DELETE", fqTable, "admin_role"),
   ].join("\n");
 }
 
@@ -125,6 +129,62 @@ function emitColumnDef(name: string, spec: string): string {
     default:
       throw new Error(`schemaFromSpec: unknown column type "${spec}" for column "${name}"`);
   }
+}
+
+/** The database a plugin schema's DDL runs in. */
+export type PluginSchemaDatabase = "cms_admin" | "cms_public";
+
+/**
+ * Issue #635 — the roles plugin schema DDL may grant to, per database. The
+ * admin runs this DDL at every boot, so this is the runtime twin of the
+ * migration grant lint: cms_admin grants go to admin_role (the public side
+ * has no path to cms_admin, CLAUDE.md §2); cms_public grants go to
+ * public_role (the gateway and the Tier 2 sandbox) and admin_role.
+ */
+export const PLUGIN_SCHEMA_GRANTEES: Readonly<Record<PluginSchemaDatabase, ReadonlySet<string>>> = {
+  cms_admin: new Set(["admin_role"]),
+  cms_public: new Set(["public_role", "admin_role"]),
+};
+
+/**
+ * Issue #635, expand release — the former gateway_role keeps READ-ONLY
+ * access to a visitor-serving plugin's private tables (#613) until the
+ * contract release drops the role: while an upgrade rolls, and after a
+ * rollback, the previous release's gateway still reads them as
+ * gateway_role. Only `USAGE` on a schema and column-level `SELECT (…)`:
+ * never table-wide, never a write. The contract release removes this set.
+ */
+export const LEGACY_READ_ONLY_GRANTEES: Readonly<
+  Record<PluginSchemaDatabase, ReadonlySet<string>>
+> = {
+  cms_admin: new Set(["gateway_role"]),
+  cms_public: new Set(),
+};
+
+const READ_ONLY_PRIVILEGES = /^(?:USAGE|SELECT \([^()]+\))$/;
+
+/**
+ * The only way the emitters write a GRANT, so no code path can grant a
+ * plugin schema to a role outside {@link PLUGIN_SCHEMA_GRANTEES} (or a
+ * read-only privilege outside {@link LEGACY_READ_ONLY_GRANTEES}).
+ *
+ * @throws when `grantee` may not hold `privileges` in `database`.
+ */
+export function grantStatement(
+  database: PluginSchemaDatabase,
+  privileges: string,
+  object: string,
+  grantee: string,
+): string {
+  const allowed =
+    PLUGIN_SCHEMA_GRANTEES[database].has(grantee) ||
+    (LEGACY_READ_ONLY_GRANTEES[database].has(grantee) && READ_ONLY_PRIVILEGES.test(privileges));
+  if (!allowed) {
+    throw new Error(
+      `plugin schema: refusing to GRANT ${privileges} ON ${object} TO ${grantee} in ${database} — only ${[...PLUGIN_SCHEMA_GRANTEES[database]].join(", ")} may hold plugin-schema privileges there (CLAUDE.md §2, #635)`,
+    );
+  }
+  return `GRANT ${privileges} ON ${object} TO ${grantee};`;
 }
 
 /** Defensive identifier quoting. Plugin slugs + table names are
@@ -216,7 +276,9 @@ export function adminSchemaFromSpec(opts: {
   const stmts: string[] = [];
 
   stmts.push(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(schemaName)};`);
-  stmts.push(`GRANT USAGE ON SCHEMA ${quoteIdent(schemaName)} TO admin_role;`);
+  stmts.push(
+    grantStatement("cms_admin", "USAGE", `SCHEMA ${quoteIdent(schemaName)}`, "admin_role"),
+  );
 
   for (const [tableName, columns] of Object.entries(opts.adminSchema)) {
     const fqTable = `${quoteIdent(schemaName)}.${quoteIdent(tableName)}`;
@@ -257,7 +319,7 @@ export function adminSchemaFromSpec(opts: {
         `CREATE POLICY ${quoteIdent(policyName)} ON ${fqTable}`,
         `  USING (current_setting('caelo.plugin_id', true) = '${opts.pluginId}')`,
         `  WITH CHECK (current_setting('caelo.plugin_id', true) = '${opts.pluginId}');`,
-        `GRANT SELECT, INSERT, UPDATE, DELETE ON ${fqTable} TO admin_role;`,
+        grantStatement("cms_admin", "SELECT, INSERT, UPDATE, DELETE", fqTable, "admin_role"),
       ].join("\n"),
     );
   }
@@ -305,10 +367,15 @@ function gatewayReadGrants(
   ];
   const grant = visitorReadable
     ? [
-        `    GRANT USAGE ON SCHEMA ${schema} TO gateway_role;`,
+        `    ${grantStatement("cms_admin", "USAGE", `SCHEMA ${schema}`, "gateway_role")}`,
         ...Object.entries(adminSchema).map(
           ([t, columns]) =>
-            `    GRANT SELECT (${gatewayReadableColumns(columns).map(quoteIdent).join(", ")}) ON ${schema}.${quoteIdent(t)} TO gateway_role;`,
+            `    ${grantStatement(
+              "cms_admin",
+              `SELECT (${gatewayReadableColumns(columns).map(quoteIdent).join(", ")})`,
+              `${schema}.${quoteIdent(t)}`,
+              "gateway_role",
+            )}`,
         ),
       ]
     : [];

@@ -9,7 +9,14 @@
  *     (REVOKE … FROM PUBLIC is fine), nor to gateway_role after the
  *     migration that made the gateway public-only (0281);
  *   - no migration in either database installs a bridge between databases
- *     (dblink, postgres_fdw, a foreign server or user mapping).
+ *     (dblink, postgres_fdw, a foreign server or user mapping);
+ *   - a grantee the lint cannot read — computed at run time (`format('… TO
+ *     %I', r)`, `'… TO ' || r`, `quote_ident(…)`) — fails closed: the line
+ *     must carry `-- caelo:dynamic-grantee <reason>` (on the GRANT's line or
+ *     the line above), so a reviewer reads why the role set is safe.
+ *
+ * The plugin schema DDL the admin runs at boot is checked by its own test
+ * (plugin-sandbox `schema-grants.test.ts`).
  */
 
 import { describe, expect, it } from "bun:test";
@@ -44,6 +51,29 @@ function grantsTo(sql: string, grantee: RegExp): string[] {
   });
 }
 
+/** A grantee written as something other than a role name. */
+const DYNAMIC_GRANTEE = /%[ILs]|\|\||\bquote_ident\s*\(|\bformat\s*\(/i;
+
+const ANNOTATION = /--\s*caelo:dynamic-grantee\s+\S/;
+
+/**
+ * Every GRANT in `sql` whose grantee is computed at run time and carries no
+ * `caelo:dynamic-grantee` annotation, as `line N: statement`.
+ */
+function unannotatedDynamicGrants(sql: string): string[] {
+  const raw = sql.split("\n");
+  // Blank out comments but keep offsets, so a match maps back to its line.
+  const code = raw.map((line) => line.replace(/--[^\n]*/, (c) => " ".repeat(c.length))).join("\n");
+  const out: string[] = [];
+  for (const m of code.matchAll(/\bGRANT\b[^;]*?\bTO\b([^;]*)/gi)) {
+    if (!DYNAMIC_GRANTEE.test(m[1] ?? "")) continue;
+    const line = code.slice(0, m.index).split("\n").length - 1;
+    const annotated = [raw[line], raw[line - 1]].some((l) => l !== undefined && ANNOTATION.test(l));
+    if (!annotated) out.push(`line ${line + 1}: ${m[0].replace(/\s+/g, " ").slice(0, 160)}`);
+  }
+  return out;
+}
+
 const BRIDGE =
   /\bCREATE\s+(EXTENSION\s+(IF\s+NOT\s+EXISTS\s+)?"?(dblink|postgres_fdw)\b|FOREIGN\s+DATA\s+WRAPPER\b|SERVER\b|USER\s+MAPPING\b)/i;
 
@@ -53,6 +83,39 @@ describe("migration grant lint (#635)", () => {
     expect(grantsTo("REVOKE ALL ON t FROM public_role;", /\bpublic_role\b/)).toHaveLength(0);
     expect(grantsTo("-- GRANT SELECT ON t TO public_role", /\bpublic_role\b/)).toHaveLength(0);
     expect(BRIDGE.test("CREATE EXTENSION IF NOT EXISTS dblink")).toBe(true);
+  });
+
+  it("flags a computed grantee unless annotated (self-test, review finding)", () => {
+    for (const sql of [
+      "EXECUTE format('GRANT SELECT ON t TO %I', r);",
+      "EXECUTE 'GRANT SELECT ON t TO ' || r;",
+      "EXECUTE 'GRANT CONNECT ON DATABASE cms_admin TO ' || quote_ident(r);",
+      "DO $$ BEGIN\n  EXECUTE format('GRANT USAGE ON SCHEMA s TO %s', role_name);\nEND $$;",
+    ]) {
+      expect(unannotatedDynamicGrants(sql)).toHaveLength(1);
+    }
+    expect(
+      unannotatedDynamicGrants(
+        "-- caelo:dynamic-grantee r is one of the literal roles above\nEXECUTE format('GRANT SELECT ON t TO %I', r);",
+      ),
+    ).toEqual([]);
+    // A bare marker without a reason does not count.
+    expect(
+      unannotatedDynamicGrants(
+        "-- caelo:dynamic-grantee\nEXECUTE format('GRANT SELECT ON t TO %I', r);",
+      ),
+    ).toHaveLength(1);
+    // A computed object with a literal grantee is readable.
+    expect(
+      unannotatedDynamicGrants("EXECUTE format('GRANT SELECT ON %I TO public_role', t);"),
+    ).toEqual([]);
+  });
+
+  it("every computed grantee in any migration is annotated", () => {
+    const offenders = [...migrations("cms_admin"), ...migrations("cms_public")].flatMap(
+      ({ file, sql }) => unannotatedDynamicGrants(sql).map((s) => `${file} ${s}`),
+    );
+    expect(offenders).toEqual([]);
   });
 
   it("no cms_admin migration grants anything to public_role or PUBLIC", () => {
