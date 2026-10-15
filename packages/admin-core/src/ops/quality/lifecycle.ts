@@ -39,12 +39,15 @@ import { loadAcceptances, loadGateAuditById } from "./gate-loader.js";
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
 /** Pages Lighthouse audits per Stage: the homepage plus changed pages,
- *  capped so an audit stays within minutes (each page costs 3 Lighthouse
- *  runs). The findings checks read every page regardless. */
+ *  capped so an audit stays within minutes (each page costs
+ *  PERFORMANCE_RUNS Lighthouse runs). The findings checks read every page
+ *  regardless. */
 export const QUALITY_AUDIT_PAGE_CAP = 5;
 
-/** Performance runs per page (median of 3, per #553). */
-const PERFORMANCE_RUNS = 3;
+/** Performance runs per page. The gate targets 100, so one noisy run must
+ *  not decide the score: the median of 5 (Lighthouse's own advice against
+ *  variance, docs/variability.md) instead of the 3 of #553. */
+const PERFORMANCE_RUNS = 5;
 
 /** A `running` audit older than this belongs to a process that died. */
 const STALE_RUNNING_MINUTES = 30;

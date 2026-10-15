@@ -8,6 +8,7 @@ import {
   LighthouseRunError,
   measurementFromRuns,
 } from "../lighthouse-extract.js";
+import { pageMeasurementSchema } from "../lighthouse-protocol.js";
 
 type Audit = LhrLike["audits"][string];
 
@@ -170,6 +171,26 @@ describe("flagged elements", () => {
       explanation:
         "Fix any of the following: Element has insufficient color contrast of 2.9 (foreground color: #ffffff, background color: #8b8bf5)",
     });
+  });
+
+  it("pass the wire schema when the list is truncated", () => {
+    // The "+N more" marker made a sixth entry the protocol schema (max 5)
+    // rejected — and one rejected finding failed the whole audit run.
+    const contrast: Audit = {
+      ...audit("color-contrast", 0),
+      details: {
+        items: Array.from({ length: 12 }, (_v, i) => ({
+          node: { type: "node", selector: `p.low-${i}`, snippet: `<p class="low-${i}">` },
+        })),
+      },
+    };
+    const { measurement } = measurementFromRuns(
+      lhr({ performance: 100, accessibility: 90, audits: [contrast] }),
+      [],
+    );
+    expect(measurement.failingAudits[0]?.elements).toHaveLength(6);
+    const parsed = pageMeasurementSchema.safeParse(measurement);
+    expect(parsed.error).toBeUndefined();
   });
 
   it("carry an errors-in-console entry's message and the URL it came from", () => {

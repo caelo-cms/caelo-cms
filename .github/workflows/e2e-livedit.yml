@@ -162,7 +162,15 @@ jobs:
     # out runs that were genuinely working. 45 min covers the 6-
     # scenario worst case (~30 min run + ~10 min spin-up + buffer)
     # while still failing a stuck job in bounded time.
-    timeout-minutes: 45
+    # 65 since the quality-gate hang fix: the homepage scenario owns a
+    # 25-min test budget and Playwright retries it once, so a first attempt
+    # that legitimately fails at its budget plus a full-length retry is
+    # ~50 min on top of ~3 min setup/build and ~6 min for the other
+    # scenarios. At 45 such runs were CANCELLED (runs 38745512796,
+    # 38746723795), which skips the failure-only diagnostics and loses the
+    # retry's verdict; 65 lets every attempt report while a genuinely stuck
+    # job still dies in bounded time.
+    timeout-minutes: 65
     permissions:
       # `contents: write` is required for the "Push screenshots…" step
       # below — it pushes failure screenshots to the `screenshots/

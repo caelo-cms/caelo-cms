@@ -21,6 +21,7 @@ import { z } from "zod";
 import type { classifyStageOp } from "../../ops/quality/classify_stage.js";
 import type { getAuditOp, listAcceptancesOp, listAuditsOp } from "../../ops/quality/read.js";
 import { findingOwner } from "../../quality/platform-audits.js";
+import { droppedSincePrevious } from "../../quality/ratchet.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
 import {
   formatCheckNotes,
@@ -65,13 +66,13 @@ const CATEGORY_LABEL: Record<string, string> = {
  * operator before a fix round starts (#685).
  */
 export const AUDIT_PENDING_NEXT_STEP =
-  "Do not re-read it now: when the operator's chat is open, the result appears in this chat, and when it finds problems the operator is asked whether you should fix them — finish your turn with your summary. Only without an open chat (Power-MCP) read it again after a couple of minutes.";
+  "Do not re-read it now: when the operator's chat is open, the result appears in this chat, and when it finds problems the operator is asked whether you should fix them — finish your turn with your summary. Only without an open chat (Power-MCP): call get_quality_audit again (it waits for the result) and fix every problem it names before you report back.";
 
 function statusLine(run: AuditRun): string {
   switch (run.status) {
     case "queued":
     case "running":
-      return `Audit ${run.status} — it takes 1–2 minutes. ${AUDIT_PENDING_NEXT_STEP}`;
+      return `Audit ${run.status} — it takes 2–4 minutes. ${AUDIT_PENDING_NEXT_STEP}`;
     case "passed":
       return "Audit passed: 100 in every category and no findings.";
     case "problems":
@@ -83,6 +84,28 @@ function statusLine(run: AuditRun): string {
     case "superseded":
       return "Superseded by a newer Stage before it ran; that Stage's audit covers these pages.";
   }
+}
+
+/**
+ * What the AI does with open problems. An external agent read 92–97 and
+ * reported the scores back instead of fixing them, so the instruction sits
+ * at the end of the result, where the next action is decided — not only
+ * in the tool description.
+ */
+export const AUDIT_FIX_LOOP_NEXT_STEP =
+  "NEXT STEP — do not report these problems to the operator as a result; fix them now. " +
+  "First every category marked DROPPED since the page's previous audit (look at the changes since then first), then every other PROBLEM: fix it in the module, page or theme the flagged elements and metrics name, call stage_changes, read get_quality_audit again, and repeat until the audit passes. " +
+  "Performance is already the median over several runs: a score below 100 is not measurement noise — fix what the metrics name. " +
+  "Go to the operator only with what you proved cannot be fixed in the site (a CAELO PLATFORM finding: bug_report; a fix that would break what the operator asked for), as one accept_quality_findings decision per group, with the reason why.";
+
+/** Whether an audit result still has a problem no editor accepted. */
+export function hasOpenProblems(v: {
+  readonly pages: readonly { readonly problemAccepted: readonly boolean[] }[];
+  readonly siteProblemAccepted: readonly boolean[];
+}): boolean {
+  return (
+    v.pages.some((p) => p.problemAccepted.some((a) => !a)) || v.siteProblemAccepted.some((a) => !a)
+  );
 }
 
 /**
@@ -167,8 +190,13 @@ export function formatPage(p: AuditPage): string[] {
         lines.push(`  - element ${where}${el.explanation ? ` — ${el.explanation}` : ""}`);
       }
     } else {
+      const previous = p.previousScores?.[problem.category];
+      const dropped =
+        previous !== undefined && droppedSincePrevious(problem.category, problem.score, previous)
+          ? ` — DROPPED since this page's previous audit (${previous} → ${problem.score}): check the changes since then first`
+          : "";
       lines.push(
-        `- ${tag} ${CATEGORY_LABEL[problem.category] ?? problem.category} score ${problem.score} is below the target 100${accepted ? "" : " — not good enough: fix what pulls it down (the metrics above name the element)"}`,
+        `- ${tag} ${CATEGORY_LABEL[problem.category] ?? problem.category} score ${problem.score} is below the target 100${dropped}${accepted ? "" : " — not good enough: fix what pulls it down (the metrics above name the element)"}`,
       );
     }
   }
@@ -176,14 +204,41 @@ export function formatPage(p: AuditPage): string[] {
   return lines;
 }
 
-export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
+/**
+ * The get_quality_audit result: run status, why Lighthouse ran, the page
+ * checks, every page, and — while a problem is open — the fix loop.
+ */
+export function formatAudit(value: unknown): string {
+  const v = value as AuditValue;
+  if (!v.run) {
+    return "No quality audit exists yet for this chat — every Stage is checked (plugin page checks, when any is active, on every page; Lighthouse when module code, layouts, templates, the theme, new pages or plugin config changed).";
+  }
+  const r = v.run;
+  const lines = [`audit ${r.id} (deploy run ${r.deployRunId}) — ${r.status}`, statusLine(r)];
+  if (r.classification.auditNeeded) {
+    lines.push(
+      `Lighthouse ran because: ${r.classification.reasons.map((x) => x.label).join("; ")}`,
+    );
+  } else if (r.status !== "skipped") {
+    lines.push(
+      `Lighthouse not needed for this Stage (${r.classification.skipped.slice(0, 3).join("; ") || "no rendering changes"}).`,
+    );
+  }
+  if (v.checks) lines.push(...formatChecksSummary(v.checks, v.siteProblemAccepted));
+  for (const p of v.pages) lines.push("", ...formatPage(p));
+  if (r.status === "problems" && hasOpenProblems(v)) lines.push("", AUDIT_FIX_LOOP_NEXT_STEP);
+  return lines.join("\n");
+}
+
+const readQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   name: "get_quality_audit",
   description:
-    "Read the quality check of the staged site: the page checks (added by plugins such as SEO checks) that read EVERY page on every Stage, plus a Lighthouse audit (Performance, Accessibility, Best Practices, SEO; mobile) when the Stage changed how pages render. " +
+    "Read the quality check of the staged site: the page checks plugins add (such as SEO checks; when an active plugin adds any) that read EVERY page on every Stage, plus a Lighthouse audit (Performance, Accessibility, Best Practices, SEO; mobile) when the Stage changed how pages render. " +
     "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores (the target is 100 in every category), the Performance metrics behind the Performance score (FCP, LCP, TBT, CLS, Speed Index: the median over the runs with Lighthouse's rating, plus the LCP element, the LCP breakdown and the elements that shifted with their causes), every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), every page-check problem with its rule id (`<check>/<rule>`, e.g. `seo-check/title-missing` — rule ids contain a slash) and a fix hint naming the tool to use, site-wide findings, non-blocking warnings and hints, and infrastructure errors. " +
     "THE TARGET IS 100 IN EVERY CATEGORY AND ZERO FINDINGS: every category below 100, every scored Lighthouse audit below a perfect score, and every page-check error is a PROBLEM that blocks Publish live. A score like 90 is NOT acceptable on its own — keep fixing until 100 wherever achievable. Problems an editor accepted are marked ACCEPTED and do not block (a worse value than accepted blocks again). Warnings and hints never block. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. " +
     "To make a page faster, read its metrics here and fix the worst one in the module that renders the named element, then Stage again and re-read — repeat until Performance is 100. Use this instead of running Lighthouse yourself: the audit runs against the real staged build, which no other URL serves. Only what truly cannot be fixed goes to the operator, as one decision per group (accept_quality_findings with groups), with the reason why. " +
     "A finding marked CAELO PLATFORM (back/forward cache, caching of Caelo's own files, server response, compression, redirects) is decided by Caelo's hosting/build setup, not by the site: report it with bug_report and never edit the site for it; it blocks until Caelo fixes it or the operator decides to accept it. " +
+    "Without an open operator chat (Power-MCP) a call on a queued or running audit waits for its result (up to ~50 s; call again if it is still running). " +
     "Typical input: {} or { auditRunId }.",
   opName: "quality_audits.get",
   input: getAuditInput,
@@ -193,27 +248,64 @@ export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
       : toolCtx.chatSessionId
         ? { chatSessionId: toolCtx.chatSessionId }
         : {},
-  format: (value) => {
-    const v = value as AuditValue;
-    if (!v.run) {
-      return "No quality audit exists yet for this chat — every Stage is checked (page checks on every page; Lighthouse when module code, layouts, templates, the theme, new pages or plugin config changed).";
-    }
-    const r = v.run;
-    const lines = [`audit ${r.id} (deploy run ${r.deployRunId}) — ${r.status}`, statusLine(r)];
-    if (r.classification.auditNeeded) {
-      lines.push(
-        `Lighthouse ran because: ${r.classification.reasons.map((x) => x.label).join("; ")}`,
-      );
-    } else if (r.status !== "skipped") {
-      lines.push(
-        `Lighthouse not needed for this Stage (${r.classification.skipped.slice(0, 3).join("; ") || "no rendering changes"}).`,
-      );
-    }
-    if (v.checks) lines.push(...formatChecksSummary(v.checks, v.siteProblemAccepted));
-    for (const p of v.pages) lines.push("", ...formatPage(p));
-    return lines.join("\n");
-  },
+  format: formatAudit,
 });
+
+/** Bounded wait for a running audit: under the MCP SDK client's default
+ *  60 s request timeout, like the approval wait (mcp-server approval-wait.ts). */
+export const AUDIT_WAIT_MS = 50_000;
+const AUDIT_POLL_INTERVAL_MS = 5_000;
+
+function auditPending(value: unknown): boolean {
+  const status = (value as AuditValue | undefined)?.run?.status;
+  return status === "queued" || status === "running";
+}
+
+/**
+ * Re-read while the audit is queued or running, until it settles, the
+ * wait ends or the turn is stopped. Returns the last read.
+ */
+export async function readUntilSettled<R extends { ok: boolean; value?: unknown }>(
+  read: () => Promise<R>,
+  opts: {
+    readonly waitMs: number;
+    readonly intervalMs: number;
+    readonly signal?: AbortSignal;
+    readonly sleep?: (ms: number) => Promise<void>;
+    readonly now?: () => number;
+  },
+): Promise<R> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? Date.now;
+  const deadline = now() + opts.waitMs;
+  let result = await read();
+  while (result.ok && auditPending(result.value) && now() < deadline && !opts.signal?.aborted) {
+    await sleep(opts.intervalMs);
+    result = await read();
+  }
+  return result;
+}
+
+/**
+ * get_quality_audit. An agent without an open operator chat is told the
+ * result nowhere else, so a read of a running audit waits for it instead
+ * of answering "running — read again later": the external agent that got
+ * that answer reported a half-finished state to the operator and never
+ * came back to fix the scores. The Live Edit chat never waits — the
+ * result reaches that chat on its own (AUDIT_PENDING_NEXT_STEP).
+ */
+export const getQualityAuditTool: typeof readQualityAuditTool = {
+  ...readQualityAuditTool,
+  handler: (ctx, input, toolCtx) => {
+    const read = () => readQualityAuditTool.handler(ctx, input, toolCtx);
+    if (toolCtx.operatorBrowserAttached === true) return read();
+    return readUntilSettled(read, {
+      waitMs: AUDIT_WAIT_MS,
+      intervalMs: AUDIT_POLL_INTERVAL_MS,
+      ...(toolCtx.abortSignal ? { signal: toolCtx.abortSignal } : {}),
+    });
+  },
+};
 
 const checkStageInput = z.object({}).strict();
 
@@ -240,7 +332,7 @@ function formatLastMetrics(pages: NonNullable<StageValue["lastMetrics"]>): strin
 export const checkStageAuditTool = makeReadTool<z.infer<typeof checkStageInput>>({
   name: "check_stage_audit",
   description:
-    "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (The page checks read every page on EVERY Stage regardless.) " +
+    "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (Plugin page checks, when any is active, read every page on EVERY Stage regardless.) " +
     "Lighthouse runs for: new or changed module html/css/js, layout / template / theme changes, new pages, plugin configuration. Not for: only text and field values, placing or moving existing modules, SEO texts, redirects. " +
     "Lists the deciding changes and the pages the check would cover, plus the last measured Performance metrics (FCP, LCP, TBT, CLS, Speed Index; LCP element, layout shifts) of those pages and the homepage — the starting point for a speed fix (the target is Performance 100). Use this instead of running Lighthouse yourself: the audit runs against the real staged build. Takes no input (uses the current chat).",
   opName: "quality_audits.classify_stage",
@@ -257,10 +349,10 @@ export const checkStageAuditTool = makeReadTool<z.infer<typeof checkStageInput>>
     const verdict = c.auditNeeded
       ? [
           `The next Stage will be quality-checked (Lighthouse) because: ${c.reasons.map((r) => `${r.rule} — ${r.label}`).join("; ")}.`,
-          `Pages it touches: ${v.touchedPageIds.length} (the homepage is always included; up to 5 are audited by Lighthouse; the page checks read every page). Publish live waits for the result.`,
+          `Pages it touches: ${v.touchedPageIds.length} (the homepage is always included; up to 5 are audited by Lighthouse; plugin page checks, when any is active, read every page). Publish live waits for the result.`,
         ]
       : [
-          `The next Stage needs no Lighthouse audit by its own changes (${c.skipped.join("; ") || "nothing pending"}); the page checks still read every page and Publish live waits for them. Lighthouse can still run when this is the site's first Stage, a plugin was activated, or the previous Lighthouse audit did not end clean.`,
+          `The next Stage needs no Lighthouse audit by its own changes (${c.skipped.join("; ") || "nothing pending"}); plugin page checks, when any is active, still read every page and Publish live waits for them. Lighthouse can still run when this is the site's first Stage, a plugin was activated, or the previous Lighthouse audit did not end clean.`,
         ];
     return [...verdict, "", ...formatLastMetrics(v.lastMetrics ?? [])].join("\n");
   },

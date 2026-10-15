@@ -164,6 +164,19 @@ describe("the gate with page-check problems", () => {
     expect(summary[1]).toBe("- CHECK FAILED: staging answered 404 for /x");
   });
 
+  it("says no page check is installed instead of reporting 0 pages read", () => {
+    const [line] = formatChecksSummary({
+      ran: [],
+      pagesChecked: 0,
+      findingCounts: { error: 0, warning: 0, info: 0 },
+      siteFindings: [],
+      siteProblems: [],
+      errors: [],
+    });
+    expect(line).toContain("none installed");
+    expect(line).not.toContain("page(s) read");
+  });
+
   it("a passed Stage without Lighthouse says so in the chat", () => {
     const base = {
       status: "passed" as const,
