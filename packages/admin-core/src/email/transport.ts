@@ -31,6 +31,21 @@ export function buildEmailTransport(cfg: EmailConfigRow): EmailTransport | undef
   return undefined;
 }
 
+/**
+ * Why this config cannot deliver mail, or null when it can. `buildEmailTransport`
+ * returns a transport for SMTP/SES too, but those throw on every send, so a
+ * caller that must tell the user "no mail will arrive" (the `/forgot` page)
+ * asks this instead of checking for a transport.
+ */
+export function emailDeliveryProblem(cfg: EmailConfigRow): string | null {
+  if (cfg.transport === "none") return "no email transport is set up";
+  if (cfg.transport === "smtp" || cfg.transport === "ses") {
+    return `the "${cfg.transport}" email transport is not implemented yet`;
+  }
+  if (!(cfg.config as { apiKey?: string }).apiKey) return "the Resend transport has no API key";
+  return null;
+}
+
 function makeResendTransport(cfg: EmailConfigRow): EmailTransport {
   const apiKey = (cfg.config as { apiKey?: string }).apiKey;
   if (!apiKey) {

@@ -1120,6 +1120,7 @@ const handlers: Record<string, () => Promise<void>> = {
   truncate: lifecycleTruncate,
   "admin-domain": adminDomain,
   "staging-domain": stagingDomain,
+  "owner-reset": ownerReset,
   // #696 — Pulumi state in the install's own project.
   state: async () => (await import("./state-command.js")).stateCommand(process.argv),
   attach: async () => (await import("./state-command.js")).attachCommand(process.argv),
@@ -1194,6 +1195,45 @@ async function lifecycleDestroy(): Promise<void> {
 async function lifecycleTruncate(): Promise<void> {
   const { truncateCommand } = await import("./lifecycle.js");
   await truncateCommand();
+}
+
+/**
+ * #769 `owner-reset [--install <id>] [--email <addr>]` — print a one-time
+ * reset link for a locked-out Owner, for installs whose admin cannot email
+ * one (see owner-reset.ts for why the operator's cloud identity may).
+ */
+async function ownerReset(): Promise<void> {
+  const { installFlag, listInstalls, selectInstall } = await import("./install-state.js");
+  const selected = selectInstall(listInstalls(), installFlag(process.argv));
+  if (!selected.ok) {
+    console.error(selected.message);
+    process.exit(1);
+  }
+  const meta = selected.meta;
+  if (meta.provider !== "gcp-firebase") {
+    console.error(
+      `owner-reset works on gcp-firebase installs so far; this one is ${meta.provider} (issue #770). ` +
+        "Until then, another Owner can set a new password under Settings -> Users, or set up email under Settings -> Email so /forgot can send the link.",
+    );
+    process.exit(1);
+  }
+  if (!meta.projectId || !meta.region) {
+    console.error(
+      `install ${meta.installId} has no project or region recorded in install.json; re-run the wizard to record it.`,
+    );
+    process.exit(1);
+  }
+  const email = arg("email");
+  const { describeOwnerReset, requestOwnerReset } = await import("./owner-reset.js");
+  const r = await requestOwnerReset(
+    { projectId: meta.projectId, region: meta.region },
+    email ? { email } : {},
+  );
+  if (!r.ok) {
+    console.error(`owner-reset: ${r.error}`);
+    process.exit(1);
+  }
+  for (const line of describeOwnerReset(r.value)) console.log(line);
 }
 
 /**
@@ -1495,7 +1535,7 @@ if (route.kind === "handler" || route.kind === "wizard") {
   }
 } else {
   console.log(
-    "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] [--local|--install-job] | <init|up|migrate|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|state migrate|attach|pulumi-output-sync|version> [options]\n" +
+    "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] [--local|--install-job] | <init|up|migrate|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|owner-reset|state migrate|attach|pulumi-output-sync|version> [options]\n" +
       "With several installs on this machine, pick one with --install <install-id or domain> (status, upgrade and backup also take --install all); in a terminal you are asked otherwise.\n" +
       "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
   );

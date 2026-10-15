@@ -29,7 +29,9 @@
  *        bulk acceptance of the picked groups (every open page, or the
  *        picked ones): proposed and applied as THIS human in one click, on
  *        the same propose/execute engine the AI's approval card uses. The AI
- *        is not involved, so there is nothing to approve twice.
+ *        is not involved, so there is nothing to approve twice. Answers
+ *        with the chat's status after the acceptance (`status`), so the
+ *        card never re-renders the groups it just accepted.
  */
 
 import { describeError, verifyCsrfToken } from "@caelo-cms/admin-core";
@@ -238,7 +240,13 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
       });
       return json({ ok: false, error: describeError(applied.error) }, { status: 409 });
     }
-    return json({ ok: true, accepted: (applied.value as { accepted?: number }).accepted ?? 0 });
+    // The status after the acceptance rides along: the card renders it at
+    // once instead of its pre-accept groups until the next read lands.
+    return json({
+      ok: true,
+      accepted: (applied.value as { accepted?: number }).accepted ?? 0,
+      status: await chatStatus(locals, params.sessionId),
+    });
   }
 
   if (body?.action === "claim" && typeof body.auditRunId === "string") {

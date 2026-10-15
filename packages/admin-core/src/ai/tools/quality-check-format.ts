@@ -60,8 +60,12 @@ export function formatChecksSummary(
   siteAccepted: readonly boolean[] = [],
 ): string[] {
   const c = checks.findingCounts;
+  // With no page check installed (they come from plugins, #727) nothing
+  // reads the pages; "none — 0 page(s) read" read like a broken fetch.
   const lines = [
-    `page checks (every page, every Stage): ${checks.ran.map((r) => r.id).join(", ") || "none"} — ${checks.pagesChecked} page(s) read; ${c.error} error(s), ${c.warning} warning(s), ${c.info} hint(s)`,
+    checks.ran.length === 0
+      ? "page checks: none installed (page checks come from plugins; no active plugin adds one) — only Lighthouse checked this Stage"
+      : `page checks (every page, every Stage): ${checks.ran.map((r) => r.id).join(", ")} — ${checks.pagesChecked} page(s) read; ${c.error} error(s), ${c.warning} warning(s), ${c.info} hint(s)`,
   ];
   for (const e of checks.errors) {
     lines.push(`- CHECK FAILED${e.checkId ? ` (${e.checkId})` : ""}: ${e.message}`);
