@@ -32,6 +32,12 @@ import * as aws from "@pulumi/aws";
 import * as awsx from "@pulumi/awsx";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
+import {
+  AWS_SERVICE_SECRETS,
+  type AwsSecret,
+  type AwsTaskService,
+  secretsReadPolicy,
+} from "../../dist/aws-task-roles.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "../../dist/stack-contract.js";
 
@@ -344,38 +350,48 @@ const cluster = new aws.ecs.Cluster(`${namePrefix}-ecs`, {
   settings: [{ name: "containerInsights", value: "enabled" }],
 });
 
-const taskRole = new aws.iam.Role(`${namePrefix}-task-role`, {
-  assumeRolePolicy: JSON.stringify({
-    Version: "2012-10-17",
-    Statement: [
-      {
-        Effect: "Allow",
-        Principal: { Service: "ecs-tasks.amazonaws.com" },
-        Action: "sts:AssumeRole",
-      },
-    ],
-  }),
-});
+// One task role per service (#635): the gateway's may read only the
+// public_role password, never a secret that unlocks a cms_admin login
+// (src/aws-task-roles.ts AWS_SERVICE_SECRETS, asserted by
+// gateway-env-isolation.test.ts). The admin keeps the logical names the
+// former shared role had, so upgrading replaces nothing on its side.
+const secretArns: Record<AwsSecret, pulumi.Output<string>> = {
+  "postgres-password": pgSecret.arn,
+  "public-role-password": publicRoleSecret.arn,
+  "gateway-role-password": gatewayRoleSecret.arn,
+  "csrf-secret": csrfSecretRes.arn,
+  "cookie-secret": cookieSecretRes.arn,
+  "anthropic-api-key": anthropicSecretRes.arn,
+  "resend-api-key": resendSecretRes.arn,
+};
 
-new aws.iam.RolePolicy(`${namePrefix}-task-secrets`, {
-  role: taskRole.id,
-  policy: pulumi
-    .all([
-      pgSecret.arn,
-      publicRoleSecret.arn,
-      gatewayRoleSecret.arn,
-      csrfSecretRes.arn,
-      cookieSecretRes.arn,
-      anthropicSecretRes.arn,
-      resendSecretRes.arn,
-    ])
-    .apply((arns) =>
-      JSON.stringify({
-        Version: "2012-10-17",
-        Statement: [{ Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: arns }],
-      }),
-    ),
-});
+function taskRole(service: AwsTaskService): aws.iam.Role {
+  const prefix = service === "admin" ? namePrefix : `${namePrefix}-${service}`;
+  const role = new aws.iam.Role(`${prefix}-task-role`, {
+    assumeRolePolicy: JSON.stringify({
+      Version: "2012-10-17",
+      Statement: [
+        {
+          Effect: "Allow",
+          Principal: { Service: "ecs-tasks.amazonaws.com" },
+          Action: "sts:AssumeRole",
+        },
+      ],
+    }),
+  });
+  new aws.iam.RolePolicy(`${prefix}-task-secrets`, {
+    role: role.id,
+    policy: pulumi
+      .all(AWS_SERVICE_SECRETS[service].map((name) => secretArns[name]))
+      .apply(secretsReadPolicy),
+  });
+  return role;
+}
+
+const taskRoles: Record<AwsTaskService, aws.iam.Role> = {
+  admin: taskRole("admin"),
+  gateway: taskRole("gateway"),
+};
 
 const execRole = new aws.iam.Role(`${namePrefix}-exec-role`, {
   assumeRolePolicy: JSON.stringify({
@@ -441,6 +457,9 @@ export const cloudfrontDomainOut = distribution.domainName;
 export const redirectKvsArnOut = redirectKvs.arn;
 export const ecsClusterArnOut = cluster.arn;
 export const rdsAddressOut = db.address;
+// The task roles the admin-side and gateway task definitions run as.
+export const adminTaskRoleArnOut = taskRoles.admin.arn;
+export const gatewayTaskRoleArnOut = taskRoles.gateway.arn;
 
 // Note: the bootstrap token (and other secrets like postgres-password,
 // CSRF/cookie secrets, Anthropic key) are stored in Pulumi's encrypted
