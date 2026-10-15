@@ -12,7 +12,7 @@ describe("claudeMcpAddCommand", () => {
         "claude mcp add caelo-admin \\",
         "  --env CAELO_ADMIN_URL=https://admin.example.com \\",
         "  --env CAELO_MCP_TOKEN=tok_123 \\",
-        "  -- bunx --package @caelo-cms/mcp-server caelo-admin-mcp",
+        "  -- bunx --package @caelo-cms/mcp-server@latest caelo-admin-mcp",
       ].join("\n"),
     );
   });
@@ -20,13 +20,22 @@ describe("claudeMcpAddCommand", () => {
   it("wires the caelo_chat shim for chat tokens", () => {
     const cmd = claudeMcpAddCommand({ ...base, scope: "chat", iapServiceAccount: null });
     expect(cmd.startsWith("claude mcp add caelo \\")).toBe(true);
-    expect(cmd.endsWith("-- bunx @caelo-cms/mcp-server")).toBe(true);
+    expect(cmd.endsWith("-- bunx @caelo-cms/mcp-server@latest")).toBe(true);
   });
 
-  it("#764: carries no version for either scope — the shim pins itself to the admin's release", () => {
+  it("#764: carries no release number for either scope — the shim pins itself to the admin's release", () => {
     for (const scope of ["admin", "chat"]) {
       const cmd = claudeMcpAddCommand({ ...base, scope, iapServiceAccount: null });
-      expect(cmd).not.toContain("@caelo-cms/mcp-server@");
+      expect(cmd).not.toMatch(/@caelo-cms\/mcp-server@\d/);
+    }
+  });
+
+  it("#764: resolves @latest, so bunx never reuses a cached pre-handshake shim", () => {
+    // A bare name lets bunx run its cached unversioned install (up to a day old)
+    // or a same-named binary on PATH; a dist-tag asks the registry every start.
+    for (const scope of ["admin", "chat"]) {
+      const cmd = claudeMcpAddCommand({ ...base, scope, iapServiceAccount: null });
+      expect(cmd).toContain("@caelo-cms/mcp-server@latest");
     }
   });
 
