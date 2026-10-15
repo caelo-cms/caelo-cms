@@ -29,6 +29,7 @@ import { z } from "zod";
 import { type ExternalApproval, operatorHasPermission } from "./external-authorization.js";
 import { previewContext } from "./preview-context.js";
 import type { PluginRowLocker } from "./private-storage.js";
+import { emitPublicPluginOpEvent, isPublicSideHost } from "./published-state.js";
 import { consumeExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
@@ -570,6 +571,18 @@ export async function runPluginOperation(
     // poll, allowing per-page incremental rebuild on plugin data
     // change. Best-effort: failure to audit doesn't fail the op.
     try {
+      // #635 — on the public side (no cms_admin login) the record lands in
+      // cms_public, where the admin reads it back only as untrusted hints.
+      if (isPublicSideHost(cachedInfra)) {
+        await emitPublicPluginOpEvent(cachedInfra, {
+          pluginId: plugin.pluginId,
+          actorId: plugin.pluginActorId,
+          operation: `${plugin.slug}.${opts.operationName}`,
+          inputHash: auditInputDigest(opts.args),
+          entityId: extractEntityId(value),
+        });
+        return { ok: true, value };
+      }
       await emitPluginAuditRow(cachedInfra.adapter, {
         actorId: plugin.pluginActorId,
         operation: `${plugin.slug}.${opts.operationName}`,

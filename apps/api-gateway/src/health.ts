@@ -4,14 +4,14 @@
  * The gateway's health check for upgrades (epic #696).
  *
  *   GET /api/_caelo/health         → `{ ok, version }` (liveness)
- *   GET /api/_caelo/health?deep=1  → also proves both database logins work
- *                                    (gateway_role on cms_admin, public_role
- *                                    on cms_public); 503 otherwise
+ *   GET /api/_caelo/health?deep=1  → also proves the database login works
+ *                                    (public_role on cms_public — the gateway
+ *                                    has no other, #635); 503 otherwise
  *
  * Under `/api/` because that is the only path the gcp load balancer routes to
  * the gateway. The gateway is public by design, so the answer carries nothing
  * but the release version and a failure kind — never a database error. The
- * deep check costs one round trip per pool only until it first succeeds
+ * deep check costs one round trip only until it first succeeds
  * (`verifyRoles` remembers success), so it is no amplification vector behind
  * the WAF's rate limits.
  */

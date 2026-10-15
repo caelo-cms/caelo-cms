@@ -23,9 +23,16 @@
  * dedicated long-lived connection per replica. The poll cost is
  * trivial — one indexed timestamp range query per tick.
  *
- * Also runs the gateway-log + pow-challenges GC sweep every hour:
- *   - DELETE FROM gateway_request_log WHERE created_at < now() - '90 days'.
- *   - DELETE FROM pow_challenges WHERE expires_at < now() - '1 hour'.
+ * Visitor plugin ops (#635): the public gateway has no cms_admin login, so
+ * the op record of a visitor call lands in cms_public
+ * (`gateway_plugin_op_events`). The tick reads those too — as UNTRUSTED
+ * hints: each row is schema-checked, only allowlisted op kinds count, a
+ * page id is accepted only when it names an existing page, and a hint
+ * only ever schedules a rebuild from the authoritative state (it never
+ * changes cms_admin). See docs/dev/public-admin-boundary.md.
+ *
+ * Also runs the admin's own GC sweep every hour (its login rate-limit
+ * buckets); the gateway sweeps its own state in cms_public.
  */
 
 import { createHash } from "node:crypto";
@@ -43,6 +50,7 @@ import {
   type Screenshotter,
 } from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
+import { z } from "zod";
 import { parseCrawlScope } from "./crawl-scope.js";
 import { parseExplicitUrls } from "./explicit-urls.js";
 
@@ -162,16 +170,36 @@ async function resolvePluginOpPageId(
   operation: string,
   entityId: string,
 ): Promise<string | null> {
+  // The plugin tables live in cms_public: what they say is UNTRUSTED (#635).
+  // A page id counts only when it is a uuid naming a page that exists.
+  const pageId = await readPluginRowPageId(adapter, operation, entityId);
+  if (pageId === null || !UUID_RE.test(pageId)) return null;
+  const exists = (await adapter.withAdminTransaction(
+    SYSTEM_CTX,
+    async (tx) =>
+      await tx.execute(sql`SELECT 1 AS ok FROM pages WHERE id = ${pageId}::uuid LIMIT 1`),
+  )) as unknown as unknown[];
+  return exists.length > 0 ? pageId : null;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function readPluginRowPageId(
+  adapter: DatabaseAdapter,
+  operation: string,
+  entityId: string,
+): Promise<string | null> {
   // Comments — `comments.moderate` + bulk variant. entity_id is the
   // comment id; lookup table is cms_public.plugin_comments.comments.
-  if (operation === "comments.moderate" || operation === "comments.moderate_bulk") {
+  if (operation === "comments.moderate" || operation === "comments.bulk_moderate") {
     try {
       const pub = adapter.rawPublic();
       const rows = (await pub`
         SELECT page_id::text AS page_id FROM plugin_comments.comments
         WHERE id = ${entityId}::uuid LIMIT 1
       `) as unknown as { page_id: string | null }[];
-      return rows[0]?.page_id ?? null;
+      const v = rows[0]?.page_id;
+      return typeof v === "string" ? v : null;
     } catch {
       return null;
     }
@@ -185,7 +213,8 @@ async function resolvePluginOpPageId(
         SELECT page_id::text AS page_id FROM plugin_ratings.ratings
         WHERE id = ${entityId}::uuid LIMIT 1
       `) as unknown as { page_id: string | null }[];
-      return rows[0]?.page_id ?? null;
+      const v = rows[0]?.page_id;
+      return typeof v === "string" ? v : null;
     } catch {
       return null;
     }
@@ -195,6 +224,32 @@ async function resolvePluginOpPageId(
   // they intentionally don't appear here. If a future plugin op should
   // trigger a per-page rebuild, add a case + the lookup query.
   return null;
+}
+
+const visitorOpEvent = z.object({
+  id: z.string().regex(/^\d{1,20}$/),
+  operation: z.string().regex(/^[a-z][a-z0-9-]{0,63}\.[a-z_][a-z0-9_]{0,119}$/),
+  entity_id: z.string().regex(UUID_RE).nullable(),
+  succeeded: z.boolean(),
+});
+
+/**
+ * Validate `gateway_plugin_op_events` rows read from cms_public. Rows are
+ * returned in id order; a malformed one is dropped (its id still moves
+ * the watermark past it only if a later valid row follows).
+ */
+export function parseVisitorOpEvents(raw: readonly unknown[]): {
+  rows: z.infer<typeof visitorOpEvent>[];
+  dropped: number;
+} {
+  const rows: z.infer<typeof visitorOpEvent>[] = [];
+  let dropped = 0;
+  for (const r of raw) {
+    const parsed = visitorOpEvent.safeParse(r);
+    if (parsed.success) rows.push(parsed.data);
+    else dropped += 1;
+  }
+  return { rows, dropped };
 }
 
 export function startRedeployOrchestrator(cfg: OrchestratorConfig): OrchestratorHandle {
@@ -311,7 +366,13 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           operation: string;
         }>,
     );
-    if (rows.length === 0) return;
+    const visitorRows = await readVisitorOpEvents(safeOpKinds);
+    if (rows.length === 0 && visitorRows.length === 0) return;
+    for (const r of visitorRows) {
+      if (!r.entity_id) continue;
+      const pageId = await resolvePluginOpPageId(cfg.adapter, r.operation, r.entity_id);
+      if (pageId) pendingPageIds.add(pageId);
+    }
     // Collect per-page deltas. Operations on `pages.*` carry the page
     // id as `entity_id` directly. Plugin write ops carry their own
     // entity (e.g. `comments.moderate.entity_id` is the comment id);
@@ -329,7 +390,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         if (pageId) pendingPageIds.add(pageId);
       }
     }
-    const latest = rows[rows.length - 1]?.created_at;
+    const latest = rows.length > 0 ? rows[rows.length - 1]?.created_at : undefined;
     if (latest) {
       lastSeenAt = latest instanceof Date ? latest : new Date(String(latest));
       void persistLastSeen(lastSeenAt);
@@ -558,16 +619,57 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
     }
   }
 
+  /**
+   * #635 — visitor plugin op events past the persisted watermark, read from
+   * cms_public as UNTRUSTED rows: anything that is not a well-formed event
+   * of an allowlisted op kind is skipped, and at most 500 are taken per
+   * tick, so a flood of forged rows can delay rebuilds but never widen
+   * what a rebuild may touch.
+   */
+  async function readVisitorOpEvents(
+    opKinds: readonly string[],
+  ): Promise<{ operation: string; entity_id: string | null }[]> {
+    try {
+      const watermark = (await cfg.adapter.withAdminTransaction(
+        SYSTEM_CTX,
+        async (tx) =>
+          await tx.execute(
+            sql`SELECT auto_redeploy_last_public_event_id::text AS id FROM site_settings WHERE id = 1`,
+          ),
+      )) as unknown as { id: string }[];
+      const after = watermark[0]?.id ?? "0";
+      const raw = (await cfg.adapter.withPublicTransaction(
+        SYSTEM_CTX,
+        async (tx) =>
+          await tx.execute(sql`
+            SELECT id::text AS id, operation, entity_id::text AS entity_id, succeeded
+            FROM gateway_plugin_op_events
+            WHERE id > ${after}::bigint
+            ORDER BY id ASC
+            LIMIT 500
+          `),
+      )) as unknown as unknown[];
+      const { rows } = parseVisitorOpEvents(raw);
+      if (rows.length === 0) return [];
+      const last = rows[rows.length - 1]?.id as string;
+      await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
+        await tx.execute(
+          sql`UPDATE site_settings SET auto_redeploy_last_public_event_id = ${last}::bigint WHERE id = 1`,
+        );
+      });
+      return rows.filter((r) => r.succeeded && opKinds.includes(r.operation));
+    } catch (e) {
+      console.error(
+        `[redeploy-orchestrator] visitor op events unreadable: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return [];
+    }
+  }
+
   async function gcSweep(): Promise<void> {
     if (stopped) return;
     try {
       await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
-        await tx.execute(
-          sql`DELETE FROM gateway_request_log WHERE created_at < now() - interval '90 days'`,
-        );
-        await tx.execute(
-          sql`DELETE FROM pow_challenges WHERE expires_at < now() - interval '1 hour'`,
-        );
         await tx.execute(
           sql`DELETE FROM rate_limit_buckets WHERE expires_at < now() - interval '1 hour'`,
         );

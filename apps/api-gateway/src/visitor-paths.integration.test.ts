@@ -10,17 +10,19 @@
  *      literal "dev" token in production, so a visitor whose proof the
  *      gateway had verified was still refused.
  *
- * Drives each path through `handleRequest` exactly as production wires it:
- * gateway_role on cms_admin, public_role on cms_public, the registry from
- * `registerGatewayOperations`, the real comments plugin attached by the
- * dispatch-only host. The adversarial block proves the grants (migrations
- * 0252, 0259) reach only approved comments.
+ * Drives each path through `handleRequest` exactly as production wires it
+ * since #635: public_role on cms_public and no cms_admin login at all, the
+ * registry from `registerGatewayOperations`, the real comments plugin
+ * attached by the dispatch-only host, approved comments read from what the
+ * admin publishes. The adversarial block proves only approved comments
+ * cross, and the public side cannot rewrite them.
  *
  * Core A/B testing is gone (epic #676, migration 0259): the gateway serves
  * no `/api/variant*` route and its registry holds no experiment operation.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { drainProjectionOnce, publishProjectionOnce } from "@caelo-cms/admin-core";
 import commentsPlugin from "@caelo-cms/plugin-comments";
 import {
   bootstrap,
@@ -43,11 +45,10 @@ import {
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
-const GATEWAY_URL = process.env.GATEWAY_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_DATABASE_URL;
-if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !GATEWAY_URL || !PUBLIC_URL) {
+if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !PUBLIC_URL) {
   throw new Error(
-    "ADMIN_DATABASE_URL, PUBLIC_ADMIN_DATABASE_URL, GATEWAY_DATABASE_URL and PUBLIC_DATABASE_URL are required (bootstrap.sh creates gateway_role)",
+    "ADMIN_DATABASE_URL, PUBLIC_ADMIN_DATABASE_URL and PUBLIC_DATABASE_URL are required",
   );
 }
 
@@ -82,8 +83,6 @@ async function cleanup(): Promise<void> {
     await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'comments')`;
     await tx`DELETE FROM plugin_schema_migrations WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'comments')`;
     await tx`DELETE FROM plugins WHERE slug = 'comments'`;
-    await tx`DELETE FROM gateway_request_log WHERE plugin_slug = 'comments'`;
-    await tx`DELETE FROM rate_limit_buckets WHERE key LIKE '%comments%'`;
   });
   const pub = new SQL(PUBLIC_ADMIN_URL as string);
   try {
@@ -98,6 +97,12 @@ async function setCaptcha(provider: "off" | "pow"): Promise<void> {
   await asAdmin(async (tx) => {
     await tx`UPDATE site_settings SET captcha_provider = ${provider}, captcha_pow_target_prefix = '0' WHERE id = 1`;
   });
+  await publish();
+}
+
+/** The admin's outbox drain (#635): publish what changed, then the gateway drops its caches. */
+async function publish(): Promise<void> {
+  await drainProjectionOnce(adminAdapter, new Map());
   invalidateGatewaySettings();
 }
 
@@ -176,14 +181,13 @@ beforeAll(async () => {
              (gen_random_uuid(), ${pageId}::uuid, 'Spammer', 'buy now', 'spam', now()),
              (gen_random_uuid(), ${pageId}::uuid, 'Troll', 'rejected text', 'rejected', now())`;
   });
+  // The migration job / admin boot publish (#635), approved comments included.
+  await publishProjectionOnce(adminAdapter, { declarations: new Map(), comments: true });
 
   // --- Gateway side: production wiring. ---
-  const urls = gatewayDatabaseUrls({
-    GATEWAY_DATABASE_URL: GATEWAY_URL,
-    PUBLIC_DATABASE_URL: PUBLIC_URL,
-  });
+  const urls = gatewayDatabaseUrls({ PUBLIC_DATABASE_URL: PUBLIC_URL });
   gatewayAdapter = new DatabaseAdapter({
-    adminDatabaseUrl: urls.gateway,
+    adminDatabaseUrl: null,
     publicDatabaseUrl: urls.public,
     expectedRoles: GATEWAY_DATABASE_ROLES,
   });
@@ -208,7 +212,7 @@ afterAll(async () => {
     await tx`UPDATE site_settings SET captcha_provider = ${savedCaptcha?.provider ?? "pow"},
              captcha_pow_target_prefix = ${savedCaptcha?.prefix ?? "000fff"} WHERE id = 1`;
   });
-  invalidateGatewaySettings();
+  await publish();
   await cleanup();
   await gatewayAdapter.close();
   await adminAdapter.close();
@@ -232,6 +236,29 @@ describe("comments list_approved through the gateway (#634)", () => {
     const comments = ((await r.json()) as { data: { comments: { author_name: string }[] } }).data
       .comments;
     expect(comments.map((c) => c.author_name)).toEqual(["Ada"]);
+  });
+
+  it("a moderation in the admin reaches the gateway through the outbox", async () => {
+    await asAdmin(async (tx) => {
+      await tx`
+        INSERT INTO comment_archive (public_row_id, page_id, author_name, content, status, submitted_at)
+        VALUES (gen_random_uuid(), ${pageId}::uuid, 'Grace', 'Approved later', 'approved', now())`;
+    });
+    await publish();
+    const r = await handleRequest(post("/api/plugin/comments/list_approved", { pageId }));
+    const comments = ((await r.json()) as { data: { comments: { author_name: string }[] } }).data
+      .comments;
+    expect(comments.map((c) => c.author_name)).toEqual(["Ada", "Grace"]);
+    await asAdmin(async (tx) => {
+      await tx`DELETE FROM comment_archive WHERE author_name = 'Grace' AND page_id = ${pageId}::uuid`;
+    });
+    await publish();
+    const after = await handleRequest(post("/api/plugin/comments/list_approved", { pageId }));
+    expect(
+      ((await after.json()) as { data: { comments: { author_name: string }[] } }).data.comments.map(
+        (c) => c.author_name,
+      ),
+    ).toEqual(["Ada"]);
   });
 });
 
@@ -295,14 +322,14 @@ describe("comments submit: ctx.captcha.requireProof follows the gateway's verdic
   });
 });
 
-describe("the new grants reach only what the visitor paths need (#634, adversarial)", () => {
-  /** Run `query` as gateway_role; resolve to its rows, or the error message. */
+describe("only approved comments cross to the public side (#634, #635, adversarial)", () => {
+  /** Run `query` as public_role (the gateway's login); resolve to its rows, or the error message. */
   async function attempt(
     query: ReturnType<typeof sql>,
     actorKind: "system" | "plugin" = "system",
   ): Promise<unknown[] | string> {
     try {
-      return await gatewayAdapter.withAdminTransaction(
+      return await gatewayAdapter.withPublicTransaction(
         { actorId: SYSTEM_ACTOR_ID, actorKind, requestId: "t634" },
         async (tx) => (await tx.execute(query)) as unknown as unknown[],
       );
@@ -312,27 +339,27 @@ describe("the new grants reach only what the visitor paths need (#634, adversari
     }
   }
 
-  it("sees approved comments only, and cannot write the archive", async () => {
+  it("sees the approved comment only, and cannot write the published set", async () => {
     const rows = await attempt(
-      sql`SELECT status FROM comment_archive WHERE page_id = ${pageId}::uuid`,
+      sql`SELECT author_name FROM published_comments WHERE page_id = ${pageId}::uuid`,
       "plugin",
     );
-    expect(rows).toEqual([{ status: "approved" }]);
+    expect(rows).toEqual([{ author_name: "Ada" }]);
     expect(
       await attempt(
-        sql`INSERT INTO comment_archive (public_row_id, page_id, author_name, content, status, submitted_at)
-            VALUES (gen_random_uuid(), ${pageId}::uuid, 'x', 'y', 'approved', now())`,
+        sql`INSERT INTO published_comments (id, public_row_id, page_id, author_name, content, submitted_at, archived_at)
+            VALUES (gen_random_uuid(), gen_random_uuid(), ${pageId}::uuid, 'x', 'y', now(), now())`,
         "plugin",
       ),
     ).toMatch(/permission denied/);
-    expect(await attempt(sql`UPDATE comment_archive SET content = 'x'`, "plugin")).toMatch(
+    expect(await attempt(sql`UPDATE published_comments SET content = 'x'`, "plugin")).toMatch(
       /permission denied/,
     );
   });
 
-  it("still cannot read pages or any other authoring table", async () => {
-    expect(await attempt(sql`SELECT id FROM pages LIMIT 1`)).toMatch(/permission denied/);
-    expect(await attempt(sql`SELECT id FROM modules LIMIT 1`)).toMatch(/permission denied/);
+  it("there is no authoring table to reach on its connection", async () => {
+    expect(await attempt(sql`SELECT id FROM pages LIMIT 1`)).toMatch(/does not exist/);
+    expect(await attempt(sql`SELECT id FROM comment_archive LIMIT 1`)).toMatch(/does not exist/);
   });
 
   it("the registry holds only the gateway's operations — a plugin cannot reach the archive write", async () => {

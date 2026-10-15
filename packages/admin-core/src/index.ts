@@ -128,6 +128,8 @@ export {
 export * from "./ops/users.js";
 export * from "./password.js";
 export * from "./permissions.js";
+export * from "./public-projection.js";
+export * from "./untrusted/public-data.js";
 // P21 ship 5 — release-check sidecar worker (replaces the in-handler
 // GitHub fetch; bootstrap from hooks.server.ts).
 // #696 Phase 5 — the auto-update scheduler (bootstrapped from hooks.server.ts).

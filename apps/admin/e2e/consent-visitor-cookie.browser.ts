@@ -14,7 +14,7 @@
  * (apps/api-gateway/e2e/consent-site.ts) generates a page with a consent
  * banner through the real static generator — the consent-manager runtime
  * is injected exactly as on a live build — and serves it next to the real
- * gateway, booted as gateway_role.
+ * gateway, booted as public_role only (no cms_admin login, #635).
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
@@ -33,12 +33,7 @@ let pageUrl = "";
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async () => {
-  for (const name of [
-    "ADMIN_DATABASE_URL",
-    "PUBLIC_ADMIN_DATABASE_URL",
-    "GATEWAY_DATABASE_URL",
-    "PUBLIC_DATABASE_URL",
-  ]) {
+  for (const name of ["ADMIN_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL", "PUBLIC_DATABASE_URL"]) {
     if (!process.env[name]) throw new Error(`${name} is required (see ci.yml e2e)`);
   }
   const proc = spawn("bun", ["--no-env-file", "apps/api-gateway/e2e/consent-site.ts"], {
@@ -49,7 +44,6 @@ test.beforeAll(async () => {
       NODE_ENV: "development",
       ADMIN_DATABASE_URL: process.env.ADMIN_DATABASE_URL,
       PUBLIC_ADMIN_DATABASE_URL: process.env.PUBLIC_ADMIN_DATABASE_URL,
-      GATEWAY_DATABASE_URL: process.env.GATEWAY_DATABASE_URL,
       PUBLIC_DATABASE_URL: process.env.PUBLIC_DATABASE_URL,
     },
     stdio: ["ignore", "pipe", "inherit"],

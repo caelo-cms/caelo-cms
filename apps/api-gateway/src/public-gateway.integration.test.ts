@@ -1,20 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #613 — the API gateway runs without any admin_role credential.
+ * Issue #635 — the API gateway runs with NO cms_admin login.
  *
  * The admin side registers + provisions a fixture plugin as admin_role
- * (exactly as the admin host does); the gateway side then serves /api/*
- * through `handleRequest` with the gateway's real identities — gateway_role
- * on cms_admin, public_role on cms_public — and a dispatch-only plugin host.
- * Proves that forms-style plugin writes, private-storage reads, rate
- * limiting, captcha, honeypot, the request log and the plugin op audit all
- * work under the narrow grants (migration 0248), that the gateway follows
- * Owner activation/disable without a restart, and — adversarially — that
- * gateway_role reaches nothing else in cms_admin.
+ * (exactly as the admin host does) and publishes the gateway projection
+ * into cms_public; the gateway side then serves /api/* through
+ * `handleRequest` with its real identity — public_role on cms_public, and
+ * an adapter that has no cms_admin pool at all — and a dispatch-only plugin
+ * host. Proves that plugin writes, the declared visitor projection of
+ * private storage, rate limiting, captcha, honeypot, the request log, the
+ * plugin op events and the staging gate all work from cms_public alone,
+ * that the projection follows admin writes through the outbox, and —
+ * adversarially — that the public side can neither reach cms_admin nor
+ * rewrite what the admin published.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { drainProjectionOnce, publishProjectionOnce } from "@caelo-cms/admin-core";
 import {
   bootstrap,
   bootstrapDispatchOnly,
@@ -23,9 +26,12 @@ import {
   resetPluginHost,
   syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
-import { adminSchemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { definePlugin, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
-import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  AdminDatabaseUnavailableError,
+  DatabaseAdapter,
+  OperationRegistry,
+} from "@caelo-cms/query-api";
 import { STAGING_SESSION_COOKIE, signStagingToken } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
@@ -40,17 +46,16 @@ import {
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
-const GATEWAY_URL = process.env.GATEWAY_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_DATABASE_URL;
-if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !GATEWAY_URL || !PUBLIC_URL) {
+if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !PUBLIC_URL) {
   throw new Error(
-    "ADMIN_DATABASE_URL, PUBLIC_ADMIN_DATABASE_URL, GATEWAY_DATABASE_URL and PUBLIC_DATABASE_URL are required (bootstrap.sh creates gateway_role)",
+    "ADMIN_DATABASE_URL, PUBLIC_ADMIN_DATABASE_URL and PUBLIC_DATABASE_URL are required",
   );
 }
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
-const SLUG = "t613-gw";
-const SCHEMA = "plugin_t613_gw";
+const SLUG = "t635-gw";
+const SCHEMA = "plugin_t635_gw";
 
 type AdminCtx = { adminQuery?: PluginAdminQuery };
 
@@ -59,13 +64,14 @@ const fixture = definePlugin({
   version: "1.0.0",
   tier: 1,
   schema: { notes: { id: "uuid", visitor_id: "string", message: "string" } },
-  // `internal_note` and `drafts` are what a later version drops (#613 review).
   adminSchema: {
     settings: { label: "string", internal_note: "string" },
     drafts: { body: "string" },
   },
+  // Only `settings.label` crosses to the public side.
+  visitorProjection: { settings: ["label"] },
   requestedCapabilities: ["cms_admin_schema"],
-  publicOperations: ["save", "read_setting"],
+  publicOperations: ["save", "read_setting", "read_internal", "write_setting"],
   operations: {
     save: async (ctx, args) => {
       const r = await ctx.query.insert("notes", {
@@ -74,17 +80,28 @@ const fixture = definePlugin({
       });
       return { id: r.id };
     },
-    // Visitor-facing read of the plugin's private cms_admin storage — the
+    // Visitor-facing read of the private storage's projection — the
     // consent-manager `record_consent` shape.
     read_setting: async (ctx) => {
       const q = (ctx as AdminCtx).adminQuery;
       if (!q) throw new Error("ctx.adminQuery missing");
       const rows = await q.list<"settings", { label: string }>("settings", { limit: 1 });
-      return { label: rows[0]?.label ?? null };
+      return { label: rows[0]?.label ?? null, keys: Object.keys(rows[0] ?? {}).sort() };
+    },
+    read_internal: async (ctx) => {
+      const q = (ctx as AdminCtx).adminQuery as PluginAdminQuery;
+      return { drafts: await q.list("drafts", { limit: 1 }) };
+    },
+    write_setting: async (ctx) => {
+      const q = (ctx as AdminCtx).adminQuery as PluginAdminQuery;
+      await q.insert("settings", { label: "from-a-visitor" });
+      return { written: true };
     },
     admin_only: async () => ({ secret: true }),
   },
 });
+
+const DECLARATIONS = new Map([[SLUG, { settings: ["label"] }]]);
 
 let adminAdapter: DatabaseAdapter;
 let gatewayAdapter: DatabaseAdapter;
@@ -103,6 +120,26 @@ async function asAdmin<T>(fn: (tx: SQL) => Promise<T>, pluginScope?: string): Pr
   }
 }
 
+/** Read cms_public as the admin (admin_role, system actor). */
+async function asPublicAdmin<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
+  const conn = new SQL(PUBLIC_ADMIN_URL as string);
+  try {
+    return (await conn.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return fn(tx as unknown as SQL);
+    })) as T;
+  } finally {
+    await conn.end();
+  }
+}
+
+/** The admin publishes (the outbox drain the admin process runs every 2s). */
+async function publish(): Promise<void> {
+  await drainProjectionOnce(adminAdapter, DECLARATIONS);
+  invalidateGatewaySettings();
+  invalidateRateLimitSpecCache();
+}
+
 async function cleanup(): Promise<void> {
   resetPluginHost();
   resetDispatchOnlyHost();
@@ -114,15 +151,10 @@ async function cleanup(): Promise<void> {
     await tx`DELETE FROM plugin_schema_migrations WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${SLUG})`;
     await tx`DELETE FROM plugins WHERE slug = ${SLUG}`;
     await tx`DELETE FROM plugin_rate_limit_overrides WHERE plugin_slug = ${SLUG}`;
-    await tx`DELETE FROM gateway_request_log WHERE plugin_slug = ${SLUG}`;
-    await tx`DELETE FROM rate_limit_buckets WHERE key LIKE ${`%${SLUG}%`}`;
   });
-  const pub = new SQL(PUBLIC_ADMIN_URL as string);
-  try {
-    await pub.unsafe(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
-  } finally {
-    await pub.end();
-  }
+  await asPublicAdmin(async (tx) => {
+    await tx.unsafe(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+  });
 }
 
 let clientIp = 0;
@@ -154,7 +186,7 @@ async function expectStatus(r: Response, status: number): Promise<void> {
 
 beforeAll(async () => {
   await cleanup();
-  // --- Admin side: register + provision, as the admin host does. ---
+  // --- Admin side: register + provision + publish, as the admin host does. ---
   adminAdapter = new DatabaseAdapter({
     adminDatabaseUrl: ADMIN_URL,
     publicDatabaseUrl: PUBLIC_ADMIN_URL,
@@ -172,18 +204,19 @@ beforeAll(async () => {
         ?.id ?? "",
   );
   await asAdmin(async (tx) => {
-    await tx.unsafe(`INSERT INTO ${SCHEMA}.settings (label) VALUES ('from-the-admin')`);
+    await tx.unsafe(
+      `INSERT INTO ${SCHEMA}.settings (label, internal_note) VALUES ('from-the-admin', 'private')`,
+    );
+    await tx.unsafe(`INSERT INTO ${SCHEMA}.drafts (body) VALUES ('unpublished')`);
   }, pluginId);
+  await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
   // The admin process goes away; only the gateway's view remains.
   resetPluginHost();
 
-  // --- Gateway side: its real identities, dispatch-only host. ---
-  const urls = gatewayDatabaseUrls({
-    GATEWAY_DATABASE_URL: GATEWAY_URL,
-    PUBLIC_DATABASE_URL: PUBLIC_URL,
-  });
+  // --- Gateway side: its real identity, dispatch-only host. ---
+  const urls = gatewayDatabaseUrls({ PUBLIC_DATABASE_URL: PUBLIC_URL });
   gatewayAdapter = new DatabaseAdapter({
-    adminDatabaseUrl: urls.gateway,
+    adminDatabaseUrl: null,
     publicDatabaseUrl: urls.public,
     expectedRoles: GATEWAY_DATABASE_ROLES,
   });
@@ -207,7 +240,7 @@ afterAll(async () => {
   await adminAdapter.close();
 });
 
-describe("gatewayDatabaseUrls (#613)", () => {
+describe("the gateway's database identity (#613, #635)", () => {
   it("refuses to start with any admin_role credential in the env", () => {
     for (const name of [
       "ADMIN_DATABASE_URL",
@@ -217,7 +250,6 @@ describe("gatewayDatabaseUrls (#613)", () => {
     ]) {
       expect(() =>
         gatewayDatabaseUrls({
-          GATEWAY_DATABASE_URL: "postgres://gateway_role@h/cms_admin",
           PUBLIC_DATABASE_URL: "postgres://public_role@h/cms_public",
           [name]: "x",
         }),
@@ -225,73 +257,102 @@ describe("gatewayDatabaseUrls (#613)", () => {
     }
   });
 
-  it("names a missing URL and composes passwords from their _PASSWORD companions", () => {
-    expect(() => gatewayDatabaseUrls({ PUBLIC_DATABASE_URL: "postgres://p@h/cms_public" })).toThrow(
-      /GATEWAY_DATABASE_URL/,
-    );
+  it("needs only PUBLIC_DATABASE_URL, with its _PASSWORD companion", () => {
+    expect(() => gatewayDatabaseUrls({})).toThrow(/PUBLIC_DATABASE_URL/);
     const urls = gatewayDatabaseUrls({
-      GATEWAY_DATABASE_URL: "postgresql://gateway_role@h:5432/cms_admin",
-      GATEWAY_DATABASE_PASSWORD: "g",
       PUBLIC_DATABASE_URL: "postgresql://public_role@h:5432/cms_public",
       PUBLIC_DATABASE_PASSWORD: "p",
     });
-    expect(new URL(urls.gateway).password).toBe("g");
     expect(new URL(urls.public).password).toBe("p");
   });
 
-  it("the gateway pool really is gateway_role, and the role is not privileged", async () => {
-    const raw = gatewayAdapter.rawAdmin();
-    const [who] = (await raw`SELECT current_user::text AS u`) as { u: string }[];
-    expect(who?.u).toBe("gateway_role");
-    const [attrs] = (await raw`
-      SELECT rolsuper, rolcreaterole, rolcreatedb, rolbypassrls, rolinherit
-      FROM pg_roles WHERE rolname = 'gateway_role'`) as Record<string, boolean>[];
-    expect(attrs).toEqual({
-      rolsuper: false,
-      rolcreaterole: false,
-      rolcreatedb: false,
-      rolbypassrls: false,
-      rolinherit: false,
-    });
-    const memberships = (await raw`
-      SELECT r.rolname::text AS role FROM pg_auth_members m
-      JOIN pg_roles r ON r.oid = m.roleid
-      JOIN pg_roles u ON u.oid = m.member
-      WHERE u.rolname = 'gateway_role'`) as { role: string }[];
-    expect(memberships).toEqual([]);
+  it("holds no cms_admin pool: every path to the authoring database throws", async () => {
+    expect(gatewayAdapter.hasAdminDatabase).toBe(false);
+    expect(() => gatewayAdapter.rawAdmin()).toThrow(AdminDatabaseUnavailableError);
+    await expect(
+      gatewayAdapter.withAdminTransaction(
+        { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t635" },
+        async () => "reached",
+      ),
+    ).rejects.toThrow(AdminDatabaseUnavailableError);
+  });
+
+  it("its login is public_role, which cannot even connect to cms_admin", async () => {
+    const [who] = (await gatewayAdapter.rawPublic()`SELECT current_user::text AS u`) as {
+      u: string;
+    }[];
+    expect(who?.u).toBe("public_role");
+    // Asked of the catalog: Bun's client retries a refused login forever.
+    const [can] = (await gatewayAdapter.rawPublic()`
+      SELECT has_database_privilege('public_role', 'cms_admin', 'CONNECT') AS c`) as {
+      c: boolean;
+    }[];
+    expect(can?.c).toBe(false);
   });
 });
 
-describe("/api/* served as gateway_role + public_role (#613)", () => {
-  it("dispatches a visitor write, logs the request and audits the plugin op", async () => {
+describe("/api/* served from cms_public alone (#635)", () => {
+  it("dispatches a visitor write, logs the request and records the op event in cms_public", async () => {
     const r = await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "hi" }));
     await expectStatus(r, 200);
     // No consent provider runs here, so nobody has consented to the
     // visitor-id cookie (#677).
     expect(r.headers.get("set-cookie")).toBeNull();
-    const body = (await r.json()) as { ok: boolean; data: { id: string } };
-    expect(body.ok).toBe(true);
+    const { data } = (await r.json()) as { data: { id: string } };
     // The request log write is fire-and-forget; give it a moment.
     await Bun.sleep(200);
-    const logged = await asAdmin(
+    const logged = await asPublicAdmin(
       async (tx) =>
         (await tx`SELECT status_code FROM gateway_request_log WHERE plugin_slug = ${SLUG} AND operation = 'save'`) as {
           status_code: number;
         }[],
     );
     expect(logged.map((l) => l.status_code)).toContain(200);
+    const events = await asPublicAdmin(
+      async (tx) =>
+        (await tx`SELECT operation, entity_id::text AS entity_id FROM gateway_plugin_op_events
+                  WHERE plugin_id = ${pluginId}::uuid`) as {
+          operation: string;
+          entity_id: string;
+        }[],
+    );
+    expect(events).toContainEqual({ operation: `${SLUG}.save`, entity_id: data.id });
+    // Nothing of the visitor call landed in the authoring audit trail.
     const audited = await asAdmin(
       async (tx) =>
         (await tx`SELECT a.operation FROM audit_events a JOIN actors ac ON ac.id = a.actor_id
                   WHERE ac.plugin_id = ${pluginId}::uuid`) as { operation: string }[],
     );
-    expect(audited.map((a) => a.operation)).toContain(`${SLUG}.save`);
+    expect(audited.map((a) => a.operation)).not.toContain(`${SLUG}.save`);
   });
 
-  it("a visitor operation reads the plugin's private cms_admin storage", async () => {
+  it("a visitor operation reads the declared projection of private storage, nothing more", async () => {
     const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
     await expectStatus(r, 200);
-    expect(((await r.json()) as { data: { label: string } }).data.label).toBe("from-the-admin");
+    const { data } = (await r.json()) as { data: { label: string; keys: string[] } };
+    expect(data.label).toBe("from-the-admin");
+    // `internal_note` was never published.
+    expect(data.keys).toEqual(["id", "label"]);
+  });
+
+  it("an undeclared table is unreachable, and private storage is read-only", async () => {
+    const internal = await handleRequest(post(`/api/plugin/${SLUG}/read_internal`, {}));
+    expect(internal.status).toBe(500);
+    expect(await internal.text()).toContain("not in the plugin's visitorProjection");
+    const write = await handleRequest(post(`/api/plugin/${SLUG}/write_setting`, {}));
+    expect(write.status).toBe(500);
+    expect(await write.text()).toContain("cannot write private storage");
+  });
+
+  it("follows an admin write through the outbox", async () => {
+    await asAdmin(async (tx) => {
+      await tx.unsafe(`UPDATE ${SCHEMA}.settings SET label = 'changed-by-the-owner'`);
+    }, pluginId);
+    await publish();
+    const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
+    expect(((await r.json()) as { data: { label: string } }).data.label).toBe(
+      "changed-by-the-owner",
+    );
   });
 
   it("still 404s an operation the plugin did not expose", async () => {
@@ -307,15 +368,12 @@ describe("/api/* served as gateway_role + public_role (#613)", () => {
     expect(((await r.json()) as { data: { accepted: boolean } }).data.accepted).toBe(true);
   });
 
-  it("rate limits from an Owner override", async () => {
+  it("rate limits from a published Owner override", async () => {
     await asAdmin(async (tx) => {
       await tx`INSERT INTO plugin_rate_limit_overrides (plugin_slug, operation, per_visitor_max, window_seconds)
                VALUES (${SLUG}, 'save', 2, 60)`;
     });
-    invalidateRateLimitSpecCache();
-    // A visitor without a visitor id (no consent, #677) is throttled by
-    // client IP; the per-visitor bucket is covered with consent in
-    // visitor-consent.integration.test.ts.
+    await publish();
     const header = { "X-Forwarded-For": "203.0.113.200" };
     const statuses: number[] = [];
     for (let i = 0; i < 3; i++) {
@@ -326,7 +384,7 @@ describe("/api/* served as gateway_role + public_role (#613)", () => {
     await asAdmin(async (tx) => {
       await tx`DELETE FROM plugin_rate_limit_overrides WHERE plugin_slug = ${SLUG}`;
     });
-    invalidateRateLimitSpecCache();
+    await publish();
   });
 
   it("captcha: issues a challenge, accepts its proof once, rejects the replay", async () => {
@@ -340,13 +398,14 @@ describe("/api/* served as gateway_role + public_role (#613)", () => {
       await tx`UPDATE site_settings SET captcha_provider = 'pow', captcha_pow_target_prefix = '0' WHERE id = 1`;
       return row;
     });
-    invalidateGatewaySettings();
+    await publish();
     try {
       const c = await handleRequest(new Request("http://localhost/api/captcha/challenge"));
       expect(c.status).toBe(200);
       const { challenge, target } = (
         (await c.json()) as { data: { challenge: string; target: string } }
       ).data;
+      expect(target).toBe("0");
       let nonce = 0;
       for (;;) {
         const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
@@ -365,14 +424,15 @@ describe("/api/* served as gateway_role + public_role (#613)", () => {
         await tx`UPDATE site_settings SET captcha_provider = ${saved?.captcha_provider ?? "pow"},
                  captcha_pow_target_prefix = ${saved?.captcha_pow_target_prefix ?? "000fff"} WHERE id = 1`;
       });
-      invalidateGatewaySettings();
+      await publish();
     }
   });
 
-  it("follows the admin's registry: a disable detaches, a re-activation re-attaches", async () => {
+  it("follows the published registry: a disable detaches, a re-activation re-attaches", async () => {
     await asAdmin(async (tx) => {
       await tx`UPDATE plugins SET status = 'disabled' WHERE slug = ${SLUG}`;
     });
+    await publish();
     await syncDispatchPlugins({ force: true });
     expect(loadedPlugins.bySlug(SLUG)).toBeUndefined();
     const off = await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "x" }));
@@ -381,18 +441,27 @@ describe("/api/* served as gateway_role + public_role (#613)", () => {
     await asAdmin(async (tx) => {
       await tx`UPDATE plugins SET status = 'active' WHERE slug = ${SLUG}`;
     });
+    await publish();
     await syncDispatchPlugins({ force: true });
     const on = await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "x" }));
     await expectStatus(on, 200);
+    // The plugin's projection came back with it.
+    const read = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
+    await expectStatus(read, 200);
   });
 });
 
-describe("gateway_role reaches nothing else in cms_admin (#613, adversarial)", () => {
-  /** Run `query` as gateway_role in a system-scoped tx; resolve to the error message or "ok". */
-  async function attempt(query: ReturnType<typeof sql>): Promise<string> {
+describe("the public side cannot rewrite what the admin published (#635, adversarial)", () => {
+  /** Run `query` as public_role (the gateway's login); resolve to the error text or "ok". */
+  async function attempt(query: ReturnType<typeof sql>, pluginScope?: string): Promise<string> {
     try {
-      await gatewayAdapter.withAdminTransaction(
-        { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t613" },
+      await gatewayAdapter.withPublicTransaction(
+        {
+          actorId: SYSTEM_ACTOR_ID,
+          actorKind: "system",
+          requestId: "t635",
+          ...(pluginScope ? { pluginId: pluginScope } : {}),
+        },
         async (tx) => tx.execute(query),
       );
       return "ok";
@@ -402,61 +471,55 @@ describe("gateway_role reaches nothing else in cms_admin (#613, adversarial)", (
     }
   }
 
-  it("cannot read users, AI provider keys, pages or the full settings row", async () => {
-    expect(await attempt(sql`SELECT * FROM users LIMIT 1`)).toMatch(/permission denied/);
-    expect(await attempt(sql`SELECT * FROM ai_providers LIMIT 1`)).toMatch(/permission denied/);
-    expect(await attempt(sql`SELECT * FROM pages LIMIT 1`)).toMatch(/permission denied/);
-    expect(await attempt(sql`SELECT * FROM site_settings`)).toMatch(/permission denied/);
-    expect(await attempt(sql`SELECT manifest_signature FROM plugins`)).toMatch(/permission denied/);
-    expect(await attempt(sql`SELECT gateway_cookie_secret FROM site_settings`)).toBe("ok");
+  it("cannot write any published table", async () => {
+    for (const q of [
+      sql`UPDATE published_gateway_settings SET max_body_bytes = 1`,
+      sql`DELETE FROM published_plugins`,
+      sql`INSERT INTO published_rate_limits VALUES ('x', 'y', 1, 1)`,
+      sql`UPDATE published_staging_access SET ip_allowlist = '["0.0.0.0/0"]'`,
+      sql`DELETE FROM published_projection_sections`,
+      sql`DELETE FROM published_comments`,
+    ]) {
+      expect(await attempt(q)).toMatch(/permission denied/);
+    }
   });
 
-  it("cannot write authoring data or its own settings", async () => {
-    expect(await attempt(sql`UPDATE site_settings SET gateway_max_body_bytes = 1`)).toMatch(
-      /permission denied/,
+  it("reads a plugin's projected rows only under that plugin's id", async () => {
+    const rows = await gatewayAdapter.withPublicTransaction(
+      { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t635" },
+      async (tx) => (await tx.execute(sql`SELECT * FROM published_plugin_rows`)) as unknown[],
     );
-    expect(await attempt(sql`UPDATE plugins SET status = 'active'`)).toMatch(/permission denied/);
-    expect(await attempt(sql`DELETE FROM gateway_request_log`)).toMatch(/permission denied/);
-    expect(
-      await attempt(sql`INSERT INTO actors (kind, display_name) VALUES ('system', 'x')`),
-    ).toMatch(/permission denied/);
+    expect(rows).toEqual([]);
   });
 
-  it("touches only the gateway's own rate-limit buckets", async () => {
-    expect(
-      await attempt(sql`INSERT INTO rate_limit_buckets (key, window_start, count, expires_at)
-                        VALUES ('login:someone', now(), 1, now())`),
-    ).toMatch(/row-level security/);
-    expect(
-      await attempt(sql`INSERT INTO rate_limit_buckets (key, window_start, count, expires_at)
-                        VALUES (${`gateway:${SLUG}:probe`}, now(), 1, now())`),
-    ).toBe("ok");
+  it("cannot read back its own request log or op events", async () => {
+    expect(await attempt(sql`SELECT * FROM gateway_request_log`)).toMatch(/permission denied/);
+    expect(await attempt(sql`SELECT * FROM gateway_plugin_op_events`)).toMatch(/permission denied/);
   });
 
-  it("audits only as a plugin actor", async () => {
-    expect(
-      await attempt(sql`INSERT INTO audit_events (actor_id, operation, input_hash, succeeded)
-                        VALUES (${SYSTEM_ACTOR_ID}::uuid, 'pages.delete', 'x', true)`),
-    ).toMatch(/row-level security/);
-  });
-
-  it("has no privilege on cms_public — it is a cms_admin-only login", async () => {
-    const rows = await asAdmin(
-      async (tx) =>
-        (await tx`SELECT has_database_privilege('gateway_role', 'cms_public', 'CONNECT') AS c`) as {
-          c: boolean;
-        }[],
-    );
-    expect(rows[0]?.c).toBe(false);
+  it("a section the admin never published is a loud 503, not an empty answer", async () => {
+    await asPublicAdmin(async (tx) => {
+      await tx`DELETE FROM published_projection_sections WHERE section = 'settings'`;
+      await tx`DELETE FROM published_gateway_settings`;
+    });
+    invalidateGatewaySettings();
+    try {
+      const r = await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "x" }));
+      expect(r.status).toBe(503);
+      expect(await r.text()).toContain("has not published the gateway settings");
+    } finally {
+      await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS, comments: false });
+      invalidateGatewaySettings();
+    }
   });
 });
 
-describe("staging.<domain> served as gateway_role (#650)", () => {
+describe("staging.<domain> from the published gate settings (#650, #635)", () => {
   const STAGING = "https://staging.example.com";
   const PREVIEW = "https://site--runid-t650-x1.web.app";
   const SECRET = "t650-gate-secret";
 
-  it("reads the gate settings + origin with its grants and proxies an admitted request", async () => {
+  it("reads the published gate settings + origin and proxies an admitted request", async () => {
     const saved = {
       provider: process.env.CAELO_PROVIDER,
       secret: process.env.CAELO_STAGING_GATE_SECRET,
@@ -468,7 +531,7 @@ describe("staging.<domain> served as gateway_role (#650)", () => {
       await tx`UPDATE staging_access SET origin_url = ${PREVIEW}, cookie_enabled = true,
                  staging_host = 'staging.example.com' WHERE id = 1`;
     });
-    invalidateGatewaySettings();
+    await publish();
     const upstream: string[] = [];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -502,51 +565,7 @@ describe("staging.<domain> served as gateway_role (#650)", () => {
       await asAdmin(async (tx) => {
         await tx`UPDATE staging_access SET origin_url = NULL, staging_host = NULL WHERE id = 1`;
       });
-      invalidateGatewaySettings();
+      await publish();
     }
-  });
-
-  it("cannot change the gate's settings or origin", async () => {
-    let message = "ok";
-    try {
-      await gatewayAdapter.withAdminTransaction(
-        { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t650" },
-        async (tx) => tx.execute(sql`UPDATE staging_access SET ip_allowlist = '{0.0.0.0/0}'`),
-      );
-    } catch (e) {
-      const err = e as { message?: string; cause?: { message?: string } };
-      message = `${err.message ?? ""} ${err.cause?.message ?? ""}`;
-    }
-    expect(message).toMatch(/permission denied/);
-  });
-});
-
-describe("a plugin update that drops private columns/tables (#613 review)", () => {
-  /** Whether gateway_role may SELECT a column of the plugin's private schema. */
-  async function canRead(table: string, column: string): Promise<boolean> {
-    const rows = await asAdmin(
-      async (tx) =>
-        (await tx`SELECT has_column_privilege('gateway_role', ${`${SCHEMA}.${table}`}, ${column}, 'SELECT') AS c`) as {
-          c: boolean;
-        }[],
-    );
-    return rows[0]?.c ?? false;
-  }
-
-  it("re-provisioning revokes what the new spec no longer declares, keeps what it does", async () => {
-    expect(await canRead("settings", "internal_note")).toBe(true);
-    expect(await canRead("drafts", "body")).toBe(true);
-    // The new version: `internal_note` and `drafts` are gone from the spec
-    // but stay physically (schema evolution is additive).
-    const next = adminSchemaFromSpec({
-      pluginId,
-      slug: SLUG,
-      adminSchema: { settings: { label: "string" } },
-      visitorReadable: true,
-    });
-    await adminAdapter.provisionPluginAdminSchema({ pluginId, sql: next.sql });
-    expect(await canRead("settings", "label")).toBe(true);
-    expect(await canRead("settings", "internal_note")).toBe(false);
-    expect(await canRead("drafts", "body")).toBe(false);
   });
 });

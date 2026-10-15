@@ -11,7 +11,9 @@
  * boot upserted `plugins`/`actors`/`skills` rows, ran schema DDL and
  * `onActivate`, and scheduled a second copy of every worker.
  *
- * The gateway now only MIRRORS the registry, read-only, as `gateway_role`:
+ * The gateway only MIRRORS the registry, read-only. Since #635 it has no
+ * cms_admin login at all: it reads the registry the admin PUBLISHES into
+ * cms_public (published-state.ts), never the authoring database:
  *
  *   - At boot it verifies every plugin it can run — disk plugins against
  *     the trust root, exactly as the admin does (`verifyDiskPlugin`) — but
@@ -24,14 +26,13 @@
  *     that booted before migrations (a fresh install) picks plugins up as
  *     soon as the registry exists.
  *
- * Nothing here writes cms_admin; attached plugins answer visitor calls only
+ * Nothing here reads or writes cms_admin; attached plugins answer visitor calls only
  * (dispatch.ts enforces `publicOperations`).
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import type { PluginContext, PluginContextTier1, PluginDefinition } from "@caelo-cms/plugin-sdk";
-import { sql } from "drizzle-orm";
 import { makePluginContext } from "./capabilities.js";
 import {
   type LoadedPlugin,
@@ -50,12 +51,13 @@ import {
   verifyDiskPlugin,
   verifyInMemoryPlugin,
 } from "./loader.js";
+import { readPublishedArtifact, readPublishedRegistry } from "./published-state.js";
 
 /** How stale the gateway's view of the registry may get. Matches the gateway's settings TTL. */
 export const SYNC_TTL_MS = 5_000;
 
 export interface DispatchOnlyBootstrapOpts {
-  /** Infra whose admin pool is the gateway's read-only `gateway_role` login. */
+  /** The gateway's infra: a public-only adapter (no cms_admin pool, #635). */
   readonly infra: PluginHostInfra;
   /** Absolute path to `packages/plugins`. */
   readonly pluginsRoot: string;
@@ -189,16 +191,9 @@ export async function syncDispatchPlugins(opts: { force?: boolean } = {}): Promi
 }
 
 async function readRegistry(opts: DispatchOnlyBootstrapOpts): Promise<RegistryRow[]> {
-  return (await opts.infra.adapter.withAdminTransaction(
-    { actorId: opts.systemActorId, actorKind: "system", requestId: "gateway-plugin-sync" },
-    async (tx) =>
-      tx.execute(sql`
-        SELECT p.id::text AS id, p.slug, p.tier, p.status, p.version, a.id::text AS actor_id
-        FROM plugins p
-        LEFT JOIN actors a ON a.plugin_id = p.id
-        WHERE p.status = 'active'
-      `),
-  )) as unknown as RegistryRow[];
+  // #635 — the registry the admin PUBLISHED into cms_public; the gateway
+  // has no cms_admin login.
+  return readPublishedRegistry(opts.infra, opts.systemActorId);
 }
 
 async function reconcile(
@@ -260,25 +255,19 @@ async function attachRuntimeAuthored(
   opts: DispatchOnlyBootstrapOpts,
   row: RegistryRow,
 ): Promise<LoadedPlugin> {
-  const rows = (await opts.infra.adapter.withAdminTransaction(
-    { actorId: opts.systemActorId, actorKind: "system", requestId: `gateway-attach-${row.slug}` },
-    async (tx) =>
-      tx.execute(sql`
-        SELECT manifest_json, source_code FROM plugins WHERE id = ${row.id}::uuid
-      `),
-  )) as unknown as { manifest_json: unknown; source_code: string | null }[];
-  const source = rows[0]?.source_code;
+  const artifact = await readPublishedArtifact(opts.infra, opts.systemActorId, row.id);
+  const source = artifact?.source_code;
   if (!source) throw new Error("ExternalPluginSourceMissing");
   const approval = await readExternalApproval({
     pluginId: row.id,
-    manifest: rows[0]?.manifest_json,
+    manifest: artifact?.manifest_json,
     infra: opts.infra,
     systemActorId: opts.systemActorId,
   });
   const definition = externalPluginDefinition({
     pluginId: row.id,
     approval,
-    manifest: rows[0]?.manifest_json,
+    manifest: artifact?.manifest_json,
     source,
     infra: opts.infra,
     systemActorId: opts.systemActorId,

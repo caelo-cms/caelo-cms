@@ -409,6 +409,18 @@ export default definePlugin<PluginContextTier1>({
   publicOperations: ["record_consent"],
 
   /**
+   * What the API gateway may read of the private storage (#635): the
+   * current policy version (the consent rule + `record_consent`'s version
+   * check) and the category keys (`record_consent` rejects unknown ones).
+   * The gateway has no cms_admin login; the admin publishes exactly these
+   * columns into cms_public. Tags, guards and descriptions stay private.
+   */
+  visitorProjection: {
+    settings: ["policy_version"],
+    categories: ["key", "position"],
+  },
+
+  /**
    * The banner iterates this instead of receiving markup from the
    * plugin, so it looks like the site it lives on. Placing that module
    * in the LAYOUT covers every page from one placement.
