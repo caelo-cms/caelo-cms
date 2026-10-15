@@ -86,14 +86,12 @@ export interface DatabaseUrls<V = string> {
   readonly admin: V;
   /** admin_role on cms_public — the admin's second pool (DDL, migrations). */
   readonly publicAdmin: V;
-  /** public_role on cms_public — the gateway's visitor-write pool. */
-  readonly public: V;
   /**
-   * gateway_role on cms_admin — the gateway's narrow pool (#613): its
-   * settings, rate limits, captcha, request log, plugin op audit and the
-   * plugin registry, read-mostly (migration 0248).
+   * public_role on cms_public — the gateway's only pool. The gateway has no
+   * cms_admin login (#635, CLAUDE.md §2): what it needs from authoring
+   * state the admin publishes into cms_public.
    */
-  readonly gateway: V;
+  readonly public: V;
 }
 
 /** Port Cloud SQL Postgres listens on (private IP). */
@@ -111,7 +109,6 @@ export function databaseUrls(host: string): DatabaseUrls {
     admin: url("admin_role", "cms_admin"),
     publicAdmin: url("admin_role", "cms_public"),
     public: url("public_role", "cms_public"),
-    gateway: url("gateway_role", "cms_admin"),
   };
 }
 
@@ -251,8 +248,8 @@ export type DatabaseRole = "admin_role" | "public_role" | "gateway_role";
 
 /**
  * Each database role's password secret — one per role (#613), so the
- * gateway's SA, which reads only the public_role and gateway_role
- * passwords, can never read admin_role's. `postgres-password` keeps its
+ * gateway's SA, which reads only the public_role password, can never read
+ * admin_role's (or, since #635, gateway_role's). `postgres-password` keeps its
  * name: it has always been admin_role's (and, before #613, shared with
  * public_role). `rotate-secret` changes exactly the role(s) listed here.
  */
@@ -306,9 +303,8 @@ export const SERVICE_SECRET_ENV: Readonly<
     CAELO_STAGING_GATE_SECRET: "staging-gate-secret",
   },
   gateway: {
-    // CLAUDE.md §2: never an admin_role credential (#613). gateway_role on
-    // cms_admin + public_role on cms_public, each with its own password.
-    GATEWAY_DATABASE_PASSWORD: "gateway-role-password",
+    // CLAUDE.md §2: no cms_admin credential of any role (#613, #635).
+    // public_role on cms_public is the gateway's only login.
     PUBLIC_DATABASE_PASSWORD: "public-role-password",
     // #650 — verifies staging-host requests (api-gateway staging-proxy.ts).
     CAELO_STAGING_GATE_SECRET: "staging-gate-secret",
@@ -323,12 +319,20 @@ export function serviceSecrets(service: CloudRunSlug): RuntimeSecret[] {
 /**
  * Env vars an older stack set that the contract no longer gives a service;
  * upgrade removes them. The gateway never used the KEK, and its run SA
- * cannot read it. Its admin_role pool went with #613 — the gateway refuses
- * to boot while either var is set (apps/api-gateway `gatewayDatabaseUrls`).
+ * cannot read it. Its admin_role pool went with #613 and its gateway_role
+ * pool with #635 — the gateway refuses to boot while any cms_admin
+ * credential is in its env (apps/api-gateway `adminDatabaseAccessInEnv`).
  */
 export const RETIRED_SERVICE_ENV: Readonly<Record<CloudRunSlug, readonly string[]>> = {
   admin: [],
-  gateway: ["CAELO_SECRET_KEK", "ADMIN_DATABASE_URL", "ADMIN_DATABASE_PASSWORD"],
+  gateway: [
+    "CAELO_SECRET_KEK",
+    "ADMIN_DATABASE_URL",
+    "ADMIN_DATABASE_PASSWORD",
+    // #635 — its gateway_role login on cms_admin is gone too.
+    "GATEWAY_DATABASE_URL",
+    "GATEWAY_DATABASE_PASSWORD",
+  ],
 };
 
 function secretEnv(service: CloudRunSlug, env: string): CloudRunEnvVar[] {
@@ -362,7 +366,6 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
   return [
     ...commonEnv(inputs),
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
-    { name: "GATEWAY_DATABASE_URL", value: inputs.databaseUrls.gateway },
     ...secretEnv("gateway", inputs.env),
   ];
 }
@@ -678,6 +681,12 @@ export const RETIRED_IAM_BINDINGS: readonly RetiredIamBinding[] = [
     member: "gateway-sa",
     target: { kind: "secret", name: "postgres-password" },
     why: "the gateway no longer logs in as admin_role and must not be able to read its password (CLAUDE.md §2)",
+  },
+  {
+    role: SECRET_ACCESSOR,
+    member: "gateway-sa",
+    target: { kind: "secret", name: "gateway-role-password" },
+    why: "the gateway has no cms_admin login at all and must not be able to read gateway_role's password (CLAUDE.md §2, #635)",
   },
 ];
 

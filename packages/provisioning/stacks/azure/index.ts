@@ -81,9 +81,11 @@ function randomHex(bytes: number): string {
 }
 
 const postgresPassword = pulumi.secret(randomHex(32));
-// #613 — one password per database role, so the gateway (public_role +
-// gateway_role) never holds admin_role's. bootstrap.sh creates the roles
-// with these (PUBLIC_ROLE_PASSWORD / GATEWAY_ROLE_PASSWORD).
+// #613 — one password per database role, so the gateway (public_role only,
+// #635) never holds admin_role's. bootstrap.sh creates the roles with these
+// (PUBLIC_ROLE_PASSWORD / GATEWAY_ROLE_PASSWORD). gateway_role is no longer
+// any service's login; its password stays until the contract release that
+// drops the role (#635).
 const publicRolePassword = pulumi.secret(randomHex(32));
 const gatewayRolePassword = pulumi.secret(randomHex(32));
 const csrfSecret = pulumi.secret(randomHex(32));
@@ -162,14 +164,11 @@ const adminDatabaseUrl = pulumi
 const publicAdminDatabaseUrl = pulumi
   .all([pgServer.fullyQualifiedDomainName, postgresPassword])
   .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_public?sslmode=require`);
-// The gateway's two logins (#613): public_role on cms_public and
-// gateway_role on cms_admin, each with its own password.
+// The gateway's only login (#613, #635): public_role on cms_public. It has
+// no cms_admin login at all (CLAUDE.md §2).
 const publicDatabaseUrl = pulumi
   .all([pgServer.fullyQualifiedDomainName, publicRolePassword])
   .apply(([host, pw]) => `postgresql://public_role:${pw}@${host}:5432/cms_public?sslmode=require`);
-const gatewayDatabaseUrl = pulumi
-  .all([pgServer.fullyQualifiedDomainName, gatewayRolePassword])
-  .apply(([host, pw]) => `postgresql://gateway_role:${pw}@${host}:5432/cms_admin?sslmode=require`);
 
 // === 4. Storage account + containers ===
 const storage = new azure.storage.StorageAccount(`${namePrefix}-st`, {
@@ -419,10 +418,7 @@ const adminApp = containerApp({
 });
 const _gatewayApp = containerApp({
   serviceName: "gateway",
-  databaseEnv: [
-    { name: "GATEWAY_DATABASE_URL", value: gatewayDatabaseUrl },
-    { name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl },
-  ],
+  databaseEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
 });
 const _orchestratorApp = containerApp({
   serviceName: "orchestrator",
@@ -446,7 +442,6 @@ const dnsRecordsRequired = pulumi
 const out: CloudAdapterOutputs = {
   adminDatabaseUrl: adminDatabaseUrl as unknown as string,
   publicDatabaseUrl: publicDatabaseUrl as unknown as string,
-  gatewayDatabaseUrl: gatewayDatabaseUrl as unknown as string,
   mediaStorageUrl:
     pulumi.interpolate`https://${storage.name}.blob.core.windows.net/media` as unknown as string,
   mediaCdnBaseUrl: pulumi.interpolate`https://${domain}/media` as unknown as string,
@@ -460,7 +455,6 @@ const out: CloudAdapterOutputs = {
 
 export const adminDatabaseUrlOut = out.adminDatabaseUrl;
 export const publicDatabaseUrlOut = out.publicDatabaseUrl;
-export const gatewayDatabaseUrlOut = out.gatewayDatabaseUrl;
 export const mediaStorageUrlOut = out.mediaStorageUrl;
 export const mediaCdnBaseUrlOut = out.mediaCdnBaseUrl;
 export const bootstrapUrlOut = out.bootstrapUrl;

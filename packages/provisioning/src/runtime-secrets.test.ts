@@ -340,10 +340,7 @@ describe("rotateRuntimeSecret", () => {
       ]),
     ],
     "run services describe gw-svc": [
-      service([
-        ref("GATEWAY_DATABASE_PASSWORD", "gateway-role-password"),
-        ref("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
-      ]),
+      service([ref("PUBLIC_DATABASE_PASSWORD", "public-role-password")]),
     ],
     "auth print-access-token": [ok("tok\n")],
   });
@@ -414,7 +411,7 @@ describe("rotateRuntimeSecret", () => {
     ).toBe(true);
   });
 
-  it("gateway-role-password: changes gateway_role only and rolls the gateway only (#613)", async () => {
+  it("gateway-role-password: changes gateway_role only and rolls no service (#613, #635)", async () => {
     const { run, lines } = fakeGcloud({
       ...converged(),
       "secrets versions access": [ok("old-pw")],
@@ -428,9 +425,9 @@ describe("rotateRuntimeSecret", () => {
     });
     expect(report.ok).toBe(true);
     expect(sql.passwords()).toEqual(["gateway_role new-pw"]);
-    expect(lines().filter((l) => l.startsWith("run services update "))).toEqual([
-      expect.stringContaining("run services update gw-svc"),
-    ]);
+    // No service logs in as gateway_role any more: the gateway reads
+    // cms_public only (#635).
+    expect(lines().filter((l) => l.startsWith("run services update "))).toEqual([]);
     expect(lines()).toContain(
       "secrets versions access latest --secret=caelo-production-gateway-role-password --project=acme",
     );
@@ -475,6 +472,26 @@ describe("rotateRuntimeSecret", () => {
     expect(report.error).toContain("Run `cms-provision upgrade` first");
     expect(sql.requests).toHaveLength(0);
     expect(lines().every((l) => l.startsWith("run services describe"))).toBe(true);
+  });
+
+  it("refuses gateway-role-password while the gateway still logs in with it (before #635)", async () => {
+    const answers = converged();
+    answers["run services describe gw-svc"] = [
+      service([
+        ref("GATEWAY_DATABASE_PASSWORD", "gateway-role-password"),
+        ref("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
+      ]),
+    ];
+    const { run } = fakeGcloud(answers);
+    const sql = fakeSqlApi();
+    const report = await rotateRuntimeSecret(target, "gateway-role-password", {
+      run,
+      http: sql.http,
+      generate: () => "new-pw",
+    });
+    expect(report.ok).toBe(false);
+    expect(report.error).toContain("GATEWAY_DATABASE_PASSWORD");
+    expect(sql.requests).toHaveLength(0);
   });
 
   it("refuses before changing anything on an install upgrade hasn't moved over", async () => {

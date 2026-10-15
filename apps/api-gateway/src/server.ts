@@ -70,7 +70,11 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
   url: string,
 ) => SQLType;
 
-import { GATEWAY_DATABASE_ROLES, gatewayDatabaseUrls } from "./database-env.js";
+import {
+  databaseIsolationProblems,
+  GATEWAY_DATABASE_ROLES,
+  gatewayDatabaseUrls,
+} from "./database-env.js";
 import { startGatewayStateGc } from "./gc.js";
 import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
@@ -105,7 +109,7 @@ import {
 } from "./visitor.js";
 
 export {
-  ADMIN_CREDENTIAL_ENV,
+  GATEWAY_DATABASE_ENV,
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
 } from "./database-env.js";
@@ -769,6 +773,16 @@ if (import.meta.main) {
     publicDatabaseUrl: urls.public,
     expectedRoles: GATEWAY_DATABASE_ROLES,
   });
+  // Ask the database too (#635): a login that can reach cms_admin, or a
+  // bridge out of cms_public, is refused before the first request.
+  await adapter.verifyRoles();
+  const isolation = await databaseIsolationProblems(adapter.rawPublic());
+  if (isolation.length > 0) {
+    const lines = isolation.map((p) => `  - ${p}`).join("\n");
+    throw new Error(
+      `the API gateway's database login is not isolated from cms_admin (CLAUDE.md §2):\n${lines}\nRun the migrations (their role audit names the fix) or \`cms-provision upgrade\`.`,
+    );
+  }
   // Exactly the core operations visitor paths need (#634), all on cms_public.
   const registry = new OperationRegistry();
   registerGatewayOperations(registry);
