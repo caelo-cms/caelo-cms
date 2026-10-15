@@ -62,7 +62,7 @@ Open an issue using the **Bug** template. If you've already got the fix, open th
 
 ### New plugins
 
-Every plugin follows one model (CMS_REQUIREMENTS §14): who wrote it grants it nothing. It gets a small base — its own public tables, theme, visitor id, captcha — and everything else is a grant the site's Owner approves for that exact plugin version. See [Plugin permissions](https://caelo-cms.com/plugins-permissions).
+Every plugin follows one model (CMS_REQUIREMENTS §14): who wrote it grants it nothing. It gets a small base — its own public tables, theme, visitor id, captcha — and everything else is a grant the site's Owner approves for that exact plugin version. See the plugin permissions page in the [docs](https://caelo-cms.com/docs/).
 
 - **For your own site:** ask the live-edit chat to build it. The AI submits it through `submit_plugin`; the validator runs; you approve it and its grants at `/settings/plugins`.
 - **From your own repository:** bundle the plugin into one source module and upload a JSON package `{ "manifest": …, "source": "…" }` at `/settings/plugins/installations`. The Owner reviews the exact artifact and each grant it requests; the plugin runs in the sandbox like every other.
@@ -74,7 +74,7 @@ These need an issue first so we can discuss scope. The non-negotiable invariants
 
 ### Documentation contributions
 
-Docs are dogfooded — `caelo-cms.com` is itself a Caelo install whose content lives under `docs-site/` in this repo. Edit the markdown there + open a PR; staging deploys automatically and we promote to production after review.
+The end-user docs at [caelo-cms.com/docs](https://caelo-cms.com/docs/) are dogfooded: they are pages in a Caelo install, not files in this repo. To fix or extend them, open an issue with the `documentation` label naming the page and the change; a maintainer applies it on the site. Engineering docs (`docs/`, `ARCHITECTURE.md`, `CLAUDE.md`, package READMEs) are edited here through a normal PR.
 
 ## Pull request mechanics
 

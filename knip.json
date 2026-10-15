@@ -34,11 +34,7 @@
       "entry": ["scripts/*.ts", "scripts/*.test.ts"]
     },
     "apps/admin": {
-      "entry": [
-        "scripts/scan-media-alt.ts",
-        "scripts/sign-tier1-manifest.ts",
-        "scripts/sync-docs-site.ts"
-      ]
+      "entry": ["scripts/scan-media-alt.ts", "scripts/sign-tier1-manifest.ts"]
     },
     "apps/api-gateway": {
       "entry": ["e2e/*.ts"]

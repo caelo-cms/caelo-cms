@@ -20,7 +20,7 @@
  *     anything. The bucket's convenience bindings for project viewers and
  *     editors are removed; public principals are refused outright. Project
  *     Owners keep access through their project role (that cannot be taken
- *     away at the bucket); docs-site/pages/install-gcp.md says so.
+ *     away at the bucket); the GCP install docs say so.
  *
  * Every step reads before it writes, so a re-run is a no-op and an operator
  * without IAM-write permission can still run against an ops backend someone

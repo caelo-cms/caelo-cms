@@ -113,7 +113,6 @@ describe("AI security review workflow YAML", () => {
       "dist",
       ".svelte-kit",
       "build",
-      "docs-site/.astro",
       "packages/migrations/sql",
       "coverage",
       ".turbo",

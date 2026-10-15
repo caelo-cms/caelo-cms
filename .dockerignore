@@ -57,8 +57,7 @@ output/
 *.bak
 *.tmp
 
-# Docs site source — not part of the runtime image
-docs-site/
+# Planning docs — not part of the runtime image
 plans/
 
 # CLAUDE.md + CMS_REQUIREMENTS.md + ARCHITECTURE.md — repo-only docs

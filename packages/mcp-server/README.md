@@ -15,9 +15,9 @@ token's scope:
 
 Every mode is a thin shim: calls become HTTPS POSTs against your admin
 install's `/api/mcp/*` endpoints, which dispatch into the same
-chat-runner machinery that powers the live-edit overlay. See the
-[docs page](https://caelo-cms.com/mcp) for the full Power-MCP working
-model (work sessions, preview branches, approval gates).
+chat-runner machinery that powers the live-edit overlay. See the MCP page in the
+[docs](https://caelo-cms.com/docs/) for the full Power-MCP working
+model (work sessions, the shared draft, approval gates).
 
 ## Install
 
@@ -94,4 +94,4 @@ Both modes expose `caelo_upload_images`. For example, call it with:
 
 Paths are local to the MCP process. Alternatively use `base64` plus an optional `filename`; supply exactly one of `filePath` and `base64`. Uploads support PNG/JPEG/WebP/GIF, up to 5 MiB each, with at most four files per call. The result contains per-file successes/errors and an `attachments` array. Pass that array to `caelo_chat` alongside `message` to send actual image content to Caelo's AI. In admin mode, the returned asset IDs can be used with regular media/page tools.
 
-The token owner's current `content.write` permission is required for either scope. Images are stored in the shared CMS media library; admin previews require authentication. Uploading alone does not publish a page. A partial batch keeps successful uploads — retry only the failed entries. See the [upload workflow](https://caelo-cms.com/mcp#upload-and-attach-images) for HTTP examples and server limits.
+The token owner's current `content.write` permission is required for either scope. Images are stored in the shared CMS media library; admin previews require authentication. Uploading alone does not publish a page. A partial batch keeps successful uploads — retry only the failed entries. See the MCP page in the [docs](https://caelo-cms.com/docs/) for HTTP examples and server limits.
