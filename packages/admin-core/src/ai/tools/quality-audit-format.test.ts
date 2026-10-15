@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { sampleMetrics } from "../../quality/__tests__/fixtures/sample-metrics.js";
+import { ACCEPTED_PERFORMANCE_TOLERANCE } from "../../quality/ratchet.js";
 import {
   AUDIT_FIX_LOOP_NEXT_STEP,
   formatAudit,
@@ -148,18 +149,50 @@ describe("get_quality_audit Performance metrics", () => {
     expect(formatPage(page([])).some((l) => l.startsWith("Performance metrics"))).toBe(false);
   });
 
-  it("names a score drop against the page's previous audit as a regression", () => {
+  it("points out a score drop against the page's previous audit, without claiming its cause", () => {
     const drop = {
       kind: "score_below_baseline" as const,
       category: "performance" as const,
       score: 92,
       baseline: 100,
     };
-    const worse = formatPage({ ...page([drop]), previousScores: { performance: 97 } });
-    expect(worse.join("\n")).toContain("WORSE than this page's previous audit (97 → 92)");
+    const dropped = formatPage({ ...page([drop]), previousScores: { performance: 97 } }).join("\n");
+    expect(dropped).toContain(
+      "DROPPED since this page's previous audit (97 → 92): check the changes since then first",
+    );
+    expect(dropped).not.toContain("caused");
     const better = formatPage({ ...page([drop]), previousScores: { performance: 90 } });
-    expect(better.join("\n")).not.toContain("WORSE");
-    expect(formatPage(page([drop])).join("\n")).not.toContain("WORSE");
+    expect(better.join("\n")).not.toContain("DROPPED");
+    expect(formatPage(page([drop])).join("\n")).not.toContain("DROPPED");
+  });
+
+  it("holds a Performance drop within the documented noise tolerance back from the hint only", () => {
+    const at = (category: "performance" | "accessibility", score: number) => ({
+      kind: "score_below_baseline" as const,
+      category,
+      score,
+      baseline: 100,
+    });
+    const withinNoise = 100 - ACCEPTED_PERFORMANCE_TOLERANCE;
+    const noisy = formatPage({
+      ...page([at("performance", withinNoise)]),
+      previousScores: { performance: 100 },
+    }).join("\n");
+    expect(noisy).not.toContain("DROPPED");
+    // The score itself is still a problem: the tolerance never applies
+    // against the target.
+    expect(noisy).toContain(`PROBLEM Performance score ${withinNoise} is below the target 100`);
+    const beyond = formatPage({
+      ...page([at("performance", withinNoise - 1)]),
+      previousScores: { performance: 100 },
+    }).join("\n");
+    expect(beyond).toContain(`DROPPED since this page's previous audit (100 → ${withinNoise - 1})`);
+    // Accessibility is deterministic: one point is a drop.
+    const a11y = formatPage({
+      ...page([at("accessibility", 99)]),
+      previousScores: { accessibility: 100 },
+    }).join("\n");
+    expect(a11y).toContain("DROPPED since this page's previous audit (100 → 99)");
   });
 });
 

@@ -33,9 +33,9 @@ import {
   json,
   problemSchema,
   stageClassificationSchema,
-  uuidList,
 } from "./_shared.js";
 import { loadAcceptances } from "./gate-loader.js";
+import { loadPreviousScores } from "./previous-scores.js";
 
 export const runSummarySchema = z.object({
   id: z.string(),
@@ -197,10 +197,11 @@ const auditPageSchema = z.object({
   status: z.enum(["clean", "problems", "errored"]),
   /** 0..100 per category; every category is held to 100 (#727). */
   scores: z.record(categorySchema, z.number().int()).nullable(),
-  /** The page's scores in its newest EARLIER audit that measured it, so
-   *  a drop is named as a regression the Stage caused, not as one more
-   *  score below 100. Null when the page was never measured before. */
-  previousScores: z.record(categorySchema, z.number().int()).nullable(),
+  /** The page's scores in its newest EARLIER audit on the same branch
+   *  lineage (Performance only when measured at the same CPU calibration,
+   *  previous-scores.ts), so a drop can be pointed out as "check recent
+   *  changes first". Null when there is no such audit. */
+  previousScores: z.partialRecord(categorySchema, z.number().int()).nullable(),
   performanceRuns: z.array(z.number().int()),
   failingAudits: z.array(failingAuditSchema),
   /** Lighthouse's Performance metrics (FCP, LCP, TBT, CLS, SI: medians
@@ -304,17 +305,10 @@ export const getAuditOp = defineOperation({
       tx,
       pageRows.map((r) => r.page_id),
     );
-    const previousRows = (await tx.execute(sql`
-      SELECT DISTINCT ON (qp.page_id) qp.page_id::text AS page_id, qp.scores
-      FROM quality_audit_pages qp
-      JOIN quality_audit_runs q ON q.id = qp.audit_run_id
-      WHERE qp.page_id = ANY(${uuidList(pageRows.map((r) => r.page_id))})
-        AND q.created_at < (SELECT created_at FROM quality_audit_runs WHERE id = ${runRow.id}::uuid)
-        AND qp.scores IS NOT NULL
-      ORDER BY qp.page_id, q.created_at DESC
-    `)) as unknown as { page_id: string; scores: unknown }[];
-    const previousScores = new Map(
-      previousRows.map((r) => [r.page_id, json<Record<QualityCategory, number>>(r.scores)]),
+    const previousScores = await loadPreviousScores(
+      tx,
+      runRow.id,
+      pageRows.map((r) => r.page_id),
     );
     const checks = runRow.checks === null ? null : json<RunChecksSummary>(runRow.checks);
     return ok({

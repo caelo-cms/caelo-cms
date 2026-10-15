@@ -79,6 +79,8 @@ Lighthouse's Performance score jitters a little between runs of the same page. C
 
 Accessibility, Best Practices, SEO and the page checks are deterministic: no tolerance at all.
 
+The same 2-point tolerance decides one hint, and nothing more: when a score is lower than in the page's previous audit, the AI's audit result marks it as **dropped since the previous audit — check the changes since then first**. A Performance score counts as dropped only when it fell by more than 2 points. The comparison uses only the previous audit of the same chat's branch (outside a chat, the previous staging audit outside a chat), and compares Performance only when both audits ran at the same CPU slowdown. The hint never decides whether a score blocks: a Performance of 99 blocks with or without it.
+
 ## How it plays out in the chat
 
 1. You Stage — or the AI stages its finished work. A minute or two later the result appears in the same chat.

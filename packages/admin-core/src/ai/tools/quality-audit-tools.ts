@@ -21,6 +21,7 @@ import { z } from "zod";
 import type { classifyStageOp } from "../../ops/quality/classify_stage.js";
 import type { getAuditOp, listAcceptancesOp, listAuditsOp } from "../../ops/quality/read.js";
 import { findingOwner } from "../../quality/platform-audits.js";
+import { droppedSincePrevious } from "../../quality/ratchet.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
 import {
   formatCheckNotes,
@@ -93,7 +94,7 @@ function statusLine(run: AuditRun): string {
  */
 export const AUDIT_FIX_LOOP_NEXT_STEP =
   "NEXT STEP — do not report these problems to the operator as a result; fix them now. " +
-  "First every category marked WORSE than the page's previous audit (a change since then caused it), then every other PROBLEM: fix it in the module, page or theme the flagged elements and metrics name, call stage_changes, read get_quality_audit again, and repeat until the audit passes. " +
+  "First every category marked DROPPED since the page's previous audit (look at the changes since then first), then every other PROBLEM: fix it in the module, page or theme the flagged elements and metrics name, call stage_changes, read get_quality_audit again, and repeat until the audit passes. " +
   "Performance is already the median over several runs: a score below 100 is not measurement noise — fix what the metrics name. " +
   "Go to the operator only with what you proved cannot be fixed in the site (a CAELO PLATFORM finding: bug_report; a fix that would break what the operator asked for), as one accept_quality_findings decision per group, with the reason why.";
 
@@ -190,12 +191,12 @@ export function formatPage(p: AuditPage): string[] {
       }
     } else {
       const previous = p.previousScores?.[problem.category];
-      const worse =
-        previous !== undefined && previous > problem.score
-          ? ` — WORSE than this page's previous audit (${previous} → ${problem.score}): a change since then caused it; find and fix that first`
+      const dropped =
+        previous !== undefined && droppedSincePrevious(problem.category, problem.score, previous)
+          ? ` — DROPPED since this page's previous audit (${previous} → ${problem.score}): check the changes since then first`
           : "";
       lines.push(
-        `- ${tag} ${CATEGORY_LABEL[problem.category] ?? problem.category} score ${problem.score} is below the target 100${worse}${accepted ? "" : " — not good enough: fix what pulls it down (the metrics above name the element)"}`,
+        `- ${tag} ${CATEGORY_LABEL[problem.category] ?? problem.category} score ${problem.score} is below the target 100${dropped}${accepted ? "" : " — not good enough: fix what pulls it down (the metrics above name the element)"}`,
       );
     }
   }

@@ -749,7 +749,7 @@ describe("read surfaces", () => {
     // accepted 95, and than its previous audit) with its accepted image-alt
     // finding.
     expect(audit.content).toContain(
-      "PROBLEM Accessibility score 94 is below the target 100 — WORSE than this page's previous audit (95 → 94): a change since then caused it; find and fix that first — not good enough",
+      "PROBLEM Accessibility score 94 is below the target 100 — DROPPED since this page's previous audit (95 → 94): check the changes since then first — not good enough",
     );
     expect(audit.content).toContain(
       "ACCEPTED by an editor (does not block; leave it unless asked) failing audit `image-alt`",
