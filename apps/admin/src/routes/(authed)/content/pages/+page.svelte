@@ -5,10 +5,10 @@
   import { FileText } from "lucide-svelte";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
   import StateDot from "#lib/components/StateDot.svelte";
+  import { pageStatusMark } from "#lib/components/state-dot.js";
   import { bindZodForm } from "#lib/forms/zod-bind.svelte.js";
   import { orderAsTree, parentCandidates } from "#lib/page-tree.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
-  import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import {
     Card,
@@ -155,20 +155,11 @@
                 </TableCell>
                 <TableCell>{p.title}</TableCell>
                 <TableCell>
-                  <!-- #779 — Draft / Preview / Live only where the state is
-                       known: a draft page is in no build; a page this form
-                       just staged is on staging; one just confirmed is
-                       live. A published page's build state is not tracked
-                       per page, so it keeps its status badge. -->
-                  {#if form?.published?.pageId === p.id}
-                    <StateDot state="live" />
-                  {:else if form?.staged?.pageId === p.id}
-                    <StateDot state="preview" />
-                  {:else if p.status === "draft"}
-                    <StateDot state="draft" />
-                  {:else}
-                    <Badge variant="success">{p.status}</Badge>
-                  {/if}
+                  <!-- #779 — the page STATUS, Draft or Published. Whether
+                       a published page is on staging or live is not
+                       tracked per page, so the list never shows Preview /
+                       Live (those live on the toolbar and dashboard). -->
+                  <StateDot state={pageStatusMark(p.status)} />
                 </TableCell>
                 <TableCell class="text-muted-foreground">{p.updatedAt.slice(0, 10)}</TableCell>
                 <TableCell class="text-right">

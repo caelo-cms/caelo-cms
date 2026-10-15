@@ -8,6 +8,10 @@
    * tech and for anyone who does not read the colours. The dot colours are
    * graphic-only tokens (`--state-stage`, `--state-live`) — never text.
    *
+   * `published` is the page-status mark for lists that know a page's
+   * status but not its build state (the page list): a neutral filled dot,
+   * so it never reads as Live.
+   *
    * `children` replaces the default label when the surface needs more
    * than the state word ("Draft · 3 unstaged"); it must still name the
    * state.
@@ -30,6 +34,7 @@
     draft: "Draft",
     preview: "Preview",
     live: "Live",
+    published: "Published",
   };
 
   // The filled dots get a highlight + drop shadow so they read as raised
@@ -40,6 +45,10 @@
     preview:
       "bg-state-stage shadow-[inset_0_1px_0_rgba(255,255,255,0.6),0_1px_2px_rgba(14,26,46,0.35)]",
     live: "bg-state-live shadow-[inset_0_1px_0_rgba(255,255,255,0.6),0_1px_2px_rgba(14,26,46,0.35)]",
+    // Neutral ink/muted, never coral: "published" is a page status, not
+    // a claim that the page is live.
+    published:
+      "bg-muted-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.6),0_1px_2px_rgba(14,26,46,0.35)]",
   };
 </script>
 
