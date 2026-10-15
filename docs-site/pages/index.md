@@ -40,7 +40,7 @@ Self-hosted = Docker Compose with Postgres + Caddy (auto-SSL) + the admin + the 
 ### Drive your install from your IDE
 
 ```bash
-claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \
+claude mcp add caelo --command "bunx @caelo-cms/mcp-server@latest" \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=$(your bearer)
 ```

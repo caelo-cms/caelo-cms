@@ -48,7 +48,7 @@ Cloud paths use Pulumi to spin up Cloud SQL HA + managed object storage + the pl
 Talk to your install from your IDE (Claude Code, etc.) without opening the browser:
 
 ```bash
-claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \
+claude mcp add caelo --command "bunx @caelo-cms/mcp-server@latest" \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=$(your minted bearer)
 ```

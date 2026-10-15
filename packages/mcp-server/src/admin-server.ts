@@ -98,6 +98,7 @@ export const ADMIN_MCP_INSTRUCTIONS = [
   "2. Call caelo_get_context once and follow it: it carries the site model, tool playbook, staging rules, site memory (brand voice, glossary) and the skills index.",
   "3. Load every skill the context marks ALWAYS APPLIES with load_skill before the work it covers (e.g. before writing any visitor-facing copy).",
   "Every tool in this list works over MCP, including approval-gated ones (marked APPROVAL-GATED — deploys, users/roles, languages/locales, plugin settings, bulk deletes …). Call them yourself: Caelo shows the operator an approval card in the Caelo admin (their Live Edit chat and the pending-approvals page), the call waits for Approve/Reject and returns the decision; if the wait times out, call caelo_await_approval with the proposalId. Tell the operator what you requested and that they approve the card in Caelo. Never ask the operator to paste a prompt into the Caelo admin chat or to do a step there that a tool here can do, and never re-propose a pending proposal.",
+  "After every stage_changes, call get_quality_audit (it waits for the result) and fix every open problem it names, then Stage and re-read until it passes: the target is 100 in every category and zero findings, and a score that dropped since the page's previous audit points at a recent change — check those changes first. Do not report open scores or findings to the operator as a result — only what you proved cannot be fixed in the site.",
   "Tool errors name the next step to take; follow them instead of retrying unchanged.",
 ].join("\n");
 

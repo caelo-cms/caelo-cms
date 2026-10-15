@@ -45,7 +45,8 @@ export type AuditJobResult =
   | { readonly ok: false; readonly failure: AuditInfraFailure };
 
 /** Per-page budget: 1 full + (n-1) Performance runs at up to ~45 s each
- *  (Lighthouse's own page-load ceiling), plus browser start. */
+ *  (Lighthouse's own page-load ceiling), plus browser start and the
+ *  few-second CPU benchmark (cpu-calibration.ts). */
 export function auditTimeoutMs(job: AuditJob): number {
   return 30_000 + job.pages.length * job.performanceRuns * 60_000;
 }

@@ -35,6 +35,7 @@ import {
   stageClassificationSchema,
 } from "./_shared.js";
 import { loadAcceptances } from "./gate-loader.js";
+import { loadPreviousScores } from "./previous-scores.js";
 
 export const runSummarySchema = z.object({
   id: z.string(),
@@ -196,6 +197,11 @@ const auditPageSchema = z.object({
   status: z.enum(["clean", "problems", "errored"]),
   /** 0..100 per category; every category is held to 100 (#727). */
   scores: z.record(categorySchema, z.number().int()).nullable(),
+  /** The page's scores in its newest EARLIER audit on the same branch
+   *  lineage (Performance only when measured at the same CPU calibration,
+   *  previous-scores.ts), so a drop can be pointed out as "check recent
+   *  changes first". Null when there is no such audit. */
+  previousScores: z.partialRecord(categorySchema, z.number().int()).nullable(),
   performanceRuns: z.array(z.number().int()),
   failingAudits: z.array(failingAuditSchema),
   /** Lighthouse's Performance metrics (FCP, LCP, TBT, CLS, SI: medians
@@ -299,6 +305,11 @@ export const getAuditOp = defineOperation({
       tx,
       pageRows.map((r) => r.page_id),
     );
+    const previousScores = await loadPreviousScores(
+      tx,
+      runRow.id,
+      pageRows.map((r) => r.page_id),
+    );
     const checks = runRow.checks === null ? null : json<RunChecksSummary>(runRow.checks);
     return ok({
       run: toRunSummary(runRow),
@@ -309,6 +320,7 @@ export const getAuditOp = defineOperation({
         url: r.url,
         status: r.status,
         scores: r.scores === null ? null : json<Record<QualityCategory, number>>(r.scores),
+        previousScores: previousScores.get(r.page_id) ?? null,
         performanceRuns: (r.performance_runs ?? []).map(Number),
         failingAudits: json<z.infer<typeof failingAuditSchema>[]>(r.failing_audits),
         metrics:

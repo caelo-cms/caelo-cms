@@ -467,3 +467,121 @@ test("bulk decisions per group: pick and accept, accept all, fix one group (#727
     timeout: 20_000,
   });
 });
+
+// Regression (found while fixing the Real-AI accept loop, PR #783): during
+// an accept the panel hid the whole card, and when the POST returned it
+// re-rendered from the PRE-accept status — the accepted group was back on
+// screen until the next status read landed, as if the accept had failed.
+// The network is shaped so every stale path shows: each status read is
+// taken at once but answered only after the NEXT accept has returned. The
+// card must stay up the whole time, and a group's page count may only go
+// down — it never reappears with pages already accepted.
+test("an accept never flashes the card or shows the accepted group again (#783)", async ({
+  page,
+}) => {
+  // The bulk test above accepted this rule on these pages; start the
+  // group from all three pages again.
+  runBunInline(
+    `
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const s = process.env.SLUG;
+      await tx\`DELETE FROM quality_acceptances WHERE page_id IN
+        (SELECT id FROM pages WHERE slug IN (\${s}, \${s + "-b"}, \${s + "-c"}))\`;
+    });
+    await sql.end();
+    `,
+    { SLUG },
+  );
+  const ownerId = await login(page);
+  const chatSessionId = await newChat(page);
+  seedProblemAudit(chatSessionId, ownerId, "operator", "grouped");
+  const sent = watchStreamRequests(page, chatSessionId);
+  await page.reload();
+
+  const card = page.getByTestId("quality-fix-offer");
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  const missing = card.locator('[data-group-key="seo-check/description-missing"]');
+  await expect(missing).toHaveAttribute("data-page-count", "3");
+
+  // From here on, every status read holds its (already read) answer until
+  // released — so a read started before an accept lands after it.
+  const held: (() => void)[] = [];
+  let holding = true;
+  await page.route(`**/content/chat/${chatSessionId}/quality-audit`, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const res = await route.fetch();
+    if (holding) await new Promise<void>((release) => held.push(release));
+    await route.fulfill({ response: res });
+  });
+  const releaseHeld = (): void => {
+    for (const release of held.splice(0)) release();
+  };
+
+  // Record every state of the card the operator could see.
+  await page.evaluate(() => {
+    const w = window as unknown as { __qfo: { cardGone: boolean; counts: string[] } };
+    w.__qfo = { cardGone: false, counts: [] };
+    const look = (): void => {
+      if (!document.querySelector('[data-testid="quality-fix-offer"]')) w.__qfo.cardGone = true;
+      const g = document.querySelector('[data-group-key="seo-check/description-missing"]');
+      const count = g?.getAttribute("data-page-count") ?? "none";
+      if (w.__qfo.counts.at(-1) !== count) w.__qfo.counts.push(count);
+    };
+    look();
+    new MutationObserver(look).observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["data-page-count"],
+    });
+  });
+
+  const acceptPosted = () =>
+    page.waitForResponse(
+      (r) =>
+        r.request().method() === "POST" &&
+        r.url().endsWith(`/content/chat/${chatSessionId}/quality-audit`) &&
+        (r.request().postData() ?? "").includes('"accept"'),
+    );
+
+  // Accept one picked page: the card shows the shrunk group at once, with
+  // the read that follows the accept still held.
+  await missing.getByTestId("quality-offer-group-pick").click();
+  await missing
+    .locator(`[data-testid="quality-offer-pick-page"][data-page-path="${PAGE_PATH}-b"]`)
+    .check();
+  await missing.getByTestId("quality-offer-group-accept").click();
+  await missing.getByTestId("quality-offer-accept-reason").fill("archived page, no SEO value");
+  const first = acceptPosted();
+  await missing.getByTestId("quality-offer-accept-confirm").click();
+  expect((await first).ok()).toBe(true);
+  await expect(missing).toHaveAttribute("data-page-count", "2", { timeout: 5_000 });
+
+  // Accept the rest while that read is still on the wire, then let it land:
+  // it predates this accept and must not bring the group back.
+  await missing.getByTestId("quality-offer-group-accept").click();
+  await missing.getByTestId("quality-offer-accept-reason").fill("legacy landing pages");
+  await expect(missing.getByTestId("quality-offer-accept-confirm")).toHaveText(
+    "Accept on 2 page(s)",
+  );
+  const second = acceptPosted();
+  await missing.getByTestId("quality-offer-accept-confirm").click();
+  expect((await second).ok()).toBe(true);
+  await expect(missing).toHaveCount(0, { timeout: 5_000 });
+  holding = false;
+  releaseHeld();
+  // Give the released (stale) reads and the fresh re-read time to land.
+  await expect.poll(() => held.length).toBe(0);
+  await page.waitForTimeout(2_000);
+  await expect(missing).toHaveCount(0);
+
+  const seen = await page.evaluate(
+    () => (window as unknown as { __qfo: { cardGone: boolean; counts: string[] } }).__qfo,
+  );
+  expect(seen.cardGone).toBe(false);
+  expect(seen.counts).toEqual(["3", "2", "none"]);
+  expect(sent).toHaveLength(0);
+});
