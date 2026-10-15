@@ -18,6 +18,7 @@
     TabsTrigger,
   } from "#lib/components/ui/tabs/index.js";
   import AssetsEditor from "#lib/components/theme/AssetsEditor.svelte";
+  import FontDeliveryPanel from "#lib/components/theme/FontDeliveryPanel.svelte";
   import ColorEditor from "#lib/components/theme/ColorEditor.svelte";
   import LivePreview from "#lib/components/theme/LivePreview.svelte";
   import RadiiEditor from "#lib/components/theme/RadiiEditor.svelte";
@@ -96,6 +97,11 @@
             csrfToken={data.csrfToken}
             themeSlug={data.theme.slug}
             onTokensChange={handleTokensChange}
+          />
+          <FontDeliveryPanel
+            report={data.fontDelivery}
+            csrfToken={data.csrfToken}
+            themeSlug={data.theme.slug}
           />
         </TabsContent>
         <TabsContent value="spacing" class="mt-4">
