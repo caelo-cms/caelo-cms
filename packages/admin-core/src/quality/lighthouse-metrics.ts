@@ -100,6 +100,12 @@ export interface PerformanceMetrics {
   readonly lcpBreakdown: readonly LcpBreakdownPart[];
   /** The largest layout shifts (up to five); empty when nothing shifted. */
   readonly layoutShifts: readonly LayoutShift[];
+  /** The host's benchmark index and the CPU slowdown calibrated to it
+   *  (cpu-calibration.ts); set by the audit child, absent on older audits. */
+  readonly cpuCalibration?: {
+    readonly benchmarkIndex: number;
+    readonly cpuSlowdownMultiplier: number;
+  };
 }
 
 /** Layout shifts kept per page (Lighthouse lists the largest first). */

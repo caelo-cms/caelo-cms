@@ -30,7 +30,7 @@ Lighthouse runs automatically after a Stage that can change how pages look or pe
 
 A Stage that only changes texts and field values, moves existing modules, or edits SEO texts or redirects gets no Lighthouse audit; the page checks still read every page, which takes seconds.
 
-Lighthouse covers the homepage plus the pages the Stage changed (up to five). Performance is the median of three runs; the other categories are measured once.
+Lighthouse covers the homepage plus the pages the Stage changed (up to five). Performance is the median of five runs; the other categories are measured once.
 
 ## Performance metrics
 
@@ -72,16 +72,17 @@ An acceptance records the **value measured** when it was made: the category scor
 
 ### Measurement noise
 
-Lighthouse's Performance score jitters a little between runs of the same page. Caelo handles that in two places and nowhere else:
+Lighthouse's Performance score jitters a little between runs of the same page. Caelo handles that in three places and nowhere else:
 
-- The Performance score is the **median of three runs**, and an audit that only Performance uses counts when it fails in most of those runs.
+- **CPU calibration.** Lighthouse emulates a mid-tier phone by slowing the CPU down. Its default of a fixed 4x is right only on a fast desktop; on the admin's container it over-penalises a slow, shared CPU and turns that CPU's noise into Total Blocking Time. Before each audit Caelo measures the host with Lighthouse's own benchmark and sets the slowdown with the formula of Lighthouse's CPU throttling calculator, so every install measures against the same target device. The audit shows the multiplier and the benchmark index next to the metrics. A host below benchmark index 150 is too slow to measure reliably: the check then fails loudly instead of reporting a score.
+- The Performance score is the **median of five runs**, and an audit that only Performance uses counts when it fails in most of those runs.
 - When a Performance value is compared with an **accepted** value, it may be up to **2 points** below it before it counts as worse. This tolerance never applies against the target: without an acceptance, a Performance of 99 blocks. Accepted Performance values are also never tightened or used up automatically — a lucky run would otherwise raise the bar to noise — so they stay until an editor revokes them.
 
 Accessibility, Best Practices, SEO and the page checks are deterministic: no tolerance at all.
 
 ## How it plays out in the chat
 
-1. You Stage — or the AI stages its finished work. A minute or two later the result appears in the same chat.
+1. You Stage — or the AI stages its finished work. A few minutes later the result appears in the same chat.
 2. If there are problems, the chat **asks you first**, with the findings **grouped by rule across pages**: *"Quality check found 2 kinds of issue on 312 pages: Missing meta description (312 pages); Performance score below 100 (3 pages)."* Nothing changes until you decide. This holds however the Stage happened — your **Stage** button, **Open changes**, the AI's own Stage, or an external agent's. You may have moved on while the check ran, and the AI may not have made every staged change.
    - **Fix all with AI** starts the fix of everything. The AI gets the findings by group, who staged the build, and a reminder that the build can contain changes from other chats or agents, so it checks the page before changing it. It is told the target is 100 and zero findings, fixes what it can — missing alt texts, low contrast, missing labels and headings, meta descriptions, image sizes, render-blocking CSS, layout shifts — and Stages again, which re-checks.
    - Per group you choose: **Fix all** (the AI fixes only that group), **Accept all…** (you accept the group on every page with a reason — it counts at once, Publish live opens as soon as nothing else blocks), or **Pick pages** (tick pages, then fix or accept just those).

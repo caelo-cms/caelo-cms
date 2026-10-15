@@ -52,8 +52,8 @@ export const QUALITY_TARGET = 100;
 /**
  * Points a Performance value (category score, or the score of an audit
  * that belongs only to Performance) may fall below an editor's ACCEPTED
- * value before it counts as worse. Measurement noise of the median of
- * three runs, observed at 1–2 points; never applied against the target.
+ * value before it counts as worse. Measurement noise of the Performance
+ * median, observed at 1–2 points; never applied against the target.
  */
 export const ACCEPTED_PERFORMANCE_TOLERANCE = 2;
 

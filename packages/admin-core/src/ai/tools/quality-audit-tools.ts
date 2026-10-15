@@ -71,7 +71,7 @@ function statusLine(run: AuditRun): string {
   switch (run.status) {
     case "queued":
     case "running":
-      return `Audit ${run.status} — it takes 1–2 minutes. ${AUDIT_PENDING_NEXT_STEP}`;
+      return `Audit ${run.status} — it takes 2–4 minutes. ${AUDIT_PENDING_NEXT_STEP}`;
     case "passed":
       return "Audit passed: 100 in every category and no findings.";
     case "problems":
