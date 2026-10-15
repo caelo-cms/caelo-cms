@@ -9,7 +9,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./schema/cms_admin": "./src/schema/cms_admin/index.ts",
-    "./schema/cms_public": "./src/schema/cms_public/index.ts"
+    "./schema/cms_public": "./src/schema/cms_public/index.ts",
+    "./public-projection": "./src/public-projection.ts"
   },
   "scripts": {
     "typecheck": "tsc -b",
@@ -21,7 +22,8 @@
   },
   "dependencies": {
     "@caelo-cms/shared": "workspace:*",
-    "drizzle-orm": "0.45.4"
+    "drizzle-orm": "0.45.4",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "drizzle-kit": "0.31.11"

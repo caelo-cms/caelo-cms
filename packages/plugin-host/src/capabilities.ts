@@ -44,6 +44,7 @@ import { makePluginFonts } from "./fonts.js";
 import { makePluginImages } from "./images.js";
 import { makePluginAi } from "./plugin-ai.js";
 import { makePluginPrivateFiles } from "./private-files.js";
+import { isPublicSideHost, makeProjectedAdminQuery } from "./published-state.js";
 import { makePluginSiteMedia } from "./site-media.js";
 import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
 
@@ -124,6 +125,20 @@ export async function makePluginContext(
 
   // Release-signed — attach elevated handles per requestedCapabilities.
   const tier1: Mutable<PluginContextTier1> = { ...baseCtx };
+  if (isPublicSideHost(infra)) {
+    // #635 — the public gateway has no cms_admin login. Private storage is
+    // the read-only published `visitorProjection`; `ctx.cms` reaches only
+    // the gateway's own registry (core ops backed by cms_public). Handles
+    // that need the authoring database (events, snapshots, AI, files,
+    // fonts, media) are not attached at all, so a visitor operation that
+    // reaches for one fails at the plugin, by name.
+    if (requested.has("cms_admin")) tier1.cms = makePluginCms(plugin, infra, invocation);
+    if (requested.has("cms_admin_schema")) {
+      tier1.adminQuery = makeProjectedAdminQuery(plugin, infra);
+    }
+    if (requested.has("email")) tier1.email = makePluginEmail(infra);
+    return tier1;
+  }
   if (requested.has("cms_admin")) {
     tier1.cms = makePluginCms(plugin, infra, invocation);
   }

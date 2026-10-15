@@ -25,9 +25,6 @@ describe("gateway dev launcher (#613 review)", () => {
       "GATEWAY_DATABASE_URL",
       "PUBLIC_DATABASE_URL",
     ]);
-    expect(gatewayDatabaseUrls(env)).toEqual({
-      gateway: ROOT_ENV.GATEWAY_DATABASE_URL,
-      public: ROOT_ENV.PUBLIC_DATABASE_URL,
-    });
+    expect(gatewayDatabaseUrls(env)).toEqual({ public: ROOT_ENV.PUBLIC_DATABASE_URL });
   });
 });

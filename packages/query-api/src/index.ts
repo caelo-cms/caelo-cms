@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-export { type AdapterConfig, DatabaseAdapter } from "./adapter.js";
+export {
+  type AdapterConfig,
+  AdminDatabaseUnavailableError,
+  DatabaseAdapter,
+} from "./adapter.js";
 export { recordAudit, recordAuditFromCtx, SYSTEM_ACTOR_ID } from "./audit.js";
 export {
   isRlsDenial,

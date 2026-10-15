@@ -29,15 +29,23 @@
  *   7. Request log row written async (best-effort; failure does not
  *      affect the response).
  *
- * Database identity (issue #613, CLAUDE.md §2): the gateway never holds an
- * admin_role credential. It reaches cms_admin as `gateway_role` — read
- * access to its settings and the plugin registry, append access to its own
- * state (rate-limit buckets, captcha challenges, request log, plugin op
- * audit), nothing else (migration 0248) — and cms_public as `public_role`.
- * Its plugin host only attaches what the admin registered and an Owner
- * activated (plugin-host gateway-attach.ts); it never registers, provisions
- * or activates anything itself. Its OperationRegistry holds only the core
- * operations visitor paths call (plugin-host gateway-ops.ts, #634).
+ * Database identity (issues #613, #635; CLAUDE.md §2): the gateway has NO
+ * cms_admin login. It connects to cms_public only, as `public_role`:
+ *
+ *   - its own state lives there (rate-limit buckets, captcha challenges,
+ *     request log, plugin op events — cms_public migration 0280), and it
+ *     garbage-collects it itself;
+ *   - what it needs from authoring state (its settings, the staging gate,
+ *     rate-limit overrides, the active-plugin registry, each plugin's
+ *     declared `visitorProjection`, approved comments) the admin PUBLISHES
+ *     into cms_public (`@caelo-cms/migrations/public-projection`), one way,
+ *     and NOTIFYs `caelo_gateway_settings` there.
+ *
+ * Its plugin host only attaches what the admin published as active
+ * (plugin-host gateway-attach.ts); it never registers, provisions or
+ * activates anything itself. Its OperationRegistry holds only the core
+ * operations visitor paths call, all on cms_public (plugin-host
+ * gateway-ops.ts).
  */
 
 import { resolve } from "node:path";
@@ -49,7 +57,7 @@ import {
   runPluginOperation,
   syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
-import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
 // Read SQL via globalThis.Bun rather than a value-import of "bun".
 // The type-only import is erased at compile; the runtime constructor
 // comes from Bun's globals. Keeps this file bundler-safe for any
@@ -63,6 +71,7 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
 ) => SQLType;
 
 import { GATEWAY_DATABASE_ROLES, gatewayDatabaseUrls } from "./database-env.js";
+import { startGatewayStateGc } from "./gc.js";
 import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
 import {
@@ -138,9 +147,8 @@ export function clearSessionCookieHeader(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Site settings cache — gateway secret + body cap + captcha provider live
-// in `site_settings`. Refresh every 30s; rotation effects propagate within
-// that window.
+// Settings cache — gateway secret + body cap + captcha provider, as the
+// admin publishes them from `site_settings` (published_gateway_settings).
 // ---------------------------------------------------------------------------
 
 interface GatewaySettings {
@@ -150,9 +158,8 @@ interface GatewaySettings {
 }
 
 // P13 audit fix #2 — short TTL so cookie-secret rotations propagate
-// quickly. The in-process invalidation path lives via the
-// admin-issued `gateway.rotate_cookie_secret` op which posts a
-// `pg_notify('caelo_gateway_settings', '')`; the gateway's LISTEN
+// quickly. The admin's publisher posts `pg_notify('caelo_gateway_settings',
+// <section>)` on cms_public after every publish (#635); the gateway's LISTEN
 // connection invalidates immediately. The 5s ceiling is the safety
 // net for cross-process / multi-replica deployments where NOTIFY
 // reaches one replica only.
@@ -163,34 +170,27 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
   if (cachedSettings && Date.now() - cachedSettings.loadedAt < SETTINGS_TTL_MS) {
     return cachedSettings.settings;
   }
-  const rows = await adapter.withAdminTransaction(
-    SYSTEM_CTX,
-    async (tx) =>
-      (await tx.execute(sql`
-      SELECT
-        gateway_cookie_secret      AS cookie_secret,
-        gateway_max_body_bytes     AS max_body_bytes,
-        captcha_provider           AS captcha_provider,
-        captcha_pow_target_prefix  AS captcha_pow_target_prefix
-      FROM site_settings
-      WHERE id = 1
-      LIMIT 1
+  const { published, rows } = await adapter.withPublicTransaction(SYSTEM_CTX, async (tx) => ({
+    published: await sectionPublished(tx, "settings"),
+    rows: (await tx.execute(sql`
+      SELECT cookie_secret, max_body_bytes, captcha_provider, captcha_pow_target_prefix
+      FROM published_gateway_settings WHERE id = 1
     `)) as unknown as {
-        cookie_secret: string | null;
-        max_body_bytes: number;
-        captcha_provider: "off" | "pow" | "turnstile" | "hcaptcha";
-        captcha_pow_target_prefix: string;
-      }[],
-  );
+      cookie_secret: string | null;
+      max_body_bytes: number;
+      captcha_provider: "off" | "pow" | "turnstile" | "hcaptcha";
+      captcha_pow_target_prefix: string;
+    }[],
+  }));
   const row = rows[0];
   const secret = row?.cookie_secret;
   if (!row || !secret) {
-    // Migration 0248 seeds the secret and the admin rotates it; the gateway
-    // has no write access to site_settings (#613), so it cannot mint one.
+    // The admin publishes these (#635); the gateway can neither read
+    // site_settings nor mint a secret of its own.
     throw new GatewayNotReadyError(
-      row
-        ? "site_settings.gateway_cookie_secret is not set; run the database migrations (0248 seeds it) or rotate it from /settings/gateway"
-        : "site_settings has no row; run the database migrations",
+      published
+        ? "the admin published no gateway cookie secret; run the database migrations (0248 seeds it) or rotate it from /settings/gateway"
+        : "the admin has not published the gateway settings yet; run the database migrations (they publish them) or start the admin",
     );
   }
   const settings: GatewaySettings = {
@@ -247,6 +247,14 @@ function describeFailure(e: unknown): string {
   return `${e.name}${typeof code === "string" ? ` (${code})` : ""}: ${message}`;
 }
 
+/** Whether the admin has published `section` into cms_public (#635). */
+async function sectionPublished(tx: TransactionRunner, section: string): Promise<boolean> {
+  const rows = (await tx.execute(
+    sql`SELECT 1 AS ok FROM published_projection_sections WHERE section = ${section}`,
+  )) as unknown as unknown[];
+  return rows.length > 0;
+}
+
 export function invalidateGatewaySettings(): void {
   cachedSettings = null;
   cachedStagingState = null;
@@ -265,14 +273,13 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
   if (cachedStagingState && Date.now() - cachedStagingState.loadedAt < SETTINGS_TTL_MS) {
     return cachedStagingState.state;
   }
-  const rows = (await adapter.withAdminTransaction(
+  const rows = (await adapter.withPublicTransaction(
     SYSTEM_CTX,
     async (tx) =>
       await tx.execute(sql`
         SELECT staging_host, cookie_enabled, basic_auth_enabled, basic_auth_user, basic_auth_nonce,
-               header_enabled, header_name, header_nonce,
-               to_jsonb(ip_allowlist) AS ip_allowlist, origin_url
-        FROM staging_access WHERE id = 1
+               header_enabled, header_name, header_nonce, ip_allowlist, origin_url
+        FROM published_staging_access WHERE id = 1
       `),
   )) as unknown as {
     staging_host: string | null;
@@ -288,7 +295,9 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
   }[];
   const row = rows[0];
   if (!row) {
-    throw new GatewayNotReadyError("staging_access has no row; run the database migrations (0251)");
+    throw new GatewayNotReadyError(
+      "the admin has not published the staging gate settings yet; run the database migrations (they publish them) or start the admin",
+    );
   }
   const state: StagingState = {
     host: row.staging_host,
@@ -381,7 +390,7 @@ export function setGatewayAdapter(adapter: DatabaseAdapter): void {
 async function recordRequest(row: RequestLogRow): Promise<void> {
   if (!cachedAdapter) return;
   try {
-    await cachedAdapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
+    await cachedAdapter.withPublicTransaction(SYSTEM_CTX, async (tx) => {
       await tx.execute(sql`
         INSERT INTO gateway_request_log (
           plugin_slug, operation, visitor_id_hash, status_code, duration_ms,
@@ -561,7 +570,7 @@ export async function handleRequest(req: Request): Promise<Response> {
   const cookies: string[] = [...visitor.setCookies];
 
   // P13 audit re-pass — derive an IP-scoped key once. Used on:
-  //   (a) the honeypot branch (so bots can't inflate rate_limit_buckets
+  //   (a) the honeypot branch (so bots can't inflate gateway_rate_limit_buckets
   //       by spinning fresh uuids — the IP pins the bucket),
   //   (b) any request from a visitor the gateway does not recognise — no
   //       signed cookie, a freshly minted one, or no consent to one
@@ -708,7 +717,7 @@ export async function handleRequest(req: Request): Promise<Response> {
     const status =
       result.error.kind === "PluginNotFound"
         ? 404
-        : result.error.kind === "PluginDisabled"
+        : result.error.kind === "PluginDisabled" || result.error.kind === "ProjectionNotPublished"
           ? 503
           : result.error.kind === "OperationNotDeclared"
             ? 400
@@ -752,18 +761,20 @@ export async function handleRequest(req: Request): Promise<Response> {
 
 if (import.meta.main) {
   const urls = gatewayDatabaseUrls(process.env);
-  // The "admin" pool is the cms_admin pool, opened as gateway_role.
-  // verifyRoles fails loudly if either URL resolves to another role.
+  // No cms_admin pool at all (#635): every path that would reach the
+  // authoring database throws AdminDatabaseUnavailableError. verifyRoles
+  // fails loudly if the URL resolves to anything but public_role.
   const adapter = new DatabaseAdapter({
-    adminDatabaseUrl: urls.gateway,
+    adminDatabaseUrl: null,
     publicDatabaseUrl: urls.public,
     expectedRoles: GATEWAY_DATABASE_ROLES,
   });
-  // Exactly the core operations visitor paths need (#634); gateway_role's
-  // grants cover these and nothing more.
+  // Exactly the core operations visitor paths need (#634), all on cms_public.
   const registry = new OperationRegistry();
   registerGatewayOperations(registry);
   setGatewayAdapter(adapter);
+  // The gateway's own state, expired rows only (#763 L4: never waits on the admin).
+  startGatewayStateGc(adapter);
   // P13 audit re-pass — dedicated long-lived LISTEN connection.
   // Pooled handles return to the pool after each query, dropping any
   // pg_notify subscriptions; so we open a SEPARATE Bun.SQL client that
@@ -772,7 +783,8 @@ if (import.meta.main) {
   // when this fails (e.g. during DB restart) so we don't block boot.
   void (async () => {
     try {
-      const listenSql = new SQL(urls.gateway);
+      // cms_public: the admin's publisher notifies here (#635).
+      const listenSql = new SQL(urls.public);
       // Bun's `unsafe` runs LISTEN on the bound connection; subsequent
       // notifications stream via `for await` on the connection's
       // notifications iterator.

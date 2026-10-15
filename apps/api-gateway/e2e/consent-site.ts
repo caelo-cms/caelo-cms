@@ -11,21 +11,21 @@
  *      explicit hand-off (`testPlugins`), seed one published page whose
  *      module is a consent banner, and run the real static generator on it
  *      — the plugin's runtime is injected exactly as on a live build.
- *   2. Gateway side (gateway_role + public_role, never admin_role): the
+ *   2. Gateway side (public_role only, no cms_admin login, #635): the
  *      dispatch-only plugin host and `handleRequest`.
  *   3. Serve both on one port and print `READY <port> <pagePath>`.
  *
  * SIGTERM restores what it changed: the plugin's previous status, the site
  * language, and the seeded page.
  *
- * Env: ADMIN_DATABASE_URL, PUBLIC_ADMIN_DATABASE_URL, GATEWAY_DATABASE_URL,
+ * Env: ADMIN_DATABASE_URL, PUBLIC_ADMIN_DATABASE_URL,
  * PUBLIC_DATABASE_URL.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, sep } from "node:path";
-import { registerAdminOps } from "@caelo-cms/admin-core";
+import { publishProjectionOnce, registerAdminOps } from "@caelo-cms/admin-core";
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
@@ -189,18 +189,19 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
       syncCurrent: false,
     }),
   );
+  // The admin publishes what the gateway serves from (#635).
+  await publishProjectionOnce(adminAdapter, { comments: true });
   resetPluginHost();
   await adminAdapter.close();
 
-  // --- 2. Gateway side: production identities. ---
+  // --- 2. Gateway side: production identity (no cms_admin login, #635). ---
   const urls = gatewayDatabaseUrls({
-    // Only the gateway's own logins: it refuses an environment holding
+    // Only the gateway's own login: it refuses an environment holding
     // admin_role credentials, which this process also has for step 1.
-    GATEWAY_DATABASE_URL: required("GATEWAY_DATABASE_URL"),
     PUBLIC_DATABASE_URL: required("PUBLIC_DATABASE_URL"),
   });
   const gatewayAdapter = new DatabaseAdapter({
-    adminDatabaseUrl: urls.gateway,
+    adminDatabaseUrl: null,
     publicDatabaseUrl: urls.public,
     expectedRoles: GATEWAY_DATABASE_ROLES,
   });

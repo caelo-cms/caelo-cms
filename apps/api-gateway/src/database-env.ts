@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The API gateway's database identity (issue #613, CLAUDE.md §2): which env
- * vars it connects with, which roles they must resolve to, and the admin
- * credentials it refuses to run with. Kept apart from server.ts so the dev
- * launcher (dev.ts) can use it without loading the server.
+ * The API gateway's database identity (issues #613, #635; CLAUDE.md §2):
+ * which env var it connects with, which role that must resolve to, and the
+ * admin credentials it refuses to run with. Kept apart from server.ts so
+ * the dev launcher (dev.ts) can use it without loading the server.
+ *
+ * The gateway connects to cms_public ONLY, as public_role. It has no
+ * cms_admin login: what it needs from authoring state, the admin publishes
+ * into cms_public (`@caelo-cms/migrations/public-projection`).
  */
 
 import { databaseUrlFromEnv } from "@caelo-cms/shared";
@@ -22,34 +26,31 @@ export const ADMIN_CREDENTIAL_ENV = [
   "PUBLIC_ADMIN_DATABASE_PASSWORD",
 ] as const;
 
-/** The database roles the gateway's two pools must connect as. */
+/**
+ * The roles the gateway's adapter must connect as: no cms_admin pool at
+ * all, public_role on cms_public.
+ */
 export const GATEWAY_DATABASE_ROLES = {
-  admin: "gateway_role",
+  admin: null,
   public: ["public_role"],
 } as const;
 
 /**
- * The gateway's connection URLs: `GATEWAY_DATABASE_URL` (gateway_role on
- * cms_admin) and `PUBLIC_DATABASE_URL` (public_role on cms_public), each
- * with its `_PASSWORD` companion applied. Throws, naming what is wrong,
- * when an admin credential is present or either URL is missing.
+ * The gateway's connection URL: `PUBLIC_DATABASE_URL` (public_role on
+ * cms_public) with its `_PASSWORD` companion applied. Throws, naming what is
+ * wrong, when an admin credential is present or the URL is missing.
  */
 export function gatewayDatabaseUrls(env: Readonly<Record<string, string | undefined>>): {
-  readonly gateway: string;
   readonly public: string;
 } {
   const leaked = ADMIN_CREDENTIAL_ENV.filter((name) => env[name]);
   if (leaked.length > 0) {
     throw new Error(
-      `the API gateway must not hold admin_role credentials (CLAUDE.md §2) but ${leaked.join(", ")} ${leaked.length === 1 ? "is" : "are"} set. Remove ${leaked.length === 1 ? "it" : "them"} from the gateway's environment; it connects as gateway_role (GATEWAY_DATABASE_URL) and public_role (PUBLIC_DATABASE_URL). Cloud installs: run \`cms-provision upgrade\`. Local dev with the shared root .env: start it with \`bun run --filter @caelo-cms/api-gateway dev\`, which leaves them out.`,
+      `the API gateway must not hold admin_role credentials (CLAUDE.md §2) but ${leaked.join(", ")} ${leaked.length === 1 ? "is" : "are"} set. Remove ${leaked.length === 1 ? "it" : "them"} from the gateway's environment; it connects to cms_public only, as public_role (PUBLIC_DATABASE_URL). Cloud installs: run \`cms-provision upgrade\`. Local dev with the shared root .env: start it with \`bun run --filter @caelo-cms/api-gateway dev\`, which leaves them out.`,
     );
   }
-  const gateway = databaseUrlFromEnv(["GATEWAY_DATABASE_URL"], env);
   const pub = databaseUrlFromEnv(["PUBLIC_DATABASE_URL"], env);
-  const missing = [
-    ...(gateway ? [] : ["GATEWAY_DATABASE_URL (gateway_role on cms_admin)"]),
-    ...(pub ? [] : ["PUBLIC_DATABASE_URL (public_role on cms_public)"]),
-  ];
-  if (!gateway || !pub) throw new Error(`the API gateway needs ${missing.join(" and ")}`);
-  return { gateway, public: pub };
+  if (!pub)
+    throw new Error("the API gateway needs PUBLIC_DATABASE_URL (public_role on cms_public)");
+  return { public: pub };
 }

@@ -203,6 +203,14 @@ export function adminSchemaFromSpec(opts: {
    * plugin that stops serving visitors converges on the next load.
    */
   visitorReadable?: boolean;
+  /**
+   * Issue #635 — the tables of the plugin's declared `visitorProjection`.
+   * Each gets a statement trigger that marks the plugin's projection
+   * section stale in `public_projection_outbox` (cms_admin migration
+   * 0281), so the admin republishes it into cms_public after any write —
+   * an op, a branch publish, a revert. Tables not named lose the trigger.
+   */
+  projectedTables?: ReadonlyArray<string>;
 }): EmittedSchema {
   const schemaName = `plugin_${opts.slug.replace(/-/g, "_")}`;
   const stmts: string[] = [];
@@ -255,6 +263,7 @@ export function adminSchemaFromSpec(opts: {
   }
 
   stmts.push(gatewayReadGrants(schemaName, opts.adminSchema, opts.visitorReadable));
+  stmts.push(projectionTriggers(schemaName, opts.pluginId, opts.adminSchema, opts.projectedTables));
 
   return { schemaName, sql: stmts.join("\n\n") };
 }
@@ -312,6 +321,51 @@ function gatewayReadGrants(
     "  END IF;",
     "END",
     "$caelo_gateway$;",
+  ].join("\n");
+}
+
+/**
+ * Issue #635 — keep a plugin's published projection current: a statement
+ * trigger on each projected table marks section `plugin:<id>` stale, and
+ * every other table of the schema has the trigger dropped (a table that
+ * left the projection stops waking the publisher). Guarded on the
+ * trigger function existing, so a database older than migration 0281
+ * still provisions.
+ */
+function projectionTriggers(
+  schemaName: string,
+  pluginId: string,
+  adminSchema: PluginSchemaMap,
+  projectedTables: ReadonlyArray<string> | undefined,
+): string {
+  if (!/^[0-9a-f-]{36}$/i.test(pluginId)) {
+    throw new Error(`adminSchemaFromSpec: plugin id "${pluginId}" is not a UUID`);
+  }
+  const projected = new Set(projectedTables ?? []);
+  for (const t of projected) {
+    if (!(t in adminSchema)) {
+      throw new Error(`adminSchemaFromSpec: projected table "${t}" is not in adminSchema`);
+    }
+  }
+  const schema = quoteIdent(schemaName);
+  const lines = Object.keys(adminSchema).flatMap((t) => {
+    const fq = `${schema}.${quoteIdent(t)}`;
+    const drop = `    DROP TRIGGER IF EXISTS caelo_projection ON ${fq};`;
+    if (!projected.has(t)) return [drop];
+    return [
+      drop,
+      `    CREATE TRIGGER caelo_projection AFTER INSERT OR UPDATE OR DELETE ON ${fq}`,
+      `      FOR EACH STATEMENT EXECUTE FUNCTION caelo_mark_public_projection('plugin:${pluginId.toLowerCase()}');`,
+    ];
+  });
+  return [
+    "DO $caelo_projection$",
+    "BEGIN",
+    "  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'caelo_mark_public_projection') THEN",
+    ...lines,
+    "  END IF;",
+    "END",
+    "$caelo_projection$;",
   ].join("\n");
 }
 
