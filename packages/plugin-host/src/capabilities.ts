@@ -44,6 +44,7 @@ import { makePluginFonts } from "./fonts.js";
 import { makePluginImages } from "./images.js";
 import { makePluginAi } from "./plugin-ai.js";
 import { makePluginPrivateFiles } from "./private-files.js";
+import { validatePublicRows } from "./public-row-schema.js";
 import { isPublicSideHost, makeProjectedAdminQuery } from "./published-state.js";
 import { makePluginSiteMedia } from "./site-media.js";
 import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
@@ -414,6 +415,12 @@ function makeScopedQuery(
         columns,
         ...(filter ? { filter } : {}),
       });
+      // #635 — on the admin side, rows of a public table were written by
+      // the public side: validated against the declaration before the
+      // plugin's code sees them (public-row-schema.ts).
+      if (scope.pool === "public" && !isPublicSideHost(infra)) {
+        return validatePublicRows<T>(plugin.slug, table, columns, out.rows);
+      }
       return out.rows;
     },
 

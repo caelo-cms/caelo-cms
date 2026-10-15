@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import { expect, test } from "bun:test";
+import { untrustedToolResult } from "@caelo-cms/shared";
 import { localPluginPreview, previewFromResult } from "./plugin-preview.js";
 
 test("only local plugin documents open in the editor, with canonical bounded arguments", () => {
@@ -24,6 +25,10 @@ test("only local plugin documents open in the editor, with canonical bounded arg
     "/plugins/example/preview?args=%7B%7D",
   );
   expect(previewFromResult("not json", origin)).toBeNull();
+  // #635 — a plugin tool's result arrives wrapped as untrusted data.
+  expect(
+    previewFromResult(untrustedToolResult({ previewUrl: "/plugins/example/preview" }), origin),
+  ).toBe("/plugins/example/preview?args=%7B%7D");
 });
 
 test("explicit local preview views survive navigation without accepting scripts or paths", () => {
