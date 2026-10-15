@@ -82,6 +82,11 @@ class QualityStatusPoller {
   status = $state<QualityStatus | null>(null);
   #timer: ReturnType<typeof setTimeout> | null = null;
   #users = 0;
+  // Bumped by `apply()`. A read that started under an older epoch may have
+  // read the state from before the change whose result was applied, so it
+  // is discarded instead of overwriting the newer status (the accepted
+  // group would reappear until the next read).
+  #epoch = 0;
   // Coalesced, not dropped: a refresh asked for while one is on the wire
   // runs again after it, so a caller that just changed the state (ack,
   // dismiss, claim) always gets a fetch that started after its change.
@@ -106,6 +111,18 @@ class QualityStatusPoller {
     }
   }
 
+  /**
+   * Show `status` now — the state a quality action's response carries,
+   * read by the server after the action committed — and re-read once to
+   * stay current. Any read already on the wire is discarded when it lands:
+   * it may predate the action.
+   */
+  async apply(status: QualityStatus): Promise<void> {
+    this.#epoch += 1;
+    this.status = status;
+    await this.refresh();
+  }
+
   /** Fetch now (e.g. right after a Stage) and reschedule. Resolves once a
    *  fetch that started after this call has landed. */
   async refresh(): Promise<void> {
@@ -114,12 +131,15 @@ class QualityStatusPoller {
   }
 
   async #fetchOnce(): Promise<void> {
+    const epoch = this.#epoch;
     try {
       if (typeof document === "undefined" || document.visibilityState !== "hidden") {
         const res = await fetch(`/content/chat/${this.chatSessionId}/quality-audit`, {
           headers: { accept: "application/json" },
         });
-        if (res.ok) this.status = (await res.json()) as QualityStatus;
+        if (!res.ok) return;
+        const status = (await res.json()) as QualityStatus;
+        if (epoch === this.#epoch) this.status = status;
       }
     } catch {
       // network blip — the next tick retries
@@ -170,6 +190,8 @@ export async function postQualityAction(
   note?: string;
   dismissed?: boolean;
   accepted?: number;
+  /** "accept" — the chat's status after the acceptance applied. */
+  status?: QualityStatus;
   error?: string;
 }> {
   const res = await fetch(`/content/chat/${chatSessionId}/quality-audit`, {
@@ -183,6 +205,7 @@ export async function postQualityAction(
     note?: string;
     dismissed?: boolean;
     accepted?: number;
+    status?: QualityStatus;
     error?: string;
   };
   return { ok: res.ok && data.ok !== false, ...data };

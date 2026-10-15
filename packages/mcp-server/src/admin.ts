@@ -8,6 +8,7 @@
  */
 
 import { startAdminMcpServer } from "./admin-server.js";
+import { ensureAdminRelease } from "./version-handshake.js";
 
 const adminUrl = process.env.CAELO_ADMIN_URL;
 const token = process.env.CAELO_MCP_TOKEN;
@@ -25,4 +26,5 @@ if (!token) {
   process.exit(2);
 }
 
+await ensureAdminRelease({ adminUrl, token, bin: "caelo-admin-mcp" });
 await startAdminMcpServer({ adminUrl, token });
