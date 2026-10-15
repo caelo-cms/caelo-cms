@@ -113,6 +113,7 @@
         "@ai-sdk/google": "^4.0.93",
         "@ai-sdk/openai": "^4.0.91",
         "@caelo-cms/font-service": "workspace:*",
+        "@caelo-cms/migrations": "workspace:*",
         "@caelo-cms/plugin-consent-manager": "workspace:*",
         "@caelo-cms/plugin-host": "workspace:*",
         "@caelo-cms/plugin-sandbox": "workspace:*",
