@@ -17,6 +17,8 @@ export * from "./database-url.js";
 export * from "./design-draft-shell.js";
 export * from "./document-language.js";
 export * from "./font-assets.js";
+export * from "./font-axis-policy.js";
+export * from "./font-usage.js";
 export * from "./fonts.js";
 export * from "./genesis.js";
 export * from "./genesis-inventory.js";

@@ -47,6 +47,7 @@ import {
   resolveBuildContentVariants,
   type VariantComposeModule,
 } from "./content-variants-pass.js";
+import { loadSiteFontUsage } from "./font-usage-sources.js";
 import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import {
@@ -659,6 +660,7 @@ export async function generateSite(args: {
   let themeFonts: ComposeFonts | undefined;
   let themeFontFiles: readonly { cachePath: string; relPath: string }[] = [];
   if (activeTheme !== undefined) {
+    const themeTokens = activeTheme.tokens;
     const resolved = await resolveThemeFonts({
       readFont: fontReader(tx, {
         actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -666,6 +668,7 @@ export async function generateSite(args: {
         requestId: "font-build",
       }),
       tokens: activeTheme.tokens,
+      loadFontUsage: () => loadSiteFontUsage(tx, themeTokens),
       cacheDir: defaultFontsCacheDir(root),
       publicBasePath: "/_assets/fonts",
       // Pages a plugin assigns another locale still get every slice via
