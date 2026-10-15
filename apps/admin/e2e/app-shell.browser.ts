@@ -26,6 +26,20 @@ test("Owner sees AppShell with sidebar nav, can navigate, dark mode persists", a
   // test lives on the admin routes — navigate there explicitly.
   await page.goto("/");
 
+  // #779 — the dashboard names the site's Draft / Preview / Live state;
+  // each dot is decorative, the label carries the state.
+  const siteState = page.getByTestId("site-state");
+  await expect(siteState).toBeVisible();
+  for (const [state, label] of [
+    ["draft", "Draft"],
+    ["preview", "Preview"],
+    ["live", "Live"],
+  ] as const) {
+    const mark = siteState.locator(`[data-testid="state-dot"][data-state="${state}"]`);
+    await expect(mark).toHaveText(label);
+    await expect(mark.locator('[aria-hidden="true"]')).toHaveCount(1);
+  }
+
   // Sidebar nav contains the expected items for an Owner.
   const sidebar = page.getByRole("navigation", { name: "Main navigation" });
   await expect(sidebar.getByRole("link", { name: /^Dashboard$/ })).toBeVisible();

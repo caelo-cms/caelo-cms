@@ -4,6 +4,7 @@
   import { pageCreateSchema } from "@caelo-cms/shared";
   import { FileText } from "lucide-svelte";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
+  import StateDot from "#lib/components/StateDot.svelte";
   import { bindZodForm } from "#lib/forms/zod-bind.svelte.js";
   import { orderAsTree, parentCandidates } from "#lib/page-tree.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
@@ -154,9 +155,20 @@
                 </TableCell>
                 <TableCell>{p.title}</TableCell>
                 <TableCell>
-                  <Badge variant={p.status === "published" ? "success" : "secondary"}>
-                    {p.status}
-                  </Badge>
+                  <!-- #779 — Draft / Preview / Live only where the state is
+                       known: a draft page is in no build; a page this form
+                       just staged is on staging; one just confirmed is
+                       live. A published page's build state is not tracked
+                       per page, so it keeps its status badge. -->
+                  {#if form?.published?.pageId === p.id}
+                    <StateDot state="live" />
+                  {:else if form?.staged?.pageId === p.id}
+                    <StateDot state="preview" />
+                  {:else if p.status === "draft"}
+                    <StateDot state="draft" />
+                  {:else}
+                    <Badge variant="success">{p.status}</Badge>
+                  {/if}
                 </TableCell>
                 <TableCell class="text-muted-foreground">{p.updatedAt.slice(0, 10)}</TableCell>
                 <TableCell class="text-right">
@@ -168,7 +180,9 @@
                     <form method="post" action="?/confirmPublish" use:enhance class="inline">
                       <input type="hidden" name="_csrf" value={data.csrfToken} />
                       <input type="hidden" name="pageId" value={p.id} />
-                      <Button type="submit" size="sm">Confirm publish</Button>
+                      <!-- #779 — promotes staging to production: the
+                           human Publish-live decision, so coral. -->
+                      <Button type="submit" size="sm" variant="decide">Confirm publish</Button>
                     </form>
                   {:else}
                     <form method="post" action="?/stage" use:enhance class="inline">

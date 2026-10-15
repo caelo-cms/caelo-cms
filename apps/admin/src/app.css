@@ -16,6 +16,13 @@
  * Fonts are self-hosted from the admin's own origin: the admin sits
  * behind IAP and makes no third-party requests. Schibsted Grotesk
  * ships as a variable font, hence the "Variable" family first.
+ *
+ * #779 — state language. Coral `--decide` marks the two actions only a
+ * human may take (Publish live, Approve on an approval card — CLAUDE.md
+ * §11.A); it is the same in both themes and is reserved for the
+ * `decide` button variant. `--state-live` / `--state-stage` are
+ * graphic-only (the Draft / Preview / Live dots in StateDot.svelte) and
+ * never carry text: brass is 2.7:1 and light coral 3.2:1 on white.
  */
 
 @import "@fontsource-variable/schibsted-grotesk/wght.css";
@@ -51,6 +58,11 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-link: var(--link);
+  --color-decide: var(--decide);
+  --color-decide-hover: var(--decide-hover);
+  --color-decide-foreground: var(--decide-foreground);
+  --color-state-live: var(--state-live);
+  --color-state-stage: var(--state-stage);
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
@@ -82,6 +94,12 @@
   /* Caelo blue for links and focus rings: 5.5:1 on background. */
   --ring: #2a64b8;
   --link: #2a64b8;
+  /* White label on coral: 4.6:1 (hover 6.0:1). */
+  --decide: #c4502f;
+  --decide-hover: #a9431f;
+  --decide-foreground: #ffffff;
+  --state-live: #e8684a;
+  --state-stage: #c9952f;
   /* Cards 11px; md (buttons, inputs) 9px. */
   --radius: 0.6875rem;
 }
@@ -114,6 +132,13 @@
   /* 8.7:1 on background. */
   --ring: #7fb4ff;
   --link: #7fb4ff;
+  /* Coral stays the same colour in dark mode; only brass is lifted so
+     the Draft ring stays visible on night blue. */
+  --decide: #c4502f;
+  --decide-hover: #a9431f;
+  --decide-foreground: #ffffff;
+  --state-live: #e8684a;
+  --state-stage: #d9a648;
 }
 
 @layer base {

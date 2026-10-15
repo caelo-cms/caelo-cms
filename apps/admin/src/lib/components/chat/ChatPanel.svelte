@@ -2624,10 +2624,11 @@
                       an Owner to approve it, or reject it.
                     </p>
                   {/if}
+                  <!-- #779 — Approve is the human decision: coral. -->
                   <div class="flex items-center gap-1.5">
                     <button
                       type="button"
-                      class={buttonVariants({ variant: "default", size: "sm" })}
+                      class={buttonVariants({ variant: "decide", size: "sm" })}
                       disabled={(external ? approvalDeciding[a.approvalId] === true : streaming) ||
                         missing.length > 0}
                       data-testid="chat-approval-approve"
@@ -2694,12 +2695,13 @@
                     >
                   {/if}
                   <span class="ml-auto flex items-center gap-1.5">
+                    <!-- #779 — Approve is the human decision: coral, also
+                         for a destructive kind (the domain.kind label above
+                         names it). -->
                     <Button
                       type="button"
                       size="sm"
-                      variant={/^(delete|remove|revert|clear|deactivate|cancel)/i.test(p.kind)
-                        ? "destructive"
-                        : "default"}
+                      variant="decide"
                       disabled={pendingActioning[p.proposalId] !== undefined &&
                         pendingActioning[p.proposalId] !== null}
                       onclick={() =>
