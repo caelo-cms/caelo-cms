@@ -8,6 +8,7 @@
  */
 
 import { z } from "zod";
+import { MAX_FLAGGED_ELEMENTS } from "./lighthouse-extract.js";
 import { PERFORMANCE_METRICS, type PerformanceMetricId } from "./lighthouse-metrics.js";
 import { QUALITY_CATEGORIES } from "./ratchet.js";
 
@@ -40,7 +41,13 @@ const failingAuditSchema = z
     score: z.number().min(0).max(1),
     categories: z.array(categorySchema),
     displayValue: z.string().optional(),
-    elements: z.array(flaggedElementSchema).max(5).optional(),
+    // The kept elements plus the "+N more" marker (#667). A cap of exactly
+    // MAX_FLAGGED_ELEMENTS rejected every finding with more flagged items,
+    // and one rejected line failed the whole audit run.
+    elements: z
+      .array(flaggedElementSchema)
+      .max(MAX_FLAGGED_ELEMENTS + 1)
+      .optional(),
   })
   .strict();
 

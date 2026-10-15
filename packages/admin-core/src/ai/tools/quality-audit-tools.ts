@@ -179,7 +179,7 @@ export function formatPage(p: AuditPage): string[] {
 export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   name: "get_quality_audit",
   description:
-    "Read the quality check of the staged site: the page checks (added by plugins such as SEO checks) that read EVERY page on every Stage, plus a Lighthouse audit (Performance, Accessibility, Best Practices, SEO; mobile) when the Stage changed how pages render. " +
+    "Read the quality check of the staged site: the page checks plugins add (such as SEO checks; when an active plugin adds any) that read EVERY page on every Stage, plus a Lighthouse audit (Performance, Accessibility, Best Practices, SEO; mobile) when the Stage changed how pages render. " +
     "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores (the target is 100 in every category), the Performance metrics behind the Performance score (FCP, LCP, TBT, CLS, Speed Index: the median over the runs with Lighthouse's rating, plus the LCP element, the LCP breakdown and the elements that shifted with their causes), every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), every page-check problem with its rule id (`<check>/<rule>`, e.g. `seo-check/title-missing` — rule ids contain a slash) and a fix hint naming the tool to use, site-wide findings, non-blocking warnings and hints, and infrastructure errors. " +
     "THE TARGET IS 100 IN EVERY CATEGORY AND ZERO FINDINGS: every category below 100, every scored Lighthouse audit below a perfect score, and every page-check error is a PROBLEM that blocks Publish live. A score like 90 is NOT acceptable on its own — keep fixing until 100 wherever achievable. Problems an editor accepted are marked ACCEPTED and do not block (a worse value than accepted blocks again). Warnings and hints never block. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. " +
     "To make a page faster, read its metrics here and fix the worst one in the module that renders the named element, then Stage again and re-read — repeat until Performance is 100. Use this instead of running Lighthouse yourself: the audit runs against the real staged build, which no other URL serves. Only what truly cannot be fixed goes to the operator, as one decision per group (accept_quality_findings with groups), with the reason why. " +
@@ -196,7 +196,7 @@ export const getQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   format: (value) => {
     const v = value as AuditValue;
     if (!v.run) {
-      return "No quality audit exists yet for this chat — every Stage is checked (page checks on every page; Lighthouse when module code, layouts, templates, the theme, new pages or plugin config changed).";
+      return "No quality audit exists yet for this chat — every Stage is checked (plugin page checks, when any is active, on every page; Lighthouse when module code, layouts, templates, the theme, new pages or plugin config changed).";
     }
     const r = v.run;
     const lines = [`audit ${r.id} (deploy run ${r.deployRunId}) — ${r.status}`, statusLine(r)];
@@ -240,7 +240,7 @@ function formatLastMetrics(pages: NonNullable<StageValue["lastMetrics"]>): strin
 export const checkStageAuditTool = makeReadTool<z.infer<typeof checkStageInput>>({
   name: "check_stage_audit",
   description:
-    "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (The page checks read every page on EVERY Stage regardless.) " +
+    "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (Plugin page checks, when any is active, read every page on EVERY Stage regardless.) " +
     "Lighthouse runs for: new or changed module html/css/js, layout / template / theme changes, new pages, plugin configuration. Not for: only text and field values, placing or moving existing modules, SEO texts, redirects. " +
     "Lists the deciding changes and the pages the check would cover, plus the last measured Performance metrics (FCP, LCP, TBT, CLS, Speed Index; LCP element, layout shifts) of those pages and the homepage — the starting point for a speed fix (the target is Performance 100). Use this instead of running Lighthouse yourself: the audit runs against the real staged build. Takes no input (uses the current chat).",
   opName: "quality_audits.classify_stage",
@@ -257,10 +257,10 @@ export const checkStageAuditTool = makeReadTool<z.infer<typeof checkStageInput>>
     const verdict = c.auditNeeded
       ? [
           `The next Stage will be quality-checked (Lighthouse) because: ${c.reasons.map((r) => `${r.rule} — ${r.label}`).join("; ")}.`,
-          `Pages it touches: ${v.touchedPageIds.length} (the homepage is always included; up to 5 are audited by Lighthouse; the page checks read every page). Publish live waits for the result.`,
+          `Pages it touches: ${v.touchedPageIds.length} (the homepage is always included; up to 5 are audited by Lighthouse; plugin page checks, when any is active, read every page). Publish live waits for the result.`,
         ]
       : [
-          `The next Stage needs no Lighthouse audit by its own changes (${c.skipped.join("; ") || "nothing pending"}); the page checks still read every page and Publish live waits for them. Lighthouse can still run when this is the site's first Stage, a plugin was activated, or the previous Lighthouse audit did not end clean.`,
+          `The next Stage needs no Lighthouse audit by its own changes (${c.skipped.join("; ") || "nothing pending"}); plugin page checks, when any is active, still read every page and Publish live waits for them. Lighthouse can still run when this is the site's first Stage, a plugin was activated, or the previous Lighthouse audit did not end clean.`,
         ];
     return [...verdict, "", ...formatLastMetrics(v.lastMetrics ?? [])].join("\n");
   },
