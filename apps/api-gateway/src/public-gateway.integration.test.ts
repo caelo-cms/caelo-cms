@@ -355,6 +355,22 @@ describe("/api/* served from cms_public alone (#635)", () => {
     );
   });
 
+  it("a version that drops its declaration withdraws what was published", async () => {
+    await publishProjectionOnce(adminAdapter, { declarations: new Map(), comments: false });
+    try {
+      const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
+      expect(r.status).toBe(500);
+      expect(await r.text()).toContain("ProjectionNotPublished");
+      const left = await asPublicAdmin(
+        async (tx) =>
+          (await tx`SELECT 1 FROM published_plugin_rows WHERE plugin_id = ${pluginId}::uuid`) as unknown[],
+      );
+      expect(left).toEqual([]);
+    } finally {
+      await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS, comments: false });
+    }
+  });
+
   it("still 404s an operation the plugin did not expose", async () => {
     const r = await handleRequest(post(`/api/plugin/${SLUG}/admin_only`, {}));
     expect(r.status).toBe(404);
