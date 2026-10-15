@@ -5,11 +5,32 @@
  * P6.5 — Tailwind 4 CSS-first config + shadcn-svelte theme tokens.
  * Light theme on :root, dark theme on .dark. mode-watcher toggles
  * the .dark class on <html> per the user's preference.
+ *
+ * #778 — Caelatum palette (the Caelo brand concept): cool blue-grey
+ * neutrals, an ink primary and one Caelo blue reserved for links and
+ * focus (`--link`, `--ring`). Dark mode is derived from night blue
+ * rather than inverted zinc. Every text/surface pair clears WCAG 2.x
+ * AA in both themes (ratios next to the tokens). Only colour roles and
+ * type carry over from the website — the admin keeps its density.
+ *
+ * Fonts are self-hosted from the admin's own origin: the admin sits
+ * behind IAP and makes no third-party requests. Schibsted Grotesk
+ * ships as a variable font, hence the "Variable" family first.
  */
+
+@import "@fontsource-variable/schibsted-grotesk/wght.css";
+/* Plex Mono only renders slugs, IDs, code and cost figures — the latin
+   subset covers them; rarer glyphs fall back to Menlo/Consolas. The
+   per-subset files carry no unicode-range, so adding latin-ext here
+   would shadow latin rather than extend it. */
+@import "@fontsource/ibm-plex-mono/latin-400.css";
+@import "@fontsource/ibm-plex-mono/latin-500.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
+  --font-sans: "Schibsted Grotesk Variable", "Schibsted Grotesk", Arial, Helvetica, sans-serif;
+  --font-mono: "IBM Plex Mono", Menlo, Consolas, monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -29,61 +50,70 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-link: var(--link);
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
 }
 
 :root {
-  --background: hsl(0 0% 100%);
-  --foreground: hsl(240 10% 3.9%);
-  --card: hsl(0 0% 100%);
-  --card-foreground: hsl(240 10% 3.9%);
-  --popover: hsl(0 0% 100%);
-  --popover-foreground: hsl(240 10% 3.9%);
-  --primary: hsl(240 5.9% 10%);
-  --primary-foreground: hsl(0 0% 98%);
-  --secondary: hsl(240 4.8% 95.9%);
-  --secondary-foreground: hsl(240 5.9% 10%);
-  --muted: hsl(240 4.8% 95.9%);
-  /* P6.6a — bumped from 46.1% → 35% so muted-foreground text clears
-     WCAG AA contrast (4.5:1) against background. Default shadcn token
-     is ~3.4:1 which fails axe-core's color-contrast serious rule. */
-  --muted-foreground: hsl(240 3.8% 35%);
-  --accent: hsl(240 4.8% 95.9%);
-  --accent-foreground: hsl(240 5.9% 10%);
-  /* P6.6a — bumped from 60.2% → 45% so destructive buttons clear AA
-     contrast (4.5:1) comfortably for white-on-red text (default
-     shadcn 60.2% gives ~3.85:1 which fails axe-core). */
+  --background: #f8f9fc;
+  /* Ink: 16.5:1 on background. */
+  --foreground: #0e1a2e;
+  --card: #ffffff;
+  --card-foreground: #0e1a2e;
+  --popover: #ffffff;
+  --popover-foreground: #0e1a2e;
+  /* Ink button with a white label: 17.4:1. */
+  --primary: #0e1a2e;
+  --primary-foreground: #ffffff;
+  --secondary: #f2f5fa;
+  --secondary-foreground: #0e1a2e;
+  --muted: #f2f5fa;
+  /* Secondary text: 7.0:1 on background, 6.7:1 on muted. */
+  --muted-foreground: #4a576b;
+  --accent: #f2f5fa;
+  --accent-foreground: #0e1a2e;
+  /* P6.6a — 45% lightness so white-on-red clears AA (4.5:1). */
   --destructive: hsl(0 84% 45%);
   --destructive-foreground: hsl(0 0% 98%);
-  --border: hsl(240 5.9% 90%);
-  --input: hsl(240 5.9% 90%);
-  --ring: hsl(240 5.9% 10%);
-  --radius: 0.5rem;
+  --border: #e0e5ee;
+  --input: #e0e5ee;
+  /* Caelo blue for links and focus rings: 5.5:1 on background. */
+  --ring: #2a64b8;
+  --link: #2a64b8;
+  /* Cards 11px; md (buttons, inputs) 9px. */
+  --radius: 0.6875rem;
 }
 
 .dark {
-  --background: hsl(240 10% 3.9%);
-  --foreground: hsl(0 0% 98%);
-  --card: hsl(240 10% 3.9%);
-  --card-foreground: hsl(0 0% 98%);
-  --popover: hsl(240 10% 3.9%);
-  --popover-foreground: hsl(0 0% 98%);
-  --primary: hsl(0 0% 98%);
-  --primary-foreground: hsl(240 5.9% 10%);
-  --secondary: hsl(240 3.7% 15.9%);
-  --secondary-foreground: hsl(0 0% 98%);
-  --muted: hsl(240 3.7% 15.9%);
-  /* P6.6a — bumped from 64.9% → 72% for AA contrast on dark background. */
-  --muted-foreground: hsl(240 5% 72%);
-  --accent: hsl(240 3.7% 15.9%);
-  --accent-foreground: hsl(0 0% 98%);
-  --destructive: hsl(0 62.8% 30.6%);
-  --destructive-foreground: hsl(0 0% 98%);
-  --border: hsl(240 3.7% 15.9%);
-  --input: hsl(240 3.7% 15.9%);
-  --ring: hsl(240 4.9% 83.9%);
+  --background: #0b1422;
+  /* 15.6:1 on background. */
+  --foreground: #e6ecf5;
+  --card: #111c2e;
+  --card-foreground: #e6ecf5;
+  --popover: #111c2e;
+  --popover-foreground: #e6ecf5;
+  --primary: #e6ecf5;
+  --primary-foreground: #0b1422;
+  --secondary: #16233a;
+  --secondary-foreground: #e6ecf5;
+  --muted: #16233a;
+  /* 8.4:1 on background, 7.1:1 on muted. */
+  --muted-foreground: #9fb0c8;
+  --accent: #16233a;
+  --accent-foreground: #e6ecf5;
+  /* The dark red flips to a light-on-dark pair: the former shadcn dark
+     red (30% lightness) read at ~2:1 as `text-destructive` on night
+     blue. #f87171 is 6.7:1 on background (5.7:1 on muted) and carries
+     a night-blue button label at 6.7:1. */
+  --destructive: #f87171;
+  --destructive-foreground: #0b1422;
+  --border: #22314a;
+  --input: #22314a;
+  /* 8.7:1 on background. */
+  --ring: #7fb4ff;
+  --link: #7fb4ff;
 }
 
 @layer base {
@@ -93,8 +123,7 @@
   body {
     background-color: var(--background);
     color: var(--foreground);
-    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-      "Helvetica Neue", Arial, sans-serif;
+    font-family: var(--font-sans);
   }
 }
 
