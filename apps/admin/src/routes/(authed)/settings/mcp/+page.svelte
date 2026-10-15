@@ -49,7 +49,6 @@
           adminUrl: data.adminUrl,
           token: form.plaintextToken,
           iapServiceAccount: data.iapServiceAccount,
-          version: data.mcpServerVersion,
         })
       : null,
   );

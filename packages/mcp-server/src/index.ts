@@ -20,11 +20,16 @@
  * against the admin install's `/api/mcp/*` endpoints, which dispatch
  * system-scoped ops that resolve the bearer to a Caelo actor. The MCP
  * server NEVER touches the database directly.
+ *
+ * Every mode first matches its release to the admin's (#764, see
+ * ./version-handshake.ts), so the `claude mcp add` command carries no
+ * version and survives admin upgrades.
  */
 
 import { startAdminMcpServer } from "./admin-server.js";
 import { runExport } from "./export.js";
 import { startMcpServer } from "./server.js";
+import { ensureAdminRelease } from "./version-handshake.js";
 
 const adminUrl = process.env.CAELO_ADMIN_URL;
 const token = process.env.CAELO_MCP_TOKEN;
@@ -39,6 +44,9 @@ if (!token) {
   console.error("CAELO_MCP_TOKEN not set — mint one at /settings/mcp on your admin install");
   process.exit(2);
 }
+
+// #764 — run as the admin's own release (re-execs on a mismatch).
+await ensureAdminRelease({ adminUrl, token, bin: "caelo-mcp-server" });
 
 const command = process.argv[2];
 
