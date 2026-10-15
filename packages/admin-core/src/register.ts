@@ -20,6 +20,7 @@ import {
   rejectAiProvidersProposalOp,
 } from "./ops/ai_providers_pending.js";
 import {
+  issueOwnerResetOp,
   loginOp,
   logoutOp,
   requestPasswordResetOp,
@@ -648,6 +649,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(resolveSessionOp);
   registry.register(requestPasswordResetOp);
   registry.register(resetPasswordOp);
+  registry.register(issueOwnerResetOp);
   registry.register(listRolesOp);
   registry.register(createRoleOp);
   registry.register(deleteRoleOp);

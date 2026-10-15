@@ -316,3 +316,95 @@ describe("auth.reset_password", () => {
     expect(res.ok).toBe(false);
   });
 });
+
+describe("auth.issue_owner_reset (#769)", () => {
+  async function auditRows(summaryLike: string): Promise<number> {
+    const sql = new SQL(ADMIN_URL!);
+    try {
+      let n = 0;
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const rows =
+          (await tx`SELECT count(*)::int AS n FROM audit_events WHERE operation = 'auth.issue_owner_reset' AND result_summary LIKE ${summaryLike}`) as unknown as {
+            n: number;
+          }[];
+        n = rows[0]?.n ?? 0;
+      });
+      return n;
+    } finally {
+      await sql.end();
+    }
+  }
+
+  it("issues a working, audited reset token for a named Owner", async () => {
+    const email = `${EMAIL_PREFIX}owner@example.test`;
+    const res = await execute(registry, adapter, systemCtx, "users.create", {
+      email,
+      password: STRONG,
+      displayName: `PWReset ${email}`,
+      roleNames: ["owner"],
+    });
+    if (!res.ok) throw new Error(`owner create failed: ${JSON.stringify(res.error)}`);
+    const before = await auditRows("issued via test%");
+
+    const issued = await execute(registry, adapter, systemCtx, "auth.issue_owner_reset", {
+      email: email.toUpperCase(),
+      source: "test owner-reset",
+    });
+    if (!issued.ok) throw new Error(JSON.stringify(issued.error));
+    const v = issued.value as { email: string; token: string; expiresAt: string };
+    expect(v.email).toBe(email);
+    expect(new Date(v.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    expect(await auditRows("issued via test%")).toBe(before + 1);
+
+    // The token is a normal reset token: it sets the password once.
+    const reset = await execute(registry, adapter, systemCtx, "auth.reset_password", {
+      token: v.token,
+      newPassword: STRONG_2,
+    });
+    expect(reset.ok).toBe(true);
+    const login = await execute(registry, adapter, systemCtx, "auth.login", {
+      email,
+      password: STRONG_2,
+    });
+    expect(login.ok).toBe(true);
+  });
+
+  it("refuses an account that is not an Owner and issues no token", async () => {
+    const email = `${EMAIL_PREFIX}editor@example.test`;
+    const userId = await makeUser(email);
+    const res = await execute(registry, adapter, systemCtx, "auth.issue_owner_reset", {
+      email,
+      source: "test owner-reset",
+    });
+    expect(res.ok).toBe(false);
+    expect(JSON.stringify(res.ok ? null : res.error)).toContain("is not an Owner");
+
+    const sql = new SQL(ADMIN_URL!);
+    try {
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const rows =
+          (await tx`SELECT count(*)::int AS n FROM password_reset_tokens WHERE user_id = ${userId}::uuid`) as unknown as {
+            n: number;
+          }[];
+        expect(rows[0]?.n).toBe(0);
+      });
+    } finally {
+      await sql.end();
+    }
+  });
+
+  it("is system-only: a human or AI actor cannot mint a reset token", async () => {
+    for (const actorKind of ["human", "ai"] as const) {
+      const res = await execute(
+        registry,
+        adapter,
+        { actorId: systemCtx.actorId, actorKind, requestId: "owner-reset-scope" },
+        "auth.issue_owner_reset",
+        { source: "test" },
+      );
+      expect(res.ok).toBe(false);
+    }
+  });
+});
