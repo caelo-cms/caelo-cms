@@ -38,12 +38,14 @@ const SECRET_VALUES: Record<string, string> = {
   "caelo-production-gateway-role-password": "g".repeat(64),
 };
 
-/** Env vars that would hand the gateway an admin_role credential (apps/api-gateway ADMIN_CREDENTIAL_ENV). */
+/** Env vars that would hand the gateway a cms_admin credential (apps/api-gateway ADMIN_CREDENTIAL_ENV). */
 const ADMIN_CREDENTIAL_ENV = [
   "ADMIN_DATABASE_URL",
   "ADMIN_DATABASE_PASSWORD",
   "PUBLIC_ADMIN_DATABASE_URL",
   "PUBLIC_ADMIN_DATABASE_PASSWORD",
+  "GATEWAY_DATABASE_URL",
+  "GATEWAY_DATABASE_PASSWORD",
 ];
 
 /** Split a gcloud list flag value, honouring the `^<delim>^` escape. */
@@ -122,16 +124,15 @@ function credentials(url: string | undefined): string {
 }
 
 /**
- * The gateway's process env after the upgrade: gateway_role on cms_admin and
- * public_role on cms_public, each with its own secret, and no admin_role
- * credential at all (the gateway refuses to boot with one).
+ * The gateway's process env after the upgrade: public_role on cms_public
+ * with its own secret, and no cms_admin credential of any role at all
+ * (#613, #635 — the gateway refuses to boot with one).
  */
 function expectGatewayOnItsOwnLogins(env: Record<string, string>): void {
   for (const name of ADMIN_CREDENTIAL_ENV) expect(Object.keys(env)).not.toContain(name);
   expect(Object.values(env).join("\n")).not.toContain(PW);
-  expect(credentials(databaseUrlFromEnv(["GATEWAY_DATABASE_URL"], env))).toBe(
-    `gateway_role:${"g".repeat(64)}@${HOST}:5432/cms_admin?sslmode=require`,
-  );
+  expect(Object.values(env).join("\n")).not.toContain("g".repeat(64));
+  expect(Object.values(env).join("\n")).not.toContain("cms_admin");
   expect(credentials(databaseUrlFromEnv(["PUBLIC_DATABASE_URL"], env))).toBe(
     `public_role:${"p".repeat(64)}@${HOST}:5432/cms_public?sslmode=require`,
   );
@@ -331,7 +332,7 @@ function v01035Install() {
 }
 
 describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", () => {
-  it("drops the admin_role credential and adds the gateway's own logins in one revision", () => {
+  it("drops the admin_role credential and adds the gateway's own login in one revision", () => {
     const services = v01035Install();
     const plan = upgrade(services);
     expect(services.gateway.revisions).toHaveLength(2);
@@ -343,8 +344,6 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
       "ADMIN_DATABASE_URL",
       // #650 — the staging gate key arrives in the same roll.
       "CAELO_STAGING_GATE_SECRET",
-      "GATEWAY_DATABASE_PASSWORD",
-      "GATEWAY_DATABASE_URL",
       "PUBLIC_DATABASE_PASSWORD",
     ]);
   });
@@ -371,6 +370,42 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
     const again = upgrade(services);
     expect(again.ok && again.services.gateway.flags).toEqual([]);
     expect(again.ok && again.services.admin.flags).toEqual([]);
+  });
+});
+
+/**
+ * A v0.10.50 install (#613, before #635): the gateway on gateway_role's
+ * cms_admin pool next to public_role's.
+ */
+function v01050Install() {
+  const services = v01035Install();
+  upgrade(services);
+  const env = new Map(services.gateway.env);
+  env.set("GATEWAY_DATABASE_URL", {
+    kind: "value",
+    value: `postgresql://gateway_role@${HOST}:5432/cms_admin?sslmode=require`,
+  });
+  env.set("GATEWAY_DATABASE_PASSWORD", {
+    kind: "secret",
+    secret: "caelo-production-gateway-role-password",
+    version: "latest",
+  });
+  services.gateway = new FakeService(env, SERVICE_ACCOUNTS.gateway);
+  return services;
+}
+
+describe("upgrading a v0.10.50 install: the gateway leaves cms_admin entirely (#635)", () => {
+  it("removes the gateway_role login in one revision and keeps the public pool", () => {
+    const services = v01050Install();
+    const plan = upgrade(services);
+    expect(plan.ok && plan.services.gateway.changes.map((c) => c.name).sort()).toEqual([
+      "GATEWAY_DATABASE_PASSWORD",
+      "GATEWAY_DATABASE_URL",
+    ]);
+    expectGatewayOnItsOwnLogins(containerEnv(services.gateway.env));
+    for (const revision of services.gateway.revisions) {
+      expect(revision.has("PUBLIC_DATABASE_URL")).toBe(true);
+    }
   });
 });
 

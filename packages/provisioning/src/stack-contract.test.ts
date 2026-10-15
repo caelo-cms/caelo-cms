@@ -49,12 +49,11 @@ const ADMIN_SECRETS = {
 };
 
 describe("databaseUrls", () => {
-  it("builds password-less URLs for the four role/database pairs", () => {
+  it("builds password-less URLs for the three role/database pairs", () => {
     expect(databaseUrls("10.20.0.3")).toEqual({
       admin: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
       publicAdmin: "postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
       public: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
-      gateway: "postgresql://gateway_role@10.20.0.3:5432/cms_admin?sslmode=require",
     });
   });
 });
@@ -154,15 +153,13 @@ describe.each([
 describe("gatewayEnvContract", () => {
   const gateway = gatewayEnvContract({ ...base, provider: "gcp" });
 
-  it("carries its two own logins and none of the admin's database or app secrets", () => {
+  it("carries its one own login and none of the admin's database or app secrets (#635)", () => {
     expect(asRecord(gateway)).toEqual({
       CAELO_PROVIDER: "gcp",
       CAELO_ENV: "production",
       MEDIA_STORAGE_URL: "gs://acme-caelo-production-media",
       PUBLIC_DATABASE_URL: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
-      GATEWAY_DATABASE_URL: "postgresql://gateway_role@10.20.0.3:5432/cms_admin?sslmode=require",
       PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-role-password:latest",
-      GATEWAY_DATABASE_PASSWORD: "secret:caelo-production-gateway-role-password:latest",
       CAELO_STAGING_GATE_SECRET: "secret:caelo-production-staging-gate-secret:latest",
     });
   });
@@ -188,11 +185,7 @@ describe("gatewayEnvContract", () => {
   });
 
   it("the gateway's run SA reads no admin-only secret (admin password, KEK, internal, tool approval)", () => {
-    expect(serviceSecrets("gateway")).toEqual([
-      "gateway-role-password",
-      "public-role-password",
-      "staging-gate-secret",
-    ]);
+    expect(serviceSecrets("gateway")).toEqual(["public-role-password", "staging-gate-secret"]);
     for (const v of gateway) {
       expect(v.name).not.toMatch(/KEK|INTERNAL|TOOL_APPROVAL|PUBLIC_ADMIN/);
     }
@@ -282,11 +275,6 @@ describe("runtime secrets", () => {
       },
       {
         service: "gateway",
-        secret: "gateway-role-password",
-        stackResource: "gateway-gateway-role-password-binding",
-      },
-      {
-        service: "gateway",
         secret: "public-role-password",
         stackResource: "gateway-public-role-password-binding",
       },
@@ -299,7 +287,11 @@ describe("runtime secrets", () => {
   });
 
   it("every CLI-generated secret is read by some service", () => {
-    for (const s of CLI_GENERATED_SECRETS) {
+    // gateway-role-password is read by no service since #635: it only keeps
+    // the legacy gateway_role's password set until the contract release
+    // drops the role (the previous release's gateway logs in with it while
+    // an upgrade rolls).
+    for (const s of CLI_GENERATED_SECRETS.filter((x) => x !== "gateway-role-password")) {
       expect([...serviceSecrets("admin"), ...serviceSecrets("gateway")]).toContain(s);
     }
   });
@@ -351,13 +343,12 @@ describe("stackIamInvariants", () => {
     }
   });
 
-  it("grants the gateway SA only its two role passwords, the staging gate key + telemetry roles", () => {
+  it("grants the gateway SA only its own role password, the staging gate key + telemetry roles", () => {
     for (const provider of ["gcp", "gcp-firebase"] as const) {
       const gateway = stackIamInvariants(provider).filter((i) => i.member === "gateway-sa");
       expect(gateway.map((i) => `${i.role} ${JSON.stringify(i.target)}`).sort()).toEqual([
         'roles/logging.logWriter {"kind":"project"}',
         'roles/monitoring.metricWriter {"kind":"project"}',
-        'roles/secretmanager.secretAccessor {"kind":"secret","name":"gateway-role-password"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"public-role-password"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"staging-gate-secret"}',
       ]);

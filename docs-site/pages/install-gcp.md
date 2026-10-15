@@ -279,7 +279,7 @@ Every command names a Caelo release in place of `<version>`, such as `0.10.44`: 
 | Back up the database now | `bunx @caelo-cms/provisioning@<version> backup` — prints the backup id and its restore command (`gcp` and `gcp-firebase`) |
 | Restore from PITR | `gcloud sql backups restore` — see [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
 | Rotate the AI provider key | Owner → `/settings/ai` (stored encrypted in the database) |
-| Rotate a runtime secret | `bunx @caelo-cms/provisioning@<version> rotate-secret <postgres-password\|public-role-password\|gateway-role-password\|internal-secret\|tool-approval-secret\|staging-gate-secret>` — stores a new value in Secret Manager (for a database password also on its role: `postgres-password` is `admin_role`'s, the other two the gateway's `public_role` and `gateway_role`) and rolls the services that read it |
+| Rotate a runtime secret | `bunx @caelo-cms/provisioning@<version> rotate-secret <postgres-password\|public-role-password\|gateway-role-password\|internal-secret\|tool-approval-secret\|staging-gate-secret>` — stores a new value in Secret Manager (for a database password also on its role: `postgres-password` is `admin_role`'s, `public-role-password` the gateway's `public_role`, `gateway-role-password` the unused former `gateway_role`) and rolls the services that read it |
 | Scale Cloud Run | `gcloud run services update caelo-admin-prod --max-instances=20` |
 
 ### Upgrading
@@ -363,18 +363,19 @@ The health check reaches the IAP-protected admin the way MCP clients do: it sign
 
 **Several installs on one machine.** `upgrade`, `status`, `backup`, `rotate-secret`, `truncate` and `destroy` never guess which install you mean. With more than one install under `~/.caelo-*`, they ask in the terminal which one to act on; `upgrade`, `status` and `backup` also offer "All installs", which runs them one after another and stops at the first that fails. In scripts, name the install with `--install <install-id or domain>`, for example `bunx @caelo-cms/provisioning@0.10.44 upgrade --version 0.10.44 --install example.com`, or `--install all`.
 
-#### The gateway's own database logins
+#### The gateway has no login to the authoring database
 
-The public API gateway never holds the admin's database credential. It connects as two roles of its own: `public_role` on `cms_public` and `gateway_role` on `cms_admin` — a login that can read the gateway's settings, the plugin registry and the approved comments a page already shows, append to its own request log, rate limits, captcha challenges and plugin audit, and nothing else. Each role has its own password in Secret Manager (`postgres-password` for the admin, `public-role-password` and `gateway-role-password` for the gateway), and the gateway's service account can read only the gateway's two.
+The public API gateway is the only part of Caelo a visitor reaches, so it is built to be harmless even if an attacker takes it over: it has **no login to `cms_admin`** at all. It connects to `cms_public` only, as `public_role`, with its own password in Secret Manager (`public-role-password`), and its service account can read no other database password.
+
+Its own state (request log, rate limits, captcha challenges, the record of visitor plugin calls) lives in `cms_public`. What it needs from your site's settings (its cookie key and body limit, the staging gate, rate-limit overrides, which plugins are active, the parts of a plugin's settings visitors need, approved comments) the admin **publishes** into `cms_public`: the migrations publish it, and the admin keeps it current within seconds of every change. The gateway refuses to start if its environment offers any way into `cms_admin`, and the admin treats everything it reads back from `cms_public` as untrusted.
 
 An install from before this change converges on its first `upgrade`, without anything for you to do:
 
-- the migrations create `gateway_role`, and `upgrade` gives it its password;
-- right before the gateway rolls, `public_role` moves off the admin's password onto its own (if the gateway's roll fails, it is put back, so the rolled-back gateway keeps working);
-- the gateway's new revision gets `GATEWAY_DATABASE_URL` and loses `ADMIN_DATABASE_URL` in the same step;
-- after both services rolled, the gateway's service account loses its access to the admin's password.
+- the migrations create the gateway's tables in `cms_public` and publish what it reads;
+- the gateway's new revision loses `GATEWAY_DATABASE_URL` and `GATEWAY_DATABASE_PASSWORD` (and, on installs from before #613, `ADMIN_DATABASE_URL`);
+- after both services rolled, the gateway's service account loses its access to the admin's and to `gateway_role`'s password.
 
-`upgrade` then suggests `rotate-secret postgres-password`: until that upgrade the gateway knew the admin's password. Run it.
+The former `gateway_role` login stays in the database, unused, until a later release removes it. In-product updates wait for one `upgrade` from your terminal to apply this.
 
 #### `public_role` holds no superuser-group rights
 
@@ -383,7 +384,7 @@ Cloud SQL makes every database user created through its Admin API a member of `c
 - take `public_role` out of every group through the Cloud SQL Admin API (`gcloud sql users assign-roles public_role --type=BUILT_IN --revoke-existing-roles`; only Cloud SQL's own administrator, which granted the membership, can revoke it);
 - let the migrations close `cms_admin` to everyone who doesn't use it (Cloud SQL leaves `CONNECT` on both databases to all roles) and drop `public_role`'s `CREATEROLE` / `CREATEDB` where the migration role may.
 
-After every migration run a role check refuses the install or upgrade, before any traffic moves, while `public_role` or `gateway_role` belongs to any group, has `SUPERUSER`, `BYPASSRLS` or `REPLICATION`, while `public_role` can connect to `cms_admin`, or while a job role (`operator_access_reader`, `platform_updater`) or its Cloud SQL IAM user belongs to `cloudsqlsuperuser` or another privileged group. `admin_role` keeps its membership: it is the authoring and migration role, and on Cloud SQL the group owns the databases it migrates. Nothing for you to do; in-product updates wait for one `upgrade` from your terminal to apply this.
+After every migration run a role check refuses the install or upgrade, before any traffic moves, while `public_role` or `gateway_role` belongs to any group, has `SUPERUSER`, `BYPASSRLS` or `REPLICATION`, while `public_role` can connect to `cms_admin` or holds any privilege on anything in it, while `cms_public` holds a bridge to another database (`dblink`, `postgres_fdw`, a foreign server), or while a job role (`operator_access_reader`, `platform_updater`) or its Cloud SQL IAM user belongs to `cloudsqlsuperuser` or another privileged group. `admin_role` keeps its membership: it is the authoring and migration role, and on Cloud SQL the group owns the databases it migrates. Nothing for you to do; in-product updates wait for one `upgrade` from your terminal to apply this.
 
 #### No secrets in `~/.caelo-<install-id>/`
 

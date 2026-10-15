@@ -89,9 +89,11 @@ function randomHex(bytes: number): string {
 }
 
 const postgresPassword = pulumi.secret(randomHex(32));
-// #613 — one password per database role, so the gateway (public_role +
-// gateway_role) never holds admin_role's. bootstrap.sh creates the roles
-// with these (PUBLIC_ROLE_PASSWORD / GATEWAY_ROLE_PASSWORD).
+// #613 — one password per database role, so the gateway (public_role only,
+// #635) never holds admin_role's. bootstrap.sh creates the roles with these
+// (PUBLIC_ROLE_PASSWORD / GATEWAY_ROLE_PASSWORD). gateway_role is no longer
+// any service's login; its password stays until the contract release that
+// drops the role (#635).
 const publicRolePassword = pulumi.secret(randomHex(32));
 const gatewayRolePassword = pulumi.secret(randomHex(32));
 const csrfSecret = pulumi.secret(randomHex(32));
@@ -162,13 +164,6 @@ const publicDatabaseUrl = pulumi
   .apply(
     ([host, port, pw]) =>
       `postgresql://public_role:${pw}@${host}:${port}/cms_public?sslmode=require`,
-  );
-// The gateway's cms_admin login (#613): grants from migration 0248 only.
-const gatewayDatabaseUrl = pulumi
-  .all([db.address, db.port, gatewayRolePassword])
-  .apply(
-    ([host, port, pw]) =>
-      `postgresql://gateway_role:${pw}@${host}:${port}/cms_admin?sslmode=require`,
   );
 
 // === 4. S3 buckets ===
@@ -421,7 +416,6 @@ const dnsRecordsRequired: DnsRecord[] = [
 const out: CloudAdapterOutputs = {
   adminDatabaseUrl: adminDatabaseUrl as unknown as string,
   publicDatabaseUrl: publicDatabaseUrl as unknown as string,
-  gatewayDatabaseUrl: gatewayDatabaseUrl as unknown as string,
   mediaStorageUrl: pulumi.interpolate`s3://${mediaBucket.bucket}` as unknown as string,
   mediaCdnBaseUrl:
     pulumi.interpolate`https://${distribution.domainName}/media` as unknown as string,
@@ -436,7 +430,6 @@ const out: CloudAdapterOutputs = {
 
 export const adminDatabaseUrlOut = out.adminDatabaseUrl;
 export const publicDatabaseUrlOut = out.publicDatabaseUrl;
-export const gatewayDatabaseUrlOut = out.gatewayDatabaseUrl;
 export const mediaStorageUrlOut = out.mediaStorageUrl;
 export const mediaCdnBaseUrlOut = out.mediaCdnBaseUrl;
 export const bootstrapUrlOut = out.bootstrapUrl;

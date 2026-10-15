@@ -67,3 +67,17 @@ Everything the admin reads from `cms_public` crosses a trust boundary. The rules
 3. **Never drive a privileged action without a human or validator step.** A public row can be a *hint*. Example: a plugin op event can schedule a rebuild, but only for a page that exists in `cms_admin`, and the rebuild reads the authoritative state. A public row is never an instruction.
 4. **Never instructions to the AI.** Visitor content must reach the admin AI as data, never as instructions. The admin AI holds publish and deploy tools (#763 M8).
 5. **No reverse sync.** The admin never copies public state into a table it trusts, unless a validator or a human decides first. Example: comment moderation archives a comment only through the Zod-validated `comment_archive.insert`, on an Owner or AI decision.
+
+## Guardrails that keep it so
+
+Each one fails loudly. Do not widen any of them to make a change pass: the change is what breaks the boundary.
+
+| Guardrail | Where | Fails when |
+|---|---|---|
+| **Boot refusal (env)** | `apps/api-gateway/src/database-env.ts` (`adminDatabaseAccessInEnv`) | The gateway's environment holds any cms_admin credential. Detected by variable name (`ADMIN_*`, `GATEWAY_DATABASE_*`, any other `*_DATABASE_PASSWORD`), by the database or role inside any Postgres URL in any variable, or by libpq variables (`PGDATABASE`, `PGUSER`, `PGPASSWORD`, …). The error names the variables, never their values. |
+| **Boot refusal (database)** | `databaseIsolationProblems`, run by `server.ts` at boot | The gateway's login can `CONNECT` to cms_admin, or cms_public carries `dblink`, `postgres_fdw` or a foreign server. |
+| **No admin pool** | `DatabaseAdapter({ adminDatabaseUrl: null })` | Code in the gateway reaches for cms_admin: `AdminDatabaseUnavailableError`. |
+| **Role audit** | `packages/migrations/src/role-audit.ts`, run after every migration (install, `upgrade`, in-cloud upgrader, self-hosted) | `public_role` or `PUBLIC` holds any privilege on a cms_admin object (table, column, schema, sequence, function, default privileges), or `public_role` may connect to cms_admin or belongs to a privileged group. Also fails when cms_public holds a bridge to another database. The migration job exits non-zero and nothing rolls. |
+| **Import graph** | `apps/api-gateway/src/gateway-boundary.test.ts` | The gateway entry point or any shipped plugin reaches an admin-only package (`admin-core`, `migrations`, `provisioning`, …), or the gateway's operation registry holds an operation on cms_admin. |
+| **Migration lint** | `packages/migrations/src/grant-lint.test.ts` | A cms_admin migration grants anything to `public_role` or `PUBLIC`, or (after 0281) to `gateway_role`. Also fails when any migration installs a cross-database bridge. |
+| **Adapter env** | `packages/provisioning/src/gateway-env-isolation.test.ts` | The gateway service on any adapter (gcp, gcp-firebase, self-hosted Compose, azure, aws) gets a cms_admin URL, role or credential, or its service account can read a secret that unlocks one. |

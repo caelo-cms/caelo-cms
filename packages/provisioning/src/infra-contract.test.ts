@@ -20,10 +20,11 @@ describe("infrastructure contract steps", () => {
     );
   });
 
-  it("is at 4: the public_role revoke (3) and the URL-map redirects role (4) are separate", () => {
-    expect(INFRA_CONTRACT_VERSION).toBe(4);
+  it("is at 5: public_role revoke (3), URL-map redirects role (4), no gateway cms_admin login (5)", () => {
+    expect(INFRA_CONTRACT_VERSION).toBe(5);
     expect(INFRA_CONTRACT_STEPS[3]).toContain("#633");
     expect(INFRA_CONTRACT_STEPS[4]).toContain("#587");
+    expect(INFRA_CONTRACT_STEPS[5]).toContain("#635");
   });
 
   it("lists the pending steps oldest first", () => {

@@ -55,14 +55,12 @@ export interface DnsRecord {
 export interface CloudAdapterOutputs {
   /** DSN for cms_admin role (encrypted in Pulumi state). */
   readonly adminDatabaseUrl: string;
-  /** DSN for public_role on cms_public (encrypted in Pulumi state). */
-  readonly publicDatabaseUrl: string;
   /**
-   * DSN for gateway_role on cms_admin — the API gateway's own narrow login
-   * (#613). The gateway gets this and `publicDatabaseUrl`, never
-   * `adminDatabaseUrl` (CLAUDE.md §2).
+   * DSN for public_role on cms_public (encrypted in Pulumi state) — the API
+   * gateway's only database login. It never gets a cms_admin DSN of any
+   * role (CLAUDE.md §2, #635).
    */
-  readonly gatewayDatabaseUrl: string;
+  readonly publicDatabaseUrl: string;
   /** Provider-native blob URL (s3://, gs://, https://<account>.blob.core.windows.net/<container>). */
   readonly mediaStorageUrl: string;
   /** Public-facing URL the admin reaches for media reads. */

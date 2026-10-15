@@ -21,7 +21,7 @@ import type { SQL as SQLType } from "bun";
 import { sql as dsql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
 import { type ProjectionDatabases, publishPublicProjection } from "./public-projection.js";
-import { assertRoleIsolation } from "./role-audit.js";
+import { assertPublicDatabaseIsolated, assertRoleIsolation } from "./role-audit.js";
 import { readShippedVisitorProjections } from "./shipped-declarations.js";
 
 type SQL = SQLType;
@@ -195,6 +195,9 @@ try {
     for (const w of audit.warnings) console.warn(`role isolation warning: ${w}`);
     console.log("cms_admin: database role isolation check passed");
   } else {
+    // Issue #635 — nothing in cms_public may bridge to another database.
+    await assertPublicDatabaseIsolated(sql);
+    console.log("cms_public: no bridge to other databases");
     await publishProjection(url);
   }
 } finally {

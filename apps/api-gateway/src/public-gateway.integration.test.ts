@@ -35,6 +35,7 @@ import {
 import { STAGING_SESSION_COOKIE, signStagingToken } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
+import { databaseIsolationProblems } from "./database-env.js";
 import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
 import {
   GATEWAY_DATABASE_ROLES,
@@ -241,19 +242,20 @@ afterAll(async () => {
 });
 
 describe("the gateway's database identity (#613, #635)", () => {
-  it("refuses to start with any admin_role credential in the env", () => {
+  it("refuses to start with any cms_admin credential in the env", () => {
     for (const name of [
       "ADMIN_DATABASE_URL",
       "ADMIN_DATABASE_PASSWORD",
       "PUBLIC_ADMIN_DATABASE_URL",
       "PUBLIC_ADMIN_DATABASE_PASSWORD",
+      "GATEWAY_DATABASE_URL",
     ]) {
       expect(() =>
         gatewayDatabaseUrls({
           PUBLIC_DATABASE_URL: "postgres://public_role@h/cms_public",
           [name]: "x",
         }),
-      ).toThrow(new RegExp(`must not hold admin_role credentials.*${name}`));
+      ).toThrow(new RegExp(`must not hold any cms_admin credential[\\s\\S]*${name}`));
     }
   });
 
@@ -275,6 +277,22 @@ describe("the gateway's database identity (#613, #635)", () => {
         async () => "reached",
       ),
     ).rejects.toThrow(AdminDatabaseUnavailableError);
+  });
+
+  it("the boot-time isolation probe passes on the real login and fails on a bad grant", async () => {
+    expect(await databaseIsolationProblems(gatewayAdapter.rawPublic())).toEqual([]);
+    await asAdmin(async (tx) => {
+      await tx.unsafe("GRANT CONNECT ON DATABASE cms_admin TO public_role");
+    });
+    try {
+      expect(await databaseIsolationProblems(gatewayAdapter.rawPublic())).toEqual([
+        "public_role may CONNECT to cms_admin",
+      ]);
+    } finally {
+      await asAdmin(async (tx) => {
+        await tx.unsafe("REVOKE CONNECT ON DATABASE cms_admin FROM public_role");
+      });
+    }
   });
 
   it("its login is public_role, which cannot even connect to cms_admin", async () => {
