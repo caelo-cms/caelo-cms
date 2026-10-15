@@ -299,7 +299,7 @@ The command runs as your gcloud account, the same way `staging-domain enable` re
 
 ```text
 protoPayload.serviceName=("iamcredentials.googleapis.com" OR "secretmanager.googleapis.com")
-protoPayload.methodName=("SignJwt" OR "google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion")
+protoPayload.methodName=("google.iam.credentials.v1.IAMCredentials.SignJwt" OR "google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion")
 ```
 
 Each entry's `protoPayload.authenticationInfo.principalEmail` is the account that made the call, and its time sits a few seconds before the Caelo audit entry. These logs are small (a few entries per command run and per service start) and count toward Cloud Logging's ingestion allowance; they cover every other command that reaches the admin this way too, such as `staging-domain enable`.

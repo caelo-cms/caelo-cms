@@ -19,7 +19,7 @@ function fakeGcloud(
   overrides: Record<string, GcloudResult> = {},
 ): (args: string[]) => Promise<GcloudResult> {
   const answers: Record<string, GcloudResult> = {
-    "config get-value account": ok("operator@example.com\n"),
+    "auth list": ok("operator@example.com\n"),
     "run services list": ok("caelo-production-admin-abc\n"),
     "run services describe": ok(`${ADMIN}\n`),
     "secrets versions access": ok("s".repeat(40)),
@@ -98,11 +98,15 @@ describe("requestOwnerReset", () => {
 
   it("refuses to run without an active gcloud account to name in the audit row", async () => {
     const { doFetch, seen } = fakeFetch(() => Response.json(ISSUED));
-    for (const answer of [ok(""), fail("(unset)"), ok("two words")]) {
+    for (const answer of [
+      ok(""),
+      fail("ERROR: no credentialed accounts"),
+      ok("a@x.com\nb@x.com"),
+    ]) {
       const r = await requestOwnerReset(
         target,
         {},
-        { run: fakeGcloud({ "config get-value account": answer }), fetch: doFetch },
+        { run: fakeGcloud({ "auth list": answer }), fetch: doFetch },
       );
       expect(r.ok ? "" : r.error).toContain("gcloud auth login");
     }

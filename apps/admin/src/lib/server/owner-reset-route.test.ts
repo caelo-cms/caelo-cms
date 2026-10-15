@@ -84,7 +84,7 @@ describe("POST /api/internal/owner-reset", () => {
       JSON.stringify({ requestedBy: "operator@example.com", extra: true }),
       JSON.stringify({ requestedBy: "op\nerator@example.com" }),
       JSON.stringify({ requestedBy: "<script>@example.com" }),
-      JSON.stringify({ requestedBy: `${"a".repeat(250)}@example.com` }),
+      JSON.stringify({ requestedBy: `${"a".repeat(320)}@example.com` }),
     ];
     for (const body of bad) {
       const res = await post(auth, body);

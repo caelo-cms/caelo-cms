@@ -25,7 +25,7 @@ import {
   type AdminInternalTarget,
   callAdminInternal,
 } from "./admin-internal.js";
-import { gcloud as defaultGcloud } from "./gcloud.js";
+import { activeAccount, gcloud as defaultGcloud } from "./gcloud.js";
 
 /** Token scope the admin endpoint checks (apps/admin …/api/internal/owner-reset). */
 export const OWNER_RESET_SCOPE = "auth.owner_reset";
@@ -79,12 +79,14 @@ export async function requestOwnerReset(
 async function readGcloudAccount(
   run: NonNullable<AdminInternalDeps["run"]>,
 ): Promise<AdminInternalResult<string>> {
-  const r = await run(["config", "get-value", "account"]);
-  const account = r.stdout.trim();
-  if (!r.ok || !account || /\s/.test(account)) {
+  // `auth list --filter=status:ACTIVE`, not `config get-value account`: the
+  // latter prints the sentinel `(unset)` and exits 0 when no account is set.
+  const account = await activeAccount(run);
+  if (!account || /\s/.test(account)) {
     return {
       ok: false,
-      error: `read the active gcloud account: ${r.stderr.trim() || "none is set"}. Run \`gcloud auth login\` with the account you provisioned with.`,
+      error:
+        "read the active gcloud account: none is signed in. Run `gcloud auth login` with the account you provisioned with.",
     };
   }
   return { ok: true, value: account };

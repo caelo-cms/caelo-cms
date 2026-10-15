@@ -37,14 +37,15 @@ const SOURCE = "cms-provision owner-reset";
 
 /**
  * A gcloud account: a user or service-account email, or a workforce-identity
- * principal. Bounded and restricted to the characters those use, so the
+ * principal (`principal://iam.googleapis.com/locations/global/workforcePools/
+ * <pool ≤63>/subject/<subject ≤127>`, up to 262 characters). Bounded and restricted to the characters those use, so the
  * self-asserted value cannot carry whitespace, control characters or markup
  * into the audit log and the screens that show it.
  */
 const requestedBy = z
   .string()
   .min(3)
-  .max(254)
+  .max(320)
   .regex(/^[A-Za-z0-9._%+@:/=-]+$/, "must be the gcloud account the command ran as");
 
 const SYSTEM_CTX: ExecutionContext = {
