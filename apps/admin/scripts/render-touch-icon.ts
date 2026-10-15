@@ -12,7 +12,7 @@
  * mask, and transparent corners would render as black wedges.
  *
  * Usage (rerun whenever the SVG changes):
- *   bun run apps/admin/scripts/render-touch-icon.ts
+ *   bun run --filter=@caelo-cms/admin icons:touch
  */
 
 import { fileURLToPath } from "node:url";
