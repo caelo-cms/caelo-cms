@@ -16,9 +16,13 @@
  *   list_newsletter_campaigns — campaigns + confirmed-subscriber count. Read.
  *   draft_newsletter_campaign — AI-drafted campaign saved as `draft`. Direct:
  *                               nothing leaves the site until a send.
- *   send_newsletter_campaign  — queues a draft to every confirmed subscriber.
+ *   get_newsletter_campaign   — one campaign's subject, body and the number
+ *                               of subscribers a send reaches. Read.
+ *   send_newsletter_campaign  — sends a draft to its confirmed subscribers.
  *                               APPROVAL-GATED (§11.A): an email that went
- *                               out cannot be recalled.
+ *                               out cannot be recalled. The approval card
+ *                               shows the exact subject, body and recipient
+ *                               bound, and only that is sent (send-runs.ts).
  */
 
 import {
@@ -37,6 +41,13 @@ import {
   type PluginContextTier1,
   z,
 } from "@caelo-cms/plugin-sdk";
+import {
+  adminQueryOf,
+  drainSends,
+  eligibleRecipients,
+  SEND_PROGRESS_TABLE,
+  SEND_RUNS_TABLE,
+} from "./send-runs.js";
 
 /**
  * Longest campaign body an agent may hand in. `body_html` is an unbounded
@@ -60,36 +71,45 @@ const draftCampaignArgs = z
 const DRAFT_SYSTEM_PROMPT =
   "Write a single newsletter campaign in clean HTML — header, 1-3 sections, CTA. Plain HTML only, no markdown, no extra commentary.";
 
-const sendCampaignArgs = z.object({ campaignId: z.string().uuid() }).strict();
+/**
+ * The approval of a send. The operator approves exactly these values on
+ * the card, so they are what is sent — never the public draft, which only
+ * has to still match them when the approval is applied.
+ */
+const sendCampaignArgs = z
+  .object({
+    campaignId: z.string().uuid(),
+    subject: z.string().min(1).max(300),
+    bodyHtml: z.string().min(1).max(MAX_BODY_HTML_LENGTH),
+    /** The most subscribers this approval may reach. */
+    recipientCount: z.number().int().nonnegative().max(1000),
+  })
+  .strict();
+
+const getCampaignArgs = z.object({ campaignId: z.string().uuid() }).strict();
 
 /** Most rows one `ctx.query.list` returns (the SDK's cap). */
 const SUBSCRIBER_LIST_CAP = 1000;
 
-/**
- * The campaign content an approved send is bound to (#635). Campaigns and
- * the send queue live in cms_public, where a compromised public side could
- * rewrite a queued campaign into phishing sent from the site's domain. So
- * the approval records the SHA-256 of subject + body in the plugin's
- * PRIVATE storage (cms_admin), and the worker sends only content that still
- * matches it.
- */
-export async function campaignDigest(subject: string, bodyHtml: string): Promise<string> {
-  const bytes = new TextEncoder().encode(`${subject}\u0000${bodyHtml}`);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+interface SubscriberRow {
+  id: string;
+  email: string;
+  unsub_token: string;
+  confirmed_at: string | null;
+  unsubscribed_at: string | null;
 }
 
-/** A recipient the worker may mail: one plain address, no header tricks. */
-const RECIPIENT = z.string().max(254).email();
-
-function adminQueryOf(ctx: PluginContextTier1) {
-  const q = ctx.adminQuery;
-  if (!q) {
+/** Every subscriber row, or a loud refusal when the list exceeds one read. */
+async function allSubscribers(ctx: PluginContextTier1, op: string): Promise<SubscriberRow[]> {
+  const subs = await ctx.query.list<"subscribers", SubscriberRow>("subscribers", {
+    limit: SUBSCRIBER_LIST_CAP,
+  });
+  if (subs.length >= SUBSCRIBER_LIST_CAP) {
     throw new Error(
-      "newsletter: ctx.adminQuery missing — the cms_admin_schema capability was not granted",
+      `${op}: ${SUBSCRIBER_LIST_CAP}+ subscriber rows — this sender cannot reach all of them yet, so nothing was queued`,
     );
   }
-  return q;
+  return subs;
 }
 
 function hashEmail(email: string): string {
@@ -128,8 +148,10 @@ export default definePlugin<PluginContextTier1>({
       created_at: "timestamp",
       sent_at: "timestamp_nullable",
     },
+    /** Outcome log the worker writes per recipient of a run — not a queue. */
     sends: {
       id: "uuid",
+      run_id: "string",
       campaign_id: "string",
       subscriber_id: "string",
       status: "enum:pending,sent,failed",
@@ -139,16 +161,12 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   /**
-   * #635 — what an approved send was approved FOR, out of the public
-   * side's reach: the worker sends a campaign only while its content still
-   * hashes to an approval recorded here.
+   * #635 — approved sends, out of the public side's reach: the worker
+   * sends only what a `send_runs` row holds (send-runs.ts).
    */
   adminSchema: {
-    approved_campaigns: {
-      campaign_id: "string",
-      content_sha256: "string",
-      created_at: "timestamp",
-    },
+    send_runs: SEND_RUNS_TABLE,
+    send_progress: SEND_PROGRESS_TABLE,
   },
   requestedCapabilities: [
     "ai_provider",
@@ -218,7 +236,12 @@ export default definePlugin<PluginContextTier1>({
       return { unsubscribed: matches[0].id };
     },
 
-    /** Campaigns (newest first) + how many confirmed subscribers a send reaches. */
+    /**
+     * Campaigns (newest first) + how many subscribers a send reaches. A
+     * campaign's send state comes from the approved runs in private
+     * storage, not from the public row, which anyone on the public side
+     * could rewrite.
+     */
     list_campaigns: async (ctx, _args) => {
       const campaigns = await ctx.query.list<
         "campaigns",
@@ -231,24 +254,66 @@ export default definePlugin<PluginContextTier1>({
           sent_at: string | null;
         }
       >("campaigns", { orderBy: "created_at", orderDir: "desc", limit: 100 });
-      const subs = await ctx.query.list<
-        "subscribers",
-        { confirmed_at: string | null; unsubscribed_at: string | null }
-      >("subscribers", { limit: SUBSCRIBER_LIST_CAP });
-      const subscriberCount = subs.filter((s) => s.confirmed_at && !s.unsubscribed_at).length;
+      const subs = await ctx.query.list<"subscribers", SubscriberRow>("subscribers", {
+        limit: SUBSCRIBER_LIST_CAP,
+      });
+      const admin = adminQueryOf(ctx);
+      const runs = await admin.list<
+        "send_runs",
+        { id: string; campaign_id: string; status: string; recipient_count: number }
+      >("send_runs", { orderBy: "created_at", orderDir: "desc", limit: 1000 });
+      const progress = await admin.list<"send_progress", { id: string; cursor: number }>(
+        "send_progress",
+        { orderBy: "created_at", orderDir: "desc", limit: 1000 },
+      );
+      const claimedByRun = new Map(progress.map((p) => [p.id, p.cursor]));
+      // The oldest run of a campaign is the one that sends (send-runs.ts):
+      // newest first, so an older run overwrites a newer one.
+      const runByCampaign = new Map<string, (typeof runs)[number]>();
+      for (const run of runs) runByCampaign.set(run.campaign_id, run);
       return {
         // The query handle reads at most SUBSCRIBER_LIST_CAP rows; at the
         // cap the count is a lower bound and send_campaign refuses.
         subscriberListTruncated: subs.length >= SUBSCRIBER_LIST_CAP,
-        campaigns: campaigns.map(({ id, slug, subject, status, created_at, sent_at }) => ({
-          id,
-          slug,
-          subject,
-          status,
-          created_at,
-          sent_at,
-        })),
-        subscriberCount,
+        campaigns: campaigns.map(({ id, slug, subject, status, created_at, sent_at }) => {
+          const run = runByCampaign.get(id);
+          return {
+            id,
+            slug,
+            subject,
+            status,
+            created_at,
+            sent_at,
+            approvedSend: run
+              ? {
+                  status: run.status,
+                  recipientCount: run.recipient_count,
+                  processed: claimedByRun.get(run.id) ?? 0,
+                }
+              : null,
+          };
+        }),
+        subscriberCount: eligibleRecipients(subs).recipients.length,
+      };
+    },
+
+    /** One campaign as the send approval needs it: subject, body, reach. */
+    get_campaign: async (ctx, args) => {
+      const input = getCampaignArgs.parse(args);
+      const rows = await ctx.query.list<
+        "campaigns",
+        { id: string; slug: string; subject: string; body_html: string; status: string }
+      >("campaigns", { id: input.campaignId, limit: 1 });
+      const campaign = rows[0];
+      if (!campaign) throw new Error("get_campaign: campaign not found");
+      const subs = await allSubscribers(ctx, "get_campaign");
+      return {
+        id: campaign.id,
+        slug: campaign.slug,
+        status: campaign.status,
+        subject: campaign.subject,
+        bodyHtml: campaign.body_html,
+        recipientCount: eligibleRecipients(subs).recipients.length,
       };
     },
 
@@ -304,134 +369,66 @@ export default definePlugin<PluginContextTier1>({
       return { id: r.id, costInputTokens: completion.inputTokens };
     },
 
+    /**
+     * Apply an approved send. The arguments are what the operator approved
+     * (send-runs.ts): this records them, with the recipients as of now, as
+     * one `send_runs` row in private storage — the only write, so the
+     * approval exists completely or not at all. The worker sends it.
+     */
     send_campaign: async (ctx, args) => {
       const input = sendCampaignArgs.parse(args);
-      const campaign = await ctx.query.list<
+      // Before anything is read or written: without private storage there
+      // is nowhere to record the approval.
+      const admin = adminQueryOf(ctx);
+      const rows = await ctx.query.list<
         "campaigns",
         { id: string; status: string; subject: string; body_html: string }
       >("campaigns", { id: input.campaignId, limit: 1 });
-      if (!campaign[0]) throw new Error("send_campaign: campaign not found");
-      // Only a draft is sendable: re-queuing a queued/sent campaign would
-      // email every subscriber a second time, and that cannot be recalled.
-      if (campaign[0].status !== "draft") {
+      const campaign = rows[0];
+      if (!campaign) throw new Error("send_campaign: campaign not found");
+      // Only a draft is sendable: re-sending would email every subscriber
+      // a second time, and that cannot be recalled.
+      if (campaign.status !== "draft") {
         throw new Error(
-          `send_campaign: campaign is '${campaign[0].status}', not 'draft' — it was already sent or queued`,
+          `send_campaign: campaign is '${campaign.status}', not 'draft' — it was already sent or queued`,
         );
       }
-      const subs = await ctx.query.list<
-        "subscribers",
-        { id: string; confirmed_at: string | null; unsubscribed_at: string | null }
-      >("subscribers", { limit: SUBSCRIBER_LIST_CAP });
-      // Fail loudly rather than silently mail only the first page.
-      if (subs.length >= SUBSCRIBER_LIST_CAP) {
+      if (campaign.subject !== input.subject || campaign.body_html !== input.bodyHtml) {
         throw new Error(
-          `send_campaign: ${SUBSCRIBER_LIST_CAP}+ subscriber rows — this sender cannot reach all of them yet, so nothing was queued`,
+          "send_campaign: the draft changed after it was shown for approval — nothing was queued. Read it again with get_newsletter_campaign and ask the operator to approve the current version.",
         );
       }
-      // Claim the draft atomically BEFORE enqueueing: two overlapping sends
-      // (a double-click, a retried tool call) both read 'draft' above, but
-      // only one wins this swap — the other would otherwise enqueue every
-      // subscriber a second time.
-      const claimed = await ctx.query.compareAndSwap(
-        "campaigns",
-        input.campaignId,
-        { status: "draft" },
-        { status: "sending" },
-      );
-      if (!claimed) {
-        throw new Error("send_campaign: campaign is no longer a draft — another send claimed it");
-      }
-      // Bind this approval to exactly this content (#635): the worker sends
-      // nothing whose subject or body changed after this point.
-      await adminQueryOf(ctx).insert("approved_campaigns", {
+      const earlier = await admin.list<"send_runs", { status: string }>("send_runs", {
         campaign_id: input.campaignId,
-        content_sha256: await campaignDigest(campaign[0].subject, campaign[0].body_html),
+        limit: 1,
       });
-      let queued = 0;
-      for (const s of subs) {
-        if (!s.confirmed_at || s.unsubscribed_at) continue;
-        await ctx.query.insert("sends", {
-          campaign_id: input.campaignId,
-          subscriber_id: s.id,
-          status: "pending",
-        });
-        queued += 1;
+      if (earlier[0]) {
+        throw new Error(
+          `send_campaign: this campaign already has an approved send ('${earlier[0].status}') — an approval is used once; draft a new campaign to send again`,
+        );
       }
-      await ctx.query.update("campaigns", input.campaignId, { status: "queued" });
-      return { queued };
+      const { recipients, invalid } = eligibleRecipients(
+        await allSubscribers(ctx, "send_campaign"),
+      );
+      if (recipients.length > input.recipientCount) {
+        throw new Error(
+          `send_campaign: ${recipients.length} subscribers would receive it, but the approval covers at most ${input.recipientCount} — nothing was queued. Ask the operator to approve the current count.`,
+        );
+      }
+      const run = await admin.insert("send_runs", {
+        campaign_id: input.campaignId,
+        subject: input.subject,
+        body_html: input.bodyHtml,
+        recipients,
+        recipient_count: recipients.length,
+        status: "approved",
+        approved_by: ctx.invocation.actorId,
+      });
+      return { queued: recipients.length, skippedInvalidAddresses: invalid, runId: run.id };
     },
 
-    /**
-     * Worker handler. Drains up to 10 pending sends per tick; calls
-     * ctx.email.send for each. Failure marks the row failed; success
-     * marks sent. P13 wires real rate-limiting + retry.
-     */
-    _drain_sends: async (ctx, _args) => {
-      const pending = await ctx.query.list<
-        "sends",
-        { id: string; campaign_id: string; subscriber_id: string }
-      >("sends", { status: "pending", limit: 10 });
-      let sent = 0;
-      for (const send of pending) {
-        const sub = await ctx.query.list<"subscribers", { email: string; unsub_token: string }>(
-          "subscribers",
-          { id: send.subscriber_id, limit: 1 },
-        );
-        const camp = await ctx.query.list<"campaigns", { subject: string; body_html: string }>(
-          "campaigns",
-          { id: send.campaign_id, limit: 1 },
-        );
-        if (!sub[0] || !camp[0]) {
-          await ctx.query.update("sends", send.id, { status: "failed", error: "missing record" });
-          continue;
-        }
-        // #635 — the queue, the campaign and the subscriber all come from
-        // cms_public: send only what an approval in private storage covers.
-        const approvals = await adminQueryOf(ctx).list<
-          "approved_campaigns",
-          { content_sha256: string }
-        >("approved_campaigns", { campaign_id: send.campaign_id, limit: 10 });
-        if (approvals.length === 0) {
-          // Not approved (yet): an approval made in a chat that cannot
-          // publish lands when that chat is published. Leave it queued.
-          continue;
-        }
-        const digest = await campaignDigest(camp[0].subject, camp[0].body_html);
-        if (!approvals.some((a) => a.content_sha256 === digest)) {
-          await ctx.query.update("sends", send.id, {
-            status: "failed",
-            error: "the campaign changed after it was approved — not sent",
-          });
-          continue;
-        }
-        if (!RECIPIENT.safeParse(sub[0].email).success) {
-          await ctx.query.update("sends", send.id, {
-            status: "failed",
-            error: "invalid recipient",
-          });
-          continue;
-        }
-        try {
-          if (!ctx.email) throw new Error("no email transport configured");
-          await ctx.email.send({
-            to: sub[0].email,
-            subject: camp[0].subject,
-            html: `${camp[0].body_html}<hr/><p style="font-size:12px"><a href="/api/plugin/newsletter/unsubscribe?token=${sub[0].unsub_token}">Unsubscribe</a></p>`,
-          });
-          await ctx.query.update("sends", send.id, {
-            status: "sent",
-            sent_at: new Date().toISOString(),
-          });
-          sent += 1;
-        } catch (e) {
-          await ctx.query.update("sends", send.id, {
-            status: "failed",
-            error: (e as Error).message,
-          });
-        }
-      }
-      return { sent, attempted: pending.length };
-    },
+    /** Worker: sends approved runs, a batch per tick (send-runs.ts). */
+    _drain_sends: async (ctx, _args) => drainSends(ctx),
   },
   workers: [{ name: "drain_sends", cron: "0 * * * * *", operationName: "_drain_sends" }],
   tools: [
@@ -474,19 +471,40 @@ export default definePlugin<PluginContextTier1>({
       },
     },
     {
-      name: "send_newsletter_campaign",
+      name: "get_newsletter_campaign",
       description:
-        "Send a DRAFT newsletter campaign to every confirmed subscriber. " +
-        "APPROVAL-GATED: this PAUSES for the operator's Approve in the chat before anything is queued — emails that went out cannot be recalled. " +
-        "Before calling, tell the operator the subject and the recipient count (list_newsletter_campaigns). Do not claim it was sent until approved. Only drafts can be sent.",
-      operationName: "send_campaign",
+        "Read one newsletter campaign: subject, the full body HTML, its status, and `recipientCount` — how many subscribers a send would reach now. " +
+        "Call it right before send_newsletter_campaign and pass its subject, bodyHtml and recipientCount to that tool unchanged.",
+      operationName: "get_campaign",
       requiredPermission: "settings.write",
-      approvalMode: "user-approval",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
         required: ["campaignId"],
         properties: { campaignId: { type: "string", format: "uuid" } },
+      },
+    },
+    {
+      name: "send_newsletter_campaign",
+      description:
+        "Send a DRAFT newsletter campaign to its confirmed subscribers. " +
+        "First call get_newsletter_campaign and pass its subject, bodyHtml and recipientCount here UNCHANGED: the operator's approval card shows exactly these, and exactly this content goes to at most that many subscribers. " +
+        "APPROVAL-GATED: this PAUSES for the operator's Approve in the chat before anything is queued — emails that went out cannot be recalled. " +
+        "Do not claim it was sent until approved. Only drafts can be sent, and each campaign only once.",
+      operationName: "send_campaign",
+      requiredPermission: "settings.write",
+      approvalMode: "user-approval",
+      approvalPreviewFullArgs: ["subject", "bodyHtml"],
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["campaignId", "subject", "bodyHtml", "recipientCount"],
+        properties: {
+          campaignId: { type: "string", format: "uuid" },
+          subject: { type: "string", minLength: 1, maxLength: 300 },
+          bodyHtml: { type: "string", minLength: 1, maxLength: MAX_BODY_HTML_LENGTH },
+          recipientCount: { type: "integer", minimum: 0, maximum: 1000 },
+        },
       },
     },
   ],

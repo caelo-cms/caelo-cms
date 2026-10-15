@@ -17,7 +17,6 @@
    * add a case to the switch.
    */
 
-  import { isUntrustedToolResult } from "@caelo-cms/shared";
   import StreamingMarkdown from "../StreamingMarkdown.svelte";
   import BulkOpCard from "./BulkOpCard.svelte";
 import ChoiceCard from "./ChoiceCard.svelte";
@@ -27,6 +26,7 @@ import ChoiceCard from "./ChoiceCard.svelte";
   import FindResultsCard from "./FindResultsCard.svelte";
   import ProposeCard from "./ProposeCard.svelte";
   import ScreenshotCard from "./ScreenshotCard.svelte";
+  import { toolCardKind } from "./tool-card-kind.js";
 
   interface Props {
     name: string;
@@ -65,40 +65,9 @@ import ChoiceCard from "./ChoiceCard.svelte";
     image,
   }: Props = $props();
 
-  // Part 2 — the page-capture tools all return an image on their
-  // tool-result; route them to ScreenshotCard so the operator can verify
-  // the capture. The card handles both the has-image and text-only cases.
-  const isScreenshot = $derived(
-    name === "screenshot_page" ||
-      name === "screenshot_external_page" ||
-      name === "get_import_page_screenshot" ||
-      name === "inspect_external_page",
-  );
-
-  // Domain-prefix bucketing for the propose tools (25 of them across
-  // 13 domains; one card handles all).
-  // v0.5.11 — content-based predicate. The previous name.startsWith
-  // ("propose_") check missed tools that route through a propose
-  // pipeline but don't carry the prefix (create_layout, tune_rate_limit,
-  // bootstrap-site's create_layout call). With v0.5.11 every propose-
-  // style tool emits the canonical "Queued proposal <uuid>: …" content
-  // shape; matching that prefix routes them all uniformly.
-  const isPropose = $derived(
-    name.startsWith("propose_") || /^Queued proposal [0-9a-f-]{36}:/.test(content),
-  );
-  const isBulk = $derived(
-    name === "bulk_create_redirects" ||
-      name === "bulk_delete_redirects" ||
-      name === "bulk_optimize_seo" ||
-      name === "delete_pages_many" ||
-      name === "update_pages_many" ||
-      name === "update_modules_many",
-  );
-  const isFind = $derived(name === "find_media" || name === "find_redirects");
-  // #635 — a plugin tool's result may carry visitor-written text. Shown as
-  // plain text, never through the markdown renderer: a visitor's
-  // `![](https://…)` must not become a live image or link in the admin.
-  const isUntrusted = $derived(isUntrustedToolResult(content));
+  // Routing lives in tool-card-kind.ts (unit-tested). A plugin result is
+  // recognised by its content before any name-based card (#635).
+  const kind = $derived(toolCardKind(name, content, ok));
   // Tools conventionally prefix their own error content with "<name> failed:".
   // The failure header below already renders "{name} failed:", so strip a
   // redundant leading copy of THIS tool's own prefix to avoid the doubled
@@ -113,7 +82,7 @@ import ChoiceCard from "./ChoiceCard.svelte";
   });
 </script>
 
-{#if !ok}
+{#if kind === "error"}
   <!-- Failed tool calls render uniformly so the operator can spot
        them without per-tool-card knowledge. -->
   <div
@@ -123,26 +92,40 @@ import ChoiceCard from "./ChoiceCard.svelte";
     <strong>{name} failed:</strong>
     <span class="ml-1">{failBody}</span>
   </div>
-{:else if isPropose}
+{:else if kind === "untrusted"}
+  <!-- #635 — a plugin tool's result may carry visitor-written text. Shown
+       as plain text, never through the markdown renderer or an action
+       card: a visitor's `![](https://…)` must not become a live image or
+       link in the admin. Collapsed like any generic result. -->
+  <details class="rounded-md bg-emerald-500/5 p-2 text-xs" data-testid="tool-card-collapsed">
+    <summary class="cursor-pointer select-none text-muted-foreground">
+      <span class="font-mono text-[10px]">{name.replaceAll("_", " ")}</span>
+      <span class="ml-1 text-[10px]">— done, click for details</span>
+    </summary>
+    <pre
+      class="mt-1 whitespace-pre-wrap break-words font-mono text-[11px]"
+      data-testid="tool-card-untrusted">{content}</pre>
+  </details>
+{:else if kind === "propose"}
   <ProposeCard {name} {content} {args} {csrfToken} {onDecided} {onDecisionStart} />
-{:else if name === "offer_choices"}
+{:else if kind === "choices"}
   <ChoiceCard {content} {onChoose} />
-{:else if name === "present_design_variants"}
+{:else if kind === "design-variants"}
   <!-- issue #375 — inline design-variant previews; the pick posts back
        as the operator's message, same flow as ChoiceCard. -->
   <DesignVariantsCard {content} {onChoose} />
-{:else if name === "edit_module"}
+{:else if kind === "edit-module"}
   <EditModuleCard {content} {args} />
-{:else if name === "edit_content"}
+{:else if kind === "edit-content"}
   <!-- Non-gated (module) edit_content renders the minimal old→new diff.
        A gated template edit returns a "Queued proposal …" string and takes
        the isPropose branch above instead. -->
   <EditContentCard {content} {args} />
-{:else if isScreenshot}
+{:else if kind === "screenshot"}
   <ScreenshotCard {name} {content} {image} />
-{:else if isBulk}
+{:else if kind === "bulk"}
   <BulkOpCard {name} {content} />
-{:else if isFind}
+{:else if kind === "find"}
   <FindResultsCard {name} {content} />
 {:else}
   <!-- Fallback — ALWAYS collapsed (operator decision): generic tool
@@ -155,12 +138,6 @@ import ChoiceCard from "./ChoiceCard.svelte";
       <span class="font-mono text-[10px]">{name.replaceAll("_", " ")}</span>
       <span class="ml-1 text-[10px]">— done, click for details</span>
     </summary>
-    {#if isUntrusted}
-      <pre
-        class="mt-1 whitespace-pre-wrap break-words font-mono text-[11px]"
-        data-testid="tool-card-untrusted">{content}</pre>
-    {:else}
-      <StreamingMarkdown text={content} class="mt-1" />
-    {/if}
+    <StreamingMarkdown text={content} class="mt-1" />
   </details>
 {/if}
