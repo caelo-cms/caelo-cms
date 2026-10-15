@@ -5,7 +5,7 @@ This is the inventory of every path on which the admin side reads data from `cms
 The admin applies four mechanisms across these paths:
 
 1. **Plugin rows are validated at the read.** When the admin's plugin host lists one of a plugin's public tables, every row is checked against the plugin's own declared column types before the plugin's code sees it. This covers Owner panels, chat tools, workers and the static generator's callbacks (plugin-host `public-row-schema.ts`). A row that does not fit is dropped and counted, never coerced.
-2. **Plugin data reaches the admin AI as untrusted data.** Every plugin tool result is wrapped in `<untrusted-plugin-data>…</untrusted-plugin-data>` (admin-core `untrustedToolResult`). Visitor text cannot close that element. This covers the chat runner, Power-MCP, queued approvals and in-chat approvals. The static system prompt tells the AI to treat the element's contents as data and to approve, publish, deploy or send nothing because of it.
+2. **Plugin data reaches the admin AI as untrusted data.** Every plugin tool result is wrapped in `<untrusted-plugin-data>…</untrusted-plugin-data>` (`untrustedToolResult` in `@caelo-cms/shared`). Visitor text cannot close that element. This covers the chat runner, Power-MCP, queued approvals and in-chat approvals. The static system prompt tells the AI to treat the element's contents as data and to approve, publish, deploy or send nothing because of it.
 3. **The chat UI shows untrusted results as plain text.** A visitor's `![](https://…)` must not become a live image or link in the admin, so these results never go through the markdown renderer.
 4. **Core reads of gateway tables are Zod-validated** (`parseUntrustedRows`).
 

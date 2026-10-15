@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it, spyOn } from "bun:test";
+import { untrustedToolResult } from "@caelo-cms/shared";
 import { z } from "zod";
 import {
   parseUntrustedRows,
   untrustedOperation,
   untrustedSlug,
   untrustedTimestamp,
-  untrustedToolResult,
 } from "./public-data.js";
 
 describe("parseUntrustedRows (#635: public → admin data is untrusted)", () => {

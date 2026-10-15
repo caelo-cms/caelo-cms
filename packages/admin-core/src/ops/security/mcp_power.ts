@@ -40,7 +40,7 @@
 import { pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { defineOperation, execute } from "@caelo-cms/query-api";
-import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
+import { type ExecutionContext, err, ok, untrustedToolResult } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { buildSkillsContext } from "../../ai/chat-runner/context/skills.js";
@@ -54,7 +54,6 @@ import { queuePluginToolApproval } from "../../ai/queued-tool-approval.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
-import { untrustedToolResult } from "../../untrusted/public-data.js";
 import {
   approvalOutcome,
   findMcpHandoffByToolCall,

@@ -43,7 +43,7 @@ import {
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { untrustedToolResult } from "../untrusted/public-data.js";
+import { untrustedToolResult } from "@caelo-cms/shared";
 import { approvedPluginInvocation, chatPluginInvocation } from "./plugin-invocation.js";
 import { describeError } from "./tools/_describe-error.js";
 import type { ToolResult } from "./tools/dispatch.js";

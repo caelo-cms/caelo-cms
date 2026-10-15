@@ -35,12 +35,12 @@ import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { untrustedToolResult } from "@caelo-cms/shared";
 import {
   approverPermissionsOf,
   isApproverPermissionRefusal,
 } from "../../ops/_approver-permission.js";
 import { describeOperatorAccessSync, syncOperatorAccess } from "../../ops/user_access.js";
-import { untrustedToolResult } from "../../untrusted/public-data.js";
 import { describePersistError } from "../chat-runner/persistence.js";
 import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
 import { approvedPluginInvocation } from "../plugin-invocation.js";

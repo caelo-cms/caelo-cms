@@ -17,6 +17,7 @@
    * add a case to the switch.
    */
 
+  import { isUntrustedToolResult } from "@caelo-cms/shared";
   import StreamingMarkdown from "../StreamingMarkdown.svelte";
   import BulkOpCard from "./BulkOpCard.svelte";
 import ChoiceCard from "./ChoiceCard.svelte";
@@ -97,7 +98,7 @@ import ChoiceCard from "./ChoiceCard.svelte";
   // #635 — a plugin tool's result may carry visitor-written text. Shown as
   // plain text, never through the markdown renderer: a visitor's
   // `![](https://…)` must not become a live image or link in the admin.
-  const isUntrusted = $derived(content.startsWith("<untrusted-plugin-data>"));
+  const isUntrusted = $derived(isUntrustedToolResult(content));
   // Tools conventionally prefix their own error content with "<name> failed:".
   // The failure header below already renders "{name} failed:", so strip a
   // redundant leading copy of THIS tool's own prefix to avoid the doubled

@@ -14,6 +14,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import { untrustedToolResultValue } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { privateStorageRefusal } from "../../../plugin-host/src/private-storage.js";
 import { approveQueuedToolCall, queuePluginToolApproval } from "../ai/queued-tool-approval.js";
@@ -22,7 +23,6 @@ import { submitPluginTool } from "../ai/tools/submit-plugin.js";
 import { lockPluginRow } from "../locks.js";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
 import { registerAdminOps } from "../register.js";
-import { untrustedToolResultValue } from "../untrusted/public-data.js";
 
 let adapter: DatabaseAdapter;
 let pluginsRoot: string;
