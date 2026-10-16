@@ -13,12 +13,8 @@ import { resolve } from "node:path";
 
 const ADMIN_ROOT = resolve(import.meta.dir, "..");
 const ASSETS = "%sveltekit.assets%/";
-// Comments are skipped so the one explaining the missing manifest does not count.
-const markup = readFileSync(resolve(ADMIN_ROOT, "src/app.html"), "utf8").replace(
-  /<!--[\s\S]*?-->/g,
-  "",
-);
-const links = [...markup.matchAll(/<link\b[^>]*>/g)].map((m) => m[0]);
+const appHtml = readFileSync(resolve(ADMIN_ROOT, "src/app.html"), "utf8");
+const links = [...appHtml.matchAll(/<link\b[^>]*>/g)].map((m) => m[0]);
 
 function attr(tag: string, name: string): string | undefined {
   return new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1];
