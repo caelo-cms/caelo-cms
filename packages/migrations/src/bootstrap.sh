@@ -65,7 +65,7 @@ $PSQL -c "GRANT CONNECT ON DATABASE cms_public TO public_role, admin_role;"
 # enforced by the role-isolation.integration.test suite.
 
 # Issue #635 — the API gateway has no cms_admin login any more. A database
-# from before still holds the former gateway_role; migration 0282 strips its
+# from before still holds the former gateway_role; migration 0284 strips its
 # grants but cannot drop a role the superuser created. Drop it here, with
 # whatever it still holds in either database.
 if exists_role gateway_role; then

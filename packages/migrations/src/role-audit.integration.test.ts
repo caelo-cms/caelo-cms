@@ -49,12 +49,12 @@ const onDatabase = (url: string, db: string) => {
   return u.toString();
 };
 
-const migration0282 = resolve(
+const migration0284 = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "..",
   "migrations",
   "cms_admin",
-  "0282_drop_gateway_role.sql",
+  "0284_drop_gateway_role.sql",
 );
 
 const migration0278 = resolve(
@@ -265,7 +265,7 @@ describe("the public side reaches no cms_admin object (#635)", () => {
 });
 
 describe("the former gateway_role (#635)", () => {
-  it("a leftover gateway_role with CONNECT or grants fails the audit; 0282 strips it", async () => {
+  it("a leftover gateway_role with CONNECT or grants fails the audit; 0284 strips it", async () => {
     // What a database from before #635 holds (bootstrap.sh created the role
     // as the superuser, the migrations granted it).
     await su.unsafe("CREATE ROLE gateway_role NOINHERIT LOGIN");
@@ -277,9 +277,9 @@ describe("the former gateway_role (#635)", () => {
       await expect(run).rejects.toThrow(
         "gateway_role holds a privilege on cms_admin column site_settings.gateway_cookie_secret",
       );
-      // 0282 as the migration role, which may revoke but not drop a role
+      // 0284 as the migration role, which may revoke but not drop a role
       // the superuser created.
-      const body = await readFile(migration0282, "utf8");
+      const body = await readFile(migration0284, "utf8");
       await admin.begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
         await tx.unsafe(body);
