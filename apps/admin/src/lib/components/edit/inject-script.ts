@@ -1,6 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
+ * Caelo blue for the edit-mode overlay. A literal, not an admin CSS
+ * variable: the stylesheet lands inside the operator's own site, which
+ * never loads the admin's tokens. White text on it is 5.8:1 (WCAG AA).
+ */
+export const EDIT_OVERLAY_COLOR = "#2a64b8";
+
+/**
+ * Stylesheet the runtime installs for edit mode: crosshair cursor, hover
+ * outline + "Edit" label on every module root, and the top banner. Kept
+ * self-contained because it styles the operator's site, not the admin.
+ * The label names IBM Plex Mono first but the site rarely loads it, so
+ * the stack falls back to the platform monospace.
+ */
+export const EDIT_OVERLAY_CSS =
+  "body.caelo-edit-mode [data-caelo-module-id]{cursor:crosshair;}" +
+  `body.caelo-edit-mode [data-caelo-module-id]:hover{outline:2px solid ${EDIT_OVERLAY_COLOR};outline-offset:2px;position:relative;}` +
+  `body.caelo-edit-mode [data-caelo-module-id]:hover::after{content:'Edit';position:absolute;top:-1.4rem;left:0;background:${EDIT_OVERLAY_COLOR};color:#fff;font:500 11px/1 "IBM Plex Mono", Menlo, Consolas, monospace;padding:2px 6px;border-radius:3px;pointer-events:none;z-index:2147483647;}` +
+  `body.caelo-edit-mode::before{content:'Edit mode — click any element to add it as a chip';position:fixed;top:0;left:0;right:0;background:${EDIT_OVERLAY_COLOR};color:#fff;font:500 12px/1.4 system-ui;padding:6px 12px;text-align:center;z-index:2147483646;pointer-events:none;}`;
+
+/**
  * Runtime injected at the bottom of every `/edit/preview-by-path/...`
  * (and the legacy `/edit/preview/[pageId]`) response. Jobs:
  *
@@ -11,7 +31,7 @@
  *   3. **Edit mode toggle** — the parent posts
  *      `{kind: "caelo:set-edit-mode", on: true|false}` (driven by the
  *      toolbar Edit button). When ON: cursor=crosshair, hover outline +
- *      "✏ Edit" pill on every `[data-caelo-module-id]`, click captures
+ *      "Edit" pill on every `[data-caelo-module-id]`, click captures
  *      → `caelo:element-clicked`. When OFF: the iframe behaves like the
  *      live site — links navigate, forms submit, JS runs.
  *   4. Listen for `{kind: "caelo:reload"}` and `location.reload()`.
@@ -60,11 +80,7 @@ export const INJECT_SCRIPT = `
   if (!document.getElementById(STYLE_ID)) {
     var s = document.createElement("style");
     s.id = STYLE_ID;
-    s.textContent =
-      "body.caelo-edit-mode [data-caelo-module-id]{cursor:crosshair;}" +
-      "body.caelo-edit-mode [data-caelo-module-id]:hover{outline:2px solid #3b82f6;outline-offset:2px;position:relative;}" +
-      "body.caelo-edit-mode [data-caelo-module-id]:hover::after{content:'\\u270F\\uFE0F Edit';position:absolute;top:-1.4rem;left:0;background:#3b82f6;color:#fff;font:500 11px/1 system-ui;padding:2px 6px;border-radius:3px;pointer-events:none;z-index:2147483647;}" +
-      "body.caelo-edit-mode::before{content:'Edit mode — click any element to add it as a chip';position:fixed;top:0;left:0;right:0;background:#3b82f6;color:#fff;font:500 12px/1.4 system-ui;padding:6px 12px;text-align:center;z-index:2147483646;pointer-events:none;}";
+    s.textContent = ${JSON.stringify(EDIT_OVERLAY_CSS)};
     document.head.appendChild(s);
   }
 
