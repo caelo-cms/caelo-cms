@@ -2,7 +2,7 @@
 
 This is the deep-dive companion to [`CLAUDE.md`](./CLAUDE.md). CLAUDE.md is the engineering-rules file (read first, kept short). This file answers *"how does Caelo fit together?"* — broken into four focused diagrams plus a guide to where things live in the repo.
 
-For the *why* behind every choice (RLS, two databases, snapshots, no-fallbacks, etc.) see [`CMS_REQUIREMENTS.md`](./CMS_REQUIREMENTS.md).
+For the *why* behind every choice (RLS, two databases, snapshots, no-fallbacks, etc.) see [`CMS_REQUIREMENTS.md`](./CMS_REQUIREMENTS.md). End-user documentation (install, editing, plugins, MCP) lives at [caelo-cms.com/docs](https://caelo-cms.com/docs/), built in Caelo itself.
 
 ---
 
@@ -17,7 +17,7 @@ graph TD
   subgraph apps["apps/"]
     Admin["apps/admin<br/>SvelteKit + adapter-node (on Bun)<br/>authoring UI · /edit · /settings · API"]
     StaticGen["apps/static-generator<br/>subprocess invoked at deploy<br/>emits HTML to output/&lt;env&gt;/"]
-    Gateway["apps/api-gateway<br/>P12+ · public plugin writes<br/>public_role + gateway_role, never admin_role"]
+    Gateway["apps/api-gateway<br/>public plugin writes<br/>public_role on cms_public only<br/>no cms_admin login"]
   end
 
   subgraph pkgs["packages/"]
@@ -25,7 +25,7 @@ graph TD
     QueryApi["packages/query-api<br/>defineOperation · Validator · Adapter<br/>the chokepoint"]
     Shared["packages/shared<br/>Zod schemas · two-pass composer<br/>structured-sets validators"]
     Migrations["packages/migrations<br/>SQL migrations · drizzle-kit"]
-    Provisioning["packages/provisioning<br/>Pulumi (P14+)<br/>self-hosted · GCP/AWS/Azure"]
+    Provisioning["packages/provisioning<br/>Pulumi + Compose<br/>self-hosted · GCP (AWS/Azure planned)"]
     PluginSdk["packages/plugin-sdk<br/>P11+ · definePlugin · sandbox SDK"]
   end
 
@@ -47,7 +47,8 @@ graph TD
 
   QueryApi -- admin_role --> CmsAdmin
   QueryApi -- public_role --> CmsPublic
-  Gateway -- "gateway_role (narrow grants)" --> CmsAdmin
+  Gateway -- "public_role only" --> CmsPublic
+  AdminCore -. "publishes the declared projection (one way)" .-> CmsPublic
 
   Migrations -. apply on boot .-> CmsAdmin
   Migrations -. apply on boot .-> CmsPublic
@@ -59,7 +60,7 @@ graph TD
 
 **Key invariants** (see [CLAUDE.md §2](./CLAUDE.md#2-non-negotiable-invariants)):
 
-- `admin_role` and `public_role` are isolated. The API Gateway never holds `admin_role` credentials: it connects to cms_public as `public_role` and to cms_admin as `gateway_role`, a login with column-level grants on exactly what serving `/api/*` needs (its settings, rate limits, captcha challenges, request log, plugin op audit, and read access to the plugin registry — migration 0248). Its plugin host is dispatch-only: it attaches the plugins the admin registered and an Owner activated, and never writes the registry (`packages/plugin-host/src/gateway-attach.ts`, #613). Every role has its own password secret, so the gateway's service account cannot read admin_role's.
+- **The public side has no path to cms_admin** (#635). The API gateway connects to cms_public only, as `public_role`; it holds no cms_admin login of any role and refuses to boot when its env offers any database access besides `PUBLIC_DATABASE_URL`. Its own state (request log, rate-limit buckets, captcha challenges, plugin op events) lives in cms_public. What it needs from authoring state (its settings, the staging gate, rate limits, the active-plugin registry, each plugin's declared `visitorProjection`, approved comments) the admin **publishes** into cms_public, one way, kept current by an outbox the source tables' triggers write in the same transaction (`packages/migrations/src/public-projection.ts`). Its plugin host is dispatch-only and reads only that projection (`packages/plugin-host/src/published-state.ts`). Everything the admin reads back from cms_public is **untrusted input**: Zod-validated at the boundary, rendered as text, never an instruction or a privileged trigger on its own. Details and the guardrails that keep it so: [docs/dev/public-admin-boundary.md](./docs/dev/public-admin-boundary.md). Every role has its own password secret, so the gateway's service account cannot read admin_role's.
 - RLS is `FORCE`d on every table in both databases — role isolation alone is not enough.
 - The static generator runs as a subprocess at deploy time. It is not a long-running service. It has no plugin host of its own: every plugin answer a build needs (data lists, head contributions, public URLs, content variants, withheld modules, `staticRender`, client assets) is a call back over its stdio to the admin's plugin host (`packages/plugin-host/src/build-services.ts`, #605), so the published site gets what the preview shows.
 
@@ -162,7 +163,7 @@ graph TD
   Handler -.->|throws| Rollback["ROLLBACK<br/>audit + snapshot rolled back atomically"]
 ```
 
-**Branch-aware writes.** Each chat session owns an ephemeral `chat_branches` row. Snapshots emitted from a chat are tagged with that `chat_branch_id`. The branch only merges into main on publish (`publishChatSessionOp`). This is why two editors in two chats can edit the same page without colliding.
+**Branch-aware writes.** Every chat writes to a branch, not to main. By default that is the site's one shared draft (`site_draft`, `packages/admin-core/src/draft.ts`): all chats bind to it and see each other's unstaged changes. An experiment or a site migration moves its chat onto an isolated branch first (`start_isolated_branch`). Snapshots emitted from a chat are tagged with the branch's `chat_branch_id` and stay pending until a Stage merges the selected chats' snapshots into main and rebuilds staging (`packages/admin-core/src/stage/stage-chats.ts`). Publish live — promoting staging to production — is a separate human click. Two chats editing the same entity do not block each other: the later write takes over the earlier chat's lock and its unstaged change (`locks.ts`, `lock-takeover.ts`), and both chats are told.
 
 **Static-generator parity.** Both the admin's `/edit` preview AND `apps/static-generator` (deploy) call `composePageWithLayout` from `packages/shared/preview-compose.ts`. Same input → byte-identical output. There is no separate "production renderer". Plugin input reaches both through the same resolvers: the preview calls the plugin host in-process, the generator subprocess calls it through the admin (`BuildPluginServices`, #605).
 
@@ -232,12 +233,12 @@ erDiagram
 | **Auth** | `users`, `sessions`, `actors`, `roles`, `permissions`, `user_roles`, `role_permissions` | Argon2id passwords. Sessions hold a CSRF token consumed by every form action. |
 | **Content** | `layouts`, `layout_blocks`, `layout_modules`, `templates`, `template_blocks`, `pages`, `page_modules`, `modules` | Two-pass composer: layout wraps template; both have block/module attachment rows. |
 | **Snapshots** | `site_snapshots`, `page_snapshots`, `module_snapshots`, `template_snapshots`, `page_layout_snapshots`, `chat_branch_publish_marks` | Every write emits a snapshot. Reverting `site_snapshots` restores the full set atomically. |
-| **Chat** | `chat_sessions`, `chat_branches`, `chat_messages`, `ai_calls`, `site_ai_memory`, `site_memory_proposals` | Sessions on ephemeral branches. AI memory proposals queue for Owner review. |
+| **Chat** | `chat_sessions`, `chat_branches`, `site_draft`, `chat_messages`, `ai_calls`, `site_ai_memory`, `site_memory_proposals` | Sessions bind to the shared draft, or to an isolated branch for experiments and migrations. AI memory proposals queue for Owner review. |
 | **Deploy** | `deploy_targets`, `deploy_runs` | `deploy_runs.progress jsonb` updated by the static generator subprocess. |
 | **Sideband** | `structured_sets`, `redirects`, `site_defaults`, `audit_events`, `rate_limit_buckets`, `user_preferences` | `structured_sets` is the typed-list primitive (nav-menus, taxonomies, tags, link-lists). `site_defaults` is a singleton row. |
 | **Themes** (v0.11.0, #45) | `themes`, `theme_snapshots`, `theme_pending_actions` | DTCG-shaped jsonb `tokens` (color / dimension / typography composite / shadow composite / motion / breakpoint, plus DTCG aliasing). Exactly one `is_active=true` row enforced by partial unique index. Four media FKs for logo / logo-dark / favicon / social-share. Create / activate / delete go through the §11.A propose/execute gate (`theme_pending_actions`). The renderer reads the active theme via `ComposeInput.theme` and emits Tailwind 4-namespaced CSS vars under `<style data-source="theme">`. Zod source of truth: `packages/shared/src/themes.ts`. |
 
-**Snapshot semantics.** A snapshot is a content-addressed copy of an entity at a point in time, grouped under a `site_snapshots` row tagged with the originating chat branch (or `NULL` for system / direct-admin writes). Reverting walks the group and restores every member in one transaction. Chat-keyed Undo (the primary history surface) targets the most recent `site_snapshots` row tagged with the active branch.
+**Snapshot semantics.** A snapshot is a content-addressed copy of an entity at a point in time, grouped under a `site_snapshots` row tagged with the originating chat branch (or `NULL` for system / direct-admin writes). Reverting walks the group and restores every member in one transaction. Chat-keyed Undo (the primary history surface) drops the current chat's pending snapshots, plus any later pending snapshot built on them (`draft.ts`); the other chats affected are reported before the undo is confirmed.
 
 ---
 
@@ -247,13 +248,13 @@ erDiagram
 |---|---|
 | `apps/admin/` | SvelteKit admin app + every authenticated route (`/edit`, `/content/*`, `/settings/*`). |
 | `apps/static-generator/` | Subprocess invoked by `deploy.trigger`; reads composed pages + emits HTML to `output/<env>/`. |
-| `apps/api-gateway/` | Reserved for P12+ — public plugin write endpoints under the `cms_public` role. |
+| `apps/api-gateway/` | Public `/api/*` endpoints for plugin writes (forms, comments, ratings, newsletter) with rate limits, proof-of-work captcha and honeypots; connects to cms_public only, as `public_role`, and holds no cms_admin login (#635). |
 | `packages/admin-core/` | Ops registry + AI tool dispatch + chat-runner + audit + snapshot emitter. The orchestrator. |
 | `packages/query-api/` | `defineOperation`, the Validator, the Database Adapter. Every DB call goes through here. |
 | `packages/shared/` | Zod schemas, the two-pass composer, the slot scanner, structured-sets validators. Shared between admin and static-gen. |
 | `packages/migrations/` | SQL migrations for both `cms_admin` and `cms_public`; applied in order at boot. |
 | `packages/plugin-sdk/` | P11+ — `definePlugin`, `defineComponent`, the Deno-sandbox SDK injected into plugin code. |
-| `packages/provisioning/` | P14+ — Pulumi for self-hosted Compose, GCP, AWS, Azure adapters. |
+| `packages/provisioning/` | The `cms-provision` CLI: self-hosted Docker Compose and the GCP stacks (`gcp`, `gcp-firebase`) via Pulumi, plus lifecycle commands (upgrade, backup, status, …). AWS and Azure stacks exist but their install wizard is not implemented yet. |
 
 ---
 

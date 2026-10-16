@@ -25,6 +25,7 @@
    *                             without triggering it.
    */
   import { enhance } from "$app/forms";
+  import StateDot from "#lib/components/StateDot.svelte";
   import { Button } from "#lib/components/ui/button/index.js";
   import {
     Dialog,
@@ -246,8 +247,10 @@
 <!-- run #10 D6 — ONE Publish-live form for both toolbar branches. The
      button's disabled state carries a VISIBLE reason (not tooltip-only)
      and failures render a persistent inline alert — a Publish click can
-     no longer be a silent no-op (same pattern as #267's stage-error). -->
-{#snippet publishLiveForm(testid: string, variant: "default" | "outline")}
+     no longer be a silent no-op (same pattern as #267's stage-error).
+     #779 — Publish live is a human-only decision, so it is coral
+     (`decide`) in both toolbar branches. -->
+{#snippet publishLiveForm(testid: string)}
   <form
     method="post"
     action="?/promoteToProduction"
@@ -270,7 +273,7 @@
     <Button
       type="submit"
       size="sm"
-      {variant}
+      variant="decide"
       disabled={publishState.disabled}
       title={publishState.tooltip}
       data-testid={testid}
@@ -377,23 +380,24 @@
       Preview staging ↗
     </a>
   {/if}
+  <!-- #779 — the deploy state as a Draft/Preview/Live mark: Live when
+       production serves the latest staged build, Preview when a newer
+       staged build waits for Publish live. -->
   {#if productionMatchesStaging === true}
     <span
-      class="inline-flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-300"
+      class="text-muted-foreground"
       title="Live serves the same build as the current staging preview"
       data-testid="live-sync-indicator"
     >
-      <span class="size-1.5 rounded-full bg-emerald-500"></span>
-      Live matches staging
+      <StateDot state="live">Live matches staging</StateDot>
     </span>
   {:else if productionMatchesStaging === false}
     <span
-      class="inline-flex items-center gap-1 text-xs text-amber-700 dark:text-amber-300"
+      class="text-muted-foreground"
       title="A newer staging build hasn't been Published live yet"
       data-testid="live-sync-indicator"
     >
-      <span class="size-1.5 rounded-full bg-amber-500"></span>
-      Newer staged build not yet live
+      <StateDot state="preview">Preview: newer staged build not yet live</StateDot>
     </span>
   {/if}
 {/snippet}
@@ -410,7 +414,7 @@
        link + the live-matches-staging indicator inline. -->
   <div class="inline-flex items-center gap-3" data-testid="stage-deploy">
     {@render stagingStatus()}
-    {@render publishLiveForm("promote-only-btn", "default")}
+    {@render publishLiveForm("promote-only-btn")}
     {@render qualityGateControls()}
   </div>
 {:else}
@@ -427,7 +431,8 @@
       data-testid="pending-pill"
       title="Preview what Stage will ship"
     >
-      {branchChangeCount} pending
+      <!-- #779 — unstaged edits are the Draft state. -->
+      <StateDot state="draft">Draft · {branchChangeCount} pending</StateDot>
     </button>
 
     {#if popoverOpen}
@@ -443,7 +448,7 @@
         <ul class="space-y-1 text-xs">
           {#each pendingChanges.pending.pages as e (e.entityId)}
             <li class="flex items-center gap-2">
-              <span class="rounded bg-blue-500/10 px-1 py-0.5 font-mono text-[10px] text-blue-700"
+              <span class="rounded bg-link/10 px-1 py-0.5 font-mono text-[10px] text-link"
                 >page</span
               >
               <span class="truncate">{e.label}</span>
@@ -452,7 +457,7 @@
           {#each pendingChanges.pending.globals as e (e.entityId)}
             <li class="flex items-center gap-2">
               <span
-                class="rounded bg-purple-500/10 px-1 py-0.5 font-mono text-[10px] text-purple-700"
+                class="rounded bg-purple-500/10 px-1 py-0.5 font-mono text-[10px] text-purple-700 dark:text-purple-300"
                 >{e.kind}</span
               >
               <span class="truncate">{e.label}</span>
@@ -461,7 +466,7 @@
           {/each}
           {#each pendingChanges.pending.lists as e (e.entityId)}
             <li class="flex items-center gap-2">
-              <span class="rounded bg-emerald-500/10 px-1 py-0.5 font-mono text-[10px] text-emerald-700"
+              <span class="rounded bg-emerald-500/10 px-1 py-0.5 font-mono text-[10px] text-emerald-700 dark:text-emerald-300"
                 >list</span
               >
               <span class="truncate">{e.label}</span>
@@ -489,7 +494,7 @@
       {staging ? "Staging…" : "Stage…"}
     </Button>
     {@render stagingStatus()}
-    {@render publishLiveForm("promote-btn", "outline")}
+    {@render publishLiveForm("promote-btn")}
     {@render qualityGateControls()}
   </div>
 {/if}

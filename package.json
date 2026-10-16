@@ -1,6 +1,6 @@
 {
   "name": "caelo-cms",
-  "version": "0.10.50",
+  "version": "0.10.51",
   "private": true,
   "description": "AI-first, open-source CMS (MPL 2.0).",
   "license": "MPL-2.0",
@@ -19,7 +19,9 @@
     "lint": "biome check . && bun run --filter=@caelo-cms/admin-core lint:audit && bun run --filter=@caelo-cms/admin-core lint:spdx",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
-    "license:check": "license-checker-rseidelsohn --production --onlyAllow 'MPL-2.0;Apache-2.0;MIT;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;CC0-1.0;Unlicense;Python-2.0;BlueOak-1.0.0' --excludePackages 'caelo-cms'",
+    "license:check": "bun run license:check:deps && bun run license:check:fonts",
+    "license:check:deps": "license-checker-rseidelsohn --production --onlyAllow 'MPL-2.0;Apache-2.0;MIT;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;CC0-1.0;Unlicense;Python-2.0;BlueOak-1.0.0' --excludePackages 'caelo-cms;@fontsource-variable/schibsted-grotesk;@fontsource/ibm-plex-mono'",
+    "license:check:fonts": "license-checker-rseidelsohn --onlyAllow 'OFL-1.1' --includePackages '@fontsource-variable/schibsted-grotesk;@fontsource/ibm-plex-mono'",
     "db:generate": "bun run --filter=@caelo-cms/migrations generate:admin && bun run --filter=@caelo-cms/migrations generate:public",
     "db:migrate": "bun run packages/migrations/src/migrate.ts admin && bun run packages/migrations/src/migrate.ts public",
     "plugins:sign": "bun run apps/admin/scripts/sign-tier1-manifest.ts",

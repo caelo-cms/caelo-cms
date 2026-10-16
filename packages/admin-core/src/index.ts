@@ -79,9 +79,15 @@ export { type DomainEventInput, type DomainEventKind, emitDomainEvent } from "./
 export {
   type DeliverResetEmailArgs,
   deliverPasswordResetEmail,
+  passwordResetEmailProblem,
+  type ResetEmailContext,
 } from "./email/password-reset.js";
 // P12 review pass — email transport factory (consumed by hooks.server.ts).
-export { buildEmailTransport, type EmailConfigRow } from "./email/transport.js";
+export {
+  buildEmailTransport,
+  type EmailConfigRow,
+  emailDeliveryProblem,
+} from "./email/transport.js";
 export { lockPluginRow } from "./locks.js";
 export { assertDurableMediaRoot, type MediaStorageSetup } from "./media/durable-root.js";
 export * from "./media/pipeline.js";
@@ -145,6 +151,7 @@ export {
   type UpgraderResolver,
 } from "./platform-updates/scheduler.js";
 export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
+export * from "./public-projection.js";
 // #553 — quality-audit worker (Lighthouse after a substantial Stage).
 export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit-worker.js";
 export * from "./rate-limit.js";
@@ -188,3 +195,4 @@ export {
   stageChatSessions,
 } from "./stage/stage-chats.js";
 export * from "./tokens.js";
+export * from "./untrusted/public-data.js";

@@ -44,5 +44,5 @@ The full reviewer checklist lives in CONTRIBUTING.md and CLAUDE.md §9.
 - [ ] Snapshots emitted for every write that affects authoring state
 - [ ] Zod validation present at every external boundary (tool calls, HTTP requests, plugin SDK surfaces)
 - [ ] Tests added (unit + integration + Playwright per CLAUDE.md §6)
-- [ ] Docs updated when behaviour is user-visible (`docs-site/` for end-user docs; `CLAUDE.md` / `ARCHITECTURE.md` for engineering principles)
+- [ ] Docs updated when behaviour is user-visible (end-user docs live at caelo-cms.com/docs/, built in Caelo: name the page to update in the PR description; `docs/`, `CLAUDE.md`, `ARCHITECTURE.md` for engineering docs)
 - [ ] `// SPDX-License-Identifier: MPL-2.0` header on every new source file

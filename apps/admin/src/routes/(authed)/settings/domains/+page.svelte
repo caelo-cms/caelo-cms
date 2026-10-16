@@ -59,7 +59,7 @@
       </CardHeader>
       <CardContent class="space-y-3 text-sm">
         {#if data.hosting.error}
-          <p class="text-red-600">Status unavailable: {data.hosting.error}</p>
+          <p class="text-destructive">Status unavailable: {data.hosting.error}</p>
         {:else if data.hosting.domains.length === 0}
           <p class="text-muted-foreground">No custom domains on the Firebase Hosting site.</p>
         {:else}
@@ -176,10 +176,10 @@
                 </TableCell>
                 <TableCell>
                   {#if d.tlsStatus === "active"}
-                    <span class="inline-flex items-center gap-1 text-green-600"><CheckCircle class="size-3" /> active</span>
+                    <span class="inline-flex items-center gap-1 text-green-700 dark:text-green-400"><CheckCircle class="size-3" /> active</span>
                     {#if d.tlsExpiresAt}<span class="ml-2 text-xs text-muted-foreground">expires {new Date(d.tlsExpiresAt).toLocaleDateString()}</span>{/if}
                   {:else if d.tlsStatus === "failed"}
-                    <span class="inline-flex items-center gap-1 text-red-600"><ShieldAlert class="size-3" /> failed</span>
+                    <span class="inline-flex items-center gap-1 text-destructive"><ShieldAlert class="size-3" /> failed</span>
                     {#if d.tlsError}<span class="ml-2 text-xs text-muted-foreground">{d.tlsError.slice(0, 80)}</span>{/if}
                   {:else}
                     <span class="inline-flex items-center gap-1 text-muted-foreground"><ShieldQuestion class="size-3" /> {d.tlsStatus}</span>

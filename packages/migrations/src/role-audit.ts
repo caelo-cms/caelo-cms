@@ -31,6 +31,12 @@
  *     privileged group ({@link PRIVILEGED_GROUPS}), no SUPERUSER / BYPASSRLS
  *     / REPLICATION.
  *
+ * Issue #635 extends the guard to the whole public side: no privilege on
+ * any cms_admin object may be held by public_role or PUBLIC
+ * ({@link CROSS_DATABASE_GRANTS_SQL}), and cms_public may hold no bridge to
+ * another database ({@link assertPublicDatabaseIsolated}, run by migrate.ts
+ * on the cms_public target).
+ *
  * CREATEROLE / CREATEDB are reported as warnings, not violations: migration
  * 0278 drops them where the migration role may alter the role, but whether
  * Cloud SQL lets admin_role alter a role the Admin API created is not
@@ -197,6 +203,112 @@ export function evaluateRoleAudit(roles: readonly AuditedRole[]): RoleAuditResul
   return { violations, warnings };
 }
 
+/**
+ * Issue #635 — every privilege on a cms_admin object granted to a role the
+ * public side logs in as, or to PUBLIC on a table, sequence or schema (which
+ * every login inherits — extension-owned objects aside). Run on cms_admin. Columns, tables, sequences,
+ * schemas, functions and default privileges are all covered; the public
+ * side must not be able to read or write a single authoring object.
+ *
+ * `gateway_role` is exempt until the contract release that drops it: the
+ * previous release's gateway logs in with it while an upgrade rolls (it
+ * is no service's login from this release on).
+ */
+export const PUBLIC_SIDE_ROLES = ["public_role"] as const;
+
+export const CROSS_DATABASE_GRANTS_SQL = `
+WITH grantees AS (
+  SELECT oid, rolname::text AS rolname FROM pg_roles
+   WHERE rolname IN (${PUBLIC_SIDE_ROLES.map((r) => `'${r}'`).join(", ")})
+  UNION ALL SELECT 0::oid, 'PUBLIC'
+),
+grants AS (
+  SELECT g.rolname, 'table ' || c.oid::regclass::text AS object
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    CROSS JOIN LATERAL aclexplode(c.relacl) a
+    JOIN grantees g ON g.oid = a.grantee
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+     -- An extension's own objects (e.g. a stats view it grants to PUBLIC)
+     -- are the extension's contract, not an application grant.
+     AND NOT (g.rolname = 'PUBLIC' AND EXISTS (
+       SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass
+          AND d.objid = c.oid AND d.deptype = 'e'))
+  UNION ALL
+  SELECT g.rolname, 'column ' || c.oid::regclass::text || '.' || att.attname::text
+    FROM pg_attribute att
+    JOIN pg_class c ON c.oid = att.attrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    CROSS JOIN LATERAL aclexplode(att.attacl) a
+    JOIN grantees g ON g.oid = a.grantee
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+  UNION ALL
+  SELECT g.rolname, 'schema ' || n.nspname::text
+    FROM pg_namespace n
+    CROSS JOIN LATERAL aclexplode(n.nspacl) a
+    JOIN grantees g ON g.oid = a.grantee
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+     AND n.nspname NOT LIKE 'pg\\_%'
+     AND NOT (g.rolname = 'PUBLIC' AND n.nspname = 'public')
+  UNION ALL
+  SELECT g.rolname, 'function ' || p.oid::regprocedure::text
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    CROSS JOIN LATERAL aclexplode(p.proacl) a
+    JOIN grantees g ON g.oid = a.grantee
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND g.rolname <> 'PUBLIC'
+  UNION ALL
+  SELECT g.rolname, 'default privileges of ' || pg_get_userbyid(d.defaclrole)::text
+    FROM pg_default_acl d
+    CROSS JOIN LATERAL aclexplode(d.defaclacl) a
+    JOIN grantees g ON g.oid = a.grantee
+)
+SELECT DISTINCT rolname, object FROM grants ORDER BY rolname, object
+`;
+
+/** A raw row of {@link CROSS_DATABASE_GRANTS_SQL}. */
+export interface CrossDatabaseGrantRow {
+  readonly rolname: string;
+  readonly object: string;
+}
+
+/** The violation text for each grant the public side holds on cms_admin. */
+export function crossDatabaseGrantViolations(rows: readonly CrossDatabaseGrantRow[]): string[] {
+  return rows.map(
+    (r) =>
+      `${r.rolname} holds a privilege on cms_admin ${r.object} (the public side must reach no authoring object)`,
+  );
+}
+
+/**
+ * Issue #635 — run on cms_PUBLIC: nothing there may reach another database.
+ * dblink or postgres_fdw, a foreign server, or a user mapping is a bridge a
+ * compromised public side could use to reach cms_admin.
+ */
+export const PUBLIC_DATABASE_BRIDGES_SQL = `
+SELECT 'extension ' || extname::text AS bridge FROM pg_extension
+ WHERE extname IN ('dblink', 'postgres_fdw')
+UNION ALL SELECT 'foreign data wrapper ' || fdwname::text FROM pg_foreign_data_wrapper
+UNION ALL SELECT 'foreign server ' || srvname::text FROM pg_foreign_server
+UNION ALL SELECT 'user mapping for ' || usename::text FROM pg_user_mappings
+ORDER BY 1
+`;
+
+/**
+ * Fail (throw) when cms_public holds a bridge to another database. Run by
+ * migrate.ts after every cms_public migration run.
+ */
+export async function assertPublicDatabaseIsolated(sql: AuditQuery): Promise<void> {
+  const rows = (await sql.unsafe(PUBLIC_DATABASE_BRIDGES_SQL)) as { bridge: string }[];
+  if (rows.length === 0) return;
+  throw new Error(
+    roleAuditError({
+      violations: rows.map((r) => `cms_public has a ${r.bridge}, a bridge to other databases`),
+      warnings: [],
+    }),
+  );
+}
+
 /** What the operator does about a violation; part of the error message. */
 export const ROLE_AUDIT_NEXT_STEP =
   "On GCP run `cms-provision upgrade` (it revokes the Cloud SQL Admin API's role memberships from public_role, then migrates again); on a self-hosted install run `cms-provision up`. Do not roll any service until this check passes.";
@@ -207,7 +319,7 @@ export const ROLE_AUDIT_NEXT_STEP =
  */
 export function roleAuditError(result: RoleAuditResult): string {
   return [
-    `Database role isolation check failed (issue #633, CLAUDE.md §2):`,
+    `Database role isolation check failed (issues #633, #635; CLAUDE.md §2):`,
     ...result.violations.map((v) => `  - ${v}`),
     ROLE_AUDIT_NEXT_STEP,
   ].join("\n");
@@ -225,7 +337,12 @@ export interface AuditQuery {
  */
 export async function assertRoleIsolation(sql: AuditQuery): Promise<RoleAuditResult> {
   const rows = (await sql.unsafe(ROLE_AUDIT_SQL)) as RoleAuditRow[];
-  const result = evaluateRoleAudit(rows.map(toAuditedRole));
+  const grants = (await sql.unsafe(CROSS_DATABASE_GRANTS_SQL)) as CrossDatabaseGrantRow[];
+  const roles = evaluateRoleAudit(rows.map(toAuditedRole));
+  const result: RoleAuditResult = {
+    violations: [...roles.violations, ...crossDatabaseGrantViolations(grants)],
+    warnings: roles.warnings,
+  };
   if (result.violations.length > 0) throw new Error(roleAuditError(result));
   return result;
 }

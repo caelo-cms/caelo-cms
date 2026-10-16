@@ -9,7 +9,7 @@ This document just covers the contribution mechanics.
 ## Quick orientation
 
 - **License:** MPL 2.0. Every source file carries `// SPDX-License-Identifier: MPL-2.0`. New files must too — `bun run lint` enforces this.
-- **Compatible-license dependencies only:** MPL-2.0, Apache-2.0, MIT, BSD, ISC, 0BSD, CC0-1.0. GPL/AGPL/SSPL block PRs. `bun run license:check` enforces this in CI.
+- **Compatible-license dependencies only:** MPL-2.0, Apache-2.0, MIT, BSD, ISC, 0BSD, CC0-1.0 — plus OFL-1.1 for font packages only. GPL/AGPL/SSPL block PRs. `bun run license:check` enforces this in CI.
 - **Tests run under `bun test`** (Bun's native runner). Don't add Vitest back.
 - **TypeScript strict, no `any` without a comment, Zod at every external boundary.** See CLAUDE.md §4.
 
@@ -29,7 +29,7 @@ bun run --filter @caelo-cms/admin dev     # admin at http://localhost:5173
 bun run --filter @caelo-cms/api-gateway dev  # public API gateway at http://localhost:8090 (optional)
 ```
 
-The API gateway never holds the admin's database credential (CLAUDE.md §2): it connects as `gateway_role` (`GATEWAY_DATABASE_URL`) and `public_role` (`PUBLIC_DATABASE_URL`) and refuses to start while any `ADMIN_*` / `PUBLIC_ADMIN_*` database var is in its environment. The shared root `.env` carries those for the admin, so start the gateway through its `dev` script above: it loads `.env` and leaves the admin's credentials out of the gateway's process. A database created before `gateway_role` existed: re-run `packages/migrations/src/bootstrap.sh` (idempotent, with `GATEWAY_ROLE_PASSWORD` set) — it creates the role and re-applies its grants.
+The API gateway has no path to the authoring database (CLAUDE.md §2, #635): it connects to cms_public only, as `public_role` (`PUBLIC_DATABASE_URL`), and refuses to start while its environment offers any other database access (any other database-related variable, a URL or connection string in any value, or a mounted secret file holding one). What it needs from authoring state the admin publishes into cms_public (see [docs/dev/public-admin-boundary.md](./docs/dev/public-admin-boundary.md)); `bun run db:migrate` publishes it, and the running admin keeps it current. The shared root `.env` carries the admin's credentials, so start the gateway through its `dev` script above: it loads `.env` and leaves every cms_admin credential out of the gateway's process. A database created before `gateway_role` existed: re-run `packages/migrations/src/bootstrap.sh` (idempotent, with `GATEWAY_ROLE_PASSWORD` set) — it creates the role and re-applies its grants.
 
 Verify everything passes locally before opening a PR:
 
@@ -62,7 +62,7 @@ Open an issue using the **Bug** template. If you've already got the fix, open th
 
 ### New plugins
 
-Every plugin follows one model (CMS_REQUIREMENTS §14): who wrote it grants it nothing. It gets a small base — its own public tables, theme, visitor id, captcha — and everything else is a grant the site's Owner approves for that exact plugin version. See [Plugin permissions](https://caelo-cms.com/plugins-permissions).
+Every plugin follows one model (CMS_REQUIREMENTS §14): who wrote it grants it nothing. It gets a small base — its own public tables, theme, visitor id, captcha — and everything else is a grant the site's Owner approves for that exact plugin version. See the plugin permissions page in the [docs](https://caelo-cms.com/docs/).
 
 - **For your own site:** ask the live-edit chat to build it. The AI submits it through `submit_plugin`; the validator runs; you approve it and its grants at `/settings/plugins`.
 - **From your own repository:** bundle the plugin into one source module and upload a JSON package `{ "manifest": …, "source": "…" }` at `/settings/plugins/installations`. The Owner reviews the exact artifact and each grant it requests; the plugin runs in the sandbox like every other.
@@ -74,7 +74,7 @@ These need an issue first so we can discuss scope. The non-negotiable invariants
 
 ### Documentation contributions
 
-Docs are dogfooded — `caelo-cms.com` is itself a Caelo install whose content lives under `docs-site/` in this repo. Edit the markdown there + open a PR; staging deploys automatically and we promote to production after review.
+The end-user docs at [caelo-cms.com/docs](https://caelo-cms.com/docs/) are dogfooded: they are pages in a Caelo install, not files in this repo. To fix or extend them, open an issue with the `documentation` label naming the page and the change; a maintainer applies it on the site. Engineering docs (`docs/`, `ARCHITECTURE.md`, `CLAUDE.md`, package READMEs) are edited here through a normal PR.
 
 ## Pull request mechanics
 

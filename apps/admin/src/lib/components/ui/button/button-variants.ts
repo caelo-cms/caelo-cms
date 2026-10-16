@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 import { tv, type VariantProps } from "tailwind-variants";
 
+/**
+ * shadcn-svelte button variants plus Caelo's `decide`.
+ *
+ * `decide` (coral, #779) is reserved for the actions only a human may
+ * take: Publish live and Approve on an approval card (CLAUDE.md §11.A).
+ * Every other primary action stays `default` (ink). `decide-variant-guard.test.ts`
+ * pins the allowed call sites so the colour keeps meaning "you decide".
+ */
+
 export const buttonVariants = tv({
   base: "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
   variants: {
@@ -11,6 +20,7 @@ export const buttonVariants = tv({
       secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
       ghost: "hover:bg-accent hover:text-accent-foreground",
       link: "text-primary underline-offset-4 hover:underline",
+      decide: "bg-decide text-decide-foreground hover:bg-decide-hover",
     },
     size: {
       default: "h-9 px-4 py-2",

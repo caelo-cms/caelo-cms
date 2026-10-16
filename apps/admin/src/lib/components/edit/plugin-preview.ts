@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
+import { isUntrustedToolResult, untrustedToolResultValue } from "@caelo-cms/shared";
+
 /** Only authenticated local plugin-preview endpoints can become editor surfaces. */
 export function localPluginPreview(value: unknown, origin: string): string | null {
   if (typeof value !== "string" || value.length > 4096) return null;
@@ -26,9 +28,16 @@ export function localPluginPreview(value: unknown, origin: string): string | nul
     return null;
   }
 }
+/**
+ * The preview link a tool result names, if any. A plugin tool's result
+ * arrives wrapped as untrusted data (#635); a built-in tool's is plain JSON.
+ */
 export function previewFromResult(content: string, origin: string): string | null {
   try {
-    return localPluginPreview(JSON.parse(content)?.previewUrl, origin);
+    const value = isUntrustedToolResult(content)
+      ? untrustedToolResultValue(content)
+      : JSON.parse(content);
+    return localPluginPreview((value as { previewUrl?: unknown } | null)?.previewUrl, origin);
   } catch {
     return null;
   }

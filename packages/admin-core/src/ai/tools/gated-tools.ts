@@ -35,6 +35,7 @@ import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { untrustedToolResult } from "@caelo-cms/shared";
 import {
   approverPermissionsOf,
   isApproverPermissionRefusal,
@@ -277,7 +278,8 @@ export function attachPluginGatedExecute(
       if (!r.ok) {
         return { ok: false, error: `${r.error.kind}: ${r.error.message}` };
       }
-      return { ok: true, value: r.value };
+      // #635 — plugin data may be visitor-written: data, never instructions.
+      return { ok: true, value: untrustedToolResult(r.value) };
     },
   };
 }

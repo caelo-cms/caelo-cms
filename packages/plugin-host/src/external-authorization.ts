@@ -17,6 +17,7 @@ import { type PluginCapability, pluginManifest } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
 import { EXTERNAL_OPS, registerExternalPluginOps } from "./external-ops.js";
+import { isPublicSideHost, readPublishedApprovalState } from "./published-state.js";
 
 export interface ExternalApproval {
   readonly artifactDigest: string;
@@ -37,6 +38,9 @@ async function approvalState(
   systemActorId: string,
   pluginId: string,
 ): Promise<ApprovalState> {
+  // #635 — the public gateway has no cms_admin login: it checks the
+  // receipts the admin published, with the same digest rule.
+  if (isPublicSideHost(infra)) return readPublishedApprovalState(infra, systemActorId, pluginId);
   registerExternalPluginOps(infra.registry);
   const r = await execute(
     infra.registry,

@@ -83,14 +83,14 @@
     margin: 0.5rem 0;
     padding: 0.5rem 0.75rem;
     border-radius: 0.375rem;
-    background: hsl(var(--muted));
+    background: var(--muted);
     overflow-x: auto;
     font-size: 0.85em;
   }
   div :global(code) {
     padding: 0.1rem 0.3rem;
     border-radius: 0.25rem;
-    background: hsl(var(--muted));
+    background: var(--muted);
     font-size: 0.85em;
   }
   div :global(pre code) {
@@ -104,15 +104,15 @@
   div :global(ol) { list-style: decimal; }
   div :global(ul) { list-style: disc; }
   div :global(li) { margin: 0.25rem 0; }
-  div :global(li::marker) { color: hsl(var(--muted-foreground)); }
+  div :global(li::marker) { color: var(--muted-foreground); }
   div :global(h1), div :global(h2), div :global(h3) { margin: 0.5rem 0 0.25rem; font-weight: 600; }
-  div :global(a) { color: hsl(var(--primary)); text-decoration: underline; text-underline-offset: 2px; }
+  div :global(a) { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
   div :global(table) { border-collapse: collapse; margin: 0.5rem 0; font-size: 0.85em; }
-  div :global(th), div :global(td) { border: 1px solid hsl(var(--border)); padding: 0.25rem 0.5rem; }
+  div :global(th), div :global(td) { border: 1px solid var(--border); padding: 0.25rem 0.5rem; }
   div :global(blockquote) {
-    border-left: 3px solid hsl(var(--border));
+    border-left: 3px solid var(--border);
     padding-left: 0.75rem;
-    color: hsl(var(--muted-foreground));
+    color: var(--muted-foreground);
     margin: 0.5rem 0;
   }
 </style>

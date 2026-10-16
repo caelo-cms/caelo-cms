@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The Cloud Shell install links (#696) in README + docs: release.ts moves
+ * The Cloud Shell install links (#696) in the README: release.ts moves
  * them on every stable release, and each one is exactly what
  * `cloudShellInstallUrl` builds for the current version.
  */
@@ -34,7 +34,7 @@ describe("pinCloudShellLinks", () => {
   });
 });
 
-describe("the Cloud Shell links in README + docs", () => {
+describe("the Cloud Shell links in the README", () => {
   for (const file of CLOUD_SHELL_LINK_FILES) {
     const text = readFileSync(resolve(REPO_ROOT, file), "utf8");
     const links = text.match(LINK) ?? [];

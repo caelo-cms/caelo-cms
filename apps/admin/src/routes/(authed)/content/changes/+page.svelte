@@ -2,6 +2,7 @@
   // SPDX-License-Identifier: MPL-2.0
   import { GitPullRequestArrow } from "lucide-svelte";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
+  import StateDot from "#lib/components/StateDot.svelte";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -131,9 +132,14 @@
               {#if c.anchorPagePath}
                 <Badge variant="outline">{c.anchorPagePath}</Badge>
               {/if}
-              <Badge variant={c.pendingCount > 0 ? "warning" : "secondary"}>
-                {c.pendingCount} unstaged
-              </Badge>
+              <!-- #779 — unstaged changes are the Draft state. -->
+              {#if c.pendingCount > 0}
+                <StateDot state="draft" class="text-muted-foreground">
+                  Draft · {c.pendingCount} unstaged
+                </StateDot>
+              {:else}
+                <Badge variant="secondary">0 unstaged</Badge>
+              {/if}
               <span class="text-xs text-muted-foreground">active {when(c.lastActiveAt)}</span>
               {#if c.isMine}
                 <Button

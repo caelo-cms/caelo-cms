@@ -268,12 +268,7 @@ const CONVERGED_GATEWAY_DB = [
     name: "PUBLIC_DATABASE_URL",
     value: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
   },
-  {
-    name: "GATEWAY_DATABASE_URL",
-    value: "postgresql://gateway_role@10.20.0.3:5432/cms_admin?sslmode=require",
-  },
   secretRef("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
-  secretRef("GATEWAY_DATABASE_PASSWORD", "gateway-role-password"),
 ];
 
 describe("planContractEnv", () => {
@@ -776,10 +771,10 @@ describe("ensureStackInvariants", () => {
       const gatewayGrants = calls.filter(
         (c) => c.startsWith("secrets add-iam-policy-binding") && c.includes(GW_SA),
       );
-      // #613 — never admin_role's postgres-password. #650 — the staging
-      // gate key is the one secret the gateway shares with the admin.
+      // #613 — never admin_role's postgres-password; #635 — nor
+      // gateway_role's. #650 — the staging gate key is the one secret the
+      // gateway shares with the admin.
       expect(gatewayGrants).toEqual([
-        `secrets add-iam-policy-binding caelo-production-gateway-role-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
         `secrets add-iam-policy-binding caelo-production-public-role-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
         `secrets add-iam-policy-binding caelo-production-staging-gate-secret --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
       ]);
@@ -802,7 +797,8 @@ describe("removeRetiredIamBindings (#613)", () => {
       ],
     });
     const outcomes = await removeRetiredIamBindings(gcp, { run, sleep: async () => {} });
-    expect(outcomes.map((o) => o.status)).toEqual(["removed"]);
+    // postgres-password removed; gateway-role-password (#635) already clean.
+    expect(outcomes.map((o) => o.status)).toEqual(["removed", "absent"]);
     expect(calls).toContain(REMOVE);
     // The admin's own binding on the same secret is never touched.
     expect(calls.some((c) => c.includes("remove") && c.includes(RUN_SA))).toBe(false);
@@ -815,8 +811,21 @@ describe("removeRetiredIamBindings (#613)", () => {
       ],
     });
     const outcomes = await removeRetiredIamBindings(firebase, { run, sleep: async () => {} });
-    expect(outcomes.map((o) => o.status)).toEqual(["absent"]);
+    expect(outcomes.map((o) => o.status)).toEqual(["absent", "absent"]);
     expect(calls.filter((c) => c.includes("remove-iam-policy-binding"))).toEqual([]);
+  });
+
+  it("takes the gateway SA off gateway_role's password (#635)", async () => {
+    const { run, calls } = fakeGcloud({
+      "secrets get-iam-policy caelo-production-gateway-role-password": [
+        policy([{ role: "roles/secretmanager.secretAccessor", members: [GW_SA] }]),
+      ],
+    });
+    const outcomes = await removeRetiredIamBindings(gcp, { run, sleep: async () => {} });
+    expect(outcomes.map((o) => o.status)).toEqual(["absent", "removed"]);
+    expect(calls).toContain(
+      `secrets remove-iam-policy-binding caelo-production-gateway-role-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+    );
   });
 
   it("reports a failed removal instead of throwing", async () => {

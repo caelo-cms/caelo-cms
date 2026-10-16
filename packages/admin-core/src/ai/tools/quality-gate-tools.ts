@@ -65,7 +65,7 @@ export const retryQualityAuditTool: ToolDefinitionWithHandler<Record<string, nev
       ok: true,
       content:
         v.status === "queued"
-          ? `Quality check ${v.auditRunId} queued; it takes 1–2 minutes. Read the result with get_quality_audit.`
+          ? `Quality check ${v.auditRunId} queued; it takes 2–4 minutes. Read the result with get_quality_audit.`
           : `No quality check needed for the staged build (audit ${v.auditRunId} skipped).`,
       value: v,
     };

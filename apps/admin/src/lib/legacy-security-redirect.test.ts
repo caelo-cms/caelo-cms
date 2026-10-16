@@ -51,9 +51,9 @@ describe("legacySecurityRedirect (#684)", () => {
 describe("no admin link still points at /security", () => {
   it("finds none in source, prompts or docs", () => {
     // One glob per root: Bun's Glob matches nothing for a brace group that
-    // contains a slash (`{…,docs-site/pages}`), which once left this guard
-    // scanning zero files and passing vacuously — hence the count check.
-    const roots = ["apps", "packages", "docs", "docs-site/pages"];
+    // contains a slash (`{…,a/b}`), which once left this guard scanning zero
+    // files and passing vacuously — hence the count check.
+    const roots = ["apps", "packages", "docs"];
     const files = roots.flatMap((root) =>
       [...new Glob("**/*.{ts,svelte,md,json,yaml}").scanSync({ cwd: join(REPO_ROOT, root) })].map(
         (f) => `${root}/${f}`,

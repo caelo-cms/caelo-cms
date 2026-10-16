@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 4;
+export const INFRA_CONTRACT_VERSION = 5;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -36,6 +36,10 @@ export const INFRA_CONTRACT_VERSION = 4;
 //       first.
 //   4 — #587: on `gcp`, the admin's custom role for writing the redirects
 //       table into the URL map (url-map-redirects-access.ts).
+//   5 — #635: the gateway has no cms_admin login. Its GATEWAY_DATABASE_URL /
+//       GATEWAY_DATABASE_PASSWORD go, and its SA loses access to the
+//       gateway-role-password secret (a retired IAM binding, removed after
+//       the roll — the in-cloud upgrader cannot change IAM).
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -47,6 +51,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   2: "the in-cloud upgrader job and its scoped permissions",
   3: "public_role out of the Cloud SQL superuser group (#633)",
   4: "the admin's permission to serve redirects from the load balancer (#587)",
+  5: "the gateway's cms_admin login removed from its env and IAM (#635)",
 };
 
 /**

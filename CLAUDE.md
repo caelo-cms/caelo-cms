@@ -62,6 +62,7 @@ These cannot be violated by any change, AI-generated or human:
 - **Skills are the official way to teach AI new behaviour.** Do not hardcode new prompt scaffolding into tool handlers; ship a skill.
 - **Two levels of skill activation — never conflate them.** Site-wide activation promotes a skill from `awaiting_activation` to `active` — a human Owner click for a standalone skill, or the plugin's own activation for a plugin-owned one (see above). Per-chat engagement (AI auto-matcher or user manual toggle) decides which active skills augment the current AI call. User manual disengagement in a chat always overrides the matcher for that chat.
 - **`admin_role` and `public_role` are isolated.** Never grant cross-database privileges. Never let the API Gateway hold `admin_role` credentials.
+- **Public side has no path to cms_admin; public → admin data is untrusted** (#635). Assume the gateway process, its credentials and all of `cms_public` are compromised, and the authoring side must stay intact. So the gateway has no cms_admin login of any role. It reads only what the admin *publishes* into cms_public: declared columns, one way, never read back. Everything the admin reads from cms_public is attacker-writable: Zod-validate it at the boundary, render it as text, mark it as untrusted data in AI tool results, and never let it drive a privileged action without a human or validator step. Guardrails (boot refusal, role audit, import and migration lints, adapter env tests): [`docs/dev/public-admin-boundary.md`](./docs/dev/public-admin-boundary.md).
 - **Auth plugin core logic is locked from AI regeneration.** AI can configure it (protected routes, roles, OAuth provider entries where a human-approved secret exists) — not rewrite it.
 - **i18n is plugin-owned (epic #380).** Core has no locale registry, no locale column on pages, no translation machinery — the `international-site` plugin provides them (CMS_REQUIREMENTS §7). Locale/URL-strategy config remains hard-to-revert: the plugin routes it through the §11.A proposal gate (AI drafts, Owner approves), never through a direct AI write.
 - **Deployment logic is locked from AI.** AI can *request* a deploy via the fixed Deploy op; it cannot modify the generator, deploy scripts, or deploy targets.
@@ -81,7 +82,7 @@ These cannot be violated by any change, AI-generated or human:
 ## 3. Dependency & version policy
 
 - **Always verify the current version** of a package before adding it — do not trust training-data recall. Fetch the latest stable from the npm registry (or vendor docs via context7) and pin in `package.json`. If the requirements doc specifies a library (Bun, SvelteKit, Astro, Zod, Arctic, Pulumi, oxc-parser, Deno, @sveltejs/adapter-node (run under Bun), sharp, drizzle/atlas), use it — don't re-evaluate mid-project.
-- **Project licence: MPL 2.0.** Maximum freedom for developers, hosting providers, and AI-generated modules; modifications to core files must stay open; patent protection included; one licence, no dual-licensing complexity (same licence as Firefox, Brave, LibreOffice). All dependencies must be **MPL-2.0-compatible** — MPL-2.0, Apache-2.0, MIT, BSD, ISC. GPL/AGPL/SSPL/proprietary deps are blockers and must be rejected in PR review. Record the license of every new dep in the PR description.
+- **Project licence: MPL 2.0.** Maximum freedom for developers, hosting providers, and AI-generated modules; modifications to core files must stay open; patent protection included; one licence, no dual-licensing complexity (same licence as Firefox, Brave, LibreOffice). All dependencies must be **MPL-2.0-compatible** — MPL-2.0, Apache-2.0, MIT, BSD, ISC. **Exception: OFL-1.1 for font packages only** (the admin's self-hosted brand fonts) — allowed per package in both licence gates, never globally; `scripts/font-license-exception.test.ts` enforces it. GPL/AGPL/SSPL/proprietary deps are blockers and must be rejected in PR review. Record the license of every new dep in the PR description.
 - **Prefer fewer, well-maintained dependencies** over clever micro-libraries. OSS contributors will audit this tree.
 - **Upgrade, don't pin forever.** Dependabot/renovate on; security advisories block merges.
 - **No proprietary SDKs on critical paths** — vendor-neutrality is a core goal. AI providers all sit behind the Provider Abstraction Layer.
@@ -176,7 +177,7 @@ This project is largely AI-authored. AI contributions are held to a *higher*, no
 
 ## 10. Documentation as you go
 
-Every phase updates `docs/` when it introduces user-visible behaviour. Caelo's docs site is built *with Caelo itself* (dogfooding from P17) — broken docs block the release.
+Every phase updates the docs when it introduces user-visible behaviour. End-user docs live at [caelo-cms.com/docs](https://caelo-cms.com/docs/), built *with Caelo itself* (dogfooding) — they are site content, not files in this repo, so a user-visible change names the docs page to update in its PR. Engineering docs live in `docs/`, `ARCHITECTURE.md` and package READMEs. Broken docs block the release.
 
 ---
 

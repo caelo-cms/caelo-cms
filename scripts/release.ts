@@ -187,7 +187,7 @@ function bumpVersionFile(newVersion: string, dryRun: boolean): void {
 }
 
 /**
- * #696 — move the "Open in Cloud Shell" install links in README + docs to
+ * #696 — move the "Open in Cloud Shell" install links in the README to
  * the new release (scripts/cloud-shell-links.ts; a pre-release keeps the
  * last stable links). Returns how many files changed.
  */

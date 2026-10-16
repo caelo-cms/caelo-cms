@@ -20,6 +20,7 @@ import {
   rejectAiProvidersProposalOp,
 } from "./ops/ai_providers_pending.js";
 import {
+  issueOwnerResetOp,
   loginOp,
   logoutOp,
   requestPasswordResetOp,
@@ -473,6 +474,7 @@ import {
   createMcpTokenOp,
   listMcpTokensOp,
   mcpAuthorizeUploadOp,
+  mcpGetVersionOp,
   mcpSendChatOp,
   revokeMcpTokenOp,
 } from "./ops/security/mcp_tokens.js";
@@ -649,6 +651,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(resolveSessionOp);
   registry.register(requestPasswordResetOp);
   registry.register(resetPasswordOp);
+  registry.register(issueOwnerResetOp);
   registry.register(listRolesOp);
   registry.register(createRoleOp);
   registry.register(deleteRoleOp);
@@ -898,6 +901,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(revokeMcpTokenOp);
   registry.register(mcpSendChatOp);
   registry.register(mcpAuthorizeUploadOp);
+  registry.register(mcpGetVersionOp);
   // Issue #376 — Power-MCP: admin-scoped tokens drive the chat-runner
   // tool catalogue directly (external agent owns the loop). See
   // ops/security/mcp_power.ts for the invariants.

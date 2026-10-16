@@ -19,7 +19,7 @@
     },
     "apps/admin": {
       "name": "@caelo-cms/admin",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/admin-core": "workspace:*",
         "@caelo-cms/font-service": "workspace:*",
@@ -28,6 +28,8 @@
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/redeploy-orchestrator": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
+        "@fontsource-variable/schibsted-grotesk": "5.3.0",
+        "@fontsource/ibm-plex-mono": "5.3.0",
         "@google-cloud/storage": "^8.4.0",
         "bits-ui": "^2.19.5",
         "clsx": "^2.1.1",
@@ -70,7 +72,7 @@
     },
     "apps/api-gateway": {
       "name": "@caelo-cms/api-gateway",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/plugin-host": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
@@ -89,7 +91,7 @@
     },
     "apps/static-generator": {
       "name": "@caelo-cms/static-generator",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "bin": {
         "caelo-static-generator": "./src/cli.ts",
       },
@@ -107,12 +109,13 @@
     },
     "packages/admin-core": {
       "name": "@caelo-cms/admin-core",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.78",
         "@ai-sdk/google": "^4.0.93",
         "@ai-sdk/openai": "^4.0.91",
         "@caelo-cms/font-service": "workspace:*",
+        "@caelo-cms/migrations": "workspace:*",
         "@caelo-cms/plugin-consent-manager": "workspace:*",
         "@caelo-cms/plugin-host": "workspace:*",
         "@caelo-cms/plugin-sandbox": "workspace:*",
@@ -142,7 +145,7 @@
     },
     "packages/font-service": {
       "name": "@caelo-cms/font-service",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
@@ -155,7 +158,7 @@
     },
     "packages/mcp-server": {
       "name": "@caelo-cms/mcp-server",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "bin": {
         "caelo-mcp-server": "./dist/index.js",
         "caelo-admin-mcp": "./dist/admin.js",
@@ -168,10 +171,11 @@
     },
     "packages/migrations": {
       "name": "@caelo-cms/migrations",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/shared": "workspace:*",
         "drizzle-orm": "0.45.4",
+        "zod": "4.6.5",
       },
       "devDependencies": {
         "drizzle-kit": "0.31.11",
@@ -179,7 +183,7 @@
     },
     "packages/platform-updater": {
       "name": "@caelo-cms/platform-updater",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/provisioning": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
@@ -190,11 +194,11 @@
     },
     "packages/plugin-component-kit": {
       "name": "@caelo-cms/plugin-component-kit",
-      "version": "0.10.50",
+      "version": "0.10.51",
     },
     "packages/plugin-host": {
       "name": "@caelo-cms/plugin-host",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/font-service": "workspace:*",
         "@caelo-cms/plugin-sandbox": "workspace:*",
@@ -211,7 +215,7 @@
     },
     "packages/plugin-sandbox": {
       "name": "@caelo-cms/plugin-sandbox",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/plugin-sdk": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
@@ -220,7 +224,7 @@
     },
     "packages/plugin-sdk": {
       "name": "@caelo-cms/plugin-sdk",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/shared": "workspace:*",
         "zod": "4.6.5",
@@ -228,7 +232,7 @@
     },
     "packages/plugins/auth": {
       "name": "@caelo-cms/plugin-auth",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -236,7 +240,7 @@
     },
     "packages/plugins/comments": {
       "name": "@caelo-cms/plugin-comments",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -244,14 +248,14 @@
     },
     "packages/plugins/consent-manager": {
       "name": "@caelo-cms/plugin-consent-manager",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/plugin-sdk": "workspace:*",
       },
     },
     "packages/plugins/forms": {
       "name": "@caelo-cms/plugin-forms",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -259,7 +263,7 @@
     },
     "packages/plugins/international-site": {
       "name": "@caelo-cms/plugin-international-site",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -267,7 +271,7 @@
     },
     "packages/plugins/newsletter": {
       "name": "@caelo-cms/plugin-newsletter",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -275,7 +279,7 @@
     },
     "packages/plugins/ratings": {
       "name": "@caelo-cms/plugin-ratings",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -283,7 +287,7 @@
     },
     "packages/provisioning": {
       "name": "@caelo-cms/provisioning",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "bin": {
         "cms-provision": "./dist/cli.js",
       },
@@ -305,7 +309,7 @@
     },
     "packages/query-api": {
       "name": "@caelo-cms/query-api",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/shared": "workspace:*",
         "drizzle-orm": "0.45.4",
@@ -314,11 +318,12 @@
     },
     "packages/redeploy-orchestrator": {
       "name": "@caelo-cms/redeploy-orchestrator",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/site-importer": "workspace:*",
         "drizzle-orm": "0.45.4",
+        "zod": "4.6.5",
       },
       "devDependencies": {
         "@caelo-cms/admin-core": "workspace:*",
@@ -326,7 +331,7 @@
     },
     "packages/shared": {
       "name": "@caelo-cms/shared",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "colorjs.io": "^0.7.1",
         "htmlparser2": "^12.0.0",
@@ -339,7 +344,7 @@
     },
     "packages/site-importer": {
       "name": "@caelo-cms/site-importer",
-      "version": "0.10.50",
+      "version": "0.10.51",
       "dependencies": {
         "htmlparser2": "^12.0.0",
         "playwright": "1.64.0",
@@ -582,6 +587,10 @@
     "@floating-ui/dom": ["@floating-ui/dom@1.7.6", "", { "dependencies": { "@floating-ui/core": "^1.7.5", "@floating-ui/utils": "^0.2.11" } }, "sha512-9gZSAI5XM36880PPMm//9dfiEngYoC6Am2izES1FF406YFsjvyBMmeJ2g4SAju3xWwtuynNRFL2s9hgxpLI5SQ=="],
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.11", "", {}, "sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg=="],
+
+    "@fontsource-variable/schibsted-grotesk": ["@fontsource-variable/schibsted-grotesk@5.3.0", "", {}, "sha512-ndS6H/KICWANchlHF3q4UdZD+xrZ3Ji0rUobIuXlgvDUzDfqZDsVuXPXZb636nJZMHE9zZ9Fmwgqazm8hMB50Q=="],
+
+    "@fontsource/ibm-plex-mono": ["@fontsource/ibm-plex-mono@5.3.0", "", {}, "sha512-eTgnZjZEGk1QtD3ZstF+Vclo2HLAni8YMy34/DxllwZvyz1lR/1RF/xTiAquOBO7MvqBx8D2Ig2WCPMVfdZu7Q=="],
 
     "@formatjs/ecma402-abstract": ["@formatjs/ecma402-abstract@2.3.6", "", { "dependencies": { "@formatjs/fast-memoize": "2.2.7", "@formatjs/intl-localematcher": "0.6.2", "decimal.js": "^10.4.3", "tslib": "^2.8.0" } }, "sha512-HJnTFeRM2kVFVr5gr5kH1XP6K0JcJtE7Lzvtr3FS/so5f1kpsqqqxy5JF+FRaO6H2qmcMfAUIox7AJteieRtVw=="],
 

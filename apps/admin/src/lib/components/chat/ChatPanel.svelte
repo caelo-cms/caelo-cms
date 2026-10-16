@@ -648,8 +648,14 @@
   });
 
   const qualityOffer = $derived(openQualityOffer(qualityStatus.status));
-  /** The audit whose offer the operator is acting on (hides its card meanwhile). */
+  /** The audit whose offer the operator is acting on (its card is busy meanwhile). */
   let qualityOfferActing = $state<string | null>(null);
+  /**
+   * Whether the acting click settles the offer (fix / "Not now"): its card
+   * hides meanwhile. An acceptance only shrinks the groups, so its card
+   * stays up (busy) and switches to the status the accept answers with.
+   */
+  let qualityOfferSettling = $state(false);
   let qualityOfferError = $state<string | null>(null);
   let shownQualityOfferId: string | null = null;
   $effect(() => {
@@ -670,6 +676,7 @@
   ): Promise<void> {
     if (streaming || qualityOfferActing !== null) return;
     qualityOfferActing = auditRunId;
+    qualityOfferSettling = true;
     qualityOfferError = null;
     try {
       // #682 — one agent per chat: say so here instead of starting a turn
@@ -715,6 +722,7 @@
       qualityOfferError = "Could not start the fix — check the connection and try again.";
     } finally {
       qualityOfferActing = null;
+      qualityOfferSettling = false;
       void qualityStatus.refresh();
     }
   }
@@ -723,6 +731,9 @@
    * #727 — "Accept all…" / "Accept selected…" on a group: the operator's own
    * acceptance with their reason, applied by this click (the AI is not
    * involved). The offer stays: the groups shrink to what is still open.
+   * The card shows the status the accept answers with — read after it
+   * applied — so an accepted group never reappears from the pre-accept
+   * status, and a read already on the wire cannot bring it back either.
    */
   async function acceptQualityGroups(
     auditRunId: string,
@@ -739,12 +750,18 @@
         groups,
         reason,
       });
+      if (r.ok && r.status) {
+        // Before the card turns clickable again: never the old groups.
+        void qualityStatus.apply(r.status);
+        return;
+      }
       if (!r.ok) qualityOfferError = r.error ?? "Could not accept — try again.";
+      await qualityStatus.refresh();
     } catch {
       qualityOfferError = "Could not accept — check the connection and try again.";
+      void qualityStatus.refresh();
     } finally {
       qualityOfferActing = null;
-      void qualityStatus.refresh();
     }
   }
 
@@ -752,6 +769,7 @@
   async function dismissQualityOffer(auditRunId: string): Promise<void> {
     if (qualityOfferActing !== null) return;
     qualityOfferActing = auditRunId;
+    qualityOfferSettling = true;
     qualityOfferError = null;
     try {
       const r = await postQualityAction(session.id, csrfToken, { action: "dismiss", auditRunId });
@@ -767,6 +785,7 @@
       qualityOfferError = "Could not dismiss — check the connection and try again.";
     } finally {
       qualityOfferActing = null;
+      qualityOfferSettling = false;
       void qualityStatus.refresh();
     }
   }
@@ -2492,14 +2511,14 @@
              declarations.) -->
         {#if crawlRun && (crawlRun.status === "crawling" || crawlRun.status === "proposed")}
           <div
-            class="flex items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-2 text-xs"
+            class="flex items-center gap-2 rounded-md border border-link/30 bg-link/5 p-2 text-xs"
             data-testid="chat-import-progress"
           >
             <span
-              class="inline-block size-3 animate-spin rounded-full border-2 border-sky-600 border-t-transparent motion-reduce:animate-none"
+              class="inline-block size-3 animate-spin rounded-full border-2 border-link border-t-transparent motion-reduce:animate-none"
               aria-hidden="true"
             ></span>
-            <span class="font-medium text-sky-700 dark:text-sky-400">
+            <span class="font-medium text-link">
               {crawlRun.status === "proposed" ? "Crawler starting…" : "Crawling…"}
             </span>
             <span class="text-muted-foreground">
@@ -2538,7 +2557,7 @@
              Drops out as soon as the row flips to applied/rejected. -->
         <!-- #685 — the quality check found problems: ask before the AI
              fixes anything. Only the operator's click starts the turn. -->
-        {#if qualityOffer && qualityOffer.auditRunId !== qualityOfferActing}
+        {#if qualityOffer && !(qualityOfferSettling && qualityOffer.auditRunId === qualityOfferActing)}
           <QualityFixOfferCard
             text={qualityOffer.text}
             actionLabel={qualityOffer.actionLabel}
@@ -2607,13 +2626,15 @@
                 >
                   {#if external}
                     <span
-                      class="mb-1 inline-block rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-700 dark:text-sky-300"
+                      class="mb-1 inline-block rounded bg-link/10 px-1.5 py-0.5 text-[10px] text-link"
                       data-testid="chat-approval-external-agent"
                       title="The decision goes back to the external agent, which continues its own work. This chat's AI does not act on it."
                       >{EXTERNAL_AGENT_LABEL}</span
                     >
                   {/if}
-                  <pre class="mb-2 whitespace-pre-wrap font-sans text-[11px]">{a.preview ||
+                  <pre
+                    class="mb-2 max-h-96 overflow-y-auto whitespace-pre-wrap break-words font-sans text-[11px]"
+                    data-testid="chat-approval-preview">{a.preview ||
                       a.name}</pre>
                   {#if missing.length > 0}
                     <p
@@ -2624,10 +2645,11 @@
                       an Owner to approve it, or reject it.
                     </p>
                   {/if}
+                  <!-- #779 — Approve is the human decision: coral. -->
                   <div class="flex items-center gap-1.5">
                     <button
                       type="button"
-                      class={buttonVariants({ variant: "default", size: "sm" })}
+                      class={buttonVariants({ variant: "decide", size: "sm" })}
                       disabled={(external ? approvalDeciding[a.approvalId] === true : streaming) ||
                         missing.length > 0}
                       data-testid="chat-approval-approve"
@@ -2652,7 +2674,7 @@
           <ul class="space-y-1 text-xs" data-testid="chat-mcp-handoffs">
             {#each mcpHandoffs as h (h.proposalId)}
               <li
-                class="flex items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-1.5"
+                class="flex items-center gap-2 rounded-md border border-link/30 bg-link/5 p-1.5"
                 data-testid="chat-mcp-handoff"
                 data-outcome={h.outcome}
                 data-delivered={h.deliveredAt !== null ? "true" : "false"}
@@ -2687,19 +2709,20 @@
                   <span class="truncate">{p.summary}</span>
                   {#if p.requestedVia === "power_mcp"}
                     <span
-                      class="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-700 dark:text-sky-300"
+                      class="shrink-0 rounded bg-link/10 px-1.5 py-0.5 text-[10px] text-link"
                       data-testid="pending-external-agent"
                       title="The decision is handed back to the external agent, which continues the work. This chat's AI does not act on it."
                       >{EXTERNAL_AGENT_LABEL}</span
                     >
                   {/if}
                   <span class="ml-auto flex items-center gap-1.5">
+                    <!-- #779 — Approve is the human decision: coral, also
+                         for a destructive kind (the domain.kind label above
+                         names it). -->
                     <Button
                       type="button"
                       size="sm"
-                      variant={/^(delete|remove|revert|clear|deactivate|cancel)/i.test(p.kind)
-                        ? "destructive"
-                        : "default"}
+                      variant="decide"
                       disabled={pendingActioning[p.proposalId] !== undefined &&
                         pendingActioning[p.proposalId] !== null}
                       onclick={() =>

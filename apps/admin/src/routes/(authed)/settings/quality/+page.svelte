@@ -42,7 +42,7 @@
   function metricClass(score: number | null): string {
     if (score === null) return "text-muted-foreground";
     if (score >= 0.9) return "text-emerald-700 dark:text-emerald-400";
-    if (score >= 0.5) return "text-amber-600 dark:text-amber-400";
+    if (score >= 0.5) return "text-amber-700 dark:text-amber-400";
     return "text-destructive";
   }
 

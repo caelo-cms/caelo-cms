@@ -26,6 +26,10 @@ export interface LhrLike {
   readonly requestedUrl?: string;
   readonly finalDisplayedUrl?: string;
   readonly runtimeError?: { readonly code: string; readonly message: string };
+  /** The settings the run used; the CPU calibration checks its throttling. */
+  readonly configSettings?: {
+    readonly throttling?: { readonly cpuSlowdownMultiplier?: number };
+  };
   readonly categories: Readonly<
     Record<
       string,
@@ -61,8 +65,10 @@ export interface LhrLike {
   >;
 }
 
-/** Flagged elements reported per finding (enough to locate the module). */
-const MAX_FLAGGED_ELEMENTS = 5;
+/** Flagged elements reported per finding (enough to locate the module).
+ *  A longer list keeps this many plus one truncation marker, so a
+ *  finding carries at most `MAX_FLAGGED_ELEMENTS + 1` entries. */
+export const MAX_FLAGGED_ELEMENTS = 5;
 
 /** Label prefix of the marker appended when an audit flagged more items
  *  than are kept (#667). */

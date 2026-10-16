@@ -74,8 +74,7 @@ in `value`) flow out of *every* `execute(...)` call. Any id later read from an
 op result — e.g. a `chatSessionId` — was then "password data", which produced
 a cascade of `js/clear-text-logging` (high) alerts on unrelated
 observability logs: the chat-runner's loop/streaming/dispatch/catalogue/
-passive-turn/budget-gate diagnostics, `ai/auto-recovery.ts`, and
-`apps/admin/scripts/sync-docs-site.ts`.
+passive-turn/budget-gate diagnostics and `ai/auto-recovery.ts`.
 
 The cure is structural: `execute()` re-wraps the lookup error
 (`return err(opLookup.error)`), so no op definition can reach an op result
@@ -129,10 +128,21 @@ on every PR and **fails** it when the diff introduces a dependency that:
 - carries a license outside the MPL-2.0-compatible **allow-list**
   (`allow-licenses`, per CLAUDE.md §3).
 
-The allow-list mirrors the `--onlyAllow` set in `package.json`'s `license:check`
-script. **Keep the two in lockstep** — `scripts/codeql-workflow.test.ts` fails
-CI if they diverge. We use the non-deprecated `allow-licenses` option (not
-`deny-licenses`); anything outside the set (GPL/AGPL/SSPL/proprietary) fails.
+The allow-list mirrors the `--onlyAllow` set in `package.json`'s
+`license:check:deps` script. **Keep the two in lockstep** —
+`scripts/codeql-workflow.test.ts` fails CI if they diverge. We use the
+non-deprecated `allow-licenses` option (not `deny-licenses`); anything outside
+the set (GPL/AGPL/SSPL/proprietary) fails.
+
+**Font exception (OFL-1.1, fonts only).** The admin self-hosts its brand fonts
+(`@fontsource-variable/schibsted-grotesk`, `@fontsource/ibm-plex-mono`), which
+are OFL-1.1. OFL is never added to a global allow-list. Instead the workflow
+exempts exactly those packages by purl (`allow-dependencies-licenses`), and
+`bun run license:check` runs two gates: `license:check:deps` (global set, fonts
+excluded) and `license:check:fonts` (only the font packages, only `OFL-1.1`).
+`scripts/font-license-exception.test.ts` fails if the two lists diverge, if a
+non-Fontsource package is exempted, or if OFL appears in a global list. To add
+another font, add it to both lists.
 
 On failure it posts a single summary comment on the PR
 (`comment-summary-in-pr: on-failure`).
