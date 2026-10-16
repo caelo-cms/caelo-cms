@@ -33,14 +33,18 @@ Manual setup if your client isn't Claude Code:
 
 ```bash
 # stdio server invoked by your MCP-aware client
-bunx @caelo-cms/mcp-server
+bunx @caelo-cms/mcp-server@latest
 ```
+
+It switches to the exact release your install runs at startup (see the
+MCP page in the [docs](https://caelo-cms.com/docs/)), so the command never needs a
+version; `@latest` keeps `bunx` from reusing an older cached install.
 
 with these env vars set:
 
 | Variable | Required | Notes |
 |---|---|---|
-| `CAELO_ADMIN_URL` | yes | `https://admin.example.com` — point at your install. |
+| `CAELO_ADMIN_URL` | yes | `https://admin.example.com` — point at your install. Must be `https://` (plain `http://` only for localhost). |
 | `CAELO_MCP_TOKEN` | yes | Bearer minted at `/settings/mcp`. |
 | `CAELO_IAP_SERVICE_ACCOUNT` | on GCP installs | The admin's MCP service account. `/settings/mcp` includes it in the `claude mcp add` command when the admin is behind Google IAP. |
 

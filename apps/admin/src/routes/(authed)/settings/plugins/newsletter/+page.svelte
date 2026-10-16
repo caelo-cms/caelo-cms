@@ -60,23 +60,36 @@
     </CardContent>
   </Card>
 
-  <Card>
-    <CardHeader>
-      <CardTitle>Send a draft campaign</CardTitle>
-      <CardDescription>Queues per-subscriber sends; the worker drains them within a minute.</CardDescription>
-    </CardHeader>
-    <CardContent>
-      <form method="post" action="?/send" use:enhance class="grid gap-3 max-w-xl">
-        <label class="grid gap-1 text-sm">
-          <span>Campaign id</span>
-          <Input name="campaignId" placeholder="uuid…" required />
-        </label>
-        <div>
-          <Button type="submit">Queue sends</Button>
-        </div>
-      </form>
-    </CardContent>
-  </Card>
+  {#if data.reviewError}
+    <div class="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-700 dark:bg-red-950 dark:text-red-300">{data.reviewError}</div>
+  {/if}
+  {#if data.review}
+    <Card data-testid="newsletter-review">
+      <CardHeader>
+        <CardTitle>Review before sending</CardTitle>
+        <CardDescription>
+          Exactly this subject and body go to at most {data.review.recipientCount} subscriber(s). Emails
+          that went out cannot be recalled.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="grid gap-3">
+        <p class="text-sm"><span class="text-muted-foreground">Subject:</span> {data.review.subject}</p>
+        <!-- Shown as text, never rendered: the draft lives in cms_public. -->
+        <pre class="max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded border p-2 text-xs">{data.review.bodyHtml}</pre>
+        {#if data.review.status === "draft"}
+          <form method="post" action="?/send" use:enhance>
+            <input type="hidden" name="campaignId" value={data.review.id} />
+            <input type="hidden" name="subject" value={data.review.subject} />
+            <input type="hidden" name="bodyHtml" value={data.review.bodyHtml} />
+            <input type="hidden" name="recipientCount" value={data.review.recipientCount} />
+            <Button type="submit">Send exactly this</Button>
+          </form>
+        {:else}
+          <p class="text-sm text-muted-foreground">This campaign is {data.review.status}; only drafts can be sent.</p>
+        {/if}
+      </CardContent>
+    </Card>
+  {/if}
 
   <Card>
     <CardHeader>
@@ -99,7 +112,13 @@
             <li class="flex flex-wrap items-center gap-2">
               <span class="font-medium">{c.subject}</span>
               <span class="text-xs text-muted-foreground">{c.slug} · {c.status}</span>
-              <code class="text-xs">{c.id}</code>
+              {#if c.approvedSend}
+                <span class="text-xs text-muted-foreground"
+                  >send {c.approvedSend.status}: {c.approvedSend.processed}/{c.approvedSend.recipientCount}</span
+                >
+              {:else if c.status === "draft"}
+                <a class="text-xs underline" href={`?review=${c.id}`}>Review and send</a>
+              {/if}
             </li>
           {/each}
         </ul>

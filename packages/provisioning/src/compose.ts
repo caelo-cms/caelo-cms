@@ -388,8 +388,8 @@ ${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts
     depends_on:
       postgres: { condition: service_healthy }
     environment:
-      # Its own two logins only — no authoring credential (#613, CLAUDE.md §2).
-      GATEWAY_DATABASE_URL: "${dbUrl("gateway_role", spec.rolePasswords.gateway, "cms_admin")}"
+      # public_role on cms_public is its only database login (#613, #635,
+      # CLAUDE.md §2: the public side has no path to the authoring database).
       PUBLIC_DATABASE_URL: "${dbUrl("public_role", spec.rolePasswords.public, "cms_public")}"
       GATEWAY_PORT: "${COMPOSE_GATEWAY_PORT}"
       NODE_ENV: production`;

@@ -10,6 +10,7 @@
   "references": [
     { "path": "../font-service" },
     { "path": "../shared" },
+    { "path": "../migrations" },
     { "path": "../query-api" },
     { "path": "../plugin-sandbox" },
     { "path": "../plugin-sdk" },

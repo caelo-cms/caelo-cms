@@ -1,12 +1,12 @@
 {
   "name": "@caelo-cms/admin",
-  "version": "0.10.50",
+  "version": "0.10.51",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
   "scripts": {
     "sync": "svelte-kit sync",
-    "typecheck": "svelte-kit sync && svelte-check --tsconfig tsconfig.json && tsc --noEmit",
+    "typecheck": "svelte-kit sync && svelte-check --tsconfig tsconfig.json && tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json",
     "dev": "svelte-kit sync && bun --bun vite dev",
     "build": "svelte-kit sync && bun --bun vite build",
     "preview": "bun --bun vite preview",

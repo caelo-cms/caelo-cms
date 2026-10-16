@@ -17,7 +17,7 @@ graph TD
   subgraph apps["apps/"]
     Admin["apps/admin<br/>SvelteKit + adapter-node (on Bun)<br/>authoring UI · /edit · /settings · API"]
     StaticGen["apps/static-generator<br/>subprocess invoked at deploy<br/>emits HTML to output/&lt;env&gt;/"]
-    Gateway["apps/api-gateway<br/>public plugin writes<br/>public_role + gateway_role, never admin_role"]
+    Gateway["apps/api-gateway<br/>public plugin writes<br/>public_role on cms_public only<br/>no cms_admin login"]
   end
 
   subgraph pkgs["packages/"]
@@ -47,7 +47,8 @@ graph TD
 
   QueryApi -- admin_role --> CmsAdmin
   QueryApi -- public_role --> CmsPublic
-  Gateway -- "gateway_role (narrow grants)" --> CmsAdmin
+  Gateway -- "public_role only" --> CmsPublic
+  AdminCore -. "publishes the declared projection (one way)" .-> CmsPublic
 
   Migrations -. apply on boot .-> CmsAdmin
   Migrations -. apply on boot .-> CmsPublic
@@ -59,7 +60,7 @@ graph TD
 
 **Key invariants** (see [CLAUDE.md §2](./CLAUDE.md#2-non-negotiable-invariants)):
 
-- `admin_role` and `public_role` are isolated. The API Gateway never holds `admin_role` credentials: it connects to cms_public as `public_role` and to cms_admin as `gateway_role`, a login with column-level grants on exactly what serving `/api/*` needs (its settings, rate limits, captcha challenges, request log, plugin op audit, and read access to the plugin registry — migration 0248). Its plugin host is dispatch-only: it attaches the plugins the admin registered and an Owner activated, and never writes the registry (`packages/plugin-host/src/gateway-attach.ts`, #613). Every role has its own password secret, so the gateway's service account cannot read admin_role's.
+- **The public side has no path to cms_admin** (#635). The API gateway connects to cms_public only, as `public_role`; it holds no cms_admin login of any role and refuses to boot when its env offers any database access besides `PUBLIC_DATABASE_URL`. Its own state (request log, rate-limit buckets, captcha challenges, plugin op events) lives in cms_public. What it needs from authoring state (its settings, the staging gate, rate limits, the active-plugin registry, each plugin's declared `visitorProjection`, approved comments) the admin **publishes** into cms_public, one way, kept current by an outbox the source tables' triggers write in the same transaction (`packages/migrations/src/public-projection.ts`). Its plugin host is dispatch-only and reads only that projection (`packages/plugin-host/src/published-state.ts`). Everything the admin reads back from cms_public is **untrusted input**: Zod-validated at the boundary, rendered as text, never an instruction or a privileged trigger on its own. Details and the guardrails that keep it so: [docs/dev/public-admin-boundary.md](./docs/dev/public-admin-boundary.md). Every role has its own password secret, so the gateway's service account cannot read admin_role's.
 - RLS is `FORCE`d on every table in both databases — role isolation alone is not enough.
 - The static generator runs as a subprocess at deploy time. It is not a long-running service. It has no plugin host of its own: every plugin answer a build needs (data lists, head contributions, public URLs, content variants, withheld modules, `staticRender`, client assets) is a call back over its stdio to the admin's plugin host (`packages/plugin-host/src/build-services.ts`, #605), so the published site gets what the preview shows.
 
@@ -247,7 +248,7 @@ erDiagram
 |---|---|
 | `apps/admin/` | SvelteKit admin app + every authenticated route (`/edit`, `/content/*`, `/settings/*`). |
 | `apps/static-generator/` | Subprocess invoked by `deploy.trigger`; reads composed pages + emits HTML to `output/<env>/`. |
-| `apps/api-gateway/` | Public `/api/*` endpoints for plugin writes (forms, comments, ratings, newsletter) with rate limits, proof-of-work captcha and honeypots; runs as `public_role` + `gateway_role`, never `admin_role`. |
+| `apps/api-gateway/` | Public `/api/*` endpoints for plugin writes (forms, comments, ratings, newsletter) with rate limits, proof-of-work captcha and honeypots; connects to cms_public only, as `public_role`, and holds no cms_admin login (#635). |
 | `packages/admin-core/` | Ops registry + AI tool dispatch + chat-runner + audit + snapshot emitter. The orchestrator. |
 | `packages/query-api/` | `defineOperation`, the Validator, the Database Adapter. Every DB call goes through here. |
 | `packages/shared/` | Zod schemas, the two-pass composer, the slot scanner, structured-sets validators. Shared between admin and static-gen. |

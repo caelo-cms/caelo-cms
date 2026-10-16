@@ -20,7 +20,7 @@ import { pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host"
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ChatAttachment, ExecutionContext } from "@caelo-cms/shared";
-import { buildChatImageKey } from "@caelo-cms/shared";
+import { buildChatImageKey, untrustedToolResult } from "@caelo-cms/shared";
 import { getMediaStorage } from "../../media/storage.js";
 import { tryAutoRecover } from "../auto-recovery.js";
 import { chatPluginInvocation } from "../plugin-invocation.js";
@@ -297,7 +297,8 @@ export async function dispatchToolCall(
           invocation: chatPluginInvocation(aiCtxWithBranch, humanCtx.actorId),
         }).then((r) =>
           r.ok
-            ? { ok: true, content: JSON.stringify(r.value) }
+            ? // #635 — plugin data may be visitor-written: data, never instructions.
+              { ok: true, content: untrustedToolResult(r.value) }
             : { ok: false, content: `${r.error.kind}: ${r.error.message}` },
         )
       : tools.dispatch(call.name, call.arguments, aiCtxWithBranch, {

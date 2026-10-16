@@ -74,6 +74,7 @@ export * from "./theme-ramp.js";
 export * from "./theme-render.js";
 export * from "./themes.js";
 export * from "./themes-errors.js";
+export * from "./untrusted-tool-result.js";
 export * from "./url.js";
 export {
   CAELO_VERSION,

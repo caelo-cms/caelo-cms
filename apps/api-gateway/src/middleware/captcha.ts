@@ -5,7 +5,8 @@
  *
  * Issue:    GET /api/captcha/challenge → { challenge, target, expiresAt }
  *           Stores `(challenge, target, expires_at, visitor_id_hash)` in
- *           pow_challenges so the verify side can reject replays.
+ *           gateway_pow_challenges (cms_public, #635) so the verify side can
+ *           reject replays.
  *
  * Verify:   client computes nonce s.t. sha256(challenge + nonce) starts with
  *           `target`. Submits {challenge, nonce} as `_caelo_captcha` field.
@@ -16,8 +17,8 @@
  *           Bot pays ~50ms of CPU per submission at target=0x000fff (24 bits).
  *           Real user pays the same 50ms once per submission, invisibly.
  *
- * Replay:   used_at flag prevents re-use; cron sweeps expired rows hourly
- *           (the redeploy-orchestrator's GC step in PR2).
+ * Replay:   used_at flag prevents re-use; the gateway sweeps expired rows
+ *           hourly itself (gc.ts).
  */
 
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
@@ -46,7 +47,7 @@ export async function issuePowChallenge(
 ): Promise<CaptchaChallenge> {
   const challenge = randomChallenge();
   const expiresAt = new Date(Date.now() + CHALLENGE_TTL_SEC * 1000).toISOString();
-  await adapter.withAdminTransaction(
+  await adapter.withPublicTransaction(
     {
       actorId: "00000000-0000-0000-0000-00000000ffff",
       actorKind: "system",
@@ -54,7 +55,7 @@ export async function issuePowChallenge(
     },
     async (tx) => {
       await tx.execute(sql`
-        INSERT INTO pow_challenges (challenge, target_hex, expires_at, visitor_id_hash)
+        INSERT INTO gateway_pow_challenges (challenge, target_hex, expires_at, visitor_id_hash)
         VALUES (${challenge}, ${args.config.powTargetPrefix}, ${expiresAt}, ${args.visitorIdHash})
       `);
     },
@@ -80,7 +81,7 @@ export async function verifyPowProof(
   }
   // Atomic claim — one UPDATE returns the row only if it was unused +
   // unexpired. Replay → 0 rows → reject.
-  const row = await adapter.withAdminTransaction(
+  const row = await adapter.withPublicTransaction(
     {
       actorId: "00000000-0000-0000-0000-00000000ffff",
       actorKind: "system",
@@ -88,7 +89,7 @@ export async function verifyPowProof(
     },
     async (tx) => {
       const rs = (await tx.execute(sql`
-        UPDATE pow_challenges
+        UPDATE gateway_pow_challenges
            SET used_at = now()
          WHERE challenge = ${proof.challenge}
            AND used_at IS NULL

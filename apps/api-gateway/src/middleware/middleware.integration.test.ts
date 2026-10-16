@@ -10,6 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { publishProjectionOnce } from "@caelo-cms/admin-core";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { readBodyWithCap } from "./body-cap.js";
@@ -19,17 +20,27 @@ import { consumeRateLimit, rateLimitKey, resolveRateLimitSpec } from "./rate-lim
 import { generateCookieSecret, signCookieValue, verifySignedCookie } from "./signed-cookie.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
-const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
-if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
+const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
+const PUBLIC_ROLE_URL = process.env.PUBLIC_DATABASE_URL;
+if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !PUBLIC_ROLE_URL) throw new Error("DB URLs required");
 
+/** The gateway's own identity: public_role on cms_public, no cms_admin pool (#635). */
 let adapter: DatabaseAdapter;
+/** The admin, for fixtures + publishing the projection the gateway reads. */
+let admin: DatabaseAdapter;
 
 beforeAll(() => {
-  adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  adapter = new DatabaseAdapter({
+    adminDatabaseUrl: null,
+    publicDatabaseUrl: PUBLIC_ROLE_URL,
+    expectedRoles: { admin: null, public: ["public_role"] },
+  });
+  admin = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_ADMIN_URL });
 });
 
 afterAll(async () => {
   await adapter.close();
+  await admin.close();
 });
 
 describe("body-cap", () => {
@@ -161,7 +172,7 @@ describe("rate-limit", () => {
 
   it("resolveRateLimitSpec honors plugin_rate_limit_overrides", async () => {
     const slug = `test-rl-${Date.now()}`;
-    await adapter.withAdminTransaction(
+    await admin.withAdminTransaction(
       { actorId: "00000000-0000-0000-0000-00000000ffff", actorKind: "system", requestId: "t" },
       async (tx) => {
         await tx.execute(sql`
@@ -170,6 +181,8 @@ describe("rate-limit", () => {
         `);
       },
     );
+    // The gateway reads what the admin published (#635), not cms_admin.
+    await publishProjectionOnce(admin, { declarations: new Map() });
     const spec = await resolveRateLimitSpec(adapter, slug, "submit");
     expect(spec.perVisitorMax).toBe(5);
     expect(spec.windowSeconds).toBe(30);

@@ -218,7 +218,7 @@ export function decideGate(audit: GateAudit | null, acceptances: GateAcceptances
         openProblems: [],
         canPublishAnyway: false,
         message:
-          "Publish live is blocked until the quality check of the staged build finishes (usually 1–2 minutes). Try again when it is done.",
+          "Publish live is blocked until the quality check of the staged build finishes (usually 2–4 minutes). Try again when it is done.",
       };
     case "passed":
     case "skipped":
