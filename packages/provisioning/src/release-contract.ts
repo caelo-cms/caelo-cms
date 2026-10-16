@@ -46,6 +46,9 @@ export const INFRA_CONTRACT_PATHS: readonly string[] = [
   // #587 — the admin's URL-map redirects role and the URL map's shape.
   "packages/provisioning/src/url-map-redirects-access.ts",
   "packages/provisioning/src/gcp-url-map.ts",
+  // The in-cloud upgrader job's service account, custom roles and bucket
+  // grants (#799 added one without the checks noticing).
+  "packages/provisioning/src/upgrader-setup.ts",
 ];
 
 /**

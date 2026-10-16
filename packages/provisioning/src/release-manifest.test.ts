@@ -296,6 +296,7 @@ describe("release-contract", () => {
     expect(isInfraContractPath("packages/provisioning/stacks/gcp/index.ts")).toBe(true);
     expect(isInfraContractPath("packages/provisioning/src/stack-converge.ts")).toBe(true);
     expect(isInfraContractPath("packages/provisioning/src/upgrade/converge.ts")).toBe(true);
+    expect(isInfraContractPath("packages/provisioning/src/upgrader-setup.ts")).toBe(true);
     expect(isInfraContractPath("packages/provisioning/src/stack-converge.test.ts")).toBe(false);
     expect(isInfraContractPath("packages/provisioning/stacks/gcp/README.md")).toBe(false);
     expect(isInfraContractPath("packages/provisioning/src/cli.ts")).toBe(false);
