@@ -9,7 +9,7 @@ import { fontMetadata, fontReader } from "@caelo-cms/font-service";
 import { localBuildPluginServices } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { applyDtcgWrites, type ExecutionContext, type ThemeDocument } from "@caelo-cms/shared";
-import { generateSite, resolveThemeFonts } from "@caelo-cms/static-generator";
+import { generateSite, loadSiteFontUsage, resolveThemeFonts } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
@@ -198,6 +198,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
         cacheDir,
         publicBasePath: "/_caelo/fonts",
         readFont: fontReader(tx, ctx),
+        loadFontUsage: () => loadSiteFontUsage(tx, tokens),
         preloadLanguage: null,
         fetcher: (() => {
           throw new Error("Unexpected font network fetch");
@@ -208,9 +209,11 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
       // The fixture covers Latin + Vietnamese: two WOFF2 slices + the license.
       expect(preview.files.map((f) => f.relPath).filter((p) => p.endsWith(".woff2"))).toEqual([
         expect.stringMatching(
-          new RegExp(`^pinned/${font.sha256}\\.vietnamese\\.[0-9a-f]{12}\\.woff2$`),
+          new RegExp(`^pinned/${font.sha256}\\.[0-9a-f]{12}\\.vietnamese\\.[0-9a-f]{12}\\.woff2$`),
         ),
-        expect.stringMatching(new RegExp(`^pinned/${font.sha256}\\.latin\\.[0-9a-f]{12}\\.woff2$`)),
+        expect.stringMatching(
+          new RegExp(`^pinned/${font.sha256}\\.[0-9a-f]{12}\\.latin\\.[0-9a-f]{12}\\.woff2$`),
+        ),
       ]);
       expect(preview.preloads).toEqual([]);
       const build = await resolveThemeFonts({
@@ -218,6 +221,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
         cacheDir,
         publicBasePath: "/_assets/fonts",
         readFont: fontReader(tx, ctx),
+        loadFontUsage: () => loadSiteFontUsage(tx, tokens),
         preloadLanguage: null,
       });
       expect(build.files).toEqual(preview.files);
@@ -227,6 +231,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
         cacheDir,
         publicBasePath: "/restored",
         readFont: fontReader(tx, ctx),
+        loadFontUsage: () => loadSiteFontUsage(tx, tokens),
         preloadLanguage: null,
       });
       expect(restored.files).toEqual(preview.files);
@@ -278,7 +283,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
         (m) => m[1],
       );
       expect(preloads).toEqual([
-        expect.stringMatching(/\/pinned\/[0-9a-f]{64}\.latin\.[0-9a-f]{12}\.woff2$/),
+        expect.stringMatching(/\/pinned\/[0-9a-f]{64}\.[0-9a-f]{12}\.latin\.[0-9a-f]{12}\.woff2$/),
       ]);
       expect(
         await readFile(

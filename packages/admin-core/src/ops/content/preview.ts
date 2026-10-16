@@ -56,7 +56,11 @@ import {
   type ThemeDocument,
   unknownCssVarMarker,
 } from "@caelo-cms/shared";
-import { defaultFontsCacheDir, resolveThemeFonts } from "@caelo-cms/static-generator";
+import {
+  defaultFontsCacheDir,
+  loadSiteFontUsage,
+  resolveThemeFonts,
+} from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { pendingSnapshotSql } from "../../draft.js";
@@ -1049,9 +1053,13 @@ export const renderPagePreviewOp = defineOperation({
     let previewFonts: ComposeFonts | undefined;
     const fontMarkers: string[] = [];
     if (composeTheme !== undefined) {
+      const themeTokens = composeTheme.tokens;
       const resolvedFonts = await resolveThemeFonts({
         readFont: fontReader(tx, ctx),
         tokens: composeTheme.tokens,
+        // Same loader as the build: the preview instances faces exactly
+        // as the deployed site will (preview/production parity).
+        loadFontUsage: () => loadSiteFontUsage(tx, themeTokens),
         cacheDir: defaultFontsCacheDir(process.cwd()),
         publicBasePath: "/_caelo/fonts",
         // The editor iframe gains nothing from a preload hint; the @font-face

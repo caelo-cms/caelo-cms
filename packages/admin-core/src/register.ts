@@ -554,6 +554,7 @@ import {
   getSubagentRunOp,
   listSubagentRunsOp,
 } from "./ops/subagents/runs.js";
+import { themeFontDeliveryOp } from "./ops/theme-font-delivery.js";
 import {
   duplicateThemeOp,
   exportThemeDtcgOp,
@@ -956,6 +957,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getThemeOp);
   registry.register(getActiveThemeOp);
   registry.register(updateThemeTokensOp);
+  registry.register(themeFontDeliveryOp);
   // v0.11.4 (issue #76 follow-up) — meta editor + history reader.
   registry.register(updateThemeMetaOp);
   registry.register(listThemeHistoryOp);
