@@ -111,6 +111,16 @@ test("the chat's own AI resumes on Approve after Stop and a reload", async ({ co
   await page.reload();
   await expect(card).toBeVisible({ timeout: 15_000 });
   expect(tokensNamed(minted)).toBe(0);
+  // #779 — Approve is the human decision: coral (`--decide` #c4502f);
+  // Reject keeps the neutral outline.
+  await expect(card.getByTestId("chat-approval-approve")).toHaveCSS(
+    "background-color",
+    "rgb(196, 80, 47)",
+  );
+  await expect(card.getByTestId("chat-approval-reject")).not.toHaveCSS(
+    "background-color",
+    "rgb(196, 80, 47)",
+  );
 
   const resume = page.waitForRequest(
     (r) =>

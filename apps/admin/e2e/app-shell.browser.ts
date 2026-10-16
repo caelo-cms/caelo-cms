@@ -35,6 +35,20 @@ test("Owner sees AppShell with sidebar nav, can navigate, dark mode persists", a
   await expect(mark).toHaveAttribute("aria-hidden", "true");
   await expect(homeLink).toHaveText("Caelo");
 
+  // #779 — the dashboard names the site's Draft / Preview / Live state;
+  // each dot is decorative, the label carries the state.
+  const siteState = page.getByTestId("site-state");
+  await expect(siteState).toBeVisible();
+  for (const [state, label] of [
+    ["draft", "Draft"],
+    ["preview", "Preview"],
+    ["live", "Live"],
+  ] as const) {
+    const stateMark = siteState.locator(`[data-testid="state-dot"][data-state="${state}"]`);
+    await expect(stateMark).toHaveText(label);
+    await expect(stateMark.locator('[aria-hidden="true"]')).toHaveCount(1);
+  }
+
   // Sidebar nav contains the expected items for an Owner.
   const sidebar = page.getByRole("navigation", { name: "Main navigation" });
   await expect(sidebar.getByRole("link", { name: /^Dashboard$/ })).toBeVisible();
