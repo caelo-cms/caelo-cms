@@ -4,6 +4,7 @@ import { describe, expect, it } from "bun:test";
 import {
   type AuditedRole,
   assertRoleIsolation,
+  type CrossDatabaseGrantRow,
   evaluateRoleAudit,
   ROLE_AUDIT_NEXT_STEP,
   ROLE_AUDIT_SQL,
@@ -153,7 +154,9 @@ describe("ROLE_AUDIT_SQL", () => {
 });
 
 describe("assertRoleIsolation", () => {
-  const rows = (r: RoleAuditRow[]) => ({ unsafe: async () => r });
+  const rows = (r: RoleAuditRow[], grants: CrossDatabaseGrantRow[] = []) => ({
+    unsafe: async (q: string) => (q === ROLE_AUDIT_SQL ? r : grants),
+  });
   const asRow = (a: AuditedRole): RoleAuditRow => ({
     rolname: a.rolname,
     kind: a.kind,
@@ -172,6 +175,13 @@ describe("assertRoleIsolation", () => {
     await expect(run).rejects.toThrow(ROLE_AUDIT_NEXT_STEP);
   });
 
+  it("fails on any cms_admin privilege the public side holds (#635)", async () => {
+    const run = assertRoleIsolation(rows([], [{ rolname: "public_role", object: "table pages" }]));
+    await expect(run).rejects.toThrow(
+      "public_role holds a privilege on cms_admin table pages (the public side must reach no authoring object)",
+    );
+  });
+
   it("returns warnings when nothing breaches isolation", async () => {
     const r = await assertRoleIsolation(
       rows([asRow({ ...cloudSqlPublicRole, memberOf: [], canConnectHere: false })]),
@@ -185,7 +195,7 @@ describe("roleAuditError", () => {
   it("lists every violation", () => {
     expect(roleAuditError({ violations: ["a", "b"], warnings: [] })).toBe(
       [
-        "Database role isolation check failed (issue #633, CLAUDE.md §2):",
+        "Database role isolation check failed (issues #633, #635; CLAUDE.md §2):",
         "  - a",
         "  - b",
         ROLE_AUDIT_NEXT_STEP,

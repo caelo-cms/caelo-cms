@@ -15,7 +15,7 @@ import { gcloud as defaultGcloud } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import { GCP_STACK_ENV, gcpNamePrefix } from "./gcp-names.js";
 import type { ImageDigests } from "./install-state.js";
-import { type CloudRunSlug, SERVICE_SECRET_ENV } from "./stack-contract.js";
+import { type CloudRunSlug, RETIRED_SERVICE_ENV, SERVICE_SECRET_ENV } from "./stack-contract.js";
 import { liveContainerEnv } from "./stack-converge.js";
 
 /** The `sha256:…` digest an image reference pins, or null for a tag reference. */
@@ -61,8 +61,9 @@ async function findDeployedService(
  * reads the password from the URL). The wizard keeps the release an install
  * runs, so re-running it on an install `upgrade` hasn't moved over yet would
  * pair the old release with env it can't connect with. The same holds for a
- * gateway from before #613: its release needs the admin_role pool the
- * current contract no longer gives it (no GATEWAY_DATABASE_PASSWORD yet).
+ * gateway from before #613 or #635: its release needs a cms_admin pool
+ * (admin_role, then gateway_role) the current contract no longer gives it —
+ * it still carries the retired database vars.
  * Such an install has to go through `upgrade` first, which moves the image
  * and the env in one revision.
  */
@@ -88,13 +89,19 @@ export async function checkDeployedRuntimeEnv(opts: {
       return { ok: false, error: `describe ${found.name}: ${describe.stderr.trim()}` };
     }
     const env = liveContainerEnv(describe.stdout);
-    const missing = Object.keys(SERVICE_SECRET_ENV[slug]).filter(
-      (name) => name.endsWith("_PASSWORD") && env.get(name)?.kind !== "secret",
-    );
+    const missing = [
+      ...Object.keys(SERVICE_SECRET_ENV[slug]).filter(
+        (name) => name.endsWith("_PASSWORD") && env.get(name)?.kind !== "secret",
+      ),
+      // A database var the contract retired (the gateway's ADMIN_* before
+      // #613, its GATEWAY_* before #635) means the running release still
+      // needs that login.
+      ...RETIRED_SERVICE_ENV[slug].filter((name) => /DATABASE/.test(name) && env.has(name)),
+    ];
     if (missing.length > 0) {
       return {
         ok: false,
-        error: `${found.name} does not read ${missing.join(", ")} from Secret Manager — its release predates the current database env (Secret Manager runtime secrets; for the gateway, its own database logins, #613). Run \`upgrade\` first: it moves the release and its env over together. Re-running the installer now would give the running release a database env it can't connect with.`,
+        error: `${found.name} does not match the current database env (${missing.join(", ")}) — its release predates it (Secret Manager runtime secrets; for the gateway, its own database login, #613/#635). Run \`upgrade\` first: it moves the release and its env over together. Re-running the installer now would give the running release a database env it can't connect with.`,
       };
     }
   }

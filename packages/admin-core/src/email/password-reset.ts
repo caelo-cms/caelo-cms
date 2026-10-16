@@ -70,7 +70,10 @@ export async function passwordResetEmailProblem(args: ResetEmailContext): Promis
 
 /**
  * Email the reset link. Callers check {@link passwordResetEmailProblem}
- * first; a config that cannot deliver is a caller bug and throws.
+ * first; a config that cannot deliver throws (it can change between that
+ * check and this call), so a caller answering an unauthenticated request
+ * catches and answers as it would for an unknown address (the `/forgot`
+ * route does, in apps/admin `requestPasswordResetLink`).
  */
 export async function deliverPasswordResetEmail(args: DeliverResetEmailArgs): Promise<void> {
   const { to, displayName, resetUrl } = args;

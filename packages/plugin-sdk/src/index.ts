@@ -144,6 +144,11 @@ export const pluginToolSpec = z.object({
    *  bypass where plugin tools skipped the approvals surface entirely
    *  (#388). The tool's description must state the two-step contract. */
   approvalMode: z.literal("user-approval").optional(),
+  /** #635 — arguments the approval card shows IN FULL instead of cut to
+   *  one line, because the approver approves their exact text (e.g. the
+   *  body of an email that is sent as approved). Only meaningful with
+   *  `approvalMode`; bound each one in `inputJsonSchema` (`maxLength`). */
+  approvalPreviewFullArgs: z.array(z.string().min(1).max(64)).max(8).optional(),
   /** The permission the HUMAN a chat call acts for must hold — for the
    *  direct call, or for the approver of an approval-gated one. Use the
    *  permission the plugin's own owner panel requires, so the chat is not
@@ -448,6 +453,21 @@ export const pluginManifest = z
     hasStaticRender: z.boolean().default(false),
     /** See `PluginDefinition.publicOperations`. */
     publicOperations: z.array(z.string().min(1).max(120)).optional(),
+    /** See `PluginDefinition.visitorProjection` (#635). Each table must be
+     *  in `adminSchema` and each column declared on it. */
+    visitorProjection: z
+      .record(
+        z.string().regex(/^[a-z_][a-z0-9_]*$/),
+        z
+          .array(
+            z
+              .string()
+              .regex(/^[a-z_][a-z0-9_]*$/)
+              .refine((c) => !c.startsWith("caelo_"), "caelo_ columns are host-owned"),
+          )
+          .max(64),
+      )
+      .optional(),
     /** See `PluginDefinition.buildAssets`. Release-signed only — the
      *  files land on every page of the public site, so authorship has
      *  to be auditable. */
@@ -500,7 +520,30 @@ export const pluginManifest = z
      */
     dataLists: z.array(pluginDataListSpec).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((m, ctx) => {
+    // #635 — the projection can only name what private storage declares.
+    for (const [table, columns] of Object.entries(m.visitorProjection ?? {})) {
+      const declared = m.adminSchema?.[table];
+      if (!declared) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["visitorProjection", table],
+          message: `visitorProjection names table "${table}", which is not in adminSchema`,
+        });
+        continue;
+      }
+      for (const c of columns) {
+        if (c !== "id" && !(c in declared)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["visitorProjection", table],
+            message: `visitorProjection names column "${c}", which adminSchema.${table} does not declare`,
+          });
+        }
+      }
+    }
+  });
 
 export type PluginManifest = z.infer<typeof pluginManifest>;
 
@@ -1273,6 +1316,22 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly publicOperations?: ReadonlyArray<string>;
   /**
+   * The visitor-readable projection of this plugin's private storage
+   * (`adminSchema`): table → the columns the API gateway may read (`id`
+   * is always included). Issue #635 — the gateway has no cms_admin login,
+   * so the admin PUBLISHES exactly these columns of the main-line rows
+   * into cms_public, and in the gateway `ctx.adminQuery` is a read-only
+   * handle over that projection. Anything not declared here is
+   * unreachable from a visitor request.
+   *
+   * Keep it minimal: every declared column is readable by the public
+   * side. Release-signed only (it projects `adminSchema`).
+   *
+   * @example
+   *   visitorProjection: { settings: ["policy_version"], categories: ["key", "position"] }
+   */
+  readonly visitorProjection?: Readonly<Record<string, ReadonlyArray<string>>>;
+  /**
    * The I/O half of module deferrals: an operation in `operations`
    * taking `{moduleIds: string[], modules: DeferralCandidate[]}` (every
    * module in the current render pass, with the content about to ship)
@@ -1348,6 +1407,7 @@ export function manifestFromDefinition(def: {
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
   readonly tools?: ReadonlyArray<PluginToolSpec>;
   readonly publicOperations?: ReadonlyArray<string>;
+  readonly visitorProjection?: Readonly<Record<string, ReadonlyArray<string>>>;
 }): PluginManifest {
   return pluginManifest.parse({
     slug: def.slug,
@@ -1362,6 +1422,13 @@ export function manifestFromDefinition(def: {
     hasStaticRender: Boolean(def.staticRender),
     ...(def.publicOperations && def.publicOperations.length > 0
       ? { publicOperations: [...def.publicOperations] }
+      : {}),
+    ...(def.visitorProjection && Object.keys(def.visitorProjection).length > 0
+      ? {
+          visitorProjection: Object.fromEntries(
+            Object.entries(def.visitorProjection).map(([t, cols]) => [t, [...cols]]),
+          ),
+        }
       : {}),
     hasBuildAssets: Boolean(def.buildAssets),
     hasDeferrals: Boolean(def.deferralsOperation),

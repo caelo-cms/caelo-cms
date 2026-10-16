@@ -41,7 +41,13 @@ import type { OperationDefinition, TransactionRunner } from "./operation.js";
  * silently misbehave.
  */
 export interface AdapterConfig {
-  readonly adminDatabaseUrl: string;
+  /**
+   * The cms_admin URL, or `null` for a public-side process (the API
+   * gateway, issue #635): it then holds no cms_admin pool at all, and every
+   * path that would reach the authoring database throws
+   * {@link AdminDatabaseUnavailableError} instead of connecting.
+   */
+  readonly adminDatabaseUrl: string | null;
   readonly publicDatabaseUrl: string;
   /** Disable the startup self-check. Only for tests that deliberately assert it triggers. */
   readonly skipRoleVerification?: boolean;
@@ -61,12 +67,28 @@ export interface AdapterConfig {
    * loudly instead of silently running as someone else.
    */
   readonly expectedRoles?: {
-    readonly admin: string;
+    /** The admin pool's role; `null` exactly when `adminDatabaseUrl` is `null`. */
+    readonly admin: string | null;
     readonly public: readonly string[];
   };
 }
 
 const DEFAULT_ROLES = { admin: "admin_role", public: ["admin_role", "public_role"] } as const;
+
+/**
+ * Thrown when a public-side process (constructed with
+ * `adminDatabaseUrl: null`) reaches for cms_admin. The public side has no
+ * path to the authoring database by design (CLAUDE.md §2, issue #635), so
+ * this is always a bug in the caller, never a condition to recover from.
+ */
+export class AdminDatabaseUnavailableError extends Error {
+  override readonly name = "AdminDatabaseUnavailableError";
+  constructor(what: string) {
+    super(
+      `${what}: this process has no cms_admin connection by design (public side, CLAUDE.md §2). Read what the admin published into cms_public instead.`,
+    );
+  }
+}
 
 /**
  * Resolve the per-pool `max` connection cap. Returns `undefined` when neither
@@ -103,29 +125,76 @@ interface ConnectionIdentity {
 }
 
 export class DatabaseAdapter {
-  readonly #admin: BunSQLDatabase;
+  readonly #admin: BunSQLDatabase | null;
   readonly #public: BunSQLDatabase;
-  readonly #adminRaw: SQL;
+  readonly #adminRaw: SQL | null;
   readonly #publicRaw: SQL;
   readonly #skipVerify: boolean;
-  readonly #roles: { readonly admin: string; readonly public: readonly string[] };
+  readonly #roles: { readonly admin: string | null; readonly public: readonly string[] };
   #verifyPromise: Promise<void> | null = null;
+  #projectionPublisher: (() => Promise<unknown>) | null = null;
 
   constructor(config: AdapterConfig) {
+    this.#roles = config.expectedRoles ?? DEFAULT_ROLES;
+    if ((config.adminDatabaseUrl === null) !== (this.#roles.admin === null)) {
+      throw new Error(
+        "DatabaseAdapter: a public-only adapter (adminDatabaseUrl: null) must expect no admin role, and an adapter with an admin URL must expect one",
+      );
+    }
     // When no pool cap is configured (the production case) keep the original
     // 1-arg construction so behaviour is byte-for-byte unchanged: Bun default 10.
     const poolMax = resolvePoolMax(config.poolMax);
-    if (poolMax === undefined) {
-      this.#adminRaw = new SQL(config.adminDatabaseUrl);
-      this.#publicRaw = new SQL(config.publicDatabaseUrl);
-    } else {
-      this.#adminRaw = new SQL(config.adminDatabaseUrl, { max: poolMax });
-      this.#publicRaw = new SQL(config.publicDatabaseUrl, { max: poolMax });
-    }
-    this.#admin = drizzle(this.#adminRaw);
+    const open = (url: string): SQL =>
+      poolMax === undefined ? new SQL(url) : new SQL(url, { max: poolMax });
+    this.#adminRaw = config.adminDatabaseUrl === null ? null : open(config.adminDatabaseUrl);
+    this.#publicRaw = open(config.publicDatabaseUrl);
+    this.#admin = this.#adminRaw === null ? null : drizzle(this.#adminRaw);
     this.#public = drizzle(this.#publicRaw);
     this.#skipVerify = config.skipRoleVerification === true;
-    this.#roles = config.expectedRoles ?? DEFAULT_ROLES;
+  }
+
+  /**
+   * Whether this process holds a cms_admin pool. False for the public-side
+   * API gateway (issue #635): its plugin host then reads the projection the
+   * admin publishes into cms_public instead of authoring state.
+   */
+  get hasAdminDatabase(): boolean {
+    return this.#admin !== null;
+  }
+
+  /**
+   * Issue #635 — register the publisher of the gateway projection. After
+   * any cms_admin transaction of this adapter commits a change to
+   * published state (cms_admin 0281's triggers mark it with
+   * `caelo.projection_dirty`), the adapter runs `publish` and waits for it
+   * BEFORE the op or transaction returns. A revoked grant, a deactivated
+   * plugin, an unapproved comment, a rotated cookie secret or a closed
+   * staging gate is therefore live on the public side when the admin call
+   * returns — not whenever an interval timer next gets CPU (Cloud Run
+   * throttles CPU outside requests, and scales to zero). The publisher's
+   * own poll and the boot/migration publish remain as crash recovery.
+   */
+  setProjectionPublisher(publish: (() => Promise<unknown>) | null): void {
+    this.#projectionPublisher = publish;
+  }
+
+  /** Whether this transaction changed published state (see {@link setProjectionPublisher}). */
+  async #projectionDirty(tx: TransactionRunner): Promise<boolean> {
+    if (this.#projectionPublisher === null) return false;
+    const found = (await tx.execute(
+      sql`SELECT current_setting('caelo.projection_dirty', true) AS v`,
+    )) as unknown as { v: string | null }[];
+    return found[0]?.v === "on";
+  }
+
+  async #publishAfterCommit(): Promise<void> {
+    const publish = this.#projectionPublisher;
+    if (publish !== null) await publish();
+  }
+
+  #adminDb(what: string): BunSQLDatabase {
+    if (this.#admin === null) throw new AdminDatabaseUnavailableError(what);
+    return this.#admin;
   }
 
   /**
@@ -155,11 +224,13 @@ export class DatabaseAdapter {
   }
 
   async #verifyRolesOnce(): Promise<void> {
-    const admin = await this.#identity(this.#adminRaw);
-    if (admin.user !== this.#roles.admin || admin.database !== "cms_admin") {
-      throw new Error(
-        `DatabaseAdapter admin pool expected (${this.#roles.admin}, cms_admin) but connected as (${admin.user}, ${admin.database}). Check ADMIN_DATABASE_URL.`,
-      );
+    if (this.#adminRaw !== null) {
+      const admin = await this.#identity(this.#adminRaw);
+      if (admin.user !== this.#roles.admin || admin.database !== "cms_admin") {
+        throw new Error(
+          `DatabaseAdapter admin pool expected (${this.#roles.admin}, cms_admin) but connected as (${admin.user}, ${admin.database}). Check ADMIN_DATABASE_URL.`,
+        );
+      }
     }
     const pub = await this.#identity(this.#publicRaw);
     if (pub.database !== "cms_public") {
@@ -194,10 +265,12 @@ export class DatabaseAdapter {
   ): Promise<Result<O, QueryError>> {
     if (!this.#skipVerify) await this.verifyRoles();
 
-    const db = op.database === "cms_admin" ? this.#admin : this.#public;
+    const db = op.database === "cms_admin" ? this.#adminDb(`operation ${op.name}`) : this.#public;
+    let publishAfterCommit = false;
 
+    let result: Result<O, QueryError>;
     try {
-      return await db.transaction(async (tx) => {
+      result = await db.transaction(async (tx) => {
         await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
         await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
         await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
@@ -221,7 +294,9 @@ export class DatabaseAdapter {
           if (denied !== null) return err(branchNotFound(op.name, denied));
         }
 
-        return await op.handler(ctx, validatedInput, tx);
+        const out = await op.handler(ctx, validatedInput, tx);
+        if (op.database === "cms_admin") publishAfterCommit = await this.#projectionDirty(tx);
+        return out;
       });
     } catch (thrown) {
       // Run #9 R8 — handler-requested abort: the throw already rolled the
@@ -250,10 +325,22 @@ export class DatabaseAdapter {
         ...(pgDetail ? { pgDetail } : {}),
       });
     }
+    if (publishAfterCommit) {
+      try {
+        await this.#publishAfterCommit();
+      } catch (thrown) {
+        return err({
+          kind: "HandlerError",
+          operation: op.name,
+          message: `The change is saved, but the public site does not serve it yet: publishing it failed (${thrown instanceof Error ? thrown.message : String(thrown)}). Do not repeat the change; it is published automatically within seconds once the public database answers.`,
+        });
+      }
+    }
+    return result;
   }
 
   async close(): Promise<void> {
-    await Promise.all([this.#adminRaw.end(), this.#publicRaw.end()]);
+    await Promise.all([this.#adminRaw?.end(), this.#publicRaw.end()]);
   }
 
   /**
@@ -271,8 +358,10 @@ export class DatabaseAdapter {
     ctx: ExecutionContext,
     fn: (tx: TransactionRunner) => Promise<T>,
   ): Promise<T> {
+    const admin = this.#adminDb("withAdminTransaction");
     if (!this.#skipVerify) await this.verifyRoles();
-    return await this.#admin.transaction(async (tx) => {
+    let publishAfterCommit = false;
+    const out = await admin.transaction(async (tx) => {
       await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
       await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
       await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
@@ -285,12 +374,37 @@ export class DatabaseAdapter {
       if (denied !== null) {
         throw new OperationAbortError(branchNotFound("withAdminTransaction", denied));
       }
+      const result = await fn(tx);
+      publishAfterCommit = await this.#projectionDirty(tx);
+      return result;
+    });
+    // #635 — published state changed: live on the public side before returning.
+    if (publishAfterCommit) await this.#publishAfterCommit();
+    return out;
+  }
+
+  /**
+   * Open a cms_public transaction with the caller's identity set via
+   * session vars and run an arbitrary callback — the cms_public twin of
+   * {@link withAdminTransaction}. cms_public has no chat branches (its rows
+   * are live visitor data), so no branch identity is set or checked.
+   */
+  async withPublicTransaction<T>(
+    ctx: ExecutionContext,
+    fn: (tx: TransactionRunner) => Promise<T>,
+  ): Promise<T> {
+    if (!this.#skipVerify) await this.verifyRoles();
+    return await this.#public.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
+      await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
+      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
       return await fn(tx);
     });
   }
 
   /** Test-only: raw access for fixture setup / adversarial direct queries. */
   rawAdmin(): SQL {
+    if (this.#adminRaw === null) throw new AdminDatabaseUnavailableError("rawAdmin");
     return this.#adminRaw;
   }
   rawPublic(): SQL {
@@ -344,8 +458,9 @@ export class DatabaseAdapter {
    * pool.
    */
   async provisionPluginAdminSchema(opts: { pluginId: string; sql: string }): Promise<void> {
+    const admin = this.#adminDb("provisionPluginAdminSchema");
     if (!this.#skipVerify) await this.verifyRoles();
-    await this.#admin.transaction(async (tx) => {
+    await admin.transaction(async (tx) => {
       await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
       await tx.execute(sql.raw(`SELECT set_config('caelo.plugin_id', '${opts.pluginId}', true)`));
       await tx.execute(sql.raw(opts.sql));
@@ -357,13 +472,14 @@ export class DatabaseAdapter {
    * Same watertight name gate as the cms_public variant.
    */
   async dropPluginAdminSchema(opts: { schemaName: string }): Promise<void> {
+    const admin = this.#adminDb("dropPluginAdminSchema");
     if (!this.#skipVerify) await this.verifyRoles();
     if (!/^plugin_[a-z][a-z0-9_]*$/.test(opts.schemaName)) {
       throw new Error(
         `dropPluginAdminSchema: refusing to drop schema "${opts.schemaName}" — name doesn't match plugin_<slug> pattern`,
       );
     }
-    await this.#admin.transaction(async (tx) => {
+    await admin.transaction(async (tx) => {
       await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
       await tx.execute(sql.raw(`DROP SCHEMA IF EXISTS "${opts.schemaName}" CASCADE`));
     });
@@ -383,7 +499,7 @@ export class DatabaseAdapter {
   }
 
   get admin(): BunSQLDatabase {
-    return this.#admin;
+    return this.#adminDb("admin pool");
   }
   get public(): BunSQLDatabase {
     return this.#public;

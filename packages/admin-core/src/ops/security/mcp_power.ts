@@ -40,7 +40,7 @@
 import { pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { defineOperation, execute } from "@caelo-cms/query-api";
-import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
+import { type ExecutionContext, err, ok, untrustedToolResult } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { buildSkillsContext } from "../../ai/chat-runner/context/skills.js";
@@ -687,7 +687,8 @@ export const mcpExecuteToolOp = defineOperation({
             }).then(
               (r): ToolResult =>
                 r.ok
-                  ? { ok: true, content: JSON.stringify(r.value) }
+                  ? // #635 — plugin data may be visitor-written: data, never instructions.
+                    { ok: true, content: untrustedToolResult(r.value) }
                   : { ok: false, content: `${r.error.kind}: ${r.error.message}` },
             )
           : await tools.dispatch(input.toolName, input.args ?? {}, aiCtx, {

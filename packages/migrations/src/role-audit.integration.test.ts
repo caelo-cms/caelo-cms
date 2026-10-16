@@ -23,7 +23,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SQL } from "bun";
-import { assertRoleIsolation } from "./role-audit.js";
+import { assertPublicDatabaseIsolated, assertRoleIsolation } from "./role-audit.js";
 
 const env = process.env;
 const required = [
@@ -209,6 +209,51 @@ describe("public_role isolation on a Cloud SQL-shaped database (#633)", () => {
       );
     } finally {
       await su.unsafe("REVOKE cloudsqlsuperuser FROM public_role");
+    }
+  });
+});
+
+describe("the public side reaches no cms_admin object (#635)", () => {
+  it("fails the run on a deliberately bad grant, naming it, and passes once it is revoked", async () => {
+    await su.unsafe("GRANT SELECT ON pages TO public_role");
+    await su.unsafe("GRANT UPDATE (title) ON pages TO public_role");
+    try {
+      const run = assertRoleIsolation(admin);
+      await expect(run).rejects.toThrow("public_role holds a privilege on cms_admin table pages");
+      await expect(run).rejects.toThrow(
+        "public_role holds a privilege on cms_admin column pages.title",
+      );
+    } finally {
+      await su.unsafe("REVOKE ALL ON pages FROM public_role");
+    }
+    await expect(assertRoleIsolation(admin)).resolves.toBeDefined();
+  });
+
+  it("fails on a privilege granted to PUBLIC, which every login inherits", async () => {
+    await su.unsafe("GRANT SELECT ON site_settings TO PUBLIC");
+    try {
+      await expect(assertRoleIsolation(admin)).rejects.toThrow(
+        "PUBLIC holds a privilege on cms_admin table site_settings",
+      );
+    } finally {
+      await su.unsafe("REVOKE SELECT ON site_settings FROM PUBLIC");
+    }
+  });
+
+  it("fails when cms_public holds a bridge to other databases", async () => {
+    const pub = new SQL(superuserUrl("cms_public"), { max: 1 });
+    try {
+      await assertPublicDatabaseIsolated(pub);
+      await pub.unsafe("CREATE FOREIGN DATA WRAPPER caelo_t635_fdw");
+      try {
+        await expect(assertPublicDatabaseIsolated(pub)).rejects.toThrow(
+          "cms_public has a foreign data wrapper caelo_t635_fdw",
+        );
+      } finally {
+        await pub.unsafe("DROP FOREIGN DATA WRAPPER caelo_t635_fdw");
+      }
+    } finally {
+      await pub.end();
     }
   });
 });

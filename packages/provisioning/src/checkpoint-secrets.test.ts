@@ -40,7 +40,6 @@ const setupLink = "https://admin.acme.test/setup?token=fakeSetupToken0123456789"
 const stackOutputs = {
   adminDatabaseUrlOut: { value: databaseUrls("10.1.2.3").admin, secret: false },
   publicDatabaseUrlOut: { value: databaseUrls("10.1.2.3").public, secret: false },
-  gatewayDatabaseUrlOut: { value: databaseUrls("10.1.2.3").gateway, secret: false },
   bootstrapUrlOut: { value: setupLink, secret: false },
   bootstrapTokenExpiresAtOut: { value: "2026-10-13T00:00:00.000Z", secret: false },
   providerOut: { value: "gcp", secret: false },

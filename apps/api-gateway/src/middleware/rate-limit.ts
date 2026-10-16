@@ -5,7 +5,8 @@
  *
  * Wraps the existing PostgresRateLimiter with per-(plugin, operation)
  * limits resolved from:
- *   1. `plugin_rate_limit_overrides` row (Owner-set or §11.A approved)
+ *   1. `plugin_rate_limit_overrides` row (Owner-set or §11.A approved), as
+ *      the admin publishes it into cms_public (`published_rate_limits`, #635)
  *   2. plugin manifest's `gateway.rateLimits[op]`
  *   3. default fallback (30 req / 60s)
  *
@@ -51,9 +52,6 @@ export interface RateLimitDecision {
 interface OverrideRow {
   per_visitor_max: number;
   window_seconds: number;
-  profile_name: string | null;
-  profile_per_visitor_max: number | null;
-  profile_window_seconds: number | null;
 }
 
 interface ManifestRateLimits {
@@ -73,7 +71,9 @@ export async function resolveRateLimitSpec(
     return cached.spec;
   }
   // 1. Check overrides table.
-  const rows = await adapter.withAdminTransaction(
+  // The override as the admin published it (#635), its profile already
+  // dereferenced at publish time.
+  const rows = await adapter.withPublicTransaction(
     {
       actorId: "00000000-0000-0000-0000-00000000ffff",
       actorKind: "system",
@@ -81,37 +81,15 @@ export async function resolveRateLimitSpec(
     },
     async (tx) =>
       (await tx.execute(sql`
-        SELECT
-          o.per_visitor_max,
-          o.window_seconds,
-          o.profile_name,
-          p.per_visitor_max AS profile_per_visitor_max,
-          p.window_seconds  AS profile_window_seconds
-        FROM plugin_rate_limit_overrides o
-        LEFT JOIN rate_limit_profiles p ON p.name = o.profile_name
-        WHERE o.plugin_slug = ${pluginSlug} AND o.operation = ${operation}
+        SELECT per_visitor_max, window_seconds
+        FROM published_rate_limits
+        WHERE plugin_slug = ${pluginSlug} AND operation = ${operation}
         LIMIT 1
       `)) as unknown as OverrideRow[],
   );
   let resolved: RateLimitSpec;
   if (rows[0]) {
-    // P13 ideas-pass — profile dereferences first; row's per/window
-    // is the fallback when no profile is named.
-    if (
-      rows[0].profile_name &&
-      rows[0].profile_per_visitor_max !== null &&
-      rows[0].profile_window_seconds !== null
-    ) {
-      resolved = {
-        perVisitorMax: rows[0].profile_per_visitor_max,
-        windowSeconds: rows[0].profile_window_seconds,
-      };
-    } else {
-      resolved = {
-        perVisitorMax: rows[0].per_visitor_max,
-        windowSeconds: rows[0].window_seconds,
-      };
-    }
+    resolved = { perVisitorMax: rows[0].per_visitor_max, windowSeconds: rows[0].window_seconds };
   } else {
     // 2. Plugin manifest.
     const manifestGateway = (
@@ -154,7 +132,7 @@ export async function consumeRateLimit(
   const { key, spec } = args;
   const windowMs = spec.windowSeconds * 1000;
 
-  const row = await adapter.withAdminTransaction(
+  const row = await adapter.withPublicTransaction(
     {
       actorId: "00000000-0000-0000-0000-00000000ffff",
       actorKind: "system",
@@ -170,7 +148,7 @@ export async function consumeRateLimit(
       // Read existing row (NULL on first hit).
       const existing = (await tx.execute(sql`
         SELECT count, window_start, expires_at, tokens_remaining, last_refill_at
-        FROM rate_limit_buckets
+        FROM gateway_rate_limit_buckets
         WHERE key = ${key}
         LIMIT 1
       `)) as unknown as Array<{
@@ -213,7 +191,7 @@ export async function consumeRateLimit(
       const newExpiresIso = new Date(newExpiresAtMs).toISOString();
       const nowIso = new Date(now).toISOString();
       const rs = (await tx.execute(sql`
-        INSERT INTO rate_limit_buckets (key, window_start, count, expires_at, tokens_remaining, last_refill_at)
+        INSERT INTO gateway_rate_limit_buckets (key, window_start, count, expires_at, tokens_remaining, last_refill_at)
         VALUES (${key}, ${nowIso}, ${newCount}, ${newExpiresIso}, ${newTokens}, ${nowIso})
         ON CONFLICT (key) DO UPDATE SET
           window_start    = EXCLUDED.window_start,
@@ -287,7 +265,7 @@ export function rateLimitKey(pluginSlug: string, operation: string, visitorId: s
  * When a visitor presents no signed cookie (fresh visitor OR honeypot
  * branch where we deliberately don't mint one), the bare visitorId
  * is a fresh UUID per request — meaning every bot retry creates a new
- * `rate_limit_buckets` row + escapes per-visitor throttling. Hashing
+ * `gateway_rate_limit_buckets` row + escapes per-visitor throttling. Hashing
  * the request's source IP and combining it with the slug pins the
  * bucket to the (origin, op) pair regardless of cookie state, so a
  * bot can't multiply rows by spinning fresh uuids.

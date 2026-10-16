@@ -108,3 +108,15 @@ export function approverPermissionsForGatedCall(
   const op = registry.lookup(executeOp);
   return op.ok ? approverPermissionsOf(op.value) : null;
 }
+
+/**
+ * #635 — the arguments of a gated PLUGIN tool its approval card shows in
+ * full (`approvalPreviewFullArgs`), because the approver approves their
+ * exact text. Empty for every other tool.
+ */
+export function fullPreviewArgsForGatedCall(toolName: string): readonly string[] {
+  const plugin = pluginToolsRegistry
+    .list()
+    .find(({ spec }) => spec.name === toolName && spec.approvalMode);
+  return plugin?.spec.approvalPreviewFullArgs ?? [];
+}

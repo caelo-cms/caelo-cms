@@ -26,6 +26,15 @@ test("Owner sees AppShell with sidebar nav, can navigate, dark mode persists", a
   // test lives on the admin routes — navigate there explicitly.
   await page.goto("/");
 
+  // Brand mark (#777): the home link keeps its accessible name and shows
+  // the Caelatum mark (decorative SVG), not the old letter-"C" placeholder.
+  const homeLink = page.getByRole("link", { name: "Caelo CMS — Dashboard" });
+  await expect(homeLink).toBeVisible();
+  const mark = homeLink.locator('svg[data-caelo-mark="open"]');
+  await expect(mark).toBeVisible();
+  await expect(mark).toHaveAttribute("aria-hidden", "true");
+  await expect(homeLink).toHaveText("Caelo");
+
   // #779 — the dashboard names the site's Draft / Preview / Live state;
   // each dot is decorative, the label carries the state.
   const siteState = page.getByTestId("site-state");
@@ -35,9 +44,9 @@ test("Owner sees AppShell with sidebar nav, can navigate, dark mode persists", a
     ["preview", "Preview"],
     ["live", "Live"],
   ] as const) {
-    const mark = siteState.locator(`[data-testid="state-dot"][data-state="${state}"]`);
-    await expect(mark).toHaveText(label);
-    await expect(mark.locator('[aria-hidden="true"]')).toHaveCount(1);
+    const stateMark = siteState.locator(`[data-testid="state-dot"][data-state="${state}"]`);
+    await expect(stateMark).toHaveText(label);
+    await expect(stateMark.locator('[aria-hidden="true"]')).toHaveCount(1);
   }
 
   // Sidebar nav contains the expected items for an Owner.

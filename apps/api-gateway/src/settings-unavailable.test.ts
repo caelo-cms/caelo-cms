@@ -11,12 +11,12 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { handleRequest, invalidateGatewaySettings, setGatewayAdapter } from "./server.js";
 
-/** An adapter whose every cms_admin transaction resolves to `rows` or throws `error`. */
+/** An adapter whose every cms_public query returns `rows`, or whose transactions throw `error`. */
 function fakeAdapter(outcome: { rows: unknown[] } | { error: Error }): DatabaseAdapter {
   return {
-    withAdminTransaction: async () => {
+    withPublicTransaction: async (_ctx: unknown, fn: (tx: unknown) => Promise<unknown>) => {
       if ("error" in outcome) throw outcome.error;
-      return outcome.rows;
+      return fn({ execute: async () => outcome.rows });
     },
   } as unknown as DatabaseAdapter;
 }
@@ -60,6 +60,8 @@ describe("settings that cannot be loaded (#613 review)", () => {
     invalidateGatewaySettings();
     const r = await challenge();
     expect(r.status).toBe(503);
-    expect(await r.text()).toContain("site_settings has no row; run the database migrations");
+    expect(await r.text()).toContain(
+      "the admin has not published the gateway settings yet; run the database migrations",
+    );
   });
 });

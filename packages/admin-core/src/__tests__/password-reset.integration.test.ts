@@ -336,6 +336,54 @@ describe("auth.issue_owner_reset (#769)", () => {
     }
   }
 
+  async function countRows(query: "owners" | "tokens"): Promise<number> {
+    const sql = new SQL(ADMIN_URL!);
+    try {
+      let n = 0;
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const rows = (query === "owners"
+          ? await tx`SELECT count(*)::int AS n FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id WHERE r.name = 'owner' AND u.deleted_at IS NULL`
+          : await tx`SELECT count(*)::int AS n FROM password_reset_tokens`) as unknown as {
+          n: number;
+        }[];
+        n = rows[0]?.n ?? 0;
+      });
+      return n;
+    } finally {
+      await sql.end();
+    }
+  }
+
+  async function makeOwner(email: string): Promise<void> {
+    const res = await execute(registry, adapter, systemCtx, "users.create", {
+      email,
+      password: STRONG,
+      displayName: `PWReset ${email}`,
+      roleNames: ["owner"],
+    });
+    if (!res.ok) throw new Error(`owner create failed: ${JSON.stringify(res.error)}`);
+  }
+
+  // Runs first in this describe: the per-file reset leaves no Owner yet.
+  it("refuses on an install without an Owner, audited, and issues no token", async () => {
+    expect(await countRows("owners")).toBe(0);
+    const tokensBefore = await countRows("tokens");
+    const before = await auditRows("no-owner");
+
+    for (const input of [
+      { source: "test owner-reset" },
+      { email: `${EMAIL_PREFIX}ghost@example.test`, source: "test owner-reset" },
+    ]) {
+      const res = await execute(registry, adapter, systemCtx, "auth.issue_owner_reset", input);
+      expect(res.ok).toBe(false);
+      expect(JSON.stringify(res.ok ? null : res.error)).toContain("no Owner account yet");
+    }
+    expect(await auditRows("no-owner")).toBe(before + 1);
+    expect(await auditRows("not-an-owner")).toBeGreaterThanOrEqual(1);
+    expect(await countRows("tokens")).toBe(tokensBefore);
+  });
+
   it("issues a working, audited reset token for a named Owner", async () => {
     const email = `${EMAIL_PREFIX}owner@example.test`;
     const res = await execute(registry, adapter, systemCtx, "users.create", {
@@ -368,6 +416,38 @@ describe("auth.issue_owner_reset (#769)", () => {
       password: STRONG_2,
     });
     expect(login.ok).toBe(true);
+  });
+
+  it("with several Owners, refuses an unnamed reset and names them; --email picks one", async () => {
+    const a = `${EMAIL_PREFIX}owner-a@example.test`;
+    const b = `${EMAIL_PREFIX}owner-b@example.test`;
+    await makeOwner(a);
+    await makeOwner(b);
+    expect(await countRows("owners")).toBeGreaterThanOrEqual(2);
+    const tokensBefore = await countRows("tokens");
+    const before = await auditRows("several-owners");
+
+    const unnamed = await execute(registry, adapter, systemCtx, "auth.issue_owner_reset", {
+      source: "test owner-reset",
+    });
+    expect(unnamed.ok).toBe(false);
+    const message = JSON.stringify(unnamed.ok ? null : unnamed.error);
+    expect(message).toContain(a);
+    expect(message).toContain(b);
+    expect(message).toContain("--email");
+    expect(await auditRows("several-owners")).toBe(before + 1);
+    expect(await countRows("tokens")).toBe(tokensBefore);
+
+    const named = await execute(registry, adapter, systemCtx, "auth.issue_owner_reset", {
+      email: b,
+      source: "test owner-reset by gcloud account operator@example.com (self-asserted)",
+    });
+    if (!named.ok) throw new Error(JSON.stringify(named.error));
+    expect((named.value as { email: string }).email).toBe(b);
+    expect(await countRows("tokens")).toBe(tokensBefore + 1);
+    expect(
+      await auditRows("issued via test owner-reset by gcloud account operator@example.com%"),
+    ).toBe(1);
   });
 
   it("refuses an account that is not an Owner and issues no token", async () => {
