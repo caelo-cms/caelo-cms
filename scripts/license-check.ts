@@ -78,13 +78,13 @@ export const LICENSE_EXCEPTIONS: readonly LicenseException[] = [
     name: "spdx-exceptions",
     license: "CC-BY-3.0",
     reason:
-      "Licence-metadata data file (list of SPDX exception ids), dev-only via the licence checker itself; never shipped.",
+      "Data file (list of SPDX exception ids), not code. Reaches the shipped provisioning closure (npm package and ops image) via @pulumi/pulumi -> @npmcli/arborist -> spdx-expression-parse. CC-BY-3.0 only requires attribution, which the package's own README carries and which ships unmodified inside node_modules.",
   },
   {
     name: "spdx-ranges",
     license: "(MIT AND CC-BY-3.0)",
     reason:
-      "Licence-metadata data file (SPDX licence ranges), dev-only via the licence checker itself; never shipped.",
+      "Data file (SPDX licence ranges), not code. Dev-only: reached solely through the licence checker (license-checker-rseidelsohn -> spdx-satisfies), a root devDependency; no image or published package contains it.",
   },
   {
     name: "pako",

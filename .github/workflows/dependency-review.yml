@@ -63,7 +63,8 @@ jobs:
           # - OFL-1.1 for the admin's two self-hosted brand fonts (issue #778).
           # - LGPL-3.0-or-later for the prebuilt libvips of every sharp
           #   platform (issue #794), so a sharp bump does not trip the gate.
-          # - CC-BY-3.0 SPDX data files (dev-only) and pako's Zlib component.
+          # - CC-BY-3.0 SPDX data files (attribution-only, not code) and pako's
+          #   Zlib component.
           allow-dependencies-licenses: >-
             pkg:npm/@fontsource-variable/schibsted-grotesk,
             pkg:npm/@fontsource/ibm-plex-mono,

@@ -160,8 +160,11 @@ lockstep; `scripts/font-license-exception.test.ts` guards the font rule.
   `/app/THIRD_PARTY_NOTICES.txt` (package and bundled library versions, the
   `lovell/sharp-libvips` release for corresponding source, and the LGPL-3.0 and
   GPL-3.0 texts from `licenses/`).
-- **CC-BY-3.0** for the dev-only SPDX data packages `spdx-exceptions` and
-  `spdx-ranges`, **Zlib** for `pako`, and `@logdna/tail-file` 2.2.0, whose
+- **CC-BY-3.0** for the SPDX data packages `spdx-exceptions` and
+  `spdx-ranges`: data files, not code, under an attribution-only licence.
+  `spdx-ranges` is dev-only (licence checker); `spdx-exceptions` also ships in
+  the provisioning closure through Pulumi, with its attribution intact in its
+  README. **Zlib** for `pako`, and `@logdna/tail-file` 2.2.0, whose
   LICENSE file is the MIT text but whose `package.json` reports no SPDX id.
 
 On failure it posts a single summary comment on the PR
