@@ -57,16 +57,19 @@ export interface SystemContextResult {
   newlyActivatedSkills: ReadonlyArray<{ slug: string; description: string }>;
   /**
    * Cold-start status ("Theme: needs setup", …), each entry naming the tool
-   * that fixes it. Rides on the USER message (first + on change); undefined once
-   * the site's foundation is complete.
+   * that fixes it, plus follow-ups the AI should offer rather than do (the
+   * 404 page). Rides on the USER message (first + on change); undefined once
+   * neither remains.
    */
   statusLine: string | undefined;
 }
 
 /**
- * Derive the cold-start status. Each entry names the tool that fixes it — the
- * AI acts without asking. Exported for unit tests; production callers go through
- * buildSystemContextBlocks.
+ * Derive the cold-start status. Each base-setup entry names the tool that
+ * fixes it — the AI acts without asking. Follow-ups that are not base setup
+ * (the 404 page) form a second segment the AI offers to the operator at the
+ * end of its turn instead of doing them unprompted. Exported for unit tests;
+ * production callers go through buildSystemContextBlocks.
  */
 export function buildStatusLine(args: {
   layoutsValue: unknown;
@@ -115,17 +118,32 @@ export function buildStatusLine(args: {
       "Theme: needs setup — active theme is a gray SEED; compose a full brand palette via set_theme_tokens + set_theme_meta BEFORE authoring visitor-facing pages",
     );
   }
+  // Gaps that are worth closing but are NOT base setup: the site works and
+  // publishes without them. They go in their own segment that tells the AI
+  // to OFFER the work, never to do it unprompted — listed among the base
+  // gaps, the 404 page read as a to-do: the AI built, published and
+  // designated an extra page inside the operator's "build me a homepage"
+  // turn and, now in site-chores mode, went on to build stub pages for its
+  // nav links (e2e-livedit run 38915969785: a 24-loop homepage turn, 2.73M
+  // input tokens for the scenario against a 2.0M ceiling).
+  const offers: string[] = [];
   // #802 — without a designated 404 page the build ships no /404.html and
   // every unknown URL shows the hosting provider's generic error page. Not
-  // a build failure (that would block every Stage on existing sites), so
-  // the AI is told here and closes the gap itself. Strictly null, like the
-  // site language: an absent field is not evidence.
+  // a build failure (that would block every Stage on existing sites).
+  // Strictly null, like the site language: an absent field is not evidence.
   if (defaults && defaults.notFoundPageId === null)
-    missing.push(
-      "404 page: not designated — unknown URLs show the hosting provider's generic error page instead of the site's design (build_page a short 'Page not found' page with the site's normal template and links back home, publish it with set_pages_status_many, then set_not_found_page({pageId}); do it once the theme and homepage exist)",
+    offers.push(
+      "404 page: not designated — unknown URLs show the hosting provider's generic error page instead of the site's design (once the operator agrees: build_page a short 'Page not found' page with the site's normal template and links back home, publish it with set_pages_status_many, then set_not_found_page({pageId}))",
     );
-  if (missing.length === 0) return undefined;
-  return `[Site status — base setup still missing] ${missing.join(" | ")}`;
+  const segments: string[] = [];
+  if (missing.length > 0)
+    segments.push(`[Site status — base setup still missing] ${missing.join(" | ")}`);
+  if (offers.length > 0)
+    segments.push(
+      `[Site status — worth offering, NOT part of this request] ${offers.join(" | ")}. Do not do this work in the current turn unless the operator asked for it; finish what they asked, then offer it in one sentence of your closing summary.`,
+    );
+  if (segments.length === 0) return undefined;
+  return segments.join("\n");
 }
 
 /**

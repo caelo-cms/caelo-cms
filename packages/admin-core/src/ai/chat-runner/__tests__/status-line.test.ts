@@ -2,9 +2,10 @@
 
 /**
  * 2026-07 — the `[Site status]` line (kept from the prompt-diet A/B).
- * It rides on the user message ONLY while base setup is missing; a
- * complete foundation must yield `undefined` so steady-state turns
- * carry zero status overhead. Each gap names the tool that fixes it.
+ * It rides on the user message ONLY while base setup is missing or a
+ * follow-up is worth offering; a complete site must yield `undefined` so
+ * steady-state turns carry zero status overhead. Each gap names the tool
+ * that fixes it.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -86,7 +87,7 @@ describe("buildStatusLine", () => {
     expect(line).toContain("Site language: not set");
   });
 
-  it("#802: flags a missing 404 page and names the tools that fix it", () => {
+  it("#802: offers a missing 404 page instead of listing it as a to-do", () => {
     const line = buildStatusLine({
       ...COMPLETE,
       siteDefaultsValue: { defaults: { siteName: "Acme", notFoundPageId: null } },
@@ -94,6 +95,12 @@ describe("buildStatusLine", () => {
     expect(line).toContain("404 page: not designated");
     expect(line).toContain("set_not_found_page({pageId})");
     expect(line).toContain("build_page");
+    // Not base setup: listed as a "base setup still missing" to-do the AI
+    // built a 404 page inside a homepage turn (e2e-livedit run 38915969785).
+    expect(line).not.toContain("base setup still missing");
+    expect(line).toStartWith("[Site status — worth offering, NOT part of this request]");
+    expect(line).toContain("Do not do this work in the current turn unless the operator asked");
+    expect(line).toContain("offer it in one sentence of your closing summary");
     expect(
       buildStatusLine({
         ...COMPLETE,
@@ -104,6 +111,20 @@ describe("buildStatusLine", () => {
     ).toBeUndefined();
     // Only an explicit null counts — a read without the field is not evidence.
     expect(buildStatusLine(COMPLETE)).toBeUndefined();
+  });
+
+  it("#802: keeps base-setup gaps and the 404 offer in separate segments", () => {
+    const line = buildStatusLine({
+      ...COMPLETE,
+      activeTheme: { origin: "seed" },
+      siteDefaultsValue: { defaults: { siteName: "Acme", notFoundPageId: null } },
+    });
+    const [base, offer] = (line ?? "").split("\n");
+    expect(base).toStartWith("[Site status — base setup still missing]");
+    expect(base).toContain("Theme: needs setup");
+    expect(base).not.toContain("404 page");
+    expect(offer).toStartWith("[Site status — worth offering, NOT part of this request]");
+    expect(offer).toContain("404 page: not designated");
   });
 
   it("treats a seed-origin theme as needing setup even when one is active", () => {
