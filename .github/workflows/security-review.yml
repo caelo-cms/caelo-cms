@@ -160,7 +160,7 @@ jobs:
           # scoped only; root files (bun.lock, package.json, tsconfig*) fall
           # through, which is acceptable because the action's diff-aware
           # scanner has nothing to flag on routine lockfile updates.
-          exclude-directories: node_modules,dist,.svelte-kit,build,docs-site/.astro,packages/migrations/sql,coverage,.turbo,test-results,playwright-report
+          exclude-directories: node_modules,dist,.svelte-kit,build,packages/migrations/sql,coverage,.turbo,test-results,playwright-report
           # Caelo house rules appended to the action's default audit prompt.
           # Teaches the reviewer to cite CLAUDE.md §2 / §4 / §7 / §11.A.
           # Read from the BASE ref's trusted copy (not the PR head) so a

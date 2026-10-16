@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The "Open in Cloud Shell" install links in the README and the docs pin
- * the release they install (`cloudshell_git_branch=release-v<version>`,
+ * The "Open in Cloud Shell" install links in the README pin the release
+ * they install (`cloudshell_git_branch=release-v<version>`,
  * epic #696). scripts/release.ts moves them to each new stable release in
  * the release commit; cloud-shell-links.test.ts checks they always name the
  * current version.
@@ -12,13 +12,12 @@
  * GitHub Release is published (it polls every 30 minutes).
  */
 
-/** Files carrying Cloud Shell install links (repo-relative). */
-export const CLOUD_SHELL_LINK_FILES: readonly string[] = [
-  "README.md",
-  "docs-site/pages/index.md",
-  "docs-site/pages/quickstart.md",
-  "docs-site/pages/install-gcp.md",
-];
+/**
+ * Files carrying Cloud Shell install links (repo-relative). The end-user
+ * docs at caelo-cms.com/docs/ are site content, not repo files, so their
+ * links are moved on the site, not here.
+ */
+export const CLOUD_SHELL_LINK_FILES: readonly string[] = ["README.md"];
 
 /** The pinned branch inside a Cloud Shell install link. */
 export const CLOUD_SHELL_BRANCH = /cloudshell_git_branch=release-v(\d+\.\d+\.\d+)/g;

@@ -1,112 +1,132 @@
-# Caelo CMS
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./.github/brand/caelo-mark-dark.svg">
+    <img src="./.github/brand/caelo-mark-light.svg" width="72" height="72" alt="Caelo logo">
+  </picture>
+</p>
 
-**AI-first, open-source CMS.** Built for the AI agent as the primary user — humans configure, AI authors. Self-hostable on a single VM or one-click deploy to GCP / AWS / Azure. MPL 2.0.
+<h1 align="center">Caelo</h1>
 
-[![CI](https://github.com/caelo-cms/caelo-cms/actions/workflows/ci.yml/badge.svg)](https://github.com/caelo-cms/caelo-cms/actions/workflows/ci.yml)
-[![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](./LICENSE)
-[![Docs](https://img.shields.io/badge/docs-caelo--cms.com-blue)](https://caelo-cms.com)
+<p align="center">
+  <strong>Open-source CMS for websites run with AI.</strong><br>
+  The AI does the work. Caelo keeps your site in shape.
+</p>
+
+<p align="center">
+  <a href="https://github.com/caelo-cms/caelo-cms/actions/workflows/ci.yml"><img src="https://github.com/caelo-cms/caelo-cms/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg" alt="License: MPL 2.0"></a>
+  <a href="https://caelo-cms.com/docs/"><img src="https://img.shields.io/badge/docs-caelo--cms.com-blue" alt="Docs"></a>
+</p>
 
 ---
 
-## What it does
+An AI can build a good-looking website in minutes. Running it is the hard part: the tenth page should match the first, a colleague should be able to change something without breaking the design, a mistake should be easy to take back, and nobody should reach your data through an exposed admin login.
 
-You talk to your site. The AI agent edits modules, drafts pages, optimises SEO, moderates comments, proposes layout changes — every action lands as a draft snapshot, you review, you publish. The architecture is layered so the AI can't ship a page without your click; the chat surface drives every routine task; the live-edit overlay shows your real site while you work.
+Caelo is built for that second day. You describe what you want, in the chat next to your live site or from your own agent. The AI builds it from your site's own parts. You review it, and you decide what goes live.
 
-```
-talk → preview → publish.
-```
+## Why Caelo
 
-Behind that loop sits a small, opinionated kernel: two isolated Postgres roles with RLS forced on every table, a Query API chokepoint that gates every write, a snapshot system where every change is reverted by clicking back through chat history, a plugin host that runs core code in-process and sandboxes everything else in Deno, and provisioning that hands you SSL + cron + DB backups on the first run.
+### One system instead of loose pages
 
-## Install in one line
+Everything the AI builds comes from the same parts, so the site stays consistent and maintainable.
+
+- Pages are assembled from layouts, templates and modules, styled by one theme. A page never holds raw HTML of its own.
+- Plugins for languages, cookie consent, forms, newsletter, comments, ratings and visitor login ship with Caelo.
+- SEO is structured fields (meta, canonical, Open Graph, JSON-LD, sitemap), not hand-written `<head>` markup. Moving a page creates its redirect.
+- Staged builds get a Lighthouse quality check; a failed check keeps the site from going live until it is fixed or explicitly accepted.
+
+### You decide
+
+The AI works a lot and fast, but never over your head.
+
+- Every change lands in a draft. The AI can stage its finished work for review; **Publish live is always a human click.**
+- Hard-to-undo actions (deploys, users and roles, domains, themes and layouts, plugins, bulk deletes, URL moves) pause for your approval right in the chat.
+- Every write is a snapshot. Undo works per chat; whole pages, modules or the site can be reverted.
+- The same rules apply whether the work comes from the admin chat, the live-edit overlay or your own agent over MCP.
+
+### Separated worlds
+
+Visitors only ever reach finished pages. Where the site is built, nobody gets in without logging in.
+
+- The public site is static HTML, served from object storage behind a CDN or from Caddy. Visitor writes (forms, comments, ratings) go through a separate, rate-limited API gateway that never holds admin credentials.
+- On Google Cloud, the admin sits behind Identity-Aware Proxy before Caelo's own login is even reached.
+- Two Postgres databases with isolated roles: authoring data and public plugin data never share one. Row-level security is forced on every table.
+- Plugins the AI writes run in a Deno sandbox with no file, network or environment access, and get only the permissions the Owner grants for that exact version. Release images are signed and verified on install and on every upgrade.
+
+### Getting there, and running it
+
+- **Moving an existing site:** the AI crawls it (after you approve the crawl), rebuilds it page by page in Caelo, sets up redirects and reports what it carried over.
+- **Your infrastructure, your AI:** MPL 2.0, running in your own cloud account or on your own server. Pick the model provider (Anthropic, OpenAI, Google, or a local OpenAI-compatible endpoint), see every AI call in the cost dashboard and cap it with budgets. Or drive the site from your own agent (Claude Code and others) over MCP, so the AI work runs on your agent's account instead of Caelo's.
+
+## Status
+
+**Pre-1.0, under active development.** Its own website, caelo-cms.com, is a Caelo install, but expect rough edges and breaking changes before 1.0. What works today: self-hosted with Docker Compose, and Google Cloud (`gcp`, `gcp-firebase`). AWS and Azure are planned, not available yet.
+
+Until 1.0, Caelo deliberately fails loudly with a structured error where it could otherwise fall back to a silent default (`CLAUDE.md` §2). That rule is relaxed at 1.0 with a documented breaking-change policy.
+
+## Install
+
+### Self-hosted
+
+On a Linux host with Docker and Bun, in the directory that should hold the install:
 
 ```bash
 bunx @caelo-cms/provisioning@latest --provider self-hosted --domain example.com --owner-email you@example.com
 ```
 
-That stands up Postgres + Caddy (with auto-SSL) + the admin app + the API gateway as a Docker Compose stack, runs the migrations and health-checks it. It works on any Linux box with Docker + Bun.
+That writes the configuration to `.caelo/`, starts Postgres, Caddy (automatic TLS), the admin app and the API gateway as a Docker Compose stack from signed, prebuilt images, and runs the migrations. Backups are `pg_dump`s plus the media and site files.
 
-### One click on Google Cloud
+### Google Cloud, from the browser
 
-No laptop needed — install into your own Google Cloud project from the browser:
+No laptop needed: install into your own Google Cloud project from Cloud Shell.
 
 | | |
 |---|---|
 | Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp.md) |
 | Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp-firebase.md) |
 
-Cloud Shell opens a short tutorial: sign in, run `./run.sh`, answer a few questions, confirm the monthly cost. The install then runs as a job in your project — closing the tab doesn't stop it, and clicking the button again picks it up. The links are pinned to this release; `run.sh` verifies the provisioner's npm provenance and the release's signed manifest before anything runs ([how](https://github.com/caelo-cms/install#what-happens-when-you-click)).
+Cloud Shell opens a short tutorial: sign in, run `./run.sh`, answer a few questions, confirm the monthly cost. The install then runs as a job in your project, so closing the tab doesn't stop it, and clicking the button again picks it up. The links are pinned to this release; `run.sh` verifies the provisioner's npm provenance and the release's signed manifest before anything runs ([how](https://github.com/caelo-cms/install#what-happens-when-you-click)).
 
-For cloud from a terminal:
-
-```bash
-bunx @caelo-cms/provisioning@latest --provider gcp     # or aws, or azure
-```
-
-Cloud paths use Pulumi to spin up Cloud SQL HA + managed object storage + the platform's CDN + Secret Manager + Cloud Run / Lambda / Container Apps. You get staging + production as separate stacks; staging is `noindex` by default.
-
-Talk to your install from your IDE (Claude Code, etc.) without opening the browser:
+### Google Cloud, from a terminal
 
 ```bash
-claude mcp add caelo --command "bunx @caelo-cms/mcp-server@latest" \
-  --env CAELO_ADMIN_URL=https://your-install.example.com \
-  --env CAELO_MCP_TOKEN=$(your minted bearer)
+bunx @caelo-cms/provisioning@latest --provider gcp     # or gcp-firebase
 ```
 
-Mint the bearer at `/settings/mcp` on your install.
+The wizard creates or reuses the project, prints a monthly cost estimate before anything billable is created, and provisions Cloud Run, Cloud SQL, the static hosting and Secret Manager with Pulumi. Staging is `noindex` and can be password-protected.
+
+After any install, open the setup link it prints, create the Owner account and pick your AI provider. Everything else happens in the chat.
+
+## Drive it from your own agent
+
+`@caelo-cms/mcp-server` connects any MCP client to your install, in one of two modes:
+
+- **`caelo_chat`**: you describe an outcome, Caelo's own AI does the work.
+- **Power-MCP**: your agent gets Caelo's full tool catalogue and runs the loop itself; by default Caelo makes no AI calls of its own.
+
+Either way the agent works in the draft, and publishing stays with a human. Mint a token at `/settings/mcp` on your install; the page shows the exact `claude mcp add` command for it.
 
 ## Documentation
 
-The docs site at **[caelo-cms.com](https://caelo-cms.com)** is itself a Caelo install. Quickstart per provider, architecture overview, plugin authoring, security policy, changelog — all there.
+User docs (install, editing, plugins, MCP, security) live at **[caelo-cms.com/docs](https://caelo-cms.com/docs/)**, built in Caelo itself.
 
-For contributors: read **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** and **[`CLAUDE.md`](./CLAUDE.md)** before opening a PR. The architecture overview lives in **[`ARCHITECTURE.md`](./ARCHITECTURE.md)**, and the canonical product spec is **[`CMS_REQUIREMENTS.md`](./CMS_REQUIREMENTS.md)**.
-
-## What's in the box
-
-- **Pages, modules, templates, layouts** — composed by reference, never by raw HTML on a page.
-- **Two-database split** — `cms_admin` (authoring) + `cms_public` (visitor + plugin data) with RLS forced on every table.
-- **Live-edit overlay** — your real site in a chrome-less iframe + a floating chat overlay; click any element, ask the AI, watch it change in place.
-- **Snapshot versioning + chat-keyed Undo** — every write emits a snapshot; every revert is one click.
-- **i18n as a plugin** — core is locale-agnostic (globally unique slugs, one designated homepage); multi-language sites arrive with the first-party `international-site` plugin (epic #380).
-- **Skills system** — Claude-style skill bodies the AI engages per turn, Owner-curated, AI-proposable.
-- **Subagents** — the AI spawns parallel reasoning loops (QA, brand-voice, legal-check) on demand.
-- **One plugin model** — shipped or AI-built at runtime, every plugin gets the same small base (its own tables) and everything else only as an Owner-approved grant for that exact version; core data only through named Query API operations, never a direct write to live.
-- **Five core plugins** — forms, comments, newsletter, ratings, visitor auth (email/password + OAuth via Arctic).
-- **API gateway** with rate-limiting + CAPTCHA / PoW + honeypot + debounced auto-redeploy.
-- **Multi-provider AI** — Anthropic / OpenAI / Google / local OpenAI-compat behind a provider abstraction; per-(scope × operation_type) budgets enforced independently.
-- **Pulumi provisioning** — self-hosted + GCP + AWS + Azure adapters; one-line bootstrap to TLS-served staging + production.
-- **MCP server** — drive your install from any MCP-aware client; same agent the live-edit chat uses.
-
-## Status
-
-**Pre-1.0 (v0.1.0).** The product surface is complete; the OSS launch is the dogfooding pass. Expect rough edges in the first 30 days; we fix in real-time and ship paper-cut releases.
-
-The pre-1.0 invariant from `CLAUDE.md` §2: every code path that could "default to something sensible when data is missing" instead **fails loudly with a structured error**. That rule is relaxed deliberately at 1.0.0 with a documented breaking-change policy.
+For contributors: read **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** and **[`CLAUDE.md`](./CLAUDE.md)** before opening a PR. The architecture overview is in **[`ARCHITECTURE.md`](./ARCHITECTURE.md)**, the product spec in **[`CMS_REQUIREMENTS.md`](./CMS_REQUIREMENTS.md)**.
 
 ## Roadmap
 
-The roadmap lives on the GitHub Project board: **[Caelo Roadmap](https://github.com/orgs/caelo-cms/projects/1)**. Issues are tagged with Area, Priority, and Size; statuses move through Backlog → Ready → In progress → In review → Done.
-
-Current shape (v0.3.x → 1.0):
-
-- **AI surface** — voice input into the chat composer, then AI-provider STT (Whisper et al.), eventually a real-time voice mode (two-way audio with the AI). Engaged-skills panel on every chat session.
-- **Plugin tier** — Owner UI for activating / deactivating plugins, AI-proposable activation via the propose/execute pattern, ship-default of only essential plugins active.
-- **Cloud provisioning** — AWS + Azure adapters to parity with GCP, DNS adapter abstraction (Cloudflare / Route53 / Cloud DNS / Azure DNS).
-- **Engineering hygiene** — `knip` + `madge` + coverage thresholds in CI, branch protection on `main`, automated AI code review on every PR, splitting the codebase's largest files, extracting Query API op boilerplate.
-
-See the board for the full list and current status.
+The roadmap lives on the GitHub Project board: **[Caelo Roadmap](https://github.com/orgs/caelo-cms/projects/1)**. Issues are tagged with Area, Priority and Size and move through Backlog, Ready, In progress, In review and Done.
 
 ## Local development
 
-Prerequisites: [Bun](https://bun.sh/) ≥ 1.3, Docker + Docker Compose, [Deno](https://deno.com) ≥ 2 (for the plugin sandbox), an Anthropic API key.
+Prerequisites: [Bun](https://bun.sh/) 1.3.13 or newer, Docker with Docker Compose, [Deno](https://deno.com) 2 or newer (for the plugin sandbox), and an API key for an AI provider.
 
 ```bash
 git clone https://github.com/caelo-cms/caelo-cms.git
 cd caelo-cms
-cp .env.example .env                  # then add ANTHROPIC_API_KEY
+cp .env.example .env                  # then add your AI provider key
 bun install
-docker compose up -d                  # postgres + caddy
-bun run db:migrate                    # both cms_admin + cms_public migrations
+docker compose up -d                  # Postgres + Caddy
+bun run db:migrate                    # cms_admin + cms_public migrations
 bun run --filter @caelo-cms/admin seed:dev
 bun run --filter @caelo-cms/admin dev     # admin at http://localhost:5173
 ```
@@ -114,15 +134,15 @@ bun run --filter @caelo-cms/admin dev     # admin at http://localhost:5173
 Verify before opening a PR:
 
 ```bash
-bun run lint            # biome + audit-callsites + SPDX
-bun run typecheck       # tsc -b across the whole workspace
-bun test                # unit + integration; needs Postgres up
+bun run lint            # Biome + audit-callsites + SPDX headers
+bun run typecheck
+bun run test            # unit + integration; truncates the databases in .env, so never point it at data you want to keep
 bun run license:check   # transitive license allowlist
 ```
 
 ## License
 
-[MPL 2.0](./LICENSE). Maximum freedom for developers and hosting providers; modifications to core files stay open; one license, no dual-licensing.
+[MPL 2.0](./LICENSE). Maximum freedom for developers and hosting providers; modifications to core files stay open; one license, no dual licensing.
 
 All dependencies are MPL-2.0-compatible (MPL-2.0, Apache-2.0, MIT, BSD, ISC). `bun run license:check` enforces this in CI.
 
