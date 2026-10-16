@@ -6,6 +6,7 @@ import {
   processClaimedRun,
   resolveStagingOrigin,
   stagedPageUrl,
+  stagedUrlOfPage,
   toDisplayUrl,
 } from "../audit-worker.js";
 import { testCheckRegistry } from "../checks/__tests__/fixtures/test-checks.js";
@@ -23,11 +24,38 @@ function run(overrides: Partial<ClaimedAuditRun> = {}): ClaimedAuditRun {
     siteUrl: null,
     env: "staging",
     outDir: "output/staging",
-    pages: [{ pageId: "00000000-0000-4000-8000-0000000000cc", currentPath: "/" }],
-    checkPages: [{ pageId: "00000000-0000-4000-8000-0000000000cc", currentPath: "/" }],
+    pages: [
+      { pageId: "00000000-0000-4000-8000-0000000000cc", currentPath: "/", isNotFoundPage: false },
+    ],
+    checkPages: [
+      { pageId: "00000000-0000-4000-8000-0000000000cc", currentPath: "/", isNotFoundPage: false },
+    ],
     ...overrides,
   };
 }
+
+describe("stagedUrlOfPage (#802)", () => {
+  it("loads the designated 404 page from /404.html, never from its own path", () => {
+    // Its own path answers 404 by design; auditing it there failed the
+    // gate with Chrome's error interstitial.
+    for (const style of ["directory", "no-extension"] as const) {
+      expect(
+        stagedUrlOfPage(
+          "https://staging.example.com/",
+          { currentPath: "/404", isNotFoundPage: true },
+          style,
+        ),
+      ).toBe("https://staging.example.com/404.html");
+    }
+    expect(
+      stagedUrlOfPage(
+        "https://staging.example.com",
+        { currentPath: "/pricing", isNotFoundPage: false },
+        "directory",
+      ),
+    ).toBe("https://staging.example.com/pricing/");
+  });
+});
 
 describe("stagedPageUrl", () => {
   it("matches the generator's directory layout (trailing slash, no redirect)", () => {

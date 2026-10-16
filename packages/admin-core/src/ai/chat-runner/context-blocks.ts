@@ -82,7 +82,11 @@ export function buildStatusLine(args: {
   const defaults =
     (
       args.siteDefaultsValue as {
-        defaults?: { siteName?: string | null; siteLanguage?: string | null } | null;
+        defaults?: {
+          siteName?: string | null;
+          siteLanguage?: string | null;
+          notFoundPageId?: string | null;
+        } | null;
       } | null
     )?.defaults ?? null;
   if (layouts.length === 0) missing.push("Layout: needs setup (create_layout)");
@@ -111,6 +115,15 @@ export function buildStatusLine(args: {
       "Theme: needs setup — active theme is a gray SEED; compose a full brand palette via set_theme_tokens + set_theme_meta BEFORE authoring visitor-facing pages",
     );
   }
+  // #802 — without a designated 404 page the build ships no /404.html and
+  // every unknown URL shows the hosting provider's generic error page. Not
+  // a build failure (that would block every Stage on existing sites), so
+  // the AI is told here and closes the gap itself. Strictly null, like the
+  // site language: an absent field is not evidence.
+  if (defaults && defaults.notFoundPageId === null)
+    missing.push(
+      "404 page: not designated — unknown URLs show the hosting provider's generic error page instead of the site's design (build_page a short 'Page not found' page with the site's normal template and links back home, publish it with set_pages_status_many, then set_not_found_page({pageId}); do it once the theme and homepage exist)",
+    );
   if (missing.length === 0) return undefined;
   return `[Site status — base setup still missing] ${missing.join(" | ")}`;
 }

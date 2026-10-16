@@ -343,6 +343,17 @@ export const enqueueAuditOp = defineOperation({
   },
 });
 
+/**
+ * A page the audit loads. #802 — the designated 404 page is built as
+ * `/404.html`, never at its own path, so the worker must load it there
+ * (`isNotFoundPage`); its `currentPath` stays the page's identity in reports.
+ */
+const claimedAuditPage = z.object({
+  pageId: z.string(),
+  currentPath: z.string(),
+  isNotFoundPage: z.boolean(),
+});
+
 const claimedRunSchema = z.object({
   auditRunId: z.string(),
   deployRunId: z.string(),
@@ -361,10 +372,10 @@ const claimedRunSchema = z.object({
   env: z.string(),
   outDir: z.string(),
   /** Lighthouse's pages (empty when this Stage needs no Lighthouse). */
-  pages: z.array(z.object({ pageId: z.string(), currentPath: z.string() })),
+  pages: z.array(claimedAuditPage),
   /** #727 — every published page of the staged build, homepage first:
    *  what the findings checks read. */
-  checkPages: z.array(z.object({ pageId: z.string(), currentPath: z.string() })),
+  checkPages: z.array(claimedAuditPage),
 });
 
 export const claimNextAuditOp = defineOperation({
@@ -438,20 +449,25 @@ export const claimNextAuditOp = defineOperation({
       });
     }
     const pages = (await tx.execute(sql`
-      SELECT t.id::text AS page_id, p.current_path
+      SELECT t.id::text AS page_id, p.current_path,
+             (sd.not_found_page_id IS NOT NULL AND sd.not_found_page_id = p.id) AS is_not_found
       FROM unnest(${uuidList(row.target_page_ids)}) WITH ORDINALITY AS t(id, ord)
       JOIN pages p ON p.id = t.id
+      LEFT JOIN site_defaults sd ON sd.id = 1
       WHERE p.status = 'published' AND p.deleted_at IS NULL
       ORDER BY t.ord
-    `)) as unknown as { page_id: string; current_path: string }[];
+    `)) as unknown as AuditPageRow[];
     // The staged build holds exactly the published pages of main
     // (deploy/draft-pages.ts); a page published or deleted since the build
     // shows up as a page staging does not serve / a dropped result.
     const checkPages = (await tx.execute(sql`
-      SELECT id::text AS page_id, current_path FROM pages
-      WHERE status = 'published' AND deleted_at IS NULL AND chat_branch_id IS NULL
-      ORDER BY (current_path = '/') DESC, current_path
-    `)) as unknown as { page_id: string; current_path: string }[];
+      SELECT p.id::text AS page_id, p.current_path,
+             (sd.not_found_page_id IS NOT NULL AND sd.not_found_page_id = p.id) AS is_not_found
+      FROM pages p
+      LEFT JOIN site_defaults sd ON sd.id = 1
+      WHERE p.status = 'published' AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
+      ORDER BY (p.current_path = '/') DESC, p.current_path
+    `)) as unknown as AuditPageRow[];
     return ok({
       run: {
         auditRunId: row.id,
@@ -462,10 +478,24 @@ export const claimNextAuditOp = defineOperation({
         siteUrl: info.site_url,
         env: info.env,
         outDir: info.out_dir,
-        pages: pages.map((p) => ({ pageId: p.page_id, currentPath: p.current_path })),
-        checkPages: checkPages.map((p) => ({ pageId: p.page_id, currentPath: p.current_path })),
+        pages: pages.map(toClaimedAuditPage),
+        checkPages: checkPages.map(toClaimedAuditPage),
       },
       superseded: superseded.length,
     });
   },
 });
+
+interface AuditPageRow {
+  page_id: string;
+  current_path: string;
+  is_not_found: boolean;
+}
+
+function toClaimedAuditPage(r: AuditPageRow): z.infer<typeof claimedAuditPage> {
+  return {
+    pageId: r.page_id,
+    currentPath: r.current_path,
+    isNotFoundPage: r.is_not_found === true,
+  };
+}

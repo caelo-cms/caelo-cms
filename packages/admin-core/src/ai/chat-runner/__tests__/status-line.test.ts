@@ -86,6 +86,26 @@ describe("buildStatusLine", () => {
     expect(line).toContain("Site language: not set");
   });
 
+  it("#802: flags a missing 404 page and names the tools that fix it", () => {
+    const line = buildStatusLine({
+      ...COMPLETE,
+      siteDefaultsValue: { defaults: { siteName: "Acme", notFoundPageId: null } },
+    });
+    expect(line).toContain("404 page: not designated");
+    expect(line).toContain("set_not_found_page({pageId})");
+    expect(line).toContain("build_page");
+    expect(
+      buildStatusLine({
+        ...COMPLETE,
+        siteDefaultsValue: {
+          defaults: { siteName: "Acme", notFoundPageId: "00000000-0000-0000-0000-000000000404" },
+        },
+      }),
+    ).toBeUndefined();
+    // Only an explicit null counts — a read without the field is not evidence.
+    expect(buildStatusLine(COMPLETE)).toBeUndefined();
+  });
+
   it("treats a seed-origin theme as needing setup even when one is active", () => {
     const line = buildStatusLine({ ...COMPLETE, activeTheme: { origin: "seed" } });
     expect(line).toContain("Theme: needs setup");
