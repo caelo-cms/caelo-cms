@@ -746,9 +746,10 @@ describe("read surfaces", () => {
     const audit = await getQualityAuditTool.handler(AI, { auditRunId: problems[0]?.id }, toolCtx);
     expect(audit.ok).toBe(true);
     // The newest problems run: /about at Accessibility 94 (worse than the
-    // accepted 95) with its accepted image-alt finding.
+    // accepted 95, and than its previous audit) with its accepted image-alt
+    // finding.
     expect(audit.content).toContain(
-      "PROBLEM Accessibility score 94 is below the target 100 — not good enough",
+      "PROBLEM Accessibility score 94 is below the target 100 — DROPPED since this page's previous audit (95 → 94): check the changes since then first — not good enough",
     );
     expect(audit.content).toContain(
       "ACCEPTED by an editor (does not block; leave it unless asked) failing audit `image-alt`",

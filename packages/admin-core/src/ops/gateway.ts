@@ -19,6 +19,13 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import {
+  parseUntrustedRows,
+  untrustedErrorKind,
+  untrustedOperation,
+  untrustedSlug,
+  untrustedTimestamp,
+} from "../untrusted/public-data.js";
 import { requiresApproverPermission } from "./_approver-permission.js";
 
 const captchaProvider = z.enum(["off", "pow", "turnstile", "hcaptcha"]);
@@ -218,10 +225,33 @@ export const rotateCookieSecretOp = defineOperation({
   },
 });
 
+/**
+ * One `gateway_request_log` row as the public side wrote it (#635): every
+ * field bounded and shaped, or the row is dropped at the boundary.
+ */
+const requestLogRow = z.object({
+  id: z.string().regex(/^\d{1,20}$/),
+  plugin_slug: untrustedSlug,
+  operation: untrustedOperation,
+  status_code: z.number().int().min(100).max(599),
+  duration_ms: z.number().int().min(0),
+  body_bytes: z.number().int().min(0),
+  was_rate_limited: z.boolean(),
+  was_honeypot_caught: z.boolean(),
+  captcha_passed: z.boolean(),
+  error_kind: untrustedErrorKind.nullable(),
+  created_at: untrustedTimestamp,
+});
+
+/**
+ * Recent visitor requests. Reads cms_public (the gateway writes the log
+ * there since #635), so every row is UNTRUSTED: validated by
+ * {@link requestLogRow}, and `droppedRows` says how many failed.
+ */
 export const listGatewayRequestsOp = defineOperation({
   name: "gateway.list_recent_requests",
   actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
+  database: "cms_public",
   input: z
     .object({
       limit: z.number().int().min(1).max(500).default(100),
@@ -245,6 +275,8 @@ export const listGatewayRequestsOp = defineOperation({
         createdAt: z.string(),
       }),
     ),
+    /** Rows that failed boundary validation (a sign the public side wrote garbage). */
+    droppedRows: z.number(),
   }),
   handler: async (_ctx, input, tx) => {
     const filters: ReturnType<typeof sql>[] = [];
@@ -252,7 +284,7 @@ export const listGatewayRequestsOp = defineOperation({
     if (input.onlyErrors) filters.push(sql`status_code >= 400`);
     const where = filters.length === 0 ? sql.raw("") : sql`WHERE ${sql.join(filters, sql` AND `)}`;
     const limitSql = sql.raw(`LIMIT ${input.limit}`);
-    const rows = (await tx.execute(sql`
+    const raw = (await tx.execute(sql`
       SELECT id::text AS id, plugin_slug, operation, status_code, duration_ms,
              body_bytes, was_rate_limited, was_honeypot_caught, captcha_passed,
              error_kind, created_at
@@ -260,20 +292,14 @@ export const listGatewayRequestsOp = defineOperation({
       ${where}
       ORDER BY created_at DESC
       ${limitSql}
-    `)) as unknown as Array<{
-      id: string;
-      plugin_slug: string;
-      operation: string;
-      status_code: number;
-      duration_ms: number;
-      body_bytes: number;
-      was_rate_limited: boolean;
-      was_honeypot_caught: boolean;
-      captcha_passed: boolean;
-      error_kind: string | null;
-      created_at: string | Date;
-    }>;
+    `)) as unknown as unknown[];
+    const { rows, dropped } = parseUntrustedRows(
+      "gateway.list_recent_requests",
+      requestLogRow,
+      raw,
+    );
     return ok({
+      droppedRows: dropped,
       rows: rows.map((r) => ({
         id: r.id,
         pluginSlug: r.plugin_slug,
@@ -285,7 +311,7 @@ export const listGatewayRequestsOp = defineOperation({
         wasHoneypotCaught: r.was_honeypot_caught,
         captchaPassed: r.captcha_passed,
         errorKind: r.error_kind,
-        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        createdAt: r.created_at,
       })),
     });
   },
@@ -306,7 +332,9 @@ export const listGatewayRequestsOp = defineOperation({
 export const listGatewayAnalyticsOp = defineOperation({
   name: "gateway.list_analytics",
   actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
+  // #635 — the gateway logs in cms_public; the per-op names it wrote are
+  // UNTRUSTED and validated below.
+  database: "cms_public",
   input: z
     .object({
       windowSec: z.number().int().min(60).max(86400).default(3600),
@@ -378,14 +406,19 @@ export const listGatewayAnalyticsOp = defineOperation({
       GROUP BY plugin_slug, operation
       ORDER BY COUNT(*) DESC
       ${perOpLimit}
-    `)) as unknown as Array<{
-      plugin_slug: string;
-      operation: string;
-      requests: number;
-      p95_ms: number;
-      error_count: number;
-      throttled_count: number;
-    }>;
+    `)) as unknown as unknown[];
+    const perOp = parseUntrustedRows(
+      "gateway.list_analytics",
+      z.object({
+        plugin_slug: untrustedSlug,
+        operation: untrustedOperation,
+        requests: z.number(),
+        p95_ms: z.number(),
+        error_count: z.number(),
+        throttled_count: z.number(),
+      }),
+      perOpRows,
+    ).rows;
     // Per-minute buckets — `date_trunc` keeps PG happy; UI just plots them.
     const bucketRows = (await tx.execute(sql`
       SELECT date_trunc('minute', created_at) AS bucket_at, COUNT(*)::int AS requests
@@ -403,7 +436,7 @@ export const listGatewayAnalyticsOp = defineOperation({
         throttledCount: overall.throttled_count,
         honeypotCount: overall.honeypot_count,
       },
-      perOp: perOpRows.map((r) => ({
+      perOp: perOp.map((r) => ({
         pluginSlug: r.plugin_slug,
         operation: r.operation,
         requests: r.requests,

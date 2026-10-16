@@ -474,6 +474,7 @@ import {
   createMcpTokenOp,
   listMcpTokensOp,
   mcpAuthorizeUploadOp,
+  mcpGetVersionOp,
   mcpSendChatOp,
   revokeMcpTokenOp,
 } from "./ops/security/mcp_tokens.js";
@@ -899,6 +900,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(revokeMcpTokenOp);
   registry.register(mcpSendChatOp);
   registry.register(mcpAuthorizeUploadOp);
+  registry.register(mcpGetVersionOp);
   // Issue #376 — Power-MCP: admin-scoped tokens drive the chat-runner
   // tool catalogue directly (external agent owns the loop). See
   // ops/security/mcp_power.ts for the invariants.

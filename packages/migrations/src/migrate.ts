@@ -18,7 +18,11 @@ import { databaseUrlFromEnv } from "@caelo-cms/shared";
 // a value-import of "bun" — avoids the SvelteKit/Vite chain inlining
 // a stub package when admin transitively imports this module.
 import type { SQL as SQLType } from "bun";
-import { assertRoleIsolation } from "./role-audit.js";
+import { sql as dsql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sql";
+import { type ProjectionDatabases, publishPublicProjection } from "./public-projection.js";
+import { assertPublicDatabaseIsolated, assertRoleIsolation } from "./role-audit.js";
+import { readShippedVisitorProjections } from "./shipped-declarations.js";
 
 type SQL = SQLType;
 const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
@@ -131,6 +135,52 @@ async function assertNoRlsPolicyDrift(sql: SQL): Promise<void> {
   }
 }
 
+/**
+ * Issue #635 — after cms_public is migrated, publish the projection the
+ * API gateway reads (it has no cms_admin login), so a gateway rolled right
+ * after this job finds everything it serves from. Needs both URLs: every
+ * runner (the Cloud Run migration job, the self-hosted admin container,
+ * CI, `bun run db:migrate`) carries them.
+ */
+async function publishProjection(publicUrl: string): Promise<void> {
+  const adminUrl = databaseUrlFromEnv(["ADMIN_DATABASE_URL"]);
+  if (!adminUrl) {
+    throw new Error(
+      "migrate public: ADMIN_DATABASE_URL is required to publish the gateway's projection (issue #635); the migration job carries both database URLs",
+    );
+  }
+  const adminClient = new SQL(adminUrl);
+  const publicClient = new SQL(publicUrl);
+  const admin = drizzle(adminClient);
+  const pub = drizzle(publicClient);
+  const asSystem = dsql`SELECT set_config('caelo.actor_kind', 'system', true)`;
+  const dbs: ProjectionDatabases = {
+    readAdmin: (fn) =>
+      admin.transaction(async (tx) => {
+        await tx.execute(asSystem);
+        return fn(tx);
+      }),
+    writePublic: (fn) =>
+      pub.transaction(async (tx) => {
+        await tx.execute(asSystem);
+        await fn(tx);
+      }),
+  };
+  try {
+    const declarations = readShippedVisitorProjections(resolve(here, "..", "..", "plugins"));
+    const report = await publishPublicProjection(dbs, declarations, { comments: true });
+    console.log(`cms_public: gateway projection published (${report.sections.join(", ")})`);
+    for (const slug of report.pendingPlugins) {
+      console.warn(
+        `cms_public: ${slug}'s declared tables are not provisioned yet; the admin publishes them when it boots`,
+      );
+    }
+  } finally {
+    await adminClient.end();
+    await publicClient.end();
+  }
+}
+
 const sql = new SQL(url);
 try {
   await runMigrations(sql, migrationsDir);
@@ -144,6 +194,11 @@ try {
     const audit = await assertRoleIsolation(sql);
     for (const w of audit.warnings) console.warn(`role isolation warning: ${w}`);
     console.log("cms_admin: database role isolation check passed");
+  } else {
+    // Issue #635 — nothing in cms_public may bridge to another database.
+    await assertPublicDatabaseIsolated(sql);
+    console.log("cms_public: no bridge to other databases");
+    await publishProjection(url);
   }
 } finally {
   await sql.end();

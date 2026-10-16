@@ -75,10 +75,12 @@ export async function gcloud(
 
 /**
  * Active gcloud account. Returns `null` when no account is logged in
- * — caller prompts `gcloud auth login`.
+ * — caller prompts `gcloud auth login`. `run` is injectable for tests.
  */
-export async function activeAccount(): Promise<string | null> {
-  const r = await gcloud(["auth", "list", "--format=value(account)", "--filter=status:ACTIVE"]);
+export async function activeAccount(
+  run: (args: string[]) => Promise<GcloudResult> = gcloud,
+): Promise<string | null> {
+  const r = await run(["auth", "list", "--format=value(account)", "--filter=status:ACTIVE"]);
   if (!r.ok) return null;
   const value = r.stdout.trim();
   return value.length > 0 ? value : null;

@@ -35,12 +35,12 @@ Self-hosted = Docker Compose with Postgres + Caddy (auto-SSL) + the admin + the 
 
 ### Or one click on Google Cloud
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.50&cloudshell_tutorial=gcp.md) — install into your own Google Cloud project from the browser, no laptop needed ([Firebase Hosting variant](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.50&cloudshell_tutorial=gcp-firebase.md), [how it works](/install-gcp#one-click-install-from-cloud-shell)).
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp.md) — install into your own Google Cloud project from the browser, no laptop needed ([Firebase Hosting variant](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp-firebase.md), [how it works](/install-gcp#one-click-install-from-cloud-shell)).
 
 ### Drive your install from your IDE
 
 ```bash
-claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \
+claude mcp add caelo --command "bunx @caelo-cms/mcp-server@latest" \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=$(your bearer)
 ```

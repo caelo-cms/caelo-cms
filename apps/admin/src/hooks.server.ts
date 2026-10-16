@@ -46,6 +46,7 @@ import {
   startChatImageGcWorker,
   startDomainEventGcWorker,
   startProposalGcWorker,
+  startPublicProjectionPublisher,
   startQualityAuditWorker,
   startReleaseCheckWorker,
   transformPluginImage,
@@ -222,6 +223,11 @@ async function bootstrapPlugins(): Promise<void> {
   for (const f of report.failed) {
     console.error(`[hooks] plugin FAILED to load: ${f.slug} — ${f.reason}`);
   }
+  // #635 — the gateway has no cms_admin login: publish what it serves from
+  // into cms_public now that the plugins (and their projection triggers)
+  // are in place, then keep it current from the outbox.
+  const publisher = startPublicProjectionPublisher({ adapter });
+  await publisher.publishAll();
   // P12 review-pass #3 — startup warning if any loaded plugin declared
   // the `email` capability but no transport is configured. These sends
   // would fall through to the stderr stub silently otherwise.

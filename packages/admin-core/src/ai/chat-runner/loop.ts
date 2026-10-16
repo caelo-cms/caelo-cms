@@ -34,7 +34,11 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import type { AIProvider, ChatMessageInput, ProviderStepSummary } from "../provider.js";
 import { capWrapUpNoticeText, shouldWrapUpAtCap } from "../tools/subagent-budget.js";
 import { buildApprovalPreview } from "./approval.js";
-import { approverPermissionsForGatedCall, preflightGatedCall } from "./approval-preflight.js";
+import {
+  approverPermissionsForGatedCall,
+  fullPreviewArgsForGatedCall,
+  preflightGatedCall,
+} from "./approval-preflight.js";
 import {
   type BudgetGateState,
   budgetTripText,
@@ -844,7 +848,11 @@ export async function* runToolLoop(
       if (askable.length === 0 && rejected.length > 0) continue;
       const cards = askable.map((req) => ({
         req,
-        preview: buildApprovalPreview(req.name, req.arguments),
+        preview: buildApprovalPreview(
+          req.name,
+          req.arguments,
+          fullPreviewArgsForGatedCall(req.name),
+        ),
         requiredPermissions: approverPermissionsForGatedCall(tools, registry, req.name),
       }));
       const autoApprove = process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1";

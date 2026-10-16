@@ -6,7 +6,8 @@
  *
  * Production wiring: the real consent-manager and ratings plugins are
  * registered + provisioned by an admin-side host, then served by the
- * dispatch-only host as gateway_role / public_role. Each case is one
+ * dispatch-only host as public_role (no cms_admin login, #635), from the
+ * projection the admin publishes. Each case is one
  * visitor state the banner can leave behind:
  *
  *   - no decision yet           → no cookie, plugins see no id
@@ -18,6 +19,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { drainProjectionOnce, publishProjectionOnce } from "@caelo-cms/admin-core";
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
@@ -41,11 +43,10 @@ import {
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
-const GATEWAY_URL = process.env.GATEWAY_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_DATABASE_URL;
-if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !GATEWAY_URL || !PUBLIC_URL) {
+if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !PUBLIC_URL) {
   throw new Error(
-    "ADMIN_DATABASE_URL, PUBLIC_ADMIN_DATABASE_URL, GATEWAY_DATABASE_URL and PUBLIC_DATABASE_URL are required (bootstrap.sh creates gateway_role)",
+    "ADMIN_DATABASE_URL, PUBLIC_ADMIN_DATABASE_URL and PUBLIC_DATABASE_URL are required",
   );
 }
 
@@ -105,8 +106,6 @@ async function cleanup(): Promise<void> {
       await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${slug})`;
       await tx`DELETE FROM plugin_schema_migrations WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${slug})`;
       await tx`DELETE FROM plugins WHERE slug = ${slug}`;
-      await tx`DELETE FROM gateway_request_log WHERE plugin_slug = ${slug}`;
-      await tx`DELETE FROM rate_limit_buckets WHERE key LIKE ${`%${slug}%`}`;
     }
   });
   const pub = new SQL(PUBLIC_ADMIN_URL as string);
@@ -123,6 +122,15 @@ async function setCaptcha(provider: "off" | "pow"): Promise<void> {
   await asAdmin(async (tx) => {
     await tx`UPDATE site_settings SET captcha_provider = ${provider}, captcha_pow_target_prefix = '0' WHERE id = 1`;
   });
+  await publish();
+}
+
+/** Consent-manager's declared projection: what the admin publishes of its private storage. */
+const DECLARATIONS = new Map([["consent-manager", consentPlugin.visitorProjection ?? {}]]);
+
+/** The admin's outbox drain (#635): publish what changed, then the gateway drops its caches. */
+async function publish(): Promise<void> {
+  await drainProjectionOnce(adminAdapter, DECLARATIONS);
   invalidateGatewaySettings();
 }
 
@@ -134,7 +142,7 @@ async function setPolicyVersion(version: number): Promise<void> {
     "consent-manager",
   );
   expect(updated).toHaveLength(1);
-  invalidateGatewaySettings();
+  await publish();
 }
 
 /** The `caelo_consent` cookie exactly as the consent runtime writes it. */
@@ -215,6 +223,7 @@ beforeAll(async () => {
     testPlugins: [{ definition: consentPlugin }, { definition: ratingsPlugin }],
   });
   expect(adminReport.failed).toEqual([]);
+  await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
   resetPluginHost();
   pluginIds = await asAdmin(async (tx) => {
     const rows =
@@ -226,12 +235,9 @@ beforeAll(async () => {
   });
 
   // --- Gateway side: production wiring. ---
-  const urls = gatewayDatabaseUrls({
-    GATEWAY_DATABASE_URL: GATEWAY_URL,
-    PUBLIC_DATABASE_URL: PUBLIC_URL,
-  });
+  const urls = gatewayDatabaseUrls({ PUBLIC_DATABASE_URL: PUBLIC_URL });
   gatewayAdapter = new DatabaseAdapter({
-    adminDatabaseUrl: urls.gateway,
+    adminDatabaseUrl: null,
     publicDatabaseUrl: urls.public,
     expectedRoles: GATEWAY_DATABASE_ROLES,
   });
@@ -256,7 +262,7 @@ afterAll(async () => {
     await tx`UPDATE site_settings SET captcha_provider = ${savedCaptcha?.provider ?? "pow"},
              captcha_pow_target_prefix = ${savedCaptcha?.prefix ?? "000fff"} WHERE id = 1`;
   });
-  invalidateGatewaySettings();
+  await publish();
   await cleanup();
   await gatewayAdapter.close();
   await adminAdapter.close();
@@ -411,7 +417,7 @@ describe("a consent provider that cannot answer (#677)", () => {
       "consent-manager",
     );
     expect(saved).toHaveLength(1);
-    invalidateGatewaySettings();
+    await publish();
     try {
       const r = await handleRequest(post(RATE, { pageId: "p-broken", score: 4 }, [ACCEPTED]));
       await expectStatus(r, 503);
@@ -424,7 +430,7 @@ describe("a consent provider that cannot answer (#677)", () => {
         await tx`INSERT INTO plugin_consent_manager.settings
                  SELECT * FROM jsonb_populate_record(NULL::plugin_consent_manager.settings, (${saved[0]?.row ?? ""}::text)::jsonb)`;
       }, "consent-manager");
-      invalidateGatewaySettings();
+      await publish();
     }
   });
 });

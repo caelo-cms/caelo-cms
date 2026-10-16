@@ -13,21 +13,15 @@ const ROOT_ENV = {
   CAELO_SITE_URL: "http://localhost:8082",
 };
 
-describe("gateway dev launcher (#613 review)", () => {
+describe("gateway dev launcher (#613 review, #635)", () => {
   it("the strict guard refuses the shared root .env as is", () => {
-    expect(() => gatewayDatabaseUrls(ROOT_ENV)).toThrow(/must not hold admin_role credentials/);
+    expect(() => gatewayDatabaseUrls(ROOT_ENV)).toThrow(/must not hold any cms_admin credential/);
   });
 
   it("starts the gateway from it with the admin credentials left out", () => {
     const env = gatewayDevEnv({ ...ROOT_ENV, ADMIN_DATABASE_PASSWORD: "x", UNSET: undefined });
-    expect(Object.keys(env).sort()).toEqual([
-      "CAELO_SITE_URL",
-      "GATEWAY_DATABASE_URL",
-      "PUBLIC_DATABASE_URL",
-    ]);
-    expect(gatewayDatabaseUrls(env)).toEqual({
-      gateway: ROOT_ENV.GATEWAY_DATABASE_URL,
-      public: ROOT_ENV.PUBLIC_DATABASE_URL,
-    });
+    // #635 — the gateway_role URL goes too: no cms_admin login at all.
+    expect(Object.keys(env).sort()).toEqual(["CAELO_SITE_URL", "PUBLIC_DATABASE_URL"]);
+    expect(gatewayDatabaseUrls(env)).toEqual({ public: ROOT_ENV.PUBLIC_DATABASE_URL });
   });
 });

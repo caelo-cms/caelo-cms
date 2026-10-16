@@ -76,6 +76,10 @@
     const sel = selectionOf(group);
     if (!sel || reason.trim().length < MIN_ACCEPT_REASON) return;
     onAccept([sel], reason.trim());
+    // The card stays mounted across the acceptance (the groups shrink in
+    // place): close this group's pick too, so what is left of it starts
+    // from "all of the group" like a fresh card.
+    picking[group.key] = null;
     accepting = null;
     reason = "";
   }
@@ -100,6 +104,7 @@
           class="rounded border border-amber-500/30 bg-background/60 p-1.5"
           data-testid="quality-offer-group"
           data-group-key={group.key}
+          data-page-count={group.pages.length}
         >
           <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span class="min-w-0 flex-1">

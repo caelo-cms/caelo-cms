@@ -31,6 +31,10 @@
  *   is a problem. Performance acceptances are also never tightened or
  *   spent automatically (a lucky run would raise the bar to noise); they
  *   stay until an editor revokes them.
+ * - The same tolerance decides whether get_quality_audit points out a
+ *   Performance score as "dropped since the previous audit"
+ *   (`droppedSincePrevious`). That is a hint for where to look first, not
+ *   a gate: the score below 100 blocks either way.
  */
 
 import type { CheckRuleProblem } from "./checks/evaluate.js";
@@ -52,8 +56,8 @@ export const QUALITY_TARGET = 100;
 /**
  * Points a Performance value (category score, or the score of an audit
  * that belongs only to Performance) may fall below an editor's ACCEPTED
- * value before it counts as worse. Measurement noise of the median of
- * three runs, observed at 1–2 points; never applied against the target.
+ * value before it counts as worse. Measurement noise of the Performance
+ * median, observed at 1–2 points; never applied against the target.
  */
 export const ACCEPTED_PERFORMANCE_TOLERANCE = 2;
 
@@ -179,6 +183,21 @@ export function isPerformanceNoisy(problem: LighthouseProblem): boolean {
  */
 export function acceptedValueCovers(measured: number, accepted: number, noisy: boolean): boolean {
   return measured >= accepted - (noisy ? ACCEPTED_PERFORMANCE_TOLERANCE : 0);
+}
+
+/**
+ * Whether a category score dropped since the page's previous comparable
+ * audit, beyond measurement noise: Performance must fall more than
+ * ACCEPTED_PERFORMANCE_TOLERANCE points, the deterministic categories any
+ * point. Only steers the "check recent changes first" hint; it never
+ * decides whether the score blocks.
+ */
+export function droppedSincePrevious(
+  category: QualityCategory,
+  current: number,
+  previous: number,
+): boolean {
+  return !acceptedValueCovers(current, previous, category === "performance");
 }
 
 /** The 0..100 value of a Lighthouse problem that an acceptance compares. */

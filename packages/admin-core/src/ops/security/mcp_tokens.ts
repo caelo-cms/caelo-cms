@@ -16,6 +16,7 @@
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { defineOperation, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import {
+  CAELO_VERSION,
   CHAT_MAX_ATTACHMENTS,
   chatAttachmentSchema,
   err,
@@ -633,5 +634,40 @@ export const mcpAuthorizeUploadOp = defineOperation({
         message: "permission_denied: content.write required for an active user",
       });
     return ok({ actorId });
+  },
+});
+
+/**
+ * Issue #764 — the release the MCP shim must run. mcp-server ships in
+ * lockstep with the admin, so the shim asks at startup and re-execs as
+ * this exact version when it differs; the `claude mcp add` command then
+ * never needs regenerating after an upgrade. Any token scope may ask
+ * (chat and admin shims both handshake); the version is only disclosed
+ * to a live token.
+ */
+export const mcpGetVersionOp = defineOperation({
+  name: "mcp.get_version",
+  // Why system-only: the bearer is in the input (same reason as
+  // mcp.send_chat) — the HTTP shell dispatches as system.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({ plaintextToken: z.string().min(8).max(200) }).strict(),
+  output: z.object({ version: z.string() }),
+  handler: async (_ctx, input, _tx) => {
+    const bridge = getMcpBridge();
+    if (!bridge)
+      return err({
+        kind: "HandlerError",
+        operation: "mcp.get_version",
+        message: "MCP bridge not configured",
+      });
+    const resolved = await resolveMcpToken(bridge.adapter, input.plaintextToken);
+    if (!resolved.ok)
+      return err({
+        kind: "HandlerError",
+        operation: "mcp.get_version",
+        message: `auth_error: token ${resolved.error}`,
+      });
+    return ok({ version: CAELO_VERSION });
   },
 });

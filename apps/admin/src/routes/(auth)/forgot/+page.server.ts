@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { deliverPasswordResetEmail, passwordResetEmailProblem } from "@caelo-cms/admin-core";
-import { execute } from "@caelo-cms/query-api";
+import { passwordResetEmailProblem } from "@caelo-cms/admin-core";
 import { fail } from "@sveltejs/kit";
+import { requestPasswordResetLink } from "#lib/server/forgot-password.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -21,8 +21,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 /**
  * Step 1 of self-service reset. Unauthenticated (`locals.ctx` is the system
  * actor here), so no CSRF token exists yet — same as /login. The response is
- * identical whether or not the address matches an account (no enumeration); the
- * email is sent only when a matching account exists, out of the op's DB tx.
+ * identical whether or not the address matches an account (no enumeration),
+ * including when sending the email fails; see `requestPasswordResetLink`.
  */
 export const actions: Actions = {
   default: async ({ request, locals, url, getClientAddress }) => {
@@ -42,33 +42,12 @@ export const actions: Actions = {
 
     if (!email) return fail(400, { email, error: "Enter your email address." });
 
-    // A form posted before the page knew (or by a script) must not issue a
-    // token nobody can receive.
-    if ((await passwordResetEmailProblem({ registry, adapter, ctx: locals.ctx })) !== null) {
-      return fail(409, { email, emailUnavailable: true });
-    }
-
-    const result = await execute(registry, adapter, locals.ctx, "auth.request_password_reset", {
+    const outcome = await requestPasswordResetLink(
+      { registry, adapter, ctx: locals.ctx, origin: url.origin },
       email,
-    });
-    if (result.ok) {
-      const { delivery } = result.value as {
-        delivery: { email: string; token: string; displayName: string } | null;
-      };
-      if (delivery) {
-        const resetUrl = new URL(
-          `/reset?token=${encodeURIComponent(delivery.token)}`,
-          url.origin,
-        ).toString();
-        await deliverPasswordResetEmail({
-          registry,
-          adapter,
-          ctx: locals.ctx,
-          to: delivery.email,
-          displayName: delivery.displayName,
-          resetUrl,
-        });
-      }
+    );
+    if (outcome.kind === "email-unavailable") {
+      return fail(409, { email, emailUnavailable: true });
     }
 
     // Always the same outcome — never reveal whether the account exists.

@@ -32,8 +32,8 @@ No laptop needed — install into your own Google Cloud project from the browser
 
 | | |
 |---|---|
-| Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.50&cloudshell_tutorial=gcp.md) |
-| Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.50&cloudshell_tutorial=gcp-firebase.md) |
+| Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp.md) |
+| Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp-firebase.md) |
 
 Cloud Shell opens a short tutorial: sign in, run `./run.sh`, answer a few questions, confirm the monthly cost. The install then runs as a job in your project — closing the tab doesn't stop it, and clicking the button again picks it up. The links are pinned to this release; `run.sh` verifies the provisioner's npm provenance and the release's signed manifest before anything runs ([how](https://github.com/caelo-cms/install#what-happens-when-you-click)).
 
@@ -48,7 +48,7 @@ Cloud paths use Pulumi to spin up Cloud SQL HA + managed object storage + the pl
 Talk to your install from your IDE (Claude Code, etc.) without opening the browser:
 
 ```bash
-claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \
+claude mcp add caelo --command "bunx @caelo-cms/mcp-server@latest" \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=$(your minted bearer)
 ```

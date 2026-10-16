@@ -16,6 +16,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { publishProjectionOnce } from "@caelo-cms/admin-core";
 import { applyPluginLifecycle, bootstrap, resetPluginHost } from "@caelo-cms/plugin-host";
 import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
@@ -25,12 +26,14 @@ import { handleRequest, invalidateGatewaySettings, setGatewayAdapter } from "./s
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
-if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
+const PUBLIC_ROLE_URL = process.env.PUBLIC_DATABASE_URL;
+if (!ADMIN_URL || !PUBLIC_URL || !PUBLIC_ROLE_URL) throw new Error("DB URLs required");
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SLUG = "test-p12-gw";
 
 let adapter: DatabaseAdapter;
+let gatewayAdapter: DatabaseAdapter;
 let registry: OperationRegistry;
 
 const fixturePlugin = definePlugin({
@@ -124,8 +127,15 @@ beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   // P13 — gateway needs an adapter handle for body cap, signed cookies,
-  // rate limit, captcha, request log.
-  setGatewayAdapter(adapter);
+  // rate limit, captcha, request log. #635: its own identity, public_role
+  // on cms_public only, reading what the admin published.
+  gatewayAdapter = new DatabaseAdapter({
+    adminDatabaseUrl: null,
+    publicDatabaseUrl: PUBLIC_ROLE_URL,
+    expectedRoles: { admin: null, public: ["public_role"] },
+  });
+  setGatewayAdapter(gatewayAdapter);
+  await publishProjectionOnce(adapter, { declarations: new Map() });
   invalidateGatewaySettings();
 });
 
@@ -136,6 +146,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await adapter.close();
+  await gatewayAdapter.close();
 });
 
 function postReq(path: string, body: unknown, cookieHeader?: string): Request {

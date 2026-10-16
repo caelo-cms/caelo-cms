@@ -337,6 +337,19 @@ async function categoriesOf(q: PluginAdminQuery): Promise<CategoryRow[]> {
   return rows;
 }
 
+/**
+ * One CSV cell of the consent export. The rows are visitor-written
+ * cms_public data (#635), and the file is meant to be opened in a
+ * spreadsheet: every cell is quoted with its quotes doubled, and a value a
+ * spreadsheet would run as a formula (=, +, -, @, tab, CR) is prefixed with
+ * an apostrophe so it stays text.
+ */
+export function csvCell(value: string | null | undefined): string {
+  const text = value ?? "";
+  const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  return `"${safe.replaceAll('"', '""')}"`;
+}
+
 export default definePlugin<PluginContextTier1>({
   slug: SLUG,
   version: "0.1.0",
@@ -407,6 +420,18 @@ export default definePlugin<PluginContextTier1>({
 
   /** Only the record itself. Everything else is the Owner's. */
   publicOperations: ["record_consent"],
+
+  /**
+   * What the API gateway may read of the private storage (#635): the
+   * current policy version (the consent rule + `record_consent`'s version
+   * check) and the category keys (`record_consent` rejects unknown ones).
+   * The gateway has no cms_admin login; the admin publishes exactly these
+   * columns into cms_public. Tags, guards and descriptions stay private.
+   */
+  visitorProjection: {
+    settings: ["policy_version"],
+    categories: ["key", "position"],
+  },
 
   /**
    * The banner iterates this instead of receiving markup from the
@@ -857,7 +882,7 @@ export default definePlugin<PluginContextTier1>({
         ip_hash: string;
         granted: unknown;
         policy_version: number;
-        created_at: string;
+        created_at: string | Date;
       }>;
       const truncated = rows.length > cap;
       const page = truncated ? rows.slice(0, cap) : rows;
@@ -865,12 +890,14 @@ export default definePlugin<PluginContextTier1>({
         "recorded_at,visitor_id,ip_hash,policy_version,granted",
         ...page.map((r) =>
           [
-            r.created_at,
+            r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
             r.visitor_id,
             r.ip_hash,
             String(r.policy_version),
-            `"${(Array.isArray(r.granted) ? r.granted : []).join(" ")}"`,
-          ].join(","),
+            (Array.isArray(r.granted) ? r.granted : []).join(" "),
+          ]
+            .map(csvCell)
+            .join(","),
         ),
       ].join("\n");
       return {

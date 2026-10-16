@@ -648,8 +648,14 @@
   });
 
   const qualityOffer = $derived(openQualityOffer(qualityStatus.status));
-  /** The audit whose offer the operator is acting on (hides its card meanwhile). */
+  /** The audit whose offer the operator is acting on (its card is busy meanwhile). */
   let qualityOfferActing = $state<string | null>(null);
+  /**
+   * Whether the acting click settles the offer (fix / "Not now"): its card
+   * hides meanwhile. An acceptance only shrinks the groups, so its card
+   * stays up (busy) and switches to the status the accept answers with.
+   */
+  let qualityOfferSettling = $state(false);
   let qualityOfferError = $state<string | null>(null);
   let shownQualityOfferId: string | null = null;
   $effect(() => {
@@ -670,6 +676,7 @@
   ): Promise<void> {
     if (streaming || qualityOfferActing !== null) return;
     qualityOfferActing = auditRunId;
+    qualityOfferSettling = true;
     qualityOfferError = null;
     try {
       // #682 — one agent per chat: say so here instead of starting a turn
@@ -715,6 +722,7 @@
       qualityOfferError = "Could not start the fix — check the connection and try again.";
     } finally {
       qualityOfferActing = null;
+      qualityOfferSettling = false;
       void qualityStatus.refresh();
     }
   }
@@ -723,6 +731,9 @@
    * #727 — "Accept all…" / "Accept selected…" on a group: the operator's own
    * acceptance with their reason, applied by this click (the AI is not
    * involved). The offer stays: the groups shrink to what is still open.
+   * The card shows the status the accept answers with — read after it
+   * applied — so an accepted group never reappears from the pre-accept
+   * status, and a read already on the wire cannot bring it back either.
    */
   async function acceptQualityGroups(
     auditRunId: string,
@@ -739,12 +750,18 @@
         groups,
         reason,
       });
+      if (r.ok && r.status) {
+        // Before the card turns clickable again: never the old groups.
+        void qualityStatus.apply(r.status);
+        return;
+      }
       if (!r.ok) qualityOfferError = r.error ?? "Could not accept — try again.";
+      await qualityStatus.refresh();
     } catch {
       qualityOfferError = "Could not accept — check the connection and try again.";
+      void qualityStatus.refresh();
     } finally {
       qualityOfferActing = null;
-      void qualityStatus.refresh();
     }
   }
 
@@ -752,6 +769,7 @@
   async function dismissQualityOffer(auditRunId: string): Promise<void> {
     if (qualityOfferActing !== null) return;
     qualityOfferActing = auditRunId;
+    qualityOfferSettling = true;
     qualityOfferError = null;
     try {
       const r = await postQualityAction(session.id, csrfToken, { action: "dismiss", auditRunId });
@@ -767,6 +785,7 @@
       qualityOfferError = "Could not dismiss — check the connection and try again.";
     } finally {
       qualityOfferActing = null;
+      qualityOfferSettling = false;
       void qualityStatus.refresh();
     }
   }
@@ -2538,7 +2557,7 @@
              Drops out as soon as the row flips to applied/rejected. -->
         <!-- #685 — the quality check found problems: ask before the AI
              fixes anything. Only the operator's click starts the turn. -->
-        {#if qualityOffer && qualityOffer.auditRunId !== qualityOfferActing}
+        {#if qualityOffer && !(qualityOfferSettling && qualityOffer.auditRunId === qualityOfferActing)}
           <QualityFixOfferCard
             text={qualityOffer.text}
             actionLabel={qualityOffer.actionLabel}
@@ -2613,7 +2632,9 @@
                       >{EXTERNAL_AGENT_LABEL}</span
                     >
                   {/if}
-                  <pre class="mb-2 whitespace-pre-wrap font-sans text-[11px]">{a.preview ||
+                  <pre
+                    class="mb-2 max-h-96 overflow-y-auto whitespace-pre-wrap break-words font-sans text-[11px]"
+                    data-testid="chat-approval-preview">{a.preview ||
                       a.name}</pre>
                   {#if missing.length > 0}
                     <p
