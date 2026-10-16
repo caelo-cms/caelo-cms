@@ -21,10 +21,13 @@
  * after every round turned "fix until 100" into a click per round. It
  * continues only while each round gets closer to the target (`madeProgress`:
  * fewer open problems, or as many with less score shortfall); a round that
- * does not stops the loop and the card asks the operator again. That bound
- * also ends the loop: the distance is a pair of non-negative integers that
- * must fall every round. A picked fix ("leave the others alone") never
- * continues on its own, and the panel's Stop latch (#672) holds it back.
+ * does not stops the loop and the card asks the operator again. Two hard
+ * bounds stop it as well, whatever the progress: MAX_AUTO_FIX_ROUNDS rounds
+ * per chain, and AUTO_FIX_COST_CAP_MICROCENTS of AI spend in the chat since
+ * the operator's click (no unbounded AI spend on one click, CLAUDE.md §4).
+ * Past either, every further round needs the operator's click again. A
+ * picked fix ("leave the others alone") never continues on its own, and the
+ * panel's Stop latch (#672) holds it back.
  *
  * #727 "optimum, not good enough": the target is 100 and zero findings, and
  * the card groups the OPEN problems by rule across pages. Per group the
@@ -56,6 +59,25 @@ export function fixDistance(open: readonly OpenProblem[]): FixDistance {
     }
   }
   return { openCount: open.length, scoreShortfall };
+}
+
+/**
+ * #771 — the most fix rounds one "Fix all with AI" click runs on its own:
+ * the audit of the AI's re-Stage continues only while its fix round is
+ * below this. Counted by `quality_audit_runs.fix_round` (the operator's
+ * click starts round 1).
+ */
+export const MAX_AUTO_FIX_ROUNDS = 5;
+
+/**
+ * #771 — the most AI spend (microcents, 1 USD = 1e8) the chat may use
+ * since the operator's "Fix all with AI" click before the next round needs
+ * a click again. Summed from `ai_calls` of the chat, subagents included.
+ */
+export const AUTO_FIX_COST_CAP_MICROCENTS = 5 * 100_000_000;
+
+function usd(microcents: number): string {
+  return `$${(microcents / 100_000_000).toFixed(2)}`;
 }
 
 /** Whether a fix round got closer to the target: fewer open problems, or
@@ -100,7 +122,12 @@ export interface ChatAuditSummary {
    * round the operator asked for in full ("Fix all with AI" on the chat's
    * previous audit): the distance before that round and now. Null otherwise.
    */
-  readonly fixChain: { readonly before: FixDistance; readonly now: FixDistance } | null;
+  readonly fixChain: {
+    readonly before: FixDistance;
+    readonly now: FixDistance;
+    /** AI spend of the chat since the click that started the chain. */
+    readonly spentMicrocents: number;
+  } | null;
 }
 
 export type ChatFeedback =
@@ -241,8 +268,10 @@ export function fixPromptFor(
     selection === null
       ? `Please fix the quality findings of the staged build: ${groups.length} group(s) on ${pageCount} page(s). Publish live is blocked until they are fixed or accepted.`
       : `Please fix these quality findings I picked: ${groups.length} group(s) on ${pageCount} page(s). Leave the other findings alone for now.`;
+  // Promised only when the round this prompt starts can still be followed
+  // by an automatic one (the round cap; spend is checked when it settles).
   const next =
-    selection === null
+    selection === null && audit.fixRound + 1 < MAX_AUTO_FIX_ROUNDS
       ? " The chat sends you the next round on its own as long as each round gets closer to the target, so fix everything you can now instead of reporting problems back to me."
       : "";
   const round = `Fix round ${audit.fixRound + 1}: call get_quality_audit for the details, fix what you can, then Stage again yourself (stage_changes) so the fixes are re-checked.${next}`;
@@ -266,10 +295,31 @@ function problemsOffer(audit: ChatAuditSummary): ChatFeedback {
   const prompt = fixPromptFor(audit, null) as string;
   const groupsCopy = [...audit.groups];
   const chain = audit.fixChain;
-  if (chain && madeProgress(chain.before, chain.now)) {
+  const progressed = chain !== null && madeProgress(chain.before, chain.now);
+  if (chain && progressed && audit.fixRound >= MAX_AUTO_FIX_ROUNDS) {
     return {
       kind: "offer",
-      text: `${lead} The AI's fix round went from ${describeDistance(chain.before)} to ${describeDistance(chain.now)} — it keeps fixing on its own until the target is reached (Stop halts it).`,
+      text: `${lead} The AI's fix round went from ${describeDistance(chain.before)} to ${describeDistance(chain.now)}, but it has run ${audit.fixRound} round(s), the most one click runs on its own. Publish live stays blocked until each is fixed or accepted — let it keep trying, or decide per group below.`,
+      actionLabel: "Keep fixing with AI",
+      prompt,
+      groups: groupsCopy,
+      autoContinue: false,
+    };
+  }
+  if (chain && progressed && chain.spentMicrocents >= AUTO_FIX_COST_CAP_MICROCENTS) {
+    return {
+      kind: "offer",
+      text: `${lead} The AI's fix round went from ${describeDistance(chain.before)} to ${describeDistance(chain.now)}, but these rounds used ${usd(chain.spentMicrocents)} of AI spend, the most one click spends on its own (${usd(AUTO_FIX_COST_CAP_MICROCENTS)}). Publish live stays blocked until each is fixed or accepted — let it keep trying, or decide per group below.`,
+      actionLabel: "Keep fixing with AI",
+      prompt,
+      groups: groupsCopy,
+      autoContinue: false,
+    };
+  }
+  if (chain && progressed) {
+    return {
+      kind: "offer",
+      text: `${lead} The AI's fix round went from ${describeDistance(chain.before)} to ${describeDistance(chain.now)} — it keeps fixing on its own until the target is reached, at most ${MAX_AUTO_FIX_ROUNDS} rounds and ${usd(AUTO_FIX_COST_CAP_MICROCENTS)} of AI spend per click (Stop halts it).`,
       actionLabel: "Fix all with AI",
       prompt,
       groups: groupsCopy,

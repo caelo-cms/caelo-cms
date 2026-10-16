@@ -2,11 +2,13 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  AUTO_FIX_COST_CAP_MICROCENTS,
   type ChatAuditSummary,
   type ChatFeedback,
   chatFeedbackFor,
   fixDistance,
   fixPromptFor,
+  MAX_AUTO_FIX_ROUNDS,
   madeProgress,
 } from "../chat-feedback.js";
 import {
@@ -399,6 +401,7 @@ describe("chatFeedbackFor", () => {
       fixChain: {
         before: { openCount: 9, scoreShortfall: 20 },
         now: { openCount: 6, scoreShortfall: 30 },
+        spentMicrocents: 0,
       },
     });
     expect(fewer.autoContinue).toBe(true);
@@ -411,6 +414,7 @@ describe("chatFeedbackFor", () => {
       fixChain: {
         before: { openCount: 3, scoreShortfall: 12 },
         now: { openCount: 3, scoreShortfall: 4 },
+        spentMicrocents: 0,
       },
     });
     expect(higher.autoContinue).toBe(true);
@@ -421,13 +425,49 @@ describe("chatFeedbackFor", () => {
       { openCount: 3, scoreShortfall: 12 },
       { openCount: 4, scoreShortfall: 0 },
     ]) {
-      const stalled = offer({ fixChain: { before: { openCount: 3, scoreShortfall: 12 }, now } });
+      const stalled = offer({
+        fixChain: { before: { openCount: 3, scoreShortfall: 12 }, now, spentMicrocents: 0 },
+      });
       expect(stalled.autoContinue).toBe(false);
       expect(stalled.actionLabel).toBe("Keep fixing with AI");
       expect(stalled.text).toContain("got no closer to the target");
       expect(stalled.text).toContain("decide per group below");
       expect(stalled.groups).toHaveLength(3);
     }
+  });
+
+  it("stops continuing on its own after MAX_AUTO_FIX_ROUNDS rounds, however close it got", () => {
+    const progress = {
+      before: { openCount: 3, scoreShortfall: 12 },
+      now: { openCount: 2, scoreShortfall: 4 },
+      spentMicrocents: 0,
+    };
+    expect(offer({ fixRound: MAX_AUTO_FIX_ROUNDS - 1, fixChain: progress }).autoContinue).toBe(
+      true,
+    );
+    const capped = offer({ fixRound: MAX_AUTO_FIX_ROUNDS, fixChain: progress });
+    expect(capped.autoContinue).toBe(false);
+    expect(capped.actionLabel).toBe("Keep fixing with AI");
+    expect(capped.text).toContain(`it has run ${MAX_AUTO_FIX_ROUNDS} round(s)`);
+    // The last automatic round is not promised a successor.
+    expect(offer({ fixRound: MAX_AUTO_FIX_ROUNDS - 1, fixChain: progress }).prompt).not.toContain(
+      "next round on its own",
+    );
+  });
+
+  it("stops continuing on its own once the chain's AI spend reaches the cap", () => {
+    const chain = (spentMicrocents: number) => ({
+      before: { openCount: 3, scoreShortfall: 12 },
+      now: { openCount: 2, scoreShortfall: 4 },
+      spentMicrocents,
+    });
+    expect(
+      offer({ fixRound: 1, fixChain: chain(AUTO_FIX_COST_CAP_MICROCENTS - 1) }).autoContinue,
+    ).toBe(true);
+    const capped = offer({ fixRound: 1, fixChain: chain(AUTO_FIX_COST_CAP_MICROCENTS) });
+    expect(capped.autoContinue).toBe(false);
+    expect(capped.actionLabel).toBe("Keep fixing with AI");
+    expect(capped.text).toContain("used $5.00 of AI spend");
   });
 
   it("measures the distance as open problems plus missing score points", () => {

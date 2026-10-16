@@ -326,6 +326,11 @@ export const chatStatusOp = defineOperation({
  * audit ("Fix all with AI"); null otherwise. The previous audit's problems
  * are counted under today's acceptances, like the current ones, so an
  * acceptance in between is not mistaken for the AI's progress.
+ *
+ * `spentMicrocents` is the chat's AI spend (every `ai_calls` row of the
+ * chat, subagents included) since the chain began: the earliest fix
+ * request of the unbroken run of fix-all audits before this one. The
+ * offer stops continuing on its own past AUTO_FIX_COST_CAP_MICROCENTS.
  */
 async function fixChainOf(
   tx: Tx,
@@ -349,7 +354,39 @@ async function fixChainOf(
   return {
     before: fixDistance(decideGate(prev, acceptances).openProblems),
     now: fixDistance(open),
+    spentMicrocents: await fixChainSpend(tx, auditRunId),
   };
+}
+
+/** The chat's AI spend since the fix-all chain that led to `auditRunId`
+ *  began (see fixChainOf). */
+async function fixChainSpend(tx: Tx, auditRunId: string): Promise<number> {
+  const rows = (await tx.execute(sql`
+    WITH cur AS (
+      SELECT chat_session_id, created_at FROM quality_audit_runs WHERE id = ${auditRunId}::uuid
+    ),
+    earlier AS (
+      SELECT p.status, p.fix_scope, p.fix_requested_at,
+             row_number() OVER (ORDER BY p.created_at DESC) AS rn
+      FROM quality_audit_runs p, cur
+      WHERE p.chat_session_id = cur.chat_session_id AND p.created_at < cur.created_at
+    ),
+    chain_start AS (
+      SELECT min(fix_requested_at) AS at FROM earlier
+      WHERE rn < COALESCE(
+        (SELECT min(rn) FROM earlier
+         WHERE NOT (status = 'problems' AND fix_scope IS NOT DISTINCT FROM 'all')),
+        9223372036854775807
+      )
+    )
+    SELECT COALESCE(sum(a.cost_estimate_microcents), 0)::text AS spent
+    FROM ai_calls a, cur, chain_start
+    WHERE a.chat_session_id = cur.chat_session_id AND a.created_at >= chain_start.at
+  `)) as unknown as { spent: string }[];
+  const row = rows[0];
+  // An aggregate without GROUP BY always yields one row.
+  if (!row) throw new Error(`quality_audits.chat_status: no spend row for audit ${auditRunId}`);
+  return Number(row.spent);
 }
 
 /** How long a chat tab may hold the delivery of an audit's message
@@ -403,6 +440,19 @@ export const claimChatNotificationOp = defineOperation({
       RETURNING id
     `)) as unknown as { id: string }[];
     if (rows.length !== 1) return ok({ claimed: false });
+    // #771 — a fix-all request may run several AI rounds on its own: the
+    // request that starts (or continues) that spend is on the record.
+    if (input.fixScope !== null) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "quality_audits.claim_chat_notification",
+        input,
+        succeeded: true,
+        entityId: input.auditRunId,
+        resultSummary: `fix requested (${input.fixScope})`,
+      });
+    }
     if (input.note) {
       const appended = await appendChatMessageOp.handler(
         ctx,
