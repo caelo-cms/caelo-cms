@@ -3,13 +3,7 @@
   import { setupFormSchema } from "@caelo-cms/shared";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
-  import {
-    Card,
-    CardContent,
-    CardDescription,
-    CardHeader,
-    CardTitle,
-  } from "#lib/components/ui/card/index.js";
+  import AuthPlate from "#lib/components/AuthPlate.svelte";
   import { Input } from "#lib/components/ui/input/index.js";
   import { Label } from "#lib/components/ui/label/index.js";
   import { bindZodForm } from "#lib/forms/zod-bind.svelte.js";
@@ -26,103 +20,98 @@
   });
 </script>
 
-<Card>
-  <CardHeader>
-    <CardTitle>Welcome to Caelo</CardTitle>
-    <CardDescription>
-      Create the first owner account. After this, users are managed in the admin.
-    </CardDescription>
-  </CardHeader>
-  <CardContent class="space-y-4">
-    {#if form?.error}
-      <Alert variant="destructive">
-        <AlertDescription>{form.error}</AlertDescription>
-      </Alert>
-    {/if}
-    <form method="post" class="space-y-4">
-      {#if data.tokenRequired}
-        <div class="space-y-2">
-          <Label for="token">Bootstrap token</Label>
-          <Input
-            id="token"
-            name="token"
-            type="text"
-            required
-            value={data.tokenFromQuery}
-            placeholder="64-character hex token from `cms-provision init` output"
-          />
-          <p class="text-xs text-muted-foreground">
-            This installation requires a one-time token. Open the URL printed by `cms-provision
-            init` (the token is in the query string), or paste it here.
-          </p>
-        </div>
-      {/if}
+<AuthPlate
+  title="Welcome to Caelo"
+  description="Create the first owner account. After this, users are managed in the admin."
+>
+  {#if form?.error}
+    <Alert variant="destructive">
+      <AlertDescription>{form.error}</AlertDescription>
+    </Alert>
+  {/if}
+  <form method="post" class="space-y-4">
+    {#if data.tokenRequired}
       <div class="space-y-2">
-        <Label for="displayName">Your name</Label>
+        <Label for="token">Bootstrap token</Label>
         <Input
-          id="displayName"
-          name="displayName"
+          id="token"
+          name="token"
           type="text"
           required
-          placeholder="e.g. Jane Doe"
-          value={form?.displayName ?? ""}
-          aria-invalid={setupForm.errors.displayName ? "true" : undefined}
-          aria-describedby={setupForm.errors.displayName ? "displayName-err" : undefined}
-          oninput={(e) =>
-            setupForm.update("displayName", (e.currentTarget as HTMLInputElement).value)}
+          value={data.tokenFromQuery}
+          placeholder="64-character hex token from `cms-provision init` output"
         />
-        {#if setupForm.errors.displayName}
-          <p id="displayName-err" class="text-xs text-destructive">
-            {setupForm.errors.displayName}
-          </p>
-        {/if}
         <p class="text-xs text-muted-foreground">
-          Shown next to your edits and in the chat — your personal name, not the site's. You'll
-          name the site itself in your first chat.
+          This installation requires a one-time token. Open the URL printed by `cms-provision
+          init` (the token is in the query string), or paste it here.
         </p>
       </div>
-      <div class="space-y-2">
-        <Label for="email">Email</Label>
-        <Input
-          id="email"
-          name="email"
-          type="email"
-          autocomplete="username"
-          required
-          value={form?.email ?? ""}
-          aria-invalid={setupForm.errors.email ? "true" : undefined}
-          aria-describedby={setupForm.errors.email ? "email-err" : undefined}
-          oninput={(e) => setupForm.update("email", (e.currentTarget as HTMLInputElement).value)}
-        />
-        {#if setupForm.errors.email}
-          <p id="email-err" class="text-xs text-destructive">{setupForm.errors.email}</p>
-        {/if}
-      </div>
-      <div class="space-y-2">
-        <Label for="password">Password</Label>
-        <Input
-          id="password"
-          name="password"
-          type="password"
-          autocomplete="new-password"
-          required
-          minlength={10}
-          aria-invalid={setupForm.errors.password ? "true" : undefined}
-          aria-describedby={setupForm.errors.password ? "password-err" : undefined}
-          oninput={(e) =>
-            setupForm.update("password", (e.currentTarget as HTMLInputElement).value)}
-        />
-        {#if setupForm.errors.password}
-          <p id="password-err" class="text-xs text-destructive">{setupForm.errors.password}</p>
-        {:else}
-          <p class="text-xs text-muted-foreground">
-            At least 10 characters. Not a common password or your name/email.
-          </p>
-        {/if}
-      </div>
-      <!-- Submit stays enabled — see comment in login form. The
-           inline errors are advisory; the server is authoritative. -->
-      <Button type="submit" class="w-full">Create owner</Button>
-    </form>
-  </CardContent>
-</Card>
+    {/if}
+    <div class="space-y-2">
+      <Label for="displayName">Your name</Label>
+      <Input
+        id="displayName"
+        name="displayName"
+        type="text"
+        required
+        placeholder="e.g. Jane Doe"
+        value={form?.displayName ?? ""}
+        aria-invalid={setupForm.errors.displayName ? "true" : undefined}
+        aria-describedby={setupForm.errors.displayName ? "displayName-err" : undefined}
+        oninput={(e) =>
+          setupForm.update("displayName", (e.currentTarget as HTMLInputElement).value)}
+      />
+      {#if setupForm.errors.displayName}
+        <p id="displayName-err" class="text-xs text-destructive">
+          {setupForm.errors.displayName}
+        </p>
+      {/if}
+      <p class="text-xs text-muted-foreground">
+        Shown next to your edits and in the chat — your personal name, not the site's. You'll
+        name the site itself in your first chat.
+      </p>
+    </div>
+    <div class="space-y-2">
+      <Label for="email">Email</Label>
+      <Input
+        id="email"
+        name="email"
+        type="email"
+        autocomplete="username"
+        required
+        value={form?.email ?? ""}
+        aria-invalid={setupForm.errors.email ? "true" : undefined}
+        aria-describedby={setupForm.errors.email ? "email-err" : undefined}
+        oninput={(e) => setupForm.update("email", (e.currentTarget as HTMLInputElement).value)}
+      />
+      {#if setupForm.errors.email}
+        <p id="email-err" class="text-xs text-destructive">{setupForm.errors.email}</p>
+      {/if}
+    </div>
+    <div class="space-y-2">
+      <Label for="password">Password</Label>
+      <Input
+        id="password"
+        name="password"
+        type="password"
+        autocomplete="new-password"
+        required
+        minlength={10}
+        aria-invalid={setupForm.errors.password ? "true" : undefined}
+        aria-describedby={setupForm.errors.password ? "password-err" : undefined}
+        oninput={(e) =>
+          setupForm.update("password", (e.currentTarget as HTMLInputElement).value)}
+      />
+      {#if setupForm.errors.password}
+        <p id="password-err" class="text-xs text-destructive">{setupForm.errors.password}</p>
+      {:else}
+        <p class="text-xs text-muted-foreground">
+          At least 10 characters. Not a common password or your name/email.
+        </p>
+      {/if}
+    </div>
+    <!-- Submit stays enabled — see comment in login form. The
+         inline errors are advisory; the server is authoritative. -->
+    <Button type="submit" class="w-full">Create owner</Button>
+  </form>
+</AuthPlate>

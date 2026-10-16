@@ -51,6 +51,7 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-link: var(--link);
+  --color-sky-label: var(--sky-label);
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
@@ -84,6 +85,13 @@
   --link: #2a64b8;
   /* Cards 11px; md (buttons, inputs) 9px. */
   --radius: 0.6875rem;
+  /* #781 — arrival screens (the (auth) routes). The sky is staging for
+     visitors, so it lives only on these screens, never on work
+     surfaces. Sky labels are 5.4:1 on the lightest sky stop; the plate
+     ring is the relief edge around the form card. */
+  --sky: linear-gradient(180deg, #c3dbf2 0%, #dce9f6 40%, #efe7ef 72%, #f8e6d8 100%);
+  --sky-label: #1f5299;
+  --plate-ring: rgba(255, 255, 255, 0.55);
 }
 
 .dark {
@@ -114,6 +122,11 @@
   /* 8.7:1 on background. */
   --ring: #7fb4ff;
   --link: #7fb4ff;
+  /* The sky is light-mode only: arrival screens sit on the plain
+     night-blue background, labels take the link blue (8.7:1). */
+  --sky: none;
+  --sky-label: #7fb4ff;
+  --plate-ring: rgba(255, 255, 255, 0.08);
 }
 
 @layer base {
