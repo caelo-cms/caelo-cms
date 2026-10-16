@@ -78,6 +78,9 @@ export async function runSeoPass(args: {
   /** The target's page emission style (v0.2.85). Every URL of the pass
    *  — canonical, sitemap `<loc>`, plugin hreflang — follows it (#590). */
   pageUrlStyle: PageUrlStyle;
+  /** #802 — the designated 404 page (shipped as `/404.html`), or null.
+   *  It gets {@link notFoundPageSeo} and never enters the sitemap. */
+  notFoundPageId: string | null;
 }): Promise<{ sitemapEmitted: boolean }> {
   if (args.pages.length === 0) {
     return { sitemapEmitted: false };
@@ -231,21 +234,27 @@ export async function runSeoPass(args: {
   for (const p of args.pages) {
     const bundle = bundleById.get(p.pageId);
     if (!bundle) continue;
-    const canonical = publicUrlOf(bundle);
+    const isNotFoundPage = bundle.pageId === args.notFoundPageId;
     const ogImageUrl = bundle.ogImageAssetId
       ? (ogImageUrlByAsset.get(bundle.ogImageAssetId) ?? null)
       : null;
     const headBlock = renderSeoHead({
       title: bundle.title,
       metaDescription: bundle.metaDescription,
-      canonical,
-      noindex: bundle.noindex,
       ogImageUrl,
       organization: args.settings.organization,
+      ...(isNotFoundPage
+        ? notFoundPageSeo()
+        : { canonical: publicUrlOf(bundle), noindex: bundle.noindex }),
     });
     p.html = injectSeoIntoHead(
       p.html,
-      composeHeadBlock(headBlock, contributions.head.get(bundle.pageId)),
+      // #802 — no plugin head contributions on the 404 page: it answers
+      // every unknown URL, so hreflang alternates would be false claims.
+      composeHeadBlock(
+        headBlock,
+        isNotFoundPage ? undefined : contributions.head.get(bundle.pageId),
+      ),
     );
     // `<html lang>` — same resolution as the admin preview.
     p.html = applyDocumentLanguage(
@@ -263,7 +272,7 @@ export async function runSeoPass(args: {
   const sitemapEnabled = args.settings.siteBaseUrl.length > 0;
   if (sitemapEnabled) {
     const entries = seoBundles
-      .filter((b) => !b.noindex)
+      .filter((b) => isSitemapEntry(b, args.notFoundPageId))
       // #391 — plugin-contributed exclusion (e.g. an unpublished
       // variant URL must not appear; clean-404 semantics).
       .filter((b) => contributions.sitemap.get(b.pageId)?.exclude !== true)
@@ -298,6 +307,26 @@ export async function runSeoPass(args: {
     await writeFile(join(args.buildDir, "sitemap.xml"), xml, "utf8");
   }
   return { sitemapEmitted: sitemapEnabled };
+}
+
+/**
+ * #802 — head fields of the 404 page. It is served for every unknown URL,
+ * so it has no canonical URL of its own (no canonical, og:url or JSON-LD
+ * url) and must never be indexed, whatever its page SEO says.
+ */
+export function notFoundPageSeo(): { canonical: null; noindex: true } {
+  return { canonical: null, noindex: true };
+}
+
+/**
+ * Does the page get a sitemap `<url>`? Not when it is noindex, and never
+ * the 404 page (#802), which is not reachable at its own URL.
+ */
+export function isSitemapEntry(
+  page: { readonly pageId: string; readonly noindex: boolean },
+  notFoundPageId: string | null,
+): boolean {
+  return !page.noindex && page.pageId !== notFoundPageId;
 }
 
 function enc(s: string): string {

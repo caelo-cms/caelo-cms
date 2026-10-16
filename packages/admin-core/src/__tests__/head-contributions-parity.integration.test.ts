@@ -236,6 +236,7 @@ describe("#391 — generator/preview parity + sitemap contributions", () => {
           organization: {},
         },
         pageUrlStyle: "directory",
+        notFoundPageId: null,
       });
     });
     const expectedBlock = renderHeadEntries(ENTRIES);

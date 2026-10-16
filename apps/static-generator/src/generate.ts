@@ -55,6 +55,11 @@ import {
   loadNestedModules,
   type RenderedPageForGate,
 } from "./nested-modules-pass.js";
+import {
+  NOT_FOUND_PAGE_FILE,
+  notFoundPageBuildError,
+  readNotFoundPageId,
+} from "./not-found-page.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { rewritePreviewFontUrls } from "./preview-font-urls.js";
 import { writeRedirectFiles } from "./redirects-pass.js";
@@ -218,6 +223,20 @@ export function pageOutputPath(
   const trimmed = trimSlashes(currentPath);
   if (trimmed.length === 0) return "index.html";
   return pageUrlStyle === "no-extension" ? trimmed : `${trimmed}/index.html`;
+}
+
+/**
+ * #802 — the file a built page is written to: `404.html` for the
+ * designated 404 page (whatever the URL style; see not-found-page.ts),
+ * its composed path ({@link pageOutputPath}) otherwise.
+ */
+export function builtPageOutputPath(
+  page: { readonly pageId: string; readonly currentPath: string },
+  notFoundPageId: string | null,
+  pageUrlStyle: "directory" | "no-extension" = "directory",
+): string {
+  if (notFoundPageId !== null && page.pageId === notFoundPageId) return NOT_FOUND_PAGE_FILE;
+  return pageOutputPath(page.currentPath, pageUrlStyle);
 }
 
 /**
@@ -474,6 +493,22 @@ export async function generateSite(args: {
   });
   if (zeroPageError !== null) throw new Error(zeroPageError);
 
+  // #802 — the designated 404 page ships as /404.html, not at its path.
+  const notFoundPageId = await readNotFoundPageId(tx);
+  const notFoundError = notFoundPageBuildError({
+    notFoundPageId,
+    builtPageIds: pageRows.map((p) => p.page_id),
+    env: target.env,
+    incremental: (args.changedPageIds?.length ?? 0) > 0,
+  });
+  if (notFoundError !== null) throw new Error(notFoundError);
+  const outputPathOf = (p: PageRow): string =>
+    builtPageOutputPath(
+      { pageId: p.page_id, currentPath: p.current_path },
+      notFoundPageId,
+      target.pageUrlStyle,
+    );
+
   // #390 — the emitted path IS pages.current_path (home designation,
   // prefixes and slug formats are materialized there by the write ops),
   // so generator + canonical + sitemap agree by construction.
@@ -483,7 +518,7 @@ export async function generateSite(args: {
   const pageUrlStyle = target.pageUrlStyle ?? "directory";
 
   // issue #302 — fail loudly when no page will land at the bucket root.
-  const plannedPaths = pageRows.map((p) => pageOutputPath(p.current_path, target.pageUrlStyle));
+  const plannedPaths = pageRows.map(outputPathOf);
   const rootEligibleSlugs = pageRows.map((p) => p.slug);
   const rootError = missingRootPageError({
     outputPaths: plannedPaths,
@@ -893,7 +928,7 @@ export async function generateSite(args: {
       pageId: page.page_id,
       pageSlug: page.slug,
       pageTitle: page.title,
-      relPath: pageOutputPath(page.current_path, target.pageUrlStyle),
+      relPath: outputPathOf(page),
     });
     renderedForGate.push({
       pageSlug: page.slug,
@@ -963,6 +998,7 @@ export async function generateSite(args: {
     pages: composedPages,
     settings: seoSettings,
     pageUrlStyle,
+    notFoundPageId,
   });
   if (seoResult.sitemapEmitted) fileCount += 1;
 
@@ -1038,8 +1074,14 @@ export async function generateSite(args: {
     pages: pageRows.map((p) => ({
       slug: p.slug,
       path: p.current_path,
-      outputPath: pageOutputPath(p.current_path, target.pageUrlStyle),
+      outputPath: outputPathOf(p),
     })),
+    // #802 — the error page every provider serves for unknown URLs, or
+    // null when none is designated (the host's generic page answers).
+    notFoundPage:
+      notFoundPageId !== null && pageRows.some((p) => p.page_id === notFoundPageId)
+        ? NOT_FOUND_PAGE_FILE
+        : null,
     // Promote guard — see manifestBakesEnvNoindex.
     envNoindexInHtml: false,
   };

@@ -293,7 +293,14 @@ const distribution = new aws.cloudfront.Distribution(`${namePrefix}-cdn`, {
     minimumProtocolVersion: "TLSv1.2_2021",
   },
   restrictions: { geoRestriction: { restrictionType: "none" } },
+  // #802 — unknown URLs get the site's own 404 page (the generator writes
+  // `/404.html` from the designated page) with status 404. The S3 origins
+  // are OAI-only with `s3:GetObject` and no `s3:ListBucket`, so S3 answers
+  // a missing key with 403, not 404; without the 403 entry visitors saw
+  // S3's AccessDenied XML. Both origins on this distribution are private
+  // buckets, so a 403 here always means "no such object".
   customErrorResponses: [
+    { errorCode: 403, responseCode: 404, responsePagePath: "/404.html", errorCachingMinTtl: 60 },
     { errorCode: 404, responseCode: 404, responsePagePath: "/404.html", errorCachingMinTtl: 60 },
   ],
 });

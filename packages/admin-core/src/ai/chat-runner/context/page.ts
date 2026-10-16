@@ -40,6 +40,8 @@ export async function buildPageContext(
           templateId: string;
           /** 0184 — this page is the designated site root. */
           isHomePage: boolean;
+          /** 0284 (#802) — this page is the designated 404 page. */
+          isNotFoundPage: boolean;
           blocks: {
             blockName: string;
             modules: { moduleId: string; slug: string; displayName: string; html: string }[];
@@ -58,6 +60,11 @@ export async function buildPageContext(
         ...(v.page.isHomePage
           ? [
               "Homepage: YES — this page is the site root and serves at `/` (not at `/<slug>`). It keeps its slug but the designation (set_home_page) makes it the site root.",
+            ]
+          : []),
+        ...(v.page.isNotFoundPage
+          ? [
+              "404 page: YES — this is the site's error page (set_not_found_page). Publishing ships it as /404.html, shown for every unknown URL with status 404; it is not reachable at its own slug, is noindex and stays out of the sitemap. Keep it helpful: say the page was not found and link back to the homepage and main sections.",
             ]
           : []),
         `Template id: ${v.page.templateId}`,

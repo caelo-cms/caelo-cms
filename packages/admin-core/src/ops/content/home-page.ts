@@ -65,6 +65,21 @@ export const setHomePageOp = defineOperation({
           : `this page has ${childCount} child page(s), and the homepage cannot be a parent — move them to the top level or under another page first (move_pages), then designate it`,
       });
     }
+    // 0284 (#802) — the 404 page ships only as /404.html; as the
+    // homepage it would have to serve "/" too.
+    const notFoundRows = (await tx.execute(sql`
+      SELECT 1 AS is_not_found FROM site_defaults
+      WHERE id = 1 AND not_found_page_id = ${input.pageId}::uuid
+      LIMIT 1
+    `)) as unknown as { is_not_found: number }[];
+    if (notFoundRows.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.set_home_page",
+        message:
+          "this page is the site's 404 page (shown for unknown URLs), so it cannot also be the homepage — designate another page as the homepage, or first designate a different 404 page (set_not_found_page)",
+      });
+    }
     // Capture the previous designation BEFORE the flip — its page's
     // composed path changes back from "/" to its slug shape (#390).
     const prevRows = (await tx.execute(sql`

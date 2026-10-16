@@ -21,6 +21,9 @@ export {
   manifestBakesEnvNoindex,
   pageOutputPath,
 } from "./generate.js";
+// #802 — the file the designated 404 page ships as (the quality audit
+// loads it there, not at the page's own path).
+export { NOT_FOUND_PAGE_FILE } from "./not-found-page.js";
 export {
   axisSpecHash,
   cachedPinnedFaceSlices,

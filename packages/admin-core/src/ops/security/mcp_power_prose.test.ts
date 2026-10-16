@@ -14,9 +14,18 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import {
+  isUntrustedToolResult,
+  untrustedToolResult,
+  untrustedToolResultValue,
+} from "@caelo-cms/shared";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
-import { POWER_MCP_EXCLUDED_TOOLS, powerToolCatalogue } from "./mcp_power.js";
+import {
+  POWER_MCP_EXCLUDED_TOOLS,
+  powerToolCatalogue,
+  surfaceToolResultContent,
+} from "./mcp_power.js";
 import { annotateExcludedToolMentions, findExcludedToolMentions } from "./mcp_power_prose.js";
 
 // Synthetic names — the helper contract (word boundaries, backticks,
@@ -105,5 +114,44 @@ describe("Power-MCP prompt↔catalog consistency (#413)", () => {
       )
       .filter(([, names]) => names.length > 0);
     expect(violations).toEqual([]);
+  });
+});
+
+describe("surfaceToolResultContent — data results round-trip (bug 2c323d9a)", () => {
+  const names = [...POWER_MCP_EXCLUDED_TOOLS.keys()];
+  const html = names.map((n) => `<p>Use <code>${n}</code> or \`${n}\` here.</p>`).join("");
+
+  it("returns site-data tool results byte-for-byte, even when they name excluded tools", () => {
+    // A docs page documenting the chat surface legitimately names these
+    // tools; annotating the read let a read-modify-write persist the note.
+    for (const tool of [
+      "get_content_instance",
+      "read_content",
+      "query_page_html",
+      "grep_content",
+      "list_modules",
+    ]) {
+      const content = JSON.stringify({ values: { body: html } });
+      expect(surfaceToolResultContent(tool, content)).toBe(content);
+    }
+  });
+
+  it("passes a plugin result through still wrapped as untrusted data (#635)", () => {
+    // The wrapper is applied before this boundary; dropping the annotation
+    // must leave it intact and its value unchanged.
+    const value = { comments: [{ content: html }] };
+    const wrapped = untrustedToolResult(value);
+    const served = surfaceToolResultContent("list_comments", wrapped);
+    expect(served).toBe(wrapped);
+    expect(isUntrustedToolResult(served)).toBe(true);
+    expect(untrustedToolResultValue(served)).toEqual(value);
+  });
+
+  it("still annotates load_skill results, which are instruction prose", () => {
+    const content = `Loaded skill "x" — X. Follow these instructions:\n\n${html}`;
+    const served = surfaceToolResultContent("load_skill", content);
+    expect(served).toContain("[not available on this surface — ");
+    expect(findExcludedToolMentions(served, names)).toEqual([]);
+    for (const n of names) expect(served).toContain(n);
   });
 });

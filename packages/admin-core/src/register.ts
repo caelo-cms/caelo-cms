@@ -137,6 +137,7 @@ import {
   updateModuleOp,
   updateModulesManyOp,
 } from "./ops/content/modules.js";
+import { setNotFoundPageOp } from "./ops/content/not-found-page.js";
 import {
   getPageModuleContentOp,
   listPageModuleContentOp,
@@ -704,6 +705,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(buildPageOp);
   // 0184 — explicit homepage designation (site_defaults.home_page_id).
   registry.register(setHomePageOp);
+  // 0284 (#802) — the page the static build ships as /404.html.
+  registry.register(setNotFoundPageOp);
   registry.register(listPageModuleContentOp);
   registry.register(refreshCurrentPathOp);
   registry.register(movePagesManyOp);
