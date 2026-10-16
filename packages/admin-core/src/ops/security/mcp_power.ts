@@ -87,6 +87,29 @@ export const POWER_MCP_EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
   ["submit_result", "subagent-only structured result channel"],
 ]);
 
+/**
+ * Tools whose RESULT is instruction prose the agent follows, not site data.
+ * Only these results get the excluded-tool annotation (see
+ * `surfaceToolResultContent`). Today that is `load_skill`: its result IS the
+ * skill body, the same text `mcp.get_context` annotates for the skills index
+ * and the CLAUDE.md export.
+ */
+export const POWER_MCP_INSTRUCTION_RESULT_TOOLS: ReadonlySet<string> = new Set(["load_skill"]);
+
+/**
+ * Bug 2c323d9a — the surface-honesty annotation (issue #413) is for prose the
+ * agent reads as instructions. Every other tool result carries site data
+ * (content values, module bodies, page HTML, grep hits …) that the agent
+ * reads and writes back; annotating it injected the note into a docs page's
+ * `<code>spawn_subagent</code>` and the read-modify-write persisted it to the
+ * live site. Data results therefore pass through byte-for-byte.
+ */
+export function surfaceToolResultContent(toolName: string, content: string): string {
+  return POWER_MCP_INSTRUCTION_RESULT_TOOLS.has(toolName)
+    ? annotateExcludedToolMentions(content, POWER_MCP_EXCLUDED_TOOLS)
+    : content;
+}
+
 const toolCatalogueEntry = z.object({
   name: z.string(),
   description: z.string(),
@@ -709,10 +732,10 @@ export const mcpExecuteToolOp = defineOperation({
               // content block.
             });
 
-      // issue #413 — tool-result prose is also authored for the chat surface
-      // (e.g. inspect_page_render's summary hint says to call an excluded
-      // screenshot tool next). Annotate at the same boundary as the catalogue
-      // descriptions, BEFORE caching, so replays serve the same honest copy.
+      // issue #413 — results that ARE instruction prose (load_skill's skill
+      // bodies) get the same excluded-tool annotation as the catalogue,
+      // BEFORE caching so replays serve the same honest copy. Every other
+      // result is site data and must round-trip unchanged (bug 2c323d9a).
       // issue #620 — a write that took over another chat's lock (or lost one)
       // says so in this result, same as in the browser chat.
       const result: ToolResult = await withTakeoverNotices(
@@ -722,7 +745,7 @@ export const mcpExecuteToolOp = defineOperation({
         input.chatSessionId,
         {
           ...rawResult,
-          content: annotateExcludedToolMentions(rawResult.content, POWER_MCP_EXCLUDED_TOOLS),
+          content: surfaceToolResultContent(input.toolName, rawResult.content),
         },
       );
 
