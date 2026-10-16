@@ -24,7 +24,7 @@ describe("resolveUpgradePath", () => {
       install: "example.com",
       command:
         "bunx @caelo-cms/provisioning@0.10.44 upgrade --version 0.10.44 --install example.com",
-      docsUrl: "https://caelo-cms.com/install-gcp",
+      docsUrl: "https://caelo-cms.com/docs/install/maintenance/",
     });
   });
 
@@ -37,7 +37,7 @@ describe("resolveUpgradePath", () => {
     expect(resolveUpgradePath({ ...gcp, CAELO_PROVIDER: "aws" }, "0.10.44")).toEqual({
       kind: "unsupported",
       providerLabel: "AWS",
-      docsUrl: "https://caelo-cms.com/install-aws",
+      docsUrl: "https://caelo-cms.com/docs/install/",
     });
   });
 
@@ -48,7 +48,7 @@ describe("resolveUpgradePath", () => {
       install: "example.com",
       // No --install: the CLI finds the install by the folder it runs in.
       command: "bunx @caelo-cms/provisioning@0.10.44 upgrade --version 0.10.44",
-      docsUrl: "https://caelo-cms.com/install-self-hosted",
+      docsUrl: "https://caelo-cms.com/docs/install/maintenance/",
     };
     expect(
       resolveUpgradePath(

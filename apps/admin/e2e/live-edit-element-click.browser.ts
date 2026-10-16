@@ -107,6 +107,13 @@ test("clicking an element in the live-preview iframe appends a chip", async ({ p
   // (and wait for the iframe to apply it) before clicking the element.
   await enableLiveEditMode(page);
 
+  // #780 — the hover outline is Caelo blue (#2a64b8). Hover near the
+  // element's top-left corner: the overlay column is pinned right and
+  // would swallow a hover at the full-width h1's centre.
+  await taggedH1.hover({ position: { x: 8, y: 8 } });
+  await expect(taggedH1).toHaveCSS("outline-color", "rgb(42, 100, 184)");
+  await expect(taggedH1).toHaveCSS("outline-style", "solid");
+
   // Synthesize the click so we bypass the floating overlay's pointer
   // interception. With edit mode ON the inject-script's capture
   // listener treats every same-page click as a chip emit regardless of

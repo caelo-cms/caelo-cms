@@ -21,8 +21,14 @@ import {
  * Pure, with the environment passed in, so it is unit-testable.
  */
 
-/** Docs page per provider; each has an upgrade section. */
-const DOCS_BASE = "https://caelo-cms.com";
+/** Upgrade guide for every install the CLI upgrades (Google Cloud and self-hosted). */
+const UPGRADE_DOCS_URL = "https://caelo-cms.com/docs/install/maintenance/";
+
+/**
+ * Install overview, for providers without an upgrade command: the docs have
+ * no AWS or Azure page yet, and the overview says which installs exist today.
+ */
+const INSTALL_DOCS_URL = "https://caelo-cms.com/docs/install/";
 
 /** Providers whose installs `cms-provision upgrade` can upgrade. */
 const CLI_UPGRADE_PROVIDERS = ["gcp", "gcp-firebase", "self-hosted"] as const;
@@ -95,12 +101,10 @@ const PROVIDER_LABELS: Record<string, string> = {
 export function resolveUpgradePath(env: UpgradePathEnv, version: string): UpgradePath {
   const provider = updatesProvider(env);
   if (!isCliProvider(provider)) {
-    const docsPage =
-      provider === "aws" || provider === "azure" ? `install-${provider}` : "install-self-hosted";
     return {
       kind: "unsupported",
       providerLabel: PROVIDER_LABELS[provider] ?? provider,
-      docsUrl: `${DOCS_BASE}/${docsPage}`,
+      docsUrl: INSTALL_DOCS_URL,
     };
   }
   const siteUrl = env.CAELO_SITE_URL?.trim();
@@ -120,7 +124,7 @@ export function resolveUpgradePath(env: UpgradePathEnv, version: string): Upgrad
       provider,
       install: install ?? siteUrl,
       command: provisioningCommand(version, ["upgrade", "--version", version]),
-      docsUrl: `${DOCS_BASE}/install-self-hosted`,
+      docsUrl: UPGRADE_DOCS_URL,
     };
   }
   if (!install) {
@@ -134,7 +138,7 @@ export function resolveUpgradePath(env: UpgradePathEnv, version: string): Upgrad
     provider,
     install,
     command: provisioningUpgradeCommand({ version, install }),
-    docsUrl: `${DOCS_BASE}/install-gcp`,
+    docsUrl: UPGRADE_DOCS_URL,
   };
 }
 

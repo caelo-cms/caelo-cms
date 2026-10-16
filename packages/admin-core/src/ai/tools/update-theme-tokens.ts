@@ -13,6 +13,7 @@
 import { execute } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
+  fontAxisPolicy,
   fontRef,
   listThemeCssVarNames,
   scanCssVars,
@@ -39,6 +40,10 @@ const setThemeTokensToolInput = z
       .optional(),
     /** Loose-name → value map. Server normalizes to canonical paths. */
     fontBindings: z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9-]{0,79}$/), fontRef).optional(),
+    /** Role → variation-axis override for its pinned font file; null resets to the default. */
+    fontAxes: z
+      .record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9-]{0,79}$/), fontAxisPolicy.nullable())
+      .optional(),
     set: z.record(z.string(), z.unknown()).optional(),
     /** Canonical DTCG paths to drop. */
     remove: z.array(z.string()).optional(),
@@ -52,6 +57,16 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
     "Update theme tokens for one theme. Accepts loose names (`primaryColor`, `fontHeading`, " +
     "`spacingLg`) — server normalizes to canonical paths and returns what was written. " +
     "Use fontBindings: {body: {id, sha256}, heading: {id, sha256}} from find_fonts/acquire_font to pin exact font files. " +
+    "Use fontAxes to change which part of a pinned VARIABLE font visitors download, e.g. " +
+    '`fontAxes: {heading: {opsz: "full"}}` or `{body: {wght: {min: 400, max: 700}}}`; `null` resets a role to the default. ' +
+    'Per axis: "full" keeps the font\'s whole range, {min,max} clamps it, a number pins it. ' +
+    "The policy belongs to the font FILE, so it applies to every role using that file. " +
+    "Default without an override (usually right, no action needed): wght clamped to the weights the site can render, " +
+    "every other axis pinned to the font's default — this roughly halves Inter's download. Trade-offs: pinning opsz " +
+    "makes large headings render with the text optical size (a visibly heavier, less refined display cut) — use " +
+    '{opsz: "full"} when the operator wants optical sizes kept; a wght range that excludes a weight the site uses makes ' +
+    "that text render at the nearest kept weight. Read the current effective policy and byte sizes first with " +
+    'get_theme(as: "font-delivery"). Axis tags or values the font does not have are rejected with its real ranges. ' +
     "Pass `set` to add/replace tokens, `remove` to drop them. Works with the active theme " +
     "by default; pass `themeSlug` to target a specific theme. For a complete theme " +
     "replacement, use `set_theme_tokens` with all desired tokens (it's an upsert per token, " +

@@ -1,6 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { FileText, Layers, Layout, MessageSquare, Rocket, Sailboat, Settings } from "lucide-svelte";
+  import StateDot from "#lib/components/StateDot.svelte";
   import { hasAnySettingsAccess } from "#lib/settings-nav.js";
   import {
     Card,
@@ -12,6 +13,9 @@
 
   let { data } = $props();
   const has = (p: string) => data.user.permissions.includes(p);
+  const siteState = $derived(data.siteState);
+  // UTC minute, same on server and client (no hydration drift).
+  const when = (iso: string): string => `${iso.slice(0, 16).replace("T", " ")} UTC`;
 
   const tiles = $derived(
     [
@@ -57,6 +61,45 @@
         </CardHeader>
       </Card>
     </a>
+  {/if}
+
+  <!-- #779 — where the site stands, Draft → Preview → Live. -->
+  {#if siteState && has("content.read")}
+    <Card data-testid="site-state">
+      <CardHeader class="pb-2">
+        <CardTitle class="text-base">Site state</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ul class="grid gap-2 text-sm sm:grid-cols-3">
+          <li class="flex flex-col gap-0.5">
+            <StateDot state="draft" class="text-sm font-medium" />
+            <a class="text-muted-foreground underline-offset-4 hover:underline" href="/content/pages">
+              {siteState.draftPageCount === 1
+                ? "1 draft page"
+                : `${siteState.draftPageCount} draft pages`}
+            </a>
+          </li>
+          <li class="flex flex-col gap-0.5">
+            <StateDot state="preview" class="text-sm font-medium" />
+            <span class="text-muted-foreground">
+              {siteState.preview ? `Staged ${when(siteState.preview.finishedAt)}` : "Nothing staged yet"}
+            </span>
+          </li>
+          <li class="flex flex-col gap-0.5">
+            <StateDot state="live" class="text-sm font-medium" />
+            <span class="text-muted-foreground">
+              {#if siteState.live}
+                Published {when(siteState.live.finishedAt)}{siteState.liveMatchesPreview === false
+                  ? " — a newer staged build is waiting"
+                  : ""}
+              {:else}
+                Not published yet
+              {/if}
+            </span>
+          </li>
+        </ul>
+      </CardContent>
+    </Card>
   {/if}
 
   <div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">

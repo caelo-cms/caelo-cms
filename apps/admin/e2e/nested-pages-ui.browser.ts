@@ -90,6 +90,15 @@ test("the page list shows the child indented under its section with its full pat
     .getByTestId("page-row")
     .filter({ hasText: `/${seed.sectionA}/${seed.child}` });
   await expect(childRow).toHaveAttribute("data-depth", "1");
+  // #779 — the list shows the page STATUS as a mark: Draft (label carries
+  // it, the dot is decorative); never Preview / Live.
+  const mark = childRow.getByTestId("state-dot");
+  await expect(mark).toHaveAttribute("data-state", "draft");
+  await expect(mark).toHaveText("Draft");
+  await expect(mark.locator('[aria-hidden="true"]')).toHaveCount(1);
+  await expect(
+    page.getByTestId("page-row").locator('[data-state="live"], [data-state="preview"]'),
+  ).toHaveCount(0);
 });
 
 test("the Location card moves the page under another section", async ({ page }) => {

@@ -18,6 +18,8 @@ The Caelo runtime never knows it's on AWS — it just consumes `DATABASE_URL` / 
 
 ## First-time install
 
+Run this stack from a checkout of the Caelo repository after `bun install` at its root. `@pulumi/aws` + `@pulumi/awsx` are devDependencies of `@caelo-cms/provisioning`: the CLI wizard does not provision AWS yet, so the published package does not make every GCP and self-hosted install download them (the one-click install from Cloud Shell runs in a 5 GB home directory). They move back to `dependencies` when the AWS wizard ships.
+
 ```bash
 cd packages/provisioning/stacks/aws
 pulumi stack init prod

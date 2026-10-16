@@ -16,23 +16,28 @@
  *  - each slice re-encoded as WOFF2 with harfbuzz (hb-subset) and the
  *    reference woff2 encoder, both as wasm, so the generator needs no
  *    native addon and no Python;
- *  - variation axes (`wght`, `opsz`, ...) and every OpenType layout
- *    feature are kept, so `font-weight: 100 900` and feature settings
- *    behave as with the original file. This is the whole reason our
- *    slices are larger than Google Fonts' for the same family: Google
- *    pins axes the request does not name and serves a reduced feature
- *    set (Inter's default latin slice keeps only calt/ccmp/frac/numr/
- *    dnom/pnum/tnum/kern/mark/mkmk; no ss*, cv*, case, zero, sups, ...).
- *    With the same choices this pipeline lands within ~3% of Google's
- *    bytes. Both would silently change rendering for a site that uses
- *    optical sizes or `font-feature-settings`, so neither is applied.
- *    Hinting is kept too: Google strips it only for non-Windows user
- *    agents, and a static file cannot vary by user agent.
+ *  - variation axes are instanced to the face's `EffectiveAxisSpec`
+ *    (see `font-axis-policy.ts` in `@caelo-cms/shared`): each axis kept
+ *    full, clamped to a range, or pinned to one value. This supersedes
+ *    the earlier rule of always keeping every axis ("neither is
+ *    applied"): the policy is now explicit, operator-overridable data,
+ *    and its default (`wght` clamped to the weights the site can render,
+ *    every other axis pinned to the font default — Google Fonts' choice)
+ *    is derived conservatively, so a site that addresses an axis or uses
+ *    a weight keeps it. Inter's latin slice drops from ~103 KB to ~52 KB
+ *    under that default.
+ *  - every OpenType layout feature is kept, so `font-feature-settings`
+ *    behaves as with the original file (Google serves a reduced set;
+ *    dropping features would silently change rendering for a site that
+ *    uses ss*, cv*, case, zero, ...). Hinting is kept too: Google strips
+ *    it only for non-Windows user agents, and a static file cannot vary
+ *    by user agent.
  *
  * Slices are by script, never by site text: content edits and new
  * translations cannot change a derived file. The output is a pure
- * function of (source bytes, slice table, toolchain version) — see
- * {@link deliveryToolchainTag}, which callers put into cache keys.
+ * function of (source bytes, axis spec, slice table, toolchain version):
+ * callers key caches on the source sha256, `axisSpecKey(spec)` and
+ * {@link deliveryToolchainTag}.
  *
  * Failure model (CLAUDE.md §2): any step that fails throws
  * {@link FontDeliveryError}. There is deliberately no path that hands the
@@ -43,6 +48,12 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import {
+  axisSpecKey,
+  type EffectiveAxisSpec,
+  expectedOutputAxes,
+  isFullAxisSpec,
+} from "@caelo-cms/shared";
 import fontverter from "fontverter";
 import subsetFont from "subset-font";
 import { openFont } from "./inspect.js";
@@ -56,7 +67,7 @@ export const FULL_FACE_SUBSET = "full";
  * retained tables, verification), so caches keyed on the toolchain tag
  * are invalidated even when no dependency version moved.
  */
-const DELIVERY_ALGORITHM = "caelo-font-delivery/1";
+const DELIVERY_ALGORITHM = "caelo-font-delivery/2";
 
 /**
  * name-table records hb-subset keeps besides its default 0-6: copyright
@@ -141,25 +152,73 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-interface AxisRange {
+/** Min/max of one variation axis as fontkit reports it. */
+export interface AxisRange {
   readonly min: number;
   readonly max: number;
 }
 
+/** The file's axes as sorted `tag → {min, max}` (comparable as JSON). */
 function axesOf(font: unknown): Record<string, AxisRange> {
   const axes = (font as { variationAxes?: Record<string, AxisRange> }).variationAxes ?? {};
-  return Object.fromEntries(
-    Object.entries(axes).map(([tag, a]) => [tag, { min: a.min, max: a.max }]),
-  );
+  const out: Record<string, AxisRange> = {};
+  for (const tag of Object.keys(axes).sort()) {
+    const axis = axes[tag] as AxisRange;
+    out[tag] = { min: axis.min, max: axis.max };
+  }
+  return out;
+}
+
+/** subset-font's `variationAxes` option for a spec: ranges and pins; full axes omitted. */
+function instancingOption(
+  spec: EffectiveAxisSpec,
+): Record<string, number | { min: number; max: number }> | undefined {
+  const option: Record<string, number | { min: number; max: number }> = {};
+  for (const [tag, axis] of Object.entries(spec)) {
+    if (axis.mode === "pin") option[tag] = axis.value;
+    else if (axis.mode === "range") option[tag] = { min: axis.min, max: axis.max };
+  }
+  return Object.keys(option).length > 0 ? option : undefined;
+}
+
+/** The spec must describe exactly the source's axes, each within its range. */
+function checkSpecAgainstSource(
+  sourceSha256: string,
+  spec: EffectiveAxisSpec,
+  sourceAxes: Record<string, AxisRange>,
+): void {
+  const specTags = Object.keys(spec).sort().join(",");
+  const sourceTags = Object.keys(sourceAxes).join(",");
+  if (specTags !== sourceTags) {
+    throw new FontDeliveryError(
+      sourceSha256,
+      "source",
+      `AxisSpecMismatch:spec names [${specTags}], source has [${sourceTags}]`,
+    );
+  }
+  for (const [tag, axis] of Object.entries(spec)) {
+    const range = sourceAxes[tag] as AxisRange;
+    const [lo, hi] = axis.mode === "pin" ? [axis.value, axis.value] : [axis.min, axis.max];
+    const fullMismatch = axis.mode === "full" && (lo !== range.min || hi !== range.max);
+    if (lo < range.min || hi > range.max || fullMismatch) {
+      throw new FontDeliveryError(
+        sourceSha256,
+        "source",
+        `AxisSpecOutOfRange:${axisSpecKey(spec)}`,
+      );
+    }
+  }
 }
 
 /**
  * Re-open a derived file and check it is a WOFF2 that maps every code
- * point it was cut for and kept the source's variation axes. A slice that
- * silently lost glyphs or axes would render as fallback text in
- * production, so it is a build failure here.
+ * point it was cut for and carries exactly the axes instancing should
+ * have left: pinned axes gone, every other axis at its (possibly
+ * clamped) range. A slice that silently lost glyphs, or kept/lost an
+ * axis the CSS descriptors assume, would render wrongly in production,
+ * so it is a build failure here.
  */
-function verifySlice(
+export function verifyDeliveredSlice(
   sourceSha256: string,
   subset: string,
   bytes: Uint8Array,
@@ -175,8 +234,14 @@ function verifySlice(
   } catch (error) {
     throw new FontDeliveryError(sourceSha256, subset, `OutputUnreadable:${describe(error)}`);
   }
-  if (JSON.stringify(axesOf(font)) !== JSON.stringify(expectedAxes)) {
-    throw new FontDeliveryError(sourceSha256, subset, "VariationAxesLost");
+  const actual = JSON.stringify(axesOf(font));
+  const expected = JSON.stringify(expectedAxes);
+  if (actual !== expected) {
+    throw new FontDeliveryError(
+      sourceSha256,
+      subset,
+      `VariationAxesMismatch:expected ${expected}, got ${actual}`,
+    );
   }
   if (codePoints !== null) {
     const mapped = new Set(font.characterSet);
@@ -205,10 +270,16 @@ async function step<T>(sourceSha256: string, subset: string, run: () => Promise<
  * and WOFF2 sources; a compressed source is decoded to sfnt once and
  * encoded once, never compressed on top of its existing compression.
  *
- * @throws FontDeliveryError when the source cannot be read, a slice
- *   cannot be produced, or a produced slice fails verification.
+ * @param axisSpec one entry per source axis (from `effectiveAxisSpec`);
+ *   `{}` for a static face
+ * @throws FontDeliveryError when the source cannot be read, the spec does
+ *   not describe the source's axes, a slice cannot be produced, or a
+ *   produced slice fails verification.
  */
-export async function deriveWebDelivery(source: Uint8Array): Promise<WebDelivery> {
+export async function deriveWebDelivery(
+  source: Uint8Array,
+  axisSpec: EffectiveAxisSpec,
+): Promise<WebDelivery> {
   const sourceSha256 = createHash("sha256").update(source).digest("hex");
   let opened: ReturnType<typeof openFont>;
   try {
@@ -217,7 +288,8 @@ export async function deriveWebDelivery(source: Uint8Array): Promise<WebDelivery
     throw new FontDeliveryError(sourceSha256, "source", `SourceUnreadable:${describe(error)}`);
   }
   const { font, format } = opened;
-  const expectedAxes = axesOf(font);
+  checkSpecAgainstSource(sourceSha256, axisSpec, axesOf(font));
+  const expectedAxes = expectedOutputAxes(axisSpec);
   const fsType = (font as unknown as { "OS/2"?: { fsType?: { noSubsetting?: boolean } } })["OS/2"]
     ?.fsType;
 
@@ -227,6 +299,11 @@ export async function deriveWebDelivery(source: Uint8Array): Promise<WebDelivery
     // the face ships whole. Changing the container to WOFF2 is lossless
     // and not subsetting, so the size win from compression is still taken;
     // a WOFF2 source is shipped as-is (no second compression pass).
+    // Instancing modifies the design space too, so the policy layer only
+    // ever asks for the full face here; anything else is a caller bug.
+    if (!isFullAxisSpec(axisSpec)) {
+      throw new FontDeliveryError(sourceSha256, FULL_FACE_SUBSET, "AxisInstancingForbidden");
+    }
     const bytes =
       format === "woff2"
         ? source
@@ -235,7 +312,7 @@ export async function deriveWebDelivery(source: Uint8Array): Promise<WebDelivery
               fontverter.convert(Buffer.from(source), "woff2"),
             ),
           );
-    verifySlice(sourceSha256, FULL_FACE_SUBSET, bytes, expectedAxes, null);
+    verifyDeliveredSlice(sourceSha256, FULL_FACE_SUBSET, bytes, expectedAxes, null);
     return { split: false, faces: [{ subset: FULL_FACE_SUBSET, unicodeRange: null, bytes }] };
   }
 
@@ -252,15 +329,20 @@ export async function deriveWebDelivery(source: Uint8Array): Promise<WebDelivery
     .sort((a, z) => a - z);
   const plan = planSlices(charset);
 
+  const variationAxes = instancingOption(axisSpec);
   const faces: WebDeliveryFace[] = [];
   for (const slice of plan) {
     const text = slice.codePoints.map((cp) => String.fromCodePoint(cp)).join("");
     const bytes = new Uint8Array(
       await step(sourceSha256, slice.name, () =>
-        subsetFont(sfnt, text, { targetFormat: "woff2", preserveNameIds: PRESERVED_NAME_IDS }),
+        subsetFont(sfnt, text, {
+          targetFormat: "woff2",
+          preserveNameIds: PRESERVED_NAME_IDS,
+          ...(variationAxes === undefined ? {} : { variationAxes }),
+        }),
       ),
     );
-    verifySlice(sourceSha256, slice.name, bytes, expectedAxes, slice.codePoints);
+    verifyDeliveredSlice(sourceSha256, slice.name, bytes, expectedAxes, slice.codePoints);
     faces.push({ subset: slice.name, unicodeRange: slice.unicodeRange, bytes });
   }
   if (faces.length === 0) {
