@@ -14,6 +14,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import {
+  isUntrustedToolResult,
+  untrustedToolResult,
+  untrustedToolResultValue,
+} from "@caelo-cms/shared";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import {
@@ -129,6 +134,17 @@ describe("surfaceToolResultContent — data results round-trip (bug 2c323d9a)", 
       const content = JSON.stringify({ values: { body: html } });
       expect(surfaceToolResultContent(tool, content)).toBe(content);
     }
+  });
+
+  it("passes a plugin result through still wrapped as untrusted data (#635)", () => {
+    // The wrapper is applied before this boundary; dropping the annotation
+    // must leave it intact and its value unchanged.
+    const value = { comments: [{ content: html }] };
+    const wrapped = untrustedToolResult(value);
+    const served = surfaceToolResultContent("list_comments", wrapped);
+    expect(served).toBe(wrapped);
+    expect(isUntrustedToolResult(served)).toBe(true);
+    expect(untrustedToolResultValue(served)).toEqual(value);
   });
 
   it("still annotates load_skill results, which are instruction prose", () => {
