@@ -87,6 +87,18 @@ COPY --from=builder /repo/node_modules ./node_modules
 COPY --from=builder /repo/packages ./packages
 COPY --from=builder /repo/apps/api-gateway ./apps/api-gateway
 
+# #794 — sharp loads the prebuilt libvips from @img/sharp-libvips-<platform>,
+# which this image redistributes. libvips and several bundled libraries are
+# LGPL-3.0-or-later and the npm package carries no licence file, so generate
+# the LGPL-3.0 §4 notice (versions, source link, LGPL + GPL texts) from what
+# is installed in the final tree. The generator fails if it finds no libvips
+# package; the licence texts come from the repo, not the network.
+COPY scripts/libvips-notice.ts /tmp/notice/libvips-notice.ts
+COPY licenses /tmp/notice/licenses
+RUN bun /tmp/notice/libvips-notice.ts --root /app --licenses /tmp/notice/licenses \
+      --out /app/THIRD_PARTY_NOTICES.txt && \
+    rm -rf /tmp/notice
+
 ENV NODE_ENV=production
 # Cloud Run defaults to PORT=8080 (platform-injected); local Compose
 # can override via GATEWAY_PORT. Server reads either.
