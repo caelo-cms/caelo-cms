@@ -23,6 +23,7 @@
 import { existsSync } from "node:fs";
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { NOT_FOUND_PAGE_FILE } from "@caelo-cms/static-generator";
 import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { localBuildArchiveDir } from "../ops/deploy.js";
 import { type CheckRegistry, createCoreCheckRegistry } from "./checks/registry.js";
@@ -56,9 +57,17 @@ export interface ClaimedAuditRun {
   readonly env: string;
   readonly outDir: string;
   /** Lighthouse's pages; empty when the Stage needs no Lighthouse. */
-  readonly pages: readonly { readonly pageId: string; readonly currentPath: string }[];
+  readonly pages: readonly ClaimedAuditPage[];
   /** #727 — every published page, for the findings checks. */
-  readonly checkPages: readonly { readonly pageId: string; readonly currentPath: string }[];
+  readonly checkPages: readonly ClaimedAuditPage[];
+}
+
+/** A page of a claimed audit run. */
+export interface ClaimedAuditPage {
+  readonly pageId: string;
+  readonly currentPath: string;
+  /** #802 — the designated 404 page, built as `/404.html` instead of at its path. */
+  readonly isNotFoundPage: boolean;
 }
 
 export type StagingOrigin =
@@ -214,6 +223,20 @@ export function stagedPageUrl(
   return style === "directory" ? `${base}${trimmed}/` : `${base}${trimmed}`;
 }
 
+/**
+ * #802 — where the staged build serves `page`: the designated 404 page is
+ * written to `/404.html` and nowhere else (its own path answers 404 by
+ * design), every other page at {@link stagedPageUrl}.
+ */
+export function stagedUrlOfPage(
+  baseUrl: string,
+  page: Pick<ClaimedAuditPage, "currentPath" | "isNotFoundPage">,
+  style: "directory" | "no-extension",
+): string {
+  if (page.isNotFoundPage) return `${trimTrailingSlashes(baseUrl)}/${NOT_FOUND_PAGE_FILE}`;
+  return stagedPageUrl(baseUrl, page.currentPath, style);
+}
+
 interface WorkerDeps {
   readonly adapter: DatabaseAdapter;
   readonly registry: OperationRegistry;
@@ -295,8 +318,8 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
     });
     return;
   }
-  const pageUrl = (currentPath: string) =>
-    stagedPageUrl(origin.baseUrl, currentPath, run.pageUrlStyle);
+  const pageUrl = (page: ClaimedAuditPage) =>
+    stagedUrlOfPage(origin.baseUrl, page, run.pageUrlStyle);
   let result: AuditJobResult | null = null;
   let checked: Awaited<ReturnType<typeof runChecksOnStagedBuild>>;
   try {
@@ -305,13 +328,13 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
       run.checkPages.map((p) => ({
         pageId: p.pageId,
         path: p.currentPath,
-        url: pageUrl(p.currentPath),
+        url: pageUrl(p),
       })),
       deps.fetchPage,
     );
     if (run.pages.length > 0 && runLighthouse) {
       result = await runLighthouse({
-        pages: run.pages.map((p) => ({ pageId: p.pageId, url: pageUrl(p.currentPath) })),
+        pages: run.pages.map((p) => ({ pageId: p.pageId, url: pageUrl(p) })),
         performanceRuns: run.performanceRuns,
       });
     }

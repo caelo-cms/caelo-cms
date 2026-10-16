@@ -509,13 +509,40 @@ describe("quality audit lifecycle + ratchet", () => {
     expect(v.classification.auditNeeded).toBe(false);
     expect(v.targetPageIds).toEqual([]);
     expect(v.classification.skipped).toEqual(["field values: copy"]);
-    const run = (
-      await op<{
-        run: { auditRunId: string; pages: unknown[]; checkPages: { pageId: string }[] };
-      }>(SYS, "quality_audits.claim_next", {})
-    ).run;
+    // #802 — the designated 404 page is flagged so the worker loads it
+    // from /404.html (its own path answers 404 by design).
+    const prevNotFound = (await withSql(
+      (tx) => tx`SELECT not_found_page_id::text AS id FROM site_defaults WHERE id = 1`,
+    )) as unknown as { id: string | null }[];
+    await withSql(
+      (tx) => tx`UPDATE site_defaults SET not_found_page_id = ${aboutId}::uuid WHERE id = 1`,
+    );
+    let run: {
+      auditRunId: string;
+      pages: unknown[];
+      checkPages: { pageId: string; isNotFoundPage: boolean }[];
+    } | null;
+    try {
+      run = (
+        await op<{
+          run: {
+            auditRunId: string;
+            pages: unknown[];
+            checkPages: { pageId: string; isNotFoundPage: boolean }[];
+          };
+        }>(SYS, "quality_audits.claim_next", {})
+      ).run;
+    } finally {
+      await withSql(
+        (tx) =>
+          tx`UPDATE site_defaults SET not_found_page_id = ${prevNotFound[0]?.id ?? null}::uuid WHERE id = 1`,
+      );
+    }
     expect(run?.pages).toEqual([]);
-    expect(run?.checkPages.map((p) => p.pageId)).toEqual([homeId, aboutId]);
+    expect(run?.checkPages.map((p) => [p.pageId, p.isNotFoundPage])).toEqual([
+      [homeId, false],
+      [aboutId, true],
+    ]);
     expect((await record(run?.auditRunId as string, [])).status).toBe("passed");
   });
 
