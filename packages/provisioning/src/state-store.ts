@@ -162,6 +162,15 @@ export class GcsStateStore implements StateStore {
   }
 }
 
+/**
+ * Another run holds the install's state lock. Distinct from every other
+ * lock failure (no access, gcloud missing), which callers must not report
+ * as "busy" — retrying later will not fix those.
+ */
+export class StateLockHeldError extends Error {
+  override readonly name = "StateLockHeldError";
+}
+
 /** `gs://<bucket>/install/state.lock` — see {@link acquireBucketStateLock}. */
 export function bucketStateLockUrl(bucket: string): string {
   return `gs://${bucket}/${OPS_INSTALL_PREFIX}/state.lock`;
@@ -197,7 +206,7 @@ export function acquireBucketStateLock(
   if (!r.ok) {
     if (/PreconditionFailed|412|At least one of the pre-conditions/i.test(r.stderr)) {
       const held = run(["storage", "cat", url]);
-      throw new Error(
+      throw new StateLockHeldError(
         `Another run is changing this install's state (${held.ok ? held.stdout.trim() : url}). Re-run once it has finished; if none is running, remove the stale lock: gcloud storage rm ${url}`,
       );
     }
@@ -221,7 +230,7 @@ export function acquireLocalStateLock(root: string, purpose: string): () => void
     writeFileSync(path, lockBody(purpose), { flag: "wx", mode: 0o600 });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(
+      throw new StateLockHeldError(
         `Another run is changing this install's state (${readFileSync(path, "utf8").trim()}). Re-run once it has finished; if none is running, remove the stale lock: rm ${path}`,
       );
     }

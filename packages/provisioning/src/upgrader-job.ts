@@ -43,6 +43,7 @@ import type { GcloudRunner, Sleep } from "./gcloud-retry.js";
 import { gcpNamePrefix, upgraderJobName } from "./gcp-names.js";
 import type { InstallMetadata } from "./install-state.js";
 import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
+import { StateLockHeldError } from "./state-store.js";
 import {
   type AppRollPlan,
   executeAppRoll,
@@ -224,10 +225,19 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     try {
       releaseLock = deps.lockState();
     } catch (e) {
+      if (e instanceof StateLockHeldError) {
+        return stopWith(
+          "failed",
+          ["state-locked"],
+          `Nothing was changed: another install operation is running on this site (${errorText(e)}). Try again when it has finished.`,
+        );
+      }
+      // Not contention: the job cannot reach its own ops bucket. Retrying
+      // will not help; a Cloud Shell upgrade re-converges the job's grants.
       return stopWith(
-        "failed",
-        ["state-locked"],
-        `Nothing was changed: another install operation is running on this site (${errorText(e)}). Try again when it has finished.`,
+        "needs_cloud_shell",
+        ["state-access"],
+        `Nothing was changed: the upgrader could not take the install's state lock (${errorText(e)}). Run the upgrade once with Cloud Shell; it repairs the upgrader's access.`,
       );
     }
 
