@@ -100,7 +100,7 @@ describe.skipIf(!dockerUp)(`self-hosted redirects through ${CADDY_IMAGE}`, () =>
     const location = head.match(/^location: ([^\r\n]*)/im)?.[1]?.trim() ?? null;
     return { status, location };
   };
-  const eventually = async (host: string, path: string, location: string) => {
+  const eventually = async (host: string, path: string, location: string | null) => {
     const deadline = Date.now() + 30_000;
     for (;;) {
       const got = probe(host, path).location;
@@ -241,7 +241,14 @@ describe.skipIf(!dockerUp)(`self-hosted redirects through ${CADDY_IMAGE}`, () =>
   it("the reload loop picks up a deploy's new snippet", async () => {
     write("production", snippet([["/brand-new", "/blog", 301]]));
     await eventually(LIVE, "/brand-new", "/blog/");
+    // Caddy's graceful reload keeps the old config's listener open for a
+    // moment next to the new one (SO_REUSEPORT), so a connection right
+    // after the first new answer can still reach the old config: the old
+    // redirect may answer once more (CI run 38867358899). What must hold is
+    // that the new snippet REPLACES the old one once the reload settled.
+    await eventually(LIVE, "/old", null);
     expect(probe(LIVE, "/old").status).toBe(404);
+    expect(probe(LIVE, "/brand-new").location).toBe("/blog/");
   }, 60_000);
 
   it("a snippet Caddy rejects leaves the previous redirects live; the next good one is picked up", async () => {

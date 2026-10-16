@@ -128,21 +128,44 @@ on every PR and **fails** it when the diff introduces a dependency that:
 - carries a license outside the MPL-2.0-compatible **allow-list**
   (`allow-licenses`, per CLAUDE.md §3).
 
-The allow-list mirrors the `--onlyAllow` set in `package.json`'s
-`license:check:deps` script. **Keep the two in lockstep** —
+The allow-list mirrors `ALLOWED_LICENSES` in `scripts/license-check.ts`, the
+gate behind `bun run license:check`. **Keep the two in lockstep** —
 `scripts/codeql-workflow.test.ts` fails CI if they diverge. We use the
 non-deprecated `allow-licenses` option (not `deny-licenses`); anything outside
 the set (GPL/AGPL/SSPL/proprietary) fails.
 
-**Font exception (OFL-1.1, fonts only).** The admin self-hosts its brand fonts
-(`@fontsource-variable/schibsted-grotesk`, `@fontsource/ibm-plex-mono`), which
-are OFL-1.1. OFL is never added to a global allow-list. Instead the workflow
-exempts exactly those packages by purl (`allow-dependencies-licenses`), and
-`bun run license:check` runs two gates: `license:check:deps` (global set, fonts
-excluded) and `license:check:fonts` (only the font packages, only `OFL-1.1`).
-`scripts/font-license-exception.test.ts` fails if the two lists diverge, if a
-non-Fontsource package is exempted, or if OFL appears in a global list. To add
-another font, add it to both lists.
+**`bun run license:check` (installed tree).** Dependency review only sees
+dependencies a PR adds or changes, so `scripts/license-check.ts` checks the
+whole installed tree in CI: every workspace, dev dependencies included, private
+`@caelo-cms/*` workspaces skipped. It evaluates SPDX expressions properly
+(every `AND` operand must be allowed, one `OR` operand suffices) and fails when
+fewer than `MIN_PACKAGES` packages were examined, because a broken scan (the
+old `--production` flag resolved 0 packages under bun workspaces) must not read
+as a pass.
+
+**Per-package exceptions.** `LICENSE_EXCEPTIONS` in `scripts/license-check.ts`
+lists each reviewed exception with its exact licence string and a reason; an
+unused entry fails the gate. The workflow exempts the same packages by purl
+(`allow-dependencies-licenses`), never via `allow-licenses`.
+`scripts/license-check.test.ts` pins the list and keeps the workflow in
+lockstep; `scripts/font-license-exception.test.ts` guards the font rule.
+
+- **OFL-1.1, fonts only** (#778): the admin's self-hosted brand fonts
+  (`@fontsource-variable/schibsted-grotesk`, `@fontsource/ibm-plex-mono`). To
+  add another font, add it to both lists.
+- **LGPL-3.0-or-later, `@img/sharp-libvips-*` only** (#794): the prebuilt
+  libvips that `sharp` loads at runtime as a separate shared library. The admin
+  and gateway images redistribute it, so their Dockerfiles run
+  `scripts/libvips-notice.ts` against the final `/app` tree to write
+  `/app/THIRD_PARTY_NOTICES.txt` (package and bundled library versions, the
+  `lovell/sharp-libvips` release for corresponding source, and the LGPL-3.0 and
+  GPL-3.0 texts from `licenses/`).
+- **CC-BY-3.0** for the SPDX data packages `spdx-exceptions` and
+  `spdx-ranges`: data files, not code, under an attribution-only licence.
+  `spdx-ranges` is dev-only (licence checker); `spdx-exceptions` also ships in
+  the provisioning closure through Pulumi, with its attribution intact in its
+  README. **Zlib** for `pako`, and `@logdna/tail-file` 2.2.0, whose
+  LICENSE file is the MIT text but whose `package.json` reports no SPDX id.
 
 On failure it posts a single summary comment on the PR
 (`comment-summary-in-pr: on-failure`).

@@ -8,13 +8,14 @@ name: Dependency Review
 #   * Vulnerabilities — fail on any newly-introduced dependency with a known
 #     advisory of `high` severity or higher.
 #   * Licenses — allow only the MPL-2.0-compatible set (CLAUDE.md §3). The list
-#     mirrors the superset already pinned by `package.json`'s `license:check:deps`
-#     script so the two license gates agree and a benign, already-accepted dep
-#     doesn't trip a false positive. We use `allow-licenses` (not the deprecated
-#     `deny-licenses`) — anything outside the set (GPL/AGPL/SSPL/proprietary)
-#     fails the check.
-#   * Font exception — OFL-1.1 is accepted for the listed font packages only,
-#     via `allow-dependencies-licenses` (purls), never via `allow-licenses`.
+#     mirrors ALLOWED_LICENSES in scripts/license-check.ts (`bun run
+#     license:check`) so the two license gates agree and a benign,
+#     already-accepted dep doesn't trip a false positive. We use
+#     `allow-licenses` (not the deprecated `deny-licenses`) — anything outside
+#     the set (GPL/AGPL/SSPL/proprietary) fails the check.
+#   * Per-package exceptions — the reviewed LICENSE_EXCEPTIONS of
+#     scripts/license-check.ts (OFL-1.1 fonts, LGPL libvips, …) are exempted by
+#     purl via `allow-dependencies-licenses`, never via `allow-licenses`.
 #
 # Supply chain: pinned by major tag per the repo convention; the pin format is
 # asserted by scripts/codeql-workflow.test.ts.
@@ -51,13 +52,33 @@ jobs:
           # access, so a high-severity advisory there is a real exposure — the
           # action defaults to `runtime` only, which would let it through.
           fail-on-scopes: runtime, development
-          # MPL-2.0-compatible set per CLAUDE.md §3 — mirrors the `license:check:deps`
-          # allow-list in package.json. Keep the two in lockstep.
+          # MPL-2.0-compatible set per CLAUDE.md §3 — mirrors ALLOWED_LICENSES in
+          # scripts/license-check.ts. scripts/license-check.test.ts keeps the two
+          # in lockstep.
           allow-licenses: MPL-2.0, Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC0-1.0, Unlicense, Python-2.0, BlueOak-1.0.0
-          # OFL-1.1 for font packages only (CLAUDE.md §3, issue #778): the
-          # admin self-hosts its two brand fonts. Per-package exemption, never a
-          # global OFL-1.1 entry above — mirrors `license:check:fonts` in
-          # package.json; scripts/font-license-exception.test.ts keeps the two
-          # in lockstep and rejects any non-font package here.
-          allow-dependencies-licenses: pkg:npm/@fontsource-variable/schibsted-grotesk, pkg:npm/@fontsource/ibm-plex-mono
+          # Per-package exceptions, mirroring LICENSE_EXCEPTIONS in
+          # scripts/license-check.ts (each carries its reason there); never a
+          # global entry above. The license-check and font tests keep this list
+          # in lockstep with the policy:
+          # - OFL-1.1 for the admin's two self-hosted brand fonts (issue #778).
+          # - LGPL-3.0-or-later for the prebuilt libvips of every sharp
+          #   platform (issue #794), so a sharp bump does not trip the gate.
+          # - CC-BY-3.0 SPDX data files (attribution-only, not code) and pako's
+          #   Zlib component.
+          allow-dependencies-licenses: >-
+            pkg:npm/@fontsource-variable/schibsted-grotesk,
+            pkg:npm/@fontsource/ibm-plex-mono,
+            pkg:npm/@img/sharp-libvips-darwin-arm64,
+            pkg:npm/@img/sharp-libvips-darwin-x64,
+            pkg:npm/@img/sharp-libvips-linux-arm,
+            pkg:npm/@img/sharp-libvips-linux-arm64,
+            pkg:npm/@img/sharp-libvips-linux-ppc64,
+            pkg:npm/@img/sharp-libvips-linux-riscv64,
+            pkg:npm/@img/sharp-libvips-linux-s390x,
+            pkg:npm/@img/sharp-libvips-linux-x64,
+            pkg:npm/@img/sharp-libvips-linuxmusl-arm64,
+            pkg:npm/@img/sharp-libvips-linuxmusl-x64,
+            pkg:npm/spdx-exceptions,
+            pkg:npm/spdx-ranges,
+            pkg:npm/pako
           comment-summary-in-pr: on-failure

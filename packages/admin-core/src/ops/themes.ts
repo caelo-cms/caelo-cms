@@ -35,8 +35,11 @@ import { defineOperation } from "@caelo-cms/query-api";
 import {
   applyDtcgWrites,
   buildMediaUrl,
+  collectPinnedFaces,
   err,
   exportDtcg,
+  FONT_AXES_EXTENSION,
+  FontAxisPolicyError,
   InvalidColorValue,
   normalizeTokens,
   ok,
@@ -54,6 +57,12 @@ import { recordAudit } from "../audit.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { emitSnapshot, type SnapshotOpKind } from "../snapshots/index.js";
 import type { ThemeState } from "../snapshots/state.js";
+import {
+  applyFontAxisOverrides,
+  fontAxesInput,
+  overrideForNewBinding,
+  overrideWeightConflict,
+} from "./theme-font-axes.js";
 
 // ────────────────────────────────────────────────────────────────────
 // Zod row schemas
@@ -328,6 +337,12 @@ const updateTokensInput = z
     set: z.record(z.string(), z.unknown()).optional(),
     fontBindings: z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9-]{0,79}$/), fontRef).optional(),
     /**
+     * Variation-axis override per typography role (`null` resets to the
+     * derived default). Applied face-wide: every role bound to the same
+     * font file gets it. See theme-font-axes.ts.
+     */
+    fontAxes: fontAxesInput.optional(),
+    /**
      * Canonical DTCG paths to drop. No normalization — caller must
      * know the path (looked up via get_theme first if needed).
      */
@@ -338,9 +353,10 @@ const updateTokensInput = z
     (v) =>
       (v.set && Object.keys(v.set).length > 0) ||
       (v.remove && v.remove.length > 0) ||
-      (v.fontBindings && Object.keys(v.fontBindings).length > 0),
+      (v.fontBindings && Object.keys(v.fontBindings).length > 0) ||
+      (v.fontAxes && Object.keys(v.fontAxes).length > 0),
     {
-      message: "pass at least one of `set` or `remove`",
+      message: "pass at least one of `set`, `remove`, `fontBindings` or `fontAxes`",
     },
   );
 
@@ -445,6 +461,10 @@ export const updateThemeTokensOp = defineOperation({
           | undefined;
         if (previous && typeof previous.$value === "string")
           throw new Error("Bind the concrete typography role instead of an alias");
+        // The axis override belongs to the face: inherit the one its other
+        // roles carry; drop one that was validated against another face.
+        const { [FONT_AXES_EXTENSION]: _dropped, ...otherExtensions } = previous?.$extensions ?? {};
+        const axes = overrideForNewBinding(typography, role, ref.sha256, previous);
         typography[role] = {
           ...previous,
           $type: "typography",
@@ -454,10 +474,47 @@ export const updateThemeTokensOp = defineOperation({
             fontWeight: face.weight,
             fontStyle: face.style,
           },
-          $extensions: { ...previous?.$extensions, "caelo.font": ref },
+          $extensions: {
+            ...otherExtensions,
+            "caelo.font": ref,
+            ...(axes === undefined ? {} : { [FONT_AXES_EXTENSION]: axes }),
+          },
         };
         canonicalPathsWritten = [...canonicalPathsWritten, `typography.${role}`];
       }
+    }
+
+    if (input.fontAxes) {
+      nextTokens = structuredClone(nextTokens);
+      const doc = nextTokens as Record<string, unknown>;
+      const typography = (doc.typography ?? {}) as Record<string, unknown>;
+      doc.typography = typography;
+      const applied = await applyFontAxisOverrides(ctx, tx, typography, input.fontAxes);
+      if (!applied.ok) return applied;
+      canonicalPathsWritten = [
+        ...canonicalPathsWritten,
+        ...applied.value.filter((p) => !canonicalPathsWritten.includes(p)),
+      ];
+    }
+
+    // Every role of a pinned face must carry the same axis override, and
+    // no override may exclude a weight its roles use; a write that broke
+    // either would fail every render later, so it fails here instead.
+    try {
+      collectPinnedFaces(nextTokens);
+    } catch (e) {
+      if (!(e instanceof FontAxisPolicyError)) throw e;
+      return err({ kind: "HandlerError", operation: "themes.update_tokens", message: e.message });
+    }
+    const weightConflict = overrideWeightConflict(
+      ((nextTokens as Record<string, unknown>).typography ?? {}) as Record<string, unknown>,
+    );
+    if (weightConflict !== null) {
+      return err({
+        kind: "HandlerError",
+        operation: "themes.update_tokens",
+        message: weightConflict,
+      });
     }
 
     // Validate the resulting document (catches removes that orphan

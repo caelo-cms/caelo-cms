@@ -689,7 +689,11 @@ export async function awaitPublishComplete(page: Page): Promise<void> {
 interface QualityChatStatus {
   audit: { id: string; status: string; fixRound: number } | null;
   notified: boolean;
-  feedback: { kind: "note" } | { kind: "offer"; groups: readonly { key: string }[] } | null;
+  /** #771 — `autoContinue`: the panel sends the next fix round itself. */
+  feedback:
+    | { kind: "note" }
+    | { kind: "offer"; groups: readonly { key: string }[]; autoContinue: boolean }
+    | null;
   gate: { open: boolean; state: string; message: string } | null;
 }
 
@@ -809,11 +813,11 @@ const QUALITY_ACCEPT_REMAINING_PROMPT =
  * bundled Chromium). When it finds problems the chat asks first (#685:
  * "Let the AI fix them?"); the helper clicks "Fix all with AI" like an operator
  * who wants it fixed, and waits for that turn. The
- * AI re-stages its fix itself (issue #620); only when it did not does the
- * helper Stage again (the operator's click), up to the 2 automatic fix rounds.
+ * AI re-stages its fix itself (issue #620), and the panel sends the next
+ * round on its own while each round gets closer to the target (#771).
  * #727 — the target is 100 and zero findings, so on a CI runner something
- * is usually left after those rounds (a Performance score the runner cannot
- * reach). The helper then decides on the quality card like an operator who
+ * is usually left when that loop stops (a Performance score the runner
+ * cannot reach). The helper then decides on the quality card like an operator who
  * wants to publish: "Accept all…" per remaining group, with a reason. If the
  * AI did not re-stage and no card is up, it answers the AI's question with
  * "accept" once; acceptances the AI proposes are auto-approved in this suite
@@ -879,6 +883,7 @@ export async function awaitQualityGateOpen(
     }
     const running = !st.audit || st.audit.status === "queued" || st.audit.status === "running";
     const offerOpen = !st.notified && st.feedback?.kind === "offer";
+    const autoContinue = st.feedback?.kind === "offer" && st.feedback.autoContinue && !st.notified;
     if (running || (!st.notified && !offerOpen)) {
       await page.waitForTimeout(5_000);
       continue;
@@ -886,11 +891,12 @@ export async function awaitQualityGateOpen(
     if (st.gate?.state === "errored" || st.gate?.state === "missing") {
       throw new Error(`awaitQualityGateOpen: the quality check failed — ${st.gate.message}`);
     }
-    // #727 — after the automatic fix rounds, decide what is left the way an
-    // operator who wants to publish does: accept every remaining group on
-    // the card (one decision per group, with a reason). Before that, answer
-    // like an operator who wants them fixed.
-    if (offerOpen && restages >= 2) {
+    // #727 / #771 — once the fix loop the operator started has stopped (a
+    // card that does not continue on its own after the AI re-staged), decide
+    // what is left the way an operator who wants to publish does: accept
+    // every remaining group on the card (one decision per group, with a
+    // reason). Before that, answer like an operator who wants them fixed.
+    if (offerOpen && !autoContinue && restages >= 1) {
       await waitForChatTurnIdle(page);
       await acceptRemainingQualityGroups(page, read, accepted);
       const done = await opened();
@@ -899,7 +905,8 @@ export async function awaitQualityGateOpen(
     }
     // Problems: the chat asks before the AI fixes anything (#685). Answer
     // like an operator who wants them fixed, then let that turn run to the end.
-    if (offerOpen) {
+    // An auto-continuing card needs no click: the panel sends that round.
+    if (offerOpen && !autoContinue) {
       await waitForChatTurnIdle(page);
       await page.getByTestId("quality-fix-offer-fix").click({ timeout: 60_000 });
     }

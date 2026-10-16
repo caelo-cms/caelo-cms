@@ -4,10 +4,13 @@
  * Issue #685 — the chat's "Let the AI fix them?" card for a quality check
  * that found problems. Pure decisions, unit-tested; ChatPanel wires them.
  *
- * Nothing here starts the AI. The card is only ever an offer: the turn runs
- * when the operator clicks its button (an explicit operator action, so it
- * may lift the Stop latch of #672), and is refused while an external agent
- * works in the chat (#682: one agent per chat).
+ * The card is an offer: the turn runs when the operator clicks its button
+ * (an explicit operator action, so it may lift the Stop latch of #672), and
+ * is refused while an external agent works in the chat (#682: one agent per
+ * chat). #771: once the operator clicked "Fix all with AI", the next round
+ * of that fix runs without a click while each round gets closer to the
+ * target (the server decides, `autoContinue`); it is an automatic turn, so
+ * the Stop latch holds it back.
  */
 
 import type { AgentRunView } from "#lib/components/agents/agent-runs-client.js";
@@ -26,6 +29,8 @@ export interface QualityFixOffer {
   readonly actionLabel: string;
   /** #727 — the open problems by group; each is fixed, accepted or picked. */
   readonly groups: readonly QualityProblemGroup[];
+  /** #771 — the next round of the operator's fix-all: send without a click. */
+  readonly autoContinue: boolean;
 }
 
 /**
@@ -42,7 +47,27 @@ export function openQualityOffer(status: QualityStatus | null): QualityFixOffer 
     text: f.text,
     actionLabel: f.actionLabel,
     groups: f.groups,
+    autoContinue: f.autoContinue,
   };
+}
+
+/**
+ * #771 — the offer whose fix round the panel starts on its own now, or null:
+ * only an `autoContinue` offer, never twice for one audit, and never into a
+ * running turn, a pending card action or a half-typed message.
+ */
+export function autoContinueOffer(
+  offer: QualityFixOffer | null,
+  state: {
+    readonly streaming: boolean;
+    readonly acting: boolean;
+    readonly composer: string;
+    readonly started: ReadonlySet<string>;
+  },
+): QualityFixOffer | null {
+  if (!offer?.autoContinue || state.streaming || state.acting) return null;
+  if (state.composer.trim().length > 0 || state.started.has(offer.auditRunId)) return null;
+  return offer;
 }
 
 /**

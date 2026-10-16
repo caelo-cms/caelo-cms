@@ -3,8 +3,9 @@
 /**
  * Issue #413 — surface-honest prose for the Power-MCP surface.
  *
- * Prompt chunks, tool descriptions, tool-result hints and the DB-seeded
- * skill bodies were authored for Caelo's own chat-runner, so they freely
+ * Prompt chunks, tool descriptions and the DB-seeded skill bodies (served
+ * via mcp.get_context and load_skill) were authored for Caelo's own
+ * chat-runner, so they freely
  * recommend tools that POWER_MCP_EXCLUDED_TOOLS strips from the external
  * surface. The seeded skills cannot be rewritten per surface (they are
  * operator data), so the serve boundary annotates instead: every mention
@@ -22,6 +23,11 @@
  * exclusion map they are handed: when #412 removes a tool from the map,
  * its mentions stop being annotated AND stop being violations, with no
  * test change needed.
+ *
+ * Only instruction prose is annotated. Tool results carrying site data
+ * (content values, module bodies, page HTML) must round-trip byte-for-byte,
+ * or a read-modify-write persists the note into the site (bug 2c323d9a) —
+ * see `surfaceToolResultContent` in mcp_power.ts.
  */
 
 /** Opening marker of an annotation note. Shared by the annotator and the

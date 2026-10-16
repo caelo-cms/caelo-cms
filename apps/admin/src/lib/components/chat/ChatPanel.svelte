@@ -40,6 +40,7 @@
   import InlineDiff from "./InlineDiff.svelte";
   import QualityFixOfferCard from "./QualityFixOfferCard.svelte";
   import {
+    autoContinueOffer,
     autoDeliverableNote,
     externalAgentRefusal,
     openQualityOffer,
@@ -669,10 +670,13 @@
   /**
    * "Fix with AI" — the operator's click starts the fix round (#685). #727:
    * `fixSelection` narrows it to the groups / pages picked on the card.
+   * #771: `trigger` "auto" is the next round of a fix-all the operator
+   * started, sent without a click (the Stop latch holds it back).
    */
   async function acceptQualityOffer(
     auditRunId: string,
     fixSelection: QualityGroupSelection[] | null = null,
+    trigger: "operator" | "auto" = "operator",
   ): Promise<void> {
     if (streaming || qualityOfferActing !== null) return;
     qualityOfferActing = auditRunId;
@@ -705,7 +709,7 @@
       // Settled for every tab the moment the turn starts — not when it
       // ends: a long fix turn would outlive the claim's lease, and another
       // tab could then offer (or dismiss) the fix while it runs.
-      const started = await sendAutoMessage(r.send, "operator", () => {
+      const started = await sendAutoMessage(r.send, trigger, () => {
         void postQualityAction(session.id, csrfToken, { action: "ack", auditRunId })
           .catch(() => undefined)
           .finally(() => void qualityStatus.refresh());
@@ -726,6 +730,20 @@
       void qualityStatus.refresh();
     }
   }
+
+  /** #771 — audits whose next fix round this tab already started on its own. */
+  const autoContinuedAudits = new Set<string>();
+  $effect(() => {
+    const offer = autoContinueOffer(qualityOffer, {
+      streaming,
+      acting: qualityOfferActing !== null,
+      composer,
+      started: autoContinuedAudits,
+    });
+    if (offer === null) return;
+    autoContinuedAudits.add(offer.auditRunId);
+    void acceptQualityOffer(offer.auditRunId, null, "auto");
+  });
 
   /**
    * #727 — "Accept all…" / "Accept selected…" on a group: the operator's own

@@ -47,6 +47,7 @@ import {
   resolveBuildContentVariants,
   type VariantComposeModule,
 } from "./content-variants-pass.js";
+import { loadSiteFontUsage } from "./font-usage-sources.js";
 import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import {
@@ -60,6 +61,7 @@ import {
   readNotFoundPageId,
 } from "./not-found-page.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
+import { rewritePreviewFontUrls } from "./preview-font-urls.js";
 import { writeRedirectFiles } from "./redirects-pass.js";
 import {
   buildRobotsTxtWithSitemap,
@@ -694,6 +696,7 @@ export async function generateSite(args: {
   let themeFonts: ComposeFonts | undefined;
   let themeFontFiles: readonly { cachePath: string; relPath: string }[] = [];
   if (activeTheme !== undefined) {
+    const themeTokens = activeTheme.tokens;
     const resolved = await resolveThemeFonts({
       readFont: fontReader(tx, {
         actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -701,6 +704,7 @@ export async function generateSite(args: {
         requestId: "font-build",
       }),
       tokens: activeTheme.tokens,
+      loadFontUsage: () => loadSiteFontUsage(tx, themeTokens),
       cacheDir: defaultFontsCacheDir(root),
       publicBasePath: "/_assets/fonts",
       // Pages a plugin assigns another locale still get every slice via
@@ -964,6 +968,9 @@ export async function generateSite(args: {
     await copyFile(f.cachePath, target);
     fileCount += 1;
   }
+  // A module may carry the editor preview's font URL (/_caelo/fonts/...),
+  // which only the admin serves: point it at the copy above, or fail.
+  rewritePreviewFontUrls(composedPages, new Set(themeFontFiles.map((f) => f.relPath)));
 
   const mediaSettings = await readMediaSettings(tx);
   const mediaRoot = resolve(root, process.env.MEDIA_ROOT_DIR ?? "data/media");

@@ -10,8 +10,9 @@
  *        message (a short lease, so two tabs never post it twice). A status
  *        note is appended and marked delivered in one transaction. A fix
  *        offer (#685) is claimed ONLY when the operator clicked its "Fix
- *        with AI": its prompt comes back as `send`, the panel sends it as
- *        the operator's turn and then acknowledges it.
+ *        with AI" — or, #771, when the offer says `autoContinue` (the next
+ *        round of a fix-all the operator started): its prompt comes back as
+ *        `send`, the panel sends it as a turn and then acknowledges it.
  * POST {action:"ack", auditRunId} → that acknowledgement. Without it the
  *        lease runs out and the card offers the fix again.
  * POST {action:"release", auditRunId} → the clicked fix request started no
@@ -57,6 +58,7 @@ interface ChatStatus {
         text: string;
         actionLabel: string;
         prompt: string;
+        autoContinue: boolean;
         groups: {
           key: string;
           ref: { auditId: string } | { category: string } | { ruleId: string };
@@ -272,7 +274,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         auditRunId: body.auditRunId,
         ...(isNote
           ? { note: { chatSessionId: params.sessionId, text: status.feedback.text } }
-          : { fixRequested: true }),
+          : { fixScope: fixSelection ? "picked" : "all" }),
       },
     );
     if (!claimed.ok) throw error(500, describeError(claimed.error));

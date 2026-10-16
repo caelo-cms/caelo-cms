@@ -55,8 +55,9 @@ const HANDWRITTEN: Record<string, { keys: string[]; required: string[] }> = {
     required: ["options", "question"],
   },
   set_theme_tokens: {
-    // fontBindings arrived after the migration, with the font library (#486).
-    keys: ["fontBindings", "remove", "set", "themeSlug"],
+    // fontBindings arrived after the migration, with the font library (#486);
+    // fontAxes with the per-face variation-axis policy.
+    keys: ["fontAxes", "fontBindings", "remove", "set", "themeSlug"],
     required: [],
   },
 };

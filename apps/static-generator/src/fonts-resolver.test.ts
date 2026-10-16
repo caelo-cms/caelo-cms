@@ -15,6 +15,11 @@ import { clearFontResolverMemo, resolveThemeFonts } from "./fonts-resolver.js";
 
 const WOFF2_BYTES = new TextEncoder().encode("fake-woff2-bytes");
 
+/** These themes pin no registry face, so the usage scan must never run. */
+const noUsageScan = async (): Promise<never> => {
+  throw new Error("usage scan requested for a theme without pinned faces");
+};
+
 const CSS2_FIXTURE = (family: string) => `
 @font-face {
   font-family: '${family}';
@@ -80,6 +85,7 @@ describe("resolveThemeFonts (issue #150)", () => {
       cacheDir,
       publicBasePath: "/_assets/fonts",
       preloadLanguage: null,
+      loadFontUsage: noUsageScan,
       fetcher: fakeFetcher(calls),
     });
     expect(res.unresolved).toEqual([]);
@@ -105,6 +111,7 @@ describe("resolveThemeFonts (issue #150)", () => {
       cacheDir,
       publicBasePath: "/_caelo/fonts",
       preloadLanguage: null,
+      loadFontUsage: noUsageScan,
       fetcher: fakeFetcher(calls),
     };
     await resolveThemeFonts(args);
@@ -123,6 +130,7 @@ describe("resolveThemeFonts (issue #150)", () => {
       cacheDir,
       publicBasePath: "/_assets/fonts",
       preloadLanguage: null,
+      loadFontUsage: noUsageScan,
       fetcher: fakeFetcher([], ["Playfair Display"]),
     });
     expect(res.unresolved).toEqual(["Playfair Display"]);
@@ -146,6 +154,7 @@ describe("resolveThemeFonts (issue #150)", () => {
       cacheDir,
       publicBasePath: "/_assets/fonts",
       preloadLanguage: null,
+      loadFontUsage: noUsageScan,
       fetcher: evilFetcher,
     });
     expect(res.unresolved).toEqual(["Poppins"]);
@@ -159,6 +168,7 @@ describe("resolveThemeFonts (issue #150)", () => {
       cacheDir,
       publicBasePath: "/_assets/fonts",
       preloadLanguage: null,
+      loadFontUsage: noUsageScan,
       fetcher: fakeFetcher(calls),
     });
     expect(res).toEqual({ css: "", preloads: [], files: [], unresolved: [] });

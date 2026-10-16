@@ -7,6 +7,10 @@ declare module "subset-font" {
   interface SubsetFontOptions {
     readonly targetFormat?: "sfnt" | "truetype" | "woff" | "woff2";
     readonly preserveNameIds?: readonly number[];
+    /** Per axis: a number pins it, `{min, max}` clamps it (harfbuzz instancer). */
+    readonly variationAxes?: Readonly<
+      Record<string, number | { readonly min: number; readonly max: number }>
+    >;
   }
   function subsetFont(font: Buffer, text: string, options?: SubsetFontOptions): Promise<Buffer>;
   export default subsetFont;
