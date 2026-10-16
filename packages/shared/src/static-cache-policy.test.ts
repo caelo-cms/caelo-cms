@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { CONTENT_HASHED_PATH_PATTERN, isContentHashedPath } from "./static-cache-policy.js";
+import {
+  CONTENT_HASHED_PATH_PATTERN,
+  isContentHashedPath,
+  isPinnedFontSliceFile,
+} from "./static-cache-policy.js";
 
 /** Build outputs whose URL changes whenever their bytes change. */
 const HASHED_PATHS = [
   // Lighthouse report on gcp-firebase staging (v0.10.28).
   "/_assets/fonts/inter/29ede7bd4be32ab0.woff2",
   "/_assets/fonts/manrope/f3a06e9b32049b82.woff2",
-  `/_assets/fonts/pinned/${"a".repeat(64)}.latin.0123456789ab.woff2`,
-  `/_assets/fonts/pinned/${"0".repeat(64)}.cyrillic-ext.0123456789ab.woff2`,
+  // #793 — `<source sha256>.<axis-spec hash>.<slice>.<toolchain tag>.woff2`.
+  `/_assets/fonts/pinned/${"a".repeat(64)}.de5786ef1b56.latin.0123456789ab.woff2`,
+  `/_assets/fonts/pinned/${"0".repeat(64)}.1f23e5fa3b6d.cyrillic-ext.0123456789ab.woff2`,
   "/_caelo/plugin/consent-manager/runtime.0123456789ab.js",
   "/_caelo/plugin/consent-manager/banner.abcdef012345.css",
   "/_app/immutable/chunks/abc.js",
@@ -44,6 +49,8 @@ const STABLE_PATHS = [
   // appear, it must not be pinned in caches for a year.
   `/_assets/fonts/pinned/${"0".repeat(64)}.ttf`,
   `/_assets/fonts/pinned/${"a".repeat(64)}.latin.woff2`,
+  // Pre-#793 slice name (no axis-spec hash) — no longer emitted.
+  `/_assets/fonts/pinned/${"a".repeat(64)}.latin.0123456789ab.woff2`,
   "/_assets/fonts/inter/not-a-hash.woff2",
   "/_assets/fonts/inter/29ede7bd4be32ab0.woff2.html",
   "/_caelo/plugin/consent-manager/runtime.js",
@@ -75,5 +82,28 @@ describe("isContentHashedPath", () => {
     expect(CONTENT_HASHED_PATH_PATTERN).not.toMatch(/\\[1-9]/);
     expect(CONTENT_HASHED_PATH_PATTERN.startsWith("^/")).toBe(true);
     expect(CONTENT_HASHED_PATH_PATTERN.endsWith("$")).toBe(true);
+  });
+});
+
+describe("isPinnedFontSliceFile", () => {
+  it("accepts the slice name the delivery emits (e2e-livedit run 38915969785)", () => {
+    expect(
+      isPinnedFontSliceFile(
+        "29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031.de5786ef1b56.latin.3075c73f4eb5.woff2",
+      ),
+    ).toBe(true);
+    expect(
+      isPinnedFontSliceFile(`${"b".repeat(64)}.0123456789ab.latin-ext.0123456789ab.woff2`),
+    ).toBe(true);
+  });
+
+  it("rejects the pre-#793 shape, other extensions and path segments", () => {
+    expect(isPinnedFontSliceFile(`${"b".repeat(64)}.latin.0123456789ab.woff2`)).toBe(false);
+    expect(isPinnedFontSliceFile(`${"b".repeat(64)}.0123456789ab.latin.0123456789ab.ttf`)).toBe(
+      false,
+    );
+    expect(
+      isPinnedFontSliceFile(`../${"b".repeat(64)}.0123456789ab.latin.0123456789ab.woff2`),
+    ).toBe(false);
   });
 });
