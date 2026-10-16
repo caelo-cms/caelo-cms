@@ -110,7 +110,7 @@ describe("VERSION_CONFIG_HEADERS — Cache-Control per path class", () => {
       "/_assets/brand-favicon.0123456789abcdef.ico",
       "/_assets/fonts/inter/29ede7bd4be32ab0.woff2",
       "/_assets/fonts/manrope/f3a06e9b32049b82.woff2",
-      `/_assets/fonts/pinned/${"c".repeat(64)}.latin-ext.0123456789ab.woff2`,
+      `/_assets/fonts/pinned/${"c".repeat(64)}.0123456789ab.latin-ext.0123456789ab.woff2`,
       "/_caelo/plugin/consent-manager/runtime.0123456789ab.js",
       "/_app/immutable/chunks/abc.js",
     ]) {

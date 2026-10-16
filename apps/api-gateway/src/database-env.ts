@@ -48,6 +48,15 @@ export const GATEWAY_DATABASE_ROLES = {
 const DATABASE_ISH_TOKEN =
   /^(?:DB|DBNAME|DBUSER|DATABASE|DATABASES|PG[A-Z]*|POSTGRES|POSTGRESQL|PSQL|SQL|DSN|PASS|PASSWD|PASSWORD|PASSWORDS|PWD|CREDENTIAL|CREDENTIALS)$/;
 
+/**
+ * Variables the OS, the shell or the container runtime set on their own,
+ * whose names merely look database-ish: `PWD` is the working directory
+ * (Cloud Run sets it in every container), not a password. Exempt from the
+ * name check only; their values still get the value checks, so a Postgres
+ * URL smuggled into `PWD` is still refused.
+ */
+const RUNTIME_ENV_NAMES = new Set(["PWD", "OLDPWD"]);
+
 function isDatabaseIshName(name: string): boolean {
   return name
     .toUpperCase()
@@ -193,7 +202,7 @@ export function adminDatabaseAccessInEnv(
       continue;
     }
     if (OWN_LOGIN_ENV.has(name)) continue;
-    if (isDatabaseIshName(name)) {
+    if (!RUNTIME_ENV_NAMES.has(name) && isDatabaseIshName(name)) {
       found.push(
         `${name}: a database-related variable; the gateway's only database access is PUBLIC_DATABASE_URL`,
       );

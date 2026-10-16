@@ -52,6 +52,10 @@ describe("adminDatabaseAccessInEnv (#635)", () => {
         ECS_CONTAINER_METADATA_URI_V4: "http://169.254.170.2/v4/x",
         PATH: "/usr/bin",
         HOME: "/root",
+        // Cloud Run sets the working directory in every container (v0.10.51
+        // gateway crash-looped on it).
+        PWD: "/app",
+        OLDPWD: "/",
         PAGE_SIZE: "50",
         BYPASS_CACHE: "1",
       }),
@@ -82,6 +86,10 @@ describe("adminDatabaseAccessInEnv (#635)", () => {
     ]) {
       expect(check({ ...OWN, [name]: "x" })).toEqual([expect.stringContaining(`${name}:`)]);
     }
+  });
+
+  it("still checks the values of runtime variables like PWD", () => {
+    expect(check({ ...OWN, PWD: "postgres://admin_role:x@db/cms_admin" })).toHaveLength(1);
   });
 
   it("refuses a Postgres URL under any other name, whatever it points at", () => {

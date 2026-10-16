@@ -20,7 +20,13 @@ import {
   inspectFontBytes,
   openFont,
 } from "@caelo-cms/font-service";
-import { type SiteFontUsage, scanSiteFontUsage, type ThemeDocument } from "@caelo-cms/shared";
+import {
+  isContentHashedPath,
+  isPinnedFontSliceFile,
+  type SiteFontUsage,
+  scanSiteFontUsage,
+  type ThemeDocument,
+} from "@caelo-cms/shared";
 import fontverter from "fontverter";
 import { clearFontResolverMemo, resolveThemeFonts } from "./fonts-resolver.js";
 import { clearPinnedDeliveryMemo } from "./pinned-font-delivery.js";
@@ -154,6 +160,13 @@ describe("resolveThemeFonts — pinned registry faces", () => {
       expect(file.relPath).toMatch(
         /^pinned\/[0-9a-f]{64}\.[0-9a-f]{12}\.[a-z-]+\.[0-9a-f]{12}\.woff2$/,
       );
+      // The emitted name must satisfy both consumers of the shared shape:
+      // the admin's preview font route (/_caelo/fonts/pinned/<file>) and
+      // the published site's immutable cache policy. #793 changed the name
+      // without them and every pinned font 404'd in the editor preview
+      // (e2e-livedit run 38915969785).
+      expect(isPinnedFontSliceFile(file.relPath.slice("pinned/".length))).toBe(true);
+      expect(isContentHashedPath(`_assets/fonts/${file.relPath}`)).toBe(true);
       const bytes = await readFile(file.cachePath);
       expect(bytes.subarray(0, 4).toString("ascii")).toBe("wOF2");
       expect(bytes.toString("hex")).not.toBe(sourceHex);
