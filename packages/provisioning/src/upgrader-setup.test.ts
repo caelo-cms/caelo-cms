@@ -13,6 +13,7 @@ import type { GcloudResult } from "./gcloud.js";
 import {
   ensureUpgraderJob,
   UPGRADER_FORBIDDEN_ROLES,
+  UPGRADER_OPS_LIST_ROLE,
   UPGRADER_SQL_BACKUP_ROLE,
   type UpgraderSetupTarget,
 } from "./upgrader-setup.js";
@@ -83,6 +84,7 @@ describe("ensureUpgraderJob", () => {
         "iam service-accounts add-iam-policy-binding caelo-production-upgrader@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "iam service-accounts add-iam-policy-binding caelo-mcp@acme.iam.gserviceaccount.com → roles/iam.serviceAccountTokenCreator",
         "storage buckets add-iam-policy-binding gs://acme-caelo-ops → roles/storage.objectUser",
+        "storage buckets add-iam-policy-binding gs://acme-caelo-ops → projects/acme/roles/caeloUpgraderOpsList",
       ].sort(),
     );
     // The bucket grant only reaches install.json, not the Pulumi state.
@@ -90,6 +92,12 @@ describe("ensureUpgraderJob", () => {
     expect(bucket?.condition).toContain(
       'resource.name.startsWith("projects/_/buckets/acme-caelo-ops/objects/install/")',
     );
+    // gcloud storage cp lists the bucket before every upload; GCS checks the
+    // list against the bucket itself, so this grant cannot carry the
+    // install/ condition — and so it carries nothing but the list.
+    const list = mine.find((g) => g.role.endsWith("/caeloUpgraderOpsList"));
+    expect(list?.condition).toBe("None");
+    expect(UPGRADER_OPS_LIST_ROLE.permissions).toEqual(["storage.objects.list"]);
   });
 
   it("never grants a forbidden role, a setIamPolicy permission, or a project-wide iam role", async () => {
@@ -101,7 +109,10 @@ describe("ensureUpgraderJob", () => {
       }
       if (g.role.startsWith("roles/iam.")) expect(g.where).toStartWith("iam service-accounts");
     }
-    const role = calls.find((c) => c.slice(0, 3).join(" ") === "iam roles create");
+    const role = calls.find(
+      (c) =>
+        c.slice(0, 3).join(" ") === "iam roles create" && c[3] === UPGRADER_SQL_BACKUP_ROLE.roleId,
+    );
     const perms = (flag(role ?? [], "permissions") ?? "").split(",");
     expect(perms.sort()).toEqual([...UPGRADER_SQL_BACKUP_ROLE.permissions].sort());
     // Nothing but the one write it needs: create a backup.

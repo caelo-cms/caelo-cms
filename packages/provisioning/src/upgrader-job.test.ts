@@ -14,6 +14,7 @@ import type { GcloudResult } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import type { InstallMetadata } from "./install-state.js";
 import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
+import { StateLockHeldError } from "./state-store.js";
 import type { HealthOutcome, HealthProbe } from "./upgrade/health.js";
 import {
   type ClaimedUpdate,
@@ -162,6 +163,7 @@ function setup(
     deep?: HealthOutcome;
     migrate?: { ok: boolean; error?: string };
     locked?: boolean;
+    lockDenied?: boolean;
   } = {},
 ) {
   const order: string[] = [];
@@ -188,7 +190,8 @@ function setup(
     },
     lockState: () => {
       order.push("lock");
-      if (opts.locked) throw new Error("held by caelo installer");
+      if (opts.locked) throw new StateLockHeldError("held by caelo installer");
+      if (opts.lockDenied) throw new Error("storage.objects.list denied");
       return () => order.push("unlock");
     },
     readInstall: () => (opts.meta === undefined ? META : opts.meta),
@@ -284,6 +287,19 @@ describe("runUpgraderJob", () => {
     expect(r.status).toBe("failed");
     expect(busy.q.end()?.codes).toEqual(["state-locked"]);
     expect(busy.order.some((l) => l.startsWith("manifest") || l.startsWith("gcloud"))).toBe(false);
+  });
+
+  it("does not call a lock it cannot take 'busy': an access failure asks for Cloud Shell", async () => {
+    const denied = setup({ lockDenied: true });
+    const r = await runUpgraderJob(denied.deps);
+    expect(r.status).toBe("needs_cloud_shell");
+    const end = denied.q.end();
+    expect(end?.codes).toEqual(["state-access"]);
+    expect(end?.reason).not.toContain("another install operation");
+    expect(end?.reason).toContain("storage.objects.list denied");
+    expect(denied.order.some((l) => l.startsWith("manifest") || l.startsWith("gcloud"))).toBe(
+      false,
+    );
   });
 
   it("retries recording the end, and fails the run when it cannot", async () => {
