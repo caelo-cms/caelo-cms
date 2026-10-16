@@ -211,11 +211,13 @@
     {/if}
     <!-- v0.2.62 — inline action buttons. Disabled while a
          submission is in flight. -->
+    <!-- #779 — Approve is the human decision, always coral (`decide`);
+         a destructive proposal still says so in its red kind badge. -->
     <div class="mt-2 flex items-center gap-2">
       <Button
         type="button"
         size="sm"
-        variant={isDestructive ? "destructive" : "default"}
+        variant="decide"
         disabled={outcome === "approving" || outcome === "rejecting"}
         onclick={() => postAction("approve")}
         data-testid="propose-approve"
