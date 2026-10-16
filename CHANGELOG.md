@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.10.52
+
+### Features
+- ae460745 ship the site's own 404 page on every provider (#802) (#805)
+- fcd8f022 one "Fix all with AI" fixes until the target (#795)
+- 0e319c8d coral decide for Publish live + Approve, Draft/Preview/Live state dots (#791)
+- 2f82428e sky + relief plate on arrival screens and installer page (#781) (#790)
+- 1b831323 live-edit overlay in Caelo blue, no emoji label (#780) (#785)
+- d52f753d Caelatum tokens, night-blue dark mode, self-hosted Schibsted + Plex Mono (OFL for fonts only) (#789)
+- c8fda6c9 Caelatum brand mark for favicon, touch icon and sidebar (#777) (#786)
+
+### Fixes
+- 50b40c3f PWD is the working directory, not a database password (#821)
+- 74228ff2 unblock v0.10.52 real-AI suite (pinned-font preview 404s, 404-page detour in homepage turn) (#823)
+- 0ccd78b5 bump INFRA_CONTRACT_VERSION to 6 for the upgrader's ops-bucket list role (#799) (#812)
+- 219bbdef stop annotating site-data tool results on the Power-MCP surface (#801)
+- c4feb701 license gate checks the full tree; LGPL only for sharp-libvips, notice shipped in images (#796)
+- f80afe0b Caelatum epic follow-ups (docs links, admin manifest) (#800)
+- de26cfd1 let the upgrader list its ops bucket; stop reporting access failures as "busy" (#799)
+- b717c173 stop installing the AWS and Azure Pulumi SDKs with the CLI (#798)
+
+### Docs
+- 6fff9c71 repo front door with the new positioning, brand assets, retire docs-site/ (#782) (#787)
+
+### Other
+- 6b2f28a4 operator-configurable variable-axis delivery for pinned fonts (#793)
+
 ## v0.10.51
 
 ### Features
