@@ -2,7 +2,7 @@
 -- caelo:contract revokes gateway_role's cms_admin login and grants and drops the gateway's legacy cms_admin tables; a gateway older than #635 (0280/0281) can no longer serve /api/*
 -- caelo:requires-earlier-run 0281_public_projection_outbox.sql
 --
--- 0284 — the contract half of issue #635: the public side has no path to
+-- 0285 — the contract half of issue #635: the public side has no path to
 -- cms_admin (CLAUDE.md §2).
 --
 -- Since 0280/0281 the API gateway serves /api/* from cms_public alone and

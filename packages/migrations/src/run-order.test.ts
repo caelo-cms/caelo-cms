@@ -88,8 +88,8 @@ describe("the shipped migrations (#635)", () => {
     });
   }
 
-  it("0284 (drops gateway_role) requires an earlier run of 0281", () => {
-    const body = readFileSync(resolve(root, "cms_admin", "0284_drop_gateway_role.sql"), "utf8");
+  it("0285 (drops gateway_role) requires an earlier run of 0281", () => {
+    const body = readFileSync(resolve(root, "cms_admin", "0285_drop_gateway_role.sql"), "utf8");
     expect(requiredEarlierRuns(body)).toEqual(["0281_public_projection_outbox.sql"]);
   });
 });

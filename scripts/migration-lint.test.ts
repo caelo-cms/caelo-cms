@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   lintMigrationSql,
   lintMigrationsSince,
@@ -190,4 +190,28 @@ describe("outOfOrderMigrations (#635: 0282 arriving after a shipped 0283)", () =
       rmSync(repo, { recursive: true, force: true });
     }
   });
+});
+
+describe("migration numbers (#635: 0284 merged twice)", () => {
+  // Two branches can each take the next free number; whichever merges
+  // second must renumber. Two files with one number apply in name order,
+  // which nobody chose.
+  //
+  // 0198 was taken three times before this check existed, and those files
+  // are long applied. The runner records file names, so renaming them would
+  // apply them a second time on every install. They stay; nothing else may
+  // join them.
+  const SHIPPED_DUPLICATES = new Set(["0198"]);
+  for (const db of ["cms_admin", "cms_public"]) {
+    it(`${db}: every number is used once`, () => {
+      const dir = resolve(import.meta.dir, "..", "packages/migrations/migrations", db);
+      const numbers = readdirSync(dir)
+        .filter((f) => /^\d{4}_.+\.sql$/.test(f))
+        .map((f) => f.slice(0, 4));
+      const repeated = numbers.filter(
+        (n, i) => numbers.indexOf(n) !== i && !(db === "cms_admin" && SHIPPED_DUPLICATES.has(n)),
+      );
+      expect(repeated).toEqual([]);
+    });
+  }
 });

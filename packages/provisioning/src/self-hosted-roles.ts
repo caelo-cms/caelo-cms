@@ -72,7 +72,7 @@ function convergenceSql(password: PasswordSql, agent: boolean): string {
     "GRANT CONNECT ON DATABASE cms_public TO public_role, admin_role;",
     // #635 — the gateway's former cms_admin login goes, with whatever it
     // still holds in either database (the superuser may drop what
-    // migration 0284 could only revoke).
+    // migration 0285 could only revoke).
     "\\connect cms_public",
     "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') THEN DROP OWNED BY gateway_role; END IF; END $$;",
     "\\connect cms_admin",
