@@ -9,7 +9,7 @@ This document just covers the contribution mechanics.
 ## Quick orientation
 
 - **License:** MPL 2.0. Every source file carries `// SPDX-License-Identifier: MPL-2.0`. New files must too — `bun run lint` enforces this.
-- **Compatible-license dependencies only:** MPL-2.0, Apache-2.0, MIT, BSD, ISC, 0BSD, CC0-1.0. GPL/AGPL/SSPL block PRs. `bun run license:check` enforces this in CI.
+- **Compatible-license dependencies only:** MPL-2.0, Apache-2.0, MIT, BSD, ISC, 0BSD, CC0-1.0 — plus OFL-1.1 for font packages only. GPL/AGPL/SSPL block PRs. `bun run license:check` enforces this in CI.
 - **Tests run under `bun test`** (Bun's native runner). Don't add Vitest back.
 - **TypeScript strict, no `any` without a comment, Zod at every external boundary.** See CLAUDE.md §4.
 

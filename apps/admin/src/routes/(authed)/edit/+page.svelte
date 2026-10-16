@@ -445,7 +445,7 @@
       class={cn(
         "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
         editMode
-          ? "border-blue-500 bg-blue-500 text-white hover:bg-blue-600"
+          ? "border-link bg-link/10 text-link hover:bg-link/15"
           : "border-border bg-background text-foreground hover:bg-accent",
       )}
       title="When on, clicks in the page select an element to edit"
@@ -461,7 +461,7 @@
       class={cn(
         "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors motion-reduce:transition-none",
         diffOpen
-          ? "border-blue-500 bg-blue-500 text-white hover:bg-blue-600"
+          ? "border-link bg-link/10 text-link hover:bg-link/15"
           : "border-border bg-background text-foreground hover:bg-accent",
         (!activePage || !data.activeChat) && "cursor-not-allowed opacity-50",
       )}

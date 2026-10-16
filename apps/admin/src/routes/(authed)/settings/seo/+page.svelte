@@ -202,7 +202,7 @@
               {#if !p.autofilledAt}
                 <span class="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">unfilled</span>
               {:else if !p.optimizedAt}
-                <span class="ml-2 rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-900 dark:bg-blue-900/30 dark:text-blue-100">never optimized</span>
+                <span class="ml-2 rounded bg-link/10 px-1.5 py-0.5 text-xs text-link">never optimized</span>
               {/if}
             </li>
           {/each}

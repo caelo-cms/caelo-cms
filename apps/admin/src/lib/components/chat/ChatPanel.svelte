@@ -2511,14 +2511,14 @@
              declarations.) -->
         {#if crawlRun && (crawlRun.status === "crawling" || crawlRun.status === "proposed")}
           <div
-            class="flex items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-2 text-xs"
+            class="flex items-center gap-2 rounded-md border border-link/30 bg-link/5 p-2 text-xs"
             data-testid="chat-import-progress"
           >
             <span
-              class="inline-block size-3 animate-spin rounded-full border-2 border-sky-600 border-t-transparent motion-reduce:animate-none"
+              class="inline-block size-3 animate-spin rounded-full border-2 border-link border-t-transparent motion-reduce:animate-none"
               aria-hidden="true"
             ></span>
-            <span class="font-medium text-sky-700 dark:text-sky-400">
+            <span class="font-medium text-link">
               {crawlRun.status === "proposed" ? "Crawler starting…" : "Crawling…"}
             </span>
             <span class="text-muted-foreground">
@@ -2626,7 +2626,7 @@
                 >
                   {#if external}
                     <span
-                      class="mb-1 inline-block rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-700 dark:text-sky-300"
+                      class="mb-1 inline-block rounded bg-link/10 px-1.5 py-0.5 text-[10px] text-link"
                       data-testid="chat-approval-external-agent"
                       title="The decision goes back to the external agent, which continues its own work. This chat's AI does not act on it."
                       >{EXTERNAL_AGENT_LABEL}</span
@@ -2673,7 +2673,7 @@
           <ul class="space-y-1 text-xs" data-testid="chat-mcp-handoffs">
             {#each mcpHandoffs as h (h.proposalId)}
               <li
-                class="flex items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-1.5"
+                class="flex items-center gap-2 rounded-md border border-link/30 bg-link/5 p-1.5"
                 data-testid="chat-mcp-handoff"
                 data-outcome={h.outcome}
                 data-delivered={h.deliveredAt !== null ? "true" : "false"}
@@ -2708,7 +2708,7 @@
                   <span class="truncate">{p.summary}</span>
                   {#if p.requestedVia === "power_mcp"}
                     <span
-                      class="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-700 dark:text-sky-300"
+                      class="shrink-0 rounded bg-link/10 px-1.5 py-0.5 text-[10px] text-link"
                       data-testid="pending-external-agent"
                       title="The decision is handed back to the external agent, which continues the work. This chat's AI does not act on it."
                       >{EXTERNAL_AGENT_LABEL}</span
