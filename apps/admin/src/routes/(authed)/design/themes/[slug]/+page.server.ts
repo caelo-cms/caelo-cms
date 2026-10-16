@@ -11,8 +11,9 @@
 
 import { type FontMetadata, fontMetadata, fontRef } from "@caelo-cms/font-service";
 import { execute } from "@caelo-cms/query-api";
-import type { Theme } from "@caelo-cms/shared";
+import { type FontAxisPolicy, fontAxisTag, type Theme } from "@caelo-cms/shared";
 import { error, fail } from "@sveltejs/kit";
+import type { FontDeliveryReport } from "#lib/components/theme/font-delivery-report.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
@@ -41,7 +42,18 @@ export const load: PageServerLoad = async ({ params, locals }) => {
       if (result.ok) fonts.push(fontMetadata.parse(result.value));
     }
   }
-  return { theme, fonts };
+  // What visitors download per pinned face. A failure (e.g. an invalid
+  // stored override) is shown in the panel rather than hiding the page.
+  const delivery = await execute(registry, adapter, locals.ctx, "themes.font_delivery", {
+    themeSlug: theme.slug,
+  });
+  const fontDelivery = delivery.ok
+    ? { ok: true as const, value: delivery.value as FontDeliveryReport }
+    : {
+        ok: false as const,
+        error: extractErrorMessage(delivery.error, "font delivery unavailable"),
+      };
+  return { theme, fonts, fontDelivery };
 };
 
 export const actions: Actions = {
@@ -125,6 +137,47 @@ export const actions: Actions = {
         v.canonicalPathsRemoved.length > 0
           ? `Removed ${v.canonicalPathsRemoved.join(", ")}.`
           : `No matching path ('${path}') — already gone.`,
+    };
+  },
+
+  /**
+   * Set (or reset) the variation-axis override of one pinned font file.
+   * Posted per face by the Font delivery panel: `role` (any role bound to
+   * the face — the op applies it face-wide) and per axis
+   * `mode_<tag>` = default | full | range | pin with `min_/max_/value_<tag>`.
+   * Every axis on "default" resets the face to the derived default.
+   */
+  setFontAxes: async ({ request, params, locals }) => {
+    requirePermission(locals, "roles.manage");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const slug = String(form.get("themeSlug") ?? params.slug);
+    const role = String(form.get("role") ?? "");
+    const policy: FontAxisPolicy = {};
+    for (const [key, raw] of form.entries()) {
+      if (!key.startsWith("mode_") || typeof raw !== "string") continue;
+      const tag = fontAxisTag.safeParse(key.slice("mode_".length));
+      if (!tag.success) return fail(400, { error: `invalid axis '${key.slice(5)}'` });
+      const num = (name: string) => Number(String(form.get(`${name}_${tag.data}`) ?? "").trim());
+      if (raw === "full") policy[tag.data] = "full";
+      else if (raw === "range") policy[tag.data] = { min: num("min"), max: num("max") };
+      else if (raw === "pin") policy[tag.data] = num("value");
+      else if (raw !== "default") return fail(400, { error: `invalid mode '${raw}'` });
+    }
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "themes.update_tokens", {
+      themeSlug: slug,
+      fontAxes: { [role]: Object.keys(policy).length === 0 ? null : policy },
+    });
+    if (!r.ok) {
+      return fail(400, { error: extractErrorMessage(r.error, "saving the font axes failed") });
+    }
+    return {
+      ok: true,
+      message:
+        Object.keys(policy).length === 0
+          ? "Font file reset to the default delivery policy."
+          : "Font delivery policy saved. The next preview and deploy use it.",
     };
   },
 

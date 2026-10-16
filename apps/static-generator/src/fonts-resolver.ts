@@ -32,15 +32,23 @@ import { dirname, join } from "node:path";
 import { type FontMetadata, type FontRef, fontRef } from "@caelo-cms/font-service";
 import {
   buildFontFaceCss,
+  collectPinnedFaces,
+  type EffectiveAxisSpec,
+  effectiveAxisSpec,
   extractThemeFontRequests,
+  type FontAxisPolicy,
   type FontRequest,
   fontFamilySlug,
+  fontWeightDescriptor,
   googleFontsCssUrl,
   type ParsedFontFace,
   parseFontsCss,
   type ResolvedFontFace,
+  type SiteFontUsage,
   selectPreloadFaces,
+  servedWeightRange,
   type ThemeDocument,
+  type WeightUsage,
 } from "@caelo-cms/shared";
 import { pinnedFaceSlices, preloadSliceFor } from "./pinned-font-delivery.js";
 
@@ -55,6 +63,8 @@ const ALLOWED_FONT_FILE_HOSTS: ReadonlySet<string> = new Set(["fonts.gstatic.com
 /** css2 serves woff2 (+ unicode-range splits) only to modern-browser UAs. */
 const WOFF2_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+const STATIC_FACE_USAGE: WeightUsage = { weights: null, variationSettingsAxes: [] };
 
 /** One face persisted in a family manifest: parse result + cache file. */
 interface CachedFace extends Omit<ParsedFontFace, "srcUrl"> {
@@ -80,6 +90,13 @@ export interface ResolveThemeFontsArgs {
    * `null` preloads no pinned slice.
    */
   readonly preloadLanguage: string | null;
+  /**
+   * Site-wide weight / variation-axis usage (`loadSiteFontUsage`), the
+   * input to each pinned face's default axis policy. Called at most once,
+   * and only when a pinned face has variation axes. Preview and build
+   * pass the same loader so both instance faces identically.
+   */
+  readonly loadFontUsage: () => Promise<SiteFontUsage>;
 }
 
 export interface ResolvedThemeFonts {
@@ -173,6 +190,17 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
   const files: { cachePath: string; relPath: string }[] = [];
   const unresolved: string[] = [];
 
+  // Axis overrides belong to the face (one file, one @font-face set); a
+  // malformed or conflicting override fails every pinned role loudly.
+  let overrides: Map<string, FontAxisPolicy | null> | Error;
+  try {
+    overrides = new Map(collectPinnedFaces(args.tokens).map((f) => [f.ref.sha256, f.override]));
+  } catch (error) {
+    overrides = error instanceof Error ? error : new Error(String(error));
+  }
+  let usage: Promise<SiteFontUsage> | null = null;
+  const specs = new Map<string, EffectiveAxisSpec>();
+
   const typography = (args.tokens as Record<string, unknown>).typography;
   if (typography && typeof typography === "object") {
     for (const [role, raw] of Object.entries(typography)) {
@@ -186,6 +214,7 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
       pinnedFamilies.add(family);
       try {
         const ref = fontRef.parse(binding);
+        if (overrides instanceof Error) throw overrides;
         if (!args.readFont) throw new Error("FontReaderUnavailable");
         const { metadata, bytes } = await args.readFont(ref);
         if (
@@ -195,26 +224,45 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
           createHash("sha256").update(bytes).digest("hex") !== ref.sha256
         )
           throw new Error("FontBindingMismatch");
+        let spec = specs.get(ref.sha256);
+        if (spec === undefined) {
+          // A static face has no axis to derive, so it never pays for the
+          // site-wide usage scan; the empty usage is never consulted.
+          let faceUsage = STATIC_FACE_USAGE;
+          if (Object.keys(metadata.axes).length > 0) {
+            usage ??= args.loadFontUsage();
+            faceUsage = await usage;
+          }
+          spec = effectiveAxisSpec(
+            metadata.axes,
+            overrides.get(ref.sha256) ?? null,
+            faceUsage,
+            metadata.embedding.subset,
+          ).spec;
+          specs.set(ref.sha256, spec);
+        }
         const declaredWeight = entry.$value?.fontWeight ?? metadata.weight;
         const weight =
           declaredWeight === "normal" ? 400 : declaredWeight === "bold" ? 700 : declaredWeight;
-        const wght = metadata.axes.wght;
-        if (
-          typeof weight !== "number" ||
-          (wght ? weight < wght.min || weight > wght.max : weight !== metadata.weight) ||
-          (entry.$value?.fontStyle ?? "normal") !== metadata.style
-        )
+        const [servedMin, servedMax] = servedWeightRange(spec, metadata.weight);
+        if (typeof weight !== "number" || (entry.$value?.fontStyle ?? "normal") !== metadata.style)
           throw new Error("FontFaceMismatch");
+        if (weight < servedMin || weight > servedMax)
+          throw new Error(`FontWeightOutsideDelivery:${weight} not in ${servedMin}-${servedMax}`);
         // The registry file is the complete original (often a ~0.9 MB
-        // TTF); visitors get WOFF2 unicode-range slices derived from it.
-        // A derivation failure throws and lands in `unresolved` below —
-        // the raw source is never shipped in its place.
+        // TTF); visitors get WOFF2 unicode-range slices derived from it,
+        // instanced to the face's axis spec. A derivation failure throws
+        // and lands in `unresolved` below — the raw source is never
+        // shipped in its place.
         const delivery = await pinnedFaceSlices({
           cacheDir: args.cacheDir,
           sha256: ref.sha256,
           bytes,
+          axisSpec: spec,
         });
-        const fontWeight = wght ? `${wght.min} ${wght.max}` : String(metadata.weight);
+        // The descriptor matches the delivered file, so the browser never
+        // asks this face for (or synthesizes) a weight it does not carry.
+        const fontWeight = fontWeightDescriptor(spec, metadata.weight);
         const slicesToEmit = emittedPinned.has(ref.sha256) ? [] : delivery.slices;
         emittedPinned.add(ref.sha256);
         for (const slice of slicesToEmit) {

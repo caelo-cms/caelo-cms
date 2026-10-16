@@ -26,7 +26,7 @@ import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
-const AS_VALUES = ["dtcg", "css-vars", "tailwind", "summary"] as const;
+const AS_VALUES = ["dtcg", "css-vars", "tailwind", "summary", "font-delivery"] as const;
 type AsFormat = (typeof AS_VALUES)[number];
 
 const getThemeToolInput = z
@@ -73,11 +73,24 @@ export const getThemeTool: ToolDefinitionWithHandler<GetThemeToolInput> = {
     "`css-vars` returns the rendered `:root { … }` block — what the public site ships. " +
     "`tailwind` returns a `@theme inline { … }` block mapping the tokens to Tailwind 4 " +
     "variable names. `summary` returns a tiny `'primary=…, body=…, radius=…'` + active flag. " +
+    "`font-delivery` reports what visitors download for each pinned font file: the roles using it, its axes, the " +
+    "operator override, the effective per-axis policy (full / range / pin, with whether it is the derived default), the " +
+    "weights the site can render (or why that is unknown), and slice sizes once a preview/build derived them — read it " +
+    'before answering "make the fonts load faster" or changing set_theme_tokens fontAxes. ' +
     "Use `css-vars` when writing module HTML that references `var(--color-…)` so you don't " +
     "have to mentally translate DTCG paths.",
   schema: getThemeToolInput,
   inputSchema: z.toJSONSchema(getThemeToolInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {
+    if (input.as === "font-delivery") {
+      const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.font_delivery", {
+        ...(input.slug === undefined ? {} : { themeSlug: input.slug }),
+      });
+      if (!r.ok) {
+        return { ok: false, content: `themes.font_delivery failed: ${describeError(r.error)}` };
+      }
+      return { ok: true, content: JSON.stringify(r.value, null, 2) };
+    }
     let theme: Theme | null;
     let fallbackNote = "";
     if (input.slug === undefined) {
@@ -108,7 +121,7 @@ export const getThemeTool: ToolDefinitionWithHandler<GetThemeToolInput> = {
         };
       }
     }
-    const as: AsFormat = input.as;
+    const as: Exclude<AsFormat, "font-delivery"> = input.as;
     switch (as) {
       case "dtcg":
         return { ok: true, content: JSON.stringify(theme, null, 2) + fallbackNote };

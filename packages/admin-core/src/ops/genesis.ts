@@ -42,7 +42,11 @@ import {
   ok,
   sanitizeDraftHtml,
 } from "@caelo-cms/shared";
-import { defaultFontsCacheDir, resolveThemeFonts } from "@caelo-cms/static-generator";
+import {
+  defaultFontsCacheDir,
+  loadSiteFontUsage,
+  resolveThemeFonts,
+} from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -359,6 +363,10 @@ export const renderDesignDraftOp = defineOperation({
       const resolved = await resolveThemeFonts({
         readFont: fontReader(tx, _ctx),
         tokens: theme.tokens,
+        // The draft is not stored as modules yet, so its own markup joins
+        // the usage scan: a weight only the draft uses must survive.
+        loadFontUsage: () =>
+          loadSiteFontUsage(tx, theme.tokens, [{ label: "design-draft", text: draft.html }]),
         cacheDir: defaultFontsCacheDir(process.cwd()),
         publicBasePath: "/_caelo/fonts",
         // The editor iframe gains nothing from a preload hint; the @font-face
