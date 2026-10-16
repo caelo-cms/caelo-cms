@@ -56,6 +56,7 @@ import {
   type RenderedPageForGate,
 } from "./nested-modules-pass.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
+import { rewritePreviewFontUrls } from "./preview-font-urls.js";
 import { writeRedirectFiles } from "./redirects-pass.js";
 import {
   buildRobotsTxtWithSitemap,
@@ -932,6 +933,9 @@ export async function generateSite(args: {
     await copyFile(f.cachePath, target);
     fileCount += 1;
   }
+  // A module may carry the editor preview's font URL (/_caelo/fonts/...),
+  // which only the admin serves: point it at the copy above, or fail.
+  rewritePreviewFontUrls(composedPages, new Set(themeFontFiles.map((f) => f.relPath)));
 
   const mediaSettings = await readMediaSettings(tx);
   const mediaRoot = resolve(root, process.env.MEDIA_ROOT_DIR ?? "data/media");

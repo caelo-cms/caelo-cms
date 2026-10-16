@@ -113,7 +113,8 @@ async function previousStagingAudit(
 }
 
 /**
- * The fix round of a chat's next audit (#553 2-round cap): one more than
+ * The fix round of a chat's next audit (#553; numbers the rounds of the fix
+ * prompt — #771 replaced the 2-round cap with a progress rule): one more than
  * the chat's previous audit when that one left problems open AND the
  * operator asked the AI to fix them (#685: "Fix with AI" — the Stage being
  * audited is the AI's fix attempt); unchanged when they did not (a Stage
