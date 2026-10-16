@@ -17,14 +17,13 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defaultFontsCacheDir } from "@caelo-cms/admin-core";
+import { isPinnedFontSliceFile } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { requireUserOrPreviewScreenshotToken } from "#lib/server/preview-screenshot-auth.js";
 import type { RequestHandler } from "./$types";
 
 const FAMILY_RE = /^[a-z0-9-]{1,80}$/;
 const FILE_RE = /^[a-f0-9]{16}\.woff2$/;
-/** Registry-derived slices: `<source sha256>.<slice>.<toolchain tag>.woff2`. */
-const PINNED_FILE_RE = /^[a-f0-9]{64}\.[a-z]+(-[a-z]+)?\.[a-f0-9]{12}\.woff2$/;
 
 export const GET: RequestHandler = async ({ params, locals, request }) => {
   // issue #412 — the server-side screenshot browser presents a signed
@@ -37,7 +36,9 @@ export const GET: RequestHandler = async ({ params, locals, request }) => {
     !family ||
     !file ||
     !FAMILY_RE.test(family) ||
-    !(family === "pinned" ? PINNED_FILE_RE : FILE_RE).test(file)
+    // Registry-derived slices share their name shape with the static
+    // build's cache policy — one definition in @caelo-cms/shared.
+    !(family === "pinned" ? isPinnedFontSliceFile(file) : FILE_RE.test(file))
   ) {
     throw error(404, "not found");
   }

@@ -10,7 +10,7 @@ Ask the AI in the editor chat, for example *"make a page for broken links"*. The
 2. publishes it (`set_pages_status_many`);
 3. designates it with `set_not_found_page({ pageId })`.
 
-The AI's site status reports "404 page: not designated" until this is done, so the AI usually offers it on its own. One site has exactly one 404 page; designating another page replaces it, and `set_not_found_page({ pageId: null })` removes the designation. The homepage cannot be the 404 page.
+The AI's site status reports "404 page: not designated" until this is done, so the AI offers it on its own at the end of a turn. It does not build the page unasked in the middle of another request (a "build me a homepage" turn stays a homepage turn); say yes and it sets the page up. One site has exactly one 404 page; designating another page replaces it, and `set_not_found_page({ pageId: null })` removes the designation. The homepage cannot be the 404 page.
 
 ## What the build does
 
