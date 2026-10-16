@@ -78,6 +78,22 @@ describe("scanSiteFontUsage", () => {
     expect(scan().variationSettingsAxes).toEqual([]);
   });
 
+  it("reads theme weights in linear time even for role names repeating --font-weight-", () => {
+    // Regression (CodeQL js/polynomial-redos): the theme-weight pattern used
+    // to backtrack quadratically on runs of `--font-weight-`.
+    const role = `x${"--font-weight-".repeat(20_000)}`;
+    const tokens = {
+      typography: {
+        [role]: { $type: "typography", $value: { fontFamily: "Inter", fontWeight: 550 } },
+      },
+    } as unknown as ThemeDocument;
+    const started = performance.now();
+    const usage = scanSiteFontUsage({ tokens, sources: [] });
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(usage.uncertain).toEqual([]);
+    expect(usage.weights).toContain(550);
+  });
+
   it("does not mistake custom property names for font-weight declarations", () => {
     expect(scan(".a{--font-weight-x:500}").weights).toEqual([400, 600, 700, 900]);
   });

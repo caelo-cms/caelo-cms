@@ -357,8 +357,14 @@ export function scanSiteFontUsage(input: {
   // Theme typography weights apply to their roles whether or not any CSS
   // references `--font-weight-<role>`; the theme emits them as such vars.
   const themeCss = all[0]?.text ?? "";
-  for (const m of themeCss.matchAll(/--font-weight-[A-Za-z0-9_-]+:([^;}]*)/g)) {
-    const reason = addWeightTokens(scan, (m[1] as string).trim());
+  // The name match has no suffix and starts only at a name boundary, so it
+  // never backtracks; the value is read with the same bounded reader as
+  // every other declaration (a `[name]+:` pattern here is polynomial on
+  // runs like `--font-weight---font-weight-...`).
+  for (const m of themeCss.matchAll(/(?<![\w-])--font-weight-[A-Za-z0-9_-]+/g)) {
+    const value = valueAfterColon(themeCss, (m.index ?? 0) + m[0].length);
+    if (value === null) continue;
+    const reason = addWeightTokens(scan, value);
     if (reason !== null) uncertain(scan, "theme", reason);
   }
   const props = collectCustomProps(all);
