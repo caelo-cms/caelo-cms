@@ -74,8 +74,7 @@ in `value`) flow out of *every* `execute(...)` call. Any id later read from an
 op result — e.g. a `chatSessionId` — was then "password data", which produced
 a cascade of `js/clear-text-logging` (high) alerts on unrelated
 observability logs: the chat-runner's loop/streaming/dispatch/catalogue/
-passive-turn/budget-gate diagnostics, `ai/auto-recovery.ts`, and
-`apps/admin/scripts/sync-docs-site.ts`.
+passive-turn/budget-gate diagnostics and `ai/auto-recovery.ts`.
 
 The cure is structural: `execute()` re-wraps the lookup error
 (`return err(opLookup.error)`), so no op definition can reach an op result

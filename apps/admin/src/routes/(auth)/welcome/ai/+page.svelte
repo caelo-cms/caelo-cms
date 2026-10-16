@@ -10,13 +10,7 @@
 
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
-  import {
-    Card,
-    CardContent,
-    CardDescription,
-    CardHeader,
-    CardTitle,
-  } from "#lib/components/ui/card/index.js";
+  import AuthPlate from "#lib/components/AuthPlate.svelte";
   import { Input } from "#lib/components/ui/input/index.js";
   import { Label } from "#lib/components/ui/label/index.js";
   import { Select } from "#lib/components/ui/select/index.js";
@@ -61,81 +55,75 @@
   let model = $state(defaultModelForProvider(form?.provider ?? "anthropic"));
 </script>
 
-<Card>
-  <CardHeader>
-    <CardTitle>One last step</CardTitle>
-    <CardDescription>
-      Caelo works through an AI you talk to. Pick which AI powers your site and paste its API key —
-      then you're in.
-    </CardDescription>
-  </CardHeader>
-  <CardContent class="space-y-4">
-    {#if form?.error}
-      <Alert variant="destructive">
-        <AlertDescription>{form.error}</AlertDescription>
-      </Alert>
-    {/if}
-    <form method="post" class="space-y-4">
-      <input type="hidden" name="_csrf" value={data.csrfToken} />
-      <fieldset class="space-y-2">
-        <legend class="text-sm font-medium">AI provider</legend>
-        {#each providers as p (p.name)}
-          <label
-            class="flex cursor-pointer items-start gap-3 rounded-md border p-3 transition-colors
-              {selected === p.name ? 'border-primary bg-accent' : 'hover:bg-accent/50'}"
-          >
-            <input
-              type="radio"
-              name="provider"
-              value={p.name}
-              checked={selected === p.name}
-              onchange={() => {
-                selected = p.name;
-                model = defaultModelForProvider(p.name);
-              }}
-              class="mt-1"
-            />
-            <span class="space-y-0.5">
-              <span class="block text-sm font-medium">{p.label}</span>
-              <span class="block text-xs text-muted-foreground">{p.hint}</span>
-            </span>
-          </label>
+<AuthPlate
+  title="One last step"
+  description="Caelo works through an AI you talk to. Pick which AI powers your site and paste its API key — then you're in."
+>
+  {#if form?.error}
+    <Alert variant="destructive">
+      <AlertDescription>{form.error}</AlertDescription>
+    </Alert>
+  {/if}
+  <form method="post" class="space-y-4">
+    <input type="hidden" name="_csrf" value={data.csrfToken} />
+    <fieldset class="space-y-2">
+      <legend class="text-sm font-medium">AI provider</legend>
+      {#each providers as p (p.name)}
+        <label
+          class="flex cursor-pointer items-start gap-3 rounded-md border p-3 transition-colors
+            {selected === p.name ? 'border-primary bg-accent' : 'hover:bg-accent/50'}"
+        >
+          <input
+            type="radio"
+            name="provider"
+            value={p.name}
+            checked={selected === p.name}
+            onchange={() => {
+              selected = p.name;
+              model = defaultModelForProvider(p.name);
+            }}
+            class="mt-1"
+          />
+          <span class="space-y-0.5">
+            <span class="block text-sm font-medium">{p.label}</span>
+            <span class="block text-xs text-muted-foreground">{p.hint}</span>
+          </span>
+        </label>
+      {/each}
+    </fieldset>
+    <div class="space-y-2">
+      <Label for="apiKey">API key</Label>
+      <Input
+        id="apiKey"
+        name="apiKey"
+        type="password"
+        required
+        autocomplete="off"
+        placeholder={selectedProvider.keyPrefix}
+      />
+      <p class="text-xs text-muted-foreground">
+        Get one at
+        <a
+          href={selectedProvider.keyUrl}
+          target="_blank"
+          rel="noreferrer"
+          class="underline underline-offset-2">{new URL(selectedProvider.keyUrl).hostname}</a
+        >. Stored encrypted, never shown again, switchable anytime.
+      </p>
+    </div>
+    <div class="space-y-2">
+      <Label for="model">Model</Label>
+      <Select id="model" name="model" bind:value={model}>
+        {#each models as m (m.id)}
+          <option value={m.id}>{m.label}</option>
         {/each}
-      </fieldset>
-      <div class="space-y-2">
-        <Label for="apiKey">API key</Label>
-        <Input
-          id="apiKey"
-          name="apiKey"
-          type="password"
-          required
-          autocomplete="off"
-          placeholder={selectedProvider.keyPrefix}
-        />
-        <p class="text-xs text-muted-foreground">
-          Get one at
-          <a
-            href={selectedProvider.keyUrl}
-            target="_blank"
-            rel="noreferrer"
-            class="underline underline-offset-2">{new URL(selectedProvider.keyUrl).hostname}</a
-          >. Stored encrypted, never shown again, switchable anytime.
-        </p>
-      </div>
-      <div class="space-y-2">
-        <Label for="model">Model</Label>
-        <Select id="model" name="model" bind:value={model}>
-          {#each models as m (m.id)}
-            <option value={m.id}>{m.label}</option>
-          {/each}
-        </Select>
-        <p class="text-xs text-muted-foreground">{MODEL_HELPER_TEXT}</p>
-      </div>
-      <Button type="submit" class="w-full">Save &amp; start</Button>
-    </form>
-    <p class="text-center text-xs text-muted-foreground">
-      Running a local model or using environment keys?
-      <a href="/settings/ai" class="underline underline-offset-2">Advanced setup</a>
-    </p>
-  </CardContent>
-</Card>
+      </Select>
+      <p class="text-xs text-muted-foreground">{MODEL_HELPER_TEXT}</p>
+    </div>
+    <Button type="submit" class="w-full">Save &amp; start</Button>
+  </form>
+  <p class="text-center text-xs text-muted-foreground">
+    Running a local model or using environment keys?
+    <a href="/settings/ai" class="underline underline-offset-2">Advanced setup</a>
+  </p>
+</AuthPlate>

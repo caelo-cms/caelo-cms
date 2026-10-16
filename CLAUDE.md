@@ -177,7 +177,7 @@ This project is largely AI-authored. AI contributions are held to a *higher*, no
 
 ## 10. Documentation as you go
 
-Every phase updates `docs/` when it introduces user-visible behaviour. Caelo's docs site is built *with Caelo itself* (dogfooding from P17) — broken docs block the release.
+Every phase updates the docs when it introduces user-visible behaviour. End-user docs live at [caelo-cms.com/docs](https://caelo-cms.com/docs/), built *with Caelo itself* (dogfooding) — they are site content, not files in this repo, so a user-visible change names the docs page to update in its PR. Engineering docs live in `docs/`, `ARCHITECTURE.md` and package READMEs. Broken docs block the release.
 
 ---
 

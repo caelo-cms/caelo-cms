@@ -21,7 +21,7 @@
  * prove which operator sent it. The audit row labels it that way; the
  * authoritative record is Google's Data Access audit log for the
  * iamcredentials `signJwt` and secretmanager `AccessSecretVersion` calls the
- * CLI makes as the operator (docs-site install-gcp, "Owner reset").
+ * CLI makes as the operator (GCP install docs at caelo-cms.com/docs/, "Owner reset").
  */
 
 import { execute } from "@caelo-cms/query-api";
