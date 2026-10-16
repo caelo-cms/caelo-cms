@@ -27,7 +27,7 @@
       {#if data.run.finishedAt} · finished {new Date(data.run.finishedAt).toLocaleString()}{/if}
     </p>
     {#if data.run.errorMessage}
-      <p class="mt-2 text-sm text-red-600">{data.run.errorMessage}</p>
+      <p class="mt-2 text-sm text-destructive">{data.run.errorMessage}</p>
     {/if}
   </div>
 

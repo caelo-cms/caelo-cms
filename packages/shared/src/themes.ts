@@ -23,6 +23,7 @@
  */
 
 import { z } from "zod";
+import { FONT_AXES_EXTENSION } from "./font-axis-policy.js";
 import { isUnsafeKey } from "./safe-keys.js";
 import { UnknownTokenName } from "./themes-errors.js";
 
@@ -788,8 +789,12 @@ export function applyDtcgWrites(
       nextValue &&
       typeof nextValue === "object" &&
       (nextValue as { fontFamily?: string }).fontFamily !== oldValue?.fontFamily
-    )
+    ) {
+      // A new family unbinds the pinned face, and with it the face's axis
+      // override: it was validated against the old face's axes.
       delete extensions["caelo.font"];
+      delete extensions[FONT_AXES_EXTENSION];
+    }
     setLeafAtPath(out, path, {
       ...(Object.keys(extensions).length ? { $extensions: extensions } : {}),
       $value: nextValue,

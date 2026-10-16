@@ -186,6 +186,7 @@ describe("the gate with page-check problems", () => {
       errorCode: null,
       errorMessage: null,
       skippedBecause: ["field values: hero"],
+      fixChain: null,
     };
     expect(chatFeedbackFor({ ...base, lighthouse: false })?.text).toContain(
       "page checks on every page; no Lighthouse audit needed: field values: hero",

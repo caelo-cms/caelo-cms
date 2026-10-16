@@ -82,7 +82,7 @@ These cannot be violated by any change, AI-generated or human:
 ## 3. Dependency & version policy
 
 - **Always verify the current version** of a package before adding it — do not trust training-data recall. Fetch the latest stable from the npm registry (or vendor docs via context7) and pin in `package.json`. If the requirements doc specifies a library (Bun, SvelteKit, Astro, Zod, Arctic, Pulumi, oxc-parser, Deno, @sveltejs/adapter-node (run under Bun), sharp, drizzle/atlas), use it — don't re-evaluate mid-project.
-- **Project licence: MPL 2.0.** Maximum freedom for developers, hosting providers, and AI-generated modules; modifications to core files must stay open; patent protection included; one licence, no dual-licensing complexity (same licence as Firefox, Brave, LibreOffice). All dependencies must be **MPL-2.0-compatible** — MPL-2.0, Apache-2.0, MIT, BSD, ISC. GPL/AGPL/SSPL/proprietary deps are blockers and must be rejected in PR review. Record the license of every new dep in the PR description.
+- **Project licence: MPL 2.0.** Maximum freedom for developers, hosting providers, and AI-generated modules; modifications to core files must stay open; patent protection included; one licence, no dual-licensing complexity (same licence as Firefox, Brave, LibreOffice). All dependencies must be **MPL-2.0-compatible** — MPL-2.0, Apache-2.0, MIT, BSD, ISC. **Exception: OFL-1.1 for font packages only** (the admin's self-hosted brand fonts) — allowed per package in both licence gates, never globally; `scripts/font-license-exception.test.ts` enforces it. **Exception: LGPL-3.0-or-later for `@img/sharp-libvips-*` only** — the mandated `sharp` loads libvips as a separate, dynamically linked shared library, so the LGPL does not reach Caelo's code, and every image that redistributes it ships a generated `THIRD_PARTY_NOTICES.txt` (LGPL/GPL texts + source link, `scripts/libvips-notice.ts`). The few other non-allow-list licences in the tree (CC-BY-3.0 SPDX data files, pako's Zlib, one custom licence verified as MIT text) are likewise per-package, version- or licence-pinned entries with a written reason in `LICENSE_EXCEPTIONS` of `scripts/license-check.ts` (`bun run license:check` scans every workspace's full tree, dev deps included); a stale entry fails the gate. GPL/AGPL/SSPL/proprietary deps are blockers and must be rejected in PR review. Record the license of every new dep in the PR description.
 - **Prefer fewer, well-maintained dependencies** over clever micro-libraries. OSS contributors will audit this tree.
 - **Upgrade, don't pin forever.** Dependabot/renovate on; security advisories block merges.
 - **No proprietary SDKs on critical paths** — vendor-neutrality is a core goal. AI providers all sit behind the Provider Abstraction Layer.
@@ -177,7 +177,7 @@ This project is largely AI-authored. AI contributions are held to a *higher*, no
 
 ## 10. Documentation as you go
 
-Every phase updates `docs/` when it introduces user-visible behaviour. Caelo's docs site is built *with Caelo itself* (dogfooding from P17) — broken docs block the release.
+Every phase updates the docs when it introduces user-visible behaviour. End-user docs live at [caelo-cms.com/docs](https://caelo-cms.com/docs/), built *with Caelo itself* (dogfooding) — they are site content, not files in this repo, so a user-visible change names the docs page to update in its PR. Engineering docs live in `docs/`, `ARCHITECTURE.md` and package READMEs. Broken docs block the release.
 
 ---
 

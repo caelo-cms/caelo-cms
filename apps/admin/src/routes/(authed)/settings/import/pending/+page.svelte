@@ -79,7 +79,7 @@
                  unknown, never omitted. -->
             {#if r.estimate}
               {#if r.estimate.failed}
-                <p class="mb-2 text-sm text-amber-600 dark:text-amber-400" data-testid="import-estimate">
+                <p class="mb-2 text-sm text-amber-700 dark:text-amber-400" data-testid="import-estimate">
                   Scope unknown — estimate failed: {r.estimate.reason}
                 </p>
               {:else}
@@ -93,7 +93,7 @@
                   </p>
                 {/if}
                 <p
-                  class="mb-2 text-sm {r.estimate.pages > 500 ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}"
+                  class="mb-2 text-sm {r.estimate.pages > 500 ? 'font-medium text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}"
                   data-testid="import-estimate"
                 >
                   {#if r.estimate.pages > 500}⚠ Large site:{/if}

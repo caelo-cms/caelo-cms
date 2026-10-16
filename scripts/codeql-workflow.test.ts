@@ -19,12 +19,12 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { ALLOWED_LICENSES } from "./license-check.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const CODEQL_PATH = resolve(REPO_ROOT, ".github/workflows/codeql.yml");
 const DEP_REVIEW_PATH = resolve(REPO_ROOT, ".github/workflows/dependency-review.yml");
 const RULESET_PATH = resolve(REPO_ROOT, ".github/rulesets/main.json");
-const PACKAGE_JSON_PATH = resolve(REPO_ROOT, "package.json");
 
 const codeql = readFileSync(CODEQL_PATH, "utf8");
 const depReview = readFileSync(DEP_REVIEW_PATH, "utf8");
@@ -160,7 +160,7 @@ describe("main.json ruleset — CodeQL required status check", () => {
 describe("license allow-list lockstep", () => {
   // The MPL-compatible set (CLAUDE.md §3) lives in two places: the
   // dependency-review workflow gates PR-introduced deps, and `license:check`
-  // gates the installed tree. They must stay identical, or one gate quietly
+  // (scripts/license-check.ts) gates the installed tree. They must stay identical, or one gate quietly
   // permits what the other forbids. This test fails the moment they diverge.
   function dependencyReviewAllowList(): Set<string> {
     const m = depReview.match(/allow-licenses:\s*(.+)/);
@@ -173,24 +173,8 @@ describe("license allow-list lockstep", () => {
     );
   }
 
-  function licenseCheckAllowList(): Set<string> {
-    const pkg = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8")) as {
-      scripts: Record<string, string>;
-    };
-    const script = pkg.scripts["license:check"];
-    if (!script) throw new Error("package.json has no license:check script");
-    const m = script.match(/--onlyAllow\s+'([^']+)'/);
-    if (!m) throw new Error("license:check has no --onlyAllow '...' argument");
-    return new Set(
-      m[1]!
-        .split(";")
-        .map((s) => s.trim())
-        .filter(Boolean),
-    );
-  }
-
-  it("dependency-review allow-licenses equals package.json license:check --onlyAllow", () => {
-    expect([...dependencyReviewAllowList()].sort()).toEqual([...licenseCheckAllowList()].sort());
+  it("dependency-review allow-licenses equals ALLOWED_LICENSES of scripts/license-check.ts", () => {
+    expect([...dependencyReviewAllowList()].sort()).toEqual([...ALLOWED_LICENSES].sort());
   });
 });
 

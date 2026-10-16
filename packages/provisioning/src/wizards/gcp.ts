@@ -1935,7 +1935,7 @@ async function stepFinalize(installId: string, setupLink: "print" | "secret"): P
       `     click ${bold("New token")} (scope ${bold("chat")}: Caelo's AI does the work; ${bold("admin")}: your agent drives Caelo's tools),`,
       "     copy the bearer (shown once) and run the `claude mcp add` command the page shows.",
       "     The admin is behind Google IAP, so run `gcloud auth application-default login` once on that machine.",
-      `     Details: ${cyan("https://caelo-cms.com/mcp")}`,
+      `     Details: ${cyan("https://caelo-cms.com/docs/mcp/")}`,
       ...adminNote,
       "",
       bold("Lifecycle commands:"),

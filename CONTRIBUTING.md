@@ -9,7 +9,7 @@ This document just covers the contribution mechanics.
 ## Quick orientation
 
 - **License:** MPL 2.0. Every source file carries `// SPDX-License-Identifier: MPL-2.0`. New files must too — `bun run lint` enforces this.
-- **Compatible-license dependencies only:** MPL-2.0, Apache-2.0, MIT, BSD, ISC, 0BSD, CC0-1.0. GPL/AGPL/SSPL block PRs. `bun run license:check` enforces this in CI.
+- **Compatible-license dependencies only:** MPL-2.0, Apache-2.0, MIT, BSD, ISC, 0BSD, CC0-1.0 — plus a few reviewed per-package exceptions (OFL-1.1 for font packages, LGPL-3.0 for sharp's prebuilt libvips, …), each with its reason in `scripts/license-check.ts`. GPL/AGPL/SSPL block PRs. `bun run license:check` enforces this in CI over every workspace, dev deps included.
 - **Tests run under `bun test`** (Bun's native runner). Don't add Vitest back.
 - **TypeScript strict, no `any` without a comment, Zod at every external boundary.** See CLAUDE.md §4.
 
@@ -62,7 +62,7 @@ Open an issue using the **Bug** template. If you've already got the fix, open th
 
 ### New plugins
 
-Every plugin follows one model (CMS_REQUIREMENTS §14): who wrote it grants it nothing. It gets a small base — its own public tables, theme, visitor id, captcha — and everything else is a grant the site's Owner approves for that exact plugin version. See [Plugin permissions](https://caelo-cms.com/plugins-permissions).
+Every plugin follows one model (CMS_REQUIREMENTS §14): who wrote it grants it nothing. It gets a small base — its own public tables, theme, visitor id, captcha — and everything else is a grant the site's Owner approves for that exact plugin version. See [Plugin permissions](https://caelo-cms.com/docs/plugins/permissions/) in the docs.
 
 - **For your own site:** ask the live-edit chat to build it. The AI submits it through `submit_plugin`; the validator runs; you approve it and its grants at `/settings/plugins`.
 - **From your own repository:** bundle the plugin into one source module and upload a JSON package `{ "manifest": …, "source": "…" }` at `/settings/plugins/installations`. The Owner reviews the exact artifact and each grant it requests; the plugin runs in the sandbox like every other.
@@ -74,7 +74,7 @@ These need an issue first so we can discuss scope. The non-negotiable invariants
 
 ### Documentation contributions
 
-Docs are dogfooded — `caelo-cms.com` is itself a Caelo install whose content lives under `docs-site/` in this repo. Edit the markdown there + open a PR; staging deploys automatically and we promote to production after review.
+The end-user docs at [caelo-cms.com/docs](https://caelo-cms.com/docs/) are dogfooded: they are pages in a Caelo install, not files in this repo. To fix or extend them, open an issue with the `documentation` label naming the page and the change; a maintainer applies it on the site. Engineering docs (`docs/`, `ARCHITECTURE.md`, `CLAUDE.md`, package READMEs) are edited here through a normal PR.
 
 ## Pull request mechanics
 
@@ -114,7 +114,7 @@ Reviewers check (per CLAUDE.md §9):
 Three GitHub-native security gates run alongside the AI review (issue #26). Unlike the AI review, the first two are **deterministic** and the CodeQL gate **blocks merge**. Full details — including the required-context confirmation gotcha and the noise lever — live in [`docs/dev/codeql.md`](./docs/dev/codeql.md).
 
 - **CodeQL (static analysis).** `.github/workflows/codeql.yml` runs CodeQL's `security-extended` query suite over the JavaScript/TypeScript tree on every PR, on every push to `main`, and on a weekly schedule. It catches class-of-vulnerability bugs — SQLi, XSS, command injection, auth bypass, prototype pollution — that pattern-matching reviewers miss. Findings land in the repo **Security tab** (Code scanning alerts). The `CodeQL` check is a **required status check** in the `main-protection` ruleset, so high-or-higher-severity findings block merge (the merge-time severity threshold is configured in repo *Settings → Code security → Protection rules*). If first-run noise is too high, the suite is downgradeable to the default `security` set via the single `queries:` line in the workflow.
-- **Dependency review.** `.github/workflows/dependency-review.yml` runs `actions/dependency-review-action` on every PR and **fails** the PR when it introduces a dependency with a known advisory of `high` severity or higher, or with a license outside the MPL-2.0-compatible allow-list (which mirrors the `license:check` allow-list in `package.json` — keep the two in lockstep). On failure it posts a one-shot summary comment on the PR.
+- **Dependency review.** `.github/workflows/dependency-review.yml` runs `actions/dependency-review-action` on every PR and **fails** the PR when it introduces a dependency with a known advisory of `high` severity or higher, or with a license outside the MPL-2.0-compatible allow-list (which mirrors `ALLOWED_LICENSES` in `scripts/license-check.ts` — `scripts/codeql-workflow.test.ts` keeps the two in lockstep). On failure it posts a one-shot summary comment on the PR.
 - **Secret scanning + push protection.** Enabled at the repo level so an accidental secret commit is rejected at `git push` before it ever lands (the mechanical backstop for CLAUDE.md §7). These are repo *settings*, not files; like the branch-protection ruleset they're managed as config-as-code by a maintainer with repo-admin scope:
 
   ```sh

@@ -17,6 +17,8 @@ The Caelo runtime never knows it's on Azure — every Container App consumes pla
 
 ## First-time install
 
+Run this stack from a checkout of the Caelo repository after `bun install` at its root. `@pulumi/azure-native` is a devDependency of `@caelo-cms/provisioning`: the CLI wizard does not provision Azure yet, so the published package does not make every GCP and self-hosted install download it (the one-click install from Cloud Shell runs in a 5 GB home directory). It moves back to `dependencies` when the Azure wizard ships.
+
 ```bash
 cd packages/provisioning/stacks/azure
 pulumi stack init prod

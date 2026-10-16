@@ -30,6 +30,7 @@ import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
+import { AUTO_FIX_COST_CAP_MICROCENTS } from "../quality/chat-feedback.js";
 import { CheckRegistry } from "../quality/checks/registry.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
 import type { AuditJobResult } from "../quality/lighthouse-runner.js";
@@ -92,6 +93,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM quality_audit_runs`;
     await tx`DELETE FROM deploy_runs`;
     await tx`DELETE FROM chat_entity_locks WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE ${`${PFX}%`})`;
+    await tx`DELETE FROM ai_calls WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM chat_sessions WHERE title LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}%`} OR slug = 'home')`;
     await tx`DELETE FROM pages_seo WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}%`} OR slug = 'home')`;
@@ -126,7 +128,10 @@ async function opErr(ctx: ExecutionContext, name: string, input: unknown): Promi
 }
 
 /** The /edit Stage flow, op for op (classify → merge → build → finalize → enqueue). */
-async function stage(chatSessionId: string): Promise<{ runId: string; status: string }> {
+async function stage(
+  chatSessionId: string,
+  stagedBy: "operator" | "live_edit_ai" = "operator",
+): Promise<{ runId: string; status: string }> {
   const { headerIds, ...branch } = await op<{ headerIds: string[] }>(
     HUMAN,
     "quality_audits.classify_stage",
@@ -150,7 +155,7 @@ async function stage(chatSessionId: string): Promise<{ runId: string; status: st
     deployRunId: built.runId,
     chatSessionId,
     branch,
-    stagedBy: "operator",
+    stagedBy,
   });
   return { runId: built.runId, status: q.status };
 }
@@ -393,7 +398,7 @@ describe("block → fix → publish", () => {
     const claim = () =>
       op<{ claimed: boolean }>(HUMAN, "quality_audits.claim_chat_notification", {
         auditRunId,
-        fixRequested: true,
+        fixScope: "all",
       });
     const fixRequested = () =>
       withSql(
@@ -752,48 +757,150 @@ describe("a failed quality check", () => {
   });
 });
 
-describe("2-round fix cap", () => {
-  it("after two fix rounds the card says so — and the operator still decides", async () => {
+describe("fix-all loop (#771)", () => {
+  it("one 'Fix all with AI' continues while each round gets closer, then asks again", async () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
       HUMAN,
       "chat.create_session",
-      {
-        isolation: "experiment",
-        title: `${PFX}cap`,
-      },
+      { isolation: "experiment", title: `${PFX}loop` },
     );
     const branch = { ...HUMAN, chatBranchId: s.chatBranchId };
-    const stubborn = fakeLighthouse(() => ({ failing: [imageAlt] }));
-    const prompts: string[] = [];
-    const labels: string[] = [];
-    for (let round = 0; round < 3; round += 1) {
-      await editModule(branch, `<p>try ${round}</p>`);
-      await stage(s.chatSessionId);
-      await audit(stubborn);
+    // Round by round: what the AI's re-Stage measures (and who staged it).
+    const rounds: { by: "operator" | "live_edit_ai"; performance: number }[] = [
+      { by: "operator", performance: 80 },
+      { by: "live_edit_ai", performance: 90 }, // closer: continues on its own
+      { by: "live_edit_ai", performance: 90 }, // no closer: stops and asks
+    ];
+    const offers: { autoContinue: boolean; actionLabel: string; text: string; prompt: string }[] =
+      [];
+    for (const [i, round] of rounds.entries()) {
+      await editModule(branch, `<p>try ${i}</p>`);
+      await stage(s.chatSessionId, round.by);
+      await audit(fakeLighthouse(() => ({ scores: { performance: round.performance } })));
       const st = await op<{
         audit: { id: string; fixRound: number };
-        feedback: { kind: string; prompt: string; actionLabel: string };
+        feedback: {
+          kind: string;
+          prompt: string;
+          actionLabel: string;
+          text: string;
+          autoContinue: boolean;
+        };
       }>(HUMAN, "quality_audits.chat_status", { chatSessionId: s.chatSessionId });
-      expect(st.audit.fixRound).toBe(round);
+      expect(st.audit.fixRound).toBe(i);
       expect(st.feedback.kind).toBe("offer");
-      prompts.push(st.feedback.prompt);
-      labels.push(st.feedback.actionLabel);
-      // The operator clicks the offer: the panel claims it as a fix request
-      // BEFORE the turn runs (the AI re-stages inside that turn, so the ack
-      // at its end would come too late), then sends the prompt.
-      const auditRunId = st.audit.id;
+      offers.push(st.feedback);
+      // The operator's click on the first card; the panel's own send after.
       await op(HUMAN, "quality_audits.claim_chat_notification", {
-        auditRunId,
-        fixRequested: true,
+        auditRunId: st.audit.id,
+        fixScope: "all",
       });
     }
-    expect(prompts[0]).toContain("Fix round 1:");
-    expect(prompts[1]).toContain("Fix round 2:");
-    expect(prompts[2]).toContain("left after 2 fix round(s) and I asked you to continue");
-    for (const prompt of prompts) {
-      expect(prompt).toContain("a score like 90 is NOT good enough on its own");
+    expect(offers.map((o) => o.autoContinue)).toEqual([false, true, false]);
+    expect(offers.map((o) => o.actionLabel)).toEqual([
+      "Fix all with AI",
+      "Fix all with AI",
+      "Keep fixing with AI",
+    ]);
+    expect(offers[1]?.text).toContain("keeps fixing on its own");
+    expect(offers[2]?.text).toContain("got no closer to the target");
+    expect(offers[0]?.prompt).toContain("Fix round 1:");
+    expect(offers[1]?.prompt).toContain("Fix round 2:");
+    expect(offers[2]?.prompt).toContain("Fix round 3:");
+    for (const o of offers) {
+      expect(o.prompt).toContain("a score like 90 is NOT good enough on its own");
+      expect(o.prompt).toContain("The chat sends you the next round on its own");
     }
-    expect(labels).toEqual(["Fix all with AI", "Fix all with AI", "Keep fixing with AI"]);
+  });
+
+  it("a picked fix, or a Stage the AI did not make, never continues on its own", async () => {
+    const s = await op<{ chatSessionId: string; chatBranchId: string }>(
+      HUMAN,
+      "chat.create_session",
+      { isolation: "experiment", title: `${PFX}loop-picked` },
+    );
+    const branch = { ...HUMAN, chatBranchId: s.chatBranchId };
+    const status = () =>
+      op<{ audit: { id: string }; feedback: { autoContinue: boolean } }>(
+        HUMAN,
+        "quality_audits.chat_status",
+        { chatSessionId: s.chatSessionId },
+      );
+    const roundWith = async (performance: number, by: "operator" | "live_edit_ai") => {
+      await editModule(branch, `<p>perf ${performance} ${by}</p>`);
+      await stage(s.chatSessionId, by);
+      await audit(fakeLighthouse(() => ({ scores: { performance } })));
+      return status();
+    };
+    const first = await roundWith(70, "operator");
+    await op(HUMAN, "quality_audits.claim_chat_notification", {
+      auditRunId: first.audit.id,
+      fixScope: "picked",
+    });
+    // Closer, but the operator asked only for some groups.
+    const afterPicked = await roundWith(80, "live_edit_ai");
+    expect(afterPicked.feedback.autoContinue).toBe(false);
+    await op(HUMAN, "quality_audits.claim_chat_notification", {
+      auditRunId: afterPicked.audit.id,
+      fixScope: "all",
+    });
+    // Closer, but the operator staged it themselves: their Stage, their call.
+    expect((await roundWith(90, "operator")).feedback.autoContinue).toBe(false);
+  });
+
+  it("stops continuing on its own once the chain's AI spend reaches the cap", async () => {
+    const s = await op<{ chatSessionId: string; chatBranchId: string }>(
+      HUMAN,
+      "chat.create_session",
+      { isolation: "experiment", title: `${PFX}loop-spend` },
+    );
+    const branch = { ...HUMAN, chatBranchId: s.chatBranchId };
+    const spend = (microcents: number, at: string) =>
+      withSql(async (tx) => {
+        await tx`INSERT INTO ai_calls (chat_session_id, actor_id, provider, model, input_tokens,
+                                       output_tokens, cost_estimate_microcents, created_at)
+                 VALUES (${s.chatSessionId}::uuid, ${SYSTEM_ID}::uuid, 'anthropic', 'test-model',
+                         1, 1, ${microcents}, ${at}::timestamptz)`;
+      });
+    const roundWith = async (performance: number, by: "operator" | "live_edit_ai") => {
+      await editModule(branch, `<p>spend ${performance} ${by}</p>`);
+      await stage(s.chatSessionId, by);
+      await audit(fakeLighthouse(() => ({ scores: { performance } })));
+      return op<{
+        audit: { id: string };
+        feedback: { autoContinue: boolean; actionLabel: string; text: string };
+      }>(HUMAN, "quality_audits.chat_status", { chatSessionId: s.chatSessionId });
+    };
+    // Spend from before the operator's click is not the fix loop's.
+    await spend(AUTO_FIX_COST_CAP_MICROCENTS * 2, "2000-01-01T00:00:00Z");
+    const first = await roundWith(60, "operator");
+    await op(HUMAN, "quality_audits.claim_chat_notification", {
+      auditRunId: first.audit.id,
+      fixScope: "all",
+    });
+    await spend(AUTO_FIX_COST_CAP_MICROCENTS / 2, new Date().toISOString());
+    const second = await roundWith(70, "live_edit_ai");
+    expect(second.feedback.autoContinue).toBe(true);
+    // The panel's own send of round 2; that round spends up to the cap.
+    await op(HUMAN, "quality_audits.claim_chat_notification", {
+      auditRunId: second.audit.id,
+      fixScope: "all",
+    });
+    await spend(AUTO_FIX_COST_CAP_MICROCENTS / 2, new Date().toISOString());
+    const third = await roundWith(80, "live_edit_ai");
+    expect(third.feedback.autoContinue).toBe(false);
+    expect(third.feedback.actionLabel).toBe("Keep fixing with AI");
+    expect(third.feedback.text).toContain("used $5.00 of AI spend");
+    // Every fix request that starts AI spend is on the audit record.
+    const audited = await withSql(
+      (tx) => tx`SELECT result_summary FROM audit_events
+                 WHERE operation = 'quality_audits.claim_chat_notification'
+                   AND entity_id IN (${first.audit.id}, ${second.audit.id})`,
+    );
+    expect((audited as { result_summary: string }[]).map((r) => r.result_summary)).toEqual([
+      "fix requested (all)",
+      "fix requested (all)",
+    ]);
   });
 
   it("a Stage after 'Not now' uses up no fix round (#685)", async () => {
@@ -819,7 +926,7 @@ describe("2-round fix cap", () => {
         // fix request) is left behind and its lease runs out.
         await op(HUMAN, "quality_audits.claim_chat_notification", {
           auditRunId: st.audit.id,
-          fixRequested: true,
+          fixScope: "all",
         });
         await withSql(async (tx) => {
           await tx`UPDATE quality_audit_runs SET chat_notify_claimed_at = now() - interval '5 minutes'

@@ -2,11 +2,14 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  AUTO_FIX_COST_CAP_MICROCENTS,
   type ChatAuditSummary,
   type ChatFeedback,
   chatFeedbackFor,
+  fixDistance,
   fixPromptFor,
   MAX_AUTO_FIX_ROUNDS,
+  madeProgress,
 } from "../chat-feedback.js";
 import {
   CURRENT_GATE_RULES,
@@ -261,6 +264,7 @@ describe("chatFeedbackFor", () => {
     skippedBecause: [] as string[],
     lighthouse: true,
     groups: [] as ProblemGroup[],
+    fixChain: null as ChatAuditSummary["fixChain"],
   };
   const descriptionMissing = (path: string) => ({
     pageId: `id-${path}`,
@@ -370,7 +374,7 @@ describe("chatFeedbackFor", () => {
   });
 
   it("every fix request holds the AI to the optimum and keeps acceptances the operator's (#727, #667)", () => {
-    for (const fixRound of [0, 1, MAX_AUTO_FIX_ROUNDS]) {
+    for (const fixRound of [0, 1, 5]) {
       const { prompt } = offer({ fixRound });
       expect(prompt).toContain("a score like 90 is NOT good enough on its own");
       expect(prompt).toContain("Keep fixing until the target is reached");
@@ -383,13 +387,117 @@ describe("chatFeedbackFor", () => {
     }
   });
 
-  it("after the fix-round cap the card says so and still lets the operator decide", () => {
-    expect(offer({ fixRound: 0 }).prompt).toContain("Fix round 1:");
-    const capped = offer({ fixRound: MAX_AUTO_FIX_ROUNDS });
+  it("an offer nobody asked to fix waits for the operator's click (#685)", () => {
+    const f = offer({ stagedBy: "live_edit_ai" });
+    expect(f.autoContinue).toBe(false);
+    expect(f.actionLabel).toBe("Fix all with AI");
+    expect(f.prompt).toContain("Fix round 1:");
+  });
+
+  // #771 — one "Fix all with AI" fixes until the target, not one click per round.
+  it("a fix round that got closer to the target continues without a click", () => {
+    const fewer = offer({
+      fixRound: 1,
+      fixChain: {
+        before: { openCount: 9, scoreShortfall: 20 },
+        now: { openCount: 6, scoreShortfall: 30 },
+        spentMicrocents: 0,
+      },
+    });
+    expect(fewer.autoContinue).toBe(true);
+    expect(fewer.text).toContain("from 9 open problem(s), 20 score point(s) below 100 to 6");
+    expect(fewer.text).toContain("keeps fixing on its own");
+    expect(fewer.prompt).toContain("Fix round 2:");
+    expect(fewer.prompt).toContain("The chat sends you the next round on its own");
+    // Same number of problems, but higher scores: still closer.
+    const higher = offer({
+      fixChain: {
+        before: { openCount: 3, scoreShortfall: 12 },
+        now: { openCount: 3, scoreShortfall: 4 },
+        spentMicrocents: 0,
+      },
+    });
+    expect(higher.autoContinue).toBe(true);
+  });
+
+  it("a fix round that got no closer stops the loop and asks the operator", () => {
+    for (const now of [
+      { openCount: 3, scoreShortfall: 12 },
+      { openCount: 4, scoreShortfall: 0 },
+    ]) {
+      const stalled = offer({
+        fixChain: { before: { openCount: 3, scoreShortfall: 12 }, now, spentMicrocents: 0 },
+      });
+      expect(stalled.autoContinue).toBe(false);
+      expect(stalled.actionLabel).toBe("Keep fixing with AI");
+      expect(stalled.text).toContain("got no closer to the target");
+      expect(stalled.text).toContain("decide per group below");
+      expect(stalled.groups).toHaveLength(3);
+    }
+  });
+
+  it("stops continuing on its own after MAX_AUTO_FIX_ROUNDS rounds, however close it got", () => {
+    const progress = {
+      before: { openCount: 3, scoreShortfall: 12 },
+      now: { openCount: 2, scoreShortfall: 4 },
+      spentMicrocents: 0,
+    };
+    expect(offer({ fixRound: MAX_AUTO_FIX_ROUNDS - 1, fixChain: progress }).autoContinue).toBe(
+      true,
+    );
+    const capped = offer({ fixRound: MAX_AUTO_FIX_ROUNDS, fixChain: progress });
+    expect(capped.autoContinue).toBe(false);
     expect(capped.actionLabel).toBe("Keep fixing with AI");
-    expect(capped.text).toContain(`left after ${MAX_AUTO_FIX_ROUNDS} fix rounds`);
-    expect(capped.text).toContain("decide per group below");
-    expect(capped.groups).toHaveLength(3);
+    expect(capped.text).toContain(`it has run ${MAX_AUTO_FIX_ROUNDS} round(s)`);
+    // The last automatic round is not promised a successor.
+    expect(offer({ fixRound: MAX_AUTO_FIX_ROUNDS - 1, fixChain: progress }).prompt).not.toContain(
+      "next round on its own",
+    );
+  });
+
+  it("stops continuing on its own once the chain's AI spend reaches the cap", () => {
+    const chain = (spentMicrocents: number) => ({
+      before: { openCount: 3, scoreShortfall: 12 },
+      now: { openCount: 2, scoreShortfall: 4 },
+      spentMicrocents,
+    });
+    expect(
+      offer({ fixRound: 1, fixChain: chain(AUTO_FIX_COST_CAP_MICROCENTS - 1) }).autoContinue,
+    ).toBe(true);
+    const capped = offer({ fixRound: 1, fixChain: chain(AUTO_FIX_COST_CAP_MICROCENTS) });
+    expect(capped.autoContinue).toBe(false);
+    expect(capped.actionLabel).toBe("Keep fixing with AI");
+    expect(capped.text).toContain("used $5.00 of AI spend");
+  });
+
+  it("measures the distance as open problems plus missing score points", () => {
+    const open = [
+      {
+        pageId: "p",
+        pagePath: "/",
+        problem: {
+          kind: "score_below_baseline" as const,
+          category: "seo" as const,
+          score: 92,
+          baseline: 100,
+        },
+      },
+      descriptionMissing("/"),
+    ];
+    expect(fixDistance(open)).toEqual({ openCount: 2, scoreShortfall: 8 });
+    expect(
+      madeProgress({ openCount: 2, scoreShortfall: 8 }, { openCount: 1, scoreShortfall: 50 }),
+    ).toBe(true);
+    expect(
+      madeProgress({ openCount: 2, scoreShortfall: 8 }, { openCount: 2, scoreShortfall: 8 }),
+    ).toBe(false);
+  });
+
+  it("a picked fix does not promise the next round", () => {
+    const summary = { ...base, status: "problems" as const, groups };
+    expect(fixPromptFor(summary, [{ key: "seo-check/description-missing" }])).not.toContain(
+      "next round on its own",
+    );
   });
 
   it("a picked fix covers only the chosen groups and pages", () => {

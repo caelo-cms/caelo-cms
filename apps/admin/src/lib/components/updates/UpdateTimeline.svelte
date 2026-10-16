@@ -104,9 +104,9 @@
             <li class="flex gap-2 text-xs text-muted-foreground">
               <span class="shrink-0 font-mono">{time(line.at)}</span>
               {#if line.level === "success"}
-                <CircleCheck class="size-3.5 shrink-0 text-green-700" aria-label="done" />
+                <CircleCheck class="size-3.5 shrink-0 text-green-700 dark:text-green-400" aria-label="done" />
               {:else if line.level === "warn"}
-                <TriangleAlert class="size-3.5 shrink-0 text-amber-700" aria-label="warning" />
+                <TriangleAlert class="size-3.5 shrink-0 text-amber-700 dark:text-amber-400" aria-label="warning" />
               {:else if line.level === "error"}
                 <CircleAlert class="size-3.5 shrink-0 text-destructive" aria-label="error" />
               {/if}

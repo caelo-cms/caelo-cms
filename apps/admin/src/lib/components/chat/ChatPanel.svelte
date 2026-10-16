@@ -40,6 +40,7 @@
   import InlineDiff from "./InlineDiff.svelte";
   import QualityFixOfferCard from "./QualityFixOfferCard.svelte";
   import {
+    autoContinueOffer,
     autoDeliverableNote,
     externalAgentRefusal,
     openQualityOffer,
@@ -669,10 +670,13 @@
   /**
    * "Fix with AI" — the operator's click starts the fix round (#685). #727:
    * `fixSelection` narrows it to the groups / pages picked on the card.
+   * #771: `trigger` "auto" is the next round of a fix-all the operator
+   * started, sent without a click (the Stop latch holds it back).
    */
   async function acceptQualityOffer(
     auditRunId: string,
     fixSelection: QualityGroupSelection[] | null = null,
+    trigger: "operator" | "auto" = "operator",
   ): Promise<void> {
     if (streaming || qualityOfferActing !== null) return;
     qualityOfferActing = auditRunId;
@@ -705,7 +709,7 @@
       // Settled for every tab the moment the turn starts — not when it
       // ends: a long fix turn would outlive the claim's lease, and another
       // tab could then offer (or dismiss) the fix while it runs.
-      const started = await sendAutoMessage(r.send, "operator", () => {
+      const started = await sendAutoMessage(r.send, trigger, () => {
         void postQualityAction(session.id, csrfToken, { action: "ack", auditRunId })
           .catch(() => undefined)
           .finally(() => void qualityStatus.refresh());
@@ -726,6 +730,20 @@
       void qualityStatus.refresh();
     }
   }
+
+  /** #771 — audits whose next fix round this tab already started on its own. */
+  const autoContinuedAudits = new Set<string>();
+  $effect(() => {
+    const offer = autoContinueOffer(qualityOffer, {
+      streaming,
+      acting: qualityOfferActing !== null,
+      composer,
+      started: autoContinuedAudits,
+    });
+    if (offer === null) return;
+    autoContinuedAudits.add(offer.auditRunId);
+    void acceptQualityOffer(offer.auditRunId, null, "auto");
+  });
 
   /**
    * #727 — "Accept all…" / "Accept selected…" on a group: the operator's own
@@ -2511,14 +2529,14 @@
              declarations.) -->
         {#if crawlRun && (crawlRun.status === "crawling" || crawlRun.status === "proposed")}
           <div
-            class="flex items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-2 text-xs"
+            class="flex items-center gap-2 rounded-md border border-link/30 bg-link/5 p-2 text-xs"
             data-testid="chat-import-progress"
           >
             <span
-              class="inline-block size-3 animate-spin rounded-full border-2 border-sky-600 border-t-transparent motion-reduce:animate-none"
+              class="inline-block size-3 animate-spin rounded-full border-2 border-link border-t-transparent motion-reduce:animate-none"
               aria-hidden="true"
             ></span>
-            <span class="font-medium text-sky-700 dark:text-sky-400">
+            <span class="font-medium text-link">
               {crawlRun.status === "proposed" ? "Crawler starting…" : "Crawling…"}
             </span>
             <span class="text-muted-foreground">
@@ -2626,7 +2644,7 @@
                 >
                   {#if external}
                     <span
-                      class="mb-1 inline-block rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-700 dark:text-sky-300"
+                      class="mb-1 inline-block rounded bg-link/10 px-1.5 py-0.5 text-[10px] text-link"
                       data-testid="chat-approval-external-agent"
                       title="The decision goes back to the external agent, which continues its own work. This chat's AI does not act on it."
                       >{EXTERNAL_AGENT_LABEL}</span
@@ -2645,10 +2663,11 @@
                       an Owner to approve it, or reject it.
                     </p>
                   {/if}
+                  <!-- #779 — Approve is the human decision: coral. -->
                   <div class="flex items-center gap-1.5">
                     <button
                       type="button"
-                      class={buttonVariants({ variant: "default", size: "sm" })}
+                      class={buttonVariants({ variant: "decide", size: "sm" })}
                       disabled={(external ? approvalDeciding[a.approvalId] === true : streaming) ||
                         missing.length > 0}
                       data-testid="chat-approval-approve"
@@ -2673,7 +2692,7 @@
           <ul class="space-y-1 text-xs" data-testid="chat-mcp-handoffs">
             {#each mcpHandoffs as h (h.proposalId)}
               <li
-                class="flex items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-1.5"
+                class="flex items-center gap-2 rounded-md border border-link/30 bg-link/5 p-1.5"
                 data-testid="chat-mcp-handoff"
                 data-outcome={h.outcome}
                 data-delivered={h.deliveredAt !== null ? "true" : "false"}
@@ -2708,19 +2727,20 @@
                   <span class="truncate">{p.summary}</span>
                   {#if p.requestedVia === "power_mcp"}
                     <span
-                      class="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-700 dark:text-sky-300"
+                      class="shrink-0 rounded bg-link/10 px-1.5 py-0.5 text-[10px] text-link"
                       data-testid="pending-external-agent"
                       title="The decision is handed back to the external agent, which continues the work. This chat's AI does not act on it."
                       >{EXTERNAL_AGENT_LABEL}</span
                     >
                   {/if}
                   <span class="ml-auto flex items-center gap-1.5">
+                    <!-- #779 — Approve is the human decision: coral, also
+                         for a destructive kind (the domain.kind label above
+                         names it). -->
                     <Button
                       type="button"
                       size="sm"
-                      variant={/^(delete|remove|revert|clear|deactivate|cancel)/i.test(p.kind)
-                        ? "destructive"
-                        : "default"}
+                      variant="decide"
                       disabled={pendingActioning[p.proposalId] !== undefined &&
                         pendingActioning[p.proposalId] !== null}
                       onclick={() =>

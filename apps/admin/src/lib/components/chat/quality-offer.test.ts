@@ -7,6 +7,7 @@ import type {
   QualityStatus,
 } from "#lib/components/edit/quality-status.svelte.js";
 import {
+  autoContinueOffer,
   autoDeliverableNote,
   externalAgentRefusal,
   groupSelection,
@@ -36,6 +37,7 @@ function status(over: Partial<QualityStatus> = {}): QualityStatus {
       actionLabel: "Fix all with AI",
       prompt: "Please fix the quality findings. …",
       groups: [GROUP],
+      autoContinue: false,
     },
     deployRunId: "d1",
     gate: null,
@@ -68,8 +70,17 @@ describe("openQualityOffer (issue #685)", () => {
       text: expect.stringContaining("Let the AI fix them?"),
       actionLabel: "Fix all with AI",
       groups: [GROUP],
+      autoContinue: false,
     });
     expect(autoDeliverableNote(s)).toBeNull();
+    expect(
+      autoContinueOffer(openQualityOffer(s), {
+        streaming: false,
+        acting: false,
+        composer: "",
+        started: new Set(),
+      }),
+    ).toBeNull();
   });
 
   it("no card once the operator decided, while running, or for a status note", () => {
@@ -86,6 +97,34 @@ describe("openQualityOffer (issue #685)", () => {
     const note = status({ feedback: { kind: "note", text: "Quality check passed" } });
     expect(autoDeliverableNote(note)).toBe("a1");
     expect(autoDeliverableNote({ ...note, notified: true })).toBeNull();
+  });
+});
+
+describe("autoContinueOffer (#771: one fix-all click fixes until the target)", () => {
+  const continuing = openQualityOffer(
+    status({
+      feedback: {
+        kind: "offer",
+        text: "The AI's fix round went from 5 open problem(s) to 2 open problem(s)",
+        actionLabel: "Fix all with AI",
+        prompt: "Please fix the quality findings. …",
+        groups: [GROUP],
+        autoContinue: true,
+      },
+    }),
+  );
+  const idle = { streaming: false, acting: false, composer: "", started: new Set<string>() };
+
+  it("the next round of a fix-all starts without a click", () => {
+    expect(autoContinueOffer(continuing, idle)?.auditRunId).toBe("a1");
+  });
+
+  it("never into a running turn, a card action, a typed message, or twice", () => {
+    expect(autoContinueOffer(continuing, { ...idle, streaming: true })).toBeNull();
+    expect(autoContinueOffer(continuing, { ...idle, acting: true })).toBeNull();
+    expect(autoContinueOffer(continuing, { ...idle, composer: "wait" })).toBeNull();
+    expect(autoContinueOffer(continuing, { ...idle, started: new Set(["a1"]) })).toBeNull();
+    expect(autoContinueOffer(null, idle)).toBeNull();
   });
 });
 

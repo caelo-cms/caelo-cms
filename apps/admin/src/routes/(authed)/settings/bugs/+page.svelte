@@ -23,7 +23,7 @@
     s === "blocking"
       ? "bg-destructive/15 text-destructive"
       : s === "degraded"
-        ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+        ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
         : "bg-muted text-muted-foreground";
 
   // A fenced code block's fence must be LONGER than any backtick run it

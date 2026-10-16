@@ -31,7 +31,13 @@
  *     health check signs its IAP credential as that account
  *     (upgrade/health.ts). The operator-access sync job keeps it there.
  *   - `roles/storage.objectUser` on the ops bucket, conditioned to the
- *     `install/` prefix (install.json) — not the Pulumi state.
+ *     `install/` prefix (install.json, the state lock) — not the Pulumi state.
+ *   - the custom role `caeloUpgraderOpsList` (`storage.objects.list` only)
+ *     on the ops bucket, unconditioned: `gcloud storage cp` lists the
+ *     destination prefix and reads the bucket's storage layout before every
+ *     upload, and GCS checks both against the bucket, never an object path,
+ *     so no `install/` condition can admit them. It reveals object names,
+ *     not contents.
  *   - `roles/logging.logWriter`.
  *
  * It gets no `*.setIamPolicy`, no service-account admin, no secret
@@ -69,6 +75,18 @@ export const UPGRADER_SQL_BACKUP_ROLE: CustomRoleSpec = {
     "cloudsql.instances.get",
     "cloudsql.instances.list",
   ],
+};
+
+/**
+ * Listing the ops bucket, which every `gcloud storage cp` into it needs (see
+ * the file header). Names only — reads and writes stay on `install/`.
+ */
+export const UPGRADER_OPS_LIST_ROLE: CustomRoleSpec = {
+  roleId: "caeloUpgraderOpsList",
+  title: "Caelo upgrader: list the ops bucket",
+  description:
+    "Lets the Caelo upgrader job list object names in the install's ops bucket (gcloud storage cp needs it). Names only; object reads/writes stay limited to install/.",
+  permissions: ["storage.objects.list"],
 };
 
 /** Project-level roles of the upgrader's service account. */
@@ -176,10 +194,12 @@ export async function ensureUpgraderJob(
     };
   }
 
-  // 1. The backup role.
-  const roleError = await ensureCustomRole(run, projectId, UPGRADER_SQL_BACKUP_ROLE);
-  if (roleError) return { ok: false, done, error: roleError };
-  done.push(`custom role ${UPGRADER_SQL_BACKUP_ROLE.roleId}`);
+  // 1. The backup and ops-bucket-list roles.
+  for (const role of [UPGRADER_SQL_BACKUP_ROLE, UPGRADER_OPS_LIST_ROLE]) {
+    const roleError = await ensureCustomRole(run, projectId, role);
+    if (roleError) return { ok: false, done, error: roleError };
+    done.push(`custom role ${role.roleId}`);
+  }
 
   // 2. The job's own service account.
   const describe = await run([
@@ -275,6 +295,22 @@ export async function ensureUpgraderJob(
   if (!bucketGrant.ok)
     return fail(`grant the upgrader install.json in gs://${bucket}`, bucketGrant);
   done.push(`upgrader: roles/storage.objectUser on gs://${bucket}/${OPS_INSTALL_PREFIX}/`);
+
+  const listRole = customRoleName(projectId, UPGRADER_OPS_LIST_ROLE.roleId);
+  const listGrant = await retry([
+    "storage",
+    "buckets",
+    "add-iam-policy-binding",
+    `gs://${bucket}`,
+    `--member=${member}`,
+    `--role=${listRole}`,
+    "--condition=None",
+    project,
+    "--quiet",
+    "--format=none",
+  ]);
+  if (!listGrant.ok) return fail(`grant the upgrader object listing on gs://${bucket}`, listGrant);
+  done.push(`upgrader: ${listRole} on gs://${bucket}`);
 
   // 6. Its database login (migration 0267's platform_updater role).
   const sqlUser = await ensureCloudSqlIamUser(run, {

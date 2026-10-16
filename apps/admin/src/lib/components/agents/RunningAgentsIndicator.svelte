@@ -81,7 +81,7 @@
         open = !open;
       }}
     >
-      <Bot class="size-4 {active.length > 0 ? 'animate-pulse text-amber-600' : ''}" />
+      <Bot class="size-4 {active.length > 0 ? 'animate-pulse text-amber-700 dark:text-amber-400' : ''}" />
       {active.length > 0 ? `${active.length} agent${active.length === 1 ? "" : "s"} running` : "Agents"}
     </Button>
     {#if open}
