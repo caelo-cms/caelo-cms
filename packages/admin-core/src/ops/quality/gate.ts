@@ -23,16 +23,28 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { chatFeedbackFor, fixPromptFor } from "../../quality/chat-feedback.js";
-import { CURRENT_GATE_RULES, type GateDecision } from "../../quality/gate.js";
+import {
+  type ChatAuditSummary,
+  chatFeedbackFor,
+  fixDistance,
+  fixPromptFor,
+} from "../../quality/chat-feedback.js";
+import { CURRENT_GATE_RULES, decideGate, type GateDecision } from "../../quality/gate.js";
 import { groupOpenProblems } from "../../quality/problem-groups.js";
 import { appendChatMessageOp } from "../chat/messages.js";
 import { promoteDeployOp } from "../deploy.js";
 import { actorHasPermission } from "./_permissions.js";
 import { categorySchema } from "./_shared.js";
-import { latestSucceededRun, publishGateForRun } from "./gate-loader.js";
+import {
+  latestSucceededRun,
+  loadAcceptances,
+  loadGateAuditById,
+  publishGateForRun,
+} from "./gate-loader.js";
 import { enqueueAuditOp } from "./lifecycle.js";
 import { RUN_COLUMNS, type RunDbRow, runSummarySchema, toRunSummary } from "./read.js";
+
+type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
 const gateSchema = z.object({
   open: z.boolean(),
@@ -209,13 +221,15 @@ const problemGroupSchema = z.object({
 const feedbackSchema = z
   .discriminatedUnion("kind", [
     z.object({ kind: z.literal("note"), text: z.string() }),
-    // #685 — shown as a card; `prompt` is sent only on the operator's click.
+    // #685 — shown as a card; `prompt` is sent only on the operator's click,
+    // or on its own when `autoContinue` (#771: the next round of a fix-all).
     z.object({
       kind: z.literal("offer"),
       text: z.string(),
       actionLabel: z.string(),
       prompt: z.string(),
       groups: z.array(problemGroupSchema),
+      autoContinue: z.boolean(),
     }),
   ])
   .nullable();
@@ -278,7 +292,7 @@ export const chatStatusOp = defineOperation({
     // #727 — the card groups the problems the gate blocks on NOW: an
     // acceptance (or revoke) changes the groups at once.
     const open = current && decision ? decision.openProblems : [];
-    const summary = {
+    const summary: ChatAuditSummary = {
       status: audit.status,
       fixRound: audit.fixRound,
       stagedBy: audit.stagedBy,
@@ -287,6 +301,10 @@ export const chatStatusOp = defineOperation({
       skippedBecause: audit.classification.skipped,
       lighthouse: audit.classification.auditNeeded,
       groups: groupOpenProblems(open),
+      fixChain:
+        current && audit.status === "problems" && audit.stagedBy === "live_edit_ai"
+          ? await fixChainOf(tx, audit.id, open)
+          : null,
     };
     let feedback = chatFeedbackFor(summary);
     if (feedback?.kind === "offer" && input.fixSelection) {
@@ -301,6 +319,38 @@ export const chatStatusOp = defineOperation({
     });
   },
 });
+
+/**
+ * #771 — the distance before and after the fix round an audit checks, when
+ * the operator asked the AI to fix ALL problems of the chat's previous
+ * audit ("Fix all with AI"); null otherwise. The previous audit's problems
+ * are counted under today's acceptances, like the current ones, so an
+ * acceptance in between is not mistaken for the AI's progress.
+ */
+async function fixChainOf(
+  tx: Tx,
+  auditRunId: string,
+  open: GateDecision["openProblems"],
+): Promise<ChatAuditSummary["fixChain"]> {
+  const rows = (await tx.execute(sql`
+    SELECT prev.id::text AS id
+    FROM quality_audit_runs cur
+    JOIN LATERAL (
+      SELECT id, status, fix_scope FROM quality_audit_runs p
+      WHERE p.chat_session_id = cur.chat_session_id AND p.created_at < cur.created_at
+      ORDER BY p.created_at DESC LIMIT 1
+    ) prev ON TRUE
+    WHERE cur.id = ${auditRunId}::uuid AND prev.status = 'problems' AND prev.fix_scope = 'all'
+  `)) as unknown as { id: string }[];
+  const prevId = rows[0]?.id;
+  if (prevId === undefined) return null;
+  const prev = await loadGateAuditById(tx, prevId);
+  const acceptances = await loadAcceptances(tx, prev?.pages.map((p) => p.pageId) ?? []);
+  return {
+    before: fixDistance(decideGate(prev, acceptances).openProblems),
+    now: fixDistance(open),
+  };
+}
 
 /** How long a chat tab may hold the delivery of an audit's message
  *  before another poll may deliver it instead. */
@@ -323,11 +373,13 @@ export const claimChatNotificationOp = defineOperation({
         .optional(),
       /** #685 — the operator clicked "Fix with AI": record the requested
        *  fix round now, BEFORE the turn runs — the AI re-stages inside that
-       *  turn, and the next audit's fix round is decided at that Stage. */
-      fixRequested: z.boolean().default(false),
+       *  turn, and the next audit's fix round is decided at that Stage.
+       *  #771: `all` (every open group) lets the next round continue on its
+       *  own; `picked` (some groups / pages) never does. */
+      fixScope: z.enum(["all", "picked"]).nullable().default(null),
     })
     .strict()
-    .refine((v) => !(v.fixRequested && v.note), {
+    .refine((v) => !(v.fixScope !== null && v.note), {
       message: "a fix request starts a turn; a note settles the offer — pass one, not both",
     }),
   output: z.object({ claimed: z.boolean() }),
@@ -342,7 +394,8 @@ export const claimChatNotificationOp = defineOperation({
     const rows = (await tx.execute(sql`
       UPDATE quality_audit_runs
          SET chat_notify_claimed_at = now(),
-             fix_requested_at = CASE WHEN ${input.fixRequested} THEN now() ELSE NULL END
+             fix_requested_at = CASE WHEN ${input.fixScope}::text IS NULL THEN NULL ELSE now() END,
+             fix_scope = ${input.fixScope}
       WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
         AND status IN ('passed', 'problems', 'errored', 'skipped')
         AND (chat_notify_claimed_at IS NULL
@@ -400,7 +453,8 @@ export const releaseChatNotificationOp = defineOperation({
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
     await tx.execute(sql`
-      UPDATE quality_audit_runs SET chat_notify_claimed_at = NULL, fix_requested_at = NULL
+      UPDATE quality_audit_runs
+         SET chat_notify_claimed_at = NULL, fix_requested_at = NULL, fix_scope = NULL
       WHERE id = ${input.auditRunId}::uuid AND chat_notified_at IS NULL
     `);
     return ok({});

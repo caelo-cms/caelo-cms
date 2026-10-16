@@ -51,7 +51,8 @@ export interface QualityProblemGroup {
 }
 
 /** What the chat is told about a settled audit (#553). An `offer` (#685)
- *  is a card: its `prompt` is sent only on the operator's click. */
+ *  is a card: its `prompt` is sent on the operator's click, or on its own
+ *  when `autoContinue` (#771: the next round of a fix-all). */
 export type QualityFeedback =
   | { readonly kind: "note"; readonly text: string }
   | {
@@ -61,6 +62,7 @@ export type QualityFeedback =
       readonly prompt: string;
       /** #727 — the open problems by group: fix / accept / pick each. */
       readonly groups: readonly QualityProblemGroup[];
+      readonly autoContinue: boolean;
     };
 
 /** #727 — the groups (and optionally pages of each) a card click covers. */
