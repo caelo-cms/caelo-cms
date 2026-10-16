@@ -90,6 +90,9 @@ const pageWithModulesSchema = pageRowSchema.extend({
    * designation explicitly instead of it guessing from the slug.
    */
   isHomePage: z.boolean(),
+  /** 0284 (#802) — true when this page is `site_defaults.not_found_page_id`:
+   *  the build ships it as `/404.html`, never at its own path. */
+  isNotFoundPage: z.boolean(),
   blocks: z.array(
     z.object({
       blockName: z.string(),
@@ -577,16 +580,21 @@ export const getPageWithModulesOp = defineOperation({
       }
     }
     // 0184 — is this page the designated homepage (site root)?
-    const homeRows = (await tx.execute(sql`
-      SELECT 1 AS is_home FROM site_defaults
-      WHERE id = 1 AND home_page_id = ${input.pageId}::uuid
+    // 0284 (#802) — or the designated 404 page?
+    const designationRows = (await tx.execute(sql`
+      SELECT (home_page_id = ${input.pageId}::uuid) AS is_home,
+             (not_found_page_id = ${input.pageId}::uuid) AS is_not_found
+      FROM site_defaults
+      WHERE id = 1
       LIMIT 1
-    `)) as unknown as { is_home: number }[];
-    const isHomePage = homeRows.length > 0;
+    `)) as unknown as { is_home: boolean | null; is_not_found: boolean | null }[];
+    const isHomePage = designationRows[0]?.is_home === true;
+    const isNotFoundPage = designationRows[0]?.is_not_found === true;
     return ok({
       page: {
         ...rowToPage(pageRow),
         isHomePage,
+        isNotFoundPage,
         blocks: orderedBlocks,
       },
     });

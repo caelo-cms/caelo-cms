@@ -230,6 +230,7 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
             organization: {},
           },
           pageUrlStyle: style,
+          notFoundPageId: null,
         });
       });
       const allAlternates = { ...expected, "x-default": expected.en };

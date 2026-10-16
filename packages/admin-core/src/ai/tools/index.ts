@@ -205,6 +205,7 @@ import { setMediaAltManyTool } from "./set-media-alt-many.js";
 import { setMediaSourceTool } from "./set-media-source.js";
 import { setMediaSourceManyTool } from "./set-media-source-many.js";
 import { setMediaVisibilityManyTool } from "./set-media-visibility-many.js";
+import { setNotFoundPageTool } from "./set-not-found-page.js";
 import { setPageModuleContentTool } from "./set-page-module-content.js";
 import { setPageModuleContentManyTool } from "./set-page-module-content-many.js";
 import { setPageSeoTool } from "./set-page-seo.js";
@@ -408,6 +409,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // 0184 — designate any page as the site root (per locale). Replaces the
   // reliance on a magic `home` slug for the homepage.
   registry.register(setHomePageTool);
+  // 0284 (#802) — designate the page shipped as /404.html for unknown URLs.
+  registry.register(setNotFoundPageTool);
   registry.register(repointPageTemplateTool);
   registry.register(moveModuleTool);
   registry.register(reorderModuleTool);

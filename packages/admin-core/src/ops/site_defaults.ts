@@ -37,6 +37,10 @@ const siteDefaultsRow = z.object({
    *  plugins that need to know which page is already the root before
    *  they can declare others the root of their own URL space. */
   homePageId: z.string().nullable(),
+  /** 0284 (#802) — the page the static build ships as `/404.html`
+   *  (served for unknown URLs with status 404). Null = none designated:
+   *  visitors get the hosting provider's generic error page. */
+  notFoundPageId: z.string().nullable(),
   // v0.11.4 (issue #76 follow-up) — site identity captured at onboarding.
   // Nullable on fresh installs that pre-date the identity step or where
   // the operator skipped the optional fields.
@@ -77,6 +81,7 @@ export const getSiteDefaultsOp = defineOperation({
         sd.default_template_id::text AS default_template_id,
         t.slug                        AS default_template_slug,
         sd.home_page_id::text         AS home_page_id,
+        sd.not_found_page_id::text    AS not_found_page_id,
         sd.site_name                  AS site_name,
         sd.site_purpose               AS site_purpose,
         sd.design_brief               AS design_brief,
@@ -93,6 +98,7 @@ export const getSiteDefaultsOp = defineOperation({
       default_template_id: string;
       default_template_slug: string;
       home_page_id: string | null;
+      not_found_page_id: string | null;
       site_name: string | null;
       site_purpose: string | null;
       design_brief: unknown;
@@ -108,6 +114,7 @@ export const getSiteDefaultsOp = defineOperation({
         defaultTemplateId: r.default_template_id,
         defaultTemplateSlug: r.default_template_slug,
         homePageId: r.home_page_id,
+        notFoundPageId: r.not_found_page_id,
         siteName: r.site_name,
         sitePurpose: r.site_purpose,
         designBrief: parseDesignBrief(r.design_brief),

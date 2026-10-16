@@ -833,6 +833,14 @@ export const setHomePageToolInput = z.object({ pageId: z.string().uuid() }).stri
 export type SetHomePageToolInput = z.infer<typeof setHomePageToolInput>;
 
 /**
+ * 0284 (#802) — `set_not_found_page`. AI designates the page the static
+ * build ships as `/404.html` (shown for unknown URLs, status 404);
+ * `pageId: null` clears the designation.
+ */
+export const setNotFoundPageToolInput = z.object({ pageId: z.string().uuid().nullable() }).strict();
+export type SetNotFoundPageToolInput = z.infer<typeof setNotFoundPageToolInput>;
+
+/**
  * 0181 — `set_media_source`. AI records an asset's provenance (source
  * kind + origin detail) and licence when known. All fields but the
  * assetId are optional; the op COALESCEs so omitted fields stay
