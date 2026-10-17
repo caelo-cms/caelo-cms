@@ -24,7 +24,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { localBuildPluginServices } from "@caelo-cms/plugin-host";
@@ -32,10 +32,11 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { FAVICON_VARIANT, FAVICON_VARIANT_PX } from "@caelo-cms/shared";
 import { generateSite, pageOutputPath } from "@caelo-cms/static-generator";
-import { SQL } from "bun";
+import { Glob, SQL } from "bun";
 import sharp from "sharp";
 import { runMediaPipeline } from "../media/pipeline.js";
 import { LocalVolumeAdapter, setMediaStorage } from "../media/storage.js";
+import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { minimalIco } from "./fixtures/ico.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
@@ -70,6 +71,9 @@ let previousActiveSlug: string | null = null;
 let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
 let mediaRoot = "";
 let restoreSiteLanguage: (() => Promise<void>) | null = null;
+let prevSkipServeCheck: string | undefined;
+/** The `home` page this test created (null when one existed). */
+let createdHomeId: string | null = null;
 const THEME_SLUG = `${PREFIX}-theme`;
 
 async function run(name: string, input: unknown): Promise<unknown> {
@@ -108,6 +112,10 @@ beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
+  // Stage (deploy.trigger) runs the generator CLI through the bridge.
+  setDeployBridge({ registry, adapter });
+  prevSkipServeCheck = process.env.CAELO_SKIP_STAGING_SERVE_CHECK;
+  process.env.CAELO_SKIP_STAGING_SERVE_CHECK = "1";
   await cleanup();
   // #551: the generator refuses to build without a configured site URL.
   restoreSiteBaseUrl = await pinSiteBaseUrl(ADMIN_URL, "https://favicon-test.invalid");
@@ -194,6 +202,26 @@ beforeAll(async () => {
   })) as { pageId: string };
   pageId = page.pageId;
   await run("pages.set_status", { pageId, status: "published" });
+  // Staging builds refuse published pages without a meta description.
+  await run("pages_seo.autofill", { pageId, metaDescription: "The favicon head page." });
+  // A staging build needs a page at '/' (slug `home`); add one if the
+  // database has none, and remove it again afterwards.
+  const home = await sqlSystem(
+    (tx) =>
+      tx.unsafe("SELECT id::text AS id FROM pages WHERE slug = 'home' LIMIT 1") as Promise<
+        { id: string }[]
+      >,
+  );
+  if (home.length === 0) {
+    const created = (await run("pages.create", {
+      slug: "home",
+      title: "Home",
+      templateId: tpl.templateId,
+    })) as { pageId: string };
+    createdHomeId = created.pageId;
+    await run("pages.set_status", { pageId: createdHomeId, status: "published" });
+    await run("pages_seo.autofill", { pageId: createdHomeId, metaDescription: "Home." });
+  }
   const rows = await sqlSystem(
     (tx) =>
       tx.unsafe(`SELECT current_path FROM pages WHERE id = '${pageId}'::uuid`) as Promise<
@@ -210,6 +238,12 @@ afterAll(async () => {
       await tx.unsafe("UPDATE themes SET is_active = false WHERE is_active = true");
       await tx.unsafe(`UPDATE themes SET is_active = true WHERE slug = '${slug}'`);
     });
+  }
+  if (prevSkipServeCheck === undefined) delete process.env.CAELO_SKIP_STAGING_SERVE_CHECK;
+  else process.env.CAELO_SKIP_STAGING_SERVE_CHECK = prevSkipServeCheck;
+  if (createdHomeId !== null) {
+    const id = createdHomeId;
+    await sqlSystem((tx) => tx.unsafe(`DELETE FROM pages WHERE id = '${id}'::uuid`));
   }
   await restoreSiteBaseUrl?.();
   await restoreSiteLanguage?.();
@@ -294,13 +328,16 @@ describe("theme favicon is emitted into <head>", () => {
     expect(shipped.byteLength).toBeLessThan(faviconOrigBytes / 20);
   });
 
-  it("a raster favicon without its rendition fails the build with the fix; binding again repairs it", async () => {
-    // A favicon bound before the rendition rule existed.
-    await sqlSystem((tx) =>
+  /** Drop the rendition: the state of a raster favicon bound before this release. */
+  const dropRendition = () =>
+    sqlSystem((tx) =>
       tx.unsafe(
         `DELETE FROM media_variants WHERE asset_id = '${faviconId}'::uuid AND variant = '${FAVICON_VARIANT}'`,
       ),
     );
+
+  it("the generator alone never ships the large original: a missing rendition fails it loudly", async () => {
+    await dropRendition();
     let failure = "";
     try {
       await build("site-stale");
@@ -308,11 +345,90 @@ describe("theme favicon is emitted into <head>", () => {
       failure = (e as Error).message;
     }
     expect(failure).toContain(`has no ${FAVICON_VARIANT} rendition`);
-    expect(failure).toContain(`set_theme_asset with slot "favicon" and mediaId ${faviconId}`);
-    await run("themes.set_asset", { slot: "favicon", mediaId: faviconId });
-    const result = await build("site-rebound");
-    const html = await readFile(join(result.buildDir, pageOutputPath(pagePath)), "utf8");
-    expect(headOf(html)).toContain(`/_assets/${faviconSlug}/${FAVICON_VARIANT}.`);
+    expect(failure).toContain("themes.ensure_favicon_rendition");
+  });
+
+  it("a favicon bound before this release stages with no manual step and ships the 64x64 file", async () => {
+    await dropRendition();
+    const staged = (await run("deploy.trigger", { targetName: "staging", repoRoot })) as {
+      runId: string;
+    };
+    expect(staged.runId).toBeTruthy();
+    // The rendition was written once, from the stored original, and audited.
+    const variants = await sqlSystem(
+      (tx) =>
+        tx.unsafe(
+          `SELECT width, height FROM media_variants
+           WHERE asset_id = '${faviconId}'::uuid AND variant = '${FAVICON_VARIANT}'`,
+        ) as Promise<{ width: number; height: number }[]>,
+    );
+    expect(variants).toEqual([{ width: FAVICON_VARIANT_PX, height: FAVICON_VARIANT_PX }]);
+    const audits = await sqlSystem(
+      (tx) =>
+        tx.unsafe(
+          `SELECT result_summary FROM audit_events
+           WHERE operation = 'themes.ensure_favicon_rendition' AND entity_id = '${faviconId}'`,
+        ) as Promise<{ result_summary: string }[]>,
+    );
+    expect(audits.length).toBeGreaterThan(0);
+    // The staged build links and ships the 64 px PNG.
+    const shippedPaths = [
+      ...new Glob(`**/_assets/${faviconSlug}/${FAVICON_VARIANT}.*.png`).scanSync({
+        cwd: repoRoot,
+      }),
+    ];
+    expect(shippedPaths.length).toBeGreaterThan(0);
+    const shippedRel = shippedPaths[0] as string;
+    const buildDir = join(repoRoot, shippedRel.slice(0, shippedRel.indexOf("/_assets/")));
+    const html = await readFile(join(buildDir, pageOutputPath(pagePath)), "utf8");
+    expect(headOf(html)).toContain(
+      `<link rel="icon" href="/${shippedRel.slice(shippedRel.indexOf("_assets/"))}" type="image/png">`,
+    );
+    const meta = await sharp(await readFile(join(repoRoot, shippedRel))).metadata();
+    expect(meta).toMatchObject({
+      format: "png",
+      width: FAVICON_VARIANT_PX,
+      height: FAVICON_VARIANT_PX,
+    });
+    // A second Stage finds it in place: no second write.
+    await run("deploy.trigger", { targetName: "staging", repoRoot });
+    const again = await sqlSystem(
+      (tx) =>
+        tx.unsafe(
+          `SELECT count(*)::int AS n FROM audit_events
+           WHERE operation = 'themes.ensure_favicon_rendition' AND entity_id = '${faviconId}'`,
+        ) as Promise<{ n: number }[]>,
+    );
+    expect(again[0]?.n).toBe(audits.length);
+  });
+
+  it("a Stage whose favicon original cannot be read fails loudly, recorded as a failed run", async () => {
+    await dropRendition();
+    const orig = join(mediaRoot, SHA, "orig.png");
+    await rename(orig, `${orig}.away`);
+    try {
+      const r = await execute(registry, adapter, SYS_CTX, "deploy.trigger", {
+        targetName: "staging",
+        repoRoot,
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      const message = JSON.stringify(r.error);
+      expect(message).toContain(`has no ${FAVICON_VARIANT} rendition`);
+      expect(message).toContain("could not be made from the stored original");
+      const failed = await sqlSystem(
+        (tx) =>
+          tx.unsafe(
+            `SELECT status, error_message FROM deploy_runs WHERE error_message LIKE 'Blocked, favicon:%' ORDER BY started_at DESC LIMIT 1`,
+          ) as Promise<{ status: string; error_message: string }[]>,
+      );
+      expect(failed[0]?.status).toBe("failed");
+      expect(failed[0]?.error_message).toContain("Blocked, favicon:");
+    } finally {
+      await rename(`${orig}.away`, orig);
+    }
+    // Restored original: the next Stage repairs it.
+    await run("deploy.trigger", { targetName: "staging", repoRoot });
   });
 
   it("refuses to bind a non-image asset to the favicon slot", async () => {

@@ -1227,9 +1227,11 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
  * The bound favicon as the `<link rel="icon">` links it: a raster favicon
  * ships its small PNG rendition (`FAVICON_VARIANT`), ICO/SVG their own
  * bytes. `themes.set_asset` creates the rendition when the favicon is
- * bound; a raster favicon bound before that rule has none, and the build
- * fails loudly with the fix instead of shipping the multi-MB original
- * (CLAUDE.md §2 — that original cost the page its LCP).
+ * bound, and `deploy.trigger` creates it (`themes.ensure_favicon_rendition`)
+ * before the generator starts for a favicon bound before that rule. A
+ * rendition still missing here means the build was started outside that
+ * path: fail loudly instead of shipping the multi-MB original (CLAUDE.md
+ * §2 — that original cost the page its LCP).
  */
 export function faviconAsset(row: {
   favicon_media_id: string | null;
@@ -1244,8 +1246,8 @@ export function faviconAsset(row: {
     throw new Error(
       `static-generator: the theme favicon (media ${row.favicon_slug}, ${row.favicon_mime}) has no ${FAVICON_VARIANT} rendition, ` +
         "so the page would link the full-size original as its icon (a large download on every page load). " +
-        `Next step: bind the favicon again (AI tool: set_theme_asset with slot "favicon" and mediaId ${row.favicon_media_id}) — ` +
-        "binding creates the rendition — then Stage again.",
+        "Stage creates it before the build (themes.ensure_favicon_rendition); this build was started without that step. " +
+        `Next step: Stage again, or bind the favicon again (AI tool: set_theme_asset with slot "favicon" and mediaId ${row.favicon_media_id}).`,
     );
   }
   return {
