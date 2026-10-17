@@ -283,6 +283,19 @@ export const LINK_TARGET_MISSING = "link-target-missing";
  */
 export const LINK_RESOLVER_UNAVAILABLE = "link-resolver-unavailable";
 
+/** True for the two link failure markers above. */
+export function isLinkFailureMarker(marker: string): boolean {
+  return (
+    marker.startsWith(`${LINK_TARGET_MISSING}:`) ||
+    marker.startsWith(`${LINK_RESOLVER_UNAVAILABLE}:`)
+  );
+}
+
+/** The link failure markers among `markers`, in order. */
+export function linkMarkersOf(markers: readonly string[]): string[] {
+  return markers.filter(isLinkFailureMarker);
+}
+
 /**
  * Resolve every reference embedded in rendered HTML. Unresolvable
  * references stay in the output verbatim (loud-raw, CLAUDE.md §2) and

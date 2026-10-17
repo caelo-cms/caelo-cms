@@ -57,7 +57,7 @@
  */
 
 import type { ModuleFieldKind } from "./content.js";
-import { LINK_RESOLVER_UNAVAILABLE, LINK_TARGET_MISSING, type LinkResolver } from "./link-refs.js";
+import { isLinkFailureMarker, type LinkResolver } from "./link-refs.js";
 import { caeloMissingComment, renderTemplate, type TemplateField } from "./template-engine.js";
 
 const MAX_RECURSION_DEPTH = 8;
@@ -161,13 +161,6 @@ interface RenderContext {
   readonly dormantDataLists: Readonly<Record<string, string>>;
   /** Epic #724 — resolves internal references in every nested module. */
   readonly linkResolver: LinkResolver | undefined;
-}
-
-function isLinkMarker(marker: string): boolean {
-  return (
-    marker.startsWith(`${LINK_TARGET_MISSING}:`) ||
-    marker.startsWith(`${LINK_RESOLVER_UNAVAILABLE}:`)
-  );
 }
 
 function isNestedRef(v: unknown): v is NestedRefValue {
@@ -330,7 +323,7 @@ function substituteWithRecursion(
     // HTML (loud-raw), so the enclosing module's render meets it again.
     // The nested render already reported it with the precise field
     // trail; drop the echo instead of reporting one broken link twice.
-    if (isLinkMarker(m) && ctx.missing.includes(m)) continue;
+    if (isLinkFailureMarker(m) && ctx.missing.includes(m)) continue;
     fail(ctx, m);
   }
   return result.html;
