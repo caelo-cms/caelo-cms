@@ -118,7 +118,7 @@ The roadmap lives on the GitHub Project board: **[Caelo Roadmap](https://github.
 
 ## Local development
 
-Prerequisites: [Bun](https://bun.sh/) 1.3.13 or newer, Docker with Docker Compose, [Deno](https://deno.com) 2 or newer (for the plugin sandbox), and an API key for an AI provider.
+Prerequisites: [Bun](https://bun.sh/) 1.4.2 or newer (the version pinned in `packageManager` and CI; 1.3.x breaks the plugin-sandbox bundling the tests rely on), Docker with Docker Compose, [Deno](https://deno.com) 2 or newer (for the plugin sandbox), and an API key for an AI provider.
 
 ```bash
 git clone https://github.com/caelo-cms/caelo-cms.git
@@ -130,6 +130,8 @@ bun run db:migrate                    # cms_admin + cms_public migrations
 bun run --filter @caelo-cms/admin seed:dev
 bun run --filter @caelo-cms/admin dev     # admin at http://localhost:5173
 ```
+
+All configuration lives in the root `.env`; the admin's `dev` and `seed:dev` scripts load it from there, so you can also run them from `apps/admin`. Ports, the staging URL and the importer allowlist for local migration tests are in the optional block at the end of `.env.example`; see [`CONTRIBUTING.md`](./CONTRIBUTING.md#local-development-loop) for when you need them.
 
 Verify before opening a PR:
 

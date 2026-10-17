@@ -15,7 +15,7 @@ This document just covers the contribution mechanics.
 
 ## Local development loop
 
-You need: [Bun](https://bun.sh) ≥1.3 + Docker (for Postgres) + the [Anthropic API key](https://console.anthropic.com) (for AI features) + [Deno](https://deno.com) ≥2 (for the plugin sandbox).
+You need: [Bun](https://bun.sh) ≥1.4.2 (pinned in `packageManager` and CI; 1.3.x breaks the plugin-sandbox bundling the tests rely on) + Docker (for Postgres) + the [Anthropic API key](https://console.anthropic.com) (for AI features) + [Deno](https://deno.com) ≥2 (for the plugin sandbox).
 
 ```bash
 git clone https://github.com/caelo-cms/caelo-cms.git
@@ -30,6 +30,12 @@ bun run --filter @caelo-cms/api-gateway dev  # public API gateway at http://loca
 ```
 
 The API gateway has no path to the authoring database (CLAUDE.md §2, #635): it connects to cms_public only, as `public_role` (`PUBLIC_DATABASE_URL`), and refuses to start while its environment offers any other database access (any other database-related variable, a URL or connection string in any value, or a mounted secret file holding one). What it needs from authoring state the admin publishes into cms_public (see [docs/dev/public-admin-boundary.md](./docs/dev/public-admin-boundary.md)); `bun run db:migrate` publishes it, and the running admin keeps it current. The shared root `.env` carries the admin's credentials, so start the gateway through its `dev` script above: it loads `.env` and leaves every cms_admin credential out of the gateway's process. A database created before `gateway_role` existed: re-run `packages/migrations/src/bootstrap.sh` (idempotent, with `GATEWAY_ROLE_PASSWORD` set) — it creates the role and re-applies its grants.
+
+**Where the env comes from.** There is one `.env`, at the repo root. Bun only auto-loads a `.env` from the current directory, and a workspace script runs in its package directory, so the admin's `dev` and `seed:dev` scripts pass `--env-file=../../.env` explicitly (as the gateway's does). Start the admin through `bun run dev` (from `apps/admin` or with `--filter` from the root), not with a bare `bunx vite dev`: that skips the root `.env` and fails with `ADMIN_DATABASE_URL is required`.
+
+**Staging and production ports.** `docker compose up -d` serves the staged build on `STAGING_PORT` (default `8081`) and the production build on `PRODUCTION_PORT` (default `8082`). The admin does not read the compose ports; it builds its staging preview links and runs the staged-build quality audit against `CAELO_STAGING_BASE_URL` (default `http://localhost:8081`). If you change `STAGING_PORT`, for example because a second checkout's compose stack already holds `8081`, set `CAELO_STAGING_BASE_URL` to match, and `CAELO_SITE_URL` if you change `PRODUCTION_PORT`. All of them are in the optional block at the end of `.env.example`.
+
+**Migrating a site served on your machine.** The site importer's SSRF guard refuses private and loopback addresses, so migrating a site you serve on `localhost` fails until you exempt those hosts: set `CAELO_IMPORTER_ALLOWED_HOSTS=127.0.0.1,localhost` in `.env` (exact hostnames, comma-separated). It is empty, fully guarded, everywhere else; never set it on a real install. The real-AI e2e suite sets it itself for its fixture server ([`docs/internal/e2e-livedit.md`](./docs/internal/e2e-livedit.md)).
 
 Verify everything passes locally before opening a PR:
 

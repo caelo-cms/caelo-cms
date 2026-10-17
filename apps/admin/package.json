@@ -7,7 +7,7 @@
   "scripts": {
     "sync": "svelte-kit sync",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig tsconfig.json && tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json",
-    "dev": "svelte-kit sync && bun --bun vite dev",
+    "dev": "svelte-kit sync && bun --env-file=../../.env --bun vite dev",
     "build": "svelte-kit sync && bun --bun vite build",
     "preview": "bun --bun vite preview",
     "icons:touch": "bun run scripts/render-touch-icon.ts",
