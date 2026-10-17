@@ -402,6 +402,7 @@ describe("chatFeedbackFor", () => {
         before: { openCount: 9, scoreShortfall: 20 },
         now: { openCount: 6, scoreShortfall: 30 },
         spentMicrocents: 0,
+        operatorDecided: false,
       },
     });
     expect(fewer.autoContinue).toBe(true);
@@ -415,6 +416,7 @@ describe("chatFeedbackFor", () => {
         before: { openCount: 3, scoreShortfall: 12 },
         now: { openCount: 3, scoreShortfall: 4 },
         spentMicrocents: 0,
+        operatorDecided: false,
       },
     });
     expect(higher.autoContinue).toBe(true);
@@ -426,7 +428,12 @@ describe("chatFeedbackFor", () => {
       { openCount: 4, scoreShortfall: 0 },
     ]) {
       const stalled = offer({
-        fixChain: { before: { openCount: 3, scoreShortfall: 12 }, now, spentMicrocents: 0 },
+        fixChain: {
+          before: { openCount: 3, scoreShortfall: 12 },
+          now,
+          spentMicrocents: 0,
+          operatorDecided: false,
+        },
       });
       expect(stalled.autoContinue).toBe(false);
       expect(stalled.actionLabel).toBe("Keep fixing with AI");
@@ -441,6 +448,7 @@ describe("chatFeedbackFor", () => {
       before: { openCount: 3, scoreShortfall: 12 },
       now: { openCount: 2, scoreShortfall: 4 },
       spentMicrocents: 0,
+      operatorDecided: false,
     };
     expect(offer({ fixRound: MAX_AUTO_FIX_ROUNDS - 1, fixChain: progress }).autoContinue).toBe(
       true,
@@ -460,6 +468,7 @@ describe("chatFeedbackFor", () => {
       before: { openCount: 3, scoreShortfall: 12 },
       now: { openCount: 2, scoreShortfall: 4 },
       spentMicrocents,
+      operatorDecided: false,
     });
     expect(
       offer({ fixRound: 1, fixChain: chain(AUTO_FIX_COST_CAP_MICROCENTS - 1) }).autoContinue,
@@ -468,6 +477,30 @@ describe("chatFeedbackFor", () => {
     expect(capped.autoContinue).toBe(false);
     expect(capped.actionLabel).toBe("Keep fixing with AI");
     expect(capped.text).toContain("used $5.00 of AI spend");
+  });
+
+  // #685 — accepting or revoking on the card is the operator taking over.
+  it("a round during which the operator decided on findings never continues on its own", () => {
+    const chain = (operatorDecided: boolean) => ({
+      before: { openCount: 3, scoreShortfall: 12 },
+      now: { openCount: 2, scoreShortfall: 4 },
+      spentMicrocents: 0,
+      operatorDecided,
+    });
+    expect(offer({ fixRound: 1, fixChain: chain(false) }).autoContinue).toBe(true);
+    const decided = offer({ fixRound: 1, fixChain: chain(true) });
+    expect(decided.autoContinue).toBe(false);
+    expect(decided.actionLabel).toBe("Keep fixing with AI");
+    expect(decided.text).toContain("You decided on findings while the AI was fixing");
+    expect(decided.text).toContain("decide per group below");
+    expect(decided.groups).toHaveLength(3);
+    // Also when the round got no closer: still the operator's call, no auto turn.
+    expect(
+      offer({
+        fixRound: 1,
+        fixChain: { ...chain(true), now: { openCount: 3, scoreShortfall: 12 } },
+      }).autoContinue,
+    ).toBe(false);
   });
 
   it("measures the distance as open problems plus missing score points", () => {

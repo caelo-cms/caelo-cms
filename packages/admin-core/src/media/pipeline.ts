@@ -16,6 +16,8 @@
 
 import {
   buildStorageKey,
+  FAVICON_VARIANT,
+  FAVICON_VARIANT_PX,
   MEDIA_VARIANT_TAGS,
   MEDIA_VARIANT_WIDTHS,
   type MediaMime,
@@ -250,6 +252,43 @@ export async function runMediaPipeline(
   }
 
   return { variants, width: sourceWidth, height: sourceHeight };
+}
+
+/**
+ * The favicon rendition of a raster image (`FAVICON_VARIANT`): a square
+ * `FAVICON_VARIANT_PX` PNG, the whole image letterboxed onto a
+ * transparent square (`contain`) so a wide logo is not cropped. PNG, not
+ * WebP: every browser takes a PNG favicon. Built when the image is bound
+ * as the theme favicon (see ops/media_favicon.ts), not per upload.
+ *
+ * @param sha - content hash of the original (drives the storage key).
+ * @param body - the original's bytes (any raster the pipeline decodes).
+ */
+export async function renderFaviconRendition(
+  sha: string,
+  body: Uint8Array,
+): Promise<PipelineOutputVariant> {
+  const buf = await sharp(body)
+    .rotate()
+    .resize({
+      width: FAVICON_VARIANT_PX,
+      height: FAVICON_VARIANT_PX,
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png({ compressionLevel: 9 })
+    .toBuffer({ resolveWithObject: true });
+  const out = new Uint8Array(buf.data);
+  return {
+    variant: FAVICON_VARIANT,
+    format: "png",
+    width: buf.info.width,
+    height: buf.info.height,
+    sizeBytes: out.byteLength,
+    storageKey: buildStorageKey(sha, FAVICON_VARIANT, "png"),
+    body: out,
+    contentType: "image/png",
+  };
 }
 
 // ---------------------------------------------------------------------

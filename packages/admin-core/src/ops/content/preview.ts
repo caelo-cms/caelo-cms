@@ -54,6 +54,7 @@ import {
   type SiteSeoSettings,
   scanCssVars,
   type ThemeDocument,
+  themeFaviconRendition,
   unknownCssVarMarker,
 } from "@caelo-cms/shared";
 import {
@@ -1444,7 +1445,15 @@ export async function loadActiveThemeForCompose(
     assets: {
       logo: asset(row.logo_media_id, row.logo_slug, row.logo_mime),
       logoDark: asset(row.logo_dark_media_id, row.logo_dark_slug, row.logo_dark_mime),
-      favicon: asset(row.favicon_media_id, row.favicon_slug, row.favicon_mime),
+      // Same rendition as the static generator: a raster favicon links its
+      // small PNG, never the (often MB-sized) original.
+      favicon:
+        row.favicon_media_id === null || row.favicon_slug === null || row.favicon_mime === null
+          ? null
+          : {
+              mediaId: row.favicon_media_id,
+              ...themeFaviconRendition(row.favicon_slug, row.favicon_mime),
+            },
       socialShare: asset(row.social_share_media_id, row.social_share_slug, row.social_share_mime),
     },
   };

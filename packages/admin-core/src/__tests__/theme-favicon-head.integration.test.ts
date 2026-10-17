@@ -14,6 +14,12 @@
  * Also locks the generator's theme-asset URL shape: it used to build
  * `/_caelo/media/<uuid>` from the media id, which the media pass reads
  * as a SLUG and fails the deploy on as unresolved.
+ *
+ * Regression (LCP): a raster favicon linked its `orig` — an AI-generated
+ * 1024 px PNG of 1-2 MB downloaded on every page load, which took the
+ * homepage's Lighthouse LCP from 0.9 s to 4.7 s. Binding a raster favicon
+ * now creates a 64 px PNG rendition (`icon-64`) and both surfaces link
+ * that; a raster favicon without one fails the build loudly.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -24,9 +30,12 @@ import { join, resolve } from "node:path";
 import { localBuildPluginServices } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { FAVICON_VARIANT, FAVICON_VARIANT_PX } from "@caelo-cms/shared";
 import { generateSite, pageOutputPath } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
+import sharp from "sharp";
 import { runMediaPipeline } from "../media/pipeline.js";
+import { LocalVolumeAdapter, setMediaStorage } from "../media/storage.js";
 import { registerAdminOps } from "../register.js";
 import { minimalIco } from "./fixtures/ico.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
@@ -54,6 +63,8 @@ let pageId = "";
 let pagePath = "";
 let faviconId = "";
 let faviconSlug = "";
+/** Byte size of the large PNG favicon's original. */
+let faviconOrigBytes = 0;
 /** Slug of the theme active before this test — re-activated after. */
 let previousActiveSlug: string | null = null;
 let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
@@ -103,25 +114,36 @@ beforeAll(async () => {
   restoreSiteLanguage = await pinSiteLanguage(ADMIN_URL, "en");
   repoRoot = mkdtempSync(join(tmpdir(), `${PREFIX}-root-`));
 
-  // A PNG favicon, with its orig bytes on disk where the generator's
-  // media pass reads them (MEDIA_ROOT_DIR resolves against repoRoot).
+  // A large PNG favicon (the shape of a generate_image result: 1024 px,
+  // noisy so it does not compress away), with its orig bytes on disk where
+  // the generator's media pass reads them (MEDIA_ROOT_DIR resolves against
+  // repoRoot) and where `themes.set_asset` reads them to make the rendition.
+  const side = 1024;
+  const noise = Buffer.alloc(side * side * 3);
+  for (let i = 0; i < noise.length; i += 1) noise[i] = (i * 2654435761) >>> 24;
+  const png = new Uint8Array(
+    await sharp(noise, { raw: { width: side, height: side, channels: 3 } })
+      .png()
+      .toBuffer(),
+  );
+  faviconOrigBytes = png.byteLength;
   const upload = (await run("media.upload", {
     sha256: SHA,
     originalName: "favicon.png",
     name: "Tfavh Favicon",
     mime: "image/png",
-    sizeBytes: 4,
-    width: 32,
-    height: 32,
+    sizeBytes: png.byteLength,
+    width: side,
+    height: side,
     alt: "",
     storageKey: `${SHA}/orig.png`,
     variants: [
       {
         variant: "orig",
         format: "png",
-        width: 32,
-        height: 32,
-        sizeBytes: 4,
+        width: side,
+        height: side,
+        sizeBytes: png.byteLength,
         storageKey: `${SHA}/orig.png`,
       },
     ],
@@ -129,8 +151,9 @@ beforeAll(async () => {
   faviconId = upload.assetId;
   faviconSlug = upload.slug;
   mediaRoot = resolve(repoRoot, process.env.MEDIA_ROOT_DIR ?? "data/media");
+  setMediaStorage(new LocalVolumeAdapter(mediaRoot));
   await mkdir(join(mediaRoot, SHA), { recursive: true });
-  await writeFile(join(mediaRoot, SHA, "orig.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  await writeFile(join(mediaRoot, SHA, "orig.png"), png);
 
   // A dedicated ACTIVE theme with a system-only font stack: the seeded
   // theme's body face is a web font, which would make the build depend on
@@ -203,16 +226,34 @@ function headOf(html: string): string {
 }
 
 describe("theme favicon is emitted into <head>", () => {
-  it("editor preview carries <link rel=icon> with the admin media URL + real mime", async () => {
+  it("binding a raster favicon creates its small PNG rendition", async () => {
+    const rows = await sqlSystem(
+      (tx) =>
+        tx.unsafe(
+          `SELECT format, width, height, size_bytes FROM media_variants
+           WHERE asset_id = '${faviconId}'::uuid AND variant = '${FAVICON_VARIANT}'`,
+        ) as Promise<{ format: string; width: number; height: number; size_bytes: number }[]>,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      format: "png",
+      width: FAVICON_VARIANT_PX,
+      height: FAVICON_VARIANT_PX,
+    });
+    expect(Number(rows[0]?.size_bytes)).toBeLessThan(faviconOrigBytes / 20);
+  });
+
+  it("editor preview carries <link rel=icon> with the rendition's admin media URL", async () => {
     const out = (await run("pages.render_preview", { pageId })) as { html: string };
     expect(headOf(out.html)).toContain(
-      `<link rel="icon" href="/_caelo/media/${faviconSlug}" type="image/png">`,
+      `<link rel="icon" href="/_caelo/media/${faviconSlug}/${FAVICON_VARIANT}" type="image/png">`,
     );
+    expect(out.html).not.toContain(`/_caelo/media/${faviconSlug}"`);
     expect(out.html.split('rel="icon"').length - 1).toBe(1);
   });
 
-  it("static build carries <link rel=icon> with the published /_assets URL and ships the file", async () => {
-    const result = await adapter.withAdminTransaction(SYS_CTX, (tx) =>
+  const build = (outDir: string) =>
+    adapter.withAdminTransaction(SYS_CTX, (tx) =>
       generateSite({
         tx,
         adapter,
@@ -222,26 +263,56 @@ describe("theme favicon is emitted into <head>", () => {
         changedPageIds: [pageId],
         target: {
           id: crypto.randomUUID(),
-          name: "favicon-test",
+          name: `favicon-${outDir}`,
           env: "dev",
-          outDir: "site",
+          outDir,
           baseUrl: "https://favicon-test.invalid",
           robotsDefault: "noindex",
         },
       }),
     );
+
+  it("static build links the published 64 px rendition, never the large original", async () => {
+    const result = await build("site");
     const html = await readFile(join(result.buildDir, pageOutputPath(pagePath)), "utf8");
     // #667 — the published name carries the content hash.
     const href = headOf(html).match(
       new RegExp(
-        `<link rel="icon" href="/(_assets/${faviconSlug}\\.[0-9a-f]{16}\\.png)" type="image/png">`,
+        `<link rel="icon" href="/(_assets/${faviconSlug}/${FAVICON_VARIANT}\\.[0-9a-f]{16}\\.png)" type="image/png">`,
       ),
     )?.[1];
     expect(href).toBeDefined();
     expect(html).not.toContain("/_caelo/media");
     expect(html).not.toContain(faviconId);
     const shipped = await readFile(join(result.buildDir, href as string));
-    expect(shipped.byteLength).toBe(4);
+    const meta = await sharp(shipped).metadata();
+    expect(meta).toMatchObject({
+      format: "png",
+      width: FAVICON_VARIANT_PX,
+      height: FAVICON_VARIANT_PX,
+    });
+    expect(shipped.byteLength).toBeLessThan(faviconOrigBytes / 20);
+  });
+
+  it("a raster favicon without its rendition fails the build with the fix; binding again repairs it", async () => {
+    // A favicon bound before the rendition rule existed.
+    await sqlSystem((tx) =>
+      tx.unsafe(
+        `DELETE FROM media_variants WHERE asset_id = '${faviconId}'::uuid AND variant = '${FAVICON_VARIANT}'`,
+      ),
+    );
+    let failure = "";
+    try {
+      await build("site-stale");
+    } catch (e) {
+      failure = (e as Error).message;
+    }
+    expect(failure).toContain(`has no ${FAVICON_VARIANT} rendition`);
+    expect(failure).toContain(`set_theme_asset with slot "favicon" and mediaId ${faviconId}`);
+    await run("themes.set_asset", { slot: "favicon", mediaId: faviconId });
+    const result = await build("site-rebound");
+    const html = await readFile(join(result.buildDir, pageOutputPath(pagePath)), "utf8");
+    expect(headOf(html)).toContain(`/_assets/${faviconSlug}/${FAVICON_VARIANT}.`);
   });
 
   it("refuses to bind a non-image asset to the favicon slot", async () => {

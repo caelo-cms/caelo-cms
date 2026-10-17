@@ -35,10 +35,13 @@ import {
   type ComposeTheme,
   type ComposeThemeAsset,
   composePageWithLayout,
+  FAVICON_VARIANT,
   fontUnresolvableMarker,
+  isRasterImageMime,
   type ModuleFieldKind,
   redirectTargetIssue,
   type ThemeDocument,
+  themeFaviconRendition,
   trimSlashes,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -634,6 +637,10 @@ export async function generateSite(args: {
       t.favicon_media_id::text       AS favicon_media_id,
       fa.slug                        AS favicon_slug,
       fa.mime                        AS favicon_mime,
+      EXISTS (
+        SELECT 1 FROM media_variants fv
+        WHERE fv.asset_id = fa.id AND fv.variant = ${FAVICON_VARIANT}
+      )                              AS favicon_has_rendition,
       t.social_share_media_id::text  AS social_share_media_id,
       ssa.slug                       AS social_share_slug,
       ssa.mime                       AS social_share_mime
@@ -655,6 +662,7 @@ export async function generateSite(args: {
     favicon_media_id: string | null;
     favicon_slug: string | null;
     favicon_mime: string | null;
+    favicon_has_rendition: boolean;
     social_share_media_id: string | null;
     social_share_slug: string | null;
     social_share_mime: string | null;
@@ -679,7 +687,7 @@ export async function generateSite(args: {
       assets: {
         logo: asset(tr.logo_media_id, tr.logo_slug, tr.logo_mime),
         logoDark: asset(tr.logo_dark_media_id, tr.logo_dark_slug, tr.logo_dark_mime),
-        favicon: asset(tr.favicon_media_id, tr.favicon_slug, tr.favicon_mime),
+        favicon: faviconAsset(tr),
         socialShare: asset(tr.social_share_media_id, tr.social_share_slug, tr.social_share_mime),
       },
     };
@@ -1213,4 +1221,35 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
     grouped.set(r.block_name, arr);
   }
   return [...grouped.entries()].map(([blockName, modules]) => ({ blockName, modules }));
+}
+
+/**
+ * The bound favicon as the `<link rel="icon">` links it: a raster favicon
+ * ships its small PNG rendition (`FAVICON_VARIANT`), ICO/SVG their own
+ * bytes. `themes.set_asset` creates the rendition when the favicon is
+ * bound; a raster favicon bound before that rule has none, and the build
+ * fails loudly with the fix instead of shipping the multi-MB original
+ * (CLAUDE.md §2 — that original cost the page its LCP).
+ */
+export function faviconAsset(row: {
+  favicon_media_id: string | null;
+  favicon_slug: string | null;
+  favicon_mime: string | null;
+  favicon_has_rendition: boolean;
+}): ComposeThemeAsset | null {
+  if (row.favicon_media_id === null || row.favicon_slug === null || row.favicon_mime === null) {
+    return null;
+  }
+  if (isRasterImageMime(row.favicon_mime) && !row.favicon_has_rendition) {
+    throw new Error(
+      `static-generator: the theme favicon (media ${row.favicon_slug}, ${row.favicon_mime}) has no ${FAVICON_VARIANT} rendition, ` +
+        "so the page would link the full-size original as its icon (a large download on every page load). " +
+        `Next step: bind the favicon again (AI tool: set_theme_asset with slot "favicon" and mediaId ${row.favicon_media_id}) — ` +
+        "binding creates the rendition — then Stage again.",
+    );
+  }
+  return {
+    mediaId: row.favicon_media_id,
+    ...themeFaviconRendition(row.favicon_slug, row.favicon_mime),
+  };
 }
