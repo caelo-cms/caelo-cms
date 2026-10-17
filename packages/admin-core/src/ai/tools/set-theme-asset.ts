@@ -35,7 +35,8 @@ export const setThemeAssetTool: ToolDefinitionWithHandler<SetThemeAssetToolInput
     "theme by default; pass `themeSlug` to bind on a specific theme. A bound favicon is emitted " +
     'as `<link rel="icon">` in every page\'s <head> by the platform — never hand-write an icon ' +
     "tag into a module. The favicon must be an image row (ICO, PNG or SVG); an uploaded .ico " +
-    "is fine as-is.",
+    "is fine as-is, and a raster image of any size (e.g. a 1024px generate_image result) is " +
+    "fine too — the platform links a 64px PNG made from it, never the large original.",
   schema: setThemeAssetToolInput,
   inputSchema: {
     type: "object",

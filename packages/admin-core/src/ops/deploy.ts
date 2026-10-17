@@ -560,6 +560,33 @@ export const triggerDeployOp = defineOperation({
           "Rebuild staging with deploy_staging, then call propose_deploy_promote (fromTarget = the staging target) so the Owner approves the go-live.",
       });
     }
+    // The active theme's raster favicon ships as its 64 px rendition
+    // (ops/media_favicon.ts). One bound before that rule has none: create
+    // it from the stored original now, so an upgraded install needs no
+    // manual step. Its own committed transaction — the generator reads
+    // through a separate connection and would not see a row written in
+    // this one. A failure (original missing / undecodable) fails the build
+    // loudly, recorded as a failed run like the other pre-build stops.
+    const favBridge = getDeployBridge();
+    if (favBridge) {
+      const fav = await execute(
+        favBridge.registry,
+        favBridge.adapter,
+        ctx,
+        "themes.ensure_favicon_rendition",
+        {},
+      );
+      if (!fav.ok) {
+        const message =
+          fav.error.kind === "HandlerError" ? fav.error.message : JSON.stringify(fav.error);
+        await tx.execute(sql`
+          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', now(),
+                  ${`Blocked, favicon: ${message}`})
+        `);
+        return err({ kind: "HandlerError", operation: "deploy.trigger", message });
+      }
+    }
     // #553 — a production build publishes what is staged, so it passes the
     // same quality gate as Publish live (production-gate.ts). A refusal is
     // recorded as a failed run, so Ops and the notification bell show it
