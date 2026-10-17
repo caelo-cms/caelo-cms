@@ -41,6 +41,10 @@
  * v0.11.1 (issue #76): `theme-asset-unbound:<slot>` for the four
  * `{{theme_<slot>_url}}` placeholders when the active theme's asset
  * slot isn't bound.
+ * Epic #724: `link-target-missing:page/<id>` / `…:media/<id>` for an
+ * internal reference (`caelo:page/<id>`, `caelo:media/<id>`) whose
+ * target does not exist, and `link-resolver-unavailable:<kind>/<id>`
+ * for one rendered without a resolver (see `link-refs.ts`).
  * The chat-runner diag pass + editor missing-content surface read
  * these literal strings; any rename is a silent regression for them.
  *
@@ -63,6 +67,7 @@
 
 import Mustache from "mustache";
 import { MODULE_FIELD_SECTION_KINDS, type ModuleFieldKind } from "./content.js";
+import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import { stripCdataGuards } from "./strip-cdata.js";
 
 // Override Mustache's default HTML escape — module HTML substitutes
@@ -139,6 +144,16 @@ export interface RenderTemplateInput {
     readonly favicon: string | null;
     readonly socialShare: string | null;
   };
+  /**
+   * Epic #724 — turns internal references (`caelo:page/<id>`,
+   * `caelo:media/<id>`) into URLs for the page being rendered. Applied
+   * to the fully substituted output, so a reference resolves wherever it
+   * came from: module HTML attributes, a field value, a field default, a
+   * link-list item, rich text. A missing target stays raw and pushes
+   * `link-target-missing:<kind>/<id>`; with no resolver every reference
+   * pushes `link-resolver-unavailable:<kind>/<id>` (loud, never empty).
+   */
+  readonly linkResolver?: LinkResolver;
 }
 
 export interface RenderTemplateOutput {
@@ -372,6 +387,12 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   for (const [sentinel, original] of sentinels) {
     final = final.split(sentinel).join(original);
   }
+
+  // 6. Resolve internal references (epic #724). Last, so values,
+  //    defaults and list items substituted above are covered; nested
+  //    partials arrive already resolved by their own render, and a
+  //    resolved URL never matches the reference grammar again.
+  final = resolveLinkRefsInHtml(final, input.linkResolver, missing);
 
   return { html: final, missingSlots: missing };
 }

@@ -57,6 +57,7 @@
  */
 
 import type { ModuleFieldKind } from "./content.js";
+import { LINK_RESOLVER_UNAVAILABLE, LINK_TARGET_MISSING, type LinkResolver } from "./link-refs.js";
 import { caeloMissingComment, renderTemplate, type TemplateField } from "./template-engine.js";
 
 const MAX_RECURSION_DEPTH = 8;
@@ -158,6 +159,15 @@ interface RenderContext {
    *  module: a switcher can sit inside a nested chrome module. */
   readonly dataLists: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
   readonly dormantDataLists: Readonly<Record<string, string>>;
+  /** Epic #724 — resolves internal references in every nested module. */
+  readonly linkResolver: LinkResolver | undefined;
+}
+
+function isLinkMarker(marker: string): boolean {
+  return (
+    marker.startsWith(`${LINK_TARGET_MISSING}:`) ||
+    marker.startsWith(`${LINK_RESOLVER_UNAVAILABLE}:`)
+  );
 }
 
 function isNestedRef(v: unknown): v is NestedRefValue {
@@ -193,6 +203,7 @@ export function renderModuleWithContent(
     readonly dataLists: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
     readonly dormantDataLists: Readonly<Record<string, string>>;
   },
+  linkResolver?: LinkResolver,
 ): NestedRenderResult {
   const touched = new Set<string>();
   const missing: string[] = [];
@@ -208,6 +219,7 @@ export function renderModuleWithContent(
     themeAssets,
     dataLists: pluginLists?.dataLists ?? {},
     dormantDataLists: pluginLists?.dormantDataLists ?? {},
+    linkResolver,
   });
   return { html, touchedModuleIds: touched, missingSlots: missing, failures };
 }
@@ -255,6 +267,7 @@ function renderInner(moduleId: string, contentInstanceId: string, ctx: RenderCon
     themeAssets: ctx.themeAssets,
     dataLists: ctx.dataLists,
     dormantDataLists: ctx.dormantDataLists,
+    linkResolver: ctx.linkResolver,
   };
 
   return substituteWithRecursion(mod.html, mod.fields, ci.values, childCtx);
@@ -310,8 +323,16 @@ function substituteWithRecursion(
     themeAssets: ctx.themeAssets,
     dataLists: ctx.dataLists,
     dormantDataLists: ctx.dormantDataLists,
+    linkResolver: ctx.linkResolver,
   });
-  for (const m of result.missingSlots) fail(ctx, m);
+  for (const m of result.missingSlots) {
+    // A broken reference inside a nested module stays raw in the partial
+    // HTML (loud-raw), so the enclosing module's render meets it again.
+    // The nested render already reported it with the precise field
+    // trail; drop the echo instead of reporting one broken link twice.
+    if (isLinkMarker(m) && ctx.missing.includes(m)) continue;
+    fail(ctx, m);
+  }
   return result.html;
 }
 
@@ -381,6 +402,8 @@ export function renderPlacedModule(
     readonly themeAssets?: NestedRenderThemeAssets;
     readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
     readonly dormantDataLists?: Readonly<Record<string, string>>;
+    /** Epic #724 — resolves internal references (see `link-refs.ts`). */
+    readonly linkResolver?: LinkResolver;
   },
 ): NestedRenderResult {
   const touched = new Set<string>();
@@ -400,6 +423,7 @@ export function renderPlacedModule(
     themeAssets: options.themeAssets,
     dataLists: options.dataLists ?? {},
     dormantDataLists: options.dormantDataLists ?? {},
+    linkResolver: options.linkResolver,
   });
   return { html, touchedModuleIds: touched, missingSlots: missing, failures };
 }
