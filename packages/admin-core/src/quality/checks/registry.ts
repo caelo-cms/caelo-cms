@@ -13,9 +13,10 @@
  *   through the per-category ratchet (ratchet.ts).
  *
  * `source` records who contributed an entry. Core registers Lighthouse and
- * its own findings check, `structure` (#820: repeated free markup that
- * should be a module — maintainer decision: a core topic like Lighthouse,
- * not a plugin add-on). The rule about pages without a meta description
+ * its own findings checks, `structure` (#820: repeated free markup that
+ * should be a module) and `links` (#849: broken internal links, missing
+ * assets, redirect chains and loops, orphan pages) — maintainer decision:
+ * core topics like Lighthouse, not plugin add-ons. The rule about pages without a meta description
  * is enforced before the build by `deploy.trigger` (#730,
  * deploy/missing-seo.ts), so a staged build can never contain such a page.
  * Plugins add further findings checks (#727, the `checks` composition
@@ -26,6 +27,7 @@ import type { AuditJob } from "../lighthouse-protocol.js";
 import { type AuditJobResult, runAuditJob } from "../lighthouse-runner.js";
 import type { QualityCheck } from "./check.js";
 import { checkIdSchema } from "./findings.js";
+import { createLinksCheck, type LinkSources } from "./links.js";
 import { createStructureCheck, type StructureSources } from "./structure.js";
 
 /** Who contributed a check. */
@@ -120,18 +122,23 @@ export class CheckRegistry {
 }
 
 /**
- * The checks core ships: Lighthouse and the `structure` findings check.
+ * The checks core ships: Lighthouse and the `structure` and `links`
+ * findings checks.
  *
  * @param options.structure - where the structure check reads module
  *   templates and layouts (required: a core check that silently did not
  *   run would read as "no findings").
+ * @param options.links - where the link check reads modules, layouts,
+ *   redirects and the site's own URLs (required, same reason).
  */
 export function createCoreCheckRegistry(options: {
   readonly lighthouse?: LighthouseRunner;
   readonly structure: StructureSources;
+  readonly links: LinkSources;
 }): CheckRegistry {
   const registry = new CheckRegistry();
   registry.registerLighthouse(options.lighthouse ?? runAuditJob);
   registry.register(createStructureCheck(options.structure), CORE);
+  registry.register(createLinksCheck(options.links), CORE);
   return registry;
 }
