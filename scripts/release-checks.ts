@@ -18,7 +18,11 @@ import { z } from "zod";
 import { INFRA_CONTRACT_VERSION } from "../packages/provisioning/src/infra-contract.ts";
 import { isInfraContractPath } from "../packages/provisioning/src/release-contract.ts";
 import { compareSemver } from "../packages/provisioning/src/release-manifest.ts";
-import { formatFindings, lintMigrationsSince } from "./migration-lint.ts";
+import {
+  formatFindings,
+  lintMigrationsSince,
+  outOfOrderMigrationsSince,
+} from "./migration-lint.ts";
 
 /** Repo-relative path of the release-cut declaration. */
 export const RELEASE_META_PATH = "release-meta.json";
@@ -310,6 +314,14 @@ export async function runReleaseChecks(
     errors.push(
       `contract (destructive) migrations since ${previousTag}:\n${formatFindings(findings)}\n` +
         "Installs cannot take this release unattended. If that is intended, re-cut with the contract acknowledgement (release-cut input ack_contract_migrations / --ack-contract-migrations); otherwise move the destructive step to a later release (expand/contract).",
+    );
+  }
+
+  // A migration numbered below one the previous release shipped would run
+  // after it on upgraded installs but before it on fresh ones.
+  for (const { file, head } of outOfOrderMigrationsSince(previousTag, opts.repoRoot)) {
+    errors.push(
+      `migration ${file} sorts below ${head}, which ${previousTag} already shipped: upgraded installs would apply it after ${head}, fresh installs before. Renumber it above ${head}.`,
     );
   }
 

@@ -237,14 +237,13 @@ export function adminMediaVolumeTemplate(volume: MediaVolumeContract) {
 export type RuntimeSecret =
   | "postgres-password"
   | "public-role-password"
-  | "gateway-role-password"
   | "secret-kek"
   | "internal-secret"
   | "tool-approval-secret"
   | "staging-gate-secret";
 
 /** The Postgres roles Caelo's services log in as, with their passwords. */
-export type DatabaseRole = "admin_role" | "public_role" | "gateway_role";
+export type DatabaseRole = "admin_role" | "public_role";
 
 /**
  * Each database role's password secret — one per role (#613), so the
@@ -256,7 +255,6 @@ export type DatabaseRole = "admin_role" | "public_role" | "gateway_role";
 export const DATABASE_ROLE_SECRET: Readonly<Record<DatabaseRole, RuntimeSecret>> = {
   admin_role: "postgres-password",
   public_role: "public-role-password",
-  gateway_role: "gateway-role-password",
 };
 
 /**
@@ -269,10 +267,9 @@ export const DATABASE_ROLE_SECRET: Readonly<Record<DatabaseRole, RuntimeSecret>>
 export const CLI_GENERATED_SECRETS = [
   "internal-secret",
   "tool-approval-secret",
-  // #613 — the gateway's own role passwords. Generated (never seeded from
+  // #613 — the gateway's own role password. Generated (never seeded from
   // `postgres-password`), so the gateway never learns admin_role's.
   "public-role-password",
-  "gateway-role-password",
   // #650 — the staging access gate's key: signs "Open staging" links and
   // session cookies, derives the crawler credentials. Read by the admin
   // (issues) and the gateway (verifies).
