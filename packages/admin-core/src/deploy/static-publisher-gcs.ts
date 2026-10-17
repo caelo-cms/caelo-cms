@@ -50,6 +50,11 @@ import {
   applyGcpRedirectPlan,
   type GcpComputeApi,
 } from "./gcp-url-map-redirects.js";
+import {
+  buildFilesKey,
+  readStagedBuildFiles,
+  type StagedBuildFiles,
+} from "./staged-build-files.js";
 import { cacheControlForContentType, contentTypeFor } from "./static-file-policy.js";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
@@ -59,9 +64,6 @@ const MANIFEST_KEY = "_state/last-build-manifest.json";
 /** #587 — the staged run's redirect plan, in the staging bucket outside the
  *  run's file prefix (promote copies that prefix to the live bucket). */
 const redirectPlanKey = (runId: string) => `_redirect-plans/${runId}.json`;
-/** The staged run's full file list, beside its redirect plan: what the
- *  live bucket must hold after Confirm-publish (see pruneStaleObjects). */
-const buildFilesKey = (runId: string) => `_build-files/${runId}.json`;
 /** Written by promote for the destination target, not copied from staging. */
 const PER_TARGET_FILES = ["robots.txt", "routing-manifest.json"] as const;
 
@@ -410,30 +412,6 @@ async function readStagedRedirectPlan(stagingBucket: Bucket, runId: string): Pro
   return plan;
 }
 
-/** The file list Stage stores at {@link buildFilesKey}. */
-interface StagedBuildFiles {
-  files: string[];
-}
-
-async function readStagedBuildFiles(stagingBucket: Bucket, runId: string): Promise<string[]> {
-  const file = stagingBucket.file(buildFilesKey(runId));
-  const [exists] = await file.exists();
-  if (!exists) {
-    throw new Error(
-      `static-publisher-gcs: the file list of run ${runId} (gs://<staging>/${buildFilesKey(runId)}) is missing — the run was staged by an older release or the object was deleted. Run Stage again, then Confirm-publish.`,
-    );
-  }
-  const parsed = JSON.parse((await file.download())[0].toString("utf8")) as StagedBuildFiles;
-  // An empty list would delete the whole live site; every generator build
-  // has at least `_redirects`, so empty means a corrupt object.
-  if (!Array.isArray(parsed.files) || parsed.files.length === 0) {
-    throw new Error(
-      `static-publisher-gcs: gs://<staging>/${buildFilesKey(runId)} is not a build file list. Run Stage again, then Confirm-publish.`,
-    );
-  }
-  return parsed.files;
-}
-
 /**
  * Delete every live object the published build does not contain, so a
  * removed page or asset stops being served (404 / the site's `/404.html`)
@@ -443,7 +421,7 @@ async function readStagedBuildFiles(stagingBucket: Bucket, runId: string): Promi
  */
 async function pruneStaleObjects(
   staticBucket: Bucket,
-  buildFiles: readonly string[],
+  buildFiles: Iterable<string>,
 ): Promise<void> {
   const keep = new Set([...buildFiles, ...PER_TARGET_FILES]);
   const [liveFiles] = await staticBucket.getFiles();
