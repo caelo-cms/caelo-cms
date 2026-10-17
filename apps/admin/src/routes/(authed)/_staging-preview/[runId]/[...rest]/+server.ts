@@ -23,7 +23,9 @@
  * Stage's hash-skip filtered it out — the file is identical to live),
  * fall back to the static bucket so the staged page still renders
  * complete. Without the fallback an incremental Stage would 404 on
- * every unchanged asset.
+ * every unchanged asset. Only files the staged build contains fall
+ * back (#842): a page the build deleted is still live until
+ * Confirm-publish prunes it, and must 404 here like it will live.
  *
  * Asset URLs in the staged HTML are absolute paths like
  * `/_app/immutable/...` — they hit /_app/... NOT /_staging-preview/<runId>/_app/....
@@ -36,6 +38,7 @@
  * intra-page links may resolve against the live site.)
  */
 
+import { readStagedBuildFiles, readStagedObject } from "@caelo-cms/admin-core";
 import { error } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 
@@ -70,6 +73,29 @@ async function getBuckets(): Promise<{
   return cachedStorage;
 }
 
+/** A staged run's file list never changes; one read per run, last few kept. */
+const buildFilesByRun = new Map<string, Promise<ReadonlySet<string>>>();
+const BUILD_FILES_CACHE_RUNS = 8;
+
+function buildFilesOf(
+  bucket: import("@google-cloud/storage").Bucket,
+  runId: string,
+): Promise<ReadonlySet<string>> {
+  let files = buildFilesByRun.get(runId);
+  if (!files) {
+    files = readStagedBuildFiles(bucket, runId);
+    // A failed read (run staged by an older release) is not cached, so a
+    // re-Stage under a new runId is never shadowed and a retry re-reads.
+    files.catch(() => buildFilesByRun.delete(runId));
+    buildFilesByRun.set(runId, files);
+    const oldest = buildFilesByRun.keys().next().value;
+    if (buildFilesByRun.size > BUILD_FILES_CACHE_RUNS && oldest !== undefined) {
+      buildFilesByRun.delete(oldest);
+    }
+  }
+  return files;
+}
+
 export const GET: RequestHandler = async ({ params }) => {
   const { runId, rest } = params;
   if (!runId) throw error(400, "runId required");
@@ -90,48 +116,27 @@ export const GET: RequestHandler = async ({ params }) => {
   // containing index.html).
   let key = rest ?? "";
   if (key === "" || key.endsWith("/")) key += "index.html";
-  const stagingObjectKey = `${runId}/${key}`;
-
   const { bucket, staticBucket } = await getBuckets();
-
-  // Try the staging bucket first.
-  const stagedFile = bucket.file(stagingObjectKey);
-  const [stagedExists] = await stagedFile.exists();
-  if (stagedExists) {
-    const [body] = await stagedFile.download();
-    const [meta] = await stagedFile.getMetadata();
-    return new Response(new Uint8Array(body), {
-      status: 200,
-      headers: {
-        "Content-Type": (meta.contentType as string | undefined) ?? "application/octet-stream",
-        // Don't let the operator's browser cache the staging preview —
-        // they may re-Stage and want fresh bytes immediately.
-        "Cache-Control": "private, no-cache, max-age=0, must-revalidate",
-        // Staged pages carry no env-level noindex meta (the generator
-        // renders them env-independently so promote can ship them
-        // verbatim) — the serving layer marks staging non-indexable,
-        // as the Caddy staging vhost does (CMS_REQUIREMENTS §16.5).
-        "X-Robots-Tag": "noindex",
-      },
-    });
-  }
-
-  // Fall back to the live static bucket — for incremental Stages the
-  // unchanged files (hash-skipped) only exist there.
-  const liveFile = staticBucket.file(key);
-  const [liveExists] = await liveFile.exists();
-  if (liveExists) {
-    const [body] = await liveFile.download();
-    const [meta] = await liveFile.getMetadata();
-    return new Response(new Uint8Array(body), {
-      status: 200,
-      headers: {
-        "Content-Type": (meta.contentType as string | undefined) ?? "application/octet-stream",
-        "Cache-Control": "private, no-cache, max-age=0, must-revalidate",
-        "X-Robots-Tag": "noindex",
-      },
-    });
-  }
-
-  throw error(404, `Not in staging build ${runId} or live bucket: ${key}`);
+  const object = await readStagedObject({
+    staging: bucket,
+    live: staticBucket,
+    runId,
+    buildFiles: await buildFilesOf(bucket, runId),
+    key,
+  });
+  if (!object) throw error(404, `Not in staging build ${runId}: ${key}`);
+  return new Response(new Uint8Array(object.body), {
+    status: 200,
+    headers: {
+      "Content-Type": object.contentType ?? "application/octet-stream",
+      // Don't let the operator's browser cache the staging preview —
+      // they may re-Stage and want fresh bytes immediately.
+      "Cache-Control": "private, no-cache, max-age=0, must-revalidate",
+      // Staged pages carry no env-level noindex meta (the generator
+      // renders them env-independently so promote can ship them
+      // verbatim) — the serving layer marks staging non-indexable,
+      // as the Caddy staging vhost does (CMS_REQUIREMENTS §16.5).
+      "X-Robots-Tag": "noindex",
+    },
+  });
 };

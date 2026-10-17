@@ -21,6 +21,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, sep } from "node:path";
+import { readStagedBuildFiles, readStagedObject } from "../deploy/staged-build-files.js";
 import { cacheControlForContentType, contentTypeFor } from "../deploy/static-file-policy.js";
 
 /** One file of a staged build. */
@@ -104,7 +105,9 @@ export function localBuildSource(buildDir: string): StagedFileSource {
 /**
  * Files of a gcp staging run: the private staging bucket under `<runId>/`,
  * falling back to the live static bucket for files the incremental Stage
- * skipped as unchanged — the same lookup as the admin's staging preview.
+ * skipped as unchanged, and only for files the build contains (#842: a
+ * page the build deleted is still live until Confirm-publish) — the same
+ * lookup as the admin's staging preview.
  */
 export function gcsStagingSource(runId: string): StagedFileSource {
   const stagingName = process.env.CAELO_STAGING_BUCKET;
@@ -114,29 +117,31 @@ export function gcsStagingSource(runId: string): StagedFileSource {
       "CAELO_STAGING_BUCKET / CAELO_STATIC_BUCKET not set — the GCP stack sets both on the admin service",
     );
   }
-  let buckets: Promise<{
+  let run: Promise<{
     staging: import("@google-cloud/storage").Bucket;
     live: import("@google-cloud/storage").Bucket;
+    buildFiles: ReadonlySet<string>;
   }> | null = null;
   const open = () => {
-    buckets ??= import("@google-cloud/storage").then(({ Storage }) => {
+    run ??= import("@google-cloud/storage").then(async ({ Storage }) => {
       const storage = new Storage();
-      return { staging: storage.bucket(stagingName), live: storage.bucket(staticName) };
+      const staging = storage.bucket(stagingName);
+      return {
+        staging,
+        live: storage.bucket(staticName),
+        buildFiles: await readStagedBuildFiles(staging, runId),
+      };
     });
-    return buckets;
+    return run;
   };
   return {
     async read(key) {
-      const { staging, live } = await open();
-      for (const file of [staging.file(`${runId}/${key}`), live.file(key)]) {
-        const [exists] = await file.exists();
-        if (!exists) continue;
-        const [body] = await file.download();
-        const [meta] = await file.getMetadata();
-        const type = typeof meta.contentType === "string" ? meta.contentType : contentTypeFor(key);
-        return { bytes: new Uint8Array(body), contentType: type };
-      }
-      return null;
+      const object = await readStagedObject({ ...(await open()), runId, key });
+      if (!object) return null;
+      return {
+        bytes: new Uint8Array(object.body),
+        contentType: object.contentType ?? contentTypeFor(key),
+      };
     },
   };
 }
