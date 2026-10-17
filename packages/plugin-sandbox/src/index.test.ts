@@ -445,3 +445,48 @@ describe("identifiers past Postgres' 63-byte limit (#515 review)", () => {
     ).toThrow("63-byte");
   });
 });
+
+describe("security hardening — AST escapes and schema pluginId validation", () => {
+  const kinds = (source: string) => validateSource({ source, filename: "p.ts" }).map((f) => f.kind);
+
+  it("rejects .constructor access and computed .constructor access", () => {
+    expect(kinds('const f = (() => {}).constructor("return 1");')).toContain("forbidden-eval");
+    expect(kinds('const f = (() => {})["constructor"]("return 1");')).toContain("forbidden-eval");
+    expect(kinds("const f = (() => {})[`constructor`]('return 1');")).toContain("forbidden-eval");
+  });
+
+  it("rejects optional chaining, parenthesized, and computed globalThis escapes", () => {
+    expect(kinds('eval?.("1+1");')).toContain("forbidden-eval");
+    expect(kinds('(eval)("1+1");')).toContain("forbidden-eval");
+    expect(kinds('globalThis?.fetch?.("https://evil.com");')).toContain("forbidden-call");
+    expect(kinds('globalThis["eval"]("1+1");')).toContain("forbidden-eval");
+    expect(kinds('globalThis["Deno"].exit(1);')).toContain("forbidden-deno-access");
+    expect(kinds('const k = "ev" + "al"; globalThis[k]("1+1");')).toContain("forbidden-call");
+  });
+
+  it("fails closed when AST nesting exceeds MAX_DEPTH (200)", () => {
+    let deep = 'eval("1")';
+    for (let i = 0; i < 210; i++) {
+      deep = `[${deep}]`;
+    }
+    const failures = validateSource({ source: `const x = ${deep};`, filename: "deep.ts" });
+    expect(failures.some((f) => f.kind === "parse-error")).toBe(true);
+  });
+
+  it("rejects non-UUID pluginId in schemaFromSpec and adminSchemaFromSpec", () => {
+    expect(() =>
+      schemaFromSpec({
+        pluginId: "not-a-uuid'); DROP TABLE users; --",
+        slug: "probe",
+        schema: { rows: { name: "string" } },
+      }),
+    ).toThrow("not a valid UUID");
+    expect(() =>
+      adminSchemaFromSpec({
+        pluginId: "not-a-uuid'); DROP TABLE users; --",
+        slug: "probe",
+        adminSchema: { rows: { name: "string" } },
+      }),
+    ).toThrow("not a valid UUID");
+  });
+});

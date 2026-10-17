@@ -613,6 +613,19 @@ export async function runPluginOperation(
     }
     return { ok: true, value };
   } catch (e) {
+    if (!opts.readOnlyPreview && !isPublicSideHost(cachedInfra)) {
+      try {
+        await emitPluginAuditRow(cachedInfra.adapter, {
+          actorId: plugin.pluginActorId,
+          operation: `${plugin.slug}.${opts.operationName}`,
+          inputArgs: opts.args,
+          entityId: null,
+          succeeded: false,
+        });
+      } catch {
+        // Best-effort audit on failure.
+      }
+    }
     if (isProjectionNotPublished(e)) {
       return {
         ok: false,
