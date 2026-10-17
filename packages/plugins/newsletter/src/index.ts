@@ -27,8 +27,9 @@
 
 import {
   attachCaptchaProof,
+  honeypotBodyField,
   honeypotFieldHtml,
-  isHoneypotTripped,
+  isHoneypotArgTripped,
   KIT_CSS,
   postPluginJson,
   setStatus,
@@ -180,18 +181,15 @@ export default definePlugin<PluginContextTier1>({
   publicOperations: ["subscribe", "confirm", "unsubscribe"],
   operations: {
     subscribe: async (ctx, args) => {
-      const input = args as { email: string; honeypot?: string; hp_address?: string };
-      if (
-        (typeof input.honeypot === "string" && input.honeypot.trim().length > 0) ||
-        (typeof input.hp_address === "string" && input.hp_address.trim().length > 0)
-      ) {
+      const input = args as { email: string };
+      // A filled honeypot gets the same answer as a real signup, so the
+      // bot learns nothing — and nothing is stored or mailed.
+      if (isHoneypotArgTripped(args)) {
         return { id: "00000000-0000-0000-0000-000000000000", awaitingConfirm: true };
       }
       if (!input.email?.includes("@")) throw new Error("subscribe: invalid email");
-      if (ctx.captcha) {
-        const ok = await ctx.captcha.requireProof(null);
-        if (!ok) throw new Error("subscribe: captcha verification failed");
-      }
+      const ok = await ctx.captcha.requireProof(null);
+      if (!ok) throw new Error("subscribe: captcha verification failed");
       const hash = hashEmail(input.email);
       const existing = await ctx.query.list<
         "subscribers",
@@ -548,15 +546,12 @@ export default definePlugin<PluginContextTier1>({
         ev.preventDefault();
         setStatus(status, "clear");
         const fd = new FormData(form);
-        if (isHoneypotTripped(fd)) {
-          setStatus(status, "ok", "Check your inbox to confirm.");
-          form.reset();
-          return;
-        }
         try {
           const captcha = await attachCaptchaProof().catch(() => null);
+          // The honeypot rides along; `subscribe` judges it server-side.
           const json = await postPluginJson("newsletter", "subscribe", {
             email: fd.get("email"),
+            ...honeypotBodyField(fd),
             ...(captcha ? { _caelo_captcha: captcha } : {}),
           });
           if (json.ok) {

@@ -15,8 +15,9 @@
 import {
   attachCaptchaProof,
   escapeHtml,
+  honeypotBodyField,
   honeypotFieldHtml,
-  isHoneypotTripped,
+  isHoneypotArgTripped,
   KIT_CSS,
   postPluginJson,
   readBakeTimestamp,
@@ -190,11 +191,10 @@ export default definePlugin<PluginContextTier1>({
   publicOperations: ["submit", "list_approved"],
   operations: {
     submit: async (ctx, args) => {
-      const input = args as SubmitInput & { honeypot?: string; hp_address?: string };
-      if (
-        (typeof input.honeypot === "string" && input.honeypot.trim().length > 0) ||
-        (typeof input.hp_address === "string" && input.hp_address.trim().length > 0)
-      ) {
+      const input = args as SubmitInput;
+      // A filled honeypot gets the same answer as a real submission, so
+      // the bot learns nothing — and nothing reaches the moderation inbox.
+      if (isHoneypotArgTripped(args)) {
         return { commentId: "00000000-0000-0000-0000-000000000000", status: "pending" as const };
       }
       if (!input.content.trim()) throw new Error("submit: content empty");
@@ -342,11 +342,7 @@ export default definePlugin<PluginContextTier1>({
             `ai_moderate: verdict "${input.verdict}" is not one of APPROVE, REJECT, SPAM — call ai_moderate_comment again with exactly one of them`,
           );
         }
-        if ("cms" in ctx && ctx.cms) {
-          await archiveAndDeletePublic(ctx, input.commentId, decision);
-        } else {
-          await ctx.query.update("comments", input.commentId, { status: decision });
-        }
+        await archiveAndDeletePublic(ctx, input.commentId, decision);
         return { commentId: input.commentId, status: decision, verdict };
       }
 
@@ -381,11 +377,7 @@ export default definePlugin<PluginContextTier1>({
       if (!decision) {
         return { commentId: input.commentId, status: "pending" as const, verdict };
       }
-      if ("cms" in ctx && ctx.cms) {
-        await archiveAndDeletePublic(ctx, input.commentId, decision);
-      } else {
-        await ctx.query.update("comments", input.commentId, { status: decision });
-      }
+      await archiveAndDeletePublic(ctx, input.commentId, decision);
       return { commentId: input.commentId, status: decision, verdict };
     },
   },
@@ -631,11 +623,6 @@ export default definePlugin<PluginContextTier1>({
         ev.preventDefault();
         setStatus(status, "clear");
         const fd = new FormData(form);
-        if (isHoneypotTripped(fd)) {
-          setStatus(status, "ok", "Thanks — pending moderation.");
-          form.reset();
-          return;
-        }
         try {
           // P13 — solve PoW captcha (if enabled by /settings/gateway).
           const captcha = await attachCaptchaProof().catch(() => null);
@@ -643,6 +630,8 @@ export default definePlugin<PluginContextTier1>({
             pageId,
             authorName: fd.get("authorName"),
             content: fd.get("content"),
+            // The honeypot rides along; `submit` judges it server-side.
+            ...honeypotBodyField(fd),
             captchaToken: "dev",
             ...(captcha ? { _caelo_captcha: captcha } : {}),
           });

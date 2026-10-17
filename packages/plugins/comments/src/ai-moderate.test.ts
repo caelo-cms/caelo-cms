@@ -15,12 +15,28 @@ const COMMENT_ID = "11111111-1111-4111-8111-111111111111";
 
 interface Harness {
   ctx: PluginContextTier1;
+  /** Every moderation write, as the Fix D drain records it: one archive
+   *  insert into cms_admin + one cms_public delete per decided comment. */
+  drained: Array<{ id: string; status: string }>;
+  /** Direct cms_public status writes — the pre-#847 fallback; must stay empty. */
   updates: Array<{ id: string; patch: Record<string, unknown> }>;
+  deleted: string[];
   aiCalls: number;
 }
 
-function harness(opts: { delegated?: boolean; aiText?: string; withAi?: boolean }): Harness {
-  const h: Harness = { ctx: undefined as unknown as PluginContextTier1, updates: [], aiCalls: 0 };
+function harness(opts: {
+  delegated?: boolean;
+  aiText?: string;
+  withAi?: boolean;
+  withCms?: boolean;
+}): Harness {
+  const h: Harness = {
+    ctx: undefined as unknown as PluginContextTier1,
+    drained: [],
+    updates: [],
+    deleted: [],
+    aiCalls: 0,
+  };
   const ai =
     opts.withAi === false
       ? undefined
@@ -35,12 +51,38 @@ function harness(opts: { delegated?: boolean; aiText?: string; withAi?: boolean 
     invocation: { origin: "chat", actorId: "a", aiDelegated: opts.delegated },
     query: {
       list: async (_t: string, filter: { id?: string }) =>
-        filter.id === COMMENT_ID ? [{ author_name: "Ann", content: "Nice post" }] : [],
+        filter.id === COMMENT_ID
+          ? [
+              {
+                id: COMMENT_ID,
+                page_id: "page-1",
+                parent_id: "",
+                author_name: "Ann",
+                content: "Nice post",
+                status: "pending",
+                submitted_at: "2026-01-01T00:00:00.000Z",
+              },
+            ]
+          : [],
       update: async (_t: string, id: string, patch: Record<string, unknown>) => {
         h.updates.push({ id, patch });
       },
+      delete: async (_t: string, id: string) => {
+        h.deleted.push(id);
+      },
     },
     ai,
+    ...(opts.withCms === false
+      ? {}
+      : {
+          cms: {
+            call: async (op: string, args: { publicRowId: string; status: string }) => {
+              if (op !== "comment_archive.insert") throw new Error(`unexpected cms op ${op}`);
+              h.drained.push({ id: args.publicRowId, status: args.status });
+              return { archiveId: "arch-1" };
+            },
+          },
+        }),
   } as unknown as PluginContextTier1;
   return h;
 }
@@ -56,7 +98,7 @@ describe("ai_moderate", () => {
     const h = harness({ delegated: true });
     const r = (await run(h, { commentId: COMMENT_ID })) as { workItem: AiWorkItem };
     expect(h.aiCalls).toBe(0);
-    expect(h.updates).toHaveLength(0);
+    expect(h.drained).toHaveLength(0);
     expect(r.workItem.kind).toBe("ai_work_item");
     expect(r.workItem.responseFormat).toBe("text");
     expect(r.workItem.instructions.system).toContain("APPROVE, REJECT, SPAM");
@@ -81,7 +123,9 @@ describe("ai_moderate", () => {
     const r = await run(h, { commentId: COMMENT_ID, verdict: "  spam - obvious bot " });
     expect(h.aiCalls).toBe(0);
     expect(r).toEqual({ commentId: COMMENT_ID, status: "spam", verdict: "SPAM - OBVIOUS BOT" });
-    expect(h.updates).toEqual([{ id: COMMENT_ID, patch: { status: "spam" } }]);
+    expect(h.drained).toEqual([{ id: COMMENT_ID, status: "spam" }]);
+    expect(h.deleted).toEqual([COMMENT_ID]);
+    expect(h.updates).toEqual([]);
   });
 
   it("applies a verdict on a non-delegated call too", async () => {
@@ -96,7 +140,7 @@ describe("ai_moderate", () => {
     await expect(run(h, { commentId: COMMENT_ID, verdict: "maybe" })).rejects.toThrow(
       /not one of APPROVE, REJECT, SPAM/,
     );
-    expect(h.updates).toHaveLength(0);
+    expect(h.drained).toHaveLength(0);
   });
 
   it("validates its arguments", async () => {
@@ -118,13 +162,15 @@ describe("ai_moderate", () => {
     const r = await run(h, { commentId: COMMENT_ID });
     expect(h.aiCalls).toBe(1);
     expect(r).toEqual({ commentId: COMMENT_ID, status: "rejected", verdict: "REJECT" });
-    expect(h.updates).toEqual([{ id: COMMENT_ID, patch: { status: "rejected" } }]);
+    expect(h.drained).toEqual([{ id: COMMENT_ID, status: "rejected" }]);
+    expect(h.updates).toEqual([]);
   });
 
   it("fails closed: an unrecognised model reply leaves the comment pending (#635)", async () => {
     const h = harness({ aiText: "hmm" });
     const r = await run(h, { commentId: COMMENT_ID });
     expect(r).toMatchObject({ status: "pending", verdict: "HMM" });
+    expect(h.drained).toEqual([]);
     expect(h.updates).toEqual([]);
   });
 
@@ -145,45 +191,30 @@ describe("ai_moderate", () => {
     await expect(run(h, { commentId: COMMENT_ID })).rejects.toThrow(/ai_provider capability/);
   });
 
-  it("drains moderated comments to comment_archive and deletes from cms_public when ctx.cms is available", async () => {
+  it("drains a decided comment to comment_archive and deletes it from cms_public", async () => {
     const h = harness({ aiText: "APPROVE" });
-    const archived: Array<{ op: string; args: unknown }> = [];
-    const deleted: string[] = [];
-    (h.ctx.query as unknown as Record<string, unknown>).list = async (
-      table: string,
-      filter: { id?: string },
-    ) => {
-      if (table === "comments" && filter.id === COMMENT_ID) {
-        return [
-          {
-            id: COMMENT_ID,
-            page_id: "page-1",
-            parent_id: "",
-            author_name: "Ann",
-            content: "Nice post",
-            status: "pending",
-            submitted_at: "2026-01-01T00:00:00.000Z",
-          },
-        ];
-      }
-      return [];
-    };
-    (h.ctx.query as unknown as Record<string, unknown>).delete = async (
-      _table: string,
-      id: string,
-    ) => {
-      deleted.push(id);
-    };
-    (h.ctx as unknown as { cms: { call: (op: string, args: unknown) => Promise<unknown> } }).cms = {
-      call: async (op, args) => {
-        archived.push({ op, args });
-        return {};
-      },
-    };
     const r = await run(h, { commentId: COMMENT_ID });
     expect(r).toEqual({ commentId: COMMENT_ID, status: "approved", verdict: "APPROVE" });
-    expect(archived).toHaveLength(1);
-    expect(archived[0]?.op).toBe("comment_archive.insert");
-    expect(deleted).toEqual([COMMENT_ID]);
+    expect(h.drained).toEqual([{ id: COMMENT_ID, status: "approved" }]);
+    expect(h.deleted).toEqual([COMMENT_ID]);
+  });
+
+  // #847 regression: without the cms handle ai_moderate used to fall back
+  // to a cms_public status write — leaving the decided comment in the
+  // public inbox, the leak Fix D exists to close. It must fail loudly.
+  it("fails loudly without the cms capability instead of writing status to cms_public", async () => {
+    const verdictCall = harness({ delegated: true, withCms: false });
+    await expect(run(verdictCall, { commentId: COMMENT_ID, verdict: "SPAM" })).rejects.toThrow(
+      /cms capability required/,
+    );
+    expect(verdictCall.updates).toEqual([]);
+    expect(verdictCall.deleted).toEqual([]);
+
+    const installSide = harness({ aiText: "APPROVE", withCms: false });
+    await expect(run(installSide, { commentId: COMMENT_ID })).rejects.toThrow(
+      /cms capability required/,
+    );
+    expect(installSide.updates).toEqual([]);
+    expect(installSide.deleted).toEqual([]);
   });
 });
