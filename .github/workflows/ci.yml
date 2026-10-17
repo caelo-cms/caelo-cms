@@ -65,12 +65,9 @@ jobs:
       POSTGRES_PORT: 5432
       ADMIN_ROLE_PASSWORD: caelo_admin_ci
       PUBLIC_ROLE_PASSWORD: caelo_public_ci
-      GATEWAY_ROLE_PASSWORD: caelo_gateway_ci
       ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_admin
       PUBLIC_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_public
       PUBLIC_DATABASE_URL: postgres://public_role:caelo_public_ci@localhost:5432/cms_public
-      # The API gateway's own cms_admin login (#613); bootstrap.sh creates it.
-      GATEWAY_DATABASE_URL: postgres://gateway_role:caelo_gateway_ci@localhost:5432/cms_admin
       # #566 — caddy-validate.test.ts runs `caddy validate` on the generated
       # self-hosted Caddyfile with the pinned Caddy image. Required here, so
       # a runner without Docker fails the job instead of skipping the check.
@@ -85,7 +82,6 @@ jobs:
           POSTGRES_DB: postgres
           ADMIN_ROLE_PASSWORD: caelo_admin_ci
           PUBLIC_ROLE_PASSWORD: caelo_public_ci
-          GATEWAY_ROLE_PASSWORD: caelo_gateway_ci
         ports:
           - 5432:5432
         options: >-
@@ -213,12 +209,9 @@ jobs:
       POSTGRES_PORT: 5432
       ADMIN_ROLE_PASSWORD: caelo_admin_ci
       PUBLIC_ROLE_PASSWORD: caelo_public_ci
-      GATEWAY_ROLE_PASSWORD: caelo_gateway_ci
       ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_admin
       PUBLIC_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_public
       PUBLIC_DATABASE_URL: postgres://public_role:caelo_public_ci@localhost:5432/cms_public
-      # The API gateway's own cms_admin login (#613); bootstrap.sh creates it.
-      GATEWAY_DATABASE_URL: postgres://gateway_role:caelo_gateway_ci@localhost:5432/cms_admin
 
     services:
       postgres:
@@ -229,7 +222,6 @@ jobs:
           POSTGRES_DB: postgres
           ADMIN_ROLE_PASSWORD: caelo_admin_ci
           PUBLIC_ROLE_PASSWORD: caelo_public_ci
-          GATEWAY_ROLE_PASSWORD: caelo_gateway_ci
         ports:
           - 5432:5432
         options: >-

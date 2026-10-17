@@ -61,7 +61,7 @@ describe("Compose — Caddy picks up new redirects (#587)", () => {
   const yaml = generateDockerCompose({
     domain: "example.com",
     postgresPassword: "pgpw",
-    rolePasswords: { admin: "a", public: "p", gateway: "g" },
+    rolePasswords: { admin: "a", public: "p" },
     caeloSecretKek: "0".repeat(64),
     diskSize: "20Gi",
     ports: { http: 80, https: 443 },

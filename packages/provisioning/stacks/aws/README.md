@@ -10,7 +10,7 @@ Pulumi stack provisioning Caelo on AWS managed services. Implements the shared `
 | Blob storage | Two S3 buckets (`caelo-<env>-media` + `caelo-<env>-static`) |
 | CDN | CloudFront distribution with two origins (S3 static + S3 media); static files are served as files, no edge compute on the request path |
 | Container runtime | ECS Fargate cluster + four services (admin / gateway / orchestrator / runner) |
-| Secret store | AWS Secrets Manager (postgres-password, public-role-password, gateway-role-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key). The gateway gets `publicDatabaseUrlOut` only, never a cms_admin URL of any role (#613, #635). |
+| Secret store | AWS Secrets Manager (postgres-password, public-role-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key). The gateway gets `publicDatabaseUrlOut` only, never a cms_admin URL of any role (#613, #635). |
 | DNS + cert | ACM cert (us-east-1, DNS-validated, supports `*.<domain>`) |
 | Edge-log sink | CloudFront access logs delivered to the CloudWatch log group `/caelo/<env>/cloudfront` in us-east-1 (queryable by P12A analytics plugin) |
 
