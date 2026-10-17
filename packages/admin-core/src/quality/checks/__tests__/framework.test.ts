@@ -69,12 +69,18 @@ describe("findings shape", () => {
 describe("CheckRegistry", () => {
   const check: PageCheck = { id: "demo", title: "Demo", scope: "page", run: () => [] };
 
-  it("core registers Lighthouse only; findings checks come from plugins", () => {
+  it("core registers Lighthouse and its structure check (#820)", () => {
     const r = createCoreCheckRegistry({
       lighthouse: async () => ({ ok: true, pages: [], pageErrors: [] }),
+      structure: { modules: async () => [], layouts: async () => [] },
     });
-    expect(r.list().map((e) => [e.id, e.kind])).toEqual([[LIGHTHOUSE_CHECK_ID, "lighthouse"]]);
-    expect(r.findingChecks()).toEqual([]);
+    expect(r.list().map((e) => [e.id, e.kind])).toEqual([
+      [LIGHTHOUSE_CHECK_ID, "lighthouse"],
+      ["structure", "findings"],
+    ]);
+    expect(r.findingChecks().map((e) => [e.id, e.scope, e.source])).toEqual([
+      ["structure", "site", { kind: "core" }],
+    ]);
     expect(r.lighthouse()?.id).toBe("lighthouse");
   });
 

@@ -28,6 +28,7 @@ import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-s
 import { localBuildArchiveDir } from "../ops/deploy.js";
 import { type CheckRegistry, createCoreCheckRegistry } from "./checks/registry.js";
 import { runChecksOnStagedBuild } from "./checks/run-staged.js";
+import { structureSourcesFromOps } from "./checks/structure-sources.js";
 import type { AuditJob } from "./lighthouse-protocol.js";
 import type { AuditJobResult } from "./lighthouse-runner.js";
 import {
@@ -253,9 +254,11 @@ interface WorkerDeps {
 
 let coreChecks: CheckRegistry | null = null;
 
-/** Core's registry, built once per process. */
-function defaultChecks(): CheckRegistry {
-  coreChecks ??= createCoreCheckRegistry();
+/** Core's registry, built once per process (one adapter per process). */
+function defaultChecks(deps: WorkerDeps): CheckRegistry {
+  coreChecks ??= createCoreCheckRegistry({
+    structure: structureSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX),
+  });
   return coreChecks;
 }
 
@@ -298,7 +301,7 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
     });
     return;
   }
-  const checks = deps.checks ?? defaultChecks();
+  const checks = deps.checks ?? defaultChecks(deps);
   const runLighthouse = deps.runJob ?? checks.lighthouse()?.run;
   if (run.pages.length > 0 && !runLighthouse) {
     await record(deps, run.auditRunId, null, {
