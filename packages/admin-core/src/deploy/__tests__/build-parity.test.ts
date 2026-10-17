@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { isParityRefusal, RESTAGE_NEXT_STEP } from "@caelo-cms/shared";
 import {
   buildManifestOf,
   compareBuildManifests,
@@ -19,6 +20,7 @@ import {
 
 const STAGING = "https://staging.example.com";
 const LIVE = "https://www.example.com";
+const SAME_VERSION = { stagedCaeloVersion: "0.10.52", runningCaeloVersion: "0.10.52" } as const;
 
 describe("hostNormaliser", () => {
   const n = hostNormaliser(STAGING, LIVE);
@@ -74,7 +76,7 @@ describe("compareBuildManifests / parityRefusal", () => {
   it("matches identical manifests", () => {
     const diff = compareBuildManifests({ "a.html": "1" }, { "a.html": "1" });
     expect(manifestsMatch(diff)).toBe(true);
-    expect(parityRefusal(diff, { stagingRunId: "run" })).toBeNull();
+    expect(parityRefusal(diff, { stagingRunId: "run", ...SAME_VERSION })).toBeNull();
   });
 
   it("reports added, removed and changed files, sorted", () => {
@@ -83,7 +85,7 @@ describe("compareBuildManifests / parityRefusal", () => {
       { "a.html": "2", "b.html": "1", "new.html": "1" },
     );
     expect(diff).toEqual({ added: ["new.html"], removed: ["gone.html"], changed: ["a.html"] });
-    const msg = parityRefusal(diff, { stagingRunId: "run-7" });
+    const msg = parityRefusal(diff, { stagingRunId: "run-7", ...SAME_VERSION });
     expect(msg).toContain("run-7");
     expect(msg).toContain("1 changed (a.html)");
     expect(msg).toContain("only in the live build (new.html)");
@@ -95,9 +97,62 @@ describe("compareBuildManifests / parityRefusal", () => {
     const live = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`p${i}.html`, "x"]));
     const msg = parityRefusal(compareBuildManifests({}, live), {
       stagingRunId: "r",
+      ...SAME_VERSION,
       limit: 3,
     });
     expect(msg).toContain("30 only in the live build (p0.html, p1.html, p10.html, …)");
+  });
+
+  // #834 regression — after an upgrade between Stage and Publish live the
+  // refusal blamed site edits; the cause was the new Caelo version.
+  const fontDiff = compareBuildManifests(
+    { "about/index.html": "a", "_assets/fonts/pinned/inter.latin.9d9051c79679.woff2": "f" },
+    { "about/index.html": "b", "_assets/fonts/pinned/inter.wght.latin.3075c73f4eb5.woff2": "f" },
+  );
+
+  it("names the Caelo upgrade first when the staged build was made by another version", () => {
+    const msg = parityRefusal(fontDiff, {
+      stagingRunId: "run-up",
+      stagedCaeloVersion: "0.10.51",
+      runningCaeloVersion: "0.10.52",
+    });
+    expect(msg).toStartWith(
+      "Publish live stopped: Caelo was updated from 0.10.51 to 0.10.52 since this Stage, and the new version renders the site differently",
+    );
+    expect(msg).not.toContain("another edit was merged");
+    expect(msg).toContain("about/index.html");
+    expect(msg).toContain(RESTAGE_NEXT_STEP);
+  });
+
+  it("blames a site change only when the versions match", () => {
+    const msg = parityRefusal(fontDiff, { stagingRunId: "run-same", ...SAME_VERSION });
+    expect(msg).not.toContain("Caelo was updated");
+    expect(msg).toContain("The site changed after that Stage");
+  });
+
+  it("says the version is unknown for a build staged before versions were recorded", () => {
+    const msg = parityRefusal(fontDiff, {
+      stagingRunId: "run-old",
+      stagedCaeloVersion: null,
+      runningCaeloVersion: "0.10.52",
+    });
+    expect(msg).toContain("The Caelo version that made this Stage is unknown");
+    expect(msg).toContain("a Caelo update to 0.10.52");
+    expect(msg).not.toContain("Caelo was updated from");
+    expect(msg).toContain(RESTAGE_NEXT_STEP);
+  });
+
+  it("every refusal is recognisable as one and points at the Stage again button (#835)", () => {
+    expect(RESTAGE_NEXT_STEP).toContain('"Stage again" button next to Publish live');
+    for (const stagedCaeloVersion of ["0.10.51", "0.10.52", null]) {
+      const msg = parityRefusal(fontDiff, {
+        stagingRunId: "r",
+        stagedCaeloVersion,
+        runningCaeloVersion: "0.10.52",
+      });
+      expect(isParityRefusal(msg ?? "")).toBe(true);
+      expect(msg).toEndWith(RESTAGE_NEXT_STEP);
+    }
   });
 });
 
