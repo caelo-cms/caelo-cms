@@ -10,7 +10,15 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { formResultError, publishButtonState, qualityBlockReason } from "./stage-deploy-state.js";
+import { PARITY_REFUSAL_PREFIX } from "@caelo-cms/shared";
+import {
+  formResultError,
+  offersStageAgain,
+  publishButtonState,
+  publishErrorNextStep,
+  qualityBlockReason,
+  stageToolbarMode,
+} from "./stage-deploy-state.js";
 
 describe("publishButtonState", () => {
   it("run #10 state — nothing staged: disabled WITH a visible reason, not tooltip-only", () => {
@@ -115,5 +123,49 @@ describe("publishButtonState — #553 quality gate", () => {
     expect(reason("running")).toContain("running");
     expect(reason("errored")).toContain("retry it, or publish anyway");
     expect(reason("missing")).toContain("run the check");
+  });
+});
+
+/**
+ * #835 regression — with no pending edits and a staged build, the toolbar
+ * offered Stage again only while the quality gate reported problems, so a
+ * Publish live refused by the parity guard (#834) left no way to re-Stage.
+ */
+describe("Stage again in the toolbar (#835)", () => {
+  const promoteOnly = {
+    sessionPublished: false,
+    branchChangeCount: 0,
+    hasStagedBuild: true,
+    sessionLastStagedAt: null,
+  };
+
+  it("the no-pending-edits + staged-build toolbar always offers Stage again", () => {
+    const mode = stageToolbarMode(promoteOnly);
+    expect(mode).toBe("promote-only");
+    // Independent of the quality gate: it is not an input at all.
+    expect(offersStageAgain(mode)).toBe(true);
+    // A chat that staged before, even when the staged build is gone.
+    const restaged = stageToolbarMode({
+      ...promoteOnly,
+      hasStagedBuild: false,
+      sessionLastStagedAt: "2026-10-17T10:00:00Z",
+    });
+    expect(offersStageAgain(restaged)).toBe(true);
+  });
+
+  it("no Stage again where Stage… covers it, nothing was staged, or the chat is published", () => {
+    expect(stageToolbarMode({ ...promoteOnly, branchChangeCount: 3 })).toBe("pending");
+    expect(offersStageAgain("pending")).toBe(false);
+    expect(stageToolbarMode({ ...promoteOnly, hasStagedBuild: false })).toBe("fresh");
+    expect(offersStageAgain("fresh")).toBe(false);
+    expect(stageToolbarMode({ ...promoteOnly, sessionPublished: true })).toBe("published");
+    expect(offersStageAgain("published")).toBe(false);
+  });
+
+  it("a parity refusal gets an untruncated pointer at Stage again; other failures do not", () => {
+    const refusal = `${PARITY_REFUSAL_PREFIX} Caelo was updated from 0.10.51 to 0.10.52 since this Stage …`;
+    expect(publishErrorNextStep(refusal)).toContain("Stage again");
+    expect(publishErrorNextStep("promotion failed: bucket unreachable")).toBeNull();
+    expect(publishErrorNextStep(null)).toBeNull();
   });
 });

@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import { deriveStagingCredential, type ExecutionContext } from "@caelo-cms/shared";
+import { CAELO_VERSION, deriveStagingCredential, type ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
 import { STAGING_PUBLICATION_LOCK_KEY } from "../deploy/staging-publication-lock.js";
@@ -448,6 +448,61 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     expect(fake.live.length).toBe(liveBefore);
     // The staged build stays served — nothing was published.
     expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
+  });
+
+  // #834 — after an upgrade between Stage and Publish live, the refusal
+  // must name the version change, not blame site edits nobody made.
+  async function stageRenderedByOtherVersion(version: string | null): Promise<void> {
+    // The module may still carry the previous test's post-Stage edit; this
+    // Stage includes it, so only the simulated render difference remains.
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    await markAudited(staged.runId);
+    const [recorded] = (await withSql(
+      (tx) => tx`SELECT caelo_version FROM deploy_runs WHERE id = ${staged.runId}::uuid`,
+    )) as { caelo_version: string | null }[];
+    expect(recorded?.caelo_version).toBe(CAELO_VERSION);
+    // The previous version rendered one page differently (e.g. #793's
+    // renamed font files): no site edit, only another generator.
+    await withSql(
+      (tx) => tx`UPDATE deploy_runs
+                 SET caelo_version = ${version},
+                     parity_manifest = jsonb_set(parity_manifest,
+                       ${`{${PAGE_SLUG}/index.html}`}::text[],'"rendered-by-old-caelo"'::jsonb)
+                 WHERE id = ${staged.runId}::uuid`,
+    );
+  }
+
+  async function promoteRefusal(): Promise<string> {
+    const r = await execute(registry, adapter, SYSTEM, "deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    expect(r.ok).toBe(false);
+    return r.ok ? "" : r.error.message;
+  }
+
+  it("a Caelo upgrade between Stage and Publish live is named as the cause (#834)", async () => {
+    await stageRenderedByOtherVersion("0.0.1-before-upgrade");
+    const liveBefore = fake.live.length;
+    const message = await promoteRefusal();
+    expect(message).toStartWith(
+      `Publish live stopped: Caelo was updated from 0.0.1-before-upgrade to ${CAELO_VERSION} since this Stage`,
+    );
+    expect(message).toContain(`${PAGE_SLUG}/index.html`);
+    expect(message).not.toContain("another edit was merged");
+    expect(message).toContain('"Stage again" button');
+    expect(fake.live.length).toBe(liveBefore);
+  });
+
+  it("a build staged before versions were recorded says the version is unknown (#834)", async () => {
+    await stageRenderedByOtherVersion(null);
+    const message = await promoteRefusal();
+    expect(message).toContain("The Caelo version that made this Stage is unknown");
+    expect(message).not.toContain("Caelo was updated from");
   });
 });
 

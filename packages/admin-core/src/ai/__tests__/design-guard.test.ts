@@ -11,6 +11,10 @@
  * every install already has. The old version required a Design Manifest
  * row and returned "" without one, which is why it stayed silent through
  * all 18 module writes on the dogfood install.
+ *
+ * issue #820 — pattern-reuse compares the markup, not the display name:
+ * the name match never fired on the real copies (a diff card pasted as a
+ * new module under a different name).
  */
 
 import { describe, expect, it } from "bun:test";
@@ -42,14 +46,15 @@ const TOKENS = {
   },
 };
 
+const DIFF_CARD =
+  '<div class="diff-card"><div class="diff-head"><span class="dot"></span></div><pre class="diff-body">{{code}}</pre></div>';
 const MODULES = [
+  { id: "00000000-0000-4000-8000-000000000001", displayName: "Diff card", html: DIFF_CARD },
   {
-    displayName: "Hero Banner",
-    kind: "hero",
-    type: "hero-banner",
-    description: "Gradient hero with one CTA",
+    id: "00000000-0000-4000-8000-000000000002",
+    displayName: "FAQ Accordion",
+    html: '<section class="faq"><details class="q"><summary>{{q}}</summary><div class="a"><p>{{a}}</p></div></details></section>',
   },
-  { displayName: "FAQ Accordion", kind: "content", type: "faq-accordion", description: "" },
 ];
 
 function toolCtx(opts: { tokens?: unknown; modules?: unknown[] } = {}): ToolContext {
@@ -78,44 +83,35 @@ describe("designGuardSuffix (issues #166, #430)", () => {
     expect(s).toContain("--color-primary = CTAs and links only — never large background fills");
   });
 
-  it("points lookalike mints at the existing module's type", async () => {
+  it("points a structural copy of an existing module at that module", async () => {
     const s = await designGuardSuffix(AI, toolCtx(), {
-      css: ".h{color:var(--color-foreground)}",
-      displayName: "Hero Splash",
-      kind: "hero",
-      type: "hero-splash",
+      html: DIFF_CARD.replace("{{code}}", "{{diff}}"),
+      excludeModuleIds: ["00000000-0000-4000-8000-0000000000ff"],
     });
-    expect(s).toContain('"Hero Banner"');
-    expect(s).toContain("`hero-banner`");
+    expect(s).toContain('structurally identical to the existing module "Diff card"');
+  });
+
+  it("names another module's markup nested inside a new one", async () => {
+    const s = await designGuardSuffix(AI, toolCtx(), {
+      html: `<div class="split"><div class="copy"><h2>{{t}}</h2></div>${DIFF_CARD}</div>`,
+    });
+    expect(s).toContain('contains the markup of module "Diff card"');
+    expect(s).toContain("{{>field}}");
   });
 
   it("stays silent on conformant writes", async () => {
     expect(
       await designGuardSuffix(AI, toolCtx(), {
         css: ".p{padding:2rem}",
-        displayName: "Pricing table",
-        kind: "content",
-        type: "pricing-table",
+        html: '<table class="pricing"><tr><th>{{a}}</th><td>{{b}}</td></tr></table>',
       }),
     ).toBe("");
   });
 
-  it("does not flag a mint that REUSES the existing module's type", async () => {
+  it("never matches the module the write itself created or edited", async () => {
     const s = await designGuardSuffix(AI, toolCtx(), {
-      css: ".h{padding:2rem}",
-      displayName: "Hero for landing",
-      kind: "hero",
-      type: "hero-banner",
-    });
-    expect(s).toBe("");
-  });
-
-  it("does not cross-flag a same-name module of a different kind", async () => {
-    const s = await designGuardSuffix(AI, toolCtx(), {
-      css: ".b{padding:2rem}",
-      displayName: "Hero Banner copy",
-      kind: "content",
-      type: "banner-strip",
+      html: DIFF_CARD,
+      excludeModuleIds: ["00000000-0000-4000-8000-000000000001"],
     });
     expect(s).toBe("");
   });

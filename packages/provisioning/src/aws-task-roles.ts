@@ -14,7 +14,6 @@
 export type AwsSecret =
   | "postgres-password"
   | "public-role-password"
-  | "gateway-role-password"
   | "csrf-secret"
   | "cookie-secret"
   | "anthropic-api-key"
@@ -32,7 +31,6 @@ export const AWS_SERVICE_SECRETS: Readonly<Record<AwsTaskService, readonly AwsSe
   admin: [
     "postgres-password",
     "public-role-password",
-    "gateway-role-password",
     "csrf-secret",
     "cookie-secret",
     "anthropic-api-key",

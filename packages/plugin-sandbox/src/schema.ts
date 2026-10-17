@@ -34,11 +34,20 @@ export interface EmittedSchema {
   readonly sql: string;
 }
 
+const PLUGIN_UUID_RE = /^[0-9a-f-]{36}$/i;
+
+function assertValidPluginId(pluginId: string, caller: string): void {
+  if (!PLUGIN_UUID_RE.test(pluginId)) {
+    throw new Error(`${caller}: plugin id "${pluginId}" is not a valid UUID`);
+  }
+}
+
 export function schemaFromSpec(opts: {
   pluginId: string;
   slug: string;
   schema: PluginSchemaMap;
 }): EmittedSchema {
+  assertValidPluginId(opts.pluginId, "schemaFromSpec");
   const schemaName = `plugin_${opts.slug.replace(/-/g, "_")}`;
   const stmts: string[] = [];
 
@@ -147,26 +156,10 @@ export const PLUGIN_SCHEMA_GRANTEES: Readonly<Record<PluginSchemaDatabase, Reado
 };
 
 /**
- * Issue #635, expand release — the former gateway_role keeps READ-ONLY
- * access to a visitor-serving plugin's private tables (#613) until the
- * contract release drops the role: while an upgrade rolls, and after a
- * rollback, the previous release's gateway still reads them as
- * gateway_role. Only `USAGE` on a schema and column-level `SELECT (…)`:
- * never table-wide, never a write. The contract release removes this set.
- */
-export const LEGACY_READ_ONLY_GRANTEES: Readonly<
-  Record<PluginSchemaDatabase, ReadonlySet<string>>
-> = {
-  cms_admin: new Set(["gateway_role"]),
-  cms_public: new Set(),
-};
-
-const READ_ONLY_PRIVILEGES = /^(?:USAGE|SELECT \([^()]+\))$/;
-
-/**
  * The only way the emitters write a GRANT, so no code path can grant a
- * plugin schema to a role outside {@link PLUGIN_SCHEMA_GRANTEES} (or a
- * read-only privilege outside {@link LEGACY_READ_ONLY_GRANTEES}).
+ * plugin schema to a role outside {@link PLUGIN_SCHEMA_GRANTEES}. (The
+ * expand release also let the former gateway_role keep read-only grants;
+ * this contract release dropped the role and that allowance.)
  *
  * @throws when `grantee` may not hold `privileges` in `database`.
  */
@@ -176,10 +169,7 @@ export function grantStatement(
   object: string,
   grantee: string,
 ): string {
-  const allowed =
-    PLUGIN_SCHEMA_GRANTEES[database].has(grantee) ||
-    (LEGACY_READ_ONLY_GRANTEES[database].has(grantee) && READ_ONLY_PRIVILEGES.test(privileges));
-  if (!allowed) {
+  if (!PLUGIN_SCHEMA_GRANTEES[database].has(grantee)) {
     throw new Error(
       `plugin schema: refusing to GRANT ${privileges} ON ${object} TO ${grantee} in ${database} — only ${[...PLUGIN_SCHEMA_GRANTEES[database]].join(", ")} may hold plugin-schema privileges there (CLAUDE.md §2, #635)`,
     );
@@ -256,14 +246,6 @@ export function adminSchemaFromSpec(opts: {
   slug: string;
   adminSchema: PluginSchemaMap;
   /**
-   * Issue #613 — the plugin serves visitors (`publicOperations`) and those
-   * operations may read its private tables, so the API gateway's
-   * `gateway_role` gets SELECT on them. Read-only: a visitor call never
-   * writes private storage. When false, any earlier grant is revoked, so a
-   * plugin that stops serving visitors converges on the next load.
-   */
-  visitorReadable?: boolean;
-  /**
    * Issue #635 — the tables of the plugin's declared `visitorProjection`.
    * Each gets a statement trigger that marks the plugin's projection
    * section stale in `public_projection_outbox` (cms_admin migration
@@ -272,6 +254,7 @@ export function adminSchemaFromSpec(opts: {
    */
   projectedTables?: ReadonlyArray<string>;
 }): EmittedSchema {
+  assertValidPluginId(opts.pluginId, "adminSchemaFromSpec");
   const schemaName = `plugin_${opts.slug.replace(/-/g, "_")}`;
   const stmts: string[] = [];
 
@@ -324,18 +307,19 @@ export function adminSchemaFromSpec(opts: {
     );
   }
 
-  stmts.push(gatewayReadGrants(schemaName, opts.adminSchema, opts.visitorReadable));
+  stmts.push(revokeFormerGatewayGrants(schemaName));
   stmts.push(projectionTriggers(schemaName, opts.pluginId, opts.adminSchema, opts.projectedTables));
 
   return { schemaName, sql: stmts.join("\n\n") };
 }
 
 /**
- * The columns the gateway may read on a private table: its id, the declared
- * columns and the host columns private-storage reads filter on. Exported
- * so the storage read (plugin-host `privateList`) selects exactly these.
+ * The columns a private-storage read selects: the row's id, the declared
+ * columns and the host columns the reads filter on. Exported so the
+ * storage read (plugin-host `privateList`) selects exactly these and a
+ * column a plugin update dropped from its spec never comes back.
  */
-export function gatewayReadableColumns(columns: Readonly<Record<string, string>>): string[] {
+export function privateReadColumns(columns: Readonly<Record<string, string>>): string[] {
   return [
     ...new Set([
       "id",
@@ -346,45 +330,20 @@ export function gatewayReadableColumns(columns: Readonly<Record<string, string>>
 }
 
 /**
- * Issue #613 — the API gateway's read access to a plugin's private tables,
- * recomputed from the CURRENT spec on every provisioning: everything the
- * role held on the schema is revoked first (revoking on a table also
- * revokes its column privileges), then SELECT is granted column by column
- * on the declared tables only. A table or column a plugin update dropped
- * from its spec stays physically (evolution is additive) but is no longer
- * readable by the gateway. Guarded on the role existing: a database
- * bootstrapped before `gateway_role` (migration 0248) still provisions.
+ * Issue #635 — the API gateway has no cms_admin login; it reads only the
+ * `visitorProjection` the admin publishes into cms_public. A database from
+ * before still has the former `gateway_role` (until bootstrap.sh / the
+ * self-hosted role setup drops it) with SELECT grants on this schema:
+ * revoke them on every provisioning. Guarded on the role existing.
  */
-function gatewayReadGrants(
-  schemaName: string,
-  adminSchema: PluginSchemaMap,
-  visitorReadable: boolean | undefined,
-): string {
+function revokeFormerGatewayGrants(schemaName: string): string {
   const schema = quoteIdent(schemaName);
-  const revoke = [
-    `    REVOKE ALL ON ALL TABLES IN SCHEMA ${schema} FROM gateway_role;`,
-    `    REVOKE ALL ON SCHEMA ${schema} FROM gateway_role;`,
-  ];
-  const grant = visitorReadable
-    ? [
-        `    ${grantStatement("cms_admin", "USAGE", `SCHEMA ${schema}`, "gateway_role")}`,
-        ...Object.entries(adminSchema).map(
-          ([t, columns]) =>
-            `    ${grantStatement(
-              "cms_admin",
-              `SELECT (${gatewayReadableColumns(columns).map(quoteIdent).join(", ")})`,
-              `${schema}.${quoteIdent(t)}`,
-              "gateway_role",
-            )}`,
-        ),
-      ]
-    : [];
   return [
     "DO $caelo_gateway$",
     "BEGIN",
     "  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') THEN",
-    ...revoke,
-    ...grant,
+    `    REVOKE ALL ON ALL TABLES IN SCHEMA ${schema} FROM gateway_role;`,
+    `    REVOKE ALL ON SCHEMA ${schema} FROM gateway_role;`,
     "  END IF;",
     "END",
     "$caelo_gateway$;",

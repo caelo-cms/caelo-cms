@@ -13,7 +13,6 @@ import { resolve } from "node:path";
 import {
   adminSchemaFromSpec,
   grantStatement,
-  LEGACY_READ_ONLY_GRANTEES,
   PLUGIN_SCHEMA_GRANTEES,
   type PluginSchemaDatabase,
   schemaFromSpec,
@@ -33,31 +32,15 @@ const SPEC = {
 const TABLE = '"plugin_probe"."t"';
 
 describe("grantStatement (#635)", () => {
-  it("refuses public_role, PUBLIC and unknown roles in cms_admin", () => {
-    for (const grantee of ["public_role", "PUBLIC", "postgres", "pg_read_all_data"]) {
-      expect(() => grantStatement("cms_admin", "SELECT (id)", TABLE, grantee)).toThrow(
-        /refusing to GRANT/,
-      );
-    }
-  });
-
-  it("allows the former gateway_role only USAGE and column SELECT in cms_admin", () => {
-    expect(grantStatement("cms_admin", "SELECT (id, label)", TABLE, "gateway_role")).toBe(
-      `GRANT SELECT (id, label) ON ${TABLE} TO gateway_role;`,
-    );
-    expect(grantStatement("cms_admin", "USAGE", 'SCHEMA "plugin_probe"', "gateway_role")).toContain(
-      "TO gateway_role",
-    );
-    for (const privileges of [
-      "SELECT",
-      "SELECT, INSERT",
-      "INSERT",
-      "UPDATE (label)",
-      "ALL",
-      "SELECT (id), DELETE",
-      "USAGE, CREATE",
+  it("refuses public_role, the former gateway_role, PUBLIC and unknown roles in cms_admin", () => {
+    for (const grantee of [
+      "public_role",
+      "gateway_role",
+      "PUBLIC",
+      "postgres",
+      "pg_read_all_data",
     ]) {
-      expect(() => grantStatement("cms_admin", privileges, TABLE, "gateway_role")).toThrow(
+      expect(() => grantStatement("cms_admin", "SELECT (id)", TABLE, grantee)).toThrow(
         /refusing to GRANT/,
       );
     }
@@ -83,7 +66,6 @@ describe("plugin schema DDL grants (#635)", () => {
       adminSchemaFromSpec({
         ...SPEC,
         adminSchema: { settings: { label: "string" }, approved: { digest: "text" } },
-        visitorReadable: true,
         projectedTables: ["settings"],
       }).sql,
     ],
@@ -93,10 +75,8 @@ describe("plugin schema DDL grants (#635)", () => {
     it(`${database}: every emitted GRANT goes to an allowed role`, () => {
       const found = grants(sql);
       expect(found.length).toBeGreaterThan(0);
-      for (const { privileges, grantee } of found) {
-        if (PLUGIN_SCHEMA_GRANTEES[database].has(grantee)) continue;
-        expect(LEGACY_READ_ONLY_GRANTEES[database].has(grantee)).toBe(true);
-        expect(privileges).toMatch(/^(?:USAGE|SELECT \([^()]+\))$/);
+      for (const { grantee } of found) {
+        expect(PLUGIN_SCHEMA_GRANTEES[database].has(grantee)).toBe(true);
       }
     });
   }

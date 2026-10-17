@@ -10,7 +10,7 @@ Pulumi stack provisioning Caelo on Azure managed services. Implements the shared
 | Blob storage | Storage Account with a private `media` container and static-website hosting (`$web`) |
 | CDN / Edge | Azure Front Door Standard: the primary domain serves the static website as files, with a Front Door managed certificate; no edge compute on the request path |
 | Container runtime | Four Container Apps (admin / gateway / orchestrator / runner) in one managed environment |
-| Secret store | Key Vault (postgres-password, public-role-password, gateway-role-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key). The gateway container gets `PUBLIC_DATABASE_URL` only, never a cms_admin credential of any role (#613, #635). |
+| Secret store | Key Vault (postgres-password, public-role-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key). The gateway container gets `PUBLIC_DATABASE_URL` only, never a cms_admin credential of any role (#613, #635). |
 | Edge-log sink | Log Analytics workspace receives Container Apps logs (queryable by P12A analytics plugin via Azure Monitor) |
 
 The Caelo runtime never knows it's on Azure — every Container App consumes plain `DATABASE_URL` / `MEDIA_STORAGE_URL` / `SECRETS_PROVIDER` env vars.

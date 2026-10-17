@@ -613,6 +613,23 @@ export async function runPluginOperation(
     }
     return { ok: true, value };
   } catch (e) {
+    if (!opts.readOnlyPreview && !isPublicSideHost(cachedInfra)) {
+      try {
+        await emitPluginAuditRow(cachedInfra.adapter, {
+          actorId: plugin.pluginActorId,
+          operation: `${plugin.slug}.${opts.operationName}`,
+          inputArgs: opts.args,
+          entityId: null,
+          succeeded: false,
+        });
+      } catch (auditError) {
+        // Best-effort: the caller gets the operation's own error either
+        // way, but a missing failure row must not go unnoticed.
+        console.error(
+          `[plugin-host] failure audit row not recorded for ${plugin.slug}.${opts.operationName}: ${(auditError as Error).message}`,
+        );
+      }
+    }
     if (isProjectionNotPublished(e)) {
       return {
         ok: false,
