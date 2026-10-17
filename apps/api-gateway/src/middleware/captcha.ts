@@ -72,41 +72,60 @@ export type CaptchaVerifyResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string };
 
+/**
+ * Claim `proof`'s challenge (once) and check its work.
+ *
+ * Binding: a challenge issued to a visitor id (a consented visitor's signed
+ * `caelo_visitor_id` cookie, stored as its hash) is redeemable only by a
+ * request carrying that same id. A challenge issued without one (no consent,
+ * so no id: `visitor_id_hash = ''`) is redeemable by any request; PoW then
+ * protects by cost and single use alone.
+ *
+ * @param expectedVisitorIdHash the redeeming request's visitor id hash; ""
+ *   when it carries none.
+ */
 export async function verifyPowProof(
   adapter: DatabaseAdapter,
   proof: CaptchaProof,
-  expectedVisitorIdHash?: string,
+  expectedVisitorIdHash: string,
 ): Promise<CaptchaVerifyResult> {
   if (typeof proof.challenge !== "string" || typeof proof.nonce !== "string") {
     return { ok: false, reason: "malformed proof" };
   }
-  // Atomic claim — one UPDATE returns the row only if it was unused +
-  // unexpired (and, when expectedVisitorIdHash is provided, matches the
-  // visitor identity that requested the challenge). Replay → 0 rows → reject.
-  const visitorClause =
-    expectedVisitorIdHash !== undefined
-      ? sql`AND (visitor_id_hash = '' OR visitor_id_hash = ${expectedVisitorIdHash})`
-      : sql``;
-  const row = await adapter.withPublicTransaction(
-    {
-      actorId: "00000000-0000-0000-0000-00000000ffff",
-      actorKind: "system",
-      requestId: "pow-verify",
-    },
-    async (tx) => {
+  const ctx = {
+    actorId: "00000000-0000-0000-0000-00000000ffff",
+    actorKind: "system" as const,
+    requestId: "pow-verify",
+  };
+  // Atomic claim — one UPDATE returns the row only if it was unused,
+  // unexpired and issued to this visitor (or to nobody). Replay → 0 rows.
+  const row = await adapter.withPublicTransaction(ctx, async (tx) => {
+    const rs = (await tx.execute(sql`
+      UPDATE gateway_pow_challenges
+         SET used_at = now()
+       WHERE challenge = ${proof.challenge}
+         AND used_at IS NULL
+         AND expires_at > now()
+         AND (visitor_id_hash = '' OR visitor_id_hash = ${expectedVisitorIdHash})
+       RETURNING target_hex
+    `)) as unknown as { target_hex: string }[];
+    return rs[0] ?? null;
+  });
+  if (!row) {
+    // Read-only diagnosis after the failed claim, so the visitor (and the
+    // form's script) learns which case it was. It decides nothing.
+    const state = await adapter.withPublicTransaction(ctx, async (tx) => {
       const rs = (await tx.execute(sql`
-        UPDATE gateway_pow_challenges
-           SET used_at = now()
+        SELECT used_at IS NOT NULL AS used,
+               expires_at <= now() AS expired,
+               (visitor_id_hash <> '' AND visitor_id_hash <> ${expectedVisitorIdHash}) AS other_visitor
+          FROM gateway_pow_challenges
          WHERE challenge = ${proof.challenge}
-           AND used_at IS NULL
-           AND expires_at > now()
-           ${visitorClause}
-         RETURNING target_hex
-      `)) as unknown as { target_hex: string }[];
+      `)) as unknown as ChallengeState[];
       return rs[0] ?? null;
-    },
-  );
-  if (!row) return { ok: false, reason: "challenge missing, expired, or already used" };
+    });
+    return { ok: false, reason: claimRejectionReason(state) };
+  }
   // Verify the SHA-256 prefix.
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -140,21 +159,26 @@ export function hashVisitorId(visitorId: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-/**
- * P13 audit re-pass — extract a stable IP-derived hash from the
- * request. Uses the LAST hop of X-Forwarded-For (the address appended
- * by the trusted reverse proxy / Cloud Run front end, matching
- * staging-proxy.ts) so a client cannot spoof earlier hops to rotate
- * rate-limit buckets.
- */
-export function clientIpHash(req: Request): string {
-  const xff = req.headers.get("x-forwarded-for");
-  const xri = req.headers.get("x-real-ip");
-  const parts =
-    xff
-      ?.split(",")
-      .map((s) => s.trim())
-      .filter(Boolean) ?? [];
-  const raw = (parts.at(-1) ?? xri ?? "0.0.0.0").trim();
-  return hashVisitorId(raw);
+interface ChallengeState {
+  readonly used: boolean;
+  readonly expired: boolean;
+  readonly other_visitor: boolean;
+}
+
+/** Why a challenge could not be claimed, worded for the visitor's next step. */
+function claimRejectionReason(state: ChallengeState | null): string {
+  const renew = "request a new one from /api/captcha/challenge";
+  if (!state) return `unknown captcha challenge: ${renew}`;
+  if (state.used) {
+    return `captcha challenge already used: each submission needs its own, so ${renew}`;
+  }
+  if (state.expired) {
+    return `captcha challenge expired (valid for ${CHALLENGE_TTL_SEC} seconds): ${renew} and submit within that time`;
+  }
+  if (state.other_visitor) {
+    return "captcha challenge was issued to a different visitor: the visitor cookie (caelo_visitor_id) set with the challenge did not come back with this submission. Request the challenge and submit from the same browser session, with cookies allowed for this site";
+  }
+  // Every claim condition holds as this read runs: a concurrent request
+  // with the same proof claimed it first.
+  return `captcha challenge already used: each submission needs its own, so ${renew}`;
 }
