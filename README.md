@@ -106,6 +106,17 @@ After any install, open the setup link it prints, create the Owner account and p
 
 Either way the agent works in the draft, and publishing stays with a human. Mint a token at `/settings/mcp` on your install; the page shows the exact `claude mcp add` command for it.
 
+With Claude Code, Power-MCP looks like this:
+
+```bash
+claude mcp add caelo-admin \
+  --env CAELO_ADMIN_URL=https://admin.example.com \
+  --env CAELO_MCP_TOKEN=mcp_<token> \
+  -- bunx --package @caelo-cms/mcp-server@<your Caelo version> caelo-admin-mcp
+```
+
+Then ask it for an outcome, for example *"Add a pricing page in our design system and stage it for review."* Details: [MCP and Power-MCP docs](https://caelo-cms.com/docs/mcp/).
+
 ## Documentation
 
 User docs (install, editing, plugins, MCP, security) live at **[caelo-cms.com/docs](https://caelo-cms.com/docs/)**, built in Caelo itself.
@@ -152,4 +163,4 @@ Report vulnerabilities via **[GitHub Private Vulnerability Reporting](https://gi
 
 ## Contributing
 
-See **[`CONTRIBUTING.md`](./CONTRIBUTING.md)**. Code of Conduct: the [Contributor Covenant 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
+See **[`CONTRIBUTING.md`](./CONTRIBUTING.md)**. New here? Start with an issue labeled [`good first issue`](https://github.com/caelo-cms/caelo-cms/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22). Questions, ideas and show-and-tell go to [Discussions](https://github.com/caelo-cms/caelo-cms/discussions). Code of Conduct: the [Contributor Covenant 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
