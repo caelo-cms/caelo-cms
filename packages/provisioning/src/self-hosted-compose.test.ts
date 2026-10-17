@@ -19,7 +19,7 @@ const GATEWAY = `ghcr.io/caelo-cms/gateway@sha256:${"b".repeat(64)}`;
 const base: Omit<ComposeSpec, "images"> = {
   domain: "example.com",
   postgresPassword: "pgpw",
-  rolePasswords: { admin: "adminpw", public: "publicpw", gateway: "gatewaypw" },
+  rolePasswords: { admin: "adminpw", public: "publicpw" },
   caeloSecretKek: "0".repeat(64),
   anthropicApiKey: "sk-ant-x",
   diskSize: "20Gi",

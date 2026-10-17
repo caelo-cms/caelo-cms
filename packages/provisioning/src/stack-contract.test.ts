@@ -223,14 +223,13 @@ describe("database role secrets (#613)", () => {
     expect(DATABASE_ROLE_SECRET).toEqual({
       admin_role: "postgres-password",
       public_role: "public-role-password",
-      gateway_role: "gateway-role-password",
     });
   });
 
-  it("the CLI generates the gateway's role passwords (never seeded from admin_role's)", () => {
-    expect(CLI_GENERATED_SECRETS).toEqual(
-      expect.arrayContaining(["public-role-password", "gateway-role-password"]),
-    );
+  it("the CLI generates the gateway's role password (never seeded from admin_role's)", () => {
+    expect(CLI_GENERATED_SECRETS).toContain("public-role-password");
+    // #635 — the former gateway_role is gone; nothing generates its password.
+    expect(CLI_GENERATED_SECRETS as readonly string[]).not.toContain("gateway-role-password");
   });
 
   it("retires the gateway SA's read access to admin_role's password", () => {
@@ -287,11 +286,7 @@ describe("runtime secrets", () => {
   });
 
   it("every CLI-generated secret is read by some service", () => {
-    // gateway-role-password is read by no service since #635: it only keeps
-    // the legacy gateway_role's password set until the contract release
-    // drops the role (the previous release's gateway logs in with it while
-    // an upgrade rolls).
-    for (const s of CLI_GENERATED_SECRETS.filter((x) => x !== "gateway-role-password")) {
+    for (const s of CLI_GENERATED_SECRETS) {
       expect([...serviceSecrets("admin"), ...serviceSecrets("gateway")]).toContain(s);
     }
   });
@@ -302,7 +297,7 @@ describe("self-hosted compose", () => {
     const yaml = generateDockerCompose({
       domain: "acme.com",
       postgresPassword: "p",
-      rolePasswords: { admin: "a", public: "b", gateway: "g" },
+      rolePasswords: { admin: "a", public: "b" },
       caeloSecretKek: "k",
       diskSize: "10G",
       ports: { http: 80, https: 443 },
