@@ -28,6 +28,7 @@ import { setPageModuleContentTool } from "../ai/tools/set-page-module-content.js
 import { setDeployBridge } from "../ops/deploy.js";
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
+import { linkSourcesFromOps } from "../quality/checks/links-sources.js";
 import { createCoreCheckRegistry } from "../quality/checks/registry.js";
 import { structureSourcesFromOps } from "../quality/checks/structure-sources.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
@@ -148,6 +149,7 @@ async function stageAndAudit(title: string): Promise<string> {
     checks: createCoreCheckRegistry({
       lighthouse: cleanLighthouse,
       structure: structureSourcesFromOps(registry, adapter, SYS),
+      links: linkSourcesFromOps(registry, adapter, SYS),
     }),
     env: {
       provider: "aws",
@@ -268,13 +270,19 @@ describe("the core structure check (#820)", () => {
     const got = await op<AuditRead>(AI, "quality_audits.get", { deployRunId: runId });
     expect(got.run.errorMessage).toBeNull();
     expect(got.run.status).toBe("problems");
+    // Only this check's rules: the fixture pages link nowhere, so the core
+    // links check (#849) reports them as orphans — warnings, not this test.
     const findingsOf = (id: string) =>
-      got.pages.find((p) => p.pageId === id)?.checkFindings.map((f) => [f.ruleId, f.severity]) ??
-      [];
+      got.pages
+        .find((p) => p.pageId === id)
+        ?.checkFindings.filter((f) => f.ruleId.startsWith("structure/"))
+        .map((f) => [f.ruleId, f.severity]) ?? [];
     expect(findingsOf(pageIds.a)).toEqual([[RULE, "error"]]);
     expect(findingsOf(pageIds.b)).toEqual([[RULE, "error"]]);
     expect(findingsOf(pageIds.c)).toEqual([]);
-    const message = got.pages.find((p) => p.pageId === pageIds.a)?.checkFindings[0]?.message;
+    const message = got.pages
+      .find((p) => p.pageId === pageIds.a)
+      ?.checkFindings.find((f) => f.ruleId === RULE)?.message;
     expect(message).toContain("`div.chain`");
     expect(message).toContain('in "Text"');
     const g = await gate();
@@ -310,7 +318,9 @@ describe("the core structure check (#820)", () => {
     const runId = await stageAndAudit("fixed");
     const got = await op<AuditRead>(AI, "quality_audits.get", { deployRunId: runId });
     expect(got.run.status).toBe("passed");
-    expect(got.pages.flatMap((p) => p.checkFindings)).toEqual([]);
+    expect(
+      got.pages.flatMap((p) => p.checkFindings).filter((f) => f.ruleId.startsWith("structure/")),
+    ).toEqual([]);
     expect(await gate()).toMatchObject({ open: true, state: "clean" });
   });
 });

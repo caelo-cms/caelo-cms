@@ -29,7 +29,13 @@
 
 import { CADDY_REDIRECTS_FILE } from "@caelo-cms/shared";
 import { caddyRedirectReloadCommand } from "./caddy-redirects.js";
-import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB, publicSiteUrl } from "./stack-contract.js";
+import {
+  ADMIN_MEMORY_DEFAULT,
+  GATEWAY_TRUSTED_PROXY_HOPS,
+  memoryQuantityMiB,
+  publicSiteUrl,
+  TRUSTED_PROXY_HOPS_ENV,
+} from "./stack-contract.js";
 import { ghcrRepository, isImageDigest, type ReleaseService } from "./upgrade/release-images.js";
 
 /** The admin + gateway release images, each `ghcr.io/caelo-cms/<svc>@sha256:…`. */
@@ -392,6 +398,8 @@ ${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts
       # CLAUDE.md §2: the public side has no path to the authoring database).
       PUBLIC_DATABASE_URL: "${dbUrl("public_role", spec.rolePasswords.public, "cms_public")}"
       GATEWAY_PORT: "${COMPOSE_GATEWAY_PORT}"
+      # Caddy is the one proxy in front (client-ip.ts in the gateway).
+      ${TRUSTED_PROXY_HOPS_ENV}: "${GATEWAY_TRUSTED_PROXY_HOPS["self-hosted"]}"
       NODE_ENV: production`;
 }
 

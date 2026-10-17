@@ -112,6 +112,8 @@ export const listRedirectsOp = defineOperation({
         .union([z.literal(301), z.literal(302), z.literal(307), z.literal(308), z.literal(410)])
         .optional(),
       limit: z.number().int().positive().max(1000).default(200),
+      /** #849 — rows to skip, so a reader can page through every row. */
+      offset: z.number().int().min(0).default(0),
     })
     .strict(),
   output: z.object({
@@ -130,8 +132,8 @@ export const listRedirectsOp = defineOperation({
              created_by::text AS created_by, created_at
       FROM redirects
       WHERE 1 = 1 ${queryFilter} ${statusFilter}
-      ORDER BY created_at DESC
-      LIMIT ${input.limit}
+      ORDER BY created_at DESC, id
+      LIMIT ${input.limit} OFFSET ${input.offset}
     `)) as unknown as {
       id: string;
       from_path: string;

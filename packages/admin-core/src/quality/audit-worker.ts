@@ -26,6 +26,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { NOT_FOUND_PAGE_FILE } from "@caelo-cms/static-generator";
 import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { localBuildArchiveDir } from "../ops/deploy.js";
+import { linkSourcesFromOps } from "./checks/links-sources.js";
 import { type CheckRegistry, createCoreCheckRegistry } from "./checks/registry.js";
 import { runChecksOnStagedBuild } from "./checks/run-staged.js";
 import { structureSourcesFromOps } from "./checks/structure-sources.js";
@@ -258,6 +259,7 @@ let coreChecks: CheckRegistry | null = null;
 function defaultChecks(deps: WorkerDeps): CheckRegistry {
   coreChecks ??= createCoreCheckRegistry({
     structure: structureSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX),
+    links: linkSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX),
   });
   return coreChecks;
 }
@@ -332,7 +334,12 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
         pageId: p.pageId,
         path: p.currentPath,
         url: pageUrl(p),
+        ...(p.isNotFoundPage ? { notFoundPage: true as const } : {}),
       })),
+      {
+        baseUrl: origin.baseUrl,
+        ...(origin.displayBaseUrl ? { displayBaseUrl: origin.displayBaseUrl } : {}),
+      },
       deps.fetchPage,
     );
     if (run.pages.length > 0 && runLighthouse) {
