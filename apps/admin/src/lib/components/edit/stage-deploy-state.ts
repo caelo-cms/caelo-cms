@@ -20,6 +20,8 @@
  *     button (`formResultError` feeds it), immune to toast dedup.
  */
 
+import { isParityRefusal } from "@caelo-cms/shared";
+
 export interface PublishButtonState {
   readonly disabled: boolean;
   /**
@@ -120,4 +122,49 @@ export function formResultError(result: {
     }`;
   }
   return null;
+}
+
+/**
+ * Which shape the Live edit toolbar takes:
+ *  - `published`: the chat was published; nothing to do here.
+ *  - `fresh`: no pending edits and nothing was ever staged.
+ *  - `promote-only`: no pending edits, but a staged build exists (or this
+ *    chat staged before): Publish live, plus Stage again.
+ *  - `pending`: the chat has edits; Stage… opens the Stage dialog.
+ */
+export type StageToolbarMode = "published" | "fresh" | "promote-only" | "pending";
+
+/** Pick the toolbar shape from the chat's and the site's deploy state. */
+export function stageToolbarMode(args: {
+  sessionPublished: boolean;
+  branchChangeCount: number;
+  hasStagedBuild: boolean;
+  sessionLastStagedAt: string | null;
+}): StageToolbarMode {
+  if (args.sessionPublished) return "published";
+  if (args.branchChangeCount > 0) return "pending";
+  return args.hasStagedBuild || args.sessionLastStagedAt !== null ? "promote-only" : "fresh";
+}
+
+/**
+ * #835 — whether the toolbar offers "Stage again" (rebuild staging from
+ * main without pending edits). Always in the promote-only shape, whatever
+ * the quality gate says: a Publish live refused by the parity guard, a
+ * Caelo upgrade or fixes written live (SEO texts) all need a fresh Stage,
+ * and without pending edits this button is the operator's only way to
+ * get one. With pending edits, Stage… covers it.
+ */
+export function offersStageAgain(mode: StageToolbarMode): boolean {
+  return mode === "promote-only";
+}
+
+/**
+ * #835 — the short, untruncated next step shown under a failed Publish
+ * live. The inline error itself is truncated to fit the toolbar, so the
+ * pointer at "Stage again" at the end of a parity refusal would be cut
+ * off. Null for any other failure (its own text says what to do).
+ */
+export function publishErrorNextStep(message: string | null): string | null {
+  if (message === null || !isParityRefusal(message)) return null;
+  return "Use Stage again to rebuild staging, check it, then Publish live.";
 }

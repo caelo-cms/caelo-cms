@@ -543,6 +543,7 @@ async function agentApply(argv: readonly string[], ctx: AgentCliContext): Promis
             caeloDir: ctx.caeloDir,
             runner: bunHostRunner,
             renderCompose: (images) => ctx.renderCompose(images),
+            convergeRoles: () => ctx.convergeRoles(),
             log,
           },
         ),

@@ -25,7 +25,7 @@ export {
   ADMIN_REF_ALLOWLIST,
   adminSchemaFromSpec,
   type EmittedSchema,
-  gatewayReadableColumns,
+  privateReadColumns,
   schemaFromSpec,
 } from "./schema.js";
 export {

@@ -215,11 +215,19 @@ describe("captcha (PoW)", () => {
     }
     expect(nonce).not.toBe("");
 
-    const r1 = await verifyPowProof(adapter, { challenge: challenge.challenge, nonce });
+    const r1 = await verifyPowProof(
+      adapter,
+      { challenge: challenge.challenge, nonce },
+      visitorIdHash,
+    );
     expect(r1.ok).toBe(true);
 
     // Replay should fail.
-    const r2 = await verifyPowProof(adapter, { challenge: challenge.challenge, nonce });
+    const r2 = await verifyPowProof(
+      adapter,
+      { challenge: challenge.challenge, nonce },
+      visitorIdHash,
+    );
     expect(r2.ok).toBe(false);
   });
 
@@ -233,18 +241,82 @@ describe("captcha (PoW)", () => {
       config: strictConfig,
       visitorIdHash,
     });
-    const r = await verifyPowProof(adapter, {
-      challenge: challenge.challenge,
-      nonce: "definitely-wrong-zz",
-    });
+    const r = await verifyPowProof(
+      adapter,
+      {
+        challenge: challenge.challenge,
+        nonce: "definitely-wrong-zz",
+      },
+      visitorIdHash,
+    );
     expect(r.ok).toBe(false);
   });
 
   it("rejects an unknown challenge", async () => {
-    const r = await verifyPowProof(adapter, {
-      challenge: "00000000",
-      nonce: "0",
+    const r = await verifyPowProof(
+      adapter,
+      {
+        challenge: "00000000",
+        nonce: "0",
+      },
+      visitorIdHash,
+    );
+    expect(r).toEqual({ ok: false, reason: expect.stringContaining("unknown captcha challenge") });
+  });
+
+  /** Issue a challenge to `issuedTo` and solve it. */
+  async function solved(issuedTo: string): Promise<{ challenge: string; nonce: string }> {
+    const { challenge, target } = await issuePowChallenge(adapter, {
+      config,
+      visitorIdHash: issuedTo,
     });
-    expect(r.ok).toBe(false);
+    for (let nonce = 0; ; nonce++) {
+      const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
+      if (hex.startsWith(target)) return { challenge, nonce: String(nonce) };
+    }
+  }
+
+  it("binding: a challenge issued to a visitor is redeemable by that visitor", async () => {
+    expect(await verifyPowProof(adapter, await solved(visitorIdHash), visitorIdHash)).toEqual({
+      ok: true,
+    });
+  });
+
+  it("binding: another visitor (or none) cannot redeem it, and is told why — it stays unused", async () => {
+    const proof = await solved(visitorIdHash);
+    for (const other of [hashVisitorId("someone-else"), ""]) {
+      const r = await verifyPowProof(adapter, proof, other);
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.reason).toContain("issued to a different visitor");
+        expect(r.reason).toContain("caelo_visitor_id");
+      }
+    }
+    // The failed attempts claimed nothing: the visitor it was issued to still can.
+    expect(await verifyPowProof(adapter, proof, visitorIdHash)).toEqual({ ok: true });
+  });
+
+  it("binding: a challenge issued without a visitor id is redeemable by any request", async () => {
+    expect(await verifyPowProof(adapter, await solved(""), visitorIdHash)).toEqual({ ok: true });
+    expect(await verifyPowProof(adapter, await solved(""), "")).toEqual({ ok: true });
+  });
+
+  it("names a replay and an expiry as what they are", async () => {
+    const used = await solved(visitorIdHash);
+    await verifyPowProof(adapter, used, visitorIdHash);
+    const replay = await verifyPowProof(adapter, used, visitorIdHash);
+    expect(replay.ok === false && replay.reason).toContain("already used");
+
+    const late = await solved(visitorIdHash);
+    await adapter.withPublicTransaction(
+      { actorId: "00000000-0000-0000-0000-00000000ffff", actorKind: "system", requestId: "t" },
+      async (tx) => {
+        await tx.execute(sql`
+          UPDATE gateway_pow_challenges SET expires_at = now() - interval '1 second'
+           WHERE challenge = ${late.challenge}`);
+      },
+    );
+    const expired = await verifyPowProof(adapter, late, visitorIdHash);
+    expect(expired.ok === false && expired.reason).toContain("expired");
   });
 });

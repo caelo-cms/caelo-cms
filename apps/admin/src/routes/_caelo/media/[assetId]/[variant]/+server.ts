@@ -17,13 +17,15 @@
 
 import { getMediaStorage } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
-import { MEDIA_VARIANT_TAGS, type MediaVariantTag } from "@caelo-cms/shared";
+import { FAVICON_VARIANT, MEDIA_VARIANT_TAGS, type MediaVariantTag } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { requireUserOrPreviewScreenshotToken } from "#lib/server/preview-screenshot-auth.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
-const VALID_VARIANTS = new Set<string>(MEDIA_VARIANT_TAGS);
+// The favicon rendition (`themes.set_asset` creates it) is linked from
+// every preview page's <head>, so it must resolve here too.
+const VALID_VARIANTS = new Set<string>([...MEDIA_VARIANT_TAGS, FAVICON_VARIANT]);
 
 export const GET: RequestHandler = async ({ params, locals, request }) => {
   // issue #412 — the server-side screenshot browser presents a signed

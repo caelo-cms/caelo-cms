@@ -903,6 +903,50 @@ describe("fix-all loop (#771)", () => {
     ]);
   });
 
+  // #685 — accepting (or revoking) on the card while the AI fixes is the
+  // operator taking over: the next round waits for their click.
+  it("a round during which the operator accepted a finding does not continue on its own", async () => {
+    const s = await op<{ chatSessionId: string; chatBranchId: string }>(
+      HUMAN,
+      "chat.create_session",
+      { isolation: "experiment", title: `${PFX}loop-decided` },
+    );
+    const branch = { ...HUMAN, chatBranchId: s.chatBranchId };
+    const roundWith = async (performance: number, by: "operator" | "live_edit_ai") => {
+      await editModule(branch, `<p>decided ${performance} ${by}</p>`);
+      await stage(s.chatSessionId, by);
+      await audit(fakeLighthouse(() => ({ scores: { performance, accessibility: 90 } })));
+      return op<{
+        audit: { id: string };
+        feedback: { autoContinue: boolean; actionLabel: string; text: string; groups: unknown[] };
+      }>(HUMAN, "quality_audits.chat_status", { chatSessionId: s.chatSessionId });
+    };
+    const first = await roundWith(60, "operator");
+    await op(HUMAN, "quality_audits.claim_chat_notification", {
+      auditRunId: first.audit.id,
+      fixScope: "all",
+    });
+    // While the AI fixes, the operator accepts the Accessibility group.
+    const proposal = await op<{ proposalId: string }>(HUMAN, "quality_audits.propose_accept", {
+      auditRunId: first.audit.id,
+      groups: [{ category: "accessibility" }],
+      reason: "brand colours chosen on purpose",
+    });
+    await op(HUMAN, "quality_audits.execute_proposal", { proposalId: proposal.proposalId });
+    // The AI's re-Stage got closer, but the operator has decided: ask.
+    const second = await roundWith(70, "live_edit_ai");
+    expect(second.feedback.autoContinue).toBe(false);
+    expect(second.feedback.actionLabel).toBe("Keep fixing with AI");
+    expect(second.feedback.text).toContain("You decided on findings while the AI was fixing");
+    expect(second.feedback.groups).toHaveLength(1);
+    // Their click after the decision starts a fresh chain that continues again.
+    await op(HUMAN, "quality_audits.claim_chat_notification", {
+      auditRunId: second.audit.id,
+      fixScope: "all",
+    });
+    expect((await roundWith(80, "live_edit_ai")).feedback.autoContinue).toBe(true);
+  });
+
   it("a Stage after 'Not now' uses up no fix round (#685)", async () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
       HUMAN,

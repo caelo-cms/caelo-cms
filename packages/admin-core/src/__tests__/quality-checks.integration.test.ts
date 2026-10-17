@@ -32,7 +32,9 @@ import {
   PLACEHOLDER_RULE,
   testCheckRegistry,
 } from "../quality/checks/__tests__/fixtures/test-checks.js";
+import { linkSourcesFromOps } from "../quality/checks/links-sources.js";
 import { type CheckRegistry, createCoreCheckRegistry } from "../quality/checks/registry.js";
+import { structureSourcesFromOps } from "../quality/checks/structure-sources.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
 import type { AuditJobResult } from "../quality/lighthouse-runner.js";
 import { localBuildSource } from "../quality/staged-origin.js";
@@ -453,7 +455,11 @@ describe("the per-rule ratchet", () => {
 
 describe("a broken check", () => {
   it("fails the audit loudly, offers publish anyway, and leaves acceptances alone", async () => {
-    const checks = createCoreCheckRegistry({ lighthouse: noLighthouse });
+    const checks = createCoreCheckRegistry({
+      lighthouse: noLighthouse,
+      structure: structureSourcesFromOps(registry, adapter, SYS),
+      links: linkSourcesFromOps(registry, adapter, SYS),
+    });
     checks.register(
       {
         id: "flaky",

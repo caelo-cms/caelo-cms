@@ -20,8 +20,20 @@
  *   - Dynamic import() calls.
  *   - Template/string literals containing SQL *statements* (SELECT…FROM,
  *     INSERT INTO, DROP TABLE, …) — plugins go through query.* helpers.
- *   - eval / Function / new Function.
+ *   - eval / Function / new Function, by any reference (`(0, eval)(…)`,
+ *     `const e = eval`), and calling a `.constructor` (the
+ *     function-constructor escape), including constant-folded computed
+ *     spellings (`f["con" + "structor"](…)`).
+ *   - globalThis / window / self used as a value (aliasing, passing it to
+ *     a function) — only direct member access is analysable.
  *   - Top-level globalThis writes.
+ *
+ * This layer is static and therefore incomplete by nature: a computed
+ * member whose key is only known at runtime (`obj[k]`) cannot be judged
+ * here. It is defense in depth. The guarantee is the runtime layer: the
+ * Deno child runs with every permission denied and with code generation
+ * from strings disabled, and the sandbox prelude removes `Deno` before
+ * plugin code runs (plugin-host `sandbox-runtime.ts` / `sandbox-entry.ts`).
  *
  * Plus the manifest invariants (CMS_REQUIREMENTS §14):
  *   - Tier 2 manifests MUST NOT declare `requestedCapabilities`,
@@ -61,6 +73,7 @@ export type ValidationFailureKind =
   | "forbidden-sql-template"
   | "forbidden-eval"
   | "forbidden-globalthis-write"
+  | "forbidden-globalthis-alias"
   | "parse-error";
 
 export interface ValidationFailure {
@@ -268,216 +281,349 @@ export function validateSource(opts: {
     return failures;
   }
 
-  walk(ast, (node, parents) => {
-    if (!node || typeof node !== "object") return;
-    const type = (node as { type?: string }).type;
-    if (!type) return;
+  let maxDepthExceeded = false;
+  walk(
+    ast,
+    (node, parents) => {
+      if (!node || typeof node !== "object") return;
+      const type = (node as { type?: string }).type;
+      if (!type) return;
 
-    // ImportDeclaration — only @caelo-cms/plugin-sdk allowed.
-    if (
-      type === "ImportDeclaration" ||
-      ((type === "ExportNamedDeclaration" || type === "ExportAllDeclaration") &&
-        (node as { source?: unknown }).source)
-    ) {
-      const sourceVal = (node as { source?: { value?: unknown } }).source?.value;
-      const relativeOk =
-        opts.allowRelativeImports === true &&
-        typeof sourceVal === "string" &&
-        SAME_PACKAGE_IMPORT_RE.test(sourceVal);
-      if (!relativeOk && (typeof sourceVal !== "string" || !ALLOWED_IMPORTS.has(sourceVal))) {
-        failures.push({
-          kind: "forbidden-import",
-          nodeType: type,
-          snippet: typeof sourceVal === "string" ? sourceVal : "<unknown>",
-          location: locOf(node),
-          hint: `import "${sourceVal ?? "<unknown>"}" is not allowed. Plugins may import only from "@caelo-cms/plugin-sdk".`,
-        });
+      // ImportDeclaration — only @caelo-cms/plugin-sdk allowed.
+      if (
+        type === "ImportDeclaration" ||
+        ((type === "ExportNamedDeclaration" || type === "ExportAllDeclaration") &&
+          (node as { source?: unknown }).source)
+      ) {
+        const sourceVal = (node as { source?: { value?: unknown } }).source?.value;
+        const relativeOk =
+          opts.allowRelativeImports === true &&
+          typeof sourceVal === "string" &&
+          SAME_PACKAGE_IMPORT_RE.test(sourceVal);
+        if (!relativeOk && (typeof sourceVal !== "string" || !ALLOWED_IMPORTS.has(sourceVal))) {
+          failures.push({
+            kind: "forbidden-import",
+            nodeType: type,
+            snippet: typeof sourceVal === "string" ? sourceVal : "<unknown>",
+            location: locOf(node),
+            hint: `import "${sourceVal ?? "<unknown>"}" is not allowed. Plugins may import only from "@caelo-cms/plugin-sdk".`,
+          });
+        }
+        return;
       }
-      return;
-    }
 
-    // ImportExpression — dynamic import() (oxc-parser uses ImportExpression for dynamic; some versions: CallExpression w/ Import).
-    if (type === "ImportExpression") {
-      failures.push({
-        kind: "forbidden-dynamic-import",
-        nodeType: type,
-        location: locOf(node),
-        hint: "Dynamic import() is not allowed. Use static `import` from @caelo-cms/plugin-sdk.",
-      });
-      return;
-    }
-
-    // import.meta — exposes the module's host URL/path and, under the
-    // host bundler, resolution helpers that reach the host filesystem.
-    if (type === "MetaProperty") {
-      failures.push({
-        kind: "forbidden-import-meta",
-        nodeType: type,
-        location: locOf(node),
-        hint: "import.meta is not allowed in plugin code.",
-      });
-      return;
-    }
-
-    // CallExpression — fetch, XMLHttpRequest, eval, Function, dynamic import (legacy AST shape).
-    if (type === "CallExpression") {
-      const callee = (node as { callee?: unknown }).callee;
-      const calleeName = identifierName(callee);
-      // require() — the bundle is built in the HOST process, before the
-      // Deno sandbox exists, so a require of a host path would inline
-      // that file's contents (secrets, service-account keys) into the
-      // plugin bundle. `module.require` / `globalThis.require` alike.
-      const requireProp =
-        callee && (callee as { type?: string }).type === "MemberExpression"
-          ? identifierName((callee as { property?: unknown }).property)
-          : null;
-      if (calleeName === "require" || requireProp === "require") {
+      // ImportExpression — dynamic import() (oxc-parser uses ImportExpression for dynamic; some versions: CallExpression w/ Import).
+      if (type === "ImportExpression") {
         failures.push({
-          kind: "forbidden-require",
+          kind: "forbidden-dynamic-import",
           nodeType: type,
-          snippet: "require",
           location: locOf(node),
-          hint: 'require() is not allowed. Use static `import` from "@caelo-cms/plugin-sdk".',
+          hint: "Dynamic import() is not allowed. Use static `import` from @caelo-cms/plugin-sdk.",
         });
         return;
       }
-      if (calleeName === "fetch" || calleeName === "XMLHttpRequest" || calleeName === "WebSocket") {
+
+      // import.meta — exposes the module's host URL/path and, under the
+      // host bundler, resolution helpers that reach the host filesystem.
+      if (type === "MetaProperty") {
         failures.push({
-          kind: "forbidden-call",
+          kind: "forbidden-import-meta",
           nodeType: type,
-          snippet: calleeName,
           location: locOf(node),
-          hint: `${calleeName}() is not allowed. Use ctx.api / ctx.query for I/O.`,
+          hint: "import.meta is not allowed in plugin code.",
         });
         return;
       }
-      if (calleeName === "eval") {
-        failures.push({
-          kind: "forbidden-eval",
-          nodeType: type,
-          snippet: "eval",
-          location: locOf(node),
-          hint: "eval() is not allowed.",
-        });
-        return;
-      }
-      if (calleeName === "Function") {
-        failures.push({
-          kind: "forbidden-eval",
-          nodeType: type,
-          snippet: "Function",
-          location: locOf(node),
-          hint: "Function() constructor is not allowed (treated as dynamic eval).",
-        });
-        return;
-      }
-      // globalThis.fetch / window.fetch / self.fetch
-      if (callee && (callee as { type?: string }).type === "MemberExpression") {
-        const objName = identifierName((callee as { object?: unknown }).object);
-        const propName = identifierName((callee as { property?: unknown }).property);
+
+      // MemberExpression — check .constructor, computed globalThis[...], and globalThis/window/self forbidden properties.
+      if (type === "MemberExpression") {
+        const member = node as { object?: unknown; property?: unknown; computed?: boolean };
+        const objName = identifierName(unwrapExpr(member.object));
+        const propName = memberPropertyName(member);
+
+        // Reading `.constructor` is ordinary (`value.constructor === Object`).
+        // Calling it — or reaching `.constructor.constructor` — is the
+        // function-constructor escape to eval.
         if (
-          (objName === "globalThis" || objName === "window" || objName === "self") &&
-          (propName === "fetch" || propName === "XMLHttpRequest" || propName === "WebSocket")
+          propName === "constructor" &&
+          (isCalleePosition(node, parents) || isConstructorMember(unwrapExpr(member.object)))
+        ) {
+          failures.push({
+            kind: "forbidden-eval",
+            nodeType: type,
+            snippet: ".constructor(...)",
+            location: locOf(node),
+            hint: "Calling a .constructor is not allowed in plugin code (it reaches the Function constructor). Call the class or factory you need directly.",
+          });
+          return;
+        }
+
+        if (objName === "globalThis" || objName === "window" || objName === "self") {
+          if (member.computed && propName === null) {
+            failures.push({
+              kind: "forbidden-call",
+              nodeType: type,
+              snippet: `${objName}[...]`,
+              location: locOf(node),
+              hint: `Dynamic computed property access on ${objName} is not allowed.`,
+            });
+            return;
+          }
+          if (propName !== null && GLOBAL_OBJECT_NAMES.has(propName)) {
+            failures.push({
+              kind: "forbidden-globalthis-alias",
+              nodeType: type,
+              snippet: `${objName}.${propName}`,
+              location: locOf(node),
+              hint: `${objName}.${propName} is the global object again; reference globals directly.`,
+            });
+            return;
+          }
+          if (propName === "eval" || propName === "Function") {
+            failures.push({
+              kind: "forbidden-eval",
+              nodeType: type,
+              snippet: `${objName}.${propName}`,
+              location: locOf(node),
+              hint: `${objName}.${propName} is not allowed.`,
+            });
+            return;
+          }
+          if (propName === "Deno") {
+            failures.push({
+              kind: "forbidden-deno-access",
+              nodeType: type,
+              snippet: `${objName}.Deno`,
+              location: locOf(node),
+              hint: "Deno.* is not accessible to plugins. Use ctx.query / ctx.api / ctx.theme.",
+            });
+            return;
+          }
+          if (propName === "require") {
+            failures.push({
+              kind: "forbidden-require",
+              nodeType: type,
+              snippet: `${objName}.require`,
+              location: locOf(node),
+              hint: 'require() is not allowed. Use static `import` from "@caelo-cms/plugin-sdk".',
+            });
+            return;
+          }
+          if (propName === "fetch" || propName === "XMLHttpRequest" || propName === "WebSocket") {
+            failures.push({
+              kind: "forbidden-call",
+              nodeType: type,
+              snippet: `${objName}.${propName}`,
+              location: locOf(node),
+              hint: `${objName}.${propName}() is not allowed. Use ctx.api / ctx.query for I/O.`,
+            });
+            return;
+          }
+        }
+      }
+
+      // CallExpression — fetch, XMLHttpRequest, eval, Function, dynamic import (legacy AST shape).
+      if (type === "CallExpression") {
+        const callee = unwrapExpr((node as { callee?: unknown }).callee);
+        const calleeName = identifierName(callee);
+        // require() — the bundle is built in the HOST process, before the
+        // Deno sandbox exists, so a require of a host path would inline
+        // that file's contents (secrets, service-account keys) into the
+        // plugin bundle. `module.require` / `globalThis.require` alike.
+        const requireProp =
+          callee && (callee as { type?: string }).type === "MemberExpression"
+            ? memberPropertyName(callee as { property?: unknown; computed?: boolean })
+            : null;
+        if (calleeName === "require" || requireProp === "require") {
+          failures.push({
+            kind: "forbidden-require",
+            nodeType: type,
+            snippet: "require",
+            location: locOf(node),
+            hint: 'require() is not allowed. Use static `import` from "@caelo-cms/plugin-sdk".',
+          });
+          return;
+        }
+        if (
+          calleeName === "fetch" ||
+          calleeName === "XMLHttpRequest" ||
+          calleeName === "WebSocket"
         ) {
           failures.push({
             kind: "forbidden-call",
             nodeType: type,
-            snippet: `${objName}.${propName}`,
+            snippet: calleeName,
             location: locOf(node),
-            hint: `${objName}.${propName}() is not allowed. Use ctx.api / ctx.query for I/O.`,
+            hint: `${calleeName}() is not allowed. Use ctx.api / ctx.query for I/O.`,
+          });
+          return;
+        }
+        if (calleeName === "eval") {
+          failures.push({
+            kind: "forbidden-eval",
+            nodeType: type,
+            snippet: "eval",
+            location: locOf(node),
+            hint: "eval() is not allowed.",
+          });
+          return;
+        }
+        if (calleeName === "Function") {
+          failures.push({
+            kind: "forbidden-eval",
+            nodeType: type,
+            snippet: "Function",
+            location: locOf(node),
+            hint: "Function() constructor is not allowed (treated as dynamic eval).",
           });
           return;
         }
       }
-    }
 
-    // NewExpression for Function — `new Function('...')`.
-    if (type === "NewExpression") {
-      const calleeName = identifierName((node as { callee?: unknown }).callee);
-      if (calleeName === "Function") {
+      // NewExpression for Function — `new Function('...')` or `new globalThis.Function('...')`.
+      if (type === "NewExpression") {
+        const callee = unwrapExpr((node as { callee?: unknown }).callee);
+        const calleeName = identifierName(callee);
+        const memberProp =
+          callee && (callee as { type?: string }).type === "MemberExpression"
+            ? memberPropertyName(callee as { property?: unknown; computed?: boolean })
+            : null;
+        if (calleeName === "Function" || memberProp === "Function") {
+          failures.push({
+            kind: "forbidden-eval",
+            nodeType: type,
+            snippet: "new Function",
+            location: locOf(node),
+            hint: "new Function() is not allowed (treated as dynamic eval).",
+          });
+          return;
+        }
+      }
+
+      // eval / Function referenced as a value: `(0, eval)(…)`,
+      // `const e = eval`, `[Function][0]`. Only a call reaches code
+      // generation, but any reference can become one, so all fail —
+      // except `x instanceof Function`, which cannot call it.
+      if (type === "Identifier" && isReferencePosition(node, parents)) {
+        const name = (node as { name?: string }).name;
+        const parent = parents[parents.length - 1] as
+          | { type?: string; operator?: string; right?: unknown; object?: unknown }
+          | undefined;
+        const isInstanceofRight =
+          parent?.type === "BinaryExpression" &&
+          parent.operator === "instanceof" &&
+          parent.right === node;
+        if (name === "eval" || (name === "Function" && !isInstanceofRight)) {
+          failures.push({
+            kind: "forbidden-eval",
+            nodeType: type,
+            snippet: name,
+            location: locOf(node),
+            hint: `${name} is not allowed in plugin code, called or referenced.`,
+          });
+          return;
+        }
+        // The global object as a value defeats every member rule above
+        // (`const g = globalThis; g.eval(…)`, `Reflect.get(globalThis, k)`).
+        // Direct member access (`globalThis.Math`) and `typeof` stay fine.
+        if (name !== undefined && GLOBAL_OBJECT_NAMES.has(name)) {
+          const memberObject = parent?.type === "MemberExpression" && parent.object === node;
+          const typeofOperand = parent?.type === "UnaryExpression" && parent.operator === "typeof";
+          if (!memberObject && !typeofOperand && !isBindingPosition(node, parents)) {
+            failures.push({
+              kind: "forbidden-globalthis-alias",
+              nodeType: type,
+              snippet: name,
+              location: locOf(node),
+              hint: `${name} may only be used for direct member access (${name}.X); do not alias it or pass it around.`,
+            });
+            return;
+          }
+        }
+      }
+
+      // Identifier referencing Deno — any access.
+      if (type === "Identifier" && (node as { name?: string }).name === "Deno") {
+        // Skip the Identifier inside its own declaration shadow (rare).
+        // Skip when the parent is a MemberExpression *property* (e.g. someObj.Deno) — only the object position is interesting.
+        const parent = parents[parents.length - 1] as
+          | { type?: string; property?: unknown }
+          | undefined;
+        if (
+          parent?.type === "MemberExpression" &&
+          (parent as { property?: unknown }).property === node
+        ) {
+          return;
+        }
         failures.push({
-          kind: "forbidden-eval",
+          kind: "forbidden-deno-access",
           nodeType: type,
-          snippet: "new Function",
+          snippet: "Deno",
           location: locOf(node),
-          hint: "new Function() is not allowed (treated as dynamic eval).",
+          hint: "Deno.* is not accessible to plugins. Use ctx.query / ctx.api / ctx.theme.",
         });
         return;
       }
-    }
 
-    // Identifier referencing Deno — any access.
-    if (type === "Identifier" && (node as { name?: string }).name === "Deno") {
-      // Skip the Identifier inside its own declaration shadow (rare).
-      // Skip when the parent is a MemberExpression *property* (e.g. someObj.Deno) — only the object position is interesting.
-      const parent = parents[parents.length - 1] as
-        | { type?: string; property?: unknown }
-        | undefined;
-      if (
-        parent?.type === "MemberExpression" &&
-        (parent as { property?: unknown }).property === node
-      ) {
-        return;
+      // TemplateLiteral / Literal containing SQL keywords.
+      if (type === "TemplateLiteral") {
+        const quasis = (node as { quasis?: Array<{ value?: { raw?: string } }> }).quasis ?? [];
+        for (const q of quasis) {
+          const raw = q.value?.raw ?? "";
+          if (SQL_STATEMENT_RE.test(raw)) {
+            failures.push({
+              kind: "forbidden-sql-template",
+              nodeType: type,
+              snippet: raw.slice(0, 80),
+              location: locOf(node),
+              hint: "Template literals containing SQL statements are not allowed. Use ctx.query.insert/list/update/delete instead of raw SQL.",
+            });
+            return;
+          }
+        }
       }
-      failures.push({
-        kind: "forbidden-deno-access",
-        nodeType: type,
-        snippet: "Deno",
-        location: locOf(node),
-        hint: "Deno.* is not accessible to plugins. Use ctx.query / ctx.api / ctx.theme.",
-      });
-      return;
-    }
-
-    // TemplateLiteral / Literal containing SQL keywords.
-    if (type === "TemplateLiteral") {
-      const quasis = (node as { quasis?: Array<{ value?: { raw?: string } }> }).quasis ?? [];
-      for (const q of quasis) {
-        const raw = q.value?.raw ?? "";
-        if (SQL_STATEMENT_RE.test(raw)) {
+      if (type === "Literal" || type === "StringLiteral") {
+        const v = (node as { value?: unknown }).value;
+        if (typeof v === "string" && SQL_STATEMENT_RE.test(v)) {
           failures.push({
             kind: "forbidden-sql-template",
             nodeType: type,
-            snippet: raw.slice(0, 80),
+            snippet: v.slice(0, 80),
             location: locOf(node),
-            hint: "Template literals containing SQL statements are not allowed. Use ctx.query.insert/list/update/delete instead of raw SQL.",
+            hint: "String literals containing SQL statements are not allowed. Use ctx.query.* helpers.",
           });
           return;
         }
       }
-    }
-    if (type === "Literal" || type === "StringLiteral") {
-      const v = (node as { value?: unknown }).value;
-      if (typeof v === "string" && SQL_STATEMENT_RE.test(v)) {
-        failures.push({
-          kind: "forbidden-sql-template",
-          nodeType: type,
-          snippet: v.slice(0, 80),
-          location: locOf(node),
-          hint: "String literals containing SQL statements are not allowed. Use ctx.query.* helpers.",
-        });
-        return;
-      }
-    }
 
-    // AssignmentExpression to globalThis.* at top level.
-    if (type === "AssignmentExpression") {
-      const left = (node as { left?: unknown }).left;
-      if (left && (left as { type?: string }).type === "MemberExpression") {
-        const objName = identifierName((left as { object?: unknown }).object);
-        if (objName === "globalThis" || objName === "window" || objName === "self") {
-          failures.push({
-            kind: "forbidden-globalthis-write",
-            nodeType: type,
-            snippet: `${objName}.*`,
-            location: locOf(node),
-            hint: `Writes to ${objName} are not allowed. Plugins must not pollute the global scope.`,
-          });
-          return;
+      // AssignmentExpression to globalThis.* at top level.
+      if (type === "AssignmentExpression") {
+        const left = unwrapExpr((node as { left?: unknown }).left);
+        if (left && (left as { type?: string }).type === "MemberExpression") {
+          const objName = identifierName(unwrapExpr((left as { object?: unknown }).object));
+          if (objName === "globalThis" || objName === "window" || objName === "self") {
+            failures.push({
+              kind: "forbidden-globalthis-write",
+              nodeType: type,
+              snippet: `${objName}.*`,
+              location: locOf(node),
+              hint: `Writes to ${objName} are not allowed. Plugins must not pollute the global scope.`,
+            });
+            return;
+          }
         }
       }
-    }
-  });
+    },
+    () => {
+      if (!maxDepthExceeded) {
+        maxDepthExceeded = true;
+        failures.push({
+          kind: "parse-error",
+          hint: `Plugin AST nesting depth exceeded maximum limit (${MAX_DEPTH}). Simplify deeply nested expressions.`,
+        });
+      }
+    },
+  );
 
   return failures;
 }
@@ -590,10 +736,10 @@ const CHILD_KEYS: ReadonlySet<string> = new Set([
   "implements",
 ]);
 
-function walk(node: unknown, visit: Visitor): void {
+function walk(node: unknown, visit: Visitor, onMaxDepthExceeded?: () => void): void {
   if (!node || typeof node !== "object") return;
   const visited = new WeakSet<object>();
-  walkInner(node, visit, [], visited, 0);
+  walkInner(node, visit, [], visited, 0, onMaxDepthExceeded);
 }
 
 function walkInner(
@@ -602,11 +748,15 @@ function walkInner(
   parents: unknown[],
   visited: WeakSet<object>,
   depth: number,
+  onMaxDepthExceeded?: () => void,
 ): void {
   if (!node || typeof node !== "object") return;
-  if (depth > MAX_DEPTH) return;
+  if (depth > MAX_DEPTH) {
+    onMaxDepthExceeded?.();
+    return;
+  }
   if (Array.isArray(node)) {
-    for (const child of node) walkInner(child, visit, parents, visited, depth);
+    for (const child of node) walkInner(child, visit, parents, visited, depth, onMaxDepthExceeded);
     return;
   }
   if (visited.has(node as object)) return;
@@ -616,15 +766,192 @@ function walkInner(
   for (const key of CHILD_KEYS) {
     const child = (node as Record<string, unknown>)[key];
     if (child && typeof child === "object") {
-      walkInner(child, visit, nextParents, visited, depth + 1);
+      walkInner(child, visit, nextParents, visited, depth + 1, onMaxDepthExceeded);
     }
   }
 }
 
+function unwrapExpr(n: unknown): unknown {
+  let cur = n;
+  while (cur && typeof cur === "object") {
+    const t = (cur as { type?: string }).type;
+    if (t !== undefined && TRANSPARENT_WRAPPERS.has(t)) {
+      cur = (cur as { expression?: unknown }).expression;
+    } else if (t === "SequenceExpression") {
+      // `(0, eval)` evaluates to its last element.
+      const exprs = (cur as { expressions?: unknown[] }).expressions ?? [];
+      cur = exprs[exprs.length - 1];
+    } else {
+      break;
+    }
+  }
+  return cur;
+}
+
+function memberPropertyName(member: { property?: unknown; computed?: boolean }): string | null {
+  const prop = unwrapExpr(member.property);
+  if (!prop || typeof prop !== "object") return null;
+  if (!member.computed) {
+    return identifierName(prop);
+  }
+  return foldString(prop, 0);
+}
+
+/**
+ * Constant-fold a computed key built only from literals: string/number
+ * literals, templates whose parts fold, and `+` concatenations. So
+ * `f["con" + "structor"]` and `` g[`ev${"al"}`] `` are judged like
+ * `f.constructor` / `g.eval`. Anything else (an identifier, a call) is
+ * not foldable and yields null.
+ */
+function foldString(n: unknown, depth: number): string | null {
+  const node = unwrapExpr(n);
+  if (!node || typeof node !== "object" || depth > MAX_DEPTH) return null;
+  const t = (node as { type?: string }).type;
+  if (t === "Literal" || t === "StringLiteral" || t === "NumericLiteral") {
+    const v = (node as { value?: unknown }).value;
+    if (typeof v === "string") return v;
+    if (typeof v === "number") return String(v);
+    return null;
+  }
+  if (t === "TemplateLiteral") {
+    const exprs = (node as { expressions?: unknown[] }).expressions ?? [];
+    const quasis =
+      (node as { quasis?: Array<{ value?: { cooked?: string | null } }> }).quasis ?? [];
+    let out = "";
+    for (let i = 0; i < quasis.length; i++) {
+      const cooked = quasis[i]?.value?.cooked;
+      if (typeof cooked !== "string") return null;
+      out += cooked;
+      if (i < exprs.length) {
+        const part = foldString(exprs[i], depth + 1);
+        if (part === null) return null;
+        out += part;
+      }
+    }
+    return out;
+  }
+  if (t === "BinaryExpression" && (node as { operator?: string }).operator === "+") {
+    const left = foldString((node as { left?: unknown }).left, depth + 1);
+    if (left === null) return null;
+    const right = foldString((node as { right?: unknown }).right, depth + 1);
+    return right === null ? null : left + right;
+  }
+  return null;
+}
+
+/** Names that evaluate to the global object in the Deno child. */
+const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set(["globalThis", "window", "self"]);
+
+/** Wrapper nodes that pass their inner expression's value through unchanged. */
+const TRANSPARENT_WRAPPERS: ReadonlySet<string> = new Set([
+  "ChainExpression",
+  "ParenthesizedExpression",
+  "TSAsExpression",
+  "TSSatisfiesExpression",
+  "TSNonNullExpression",
+]);
+
+/**
+ * Whether `node`'s value is what gets called: the callee of a call or
+ * `new`, or the tag of a tagged template — looking through parentheses,
+ * optional chains, TS casts and the last element of a sequence.
+ */
+function isCalleePosition(node: unknown, parents: unknown[]): boolean {
+  let child = node;
+  for (let i = parents.length - 1; i >= 0; i--) {
+    const parent = parents[i] as {
+      type?: string;
+      callee?: unknown;
+      tag?: unknown;
+      expressions?: unknown[];
+    };
+    const t = parent.type ?? "";
+    if (TRANSPARENT_WRAPPERS.has(t)) {
+      child = parent;
+      continue;
+    }
+    if (t === "SequenceExpression") {
+      const exprs = parent.expressions ?? [];
+      if (exprs[exprs.length - 1] !== child) return false;
+      child = parent;
+      continue;
+    }
+    if (t === "CallExpression" || t === "NewExpression") return parent.callee === child;
+    if (t === "TaggedTemplateExpression") return parent.tag === child;
+    return false;
+  }
+  return false;
+}
+
+/** `x.constructor` (or a folded computed spelling of it). */
+function isConstructorMember(n: unknown): boolean {
+  if (!n || typeof n !== "object" || (n as { type?: string }).type !== "MemberExpression") {
+    return false;
+  }
+  return memberPropertyName(n as { property?: unknown; computed?: boolean }) === "constructor";
+}
+
+/**
+ * Whether an Identifier node reads a variable, as opposed to naming a
+ * property, a key, a label, or a TypeScript type position.
+ */
+function isReferencePosition(node: unknown, parents: unknown[]): boolean {
+  const parent = parents[parents.length - 1] as
+    | { type?: string; property?: unknown; key?: unknown; label?: unknown; computed?: boolean }
+    | undefined;
+  if (!parent) return true;
+  const t = parent.type ?? "";
+  if (t.startsWith("TS")) return false;
+  if (t === "MemberExpression" && parent.property === node && !parent.computed) return false;
+  if (
+    (t === "Property" ||
+      t === "MethodDefinition" ||
+      t === "PropertyDefinition" ||
+      t === "AccessorProperty") &&
+    parent.key === node &&
+    !parent.computed
+  ) {
+    return false;
+  }
+  if (
+    (t === "LabeledStatement" || t === "BreakStatement" || t === "ContinueStatement") &&
+    parent.label === node
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Whether an Identifier node declares a binding rather than reading one:
+ * a variable declarator's id, a function/catch parameter, or a default-
+ * value pattern's target. A local `const self = this` is not the global.
+ */
+function isBindingPosition(node: unknown, parents: unknown[]): boolean {
+  const parent = parents[parents.length - 1] as
+    | { type?: string; id?: unknown; params?: unknown[]; param?: unknown; left?: unknown }
+    | undefined;
+  if (!parent) return false;
+  const t = parent.type ?? "";
+  if (t === "VariableDeclarator" && parent.id === node) return true;
+  if (t === "AssignmentPattern" && parent.left === node) return true;
+  if (t === "CatchClause" && parent.param === node) return true;
+  if (Array.isArray(parent.params) && parent.params.includes(node)) return true;
+  if (
+    (t === "FunctionDeclaration" || t === "FunctionExpression" || t === "ClassDeclaration") &&
+    parent.id === node
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function identifierName(n: unknown): string | null {
-  if (!n || typeof n !== "object") return null;
-  const t = (n as { type?: string }).type;
-  if (t === "Identifier") return (n as { name?: string }).name ?? null;
+  const unwrapped = unwrapExpr(n);
+  if (!unwrapped || typeof unwrapped !== "object") return null;
+  const t = (unwrapped as { type?: string }).type;
+  if (t === "Identifier") return (unwrapped as { name?: string }).name ?? null;
   return null;
 }
 

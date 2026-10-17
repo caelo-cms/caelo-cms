@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { lintMigrationSql, lintMigrationsSince, migrationHead } from "./migration-lint.ts";
+import { join, resolve } from "node:path";
+import {
+  lintMigrationSql,
+  lintMigrationsSince,
+  migrationHead,
+  outOfOrderMigrations,
+  outOfOrderMigrationsSince,
+} from "./migration-lint.ts";
 
 const rules = (sql: string) => lintMigrationSql("m.sql", sql).map((f) => f.rule);
 
@@ -140,4 +146,72 @@ describe("lintMigrationsSince (git)", () => {
     ]);
     expect(lintMigrationsSince(null, repo)).toEqual([]);
   });
+});
+
+describe("outOfOrderMigrations (#635: 0282 arriving after a shipped 0283)", () => {
+  it("flags a migration added below the previous release's head, per database", () => {
+    expect(
+      outOfOrderMigrations(
+        {
+          cms_admin: ["0281_a.sql", "0283_b.sql", "9999_rls_policies.sql", "meta"],
+          cms_public: ["0280_c.sql"],
+        },
+        { cms_admin: ["0282_late.sql", "0284_ok.sql"], cms_public: ["0281_ok.sql"] },
+      ),
+    ).toEqual([{ file: "cms_admin/0282_late.sql", head: "cms_admin/0283_b.sql" }]);
+  });
+
+  it("reads the previous release from git", () => {
+    const repo = mkdtempSync(join(tmpdir(), "caelo-migration-order-"));
+    try {
+      const git = (...args: string[]) => {
+        const p = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+        if (p.exitCode !== 0) throw new Error(new TextDecoder().decode(p.stderr));
+      };
+      const dir = join(repo, "packages/migrations/migrations/cms_admin");
+      git("init", "-q");
+      git("config", "user.email", "t@example.com");
+      git("config", "user.name", "t");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "0281_a.sql"), "SELECT 1;");
+      writeFileSync(join(dir, "0283_b.sql"), "SELECT 1;");
+      git("add", ".");
+      git("commit", "-qm", "base");
+      git("tag", "v0.1.0");
+      writeFileSync(join(dir, "0282_late.sql"), "SELECT 1;");
+      writeFileSync(join(dir, "0284_ok.sql"), "SELECT 1;");
+      git("add", ".");
+      git("commit", "-qm", "next");
+      expect(outOfOrderMigrationsSince("v0.1.0", repo)).toEqual([
+        { file: "cms_admin/0282_late.sql", head: "cms_admin/0283_b.sql" },
+      ]);
+      expect(outOfOrderMigrationsSince(null, repo)).toEqual([]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("migration numbers (#635: 0284 merged twice)", () => {
+  // Two branches can each take the next free number; whichever merges
+  // second must renumber. Two files with one number apply in name order,
+  // which nobody chose.
+  //
+  // 0198 was taken three times before this check existed, and those files
+  // are long applied. The runner records file names, so renaming them would
+  // apply them a second time on every install. They stay; nothing else may
+  // join them.
+  const SHIPPED_DUPLICATES = new Set(["0198"]);
+  for (const db of ["cms_admin", "cms_public"]) {
+    it(`${db}: every number is used once`, () => {
+      const dir = resolve(import.meta.dir, "..", "packages/migrations/migrations", db);
+      const numbers = readdirSync(dir)
+        .filter((f) => /^\d{4}_.+\.sql$/.test(f))
+        .map((f) => f.slice(0, 4));
+      const repeated = numbers.filter(
+        (n, i) => numbers.indexOf(n) !== i && !(db === "cms_admin" && SHIPPED_DUPLICATES.has(n)),
+      );
+      expect(repeated).toEqual([]);
+    });
+  }
 });

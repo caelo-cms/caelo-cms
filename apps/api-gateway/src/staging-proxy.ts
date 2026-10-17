@@ -70,6 +70,13 @@ export interface StagingState {
 
 export interface StagingProxyDeps {
   readonly config: StagingGateConfig;
+  /**
+   * The client address the deployment's proxies vouch for (client-ip.ts
+   * `clientAddress`), matched against the IP allowlist. The staging host
+   * reaches the gateway through a Cloud Run domain mapping, so on
+   * gcp-firebase that is the entry Cloud Run's front end appended.
+   */
+  readonly clientIp: string | null;
   readonly loadState: () => Promise<StagingState>;
   /** Upstream fetch (tests pass a fake). */
   readonly fetchImpl?: typeof fetch;
@@ -92,27 +99,6 @@ export function stagingGateFromEnv(
 export function isStagingRequest(req: Request, stagingHost: string): boolean {
   const host = (req.headers.get("host") ?? new URL(req.url).host).toLowerCase();
   return host === stagingHost.toLowerCase();
-}
-
-/**
- * The client address Cloud Run vouches for: the LAST `X-Forwarded-For`
- * entry. The staging host reaches the gateway through a Cloud Run domain
- * mapping (gcp-firebase has no load balancer — §11.B), so the only proxy
- * on the path is Google's front end, which appends the address it received
- * the connection from; anything before it came from the client and can be
- * forged, so an allowlist must never trust an earlier entry.
- *
- * Behind an external Application Load Balancer the front end appends TWO
- * entries (`<client>, <load-balancer IP>`) and the client would be the
- * second-to-last. That topology does not serve the staging host today; a
- * provider that puts one in front must pass its own hop count here rather
- * than reuse this function, or the allowlist would match the LB address
- * for every visitor.
- */
-export function cloudRunClientIp(xForwardedFor: string | null): string | null {
-  if (!xForwardedFor) return null;
-  const last = xForwardedFor.split(",").at(-1)?.trim();
-  return last ? last : null;
 }
 
 /**
@@ -322,7 +308,7 @@ export async function handleStagingRequest(
       cookieHeader: req.headers.get("cookie"),
       authorizationHeader: req.headers.get("authorization"),
       header: (name) => req.headers.get(name),
-      clientIp: cloudRunClientIp(req.headers.get("x-forwarded-for")),
+      clientIp: deps.clientIp,
     },
   });
   if (!decision.allowed) {

@@ -8,26 +8,30 @@ import {
   selfHostedBootstrapScript,
 } from "./self-hosted-roles.js";
 
-const PASSWORDS = { admin: "a'pw", public: "p-pw", gateway: "g-pw" };
+const PASSWORDS = { admin: "a'pw", public: "p-pw" };
 
 describe("roleConvergenceScript (#613 review)", () => {
   const script = roleConvergenceScript(PASSWORDS);
 
   it("creates missing roles and (re)sets every role's password, quoted", () => {
-    for (const role of ["admin_role", "public_role", "gateway_role"]) {
+    for (const role of ["admin_role", "public_role"]) {
       expect(script).toContain(
         `WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}')`,
       );
     }
     expect(script).toContain("ALTER ROLE admin_role WITH LOGIN PASSWORD 'a''pw';");
-    expect(script).toContain("ALTER ROLE gateway_role WITH LOGIN PASSWORD 'g-pw';");
+    expect(script).not.toContain("CREATE ROLE gateway_role");
   });
 
-  it("re-applies migration 0248's gateway grants in cms_admin, and stops on the first error", () => {
+  it("drops the former gateway_role with what it holds in both databases, and stops on the first error (#635)", () => {
     expect(script.startsWith("\\set ON_ERROR_STOP on")).toBe(true);
-    expect(script.indexOf("\\connect cms_admin")).toBeLessThan(
-      script.indexOf("PERFORM caelo_grant_gateway_role()"),
-    );
+    const publicDrop = script.indexOf("\\connect cms_public");
+    const adminDrop = script.indexOf("\\connect cms_admin");
+    expect(publicDrop).toBeGreaterThan(-1);
+    expect(adminDrop).toBeGreaterThan(publicDrop);
+    expect(script.match(/DROP OWNED BY gateway_role/g)).toHaveLength(2);
+    expect(script.indexOf("THEN DROP ROLE gateway_role;")).toBeGreaterThan(adminDrop);
+    expect(script).not.toContain("caelo_grant_gateway_role");
   });
 });
 

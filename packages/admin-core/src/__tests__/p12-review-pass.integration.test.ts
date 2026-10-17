@@ -153,7 +153,7 @@ describe("email_config ops", () => {
 });
 
 describe("auth plugin: get_auth_config + apply_auth_config", () => {
-  it("get_auth_config returns defaults on a fresh install", async () => {
+  it("get_auth_config returns the onActivate-seeded defaults on a fresh install", async () => {
     const r = await runPluginOperation({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "auth",
@@ -163,7 +163,8 @@ describe("auth plugin: get_auth_config + apply_auth_config", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const v = r.value as { id: string | null; signupOpen: boolean; passwordMinLength: number };
-    expect(v.id).toBeNull();
+    // #847 — the singleton is seeded at activation, never synthesised on read.
+    expect(typeof v.id).toBe("string");
     expect(v.signupOpen).toBe(true);
     expect(v.passwordMinLength).toBe(8);
   });

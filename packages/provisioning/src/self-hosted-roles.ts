@@ -7,13 +7,14 @@
  * bootstrap.sh creates the application roles, but only on the Postgres
  * container's FIRST start (docker-entrypoint-initdb.d). An install created
  * before the per-role passwords has a data volume whose roles have other
- * passwords — and no `gateway_role` at all — so emitting Compose URLs with
- * the new passwords would lock the admin and the gateway out on the next
- * restart. `cms-provision up` therefore runs {@link roleConvergenceScript}
- * through the running container as the Postgres superuser BEFORE it writes
- * the new Compose file: it creates missing roles and databases, sets each
- * role's password to the configured one, and re-applies migration 0248's
- * gateway grants. Every statement is idempotent.
+ * passwords, so emitting Compose URLs with the new passwords would lock the
+ * admin and the gateway out on the next restart. `cms-provision up`
+ * therefore runs {@link roleConvergenceScript} through the running container
+ * as the Postgres superuser BEFORE it writes the new Compose file: it
+ * creates missing roles and databases and sets each role's password to the
+ * configured one. It also drops the former `gateway_role` (#635: the
+ * gateway has no cms_admin login), with whatever it still holds. Every
+ * statement is idempotent.
  *
  * Passwords travel on psql's stdin, never on argv.
  */
@@ -34,7 +35,7 @@ function literal(s: string): string {
 export const AGENT_DB_ROLE = "caelo_agent";
 
 /** The application roles bootstrap.sh and the convergence create. */
-const APP_ROLES = ["admin_role", "public_role", "gateway_role"] as const;
+const APP_ROLES = ["admin_role", "public_role"] as const;
 type AppRole = (typeof APP_ROLES)[number];
 
 /** How a role's password appears in the SQL: a literal, or a psql variable. */
@@ -69,12 +70,14 @@ function convergenceSql(password: PasswordSql, agent: boolean): string {
     "REVOKE ALL ON DATABASE cms_public FROM PUBLIC;",
     "GRANT CONNECT ON DATABASE cms_admin TO admin_role;",
     "GRANT CONNECT ON DATABASE cms_public TO public_role, admin_role;",
+    // #635 — the gateway's former cms_admin login goes, with whatever it
+    // still holds in either database (the superuser may drop what
+    // migration 0285 could only revoke).
+    "\\connect cms_public",
+    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') THEN DROP OWNED BY gateway_role; END IF; END $$;",
     "\\connect cms_admin",
-    // A database that ran migration 0248 before gateway_role existed has no
-    // grants for it yet; one that has not run it yet gets them from it.
-    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_gateway_role') THEN PERFORM caelo_grant_gateway_role(); END IF; END $$;",
-    // Migration 0251's staging-gate grants (issue #650), same convergence.
-    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_gateway_staging_access') THEN PERFORM caelo_grant_gateway_staging_access(); END IF; END $$;",
+    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') THEN DROP OWNED BY gateway_role; END IF; END $$;",
+    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') THEN DROP ROLE gateway_role; END IF; END $$;",
     // Migrations 0267 + 0270 (#696): the upgrader role's grants, applied
     // now that the role exists.
     "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_platform_updater') THEN PERFORM caelo_grant_platform_updater(); END IF; END $$;",
@@ -84,7 +87,7 @@ function convergenceSql(password: PasswordSql, agent: boolean): string {
 
 /**
  * The psql script (run as the superuser, connected to any database) that
- * brings roles, databases and the gateway's grants to the configured state.
+ * brings roles and databases to the configured state.
  * Mirrors bootstrap.sh, plus the password reset bootstrap.sh never does.
  * With `agentPassword`, also the host agent's login (#696 Phase 4c).
  */
@@ -92,7 +95,6 @@ export function roleConvergenceScript(passwords: RolePasswords, agentPassword?: 
   const byRole: Record<AppRole, string> = {
     admin_role: passwords.admin,
     public_role: passwords.public,
-    gateway_role: passwords.gateway,
   };
   return convergenceSql(
     (role) => literal(role === AGENT_DB_ROLE ? (agentPassword ?? "") : byRole[role]),
@@ -104,7 +106,6 @@ export function roleConvergenceScript(passwords: RolePasswords, agentPassword?: 
 const PASSWORD_ENV: Record<AppRole | typeof AGENT_DB_ROLE, string> = {
   admin_role: "ADMIN_ROLE_PASSWORD",
   public_role: "PUBLIC_ROLE_PASSWORD",
-  gateway_role: "GATEWAY_ROLE_PASSWORD",
   [AGENT_DB_ROLE]: "AGENT_ROLE_PASSWORD",
 };
 

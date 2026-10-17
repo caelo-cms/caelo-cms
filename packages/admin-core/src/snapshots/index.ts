@@ -7,6 +7,7 @@ export {
 } from "./emit.js";
 export {
   loadBranchedModuleStates,
+  loadContentInstanceBranchStates,
   loadContentInstanceState,
   loadContentInstanceStateWithBranchOverlay,
   loadModuleState,

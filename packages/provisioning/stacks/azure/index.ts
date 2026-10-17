@@ -39,7 +39,12 @@ import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { azureFrontDoorDnsRecords } from "../../dist/azure-front-door.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
-import { ADMIN_MEMORY_DEFAULT, azureContainerAppResources } from "../../dist/stack-contract.js";
+import {
+  ADMIN_MEMORY_DEFAULT,
+  azureContainerAppResources,
+  GATEWAY_TRUSTED_PROXY_HOPS,
+  TRUSTED_PROXY_HOPS_ENV,
+} from "../../dist/stack-contract.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -83,11 +88,8 @@ function randomHex(bytes: number): string {
 const postgresPassword = pulumi.secret(randomHex(32));
 // #613 — one password per database role, so the gateway (public_role only,
 // #635) never holds admin_role's. bootstrap.sh creates the roles with these
-// (PUBLIC_ROLE_PASSWORD / GATEWAY_ROLE_PASSWORD). gateway_role is no longer
-// any service's login; its password stays until the contract release that
-// drops the role (#635).
+// (ADMIN_ROLE_PASSWORD / PUBLIC_ROLE_PASSWORD).
 const publicRolePassword = pulumi.secret(randomHex(32));
-const gatewayRolePassword = pulumi.secret(randomHex(32));
 const csrfSecret = pulumi.secret(randomHex(32));
 const cookieSecret = pulumi.secret(randomHex(32));
 const anthropicApiKey = pulumi.secret(process.env.ANTHROPIC_API_KEY ?? "");
@@ -117,7 +119,6 @@ function keyVaultSecret(shortName: string, value: pulumi.Output<string>): azure.
 
 const _pgSecret = keyVaultSecret("pg-password", postgresPassword);
 keyVaultSecret("public-role-password", publicRolePassword);
-keyVaultSecret("gateway-role-password", gatewayRolePassword);
 keyVaultSecret("csrf-secret", csrfSecret);
 keyVaultSecret("cookie-secret", cookieSecret);
 keyVaultSecret("anthropic-api-key", anthropicApiKey);
@@ -419,6 +420,8 @@ const adminApp = containerApp({
 const _gatewayApp = containerApp({
   serviceName: "gateway",
   databaseEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
+  // Which X-Forwarded-For entry is the visitor (api-gateway client-ip.ts).
+  extraEnv: [{ name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS.azure) }],
 });
 const _orchestratorApp = containerApp({
   serviceName: "orchestrator",

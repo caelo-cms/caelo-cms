@@ -947,13 +947,13 @@ export async function awaitQualityGateOpen(
       await awaitStageComplete(page);
     } else {
       // The fix wrote nothing pending on the branch (e.g. SEO texts are
-      // written live): re-stage from the gate controls.
+      // written live): re-stage with the toolbar's Stage again (#835).
       const restage = page.waitForResponse(
         (r: Response) =>
           r.url().includes("?/stageAndDeployStaging") && r.request().method() === "POST",
         { timeout: 360_000 },
       );
-      await page.getByTestId("quality-restage-btn").click({ timeout: 30_000 });
+      await page.getByTestId("restage-btn").click({ timeout: 30_000 });
       const res = await restage;
       const body = await res.text();
       if (body.includes('"type":"failure"') || body.includes('"type":"error"')) {

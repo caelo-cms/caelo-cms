@@ -33,6 +33,7 @@ const TS = Date.now().toString(36);
 const TPL_SLUG = `lint-tpl-${TS}`;
 const TARGET_SLUG = `lint-target-${TS}`;
 const LINKER_SLUG = `lint-linker-${TS}`;
+const KINDS_SLUG = `lint-kinds-${TS}`;
 let templateId = "";
 
 async function wipe(): Promise<void> {
@@ -101,6 +102,92 @@ beforeAll(async () => {
     ],
   });
   if (!linker.ok) throw new Error(`linker seed failed: ${JSON.stringify(linker.error)}`);
+
+  // #846 — a page whose content values exercise every field kind. Only the
+  // link-bearing kinds (link / url default / link-list / richtext / nested
+  // sub-module) may be reported; image + text + text-list paths never.
+  const kinds = await execute(registry, adapter, systemCtx, "pages.build_page", {
+    page: { slug: KINDS_SLUG, title: "LINT Kinds", templateId },
+    modules: [
+      {
+        ref: "card",
+        // No blockName → detached sub-module, rendered only through the
+        // parent's module-list. Its HTML + values must still be scanned.
+        displayName: "LINT Kinds Card",
+        html: `<article><a href="/missing-nested-html">{{card_label}}</a><a href="{{card_href}}">go</a><img src="{{card_image}}"></article>`,
+        fields: [
+          { name: "card_label", kind: "text", label: "Card label" },
+          { name: "card_href", kind: "link", label: "Card link" },
+          { name: "card_image", kind: "image", label: "Card image" },
+        ],
+        content: {
+          source: "inline",
+          values: {
+            card_label: "/shop/nested-text",
+            card_href: "/missing-nested-link",
+            card_image: "/media/nested.webp",
+          },
+        },
+      },
+      {
+        blockName: "content",
+        displayName: "LINT Kinds Body",
+        html:
+          `<section><img src="{{hero_image}}"><p>{{alert_text}}</p>` +
+          `{{#tags}}<span>{{.}}</span>{{/tags}}<a href="{{primary_link}}">x</a>` +
+          `<a href="{{fallback_href}}">y</a>{{#menu}}<a href="{{href}}">{{label}}</a>{{/menu}}` +
+          `<div>{{body}}</div>{{#cards}}_{{/cards}}</section>`,
+        fields: [
+          { name: "hero_image", kind: "image", label: "Hero image" },
+          { name: "alert_text", kind: "text", label: "Alert text" },
+          { name: "tags", kind: "text-list", label: "Tags" },
+          { name: "primary_link", kind: "link", label: "Primary link" },
+          {
+            name: "fallback_href",
+            kind: "url",
+            label: "Fallback href",
+            default: "/missing-default-url",
+          },
+          { name: "menu", kind: "link-list", label: "Menu" },
+          { name: "body", kind: "richtext", label: "Body" },
+          { name: "cards", kind: "module-list", label: "Cards" },
+        ],
+        content: {
+          source: "inline",
+          values: {
+            hero_image: "/media/foo.webp",
+            alert_text: "/shop/xyz",
+            tags: ["/shop/tag-path"],
+            primary_link: "/missing-link",
+            menu: [
+              { label: "Good", href: `/${TARGET_SLUG}` },
+              { label: "Bad", href: "/missing-link-list" },
+            ],
+            body: `<p>See <a href="/missing-richtext">this</a> and <a href="/${TARGET_SLUG}">that</a>.</p>`,
+            cards: [{ $ref: "card" }],
+          },
+        },
+      },
+    ],
+  });
+  if (!kinds.ok) throw new Error(`kinds seed failed: ${JSON.stringify(kinds.error)}`);
+
+  // A stored value with no declared field is never rendered, so it is not
+  // a link (no "any path-shaped string" fallback, CLAUDE.md §2). The op
+  // layer won't write an undeclared key, so plant it directly — this is
+  // the shape legacy / drifted rows can carry.
+  const placementCi = (kinds.value as { placements: { contentInstanceId: string }[] }).placements[0]
+    ?.contentInstanceId;
+  if (!placementCi) throw new Error("kinds placement missing");
+  const db = new SQL(ADMIN_URL!);
+  try {
+    await db.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`UPDATE content_instances SET "values" = "values" || jsonb_build_object('stray_path', ${"/missing-undeclared"}::text) WHERE id = ${placementCi}::uuid`;
+    });
+  } finally {
+    await db.end();
+  }
 });
 
 afterAll(async () => {
@@ -121,5 +208,40 @@ describe("scanBranchInternalLinks", () => {
     // Fragments + absolute URLs are not internal-page links — never flagged.
     expect(result.brokenInternalLinks).not.toContain("#top");
     expect(result.brokenInternalLinks).not.toContain("https://example.com");
+  });
+
+  it("#846: scans content values by declared field kind — image/text paths are never links", async () => {
+    const result = await adapter.withAdminTransaction(systemCtx, (tx) =>
+      scanBranchInternalLinks(tx, null),
+    );
+    const broken = result.brokenInternalLinks;
+    // Not links: image paths, plain text / text-list copy that starts with
+    // `/`, and a stored value with no declared field.
+    for (const notALink of [
+      "/media/foo.webp",
+      "/shop/xyz",
+      "/shop/tag-path",
+      "/media/nested.webp",
+      "/shop/nested-text",
+      "/missing-undeclared",
+    ]) {
+      expect(broken).not.toContain(notALink);
+    }
+    // Still links, still reported when they point at no page: link value,
+    // url field default (what renders when no value is set), link-list
+    // href, richtext <a href>, and a nested sub-module's link value + its
+    // hardcoded HTML href (nested modules have no placement of their own).
+    for (const deadLink of [
+      "/missing-link",
+      "/missing-default-url",
+      "/missing-link-list",
+      "/missing-richtext",
+      "/missing-nested-link",
+      "/missing-nested-html",
+    ]) {
+      expect(broken).toContain(deadLink);
+    }
+    // Valid targets reached through link-list + richtext are not flagged.
+    expect(broken).not.toContain(`/${TARGET_SLUG}`);
   });
 });

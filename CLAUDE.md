@@ -21,6 +21,7 @@ Concretely, this means every domain object the AI might reach for ships with **d
 - **Pages** carry a `kind` derivable from their template so a module appearing on three product pages reads as "this is a product-page pattern", not three coincidences.
 - **Field names inside modules** are semantic snake_case (`hero_title`, `primary_cta_href`), authored by the AI in the same call that authors the HTML — not minted by server-side heuristics from tag names. The extractor heuristic is a fallback for messy human-authored HTML, not the canonical AI path.
 - **Repeating content is a list field** (`text-list`, `link-list`, or a `module-list` of sub-modules), never numbered scalars (`label`, `label2`, `label3`, …). A menu with 10 items is one field with 10 items.
+- **A component pattern is a module, never markup in a field value.** Richtext is prose. One-off free HTML on one page is allowed; the second copy of a pattern becomes a module, and its CSS lives in that module, not in the layout. The core `structure` quality check blocks clearly repeated free markup and the write tools hint at the second copy (#820, `quality/checks/structure.ts`, `ai/tools/_markup-guard.ts`).
 
 **Reviewer test for any new AI-facing surface:** an operator who has never heard the word "module" can use it. If a surface only makes sense to a developer, the AI hasn't been given enough context.
 

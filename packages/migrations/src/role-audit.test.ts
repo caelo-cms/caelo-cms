@@ -38,7 +38,8 @@ describe("evaluateRoleAudit (#633)", () => {
   it("passes the roles as bootstrap.sh and the migrations create them", () => {
     const r = evaluateRoleAudit([
       clean("public_role", "gateway-login"),
-      { ...clean("gateway_role", "gateway-login"), canConnectHere: true },
+      // #635 — a former gateway_role the migration role could not drop.
+      clean("gateway_role", "gateway-login"),
       { ...clean("operator_access_reader", "job-role"), canConnectHere: true },
       { ...clean("platform_updater", "job-role"), canConnectHere: true },
       {
@@ -69,16 +70,16 @@ describe("evaluateRoleAudit (#633)", () => {
 
   it("refuses any membership for the gateway logins, not only the superuser group", () => {
     const r = evaluateRoleAudit([
-      { ...clean("gateway_role", "gateway-login"), memberOf: ["some_group"], canConnectHere: true },
+      { ...clean("gateway_role", "gateway-login"), memberOf: ["some_group"] },
     ]);
     expect(r.violations).toEqual(["gateway_role is a member of some_group (it must be of none)"]);
   });
 
-  it("only public_role is refused CONNECT on cms_admin (the gateway_role login needs it)", () => {
+  it("refuses CONNECT on cms_admin to the former gateway_role too (#635)", () => {
     const r = evaluateRoleAudit([
       { ...clean("gateway_role", "gateway-login"), canConnectHere: true },
     ]);
-    expect(r.violations).toEqual([]);
+    expect(r.violations).toEqual(["gateway_role can connect to cms_admin"]);
   });
 
   it("refuses SUPERUSER, BYPASSRLS and REPLICATION on every audited role", () => {
