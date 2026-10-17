@@ -1,10 +1,7 @@
 ---
-slug: install-self-hosted
-template: doc-page
-status: published
-seo:
-  title: Install — self-hosted — Caelo CMS
-  description: Run Caelo on your own VM via Docker Compose with the signed, prebuilt release images — install, verified upgrades with backup and automatic rollback.
+path: /docs/install/self-hosted/
+title: "Install: self-hosted"
+description: "Run Caelo on your own VM via Docker Compose with the signed, prebuilt release images — install, verified upgrades with backup and automatic rollback."
 ---
 
 # Install — self-hosted
@@ -123,7 +120,7 @@ Every redirect Caelo records (a page moved or renamed, a URL migration, one you 
 | Back up the install | `bunx @caelo-cms/provisioning@<version> backup [--to file.tar.gz]` — see [Backup and restore](#backup-and-restore) |
 | Restore a pre-upgrade backup | see *Troubleshooting* below |
 | Rotate any secret | `/settings/<area>` in the admin OR see incident-response §G |
-| Admin memory for the [quality checks](/quality-gate) | `caelo-self-hosted:adminMemory` (default `2Gi`, reserved for the admin container) |
+| Admin memory for the [quality checks](/docs/quality-gate/) | `caelo-self-hosted:adminMemory` (default `2Gi`, reserved for the admin container) |
 
 ## Backup and restore
 
@@ -186,10 +183,10 @@ A single self-hosted install handles roughly:
 - ~500 concurrent visitor writes via the gateway
 - ~10k editorial actions/day in the admin
 
-Past those numbers, the bottleneck is usually Postgres + the lack of read-replica failover. The cloud adapters ([GCP](/install-gcp) / [AWS](/install-aws) / [Azure](/install-azure)) give you Cloud SQL HA / RDS Multi-AZ / Azure DB zone-redundant out of the box.
+Past those numbers, the bottleneck is usually Postgres + the lack of read-replica failover. A [Google Cloud install](/docs/install/google-cloud/) runs on Cloud SQL, where regional high availability is one setting (`cloudSqlHa`, off by default).
 
 ## Next
 
-- [GCP install →](/install-gcp)
-- [Architecture →](/architecture)
+- [GCP install →](/docs/install/google-cloud/)
+- [Architecture →](/docs/architecture/)
 - [Operating + incident response runbook](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md)

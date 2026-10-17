@@ -1,36 +1,36 @@
+---
+path: /docs/error-pages/
+title: "Error pages (404)"
+description: "How your site answers a URL that does not exist — with status 404 and its own 404 page in the site's design."
+---
+
 # Error pages (404)
 
 When a visitor opens a URL that does not exist (an old bookmark, a typo, a removed page), Caelo answers with **HTTP status 404** and the site's own **404 page**: an ordinary page in the site's design, with its header, footer, theme and self-hosted fonts.
 
 ## Setting it up
 
-Ask the AI in the editor chat, for example *"make a page for broken links"*. The AI:
+Ask the AI in the editor chat, for example *"make a page for broken links"*. The AI builds a normal page with the site's template (for example a short "Page not found" message with links back to the homepage and the main sections), publishes it, and makes it the site's 404 page.
 
-1. builds a normal page with the site's template (`build_page`), e.g. a short "Page not found" message with links back to the homepage and the main sections;
-2. publishes it (`set_pages_status_many`);
-3. designates it with `set_not_found_page({ pageId })`.
+Until a 404 page is set, the AI offers to make one at the end of a turn. It does not build the page unasked in the middle of another request (a "build me a homepage" turn stays a homepage turn); say yes and it sets the page up. One site has exactly one 404 page; making another page the 404 page replaces it, and you can ask the AI to remove the setting. The homepage cannot be the 404 page.
 
-The AI's site status reports "404 page: not designated" until this is done, so the AI offers it on its own at the end of a turn. It does not build the page unasked in the middle of another request (a "build me a homepage" turn stays a homepage turn); say yes and it sets the page up. One site has exactly one 404 page; designating another page replaces it, and `set_not_found_page({ pageId: null })` removes the designation. The homepage cannot be the 404 page.
+## What gets published
 
-## What the build does
+- The 404 page is rendered like every other page and published as **`/404.html`**. It is **not** published at its own address as well: a second copy answering with status 200 would be a "soft 404" that search engines index.
+- `/404.html` is marked `noindex`, has no canonical URL, and is never listed in `sitemap.xml`.
+- It renders correctly at any depth, for `/x` as well as `/a/b/c/x`.
+- If a 404 page is set but not published (still a draft, or deleted), Stage and Publish live **stop** with a message naming the fix. If no 404 page is set, the site ships none and the hosting provider's generic error page answers instead.
 
-- The designated page is rendered like every other page and written to **`/404.html`**. It is **not** published at its own slug: a second copy answering with status 200 would be a soft-404 that search engines index.
-- `/404.html` carries `<meta name="robots" content="noindex">`, no canonical URL, no `og:url`, no hreflang, and it is never listed in `sitemap.xml`.
-- All asset URLs in the page are root-absolute, so the same file renders correctly for `/x` and for `/a/b/c/x`.
-- If a 404 page is designated but not published (still a draft, or deleted), Stage and Publish live **fail** with a message naming the fix. If no page is designated, the build ships no `/404.html` and the hosting provider's generic error page answers instead.
+## Per hosting setup
 
-## Per provider
-
-| Provider | How `/404.html` is served | Status |
+| Install | How `/404.html` is served | Status |
 |---|---|---|
-| gcp-firebase (Firebase Hosting) | Firebase serves a root `/404.html` for every unmatched path | 404 |
-| gcp (GCS + Load Balancer / Cloud CDN) | bucket website `notFoundPage: "404.html"` | 404 |
-| aws (S3 + CloudFront) | CloudFront custom error responses map the S3 origin's 404 **and 403** (a private bucket answers a missing key with 403) to `/404.html` | 404 |
-| azure (Blob static website + Front Door) | static website `error404Document: "404.html"` | 404 |
-| self-hosted (Caddy) | `handle_errors 404 { rewrite * /404.html; file_server }` | 404 |
+| Google Cloud with Firebase Hosting (`gcp-firebase`) | Firebase serves `/404.html` for every unknown path | 404 |
+| Google Cloud with load balancer + Cloud CDN (`gcp`) | the site bucket's `notFoundPage` | 404 |
+| Self-hosted (Caddy) | Caddy rewrites every 404 to `/404.html` | 404 |
 
-Other error statuses (5xx) are produced by the hosting provider or CDN itself; the static site has no compute on the request path that could render them.
+Other error statuses (5xx) come from the hosting provider or CDN itself; the published site is static and runs no code that could render them.
 
 ## Languages
 
-Core has one 404 page for the whole site. Sites with several languages (international-site plugin) currently serve that one page for unknown URLs in every language, still with status 404; per-language 404 pages are tracked in [#802](https://github.com/caelo-cms/caelo-cms/issues/802).
+A site has one 404 page. Sites with several languages (international-site plugin) currently serve that one page for unknown URLs in every language, still with status 404; per-language 404 pages are tracked in [#802](https://github.com/caelo-cms/caelo-cms/issues/802).

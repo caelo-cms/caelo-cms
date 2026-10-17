@@ -1,10 +1,7 @@
 ---
-slug: multilingual
-template: doc-page
-status: published
-seo:
-  title: Multilingual sites — Caelo CMS
-  description: Add languages by chatting. The international-site plugin handles variants, context-aware translation, localized URLs, hreflang, and the language selector.
+path: /docs/multilingual/
+title: "Multilingual sites"
+description: "Add languages by chatting. The international-site plugin handles variants, context-aware translation, localized URLs, hreflang, and the language selector."
 ---
 
 # Multilingual sites

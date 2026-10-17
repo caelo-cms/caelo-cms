@@ -1,10 +1,7 @@
 ---
-slug: security
-template: doc-page
-status: published
-seo:
-  title: Security policy — Caelo CMS
-  description: Disclosure flow via GitHub Private Vulnerability Reporting. 72-hour acknowledgement, 90-day disclosure target. Scope, out-of-scope, cryptographic surfaces.
+path: /docs/security/
+title: "Security policy"
+description: "Disclosure flow via GitHub Private Vulnerability Reporting. 72-hour acknowledgement, 90-day disclosure target. Scope, out-of-scope, cryptographic surfaces."
 ---
 
 # Security policy

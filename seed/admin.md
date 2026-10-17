@@ -1,10 +1,7 @@
 ---
-slug: admin
-template: doc-page
-status: published
-seo:
-  title: Using the Caelo admin
-  description: A tour of the admin app — live-edit, chat, settings, deployments, plugins.
+path: /docs/admin/
+title: "Using the admin"
+description: "A tour of the admin app — live-edit, chat, settings, deployments, plugins."
 ---
 
 # Using the admin
@@ -21,7 +18,7 @@ This is where you spend most of your time. The page renders your real site in a 
 - **Stage + Confirm publish** in the toolbar — two-step gate; you preview then confirm
 - **Branch-aware** — every chat operates on its own preview branch; two editors don't collide
 
-Read the deep dive: [`/admin-live-edit`](/admin-live-edit).
+Read the deep dive: [`/admin-live-edit`](/docs/live-edit/).
 
 ## Content (`/content/...`)
 
@@ -73,7 +70,7 @@ Tiles:
 - **Skills** — `/settings/skills` — AI behaviour bodies, AI-proposed queue
 - **Subagents** — `/settings/subagents` — observability for spawn_subagent runs
 - **Deployments** — `/settings/deployments` — Ops view with promote / rollback
-- **Caelo updates** — `/settings/updates` — the Caelo version you run and when Caelo last checked GitHub for a new release (it checks once an hour; **Check now** checks right away, at most once a minute), the newest release with its notes, and for the Owner **Install update** (confirmed with your password, with a live timeline and the update history) or, where the install has no upgrader yet, the exact upgrade command with a copy button. On a self-hosted install the update is carried out by the [update agent](/install-self-hosted#installing-updates-from-the-admin) on your server; until it runs, the page shows the one command that sets it up. **Automatic updates** sets which kinds of release install on their own (security fixes, patch, minor; never major), a maintenance window, how long a release waits first, pause / resume, and shows the update emails sent to you; every change there is confirmed with your password. The bell links here when a release is out. The AI can tell you the version, whether an update is available, how past updates went and what the automatic updates will do next (`get_caelo_version`, `list_caelo_updates`, `get_caelo_auto_update_status`), but only you install it or change the policy.
+- **Caelo updates** — `/settings/updates` — the Caelo version you run and when Caelo last checked GitHub for a new release (it checks once an hour; **Check now** checks right away, at most once a minute), the newest release with its notes, and for the Owner **Install update** (confirmed with your password, with a live timeline and the update history) or, where the install has no upgrader yet, the exact upgrade command with a copy button. On a self-hosted install the update is carried out by the [update agent](/docs/install/self-hosted/#installing-updates-from-the-admin) on your server; until it runs, the page shows the one command that sets it up. **Automatic updates** sets which kinds of release install on their own (security fixes, patch, minor; never major), a maintenance window, how long a release waits first, pause / resume, and shows the update emails sent to you; every change there is confirmed with your password. The bell links here when a release is out. The AI can tell you the version, whether an update is available, how past updates went and what the automatic updates will do next (`get_caelo_version`, `list_caelo_updates`, `get_caelo_auto_update_status`), but only you install it or change the policy.
 - **DNS** — `/settings/dns` — records the active Pulumi stack expects
 - **SEO** — `/settings/seo` — public site URL, sitemap toggle, Organization JSON-LD and site language. Publishing stops until the site URL and language are set; you can enter them here or tell the AI (it proposes the site URL with `propose_set_site_seo` and you approve, here or in the chat)
 
@@ -84,7 +81,7 @@ Two surfaces:
 1. **The live-edit chat overlay** — for editing pages (the primary surface)
 2. **The standalone chat at `/content/chat`** — for everything else (plugin moderation, drafting kits, site-wide changes)
 
-A third surface — **MCP** — exposes the same chat-runner outside the browser. See [`/mcp`](/mcp).
+A third surface — **MCP** — exposes the same chat-runner outside the browser. See [`/mcp`](/docs/mcp/).
 
 ## What the AI can't do
 
@@ -100,6 +97,6 @@ You'll see these as `ActorScopeRejected` errors when the AI attempts them — th
 
 ## Next
 
-- [Live-edit overlay →](/admin-live-edit)
-- [Build a plugin →](/plugins-build)
-- [MCP server →](/mcp)
+- [Live-edit overlay →](/docs/live-edit/)
+- [Build a plugin →](/docs/plugins/build/)
+- [MCP server →](/docs/mcp/)

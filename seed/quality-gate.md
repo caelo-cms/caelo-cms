@@ -1,10 +1,7 @@
 ---
-slug: quality-gate
-template: doc-page
-status: published
-seo:
-  title: Quality gate — Caelo CMS
-  description: Every Stage is checked against the optimum — 100 in every Lighthouse category and zero findings. Every finding blocks Publish live until the AI fixes it or an editor accepts it, in bulk if need be.
+path: /docs/quality-gate/
+title: "The quality gate"
+description: "Every Stage is checked against the optimum — 100 in every Lighthouse category and zero findings. Every finding blocks Publish live until the AI fixes it or an editor accepts it, in bulk if need be."
 ---
 
 # The quality gate
@@ -48,9 +45,9 @@ Each value is the median of the same runs as the Performance score, with Lightho
 
 Metrics are information, not findings: they never block Publish live on their own. The Performance score does that — anything below 100 blocks. They are what the AI fixes against: it reads them, fixes the worst one in the module that renders the named element, Stages again, and repeats until Performance is 100.
 
-The AI reads them in `get_quality_audit` (per audited page) and `check_stage_audit` (the last measured values of the pages your pending changes touch, plus the homepage), so "make the homepage faster" starts from the real staged numbers and the element that causes them. External agents on [Power-MCP](/mcp) get the same two tools and should use them instead of running Lighthouse themselves: the audit runs against the real staged build, which no other URL serves.
+The AI reads them in `get_quality_audit` (per audited page) and `check_stage_audit` (the last measured values of the pages your pending changes touch, plus the homepage), so "make the homepage faster" starts from the real staged numbers and the element that causes them. External agents on [Power-MCP](/docs/mcp/) get the same two tools and should use them instead of running Lighthouse themselves: the audit runs against the real staged build, which no other URL serves.
 
-Missing meta descriptions do not wait for this check: a Stage (and any production build) refuses published pages without one and names them, because the check only looks at a few pages. See [Live edit](/live-edit).
+Missing meta descriptions do not wait for this check: a Stage (and any production build) refuses published pages without one and names them, because the check only looks at a few pages. See [Live edit](/docs/live-edit/).
 
 ## What blocks Publish live
 
@@ -126,13 +123,11 @@ Before this version, the gate let existing debt pass: audits scoring 0.9 or more
 
 ## Server sizing
 
-The check runs on the admin server itself, using the Chromium build that ships in the admin image. Lighthouse runs in a separate process that gets no database credentials or secrets. Every provider exposes the same `adminMemory` setting, defaulting to `2Gi`, and [`upgrade`](/install-gcp#upgrading) raises existing GCP installs to it. It never lowers a larger value.
+The check runs on the admin server itself, using the Chromium build that ships in the admin image. Lighthouse runs in a separate process that gets no database credentials or secrets. Every provider exposes the same `adminMemory` setting, defaulting to `2Gi`, and [`upgrade`](/docs/install/google-cloud/#upgrading) raises existing GCP installs to it. It never lowers a larger value.
 
 | Provider | Setting |
 |---|---|
 | GCP / GCP + Firebase | `pulumi config set caelo-gcp:adminMemory 2Gi` (Cloud Run memory; billed only while an instance runs) |
-| Azure | `caelo-azure:adminMemory` (CPU follows at 2 GiB per vCPU) |
-| AWS | `caelo-aws:adminMemory` |
 | Self-hosted | `caelo-self-hosted:adminMemory` (reserved for the admin container) |
 
-On providers whose staging has no public URL (GCP behind IAP, AWS, Azure), the admin serves the staged build to the check over a short-lived loopback port. This port is read-only and closes when the check ends.
+On providers whose staging has no public URL (GCP behind IAP), the admin serves the staged build to the check over a short-lived loopback port. This port is read-only and closes when the check ends.

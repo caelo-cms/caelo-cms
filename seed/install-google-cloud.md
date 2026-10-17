@@ -1,21 +1,18 @@
 ---
-slug: install-gcp
-template: doc-page
-status: published
-seo:
-  title: Install on Google Cloud — Caelo CMS
-  description: Deploy Caelo to GCP with one command. Cloud SQL HA + Cloud Storage + Cloud CDN + Cloud Run + Secret Manager via Pulumi.
+path: /docs/install/google-cloud/
+title: "Install: Google Cloud"
+description: "Install Caelo into your own Google Cloud project, from Cloud Shell or a terminal. Cloud SQL + Cloud Storage + Cloud CDN or Firebase Hosting + Cloud Run + Secret Manager via Pulumi."
 ---
 
 # Install — Google Cloud
 
-The `--provider gcp` adapter spins up a managed stack that mirrors the self-hosted compose stack feature-for-feature, with HA + autoscaling + managed TLS.
+The `--provider gcp` adapter spins up a managed stack that mirrors the self-hosted compose stack feature-for-feature, with autoscaling, managed TLS and optional database high availability.
 
 ## What gets provisioned
 
 | Layer | GCP service | Notes |
 |---|---|---|
-| Database | **Cloud SQL Postgres 16** (Regional HA) | Automatic failover, daily snapshots, 7-day PITR |
+| Database | **Cloud SQL Postgres 16** | Zonal by default (`db-f1-micro`), daily backups kept 7 days (`backupRetentionDays`). `pulumi config set caelo-gcp:cloudSqlHa true` makes it regional, with automatic failover and point-in-time recovery |
 | Object storage | **Cloud Storage** | The public site's bucket (CDN-fronted) and a private media bucket. The media bucket is mounted into the admin as a Cloud Storage volume, so uploads survive new revisions and scale-to-zero and every admin instance sees the same files |
 | Edge | **Cloud CDN** + Load Balancer | TLS via Google-managed cert |
 | Compute (admin + gateway) | **Cloud Run** | Autoscaling, scales to zero idle |
@@ -42,8 +39,8 @@ So the provisioner deletes all four, on both `--provider gcp` and `--provider gc
 
 | Provider | |
 |---|---|
-| `gcp` — load balancer, Cloud CDN, Cloud Armor | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp.md) |
-| `gcp-firebase` — Firebase Hosting, lower fixed cost | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp-firebase.md) |
+| `gcp` — load balancer, Cloud CDN, Cloud Armor | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.52&cloudshell_tutorial=gcp.md) |
+| `gcp-firebase` — Firebase Hosting, lower fixed cost | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.52&cloudshell_tutorial=gcp-firebase.md) |
 
 The button opens [Google Cloud Shell](https://cloud.google.com/shell) in your browser with the [`caelo-cms/install`](https://github.com/caelo-cms/install) repository at the branch of this release, and a tutorial next to the terminal. You need nothing installed — only a Google account that can create a project and link billing, and your domain.
 
@@ -77,7 +74,7 @@ bunx @caelo-cms/provisioning@latest --provider gcp \
   --anthropic-key sk-ant-...
 ```
 
-Wall-clock: about 10 minutes (mostly Cloud SQL HA setup).
+Wall-clock: about 10 minutes (mostly Cloud SQL setup).
 
 ### Where the install runs: your terminal or an install job
 
@@ -116,7 +113,7 @@ What you'll see:
 
 1. Pulumi previews the stack; you confirm
 2. VPC + private services connection comes up
-3. Cloud SQL provisions in regional-HA mode
+3. Cloud SQL provisions (zonal, or regional with `cloudSqlHa`)
 4. Buckets + Secret Manager seeded
 5. Cloud Run services deployed
 6. Load balancer + Cloud CDN configured
@@ -199,7 +196,7 @@ The provisioner's summary ends with the next steps:
 
 1. **Owner setup** — open the printed setup URL and sign in with the owner email (Google IAP lets only that account through at first).
 2. **AI provider** — at `/settings/ai`, paste your Anthropic API key. It is stored encrypted in the database.
-3. **MCP (optional)** — to drive Caelo from Claude Code or another MCP client, open `/settings/mcp`, click **New token** (scope `chat` lets Caelo's AI do the work; `admin` lets your own agent use Caelo's tools), copy the token (shown once) and run the `claude mcp add` command the page shows. Because the admin is behind Google IAP, run `gcloud auth application-default login` once on that machine. See [MCP](/mcp).
+3. **MCP (optional)** — to drive Caelo from Claude Code or another MCP client, open `/settings/mcp`, click **New token** (scope `chat` lets Caelo's AI do the work; `admin` lets your own agent use Caelo's tools), copy the token (shown once) and run the `claude mcp add` command the page shows. Because the admin is behind Google IAP, run `gcloud auth application-default login` once on that machine. See [MCP](/docs/mcp/).
 
 ## Three environments
 
@@ -209,10 +206,10 @@ Production promotion goes through the **Ops** view in the admin (`/settings/depl
 
 ## Cost (rough)
 
-A small docs-site-shaped install runs ~$45/mo on GCP:
+The installer prints the monthly estimate for your configuration before it creates anything billable. A small install with the defaults:
 
-- Cloud SQL `db-g1-small` HA: ~$30
-- Cloud Run (low traffic, scales to zero idle): ~$3 — the admin runs with 2 GiB (`adminMemory`) for the [quality checks](/quality-gate); memory is billed only while an instance runs
+- Cloud SQL `db-f1-micro`, zonal: ~$10 (regional high availability roughly doubles the database line)
+- Cloud Run (low traffic, scales to zero idle): ~$3 — the admin runs with 2 GiB (`adminMemory`) for the [quality checks](/docs/quality-gate/); memory is billed only while an instance runs
 - Quality checks (Lighthouse on the admin, a few Stages a day): ~$1
 - Cloud Storage + Cloud CDN: ~$2 with cache hits
 - Load balancer + IP: ~$10
@@ -255,7 +252,7 @@ Google only maps a domain for a verified owner of it. If you have not verified y
 
 ## Protected staging on your own domain (`gcp-firebase`)
 
-Every Stage is served on the staging host behind an access gate — the same artefacts Publish live ships, with only the host swapped (see [Protected staging](/staging-access)). The wizard asks for the host (default `staging.<your domain>`; `--staging-domain <host>` when non-interactive). The gateway serves it; map it once:
+Every Stage is served on the staging host behind an access gate — the same artefacts Publish live ships, with only the host swapped (see [Protected staging](/docs/publishing/staging-access/)). The wizard asks for the host (default `staging.<your domain>`; `--staging-domain <host>` when non-interactive). The gateway serves it; map it once:
 
 ```bash
 bunx @caelo-cms/provisioning@<version> staging-domain enable
@@ -278,7 +275,7 @@ Every command names a Caelo release in place of `<version>`, such as `0.10.44`: 
 | Get back into a locked-out Owner account (gcp-firebase) | `bunx @caelo-cms/provisioning@<version> owner-reset` — prints a one-time reset link ([details](#locked-out-of-the-admin)) |
 | Read logs | Cloud Logging — filter by `resource.labels.service_name="caelo-admin-prod"` |
 | Back up the database now | `bunx @caelo-cms/provisioning@<version> backup` — prints the backup id and its restore command (`gcp` and `gcp-firebase`) |
-| Restore from PITR | `gcloud sql backups restore` — see [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
+| Restore a database backup | `gcloud sql backups restore` — see [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
 | Rotate the AI provider key | Owner → `/settings/ai` (stored encrypted in the database) |
 | Rotate a runtime secret | `bunx @caelo-cms/provisioning@<version> rotate-secret <postgres-password\|public-role-password\|gateway-role-password\|internal-secret\|tool-approval-secret\|staging-gate-secret>` — stores a new value in Secret Manager (for a database password also on its role: `postgres-password` is `admin_role`'s, `public-role-password` the gateway's `public_role`, `gateway-role-password` the unused former `gateway_role`) and rolls the services that read it |
 | Scale Cloud Run | `gcloud run services update caelo-admin-prod --max-instances=20` |
@@ -377,7 +374,7 @@ The AI can explain the policy and what the scheduler last decided (`get_caelo_up
 4. Ensures the gateway's own service account and the generated runtime secrets (the internal-API and tool-approval keys, and the gateway's two database role passwords) exist, creating them once in Secret Manager. Then ensures the IAM bindings and Cloud CDN settings the release's infrastructure declares — each service account can read exactly the secrets its service uses. It only adds what is missing here (a binding a release retired — the gateway's former access to the admin's database password — is removed only at the very end, once both services run without it). The one other thing it removes is [the default network's pre-populated firewall rules](#default-firewall-rules-removed); a failure there only warns. If a binding the install needs can't be added (usually a missing IAM permission on your gcloud account), it stops here: bindings it already added stay (they are additive and harmless), but no migration has run and no traffic has shifted. Fix the reported binding and re-run; `upgrade` skips what is already in place.
 5. Runs the infrastructure steps newer releases added, each idempotent: it takes `public_role` out of the Cloud SQL superuser group (infrastructure version 3, #633; a failure stops the upgrade before the migrations), and on `gcp` it creates the custom role `caelo_production_urlMapRedirects` that lets the admin write your redirects into the load balancer (version 4, #587; a failure only warns, and Confirm-publish fails until a re-run succeeds). In-product updates show which of these steps a release still needs and send you to Cloud Shell for them.
 6. Applies the database migrations.
-7. Rolls the admin and gateway to the new images. The admin's memory is raised to the release's default (2 GiB for the [quality checks](/quality-gate)) if it runs with less; a larger value you set is kept. Configuration the release expects (for example the public site URL your canonical tags and sitemap use, or the media bucket mounted into the admin as a Cloud Storage volume) is applied in the same step, so it lands in the same new revision and rolls back with it. Secrets are Secret Manager references, never plain values: the database URLs carry no password, and the password reaches the services from Secret Manager.
+7. Rolls the admin and gateway to the new images. The admin's memory is raised to the release's default (2 GiB for the [quality checks](/docs/quality-gate/)) if it runs with less; a larger value you set is kept. Configuration the release expects (for example the public site URL your canonical tags and sitemap use, or the media bucket mounted into the admin as a Cloud Storage volume) is applied in the same step, so it lands in the same new revision and rolls back with it. Secrets are Secret Manager references, never plain values: the database URLs carry no password, and the password reaches the services from Secret Manager.
 8. Checks the new revisions: the admin answers `/_caelo/health?deep=1` (both databases reachable, every migration the image ships applied, the expected version) through IAP, and the gateway answers `/api/_caelo/health?deep=1` (its database logins work, same version). If either check fails, both services go back to the revisions that served before and `upgrade` prints the backup id with its restore command. Restore only if the previous release no longer works against the migrated schema — restoring overwrites everything written since the backup. Before the migrations, `upgrade` checks that it can reach both health checks at all, so an access problem stops it before anything changed. `--skip-health-check` rolls with Cloud Run's readiness check only (for example to a release older than the deep health check).
 9. Records the images it rolled to. Re-running the installer later keeps that release instead of switching to the newest one — version changes always go through `upgrade`. When every infrastructure step succeeded, it also records the infrastructure version the install now has (`infraContractVersion` in `install.json`), which in-product updates check before they install a release.
 
@@ -477,6 +474,6 @@ A page that exists always wins over a redirect from the same address. Chains (`/
 
 ## Next
 
-- [AWS install →](/install-aws)
-- [Architecture →](/architecture)
+- [Self-hosted install →](/docs/install/self-hosted/)
+- [Architecture →](/docs/architecture/)
 - Incident response: [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md)

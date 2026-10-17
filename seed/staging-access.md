@@ -1,10 +1,7 @@
 ---
-slug: staging-access
-template: doc-page
-status: published
-seo:
-  title: Protected staging — Caelo CMS
-  description: Staging lives on its own host (default staging.<domain>), serves exactly what Publish live ships, and is closed to everyone you have not let in. How to open it, how crawlers get in, and what Publish live checks.
+path: /docs/publishing/staging-access/
+title: "Protected staging"
+description: "Staging lives on its own host (default staging.<domain>), serves exactly what Publish live ships, and is closed to everyone you have not let in. How to open it, how crawlers get in, and what Publish live checks."
 ---
 
 # Protected staging
@@ -50,7 +47,7 @@ A request that passes none of them gets **401** with a basic-auth prompt (when b
 
 The credentials are generated, never stored in readable form, and shown only to the Owner (settings.write). **Rotate** replaces one; everything that used the old value is locked out until it gets the new one. `cms-provision rotate-secret staging-gate-secret` replaces the key everything is derived from — every staging session and both credentials change at once.
 
-The AI can read the staging URL and the enabled modes (`get_staging_access`) and propose changes (`propose_set_staging_access`, `propose_rotate_staging_credentials`, `propose_set_staging_host`); each change waits for your Approve in the chat. It sees the credentials only when an Owner asks for them — the same holds for an external agent on the [Power-MCP](/mcp) surface: `get_staging_access` with `includeCredentials: true` returns the basic-auth password only to an `admin` token whose user holds settings.write, and every reveal is audited (`staging_access.reveal_credentials`).
+The AI can read the staging URL and the enabled modes (`get_staging_access`) and propose changes (`propose_set_staging_access`, `propose_rotate_staging_credentials`, `propose_set_staging_host`); each change waits for your Approve in the chat. It sees the credentials only when an Owner asks for them — the same holds for an external agent on the [Power-MCP](/docs/mcp/) surface: `get_staging_access` with `includeCredentials: true` returns the basic-auth password only to an `admin` token whose user holds settings.write, and every reveal is audited (`staging_access.reveal_credentials`).
 
 ## Crawling staging (searchVIU)
 

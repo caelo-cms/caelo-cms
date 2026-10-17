@@ -1,3 +1,9 @@
+---
+path: /docs/consent-and-tracking/
+title: "Consent and tracking"
+description: "The consent-manager plugin — a consent banner in your site's design, tracking tags that fire only after consent, embeds held until the visitor agrees, and a consent record you can export."
+---
+
 # Consent and tracking management
 
 The `consent-manager` plugin gives a Caelo site a GDPR consent dialog, a
@@ -152,8 +158,7 @@ The gateway reads the choice from the `caelo_consent` cookie and asks
 this plugin (`visitor_consent_rule`) which policy version counts and
 which category covers the visitor id. Forms, comments, ratings and the
 anti-spam check all work without the id. Details for site visitors and
-your privacy policy: the *Visitor cookies and consent* page in the docs
-at [caelo-cms.com/docs](https://caelo-cms.com/docs/).
+your privacy policy: [Visitor cookies and consent](/docs/visitor-privacy/).
 
 ---
 

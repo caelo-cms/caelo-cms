@@ -1,15 +1,12 @@
 ---
-slug: plugins-build
-template: doc-page
-status: published
-seo:
-  title: Build a plugin — Caelo CMS
-  description: One plugin model for every plugin. Base capabilities are always available; everything else is an Owner-approved grant bound to the exact plugin version.
+path: /docs/plugins/build/
+title: "Build a plugin"
+description: "One plugin model for every plugin. Base capabilities are always available; everything else is an Owner-approved grant bound to the exact plugin version."
 ---
 
 # Build a plugin
 
-Every Caelo plugin is the same kind of thing — whether it ships with a Caelo release or is installed on your site at runtime, and whether a person or the AI wrote it. **Who wrote a plugin grants it nothing.** A plugin gets a small base set of capabilities; everything beyond that is a grant the Owner approves for exactly that version of the plugin. The rules are on [Plugin permissions](/plugins-permissions).
+Every Caelo plugin is the same kind of thing — whether it ships with a Caelo release or is installed on your site at runtime, and whether a person or the AI wrote it. **Who wrote a plugin grants it nothing.** A plugin gets a small base set of capabilities; everything beyond that is a grant the Owner approves for exactly that version of the plugin. The rules are on [Plugin permissions](/docs/plugins/permissions/).
 
 ## Two ways a plugin arrives
 
@@ -41,7 +38,7 @@ export default definePlugin({
 
 A plugin that needs more — its own private storage, read access to the media library, chat tools for the AI, AI or image generation, background jobs, email — declares the grants it needs in its manifest. At approval the Owner sees each grant and what it allows, including every tool name and description the AI would see. A new version of the plugin is a new artifact and is approved again.
 
-Core data (pages, modules, media, …) is never reached directly: a grant for a domain allows its named Query API operations and nothing else, and writes behave like every other write in Caelo — validated, audited, snapshotted, and on the chat's branch until published. See [Plugin permissions](/plugins-permissions).
+Core data (pages, modules, media, …) is never reached directly: a grant for a domain allows its named Query API operations and nothing else, and writes behave like every other write in Caelo — validated, audited, snapshotted, and on the chat's branch until published. See [Plugin permissions](/docs/plugins/permissions/).
 
 ## Validator rules
 
@@ -110,6 +107,6 @@ A runtime-installed plugin is a single TypeScript or JavaScript module plus its 
 
 ## Next
 
-- [Plugin permissions →](/plugins-permissions)
-- [Architecture →](/architecture)
+- [Plugin permissions →](/docs/plugins/permissions/)
+- [Architecture →](/docs/architecture/)
 - The [`@caelo-cms/plugin-sdk` source](https://github.com/caelo-cms/caelo-cms/tree/main/packages/plugin-sdk)

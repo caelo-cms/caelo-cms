@@ -1,10 +1,7 @@
 ---
-slug: quickstart
-template: doc-page
-status: published
-seo:
-  title: Quickstart — Caelo CMS
-  description: From zero to a working Caelo install in under 10 minutes. Self-hosted via `bunx @caelo-cms/provisioning@latest --provider self-hosted`.
+path: /docs/quickstart/
+title: "Quickstart"
+description: "From zero to a working Caelo install in under 10 minutes. Self-hosted via `bunx @caelo-cms/provisioning@latest --provider self-hosted`."
 ---
 
 # Quickstart
@@ -32,11 +29,11 @@ This stands up and starts a Docker Compose stack:
 - The **admin app** (SvelteKit + Bun) on `https://admin.your-domain.example.com`
 - The **API gateway** for visitor-facing plugin endpoints, under `/api/*` on your site
 
-It ends by printing the Owner setup link (`https://admin.your-domain.example.com/setup?token=…`), where you create the Owner account. Save its password somewhere safe: **Forgot your password?** on the sign-in page can only email you a link once email is set up under **Settings → Email**, so set that up early. Details: [self-hosted install](/install-self-hosted).
+It ends by printing the Owner setup link (`https://admin.your-domain.example.com/setup?token=…`), where you create the Owner account. Save its password somewhere safe: **Forgot your password?** on the sign-in page can only email you a link once email is set up under **Settings → Email**, so set that up early. Details: [self-hosted install](/docs/install/self-hosted/).
 
 ### On Google Cloud, from the browser
 
-No Linux host at hand? [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp.md) installs Caelo into your own Google Cloud project from Cloud Shell, with a step-by-step tutorial — see [One-click install](/install-gcp#one-click-install-from-cloud-shell). The [Firebase Hosting variant](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp-firebase.md) has a lower fixed cost.
+No Linux host at hand? [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.52&cloudshell_tutorial=gcp.md) installs Caelo into your own Google Cloud project from Cloud Shell, with a step-by-step tutorial — see [One-click install](/docs/install/google-cloud/#one-click-install-from-cloud-shell). The [Firebase Hosting variant](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.52&cloudshell_tutorial=gcp-firebase.md) has a lower fixed cost.
 
 ## First thing to do
 
@@ -59,7 +56,7 @@ If you use Claude Code (or any MCP-aware client):
 
 ## Next steps
 
-- **Per-provider install guides:** [self-hosted](/install-self-hosted) · [GCP](/install-gcp) · [AWS](/install-aws) · [Azure](/install-azure)
-- **Architecture overview:** [`/architecture`](/architecture)
-- **Build a plugin:** [`/plugins-build`](/plugins-build)
-- **Talk to Caelo via MCP:** [`/mcp`](/mcp)
+- **Per-provider install guides:** [self-hosted](/docs/install/self-hosted/) · [GCP](/docs/install/google-cloud/) (AWS and Azure are planned, not available yet)
+- **Architecture overview:** [Architecture](/docs/architecture/)
+- **Build a plugin:** [Build a plugin](/docs/plugins/build/)
+- **Talk to Caelo via MCP:** [MCP](/docs/mcp/)

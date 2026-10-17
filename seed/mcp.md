@@ -1,10 +1,7 @@
 ---
-slug: mcp
-template: doc-page
-status: published
-seo:
-  title: Talk to Caelo from your IDE — MCP servers
-  description: Drive your Caelo install from Claude Code, Cursor, or any MCP-aware client. Two surfaces — caelo_chat (Caelo's own AI does the work) and the admin-scoped Power-MCP (your agent drives the full tool catalogue).
+path: /docs/mcp/
+title: "Talk to Caelo from your IDE (MCP)"
+description: "Drive your Caelo install from Claude Code, Cursor, or any MCP-aware client. Two surfaces — caelo_chat (Caelo's own AI does the work) and the admin-scoped Power-MCP (your agent drives the full tool catalogue)."
 ---
 
 # Talk to Caelo from your IDE — MCP servers
@@ -171,7 +168,7 @@ Approval cards from these tools wait in `/settings/tool-approvals/pending` when 
 
 On `gcp` and `gcp-firebase` installs the admin sits behind Google Identity-Aware Proxy, so the `claude mcp add` command from `/settings/mcp` carries one more variable, `CAELO_IAP_SERVICE_ACCOUNT`, and you run `gcloud auth application-default login` once. The MCP server then signs a short-lived Google credential as the install's `caelo-mcp` service account and sends it next to your Caelo token.
 
-Who may sign it follows the user list: when the Owner adds a user (in `/settings/users`, or by approving the AI's `propose_create_user` card) the operator-access sync job lets that person's Google account sign as `caelo-mcp`; deleting the user, or removing their last role, revokes it again. (The job, not the admin, holds that right: see [Who can open the admin](/install-gcp#who-can-open-the-admin-google-iap).) No `gcloud` commands, no re-running the provisioner. The person still needs their own Caelo MCP token — Google's credential only gets the request past IAP.
+Who may sign it follows the user list: when the Owner adds a user (in `/settings/users`, or by approving the AI's `propose_create_user` card) the operator-access sync job lets that person's Google account sign as `caelo-mcp`; deleting the user, or removing their last role, revokes it again. (The job, not the admin, holds that right: see [Who can open the admin](/docs/install/google-cloud/#who-can-open-the-admin-google-iap).) No `gcloud` commands, no re-running the provisioner. The person still needs their own Caelo MCP token — Google's credential only gets the request past IAP.
 
 ## Token scopes, caps, rotation
 
@@ -188,7 +185,7 @@ Who may sign it follows the user list: when the Owner adds a user (in `/settings
 ## Further reading
 
 - The [`@caelo-cms/mcp-server` README](https://github.com/caelo-cms/caelo-cms/tree/main/packages/mcp-server) — the source of truth for the SDK shape
-- [Architecture →](/architecture)
+- [Architecture →](/docs/architecture/)
 
 ## Upload and attach images
 

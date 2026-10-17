@@ -1,10 +1,7 @@
 ---
-slug: architecture
-template: doc-page
-status: published
-seo:
-  title: Architecture — Caelo CMS
-  description: Layered permission model, two-database split, Query API chokepoint, snapshot system, one plugin model with Owner-approved grants. The deep architecture overview.
+path: /docs/architecture/
+title: "Architecture"
+description: "Layered permission model, two-database split, Query API chokepoint, snapshot system, one plugin model with Owner-approved grants. The deep architecture overview."
 ---
 
 # Architecture
@@ -16,7 +13,7 @@ This page is the public version of `ARCHITECTURE.md` from the source repo — th
 1. **Layered permission model** — Module / Template / Page / Layout / Content / SEO / Redirect / Plugin / Skill / Media / Security / Deployment (i18n is plugin-provided since the plugin-system-v2 cleanup). Each layer constrains what the AI can do without your click.
 2. **Two-database split** — `cms_admin` (authoring) + `cms_public` (visitor + plugin data) with two isolated Postgres roles. **Row-Level Security forced on every table both ways.**
 3. **Module / snapshot architecture** — pages assemble modules by *live reference*, not by raw HTML. Every Query API write emits a snapshot. Reverting one click in chat restores the page.
-4. **One plugin model** — every plugin, shipped or AI-built at runtime, gets the same base (its own `cms_public.<slug>` tables) and everything else only as an Owner-approved grant bound to its exact version. Core data is reachable only through named Query API operations of a granted domain, and no plugin writes live directly. Plugin backends run in a Deno subprocess with no file, network or environment access ([Plugin permissions](/plugins-permissions)).
+4. **One plugin model** — every plugin, shipped or AI-built at runtime, gets the same base (its own `cms_public.<slug>` tables) and everything else only as an Owner-approved grant bound to its exact version. Core data is reachable only through named Query API operations of a granted domain, and no plugin writes live directly. Plugin backends run in a Deno subprocess with no file, network or environment access ([Plugin permissions](/docs/plugins/permissions/)).
 
 ## What runs where
 
@@ -82,7 +79,7 @@ Branch-aware writes via chat sessions: each chat operates on its own preview bra
 
 ## Provisioning
 
-`bunx @caelo-cms/provisioning@latest --provider <self-hosted|gcp|aws|azure>` runs Pulumi to spin up the platform-appropriate stack. Three environments per stack (dev / staging / production). Staging is `noindex` by default — enforced by staging's `robots.txt` (`Disallow: /`) and an `X-Robots-Tag: noindex` response header, not by the pages themselves, so publishing a staged build live ships exactly the same pages with production's `robots.txt`, `Sitemap:` line and sitemap. A page you mark `noindex` in its SEO settings stays `noindex` everywhere. The CMS doesn't manage its own DNS — `/settings/dns` surfaces the records you need to create at your registrar.
+`bunx @caelo-cms/provisioning@latest --provider <self-hosted|gcp|gcp-firebase>` sets up the stack: Docker Compose on your own host, or Pulumi in your own Google Cloud project. AWS and Azure are planned, not available yet. Three environments per stack (dev / staging / production). Staging is `noindex` by default — enforced by staging's `robots.txt` (`Disallow: /`) and an `X-Robots-Tag: noindex` response header, not by the pages themselves, so publishing a staged build live ships exactly the same pages with production's `robots.txt`, `Sitemap:` line and sitemap. A page you mark `noindex` in its SEO settings stays `noindex` everywhere. The CMS doesn't manage its own DNS — `/settings/dns` surfaces the records you need to create at your registrar.
 
 ## What's NOT in here
 

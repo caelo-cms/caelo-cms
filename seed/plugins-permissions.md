@@ -1,10 +1,7 @@
 ---
-slug: plugins-permissions
-template: doc-page
-status: published
-seo:
-  title: Plugin permissions — Caelo CMS
-  description: What every Caelo plugin may reach, what needs an Owner grant, and the rules no grant can lift — own data only, core data only through named operations, never a direct write to live.
+path: /docs/plugins/permissions/
+title: "Plugin permissions"
+description: "What every Caelo plugin may reach, what needs an Owner grant, and the rules no grant can lift — own data only, core data only through named operations, never a direct write to live."
 ---
 
 # Plugin permissions
@@ -77,6 +74,6 @@ Caelo is converging on this model. Where the current release does not meet it ye
 
 ## Next
 
-- [Build a plugin →](/plugins-build)
-- [Architecture →](/architecture)
+- [Build a plugin →](/docs/plugins/build/)
+- [Architecture →](/docs/architecture/)
 - The [`@caelo-cms/plugin-sandbox` source](https://github.com/caelo-cms/caelo-cms/tree/main/packages/plugin-sandbox)

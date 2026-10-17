@@ -1,64 +1,35 @@
 ---
-slug: home
-template: landing
-status: published
-seo:
-  title: Caelo CMS — AI-first, open-source CMS
-  description: Talk to your site. The AI agent edits modules, drafts pages, optimises SEO. You review, you publish. MPL 2.0. Self-hostable.
-  ogTitle: Caelo CMS
-  ogDescription: AI-first, open-source CMS. MPL 2.0. Self-hostable on a single VM or one-click deploy to GCP / AWS / Azure.
+path: /docs/
+title: "Caelo documentation"
+description: "Install Caelo, build and run your site with the AI, publish by click. Open source (MPL 2.0), on your own server or your own Google Cloud project."
 ---
 
-::: hero
-# Talk to your site.
-The AI edits modules, drafts pages, optimises SEO, moderates comments. **You review, you publish.** Every action is a snapshot you can revert with one click.
+# Caelo documentation
 
-[Quickstart →](/quickstart) · [GitHub →](https://github.com/caelo-cms/caelo-cms)
-:::
+Caelo is an open-source CMS for websites run with AI. You describe what you want, in the chat next to your live site or from your own agent. The AI builds it from your site's own parts. You review it, and you decide what goes live: every change lands in a draft, and **Publish live is always a human click**. Every write is a snapshot you can revert.
 
-::: content
-## Built for the AI agent as the primary user
+## Install
 
-Caelo's architecture is layered so the AI can't ship a page without your click. Live-edit overlay shows your real site while you work. Two-database split with RLS forced everywhere. Snapshot versioning means every change is reverted by clicking back through chat history.
+What works today: self-hosted with Docker Compose, and Google Cloud (`gcp`, `gcp-firebase`). AWS and Azure are planned, not available yet.
 
-```
-talk → preview → publish.
-```
-
-### Install in one line
+**Self-hosted**, on a Linux host with Docker and Bun, in the directory that should hold the install:
 
 ```bash
 bunx @caelo-cms/provisioning@latest --provider self-hosted --domain example.com --owner-email you@example.com
 ```
 
-Self-hosted = Docker Compose with Postgres + Caddy (auto-SSL) + the admin + the API gateway, started and health-checked by that one command. Cloud = `--provider gcp` / `aws` / `azure` — Pulumi spins up Cloud SQL HA + managed object storage + the platform's CDN + Secret Manager.
+That starts Postgres, Caddy (automatic TLS), the admin app and the API gateway as a Docker Compose stack from signed, prebuilt images. See [Install: self-hosted](/docs/install/self-hosted/).
 
-### Or one click on Google Cloud
+**Google Cloud, from the browser**, no laptop needed: [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.52&cloudshell_tutorial=gcp.md) ([Firebase Hosting variant](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.52&cloudshell_tutorial=gcp-firebase.md), [how it works](/docs/install/google-cloud/#one-click-install-from-cloud-shell)). The installer prints a monthly cost estimate before it creates anything billable.
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp.md) — install into your own Google Cloud project from the browser, no laptop needed ([Firebase Hosting variant](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.51&cloudshell_tutorial=gcp-firebase.md), [how it works](/install-gcp#one-click-install-from-cloud-shell)).
+After any install, open the setup link it prints, create the Owner account and pick your AI provider. Everything else happens in the chat. Start with the [Quickstart](/docs/quickstart/).
 
-### Drive your install from your IDE
+## Drive your install from your own agent
 
-```bash
-claude mcp add caelo --command "bunx @caelo-cms/mcp-server@latest" \
-  --env CAELO_ADMIN_URL=https://your-install.example.com \
-  --env CAELO_MCP_TOKEN=$(your bearer)
-```
+Mint a token at `/settings/mcp` on your install; the page shows the exact `claude mcp add` command for it. Two modes: `caelo_chat` (you describe an outcome, Caelo's own AI does the work) and Power-MCP (your agent gets Caelo's full tool catalogue). Either way the agent works in the draft, and publishing stays with a human. See [MCP](/docs/mcp/).
 
-Same chat-runner that powers the live-edit overlay, exposed via MCP. Read pages, propose edits, queue Owner-approval proposals — without opening the browser.
+## Status: pre-1.0
 
-### Four pillars
+Caelo is under active development; expect rough edges and breaking changes before 1.0. Until 1.0, Caelo deliberately fails loudly with a structured error where it could otherwise fall back to a silent default. That rule is relaxed at 1.0 with a documented breaking-change policy.
 
-- **AI-first** — the chat runs the editor; the panel is for security + ops.
-- **Open** — MPL 2.0, every dep MPL-compatible. No CLA. No dual-licensing.
-- **Self-hostable** — one VM works. Cloud works. Multi-region works.
-- **Opinionated** — small kernel, plugin host for the rest. One plugin model: every capability beyond a plugin's own tables is an Owner-approved grant.
-:::
-
-::: cta
-## Status: pre-1.0 (v0.1.0)
-
-The product surface is complete; we're in the dogfooding pass. Expect rough edges in the first 30 days; we fix in real-time. The pre-1.0 invariant: every code path that could "default to something sensible when data is missing" instead **fails loudly with a structured error**. Relaxed at 1.0.0.
-
-[Read the architecture →](/architecture) · [Build a plugin →](/plugins-build) · [Security policy →](/security)
-:::
+[Architecture →](/docs/architecture/) · [Build a plugin →](/docs/plugins/build/) · [Security policy →](/docs/security/) · [GitHub →](https://github.com/caelo-cms/caelo-cms)

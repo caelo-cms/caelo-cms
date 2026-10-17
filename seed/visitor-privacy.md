@@ -1,10 +1,7 @@
 ---
-slug: visitor-privacy
-template: doc-page
-status: published
-seo:
-  title: Visitor cookies and consent — Caelo CMS
-  description: Which cookies a Caelo site sets on its visitors, which need consent, and what "reject all" in the consent banner turns off — including the caelo_visitor_id cookie.
+path: /docs/visitor-privacy/
+title: "Visitor cookies and consent"
+description: "Which cookies a Caelo site sets on its visitors, which need consent, and what \"reject all\" in the consent banner turns off — including the caelo_visitor_id cookie."
 ---
 
 # Visitor cookies and consent
