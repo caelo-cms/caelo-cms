@@ -441,6 +441,48 @@ describe("security hardening — AST escapes and schema pluginId validation", ()
     expect(kinds('const k = "ev" + "al"; globalThis[k]("1+1");')).toContain("forbidden-call");
   });
 
+  it("folds constant computed keys, so split spellings of .constructor/.eval are caught", () => {
+    expect(kinds('const f = (() => {})["con" + "structor"]("return 1");')).toContain(
+      "forbidden-eval",
+    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the placeholder is plugin source under test
+    expect(kinds('const f = (() => {})[`con${"struc"}tor`]("return 1");')).toContain(
+      "forbidden-eval",
+    );
+    expect(kinds('globalThis["ev" + "al"]("1+1");')).toContain("forbidden-eval");
+    expect(kinds("const F = f.constructor.constructor;")).toContain("forbidden-eval");
+    expect(kinds('new ((0, f).constructor)("return 1");')).toContain("forbidden-eval");
+  });
+
+  it("rejects eval and Function referenced as values (sequence callee, aliases)", () => {
+    expect(kinds('(0, eval)("1+1");')).toContain("forbidden-eval");
+    expect(kinds('const e = eval; e("1+1");')).toContain("forbidden-eval");
+    expect(kinds("const F = [Function][0];")).toContain("forbidden-eval");
+    expect(kinds('(0, globalThis.eval)("1+1");')).toContain("forbidden-eval");
+  });
+
+  it("rejects the global object used as a value (aliasing)", () => {
+    expect(kinds('const g = globalThis; g.eval("1+1");')).toContain("forbidden-globalthis-alias");
+    expect(kinds('Reflect.get(globalThis, "eval");')).toContain("forbidden-globalthis-alias");
+    expect(kinds('globalThis.globalThis.eval("1+1");')).toContain("forbidden-globalthis-alias");
+    expect(kinds("const { fetch: f } = self;")).toContain("forbidden-globalthis-alias");
+  });
+
+  it("still accepts ordinary code near those rules", () => {
+    const ok = [
+      "const isPlain = (v) => v !== null && v.constructor === Object;",
+      "const name = value.constructor.name;",
+      "const isFn = (v) => v instanceof Function;",
+      "const hasWindow = typeof window !== 'undefined';",
+      "const m = globalThis.Math.max(1, 2);",
+      "function f() { const self = this; return self.x; }",
+      "const o = { eval: 1, constructor: 2 }; const v = o.eval;",
+      "const k = 'a'; const v = obj[k];",
+      "class A { eval() { return 1; } }",
+    ];
+    for (const source of ok) expect(kinds(source)).toEqual([]);
+  });
+
   it("fails closed when AST nesting exceeds MAX_DEPTH (200)", () => {
     let deep = 'eval("1")';
     for (let i = 0; i < 210; i++) {

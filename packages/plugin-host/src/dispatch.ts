@@ -622,8 +622,12 @@ export async function runPluginOperation(
           entityId: null,
           succeeded: false,
         });
-      } catch {
-        // Best-effort audit on failure.
+      } catch (auditError) {
+        // Best-effort: the caller gets the operation's own error either
+        // way, but a missing failure row must not go unnoticed.
+        console.error(
+          `[plugin-host] failure audit row not recorded for ${plugin.slug}.${opts.operationName}: ${(auditError as Error).message}`,
+        );
       }
     }
     if (isProjectionNotPublished(e)) {
