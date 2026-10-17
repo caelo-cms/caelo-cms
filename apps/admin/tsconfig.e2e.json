@@ -1,8 +1,0 @@
-{
-  // The Playwright suites (mock-AI `e2e/`, Real-AI `e2e-livedit/`) sit
-  // outside the app's `include`, so without this config nothing in CI
-  // typechecked them and errors piled up unseen. `bun run typecheck` runs
-  // it after the app check; same strict options as the app.
-  "extends": "./tsconfig.json",
-  "include": ["e2e", "e2e-livedit", "playwright.config.ts", "playwright.livedit.config.ts"]
-}
