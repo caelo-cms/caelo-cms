@@ -244,23 +244,59 @@ gh release view vX.Y.Z                      # → shows the changelog
 
 The end-user docs are pages in the Caelo CMS on
 [caelo-cms.com/docs](https://caelo-cms.com/docs/), not repo files
-(CLAUDE.md §10), so the release commit does not touch them. After the
-release is published, the docs-sync workflow
-([#827](https://github.com/caelo-cms/caelo-cms/issues/827)) drafts their
-update on a chat branch of caelo-cms.com from the merged PRs labelled
-`user-facing` (their `## User docs affected` sections) and the release
-notes. **Review the preview and publish it on caelo-cms.com** — nothing
-is published automatically.
+(CLAUDE.md §10), so the release commit does not touch them. After every
+successful `release` run,
+`.github/workflows/docs-sync.yml` prepares the docs work for the new
+stable release (pre-releases are skipped):
 
-That draft must also move the "Open in Cloud Shell" links on the docs
-pages (`/docs/`, `/docs/quickstart/`, `/docs/install/google-cloud/`) to
-`release-v<X.Y.Z>`. `scripts/release.ts` pins only the copies in this
+- the merged PRs since the previous stable release that carry the
+  `user-facing` label, each with its `## User docs affected` section, plus
+  the release notes, turned into chat messages for Caelo's AI
+  (`scripts/docs-sync.ts`, `scripts/docs-sync-prompt.ts`);
+- the public developer reference (Plugin SDK, Query API, provisioning CLI)
+  generated from the release tag for `/docs/reference/`
+  (`scripts/docs-reference.ts`). These pages are repo-owned: each says so,
+  carries `owner: repo` and links its source at the tag. Fix them here,
+  never in the CMS.
+
+Both land in the run's `docs-sync-release-vX.Y.Z` artifact and job
+summary. A user-facing PR without the section (or with it left blank)
+fails the run and is named in the summary: add the section to that PR's
+description and re-run the workflow (Actions → docs-sync → Run workflow,
+mode `release`, the tag). Re-runs are safe; the output is deterministic.
+
+`workflow_dispatch` with mode `seed` turns the `docs/cms-seed` branch
+(`seed/*.md`, frontmatter `path:` + `title:`) into one message per page,
+for the initial fill of the docs section.
+
+**Sending is not wired yet.** The workflow cannot reach caelo-cms.com's
+admin through Google IAP without weakening CLAUDE.md §11.B (gap and
+proposal on #827). Until then, open a new chat on caelo-cms.com, paste
+the messages from the artifact in order, review the chat's preview and
+publish by click. Nothing is ever published by the workflow: once sending
+lands, the drafts still wait on the chat's preview branch for the Owner.
+
+Maintainer setup for the send step (once #827's IAP access exists):
+
+1. On caelo-cms.com, `/settings/mcp` → **New token**, name `docs-sync`,
+   scope `chat` (Caelo's own AI drafts the pages; the token cannot drive
+   tools directly), with an AI-spend cap. Copy the bearer shown once.
+2. In the GitHub repo, Settings → Environments → **New environment**
+   `docs-sync`; deployment branches: `main` only; optionally required
+   reviewers. Add the secret `CAELO_MCP_TOKEN` (the bearer) there — never
+   as a repository secret.
+3. Revoke and re-mint the token at `/settings/mcp` if it ever leaks; the
+   audit trail of every docs turn is at `/settings/audit/<requestId>`.
+
+The docs update must also move the "Open in Cloud Shell" links on the
+docs pages (`/docs/`, `/docs/quickstart/`, `/docs/install/google-cloud/`)
+to `release-v<X.Y.Z>`. `scripts/release.ts` pins only the copies in this
 repo (`CLOUD_SHELL_LINK_FILES`, the README) on purpose: it cannot edit
 CMS content, and writing to the live site from the release commit would
 bypass the Owner's publish click. The `release-v<X.Y.Z>` branch of
 `caelo-cms/install` appears within about 30 minutes of the GitHub
-Release, so publish the docs after it exists. Until the docs-sync
-workflow ships, move the links by hand in the CMS.
+Release, so publish the docs after it exists. Until sending is wired,
+move the links by hand in the CMS.
 
 ---
 
