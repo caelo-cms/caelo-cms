@@ -197,7 +197,10 @@ What the script does, in order:
    contract — see ["Release manifest"](#release-manifest)) and writes
    the declaration to `release-meta.json`. A failed check stops here,
    before anything is bumped.
-2. Updates the `CAELO_VERSION` constant.
+2. Updates the `CAELO_VERSION` constant and, for a stable release,
+   moves the README's "Open in Cloud Shell" install links to
+   `release-v<X.Y.Z>` (`scripts/cloud-shell-links.ts`; repo files only,
+   see ["End-user docs"](#5-end-user-docs)).
 3. Walks every workspace `package.json` and bumps `"version"` to match.
 4. Re-signs every shipped plugin manifest under
    `packages/plugins/<slug>/` with the dev key (or
@@ -237,10 +240,12 @@ docker pull ghcr.io/caelo-cms/admin:X.Y.Z   # → succeeds
 gh release view vX.Y.Z                      # → shows the changelog
 ```
 
-### 5. Docs
+### 5. End-user docs
 
-End-user docs live in the CMS on caelo-cms.com/docs/, developer docs in
-this repo (epic #825). After every successful `release` run,
+The end-user docs are pages in the Caelo CMS on
+[caelo-cms.com/docs](https://caelo-cms.com/docs/), not repo files
+(CLAUDE.md §10), so the release commit does not touch them. After every
+successful `release` run,
 `.github/workflows/docs-sync.yml` prepares the docs work for the new
 stable release (pre-releases are skipped):
 
@@ -282,6 +287,16 @@ Maintainer setup for the send step (once #827's IAP access exists):
    as a repository secret.
 3. Revoke and re-mint the token at `/settings/mcp` if it ever leaks; the
    audit trail of every docs turn is at `/settings/audit/<requestId>`.
+
+The docs update must also move the "Open in Cloud Shell" links on the
+docs pages (`/docs/`, `/docs/quickstart/`, `/docs/install/google-cloud/`)
+to `release-v<X.Y.Z>`. `scripts/release.ts` pins only the copies in this
+repo (`CLOUD_SHELL_LINK_FILES`, the README) on purpose: it cannot edit
+CMS content, and writing to the live site from the release commit would
+bypass the Owner's publish click. The `release-v<X.Y.Z>` branch of
+`caelo-cms/install` appears within about 30 minutes of the GitHub
+Release, so publish the docs after it exists. Until sending is wired,
+move the links by hand in the CMS.
 
 ---
 

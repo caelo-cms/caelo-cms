@@ -2,7 +2,7 @@
 
 This is the deep-dive companion to [`CLAUDE.md`](./CLAUDE.md). CLAUDE.md is the engineering-rules file (read first, kept short). This file answers *"how does Caelo fit together?"* — broken into four focused diagrams plus a guide to where things live in the repo.
 
-For the *why* behind every choice (RLS, two databases, snapshots, no-fallbacks, etc.) see [`CMS_REQUIREMENTS.md`](./CMS_REQUIREMENTS.md). End-user documentation (install, editing, plugins, MCP) lives at [caelo-cms.com/docs](https://caelo-cms.com/docs/), built in Caelo itself.
+For the *why* behind every choice (RLS, two databases, snapshots, no-fallbacks, etc.) see [`CMS_REQUIREMENTS.md`](./CMS_REQUIREMENTS.md). End-user documentation (install, editing, plugins, MCP) lives in the CMS at [caelo-cms.com/docs](https://caelo-cms.com/docs/), built in Caelo itself; the developer docs are indexed in [`docs/README.md`](./docs/README.md) (CLAUDE.md §10).
 
 ---
 

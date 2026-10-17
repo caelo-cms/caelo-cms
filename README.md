@@ -110,7 +110,7 @@ Either way the agent works in the draft, and publishing stays with a human. Mint
 
 User docs (install, editing, plugins, MCP, security) live at **[caelo-cms.com/docs](https://caelo-cms.com/docs/)**, built in Caelo itself.
 
-For contributors: read **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** and **[`CLAUDE.md`](./CLAUDE.md)** before opening a PR. The architecture overview is in **[`ARCHITECTURE.md`](./ARCHITECTURE.md)**, the product spec in **[`CMS_REQUIREMENTS.md`](./CMS_REQUIREMENTS.md)**.
+For contributors: read **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** and **[`CLAUDE.md`](./CLAUDE.md)** before opening a PR. The architecture overview is in **[`ARCHITECTURE.md`](./ARCHITECTURE.md)**, the product spec in **[`CMS_REQUIREMENTS.md`](./CMS_REQUIREMENTS.md)**, and the developer docs are indexed in **[`docs/README.md`](./docs/README.md)**.
 
 ## Roadmap
 
