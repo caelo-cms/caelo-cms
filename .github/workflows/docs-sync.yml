@@ -112,36 +112,20 @@ jobs:
           fi
           echo "release=${release}" >> "${GITHUB_OUTPUT}"
 
-      - name: Check out the release tag (reference source)
-        if: steps.target.outputs.mode == 'release' && steps.target.outputs.skip != 'true'
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ steps.target.outputs.release }}
-          path: release-src
-          persist-credentials: false
-
-      - name: Check out the seed branch
-        if: steps.target.outputs.mode == 'seed'
-        uses: actions/checkout@v7
-        with:
-          ref: docs/cms-seed
-          path: seed-src
-          persist-credentials: false
-
+      # The release tag and the seed branch are read from the git objects of
+      # the main checkout above (`git show <ref>:<path>`), never checked
+      # out or executed: only main's scripts run in this job.
       - name: Prepare (release)
         if: steps.target.outputs.mode == 'release' && steps.target.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RELEASE: ${{ steps.target.outputs.release }}
-        run: >-
-          bun scripts/docs-sync.ts release
-          --release "${RELEASE}" --repo "${REPO}"
-          --source-root release-src --out docs-sync-out
+        run: bun scripts/docs-sync.ts release --release "${RELEASE}" --repo "${REPO}" --out docs-sync-out
 
       - name: Prepare (seed)
         if: steps.target.outputs.mode == 'seed'
-        run: bun scripts/docs-sync.ts seed --seed-dir seed-src/seed --out docs-sync-out
+        run: bun scripts/docs-sync.ts seed --out docs-sync-out
 
       - name: Upload docs work
         # Also on failure: the summary names the PRs to fix, and the

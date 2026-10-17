@@ -92,6 +92,13 @@ describe("extractUserDocsSection", () => {
     expect(extractUserDocsSection(body)).toBe("### Install\nstep");
   });
 
+  it("strips every comment, including interleaved and unterminated ones", () => {
+    expect(extractUserDocsSection(`${USER_DOCS_HEADING}\na<!-- x -->b<!--<!-- y -->-->c`)).toBe(
+      "ab-->c",
+    );
+    expect(extractUserDocsSection(`${USER_DOCS_HEADING}\nkeep<!-- open`)).toBe("keep");
+  });
+
   it("handles CRLF bodies", () => {
     expect(extractUserDocsSection(`${USER_DOCS_HEADING}\r\nText\r\n`)).toBe("Text");
   });

@@ -131,7 +131,29 @@ export function extractUserDocsSection(body: string): string | null {
   const rest = lines.slice(start + 1);
   const end = rest.findIndex((l) => /^#{1,2}\s/.test(l));
   const section = (end === -1 ? rest : rest.slice(0, end)).join("\n");
-  return section.replace(/<!--[\s\S]*?-->/g, "").trim();
+  return stripHtmlComments(section).trim();
+}
+
+/**
+ * Remove `<!-- … -->` comments in one left-to-right scan; an unterminated
+ * comment drops the rest. (A scan, not a regex replace: a replace can leave
+ * a fresh `<!--` behind when comments are nested or interleaved.)
+ */
+function stripHtmlComments(text: string): string {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf("<!--", i);
+    if (open === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, open);
+    const close = text.indexOf("-->", open + 4);
+    if (close === -1) break;
+    i = close + 3;
+  }
+  return out;
 }
 
 /**

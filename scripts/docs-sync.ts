@@ -4,9 +4,13 @@
  * Release docs-sync, prepare step (#827, #828). Run by
  * `.github/workflows/docs-sync.yml`; also runnable locally:
  *
- *   bun scripts/docs-sync.ts release --release v0.10.53 --repo caelo-cms/caelo-cms --out <dir> \
- *     [--source-root <checkout of the release tag>]
- *   bun scripts/docs-sync.ts seed --seed-dir <checkout>/seed --out <dir>
+ *   bun scripts/docs-sync.ts release --release v0.10.53 --repo caelo-cms/caelo-cms --out <dir>
+ *   bun scripts/docs-sync.ts seed --out <dir>
+ *
+ * The release tag (reference source) and the `docs/cms-seed` branch are
+ * read from this checkout's git objects (`refs/tags/<release>`,
+ * `refs/remotes/origin/docs/cms-seed`), never checked out or executed:
+ * see scripts/docs-source-tree.ts.
  *
  * Writes into `<dir>`:
  *   - `messages/NN.md`  the chat messages for Caelo's AI on caelo-cms.com,
@@ -24,10 +28,11 @@
  * (missing or empty "User docs affected" section), naming each one.
  */
 
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import { generateReference, writeReference } from "./docs-reference.ts";
+import { gitTree, type SourceTree } from "./docs-source-tree.ts";
 import { buildReleaseMessages, buildSeedMessages, runMarker } from "./docs-sync-prompt.ts";
 import {
   classifyPullRequests,
@@ -199,13 +204,28 @@ const execRun: Run = async (argv) => {
   return stdout;
 };
 
+/** Git ref of the seed branch as the workflow's full-history checkout has it. */
+export const SEED_REF = `refs/remotes/origin/${SEED_BRANCH}`;
+
+/** The `seed/*.md` files of `tree`, sorted by name. */
+export function readSeedFiles(tree: SourceTree): Array<{ file: string; content: string }> {
+  return tree
+    .list(SEED_DIR)
+    .filter((f) => f.endsWith(".md"))
+    .map((f) => {
+      const file = `${SEED_DIR}/${f}`;
+      const content = tree.read(file);
+      if (content === null) throw new Error(`${tree.label}: ${file} vanished while reading`);
+      return { file, content };
+    });
+}
+
 const releaseArgs = z.object({
   release: z.string().min(1),
   repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "owner/name"),
   out: z.string().min(1),
-  sourceRoot: z.string().min(1),
 });
-const seedArgs = z.object({ seedDir: z.string().min(1), out: z.string().min(1) });
+const seedArgs = z.object({ out: z.string().min(1) });
 
 function argValue(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -213,8 +233,10 @@ function argValue(name: string): string | undefined {
 }
 
 const USAGE =
-  "Usage: bun scripts/docs-sync.ts release --release <vX.Y.Z> --repo <owner/name> --out <dir> [--source-root <checkout of the release>]\n" +
-  `       bun scripts/docs-sync.ts seed --seed-dir <checkout of ${SEED_BRANCH}>/${SEED_DIR} --out <dir>`;
+  "Usage: bun scripts/docs-sync.ts release --release <vX.Y.Z> --repo <owner/name> --out <dir>\n" +
+  "       bun scripts/docs-sync.ts seed --out <dir>";
+
+const REPO_ROOT = join(import.meta.dir, "..");
 
 async function main(): Promise<number> {
   const mode = process.argv[2];
@@ -223,7 +245,6 @@ async function main(): Promise<number> {
       release: argValue("release"),
       repo: argValue("repo"),
       out: argValue("out"),
-      sourceRoot: argValue("source-root") ?? join(import.meta.dir, ".."),
     });
     if (!a.success) {
       console.error(USAGE);
@@ -239,30 +260,26 @@ async function main(): Promise<number> {
       changes: plan.changes,
     });
     writeMessages(out, messages);
-    const pages = await generateReference(resolve(a.data.sourceRoot), plan.release);
+    const pages = generateReference(gitTree(`refs/tags/${plan.release}`, REPO_ROOT), plan.release);
     writeReference(join(out, "reference"), plan.release, pages);
     writeFileSync(join(out, "plan.json"), `${JSON.stringify(plan, null, 2)}\n`);
     publishSummary(out, releaseSummary(plan, messages.length, pages.length));
     return plan.problems.length > 0 ? 1 : 0;
   }
   if (mode === "seed") {
-    const a = seedArgs.safeParse({ seedDir: argValue("seed-dir"), out: argValue("out") });
+    const a = seedArgs.safeParse({ out: argValue("out") });
     if (!a.success) {
       console.error(USAGE);
       return 2;
     }
-    const dir = resolve(a.data.seedDir);
-    const files = readdirSync(dir)
-      .filter((f) => f.endsWith(".md"))
-      .sort()
-      .map((f) => ({ file: `${SEED_DIR}/${f}`, content: readFileSync(join(dir, f), "utf8") }));
-    const pages = parseSeed(files);
+    const pages = parseSeed(readSeedFiles(gitTree(SEED_REF, REPO_ROOT)));
     const out = resolve(a.data.out);
     mkdirSync(out, { recursive: true });
     writeMessages(out, buildSeedMessages(pages));
+    const planned = pages.map(({ file, path, title }) => ({ file, path, title }));
     writeFileSync(
       join(out, "plan.json"),
-      `${JSON.stringify({ mode: "seed", marker: runMarker("seed"), pages: pages.map(({ file, path, title }) => ({ file, path, title })) }, null, 2)}\n`,
+      `${JSON.stringify({ mode: "seed", marker: runMarker("seed"), pages: planned }, null, 2)}\n`,
     );
     publishSummary(out, seedSummary(pages.map((p) => p.path)));
     return 0;

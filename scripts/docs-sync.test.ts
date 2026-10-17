@@ -4,7 +4,15 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as yaml from "js-yaml";
-import { collectRelease, type Run, releaseSummary, seedSummary } from "./docs-sync.ts";
+import type { SourceTree } from "./docs-source-tree.ts";
+import {
+  collectRelease,
+  type Run,
+  readSeedFiles,
+  releaseSummary,
+  SEED_REF,
+  seedSummary,
+} from "./docs-sync.ts";
 import { USER_DOCS_HEADING, USER_FACING_LABEL } from "./docs-sync-sources.ts";
 
 const REPO = "caelo-cms/caelo-cms";
@@ -74,6 +82,22 @@ describe("collectRelease", () => {
     await expect(collectRelease("v0.10.99", REPO, fakeRun(answers))).rejects.toThrow(
       /does not exist/,
     );
+  });
+});
+
+describe("readSeedFiles", () => {
+  it("reads the markdown files of seed/ from a tree", () => {
+    const files: Record<string, string> = { "seed/b.md": "B", "seed/a.md": "A" };
+    const tree: SourceTree = {
+      label: "test",
+      read: (p) => files[p] ?? null,
+      list: (dir) => (dir === "seed" ? ["README.txt", "a.md", "b.md"] : []),
+    };
+    expect(readSeedFiles(tree)).toEqual([
+      { file: "seed/a.md", content: "A" },
+      { file: "seed/b.md", content: "B" },
+    ]);
+    expect(SEED_REF).toBe("refs/remotes/origin/docs/cms-seed");
   });
 });
 
