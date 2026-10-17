@@ -116,7 +116,36 @@ function splitClasses(raw: string | undefined): string[] {
  * body stays once, a placeholder becomes empty.
  */
 export function stripMustache(template: string): string {
-  return template.replace(/\{\{\{[^}]*\}\}\}/g, "").replace(/\{\{[^}]*\}\}/g, "");
+  return stripDelimited(stripDelimited(template, 3), 2);
+}
+
+/**
+ * Removes every `{`×n + non-`}` run + `}`×n span, leftmost first — the
+ * same result as `replace(/\{{n}[^}]*\}{n}/g, "")`, in linear time. The
+ * regex form backtracks quadratically on long `{{{{…` runs in module HTML
+ * (CodeQL js/polynomial-redos); here, when the first `}` after an opener
+ * does not start the closer, no opener before that `}` can match either
+ * (they all hit the same `}`), so the scan resumes there.
+ */
+function stripDelimited(text: string, n: number): string {
+  const opener = "{".repeat(n);
+  const closer = "}".repeat(n);
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf(opener, i);
+    if (open < 0) break;
+    const brace = text.indexOf("}", open + n);
+    if (brace < 0) break;
+    if (text.startsWith(closer, brace)) {
+      out += text.slice(i, open);
+      i = brace + n;
+    } else {
+      out += text.slice(i, brace);
+      i = brace;
+    }
+  }
+  return out + text.slice(i);
 }
 
 /** The node's key without its children: `div.card.card--wide`. */

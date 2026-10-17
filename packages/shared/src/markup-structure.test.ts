@@ -90,6 +90,27 @@ describe("templates and free regions", () => {
     '<section class="prose"><h2>{{title}}</h2><div class="body">{{body}}</div>' +
     '<ul class="tags">{{#tags}}<li class="tag">{{.}}</li>{{/tags}}</ul></section>';
 
+  it("stripMustache matches the two-pass regex on edge cases and stays linear on long brace runs", () => {
+    const regex = (t: string): string =>
+      t.replace(/\{\{\{[^}]*\}\}\}/g, "").replace(/\{\{[^}]*\}\}/g, "");
+    for (const t of [
+      "{{x{{{y}}}",
+      "{{a}}}",
+      "{{{a}}",
+      "{{{{a}}}}",
+      "a{b}c{{",
+      "{{}}{{{}}}",
+      "}}{{a}b}}",
+      "<p>{{#s}}{{{h}}}{{/s}}</p>",
+    ]) {
+      expect(stripMustache(t)).toBe(regex(t));
+    }
+    const started = performance.now();
+    stripMustache("{{{{{{".repeat(50_000));
+    stripMustache(`${"{{".repeat(50_000)}}`);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   it("stripMustache keeps the markup a template renders", () => {
     expect(stripMustache("<p>{{a}}{{{b}}}</p>{{#s}}<i></i>{{/s}}{{>n}}")).toBe("<p></p><i></i>");
   });

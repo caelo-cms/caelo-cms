@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0285 — issue #820: free HTML versus modules.
+-- 0286 — issue #820: free HTML versus modules.
 --
 -- Page builds kept pasting component markup (a step chain, paired columns,
 -- a comparison table) into richtext values of a generic text module, page
