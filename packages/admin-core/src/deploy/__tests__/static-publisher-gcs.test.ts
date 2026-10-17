@@ -15,6 +15,7 @@
  *   - per-target robots.txt (with the Sitemap: line) + routing-manifest
  *     patches applied; a legacy staging build with env noindex baked
  *     into its HTML is refused
+ *   - live objects the published build no longer contains are deleted
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
@@ -43,6 +44,7 @@ interface MockFile {
   getMetadata: () => Promise<[Record<string, unknown>]>;
   save: ReturnType<typeof mock>;
   copy: ReturnType<typeof mock>;
+  delete: ReturnType<typeof mock>;
 }
 
 interface MockBucket {
@@ -93,6 +95,9 @@ function makeFile(bucket: MockBucket, key: string): MockFile {
         });
       },
     ),
+    delete: mock(async () => {
+      bucket.files.delete(key);
+    }),
   };
   return f;
 }
@@ -630,5 +635,120 @@ describe("gcsStaticPublisher — redirects on the load balancer (#587)", () => {
       }),
     ).rejects.toThrow(/Run Stage again/);
     expect(staticBucket.files.has("en/about/index.html")).toBe(false);
+  });
+});
+
+describe("gcsStaticPublisher — live objects the build no longer contains", () => {
+  async function writePromotable(): Promise<void> {
+    await writeFile(
+      join(buildDir, "routing-manifest.json"),
+      JSON.stringify({ env: "staging", envNoindexInHtml: false }),
+      "utf8",
+    );
+  }
+
+  function seedLive(key: string, body: string): void {
+    staticBucket.files.set(key, { ...makeFile(staticBucket, key), body: Buffer.from(body) });
+  }
+
+  it("Stage stores the build's full file list, hash-skipped files included", async () => {
+    await writePromotable();
+    seedLive(
+      "_state/last-build-manifest.json",
+      JSON.stringify({
+        buildId: "prev",
+        files: {
+          "en/about/index.html": computeCrc32cBase64(Buffer.from("<html>about</html>", "utf8")),
+        },
+        cachePolicyVersion: CACHE_POLICY_VERSION,
+      }),
+    );
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-fl", target: TARGET });
+    expect(stagingBucket.files.has("run-fl/en/about/index.html")).toBe(false);
+    const stored = JSON.parse(
+      stagingBucket.files.get("_build-files/run-fl.json")?.body?.toString("utf8") ?? "{}",
+    ) as { files: string[] };
+    expect(stored.files).toContain("en/about/index.html");
+    expect(stored.files).toContain("routing-manifest.json");
+  });
+
+  it("Publish live deletes a removed page and a page now shipped as /404.html, keeps the rest", async () => {
+    // Live from the previous publish: about (unchanged), a deleted page,
+    // and the page that became the 404 page, at its old path.
+    const aboutBody = "<html>about</html>";
+    seedLive("en/about/index.html", aboutBody);
+    seedLive("en/deleted/index.html", "<html>gone</html>");
+    seedLive("en/not-found/index.html", "<html>not found</html>");
+    seedLive(
+      "_state/last-build-manifest.json",
+      JSON.stringify({
+        buildId: "prev",
+        files: { "en/about/index.html": computeCrc32cBase64(Buffer.from(aboutBody, "utf8")) },
+        cachePolicyVersion: CACHE_POLICY_VERSION,
+      }),
+    );
+    await writeFile(join(buildDir, "404.html"), "<html>not found</html>", "utf8");
+    await writePromotable();
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-p", target: TARGET });
+    await gcsStaticPublisher.promoteToProduction({
+      sourceRunId: "run-p",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://example.com",
+    });
+    expect(staticBucket.files.has("en/deleted/index.html")).toBe(false);
+    expect(staticBucket.files.has("en/not-found/index.html")).toBe(false);
+    expect(staticBucket.files.has("404.html")).toBe(true);
+    // Hash-skipped (never in the staging prefix) but part of the build.
+    expect(staticBucket.files.has("en/about/index.html")).toBe(true);
+    expect(staticBucket.files.has("robots.txt")).toBe(true);
+    expect(staticBucket.files.has("routing-manifest.json")).toBe(true);
+    const manifest = JSON.parse(
+      staticBucket.files.get("_state/last-build-manifest.json")?.body?.toString("utf8") ?? "{}",
+    ) as { files: Record<string, string> };
+    expect(Object.keys(manifest.files)).not.toContain("en/deleted/index.html");
+  });
+
+  it("Publish live refuses a run staged without a file list (older release) before copying anything", async () => {
+    await writePromotable();
+    seedLive("en/deleted/index.html", "<html>gone</html>");
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-nofl", target: TARGET });
+    stagingBucket.files.delete("_build-files/run-nofl.json");
+    await expect(
+      gcsStaticPublisher.promoteToProduction({
+        sourceRunId: "run-nofl",
+        sourceBuildDir: buildDir,
+        fromTarget: TARGET,
+        toTarget: PROD_TARGET,
+        siteBaseUrl: "https://example.com",
+      }),
+    ).rejects.toThrow(/file list of run run-nofl .* Run Stage again/);
+    expect(staticBucket.files.has("en/about/index.html")).toBe(false);
+    expect(staticBucket.files.has("en/deleted/index.html")).toBe(true);
+  });
+
+  it("Publish live refuses an empty file list instead of deleting the live site", async () => {
+    await writePromotable();
+    seedLive("en/kept/index.html", "<html>kept</html>");
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-empty", target: TARGET });
+    stagingBucket.files.set("_build-files/run-empty.json", {
+      ...makeFile(stagingBucket, "_build-files/run-empty.json"),
+      body: Buffer.from(JSON.stringify({ files: [] })),
+    });
+    await expect(
+      gcsStaticPublisher.promoteToProduction({
+        sourceRunId: "run-empty",
+        sourceBuildDir: buildDir,
+        fromTarget: TARGET,
+        toTarget: PROD_TARGET,
+        siteBaseUrl: "https://example.com",
+      }),
+    ).rejects.toThrow(/not a build file list/);
+    expect(staticBucket.files.has("en/kept/index.html")).toBe(true);
   });
 });
