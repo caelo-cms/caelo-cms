@@ -20,7 +20,6 @@ const required = [
   "POSTGRES_PORT",
   "ADMIN_ROLE_PASSWORD",
   "PUBLIC_ROLE_PASSWORD",
-  "GATEWAY_ROLE_PASSWORD",
   "ADMIN_DATABASE_URL",
 ] as const;
 const missing = required.filter((name) => !env[name]);
@@ -96,7 +95,6 @@ beforeAll(async () => {
       {
         admin: env.ADMIN_ROLE_PASSWORD as string,
         public: env.PUBLIC_ROLE_PASSWORD as string,
-        gateway: env.GATEWAY_ROLE_PASSWORD as string,
       },
       AGENT_PASSWORD,
     ),

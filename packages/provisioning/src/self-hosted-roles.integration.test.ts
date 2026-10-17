@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #613 review — `cms-provision up` on a self-hosted volume created before
- * the per-role passwords: no `gateway_role`, `public_role` on another
- * password. The convergence script, run as the superuser exactly as `up`
- * runs it (psql, script on stdin), must leave the roles on the configured
- * passwords with the gateway's grants in place — and be safe to re-run.
+ * #613 review, #635 — `cms-provision up` on a self-hosted volume from
+ * before: `public_role` on another password, and the gateway's former
+ * `gateway_role` login still there with its grants. The convergence
+ * script, run as the superuser exactly as `up` runs it (psql, script on
+ * stdin), must leave the roles on the configured passwords and the former
+ * gateway_role gone — and be safe to re-run.
  *
  * Runs against the test database with the passwords the environment already
  * uses, so the other suites' connection URLs keep working afterwards.
@@ -25,9 +26,8 @@ const required = [
   "POSTGRES_PORT",
   "ADMIN_ROLE_PASSWORD",
   "PUBLIC_ROLE_PASSWORD",
-  "GATEWAY_ROLE_PASSWORD",
   "ADMIN_DATABASE_URL",
-  "GATEWAY_DATABASE_URL",
+  "PUBLIC_DATABASE_URL",
 ] as const;
 const missing = required.filter((name) => !env[name]);
 if (missing.length > 0) throw new Error(`${missing.join(", ")} required (see .env.example)`);
@@ -63,19 +63,20 @@ const psql: SuperuserPsql = async (script) => {
 const passwords = {
   admin: env.ADMIN_ROLE_PASSWORD as string,
   public: env.PUBLIC_ROLE_PASSWORD as string,
-  gateway: env.GATEWAY_ROLE_PASSWORD as string,
 };
 
-describe("self-hosted role convergence against Postgres (#613 review)", () => {
-  it("brings a pre-#613 volume to the configured roles, grants and passwords — twice", async () => {
-    // The pre-#613 volume: no gateway_role, public_role on another password.
+describe("self-hosted role convergence against Postgres (#613 review, #635)", () => {
+  it("brings an old volume to the configured roles and passwords, without gateway_role — twice", async () => {
+    // The old volume: the former gateway_role with a cms_admin grant, and
+    // public_role on another password.
     const reset = await psql(
       [
         "\\set ON_ERROR_STOP on",
+        "SELECT 'CREATE ROLE gateway_role NOINHERIT LOGIN' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') \\gexec",
+        "GRANT CONNECT ON DATABASE cms_admin TO gateway_role;",
         "\\connect cms_admin",
-        "DROP OWNED BY gateway_role;",
+        "GRANT SELECT (gateway_cookie_secret) ON site_settings TO gateway_role;",
         "\\connect postgres",
-        "DROP ROLE gateway_role;",
         "ALTER ROLE public_role WITH PASSWORD 'the-old-shared-password';",
         "",
       ].join("\n"),
@@ -87,36 +88,20 @@ describe("self-hosted role convergence against Postgres (#613 review)", () => {
       expect(r).toEqual({ ok: true });
     }
 
-    // The gateway logs in with its configured password and reads what 0248 grants.
-    const gateway = new SQL(env.GATEWAY_DATABASE_URL as string);
+    // public_role logs in with its configured password again.
+    const pub = new SQL(env.PUBLIC_DATABASE_URL as string);
     try {
-      const rows = (await gateway.begin(async (tx) => {
-        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-        return tx`SELECT current_user::text AS u, length(gateway_cookie_secret) > 0 AS s FROM site_settings`;
-      })) as { u: string; s: boolean }[];
-      expect(rows[0]).toEqual({ u: "gateway_role", s: true });
+      const [who] = (await pub`SELECT current_user::text AS u`) as { u: string }[];
+      expect(who?.u).toBe("public_role");
     } finally {
-      await gateway.end();
+      await pub.end();
     }
+    // The former gateway_role is gone, with its grants (#635).
     const admin = new SQL(env.ADMIN_DATABASE_URL as string);
     try {
-      const [attrs] = (await admin`
-        SELECT rolcanlogin, rolinherit FROM pg_roles WHERE rolname = 'gateway_role'`) as {
-        rolcanlogin: boolean;
-        rolinherit: boolean;
-      }[];
-      expect(attrs).toEqual({ rolcanlogin: true, rolinherit: false });
-      const policies = (await admin`
-        SELECT policyname::text AS p FROM pg_policies WHERE 'gateway_role' = ANY (roles) ORDER BY 1`) as {
-        p: string;
-      }[];
-      expect(policies.map((p) => p.p)).toEqual([
-        "audit_events_gateway_plugin_only",
-        // #634 (migration 0252): the visitor paths' row limits. The A/B
-        // ones went with the experiment tables (#676, migration 0259).
-        "comment_archive_gateway_approved_only",
-        "rate_limit_buckets_gateway_keys",
-      ]);
+      const roles =
+        (await admin`SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role'`) as unknown[];
+      expect(roles).toEqual([]);
     } finally {
       await admin.end();
     }

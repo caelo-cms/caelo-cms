@@ -97,11 +97,8 @@ function randomHex(bytes: number): string {
 const postgresPassword = pulumi.secret(randomHex(32));
 // #613 — one password per database role, so the gateway (public_role only,
 // #635) never holds admin_role's. bootstrap.sh creates the roles with these
-// (PUBLIC_ROLE_PASSWORD / GATEWAY_ROLE_PASSWORD). gateway_role is no longer
-// any service's login; its password stays until the contract release that
-// drops the role (#635).
+// (ADMIN_ROLE_PASSWORD / PUBLIC_ROLE_PASSWORD).
 const publicRolePassword = pulumi.secret(randomHex(32));
-const gatewayRolePassword = pulumi.secret(randomHex(32));
 const csrfSecret = pulumi.secret(randomHex(32));
 const cookieSecret = pulumi.secret(randomHex(32));
 const anthropicApiKey = pulumi.secret(process.env.ANTHROPIC_API_KEY ?? "");
@@ -122,7 +119,6 @@ function secret(name: string, value: pulumi.Output<string>): aws.secretsmanager.
 
 const pgSecret = secret("postgres-password", postgresPassword);
 const publicRoleSecret = secret("public-role-password", publicRolePassword);
-const gatewayRoleSecret = secret("gateway-role-password", gatewayRolePassword);
 const csrfSecretRes = secret("csrf-secret", csrfSecret);
 const cookieSecretRes = secret("cookie-secret", cookieSecret);
 const anthropicSecretRes = secret("anthropic-api-key", anthropicApiKey);
@@ -365,7 +361,6 @@ const cluster = new aws.ecs.Cluster(`${namePrefix}-ecs`, {
 const secretArns: Record<AwsSecret, pulumi.Output<string>> = {
   "postgres-password": pgSecret.arn,
   "public-role-password": publicRoleSecret.arn,
-  "gateway-role-password": gatewayRoleSecret.arn,
   "csrf-secret": csrfSecretRes.arn,
   "cookie-secret": cookieSecretRes.arn,
   "anthropic-api-key": anthropicSecretRes.arn,

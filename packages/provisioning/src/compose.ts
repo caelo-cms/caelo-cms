@@ -160,13 +160,14 @@ export function ghcrImageDigest(service: ReleaseService, ref: string): string | 
 
 /**
  * The application roles' passwords (bootstrap.sh creates the roles with
- * them). One per role, so the gateway — which gets only the public and
- * gateway logins — never holds admin_role's (#613, CLAUDE.md §2).
+ * them). One per role, so the gateway — which gets only the public login —
+ * never holds admin_role's (#613, #635, CLAUDE.md §2). An install's
+ * config.json from before #635 still carries a `gateway` entry; it is
+ * ignored.
  */
 export interface RolePasswords {
   readonly admin: string;
   readonly public: string;
-  readonly gateway: string;
 }
 
 export interface ComposeSpec {
@@ -254,7 +255,6 @@ services:
       POSTGRES_DB: caelo
       ADMIN_ROLE_PASSWORD: "${escapeYaml(spec.rolePasswords.admin)}"
       PUBLIC_ROLE_PASSWORD: "${escapeYaml(spec.rolePasswords.public)}"
-      GATEWAY_ROLE_PASSWORD: "${escapeYaml(spec.rolePasswords.gateway)}"
 ${postgresAgent(spec.agent)}    volumes:
       - caelo-pg:/var/lib/postgresql/data
       - ./bootstrap.sh:/docker-entrypoint-initdb.d/00_bootstrap.sh:ro

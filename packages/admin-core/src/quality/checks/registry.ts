@@ -12,20 +12,21 @@
  *   covers the homepage plus up to five changed pages, and its scores go
  *   through the per-category ratchet (ratchet.ts).
  *
- * `source` records who contributed an entry. Core registers Lighthouse at
- * construction and ships no findings check of its own: the one rule it
- * had in mind (pages without a meta description) is enforced before the
- * build by `deploy.trigger` (#730, deploy/missing-seo.ts), so a staged
- * build can never contain such a page. The findings checks come from
- * plugins (#727, the `checks` composition point), added with
- * `{ kind: "plugin", slug }` through the same `register` — the registry's
- * shape does not change for them.
+ * `source` records who contributed an entry. Core registers Lighthouse and
+ * its own findings check, `structure` (#820: repeated free markup that
+ * should be a module — maintainer decision: a core topic like Lighthouse,
+ * not a plugin add-on). The rule about pages without a meta description
+ * is enforced before the build by `deploy.trigger` (#730,
+ * deploy/missing-seo.ts), so a staged build can never contain such a page.
+ * Plugins add further findings checks (#727, the `checks` composition
+ * point) with `{ kind: "plugin", slug }` through the same `register`.
  */
 
 import type { AuditJob } from "../lighthouse-protocol.js";
 import { type AuditJobResult, runAuditJob } from "../lighthouse-runner.js";
 import type { QualityCheck } from "./check.js";
 import { checkIdSchema } from "./findings.js";
+import { createStructureCheck, type StructureSources } from "./structure.js";
 
 /** Who contributed a check. */
 export type CheckSource =
@@ -118,11 +119,19 @@ export class CheckRegistry {
   }
 }
 
-/** The checks core ships: Lighthouse. Plugins add the findings checks (#727). */
-export function createCoreCheckRegistry(
-  options: { readonly lighthouse?: LighthouseRunner } = {},
-): CheckRegistry {
+/**
+ * The checks core ships: Lighthouse and the `structure` findings check.
+ *
+ * @param options.structure - where the structure check reads module
+ *   templates and layouts (required: a core check that silently did not
+ *   run would read as "no findings").
+ */
+export function createCoreCheckRegistry(options: {
+  readonly lighthouse?: LighthouseRunner;
+  readonly structure: StructureSources;
+}): CheckRegistry {
   const registry = new CheckRegistry();
   registry.registerLighthouse(options.lighthouse ?? runAuditJob);
+  registry.register(createStructureCheck(options.structure), CORE);
   return registry;
 }

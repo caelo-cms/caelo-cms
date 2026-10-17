@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { withFieldMarkupGuard } from "./_markup-guard.js";
 import { activatePluginTool } from "./activate-plugin.js";
 import { addModuleTool } from "./add-module.js";
 import { addPluginToPageTool } from "./add-plugin-to-page.js";
 import { autofillPageSeoManyTool, autofillPageSeoTool } from "./autofill-page-seo.js";
 import { bootstrapSiteScaffoldTool } from "./bootstrap-site-scaffold.js";
 import { bugReportTool } from "./bug-report.js";
-import { buildPageTool } from "./build-page.js";
+import { buildPageTool, buildPageValues } from "./build-page.js";
 import { bulkCreateRedirectsTool } from "./bulk-create-redirects.js";
 import { bulkDeleteRedirectsTool } from "./bulk-delete-redirects.js";
 import { bulkOptimizeSeoTool } from "./bulk-optimize-seo.js";
@@ -255,21 +256,28 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(readContentTool);
   registry.register(editContentTool);
   registry.register(grepContentTool);
-  registry.register(setPageModuleContentTool);
+  // #820 — every field-value write carries the repeated-markup hint.
+  registry.register(withFieldMarkupGuard(setPageModuleContentTool, (i) => [i.contentValues]));
   // issue #299 — bulk-first build path (CLAUDE.md §11): one call builds a
   // page (modules + content + placements); the _many variants batch
   // incremental passes on existing pages.
-  registry.register(buildPageTool);
-  registry.register(setPageModuleContentManyTool);
-  registry.register(createContentInstancesTool);
+  registry.register(withFieldMarkupGuard(buildPageTool, buildPageValues));
+  registry.register(
+    withFieldMarkupGuard(setPageModuleContentManyTool, (i) => i.items.map((x) => x.contentValues)),
+  );
+  registry.register(
+    withFieldMarkupGuard(createContentInstancesTool, (i) => i.instances.map((x) => x.values)),
+  );
   // v0.12.0 — content_instances + placement binding tools.
   registry.register(listContentInstancesTool);
   registry.register(getContentInstanceTool);
-  registry.register(createContentInstanceTool);
-  registry.register(setContentInstanceValuesTool);
+  registry.register(withFieldMarkupGuard(createContentInstanceTool, (i) => [i.values]));
+  registry.register(withFieldMarkupGuard(setContentInstanceValuesTool, (i) => [i.values]));
   registry.register(deleteContentInstanceTool);
   // Bulk `_many` variants via the DRY makeBulkTool factory (CLAUDE.md §11).
-  registry.register(setContentInstanceValuesManyTool);
+  registry.register(
+    withFieldMarkupGuard(setContentInstanceValuesManyTool, (i) => i.items.map((x) => x.values)),
+  );
   registry.register(deleteContentInstancesTool);
   registry.register(setPlacementContentTool);
   registry.register(forkPlacementContentTool);
@@ -365,7 +373,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // audit #2 — ONE module-placement tool routed by `target`
   // (page/layout/template). Replaces add_module_to_{page,layout,template};
   // adds reuse-by-moduleId on the layout target (the old asymmetry).
-  registry.register(addModuleTool);
+  registry.register(withFieldMarkupGuard(addModuleTool, (i) => (i.values ? [i.values] : [])));
   // v0.2.16 — place a plugin's output on a page (synthetic placeholder
   // module). Tier-1 plugins go live at next deploy; Tier-2 stubs reject
   // with a clear "execution runtime pending" message.

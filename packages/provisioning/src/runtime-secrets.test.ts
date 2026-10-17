@@ -115,13 +115,7 @@ describe("ensureGeneratedSecrets", () => {
       { ...secretsInstall, replication: regional },
       { run },
     );
-    expect(outcomes.map((o) => o.status)).toEqual([
-      "present",
-      "present",
-      "present",
-      "present",
-      "present",
-    ]);
+    expect(outcomes.map((o) => o.status)).toEqual(["present", "present", "present", "present"]);
     expect(lines().some((l) => l.includes(" create ") || l.includes(" add "))).toBe(false);
   });
 
@@ -132,13 +126,7 @@ describe("ensureGeneratedSecrets", () => {
       { ...secretsInstall, replication: regional },
       { run, generate: () => `generated-value-${++n}` },
     );
-    expect(outcomes.map((o) => o.status)).toEqual([
-      "applied",
-      "applied",
-      "applied",
-      "applied",
-      "applied",
-    ]);
+    expect(outcomes.map((o) => o.status)).toEqual(["applied", "applied", "applied", "applied"]);
     const creates = calls.filter((c) => c.line.startsWith("secrets create"));
     expect(creates).toEqual([
       {
@@ -149,19 +137,15 @@ describe("ensureGeneratedSecrets", () => {
         line: "secrets create caelo-production-tool-approval-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
         stdin: "generated-value-2",
       },
-      // #613 — the gateway's role passwords: fresh values, never admin_role's.
+      // #613 — the gateway's role password: a fresh value, never admin_role's.
       {
         line: "secrets create caelo-production-public-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
         stdin: "generated-value-3",
       },
-      {
-        line: "secrets create caelo-production-gateway-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
-        stdin: "generated-value-4",
-      },
       // #650 — the staging access gate's key.
       {
         line: "secrets create caelo-production-staging-gate-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
-        stdin: "generated-value-5",
+        stdin: "generated-value-4",
       },
     ]);
     for (const c of calls) expect(c.line).not.toContain("generated-value");
@@ -186,7 +170,6 @@ describe("ensureGeneratedSecrets", () => {
       "generated",
       "generated",
       "generated",
-      "generated",
     ]);
     for (const c of calls) expect(c.line).not.toContain("operator-set");
   });
@@ -197,20 +180,13 @@ describe("ensureGeneratedSecrets", () => {
       "secrets versions list caelo-production-internal-secret": [ok("")],
       "secrets versions list caelo-production-tool-approval-secret": [ok("v/1")],
       "secrets versions list caelo-production-public-role-password": [ok("v/1")],
-      "secrets versions list caelo-production-gateway-role-password": [ok("v/1")],
       "secrets versions list caelo-production-staging-gate-secret": [ok("v/1")],
     });
     const outcomes = await ensureGeneratedSecrets(
       { ...secretsInstall, replication: { kind: "automatic" } },
       { run, generate: () => "v" },
     );
-    expect(outcomes.map((o) => o.status)).toEqual([
-      "applied",
-      "present",
-      "present",
-      "present",
-      "present",
-    ]);
+    expect(outcomes.map((o) => o.status)).toEqual(["applied", "present", "present", "present"]);
     expect(calls.filter((c) => c.line.startsWith("secrets versions add"))).toEqual([
       {
         line: "secrets versions add caelo-production-internal-secret --project=acme --data-file=-",
@@ -244,13 +220,7 @@ describe("ensureGeneratedSecrets", () => {
       { ...secretsInstall, replication: { kind: "automatic" } },
       { run, generate: () => "v" },
     );
-    expect(outcomes.map((o) => o.status)).toEqual([
-      "applied",
-      "applied",
-      "applied",
-      "applied",
-      "applied",
-    ]);
+    expect(outcomes.map((o) => o.status)).toEqual(["applied", "applied", "applied", "applied"]);
     expect(outcomes.every((o) => o.detail?.includes("gcp.resourceLocations"))).toBe(true);
     const creates = lines().filter((l) => l.startsWith("secrets create"));
     // One refused automatic attempt; then every secret — the refused one
@@ -260,7 +230,6 @@ describe("ensureGeneratedSecrets", () => {
       "secrets create caelo-production-internal-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
       "secrets create caelo-production-tool-approval-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
       "secrets create caelo-production-public-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
-      "secrets create caelo-production-gateway-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
       // #652 — the staging gate's key follows the same path.
       "secrets create caelo-production-staging-gate-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
     ]);
@@ -290,7 +259,7 @@ describe("ensureGeneratedSecrets", () => {
       { run, generate: () => "v" },
     );
     expect(outcomes.every((o) => o.status === "failed")).toBe(true);
-    expect(lines().filter((l) => l.startsWith("secrets create"))).toHaveLength(5);
+    expect(lines().filter((l) => l.startsWith("secrets create"))).toHaveLength(4);
   });
 });
 
@@ -299,7 +268,6 @@ describe("rotationRefusal", () => {
     for (const s of [
       "postgres-password",
       "public-role-password",
-      "gateway-role-password",
       "internal-secret",
       "tool-approval-secret",
       "staging-gate-secret",
@@ -311,6 +279,8 @@ describe("rotationRefusal", () => {
   it("refuses the KEK (re-encryption needed) and secrets nothing reads", () => {
     expect(rotationRefusal("secret-kek")).toContain("re-encryption");
     expect(rotationRefusal("csrf-secret")).toContain("Rotatable");
+    // #635 — the former gateway_role is gone; there is nothing to rotate.
+    expect(rotationRefusal("gateway-role-password")).toContain("Rotatable");
   });
 });
 
@@ -411,28 +381,6 @@ describe("rotateRuntimeSecret", () => {
     ).toBe(true);
   });
 
-  it("gateway-role-password: changes gateway_role only and rolls no service (#613, #635)", async () => {
-    const { run, lines } = fakeGcloud({
-      ...converged(),
-      "secrets versions access": [ok("old-pw")],
-    });
-    const sql = fakeSqlApi();
-    const report = await rotateRuntimeSecret(target, "gateway-role-password", {
-      run,
-      http: sql.http,
-      sleep: async () => {},
-      generate: () => "new-pw",
-    });
-    expect(report.ok).toBe(true);
-    expect(sql.passwords()).toEqual(["gateway_role new-pw"]);
-    // No service logs in as gateway_role any more: the gateway reads
-    // cms_public only (#635).
-    expect(lines().filter((l) => l.startsWith("run services update "))).toEqual([]);
-    expect(lines()).toContain(
-      "secrets versions access latest --secret=caelo-production-gateway-role-password --project=acme",
-    );
-  });
-
   it("public-role-password: stores nothing and rolls nothing when public_role can't be changed", async () => {
     const { run, lines } = fakeGcloud({
       ...converged(),
@@ -472,26 +420,6 @@ describe("rotateRuntimeSecret", () => {
     expect(report.error).toContain("Run `cms-provision upgrade` first");
     expect(sql.requests).toHaveLength(0);
     expect(lines().every((l) => l.startsWith("run services describe"))).toBe(true);
-  });
-
-  it("refuses gateway-role-password while the gateway still logs in with it (before #635)", async () => {
-    const answers = converged();
-    answers["run services describe gw-svc"] = [
-      service([
-        ref("GATEWAY_DATABASE_PASSWORD", "gateway-role-password"),
-        ref("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
-      ]),
-    ];
-    const { run } = fakeGcloud(answers);
-    const sql = fakeSqlApi();
-    const report = await rotateRuntimeSecret(target, "gateway-role-password", {
-      run,
-      http: sql.http,
-      generate: () => "new-pw",
-    });
-    expect(report.ok).toBe(false);
-    expect(report.error).toContain("GATEWAY_DATABASE_PASSWORD");
-    expect(sql.requests).toHaveLength(0);
   });
 
   it("refuses before changing anything on an install upgrade hasn't moved over", async () => {
