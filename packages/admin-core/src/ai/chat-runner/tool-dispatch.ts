@@ -437,7 +437,8 @@ export async function dispatchToolCall(
     if (
       result.ok &&
       call.name.startsWith("propose_") &&
-      process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1"
+      process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1" &&
+      process.env.NODE_ENV !== "production"
     ) {
       const applied = await autoApproveChatProposals(
         registry,

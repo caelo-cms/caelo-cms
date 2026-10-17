@@ -43,4 +43,26 @@ describe("sanitizeSvg", () => {
     const clean = '<svg viewBox="0 0 10 10"><rect width="10" height="10"/></svg>';
     expect(sanitizeSvg(clean)).toBe(clean);
   });
+
+  it("strips XML-namespaced script tags, foreignObject subtrees, and SMIL elements", () => {
+    const dirty =
+      '<svg xmlns:svg="http://www.w3.org/2000/svg">' +
+      "<svg:script>alert(1)</svg:script>" +
+      '<foreignObject><iframe srcdoc="<script>alert(2)</script>"></iframe></foreignObject>' +
+      '<set attributeName="onload" to="alert(3)"/>' +
+      '<animate attributeName="href" values="javascript:alert(4)"/>' +
+      "</svg>";
+    const out = sanitizeSvg(dirty);
+    expect(out.toLowerCase()).not.toContain("script");
+    expect(out.toLowerCase()).not.toContain("foreignobject");
+    expect(out.toLowerCase()).not.toContain("<set");
+    expect(out.toLowerCase()).not.toContain("<animate");
+  });
+
+  it("strips unquoted, whitespace-padded, entity-encoded, and data: href attributes", () => {
+    expect(sanitizeSvg("<a href=javascript:alert(1)>x</a>")).not.toContain("javascript:");
+    expect(sanitizeSvg('<a href="  javascript:alert(1)">x</a>')).not.toContain("javascript:");
+    expect(sanitizeSvg('<a xlink:href="&#106;avascript:alert(1)">x</a>')).not.toContain("&#106;");
+    expect(sanitizeSvg('<use href="data:image/svg+xml;base64,PHN2Zz4="/>')).not.toContain("data:");
+  });
 });

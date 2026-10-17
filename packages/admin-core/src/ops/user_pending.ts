@@ -94,7 +94,7 @@ export const proposeUserSetRolesOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const userRows = (await withSystemRls(tx, ctx, () =>
       tx.execute(sql`
-        SELECT u.id::text AS id, u.email,
+        SELECT u.id::text AS id, u.email, u.is_first_owner,
           COALESCE(
             (SELECT array_agg(r.name) FROM user_roles ur
               JOIN roles r ON r.id = ur.role_id
@@ -105,13 +105,25 @@ export const proposeUserSetRolesOp = defineOperation({
         WHERE u.id = ${input.userId}::uuid AND u.deleted_at IS NULL
         LIMIT 1
       `),
-    )) as unknown as Array<{ id: string; email: string; current_roles: string[] }>;
+    )) as unknown as Array<{
+      id: string;
+      email: string;
+      is_first_owner: boolean;
+      current_roles: string[];
+    }>;
     const u = userRows[0];
     if (!u) {
       return err({
         kind: "HandlerError",
         operation: "users.propose_set_roles",
         message: `user ${input.userId} not found or deleted`,
+      });
+    }
+    if (u.is_first_owner && !input.roleNames.includes("owner")) {
+      return err({
+        kind: "HandlerError",
+        operation: "users.propose_set_roles",
+        message: "cannot remove the owner role from the first Owner",
       });
     }
     const preview = {

@@ -72,6 +72,8 @@ export const GET: RequestHandler = async ({ params, locals, request }) => {
       "content-type": contentTypeFor(v.format),
       "content-length": String(body.byteLength),
       "cache-control": "private, max-age=31536000, immutable",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
     },
   });
 };

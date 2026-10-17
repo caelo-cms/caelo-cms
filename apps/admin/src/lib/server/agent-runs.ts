@@ -79,6 +79,7 @@ export async function cancelAgents(
   chatSessionId: string,
   runId: string | undefined,
 ): Promise<{ cancelledRunIds: string[]; stoppedExternalAgents: number; chatStopped: boolean }> {
+  requirePermission(locals, "content.write");
   await assertChatAccess(locals, chatSessionId);
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "chat.cancel_agents", {
@@ -105,6 +106,7 @@ export async function allowExternalAgent(
   chatSessionId: string,
   runId: string,
 ): Promise<boolean> {
+  requirePermission(locals, "content.write");
   await assertChatAccess(locals, chatSessionId);
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "chat.allow_external_agent", {

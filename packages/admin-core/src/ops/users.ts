@@ -289,6 +289,27 @@ export const setUserRolesOp = defineOperation({
   }),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    const targetRows = (await withSystemRls(tx, ctx, () =>
+      tx.execute(sql`
+        SELECT is_first_owner FROM users WHERE id = ${input.userId}::uuid LIMIT 1
+      `),
+    )) as unknown as { is_first_owner: boolean }[];
+    if (targetRows[0]?.is_first_owner && !input.roleNames.includes("owner")) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "users.set_roles",
+        input,
+        succeeded: false,
+        entityId: input.userId,
+        resultSummary: "first-owner-protected",
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "users.set_roles",
+        message: "cannot remove the owner role from the first owner",
+      });
+    }
     await tx.execute(sql`DELETE FROM user_roles WHERE user_id = ${input.userId}::uuid`);
     for (const roleName of input.roleNames) {
       await tx.execute(sql`
@@ -360,8 +381,11 @@ export const deleteUserOp = defineOperation({
       return ok({});
     }
     await tx.execute(sql`UPDATE users SET deleted_at = now() WHERE id = ${input.userId}::uuid`);
-    // Revoke active sessions so a soft-deleted user is signed out immediately.
+    // Revoke active sessions and MCP tokens so a soft-deleted user is signed out immediately.
     await tx.execute(sql`DELETE FROM sessions WHERE user_id = ${input.userId}::uuid`);
+    await tx.execute(
+      sql`UPDATE mcp_tokens SET revoked_at = now() WHERE actor_id = ${input.userId}::uuid AND revoked_at IS NULL`,
+    );
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

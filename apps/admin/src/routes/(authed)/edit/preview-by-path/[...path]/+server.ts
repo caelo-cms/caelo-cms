@@ -103,10 +103,10 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
   // The inject-script needs to know its own pageId/slug so it can
   // post `caelo:navigated` to the parent on every iframe load. We thread
   // those through `window.__caelo` before the runtime executes.
-  const ctx = `window.__caelo=${JSON.stringify({ pageId: page.id, slug: page.slug, path: page.currentPath })};`;
+  const ctx = `window.__caelo=${JSON.stringify({ pageId: page.id, slug: page.slug, path: page.currentPath }).replace(/</g, "\\u003c")};`;
   const scriptTag = `<script data-caelo-edit-overlay>${ctx}${INJECT_SCRIPT}</script>`;
   const html = BODY_CLOSE_RE.test(out.html)
-    ? out.html.replace(BODY_CLOSE_RE, `${scriptTag}</body>`)
+    ? out.html.replace(BODY_CLOSE_RE, () => `${scriptTag}</body>`)
     : out.html + scriptTag;
 
   return new Response(html, {

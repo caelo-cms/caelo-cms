@@ -180,6 +180,7 @@ export const INJECT_SCRIPT = `
 
   // --- parent → iframe messages: set-edit-mode + reload ---------------
   window.addEventListener("message", function (ev) {
+    if (ev.source !== window.parent) return;
     if (!ev.data || typeof ev.data !== "object") return;
     if (ev.data.kind === "caelo:set-edit-mode") {
       setEditMode(!!ev.data.on);

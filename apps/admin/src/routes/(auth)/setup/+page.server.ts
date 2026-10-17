@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { validatePasswordStrength } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { error, fail, redirect } from "@sveltejs/kit";
 import { opErrorMessage } from "#lib/server/op-error.js";
@@ -59,6 +60,13 @@ export const actions: Actions = {
     }
     if (password.length < 10) {
       return fail(400, { email, displayName, error: "Password must be at least 10 characters." });
+    }
+    if (password.length > 256) {
+      return fail(400, { email, displayName, error: "Password must be at most 256 characters." });
+    }
+    const strength = validatePasswordStrength(password, { email, displayName });
+    if (!strength.ok) {
+      return fail(400, { email, displayName, error: strength.reason });
     }
 
     // Re-check the gate inside the action — load happens at GET time.

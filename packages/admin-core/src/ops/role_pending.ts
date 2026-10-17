@@ -129,6 +129,13 @@ export const proposeRoleUpdatePermissionsOp = defineOperation({
         message: `role ${input.roleId} not found`,
       });
     }
+    if (r.is_builtin && r.name === "owner") {
+      return err({
+        kind: "HandlerError",
+        operation: "roles.propose_update_permissions",
+        message: "cannot modify permissions of the built-in owner role",
+      });
+    }
     const added = input.permissions.filter((p) => !r.current_permissions.includes(p));
     const removed = r.current_permissions.filter(
       (p) => !input.permissions.includes(p as Permission),

@@ -264,19 +264,28 @@ export async function runMediaPipeline(
 // permissive close tag. HTML treats `</script\t\n bar>` as a valid end tag,
 // so the close must accept any non-`>` run after the name — the old
 // `<\/script\s*>` missed those variants (CodeQL js/bad-tag-filter).
-const SVG_SCRIPT_RE = /<script\b[^>]*>(?:(?!<\/script)[\s\S])*<\/script[^>]*>/gi;
+const SVG_SCRIPT_RE =
+  /<(?:[a-zA-Z0-9_-]+:)?script\b[^>]*>(?:(?!<\/(?:[a-zA-Z0-9_-]+:)?script)[\s\S])*<\/(?:[a-zA-Z0-9_-]+:)?script[^>]*>/gi;
 // Any leftover script start/end tag fragment (unpaired, or revealed after a
 // removal pass) — strip the tag itself so no `<script…>` token survives.
-const SVG_SCRIPT_FRAGMENT_RE = /<\/?script\b[^>]*>?/gi;
+const SVG_SCRIPT_FRAGMENT_RE = /<\/?(?:[a-zA-Z0-9_-]+:)?script\b[^>]*>?/gi;
+const SVG_FOREIGN_OBJECT_RE =
+  /<(?:[a-zA-Z0-9_-]+:)?foreignObject\b[^>]*>(?:(?!<\/(?:[a-zA-Z0-9_-]+:)?foreignObject)[\s\S])*<\/(?:[a-zA-Z0-9_-]+:)?foreignObject[^>]*>/gi;
+const SVG_FOREIGN_OBJECT_FRAGMENT_RE = /<\/?(?:[a-zA-Z0-9_-]+:)?foreignObject\b[^>]*>?/gi;
+const SVG_SMIL_RE =
+  /<\/?(?:[a-zA-Z0-9_-]+:)?(?:set|animate|animateTransform|animateMotion)\b[^>]*>?/gi;
 const SVG_ON_ATTR_RE = /\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi;
-const SVG_JS_HREF_RE = /(href|xlink:href)\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi;
+const SVG_DANGEROUS_HREF_RE =
+  /(?:href|xlink:href)\s*=\s*(?:"[^"]*(?:(?:javascript|data)\s*:|&#[xX]?[0-9a-fA-F]+;?)[^"]*"|'[^']*(?:(?:javascript|data)\s*:|&#[xX]?[0-9a-fA-F]+;?)[^']*'|[^\s>]*?(?:(?:javascript|data)\s*:|&#[xX]?[0-9a-fA-F]+;?)[^\s>]*)/gi;
 
 /**
- * Strip executable content from an uploaded SVG (script elements, inline
- * `on*` handlers, `javascript:` hrefs). Runs to a fixed point: removing one
- * construct can expose or re-create another that a single left-to-right pass
- * would miss (CodeQL js/incomplete-multi-character-sanitization), so the
- * loop repeats until the string stops changing.
+ * Strip executable content from an uploaded SVG (script elements including
+ * XML-namespaced variants, foreignObject subtrees, SMIL animation elements,
+ * inline `on*` handlers, and `javascript:`/`data:`/entity-encoded hrefs).
+ * Runs to a fixed point: removing one construct can expose or re-create
+ * another that a single left-to-right pass would miss (CodeQL
+ * js/incomplete-multi-character-sanitization), so the loop repeats until the
+ * string stops changing.
  */
 export function sanitizeSvg(svg: string): string {
   let out = svg;
@@ -286,8 +295,11 @@ export function sanitizeSvg(svg: string): string {
     out = out
       .replace(SVG_SCRIPT_RE, "")
       .replace(SVG_SCRIPT_FRAGMENT_RE, "")
+      .replace(SVG_FOREIGN_OBJECT_RE, "")
+      .replace(SVG_FOREIGN_OBJECT_FRAGMENT_RE, "")
+      .replace(SVG_SMIL_RE, "")
       .replace(SVG_ON_ATTR_RE, "")
-      .replace(SVG_JS_HREF_RE, "");
+      .replace(SVG_DANGEROUS_HREF_RE, "");
   } while (out !== prev);
   return out;
 }

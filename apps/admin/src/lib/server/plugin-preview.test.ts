@@ -38,3 +38,9 @@ test("only declared selection targets survive; plugin scripts remain blocked", (
   expect(html).not.toContain("script");
   expect(html).not.toContain("steal");
 });
+
+test("style text cannot break out of <style> via malformed </style sequences", () => {
+  const html = sanitizePluginPreview("<style>body{}</style\t><script>alert(1)</script></style>");
+  expect(html).not.toContain("<script>");
+  expect(html).not.toContain("</style\t>");
+});
