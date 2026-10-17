@@ -14,8 +14,11 @@
 
 /**
  * Files carrying Cloud Shell install links (repo-relative). The end-user
- * docs at caelo-cms.com/docs/ are site content, not repo files, so their
- * links are moved on the site, not here.
+ * docs at caelo-cms.com/docs/ carry the same links, but they are CMS
+ * pages, not repo files (CLAUDE.md §10): the release's docs-sync draft
+ * moves them there (#827), and the Owner publishes it. Writing to the
+ * live site from here would bypass that publish click. RELEASING.md
+ * "5. End-user docs" has the procedure.
  */
 export const CLOUD_SHELL_LINK_FILES: readonly string[] = ["README.md"];
 
