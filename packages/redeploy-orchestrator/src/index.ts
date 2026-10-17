@@ -49,7 +49,7 @@ import {
   type Screenshot,
   type Screenshotter,
 } from "@caelo-cms/site-importer";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { parseCrawlScope } from "./crawl-scope.js";
 import { parseExplicitUrls } from "./explicit-urls.js";
@@ -184,46 +184,65 @@ async function resolvePluginOpPageId(
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * The plugin row a plugin op's entity names, when that row is bound to a
+ * page: the owning plugin's slug + the lookup. Forms / newsletter ops have
+ * no per-page binding (a submission or signup changes no page's bake), so
+ * they intentionally don't appear here. A future plugin op that should
+ * trigger a per-page rebuild adds a case.
+ */
+function pluginPageLookup(
+  operation: string,
+  entityId: string,
+): { slug: string; query: SQL } | null {
+  // Comments — `comments.moderate` + bulk variant; entity_id is the comment id.
+  if (operation === "comments.moderate" || operation === "comments.bulk_moderate") {
+    return {
+      slug: "comments",
+      query: sql`SELECT page_id::text AS page_id FROM plugin_comments.comments
+                 WHERE id = ${entityId}::uuid LIMIT 1`,
+    };
+  }
+  // Ratings — `ratings.submit` writes a row + updates aggregates; entity_id
+  // is the rating id.
+  if (operation === "ratings.submit") {
+    return {
+      slug: "ratings",
+      query: sql`SELECT page_id::text AS page_id FROM plugin_ratings.ratings
+                 WHERE id = ${entityId}::uuid LIMIT 1`,
+    };
+  }
+  return null;
+}
+
 async function readPluginRowPageId(
   adapter: DatabaseAdapter,
   operation: string,
   entityId: string,
 ): Promise<string | null> {
-  // Comments — `comments.moderate` + bulk variant. entity_id is the
-  // comment id; lookup table is cms_public.plugin_comments.comments.
-  if (operation === "comments.moderate" || operation === "comments.bulk_moderate") {
-    try {
-      const pub = adapter.rawPublic();
-      const rows = (await pub`
-        SELECT page_id::text AS page_id FROM plugin_comments.comments
-        WHERE id = ${entityId}::uuid LIMIT 1
-      `) as unknown as { page_id: string | null }[];
-      const v = rows[0]?.page_id;
-      return typeof v === "string" ? v : null;
-    } catch {
-      return null;
-    }
+  const lookup = pluginPageLookup(operation, entityId);
+  if (!lookup) return null;
+  try {
+    // Plugin tables are RLS-scoped to their plugin (FORCEd, so the owner
+    // too): the read runs as that plugin, or it sees no rows at all.
+    const plugins = (await adapter.withAdminTransaction(
+      SYSTEM_CTX,
+      async (tx) =>
+        await tx.execute(
+          sql`SELECT id::text AS id FROM plugins WHERE slug = ${lookup.slug} LIMIT 1`,
+        ),
+    )) as unknown as { id: string }[];
+    const pluginId = plugins[0]?.id;
+    if (!pluginId) return null;
+    const rows = (await adapter.withPublicTransaction(
+      { ...SYSTEM_CTX, pluginId },
+      async (tx) => await tx.execute(lookup.query),
+    )) as unknown as { page_id: string | null }[];
+    const v = rows[0]?.page_id;
+    return typeof v === "string" ? v : null;
+  } catch {
+    return null;
   }
-  // Ratings — `ratings.submit` writes a row + updates aggregates.
-  // entity_id is the rating id; lookup is plugin_ratings.ratings.
-  if (operation === "ratings.submit") {
-    try {
-      const pub = adapter.rawPublic();
-      const rows = (await pub`
-        SELECT page_id::text AS page_id FROM plugin_ratings.ratings
-        WHERE id = ${entityId}::uuid LIMIT 1
-      `) as unknown as { page_id: string | null }[];
-      const v = rows[0]?.page_id;
-      return typeof v === "string" ? v : null;
-    } catch {
-      return null;
-    }
-  }
-  // Forms / newsletter ops have no per-page binding (form submissions
-  // and newsletter signups don't change a particular page's bake), so
-  // they intentionally don't appear here. If a future plugin op should
-  // trigger a per-page rebuild, add a case + the lookup query.
-  return null;
 }
 
 const visitorOpEvent = z.object({
@@ -461,7 +480,9 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
     // the timer on every fire, looping indefinitely.
     const safeOpKinds = settings.opKinds.filter((k) => k !== "deploy.trigger");
     if (safeOpKinds.length === 0) return;
-    // Find audit_events newer than lastSeenAt with op IN (...).
+    // Find audit_events newer than lastSeenAt with op IN (...). One bound
+    // param per kind: drizzle + bun-sql do not send a JS array as a
+    // Postgres array, so `= ANY(${safeOpKinds})` threw on every tick.
     // P13 ideas-pass — also fetch entity_id so we can pass per-page
     // changedPageIds to the static generator (incremental rebuild).
     const rows = await cfg.adapter.withAdminTransaction(
@@ -471,7 +492,10 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         SELECT created_at, entity_id::text AS entity_id, operation
         FROM audit_events
         WHERE created_at > ${lastSeenAt.toISOString()}::timestamptz
-          AND operation = ANY(${safeOpKinds})
+          AND operation IN (${sql.join(
+            safeOpKinds.map((k) => sql`${k}`),
+            sql`, `,
+          )})
           AND succeeded = true
         ORDER BY created_at ASC
         LIMIT 500
