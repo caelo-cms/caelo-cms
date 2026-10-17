@@ -19,6 +19,9 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@caelo-cms/admin-core": "workspace:*"
+    "@caelo-cms/admin-core": "workspace:*",
+    "@caelo-cms/plugin-host": "workspace:*",
+    "@caelo-cms/plugin-ratings": "workspace:*",
+    "@caelo-cms/plugin-sandbox": "workspace:*"
   }
 }
