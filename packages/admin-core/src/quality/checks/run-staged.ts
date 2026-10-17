@@ -11,6 +11,7 @@ import { type FetchedPages, fetchStagedPages, type PageToFetch } from "./fetch-p
 import type { ChecksOutcome } from "./outcome.js";
 import type { RegisteredCheck } from "./registry.js";
 import { runFindingChecks } from "./runner.js";
+import { stagedBuildAt } from "./staged-build.js";
 
 type FindingsEntry = Extract<RegisteredCheck, { kind: "findings" }>;
 
@@ -19,17 +20,20 @@ type FindingsEntry = Extract<RegisteredCheck, { kind: "findings" }>;
  *
  * @param checks - the registry's findings entries. None: nothing is read.
  * @param pages - every published page with its URL on the staged origin.
+ * @param origin - the staged origin the pages live on (and the one shown
+ *   to operators); site checks probe other paths of the build there.
  * @param fetcher - injectable for tests.
  */
 export async function runChecksOnStagedBuild(
   checks: readonly FindingsEntry[],
   pages: readonly PageToFetch[],
+  origin: { readonly baseUrl: string; readonly displayBaseUrl?: string },
   fetcher: typeof fetch = fetch,
 ): Promise<ChecksOutcome> {
   const ran = checks.map((c) => ({ id: c.id, title: c.title, scope: c.scope, source: c.source }));
   if (checks.length === 0) return { ran, pages: [], findings: [], errors: [] };
   const fetched: FetchedPages = await fetchStagedPages(pages, fetcher);
-  const result = await runFindingChecks(checks, fetched.pages);
+  const result = await runFindingChecks(checks, fetched.pages, stagedBuildAt(origin, fetcher));
   return {
     ran,
     pages: fetched.pages.map((p) => ({ pageId: p.pageId, url: p.url })),

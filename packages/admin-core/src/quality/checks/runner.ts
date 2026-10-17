@@ -10,7 +10,7 @@
  * CLAUDE.md §2) — a silently missing check would read as "no findings".
  */
 
-import type { StagedPage } from "./check.js";
+import type { StagedBuild, StagedPage } from "./check.js";
 import { checkIdOfRule, type Finding, findingSchema } from "./findings.js";
 import type { RegisteredCheck } from "./registry.js";
 
@@ -19,8 +19,11 @@ type FindingsEntry = Extract<RegisteredCheck, { kind: "findings" }>;
 /** Most findings one call of a check may return before it counts as broken. */
 export const MAX_FINDINGS_PER_CALL = 500;
 
-/** A check call slower than this is treated as hung. */
+/** A check call slower than this is treated as hung (unless it sets its own `timeoutMs`). */
 export const CHECK_CALL_TIMEOUT_MS = 30_000;
+
+/** The most any check may ask for with `timeoutMs` (#849). */
+export const MAX_CHECK_CALL_TIMEOUT_MS = 300_000;
 
 /** A check that could not produce a valid result. */
 export interface CheckRunError {
@@ -108,10 +111,12 @@ function validateOutput(
  *
  * @param checks - the registry's findings entries, in run order.
  * @param pages - every page of the staged build that was fetched.
+ * @param build - the staged build, handed to site checks (#849).
  */
 export async function runFindingChecks(
   checks: readonly FindingsEntry[],
   pages: readonly StagedPage[],
+  build: StagedBuild,
 ): Promise<FindingRunResult> {
   const findings: Finding[] = [];
   const errors: CheckRunError[] = [];
@@ -121,13 +126,14 @@ export async function runFindingChecks(
     const calls: { page: StagedPage | null; invoke: () => unknown }[] =
       check.scope === "page"
         ? pages.map((page) => ({ page, invoke: () => check.run({ page }) }))
-        : [{ page: null, invoke: () => check.run({ pages }) }];
+        : [{ page: null, invoke: () => check.run({ pages, build }) }];
+    const timeoutMs = Math.min(check.timeoutMs ?? CHECK_CALL_TIMEOUT_MS, MAX_CHECK_CALL_TIMEOUT_MS);
     for (const call of calls) {
       const where = call.page ? ` on ${call.page.path}` : "";
       try {
         const output = await withTimeout(
           Promise.resolve().then(call.invoke),
-          CHECK_CALL_TIMEOUT_MS,
+          timeoutMs,
           `check '${entry.id}'${where}`,
         );
         const valid = validateOutput(entry, output, call.page, pageIds);
