@@ -36,6 +36,7 @@ export {
   type ServiceName,
   type StructuredLogEntry,
 } from "./logger.js";
+export * from "./markup-structure.js";
 export * from "./media.js";
 export * from "./nested-module-render.js";
 export * from "./page-log.js";

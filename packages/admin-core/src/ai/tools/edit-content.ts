@@ -145,14 +145,20 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
       };
     }
 
-    // Module CSS parity with edit_module: surface theme-var drift + Design
-    // Manifest findings on the freshly-written CSS so the AI fixes them in
+    // Module parity with edit_module: surface theme-var drift + design-guard
+    // findings on the freshly-written CSS / html so the AI fixes them in
     // the same turn.
     let suffix = "";
     if (input.entityKind === "module" && input.field === "css") {
       suffix =
         (await cssVarWarningSuffix(ctx, toolCtx, applied.content)) +
         (await designGuardSuffix(ctx, toolCtx, { css: applied.content }));
+    } else if (input.entityKind === "module" && input.field === "html") {
+      // #820 — an html edit can turn a module into a copy of another one.
+      suffix = await designGuardSuffix(ctx, toolCtx, {
+        html: applied.content,
+        excludeModuleIds: [input.entityId],
+      });
     }
 
     // Return the new sha + a cat -n snippet of each changed region (Claude
