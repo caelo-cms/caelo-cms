@@ -17,6 +17,13 @@
  * publish then copies only the changed files (it knows which they
  * are because the staging-bucket prefix only contains them).
  *
+ * Copying is additive, so Confirm-publish also deletes every live
+ * object the published build no longer contains (a deleted page, the
+ * old path of a page now served as `/404.html`, a renamed asset).
+ * Without that the bucket keeps answering those URLs with 200 and the
+ * stale bytes. Stage records the build's full file list for this,
+ * because the staging prefix holds only the changed files.
+ *
  * Two env vars drive this adapter — set by the GCP Pulumi stack on
  * the admin Cloud Run service:
  *   - CAELO_STATIC_BUCKET — public-read live origin
@@ -52,6 +59,11 @@ const MANIFEST_KEY = "_state/last-build-manifest.json";
 /** #587 — the staged run's redirect plan, in the staging bucket outside the
  *  run's file prefix (promote copies that prefix to the live bucket). */
 const redirectPlanKey = (runId: string) => `_redirect-plans/${runId}.json`;
+/** The staged run's full file list, beside its redirect plan: what the
+ *  live bucket must hold after Confirm-publish (see pruneStaleObjects). */
+const buildFilesKey = (runId: string) => `_build-files/${runId}.json`;
+/** Written by promote for the destination target, not copied from staging. */
+const PER_TARGET_FILES = ["robots.txt", "routing-manifest.json"] as const;
 
 /**
  * Bump whenever `cacheControlForContentType` / `cacheControlFor`
@@ -168,6 +180,13 @@ export function createGcsStaticPublisher(
         Buffer.from(JSON.stringify(plan), "utf8"),
         "application/json",
       );
+      const buildFiles: StagedBuildFiles = { files: files.map((f) => f.relativePath) };
+      await uploadBytes(
+        h.stagingBucket,
+        buildFilesKey(runId),
+        Buffer.from(JSON.stringify(buildFiles), "utf8"),
+        "application/json",
+      );
       return {
         provider: "gcp",
         uploadedCount: uploaded,
@@ -207,13 +226,14 @@ export function createGcsStaticPublisher(
       // #587 — read before any file moves: a run staged without a plan
       // fails here with nothing changed.
       const redirectPlan = await readStagedRedirectPlan(h.stagingBucket, sourceRunId);
+      const buildFiles = await readStagedBuildFiles(h.stagingBucket, sourceRunId);
       let copied = 0;
       await runBatched(stagedFiles, PARALLEL_COPIES, async (stagedFile) => {
         const relPath = stagedFile.name.slice(prefix.length);
         // robots.txt + routing-manifest are per-target — overwrite with
         // the destination target's values rather than copying staging's.
         // We re-render those after the copy loop completes.
-        if (relPath === "robots.txt" || relPath === "routing-manifest.json") {
+        if ((PER_TARGET_FILES as readonly string[]).includes(relPath)) {
           return;
         }
         // Keep the Content-Type publishStaging stored on the staged
@@ -266,6 +286,9 @@ export function createGcsStaticPublisher(
           // Malformed manifest — skip the per-target patch.
         }
       }
+      // After every file of the build is live, so no URL the build serves
+      // is ever missing in between.
+      await pruneStaleObjects(h.staticBucket, buildFiles);
       // Update the live manifest with the new state. We rebuild it from
       // the static bucket's actual contents to stay self-consistent —
       // someone may have edited objects out-of-band.
@@ -319,6 +342,10 @@ export function createGcsStaticPublisher(
         });
         uploaded += 1;
       });
+      await pruneStaleObjects(
+        h.staticBucket,
+        files.map((f) => f.relativePath),
+      );
       // #587 — the rolled-back build's redirects, as on Confirm-publish.
       await applyRedirectPlan(
         await redirectPlanForBuild(
@@ -381,6 +408,49 @@ async function readStagedRedirectPlan(stagingBucket: Bucket, runId: string): Pro
     );
   }
   return plan;
+}
+
+/** The file list Stage stores at {@link buildFilesKey}. */
+interface StagedBuildFiles {
+  files: string[];
+}
+
+async function readStagedBuildFiles(stagingBucket: Bucket, runId: string): Promise<string[]> {
+  const file = stagingBucket.file(buildFilesKey(runId));
+  const [exists] = await file.exists();
+  if (!exists) {
+    throw new Error(
+      `static-publisher-gcs: the file list of run ${runId} (gs://<staging>/${buildFilesKey(runId)}) is missing — the run was staged by an older release or the object was deleted. Run Stage again, then Confirm-publish.`,
+    );
+  }
+  const parsed = JSON.parse((await file.download())[0].toString("utf8")) as StagedBuildFiles;
+  // An empty list would delete the whole live site; every generator build
+  // has at least `_redirects`, so empty means a corrupt object.
+  if (!Array.isArray(parsed.files) || parsed.files.length === 0) {
+    throw new Error(
+      `static-publisher-gcs: gs://<staging>/${buildFilesKey(runId)} is not a build file list. Run Stage again, then Confirm-publish.`,
+    );
+  }
+  return parsed.files;
+}
+
+/**
+ * Delete every live object the published build does not contain, so a
+ * removed page or asset stops being served (404 / the site's `/404.html`)
+ * instead of keeping its old bytes with status 200. The publisher's own
+ * state under `_state/` and the per-target files promote writes itself
+ * stay.
+ */
+async function pruneStaleObjects(
+  staticBucket: Bucket,
+  buildFiles: readonly string[],
+): Promise<void> {
+  const keep = new Set([...buildFiles, ...PER_TARGET_FILES]);
+  const [liveFiles] = await staticBucket.getFiles();
+  const stale = liveFiles.filter((f) => !keep.has(f.name) && !f.name.startsWith("_state/"));
+  await runBatched(stale, PARALLEL_COPIES, async (f) => {
+    await f.delete({ ignoreNotFound: true });
+  });
 }
 
 /** Put a plan live on the load balancer routing the site's host. */
