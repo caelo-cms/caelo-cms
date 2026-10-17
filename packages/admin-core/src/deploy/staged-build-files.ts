@@ -16,39 +16,67 @@
  */
 
 import type { Bucket } from "@google-cloud/storage";
+import { z } from "zod";
 
 /** Where Stage stores a run's full file list in the staging bucket. */
 export const buildFilesKey = (runId: string): string => `_build-files/${runId}.json`;
 
-/** The object stored at {@link buildFilesKey}. */
-export interface StagedBuildFiles {
-  files: string[];
+/**
+ * Shape of the object at {@link buildFilesKey}. Never empty: every generator
+ * build has at least `_redirects`, so an empty list means a corrupt object
+ * (for promote it would delete the whole live site).
+ */
+const stagedBuildFilesSchema = z.object({ files: z.array(z.string().min(1)).min(1) });
+
+/** The object Stage writes at {@link buildFilesKey}. */
+export type StagedBuildFiles = z.infer<typeof stagedBuildFilesSchema>;
+
+/**
+ * A staged run cannot be read as the build it claims to be: its file list
+ * is missing or corrupt, or a file of the build is in neither bucket. The
+ * fix is always the same (Run Stage again), so callers map it to a
+ * conflict, not a server fault. Bucket I/O failures stay plain errors.
+ */
+export class StagedRunError extends Error {
+  override readonly name = "StagedRunError";
 }
 
 /**
- * Read a staged run's file list. Fails loudly when it is missing (a run
- * staged by an older release) or empty (every generator build has at
- * least `_redirects`, so empty means a corrupt object; for promote it
- * would delete the whole live site).
+ * Read a staged run's file list. Throws {@link StagedRunError} when it is
+ * missing (a run staged by an older release), not JSON, or not a non-empty
+ * list of paths.
  */
 export async function readStagedBuildFiles(
   stagingBucket: Bucket,
   runId: string,
 ): Promise<ReadonlySet<string>> {
   const file = stagingBucket.file(buildFilesKey(runId));
+  const location = `gs://<staging>/${buildFilesKey(runId)}`;
   const [exists] = await file.exists();
   if (!exists) {
-    throw new Error(
-      `static-publisher-gcs: the file list of run ${runId} (gs://<staging>/${buildFilesKey(runId)}) is missing — the run was staged by an older release or the object was deleted. Run Stage again.`,
+    throw new StagedRunError(
+      `static-publisher-gcs: the file list of run ${runId} (${location}) is missing — the run was staged by an older release or the object was deleted. Run Stage again.`,
     );
   }
-  const parsed = JSON.parse((await file.download())[0].toString("utf8")) as StagedBuildFiles;
-  if (!Array.isArray(parsed.files) || parsed.files.length === 0) {
-    throw new Error(
-      `static-publisher-gcs: gs://<staging>/${buildFilesKey(runId)} is not a build file list. Run Stage again.`,
+  const raw = (await file.download())[0].toString("utf8");
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch (e) {
+    throw new StagedRunError(
+      `static-publisher-gcs: ${location} is not valid JSON (${e instanceof Error ? e.message : String(e)}) — the object is corrupt. Run Stage again.`,
     );
   }
-  return new Set(parsed.files);
+  const parsed = stagedBuildFilesSchema.safeParse(json);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+      .join("; ");
+    throw new StagedRunError(
+      `static-publisher-gcs: ${location} is not a build file list (${issues}). Run Stage again.`,
+    );
+  }
+  return new Set(parsed.data.files);
 }
 
 /** One file of a staged run, with the bucket it was read from. */
@@ -92,7 +120,7 @@ export async function readStagedObject(args: {
   }
   // In the build but in neither bucket: the hash-skip assumed a live copy
   // that is gone (deleted out of band). Loud, not a silent 404.
-  throw new Error(
+  throw new StagedRunError(
     `staged run ${args.runId} contains ${args.key}, but it is neither in its staging prefix nor live (the live copy was removed after Stage). Run Stage again.`,
   );
 }

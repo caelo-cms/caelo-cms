@@ -9,7 +9,12 @@
 
 import { describe, expect, it } from "bun:test";
 import type { Bucket } from "@google-cloud/storage";
-import { buildFilesKey, readStagedBuildFiles, readStagedObject } from "../staged-build-files.js";
+import {
+  buildFilesKey,
+  readStagedBuildFiles,
+  readStagedObject,
+  StagedRunError,
+} from "../staged-build-files.js";
 
 /** The slice of a GCS bucket the reader touches, backed by a Map. */
 function fakeBucket(name: string, objects: Record<string, string>): Bucket {
@@ -52,6 +57,24 @@ describe("readStagedBuildFiles", () => {
       /not a build file list/,
     );
   });
+
+  it("turns corrupt JSON into an actionable StagedRunError, not a SyntaxError", async () => {
+    const staging = fakeBucket("staging", { [buildFilesKey(RUN)]: '{"files": ["index.ht' });
+    const read = readStagedBuildFiles(staging, RUN);
+    await expect(read).rejects.toBeInstanceOf(StagedRunError);
+    await expect(read).rejects.toThrow(
+      /_build-files\/run-1\.json is not valid JSON .* Run Stage again/,
+    );
+  });
+
+  it("refuses JSON of the wrong shape with the schema issue and Run Stage again", async () => {
+    const staging = fakeBucket("staging", {
+      [buildFilesKey(RUN)]: JSON.stringify({ files: ["index.html", 42] }),
+    });
+    const read = readStagedBuildFiles(staging, RUN);
+    await expect(read).rejects.toBeInstanceOf(StagedRunError);
+    await expect(read).rejects.toThrow(/not a build file list \(.*files.*\)\. Run Stage again/);
+  });
 });
 
 describe("readStagedObject", () => {
@@ -92,6 +115,9 @@ describe("readStagedObject", () => {
   it("fails loudly when a file of the build is in neither bucket", async () => {
     await expect(read(stagingWith(["gone/index.html"]), "gone/index.html")).rejects.toThrow(
       /neither in its staging prefix nor live/,
+    );
+    await expect(read(stagingWith(["gone/index.html"]), "gone/index.html")).rejects.toBeInstanceOf(
+      StagedRunError,
     );
   });
 });
