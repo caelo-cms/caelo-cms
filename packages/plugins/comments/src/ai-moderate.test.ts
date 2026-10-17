@@ -144,4 +144,46 @@ describe("ai_moderate", () => {
     const h = harness({ withAi: false });
     await expect(run(h, { commentId: COMMENT_ID })).rejects.toThrow(/ai_provider capability/);
   });
+
+  it("drains moderated comments to comment_archive and deletes from cms_public when ctx.cms is available", async () => {
+    const h = harness({ aiText: "APPROVE" });
+    const archived: Array<{ op: string; args: unknown }> = [];
+    const deleted: string[] = [];
+    (h.ctx.query as unknown as Record<string, unknown>).list = async (
+      table: string,
+      filter: { id?: string },
+    ) => {
+      if (table === "comments" && filter.id === COMMENT_ID) {
+        return [
+          {
+            id: COMMENT_ID,
+            page_id: "page-1",
+            parent_id: "",
+            author_name: "Ann",
+            content: "Nice post",
+            status: "pending",
+            submitted_at: "2026-01-01T00:00:00.000Z",
+          },
+        ];
+      }
+      return [];
+    };
+    (h.ctx.query as unknown as Record<string, unknown>).delete = async (
+      _table: string,
+      id: string,
+    ) => {
+      deleted.push(id);
+    };
+    (h.ctx as unknown as { cms: { call: (op: string, args: unknown) => Promise<unknown> } }).cms = {
+      call: async (op, args) => {
+        archived.push({ op, args });
+        return {};
+      },
+    };
+    const r = await run(h, { commentId: COMMENT_ID });
+    expect(r).toEqual({ commentId: COMMENT_ID, status: "approved", verdict: "APPROVE" });
+    expect(archived).toHaveLength(1);
+    expect(archived[0]?.op).toBe("comment_archive.insert");
+    expect(deleted).toEqual([COMMENT_ID]);
+  });
 });

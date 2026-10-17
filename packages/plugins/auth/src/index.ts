@@ -126,7 +126,21 @@ export default definePlugin<PluginContextTier1>({
     signup: async (ctx, args) => {
       const input = args as SignupInput;
       if (!input.email.includes("@")) throw new Error("signup: invalid email");
-      if (input.password.length < 8) throw new Error("signup: password >= 8 chars");
+      const cfgRows = await ctx.query.list<
+        "auth_config",
+        { signup_open: boolean; password_min_length: number }
+      >("auth_config", { limit: 1 });
+      const cfg = cfgRows[0];
+      if (cfg && cfg.signup_open === false) {
+        throw new Error("signup: registration is closed");
+      }
+      const minLen =
+        typeof cfg?.password_min_length === "number" && cfg.password_min_length >= 8
+          ? cfg.password_min_length
+          : 8;
+      if (input.password.length < minLen) {
+        throw new Error(`signup: password >= ${minLen} chars`);
+      }
       const ok = await ctx.captcha.requireProof(null);
       if (!ok) throw new Error("signup: captcha verification failed");
 
@@ -266,7 +280,17 @@ export default definePlugin<PluginContextTier1>({
 
     reset_password: async (ctx, args) => {
       const input = args as { token: string; newPassword: string };
-      if (input.newPassword.length < 8) throw new Error("reset_password: password >= 8 chars");
+      const cfgRows = await ctx.query.list<"auth_config", { password_min_length: number }>(
+        "auth_config",
+        { limit: 1 },
+      );
+      const minLen =
+        typeof cfgRows[0]?.password_min_length === "number" && cfgRows[0].password_min_length >= 8
+          ? cfgRows[0].password_min_length
+          : 8;
+      if (input.newPassword.length < minLen) {
+        throw new Error(`reset_password: password >= ${minLen} chars`);
+      }
       const tokenHash = await hashToken(input.token);
       const matches = await ctx.query.list<
         "password_reset_tokens",
@@ -281,6 +305,14 @@ export default definePlugin<PluginContextTier1>({
       await ctx.query.update("password_reset_tokens", t.id, {
         used_at: new Date().toISOString(),
       });
+      const existingSessions = await ctx.query.list<"visitor_sessions", { id: string }>(
+        "visitor_sessions",
+        { public_user_id: t.public_user_id, limit: 1000 },
+      );
+      for (const s of existingSessions) {
+        await ctx.query.delete("visitor_sessions", s.id);
+      }
+      ctx.visitor.setSession?.(null);
       return { reset: true };
     },
 
@@ -400,6 +432,13 @@ export default definePlugin<PluginContextTier1>({
       if (!p) throw new Error("execute_proposal: proposal not found");
       if (p.status !== "pending") {
         throw new Error(`execute_proposal: proposal is ${p.status}, not pending`);
+      }
+      if (
+        typeof p.proposed_password_min_length !== "number" ||
+        p.proposed_password_min_length < 8 ||
+        p.proposed_password_min_length > 128
+      ) {
+        throw new Error("execute_proposal: proposed_password_min_length must be between 8 and 128");
       }
       // Apply the proposed values to the singleton.
       const existing = await ctx.query.list<"auth_config", { id: string }>("auth_config", {

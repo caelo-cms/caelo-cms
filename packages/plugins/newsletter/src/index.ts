@@ -180,8 +180,18 @@ export default definePlugin<PluginContextTier1>({
   publicOperations: ["subscribe", "confirm", "unsubscribe"],
   operations: {
     subscribe: async (ctx, args) => {
-      const input = args as { email: string };
-      if (!input.email.includes("@")) throw new Error("subscribe: invalid email");
+      const input = args as { email: string; honeypot?: string; hp_address?: string };
+      if (
+        (typeof input.honeypot === "string" && input.honeypot.trim().length > 0) ||
+        (typeof input.hp_address === "string" && input.hp_address.trim().length > 0)
+      ) {
+        return { id: "00000000-0000-0000-0000-000000000000", awaitingConfirm: true };
+      }
+      if (!input.email?.includes("@")) throw new Error("subscribe: invalid email");
+      if (ctx.captcha) {
+        const ok = await ctx.captcha.requireProof(null);
+        if (!ok) throw new Error("subscribe: captcha verification failed");
+      }
       const hash = hashEmail(input.email);
       const existing = await ctx.query.list<
         "subscribers",

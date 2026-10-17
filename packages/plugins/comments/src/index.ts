@@ -190,7 +190,13 @@ export default definePlugin<PluginContextTier1>({
   publicOperations: ["submit", "list_approved"],
   operations: {
     submit: async (ctx, args) => {
-      const input = args as SubmitInput;
+      const input = args as SubmitInput & { honeypot?: string; hp_address?: string };
+      if (
+        (typeof input.honeypot === "string" && input.honeypot.trim().length > 0) ||
+        (typeof input.hp_address === "string" && input.hp_address.trim().length > 0)
+      ) {
+        return { commentId: "00000000-0000-0000-0000-000000000000", status: "pending" as const };
+      }
       if (!input.content.trim()) throw new Error("submit: content empty");
       if (!input.authorName.trim()) throw new Error("submit: authorName required");
       const ok = await ctx.captcha.requireProof(input.captchaToken ?? null);
@@ -336,7 +342,11 @@ export default definePlugin<PluginContextTier1>({
             `ai_moderate: verdict "${input.verdict}" is not one of APPROVE, REJECT, SPAM — call ai_moderate_comment again with exactly one of them`,
           );
         }
-        await ctx.query.update("comments", input.commentId, { status: decision });
+        if ("cms" in ctx && ctx.cms) {
+          await archiveAndDeletePublic(ctx, input.commentId, decision);
+        } else {
+          await ctx.query.update("comments", input.commentId, { status: decision });
+        }
         return { commentId: input.commentId, status: decision, verdict };
       }
 
@@ -371,7 +381,11 @@ export default definePlugin<PluginContextTier1>({
       if (!decision) {
         return { commentId: input.commentId, status: "pending" as const, verdict };
       }
-      await ctx.query.update("comments", input.commentId, { status: decision });
+      if ("cms" in ctx && ctx.cms) {
+        await archiveAndDeletePublic(ctx, input.commentId, decision);
+      } else {
+        await ctx.query.update("comments", input.commentId, { status: decision });
+      }
       return { commentId: input.commentId, status: decision, verdict };
     },
   },
@@ -524,14 +538,8 @@ export default definePlugin<PluginContextTier1>({
       });
       return r.comments
         .map((c) => {
-          const safeAuthor = c.authorName
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
-          const safeContent = c.content
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
+          const safeAuthor = escapeHtml(c.authorName);
+          const safeContent = escapeHtml(c.content);
           return `<article class="comment"><header>${safeAuthor} · ${new Date(c.submittedAt).toISOString()}</header><div class="body">${safeContent}</div></article>`;
         })
         .join("");
