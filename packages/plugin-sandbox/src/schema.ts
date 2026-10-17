@@ -34,11 +34,20 @@ export interface EmittedSchema {
   readonly sql: string;
 }
 
+const PLUGIN_UUID_RE = /^[0-9a-f-]{36}$/i;
+
+function assertValidPluginId(pluginId: string, caller: string): void {
+  if (!PLUGIN_UUID_RE.test(pluginId)) {
+    throw new Error(`${caller}: plugin id "${pluginId}" is not a valid UUID`);
+  }
+}
+
 export function schemaFromSpec(opts: {
   pluginId: string;
   slug: string;
   schema: PluginSchemaMap;
 }): EmittedSchema {
+  assertValidPluginId(opts.pluginId, "schemaFromSpec");
   const schemaName = `plugin_${opts.slug.replace(/-/g, "_")}`;
   const stmts: string[] = [];
 
@@ -245,6 +254,7 @@ export function adminSchemaFromSpec(opts: {
    */
   projectedTables?: ReadonlyArray<string>;
 }): EmittedSchema {
+  assertValidPluginId(opts.pluginId, "adminSchemaFromSpec");
   const schemaName = `plugin_${opts.slug.replace(/-/g, "_")}`;
   const stmts: string[] = [];
 
