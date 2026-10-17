@@ -222,26 +222,43 @@ async function readPluginRowPageId(
 ): Promise<string | null> {
   const lookup = pluginPageLookup(operation, entityId);
   if (!lookup) return null;
-  try {
-    // Plugin tables are RLS-scoped to their plugin (FORCEd, so the owner
-    // too): the read runs as that plugin, or it sees no rows at all.
-    const plugins = (await adapter.withAdminTransaction(
-      SYSTEM_CTX,
-      async (tx) =>
-        await tx.execute(
-          sql`SELECT id::text AS id FROM plugins WHERE slug = ${lookup.slug} LIMIT 1`,
-        ),
-    )) as unknown as { id: string }[];
-    const pluginId = plugins[0]?.id;
-    if (!pluginId) return null;
-    const rows = (await adapter.withPublicTransaction(
-      { ...SYSTEM_CTX, pluginId },
-      async (tx) => await tx.execute(lookup.query),
-    )) as unknown as { page_id: string | null }[];
-    const v = rows[0]?.page_id;
-    return typeof v === "string" ? v : null;
-  } catch {
-    return null;
+  // No catch: a failed lookup throws out of the tick, which leaves the
+  // visitor watermark (committed only after the loop) for the next tick and
+  // logs the failure. A swallowed error here once hid that this read saw
+  // no rows at all.
+  // Plugin tables are RLS-scoped to their plugin (FORCEd, so the owner
+  // too): the read runs as that plugin, or it sees no rows at all.
+  const plugins = (await adapter.withAdminTransaction(
+    SYSTEM_CTX,
+    async (tx) =>
+      await tx.execute(sql`SELECT id::text AS id FROM plugins WHERE slug = ${lookup.slug} LIMIT 1`),
+  )) as unknown as { id: string }[];
+  const pluginId = plugins[0]?.id;
+  if (!pluginId) throw new PluginNotInstalledError(lookup.slug, operation);
+  const rows = (await adapter.withPublicTransaction(
+    { ...SYSTEM_CTX, pluginId },
+    async (tx) => await tx.execute(lookup.query),
+  )) as unknown as { page_id: string | null }[];
+  const v = rows[0]?.page_id;
+  return typeof v === "string" ? v : null;
+}
+
+/**
+ * A plugin op reached the redeploy stream but its plugin has no `plugins`
+ * row: the install is inconsistent (the plugin was removed while its op is
+ * still allowlisted). Thrown rather than skipped (CLAUDE.md §2, no
+ * fallbacks pre-1.0).
+ */
+export class PluginNotInstalledError extends Error {
+  readonly slug: string;
+  readonly operation: string;
+  constructor(slug: string, operation: string) {
+    super(
+      `PluginNotInstalled: op "${operation}" needs the "${slug}" plugin, but cms_admin has no plugins row for slug "${slug}". Install the plugin, or remove "${operation}" from site_settings.auto_redeploy_op_kinds.`,
+    );
+    this.name = "PluginNotInstalledError";
+    this.slug = slug;
+    this.operation = operation;
   }
 }
 
@@ -787,10 +804,10 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
 
   const pollHandle = setInterval(() => {
     // A failed tick leaves its events (and the watermark) for the next one.
+    // The whole error, not only its message: drizzle's "Failed query"
+    // message leaves out the Postgres cause.
     tick().catch((e: unknown) => {
-      console.error(
-        `[redeploy-orchestrator] tick failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      console.error("[redeploy-orchestrator] tick failed", e);
     });
   }, pollMs);
   const gcHandle = setInterval(() => {

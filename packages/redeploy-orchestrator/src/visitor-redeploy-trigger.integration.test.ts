@@ -9,7 +9,7 @@
  * itself is observed through spy ops so no build runs.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { registerAdminOps } from "@caelo-cms/admin-core";
 import {
   bootstrap as bootstrapPluginHost,
@@ -23,7 +23,11 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { commitVisitorWatermark, startRedeployOrchestrator } from "./index.js";
+import {
+  commitVisitorWatermark,
+  PluginNotInstalledError,
+  startRedeployOrchestrator,
+} from "./index.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -37,6 +41,8 @@ const SYS: ExecutionContext = {
 };
 const PFX = "vr844-";
 const OP = "ratings.submit";
+/** Allowlisted, but its plugin (comments) is never installed in this file. */
+const UNINSTALLED_OP = "comments.moderate";
 const EVENT_PLUGIN_ID = "11111111-2222-4333-8444-555555555555";
 const POLL_MS = 25;
 
@@ -148,10 +154,10 @@ async function watermark(): Promise<string> {
 }
 
 /** Insert one event as the gateway does (public_role); returns its id. */
-async function gatewayEvent(entityId: string): Promise<string> {
+async function gatewayEvent(entityId: string, operation: string = OP): Promise<string> {
   await gateway`
     INSERT INTO gateway_plugin_op_events (plugin_id, operation, input_hash, succeeded, entity_id)
-    VALUES (${EVENT_PLUGIN_ID}::uuid, ${OP}, ${"c".repeat(64)}, true, ${entityId}::uuid)`;
+    VALUES (${EVENT_PLUGIN_ID}::uuid, ${operation},${"c".repeat(64)}, true, ${entityId}::uuid)`;
   // public_role may insert but not read back; look the id up as the system.
   const rows = (await adapter.withPublicTransaction(
     SYS,
@@ -262,7 +268,7 @@ beforeAll(async () => {
     prevSettings = rows[0] ?? null;
     await tx`UPDATE site_settings
              SET auto_redeploy_enabled = true, auto_redeploy_debounce_ms = 600000,
-                 auto_redeploy_op_kinds = string_to_array(${OP}, ','), auto_redeploy_last_seen_at = now()
+                 auto_redeploy_op_kinds = string_to_array(${`${OP},${UNINSTALLED_OP}`}, ','), auto_redeploy_last_seen_at = now()
              WHERE id = 1`;
   });
 });
@@ -313,5 +319,50 @@ describe("visitor plugin op events and the automatic redeploy (PR #844)", () => 
     await runUntilConsumed(eventId);
     expect(redeploys).toEqual([[pageId]]);
     expect(await watermark()).toBe(eventId);
+  });
+
+  it("a lookup that throws leaves the watermark in place and logs the error", async () => {
+    const installed = await withAdminSql(
+      async (tx) =>
+        (await tx`SELECT count(*)::int AS n FROM plugins WHERE slug = 'comments'`) as unknown as {
+          n: number;
+        }[],
+    );
+    expect(installed[0]?.n).toBe(0);
+    const before = await watermark();
+    // comments.moderate is allowlisted but the comments plugin has no row.
+    await gatewayEvent("00000000-0000-4000-8000-0000000000bb", UNINSTALLED_OP);
+
+    const logged: unknown[][] = [];
+    const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args);
+    });
+    const handle = startRedeployOrchestrator({
+      adapter,
+      registry: spyRegistry(),
+      pollIntervalMs: POLL_MS,
+    });
+    const notInstalled = (): PluginNotInstalledError | undefined =>
+      logged
+        .filter((args) => args[0] === "[redeploy-orchestrator] tick failed")
+        .map((args) => args[1])
+        .find((e): e is PluginNotInstalledError => e instanceof PluginNotInstalledError);
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!notInstalled()) {
+        if (Date.now() > deadline) throw new Error("the tick never surfaced the lookup failure");
+        await Bun.sleep(POLL_MS);
+      }
+      // Several more ticks: each fails the same way, none moves on.
+      await Bun.sleep(POLL_MS * 8);
+      await handle.flushPending();
+    } finally {
+      handle.stop();
+      errorSpy.mockRestore();
+    }
+    expect(notInstalled()).toMatchObject({ slug: "comments", operation: UNINSTALLED_OP });
+    expect(redeploys).toEqual([]);
+    // Left for the next tick, not skipped.
+    expect(await watermark()).toBe(before);
   });
 });
