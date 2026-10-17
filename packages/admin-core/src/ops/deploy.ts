@@ -47,7 +47,13 @@ import {
   type OperationRegistry,
   type TransactionRunner,
 } from "@caelo-cms/query-api";
-import { databaseUrlFromEnv, type ExecutionContext, err, ok } from "@caelo-cms/shared";
+import {
+  CAELO_VERSION,
+  databaseUrlFromEnv,
+  type ExecutionContext,
+  err,
+  ok,
+} from "@caelo-cms/shared";
 import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -636,10 +642,13 @@ export const triggerDeployOp = defineOperation({
     // Issue #620 — the AI holds this build covers: open now means committed
     // together with its merge, before the generator reads main.
     const coveredHolds = await openAiStageHoldIds(tx);
+    // #834 — the Caelo version rendering this build: Publish live's parity
+    // guard names an upgrade between Stage and Publish live as the cause.
     const runIdRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status, render_fingerprint, covered_ai_hold_ids)
+      INSERT INTO deploy_runs (target_id, actor_id, status, render_fingerprint, covered_ai_hold_ids,
+                               caelo_version)
       VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running', ${fingerprint},
-              ${uuidList(coveredHolds)})
+              ${uuidList(coveredHolds)}, ${CAELO_VERSION})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const runId = runIdRows[0]?.id;
@@ -1037,7 +1046,10 @@ export const promoteDeployOp = defineOperation({
             file_count = ${rebuilt ? rebuilt.fileCount : sql`(SELECT file_count FROM deploy_runs WHERE id = ${fromRunId}::uuid)`},
             build_id = ${summary.destinationBuildId},
             publish_summary = ${jsonbParam(summary)},
-            site_url = ${rebuilt ? siteBaseUrl : null}
+            site_url = ${rebuilt ? siteBaseUrl : null},
+            -- #834 — a rebuild is rendered by this version; a copy keeps
+            -- the version that rendered the copied build.
+            caelo_version = ${rebuilt ? CAELO_VERSION : sql`(SELECT caelo_version FROM deploy_runs WHERE id = ${fromRunId}::uuid)`}
         WHERE id = ${toRunId}::uuid
       `);
       if (rebuilt) {
@@ -1112,9 +1124,14 @@ async function rebuildAndPublishLive(
     );
   }
   const manifestRows = (await tx.execute(sql`
-    SELECT parity_manifest FROM deploy_runs WHERE id = ${args.stagingRunId}::uuid
-  `)) as unknown as { parity_manifest: Record<string, string> | string | null }[];
+    SELECT parity_manifest, caelo_version FROM deploy_runs WHERE id = ${args.stagingRunId}::uuid
+  `)) as unknown as {
+    parity_manifest: Record<string, string> | string | null;
+    caelo_version: string | null;
+  }[];
   const raw = manifestRows[0]?.parity_manifest ?? null;
+  // NULL = staged before 0287 recorded versions; the refusal says so.
+  const stagedCaeloVersion = manifestRows[0]?.caelo_version ?? null;
   if (raw === null) {
     throw new Error(
       `staged build ${args.stagingRunId} has no parity manifest, so Publish live cannot prove the live build matches it. Stage again, then Publish live.`,
@@ -1141,7 +1158,11 @@ async function rebuildAndPublishLive(
     throw new Error(`the live rebuild failed: ${built.message}${tail}`);
   }
   const diff = compareBuildManifests(stagedManifest, await buildManifestOf(built.result.buildDir));
-  const refusal = parityRefusal(diff, { stagingRunId: args.stagingRunId });
+  const refusal = parityRefusal(diff, {
+    stagingRunId: args.stagingRunId,
+    stagedCaeloVersion,
+    runningCaeloVersion: CAELO_VERSION,
+  });
   if (refusal) throw new ParityRefusalError(refusal);
 
   const summary = await publishLiveBuild({
