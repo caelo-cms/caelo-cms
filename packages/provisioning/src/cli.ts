@@ -56,7 +56,7 @@ import {
   selfHostedSeedDomains,
 } from "./caddy.js";
 import { redactCredentials } from "./checkpoint-secrets.js";
-import { initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
+import { cliUsage, initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
 import {
   BOOTSTRAP_DIR,
   COMPOSE_ADMIN_UPSTREAM,
@@ -1535,10 +1535,6 @@ if (route.kind === "handler" || route.kind === "wizard") {
     process.exit(1);
   }
 } else {
-  console.log(
-    "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] [--local|--install-job] | <init|up|migrate|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|owner-reset|state migrate|attach|pulumi-output-sync|version> [options]\n" +
-      "With several installs on this machine, pick one with --install <install-id or domain> (status, upgrade and backup also take --install all); in a terminal you are asked otherwise.\n" +
-      "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
-  );
+  console.log(cliUsage());
   process.exit(cmd && !cmd.startsWith("-") ? 2 : 0);
 }

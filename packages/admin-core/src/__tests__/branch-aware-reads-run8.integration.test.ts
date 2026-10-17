@@ -134,6 +134,18 @@ describe("run #8 R3 — branch-aware read ops", () => {
     expect((liveRead.value as { instance: { values: { title: string } } }).instance.values).toEqual(
       { title: "published title" },
     );
+
+    // #820 — content_instances.list overlays the same way (it returned the
+    // live values, so the markup guard missed copies this chat had written).
+    const listValues = async (ctx: ExecutionContext) => {
+      const r = await execute(registry, adapter, ctx, "content_instances.list", { moduleId });
+      if (!r.ok) throw new Error(`list: ${JSON.stringify(r.error)}`);
+      return (r.value as { instances: { id: string; values: unknown }[] }).instances
+        .filter((i) => i.id === contentInstanceId)
+        .map((i) => i.values);
+    };
+    expect(await listValues(aiCtx)).toEqual([{ title: "branched title" }]);
+    expect(await listValues(HUMAN)).toEqual([{ title: "published title" }]);
   });
 
   it("pages.get_with_modules overlays branched module code for the branch caller", async () => {

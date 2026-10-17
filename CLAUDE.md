@@ -21,6 +21,7 @@ Concretely, this means every domain object the AI might reach for ships with **d
 - **Pages** carry a `kind` derivable from their template so a module appearing on three product pages reads as "this is a product-page pattern", not three coincidences.
 - **Field names inside modules** are semantic snake_case (`hero_title`, `primary_cta_href`), authored by the AI in the same call that authors the HTML — not minted by server-side heuristics from tag names. The extractor heuristic is a fallback for messy human-authored HTML, not the canonical AI path.
 - **Repeating content is a list field** (`text-list`, `link-list`, or a `module-list` of sub-modules), never numbered scalars (`label`, `label2`, `label3`, …). A menu with 10 items is one field with 10 items.
+- **A component pattern is a module, never markup in a field value.** Richtext is prose. One-off free HTML on one page is allowed; the second copy of a pattern becomes a module, and its CSS lives in that module, not in the layout. The core `structure` quality check blocks clearly repeated free markup and the write tools hint at the second copy (#820, `quality/checks/structure.ts`, `ai/tools/_markup-guard.ts`).
 
 **Reviewer test for any new AI-facing surface:** an operator who has never heard the word "module" can use it. If a surface only makes sense to a developer, the AI hasn't been given enough context.
 
@@ -177,7 +178,13 @@ This project is largely AI-authored. AI contributions are held to a *higher*, no
 
 ## 10. Documentation as you go
 
-Every phase updates the docs when it introduces user-visible behaviour. End-user docs live at [caelo-cms.com/docs](https://caelo-cms.com/docs/), built *with Caelo itself* (dogfooding) — they are site content, not files in this repo, so a user-visible change names the docs page to update in its PR. Engineering docs live in `docs/`, `ARCHITECTURE.md` and package READMEs. Broken docs block the release.
+Two kinds of docs, two homes (epic #825):
+
+- **Developer docs** — architecture, patterns, decisions, runbooks — live in this repo: `ARCHITECTURE.md`, `CLAUDE.md`, [`docs/`](./docs/README.md) (indexed in `docs/README.md`), package READMEs, TSDoc. They change **in the same PR as the code**, because they must match the code at every commit, agents read them from the worktree, and fixing caelo-cms.com must not depend on caelo-cms.com being up. A new file under `docs/` gets an index entry; `scripts/docs-links.test.ts` fails on a missing entry or a dangling relative link.
+- **End-user docs** — install, upgrade, using the admin, plugins, MCP, for operators and editors — live in the Caelo CMS at [caelo-cms.com/docs](https://caelo-cms.com/docs/) (dogfooding, §11.C), **not** in this repo. Never add an end-user page to `docs/`. A PR that changes something operators or editors see fills in the template's `## User docs affected` section and sets the `user-facing` label; after the release, the docs-sync workflow (#827) drafts the update on a chat branch of caelo-cms.com through the Caelo MCP. **Publishing stays a human click:** the Owner reviews the preview and publishes.
+- **Public developer reference** (Plugin SDK, Query API, provisioning CLI) is written in the repo and mirrored one way to the CMS on release (#828); it is never edited in the CMS.
+
+Broken docs block the release.
 
 ---
 
@@ -378,7 +385,7 @@ The wizard runs in any terminal, requires zero prior knowledge of the cloud prov
 - **Test on a fresh install.** No GCP project exists; no `gcloud` config set. Run the CLI from scratch. If it fails or asks the user to do something manual, the PR is rejected.
 - **Update all 4 provider adapters when changing shared shape.** Adding a new knob to GCP without adding it to AWS + Azure + self-hosted is a regression — operators expect provider-portable behaviour.
 - **Add cost estimate entries** for any new billable resource. The CLI's pre-flight table must reflect reality.
-- **Add a troubleshooting entry** for any failure mode hit during dogfooding. The docs site's `install/<provider>` page surfaces the entries.
+- **Add a troubleshooting entry** for any failure mode hit during dogfooding. The entries live on the provider's `/docs/install/<provider>/` page on caelo-cms.com: describe the entry under the PR's `## User docs affected` and set the `user-facing` label (§10).
 
 ### Distinguishing dogfood deploys from end-user deploys
 

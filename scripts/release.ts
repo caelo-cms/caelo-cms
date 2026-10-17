@@ -8,13 +8,16 @@
  *
  * What it does:
  *   1. Validates the new version is SemVer + strictly greater than current.
- *   2. Updates packages/shared/src/version.ts CALEO_VERSION constant.
+ *   2. Updates packages/shared/src/version.ts CALEO_VERSION constant and
+ *      pins the README's Cloud Shell install links to the new stable
+ *      release (repo files only; the docs pages on caelo-cms.com are CMS
+ *      content, moved by the release's docs-sync draft, RELEASING.md).
  *   3. Updates root package.json + every workspace package.json `version`,
  *      and bun.lock, which records those versions.
  *   4. Re-signs every Tier-1 plugin manifest under packages/plugins/<slug>/
  *      via apps/admin/scripts/sign-tier1-manifest.ts (the same script
  *      `bun run plugins:sign` uses).
- *   5. Generates docs/CHANGELOG.md entry from conventional commits since
+ *   5. Generates the CHANGELOG.md entry from conventional commits since
  *      the last `vX.Y.Z` git tag (delegates to scripts/release-notes.ts).
  *   6. Commits the changes (`chore(release): vX.Y.Z`).
  *   7. Tags `vX.Y.Z`.

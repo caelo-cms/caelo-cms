@@ -23,6 +23,17 @@ The full reviewer checklist lives in CONTRIBUTING.md and CLAUDE.md §9.
      - Specific scenarios from CLAUDE.md §6 testing matrix
 -->
 
+## User docs affected
+
+<!-- What changes for operators or editors (install, upgrade, a screen, a setting,
+     a command, a default, an error they act on), in a sentence or two, plus the
+     docs page on caelo-cms.com/docs/ if you know it. Write "none" if nothing
+     user-visible changes.
+     If it is not "none", also set the `user-facing` label: after the release the
+     docs-sync workflow reads this section and drafts the docs update on
+     caelo-cms.com for the Owner to publish (CONTRIBUTING.md → Documentation).
+     Keep this heading exactly as it is; the workflow finds the section by it. -->
+
 ## New dependencies
 
 <!-- For every new dependency added (root or any workspace):
@@ -44,5 +55,6 @@ The full reviewer checklist lives in CONTRIBUTING.md and CLAUDE.md §9.
 - [ ] Snapshots emitted for every write that affects authoring state
 - [ ] Zod validation present at every external boundary (tool calls, HTTP requests, plugin SDK surfaces)
 - [ ] Tests added (unit + integration + Playwright per CLAUDE.md §6)
-- [ ] Docs updated when behaviour is user-visible (end-user docs live at caelo-cms.com/docs/, built in Caelo: name the page to update in the PR description; `docs/`, `CLAUDE.md`, `ARCHITECTURE.md` for engineering docs)
+- [ ] Developer docs (`docs/`, `CLAUDE.md`, `ARCHITECTURE.md`, package READMEs) updated in this PR
+- [ ] User-visible change: "User docs affected" filled in and the `user-facing` label set (end-user docs live in the CMS at caelo-cms.com/docs/, not in this repo)
 - [ ] `// SPDX-License-Identifier: MPL-2.0` header on every new source file

@@ -72,16 +72,30 @@ Every plugin follows one model (CMS_REQUIREMENTS §14): who wrote it grants it n
 
 These need an issue first so we can discuss scope. The non-negotiable invariants in CLAUDE.md §2 are not negotiable; if your change touches one, the issue is the place to argue why.
 
-### Documentation contributions
+### Documentation
 
-The end-user docs at [caelo-cms.com/docs](https://caelo-cms.com/docs/) are dogfooded: they are pages in a Caelo install, not files in this repo. To fix or extend them, open an issue with the `documentation` label naming the page and the change; a maintainer applies it on the site. Engineering docs (`docs/`, `ARCHITECTURE.md`, `CLAUDE.md`, package READMEs) are edited here through a normal PR.
+Caelo has two kinds of docs with two homes (epic #825):
+
+| Kind | Audience | Lives in | Changed by |
+|---|---|---|---|
+| **Developer docs** | contributors and AI agents | this repo: [`docs/`](./docs/README.md), `ARCHITECTURE.md`, `CLAUDE.md`, package READMEs, TSDoc | the same PR as the code they describe |
+| **End-user docs** | operators and editors (install, upgrade, using the admin, plugins, MCP) | the Caelo CMS at [caelo-cms.com/docs](https://caelo-cms.com/docs/), not this repo | a draft after each release; the site's Owner publishes it |
+
+**In your PR**, when the change alters something an operator or editor sees (a screen, a setting, a command, an install or upgrade step, a default, an error message they act on):
+
+1. Fill in the template's **`## User docs affected`** section: what changes for operators/editors, in a sentence or two, and the docs page if you know it. Write `none` when nothing user-visible changes.
+2. Set the **`user-facing`** label.
+
+After a release, the docs-sync workflow ([#827](https://github.com/caelo-cms/caelo-cms/issues/827)) collects the merged `user-facing` PRs, reads their "User docs affected" sections and the release notes, and drafts the matching docs updates on caelo-cms.com through the Caelo MCP. The draft lands on a chat branch; nothing is published until the Owner reviews the preview and clicks publish. So the label and the section are the only docs work a code PR does for end users. Do not add end-user pages to `docs/`.
+
+To fix or extend an end-user page without a code change, open an issue with the `documentation` label naming the page and the change.
 
 ## Pull request mechanics
 
 - **All changes to `main` go through a pull request.** Direct pushes, force pushes, and branch deletion are rejected by the `main-protection` ruleset on the GitHub repo. The ruleset's source-of-truth lives in `.github/rulesets/main.json` and is applied by `bun run rulesets:apply` (maintainers only). Edit the JSON via PR — do not edit the ruleset in the GitHub UI; the next apply run reverts it. Run `bun run rulesets:check` to confirm the live state matches the committed spec.
 - **Conventional commits.** `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`. Scope by phase when applicable: `feat(phase-17): …`.
 - **One coherent change per PR.** Mixed unrelated changes are rejected on review — open them separately.
-- **Use the PR template.** It asks for *what changed*, *why* (with `CMS_REQUIREMENTS.md` section reference if applicable), *how it was verified*, *new dependencies + their licenses*. The template is at `.github/PULL_REQUEST_TEMPLATE.md`.
+- **Use the PR template.** It asks for *what changed*, *why* (with `CMS_REQUIREMENTS.md` section reference if applicable), *how it was verified*, *new dependencies + their licenses*, and *which user docs it affects* (see [Documentation](#documentation)). The template is at `.github/PULL_REQUEST_TEMPLATE.md`.
 - **No `--no-verify`.** No force-push to `main`. No `--no-gpg-sign` workarounds. If a hook is blocking you, fix the underlying issue.
 - **Required CI checks must pass before merge.** The ruleset requires `Lockfile freshness`, `Lint, Typecheck, Migrate, Test, License` (the latter rolls up Biome lint + SPDX + audit-callsites, the knip dead-code gate, the madge circular-dependency gate, version lockstep, tsc, `bun test`, and MPL-2.0 license compatibility), `build + push (admin)` + `build + push (gateway)` (the matrix jobs of the `release-images` workflow — these catch regressions that only surface in the lean production Docker image, the same class of bug as #53), and `Admin production image — boot smoke` (the `admin-prod-image` job in `ci.yml` — builds the admin Dockerfile and `docker run`s it to confirm the server actually boots, catching `Cannot find module`-class regressions that succeed at build time but crash on `docker run`). The branch must be up to date with `main` and all review threads resolved before merge. Squash or rebase only — no merge commits.
 - **Tests with every change.** Bug fixes get a regression test that would have caught the bug. New features get unit + integration + (where user-visible) Playwright E2E coverage. CI blocks merges that drop below declared coverage.
@@ -105,7 +119,7 @@ Reviewers check (per CLAUDE.md §9):
 - Snapshots emitted for every write
 - Validation present (Zod at the boundary)
 - Tests added
-- Docs updated when behaviour is user-visible
+- Developer docs updated in the same PR; for user-visible behaviour, the `## User docs affected` section filled in and the `user-facing` label set
 - Dead code removed, not left behind (the `knip` CI gate enforces this; `git log` is the trail per CLAUDE.md §5 — see [`docs/dev/knip.md`](./docs/dev/knip.md))
 - No new circular dependencies (the `circular` CI gate runs madge and fails on any new runtime import cycle — see [`docs/dev/madge.md`](./docs/dev/madge.md))
 

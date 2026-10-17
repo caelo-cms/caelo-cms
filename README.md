@@ -33,7 +33,7 @@ Everything the AI builds comes from the same parts, so the site stays consistent
 - Pages are assembled from layouts, templates and modules, styled by one theme. A page never holds raw HTML of its own.
 - Plugins for languages, cookie consent, forms, newsletter, comments, ratings and visitor login ship with Caelo.
 - SEO is structured fields (meta, canonical, Open Graph, JSON-LD, sitemap), not hand-written `<head>` markup. Moving a page creates its redirect.
-- Staged builds get a Lighthouse quality check; a failed check keeps the site from going live until it is fixed or explicitly accepted.
+- Staged builds get a quality check: Lighthouse, plus a structure check that catches the same component pasted as free HTML on several pages instead of being one module. A failed check keeps the site from going live until it is fixed or explicitly accepted.
 
 ### You decide
 
@@ -110,7 +110,7 @@ Either way the agent works in the draft, and publishing stays with a human. Mint
 
 User docs (install, editing, plugins, MCP, security) live at **[caelo-cms.com/docs](https://caelo-cms.com/docs/)**, built in Caelo itself.
 
-For contributors: read **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** and **[`CLAUDE.md`](./CLAUDE.md)** before opening a PR. The architecture overview is in **[`ARCHITECTURE.md`](./ARCHITECTURE.md)**, the product spec in **[`CMS_REQUIREMENTS.md`](./CMS_REQUIREMENTS.md)**.
+For contributors: read **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** and **[`CLAUDE.md`](./CLAUDE.md)** before opening a PR. The architecture overview is in **[`ARCHITECTURE.md`](./ARCHITECTURE.md)**, the product spec in **[`CMS_REQUIREMENTS.md`](./CMS_REQUIREMENTS.md)**, and the developer docs are indexed in **[`docs/README.md`](./docs/README.md)**.
 
 ## Roadmap
 
