@@ -38,6 +38,7 @@ import { sql } from "drizzle-orm";
 import { databaseIsolationProblems } from "./database-env.js";
 import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
 import {
+  CAPTCHA_CHALLENGE_RATE_LIMIT,
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
   handleRequest,
@@ -161,17 +162,32 @@ async function cleanup(): Promise<void> {
 let clientIp = 0;
 
 /**
- * A visitor POST. Each request comes from its own client IP unless a
- * header says otherwise: cookie-less requests share an IP-scoped rate-limit
- * bucket, and one test's traffic must not throttle the next.
+ * The gcp topology (CLAUDE.md §11.B): the external Application Load Balancer
+ * appends `<client>,<LB IP>` to whatever X-Forwarded-For the client sent, and
+ * the gateway accepts traffic from the LB only (CAELO_TRUSTED_PROXY_HOPS=2).
+ */
+const LB_IP = "34.120.0.1";
+function viaLb(client: string, clientSent?: string): string {
+  return [clientSent, client, LB_IP].filter(Boolean).join(", ");
+}
+
+/** A fresh visitor address per call. */
+function nextClient(): string {
+  clientIp++;
+  return `198.51.${Math.floor(clientIp / 250)}.${clientIp % 250}`;
+}
+
+/**
+ * A visitor POST through the LB. Each request comes from its own client IP
+ * unless a header says otherwise: cookie-less requests share an IP-scoped
+ * rate-limit bucket, and one test's traffic must not throttle the next.
  */
 function post(path: string, body: unknown, headers: Record<string, string> = {}): Request {
-  clientIp++;
   return new Request(`http://localhost${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Forwarded-For": `198.51.100.${clientIp % 250}, 10.0.0.${Math.floor(clientIp / 250)}`,
+      "X-Forwarded-For": viaLb(nextClient()),
       ...headers,
     },
     body: JSON.stringify(body),
@@ -186,6 +202,7 @@ async function expectStatus(r: Response, status: number): Promise<void> {
 }
 
 beforeAll(async () => {
+  process.env.CAELO_TRUSTED_PROXY_HOPS = "2";
   await cleanup();
   // --- Admin side: register + provision + publish, as the admin host does. ---
   adminAdapter = new DatabaseAdapter({
@@ -444,7 +461,7 @@ describe("/api/* served from cms_public alone (#635)", () => {
                VALUES (${SLUG}, 'save', 2, 60)`;
     });
     await publish();
-    const header = { "X-Forwarded-For": "203.0.113.200" };
+    const header = { "X-Forwarded-For": viaLb("203.0.113.200") };
     const statuses: number[] = [];
     for (let i = 0; i < 3; i++) {
       const r = await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "n" }, header));
@@ -470,7 +487,11 @@ describe("/api/* served from cms_public alone (#635)", () => {
     });
     await publish();
     try {
-      const c = await handleRequest(new Request("http://localhost/api/captcha/challenge"));
+      const c = await handleRequest(
+        new Request("http://localhost/api/captcha/challenge", {
+          headers: { "X-Forwarded-For": viaLb(nextClient()) },
+        }),
+      );
       expect(c.status).toBe(200);
       const { challenge, target } = (
         (await c.json()) as { data: { challenge: string; target: string } }
@@ -599,6 +620,147 @@ describe("the public side cannot rewrite what the admin published (#635, adversa
   });
 });
 
+describe("the visitor's address behind the gcp load balancer (#845)", () => {
+  /** Run `fn` with the Owner's `save` limit at `max` per minute. */
+  async function withSaveLimit(max: number, fn: () => Promise<void>): Promise<void> {
+    await asAdmin(async (tx) => {
+      await tx`INSERT INTO plugin_rate_limit_overrides (plugin_slug, operation, per_visitor_max, window_seconds)
+               VALUES (${SLUG}, 'save', ${max}, 60)`;
+    });
+    await publish();
+    try {
+      await fn();
+    } finally {
+      await asAdmin(async (tx) => {
+        await tx`DELETE FROM plugin_rate_limit_overrides WHERE plugin_slug = ${SLUG}`;
+      });
+      await publish();
+    }
+  }
+
+  const save = (xff: string) =>
+    handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "ip" }, { "X-Forwarded-For": xff }));
+
+  it("buckets per visitor: every visitor shares the LB address, and only theirs counts", async () => {
+    await withSaveLimit(1, async () => {
+      const alice = nextClient();
+      await expectStatus(await save(viaLb(alice)), 200);
+      await expectStatus(await save(viaLb(alice)), 429);
+      // Another visitor through the same LB is not throttled by Alice.
+      await expectStatus(await save(viaLb(nextClient())), 200);
+    });
+  });
+
+  it("an X-Forwarded-For the client sends cannot rotate its bucket", async () => {
+    await withSaveLimit(1, async () => {
+      const mallory = nextClient();
+      await expectStatus(await save(viaLb(mallory, "10.9.9.1")), 200);
+      for (const forged of ["10.9.9.2", "10.9.9.3, 10.9.9.4", nextClient()]) {
+        await expectStatus(await save(viaLb(mallory, forged)), 429);
+      }
+    });
+  });
+
+  it("refuses a request without the LB's entries instead of guessing (503)", async () => {
+    const r = await save(nextClient());
+    await expectStatus(r, 503);
+    const err = ((await r.json()) as { error: { kind: string; message: string } }).error;
+    expect(err.kind).toBe("ClientAddressUnavailable");
+    expect(err.message).toContain("CAELO_TRUSTED_PROXY_HOPS");
+  });
+
+  it("refuses to start serving without the hop count, naming the fix", async () => {
+    const saved = process.env.CAELO_TRUSTED_PROXY_HOPS;
+    delete process.env.CAELO_TRUSTED_PROXY_HOPS;
+    try {
+      const r = await save(viaLb(nextClient()));
+      await expectStatus(r, 503);
+      expect(await r.text()).toContain("cms-provision upgrade");
+    } finally {
+      process.env.CAELO_TRUSTED_PROXY_HOPS = saved;
+    }
+  });
+});
+
+describe("cross-site plugin POSTs (#845)", () => {
+  it("refuses a browser's cross-site POST with 403, before any dispatch", async () => {
+    const r = await handleRequest(
+      post(`/api/plugin/${SLUG}/save`, { message: "csrf" }, { "Sec-Fetch-Site": "cross-site" }),
+    );
+    await expectStatus(r, 403);
+    expect(((await r.json()) as { error: { kind: string } }).error.kind).toBe("Forbidden");
+    const stored = await asPublicAdmin(
+      async (tx) =>
+        (await tx.unsafe(`SELECT 1 FROM ${SCHEMA}.notes WHERE message = 'csrf'`)) as unknown[],
+    );
+    expect(stored).toEqual([]);
+  });
+
+  it("serves same-origin and same-site POSTs, and non-browser callers without the header", async () => {
+    for (const site of ["same-origin", "same-site"]) {
+      const r = await handleRequest(
+        post(`/api/plugin/${SLUG}/save`, { message: site }, { "Sec-Fetch-Site": site }),
+      );
+      await expectStatus(r, 200);
+    }
+    await expectStatus(
+      await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "no-header" })),
+      200,
+    );
+  });
+});
+
+describe("captcha challenge minting is rate limited (#845)", () => {
+  it("answers 429 with Retry-After past the per-client cap, for that client only", async () => {
+    const saved = await asAdmin(async (tx) => {
+      const [row] =
+        (await tx`SELECT captcha_provider, captcha_pow_target_prefix FROM site_settings WHERE id = 1`) as {
+          captcha_provider: string;
+          captcha_pow_target_prefix: string;
+        }[];
+      await tx`UPDATE site_settings SET captcha_provider = 'pow' WHERE id = 1`;
+      return row;
+    });
+    await publish();
+    const challenge = (xff: string) =>
+      handleRequest(
+        new Request("http://localhost/api/captcha/challenge", {
+          headers: { "X-Forwarded-For": xff },
+        }),
+      );
+    try {
+      // A flood from one client, rotating the X-Forwarded-For it sends: the
+      // limiter's burst gate or its window stops it within the cap.
+      const flooder = nextClient();
+      let served = 0;
+      let over: Response | null = null;
+      for (let i = 0; i <= CAPTCHA_CHALLENGE_RATE_LIMIT.perVisitorMax; i++) {
+        const r = await challenge(viaLb(flooder, `10.0.${i}.1`));
+        if (r.status === 429) {
+          over = r;
+          break;
+        }
+        await expectStatus(r, 200);
+        served++;
+      }
+      expect(served).toBeGreaterThan(0);
+      if (!over) throw new Error(`no 429 after ${served} challenges from one client`);
+      expect(((await over.json()) as { error: { kind: string } }).error.kind).toBe("RateLimited");
+      const retryAfter = Number(over.headers.get("retry-after"));
+      expect(retryAfter).toBeGreaterThan(0);
+      expect(retryAfter).toBeLessThanOrEqual(CAPTCHA_CHALLENGE_RATE_LIMIT.windowSeconds + 1);
+      // The cap is per client, not site-wide: the next visitor is served.
+      await expectStatus(await challenge(viaLb(nextClient())), 200);
+    } finally {
+      await asAdmin(async (tx) => {
+        await tx`UPDATE site_settings SET captcha_provider = ${saved?.captcha_provider ?? "pow"},
+                 captcha_pow_target_prefix = ${saved?.captcha_pow_target_prefix ?? "000fff"} WHERE id = 1`;
+      });
+      await publish();
+    }
+  });
+});
+
 describe("staging.<domain> from the published gate settings (#650, #635)", () => {
   const STAGING = "https://staging.example.com";
   const PREVIEW = "https://site--runid-t650-x1.web.app";
@@ -611,6 +773,9 @@ describe("staging.<domain> from the published gate settings (#650, #635)", () =>
     };
     const realFetch = globalThis.fetch;
     process.env.CAELO_PROVIDER = "gcp-firebase";
+    // gcp-firebase: the staging domain mapping's front end appends one entry.
+    process.env.CAELO_TRUSTED_PROXY_HOPS = "1";
+    const viaDomainMapping = { "x-forwarded-for": "198.51.100.77" };
     process.env.CAELO_STAGING_GATE_SECRET = SECRET;
     await asAdmin(async (tx) => {
       await tx`UPDATE staging_access SET origin_url = ${PREVIEW}, cookie_enabled = true,
@@ -628,13 +793,19 @@ describe("staging.<domain> from the published gate settings (#650, #635)", () =>
     }) as typeof fetch;
     try {
       const denied = await handleRequest(
-        new Request(`${STAGING}/about/`, { headers: { host: "staging.example.com" } }),
+        new Request(`${STAGING}/about/`, {
+          headers: { host: "staging.example.com", ...viaDomainMapping },
+        }),
       );
       expect(denied.status).toBe(403);
       const session = await signStagingToken(SECRET, "session", Math.floor(Date.now() / 1000) + 60);
       const allowed = await handleRequest(
         new Request(`${STAGING}/about/`, {
-          headers: { host: "staging.example.com", cookie: `${STAGING_SESSION_COOKIE}=${session}` },
+          headers: {
+            host: "staging.example.com",
+            cookie: `${STAGING_SESSION_COOKIE}=${session}`,
+            ...viaDomainMapping,
+          },
         }),
       );
       await expectStatus(allowed, 200);
@@ -643,6 +814,7 @@ describe("staging.<domain> from the published gate settings (#650, #635)", () =>
       expect(upstream).toEqual([`${PREVIEW}/about/`]);
     } finally {
       globalThis.fetch = realFetch;
+      process.env.CAELO_TRUSTED_PROXY_HOPS = "2";
       if (saved.provider === undefined) delete process.env.CAELO_PROVIDER;
       else process.env.CAELO_PROVIDER = saved.provider;
       if (saved.secret === undefined) delete process.env.CAELO_STAGING_GATE_SECRET;

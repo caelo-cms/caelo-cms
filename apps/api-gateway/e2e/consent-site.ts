@@ -38,6 +38,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { generateSite, pageOutputPath } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
+import { trustedProxyHopsFromEnv } from "../src/client-ip.js";
 import {
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
@@ -54,6 +55,8 @@ function required(name: string): string {
 
 const ADMIN_URL = required("ADMIN_DATABASE_URL");
 const PUBLIC_ADMIN_URL = required("PUBLIC_ADMIN_DATABASE_URL");
+// Refuse to start without the topology, as the gateway itself does.
+trustedProxyHopsFromEnv(process.env);
 const SYSTEM: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
   actorKind: "system",
@@ -256,9 +259,11 @@ async function serveStatic(pathname: string): Promise<Response> {
 const server = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
-  fetch: (req) => {
+  fetch: (req, srv) => {
     const { pathname } = new URL(req.url);
-    return pathname.startsWith("/api/") ? handleRequest(req) : serveStatic(pathname);
+    return pathname.startsWith("/api/")
+      ? handleRequest(req, { peerAddress: srv.requestIP(req)?.address ?? null })
+      : serveStatic(pathname);
   },
 });
 

@@ -13,6 +13,7 @@ import { findingSchema } from "../findings.js";
 import { runFindingChecks } from "../runner.js";
 import { createStructureCheck, type StructureLayout, structureFindings } from "../structure.js";
 import { type StructureModule, selectorClasses } from "../structure-analysis.js";
+import { NO_PROBE_BUILD } from "./fixtures/test-checks.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -233,6 +234,7 @@ describe("createStructureCheck", () => {
         },
       ],
       [page(1, "/a", text(chain(2))), page(2, "/b", text(chain(4)))],
+      NO_PROBE_BUILD,
     );
     expect(result.errors).toEqual([]);
     expect(result.findings).toHaveLength(2);
@@ -257,6 +259,7 @@ describe("createStructureCheck", () => {
         },
       ],
       [page(1, "/a", text("<p>x</p>"))],
+      NO_PROBE_BUILD,
     );
     expect(result.findings).toEqual([]);
     expect(result.errors[0]?.message).toContain("modules.list failed: boom");
