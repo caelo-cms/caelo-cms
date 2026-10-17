@@ -32,6 +32,7 @@ import {
   PLACEHOLDER_RULE,
   testCheckRegistry,
 } from "../quality/checks/__tests__/fixtures/test-checks.js";
+import { linkSourcesFromOps } from "../quality/checks/links-sources.js";
 import { type CheckRegistry, createCoreCheckRegistry } from "../quality/checks/registry.js";
 import { structureSourcesFromOps } from "../quality/checks/structure-sources.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
@@ -457,6 +458,7 @@ describe("a broken check", () => {
     const checks = createCoreCheckRegistry({
       lighthouse: noLighthouse,
       structure: structureSourcesFromOps(registry, adapter, SYS),
+      links: linkSourcesFromOps(registry, adapter, SYS),
     });
     checks.register(
       {

@@ -70,6 +70,7 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
   url: string,
 ) => SQLType;
 
+import { ClientAddressError, clientAddress, trustedProxyHopsFromEnv } from "./client-ip.js";
 import {
   databaseIsolationProblems,
   GATEWAY_DATABASE_ROLES,
@@ -80,7 +81,7 @@ import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
 import {
   type CaptchaConfig,
-  clientIpHash,
+  hashVisitorId,
   issuePowChallenge,
   verifyPowProof,
 } from "./middleware/captcha.js";
@@ -417,6 +418,13 @@ async function recordRequest(row: RequestLogRow): Promise<void> {
 
 const PLUGIN_PATH_RE = /^\/api\/plugin\/([a-z][a-z0-9-]*)\/([a-z_][a-z0-9_]*)$/;
 
+/**
+ * Captcha challenges one visitor (or one client address) may mint. A real
+ * visitor needs one per form submission; the cap bounds the rows a flood
+ * can insert into gateway_pow_challenges before the hourly GC.
+ */
+export const CAPTCHA_CHALLENGE_RATE_LIMIT = { perVisitorMax: 60, windowSeconds: 60 } as const;
+
 function jsonResponse(
   body: unknown,
   init: { status?: number; setCookies?: string[]; retryAfterSec?: number } = {},
@@ -432,11 +440,51 @@ function jsonResponse(
   return new Response(JSON.stringify(body), { status: init.status ?? 200, headers });
 }
 
+/** The connection facts `handleRequest` cannot read from the Request itself. */
+export interface GatewayConnection {
+  /** The TCP peer (Bun `server.requestIP`); read only when no proxy is in front. */
+  readonly peerAddress: string | null;
+}
+
+type Resolved<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly response: Response };
+
+/**
+ * Run a client-address lookup (client-ip.ts), answering a deployment that
+ * cannot name the visitor with a 503 that says why instead of a guess.
+ */
+function resolveClientAddress<T>(lookup: () => T): Resolved<T> {
+  try {
+    return { ok: true, value: lookup() };
+  } catch (e) {
+    if (!(e instanceof ClientAddressError)) throw e;
+    console.error(`[api-gateway] ${e.message}`);
+    return {
+      ok: false,
+      response: jsonResponse(
+        { ok: false, error: { kind: "ClientAddressUnavailable", message: e.message } },
+        { status: 503 },
+      ),
+    };
+  }
+}
+
+/** The rate-limit bucket hash of `req`'s client address. */
+function clientIpHash(req: Request, conn: GatewayConnection): Resolved<string> {
+  return resolveClientAddress(() =>
+    hashVisitorId(clientAddress(req, trustedProxyHopsFromEnv(process.env), conn.peerAddress)),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main handler.
 // ---------------------------------------------------------------------------
 
-export async function handleRequest(req: Request): Promise<Response> {
+export async function handleRequest(
+  req: Request,
+  conn: GatewayConnection = { peerAddress: null },
+): Promise<Response> {
   const url = new URL(req.url);
 
   // #650 — the staging host (gcp-firebase; the stored setting, default
@@ -459,8 +507,14 @@ export async function handleRequest(req: Request): Promise<Response> {
     }
     if (state?.host && isStagingRequest(req, state.host)) {
       const loaded = state;
+      // The allowlist matches the same address the rate limits bucket by.
+      const clientIp = resolveClientAddress(() =>
+        clientAddress(req, trustedProxyHopsFromEnv(process.env), conn.peerAddress),
+      );
+      if (!clientIp.ok) return clientIp.response;
       return handleStagingRequest(req, {
         config: { stagingOrigin: `https://${loaded.host}`, secret: stagingGate.secret },
+        clientIp: clientIp.value,
         loadState: async () => loaded,
       });
     }
@@ -506,6 +560,36 @@ export async function handleRequest(req: Request): Promise<Response> {
     const resolved = await resolveConsentedVisitor(req, settings);
     if (!resolved.ok) return resolved.response;
     const { visitor } = resolved;
+    // Each challenge is a row in gateway_pow_challenges: bound the minting
+    // per recognised visitor, else per client address (client-ip.ts).
+    let challengeKey: string;
+    if (visitor.recognised && visitor.visitorId) {
+      challengeKey = rateLimitKey("_captcha", "challenge", visitor.visitorId);
+    } else {
+      const ipHash = clientIpHash(req, conn);
+      if (!ipHash.ok) return ipHash.response;
+      challengeKey = ipScopedRateLimitKey("_captcha", "challenge", ipHash.value);
+    }
+    const challengeRl = await consumeRateLimit(cachedAdapter, {
+      key: challengeKey,
+      spec: CAPTCHA_CHALLENGE_RATE_LIMIT,
+    });
+    if (!challengeRl.allowed) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: {
+            kind: "RateLimited",
+            message: "captcha challenge rate limit exceeded",
+          },
+        },
+        {
+          status: 429,
+          setCookies: [...visitor.setCookies],
+          retryAfterSec: challengeRl.retryAfterSec,
+        },
+      );
+    }
     const challenge = await issuePowChallenge(cachedAdapter, {
       config: settings.captcha,
       visitorIdHash: visitor.visitorIdHash,
@@ -516,6 +600,22 @@ export async function handleRequest(req: Request): Promise<Response> {
   // ---- Plugin dispatch ----
   if (req.method !== "POST" || !url.pathname.startsWith("/api/plugin/")) {
     return jsonResponse({ ok: false, error: { kind: "NotFound" } }, { status: 404 });
+  }
+  // A browser marks a POST another site's page triggers as cross-site; the
+  // site's own components post same-origin (the gateway serves /api/* on the
+  // site's host). Callers without the header (non-browser clients, old
+  // browsers) pass: this is defense in depth over the SameSite=Lax cookies.
+  if (req.headers.get("sec-fetch-site") === "cross-site") {
+    return jsonResponse(
+      {
+        ok: false,
+        error: {
+          kind: "Forbidden",
+          message: "cross-site plugin requests are not allowed",
+        },
+      },
+      { status: 403 },
+    );
   }
   const match = PLUGIN_PATH_RE.exec(url.pathname);
   if (!match) {
@@ -582,8 +682,11 @@ export async function handleRequest(req: Request): Promise<Response> {
   //       withholding cookies.
   // Recognised visitors (a signed visitor cookie they already held, with
   // consent) get the per-visitor key (fairer rate budgets when many users
-  // share an IP via NAT).
-  const ipHash = clientIpHash(req);
+  // share an IP via NAT). The address is the one the deployment's proxies
+  // vouch for (client-ip.ts), never an entry the client wrote.
+  const resolvedIp = clientIpHash(req, conn);
+  if (!resolvedIp.ok) return resolvedIp.response;
+  const ipHash = resolvedIp.value;
   const visitorRateKey =
     visitor.recognised && visitor.visitorId
       ? rateLimitKey(slug, operationName, visitor.visitorId)
@@ -658,7 +761,7 @@ export async function handleRequest(req: Request): Promise<Response> {
     const proof = (body as { _caelo_captcha?: { challenge: string; nonce: string } })
       ._caelo_captcha;
     if (proof) {
-      const verify = await verifyPowProof(cachedAdapter, proof);
+      const verify = await verifyPowProof(cachedAdapter, proof, visitor.visitorIdHash);
       if (!verify.ok) {
         void recordRequest({
           pluginSlug: slug,
@@ -764,6 +867,12 @@ export async function handleRequest(req: Request): Promise<Response> {
 // ---------------------------------------------------------------------------
 
 if (import.meta.main) {
+  // Refuse to serve without knowing which forwarded address is the visitor
+  // (client-ip.ts): every rate limit and the staging allowlist depend on it.
+  const hops = trustedProxyHopsFromEnv(process.env);
+  console.log(
+    `[api-gateway] client address: ${hops === 0 ? "the TCP peer (no proxy in front)" : `X-Forwarded-For entry ${hops} from the end`}`,
+  );
   const urls = gatewayDatabaseUrls(process.env);
   // No cms_admin pool at all (#635): every path that would reach the
   // authoring database throws AdminDatabaseUnavailableError. verifyRoles
@@ -850,7 +959,7 @@ if (import.meta.main) {
   }
   const server = Bun.serve({
     port: PORT,
-    fetch: handleRequest,
+    fetch: (req, srv) => handleRequest(req, { peerAddress: srv.requestIP(req)?.address ?? null }),
   });
   console.log(`[api-gateway] listening on :${server.port}`);
 }

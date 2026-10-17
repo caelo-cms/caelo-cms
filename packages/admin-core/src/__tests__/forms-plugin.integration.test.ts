@@ -134,7 +134,9 @@ async function captchaSettings(next?: {
  * environment, so a gateway submission without one is refused).
  */
 async function captchaProof(): Promise<{ _caelo_captcha: { challenge: string; nonce: string } }> {
-  const c = await handleRequest(new Request("http://localhost/api/captcha/challenge"));
+  const c = await handleRequest(
+    new Request("http://localhost/api/captcha/challenge", { headers: BEHIND_CADDY }),
+  );
   const { challenge, target } = (
     (await c.json()) as { data: { challenge: string; target: string } }
   ).data;
@@ -144,7 +146,14 @@ async function captchaProof(): Promise<{ _caelo_captcha: { challenge: string; no
   }
 }
 
+/**
+ * The gateway sits behind one proxy (self-hosted Caddy), which sets
+ * X-Forwarded-For to the visitor's address (api-gateway client-ip.ts).
+ */
+const BEHIND_CADDY = { "X-Forwarded-For": "203.0.113.10" };
+
 beforeAll(async () => {
+  process.env.CAELO_TRUSTED_PROXY_HOPS = "1";
   await wipe();
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
@@ -210,7 +219,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     // Visitor POSTs via the gateway. No visitor cookie without consent (#677).
     const submitReq = new Request("http://localhost/api/plugin/forms/submit", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...BEHIND_CADDY },
       body: JSON.stringify({
         formSlug: FORM_SLUG,
         pageId: "00000000-0000-0000-0000-000000000001",
@@ -374,7 +383,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     const r = await handleRequest(
       new Request("http://localhost/api/plugin/forms/submit", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...BEHIND_CADDY },
         body: JSON.stringify({
           formSlug: "no-such-form",
           data: { x: 1 },
