@@ -488,13 +488,20 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       if (visitor.lastId) await commitVisitorWatermark(cfg.adapter, visitor.lastId);
       return;
     }
+    let visitorMatched = false;
     for (const r of visitor.events) {
       if (!r.entity_id) continue;
       const pageId = await resolvePluginOpPageId(cfg.adapter, r.operation, r.entity_id);
-      if (pageId) pendingPageIds.add(pageId);
+      if (pageId) {
+        pendingPageIds.add(pageId);
+        visitorMatched = true;
+      }
     }
     // Only now: a failure above leaves the events to the next tick.
     if (visitor.lastId) await commitVisitorWatermark(cfg.adapter, visitor.lastId);
+    if (rows.length === 0 && !visitorMatched) {
+      return;
+    }
     // Collect per-page deltas. Operations on `pages.*` carry the page
     // id as `entity_id` directly. Plugin write ops carry their own
     // entity (e.g. `comments.moderate.entity_id` is the comment id);
