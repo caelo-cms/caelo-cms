@@ -25,7 +25,7 @@
  *                               worker. Direct: idempotent, derived data only.
  */
 
-import { KIT_CSS, postPluginJson } from "@caelo-cms/plugin-component-kit";
+import { attachCaptchaProof, KIT_CSS, postPluginJson } from "@caelo-cms/plugin-component-kit";
 import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 
 interface SubmitInput {
@@ -71,7 +71,12 @@ export default definePlugin<PluginContextTier1>({
   operations: {
     submit: async (ctx, args) => {
       const input = args as SubmitInput;
-      if (typeof input.score !== "number" || input.score < 1 || input.score > 5) {
+      if (
+        typeof input.score !== "number" ||
+        !Number.isInteger(input.score) ||
+        input.score < 1 ||
+        input.score > 5
+      ) {
         throw new Error("submit: score must be 1..5");
       }
       const ok = await ctx.captcha.requireProof(null);
@@ -268,7 +273,12 @@ export default definePlugin<PluginContextTier1>({
           const score = Number.parseInt(b.dataset.score ?? "0", 10);
           highlight(score);
           try {
-            await postPluginJson("ratings", "submit", { pageId, score });
+            const captcha = await attachCaptchaProof().catch(() => null);
+            await postPluginJson("ratings", "submit", {
+              pageId,
+              score,
+              ...(captcha ? { _caelo_captcha: captcha } : {}),
+            });
             await refreshAggregate();
           } catch {
             /* best-effort; keep visual feedback */

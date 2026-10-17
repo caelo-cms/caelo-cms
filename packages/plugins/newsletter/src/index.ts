@@ -27,8 +27,9 @@
 
 import {
   attachCaptchaProof,
+  honeypotBodyField,
   honeypotFieldHtml,
-  isHoneypotTripped,
+  isHoneypotArgTripped,
   KIT_CSS,
   postPluginJson,
   setStatus,
@@ -181,7 +182,14 @@ export default definePlugin<PluginContextTier1>({
   operations: {
     subscribe: async (ctx, args) => {
       const input = args as { email: string };
-      if (!input.email.includes("@")) throw new Error("subscribe: invalid email");
+      // A filled honeypot gets the same answer as a real signup, so the
+      // bot learns nothing — and nothing is stored or mailed.
+      if (isHoneypotArgTripped(args)) {
+        return { id: "00000000-0000-0000-0000-000000000000", awaitingConfirm: true };
+      }
+      if (!input.email?.includes("@")) throw new Error("subscribe: invalid email");
+      const ok = await ctx.captcha.requireProof(null);
+      if (!ok) throw new Error("subscribe: captcha verification failed");
       const hash = hashEmail(input.email);
       const existing = await ctx.query.list<
         "subscribers",
@@ -538,15 +546,12 @@ export default definePlugin<PluginContextTier1>({
         ev.preventDefault();
         setStatus(status, "clear");
         const fd = new FormData(form);
-        if (isHoneypotTripped(fd)) {
-          setStatus(status, "ok", "Check your inbox to confirm.");
-          form.reset();
-          return;
-        }
         try {
           const captcha = await attachCaptchaProof().catch(() => null);
+          // The honeypot rides along; `subscribe` judges it server-side.
           const json = await postPluginJson("newsletter", "subscribe", {
             email: fd.get("email"),
+            ...honeypotBodyField(fd),
             ...(captcha ? { _caelo_captcha: captcha } : {}),
           });
           if (json.ok) {

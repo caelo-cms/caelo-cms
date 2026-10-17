@@ -76,6 +76,21 @@ export function isHoneypotTripped(fd: FormData): boolean {
   return ((fd.get(HONEYPOT_FIELD_NAME) as string | null) ?? "").trim() !== "";
 }
 
+/** The honeypot entry for a plugin POST body: components forward the raw
+ *  field under {@link HONEYPOT_FIELD_NAME} so the server decides, since a
+ *  bot that skips the component's JS never runs a client-side check. */
+export function honeypotBodyField(fd: FormData): Record<string, string> {
+  return { [HONEYPOT_FIELD_NAME]: (fd.get(HONEYPOT_FIELD_NAME) as string | null) ?? "" };
+}
+
+/** Server-side counterpart: whether an operation's args carry a filled
+ *  honeypot under {@link HONEYPOT_FIELD_NAME}. */
+export function isHoneypotArgTripped(args: unknown): boolean {
+  if (typeof args !== "object" || args === null) return false;
+  const value = (args as Record<string, unknown>)[HONEYPOT_FIELD_NAME];
+  return typeof value === "string" && value.trim() !== "";
+}
+
 /**
  * Tiny `fetch` wrapper for plugin POSTs. Always sends JSON, always
  * sends `credentials: same-origin` so the gateway's HttpOnly session
