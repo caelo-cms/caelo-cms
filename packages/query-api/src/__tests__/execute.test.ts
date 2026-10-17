@@ -2,7 +2,8 @@
 
 import { describe, expect, it } from "bun:test";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import type { DatabaseAdapter } from "../adapter.js";
+import { DatabaseAdapter } from "../adapter.js";
+import { canonicalHash } from "../audit.js";
 import { execute } from "../execute.js";
 import { OperationRegistry } from "../registry.js";
 
@@ -31,5 +32,37 @@ describe("execute() — unknown operation", () => {
     // (the CodeQL js/clear-text-logging cascade, docs/dev/codeql.md).
     expect(result).toEqual({ ok: false, error: { kind: "UnknownOperation", name: "nope.nope" } });
     expect(Object.keys(result).sort()).toEqual(["error", "ok"]);
+  });
+});
+
+describe("canonicalHash() — sensitive field redaction", () => {
+  it("redacts newPassword, currentPassword, apiKey, and secret fields so different secrets produce identical hashes", async () => {
+    const h1 = await canonicalHash({
+      userId: "u1",
+      currentPassword: "old-password-1",
+      newPassword: "new-password-1",
+      apiKey: "sk-111",
+      clientSecret: "sec-111",
+    });
+    const h2 = await canonicalHash({
+      userId: "u1",
+      currentPassword: "old-password-2",
+      newPassword: "new-password-2",
+      apiKey: "sk-222",
+      clientSecret: "sec-222",
+    });
+    expect(h1).toBe(h2);
+  });
+});
+
+describe("DatabaseAdapter — pluginId UUID validation", () => {
+  it("rejects non-UUID pluginId before opening a transaction in provisionPluginPublicSchema and provisionPluginAdminSchema", async () => {
+    const proto = DatabaseAdapter.prototype;
+    await expect(
+      proto.provisionPluginPublicSchema.call({}, { pluginId: "not-a-uuid", sql: "SELECT 1" }),
+    ).rejects.toThrow("not a UUID");
+    await expect(
+      proto.provisionPluginAdminSchema.call({}, { pluginId: "not-a-uuid", sql: "SELECT 1" }),
+    ).rejects.toThrow("not a UUID");
   });
 });
