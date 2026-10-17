@@ -75,12 +75,18 @@ export type CaptchaVerifyResult =
 export async function verifyPowProof(
   adapter: DatabaseAdapter,
   proof: CaptchaProof,
+  expectedVisitorIdHash?: string,
 ): Promise<CaptchaVerifyResult> {
   if (typeof proof.challenge !== "string" || typeof proof.nonce !== "string") {
     return { ok: false, reason: "malformed proof" };
   }
   // Atomic claim — one UPDATE returns the row only if it was unused +
-  // unexpired. Replay → 0 rows → reject.
+  // unexpired (and, when expectedVisitorIdHash is provided, matches the
+  // visitor identity that requested the challenge). Replay → 0 rows → reject.
+  const visitorClause =
+    expectedVisitorIdHash !== undefined
+      ? sql`AND (visitor_id_hash = '' OR visitor_id_hash = ${expectedVisitorIdHash})`
+      : sql``;
   const row = await adapter.withPublicTransaction(
     {
       actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -94,6 +100,7 @@ export async function verifyPowProof(
          WHERE challenge = ${proof.challenge}
            AND used_at IS NULL
            AND expires_at > now()
+           ${visitorClause}
          RETURNING target_hex
       `)) as unknown as { target_hex: string }[];
       return rs[0] ?? null;
@@ -135,15 +142,19 @@ export function hashVisitorId(visitorId: string): string {
 
 /**
  * P13 audit re-pass — extract a stable IP-derived hash from the
- * request. Honours common proxy headers (X-Forwarded-For,
- * X-Real-IP) when present; falls back to a constant when none are.
- * Same djb2 shape as hashVisitorId — not cryptographic, just used as
- * a rate-limit bucket key (no PII written).
+ * request. Uses the LAST hop of X-Forwarded-For (the address appended
+ * by the trusted reverse proxy / Cloud Run front end, matching
+ * staging-proxy.ts) so a client cannot spoof earlier hops to rotate
+ * rate-limit buckets.
  */
 export function clientIpHash(req: Request): string {
   const xff = req.headers.get("x-forwarded-for");
   const xri = req.headers.get("x-real-ip");
-  // X-Forwarded-For: client, proxy1, proxy2 — first hop is the client.
-  const raw = (xff?.split(",")[0]?.trim() ?? xri ?? "0.0.0.0").trim();
+  const parts =
+    xff
+      ?.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean) ?? [];
+  const raw = (parts.at(-1) ?? xri ?? "0.0.0.0").trim();
   return hashVisitorId(raw);
 }

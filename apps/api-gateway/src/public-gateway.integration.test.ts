@@ -171,7 +171,7 @@ function post(path: string, body: unknown, headers: Record<string, string> = {})
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Forwarded-For": `198.51.100.${clientIp % 250}, 10.0.0.${Math.floor(clientIp / 250)}`,
+      "X-Forwarded-For": `10.0.0.${Math.floor(clientIp / 250)}, 198.51.100.${clientIp % 250}`,
       ...headers,
     },
     body: JSON.stringify(body),

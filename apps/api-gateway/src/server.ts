@@ -506,6 +506,31 @@ export async function handleRequest(req: Request): Promise<Response> {
     const resolved = await resolveConsentedVisitor(req, settings);
     if (!resolved.ok) return resolved.response;
     const { visitor } = resolved;
+    const challengeIpHash = clientIpHash(req);
+    const challengeKey =
+      visitor.recognised && visitor.visitorId
+        ? rateLimitKey("_captcha", "challenge", visitor.visitorId)
+        : ipScopedRateLimitKey("_captcha", "challenge", challengeIpHash);
+    const challengeRl = await consumeRateLimit(cachedAdapter, {
+      key: challengeKey,
+      spec: { perVisitorMax: 60, windowSeconds: 60 },
+    });
+    if (!challengeRl.allowed) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: {
+            kind: "RateLimited",
+            message: "captcha challenge rate limit exceeded",
+          },
+        },
+        {
+          status: 429,
+          setCookies: [...visitor.setCookies],
+          retryAfterSec: challengeRl.retryAfterSec,
+        },
+      );
+    }
     const challenge = await issuePowChallenge(cachedAdapter, {
       config: settings.captcha,
       visitorIdHash: visitor.visitorIdHash,
@@ -516,6 +541,18 @@ export async function handleRequest(req: Request): Promise<Response> {
   // ---- Plugin dispatch ----
   if (req.method !== "POST" || !url.pathname.startsWith("/api/plugin/")) {
     return jsonResponse({ ok: false, error: { kind: "NotFound" } }, { status: 404 });
+  }
+  if (req.headers.get("sec-fetch-site") === "cross-site") {
+    return jsonResponse(
+      {
+        ok: false,
+        error: {
+          kind: "Forbidden",
+          message: "cross-site plugin requests are not allowed",
+        },
+      },
+      { status: 403 },
+    );
   }
   const match = PLUGIN_PATH_RE.exec(url.pathname);
   if (!match) {
@@ -658,7 +695,7 @@ export async function handleRequest(req: Request): Promise<Response> {
     const proof = (body as { _caelo_captcha?: { challenge: string; nonce: string } })
       ._caelo_captcha;
     if (proof) {
-      const verify = await verifyPowProof(cachedAdapter, proof);
+      const verify = await verifyPowProof(cachedAdapter, proof, visitor.visitorIdHash);
       if (!verify.ok) {
         void recordRequest({
           pluginSlug: slug,

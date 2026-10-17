@@ -130,3 +130,17 @@ describe("parseCookies", () => {
     expect(parseCookies("=x; c=%7B%7D;  d=1")).toEqual({ c: "{}", d: "1" });
   });
 });
+
+describe("clientIpHash — X-Forwarded-For spoofing resistance", () => {
+  it("uses the last hop of X-Forwarded-For so client-prepended hops cannot rotate rate-limit buckets", async () => {
+    const { clientIpHash, hashVisitorId } = await import("./middleware/captcha.js");
+    const r1 = new Request("http://localhost/api/plugin/x/y", {
+      headers: { "x-forwarded-for": "1.1.1.1, 203.0.113.50" },
+    });
+    const r2 = new Request("http://localhost/api/plugin/x/y", {
+      headers: { "x-forwarded-for": "2.2.2.2, 203.0.113.50" },
+    });
+    expect(clientIpHash(r1)).toBe(hashVisitorId("203.0.113.50"));
+    expect(clientIpHash(r2)).toBe(hashVisitorId("203.0.113.50"));
+  });
+});
