@@ -61,6 +61,10 @@ The redeploy orchestrator keeps a watermark on `gateway_plugin_op_events.id`. It
 
 Plugin op records from visitor calls go to `gateway_plugin_op_events`. They never go to `audit_events`: the public side must not be able to forge entries in the admin's audit trail.
 
+### Rate-limit buckets and the visitor's address
+
+A recognised visitor (a consented, signed `caelo_visitor_id` cookie it already held) is bucketed by its id; everything else is bucketed by its client address. That address is the `X-Forwarded-For` entry `CAELO_TRUSTED_PROXY_HOPS` places from the end (`apps/api-gateway/src/client-ip.ts`): proxies append, so earlier entries are the client's own and forgeable, and the last entry is the closest proxy, not the visitor, when there is more than one hop. The value is a property of each adapter's topology, declared once in `packages/provisioning/src/stack-contract.ts` (`GATEWAY_TRUSTED_PROXY_HOPS`): gcp 2 (external LB), gcp-firebase 1, self-hosted 1 (Caddy), azure 1, aws 2. On gcp-firebase the trusted entry for `/api/**` is the Firebase Hosting CDN edge, because the gateway is also reachable directly on `*.run.app` and any entry before Cloud Run's own is forgeable. IP-scoped buckets there are coarse (per edge address), but a client cannot rotate them. The gateway refuses to boot without the variable, and answers 503 `ClientAddressUnavailable` to a request carrying fewer entries than the topology always appends. Changing an adapter's path to the gateway means updating its entry.
+
 ## Reading public data on the admin side
 
 Everything the admin reads from `cms_public` crosses a trust boundary. The rules:

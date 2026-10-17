@@ -130,7 +130,11 @@ async function expectStatus(r: Response, status: number): Promise<void> {
 
 /** Fetch a challenge from the gateway and solve it, as the component kit does. */
 async function solvedProof(): Promise<{ challenge: string; nonce: string }> {
-  const c = await handleRequest(new Request("http://localhost/api/captcha/challenge"));
+  const c = await handleRequest(
+    new Request("http://localhost/api/captcha/challenge", {
+      headers: { "X-Forwarded-For": "203.0.113.251" },
+    }),
+  );
   await expectStatus(c, 200);
   const { challenge, target } = (
     (await c.json()) as { data: { challenge: string; target: string } }
@@ -142,6 +146,8 @@ async function solvedProof(): Promise<{ challenge: string; nonce: string }> {
 }
 
 beforeAll(async () => {
+  // Behind one proxy (self-hosted Caddy sets X-Forwarded-For to its peer).
+  process.env.CAELO_TRUSTED_PROXY_HOPS = "1";
   await cleanup();
   savedCaptcha = await asAdmin(async (tx) => {
     const [row] =

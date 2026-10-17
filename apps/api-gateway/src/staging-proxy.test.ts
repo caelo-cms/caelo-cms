@@ -13,8 +13,8 @@ import {
   signStagingToken,
   verifyStagingToken,
 } from "@caelo-cms/shared";
+import { forwardedClientIp } from "./client-ip.js";
 import {
-  cloudRunClientIp,
   handleStagingRequest,
   isStagingRequest,
   rewriteLocation,
@@ -64,6 +64,8 @@ function harness(over: Partial<StagingState> = {}, upstream?: (c: Captured) => R
   const serve = (path: string, init: RequestInit = {}) =>
     handleStagingRequest(new Request(`${STAGING}${path}`, init), {
       config: { stagingOrigin: STAGING, secret: SECRET },
+      // gcp-firebase: the domain mapping's front end appends one entry.
+      clientIp: forwardedClientIp(new Headers(init.headers).get("x-forwarded-for"), 1),
       loadState: async () => state,
       fetchImpl,
       nowSeconds: () => NOW,
@@ -89,13 +91,6 @@ describe("staging host detection + config", () => {
     // A host the operator chose instead of staging.<domain>.
     expect(isStagingRequest(req("preview.other.de"), "preview.other.de")).toBe(true);
     expect(isStagingRequest(req("www.example.com"), "staging.example.com")).toBe(false);
-  });
-
-  it("trusts only the last X-Forwarded-For entry (the one Cloud Run appended)", () => {
-    expect(cloudRunClientIp("1.2.3.4")).toBe("1.2.3.4");
-    expect(cloudRunClientIp("6.6.6.6, 198.51.100.7")).toBe("198.51.100.7");
-    expect(cloudRunClientIp(null)).toBeNull();
-    expect(cloudRunClientIp("")).toBeNull();
   });
 });
 
@@ -210,6 +205,7 @@ describe("handleStagingRequest — gate", () => {
   it("refuses to serve without the gate key", async () => {
     const r = await handleStagingRequest(new Request(`${STAGING}/`), {
       config: { stagingOrigin: STAGING, secret: null },
+      clientIp: null,
       loadState: async () => ({
         host: "staging.example.com",
         settings: SETTINGS,

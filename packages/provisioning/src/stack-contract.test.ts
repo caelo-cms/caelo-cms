@@ -158,10 +158,19 @@ describe("gatewayEnvContract", () => {
       CAELO_PROVIDER: "gcp",
       CAELO_ENV: "production",
       MEDIA_STORAGE_URL: "gs://acme-caelo-production-media",
+      // #845 — gcp: the LB appends <client>,<LB IP>.
+      CAELO_TRUSTED_PROXY_HOPS: "2",
       PUBLIC_DATABASE_URL: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
       PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-role-password:latest",
       CAELO_STAGING_GATE_SECRET: "secret:caelo-production-staging-gate-secret:latest",
     });
+  });
+
+  it("#845 — tells the gateway its provider's proxy hop count", () => {
+    // Firebase Hosting / the domain mapping: Cloud Run's front end only.
+    const fb = asRecord(gatewayEnvContract({ ...base, provider: "gcp-firebase" }));
+    expect(fb.CAELO_TRUSTED_PROXY_HOPS).toBe("1");
+    expect(asRecord(gateway).CAELO_TRUSTED_PROXY_HOPS).toBe("2");
   });
 
   it("#650 — reads the staging host from the database, not its env", () => {

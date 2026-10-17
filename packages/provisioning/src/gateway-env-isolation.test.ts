@@ -148,7 +148,12 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
     expect(gateway).not.toMatch(/^ {4}(secrets|env_file|volumes):/m);
     const env = gateway.slice(gateway.indexOf("    environment:"));
     const keys = [...env.matchAll(/^ {6}([A-Z_][A-Z0-9_]*):/gm)].map((m) => m[1]);
-    expect(keys.sort()).toEqual(["GATEWAY_PORT", "NODE_ENV", "PUBLIC_DATABASE_URL"]);
+    expect(keys.sort()).toEqual([
+      "CAELO_TRUSTED_PROXY_HOPS",
+      "GATEWAY_PORT",
+      "NODE_ENV",
+      "PUBLIC_DATABASE_URL",
+    ]);
     expect(out).not.toMatch(/^secrets:/m);
   });
 });

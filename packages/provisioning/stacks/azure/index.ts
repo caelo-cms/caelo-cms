@@ -39,7 +39,12 @@ import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { azureFrontDoorDnsRecords } from "../../dist/azure-front-door.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
-import { ADMIN_MEMORY_DEFAULT, azureContainerAppResources } from "../../dist/stack-contract.js";
+import {
+  ADMIN_MEMORY_DEFAULT,
+  azureContainerAppResources,
+  GATEWAY_TRUSTED_PROXY_HOPS,
+  TRUSTED_PROXY_HOPS_ENV,
+} from "../../dist/stack-contract.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -415,6 +420,8 @@ const adminApp = containerApp({
 const _gatewayApp = containerApp({
   serviceName: "gateway",
   databaseEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
+  // Which X-Forwarded-For entry is the visitor (api-gateway client-ip.ts).
+  extraEnv: [{ name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS.azure) }],
 });
 const _orchestratorApp = containerApp({
   serviceName: "orchestrator",
