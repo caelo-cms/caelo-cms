@@ -33,6 +33,7 @@
 
 import {
   attachCaptchaProof,
+  escapeHtml,
   HONEYPOT_FIELD_NAME,
   honeypotFieldHtml,
   isHoneypotTripped,
@@ -377,12 +378,15 @@ export default definePlugin<PluginContextTier1>({
 
       const fieldHtml = fields
         .map((f) => {
-          const id = `field-${f.name}`;
+          const safeName = escapeHtml(f.name);
+          const safeLabel = escapeHtml(f.label);
+          const safeType = escapeHtml(f.type ?? "text");
+          const id = `field-${safeName}`;
           const inputEl =
             f.type === "textarea"
-              ? `<textarea id="${id}" name="${f.name}" rows="4"${f.required ? " required" : ""}></textarea>`
-              : `<input id="${id}" name="${f.name}" type="${f.type ?? "text"}"${f.required ? " required" : ""} />`;
-          return `<label for="${id}"><span>${f.label}</span>${inputEl}</label>`;
+              ? `<textarea id="${id}" name="${safeName}" rows="4"${f.required ? " required" : ""}></textarea>`
+              : `<input id="${id}" name="${safeName}" type="${safeType}"${f.required ? " required" : ""} />`;
+          return `<label for="${id}"><span>${safeLabel}</span>${inputEl}</label>`;
         })
         .join("");
 

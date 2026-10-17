@@ -28,10 +28,100 @@ import {
   postPluginJson,
   setStatus,
 } from "@caelo-cms/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import {
+  defineComponent,
+  definePlugin,
+  type PluginContextTier1,
+  type PluginQuery,
+  z,
+} from "@caelo-cms/plugin-sdk";
 
 const SESSION_DURATION_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 const PASSWORD_RESET_DURATION_MS = 1000 * 60 * 60; // 1 hour
+
+/** Bounds for `password_min_length`. 8 is the floor every auth surface
+ *  has always enforced; 128 caps it so a config typo can't lock every
+ *  visitor out. */
+const PASSWORD_MIN_LENGTH_FLOOR = 8;
+const PASSWORD_MIN_LENGTH_CEILING = 128;
+
+const passwordMinLength = z
+  .number()
+  .int()
+  .min(PASSWORD_MIN_LENGTH_FLOOR)
+  .max(PASSWORD_MIN_LENGTH_CEILING);
+
+/** Shared shape for every write of the config (Owner-direct apply, AI
+ *  proposal, proposal execution). Validated at the op boundary so an
+ *  out-of-range value never reaches a pending proposal. */
+const authConfigArgs = z.object({ signupOpen: z.boolean(), passwordMinLength }).strict();
+
+/** The stored singleton, re-validated on every read: a row that drifted
+ *  out of range (manual SQL, a build without the bounds) fails loudly
+ *  instead of being silently clamped to the floor. */
+const authConfigRow = z.object({
+  id: z.string(),
+  signup_open: z.boolean(),
+  password_min_length: passwordMinLength,
+  updated_at: z.unknown(),
+});
+
+type AuthConfigRow = z.infer<typeof authConfigRow>;
+
+function issuesOf(error: z.ZodError): string {
+  return error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
+}
+
+/**
+ * Read the auth_config singleton. `onActivate` seeds it, so a missing row
+ * means activation never ran — a broken install, not a "use the defaults"
+ * case (CLAUDE.md §2 no-fallbacks).
+ */
+async function readAuthConfig(q: PluginQuery, op: string): Promise<AuthConfigRow> {
+  const rows = await q.list("auth_config", { limit: 1 });
+  const row = rows[0];
+  if (!row) {
+    throw new Error(
+      `${op}: auth_config row missing — the auth plugin's onActivate has not seeded it; re-activate the plugin`,
+    );
+  }
+  const parsed = authConfigRow.safeParse(row);
+  if (!parsed.success) {
+    throw new Error(
+      `${op}: stored auth_config is invalid (${issuesOf(parsed.error)}) — re-apply it via /settings/auth with password_min_length ${PASSWORD_MIN_LENGTH_FLOOR}..${PASSWORD_MIN_LENGTH_CEILING}`,
+    );
+  }
+  return parsed.data;
+}
+
+/** Parse config-write args, turning a Zod failure into an AI-actionable error. */
+function parseAuthConfigArgs(op: string, args: unknown): z.infer<typeof authConfigArgs> {
+  const parsed = authConfigArgs.safeParse(args);
+  if (!parsed.success) {
+    throw new Error(
+      `${op}: invalid input (${issuesOf(parsed.error)}) — passwordMinLength must be an integer ${PASSWORD_MIN_LENGTH_FLOOR}..${PASSWORD_MIN_LENGTH_CEILING}`,
+    );
+  }
+  return parsed.data;
+}
+
+/**
+ * Delete every session of one visitor. `list` caps at 1000 rows, so this
+ * drains page by page until none remain — a single page would let
+ * sessions past the first 1000 survive a password reset.
+ */
+async function revokeAllSessions(q: PluginQuery, publicUserId: string): Promise<void> {
+  for (;;) {
+    const page = await q.list<"visitor_sessions", { id: string }>("visitor_sessions", {
+      public_user_id: publicUserId,
+      limit: 1000,
+    });
+    if (page.length === 0) return;
+    for (const s of page) {
+      await q.delete("visitor_sessions", s.id);
+    }
+  }
+}
 
 interface SignupInput {
   email: string;
@@ -119,6 +209,17 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   requestedCapabilities: ["chat_runner_tools", "email", "background_workers"],
+  /** Seed the auth_config singleton with the documented defaults (signup
+   *  open, 8-char minimum). Idempotent; read paths never seed. */
+  onActivate: async (ctx) => {
+    const existing = await ctx.query.list("auth_config", { limit: 1 });
+    if (existing.length === 0) {
+      await ctx.query.insert("auth_config", {
+        signup_open: true,
+        password_min_length: PASSWORD_MIN_LENGTH_FLOOR,
+      });
+    }
+  },
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
   publicOperations: ["signup", "login", "logout", "me", "request_password_reset", "reset_password"],
@@ -126,7 +227,13 @@ export default definePlugin<PluginContextTier1>({
     signup: async (ctx, args) => {
       const input = args as SignupInput;
       if (!input.email.includes("@")) throw new Error("signup: invalid email");
-      if (input.password.length < 8) throw new Error("signup: password >= 8 chars");
+      const cfg = await readAuthConfig(ctx.query, "signup");
+      if (!cfg.signup_open) {
+        throw new Error("signup: registration is closed");
+      }
+      if (input.password.length < cfg.password_min_length) {
+        throw new Error(`signup: password >= ${cfg.password_min_length} chars`);
+      }
       const ok = await ctx.captcha.requireProof(null);
       if (!ok) throw new Error("signup: captcha verification failed");
 
@@ -266,7 +373,10 @@ export default definePlugin<PluginContextTier1>({
 
     reset_password: async (ctx, args) => {
       const input = args as { token: string; newPassword: string };
-      if (input.newPassword.length < 8) throw new Error("reset_password: password >= 8 chars");
+      const cfg = await readAuthConfig(ctx.query, "reset_password");
+      if (input.newPassword.length < cfg.password_min_length) {
+        throw new Error(`reset_password: password >= ${cfg.password_min_length} chars`);
+      }
       const tokenHash = await hashToken(input.token);
       const matches = await ctx.query.list<
         "password_reset_tokens",
@@ -281,6 +391,10 @@ export default definePlugin<PluginContextTier1>({
       await ctx.query.update("password_reset_tokens", t.id, {
         used_at: new Date().toISOString(),
       });
+      // A reset is the recovery path for a compromised account: every
+      // session issued under the old password dies with it.
+      await revokeAllSessions(ctx.query, t.public_user_id);
+      ctx.visitor.setSession?.(null);
       return { reset: true };
     },
 
@@ -290,23 +404,16 @@ export default definePlugin<PluginContextTier1>({
      * propose half — Owner reviews queued rows in /settings/auth/pending.
      */
     /**
-     * `get_auth_config` — read the singleton auth_config row. Returns
-     * defaults (`signupOpen=true, passwordMinLength=8`) when the row
-     * doesn't exist yet (fresh install).
+     * `get_auth_config` — read the singleton auth_config row (seeded by
+     * `onActivate`; a missing or out-of-range row is a loud error).
      */
     get_auth_config: async (ctx, _args) => {
-      const rows = await ctx.query.list<
-        "auth_config",
-        { id: string; signup_open: boolean; password_min_length: number; updated_at: string }
-      >("auth_config", { limit: 1 });
-      if (!rows[0]) {
-        return { id: null, signupOpen: true, passwordMinLength: 8, updatedAt: null };
-      }
+      const row = await readAuthConfig(ctx.query, "get_auth_config");
       return {
-        id: rows[0].id,
-        signupOpen: rows[0].signup_open,
-        passwordMinLength: rows[0].password_min_length,
-        updatedAt: rows[0].updated_at,
+        id: row.id,
+        signupOpen: row.signup_open,
+        passwordMinLength: row.password_min_length,
+        updatedAt: row.updated_at,
       };
     },
 
@@ -317,8 +424,7 @@ export default definePlugin<PluginContextTier1>({
      * documented as the AI's path so the queue can split out later).
      */
     apply_auth_config: async (ctx, args) => {
-      const input = args as { signupOpen: boolean; passwordMinLength: number };
-      if (input.passwordMinLength < 8) throw new Error("apply_auth_config: min 8 chars");
+      const input = parseAuthConfigArgs("apply_auth_config", args);
       const existing = await ctx.query.list<"auth_config", { id: string }>("auth_config", {
         limit: 1,
       });
@@ -346,8 +452,7 @@ export default definePlugin<PluginContextTier1>({
      * the auth admin route's gating).
      */
     propose_auth_config: async (ctx, args) => {
-      const input = args as { signupOpen: boolean; passwordMinLength: number };
-      if (input.passwordMinLength < 8) throw new Error("propose_auth_config: min 8 chars");
+      const input = parseAuthConfigArgs("propose_auth_config", args);
       const r = await ctx.query.insert("auth_config_proposals", {
         proposed_signup_open: input.signupOpen,
         proposed_password_min_length: input.passwordMinLength,
@@ -401,6 +506,12 @@ export default definePlugin<PluginContextTier1>({
       if (p.status !== "pending") {
         throw new Error(`execute_proposal: proposal is ${p.status}, not pending`);
       }
+      // Re-checked at apply time too: a row queued before the propose-time
+      // bounds existed must not be applied out of range.
+      parseAuthConfigArgs("execute_proposal", {
+        signupOpen: p.proposed_signup_open,
+        passwordMinLength: p.proposed_password_min_length,
+      });
       // Apply the proposed values to the singleton.
       const existing = await ctx.query.list<"auth_config", { id: string }>("auth_config", {
         limit: 1,
@@ -477,7 +588,7 @@ export default definePlugin<PluginContextTier1>({
         required: ["signupOpen", "passwordMinLength"],
         properties: {
           signupOpen: { type: "boolean" },
-          passwordMinLength: { type: "number", minimum: 8, maximum: 128 },
+          passwordMinLength: { type: "integer", minimum: 8, maximum: 128 },
         },
       },
     },

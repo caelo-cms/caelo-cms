@@ -182,12 +182,26 @@ function adminQueryOf(ctx: unknown): PluginAdminQuery {
   return q;
 }
 
-async function refreshLocaleCache(q: PluginAdminQuery): Promise<LocaleRow[]> {
+interface LocaleRegistry {
+  rows: LocaleRow[];
+  byCode: Map<string, LocaleRow>;
+  prefixDefaultLocale: boolean;
+}
+
+async function refreshLocaleCache(q: PluginAdminQuery, ctx?: unknown): Promise<LocaleRegistry> {
   const rows = (await q.list("locales", { limit: 500 })) as unknown as LocaleRow[];
-  localeCache.clear();
-  for (const row of rows) localeCache.set(row.code, row);
-  prefixDefaultLocaleCache = (await loadPrefixDefaultLocaleSetting(q)).enabled;
-  return rows;
+  const byCode = new Map<string, LocaleRow>();
+  for (const row of rows) byCode.set(row.code, row);
+  const prefixDefaultLocale = (await loadPrefixDefaultLocaleSetting(q)).enabled;
+  const isBranch = Boolean(
+    (ctx as { invocation?: { chatBranchId?: string } } | undefined)?.invocation?.chatBranchId,
+  );
+  if (!isBranch) {
+    localeCache.clear();
+    for (const [k, v] of byCode) localeCache.set(k, v);
+    prefixDefaultLocaleCache = prefixDefaultLocale;
+  }
+  return { rows, byCode, prefixDefaultLocale };
 }
 
 /**
@@ -232,8 +246,8 @@ async function loadVariantsByPage(
   return out;
 }
 
-function defaultLocale(): LocaleRow | null {
-  for (const row of localeCache.values()) {
+function defaultLocale(locales: ReadonlyMap<string, LocaleRow> = localeCache): LocaleRow | null {
+  for (const row of locales.values()) {
     if (row.is_default) return row;
   }
   return null;
@@ -248,14 +262,15 @@ function defaultLocale(): LocaleRow | null {
 async function localesByPage(
   q: PluginAdminQuery,
   pageIds: readonly string[],
+  locales: ReadonlyMap<string, LocaleRow> = localeCache,
 ): Promise<Map<string, LocaleRow>> {
   const out = new Map<string, LocaleRow>();
-  if (localeCache.size === 0) return out;
-  const def = defaultLocale();
+  if (locales.size === 0) return out;
+  const def = defaultLocale(locales);
   const variants = await loadVariantsByPage(q, pageIds);
   for (const id of pageIds) {
     const variant = variants.get(id);
-    const locale = variant ? localeCache.get(variant.locale_code) : def;
+    const locale = variant ? locales.get(variant.locale_code) : def;
     if (!locale) {
       throw new Error(
         `international-site: page ${id} references locale "${variant?.locale_code}" which is not registered`,
@@ -270,8 +285,8 @@ async function localesByPage(
  *  locale registry (#592, #741). */
 async function chromeDepsOf(ctx: unknown): Promise<ChromeDeps> {
   const q = adminQueryOf(ctx);
-  await refreshLocaleCache(q);
-  return { q, cms: cmsOf(ctx), locales: localeCache };
+  const reg = await refreshLocaleCache(q, ctx);
+  return { q, cms: cmsOf(ctx), locales: reg.byCode };
 }
 
 /**
@@ -284,10 +299,11 @@ async function counterpartInLocale(
   q: PluginAdminQuery,
   pageId: string,
   localeCode: string,
+  ctx?: unknown,
 ): Promise<string | null> {
-  await refreshLocaleCache(q);
+  const reg = await refreshLocaleCache(q, ctx);
   const variant = (await loadVariantsByPage(q, [pageId])).get(pageId);
-  if (!variant) return defaultLocale()?.code === localeCode ? pageId : null;
+  if (!variant) return defaultLocale(reg.byCode)?.code === localeCode ? pageId : null;
   if (variant.locale_code === localeCode) return pageId;
   const rows = (await q.list("page_variants", {
     group_id: variant.group_id,
@@ -329,8 +345,8 @@ async function linkPageIntoGroup(
   const { groupPageId, pageId, localeCode } = args;
   const q = adminQueryOf(ctx);
   const cms = cmsOf(ctx);
-  await refreshLocaleCache(q);
-  if (!localeCache.has(localeCode)) {
+  const reg = await refreshLocaleCache(q, ctx);
+  if (!reg.byCode.has(localeCode)) {
     throw new Error(
       `locale "${localeCode}" is not registered — call set_locales first (list current codes via intl_status)`,
     );
@@ -368,7 +384,7 @@ async function linkPageIntoGroup(
   if (!groupId) {
     // The anchor page starts its own group as the source variant.
     groupId = crypto.randomUUID();
-    const def = defaultLocale();
+    const def = defaultLocale(reg.byCode);
     await q.insert("page_variants", {
       group_id: groupId,
       page_id: groupPageId,
@@ -429,9 +445,9 @@ async function publishedVariantMatrix(
 ): Promise<Map<string, PublishedVariant[]>> {
   const q = adminQueryOf(ctx);
   const cms = cmsOf(ctx);
-  await refreshLocaleCache(q);
+  const reg = await refreshLocaleCache(q, ctx);
   const out = new Map<string, PublishedVariant[]>();
-  if (localeCache.size === 0) return out;
+  if (reg.byCode.size === 0) return out;
 
   const requested = new Set(pageIds);
   const allVariants = (await q.list("page_variants", {
@@ -455,7 +471,7 @@ async function publishedVariantMatrix(
     for (const v of group) {
       const page = pageById.get(v.page_id);
       if (page?.status !== "published") continue;
-      const locale = localeCache.get(v.locale_code);
+      const locale = reg.byCode.get(v.locale_code);
       if (!locale) {
         throw new Error(
           `international-site: variant group ${v.group_id} references unregistered locale "${v.locale_code}"`,
@@ -681,13 +697,13 @@ export default definePlugin<PluginContextTier1>({
     url_annotations: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
       const q = adminQueryOf(ctx);
-      await refreshLocaleCache(q);
+      const reg = await refreshLocaleCache(q, ctx);
       const annotations: Record<string, Record<string, unknown>> = {};
-      if (localeCache.size === 0) {
+      if (reg.byCode.size === 0) {
         for (const id of pageIds) annotations[id] = {};
         return { annotations };
       }
-      const locales = await localesByPage(q, pageIds);
+      const locales = await localesByPage(q, pageIds, reg.byCode);
       // Which of these pages is the home page IN ITS OWN LOCALE. The
       // site has exactly one designated home (site_defaults), so core
       // composes every other page as `<prefix>/<slug>` — which put the
@@ -706,7 +722,7 @@ export default definePlugin<PluginContextTier1>({
           ...(locale.url_host ? { urlHost: locale.url_host } : {}),
           ...(homeVariantIds.has(id) ? { isLocaleRoot: true } : {}),
           // Encode is pure, so the site-wide switch rides per page.
-          ...(locale.is_default && prefixDefaultLocaleCache
+          ...(locale.is_default && reg.prefixDefaultLocale
             ? { [PREFIX_DEFAULT_LOCALE_ANNOTATION]: true }
             : {}),
         };
@@ -747,10 +763,12 @@ export default definePlugin<PluginContextTier1>({
      * #592 — the content-variants composition point: core asks, while
      * rendering, which chrome each page shows. Read-only.
      */
-    content_variants: async (ctx, args) =>
-      resolveChromeVariants(await chromeDepsOf(ctx), args, (pageIds) =>
-        localesByPage(adminQueryOf(ctx), pageIds),
-      ),
+    content_variants: async (ctx, args) => {
+      const deps = await chromeDepsOf(ctx);
+      return resolveChromeVariants(deps, args, (pageIds) =>
+        localesByPage(deps.q, pageIds, deps.locales),
+      );
+    },
 
     /**
      * #592 — translate a language's shared chrome in one AI call. #741 —
@@ -800,8 +818,8 @@ export default definePlugin<PluginContextTier1>({
 
     /** Worker tick — keeps the decode-side locale cache warm. */
     refresh_locales: async (ctx) => {
-      const rows = await refreshLocaleCache(adminQueryOf(ctx));
-      return { locales: rows.length };
+      const reg = await refreshLocaleCache(adminQueryOf(ctx), ctx);
+      return { locales: reg.rows.length };
     },
 
     /**
@@ -812,7 +830,8 @@ export default definePlugin<PluginContextTier1>({
     intl_status: async (ctx) => {
       const q = adminQueryOf(ctx);
       const cms = cmsOf(ctx);
-      const locales = await refreshLocaleCache(q);
+      const reg = await refreshLocaleCache(q, ctx);
+      const locales = reg.rows;
       const variants = (await q.list("page_variants", {
         limit: 1000,
       })) as unknown as PageVariantRow[];
@@ -856,7 +875,7 @@ export default definePlugin<PluginContextTier1>({
           isDefault: l.is_default,
         })),
         // Site-wide: the default locale is prefixed too (home stays at "/").
-        prefixDefaultLocale: prefixDefaultLocaleCache,
+        prefixDefaultLocale: reg.prefixDefaultLocale,
         groups: [...groups.entries()].map(([groupId, vs]) => ({ groupId, variants: vs })),
         // Pages without a variant row belong to the default locale and
         // have NO translations yet — the AI's to-do surface.
@@ -910,8 +929,8 @@ export default definePlugin<PluginContextTier1>({
       };
       const q = adminQueryOf(ctx);
       const cms = cmsOf(ctx);
-      await refreshLocaleCache(q);
-      if (!localeCache.has(localeCode)) {
+      const reg = await refreshLocaleCache(q, ctx);
+      if (!reg.byCode.has(localeCode)) {
         throw new Error(`locale "${localeCode}" is not registered — call set_locales first`);
       }
 
@@ -945,6 +964,7 @@ export default definePlugin<PluginContextTier1>({
           adminQueryOf(ctx),
           source.parentPageId,
           localeCode,
+          ctx,
         );
         if (variantParentId === null) {
           const parentPath =
@@ -1124,7 +1144,7 @@ export default definePlugin<PluginContextTier1>({
         await cmsOf(ctx).call("redirects.create", redirect);
         rootRedirect = { fromPath: redirect.fromPath, toPath: redirect.toPath };
       }
-      await refreshLocaleCache(q);
+      await refreshLocaleCache(q, ctx);
       const prefixChanged = prefixDefault !== storedSetting.enabled;
       return {
         locales: locales.length,
@@ -1247,8 +1267,8 @@ export default definePlugin<PluginContextTier1>({
         context?: string;
       };
       const q = adminQueryOf(ctx);
-      await refreshLocaleCache(q);
-      if (!localeCache.has(localeCode)) {
+      const reg = await refreshLocaleCache(q, ctx);
+      if (!reg.byCode.has(localeCode)) {
         throw new Error(`locale "${localeCode}" is not registered — call set_locales first`);
       }
       const existing = (await q.list("glossary", {
@@ -1274,8 +1294,8 @@ export default definePlugin<PluginContextTier1>({
     set_style_guide: async (ctx, args) => {
       const { localeCode, body } = args as { localeCode: string; body: string };
       const q = adminQueryOf(ctx);
-      await refreshLocaleCache(q);
-      if (!localeCache.has(localeCode)) {
+      const reg = await refreshLocaleCache(q, ctx);
+      if (!reg.byCode.has(localeCode)) {
         throw new Error(`locale "${localeCode}" is not registered — call set_locales first`);
       }
       const existing = (await q.list("style_guides", {
@@ -1306,10 +1326,11 @@ export default definePlugin<PluginContextTier1>({
      */
     head_contributions: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
-      // Refreshes the locale cache that localesByPage reads.
+      const q = adminQueryOf(ctx);
+      const reg = await refreshLocaleCache(q, ctx);
       const matrix = await publishedVariantMatrix(ctx, pageIds, pageUrlStyleOf(args));
       const lang: Record<string, string> = {};
-      for (const [pageId, locale] of await localesByPage(adminQueryOf(ctx), pageIds)) {
+      for (const [pageId, locale] of await localesByPage(q, pageIds, reg.byCode)) {
         lang[pageId] = locale.code;
       }
       const head: Record<string, unknown[]> = {};
@@ -1702,8 +1723,7 @@ export default definePlugin<PluginContextTier1>({
     if (!variants) return "";
     const items = variants
       .map((v) => {
-        const locale = localeCache.get(v.localeCode);
-        const label = escapeHtml(locale?.display_name ?? v.localeCode);
+        const label = escapeHtml(v.displayName || v.localeCode);
         const current = v.pageId === pageId ? ' aria-current="page"' : "";
         return `<li><a href="${escapeHtml(v.href)}" hreflang="${escapeHtml(v.localeCode)}"${current}>${label}</a></li>`;
       })
