@@ -171,12 +171,26 @@ async function gatewayEvent(entityId: string, operation: string = OP): Promise<s
   return id;
 }
 
+/** What the orchestrator logged while it ran. */
+interface Logs {
+  readonly warnings: string[];
+  /** Errors the poll loop reported as "tick failed". */
+  readonly tickErrors: unknown[];
+}
+
 /**
- * Run the orchestrator until its tick has consumed event `eventId` (the
- * watermark reached it), give the rest of that tick a few polls to arm or
- * skip the debounce timer, then fire whatever is pending.
+ * Run the orchestrator until `done` holds, give the rest of that tick a few
+ * polls to arm or skip the debounce timer, then fire whatever is pending.
+ * Captures console.warn / console.error meanwhile.
  */
-async function runUntilConsumed(eventId: string): Promise<void> {
+async function runOrchestrator(done: (logs: Logs) => Promise<boolean>): Promise<Logs> {
+  const logs: Logs = { warnings: [], tickErrors: [] };
+  const warnSpy = spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+    logs.warnings.push(args.map(String).join(" "));
+  });
+  const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    if (args[0] === "[redeploy-orchestrator] tick failed") logs.tickErrors.push(args[1]);
+  });
   const handle = startRedeployOrchestrator({
     adapter,
     registry: spyRegistry(),
@@ -184,15 +198,25 @@ async function runUntilConsumed(eventId: string): Promise<void> {
   });
   try {
     const deadline = Date.now() + 10_000;
-    while (BigInt(await watermark()) < BigInt(eventId)) {
-      if (Date.now() > deadline) throw new Error(`event ${eventId} never consumed`);
+    while (!(await done(logs))) {
+      if (Date.now() > deadline) {
+        throw new Error(`orchestrator never got there; logs: ${JSON.stringify(logs.warnings)}`);
+      }
       await Bun.sleep(POLL_MS);
     }
     await Bun.sleep(POLL_MS * 8);
     await handle.flushPending();
   } finally {
     handle.stop();
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
   }
+  return logs;
+}
+
+/** {@link runOrchestrator} until the visitor watermark reached `eventId`. */
+async function runUntilConsumed(eventId: string): Promise<Logs> {
+  return runOrchestrator(async () => BigInt(await watermark()) >= BigInt(eventId));
 }
 
 beforeAll(async () => {
@@ -321,48 +345,78 @@ describe("visitor plugin op events and the automatic redeploy (PR #844)", () => 
     expect(await watermark()).toBe(eventId);
   });
 
-  it("a lookup that throws leaves the watermark in place and logs the error", async () => {
-    const installed = await withAdminSql(
-      async (tx) =>
-        (await tx`SELECT count(*)::int AS n FROM plugins WHERE slug = 'comments'`) as unknown as {
-          n: number;
-        }[],
-    );
-    expect(installed[0]?.n).toBe(0);
-    const before = await watermark();
-    // comments.moderate is allowlisted but the comments plugin has no row.
-    await gatewayEvent("00000000-0000-4000-8000-0000000000bb", UNINSTALLED_OP);
+  it("drops a forged event for a plugin that is not installed, advances, and still redeploys later events", async () => {
+    await assertCommentsNotInstalled();
+    // comments.moderate is allowlisted, but the comments plugin has no row.
+    const forgedId = await gatewayEvent("00000000-0000-4000-8000-0000000000bb", UNINSTALLED_OP);
+    const validId = await gatewayEvent(ratingId);
+    const logs = await runUntilConsumed(validId);
+    expect(logs.tickErrors).toEqual([]);
+    expect(redeploys).toEqual([[pageId]]);
+    expect(await watermark()).toBe(validId);
+    const warned = logs.warnings.filter((w) => w.includes(`id=${forgedId} `));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain(`op=${UNINSTALLED_OP}`);
+    expect(warned[0]).toContain('the "comments" plugin is not installed');
+  });
 
-    const logged: unknown[][] = [];
-    const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-      logged.push(args);
-    });
-    const handle = startRedeployOrchestrator({
-      adapter,
-      registry: spyRegistry(),
-      pollIntervalMs: POLL_MS,
-    });
-    const notInstalled = (): PluginNotInstalledError | undefined =>
-      logged
-        .filter((args) => args[0] === "[redeploy-orchestrator] tick failed")
-        .map((args) => args[1])
-        .find((e): e is PluginNotInstalledError => e instanceof PluginNotInstalledError);
+  it("drops an event whose plugin is installed but not active", async () => {
+    await setRatingsStatus("disabled");
     try {
-      const deadline = Date.now() + 10_000;
-      while (!notInstalled()) {
-        if (Date.now() > deadline) throw new Error("the tick never surfaced the lookup failure");
-        await Bun.sleep(POLL_MS);
-      }
-      // Several more ticks: each fails the same way, none moves on.
-      await Bun.sleep(POLL_MS * 8);
-      await handle.flushPending();
+      const eventId = await gatewayEvent(ratingId);
+      const logs = await runUntilConsumed(eventId);
+      expect(logs.tickErrors).toEqual([]);
+      expect(redeploys).toEqual([]);
+      expect(await watermark()).toBe(eventId);
+      expect(
+        logs.warnings.some((w) => w.includes(`id=${eventId} `) && w.includes("not active")),
+      ).toBe(true);
     } finally {
-      handle.stop();
-      errorSpy.mockRestore();
+      await setRatingsStatus("active");
     }
-    expect(notInstalled()).toMatchObject({ slug: "comments", operation: UNINSTALLED_OP });
-    expect(redeploys).toEqual([]);
-    // Left for the next tick, not skipped.
-    expect(await watermark()).toBe(before);
+  });
+
+  it("audit_events stay strict: a missing plugin there surfaces, without starving visitor redeploys", async () => {
+    await assertCommentsNotInstalled();
+    const auditEntity = "00000000-0000-4000-8000-0000000000cc";
+    await withAdminSql(async (tx) => {
+      await tx`INSERT INTO audit_events (actor_id, operation, input_hash, succeeded, entity_id)
+               VALUES (${SYS.actorId}::uuid, ${UNINSTALLED_OP}, ${"d".repeat(64)}, true,
+                       ${auditEntity}::uuid)`;
+    });
+    try {
+      const validId = await gatewayEvent(ratingId);
+      const notInstalled = (logs: Logs): PluginNotInstalledError | undefined =>
+        logs.tickErrors.find(
+          (e): e is PluginNotInstalledError => e instanceof PluginNotInstalledError,
+        );
+      const logs = await runOrchestrator(
+        async (l) => notInstalled(l) !== undefined && BigInt(await watermark()) >= BigInt(validId),
+      );
+      expect(notInstalled(logs)).toMatchObject({ slug: "comments", operation: UNINSTALLED_OP });
+      // The visitor pass ran on its own watermark and its redeploy fired.
+      expect(await watermark()).toBe(validId);
+      expect(redeploys).toEqual([[pageId]]);
+    } finally {
+      await withAdminSql(async (tx) => {
+        await tx`DELETE FROM audit_events WHERE entity_id = ${auditEntity}::uuid`;
+      });
+    }
   });
 });
+
+async function assertCommentsNotInstalled(): Promise<void> {
+  const rows = await withAdminSql(
+    async (tx) =>
+      (await tx`SELECT count(*)::int AS n FROM plugins WHERE slug = 'comments'`) as unknown as {
+        n: number;
+      }[],
+  );
+  expect(rows[0]?.n).toBe(0);
+}
+
+async function setRatingsStatus(status: "active" | "disabled"): Promise<void> {
+  await withAdminSql(async (tx) => {
+    await tx`UPDATE plugins SET status = ${status} WHERE slug = 'ratings'`;
+  });
+}
