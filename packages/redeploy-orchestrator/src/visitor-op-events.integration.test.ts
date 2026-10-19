@@ -12,6 +12,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { SQL } from "bun";
+import { sql } from "drizzle-orm";
 import { commitVisitorWatermark, readVisitorOpEvents } from "./index.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -42,12 +43,32 @@ async function watermark(): Promise<string> {
   }
 }
 
-beforeAll(() => {
+/**
+ * List (or stop listing) the fixture plugin in the published projection,
+ * as the admin's publisher would: since #856, public_role may record an
+ * event only for a published plugin, under its own slug.
+ */
+async function setPublished(listed: boolean): Promise<void> {
+  await adapter.withPublicTransaction(
+    { actorId: "00000000-0000-0000-0000-00000000ffff", actorKind: "system", requestId: "t635" },
+    async (tx) => {
+      await tx.execute(sql`DELETE FROM published_plugins WHERE id = ${PLUGIN}::uuid`);
+      if (listed) {
+        await tx.execute(sql`
+          INSERT INTO published_plugins (id, slug, tier, version)
+          VALUES (${PLUGIN}::uuid, ${OP.split(".")[0]}, 1, '1.0.0')`);
+      }
+    },
+  );
+}
+
+beforeAll(async () => {
   adapter = new DatabaseAdapter({
     adminDatabaseUrl: ADMIN_URL,
     publicDatabaseUrl: PUBLIC_ADMIN_URL,
   });
   gateway = new SQL(PUBLIC_URL as string);
+  await setPublished(true);
 });
 
 beforeEach(async () => {
@@ -66,6 +87,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  await setPublished(false);
   await gateway.end();
   await adapter.close();
 });

@@ -23,6 +23,11 @@
  *     asks for the password again; the page shows the scheduler's
  *     last decision and the update emails (and that none were sent while
  *     no email service is set up); a Reviewer only reads.
+ *   - #862: the release notes read in Owner words (no hashes, issue numbers
+ *     or "BREAKING"); the policy form is one choice (Notify only / Install
+ *     automatically) whose kinds show only under "Install automatically"
+ *     and stay stored when "Notify only" is saved; window, waits and pause
+ *     sit under "More settings".
  *
  * The suite's admin runs with test-only stand-ins (playwright.config.ts,
  * ignored when NODE_ENV=production): CAELO_E2E_FAKE_UPGRADER (starting the
@@ -58,7 +63,7 @@ const FIXTURE_SCRIPT = `
         UPDATE release_check_cache
            SET latest_version = \${process.env.E2E_LATEST},
                release_url = 'https://github.com/caelo-cms/caelo-cms/releases',
-               release_notes = '## Highlights\n\nA release seeded by the e2e suite.',
+               release_notes = '### Features\n- 1a2b3c4d feat(editor): a release seeded by the e2e suite (#12) (#13) ⚠ BREAKING\n\n### Docs\n- 5e6f7a8b a docs-only change (#14)\n',
                published_at = now(),
                fetched_at = now()
          WHERE id = 1\`;
@@ -108,7 +113,7 @@ const FIXTURE_SCRIPT = `
       await tx\`UPDATE platform_update_scheduler SET lease_holder = NULL, last_run_at = NULL,
                  last_version = NULL, last_action = NULL, last_reason = NULL, last_wait_until = NULL\`;
       await tx\`UPDATE platform_update_policy SET mode = 'notify', auto_security = false,
-                 auto_patch = false, auto_minor = false, window_start = NULL, window_end = NULL,
+                 auto_patch = false, auto_minor = false, auto_converge = false, window_start = NULL, window_end = NULL,
                  window_timezone = 'UTC', soak_hours = 24, security_soak_hours = 2, paused = false,
                  paused_reason = NULL, paused_at = NULL, paused_until = NULL, paused_by = NULL\`;
     } else if (op === "auto-status") {
@@ -150,7 +155,7 @@ const FIXTURE_SCRIPT = `
     } else if (op === "wipe") {
       await tx\`DELETE FROM platform_update_notifications\`;
       await tx\`UPDATE platform_update_policy SET mode = 'notify', auto_security = false,
-                 auto_patch = false, auto_minor = false, window_start = NULL, window_end = NULL,
+                 auto_patch = false, auto_minor = false, auto_converge = false, window_start = NULL, window_end = NULL,
                  window_timezone = 'UTC', soak_hours = 24, security_soak_hours = 2, paused = false,
                  paused_reason = NULL, paused_at = NULL, paused_until = NULL, paused_by = NULL\`;
       await tx\`DELETE FROM platform_update_requests\`;
@@ -204,7 +209,16 @@ test("an Owner sees the pinned upgrade command and copies it", async ({ page, co
   await page.goto("/settings/updates");
   await expect(page.getByRole("heading", { level: 1, name: "Caelo updates" })).toBeVisible();
   await expect(page.getByTestId("latest-version")).toHaveText(`v${LATEST}`);
-  await expect(page.getByTestId("release-notes")).toContainText("seeded by the e2e suite");
+  // In Owner words (#862): no hashes, issue numbers, scopes or "BREAKING";
+  // docs-only changes left out; the breaking change becomes what to do.
+  const releaseNotes = page.getByTestId("release-notes");
+  await expect(releaseNotes).toContainText("A release seeded by the e2e suite");
+  await expect(releaseNotes).toContainText("Before you update: Nothing to do");
+  await expect(releaseNotes).not.toContainText("#12");
+  await expect(releaseNotes).not.toContainText("1a2b3c4d");
+  await expect(releaseNotes).not.toContainText("BREAKING");
+  await expect(releaseNotes).not.toContainText("docs-only");
+  await expect(page.getByRole("link", { name: "All changes on GitHub →" })).toBeVisible();
   // The Owner installs from the admin; the command is the alternative.
   await page.getByText("Install from a terminal instead").click();
   await expect(page.getByTestId("upgrade-command")).toHaveText(COMMAND);
@@ -437,31 +451,43 @@ test("Automatic updates: each change confirmed with the password; status and ema
   await page.goto("/settings/updates");
 
   const card = page.getByTestId("auto-update-policy");
-  await expect(card.getByTestId("auto-update-summary")).toContainText("install them yourself");
-  await card.getByLabel("When a new Caelo release comes out").selectOption("auto");
+  const summary = card.getByTestId("auto-update-summary");
+  await expect(summary).toContainText("install it yourself");
+  // One choice (#862): no "Don't tell me", no "Used only when" hint; the
+  // kinds appear only under "Install automatically".
+  await expect(card).not.toContainText("Don't tell me");
+  await expect(card).not.toContainText("Used only when");
+  await expect(card.getByTestId("policy-mode-notify")).toBeChecked();
+  await expect(card.getByTestId("policy-auto-kinds")).toBeHidden();
+  await card.getByTestId("policy-mode-auto").check();
+  await expect(card.getByTestId("policy-auto-kinds")).toBeVisible();
   await card.getByTestId("policy-auto-patch").check();
+  await card.getByTestId("policy-auto-converge").check();
+  await expect(card.getByTestId("policy-auto-converge-pending")).toContainText("Not yet in effect");
+  // Window and waiting times live under the collapsed "More settings".
+  await expect(card.getByTestId("policy-window-enabled")).toBeHidden();
+  await card.getByText("More settings").click();
   await card.getByTestId("policy-window-enabled").check();
   await card.getByLabel("From", { exact: true }).fill("02:00");
   await card.getByLabel("To", { exact: true }).fill("05:00");
   await card.getByLabel("Time zone").fill("Europe/Berlin");
   await card.getByLabel("Wait after a release (hours)").fill("48");
   await card.getByLabel("Wait for security fixes (hours)").fill("4");
+  // Each kind shows its current waiting time.
+  await expect(card.getByTestId("policy-auto-kinds")).toContainText("after 48 hours");
   await card.getByTestId("save-policy").click();
 
   // A wrong password is refused in the dialog and keeps what was typed.
   await confirmPolicy(page, "not the password");
   await expect(page.getByTestId("policy-dialog-error")).toContainText("Wrong password");
   await expect(card.getByLabel("Wait after a release (hours)")).toHaveValue("48");
-  await expect(card.getByTestId("auto-update-summary")).toContainText("install them yourself");
+  await expect(summary).toContainText("install it yourself");
   await confirmPolicy(page);
 
-  await expect(card.getByTestId("auto-update-summary")).toContainText(
-    "Installed automatically: patch releases.",
-  );
-  await expect(card.getByTestId("auto-update-summary")).toContainText(
-    "Only between 02:00 and 05:00 (Europe/Berlin).",
-  );
-  await expect(card.getByTestId("auto-update-summary")).toContainText("waits 48 hours");
+  await expect(summary).toContainText("Installed automatically: bug fixes.");
+  await expect(summary).toContainText("Google Cloud project still need you for now");
+  await expect(summary).toContainText("Only between 02:00 and 05:00 (Europe/Berlin).");
+  await expect(summary).toContainText("waits 48 hours");
 
   // Pause for a week, with a reason — its own password confirmation.
   await card.getByLabel("Pause automatic updates", { exact: true }).selectOption("7");
@@ -476,6 +502,19 @@ test("Automatic updates: each change confirmed with the password; status and ema
   await card.getByTestId("resume-auto-updates").click();
   await confirmPolicy(page);
   await expect(card.getByTestId("auto-update-paused")).toHaveCount(0);
+
+  // "Notify only" keeps the ticked kinds stored: switching back shows them.
+  await card.getByTestId("policy-mode-notify").check();
+  await expect(card.getByTestId("policy-auto-kinds")).toBeHidden();
+  await card.getByTestId("save-policy").click();
+  await confirmPolicy(page);
+  await expect(summary).toContainText("security fixes included, and install it yourself");
+  await page.reload();
+  await expect(card.getByTestId("policy-mode-notify")).toBeChecked();
+  await card.getByTestId("policy-mode-auto").check();
+  await expect(card.getByTestId("policy-auto-patch")).toBeChecked();
+  await expect(card.getByTestId("policy-auto-converge")).toBeChecked();
+  await expect(card.getByTestId("policy-auto-minor")).not.toBeChecked();
 
   // What the scheduler decided, and the emails it could not send.
   runBunInline(FIXTURE_SCRIPT, {
@@ -535,7 +574,9 @@ test("the release check: when it ran, a failed one, and Check now", async ({ pag
   ).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("release-checked-at")).toHaveText("· checked just now");
   await expect(page.getByTestId("latest-version")).toHaveText(`v${LATEST}`);
-  await expect(page.getByTestId("release-notes")).toContainText("release-check stand-in");
+  await expect(page.getByTestId("release-notes")).toContainText(
+    "A fix reported by the e2e release-check stand-in",
+  );
 
   // A second click within the minute is refused, and says so.
   await page.getByTestId("check-releases-now").click();

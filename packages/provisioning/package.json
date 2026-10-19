@@ -45,11 +45,11 @@
     "@pulumi/command": "^1",
     "@pulumi/gcp": "^10",
     "@pulumi/pulumi": "^3",
-    "@pulumi/random": "^4.21.2",
+    "@pulumi/random": "^4.21.4",
     "kleur": "4.1.5",
     "ts-node": "^10",
     "typescript": "^5",
-    "zod": "4.6.5"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@pulumi/aws": "^7",
