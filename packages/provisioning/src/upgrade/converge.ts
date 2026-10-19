@@ -426,7 +426,7 @@ export function startConverge(
       return;
     }
     if (cj.reason === "no-provisioner") {
-      // #883 review — optional for contract 8: an install without a
+      // #883 review — optional for contract 9: an install without a
       // provisioner (installed before it existed) has nothing the job could
       // run as, and creating one is a privileged identity no update should
       // mint. It stays fully converged; its admin keeps no

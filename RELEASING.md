@@ -439,7 +439,7 @@ converge job instead (#819): the Owner clicks the same Update button, the
 admin routes the release to `caelo-<env>-converge`, which runs the whole
 upgrade (backup, converge, roll, health check, rollback) from the
 release's own signed ops image as the install's `caelo-provisioner`.
-Installs set up before contract 8 (which adds that job) take one last
+Installs set up before contract 9 (which adds that job) take one last
 converge from a terminal (Cloud Shell / CLI); `./run.sh upgrade` stays
 the break-glass path for when the job itself cannot run.
 

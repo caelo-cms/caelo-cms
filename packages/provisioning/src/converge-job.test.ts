@@ -325,6 +325,41 @@ describe("runConvergeJob — stage 2 (the target release's own installer)", () =
     expect(h.q.ends[0]?.status).toBe("succeeded");
   });
 
+  it("#883 review: install.json changed between the decision and the lock stops before any change", async () => {
+    // Judged against one record, but the upgrader job (or a terminal
+    // upgrade) wrote another before this run held the lock.
+    const h = harness();
+    let reads = 0;
+    const r = await runConvergeJob({
+      ...h.deps,
+      readInstall: () => {
+        reads += 1;
+        return reads === 1 ? META : { ...META, releaseVersion: "0.10.54" };
+      },
+    });
+    expect(r.status).toBe("failed");
+    expect(h.q.ends[0]?.codes).toEqual(["install-state-changed"]);
+    expect(h.q.ends[0]?.reason).toStartWith("Nothing was changed:");
+    expect(h.upgrades).toEqual([]);
+    expect(h.checkpoints).toEqual([]);
+    expect(h.calls.at(-1)).toBe("unlock");
+
+    // A re-read that fails is loud too, never a converge on the old view.
+    const failing = harness();
+    let n = 0;
+    const r2 = await runConvergeJob({
+      ...failing.deps,
+      readInstall: () => {
+        n += 1;
+        if (n > 1) throw new Error("storage.objects.get timed out");
+        return META;
+      },
+    });
+    expect(r2.status).toBe("failed");
+    expect(failing.q.ends[0]?.codes).toEqual(["install-state-read"]);
+    expect(failing.upgrades).toEqual([]);
+  });
+
   it("a release that failed its checks ends rolled back and keeps the checkpoint for a retry", async () => {
     const h = harness({ outcome: { ok: false, rolledBack: true, unrecorded: false } });
     const r = await runConvergeJob(h.deps);

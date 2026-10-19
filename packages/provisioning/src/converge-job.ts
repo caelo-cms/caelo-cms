@@ -300,12 +300,7 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     if (compareSemver(deps.ownVersion, m.version) !== 0) {
       return await handOver(m);
     }
-    return await convergeHere(
-      m,
-      fromVersion ?? (meta.releaseVersion as string),
-      checkpoint,
-      meta.installId,
-    );
+    return await convergeHere(m, fromVersion ?? (meta.releaseVersion as string), checkpoint, meta);
   } catch (e) {
     return stopWith(
       "failed",
@@ -368,8 +363,9 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     m: ReleaseManifest,
     fromVersion: string,
     checkpoint: ConvergeCheckpoint | null,
-    installId: string,
+    judged: InstallMetadata,
   ): Promise<UpgraderRunResult> {
+    const installId = judged.installId;
     const own = await deps.ownImageDigest();
     if (own !== m.digests.ops) {
       return stopWith(
@@ -397,6 +393,11 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     const changed = resumeFrom?.backup !== undefined;
     const locked = lockOrBlock(changed);
     if (locked) return stopWith(locked.status, locked.codes, locked.reason);
+    // #815 — everything above was judged against install.json read without
+    // the lock; another install operation (the upgrader job, a terminal
+    // upgrade) may have changed it since. Never converge on a stale view.
+    const stale = recordsChangedSince(judged, changed);
+    if (stale) return stopWith(stale.status, stale.codes, stale.reason);
 
     const startedAt = deps.now().toISOString();
     let current: ConvergeCheckpoint = {
@@ -475,6 +476,35 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
       ["converge"],
       `The update to ${m.version} stopped before it finished (see the timeline above); the previous release keeps serving. Fix what it names and start the update again; it continues where it stopped.`,
     );
+  }
+
+  /**
+   * Whether install.json, re-read under the lock, is still what the run was
+   * judged on; how the request ends otherwise.
+   */
+  function recordsChangedSince(
+    judged: InstallMetadata,
+    changed: boolean,
+  ): { status: UpdateEndStatus; codes: string[]; reason: string } | null {
+    const before = changed
+      ? "This update already started changing the site; "
+      : "Nothing was changed: ";
+    let now: InstallMetadata | null;
+    try {
+      now = deps.readInstall();
+    } catch (e) {
+      return {
+        status: "failed",
+        codes: ["install-state-read"],
+        reason: `${before}the install's records (install.json) could not be read again once the lock was held (${errorText(e)}). Start the update again; it continues where it stopped.`,
+      };
+    }
+    if (JSON.stringify(now) === JSON.stringify(judged)) return null;
+    return {
+      status: "failed",
+      codes: ["install-state-changed"],
+      reason: `${before}another install operation changed the install's records (install.json) while this update was being checked. Start the update again from Settings → Updates; it continues where it stopped.`,
+    };
   }
 
   /**

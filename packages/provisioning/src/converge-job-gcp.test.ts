@@ -16,6 +16,7 @@ import {
 import {
   convergeExecutionNameError,
   deployedOwnerMismatch,
+  deployedSiteMismatch,
   executionImageDigest,
   startedExecutionName,
 } from "./converge-job-gcp.js";
@@ -154,6 +155,57 @@ describe("deployedOwnerMismatch (#883 review)", () => {
     expect(
       deployedOwnerMismatch(job("user:owner@acme.com,user:x@y.z"), "owner@acme.com"),
     ).not.toBeNull();
+  });
+});
+
+describe("deployedSiteMismatch (#883 review, round 2)", () => {
+  const admin = (env: Record<string, string>) =>
+    JSON.stringify({
+      spec: {
+        template: {
+          spec: {
+            containers: [{ env: Object.entries(env).map(([name, value]) => ({ name, value })) }],
+          },
+        },
+      },
+    });
+  const META = { domain: "acme.com", region: "europe-west1" } as const;
+  const SERVED = { CAELO_SITE_URL: "https://acme.com", CAELO_STAGING_HOST: "staging.acme.com" };
+
+  it("accepts the records of the site the admin serves, in the job's own region", () => {
+    expect(deployedSiteMismatch(admin(SERVED), META, "europe-west1")).toBeNull();
+    // An admin from before #650 has no staging host yet: the default is fine.
+    expect(
+      deployedSiteMismatch(admin({ CAELO_SITE_URL: "https://acme.com" }), META, "europe-west1"),
+    ).toBeNull();
+  });
+
+  it("refuses a tampered domain, staging host or region: the provisioner would act on it", () => {
+    expect(
+      deployedSiteMismatch(admin(SERVED), { ...META, domain: "evil.example" }, "europe-west1"),
+    ).toContain("https://evil.example");
+    expect(
+      deployedSiteMismatch(
+        admin(SERVED),
+        { ...META, stagingDomain: "staging.evil.example" },
+        "europe-west1",
+      ),
+    ).toContain("staging.evil.example");
+    expect(
+      deployedSiteMismatch(
+        admin({ CAELO_SITE_URL: "https://acme.com" }),
+        { ...META, stagingDomain: "staging.evil.example" },
+        "europe-west1",
+      ),
+    ).not.toBeNull();
+    expect(
+      deployedSiteMismatch(admin(SERVED), { ...META, region: "us-central1" }, "europe-west1"),
+    ).toContain("us-central1");
+  });
+
+  it("refuses when the admin's site cannot be read — never assumes it matches", () => {
+    expect(deployedSiteMismatch("not json", META, "europe-west1")).not.toBeNull();
+    expect(deployedSiteMismatch(admin({}), META, "europe-west1")).toContain("CAELO_SITE_URL");
   });
 });
 

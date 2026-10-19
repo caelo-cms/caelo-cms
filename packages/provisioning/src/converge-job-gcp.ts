@@ -25,7 +25,12 @@ import type { ConvergeJobDeps, ConvergeQueue, ConvergeUpgradeOutcome } from "./c
 import { CONVERGE_TASK_TIMEOUT_MINUTES } from "./converge-job-setup.js";
 import { gcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep } from "./gcloud-retry.js";
-import { convergeJobName, GCP_STACK_ENV, operatorAccessJobName } from "./gcp-names.js";
+import {
+  convergeJobName,
+  GCP_STACK_ENV,
+  gcpNamePrefix,
+  operatorAccessJobName,
+} from "./gcp-names.js";
 import { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
 import { describeExecution } from "./install-job.js";
 import {
@@ -39,9 +44,11 @@ import { runMigrationsViaCloudRunJob } from "./migration-runner.js";
 import { installIapAllowlist } from "./operator-access.js";
 import { fetchVerifiedReleaseManifest } from "./release-manifest.js";
 import type { HttpFetch } from "./runtime-secrets.js";
+import { publicSiteUrl, STAGING_HOST_ENV } from "./stack-contract.js";
 import { attachInstall } from "./state-attach.js";
 import { hasLocalPulumiState, opsBucketName } from "./state-backend.js";
 import { acquireBucketStateLock, GcsStateStore, realSyncGcloud } from "./state-store.js";
+import { resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 import { releaseImageRef, verifyCosignAll } from "./upgrade/release-images.js";
 import { upgradeGcpInstallOutcome } from "./upgrade/upgrade.js";
 import { healthProbeFor, type UpgraderPlacement } from "./upgrader-gcp.js";
@@ -74,6 +81,9 @@ export function executionImageDigest(describeJson: string): string | null {
 
 /** The operator-access job's env var listing the install's fixed IAP members. */
 const STATIC_MEMBERS_ENV = "CAELO_OPERATOR_ACCESS_STATIC_MEMBERS";
+
+/** The admin env var naming the public site (stack-contract.ts adminEnvContract). */
+const SITE_URL_ENV = "CAELO_SITE_URL";
 
 /**
  * Why install.json's Owner email does not match the IAP members the
@@ -113,6 +123,59 @@ export function deployedOwnerMismatch(describeJson: string, ownerEmail: string):
     .join(",");
   if (have !== [...installIapAllowlist(ownerEmail)].sort().join(",")) {
     return `the admin admits ${deployed || "nobody"}, the records would make it ${want}`;
+  }
+  return null;
+}
+
+/**
+ * Why install.json's site does not match what the admin serves today, or
+ * null when it does (#883 review, round 2). install.json is writable by the
+ * upgrader's account, and the converge hands its domain, staging host and
+ * region to code running as the provisioner: a tampered record would have
+ * the provisioner point the site, its certificate and its IAP gate at
+ * another domain. So the job converges only onto the site the deployed
+ * admin already serves (`CAELO_SITE_URL`, `CAELO_STAGING_HOST`, from
+ * `gcloud run services describe --format=json`) in the region this job
+ * runs in. A change of domain is a terminal upgrade by the Owner.
+ *
+ * @param adminJson the admin service's description (v1 or v2 shape)
+ * @param region the region this job runs in (the metadata server's)
+ */
+export function deployedSiteMismatch(
+  adminJson: string,
+  meta: Pick<InstallMetadata, "domain" | "stagingDomain" | "region">,
+  region: string,
+): string | null {
+  if (meta.region !== region) {
+    return `the records name region ${meta.region ?? "none"}, the converge job runs in ${region}`;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(adminJson);
+  } catch {
+    return "the admin's description is not JSON";
+  }
+  const p = parsed as {
+    spec?: {
+      template?: { spec?: { containers?: { env?: { name?: string; value?: string }[] }[] } };
+    };
+    template?: { containers?: { env?: { name?: string; value?: string }[] }[] };
+  };
+  const env =
+    p.spec?.template?.spec?.containers?.[0]?.env ?? p.template?.containers?.[0]?.env ?? [];
+  const value = (name: string) => env.find((e) => e.name === name)?.value;
+  const site = value(SITE_URL_ENV);
+  if (site === undefined) return `the admin sets no ${SITE_URL_ENV}`;
+  if (site !== publicSiteUrl(meta.domain)) {
+    return `the admin serves ${site}, the records would make it ${publicSiteUrl(meta.domain)}`;
+  }
+  // An admin from before #650 has no staging host yet; this converge adds
+  // it, but only the default one derived from the domain.
+  const staging = value(STAGING_HOST_ENV);
+  const want = installStagingHost(meta);
+  const defaultHost = installStagingHost({ domain: meta.domain });
+  if (staging === undefined ? want !== defaultHost : staging !== want) {
+    return `the admin's staging host is ${staging ?? "unset"}, the records would make it ${want}`;
   }
   return null;
 }
@@ -200,6 +263,27 @@ export function gcpConvergeDeps(
     if (ownerCheck) {
       reporter.error(
         `Nothing was changed: the install's records name ${meta.ownerEmail} as Owner, which this update could not confirm against the admin's current access settings (${ownerCheck}). Run the update once from Cloud Shell or the computer you installed from.`,
+      );
+      return { ok: false, rolledBack: false, unrecorded: false };
+    }
+    const admin = await resolveGcpResourceName(
+      run,
+      "run-service",
+      `${gcpNamePrefix(GCP_STACK_ENV)}-admin`,
+      projectId,
+      region,
+    );
+    const described = admin
+      ? await run(["run", "services", "describe", admin, ...location, "--format=json"])
+      : null;
+    const siteCheck = !admin
+      ? "the admin service could not be found"
+      : described?.ok
+        ? deployedSiteMismatch(described.stdout, meta, region)
+        : `the admin's description could not be read (${described?.stderr.trim() ?? ""})`;
+    if (siteCheck) {
+      reporter.error(
+        `Nothing was changed: the install's records name ${meta.domain} in ${meta.region}, which this update could not confirm against what the admin serves today (${siteCheck}). Run the update once from Cloud Shell or the computer you installed from.`,
       );
       return { ok: false, rolledBack: false, unrecorded: false };
     }
