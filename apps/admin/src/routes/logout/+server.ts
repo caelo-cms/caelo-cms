@@ -7,14 +7,19 @@ import { SESSION_COOKIE } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
+/**
+ * Sign out. A live session is ended only with the form's CSRF token (PR
+ * #863, L-07): without it any site could log an operator out mid-edit. A
+ * cookie whose session is already gone is just cleared — there is nothing
+ * left to protect.
+ */
 export const POST: RequestHandler = async ({ request, cookies, locals }) => {
   const { adapter, registry } = getQueryContext();
   const token = cookies.get(SESSION_COOKIE);
   if (token && locals.user) {
-    const form = await request.formData();
-    await assertCsrfToken(form, locals);
+    await assertCsrfToken(await request.formData(), locals);
     await execute(registry, adapter, locals.ctx, "auth.logout", { token });
-    cookies.delete(SESSION_COOKIE, { path: "/" });
   }
+  if (token) cookies.delete(SESSION_COOKIE, { path: "/" });
   throw redirect(303, "/login");
 };

@@ -26,6 +26,7 @@ import { tryAutoRecover } from "../auto-recovery.js";
 import { chatPluginInvocation } from "../plugin-invocation.js";
 import type { AIProvider, ChatMessageInput } from "../provider.js";
 import type { ToolRegistry } from "../tools/index.js";
+import { isE2eAutoApproveEnabled } from "./e2e-auto-approve.js";
 import type {
   AccumulatedToolCall,
   ChatRunnerOptions,
@@ -42,8 +43,8 @@ import type {
  * prefixes 1:1 (`layouts` → `layouts.execute_proposal`). Best-effort:
  * a failed execute is logged, not thrown — the chat turn continues.
  * Returns a one-line summary of what was applied, or null if nothing.
- * Guarded by CAELO_E2E_AUTO_APPROVE_PROPOSALS at the call site; NEVER
- * runs in production.
+ * Guarded by `isE2eAutoApproveEnabled()` at the call site; NEVER runs
+ * under NODE_ENV=production.
  */
 export async function autoApproveChatProposals(
   registry: OperationRegistry,
@@ -434,12 +435,7 @@ export async function dispatchToolCall(
     // comes (run-B5: the AI's correct layout-CSS fix sat unapproved). The
     // gate itself is untouched; this only simulates the click, and ONLY
     // when the explicit e2e flag is set. NEVER enable in production.
-    if (
-      result.ok &&
-      call.name.startsWith("propose_") &&
-      process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1" &&
-      process.env.NODE_ENV !== "production"
-    ) {
+    if (result.ok && call.name.startsWith("propose_") && isE2eAutoApproveEnabled()) {
       const applied = await autoApproveChatProposals(
         registry,
         adapter,
