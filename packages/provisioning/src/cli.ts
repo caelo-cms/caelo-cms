@@ -51,6 +51,7 @@ import { generateBootstrapToken } from "./bootstrap-token.js";
 import {
   type CaddyDomainSpec,
   type CaddyTlsMode,
+  caddyTokenProblem,
   generateCaddyfile,
   selfHostedAdminHost,
   selfHostedSeedDomains,
@@ -71,7 +72,7 @@ import {
   SITE_OUTPUT_ROOT,
   selfHostedSiteUrl,
 } from "./compose.js";
-import { writePrivateFile } from "./private-file.js";
+import { tightenPrivateTree, writePrivateFile } from "./private-file.js";
 import { selfCommand } from "./self-command.js";
 import {
   bunHostRunner,
@@ -225,6 +226,20 @@ function randomSecret(bytes = 32): string {
 
 function loadConfig(): CaeloConfig | null {
   if (!existsSync(CONFIG_PATH)) return null;
+  // Every command that works on an install reads its config first, so this
+  // is where an install made by an older CLI loses its world-readable
+  // secrets (#888) — not only once each file happens to be rewritten.
+  tightenPrivateTree(
+    CAELO_DIR,
+    [BOOTSTRAP_DIR, "backups"],
+    [
+      "config.json",
+      "provider.json",
+      "internal-secret.json",
+      "docker-compose.yml",
+      `${BOOTSTRAP_DIR}/pending-token.json`,
+    ],
+  );
   const cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as CaeloConfig;
   // #707 — settings added later, back-filled (and stored) with what every
   // install ran before they existed, so `upgrade` / `agent` render the same
@@ -527,6 +542,19 @@ async function init(): Promise<void> {
   if (stagingProblem) {
     console.error(`--staging-domain: ${stagingProblem}`);
     process.exit(2);
+  }
+  // The Caddyfile check would only fire in emitConfig, after config.json is
+  // written — and a re-run then stops at "config already exists".
+  for (const [flag, value, kind] of [
+    ["--domain", domain, "address"],
+    ["--staging-domain", stagingArg, "address"],
+    ["--owner-email", ownerEmail, "token"],
+  ] as const) {
+    const problem = value === undefined ? null : caddyTokenProblem(value, kind);
+    if (problem) {
+      console.error(`${flag} ${JSON.stringify(value)}: ${problem}.`);
+      process.exit(2);
+    }
   }
   // #696 — the prebuilt release images, resolved to digests and
   // cosign-verified BEFORE anything is written, so a failed check leaves no

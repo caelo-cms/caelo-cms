@@ -3,6 +3,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   type CaddyfileSpec,
+  caddyTokenProblem,
   generateCaddyfile,
   selfHostedAdminHost,
   selfHostedSeedDomains,
@@ -118,5 +119,20 @@ describe("Caddyfile TLS", () => {
         ],
       }),
     ).toThrow(/invalid hostname/);
+  });
+
+  it("refuses a comma in a site address — it would add a second address to the block", () => {
+    // `admin.example.com,:80` would serve the admin on every host on port 80.
+    expect(() =>
+      generateCaddyfile({
+        ...spec,
+        domains: [{ hostname: "admin.example.com,:80", kind: "admin", env: "production" }],
+      }),
+    ).toThrow(/invalid hostname/);
+    // A comma is harmless inside a token like the email.
+    expect(caddyTokenProblem("a,b@example.com", "token")).toBeNull();
+    expect(caddyTokenProblem("a,b.example.com", "address")).toMatch(/','/);
+    expect(caddyTokenProblem("", "token")).toBe("it is empty");
+    expect(caddyTokenProblem("192.168.1.10", "address")).toBeNull();
   });
 });
