@@ -25,9 +25,11 @@
  *   2. off the stable channel, or the policy only notifies → notify;
  *   3. major → notify (never automatic before 1.0);
  *   4. release information unreadable → blocked (fails loudly, no guess);
- *   5. changes the cloud setup → needs_cloud_shell (never automatic, even
- *      with `autoConverge` on: that choice is inert until the converge job
- *      runs these releases from Caelo, #819);
+ *   5. changes the cloud setup (#819): with no converge job on this
+ *      install → needs_cloud_shell (the terminal path); with one but
+ *      `autoConverge` off → manual (the Owner installs it from Settings →
+ *      Updates); with `autoConverge` on → on through the rules below, and
+ *      an install it decides goes to the converge job (`route: converge`);
  *   6. destructive database changes → manual (never automatic);
  *   7. the kind is not switched on (security / patch / minor) → notify;
  *   8. no upgrader on this install → blocked;
@@ -39,6 +41,7 @@
 
 import {
   inMaintenanceWindow,
+  type PlatformUpdateRoute,
   type StoredUpdatePolicy,
   type UpdateKind,
   updateKind,
@@ -109,6 +112,11 @@ export interface AutoUpdateInput {
   readonly facts: ReleaseFacts | { readonly unavailable: string };
   /** This install has an upgrader the admin can hand a request to. */
   readonly upgraderAvailable: boolean;
+  /**
+   * This install has a converge job the admin can start (#819): releases
+   * that change the cloud setup can install from Caelo at all.
+   */
+  readonly convergeAvailable: boolean;
   /** Why it has none right now, in plain words (null: none set up at all). */
   readonly upgraderProblem?: string | null;
   readonly now: Date;
@@ -128,6 +136,8 @@ export type AutoUpdateDecision =
       readonly version: string;
       readonly kind: UpdateKind;
       readonly basis: AutoUpdateBasis;
+      /** Which job installs it once the wait is over. */
+      readonly route: PlatformUpdateRoute;
       readonly reason: string;
       /** When it becomes installable; null = until the Owner resumes. */
       readonly until: Date | null;
@@ -139,6 +149,8 @@ export type AutoUpdateDecision =
       readonly version: string;
       readonly kind: UpdateKind;
       readonly basis: AutoUpdateBasis;
+      /** Which job installs it: the upgrader, or the converge job (#819). */
+      readonly route: PlatformUpdateRoute;
       readonly reason: string;
     };
 
@@ -228,20 +240,22 @@ export function decideAutoUpdate(input: AutoUpdateInput): AutoUpdateDecision {
     };
   }
   const facts = input.facts;
-  if (facts.infraChange === true) {
-    // FIXME(issue #819): once the converge job runs these releases from
-    // Caelo, `policy.autoConverge` decides here like autoPatch does below.
-    // Until then the Owner's "install automatically" choice is stored but
-    // has no effect, and the reason says so.
-    const ownerChoice = policy.autoConverge
-      ? " Your setting to install these automatically takes effect once Caelo can run them itself."
-      : "";
+  const converge = facts.infraChange === true;
+  if (converge && !input.convergeAvailable) {
     return {
       action: "needs_cloud_shell",
       ...base,
-      reason: `v${v} changes this install's cloud setup, which the admin may not do. It is never installed automatically: the Owner runs it once with their own account in Cloud Shell.${ownerChoice}`,
+      reason: `v${v} changes this install's cloud setup, and this install has no converge job to do that from Caelo. The Owner installs it once with their own account in Cloud Shell or from the computer they installed from.`,
     };
   }
+  if (converge && !policy.autoConverge) {
+    return {
+      action: "manual",
+      ...base,
+      reason: `v${v} changes this install's cloud setup. The update policy does not install those automatically; the Owner installs it from Settings → Updates.`,
+    };
+  }
+  const route: PlatformUpdateRoute = converge ? "converge" : "app_roll";
   if (facts.contractMigrations) {
     return {
       action: "manual",
@@ -265,7 +279,8 @@ export function decideAutoUpdate(input: AutoUpdateInput): AutoUpdateDecision {
       reason: `v${v} is a ${what}; the update policy does not install those automatically. The Owner installs it.`,
     };
   }
-  if (!input.upgraderAvailable) {
+  // A converge-route install needs the converge job (checked above), not the upgrader.
+  if (!converge && !input.upgraderAvailable) {
     return {
       action: "blocked",
       ...base,
@@ -274,7 +289,7 @@ export function decideAutoUpdate(input: AutoUpdateInput): AutoUpdateDecision {
         : `v${v} could install automatically, but this install has no upgrader the admin can start. Run the upgrade command from Settings → Updates once; it sets the upgrader up.`,
     };
   }
-  const auto = { ...base, basis } as const;
+  const auto = { ...base, basis, route } as const;
   if (isPausedAt(policy, now)) {
     const until = policy.pausedUntil === null ? null : new Date(policy.pausedUntil);
     const who = policy.pausedByOwner ? "by the Owner" : "after a failed automatic install";

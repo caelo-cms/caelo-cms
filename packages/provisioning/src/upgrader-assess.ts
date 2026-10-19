@@ -28,7 +28,7 @@
  * | installed below the release's minFromVersion        | refused           |
  * | release raises the infrastructure contract          | needs_cloud_shell |
  * |   … on the converge route (#819, the converge job)  | proceed           |
- * |   … converge route, automatic run                   | refused           |
+ * |   … converge route, automatic, autoConverge off     | refused           |
  * | contract (destructive) migrations, automatic run    | refused           |
  * | contract migrations, Owner's click                  | proceed + warning |
  * | automatic run the update policy does not allow      | refused           |
@@ -43,9 +43,10 @@
  *
  * The converge job (#819, converge-job.ts) asks with `route: "converge"`:
  * it runs as the install's provisioner, so an infrastructure change is what
- * it is for — every other row still applies. Automatic installs never take
- * the converge route: the update policy has no switch for it yet, so the
- * job refuses one the scheduler should never have queued.
+ * it is for — every other row still applies. An automatic run on the
+ * converge route needs the Owner's `autoConverge` (#864) on top of
+ * everything an automatic install needs; the scheduler queues one only
+ * then, and the job re-checks it here against the policy it claimed.
  */
 
 import {
@@ -224,11 +225,11 @@ export function assessUpgradeRequest(input: {
       manifest,
     );
   }
-  if (converge && request.trigger === "auto") {
+  if (converge && request.trigger === "auto" && !input.policy.autoConverge) {
     return stop(
       "refused",
       "policy",
-      `Not installed automatically: v${target} changes this install's cloud setup, and automatic installs of such releases are not switched on. Install it from Settings → Updates.`,
+      `Not installed automatically: v${target} changes this install's cloud setup, and the update policy does not install those automatically. Install it from Settings → Updates.`,
       manifest,
     );
   }

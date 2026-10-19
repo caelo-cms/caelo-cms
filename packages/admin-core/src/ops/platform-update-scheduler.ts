@@ -43,6 +43,8 @@ import {
   err,
   isNewerVersion,
   ok,
+  PLATFORM_UPDATE_ROUTES,
+  type PlatformUpdateRoute,
   UPDATE_NOTIFICATION_KINDS,
   type UpdateNotificationKind,
 } from "@caelo-cms/shared";
@@ -146,6 +148,8 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
       facts: z.union([releaseFactsSchema, z.object({ unavailable: z.string().min(1).max(1000) })]),
       /** This install has an upgrader the admin can hand a request to. */
       upgraderAvailable: z.boolean(),
+      /** This install has a converge job the admin can start (#819). */
+      convergeAvailable: z.boolean(),
       /** Why it has none right now (e.g. the self-hosted agent is not checking in). */
       upgraderProblem: z.string().max(2000).nullable(),
     })
@@ -158,6 +162,12 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
     requestId: z.string().nullable(),
     /** A pending automatic request the upgrader never claimed: start it again. */
     restartRequestId: z.string().nullable(),
+    /**
+     * Which job the request to start (new or restarted) is for (#819): the
+     * upgrader, or the converge job when the Owner allowed cloud-setup
+     * releases to install automatically. Null when there is none.
+     */
+    startRoute: z.enum(PLATFORM_UPDATE_ROUTES).nullable(),
     /** New outbox rows this tick wrote. */
     notificationsQueued: z.number().int(),
   }),
@@ -183,6 +193,7 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
         reason: null,
         requestId: null,
         restartRequestId: null,
+        startRoute: null,
         notificationsQueued: 0,
       });
     }
@@ -247,6 +258,7 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
       facts,
       upgraderAvailable: input.upgraderAvailable,
       upgraderProblem: input.upgraderProblem,
+      convergeAvailable: input.convergeAvailable,
       now: new Date(),
     });
 
@@ -298,8 +310,9 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
         };
       } else {
         const inserted = (await tx.execute(sql`
-          INSERT INTO platform_update_requests (target_version, from_version, trigger, auto_basis)
-          VALUES (${decision.version}, ${CAELO_VERSION}, 'auto', ${decision.basis})
+          INSERT INTO platform_update_requests
+            (target_version, from_version, trigger, auto_basis, route)
+          VALUES (${decision.version}, ${CAELO_VERSION}, 'auto', ${decision.basis}, ${decision.route})
           ON CONFLICT DO NOTHING
           RETURNING id::text AS id
         `)) as unknown as { id: string }[];
@@ -312,7 +325,12 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
           `);
           await recordAuditFromCtx(tx, ctx, {
             operation: SCHEDULER_TICK,
-            input: { event: "queued", targetVersion: decision.version, basis: decision.basis },
+            input: {
+              event: "queued",
+              targetVersion: decision.version,
+              basis: decision.basis,
+              route: decision.route,
+            },
             succeeded: true,
             entityId: requestId,
             resultSummary: `queued automatic ${CAELO_VERSION} → ${decision.version} (${decision.basis})`,
@@ -379,11 +397,11 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
 
     // 7. A request the upgrader never claimed (the start was lost).
     const stuck = (await tx.execute(sql`
-      SELECT id::text AS id FROM platform_update_requests
+      SELECT id::text AS id, route FROM platform_update_requests
        WHERE trigger = 'auto' AND status = 'pending'
          AND requested_at < now() - make_interval(mins => ${AUTO_REQUEST_RESTART_MINUTES})
        ORDER BY requested_at LIMIT 1
-    `)) as unknown as { id: string }[];
+    `)) as unknown as { id: string; route: PlatformUpdateRoute }[];
 
     const waitUntil = decision.action === "wait" ? decision.until : null;
     await tx.execute(sql`
@@ -400,6 +418,12 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
       reason: decision.reason,
       requestId,
       restartRequestId: requestId ? null : (stuck[0]?.id ?? null),
+      startRoute:
+        requestId && decision.action === "install"
+          ? decision.route
+          : requestId
+            ? null
+            : (stuck[0]?.route ?? null),
       notificationsQueued: queued,
     });
   },

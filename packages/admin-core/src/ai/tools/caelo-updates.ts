@@ -110,11 +110,11 @@ export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
     ].filter(Boolean);
     const lines = [
       p.mode === "auto"
-        ? `Automatic installs: on for ${kinds.length ? kinds.join(", ") : "nothing yet (no kind switched on)"}; major releases never; releases that change the cloud setup or the database destructively never (the Owner is emailed instead).`
+        ? `Automatic installs: on for ${kinds.length ? kinds.join(", ") : "nothing yet (no kind switched on)"}; major releases never; releases that destroy database data never; releases that change the cloud setup only when the Owner also allowed those (otherwise the Owner is emailed instead).`
         : "Automatic installs: off — the Owner is notified and installs by hand.",
       ...(p.mode === "auto" && p.autoConverge
         ? [
-            "The Owner also allowed releases that change the Google Cloud project to install automatically; that takes effect once Caelo can run them itself (not yet), so they are still announced only.",
+            "The Owner also allowed releases that change the Google Cloud project to install automatically: Caelo's converge job runs them under the same kinds, soak and window. An install without a converge job still announces them for the Owner to run from a terminal.",
           ]
         : []),
       p.windowStart

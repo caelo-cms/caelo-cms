@@ -344,12 +344,13 @@ describe("assessUpgradeRequest — the converge route (#819)", () => {
     manifest?: ReleaseManifestResult;
     installed?: InstalledState;
     trigger?: "manual" | "auto";
+    policy?: Partial<StoredUpdatePolicy>;
   }) =>
     assessUpgradeRequest({
       request: { targetVersion: "0.11.0", trigger: row.trigger ?? "manual" },
       manifest: row.manifest ?? verified({ infraContractVersion: 3 }),
       installed: row.installed ?? INSTALLED,
-      policy: POLICY,
+      policy: { ...POLICY, ...row.policy },
       now: NOW,
       route: "converge",
     });
@@ -365,8 +366,27 @@ describe("assessUpgradeRequest — the converge route (#819)", () => {
     expect(d.kind === "proceed" ? d.warnings : ["stopped"]).toEqual([]);
   });
 
-  it("never converges automatically: the policy has no switch for it", () => {
+  it("converges automatically only with the Owner's autoConverge (#864), default off", () => {
     expect(code(assess({ trigger: "auto" }))).toBe("refused/policy");
+    const off = assess({ trigger: "auto" });
+    expect(off.kind === "stop" ? off.reason : "").toContain("Settings → Updates");
+    expect(code(assess({ trigger: "auto", policy: { autoConverge: true } }))).toBe("proceed");
+  });
+
+  it("autoConverge never widens the rest of the policy: kinds, mode and pause still decide", () => {
+    const on = { autoConverge: true };
+    // 0.10.45 → 0.11.0 is a minor release.
+    expect(code(assess({ trigger: "auto", policy: { ...on, autoMinor: false } }))).toBe(
+      "refused/policy",
+    );
+    expect(code(assess({ trigger: "auto", policy: { ...on, mode: "notify" } }))).toBe(
+      "refused/policy",
+    );
+    expect(code(assess({ trigger: "auto", policy: { ...on, paused: true } }))).toBe(
+      "refused/policy",
+    );
+    // The Owner's click needs no autoConverge.
+    expect(code(assess({ trigger: "manual" }))).toBe("proceed");
   });
 
   it("keeps every other refusal: signature, downgrade, minFromVersion, unknown version", () => {

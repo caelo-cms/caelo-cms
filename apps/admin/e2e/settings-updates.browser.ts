@@ -463,7 +463,7 @@ test("Automatic updates: each change confirmed with the password; status and ema
   await expect(card.getByTestId("policy-auto-kinds")).toBeVisible();
   await card.getByTestId("policy-auto-patch").check();
   await card.getByTestId("policy-auto-converge").check();
-  await expect(card.getByTestId("policy-auto-converge-pending")).toContainText("Not yet in effect");
+  await expect(card.getByTestId("policy-auto-converge-hint")).toContainText("same wait");
   // Window and waiting times live under the collapsed "More settings".
   await expect(card.getByTestId("policy-window-enabled")).toBeHidden();
   await card.getByText("More settings").click();
