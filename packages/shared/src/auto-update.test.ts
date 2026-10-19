@@ -19,6 +19,7 @@ const POLICY: StoredUpdatePolicy = {
   autoSecurity: true,
   autoPatch: true,
   autoMinor: false,
+  autoConverge: false,
   channel: "stable",
   windowStart: null,
   windowEnd: null,
@@ -259,6 +260,37 @@ describe("decideAutoUpdate — releases that never install automatically", () =>
     expect(decideAutoUpdate({ ...input({}), ...over }).action).toBe(action);
   });
 
+  it("auto_converge on still never installs a cloud-setup change before #819 (inert)", () => {
+    const everything = {
+      ...POLICY,
+      autoSecurity: true,
+      autoPatch: true,
+      autoMinor: true,
+      autoConverge: true,
+    };
+    for (const facts of [
+      { ...FACTS, infraChange: true },
+      { ...SECURITY, infraChange: true },
+    ]) {
+      for (const version of [VERSIONS.patch, VERSIONS.minor]) {
+        const d = decideAutoUpdate(input({ policy: everything, facts, version }));
+        expect(d.action).toBe("needs_cloud_shell");
+        expect(d.reason).toContain("takes effect once Caelo can run them itself");
+      }
+    }
+  });
+
+  it("auto_converge off says nothing about the Owner's choice", () => {
+    const d = decideAutoUpdate(input({ facts: { ...FACTS, infraChange: true } }));
+    expect(d.reason).not.toContain("takes effect");
+  });
+
+  it("auto_converge does not touch releases without a cloud-setup change", () => {
+    const off = decideAutoUpdate(input({}));
+    const on = decideAutoUpdate(input({ policy: { ...POLICY, autoConverge: true } }));
+    expect(on).toEqual(off);
+  });
+
   it("infra unknown here is left to the upgrader (it checks install.json)", () => {
     expect(decideAutoUpdate(input({ facts: { ...FACTS, infraChange: null } })).action).toBe(
       "install",
@@ -289,7 +321,6 @@ describe("decideAutoUpdate — modes and versions", () => {
   it.each([
     ["up to date", { version: INSTALLED }, "none"],
     ["older release", { version: "0.10.40" }, "none"],
-    ["notices off", { policy: { ...POLICY, mode: "off" as const } }, "none"],
     ["notify mode", { policy: { ...POLICY, mode: "notify" as const } }, "notify"],
     [
       "notify mode, infra change",

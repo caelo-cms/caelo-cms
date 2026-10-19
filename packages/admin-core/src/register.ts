@@ -341,11 +341,7 @@ import {
   proposeSetStagingAccessOp,
   proposeSetStagingHostOp,
 } from "./ops/owner_settings_staging.js";
-import {
-  anyBootstrapTokenIssuedOp,
-  consumeBootstrapTokenOp,
-  insertBootstrapTokenOp,
-} from "./ops/owner-bootstrap-tokens.js";
+import { anyBootstrapTokenIssuedOp, insertBootstrapTokenOp } from "./ops/owner-bootstrap-tokens.js";
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import { appliedAdminMigrationsOp, appliedPublicMigrationsOp } from "./ops/platform_health.js";
@@ -620,7 +616,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createFirstOwnerOp);
   registry.register(isSetupCompleteOp);
   registry.register(insertBootstrapTokenOp);
-  registry.register(consumeBootstrapTokenOp);
   registry.register(anyBootstrapTokenIssuedOp);
   // P15 — provisioning outputs + DNS guidance.
   registry.register(setProvisioningOutputsOp);

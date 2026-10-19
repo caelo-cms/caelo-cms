@@ -195,6 +195,8 @@ describe("mcp_tokens lifecycle", () => {
  * A token is only as alive as the user it belongs to: a soft-deleted user
  * or one stripped of every role must not keep driving Caelo through a
  * bearer minted earlier. Regression for the remote-MCP review (#806).
+ * The deleted-user half (revoke in users.delete + `user_deleted` on
+ * resolution) lives in owner-invariants.integration.test.ts (M-09).
  */
 describe("mcp token resolution follows the user's state", () => {
   const userId = crypto.randomUUID();
@@ -254,42 +256,5 @@ describe("mcp token resolution follows the user's state", () => {
     });
     expect(restore.ok).toBe(true);
     expect(await resolveMessage(token.plaintextToken)).toBeNull();
-  });
-
-  it("refuses a token whose user is soft-deleted even when the token row was never revoked", async () => {
-    const token = await mint();
-    const sql = new SQL(ADMIN_URL);
-    try {
-      await sql.begin(async (tx) => {
-        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-        await tx`UPDATE users SET deleted_at = now() WHERE id = ${userId}::uuid`;
-      });
-      const refused = await resolveMessage(token.plaintextToken);
-      expect(refused).toMatch(/^auth_error: token user_deleted/);
-      expect(refused).toContain("/settings/mcp");
-    } finally {
-      await sql.begin(async (tx) => {
-        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-        await tx`UPDATE users SET deleted_at = NULL WHERE id = ${userId}::uuid`;
-      });
-      await sql.end();
-    }
-  });
-
-  it("users.delete revokes every live token of the user in the same transaction", async () => {
-    const a = await mint();
-    const b = await mint();
-    const del = await execute(registry, adapter, systemCtx, "users.delete", { userId });
-    expect(del.ok).toBe(true);
-
-    const list = await execute(registry, adapter, ownerCtx, "mcp_tokens.list", {});
-    expect(list.ok).toBe(true);
-    if (!list.ok) return;
-    const tokens = (list.value as { tokens: Array<{ id: string; revokedAt: string | null }> })
-      .tokens;
-    for (const id of [a.id, b.id]) {
-      expect(tokens.find((t) => t.id === id)?.revokedAt).not.toBeNull();
-    }
-    expect(await resolveMessage(a.plaintextToken)).toMatch(/^auth_error: token revoked/);
   });
 });

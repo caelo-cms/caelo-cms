@@ -37,7 +37,7 @@ export const load: PageServerLoad = ({ locals }) => {
 
 export const actions: Actions = {
   create: async ({ request, locals }) => {
-    requirePermission(locals, "content.read");
+    requirePermission(locals, "content.write");
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
