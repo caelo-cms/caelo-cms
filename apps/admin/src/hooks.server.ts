@@ -223,13 +223,15 @@ async function bootstrapPlugins(): Promise<void> {
   for (const f of report.failed) {
     console.error(`[hooks] plugin FAILED to load: ${f.slug} — ${f.reason}`);
   }
-  // #724 rollout E — after the plugin host, so plugins' link hooks take part.
-  await migrateLinksOnce();
   // #635 — the gateway has no cms_admin login: publish what it serves from
   // into cms_public now that the plugins (and their projection triggers)
   // are in place, then keep it current from the outbox.
   const publisher = startPublicProjectionPublisher({ adapter });
   await publisher.publishAll();
+  // #724 rollout E — after the plugin host, so plugins' link hooks take
+  // part, and after the gateway projection, which must not wait on a
+  // site-wide content conversion (nor on the editor rows it locks).
+  await migrateLinksOnce();
   // P12 review-pass #3 — startup warning if any loaded plugin declared
   // the `email` capability but no transport is configured. These sends
   // would fall through to the stderr stub silently otherwise.

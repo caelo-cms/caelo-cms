@@ -70,6 +70,7 @@ import {
   loadMainSets,
   loadPendingBranches,
   loadPluginRowTasks,
+  lockBranchEntities,
 } from "./migrate-load.js";
 
 /** One link the migration left literal. */
@@ -255,6 +256,7 @@ export async function migrateLinksToReferences(
     const lookup = await loadLinkTargetLookup(tx, b, scope.extraOwnHosts ?? []);
     const cx: ConvertContext = { lookup, ...(scope.only ? { only: scope.only } : {}) };
     const batch = new ScopeBatch();
+    if (scope.apply) await lockBranchEntities(tx, b);
     await migrateBranch(tx, b, cx, c, batch, pluginByBranch.get(b) ?? [], moduleFields);
     if (scope.apply && !batch.empty) {
       await batch.emit(tx, scope, b, "links.migrate_to_references");
@@ -277,7 +279,7 @@ async function migrateMainModules(
   c: Collector,
   batch: ScopeBatch,
 ): Promise<void> {
-  for (const m of await loadMainModules(tx)) {
+  for (const m of await loadMainModules(tx, { lock: scope.apply })) {
     const html = convertModuleHtml(m.html, cx);
     const fields = convertFieldDefaults(m.fields, cx);
     const entity = {
@@ -329,7 +331,7 @@ async function migrateMainInstances(
   batch: ScopeBatch,
   moduleFields: Map<string, { name: string; fields: unknown[] }>,
 ): Promise<void> {
-  for (const ci of await loadMainInstances(tx)) {
+  for (const ci of await loadMainInstances(tx, { lock: scope.apply })) {
     const mod = moduleFields.get(ci.moduleId);
     const out = convertContentValues(declaredFields(mod?.fields), ci.values, cx);
     const label = `content "${ci.label ?? mod?.name ?? ci.id}"${mod && ci.label ? ` (${mod.name})` : ""}`;
@@ -376,7 +378,7 @@ async function migrateMainSets(
   c: Collector,
   batch: ScopeBatch,
 ): Promise<void> {
-  for (const s of await loadMainSets(tx)) {
+  for (const s of await loadMainSets(tx, { lock: scope.apply })) {
     const out = convertSetItems(s.items, cx);
     c.record(out, "structured_sets", {
       entityKind: "structuredSet",
