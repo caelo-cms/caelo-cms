@@ -30,7 +30,10 @@
  *     object that does not exist, and an upload + a delete preconditioned
  *     on generation 1, which no object ever has. Cloud Storage authorizes a
  *     request before it evaluates its preconditions, so 403 means the
- *     permission is missing and 404/412 means it is held.
+ *     permission is missing and 404/412 means it is held — with one
+ *     exception: a read of an absent object is answered 403 whenever the
+ *     caller lacks storage.objects.list, so objects.get is probed only once
+ *     the bucket check confirmed list, and reported "unchecked" otherwise.
  *
  * Direct VPC egress (#818): the migration job and both services are
  * deployed with `--network/--subnet`. Google documents the compute
@@ -89,6 +92,11 @@ export interface AccessCheck {
 export interface MissingAccess {
   readonly check: AccessCheck;
   readonly missing: readonly string[];
+  /**
+   * Permissions that could not be judged because another one is missing
+   * first (storage.objects.get needs storage.objects.list to be testable).
+   */
+  readonly unchecked?: readonly string[];
 }
 
 /** The permissions IAM confirmed on one resource, or why it could not be asked. */
@@ -227,38 +235,77 @@ export async function runIamPreflight(
     byResource.set(key, entry);
   }
   const granted = new Map<string, ReadonlySet<string>>();
+  /** Permissions that could not be judged (see the object probes below). */
+  const unverified = new Map<string, ReadonlySet<string>>();
   const errors: string[] = [];
+  const ask = async (key: string, resource: IamResource, permissions: readonly string[]) => {
+    let r: GrantedResult;
+    try {
+      r = await tester.granted(resource, [...permissions].sort());
+    } catch (e) {
+      r = { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    if (r.ok) granted.set(key, new Set(r.granted));
+    else errors.push(`${key}: ${r.error}`);
+  };
+  const entries = [...byResource];
   await Promise.all(
-    [...byResource].map(async ([key, { resource, permissions }]) => {
-      let r: GrantedResult;
-      try {
-        r = await tester.granted(resource, [...permissions].sort());
-      } catch (e) {
-        r = { ok: false, error: e instanceof Error ? e.message : String(e) };
-      }
-      if (r.ok) granted.set(key, new Set(r.granted));
-      else errors.push(`${key}: ${r.error}`);
-    }),
+    entries
+      .filter(([, e]) => e.resource.kind !== "bucket-objects")
+      .map(([key, e]) => ask(key, e.resource, [...e.permissions])),
+  );
+  // The object probes go second: Cloud Storage answers a read of an absent
+  // object with 403 — not 404 — when the caller lacks storage.objects.list
+  // on the bucket, so the objects.get probe means something only once list
+  // is confirmed. Without it, get is reported as unchecked, never missing.
+  await Promise.all(
+    entries
+      .filter(([, e]) => e.resource.kind === "bucket-objects")
+      .map(([key, e]) => {
+        const r = e.resource as Extract<IamResource, { kind: "bucket-objects" }>;
+        const listHeld =
+          granted.get(resourceName({ kind: "bucket", bucket: r.bucket }))?.has(OBJECT_LIST) ??
+          false;
+        const asked = [...e.permissions].filter((p) => listHeld || p !== OBJECT_GET);
+        if (asked.length < e.permissions.size) unverified.set(key, new Set([OBJECT_GET]));
+        return ask(key, e.resource, asked);
+      }),
   );
   if (errors.length > 0) return { kind: "error", errors: errors.sort() };
   const missing: MissingAccess[] = [];
   for (const check of checks) {
-    const held = granted.get(resourceName(check.resource)) ?? new Set<string>();
-    const lacking = check.permissions.filter((p) => !held.has(p));
-    if (lacking.length > 0) missing.push({ check, missing: lacking });
+    const key = resourceName(check.resource);
+    const held = granted.get(key) ?? new Set<string>();
+    const unknown = unverified.get(key) ?? new Set<string>();
+    const lacking = check.permissions.filter((p) => !held.has(p) && !unknown.has(p));
+    const unchecked = check.permissions.filter((p) => unknown.has(p));
+    if (lacking.length > 0 || unchecked.length > 0) {
+      missing.push({ check, missing: lacking, ...(unchecked.length > 0 ? { unchecked } : {}) });
+    }
   }
   return missing.length === 0 ? { kind: "ok" } : { kind: "missing", missing };
 }
+
+const OBJECT_LIST = "storage.objects.list";
+const OBJECT_GET = "storage.objects.get";
 
 /**
  * The request's end reason for missing permissions: every one of them, each
  * with what it is for, then the one next step.
  */
 export function preflightMissingReason(missing: readonly MissingAccess[]): string {
-  const lines = missing.map(
-    (m) =>
-      `it cannot ${m.check.need} (missing ${m.missing.join(", ")} on ${resourceName(m.check.resource)})`,
-  );
+  const lines = missing.map((m) => {
+    const where = resourceName(m.check.resource);
+    const parts = [
+      ...(m.missing.length > 0 ? [`missing ${m.missing.join(", ")} on ${where}`] : []),
+      ...(m.unchecked && m.unchecked.length > 0
+        ? [
+            `${m.unchecked.join(", ")} on ${where} could not be checked: without storage.objects.list Cloud Storage answers 403 for any absent object, held or not`,
+          ]
+        : []),
+    ];
+    return `it ${m.missing.length > 0 ? "cannot" : "may not be able to"} ${m.check.need} (${parts.join("; ")})`;
+  });
   return `Nothing was changed: the upgrader checked its access before starting and is missing permissions this update needs — ${lines.join("; ")}. Run the upgrade once with Cloud Shell; it repairs the upgrader's access.`;
 }
 

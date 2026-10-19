@@ -180,6 +180,29 @@ describe("runIamPreflight", () => {
     expect(reason).toContain("Run the upgrade once with Cloud Shell");
   });
 
+  it("probes objects.get only once objects.list is confirmed; otherwise names it unchecked, not missing", async () => {
+    const withList: string[] = [];
+    await runIamPreflight(upgraderAccessChecks(TARGET), tester(setupGrants(), withList));
+    expect(withList.find((a) => a.startsWith("gs://acme-caelo-ops/install/"))).toContain(
+      "storage.objects.get",
+    );
+
+    const grants = setupGrants();
+    grants.get("gs://acme-caelo-ops")?.delete("storage.objects.list");
+    const asked: string[] = [];
+    const r = await runIamPreflight(upgraderAccessChecks(TARGET), tester(grants, asked));
+    const objects = asked.find((a) => a.startsWith("gs://acme-caelo-ops/install/"));
+    expect(objects).toBeDefined();
+    expect(objects).not.toContain("storage.objects.get");
+    expect(r.kind).toBe("missing");
+    if (r.kind !== "missing") return;
+    expect(r.missing.flatMap((m) => m.missing)).not.toContain("storage.objects.get");
+    expect(r.missing.flatMap((m) => m.unchecked ?? [])).toEqual(["storage.objects.get"]);
+    expect(preflightMissingReason(r.missing)).toContain(
+      "storage.objects.get on gs://acme-caelo-ops/install/ could not be checked",
+    );
+  });
+
   it("an unanswerable resource is an error, never 'nothing missing'", async () => {
     const failing: IamTester = {
       granted: async (resource) =>
