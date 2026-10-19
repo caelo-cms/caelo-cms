@@ -411,4 +411,42 @@ describe("#592 — menus and footer per language", () => {
     expect(de.html).toContain('<p class="tag">DE:Made with even more care</p>');
     expect(de.html).not.toContain('<footer class="us"');
   }, 60_000);
+
+  it("set_chrome_variants is all-or-nothing: a refused variant stores none of the batch", async () => {
+    const status = await op<{ chrome: { targetKey: string; label: string }[] }>("intl_status", {});
+    const ctaKey = status.chrome.find((c) => c.label.startsWith("Call to action"))?.targetKey;
+    if (!ctaKey) throw new Error("CTA chrome target missing — the translate_chrome test seeds it");
+    const readRows = () =>
+      sqlSystem(async (tx) => {
+        // Plugin tables are FORCE-RLS scoped to the plugin's id.
+        const plug =
+          (await tx`SELECT id::text AS id FROM plugins WHERE slug = 'international-site'`) as {
+            id: string;
+          }[];
+        await tx.unsafe(`SET LOCAL caelo.plugin_id = '${plug[0]?.id}'`);
+        return tx`SELECT target_key, locale_code, mode, "values"::text AS v FROM plugin_international_site.chrome_variants ORDER BY target_key, locale_code`;
+      });
+    const before = await readRows();
+    expect(before.length).toBeGreaterThan(0);
+
+    // The first variant is valid; the second links to a path that names
+    // no page, which core's canonicalisation refuses.
+    await expect(
+      op("set_chrome_variants", {
+        variants: [
+          {
+            targetKey: ctaKey,
+            localeCode: "de",
+            values: { cta_label: "Schreib uns", cta_href: "/t592-ueber" },
+          },
+          {
+            targetKey: footerKey(),
+            localeCode: "de",
+            values: { nav: [{ label: "Nirgends", href: "/t592-nowhere" }] },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/t592-nowhere/);
+    expect(await readRows()).toEqual(before);
+  }, 60_000);
 });

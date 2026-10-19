@@ -518,7 +518,10 @@ export async function setChromeVariants(
   const args = setVariantsArgs.parse(rawArgs);
   const targets = new Map((await loadChromeTargets(deps.cms)).map((t) => [t.key, t]));
   const variants = await loadChromeVariants(deps.q);
-  const updated: { targetKey: string; localeCode: string }[] = [];
+  // Two passes so the batch is all-or-nothing (CLAUDE.md §11): every
+  // variant is checked and its links canonicalised BEFORE the first row
+  // is written — a refused variant N must not leave 0..N-1 stored.
+  const rows: { existing: ChromeVariantRow | undefined; row: Omit<ChromeVariantRow, "id"> }[] = [];
   for (const v of args.variants) {
     requireTargetLocale(deps, v.localeCode);
     const target = targets.get(v.targetKey);
@@ -546,18 +549,23 @@ export async function setChromeVariants(
         : v.moduleId
           ? {}
           : (existing?.values ?? { ...target.values });
-    await upsertVariant(deps.q, existing, {
-      target_key: v.targetKey,
-      locale_code: v.localeCode,
-      mode: "independent",
-      module_id: v.moduleId ?? (v.values === undefined ? (existing?.module_id ?? null) : null),
-      values,
-      translation_status: "up_to_date",
-      source_hash: null,
+    rows.push({
+      existing,
+      row: {
+        target_key: v.targetKey,
+        locale_code: v.localeCode,
+        mode: "independent",
+        module_id: v.moduleId ?? (v.values === undefined ? (existing?.module_id ?? null) : null),
+        values,
+        translation_status: "up_to_date",
+        source_hash: null,
+      },
     });
-    updated.push({ targetKey: v.targetKey, localeCode: v.localeCode });
   }
-  return { updated };
+  for (const { existing, row } of rows) await upsertVariant(deps.q, existing, row);
+  return {
+    updated: rows.map(({ row }) => ({ targetKey: row.target_key, localeCode: row.locale_code })),
+  };
 }
 
 /**
