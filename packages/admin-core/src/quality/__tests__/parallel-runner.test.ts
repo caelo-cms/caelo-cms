@@ -105,6 +105,7 @@ describe("planAuditTasks", () => {
       kind: "gcs-staging" as const,
       runId: "00000000-0000-4000-8000-0000000000cc",
       baseUrl: "http://127.0.0.1:4000",
+      apiOrigin: "https://example.com",
     };
     for (const t of planAuditTasks({ ...job, stagedBuild }, JOB_ID)) {
       expect(t.order.stagedBuild).toEqual(stagedBuild);

@@ -2,10 +2,11 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { request } from "node:http";
+import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  apiTargetFor,
   localBuildSource,
   type StagedOrigin,
   serveStagedBuild,
@@ -138,5 +139,101 @@ describe("serveStagedBuild over a local build", () => {
     const other = await serveStagedBuild(localBuildSource(build));
     await other.close();
     await expect(fetch(`${other.baseUrl}/`)).rejects.toThrow();
+  });
+});
+
+describe("apiTargetFor", () => {
+  const api = "https://example.com";
+
+  it("maps /api/ paths onto the gateway origin", () => {
+    expect(apiTargetFor("/api/plugin/ratings/summary?x=1", api)?.href).toBe(
+      "https://example.com/api/plugin/ratings/summary?x=1",
+    );
+  });
+
+  it("leaves everything else to the build and never leaves the origin or /api/", () => {
+    for (const path of ["/", "/apixyz", "/about/api/x", "//evil.example/api/x", "/api/../admin"]) {
+      expect(apiTargetFor(path, api)).toBeNull();
+    }
+  });
+});
+
+describe("serveStagedBuild with the gateway behind /api/", () => {
+  let gateway: Server;
+  let origin: StagedOrigin;
+  const seen: { method: string; url: string; body: string; cookie?: string; host?: string }[] = [];
+
+  beforeAll(async () => {
+    gateway = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => {
+        body += c;
+      });
+      req.on("end", () => {
+        seen.push({
+          method: req.method ?? "",
+          url: req.url ?? "",
+          body,
+          cookie: req.headers.cookie,
+          host: req.headers.host,
+        });
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Set-Cookie": ["a=1; Path=/", "b=2; Path=/"],
+        });
+        res.end(JSON.stringify({ ok: true, data: { average: 4.5 } }));
+      });
+    });
+    await new Promise<void>((r) => gateway.listen(0, "127.0.0.1", () => r()));
+    const address = gateway.address();
+    if (address === null || typeof address === "string") throw new Error("no port");
+    origin = await serveStagedBuild(
+      {
+        read: async (key) =>
+          key === "index.html" ? { bytes: new Uint8Array([60]), contentType: "text/html" } : null,
+      },
+      { apiOrigin: `http://127.0.0.1:${address.port}` },
+    );
+  });
+
+  afterAll(async () => {
+    await origin.close();
+    await new Promise<void>((r) => gateway.close(() => r()));
+  });
+
+  it("forwards a plugin POST with its body and cookie and returns the answer unchanged", async () => {
+    const res = await fetch(`${origin.baseUrl}/api/plugin/ratings/summary`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: "caelo_v=x" },
+      body: JSON.stringify({ pageId: "p1" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, data: { average: 4.5 } });
+    expect(res.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+    expect(seen.at(-1)).toMatchObject({
+      method: "POST",
+      url: "/api/plugin/ratings/summary",
+      body: JSON.stringify({ pageId: "p1" }),
+      cookie: "caelo_v=x",
+    });
+    // The gateway sees its own host, not the loopback's.
+    expect(seen.at(-1)?.host).not.toBe(new URL(origin.baseUrl).host);
+  });
+
+  it("forwards GETs and still serves the build and refuses build writes", async () => {
+    expect((await fetch(`${origin.baseUrl}/api/captcha/challenge`)).status).toBe(200);
+    expect(seen.at(-1)).toMatchObject({ method: "GET", url: "/api/captcha/challenge" });
+    expect((await fetch(`${origin.baseUrl}/`)).status).toBe(200);
+    expect((await fetch(`${origin.baseUrl}/`, { method: "POST" })).status).toBe(405);
+  });
+
+  it("refuses a body above the gateway's ceiling without forwarding it", async () => {
+    const before = seen.length;
+    const res = await fetch(`${origin.baseUrl}/api/plugin/forms/submit`, {
+      method: "POST",
+      body: new Uint8Array(1024 * 1024 + 1),
+    });
+    expect(res.status).toBe(413);
+    expect(seen.length).toBe(before);
   });
 });

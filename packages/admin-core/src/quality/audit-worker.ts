@@ -104,6 +104,11 @@ export type StagingOrigin =
 export interface OriginEnv {
   readonly provider?: string;
   readonly stagingBaseUrl?: string;
+  /**
+   * gcp: the live site origin (`CAELO_SITE_URL`) whose `/api/*` reaches
+   * the gateway; the loopback origin forwards plugin calls there.
+   */
+  readonly siteUrl?: string;
   /** Override the file source of a loopback origin (tests). */
   readonly loopbackSource?: (run: ClaimedAuditRun) => StagedFileSource;
 }
@@ -192,6 +197,15 @@ export async function resolveStagingOrigin(
   if (provider === "gcp" || provider === "aws" || provider === "azure") {
     // No staging URL the browser can open (gcp: private bucket behind the
     // IAP-gated admin proxy): serve the run's files on a loopback port.
+    const apiOrigin = provider === "gcp" ? env.siteUrl?.trim() : undefined;
+    if (provider === "gcp" && !apiOrigin) {
+      return {
+        ok: false,
+        code: "staging-unresolvable",
+        message:
+          "CAELO_SITE_URL is not set on the admin, so the audit cannot reach the API gateway that plugin components on the staged pages call — run `cms-provision upgrade`",
+      };
+    }
     let source: StagedFileSource;
     if (env.loopbackSource) {
       source = env.loopbackSource(run);
@@ -200,17 +214,18 @@ export async function resolveStagingOrigin(
       if ("code" in found) return { ok: false, code: found.code, message: found.message };
       source = found.source;
     }
-    const origin = await serveStagedBuild(source);
+    const origin = await serveStagedBuild(source, apiOrigin ? { apiOrigin } : {});
     return {
       ok: true,
       baseUrl: origin.baseUrl,
       close: origin.close,
-      ...(provider === "gcp"
+      ...(provider === "gcp" && apiOrigin
         ? {
             stagedBuild: {
               kind: "gcs-staging" as const,
               runId: run.deployRunId,
               baseUrl: origin.baseUrl,
+              apiOrigin,
             },
           }
         : {}),
@@ -317,6 +332,7 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
   const env = deps.env ?? {
     provider: process.env.CAELO_PROVIDER,
     stagingBaseUrl: process.env.CAELO_STAGING_BASE_URL,
+    siteUrl: process.env.CAELO_SITE_URL,
   };
   if (run.pages.length === 0 && run.checkPages.length === 0) {
     await record(deps, run.auditRunId, null, {

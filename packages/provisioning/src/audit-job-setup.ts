@@ -29,7 +29,10 @@
  *   - `roles/logging.logWriter`.
  *
  * Nothing else: no Secret Manager, no Cloud SQL, and no VPC egress, so the
- * database's private IP is not even routable from a task. The admin's run
+ * database's private IP is not even routable from a task. Plugin data on a
+ * page comes the way any visitor gets it: the task's browser calls the
+ * site's public `/api/*` (the gateway, behind Cloud Armor) over the
+ * internet. The admin's run
  * SA may run the job WITH overrides (`roles/run.jobsExecutorWithOverrides`:
  * it passes each audit's batch of orders), read its executions
  * (`roles/run.viewer`) and read the results bucket. Unlike the

@@ -55,7 +55,9 @@ async function measure(order: AuditTaskOrder): Promise<AuditTaskResult> {
   let close: (() => Promise<void>) | undefined;
   let taskBase: string | null = null;
   if (order.stagedBuild) {
-    const origin = await serveStagedBuild(gcsStagingSource(order.stagedBuild.runId));
+    const origin = await serveStagedBuild(gcsStagingSource(order.stagedBuild.runId), {
+      apiOrigin: order.stagedBuild.apiOrigin,
+    });
     close = origin.close;
     taskBase = origin.baseUrl;
     const base = trimTrailingSlash(order.stagedBuild.baseUrl);

@@ -151,6 +151,7 @@ describe("resolveStagingOrigin", () => {
     for (const provider of ["gcp", "aws", "azure"]) {
       const r = await resolveStagingOrigin(run(), {
         provider,
+        siteUrl: "https://example.com",
         loopbackSource: () => ({
           read: async (key) =>
             key === "index.html"
@@ -161,15 +162,27 @@ describe("resolveStagingOrigin", () => {
       if (!r.ok) throw new Error(r.message);
       expect(r.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
       expect(await (await fetch(`${r.baseUrl}/`)).text()).toBe("<h1>staged</h1>");
+      expect(r.stagedBuild?.apiOrigin).toBe(provider === "gcp" ? "https://example.com" : undefined);
       await r.close?.();
     }
+  });
+
+  it("gcp without the site URL fails loudly: plugin calls would have no gateway", async () => {
+    const r = await resolveStagingOrigin(run(), {
+      provider: "gcp",
+      loopbackSource: () => ({ read: async () => null }),
+    });
+    expect(r).toMatchObject({ ok: false, code: "staging-unresolvable" });
+    if (!r.ok) expect(r.message).toContain("CAELO_SITE_URL");
   });
 
   it("gcp without its bucket env and aws without the build on this instance fail loudly", async () => {
     const saved = process.env.CAELO_STAGING_BUCKET;
     delete process.env.CAELO_STAGING_BUCKET;
     try {
-      expect(await resolveStagingOrigin(run(), { provider: "gcp" })).toMatchObject({
+      expect(
+        await resolveStagingOrigin(run(), { provider: "gcp", siteUrl: "https://example.com" }),
+      ).toMatchObject({
         ok: false,
         code: "staging-unresolvable",
       });

@@ -10,7 +10,9 @@
  * Trust boundary. The audit job runs as its own service account, which may
  * read the staged build (the staging and static buckets, read-only), create
  * objects in the audit results bucket and write logs — nothing else: no
- * Cloud SQL (and no VPC egress to reach it), no Secret Manager. The admin
+ * Cloud SQL (and no VPC egress to reach it), no Secret Manager. Plugin
+ * calls on the audited pages go to the site's public gateway, as a
+ * visitor's would (staged-origin.ts). The admin
  * may run that one job WITH overrides (it must pass the batch), read its
  * executions and read the results bucket. A compromised admin can therefore
  * make the job load other URLs, but the job holds nothing worth taking.
