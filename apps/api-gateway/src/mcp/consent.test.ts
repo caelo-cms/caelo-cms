@@ -50,6 +50,8 @@ describe("consent page", () => {
     const html = await res.clone().text();
     // Where the code goes, the self-chosen name marked unverified, and the surface.
     expect(html).toContain("https://chatgpt.com");
+    // On a shared host the callback id is what identifies the recipient: show all of it.
+    expect(html).toContain(CHATGPT_CALLBACK);
     expect(html).toContain("Totally Claude");
     expect(html).toContain("name not verified");
     expect(html).toContain("admin tools");

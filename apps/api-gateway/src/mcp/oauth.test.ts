@@ -22,6 +22,7 @@ import {
   ISSUER,
   location,
   obtainCode,
+  openAccess,
   PUBLIC,
   pkce,
   postToken,
@@ -762,11 +763,17 @@ describe("token: authorization_code", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toMatchObject({
-      access_token: fakeIdToken({ aud: GOOGLE_CLIENT_ID, exp: h.nowSeconds() + 3600 }),
       token_type: "Bearer",
       // From the ID token's exp, not Google's access-token expires_in (3599).
       expires_in: 3600,
     });
+    // The bearer is the ID token sealed with the surface it was granted for.
+    expect(openAccess(String(body.access_token), h.nowSeconds())).toEqual({
+      id_token: fakeIdToken({ aud: GOOGLE_CLIENT_ID, exp: h.nowSeconds() + 3600 }),
+      resource: `${PUBLIC}/api/mcp/admin`,
+      exp: h.nowSeconds() + 3600,
+    });
+    expect(String(body.access_token)).not.toContain(".eyJ");
     expect(JSON.stringify(body)).not.toContain("ya29.");
     expect(String(body.refresh_token)).toStartWith("v2.");
     expect(String(body.refresh_token)).not.toContain("google-refresh");
@@ -1006,13 +1013,12 @@ describe("token: refresh_token", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toMatchObject({
-      access_token: fakeIdToken({
-        aud: GOOGLE_CLIENT_ID,
-        exp: h.nowSeconds() + 3500,
-        refreshed: true,
-      }),
-      expires_in: 3500,
+    expect(body).toMatchObject({ expires_in: 3500 });
+    expect(openAccess(String(body.access_token), h.nowSeconds())).toEqual({
+      id_token: fakeIdToken({ aud: GOOGLE_CLIENT_ID, exp: h.nowSeconds() + 3500, refreshed: true }),
+      // The client never named a resource: consented (and valid) for both surfaces.
+      resource: null,
+      exp: h.nowSeconds() + 3500,
     });
     expect(String(body.refresh_token)).toStartWith("v2.");
     expect(Object.fromEntries(h.googleForms[1] ?? [])).toEqual({

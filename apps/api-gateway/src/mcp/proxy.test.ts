@@ -8,7 +8,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { BASE_ENV, CONFIGURED_FILE, PUBLIC } from "./__tests__/harness.js";
+import { accessToken, BASE_ENV, CONFIGURED_FILE, PUBLIC } from "./__tests__/harness.js";
 import type { ProxyLimits } from "./context.js";
 import { MAX_PROXY_BODY_BYTES, PROXY_LIMITS } from "./proxy.js";
 import { createMcpRouter } from "./routes.js";
@@ -165,6 +165,80 @@ describe("MCP proxy", () => {
     expect(seen).toHaveLength(0);
   });
 
+  it("enforces the surface a token was granted for, before anything goes upstream", async () => {
+    const chatOnly = accessToken("ok", `${PUBLIC}/api/mcp/chat`);
+    const toAdmin = await send("/api/mcp/admin", {
+      method: "POST",
+      body: "{}",
+      headers: { authorization: `Bearer ${chatOnly}` },
+    });
+    expect(toAdmin.status).toBe(401);
+    expect(toAdmin.headers.get("www-authenticate")).toBe(
+      `Bearer resource_metadata="${PUBLIC}/api/mcp/oauth/protected-resource/admin", error="invalid_token"`,
+    );
+    expect(seen).toHaveLength(0);
+    const toChat = await send("/api/mcp/chat", {
+      method: "POST",
+      body: "{}",
+      headers: { authorization: `Bearer ${chatOnly}` },
+    });
+    expect(toChat.status).toBe(200);
+    // A grant consented to for both surfaces opens both.
+    for (const surface of ["chat", "admin"]) {
+      const res = await send(`/api/mcp/${surface}`, {
+        method: "POST",
+        body: "{}",
+        headers: { authorization: `Bearer ${accessToken("ok")}` },
+      });
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it("refuses a raw Google token, a forged or an expired access token without calling the admin", async () => {
+    for (const bearer of [
+      "eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJ4In0.c2ln",
+      "ya29.google-access-token",
+      accessToken("ok", null, { ttlSeconds: -1 }),
+      `${accessToken("ok").slice(0, -4)}AAAA`,
+    ]) {
+      const res = await send("/api/mcp/chat", {
+        method: "POST",
+        body: "{}",
+        headers: { authorization: `Bearer ${bearer}` },
+      });
+      expect(res.status).toBe(401);
+      expect(res.headers.get("www-authenticate")).toBe(`${CHALLENGE_CHAT}, error="invalid_token"`);
+      expect(seen).toHaveLength(0);
+    }
+  });
+
+  it("starts the first-response timeout only after the request body was sent", async () => {
+    // The upload alone takes longer than the admin is allowed to think.
+    const chunk = new Uint8Array(64).fill(120);
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (sent >= 4) return controller.close();
+        sent++;
+        await new Promise((r) => setTimeout(r, 150));
+        controller.enqueue(chunk);
+      },
+    });
+    const res = await send(
+      "/api/mcp/chat",
+      {
+        method: "POST",
+        body: stream,
+        headers: { authorization: `Bearer ${accessToken("ok")}` },
+        duplex: "half",
+      } as RequestInit,
+      idleRecorder(),
+      { ...PROXY_LIMITS, firstResponseTimeoutMs: 300 },
+    );
+    expect(res.status).toBe(200);
+    expect(seen[0]?.body.length).toBe(256);
+  });
+
   it("forwards only allowlisted headers and sets fresh forwarding facts", async () => {
     const idle = idleRecorder();
     const res = await send(
@@ -173,7 +247,7 @@ describe("MCP proxy", () => {
         method: "POST",
         body: '{"jsonrpc":"2.0"}',
         headers: {
-          authorization: "Bearer ya29.user-token",
+          authorization: `Bearer ${accessToken("ya29.user-token")}`,
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
           "mcp-session-id": "s",
@@ -232,7 +306,7 @@ describe("MCP proxy", () => {
     const res = await send("/api/mcp/chat", {
       method: "POST",
       body: "{}",
-      headers: { authorization: "Bearer ok" },
+      headers: { authorization: `Bearer ${accessToken("ok")}` },
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("mcp-session-id")).toBe("sess-1");
@@ -261,7 +335,7 @@ describe("MCP proxy", () => {
       const idle = idleRecorder();
       const r401 = await send(
         "/api/mcp/chat",
-        { method: "POST", headers: { authorization: `Bearer ${token}` } },
+        { method: "POST", headers: { authorization: `Bearer ${accessToken(token)}` } },
         idle,
       );
       expect(r401.status).toBe(401);
@@ -274,7 +348,7 @@ describe("MCP proxy", () => {
   it("maps IAP's 403 to not_a_caelo_user and passes the admin's own 403 through", async () => {
     const r403 = await send("/api/mcp/chat", {
       method: "POST",
-      headers: { authorization: "Bearer iap-403" },
+      headers: { authorization: `Bearer ${accessToken("iap-403")}` },
     });
     expect(r403.status).toBe(403);
     expect(await r403.json()).toEqual({
@@ -284,7 +358,7 @@ describe("MCP proxy", () => {
     });
     const app = await send("/api/mcp/chat", {
       method: "POST",
-      headers: { authorization: "Bearer app-403" },
+      headers: { authorization: `Bearer ${accessToken("app-403")}` },
     });
     expect(app.status).toBe(403);
     expect(((await app.json()) as { message: string }).message).toBe("from the admin");
@@ -294,7 +368,10 @@ describe("MCP proxy", () => {
     const idle = idleRecorder();
     const res = await send(
       "/api/mcp/chat",
-      { method: "GET", headers: { authorization: "Bearer sse", accept: "text/event-stream" } },
+      {
+        method: "GET",
+        headers: { authorization: `Bearer ${accessToken("sse")}`, accept: "text/event-stream" },
+      },
       idle,
     );
     expect(res.status).toBe(200);
@@ -325,7 +402,7 @@ describe("MCP proxy", () => {
     const started = Date.now();
     const res = await send(
       "/api/mcp/chat",
-      { method: "POST", body: "{}", headers: { authorization: "Bearer hang" } },
+      { method: "POST", body: "{}", headers: { authorization: `Bearer ${accessToken("hang")}` } },
       idle,
       { ...PROXY_LIMITS, firstResponseTimeoutMs: 300 },
     );
@@ -343,7 +420,7 @@ describe("MCP proxy", () => {
       {
         method: "POST",
         body: "x".repeat(2048),
-        headers: { authorization: "Bearer ok", "content-length": "2048" },
+        headers: { authorization: `Bearer ${accessToken("ok")}`, "content-length": "2048" },
       },
       idleRecorder(),
       limits,
@@ -365,7 +442,7 @@ describe("MCP proxy", () => {
       {
         method: "POST",
         body: stream,
-        headers: { authorization: "Bearer ok" },
+        headers: { authorization: `Bearer ${accessToken("ok")}` },
         duplex: "half",
       } as RequestInit,
       idleRecorder(),
@@ -376,7 +453,11 @@ describe("MCP proxy", () => {
 
     const fits = await send(
       "/api/mcp/chat",
-      { method: "POST", body: "x".repeat(1024), headers: { authorization: "Bearer ok" } },
+      {
+        method: "POST",
+        body: "x".repeat(1024),
+        headers: { authorization: `Bearer ${accessToken("ok")}` },
+      },
       idleRecorder(),
       limits,
     );
@@ -398,7 +479,7 @@ describe("MCP proxy", () => {
     const res = await r(
       new Request(`${PUBLIC}/api/mcp/chat`, {
         method: "POST",
-        headers: { authorization: "Bearer x" },
+        headers: { authorization: `Bearer ${accessToken("x")}` },
       }),
       { clientAddress: "198.51.100.7", setIdleTimeout: () => {} },
     );
@@ -407,7 +488,7 @@ describe("MCP proxy", () => {
     expect(((await res.json()) as { error: string }).error).toBe("admin_unreachable");
     const put = await send("/api/mcp/chat", {
       method: "PUT",
-      headers: { authorization: "Bearer x" },
+      headers: { authorization: `Bearer ${accessToken("x")}` },
     });
     expect(put.status).toBe(405);
   });

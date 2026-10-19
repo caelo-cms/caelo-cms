@@ -29,7 +29,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import type { z } from "zod";
 
 /** The kinds of sealed values; each is bound to its own AAD. */
-export type SealPurpose = "state" | "code" | "refresh" | "client" | "consent";
+export type SealPurpose = "state" | "code" | "refresh" | "client" | "consent" | "access";
 
 const VERSION = "v2";
 const IV_BYTES = 12;

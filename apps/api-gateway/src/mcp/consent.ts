@@ -14,8 +14,12 @@
  * that client — the confused-deputy case the MCP Security Best Practices
  * call out for proxies with a static upstream client
  * (https://modelcontextprotocol.io/specification/2025-06-18/basic/security_best_practices#confused-deputy-problem).
- * The page names where the user will be sent back to, the app's
- * self-chosen name (labelled unverified), and what it gets access to.
+ * The page names where the user will be sent back to — the host, and the
+ * full redirect URI, because on a shared host such as chatgpt.com the
+ * callback id in the path is what tells one connector owner from another
+ * — the app's self-chosen name (labelled unverified), and what it gets
+ * access to. That access is enforced, not just shown: the access token is
+ * bound to the surface (access-token.ts).
  *
  * The binding: GET /authorize sets a `__Host-` cookie holding a random
  * nonce and embeds a sealed consent token carrying the same nonce plus the
@@ -166,7 +170,7 @@ export function consentPage(p: ConsentPage): Response {
 <p>An app wants to use this Caelo site on your behalf. Only continue if you just started connecting it yourself.</p>
 <dl>
 <dt>App</dt><dd>${name}</dd>
-<dt>Sends you back to</dt><dd><strong>${escapeHtml(redirect.target)}</strong>${redirect.note ? ` (${escapeHtml(redirect.note)})` : ""}</dd>
+<dt>Sends you back to</dt><dd><strong>${escapeHtml(redirect.target)}</strong>${redirect.note ? ` (${escapeHtml(redirect.note)})` : ""}<br><code>${escapeHtml(p.redirectUri)}</code></dd>
 <dt>Gets access to</dt><dd>${escapeHtml(access)}</dd>
 </dl>
 <p>If you approve, Google asks you to sign in next. The app can then act with your Caelo permissions until you disconnect it.</p>

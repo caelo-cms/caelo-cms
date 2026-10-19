@@ -5,8 +5,10 @@
  * admin's `/api/mcp/remote/<surface>`, streamed both ways (MCP Streamable
  * HTTP answers with SSE that can stay open for minutes).
  *
- * The broker holds no admin credential. What reaches the admin is the
- * user's own Google ID token, and IAP decides: a token not issued to the
+ * The broker holds no admin credential. The client's bearer is a sealed
+ * access token (access-token.ts); the proxy refuses one minted for the
+ * other surface and forwards only the user's own Google ID token inside
+ * it, and IAP decides: a token not issued to the
  * allowlisted client → IAP 401 (the client signs in again); a user
  * without access → IAP 403 (told to ask the Owner). The admin then reads
  * the user from IAP's signed `x-goog-iap-jwt-assertion`.
@@ -20,8 +22,9 @@
  *
  * Timeouts: Bun cuts a request whose socket is idle for its idle timeout.
  * The proxy keeps that timeout at {@link ProxyLimits.firstResponseTimeoutMs}
- * while waiting for the admin's headers (and aborts the upstream request
- * itself at that point, answering 504), and lifts it only once the admin
+ * while the request streams up and while it waits for the admin's headers,
+ * aborts the upstream request itself when the admin has not answered that
+ * long after the last request byte (504), and lifts it only once the admin
  * answered 2xx `text/event-stream` — the one response that may then stay
  * quiet between events. An unauthenticated or refused request never holds
  * a connection open. The admin's remote endpoint therefore answers a long
@@ -29,6 +32,7 @@
  * as one JSON body after minutes.
  */
 
+import { openAccessToken } from "./access-token.js";
 import type { McpSurface } from "./config.js";
 import type { McpContext, ProxyLimits } from "./context.js";
 import { resourceMetadataUrl } from "./context.js";
@@ -122,11 +126,15 @@ export function upstreamRequestHeaders(req: Request, ctx: McpContext): Headers {
   return headers;
 }
 
-/** The request body, erroring the stream as soon as it passes `limit` bytes. */
+/**
+ * The request body, erroring the stream as soon as it passes `limit`
+ * bytes, and calling `onComplete` once the last byte went upstream.
+ */
 function cappedBody(
   body: ReadableStream<Uint8Array>,
   limit: number,
   onExceeded: () => void,
+  onComplete: () => void,
 ): ReadableStream<Uint8Array> {
   let total = 0;
   return body.pipeThrough(
@@ -139,6 +147,9 @@ function cappedBody(
           return;
         }
         controller.enqueue(chunk);
+      },
+      flush() {
+        onComplete();
       },
     }),
   );
@@ -163,33 +174,56 @@ export async function handleMcpProxy(
     });
   }
   const auth = req.headers.get("authorization");
-  if (!auth || !/^Bearer [A-Za-z0-9._~+/-]+=*$/i.test(auth)) {
-    return unauthorized(ctx, surface, auth !== null);
-  }
+  const bearer = auth ? /^Bearer ([A-Za-z0-9._~+/-]+=*)$/i.exec(auth)?.[1] : undefined;
+  if (bearer === undefined) return unauthorized(ctx, surface, auth !== null);
+  // The surface binding is checked here, before anything goes upstream:
+  // a token approved for chat never reaches the admin surface.
+  const idToken = openAccessToken(ctx, bearer, surface);
+  if (idToken === null) return unauthorized(ctx, surface, true);
   const limits = ctx.proxyLimits;
   const declared = Number(req.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > limits.maxBodyBytes) {
     return tooLarge(limits.maxBodyBytes);
   }
+
+  // The first-response clock starts once the request is fully sent: a
+  // 28 MiB upload on a slow link may take longer than the admin is
+  // allowed to think. While the body streams, Bun's idle timeout (below)
+  // still cuts a client that stops sending.
+  const firstResponse = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // An admin that answers before reading the whole body has answered: the
+  // clock must not start (and later abort the response stream) after that.
+  let answered = false;
+  const startFirstResponseClock = () => {
+    if (answered) return;
+    timer ??= setTimeout(() => firstResponse.abort(), limits.firstResponseTimeoutMs);
+  };
   let overCap = false;
   const body =
     req.method === "POST" && req.body
-      ? cappedBody(req.body, limits.maxBodyBytes, () => {
-          overCap = true;
-        })
+      ? cappedBody(
+          req.body,
+          limits.maxBodyBytes,
+          () => {
+            overCap = true;
+          },
+          startFirstResponseClock,
+        )
       : null;
+  if (!body) startFirstResponseClock();
 
   // Bun's idle timeout must not fire before the proxy's own first-response
   // timeout does (Bun takes whole seconds, at most 255).
   hooks.setIdleTimeout(Math.min(255, Math.ceil(limits.firstResponseTimeoutMs / 1000) + 1));
-  const firstResponse = new AbortController();
-  const timer = setTimeout(() => firstResponse.abort(), limits.firstResponseTimeoutMs);
+  const upHeaders = upstreamRequestHeaders(req, ctx);
+  upHeaders.set("authorization", `Bearer ${idToken}`);
   const target = `${ctx.config.adminUrl}/api/mcp/remote/${surface}`;
   let upstream: Response;
   try {
     upstream = await ctx.fetchImpl(target, {
       method: req.method,
-      headers: upstreamRequestHeaders(req, ctx),
+      headers: upHeaders,
       ...(body ? { body, duplex: "half" } : {}),
       redirect: "manual",
       // Pass the admin's bytes through untouched; SSE must not be buffered by a decoder.
@@ -223,6 +257,7 @@ export async function handleMcpProxy(
       502,
     );
   } finally {
+    answered = true;
     clearTimeout(timer);
   }
   if (overCap) {

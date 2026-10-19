@@ -8,10 +8,12 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { AccessSealSchema } from "../access-token.js";
 import type { ProxyLimits } from "../context.js";
 import { GOOGLE_TOKEN_URL } from "../google.js";
 import type { BucketSpec, McpRateClass } from "../rate-limit.js";
 import { createMcpRouter, type McpRouter } from "../routes.js";
+import { open, seal } from "../seal.js";
 
 export const PUBLIC = "https://gw.example.com";
 export const ISSUER = `${PUBLIC}/api/mcp/oauth`;
@@ -38,6 +40,34 @@ export const CONFIGURED_FILE = JSON.stringify({
 
 /** The harness clock starts here (ms). */
 export const START_MS = 1_800_000_000_000;
+
+const SEAL_KEY = new Uint8Array(Buffer.from(SEAL_KEY_B64, "base64"));
+
+/**
+ * A broker access token wrapping `idToken`, as /token mints it: bound to
+ * `resource` (null = both surfaces), expiring `ttlSeconds` after `nowMs`.
+ */
+export function accessToken(
+  idToken: string,
+  resource: string | null = null,
+  { nowMs = Date.now(), ttlSeconds = 3600 }: { nowMs?: number; ttlSeconds?: number } = {},
+): string {
+  return seal(SEAL_KEY, "access", {
+    id_token: idToken,
+    resource,
+    exp: Math.floor(nowMs / 1000) + ttlSeconds,
+  });
+}
+
+/** What an access token from /token carries (fails the test if it is not one). */
+export function openAccess(
+  token: string,
+  nowSeconds: number,
+): { id_token: string; resource: string | null; exp: number } {
+  const opened = open(SEAL_KEY, "access", token, AccessSealSchema, nowSeconds);
+  if (!opened.ok) throw new Error(`not a broker access token (${opened.reason})`);
+  return opened.value;
+}
 
 /** An unsigned JWT shaped like a Google ID token (the broker reads, never verifies, it). */
 export function fakeIdToken(claims: Record<string, unknown>): string {
