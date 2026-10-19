@@ -318,6 +318,42 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     ).toBe(false);
   });
 
+  it("an unreadable audit job is reported as an error, not as a missing job, and is not moved", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events, {
+      overrides: [
+        [
+          /^run jobs describe caelo-production-audit .*containers\[0\]\.image/,
+          fail("PERMISSION_DENIED"),
+        ],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(
+      lines.some((l) => l.includes("Could not read the quality-audit job (PERMISSION_DENIED)")),
+    ).toBe(true);
+    expect(lines.some((l) => l.includes("has no quality-audit job yet"))).toBe(false);
+    expect(events.some((e) => /^gcloud run jobs update caelo-production-audit /.test(e))).toBe(
+      false,
+    );
+  });
+
+  it("a missing audit job is reported as missing", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events, {
+      overrides: [
+        [
+          /^run jobs describe caelo-production-audit .*containers\[0\]\.image/,
+          fail(
+            "ERROR: (gcloud.run.jobs.describe) Cannot find job [caelo-production-audit]. NOT_FOUND",
+          ),
+        ],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(lines.some((l) => l.includes("has no quality-audit job yet"))).toBe(true);
+  });
+
   it("without an ops image the upgrader step fails, the roll goes on, the converge is incomplete", async () => {
     const events: string[] = [];
     const { deps, recorded, lines } = upgradeDeps(events);

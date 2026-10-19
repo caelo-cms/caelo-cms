@@ -462,8 +462,13 @@ export async function executeAppRoll(
   // failure here does not undo the release: audits then fail loudly with
   // the version mismatch and the fix, until the next upgrade moves it.
   const sAudit = r.step("Moving the quality-audit job onto the admin's image...");
-  const auditPrior = await describeAuditJobImage(run, install);
-  if (!auditPrior) {
+  const described = await describeAuditJobImage(run, install);
+  const auditPrior = described.ok ? described.image : null;
+  if (!described.ok) {
+    sAudit.warned(
+      `Could not read the quality-audit job (${described.error}); Stage audits fail until the next upgrade moves it.`,
+    );
+  } else if (!auditPrior) {
     sAudit.warned(
       "The install has no quality-audit job yet; Stage audits fail until `cms-provision upgrade` sets it up.",
     );

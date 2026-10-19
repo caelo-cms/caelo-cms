@@ -15,11 +15,18 @@
 import type { GcloudRunner } from "../gcloud-retry.js";
 import { auditJobName } from "../gcp-names.js";
 
-/** The job's image now, or null when the install has no audit job yet. */
+/**
+ * The job's image now; `image: null` only when the install has no audit job
+ * yet. Any other gcloud failure (permissions, API, network) is an error, not
+ * "no job", so the app-roll reports it instead of a misleading hint.
+ */
 export async function describeAuditJobImage(
   run: GcloudRunner,
   install: { readonly projectId: string; readonly region: string; readonly env: string },
-): Promise<string | null> {
+): Promise<
+  | { readonly ok: true; readonly image: string | null }
+  | { readonly ok: false; readonly error: string }
+> {
   const r = await run([
     "run",
     "jobs",
@@ -29,8 +36,16 @@ export async function describeAuditJobImage(
     `--project=${install.projectId}`,
     "--format=value(spec.template.spec.template.spec.containers[0].image)",
   ]);
-  const image = r.ok ? r.stdout.trim() : "";
-  return image.length > 0 ? image : null;
+  if (!r.ok) {
+    return /NOT_FOUND|not found|could not be found/i.test(r.stderr)
+      ? { ok: true, image: null }
+      : { ok: false, error: r.stderr.trim() };
+  }
+  const image = r.stdout.trim();
+  if (image.length === 0) {
+    return { ok: false, error: "the job's description names no container image" };
+  }
+  return { ok: true, image };
 }
 
 /** Point the audit job at `imageRef`. */
