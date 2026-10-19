@@ -5,7 +5,9 @@
  * (`mcp_remote_connections`, migration 0310): one row per (user, surface),
  * created on the user's first remote request (see mcp_principal.ts).
  *
- *   mcp_remote_connections.list    — every connection, with the user's email.
+ *   mcp_remote_connections.list    — the connections the caller may see
+ *                                    (an Owner: all; others: their own —
+ *                                    RLS, migration 0316), with emails.
  *   mcp_remote_connections.revoke  — sticky: the user's next request is
  *                                    refused, and no request recreates it.
  *   mcp_remote_connections.restore — lift a revocation.
@@ -19,7 +21,7 @@
 
 import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
 import { withSystemRls } from "../_helpers.js";
@@ -79,27 +81,58 @@ async function selectRows(
   ctx: Pick<ExecutionContext, "actorKind">,
   id?: string,
 ): Promise<McpRemoteConnectionRow[]> {
-  // users RLS is self-or-system; the Owner's list names every user's email
-  // (the ops are human/system only, so this widens nothing for the AI).
-  const rows = (await withSystemRls(tx, ctx, () =>
-    tx.execute(sql`
-    SELECT c.id::text AS id, c.actor_id::text AS actor_id, u.email, c.surface,
+  // The connections themselves are read under the CALLER's RLS (migration
+  // 0316): an Owner sees every user's, anyone else only their own. Only the
+  // emails of those visible rows are then read with system RLS (users RLS
+  // is self-or-system) — never a join under system RLS, which would lift the
+  // connection scope too.
+  const rows = (await tx.execute(sql`
+    SELECT c.id::text AS id, c.actor_id::text AS actor_id, c.surface,
            c.ai_cost_cap_microcents, c.allow_caelo_ai, c.client_label,
            c.created_at, c.last_used_at, c.revoked_at
     FROM mcp_remote_connections c
-    LEFT JOIN users u ON u.id = c.actor_id
     ${id === undefined ? sql`` : sql`WHERE c.id = ${id}::uuid`}
     ORDER BY c.last_used_at DESC NULLS LAST, c.created_at DESC
-  `),
-  )) as unknown as RawRow[];
-  return rows.map(toRow);
+  `)) as unknown as Omit<RawRow, "email">[];
+  const actorIds = [...new Set(rows.map((r) => r.actor_id))];
+  const emails = new Map<string, string>();
+  if (actorIds.length > 0) {
+    const users = (await withSystemRls(tx, ctx, () =>
+      tx.execute(sql`
+        SELECT id::text AS id, email FROM users
+        WHERE id IN (${sql.join(
+          actorIds.map((a) => sql`${a}::uuid`),
+          sql`, `,
+        )})
+      `),
+    )) as unknown as { id: string; email: string }[];
+    for (const u of users) emails.set(u.id, u.email);
+  }
+  return rows.map((r) => toRow({ ...r, email: emails.get(r.actor_id) ?? null }));
+}
+
+/**
+ * Apply an Owner's change to one connection. RLS (0316) lets only system or
+ * a human Owner update, so "no row updated" means the id is unknown OR not
+ * the caller's to change — the same answer either way, like mcp_tokens.
+ */
+async function updateOne(
+  tx: TransactionRunner,
+  operation: string,
+  id: string,
+  set: SQL,
+): Promise<{ ok: true } | ReturnType<typeof notFound>> {
+  const updated = (await tx.execute(sql`
+    UPDATE mcp_remote_connections SET ${set} WHERE id = ${id}::uuid RETURNING id
+  `)) as unknown as { id: string }[];
+  return updated.length === 1 ? { ok: true } : notFound(operation, id);
 }
 
 function notFound(operation: string, id: string) {
   return err({
     kind: "HandlerError" as const,
     operation,
-    message: `remote connection ${id} not found — list them with mcp_remote_connections.list.`,
+    message: `remote connection ${id} not found, or not yours to change — only an Owner (settings.write) revokes, restores or caps remote connections. List the ones you can see with mcp_remote_connections.list.`,
   });
 }
 
@@ -122,10 +155,14 @@ export const revokeMcpRemoteConnectionOp = defineOperation({
   input: z.object({ id: z.string().uuid() }).strict(),
   output: z.object({ connection: connectionRow }),
   handler: async (ctx, input, tx) => {
-    await tx.execute(sql`
-      UPDATE mcp_remote_connections SET revoked_at = now(), current_chat_session_id = NULL
-      WHERE id = ${input.id}::uuid AND revoked_at IS NULL
-    `);
+    // COALESCE keeps the first revocation's timestamp on a repeat.
+    const updated = await updateOne(
+      tx,
+      "mcp_remote_connections.revoke",
+      input.id,
+      sql`revoked_at = COALESCE(revoked_at, now()), current_chat_session_id = NULL`,
+    );
+    if (!updated.ok) return updated;
     const [row] = await selectRows(tx, ctx, input.id);
     if (!row) return notFound("mcp_remote_connections.revoke", input.id);
     await recordAudit(tx, {
@@ -149,9 +186,13 @@ export const restoreMcpRemoteConnectionOp = defineOperation({
   input: z.object({ id: z.string().uuid() }).strict(),
   output: z.object({ connection: connectionRow }),
   handler: async (ctx, input, tx) => {
-    await tx.execute(sql`
-      UPDATE mcp_remote_connections SET revoked_at = NULL WHERE id = ${input.id}::uuid
-    `);
+    const updated = await updateOne(
+      tx,
+      "mcp_remote_connections.restore",
+      input.id,
+      sql`revoked_at = NULL`,
+    );
+    if (!updated.ok) return updated;
     const [row] = await selectRows(tx, ctx, input.id);
     if (!row) return notFound("mcp_remote_connections.restore", input.id);
     await recordAudit(tx, {
@@ -197,12 +238,14 @@ export const setMcpRemoteConnectionCapOp = defineOperation({
           "allowCaeloAi applies to admin-surface connections only — a chat connection always runs Caelo's own agent. Drop the flag.",
       });
     }
-    await tx.execute(sql`
-      UPDATE mcp_remote_connections
-      SET ai_cost_cap_microcents = ${input.aiCostCapMicrocents},
-          allow_caelo_ai = ${input.allowCaeloAi ?? current.allowCaeloAi}
-      WHERE id = ${input.id}::uuid
-    `);
+    const updated = await updateOne(
+      tx,
+      "mcp_remote_connections.set_cap",
+      input.id,
+      sql`ai_cost_cap_microcents = ${input.aiCostCapMicrocents},
+          allow_caelo_ai = ${input.allowCaeloAi ?? current.allowCaeloAi}`,
+    );
+    if (!updated.ok) return updated;
     const [row] = await selectRows(tx, ctx, input.id);
     if (!row) return notFound("mcp_remote_connections.set_cap", input.id);
     await recordAudit(tx, {

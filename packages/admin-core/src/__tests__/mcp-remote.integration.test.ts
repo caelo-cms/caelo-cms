@@ -265,6 +265,38 @@ describe("mcp_remote_connections ops", () => {
     expect(ai.ok).toBe(false);
   });
 
+  it("shows a non-Owner only their own connections and lets them change none (0316)", async () => {
+    const editorCtx: ExecutionContext = {
+      actorId: USERS.editor.id,
+      actorKind: "human",
+      requestId: "t806-editor",
+    };
+    const r = await execute(registry, adapter, editorCtx, "mcp_remote_connections.list", {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const rows = (r.value as { connections: { actorId: string; email: string | null }[] })
+      .connections;
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((c) => c.actorId === USERS.editor.id)).toBe(true);
+    expect(rows.some((c) => c.email === USERS.owner.email)).toBe(false);
+
+    const ownersRow = await connectionRow(USERS.owner.id, "admin");
+    const ownRow = await connectionRow(USERS.editor.id, "chat");
+    for (const id of [ownersRow!.id, ownRow!.id]) {
+      const revoke = await execute(registry, adapter, editorCtx, "mcp_remote_connections.revoke", {
+        id,
+      });
+      expect(message(revoke)).toContain("not yours to change");
+      const cap = await execute(registry, adapter, editorCtx, "mcp_remote_connections.set_cap", {
+        id,
+        aiCostCapMicrocents: 1,
+      });
+      expect(message(cap)).toContain("not yours to change");
+    }
+    expect((await connectionRow(USERS.owner.id, "admin"))?.revoked_at).toBeNull();
+    expect((await connectionRow(USERS.editor.id, "chat"))?.revoked_at).toBeNull();
+  });
+
   it("sets the cap and allowCaeloAi on admin connections; refuses allowCaeloAi on chat", async () => {
     const admin = await connectionRow(USERS.owner.id, "admin");
     const set = await execute(registry, adapter, ownerCtx, "mcp_remote_connections.set_cap", {
